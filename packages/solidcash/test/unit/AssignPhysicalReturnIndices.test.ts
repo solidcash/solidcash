@@ -131,6 +131,8 @@ import {
   persistedValueChunkWriteState,
   selectPersistedValueChunkWrite,
   selectValueChunkWriteCategory,
+  isInitialValueChunkWrite,
+  shouldRematerializeDescribedValueChunkWrite,
   resolveValueChunkWriteCategory,
   selectCompilerWriterEvent,
   selectTokenBandRepairOwner,
@@ -399,6 +401,51 @@ describe('generic persisted value-chunk write identity', () => {
   it('publishes insert identity separately from an update', () => {
     expect(describeValueChunkWrites(makeGroup('createNotice', signature, true))[0])
       .toMatchObject({ operation: 'insert', entryAccessSlot: 0, routeSlot: 0 });
+  });
+
+  it('derives first-write semantics from renamed descriptors and ignores legacy-name decoys', () => {
+    const [renamedInsert] = describeValueChunkWrites(makeGroup('createNotice', signature, true));
+    const [namedDecoyUpdate] = describeValueChunkWrites(makeGroup('publishJobPost'));
+
+    expect(isInitialValueChunkWrite(
+      selectValueChunkWriteCategory([renamedInsert]), false,
+    )).toBe(true);
+    expect(isInitialValueChunkWrite(
+      selectValueChunkWriteCategory([namedDecoyUpdate]), true,
+    )).toBe(false);
+    expect(isInitialValueChunkWrite({ status: 'absent' }, true)).toBe(true);
+  });
+
+  it('fails closed when same-category descriptor views disagree by key or planned operation', () => {
+    const [update] = describeValueChunkWrites(makeGroup('appendNotice'));
+    const distinctKey = { ...update, keySlot: '09'.repeat(32) };
+    expect(selectValueChunkWriteCategory([update, distinctKey])).toEqual({ status: 'ambiguous' });
+    expect(() => isInitialValueChunkWrite(
+      selectValueChunkWriteCategory([update, distinctKey]), true,
+    )).toThrow(/Ambiguous compiler-described value-chunk write identity/);
+
+    expect(selectValueChunkWriteCategory([
+      update, { ...update, operation: 'insert' },
+    ])).toEqual({ status: 'ambiguous' });
+  });
+
+  it('rematerializes only an exact persisted update without competing INSERT destinations', () => {
+    const [update] = describeValueChunkWrites(makeGroup('appendNotice'));
+    const [insert] = describeValueChunkWrites(makeGroup('createNotice', signature, true));
+    const updateSelection = selectValueChunkWriteCategory([update]);
+
+    expect(shouldRematerializeDescribedValueChunkWrite({
+      selection: updateSelection, persisted: true, plannedInserts: 0,
+    })).toBe(true);
+    expect(shouldRematerializeDescribedValueChunkWrite({
+      selection: updateSelection, persisted: true, plannedInserts: 1,
+    })).toBe(false);
+    expect(shouldRematerializeDescribedValueChunkWrite({
+      selection: selectValueChunkWriteCategory([insert]), persisted: true, plannedInserts: 0,
+    })).toBe(false);
+    expect(shouldRematerializeDescribedValueChunkWrite({
+      selection: { status: 'absent' }, persisted: true, plannedInserts: 0,
+    })).toBeUndefined();
   });
 
   it('refuses a category-free choice between two authenticated persisted resources', () => {

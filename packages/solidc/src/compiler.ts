@@ -3849,83 +3849,83 @@ function synthesizeMessageBusRoute(
       // walking every function with the same source name would make an unrelated overload inherit its sibling's
       // deployment topology. A remaining named helper keeps closureNames wider than one and is fenced below.
       for (const candidate of [fn]) {
-          // Synchronous traversal; `deploys` is the accumulator for this immediately enclosing handler scan.
-          // eslint-disable-next-line @typescript-eslint/no-loop-func
-          walkInvocationAst(candidate.body, (node) => {
-            // `new LockingBytecodeP2PKH(pkh)` is an InstantiationNode but not a child deploy; it is a
-            // compile-time locking-bytecode constructor and does not need a handler-owned block layout.
-            if (node instanceof InstantiationNode && !lockingBytecode.has(node.identifier.name)) {
-              deploys = true;
-              if (statefulChildren.has(node.identifier.name)) {
-                deploySites += 1;
-                const child = statefulChildren.get(node.identifier.name)!;
-                if ((child.constructorDef?.body.statements?.length ?? 0) > 0) {
-                  deploymentStateInitializationUnsupported = true;
-                }
-                if (node.hasFoldedChildCall || (node.foldedStateInit?.size ?? 0) > 0) {
-                  deploymentStateInitializationUnsupported = true;
-                }
-                const visibleInputs = new Set(fn.parameters
-                  .filter((parameter) => !parameter.name.startsWith('__internal__'))
-                  .map((parameter) => parameter.name));
-                for (const argument of node.parameters.slice(0, child.parameters.length)) {
-                  if (!(argument instanceof IdentifierNode) || !visibleInputs.has(argument.name)) {
-                    deploymentRecipeUnsupported = true;
-                  }
-                }
-                const salt = node.callOptions?.salt;
-                if (salt && !(salt instanceof HexLiteralNode)
-                  && (!(salt instanceof IdentifierNode) || !visibleInputs.has(salt.name))) {
+        // Synchronous traversal; `deploys` is the accumulator for this immediately enclosing handler scan.
+        // eslint-disable-next-line @typescript-eslint/no-loop-func
+        walkInvocationAst(candidate.body, (node) => {
+          // `new LockingBytecodeP2PKH(pkh)` is an InstantiationNode but not a child deploy; it is a
+          // compile-time locking-bytecode constructor and does not need a handler-owned block layout.
+          if (node instanceof InstantiationNode && !lockingBytecode.has(node.identifier.name)) {
+            deploys = true;
+            if (statefulChildren.has(node.identifier.name)) {
+              deploySites += 1;
+              const child = statefulChildren.get(node.identifier.name)!;
+              if ((child.constructorDef?.body.statements?.length ?? 0) > 0) {
+                deploymentStateInitializationUnsupported = true;
+              }
+              if (node.hasFoldedChildCall || (node.foldedStateInit?.size ?? 0) > 0) {
+                deploymentStateInitializationUnsupported = true;
+              }
+              const visibleInputs = new Set(fn.parameters
+                .filter((parameter) => !parameter.name.startsWith('__internal__'))
+                .map((parameter) => parameter.name));
+              for (const argument of node.parameters.slice(0, child.parameters.length)) {
+                if (!(argument instanceof IdentifierNode) || !visibleInputs.has(argument.name)) {
                   deploymentRecipeUnsupported = true;
                 }
-              } else unsupportedInstantiation = true;
-              if (hasEffectiveCallValue(node.callOptions?.value)) deployWithValue = true;
-            }
-            if (node instanceof ExternalFunctionCallNode && node.foldedIntoDeploy) {
-              deploymentStateInitializationUnsupported = true;
-            }
-          });
-          // The closure mutates only the admission accumulators for this synchronous candidate scan.
-          // eslint-disable-next-line @typescript-eslint/no-loop-func
-          const nestedDeploy = (value: unknown, nested = false, seen = new WeakSet<object>()): void => {
-            if (Array.isArray(value)) { value.forEach((item) => nestedDeploy(item, nested, seen)); return; }
-            if (!(value instanceof Node) || seen.has(value)) return;
-            seen.add(value);
-            if (value instanceof VariableDefinitionNode
+              }
+              const salt = node.callOptions?.salt;
+              if (salt && !(salt instanceof HexLiteralNode)
+                  && (!(salt instanceof IdentifierNode) || !visibleInputs.has(salt.name))) {
+                deploymentRecipeUnsupported = true;
+              }
+            } else unsupportedInstantiation = true;
+            if (hasEffectiveCallValue(node.callOptions?.value)) deployWithValue = true;
+          }
+          if (node instanceof ExternalFunctionCallNode && node.foldedIntoDeploy) {
+            deploymentStateInitializationUnsupported = true;
+          }
+        });
+        // The closure mutates only the admission accumulators for this synchronous candidate scan.
+        // eslint-disable-next-line @typescript-eslint/no-loop-func
+        const nestedDeploy = (value: unknown, nested = false, seen = new WeakSet<object>()): void => {
+          if (Array.isArray(value)) { value.forEach((item) => nestedDeploy(item, nested, seen)); return; }
+          if (!(value instanceof Node) || seen.has(value)) return;
+          seen.add(value);
+          if (value instanceof VariableDefinitionNode
               && value.expression instanceof InstantiationNode
               && statefulChildren.has(value.expression.identifier.name)) {
-              deployedLocalNames.add(value.name);
-            }
-            if (value instanceof InstantiationNode && !lockingBytecode.has(value.identifier.name) && nested) {
-              deployUnderControlFlow = true;
-            }
-            // Folded deploy calls are deliberately omitted from the ordinary invocation walk. Inspect the
-            // normalized tree directly so their constructor-state mutation cannot be mistaken for defaults.
-            if ((value instanceof InstantiationNode
+            deployedLocalNames.add(value.name);
+          }
+          if (value instanceof InstantiationNode && !lockingBytecode.has(value.identifier.name) && nested) {
+            deployUnderControlFlow = true;
+          }
+          // Folded deploy calls are deliberately omitted from the ordinary invocation walk. Inspect the
+          // normalized tree directly so their constructor-state mutation cannot be mistaken for defaults.
+          if ((value instanceof InstantiationNode
                 && (value.hasFoldedChildCall || (value.foldedStateInit?.size ?? 0) > 0))
               || (value instanceof ExternalFunctionCallNode && value.foldedIntoDeploy)) {
-              deploymentStateInitializationUnsupported = true;
-            }
-            // Admission runs before every deploy-fold annotation is guaranteed to survive normalization.
-            // Preserve the same semantic boundary structurally: a method called on a local initialized by a
-            // stateful `new` is constructor-state initialization, not an independent typed graph edge.
-            if ((value instanceof ExternalFunctionCallNode
+            deploymentStateInitializationUnsupported = true;
+          }
+          // Admission runs before every deploy-fold annotation is guaranteed to survive normalization.
+          // Preserve the same semantic boundary structurally: a method called on a local initialized by a
+          // stateful `new` is constructor-state initialization, not an independent typed graph edge.
+          if ((value instanceof ExternalFunctionCallNode
                 && value.addressExpression instanceof IdentifierNode
                 && deployedLocalNames.has(value.addressExpression.name))
               || (value instanceof MethodCallNode && value.object instanceof IdentifierNode
                 && deployedLocalNames.has(value.object.name))
               || (value instanceof FunctionCallNode && value.identifier.name.includes('.')
                 && deployedLocalNames.has(value.identifier.name.slice(0, value.identifier.name.indexOf('.'))))) {
-              deploymentStateInitializationUnsupported = true;
-            }
-            const childNested = nested || value instanceof WhileNode || value instanceof DoWhileNode
+            deploymentStateInitializationUnsupported = true;
+          }
+          const childNested = nested || value instanceof WhileNode || value instanceof DoWhileNode
               || value instanceof BranchNode || value instanceof SwitchNode || value instanceof TryCatchNode;
-            for (const [key, child] of Object.entries(value)) {
-              if (['referencedContract', 'resolvedFunction', 'definition', 'symbolTable'].includes(key)) continue;
-              nestedDeploy(child, childNested, seen);
-            }
-          };
-          nestedDeploy(candidate.body);
+          for (const [key, child] of Object.entries(value)) {
+            if (['referencedContract', 'resolvedFunction', 'definition', 'symbolTable'].includes(key)) continue;
+            nestedDeploy(child, childNested, seen);
+          }
+        };
+        nestedDeploy(candidate.body);
       }
       const kernelDeploySupported = deploys && deploySites >= 1 && !unsupportedInstantiation
         && !deployUnderControlFlow && !deployWithValue && !deploymentStateInitializationUnsupported

@@ -1082,11 +1082,48 @@ export function selectValueChunkWriteCategory(
     } catch {
       return { status: 'ambiguous' };
     }
-    identities.set(valueChunkWriteIdentity(write), write);
+    const identity = valueChunkWriteIdentity(write);
+    const previous = identities.get(identity);
+    // Logical and physical views may publish the same resource descriptor. They
+    // must agree on the planner slot and operation which produced that identity;
+    // otherwise choosing the last view would turn an INSERT into an UPDATE (or
+    // vice versa) based only on group enumeration order.
+    if (previous && (previous.operation !== write.operation
+      || previous.entryAccessSlot !== write.entryAccessSlot
+      || previous.routeSlot !== write.routeSlot)) return { status: 'ambiguous' };
+    identities.set(identity, write);
   }
   if (identities.size !== 1) return { status: 'ambiguous' };
   const write = [...identities.values()][0];
   return { status: 'exact', categoryId: write.categoryId, write };
+}
+
+/**
+ * Resolve first-write semantics from an authenticated resource descriptor.
+ * A source-name fallback is accepted only when no descriptor was published.
+ */
+export function isInitialValueChunkWrite(
+  selection: ValueChunkWriteCategorySelection,
+  legacyNamedInitial = false,
+): boolean {
+  if (selection.status === 'ambiguous') {
+    throw new Error('Ambiguous compiler-described value-chunk write identity');
+  }
+  return selection.status === 'exact' ? selection.write.operation === 'insert' : legacyNamedInitial;
+}
+
+/** Descriptor-owned rematerialization decision; `undefined` delegates to old-artifact compatibility. */
+export function shouldRematerializeDescribedValueChunkWrite(parts: {
+  selection: ValueChunkWriteCategorySelection;
+  persisted: boolean;
+  plannedInserts: number;
+}): boolean | undefined {
+  if (parts.selection.status === 'ambiguous') {
+    throw new Error('Ambiguous compiler-described value-chunk write identity');
+  }
+  if (parts.selection.status === 'absent') return undefined;
+  return parts.persisted && parts.plannedInserts === 0
+    && parts.selection.write.operation === 'update';
 }
 
 /** Resolve a chunk's owner without allowing a caller/default category to contradict compiler write identity. */
@@ -5480,10 +5517,19 @@ export class StatefulTransactionBuilder {
     persistedJobEventsSendReady = false;
   }
 
-  private _rootIsPublishJobPost(): boolean {
-    return this.lowLevelCallUtxoGroups.some((group) => group.functionName === 'publishJobPost')
+  private _isInitialChunkableValueWrite(): boolean {
+    const selection = this._valueChunkWriteCategorySelection();
+    if (selection.status !== 'absent') return isInitialValueChunkWrite(selection);
+    if (this._hasChunkableValueWriteMetadata()) {
+      throw new Error('Chunkable value write metadata did not produce one exact resource descriptor');
+    }
+    // Compatibility only for plans predating compiler/planner value-chunk descriptors.
+    const legacyNamedInitial = this.lowLevelCallUtxoGroups.some(
+      (group) => group.functionName === 'publishJobPost',
+    )
       || this.externalCallUtxoGroups.some((group) =>
         (group.functionName ?? group.logicalFunctionName) === 'publishJobPost');
+    return isInitialValueChunkWrite(selection, legacyNamedInitial);
   }
 
   /** Persist UPDATE rematerialize only for empty-address dest, never INSERT/whitelist dest. */
@@ -5493,13 +5539,28 @@ export class StatefulTransactionBuilder {
       ...this.externalCallUtxoGroups.map((group) => group.plannedEntryInserts?.length ?? 0),
       ...this.lowLevelCallUtxoGroups.map((group) => group.plannedEntryInserts?.length ?? 0),
     );
+    const selection = this._valueChunkWriteCategorySelection();
+    const described = shouldRematerializeDescribedValueChunkWrite({
+      selection,
+      persisted: selection.status === 'exact'
+        && persistedValueChunkWriteState(selection.write) !== undefined,
+      plannedInserts,
+    });
+    // A write can update its chunked collection while this transaction also
+    // inserts another entry. Those INSERT destinations own the contested
+    // output geometry, so cached continuations must not be rematerialized.
+    if (described !== undefined) return described;
+    if (this._hasChunkableValueWriteMetadata()) {
+      throw new Error('Chunkable value write metadata did not produce one exact resource descriptor');
+    }
+    // Compatibility only for plans predating compiler/planner value-chunk descriptors.
     for (const group of [...this.lowLevelCallUtxoGroups, ...this.externalCallUtxoGroups]) {
       const names = [group.logicalFunctionName, group.functionName, group.compilerRoute?.abiFunction?.name];
       if (!names.includes('publishJobEvent')) continue;
       const event = (group.logicalFunctionArgs ?? group.functionArgs)?.[1];
       if (shouldRematerializePersistUpdate({
         persistReady: isPersistedJobEventsReady(),
-        publishJobPost: this._rootIsPublishJobPost(),
+        publishJobPost: this._isInitialChunkableValueWrite(),
         event,
         plannedInserts,
       })) return true;
@@ -5507,8 +5568,14 @@ export class StatefulTransactionBuilder {
     return false;
   }
 
-  private _isFirstPublishJobEventsInsert(): boolean {
-    if (this._rootIsPublishJobPost()) return true;
+  private _isInitialChunkableValueWriteForDigest(): boolean {
+    const selection = this._valueChunkWriteCategorySelection();
+    if (selection.status !== 'absent') return isInitialValueChunkWrite(selection);
+    if (this._hasChunkableValueWriteMetadata()) {
+      throw new Error('Chunkable value write metadata did not produce one exact resource descriptor');
+    }
+    // Compatibility only for plans predating compiler/planner value-chunk descriptors.
+    if (this._isInitialChunkableValueWrite()) return true;
     const plannedInserts = Math.max(
       0,
       ...this.externalCallUtxoGroups.map((group) => group.plannedEntryInserts?.length ?? 0),
@@ -5524,12 +5591,39 @@ export class StatefulTransactionBuilder {
     return false;
   }
 
+  /** Persisted continuation state for this exact collection and key. */
+  private _persistedChunkableValueWriteState(): ReturnType<typeof persistedValueChunkWriteState> {
+    const selection = this._valueChunkWriteCategorySelection();
+    if (selection.status === 'ambiguous') isInitialValueChunkWrite(selection);
+    if (selection.status === 'exact') {
+      return selection.write.operation === 'update'
+        ? persistedValueChunkWriteState(selection.write) : undefined;
+    }
+    if (this._hasChunkableValueWriteMetadata()) {
+      throw new Error('Chunkable value write metadata did not produce one exact resource descriptor');
+    }
+    return undefined;
+  }
+
+  /** Exact descriptor readiness, with global readiness retained only for old descriptor-free plans. */
+  private _isPersistedChunkableValueWriteReady(): boolean {
+    const selection = this._valueChunkWriteCategorySelection();
+    if (selection.status === 'ambiguous') isInitialValueChunkWrite(selection);
+    if (selection.status === 'exact') return this._persistedChunkableValueWriteState() !== undefined;
+    if (this._hasChunkableValueWriteMetadata()) {
+      throw new Error('Chunkable value write metadata did not produce one exact resource descriptor');
+    }
+    return isPersistedJobEventsReady();
+  }
+
   private _shouldStampPersistUpdateDigestLock(): boolean {
     const categoryId = this._persistJobEventsTokenCategory();
+    const exactPersisted = this._persistedChunkableValueWriteState();
     return shouldStampPersistUpdateDigestLock({
-      persistReady: isPersistedJobEventsReady(),
-      persistWidth: categoryId ? persistedJobEventsWidth(categoryId) : persistedJobEventsWidth(),
-      firstPublishInsert: this._isFirstPublishJobEventsInsert(),
+      persistReady: exactPersisted !== undefined || this._isPersistedChunkableValueWriteReady(),
+      persistWidth: exactPersisted?.width
+        ?? (categoryId ? persistedJobEventsWidth(categoryId) : persistedJobEventsWidth()),
+      firstPublishInsert: this._isInitialChunkableValueWriteForDigest(),
     });
   }
 
@@ -5552,7 +5646,7 @@ export class StatefulTransactionBuilder {
 
   /** Restore 1:1 on the executing impl's INPUTINDEX*scale-k window after other writers. */
   private _reassertScaledPreserveOneToOnes(builder: TransactionBuilder): void {
-    if (!isPersistedJobEventsReady() || this._rootIsPublishJobPost()) return;
+    if (!this._isPersistedChunkableValueWriteReady() || this._isInitialChunkableValueWrite()) return;
     const emitDests = new Set(this._emitDestinationIndices());
     const emitDest = this._scaledEmitOutputIndex(builder.outputs.length);
     if (emitDest !== undefined) emitDests.add(emitDest);
@@ -5676,8 +5770,13 @@ export class StatefulTransactionBuilder {
     return this._chunkableValueWriteInputIndex();
   }
 
+  isInitialChunkableValueWrite(): boolean {
+    return this._isInitialChunkableValueWrite();
+  }
+
+  /** @deprecated Compatibility name for callers predating compiler-described value writes. */
   isRootPublishJobPost(): boolean {
-    return this._rootIsPublishJobPost();
+    return this.isInitialChunkableValueWrite();
   }
 
   private _persistDigestCategories(): string[] {
@@ -5705,8 +5804,8 @@ export class StatefulTransactionBuilder {
     outputs?: ReadonlyArray<{ token?: { nft?: { commitment?: string } } }>,
   ): Set<number> {
     return persistAndTokenWriterOccupancy({
-      persistReady: isPersistedJobEventsReady(),
-      firstPublish: this._rootIsPublishJobPost(),
+      persistReady: this._isPersistedChunkableValueWriteReady(),
+      firstPublish: this._isInitialChunkableValueWrite(),
       hasTokenWriter: this.hasMintingBandTokenWriter(),
       implIndex: this._chunkableValueWriteInputIndex(),
       band: this.getPublishJobEventsBand(),
@@ -5743,7 +5842,7 @@ export class StatefulTransactionBuilder {
   /** publishJobEvent emit is implementation-relative (`INPUTINDEX + event.offset`). */
   private _scaledEmitOutputIndex(outputCount: number): number | undefined {
     // First publish already fills Created in the callee walk at layout dest.
-    if (!isPersistedJobEventsReady() || this._rootIsPublishJobPost()) return undefined;
+    if (!this._isPersistedChunkableValueWriteReady() || this._isInitialChunkableValueWrite()) return undefined;
     const impl = this._chunkableValueWriteInputIndex();
     // No executing publishJobEvent: do not invent dest as preserve-range-1
     // (that clobbered registerArbitrator dest 7 after persist became ready).
@@ -5807,7 +5906,7 @@ export class StatefulTransactionBuilder {
       for (let index = band.start; index <= band.end; index++) reserved.add(index);
     }
     const eventSlot = this._entryScaledPreserveRange();
-    if (eventSlot && isPersistedJobEventsReady() && !this._rootIsPublishJobPost()) {
+    if (eventSlot && this._isPersistedChunkableValueWriteReady() && !this._isInitialChunkableValueWrite()) {
       reserved.add(eventSlot.endExclusive - 1);
     }
     for (const [llcIndex, group] of this.lowLevelCallUtxoGroups.entries()) {
@@ -5920,8 +6019,9 @@ export class StatefulTransactionBuilder {
         .filter((commitment) => !isEmptyValueChunkCommitment(commitment)),
     )].length;
     const publishCategory = this._jobEventsPublishCategory();
-    const persistWidth = isPersistedJobEventsReady() && !this._rootIsPublishJobPost()
-      ? persistedJobEventsWidth(publishCategory) : 0;
+    const exactPersisted = this._persistedChunkableValueWriteState();
+    const persistWidth = this._isPersistedChunkableValueWriteReady() && !this._isInitialChunkableValueWrite()
+      ? exactPersisted?.width ?? persistedJobEventsWidth(publishCategory) : 0;
     const plannedInserts = Math.max(
       0,
       ...(publishExternal?.plannedEntryInserts?.length !== undefined
@@ -5950,8 +6050,8 @@ export class StatefulTransactionBuilder {
     const tokenMaster = tokenWriter?.categoryId
       ? this.findMintingInputIndex(tokenWriter.categoryId) : -1;
     const keepAtLayout = shouldKeepPersistAtLayoutBase({
-      persistReady: isPersistedJobEventsReady(),
-      firstPublish: this._rootIsPublishJobPost(),
+      persistReady: this._isPersistedChunkableValueWriteReady(),
+      firstPublish: this._isInitialChunkableValueWrite(),
       layoutDestOccupiedByMintingWriter: tokenMaster >= 0 || this.mintingOutputSwap !== undefined,
     });
     const layoutDest = persistValueChunkBase(publishImpl, publishBlockSize);
@@ -5959,7 +6059,7 @@ export class StatefulTransactionBuilder {
     // FakeToken after dest+nNew. Whitelist pads keep the dest-25 slide.
     const preserveEndExclusive = keepAtLayout
       ? -1
-      : (isPersistedJobEventsReady() && !this._rootIsPublishJobPost()
+      : (this._isPersistedChunkableValueWriteReady() && !this._isInitialChunkableValueWrite()
         ? (this._entryScaledPreserveRange()?.endExclusive ?? -1)
         : -1);
     const forcedLayoutStart = keepAtLayout && layoutDest >= 0 ? layoutDest : undefined;
@@ -6043,10 +6143,11 @@ export class StatefulTransactionBuilder {
     const start = this.findMintingInputIndex(tokenGroup.categoryId);
     if (start < 0) { this.mintingOutputSwap = undefined; return; }
     const { start: jobEventsStart, nNew } = band;
-    const persistUpdate = isPersistedJobEventsReady() && !this._rootIsPublishJobPost();
+    const persistUpdate = this._isPersistedChunkableValueWriteReady()
+      && !this._isInitialChunkableValueWrite();
     const keepAtLayout = shouldKeepPersistAtLayoutBase({
       persistReady: persistUpdate,
-      firstPublish: this._rootIsPublishJobPost(),
+      firstPublish: this._isInitialChunkableValueWrite(),
       layoutDestOccupiedByMintingWriter: this.hasMintingBandTokenWriter(),
     });
     const persistDests = persistUpdatePredecessorDests({
@@ -6234,7 +6335,8 @@ export class StatefulTransactionBuilder {
     const band = this.getPublishJobEventsBand();
     if (!band) return;
     const categoryId = this._jobEventsPublishCategory();
-    const persistUpdate = isPersistedJobEventsReady() && !this._rootIsPublishJobPost();
+    const persistUpdate = this._isPersistedChunkableValueWriteReady()
+      && !this._isInitialChunkableValueWrite();
     const persistCategory = persistUpdate
       ? (this._persistJobEventsTokenCategory() ?? categoryId) : categoryId;
     const persistLock = (persistCategory ? persistedJobEventsLocks.get(persistCategory) : undefined)
@@ -6276,7 +6378,7 @@ export class StatefulTransactionBuilder {
     const needed = persistPredecessorPlaceCount(band.nNew, candidates.length, persistUpdate);
     const keepAtLayout = shouldKeepPersistAtLayoutBase({
       persistReady: persistUpdate,
-      firstPublish: this._rootIsPublishJobPost(),
+      firstPublish: this._isInitialChunkableValueWrite(),
       layoutDestOccupiedByMintingWriter: this.hasMintingBandTokenWriter(),
     });
     const dests = persistUpdatePredecessorDests({
@@ -6292,8 +6394,8 @@ export class StatefulTransactionBuilder {
       console.error('persist-place-occupancy', {
         persistUpdate,
         keepAtLayout,
-        persistReady: isPersistedJobEventsReady(),
-        firstPublish: this._rootIsPublishJobPost(),
+        persistReady: this._isPersistedChunkableValueWriteReady(),
+        firstPublish: this._isInitialChunkableValueWrite(),
         hasTokenWriter: this.hasMintingBandTokenWriter(),
         impl: this._chunkableValueWriteInputIndex(),
         band,
@@ -6362,9 +6464,9 @@ export class StatefulTransactionBuilder {
     const band = this.getPublishJobEventsBand();
     const categoryId = this._persistJobEventsTokenCategory() ?? this._jobEventsPublishCategory();
     if (!shouldRestorePersistedContinuationInputs({
-      initialWrite: this._rootIsPublishJobPost(),
+      initialWrite: this._isInitialChunkableValueWrite(),
       mintingBandWriter: tokenWriterPresent,
-      persisted: isPersistedJobEventsReady(),
+      persisted: this._isPersistedChunkableValueWriteReady(),
       hasBand: band !== undefined,
       hasCategory: categoryId !== undefined,
     })) return;
@@ -7234,7 +7336,7 @@ export class StatefulTransactionBuilder {
       if (fallback >= 0) {
         relocateJobEventEmitToDest(builder.outputs, fallback, {
           consumedMutableOk: persistEmitEarly,
-          preferCreated: this._rootIsPublishJobPost(),
+          preferCreated: this._isInitialChunkableValueWrite(),
         });
       }
       return;
@@ -7355,7 +7457,7 @@ export class StatefulTransactionBuilder {
     if (legacyEventFallback && executingDest >= 0) {
       relocateJobEventEmitToDest(builder.outputs, executingDest, {
         consumedMutableOk: persistEmit,
-        preferCreated: this._rootIsPublishJobPost(),
+        preferCreated: this._isInitialChunkableValueWrite(),
       });
     }
   }
@@ -7457,10 +7559,11 @@ export class StatefulTransactionBuilder {
     ));
     const persistDests = new Set(persistUpdatePredecessorDests({
       implIndex: this._chunkableValueWriteInputIndex(),
-      persistUpdate: isPersistedJobEventsReady() && !this._rootIsPublishJobPost(),
+      persistUpdate: this._isPersistedChunkableValueWriteReady()
+        && !this._isInitialChunkableValueWrite(),
       keepAtLayout: shouldKeepPersistAtLayoutBase({
-        persistReady: isPersistedJobEventsReady(),
-        firstPublish: this._rootIsPublishJobPost(),
+        persistReady: this._isPersistedChunkableValueWriteReady(),
+        firstPublish: this._isInitialChunkableValueWrite(),
         layoutDestOccupiedByMintingWriter: this.hasMintingBandTokenWriter(),
       }),
       bandStart: this.getPublishJobEventsBand()?.start ?? -1,
@@ -7507,9 +7610,9 @@ export class StatefulTransactionBuilder {
       if (liveBand && index >= liveBand.start && index <= liveBand.end) continue;
       const chunk0Dest = persistValueChunkBase(this._chunkableValueWriteInputIndex(), 5);
       const forceChunk0 = index === chunk0Dest
-        && !this._rootIsPublishJobPost()
+        && !this._isInitialChunkableValueWrite()
         && isPersistValueChunkCommitment(commit);
-      if ((persistRecipeLock && persistDests.has(index) && !this._rootIsPublishJobPost())
+      if ((persistRecipeLock && persistDests.has(index) && !this._isInitialChunkableValueWrite())
         || forceChunk0) {
         const existing = builder.outputs[index];
         if ((existing?.token?.nft?.capability === 'mutable'
@@ -11145,7 +11248,8 @@ export class StatefulTransactionBuilder {
     };
     buildTiming('start');
     if (this.emitReassertAllowed === undefined) {
-      this.emitReassertAllowed = isPersistedJobEventsReady() && !this._rootIsPublishJobPost();
+      this.emitReassertAllowed = this._isPersistedChunkableValueWriteReady()
+        && !this._isInitialChunkableValueWrite();
     }
     this.builtReturnEventOutputIndices.clear();
     const returnOutputRefs = new Map<string, Output>();

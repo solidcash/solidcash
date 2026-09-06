@@ -591,7 +591,8 @@ arguments are resolved at the call site, and recursive or ambiguous call graphs 
 parameters receive isolated plan histories, so their callee mutations can feed later reads and memory-parameter
 writes within the call without leaking into the caller. This also covers mixed value/reference formals which receive
 the same caller array. A direct pure-helper call used as a variable initializer or assignment replays these array
-effects too; capturing its ordinary return value does not invalidate the constructed-array plan.
+effects too; capturing its ordinary return value does not invalidate the constructed-array plan. Nested helpers
+also carry a replayed scalar return tuple into subsequent scalar and array expressions in their caller.
 Direct source assignments use the same point-in-time resolver, including literal and runtime array indices.
 Mixed push/pop paths which restore their entry length without popping into the pre-existing prefix are replayed
 independently per logical iteration, including finite `if`/`else` and `switch` paths. Other mixed push/pop

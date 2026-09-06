@@ -5331,6 +5331,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         type HelperSummary = {
           plans: Map<string, ArrayPlan>;
           values: Map<string, ExpressionNode>;
+          returnValues?: ExpressionNode[];
         };
         type HelperScope = {
           arrayNames: ReadonlySet<string>;
@@ -5420,10 +5421,73 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           let values = new Map(source.values);
           const replay = (expression: ExpressionNode): ExpressionNode | undefined =>
             replayExpression(expression, values, helperPlans, scope);
+          const replayNestedCall = (nestedCall: FunctionCallNode): HelperSummary | undefined => {
+            const nestedTargets = (this.functionsByName.get(nestedCall.identifier.name) ?? [])
+              .filter((candidate) => candidate.parameters.length === nestedCall.parameters.length);
+            if (nestedTargets.length !== 1) return undefined;
+            const nestedTarget = nestedTargets[0];
+            if (!nestedTarget.body || !nestedTarget.modifiers.includes(FunctionModifier.PURE)
+              || visiting.has(nestedTarget)) return undefined;
+            const nestedArrayNames = new Set(nestedTarget.parameters
+              .filter((candidate) => candidate.type instanceof ArrayType)
+              .map((candidate) => candidate.name));
+            const nestedPlanNames = new Map<string, string>();
+            const nestedValues = new Map<string, ExpressionNode>();
+            const nestedSourcePlans = copyPlans(helperPlans);
+            const propagatedPlanNames = new Set(helperPlans.keys());
+            for (let parameterIndex = 0;
+              parameterIndex < nestedTarget.parameters.length; parameterIndex += 1) {
+              const parameter = nestedTarget.parameters[parameterIndex];
+              const argument = nestedCall.parameters[parameterIndex];
+              if (parameter.type instanceof ArrayType) {
+                if (!(argument instanceof IdentifierNode)) return undefined;
+                const callerPlanName = scope.planNamesByParameter.get(argument.name);
+                const callerPlan = callerPlanName === undefined
+                  ? undefined : helperPlans.get(callerPlanName);
+                if (callerPlanName === undefined || !callerPlan) return undefined;
+                if (parameter.modifier.includes('memory')) {
+                  nestedPlanNames.set(parameter.name, callerPlanName);
+                } else {
+                  // A value parameter starts with the caller's current contents but owns an isolated history.
+                  // Its mutations remain available to reads inside this call without leaking into the caller.
+                  const copiedPlanName = `__internal__kernelHelperCopy_${this.serial++}`;
+                  nestedPlanNames.set(parameter.name, copiedPlanName);
+                  nestedSourcePlans.set(copiedPlanName, clonePlan(copiedPlanName, callerPlan));
+                }
+                continue;
+              }
+              const nestedValue = replay(argument);
+              if (!nestedValue) return undefined;
+              nestedValues.set(parameter.name, nestedValue);
+            }
+            // Nested formals reuse the caller's canonical plan names. Forwarding the same array more than once
+            // therefore preserves reference aliasing and advances one source-ordered mutation history.
+            const nestedSummary = summarize(
+              nestedTarget.body,
+              { plans: nestedSourcePlans, values: nestedValues },
+              true,
+              { arrayNames: nestedArrayNames, planNamesByParameter: nestedPlanNames },
+              new Set(visiting).add(nestedTarget),
+            );
+            if (!nestedSummary) return undefined;
+            return {
+              ...nestedSummary,
+              plans: new Map([...propagatedPlanNames].map((planName) => [
+                planName, nestedSummary.plans.get(planName)!,
+              ])),
+            };
+          };
           const body = helperBlock.statements ?? [];
           for (let index = 0; index < body.length; index += 1) {
             const helperStatement = body[index];
             if (helperStatement instanceof VariableDefinitionNode && helperStatement.expression) {
+              if (helperStatement.expression instanceof FunctionCallNode) {
+                const nestedSummary = replayNestedCall(helperStatement.expression);
+                if (!nestedSummary || nestedSummary.returnValues?.length !== 1) return undefined;
+                helperPlans = nestedSummary.plans;
+                values.set(helperStatement.name, nestedSummary.returnValues[0]);
+                continue;
+              }
               const expression = replay(helperStatement.expression);
               if (!expression) return undefined;
               values.set(helperStatement.name, expression);
@@ -5432,6 +5496,13 @@ export default class LowerVMapCounterLoops extends AstTraversal {
             if (helperStatement instanceof AssignNode
               && scope.arrayNames.has(helperStatement.identifier.name)) return undefined;
             if (helperStatement instanceof AssignNode) {
+              if (helperStatement.expression instanceof FunctionCallNode) {
+                const nestedSummary = replayNestedCall(helperStatement.expression);
+                if (!nestedSummary || nestedSummary.returnValues?.length !== 1) return undefined;
+                helperPlans = nestedSummary.plans;
+                values.set(helperStatement.identifier.name, nestedSummary.returnValues[0]);
+                continue;
+              }
               const expression = replay(helperStatement.expression);
               if (!expression) return undefined;
               values.set(helperStatement.identifier.name, expression);
@@ -5556,63 +5627,18 @@ export default class LowerVMapCounterLoops extends AstTraversal {
               continue;
             }
             if (helperStatement instanceof FunctionCallStatementNode) {
-              const nestedCall = helperStatement.call;
-              const nestedTargets = (this.functionsByName.get(nestedCall.identifier.name) ?? [])
-                .filter((candidate) => candidate.parameters.length === nestedCall.parameters.length);
-              if (nestedTargets.length !== 1) return undefined;
-              const nestedTarget = nestedTargets[0];
-              if (!nestedTarget.body || !nestedTarget.modifiers.includes(FunctionModifier.PURE)
-                || visiting.has(nestedTarget)) return undefined;
-              const nestedArrayNames = new Set(nestedTarget.parameters
-                .filter((candidate) => candidate.type instanceof ArrayType)
-                .map((candidate) => candidate.name));
-              const nestedPlanNames = new Map<string, string>();
-              const nestedValues = new Map<string, ExpressionNode>();
-              const nestedSourcePlans = copyPlans(helperPlans);
-              const propagatedPlanNames = new Set(helperPlans.keys());
-              for (let parameterIndex = 0;
-                parameterIndex < nestedTarget.parameters.length; parameterIndex += 1) {
-                const parameter = nestedTarget.parameters[parameterIndex];
-                const argument = nestedCall.parameters[parameterIndex];
-                if (parameter.type instanceof ArrayType) {
-                  if (!(argument instanceof IdentifierNode)) return undefined;
-                  const callerPlanName = scope.planNamesByParameter.get(argument.name);
-                  const callerPlan = callerPlanName === undefined
-                    ? undefined : helperPlans.get(callerPlanName);
-                  if (callerPlanName === undefined || !callerPlan) return undefined;
-                  if (parameter.modifier.includes('memory')) {
-                    nestedPlanNames.set(parameter.name, callerPlanName);
-                  } else {
-                    // A value parameter starts with the caller's current contents but owns an isolated history.
-                    // Its mutations remain available to reads inside this call without leaking into the caller.
-                    const copiedPlanName = `__internal__kernelHelperCopy_${this.serial++}`;
-                    nestedPlanNames.set(parameter.name, copiedPlanName);
-                    nestedSourcePlans.set(copiedPlanName, clonePlan(copiedPlanName, callerPlan));
-                  }
-                  continue;
-                }
-                const nestedValue = replay(argument);
-                if (!nestedValue) return undefined;
-                nestedValues.set(parameter.name, nestedValue);
-              }
-              // Nested formals reuse the caller's canonical plan names. Forwarding the same array more than once
-              // therefore preserves reference aliasing and advances one source-ordered mutation history.
-              const nestedSummary = summarize(
-                nestedTarget.body,
-                { plans: nestedSourcePlans, values: nestedValues },
-                true,
-                { arrayNames: nestedArrayNames, planNamesByParameter: nestedPlanNames },
-                new Set(visiting).add(nestedTarget),
-              );
+              const nestedSummary = replayNestedCall(helperStatement.call);
               if (!nestedSummary) return undefined;
-              helperPlans = new Map([...propagatedPlanNames].map((planName) => [
-                planName, nestedSummary.plans.get(planName)!,
-              ]));
+              helperPlans = nestedSummary.plans;
               continue;
             }
             if (helperStatement instanceof RequireNode) continue;
             if (helperStatement instanceof BreakNode && index === body.length - 1) continue;
-            if (helperStatement instanceof ReturnNode && allowTerminalReturn && index === body.length - 1) continue;
+            if (helperStatement instanceof ReturnNode && allowTerminalReturn && index === body.length - 1) {
+              const returnValues = helperStatement.expressions.map(replay);
+              if (returnValues.some((value) => value === undefined)) return undefined;
+              return { plans: helperPlans, values, returnValues: returnValues as ExpressionNode[] };
+            }
             return undefined;
           }
           return { plans: helperPlans, values };

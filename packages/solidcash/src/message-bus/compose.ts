@@ -7,7 +7,7 @@ import {
   PrimitiveType,
 } from '@solidcash/utils';
 import type { Artifact, ChildDeploymentValueRecipe } from '@solidcash/utils';
-import type { FunctionArgument } from '../Argument.js';
+import type { ConstructorArgument, FunctionArgument } from '../Argument.js';
 import type {
   ContractUnlocker, Output, TokenDetails, TransactionDetails, UnlockableUtxo, Unlocker, Utxo,
 } from '../interfaces.js';
@@ -81,6 +81,11 @@ export interface PreparedAtomicMessageBusCall {
   executionArtifact?: Artifact;
   /** Pinned delegate executor co-spent inside this participant's block. */
   executor?: StatefulContract;
+  /** Authenticated same-layout replacement selected for this participant's upgrade row. */
+  upgradeTarget?: {
+    artifact: Artifact;
+    constructorArgs: readonly ConstructorArgument[];
+  };
   /**
    * Return-event commitment already derived while discovering this call graph. This is only an optimistic
    * fixed-point seed: the composed transaction still has to expose the same result and pass every covenant.
@@ -559,6 +564,7 @@ const funderUtxo = (funder: AtomicMessageBusFunder | UnlockableUtxo): Unlockable
 const participantOf = (
   descriptor: CallDescriptor,
   unboundRouteWitnesses: Readonly<Record<string, FunctionArgument>> = {},
+  outputLockingBytecode?: string,
 ): WorklistParticipant => {
   const logicalLockingBytecode = binToHex(addressToLockScript(descriptor.contract.target));
   const representedLogicalIdentity = [
@@ -601,6 +607,7 @@ const participantOf = (
   return {
     artifact: effectiveArtifact,
     lockingBytecode: descriptor.contract.inner.lockingBytecode,
+    ...(outputLockingBytecode !== undefined && { outputLockingBytecode }),
     ...(logicalLockingBytecode !== descriptor.contract.inner.lockingBytecode && {
       logicalLockingBytecode,
       logicalIdentityOffset,
@@ -626,6 +633,23 @@ const framed = (value: Uint8Array): Uint8Array => concat(uint16(value.length), v
 const semanticJson = (value: unknown): string => JSON.stringify(
   value, (_key, field) => typeof field === 'bigint' ? field.toString() : field,
 );
+
+const sameStateGeometry = (previous: Artifact, replacement: Artifact): boolean => {
+  if (!previous.stateLayout || !replacement.stateLayout) return false;
+  const comparable = (artifact: Artifact): unknown => {
+    const layout = artifact.stateLayout;
+    if (!layout) return undefined;
+    return {
+      dataNftCount: layout.dataNftCount,
+      commitmentLimit: layout.commitmentLimit,
+      variables: layout.variables,
+      collections: layout.collections ?? [],
+      mappings: layout.mappings ?? [],
+      structs: layout.structs ?? [],
+    };
+  };
+  return semanticJson(comparable(previous)) === semanticJson(comparable(replacement));
+};
 
 interface DeferredComputeController {
   hasUnresolved(): boolean;
@@ -676,6 +700,9 @@ const graphRouteContext = (
   const needsScalarCaller = execution.artifact.messageBus?.route.inputs.some(
     (input) => input.name === '__internal__msgSenderCategory',
   ) === true;
+  const needsUpgradeBytecode = execution.artifact.messageBus?.route.inputs.some(
+    (input) => input.name === '__internal__upgradeBytecode',
+  ) === true;
   const scalarCallerCategories = !needsScalarCaller ? [] : [...new Set(ownedRows.map((row) => {
     if (row.sourceOffset === 0xffff) return '00'.repeat(32);
     const caller = finalized.callManifest.participants[row.owner];
@@ -710,6 +737,9 @@ const graphRouteContext = (
     __internal__graphSettlementTable: concat(...settlementTable),
     ...(needsScalarCaller ? {
       __internal__msgSenderCategory: hexToBin(scalarCallerCategories[0] ?? '00'.repeat(32)),
+    } : {}),
+    ...(needsUpgradeBytecode ? {
+      __internal__upgradeBytecode: hexToBin(execution.outputLockingBytecode ?? execution.lockingBytecode),
     } : {}),
     ...(execution.executionKind === 1 ? {
       // The delegate route executes against the owner block rooted at this participant's physical master. The
@@ -753,6 +783,39 @@ export class AtomicMessageBusComposition {
     const provider = descriptors[0].contract.inner.provider;
     if (descriptors.some((descriptor) => descriptor.contract.inner.provider !== provider)) {
       throw new Error('messageBus: all participants must use the same network provider');
+    }
+    const upgradeOutputs = new Map<string, string>();
+    const upgradeDeclarations = new Map<string, number>();
+    for (const descriptor of descriptors) {
+      if (!descriptor.upgradeTarget) continue;
+      if (descriptor.executor !== undefined || descriptor.executionArtifact !== undefined) {
+        throw new Error('messageBus: upgrade targets cannot be attached to delegate execution routes');
+      }
+      const owner = descriptor.contract.inner.lockingBytecode.toLowerCase();
+      const declarations = (upgradeDeclarations.get(owner) ?? 0) + 1;
+      upgradeDeclarations.set(owner, declarations);
+      if (declarations !== 1) {
+        throw new Error('messageBus: an upgraded participant requires exactly one replacement target');
+      }
+      if (!sameStateGeometry(descriptor.contract.inner.artifact, descriptor.upgradeTarget.artifact)) {
+        throw new Error(
+          `messageBus: replacement '${descriptor.upgradeTarget.artifact.contractName}' does not have identical state geometry`,
+        );
+      }
+      const replacement = new Contract(
+        descriptor.upgradeTarget.artifact,
+        [...descriptor.upgradeTarget.constructorArgs] as ConstructorArgument[],
+        {
+          provider,
+          addressType: descriptor.contract.inner.addressType,
+          category: hexToBin(descriptor.contract.categoryId),
+        },
+      );
+      const outputLockingBytecode = replacement.lockingBytecode.toLowerCase();
+      if (outputLockingBytecode === owner) {
+        throw new Error('messageBus: an upgrade replacement must change the participant locking bytecode');
+      }
+      upgradeOutputs.set(owner, outputLockingBytecode);
     }
 
     const stateByContract = new Map<StatefulContract, Promise<Record<string, unknown>>>();
@@ -866,6 +929,7 @@ export class AtomicMessageBusComposition {
     const workParticipants = descriptors.map((descriptor) => participantOf(
       descriptor,
       Object.freeze(ownerWitnesses.get(descriptor.contract.inner.lockingBytecode.toLowerCase()) ?? {}),
+      upgradeOutputs.get(descriptor.contract.inner.lockingBytecode.toLowerCase()),
     ));
 
     let next = 1;
@@ -986,6 +1050,51 @@ export class AtomicMessageBusComposition {
         `messageBus: prepared ${descriptors.length} call(s), but the compiled graph reaches `
         + `${plan.invocations.length}`,
       );
+    }
+    if (upgradeOutputs.size > 0) {
+      const legacyParticipant = plan.participants.find((participant) =>
+        !participant.artifact.messageBus?.atomicMessageBus?.protocolVersions?.includes(2));
+      if (legacyParticipant) {
+        throw new Error(
+          `messageBus: participant '${legacyParticipant.artifact.contractName}' does not advertise atomic V2 support`,
+        );
+      }
+    }
+    for (const participant of plan.participants) {
+      const owner = participant.lockingBytecode.toLowerCase();
+      const selectedHandlers = participant.invocations.map((invocationIndex) => {
+        const invocation = plan.invocations[invocationIndex];
+        return participant.artifact.messageBus?.handlers.find((candidate) =>
+          candidate.selector?.toLowerCase() === invocation.selectorHex.toLowerCase());
+      });
+      const upgradeRows = selectedHandlers.flatMap((handler, index) =>
+        handler?.lifecycle?.kind === 'upgrade' ? [index] : []);
+      const hasTarget = upgradeOutputs.has(owner);
+      if (upgradeRows.length === 0 && hasTarget) {
+        throw new Error('messageBus: a replacement target requires a selected compiler-authored upgrade handler');
+      }
+      if (upgradeRows.length > 0 && !hasTarget) {
+        throw new Error('messageBus: a selected upgrade handler requires exactly one replacement target');
+      }
+      if (upgradeRows.length > 1) {
+        throw new Error('messageBus: an upgraded participant may select exactly one upgrade row');
+      }
+      if (upgradeRows.length === 1 && upgradeRows[0] !== selectedHandlers.length - 1) {
+        throw new Error('messageBus: the participant upgrade row must be its final invocation');
+      }
+    }
+    if (upgradeOutputs.size > 0) {
+      const signedInvocation = plan.invocations.find((invocation) => {
+        const artifact = plan.participants[invocation.callee].artifact;
+        const handler = artifact.messageBus?.handlers.find((candidate) =>
+          candidate.selector?.toLowerCase() === invocation.selectorHex.toLowerCase());
+        return handler?.usesTransactionSignature === true;
+      });
+      if (signedInvocation) {
+        throw new Error(
+          `messageBus: upgrade graphs cannot include transaction-signature checks in '${signedInvocation.function}'`,
+        );
+      }
     }
     assertAtomicParticipantCapacity(plan.participants.length);
     const hasResultDependentAncestor = (invocationIndex: number): boolean => {
@@ -1138,6 +1247,7 @@ export class AtomicMessageBusComposition {
           }),
           ...(descriptor.executionArtifact && { executionArtifact: descriptor.executionArtifact }),
           ...(descriptor.executor && { executor: descriptor.executor }),
+          ...(descriptor.upgradeTarget && { upgradeTarget: descriptor.upgradeTarget }),
           ...(results[index] !== undefined
             ? { provisionalResultCommitment: hexToBin(results[index]) }
             : descriptor.provisionalResultCommitment && {
@@ -1556,6 +1666,22 @@ export class AtomicMessageBusComposition {
             { cause: error },
           );
         }
+        const authenticatedOutputLockingBytecode = participant.outputLockingBytecode?.toLowerCase();
+        if (authenticatedOutputLockingBytecode !== undefined) {
+          const masterInput = local.inputs[0];
+          const masterOutput = local.outputs[0];
+          if (!masterInput || !masterOutput || !masterInput.token || !masterOutput.token
+            || masterInput.token.category !== masterOutput.token.category
+            || masterInput.token.amount !== masterOutput.token.amount
+            || masterInput.token.nft?.capability !== masterOutput.token.nft?.capability
+            || masterInput.token.nft?.commitment !== masterOutput.token.nft?.commitment
+            || masterInput.satoshis !== masterOutput.amount) {
+            throw new Error(
+              `messageBus: participant ${participant.participant} master geometry is not preserved across upgrade`,
+            );
+          }
+          local.outputs[0] = { ...masterOutput, to: hexToBin(authenticatedOutputLockingBytecode) };
+        }
         // Runtime event occurrences occupy compiler-owned trailing slots, so they cannot appear as fixed
         // `blockLayout.kind === event` coordinates. Preserve the exact row, schema, and physical offset published
         // by the participant builder; later graph passes turn only these observed occurrences into kind-2 rows.
@@ -1823,6 +1949,7 @@ export class AtomicMessageBusComposition {
             participant,
             base: graph.layout.participantInputs[participant],
             lockingBytecode: entry.lockingBytecode,
+            outputLockingBytecode: entry.outputLockingBytecode,
             fixedSize: entry.fixedSize,
             actualSize: entry.actualSize,
             maximumSize: entry.maximumSize,
@@ -1869,19 +1996,34 @@ export class AtomicMessageBusComposition {
           '__internal__graphCallers', '__internal__graphSettlementBoundary',
           '__internal__graphCompletionPositions', '__internal__graphSettlementTable',
         ] as const;
-        const graphArguments = verifierProgram.inputs.slice(3).map((input, index) => {
-          const argument = routeContext[verifierGraphArgumentNames[index]];
+        const graphInputNames = new Map<string, typeof verifierGraphArgumentNames[number]>([
+          ['suppliedFixedSize', '__internal__graphFixedSize'],
+          ['suppliedBlockSize', '__internal__graphBlockSize'],
+          ['suppliedEmissions', '__internal__graphEmissions'],
+          ['suppliedCallers', '__internal__graphCallers'],
+          ['suppliedSettlementBoundary', '__internal__graphSettlementBoundary'],
+          ['suppliedCompletionPositions', '__internal__graphCompletionPositions'],
+          ['suppliedSettlementTable', '__internal__graphSettlementTable'],
+        ]);
+        const fixedVerifierArguments: Readonly<Record<string, FunctionArgument>> = {
+          activeInputIndex: BigInt(graph.layout.participantInputs[participant.participant]),
+          expectedLocalRows: BigInt(batchBlob[6]),
+          localBatch: batchBlob,
+        };
+        const verifierArgs = verifierProgram.inputs.map((input): FunctionArgument => {
+          const graphName = graphInputNames.get(input.name);
+          const argument = graphName === undefined
+            ? fixedVerifierArguments[input.name] ?? routeContext[input.name]
+            : routeContext[graphName];
           if (argument === undefined) {
             throw new Error(`messageBus: verifier argument '${input.name}' has no compiler-authored value`);
           }
           return argument;
         });
-        const verifierArgs: FunctionArgument[] = [
-          BigInt(graph.layout.participantInputs[participant.participant]),
-          BigInt(batchBlob[6]),
-          batchBlob,
-          ...graphArguments,
-        ];
+        // The compiler's binding digest has one stable graph-field order. Lifecycle targets are independently
+        // bound by the V2 participant output identity and therefore intentionally do not enter this digest.
+        const graphArguments = verifierProgram.inputs.flatMap((input, index) =>
+          graphInputNames.has(input.name) ? [verifierArgs[index]] : []);
         const bindingDigestParts = [
           sha256(callManifest),
           uint16(graph.layout.participantInputs[participant.participant]),

@@ -29724,6 +29724,8 @@ export class StatefulFunctionCall {
   private childDeployments: Array<{
     slotOffset: number; genesisInput: UnlockableUtxo; outputs: readonly Output[];
   }> = [];
+
+  private messageBusUpgradeTarget?: PreparedAtomicMessageBusCall['upgradeTarget'];
   private tokenContainerDeposits: Array<{ tokenContainerCategoryId: string; amount: bigint }> = [];
   private manualEvents: Array<{ name: string; args: StateValueType[] }> = [];
   private detachedEvents: Array<{
@@ -29795,6 +29797,18 @@ export class StatefulFunctionCall {
     return this;
   }
 
+  /** Select the compiler-authenticated replacement for a message-bus `upgrade` invocation. */
+  upgradeTo<T extends Artifact>(artifact: T, constructorArgs: readonly ConstructorArgument[]): this {
+    if (this.messageBusUpgradeTarget !== undefined) {
+      throw new Error('messageBus: an upgrade target has already been selected for this prepared call');
+    }
+    this.messageBusUpgradeTarget = Object.freeze({
+      artifact,
+      constructorArgs: Object.freeze([...constructorArgs]),
+    });
+    return this;
+  }
+
   /**
    * Compiler-owned description consumed by the atomic message bus composer.
    *
@@ -29806,6 +29820,7 @@ export class StatefulFunctionCall {
     contract: StatefulContract;
     functionName: string;
     args: readonly FunctionArgument[];
+    upgradeTarget?: PreparedAtomicMessageBusCall['upgradeTarget'];
   } {
     if (!this.parentContract || this.functionName === undefined || !this.functionArgs) {
       throw new Error('messageBus: composition requires a prepared stateful contract call');
@@ -29828,6 +29843,7 @@ export class StatefulFunctionCall {
       contract: this.parentContract,
       functionName: this.functionName,
       args: Object.freeze([...(this.functionArgs as FunctionArgument[])]),
+      ...(this.messageBusUpgradeTarget !== undefined && { upgradeTarget: this.messageBusUpgradeTarget }),
     });
   }
 

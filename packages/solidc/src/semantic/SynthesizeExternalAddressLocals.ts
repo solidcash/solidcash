@@ -201,10 +201,10 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
     return node;
   }
 
-    // Cheap gate pre-scan: does any function make a method call on an interface-CAST of a non-identifier
-    // (`IFoo(param.field).m()` / `IFoo(pairFor(..)).m()`)? Such a target needs this pass even in a
-    // state-var-less contract. The individual target recognizers below still decide whether the value is a
-    // caller-selected parameter path, self-pinned state, or a body-top-safe computation.
+  // Cheap gate pre-scan: does any function make a method call on an interface-CAST of a non-identifier
+  // (`IFoo(param.field).m()` / `IFoo(pairFor(..)).m()`)? Such a target needs this pass even in a
+  // state-var-less contract. The individual target recognizers below still decide whether the value is a
+  // caller-selected parameter path, self-pinned state, or a body-top-safe computation.
   private hasComputedCastTarget(node: ContractNode): boolean {
     let found = false;
     const walk = (n: unknown): void => {
@@ -256,10 +256,10 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
       const decls = [...this.usedInFn.entries()]
         .filter(([localName]) => !this.preexistingSynthLocals.has(localName))
         .map(([localName, { iface, init }]) => {
-        if (!init.location) init.location = node.location; // fresh IdentifierNode init has none
-        const def = new VariableDefinitionNode(new AddressType(false, iface), [], localName, init);
-        def.location = node.location;
-        return def;
+          if (!init.location) init.location = node.location; // fresh IdentifierNode init has none
+          const def = new VariableDefinitionNode(new AddressType(false, iface), [], localName, init);
+          def.location = node.location;
+          return def;
         });
       node.body.statements = [...decls, ...(node.body.statements ?? [])];
     }
@@ -446,8 +446,9 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
       // `IFoo(s.field).m()` / `IFoo(ss[i].field).m()` / `IFoo(ms[k].field).m()`: a plain-`address` field reached
       // through self-pinned STATE, cast to an interface (the cast supplies the callee ABI). Same soundness as the
       // chain case - the value is self-pinned state, never a caller witness. Hoist the whole `IFoo(chain)` cast
-      // (preserving the interface type) into a local. `Job storage job = jobs[id]; IFoo(job.token).m()` reaches
-      // here too: AstBuilder already inlines the storage pointer, so `job.token` is `jobs[id].token`.
+      // (preserving the interface type) into a local. `Record storage item = records[id]; IFoo(item.target).m()`
+      // reaches here too: AstBuilder already inlines the storage pointer, so `item.target` is
+      // `records[id].target`.
       if (!this.usedInFn.has(castChain.localName)) {
         this.usedInFn.set(castChain.localName, { iface: castChain.iface, init: cloneNode(node.object) as ExpressionNode });
       }
@@ -556,13 +557,13 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
       // chain OR a param-rooted field. A bare-identifier receiver already sources in codegen; a field/element
       // receiver did not ("external call target must be a parameter"). Two forms reach here:
       //   - DIRECT: `t.dest.call(x)` - `t.dest` is a struct field / element of self-pinned state (or a param).
-      //   - THROUGH INLINING: `address(__rh0_token).call(data)` where the SafeERC20/Address chain inlined
-      //     `token = IERC20(jobs[id].token)` into a local - the receiver traces (through casts + inliner-local
-      //     aliases) back to the same self-pinned state chain `jobs[id].token` (OZ forceApprove's
-      //     `_callOptionalReturnBool` does a direct `address(token).call`).
+      //   - THROUGH INLINING: `address(__rh0_target).call(data)` where a library helper chain inlined
+      //     `target = IService(records[id].target)` into a local - the receiver traces (through casts and
+      //     inliner-local aliases) back to the same self-pinned state chain `records[id].target` (a safe-call
+      //     helper can ultimately perform a direct `address(target).call`).
       // Both hoist the resolved ROOT (the state/param chain, NOT the inlined-local receiver, which is not valid at
       // the body top) into a plain-`address` local. The pinned value is byte-identical to the shipped-sound direct
-      // form `IFoo(jobs[id].token).call(data)`; the data arg keeps its form (codegen sources that).
+      // form `IService(records[id].target).call(data)`; the data arg keeps its form (codegen sources that).
       const resolved = this.resolveLlReceiver(node.object)!;
       if (!this.usedInFn.has(resolved.localName)) {
         this.usedInFn.set(resolved.localName, { iface: undefined, init: cloneNode(resolved.init) as ExpressionNode });
@@ -1017,7 +1018,7 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
         base: root.expression instanceof IdentifierNode ? root.expression.name : root.expression.constructor.name,
         type: rootType?.toString(),
         key: this.chainKey(root),
-        localInitNames: [...this.localInits.keys()].filter((name) => name.includes('escrow')),
+        localInitNames: [...this.localInits.keys()],
         single: root.expression instanceof IdentifierNode
           ? this.singleAssignLocals.has(root.expression.name) : undefined,
       });
@@ -1028,7 +1029,8 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
   }
 
   // Replace a single-assignment STORAGE-POINTER local at the base of an access chain with its initializer, so
-  // `job.token` (where `JobPost storage job = jobs[id]`) becomes the self-pinned state chain `jobs[id].token`.
+  // `item.target` (where `Record storage item = records[id]`) becomes the self-pinned state chain
+  // `records[id].target`.
   // Sound: a storage pointer is an alias to the same slots, and the local is single-assignment. Mutates in place
   // (the caller passes a clone); indices in the reached chain are params/literals (resolveChainType re-validates).
   private inlineStoragePtrBases(expr: ExpressionNode, depth = 0): ExpressionNode {

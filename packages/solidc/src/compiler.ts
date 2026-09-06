@@ -7884,7 +7884,7 @@ function compileResolvedAst(
   if (needsCollectionJournal) ast = ast.accept(new LowerMappingStorageAlias()) as Ast;
 
   // Re-run the fixed-bound unroll AFTER inlining: a `new T[](N)` literal substituted for an array param at an
-  // inline site (`_updateJobWhitelist(id, allowed, new address[](0))`) now makes the loop bound compile-time
+  // inline site (`_updateAllowlist(id, allowed, new address[](0))`) now makes the loop bound compile-time
   // constant. N==0 unrolls to zero iterations, eliminating the provably-dead loop before its body (e.g. a vmap
   // sorted-mapping write over the empty array) reaches the entry-slot pre-scan / codegen. The first pass (before
   // inlining) can't see the literal, and everything it could unroll it already did, so this pass only fires on

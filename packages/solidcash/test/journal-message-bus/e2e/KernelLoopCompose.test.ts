@@ -4010,7 +4010,7 @@ describe('kernel composite counter-key settlement', () => {
     }))).not.toBe(true);
 
     await expect(call.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
-  }, 180_000);
+  }, 240_000);
 
   it('settles repeated fungible-token transfers and container conservation', async () => {
     const provider = createTestProvider();

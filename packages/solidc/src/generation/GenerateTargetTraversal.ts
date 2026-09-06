@@ -4573,11 +4573,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.restoreCompactHelperIds(winningPool!);
     // Window 8 cannot seed a leftover 5–7 opcode span, even when that span repeats after the longer matches
     // have become OP_INVOKE barriers. A second, narrower pass on the rewritten bodies shares those leftovers
-    // without reopening the already-claimed long spans. Speed-hint only: production message-bus stays at 12.
+    // without reopening the already-claimed long spans. In ordinary compilation this remains off unless a kernel
+    // artifact is close enough to the consensus size boundary that the extra search can decide deployability.
     // Large-contract corpus: leftover window-5 saved ~5KB in ~500ms after window-8 already saved ~86KB.
     // Skip that pass once the first round did the heavy sharing (pin 175546 -> 180748).
     const skipSpeedHintLeftover = speedHintOutline && (result?.savedBytes ?? 0) >= 40_000;
-    if (speedHintOutline && !skipSpeedHintLeftover && result !== undefined && result.functions.length > 0) {
+    const estimatedOutlinedBytes = scriptToBytecode(this.output).length - (result?.savedBytes ?? 0);
+    const kernelSizePressureLeftover = !speedHintOutline
+      && this.currentContractHasMessageBus && this.compilerOptions.messageBusKernel === true
+      && estimatedOutlinedBytes >= MAX_INPUT_BYTESIZE - 512
+      && estimatedOutlinedBytes <= MAX_INPUT_BYTESIZE + 512;
+    if ((speedHintOutline || kernelSizePressureLeftover) && !skipSpeedHintLeftover
+      && result !== undefined && result.functions.length > 0) {
       const leftoverStart = Date.now();
       // First-pass outlining walks from -12 into three-byte pushes. Unused two-byte slots (typically
       // never-invoked entry-point ids in 17..127) are still free; spend them on leftover helpers so the
@@ -18888,7 +18895,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   /**
    * `map[k].push(v); emit E(..., v)` must not read `v` after the push. Persist
    * upsert/1:1 leaves a short data-NFT clone (`0057000000`) as TOS; the emit pin
-   * then DUP/PICKs that instead of JobEvent. Snapshot identifiers the later emit
+   * then DUP/PICKs that instead of the original event value. Snapshot identifiers the later emit
    * still names, before the write clobbers their slots.
    */
   private snapshotEmitSourcesBeforePush(node: MappingAssignNode, loc: SingleLocationData): void {
@@ -19270,7 +19277,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * and increments the length; pop (fixed-width only) drops the last element and decrements the length.
    */
   /**
-   * Same-tx sequential pushes share one entry UTXO, so only the last publishJobEvent
+   * Same-tx sequential pushes share one entry UTXO, so only the last collection writer
    * body runs. Earlier rows arrive as `__internal__leadingPushValue_N` (an encoded
    * array). Concatenate them onto the authenticated current value (often empty)
    * before the user's push. Empty leading is a no-op.
@@ -29439,7 +29446,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
     // A proxy's own layout event offset is proxyMaster+4. The honest emit lives at
     // the co-spent implementation's INPUTINDEX+event.offset. Admit that dest so a
-    // persist JobEvent at impl+4 is uniqueness-safe on the proxy category.
+    // persisted event at impl+4 is uniqueness-safe on the proxy category.
     const delegateCallIdx = this.functionHasDelegatecall
       ? (this.getStackIndex('__internal__callInputIndex', true) >= 0
         ? '__internal__callInputIndex'

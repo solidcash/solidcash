@@ -27,7 +27,7 @@ import { cloneNode } from '../ast/clone.js';
  * An array-field element WRITE on a LOCAL/PARAM struct var whose struct type was IMPORTED - `escrow.split[j] = v`
  * on `Escrow memory escrow` (Unicrow) - is mis-built by the AstBuilder as a mapping-field assign: the struct type
  * is unknown at parse time (not in localStructTypes), so `x.field[i] = v` falls through to the `MappingFieldAssign`
- * default, which later errors "Undefined mapping 'escrow'". Now that imports are merged and types re-resolved,
+ * default, which later errors "Undefined mapping 'records'". Now that imports are merged and types re-resolved,
  * rewrite it into the same read-modify-rebuild the AstBuilder emits for a same-file struct local:
  *
  *   T tmp = escrow.split; tmp[j] = v; escrow = Escrow(escrow.f0, .., tmp, ..);
@@ -38,9 +38,10 @@ import { cloneNode } from '../ast/clone.js';
  */
 export default class RedesugarImportedStructFieldWrites extends AstTraversal {
   private counter = 0;
-  // State ARRAY name -> its element struct type (`JobPost[] jobs`). A `JobPost storage jp = jobs[id]; jp.field = v`
-  // storage-pointer write inlines to `jobs[id].field = v`, mis-built as MappingFieldAssign(jobs, [id], field, v)
-  // when JobPost is imported. Resolve it to a read-modify-write of the array element (the EACC MarketplaceV2/V3).
+  // State ARRAY name -> its element struct type (`Record[] records`). A
+  // `Record storage item = records[id]; item.field = v` storage-pointer write inlines to
+  // `records[id].field = v`, mis-built as MappingFieldAssign(records, [id], field, v) when Record is imported.
+  // Resolve it to a read-modify-write of the array element.
   private stateArrayStructs: Map<string, StructType> = new Map();
   private stateStructs: Map<string, StructType> = new Map();
   private structTypes: Map<string, StructType> = new Map();

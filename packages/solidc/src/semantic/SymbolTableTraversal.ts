@@ -7498,7 +7498,7 @@ export default class SymbolTableTraversal extends AstTraversal {
    * Canonicalize a late inliner/capture alias to an address local already synthesized from the same authenticated
    * expression. Generated aliases are SSA; user locals are followed only when declared once with an initializer
    * and never assigned. This lets SafeERC20's conditional `__rh*_target` fallbacks reuse the body-top
-   * `__extaddr_ll_jobs_..._token` target without ever lifting a reassignable user value.
+   * `__extaddr_ll_records_..._target` target without ever lifting a reassignable user value.
    */
   private findEquivalentSynthesizedAddress(name: string, body: Node | undefined): string | undefined {
     if (!body) return undefined;
@@ -9648,7 +9648,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       }
     }
 
-    // Check if this is a contract/interface type constructor used as an address value: MarketplaceV1(addr)
+    // Check if this is a contract/interface type constructor used as an address value: Service(addr)
     if (!structType) {
       const isContractType = this.contractMap.has(node.identifier.name)
         || this.interfaceMap.has(node.identifier.name);

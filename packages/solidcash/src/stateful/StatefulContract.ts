@@ -143,7 +143,7 @@ import {
   viewTailOccupancyCap,
   valueChunkBandWidth,
   mintingSwapShift,
-  isMintingBandSwapFunction,
+  isCompilerDescribedMintingBandWriter,
   tokenWriterReturnIndex,
   participantRelocationExtraFunders,
   collidingParticipantGroupIndex,
@@ -1587,6 +1587,50 @@ function logicalExternalCallFunction(group: ExternalCallUtxoGroup): AbiFunction 
     ?? group.externalContract?.inner?.artifact;
   const name = group.logicalFunctionName ?? group.functionName;
   return (artifact?.abi as readonly AbiFunction[] | undefined)?.find((candidate) => candidate.name === name);
+}
+
+/** The exact ABI body carried by a physical participant. Compiler routes outrank source-level names because
+ * overloads and shared participants can execute a different body than the logical call which introduced them. */
+function physicalExternalCallFunction(group: ExternalCallUtxoGroup): AbiFunction | undefined {
+  return group.compilerRoute?.abiFunction
+    ?? (group.externalContract?.inner?.artifact.abi as readonly AbiFunction[] | undefined)
+      ?.find((candidate) => candidate.name === group.functionName);
+}
+
+function hasPublishedEntryEffects(group: ExternalCallUtxoGroup): boolean {
+  return physicalExternalCallFunction(group)?.entryAccesses !== undefined;
+}
+
+/** Select the single compiler-described participant which owns a computed state-writing call. A modern effect
+ * list is authoritative and ambiguity fails closed. Source names remain only for artifacts with no effect list. */
+export function computedStateWriterGroupIndex(
+  groups: readonly ExternalCallUtxoGroup[], candidateIndices: readonly number[],
+): number | undefined {
+  const described = candidateIndices.filter((index) => hasPublishedEntryEffects(groups[index]));
+  const writers = described.filter((index) => {
+    const abi = physicalExternalCallFunction(groups[index]);
+    return abi?.writesState === true
+      && abi.entryAccesses?.some((access) => access.operations.includes('write')) === true;
+  });
+  if (writers.length === 1) return writers[0];
+  if (described.length > 0) return undefined;
+  // Compatibility only for artifacts predating compiler-published entry effects.
+  return candidateIndices.find((index) => {
+    const name = groups[index]?.compilerRoute?.abiFunction.name ?? groups[index]?.functionName;
+    return name === 'transferFrom' || name === 'transfer' || name === 'approve';
+  });
+}
+
+/** Select one physical chunkable-array writer by its published collection effects. */
+export function chunkableWriterGroupIndex(groups: readonly ExternalCallUtxoGroup[]): number {
+  const candidates = groups.flatMap((group, index) => {
+    const abi = physicalExternalCallFunction(group);
+    return abi && writesChunkableArrayValue(group, abi) ? [index] : [];
+  });
+  if (candidates.length === 1) return candidates[0];
+  if (groups.some(hasPublishedEntryEffects)) return -1;
+  // Compatibility only for artifacts predating compiler-published entry effects.
+  return groups.findIndex((group) => group.functionName === 'publishJobEvent');
 }
 
 /**
@@ -22938,11 +22982,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         // band is swapped 4-wide to start+width. Its in-block return then occupies
         // postSwapMaster+blockSize-1 (33). Tail witnesses baked against the
         // pre-swap master (29) would still start at 33 and collide with that return.
-        const publishLlcIndex = lowLevelCallUtxoGroups.findIndex((group) => group.functionName === 'publishJobEvent');
+        const publishLlcIndex = chunkableWriterGroupIndex(lowLevelCallUtxoGroups);
         if (publishLlcIndex >= 0) {
           const publishLlc = lowLevelCallUtxoGroups[publishLlcIndex];
-          const publishFn = publishLlc.compilerRoute?.abiFunction
-            ?? publishLlc.externalContract?.inner.artifact.abi.find((fn: { name: string }) => fn.name === 'publishJobEvent');
+          const publishFn = physicalExternalCallFunction(publishLlc);
           let publishImpl = lowLevelCallInputBase;
           for (let index = 0; index < publishLlcIndex; index++) {
             publishImpl += 1 + lowLevelCallUtxoGroups[index].dataNftUtxos.length;
@@ -22950,8 +22993,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           const chunkBase = publishImpl + (publishFn?.blockLayout?.blockSize ?? 5);
           for (const [groupIdx, group] of externalCallUtxoGroups.entries()) {
             if (group.sharedGroupIndex !== undefined) continue;
+            if (!isCompilerDescribedMintingBandWriter(group, true)) continue;
             const tokenName = group.functionName ?? group.compilerRoute?.abiFunction.name;
-            if (!isMintingBandSwapFunction(tokenName)) continue;
             const start = nestedMasterIndices[groupIdx];
             if (start === undefined || start < 0) continue;
             let tokenWidth = 0;
@@ -23261,11 +23304,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               .findIndex((call) => call.addressParam === targetName
                 || call.addressParam?.endsWith(`_${targetName}`));
             const computedTarget = lowLevelCall?.target?.kind === 'computed'
-              ? nestedGroups.find((index) => {
-                const group = externalCallUtxoGroups[index];
-                const selected = group?.compilerRoute?.abiFunction.name ?? group?.functionName;
-                return selected === 'transferFrom' || selected === 'transfer' || selected === 'approve';
-              })
+              ? computedStateWriterGroupIndex(externalCallUtxoGroups, nestedGroups)
               : undefined;
             const nestedGroupIndex = computedTarget
               ?? (targetSlot >= 0 ? childNestedGroupIndexForSlot(targetSlot) : nestedGroups[callIndex]);
@@ -23995,13 +24034,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 .findIndex((call) => call.addressParam === targetName);
               const targetSlot = rawSlot >= 0 ? rawSlot : typedSlot;
               const tokenNested = lowLevelCall?.target?.kind === 'computed'
-                ? nestedGroups.find((idx) => {
-                  const group = externalCallUtxoGroups[idx];
-                  const name = group?.functionName ?? '';
-                  const routed = group?.compilerRoute?.abiFunction.name ?? '';
-                  return name === 'transferFrom' || name === 'transfer' || name === 'approve'
-                    || routed === 'transferFrom' || routed === 'transfer' || routed === 'approve';
-                }) : undefined;
+                ? computedStateWriterGroupIndex(externalCallUtxoGroups, nestedGroups) : undefined;
               const nestedGroup = tokenNested !== undefined ? tokenNested
                 : targetSlot >= 0 ? nestedGroups[targetSlot] : nestedGroups[callIndex];
               const callInputIndex = BigInt(nestedGroup === undefined
@@ -26178,9 +26211,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       }
       for (const [groupIdx, group] of externalCallUtxoGroups.entries()) {
         if (group.sharedGroupIndex !== undefined) continue;
-        const tokenName = group.functionName ?? group.compilerRoute?.abiFunction.name
-          ?? group.logicalFunctionName;
-        if (!isMintingBandSwapFunction(tokenName)) continue;
+        if (!isCompilerDescribedMintingBandWriter(group, true)) continue;
         const master = builder.findMintingInputIndex(group.categoryId);
         if (master < 0) continue;
         const band = builder.getPublishJobEventsBand();
@@ -26296,13 +26327,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             ?? (fill.tokenGroup.externalContract.inner.artifact.abi as readonly AbiFunction[])
               .find((fn) => fn.name === fill.tokenGroup!.functionName
                 || fn.name === fill.tokenGroup!.logicalFunctionName);
-          const writerFn = (fill.tokenGroup.externalContract.inner.artifact.abi as readonly AbiFunction[])
-            .find((fn) => fn.name === 'transferFrom') ?? tokenFn;
           const insertBudget = Math.max(1, fill.tokenGroup.batchPredecessorOutputs?.length ?? 0);
           const physicalIdx = externalCallUtxoGroups.indexOf(fill.tokenGroup);
           const writerGroup = externalCallUtxoGroups.find((candidate, index) =>
             (candidate.sharedGroupIndex ?? index) === physicalIdx
             && (candidate.batchPredecessorOutputs?.length ?? 0) > 0);
+          const writerFn = writerGroup ? physicalExternalCallFunction(writerGroup) : tokenFn;
           const predOuts = ((writerFn ?? tokenFn)?.inputs ?? [])
             .filter((input) => /^__internal__vmapBatchPredOut_\d+$/.test(input.name))
             .flatMap((input) => {

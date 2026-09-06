@@ -1,0 +1,87 @@
+import { describe, expect, it } from 'vitest';
+import type { AbiFunction, Artifact, StateLayout } from '@cashscript/utils';
+import type { ExternalCallUtxoGroup } from '../../src/stateful/StatefulTransactionBuilder.js';
+import {
+  chunkableWriterGroupIndex,
+  computedStateWriterGroupIndex,
+} from '../../src/stateful/StatefulContract.js';
+
+const layout: StateLayout = {
+  variables: [],
+  dataNftCount: 0,
+  commitmentLimit: 128,
+  collections: [
+    {
+      name: 'notices',
+      signature: 'notices:mapping(int => Notice[])',
+      keyType: 'int',
+      valueType: 'Notice[]',
+      chunkableValue: true,
+    },
+    {
+      name: 'balances',
+      signature: 'balances:mapping(address => int)',
+      keyType: 'address',
+      valueType: 'int',
+    },
+  ],
+};
+
+function group(name: string, abi: AbiFunction): ExternalCallUtxoGroup {
+  const artifact = { abi: [abi], stateLayout: layout } as unknown as Artifact;
+  return {
+    categoryId: '00'.repeat(32),
+    stateLayout: layout,
+    masterUtxo: {} as ExternalCallUtxoGroup['masterUtxo'],
+    dataNftUtxos: [],
+    requiredDataNftIndices: [],
+    functionName: name,
+    functionArgs: [],
+    externalContract: { inner: { artifact } },
+    compilerRoute: {
+      abiFunction: abi,
+      selector: new Uint8Array(4),
+      blob: new Uint8Array(),
+      args: [],
+      logicalSelectors: [],
+    },
+  };
+}
+
+function fn(name: string, collection: string, operations: Array<'read' | 'write'>): AbiFunction {
+  return {
+    name,
+    selector: '00000000',
+    inputs: [],
+    outputs: [],
+    writesState: operations.includes('write'),
+    entryAccesses: [{ collection, operations }],
+  } as AbiFunction;
+}
+
+describe('compiler-owned participant identity', () => {
+  it('selects a renamed computed writer and ignores a misleading ERC-named reader', () => {
+    const decoy = group('transferFrom', fn('transferFrom', 'balances', ['read']));
+    const renamed = group('applyLedgerDelta', fn('applyLedgerDelta', 'balances', ['write']));
+    expect(computedStateWriterGroupIndex([decoy, renamed], [0, 1])).toBe(1);
+  });
+
+  it('fails closed when published effects identify more than one computed writer', () => {
+    const first = group('alpha', fn('alpha', 'balances', ['write']));
+    const second = group('beta', fn('beta', 'balances', ['write']));
+    expect(computedStateWriterGroupIndex([first, second], [0, 1])).toBeUndefined();
+  });
+
+  it('selects a renamed chunkable writer and ignores publishJobEvent-shaped metadata', () => {
+    const decoy = group('publishJobEvent', fn('publishJobEvent', 'balances', ['write']));
+    const renamed = group('appendNotice', fn('appendNotice', 'notices', ['write']));
+    expect(chunkableWriterGroupIndex([decoy, renamed])).toBe(1);
+  });
+
+  it('retains the name fallback only when old artifacts publish no entry effects', () => {
+    const legacy = group('transferFrom', {
+      name: 'transferFrom', selector: '00000000', inputs: [], outputs: [], writesState: true,
+    } as AbiFunction);
+    expect(computedStateWriterGroupIndex([legacy], [0])).toBe(0);
+  });
+});

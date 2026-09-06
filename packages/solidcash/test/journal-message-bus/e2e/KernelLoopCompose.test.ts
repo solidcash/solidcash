@@ -2911,9 +2911,9 @@ describe('kernel counter-key mapping loop compose', () => {
       throw new Error('expected compiler-derived journal records');
     }
     expect(decodeKernelEntryJournalAccesses(rowJournalVectors[0][0])).toEqual([
-      { targetRecordOrdinal: 1, predecessorRecordOrdinal: 0, presentBefore: false, presentAfter: true },
-      { targetRecordOrdinal: 2, predecessorRecordOrdinal: 1, presentBefore: false, presentAfter: true },
-      { targetRecordOrdinal: 3, predecessorRecordOrdinal: 2, presentBefore: false, presentAfter: true },
+      { targetRecordOrdinal: 1, predecessorRecordOrdinal: 0, presentBefore: false, presentAfter: true, mutates: true },
+      { targetRecordOrdinal: 2, predecessorRecordOrdinal: 1, presentBefore: false, presentAfter: true, mutates: true },
+      { targetRecordOrdinal: 3, predecessorRecordOrdinal: 2, presentBefore: false, presentAfter: true, mutates: true },
     ]);
     const originalRouteUnlocker = routeUnlocker;
     const routeSelector = artifact.messageBus!.route.selector;
@@ -2981,6 +2981,8 @@ describe('kernel counter-key mapping loop compose', () => {
     falsePresentBefore[22] |= 0x01;
     const falsePresentAfter = new Uint8Array(originalAccessStream);
     falsePresentAfter[22] &= ~0x02;
+    const falseMutationIntent = new Uint8Array(originalAccessStream);
+    falseMutationIntent[22] &= ~0x08;
     const outOfRangePredecessor = new Uint8Array(originalAccessStream);
     outOfRangePredecessor[25] = journalRecords.length & 0xff;
     outOfRangePredecessor[26] = journalRecords.length >>> 8;
@@ -2992,6 +2994,7 @@ describe('kernel counter-key mapping loop compose', () => {
       ['wrong target record', wrongTargetRecord],
       ['wrong predecessor record', wrongPredecessorRecord],
       ['false present-before state', falsePresentBefore], ['false present-after state', falsePresentAfter],
+      ['false mutation intent', falseMutationIntent],
       ['out-of-range target', outOfRangeTarget], ['out-of-range predecessor', outOfRangePredecessor],
     ] as const) {
       const hostileRouteParams = [...routeUnlocker.params];
@@ -5811,15 +5814,42 @@ describe('kernel composite counter-key settlement', () => {
       ?.find((info) => info.collection === 'source');
     const absentWitnessIndex = artifact.messageBus!.route.inputs.findIndex((input) =>
       input.name === absentRead?.oldValuesWitnessParam);
+    const absentJournalIndex = artifact.messageBus!.route.inputs.findIndex((input) =>
+      input.name === '__internal__kernelJournalAccessStreams');
     const absentSelector = artifact.messageBus!.route.selector;
-    if (absentWitnessIndex < 0 || !absentSelector) throw new Error('missing absent-read route witness');
+    if (absentWitnessIndex < 0 || absentJournalIndex < 0 || !absentSelector
+      || absentRead?.journalAccessStreamIndex === undefined) {
+      throw new Error('missing absent-read route witness');
+    }
+    const absentJournalRows = absentRouteUnlocker.params[absentJournalIndex];
+    const absentRowStreams = Array.isArray(absentJournalRows) ? absentJournalRows[0] : undefined;
+    const absentReadStream = Array.isArray(absentRowStreams)
+      ? absentRowStreams[absentRead.journalAccessStreamIndex] : undefined;
+    if (!(absentReadStream instanceof Uint8Array)) throw new Error('missing absent-read journal stream');
+    expect(decodeKernelEntryJournalAccesses(absentReadStream)
+      .every((access) => access.mutates === false)).toBe(true);
+    const falseReadIntent = new Uint8Array(absentReadStream);
+    falseReadIntent[22] |= 0x08;
+    const hostileJournalParams = [...absentRouteUnlocker.params];
+    const hostileJournalRows = absentJournalRows.map((row: Uint8Array[], rowIndex: number) =>
+      rowIndex === 0 ? row.map((stream, streamIndex) =>
+        streamIndex === absentRead.journalAccessStreamIndex ? falseReadIntent : stream) : row);
+    hostileJournalParams[absentJournalIndex] = hostileJournalRows;
+    absentCopyBuilder.inputs[absentRouteInputIndex].unlocker = absentRouteUnlocker.contract
+      .createCompilerRouteUnlocker(absentRouteUnlocker.abiFunction, hexToBin(absentSelector))(...hostileJournalParams);
+    const absentHostileVm = createVirtualMachineBch2026ForProvider(provider);
+    expect(absentHostileVm.stateSuccess(absentHostileVm.evaluate({
+      inputIndex: absentRouteInputIndex,
+      sourceOutputs: generateLibauthSourceOutputs(absentCopyBuilder.inputs),
+      transaction: absentCopyBuilder.buildLibauthTransaction(),
+    })), 'hostile read mutation intent').not.toBe(true);
+    absentCopyBuilder.inputs[absentRouteInputIndex].unlocker = absentRouteUnlocker;
     const hostileAbsentParams = [...absentRouteUnlocker.params];
     const absentWitnessRows = absentRouteUnlocker.params[absentWitnessIndex] as bigint[][];
     hostileAbsentParams[absentWitnessIndex] = [[...absentWitnessRows[0].slice(0, 1), 1n,
       ...absentWitnessRows[0].slice(2)]];
     absentCopyBuilder.inputs[absentRouteInputIndex].unlocker = absentRouteUnlocker.contract
       .createCompilerRouteUnlocker(absentRouteUnlocker.abiFunction, hexToBin(absentSelector))(...hostileAbsentParams);
-    const absentHostileVm = createVirtualMachineBch2026ForProvider(provider);
     expect(absentHostileVm.stateSuccess(absentHostileVm.evaluate({
       inputIndex: absentRouteInputIndex,
       sourceOutputs: generateLibauthSourceOutputs(absentCopyBuilder.inputs),

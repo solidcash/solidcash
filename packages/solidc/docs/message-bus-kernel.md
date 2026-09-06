@@ -490,8 +490,9 @@ identities, authenticated+synthetic records, and authenticated clean tombstones.
 the canonical record for an absent read target: it proves no physical input existed and requests no final delete.
 Each logical mutation stream has one compact access program
 `0x06 || count8 || count * (flags8 || targetRecordOrdinal16le || predecessorRecordOrdinal16le)`.
-The access flags publish presence-before, presence-after, and whether the predecessor ordinal is present; `0xffff`
-is the canonical absent-predecessor sentinel. At five bytes per operation, a canonical 64-iteration stream is 322
+The access flags publish presence-before, presence-after, whether the predecessor ordinal is present, and whether
+the compiler-derived operation may mutate the value or topology; `0xffff` is the canonical absent-predecessor
+sentinel. At five bytes per operation, a canonical 64-iteration stream is 322
 bytes and remains one BCH stack item. The codec rejects oversized programs, unknown flags, reserved ordinals,
 non-canonical predecessor sentinels, and target/predecessor aliasing. Multiple streams remain separate items owned
 by the selected row, so the total contract surface is not constrained to one 520-byte concatenation.
@@ -519,15 +520,16 @@ transition, then restores source stream boundaries only for the compact access p
 read-your-writes semantics without deriving behavior from contract, collection, or function names. The
 planner also publishes the final nodes and tombstones in first-touch record order, independently of its legacy
 sorted-output view. Each source operation publishes the stable target and optional predecessor record ordinals,
-plus its before/after presence state; predecessor selection follows the evolving pending topology rather than the
-immutable pre-state list. The record list can be encoded directly into the canonical `0x05` carrier. The covenant
+plus its before/after presence state and mutation intent; predecessor selection follows the evolving pending topology
+rather than the immutable pre-state list. The record list can be encoded directly into the canonical `0x05` carrier. The covenant
 can therefore reproduce load/store selection and flush order without sorting dynamic slots on-chain.
 The topology planner emits the truthful initial `0x05` record vector in that same ordinal space. Existing nodes
 carry their exact authenticated pre-state slot, successor, and value; absent targets are represented only as clean
 synthetic tombstones, never as caller-asserted final values. The active transaction path now carries that vector
 into the covenant. Each row selects its target and optional predecessor ordinal, binds both records to the row's
 compile-owned collection and the exact slots used by its physical, pending, fixed-entry, or cached-read proof path,
-binds the access program's before/after presence flags to the transition branch which actually executed, and
+binds the access program's before/after presence and mutation flags to the transition branch and operation which
+actually executed, and
 consumes the stream with exact tag/count/framing checks. The SDK assigns carrier ordinals in execution-group order;
 the covenant advances one shared dense first-touch prefix through every row invocation and finally requires that
 prefix to cover the complete record vector. Coherent carrier reordering, skipped ordinals, and unused record

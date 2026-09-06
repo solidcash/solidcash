@@ -144,6 +144,8 @@ export interface JournaledMutationAccess {
   presentBefore: boolean;
   /** Whether the target exists in the pending journal immediately after this operation. */
   presentAfter: boolean;
+  /** Whether this operation is permitted to change the target value or pending topology. */
+  mutates: boolean;
 }
 
 export interface JournaledMutationPlan extends BatchUpsertPlan {
@@ -364,6 +366,7 @@ export class SortedList {
         ...(predecessorRecordOrdinal !== undefined && { predecessorRecordOrdinal }),
         presentBefore,
         presentAfter: value !== undefined,
+        mutates: dirty,
       });
       if (dirty) {
         if (value === undefined) liveSlots.delete(key);

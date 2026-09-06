@@ -175,10 +175,10 @@ describe('kernel pending-entry journal codec', () => {
 
     expect(plan.encodedAccessStreams.map((stream) => decodeKernelEntryJournalAccesses(stream)))
       .toEqual([
-        [{ targetRecordOrdinal: 0, presentBefore: true, presentAfter: true }],
+        [{ targetRecordOrdinal: 0, presentBefore: true, presentAfter: true, mutates: true }],
         [
-          { targetRecordOrdinal: 0, presentBefore: true, presentAfter: true },
-          { targetRecordOrdinal: 1, predecessorRecordOrdinal: 0, presentBefore: false, presentAfter: true },
+          { targetRecordOrdinal: 0, presentBefore: true, presentAfter: true, mutates: true },
+          { targetRecordOrdinal: 1, predecessorRecordOrdinal: 0, presentBefore: false, presentAfter: true, mutates: true },
         ],
       ]);
     expect(plan.mutationPlan.records.map((record) => ({
@@ -231,22 +231,22 @@ describe('kernel pending-entry journal codec', () => {
     ]);
     expect(plan.encodedAccessStreams.map((stream) => decodeKernelEntryJournalAccesses(stream))).toEqual([
       [
-        { targetRecordOrdinal: 0, presentBefore: true, presentAfter: true },
-        { targetRecordOrdinal: 1, predecessorRecordOrdinal: 0, presentBefore: false, presentAfter: false },
+        { targetRecordOrdinal: 0, presentBefore: true, presentAfter: true, mutates: false },
+        { targetRecordOrdinal: 1, predecessorRecordOrdinal: 0, presentBefore: false, presentAfter: false, mutates: false },
       ],
       [
-        { targetRecordOrdinal: 1, predecessorRecordOrdinal: 0, presentBefore: false, presentAfter: true },
-        { targetRecordOrdinal: 0, predecessorRecordOrdinal: 2, presentBefore: true, presentAfter: false },
+        { targetRecordOrdinal: 1, predecessorRecordOrdinal: 0, presentBefore: false, presentAfter: true, mutates: true },
+        { targetRecordOrdinal: 0, predecessorRecordOrdinal: 2, presentBefore: true, presentAfter: false, mutates: true },
       ],
     ]);
   });
 
   it('round-trips insert, update, delete, and absent-delete access states', () => {
     const accesses = [
-      { targetRecordOrdinal: 1, predecessorRecordOrdinal: 0, presentBefore: false, presentAfter: true },
-      { targetRecordOrdinal: 1, presentBefore: true, presentAfter: true },
-      { targetRecordOrdinal: 1, predecessorRecordOrdinal: 0, presentBefore: true, presentAfter: false },
-      { targetRecordOrdinal: 2, predecessorRecordOrdinal: 0, presentBefore: false, presentAfter: false },
+      { targetRecordOrdinal: 1, predecessorRecordOrdinal: 0, presentBefore: false, presentAfter: true, mutates: true },
+      { targetRecordOrdinal: 1, presentBefore: true, presentAfter: true, mutates: true },
+      { targetRecordOrdinal: 1, predecessorRecordOrdinal: 0, presentBefore: true, presentAfter: false, mutates: true },
+      { targetRecordOrdinal: 2, predecessorRecordOrdinal: 0, presentBefore: false, presentAfter: false, mutates: true },
     ];
     const encoded = encodeKernelEntryJournalAccesses(ACCESS_COLLECTION_HASH, accesses);
     expect(encoded[0]).toBe(KERNEL_ENTRY_JOURNAL_ACCESS_TAG);
@@ -260,6 +260,7 @@ describe('kernel pending-entry journal codec', () => {
       targetRecordOrdinal: ordinal,
       presentBefore: true,
       presentAfter: true,
+      mutates: ordinal % 2 === 0,
     }));
     const encoded = encodeKernelEntryJournalAccesses(ACCESS_COLLECTION_HASH, accesses);
     expect(encoded).toHaveLength(517);
@@ -271,15 +272,15 @@ describe('kernel pending-entry journal codec', () => {
 
   it('rejects malformed access programs and reserved or aliased ordinals', () => {
     expect(() => encodeKernelEntryJournalAccesses(ACCESS_COLLECTION_HASH, [{
-      targetRecordOrdinal: 65535, presentBefore: true, presentAfter: true,
+      targetRecordOrdinal: 65535, presentBefore: true, presentAfter: true, mutates: true,
     }])).toThrow('below 65535');
     expect(() => encodeKernelEntryJournalAccesses(ACCESS_COLLECTION_HASH, [{
-      targetRecordOrdinal: 1, predecessorRecordOrdinal: 1, presentBefore: false, presentAfter: true,
+      targetRecordOrdinal: 1, predecessorRecordOrdinal: 1, presentBefore: false, presentAfter: true, mutates: true,
     }])).toThrow('must differ');
     expect(() => encodeKernelEntryJournalAccesses(bytes(19, 0), [])).toThrow('exactly 20');
     expect(() => decodeKernelEntryJournalAccesses(Uint8Array.of(0x06))).toThrow('truncated');
     const valid = encodeKernelEntryJournalAccesses(ACCESS_COLLECTION_HASH, [{
-      targetRecordOrdinal: 0, presentBefore: true, presentAfter: true,
+      targetRecordOrdinal: 0, presentBefore: true, presentAfter: true, mutates: false,
     }]);
     const wrongTag = new Uint8Array(valid); wrongTag[0] = 0x07;
     expect(() => decodeKernelEntryJournalAccesses(wrongTag)).toThrow('tag');

@@ -30,8 +30,9 @@ const ACCESS_BYTES = 5;
 const ACCESS_FLAG_PRESENT_BEFORE = 1 << 0;
 const ACCESS_FLAG_PRESENT_AFTER = 1 << 1;
 const ACCESS_FLAG_HAS_PREDECESSOR = 1 << 2;
+const ACCESS_FLAG_MUTATES = 1 << 3;
 const KNOWN_ACCESS_FLAGS = ACCESS_FLAG_PRESENT_BEFORE
-  | ACCESS_FLAG_PRESENT_AFTER | ACCESS_FLAG_HAS_PREDECESSOR;
+  | ACCESS_FLAG_PRESENT_AFTER | ACCESS_FLAG_HAS_PREDECESSOR | ACCESS_FLAG_MUTATES;
 const NO_PREDECESSOR = 0xffff;
 /** `tag || count || N * (flags || target-u16le || predecessor-u16le)` must remain one BCH item. */
 export const KERNEL_ENTRY_JOURNAL_MAX_ACCESSES = Math.floor((520 - ACCESS_HEADER_BYTES) / ACCESS_BYTES);
@@ -280,6 +281,7 @@ export function encodeKernelEntryJournalAccesses(
     if (access.presentBefore) flags |= ACCESS_FLAG_PRESENT_BEFORE;
     if (access.presentAfter) flags |= ACCESS_FLAG_PRESENT_AFTER;
     if (access.predecessorRecordOrdinal !== undefined) flags |= ACCESS_FLAG_HAS_PREDECESSOR;
+    if (access.mutates) flags |= ACCESS_FLAG_MUTATES;
     const offset = ACCESS_HEADER_BYTES + index * ACCESS_BYTES;
     const predecessor = access.predecessorRecordOrdinal ?? NO_PREDECESSOR;
     encoded[offset] = flags;
@@ -327,6 +329,7 @@ export function decodeKernelEntryJournalAccesses(encoded: Uint8Array): Journaled
       ...(hasPredecessor && { predecessorRecordOrdinal: predecessor }),
       presentBefore: (flags & ACCESS_FLAG_PRESENT_BEFORE) !== 0,
       presentAfter: (flags & ACCESS_FLAG_PRESENT_AFTER) !== 0,
+      mutates: (flags & ACCESS_FLAG_MUTATES) !== 0,
     };
   });
 }

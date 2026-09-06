@@ -22636,7 +22636,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_SWAP, loc);
     this.emit(new Uint8Array([0]), loc); this.emit(Op.OP_CAT, loc);
     this.emit(Op.OP_BIN2NUM, loc);
-    this.emit(Op.OP_DUP, loc); this.emit(encodeInt(8n), loc); this.emit(Op.OP_LESSTHAN, loc);
+    this.emit(Op.OP_DUP, loc); this.emit(encodeInt(16n), loc); this.emit(Op.OP_LESSTHAN, loc);
     this.emit(Op.OP_VERIFY, loc);
     this.emit(Op.OP_SWAP, loc);
     this.emit(encodeInt(2n), loc); this.emit(Op.OP_SPLIT, loc); // cursor tail, flags, target, predecessor
@@ -22733,9 +22733,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(encodeInt(BigInt(this.getStackIndex('(credit_hk)') + 1)), loc);
     this.emit(Op.OP_PICK, loc);
     this.emit(Op.OP_FROMALTSTACK, loc);
-    // Supported row operations have exactly three transition shapes: an existing/pending target remains present
-    // (0b011), an absent read remains absent behind its proof predecessor (0b100), or an insertion becomes present
-    // behind that predecessor (0b110). Derive the expected flags from the proof branch, not from the carrier.
+    // Supported row operations have exactly three topology shapes: an existing/pending target remains present
+    // (0b0011), an absent read remains absent behind its proof predecessor (0b0100), or an insertion becomes present
+    // behind that predecessor (0b0110). Bit 3 independently binds mutation authority to the compiler-derived row
+    // operation. Derive the complete expected flags from the proof branch and operation, not from the carrier.
     this.emit(Op.OP_DUP, loc); this.emit(Op.OP_SIZE, loc); this.emit(Op.OP_NIP, loc);
     this.emit(Op.OP_0NOTEQUAL, loc);
     this.emit(Op.OP_IF, loc);
@@ -22743,6 +22744,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_ELSE, loc);
     this.emit(encodeInt(3n), loc);
     this.emit(Op.OP_ENDIF, loc);
+    if (this.sortedUpsertLoopOp !== 'read') {
+      this.emit(encodeInt(8n), loc); this.emit(Op.OP_ADD, loc);
+    }
     this.emit(encodeInt(BigInt(this.getStackIndex(
       GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_JOURNAL_COUNT,
     ) + 4)), loc);
@@ -23221,7 +23225,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_1, loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_SWAP, loc); // count, rest, flags
     this.emit(Op.OP_BIN2NUM, loc);
     this.emit(Op.OP_DUP, loc); this.emit(Op.OP_DUP, loc);
-    this.emit(encodeInt(7n), loc); this.emit(Op.OP_AND, loc);
+    this.emit(encodeInt(15n), loc); this.emit(Op.OP_AND, loc);
     this.emit(Op.OP_NUMEQUALVERIFY, loc); // reject unknown flag bits
     this.emit(Op.OP_SWAP, loc); // count, flags, rest
     this.emit(encodeInt(2n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_SWAP, loc);

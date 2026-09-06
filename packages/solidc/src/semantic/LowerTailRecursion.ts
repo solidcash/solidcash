@@ -3,12 +3,12 @@ import {
   BranchNode, BreakNode, ContractNode,
   DoWhileNode, FunctionCallNode, FunctionCallStatementNode, FunctionDefinitionNode, IdentifierNode,
   ExpressionNode, NewArrayNode, Node, ReturnNode, SourceFileNode, StatementNode, UnaryOpNode,
-  VariableDefinitionNode, WhileNode, IntLiteralNode,
+  StateAssignNode, VariableDefinitionNode, WhileNode, IntLiteralNode,
 } from '../ast/AST.js';
 import AstTraversal from '../ast/AstTraversal.js';
 import { cloneNode } from '../ast/clone.js';
 import { BinaryOperator, UnaryOperator } from '../ast/Operator.js';
-import { ArrayType, PrimitiveType } from '@solidcash/utils';
+import { ArrayType, BytesType, PrimitiveType, StructType } from '@solidcash/utils';
 
 interface RecursiveFoldShape {
   operator: BinaryOperator;
@@ -39,6 +39,7 @@ interface RecursiveFoldShape {
  */
 export default class LowerTailRecursion extends AstTraversal {
   private counter = 0;
+  private fixedScalarStateNames = new Set<string>();
 
   visitSourceFile(node: SourceFileNode): Node {
     this.lowerMutualGroups(node.freeFunctions);
@@ -49,11 +50,18 @@ export default class LowerTailRecursion extends AstTraversal {
   }
 
   visitContract(node: ContractNode): Node {
+    const parentStateNames = this.fixedScalarStateNames;
+    this.fixedScalarStateNames = new Set(node.stateVariables.filter((state) =>
+      !state.isDynamic && state.type !== PrimitiveType.STRING
+      && !(state.type instanceof ArrayType) && !(state.type instanceof StructType)
+      && !(state.type instanceof BytesType && state.type.bound === undefined))
+      .map((state) => state.name));
     this.lowerMutualGroups(node.functions);
     node.functions = node.functions.map((fn) => this.visit(fn) as FunctionDefinitionNode);
     if (node.constructorDef) node.constructorDef = this.visit(node.constructorDef) as FunctionDefinitionNode;
     if (node.fallbackDef) node.fallbackDef = this.visit(node.fallbackDef) as FunctionDefinitionNode;
     if (node.receiveDef) node.receiveDef = this.visit(node.receiveDef) as FunctionDefinitionNode;
+    this.fixedScalarStateNames = parentStateNames;
     return node;
   }
 
@@ -61,7 +69,8 @@ export default class LowerTailRecursion extends AstTraversal {
    * Lower a strongly-connected group of homogeneous mutual tail calls to a small program-counter loop. Each
    * public/internal entry keeps its own ABI and starts the shared state machine at its corresponding body. This
    * covers cycles of any length while deliberately excluding overloads, heterogeneous frames, and calls nested in
-   * source loops. A single-result, read-only binary fold may use the continuation stack implemented below; other
+   * source loops. A single-result binary fold may use the continuation stack implemented below. Fixed-width
+   * scalar writes are supported only where source evaluation captures the continuation before descent; other
    * non-tail work still requires a more general continuation representation.
    */
   private lowerMutualGroups(functions: FunctionDefinitionNode[]): void {
@@ -219,7 +228,7 @@ export default class LowerTailRecursion extends AstTraversal {
   }
 
   /**
-   * Recognize a read-only linear recursion fold. Each recursive result may be returned directly or combined with
+   * Recognize a linear recursion fold. Each recursive result may be returned directly or combined with
    * one continuation operand using the same binary operator and side throughout the SCC. Operands are captured
    * before advancing the state machine, then applied in reverse order after the base case, exactly reproducing
    * the source call stack without placing journal values in recursive OP_INVOKE frames.
@@ -230,19 +239,23 @@ export default class LowerTailRecursion extends AstTraversal {
     if (group[0].returnTypes.length !== 1) return undefined;
     let shape: RecursiveFoldShape | undefined;
     let sawFold = false;
+    let sawScalarStateWrite = false;
     let valid = true;
     const persistentEffects = new Set([
-      'StateAssignNode', 'DeleteStateNode', 'StateArrayPushNode', 'StateArrayPopNode',
+      'DeleteStateNode', 'StateArrayPushNode', 'StateArrayPopNode',
       'StateArrayAssignNode', 'StateArrayDeleteNode', 'MappingAssignNode', 'MappingFieldAssignNode',
       'MappingDeleteNode', 'EmitStatementNode', 'ExternalFunctionCallNode', 'LowLevelCallNode',
       'LowLevelCallStatementNode', 'TransferStatementNode', 'AddressTransferStatementNode',
       'AddressSendExpressionNode', 'TokenContainerMethodStatementNode', 'SelfdestructStatementNode',
       'MethodCallNode', 'MethodCallStatementNode', 'IndirectCallNode', 'InstantiationNode',
-      'AssemblyStatementNode',
+      'AssignmentExpressionNode', 'AssemblyStatementNode',
     ]);
     group.forEach((fn) => {
       this.walkNodes(fn.body!, (candidate) => {
-        if (persistentEffects.has(candidate.constructor.name)) valid = false;
+        if (candidate instanceof StateAssignNode) {
+          if (!this.fixedScalarStateNames.has(candidate.name)) valid = false;
+          else sawScalarStateWrite = true;
+        } else if (persistentEffects.has(candidate.constructor.name)) valid = false;
         if (candidate instanceof FunctionCallNode && !names.has(candidate.identifier.name)) valid = false;
         if (!(candidate instanceof ReturnNode) || candidate.expressions.length !== 1) return;
         const expression = candidate.expressions[0];
@@ -273,6 +286,9 @@ export default class LowerTailRecursion extends AstTraversal {
         sawFold = true;
       });
     });
+    // `recur(...) OP operand` reaches operand after the deeper call in source. Capturing it before descent is
+    // equivalent only when the group is read-only. `operand OP recur(...)` already evaluates in capture order.
+    if (sawScalarStateWrite && shape?.recursiveOnLeft) valid = false;
     return valid && sawFold ? shape : undefined;
   }
 

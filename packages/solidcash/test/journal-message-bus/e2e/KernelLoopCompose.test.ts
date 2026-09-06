@@ -1632,6 +1632,49 @@ describe('kernel loop message-bus compose', () => {
       .resolves.toBeDefined();
   }, 180_000);
 
+  it('executes a scalar-state recursion fold in source evaluation order', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(`contract KernelScalarRecursiveFold() {
+      int calls;
+      int result;
+      mapping(int => int) values;
+      function left(int remaining, int key) internal returns (int) {
+        this.calls = this.calls + 1;
+        if (remaining == 0) return this.values[key];
+        return remaining + right(remaining - 1, key);
+      }
+      function right(int remaining, int key) internal returns (int) {
+        this.calls = this.calls + 1;
+        if (remaining == 0) return this.values[key];
+        return remaining + left(remaining - 1, key);
+      }
+      function run(int remaining, int key) public {
+        this.result = left(remaining, key);
+        require(true);
+      }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'run'))
+      .toMatchObject({ eligible: true });
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, { calls: 0n, result: 0n }, { saltContract: true },
+    );
+    const call = StatefulContract.withCategory(inner, categoryId).batch([
+      { function: 'run', args: [3n, 7n] },
+    ]);
+    const builder = await call.build();
+    const vm = createVirtualMachineBch2026ForProvider(provider);
+    const transaction = builder.buildLibauthTransaction();
+    const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+    for (let inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex += 1) {
+      expect(vm.stateSuccess(vm.evaluate({ inputIndex, sourceOutputs, transaction })), `input ${inputIndex}`)
+        .toBe(true);
+    }
+    await expect(call.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    await expect(StatefulContract.withCategory(inner, categoryId).getState())
+      .resolves.toMatchObject({ calls: 4n, result: 6n });
+  }, 180_000);
+
   it('executes an unnamed tail-recursive result through one row', async () => {
     const provider = createTestProvider();
     const artifact = compileString(`contract KernelUnnamedTailRecursion() {

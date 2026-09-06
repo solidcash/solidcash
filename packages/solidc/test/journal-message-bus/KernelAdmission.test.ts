@@ -289,6 +289,25 @@ describe('required kernel admission', () => {
     expect(artifact.abi.find((entry) => entry.name === 'sum')?.recursiveStateHandler).toBeUndefined();
   });
 
+  it('lowers a scalar-state mutual recursion fold whose continuation precedes descent', () => {
+    const artifact = compileString(`contract C() {
+      int calls;
+      mapping(int => int) values;
+      function left(int n, int key) public returns (int) {
+        this.calls = this.calls + 1;
+        if (n == 0) return this.values[key];
+        return n + right(n - 1, key);
+      }
+      function right(int n, int key) internal returns (int) {
+        this.calls = this.calls + 1;
+        if (n == 0) return this.values[key];
+        return n + left(n - 1, key);
+      }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'left'))
+      .toMatchObject({ eligible: true });
+  });
+
   it.each([
     ['a persistent effect',
       'this.calls = this.calls + 1;',
@@ -309,6 +328,28 @@ describe('required kernel admission', () => {
         ${effect}
         if (n == 0) return this.values[key];
         ${rightReturn}
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'left'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control'))
+      .toMatchObject({ eligible: true });
+  });
+
+  it('keeps a dynamic-state recursion fold behind KERNEL_LAYOUT', () => {
+    const artifact = compileString(`contract C() {
+      string note;
+      mapping(int => int) values;
+      function left(int n, int key) public returns (int) {
+        this.note = "left";
+        if (n == 0) return this.values[key];
+        return n + right(n - 1, key);
+      }
+      function right(int n, int key) internal returns (int) {
+        this.note = "right";
+        if (n == 0) return this.values[key];
+        return n + left(n - 1, key);
       }
       function control() public { require(true); }
     }`, KERNEL);

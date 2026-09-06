@@ -3264,7 +3264,7 @@ describe('kernel counter-key mapping loop compose', () => {
     const artifact = compileString(COUNTER_MAPPING_ARRAY_SOURCE, {
       ...KERNEL, maximumInputBytes: 1_000_000,
     });
-    expect(artifact.bytecode.length / 2).toBeLessThanOrEqual(10_000);
+    expect(artifact.debug!.bytecode.length / 2).toBeLessThanOrEqual(10_000);
     for (const [name, mutation] of [['pushMany', 'push'], ['setMany', 'setAt']] as const) {
       expect(artifact.messageBus?.handlers.find((handler) => handler.name === name))
         .toMatchObject({ eligible: true });
@@ -3321,7 +3321,7 @@ describe('kernel counter-key mapping loop compose', () => {
     const artifact = compileString(COUNTER_MAPPING_ARRAY_POP_SOURCE, {
       ...KERNEL, maximumInputBytes: 1_000_000,
     });
-    expect(artifact.bytecode.length / 2).toBeLessThanOrEqual(10_000);
+    expect(artifact.debug!.bytecode.length / 2).toBeLessThanOrEqual(10_000);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'popMany'))
       .toMatchObject({ eligible: true });
     expect(artifact.abi.find((handler) => handler.name === 'popMany')?.sortedUpsertLoopInfo?.[0])
@@ -3350,7 +3350,7 @@ describe('kernel counter-key mapping loop compose', () => {
     const artifact = compileString(COUNTER_MAPPING_ARRAY_CHUNK_SOURCE, {
       ...KERNEL, maximumInputBytes: 1_000_000,
     });
-    expect(artifact.bytecode.length / 2).toBeLessThanOrEqual(10_000);
+    expect(artifact.debug!.bytecode.length / 2).toBeLessThanOrEqual(10_000);
     const inner = new Contract(artifact, [], { provider });
     const { categoryId } = await setupStatefulUtxos(
       provider, inner, artifact.stateLayout!, {}, { saltContract: true },
@@ -3377,7 +3377,7 @@ describe('kernel counter-key mapping loop compose', () => {
     const artifact = compileString(COUNTER_MAPPING_ARRAY_VALUES_SOURCE, {
       ...KERNEL, maximumInputBytes: 1_000_000,
     });
-    expect(artifact.bytecode.length / 2).toBeLessThanOrEqual(10_000);
+    expect(artifact.debug!.bytecode.length / 2).toBeLessThanOrEqual(10_000);
     const push = artifact.abi.find((handler) => handler.name === 'pushEach')!;
     expect(push.sortedUpsertLoopInfo?.[0]).toMatchObject({
       mutation: 'push',
@@ -3408,7 +3408,7 @@ describe('kernel counter-key mapping loop compose', () => {
     const artifact = compileString(COUNTER_MAPPING_ARRAY_DUPLICATE_SOURCE, {
       ...KERNEL, maximumInputBytes: 1_000_000,
     });
-    expect(artifact.bytecode.length / 2).toBeLessThanOrEqual(10_000);
+    expect(artifact.debug!.bytecode.length / 2).toBeLessThanOrEqual(10_000);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'pushAliased'))
       .toMatchObject({ eligible: true });
     const inner = new Contract(artifact, [], { provider });
@@ -3469,7 +3469,7 @@ describe('kernel counter-key mapping loop compose', () => {
     const artifact = compileString(COUNTER_MAPPING_ARRAY_DUPLICATE_CHUNK_SOURCE, {
       ...KERNEL, maximumInputBytes: 1_000_000,
     });
-    expect(artifact.bytecode.length / 2).toBeLessThanOrEqual(10_000);
+    expect(artifact.debug!.bytecode.length / 2).toBeLessThanOrEqual(10_000);
     const inner = new Contract(artifact, [], { provider });
     const { categoryId } = await setupStatefulUtxos(
       provider, inner, artifact.stateLayout!, {}, { saltContract: true },
@@ -4869,7 +4869,7 @@ describe('kernel composite counter-key settlement', () => {
     const artifact = compileString(COUNTER_STRUCT_RMW_SOURCE, KERNEL);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'update'))
       .toMatchObject({ eligible: true });
-    expect(artifact.bytecode.length / 2).toBeLessThanOrEqual(10_000);
+    expect(artifact.debug!.bytecode.length / 2).toBeLessThanOrEqual(10_000);
     const inner = new Contract(artifact, [], { provider });
     const { categoryId } = await setupStatefulUtxos(
       provider, inner, artifact.stateLayout!, {}, { saltContract: true },
@@ -4898,7 +4898,7 @@ describe('kernel composite counter-key settlement', () => {
     const artifact = compileString(COUNTER_DIRECT_STRUCT_RMW_SOURCE, KERNEL);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'update'))
       .toMatchObject({ eligible: true });
-    expect(artifact.bytecode.length / 2).toBeLessThanOrEqual(10_000);
+    expect(artifact.debug!.bytecode.length / 2).toBeLessThanOrEqual(10_000);
     const inner = new Contract(artifact, [], { provider });
     const { categoryId } = await setupStatefulUtxos(
       provider, inner, artifact.stateLayout!, {}, { saltContract: true },
@@ -6827,7 +6827,7 @@ describe('kernel composite counter-key settlement', () => {
     const artifact = compileString(DYNAMIC_BYTES_RMW_SOURCE, { ...KERNEL, maximumInputBytes: 1_000_000 });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'append'))
       .toMatchObject({ eligible: true });
-    expect(artifact.bytecode.length / 2).toBeLessThanOrEqual(10_000);
+    expect(artifact.debug!.bytecode.length / 2).toBeLessThanOrEqual(10_000);
     const inner = new Contract(artifact, [], { provider });
     const { categoryId } = await setupStatefulUtxos(
       provider, inner, artifact.stateLayout!, {}, { saltContract: true },
@@ -6906,7 +6906,7 @@ describe('kernel composite counter-key settlement', () => {
     const artifact = compileString(DYNAMIC_STRING_RMW_SOURCE, { ...KERNEL, maximumInputBytes: 1_000_000 });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'append'))
       .toMatchObject({ eligible: true });
-    expect(artifact.bytecode.length / 2).toBeLessThanOrEqual(10_000);
+    expect(artifact.debug!.bytecode.length / 2).toBeLessThanOrEqual(10_000);
     const inner = new Contract(artifact, [], { provider });
     const { categoryId } = await setupStatefulUtxos(
       provider, inner, artifact.stateLayout!, {}, { saltContract: true },
@@ -6934,7 +6934,7 @@ describe('kernel composite counter-key settlement', () => {
     const artifact = compileString(DYNAMIC_STRUCT_RMW_SOURCE, { ...KERNEL, maximumInputBytes: 1_000_000 });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'append'))
       .toMatchObject({ eligible: true });
-    expect(artifact.bytecode.length / 2).toBeLessThanOrEqual(10_000);
+    expect(artifact.debug!.bytecode.length / 2).toBeLessThanOrEqual(10_000);
     const inner = new Contract(artifact, [], { provider });
     const { categoryId } = await setupStatefulUtxos(
       provider, inner, artifact.stateLayout!, {}, { saltContract: true },

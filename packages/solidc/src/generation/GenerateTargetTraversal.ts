@@ -21179,13 +21179,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (found || !n || seen.has(n)) return;
       seen.add(n);
       // LOOP-INVARIANT value only: the range-splice body assigns EVERY new chain node the SAME value, so the value must
-      // not vary per key. Two supported forms: (1) a BOOL LITERAL (`m[k[i]] = true`, whitelistWorkers) pinned to
+      // not vary per key. Two supported forms: (1) a BOOL LITERAL (`m[k[i]] = true`) pinned to
       // 0x01/empty; (2) an 'int'-kind value read from a bare IDENTIFIER (`m[k[i]] = v`) - the SDK mints every node with
       // valueTail = encode(v arg) and the body PICKs v + EQUALVERIFYs node.value, so an invariant param verifies while a
       // reassigned / non-param identifier mints a mismatching tail and REVERTS (fail-closed). A PER-KEY value
       // (`m[k[i]] = vs[i]`, RMW `+= v`) is an ArrayAccess/binary expr - NOT matched here (the permutation of source
       // values onto the SORTED chain is unresolved) - so it falls to the clean SortedMappingCodegenPendingError.
-      // SUPERSEDED by the upsert loop: every loop-invariant sorted-set write - bool `= true` (whitelistWorkers), int
+      // SUPERSEDED by the upsert loop: every loop-invariant sorted-set write - bool `= true`, int
       // `= <param>`/`= <literal>`, per-key `= vs[i]`, and RMW `+=`/`-=` - now routes to the upsert loop (op=set/+/-),
       // which does UPDATE + INSERT, MULTI-GAP (distinct + same-gap chains), and duplicates. This matcher matches nothing
       // (returns null), so emitSortedInsertLoopSetup no-ops and the upsert setup runs. The range-splice code below is
@@ -29092,7 +29092,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_ELSE, locationData);
 
     // Check output[j]'s category+capability against self.
-    // None-cap JobEvents report a 32-byte category and must not count as minting.
+    // Capability-free tokens report a 32-byte category and must not count as minting.
     this.emit(Op.OP_DUP, locationData);                  // copy j
     this.emit(Op.OP_OUTPUTTOKENCATEGORY, locationData);  // output[j].cat+cap
     this.emit(Op.OP_SIZE, locationData);

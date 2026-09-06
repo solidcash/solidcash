@@ -86,7 +86,7 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
   // chain (the SafeERC20 `address(token).call` shape, where the inliner binds `token = IERC20(coll[k].field)`).
   private localInits: Map<string, ExpressionNode> = new Map();
   // User locals declared exactly once (with an init) and NEVER reassigned, so their value equals their init at
-  // every use - safe to trace through (the Marketplace `IERC20 token = IERC20(job.token)` intermediary). A
+  // every use, so an interface-cast intermediary is safe to trace through. A
   // reassignable local is excluded (it could be rebound to a caller value between decl and the call = forgery).
   private singleAssignLocals: Set<string> = new Set();
   // Storage-reference locals keep pointing at their initializer even when assignments through them update the
@@ -336,8 +336,8 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
         node.identifier.location = loc;
       } else if (!ADDRESS_METHODS.has(varName) && !ADDRESS_METHODS.has(method)
         && this.singleAssignLocals.has(varName) && this.localInits.has(varName)) {
-        // A SINGLE-ASSIGNMENT local aliasing an interface-cast target (`IUnicrow unicrow = IUnicrow(unicrowAddress);
-        // unicrow.pay(..)`, EACC Marketplace). The interface local is not materialized (the cast is a no-op), so
+        // A SINGLE-ASSIGNMENT local aliasing an interface-cast target (`ITarget target = ITarget(targetAddress);
+        // target.run(..)`). The interface local is not materialized (the cast is a no-op), so
         // sourcing it in codegen fails "variable 'unicrow' does not exist on the stack". Resolve the init to the
         // underlying state-var / self-pinned chain and hoist THAT, rewriting the call to the __extaddr_ local.
         const local = this.hoistTargetLocalFor(this.localInits.get(varName)!);
@@ -998,7 +998,7 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
   }
 
   // A low-level-call receiver worth hoisting into a plain-`address` local, resolved to its provenance root: a
-  // self-pinned state chain (`t.dest` == `txs[id].dest`, or `address(__rh0_token)` traced back to `jobs[id].token`)
+  // self-pinned state chain (`t.dest` == `records[id].dest`, or an address cast traced to `records[id].token`)
   // OR a param-rooted access. A bare PARAM receiver already sources in codegen; a bare STATE receiver must still
   // be hoisted because the external-call epilogue runs after the body and can only name a surviving local.
   // Returns a stable per-root local name + the ROOT to hoist as its init (valid at the body top), else undefined.
@@ -1006,8 +1006,8 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
     if (obj instanceof IdentifierNode && this.llReceiverRoot(obj) === obj
       && !this.stateRoots.has(obj.name)) return undefined; // bare parameter/local receiver works
     // Resolve the receiver to its provenance root, then inline any single-assignment storage-pointer local at the
-    // base of the resulting chain (`JobPost storage job = jobs[id]; job.token` -> `jobs[id].token`) - the AstBuilder
-    // usually inlines the storage alias, but not always (EACC Marketplace takeJob), so do it here for the target.
+    // base of the resulting chain (`Record storage item = records[id]; item.token` -> `records[id].token`) - the
+    // AstBuilder usually inlines the storage alias, but not always, so do it here for the target.
     const root = this.inlineStoragePtrBases(cloneNode(this.llReceiverRoot(obj)) as ExpressionNode);
     const rootType = this.resolveChainType(root);
     if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env

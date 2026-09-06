@@ -5952,7 +5952,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       // Nested returning calls in the receiver/arguments execute before this outer call. Collect them first so
       // each receives a real slot and the published callManifest order matches evaluation order. Returning here
       // without this descent left `outer(inner())`'s inner node at slot -1 even though code generation still
-      // evaluates it (Marketplace `unicrow.pay(..., data.getArbitratorFee(...))`).
+      // evaluates it.
       if (node.addressExpression instanceof Node) {
         this.collectExternalCalls(node.addressExpression, slots, enclosingConditions);
       }

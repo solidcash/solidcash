@@ -61,8 +61,8 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
   private stateVarTypes = new Map<string, Type>();
   private collectionTypes = new Map<string, Type>();
   // Locals initialized to a `new T[](N)` literal (N compile-time), for folding `local.length`. Populated
-  // post-inline: `_updateJobWhitelist(id, allowed, new address[](0))` binds the arg to an inline local
-  // `__inlN_disallowed_ = new address[](0)`, so the loop's `disallowed_.length` bound is constant. Only names
+  // post-inline when a literal array argument binds to an inline local, so the local's `.length` bound is
+  // constant. Only names
   // NOT in mutatedNames (never reassigned / pushed / popped anywhere in the fn) are tracked, so the recorded
   // size always holds - the length can't change out from under the fold.
   private newArrayLocalSizes = new Map<string, bigint>();
@@ -185,7 +185,7 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
   // empty). A `new T[](N)` binding is only trusted for the length fold if its name is NOT here, so the recorded
   // size can never be stale (sound regardless of control flow / scoping). Length-PRESERVING ops are deliberately
   // excluded so they don't over-block the fold: an element write `arr[i]=v` (ArrayAssignNode) and an element
-  // delete `delete arr[i]` (ArrayDeleteNode) keep the length - e.g. EACC's `new address[](1); a[0]=w;` stays foldable.
+  // delete `delete arr[i]` (ArrayDeleteNode) keep the length, so `new T[](1); a[0]=v;` stays foldable.
   private collectMutatedNames(body: Node | undefined): {
     names: Set<string>; hasCandidateLoop: boolean; hasIndirectCall: boolean;
   } {
@@ -341,7 +341,7 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
 
   // A compile-time-constant loop bound: an int literal, `fixedArray.length` (a declared ArrayType with a bound),
   // or `(new T[](N)).length` with N an int literal. The last only appears AFTER inlining substitutes a
-  // `new T[](N)` literal for an array param (`_updateJobWhitelist(id, allowed, new address[](0))`); N==0 unrolls
+  // `new T[](N)` literal for an array parameter; N==0 unrolls
   // to ZERO iterations, eliminating a provably-dead loop whose body would otherwise reach codegen (e.g. a vmap
   // sorted mapping write over an empty array). This is why the pass is run a second time, post-inline.
   private evalBound(expr: Node): bigint | undefined {
@@ -379,8 +379,8 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
   }
 
   private hasMappingWrite(stmts: Node[]): boolean {
-    // A single-key mapping write `m[k]=v` is an ArrayAssignNode; a NESTED / multi-key write `m[a][b]=v` (EACC
-    // whitelistWorkers), a struct-field write `m[k].f=v`, or a `delete m[k]` are Mapping{Assign,FieldAssign,
+    // A single-key mapping write `m[k]=v` is an ArrayAssignNode; a nested / multi-key write `m[a][b]=v`, a
+    // struct-field write `m[k].f=v`, or a `delete m[k]` are Mapping{Assign,FieldAssign,
     // Delete}Node. All must count so a fixed-bound loop writing one gets unrolled (else it falls to the
     // runtime-loop vmap path unnecessarily).
     return this.anyNode(stmts, (n) => (

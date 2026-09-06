@@ -5450,10 +5450,12 @@ describe('kernel composite counter-key settlement', () => {
         second.push(next + 2);
         first[1] = second.length;
       }
-      function mutateCopy(int[] values, int next) internal pure { values[0] = next; }
+      function mutateCopy(int[] copied, int[] memory target, int next) internal pure {
+        copied[0] = next;
+        target[0] = copied[0] + 1;
+      }
       function outerCopy(int[] memory values, int next) internal pure {
-        mutateCopy(values, next);
-        values[0] = next + 1;
+        mutateCopy(values, values, next);
       }
       function write(int n, int a, int b) public {
         int[] memory left = new int[](n);

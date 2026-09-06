@@ -587,9 +587,10 @@ array, they share one canonical history so writes and reads retain ordinary memo
 helper which does not rebind a replayed parameter may also push and pop through the shared alias; those operations
 advance the symbolic length at their exact source point. This replay composes through uniquely resolved `pure`
 helpers which forward explicit `memory` parameters: each callee receives the caller's canonical plans, scalar
-arguments are resolved at the call site, and recursive or ambiguous call graphs remain fenced. Nested calls whose
-array parameters are all value-copied leave the caller plans intact, including when the callee mutates its private
-copy.
+arguments are resolved at the call site, and recursive or ambiguous call graphs remain fenced. Value-copied array
+parameters receive isolated plan histories, so their callee mutations can feed later reads and memory-parameter
+writes within the call without leaking into the caller. This also covers mixed value/reference formals which receive
+the same caller array.
 Direct source assignments use the same point-in-time resolver, including literal and runtime array indices.
 Mixed push/pop paths which restore their entry length without popping into the pre-existing prefix are replayed
 independently per logical iteration, including finite `if`/`else` and `switch` paths. Other mixed push/pop

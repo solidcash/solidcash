@@ -5562,25 +5562,29 @@ export default class LowerVMapCounterLoops extends AstTraversal {
               const nestedArrayNames = new Set(nestedTarget.parameters
                 .filter((candidate) => candidate.type instanceof ArrayType)
                 .map((candidate) => candidate.name));
-              const hasMemoryArrayParameter = nestedTarget.parameters.some((candidate) =>
-                candidate.type instanceof ArrayType && candidate.modifier.includes('memory'));
-              // Ordinary array parameters are value-copied. When every array formal has value semantics, the
-              // nested call operates on private copies and cannot change any caller plan, even if its body mutates
-              // those copies or forwards them again. The real source call remains in place for its own checks.
-              if (!hasMemoryArrayParameter) continue;
               const nestedPlanNames = new Map<string, string>();
               const nestedValues = new Map<string, ExpressionNode>();
+              const nestedSourcePlans = copyPlans(helperPlans);
+              const propagatedPlanNames = new Set(helperPlans.keys());
               for (let parameterIndex = 0;
                 parameterIndex < nestedTarget.parameters.length; parameterIndex += 1) {
                 const parameter = nestedTarget.parameters[parameterIndex];
                 const argument = nestedCall.parameters[parameterIndex];
                 if (parameter.type instanceof ArrayType) {
-                  if (!parameter.modifier.includes('memory') || !(argument instanceof IdentifierNode)) {
-                    return undefined;
+                  if (!(argument instanceof IdentifierNode)) return undefined;
+                  const callerPlanName = scope.planNamesByParameter.get(argument.name);
+                  const callerPlan = callerPlanName === undefined
+                    ? undefined : helperPlans.get(callerPlanName);
+                  if (callerPlanName === undefined || !callerPlan) return undefined;
+                  if (parameter.modifier.includes('memory')) {
+                    nestedPlanNames.set(parameter.name, callerPlanName);
+                  } else {
+                    // A value parameter starts with the caller's current contents but owns an isolated history.
+                    // Its mutations remain available to reads inside this call without leaking into the caller.
+                    const copiedPlanName = `__internal__kernelHelperCopy_${this.serial++}`;
+                    nestedPlanNames.set(parameter.name, copiedPlanName);
+                    nestedSourcePlans.set(copiedPlanName, clonePlan(copiedPlanName, callerPlan));
                   }
-                  const planName = scope.planNamesByParameter.get(argument.name);
-                  if (planName === undefined || !helperPlans.has(planName)) return undefined;
-                  nestedPlanNames.set(parameter.name, planName);
                   continue;
                 }
                 const nestedValue = replay(argument);
@@ -5591,13 +5595,15 @@ export default class LowerVMapCounterLoops extends AstTraversal {
               // therefore preserves reference aliasing and advances one source-ordered mutation history.
               const nestedSummary = summarize(
                 nestedTarget.body,
-                { plans: helperPlans, values: nestedValues },
+                { plans: nestedSourcePlans, values: nestedValues },
                 true,
                 { arrayNames: nestedArrayNames, planNamesByParameter: nestedPlanNames },
                 new Set(visiting).add(nestedTarget),
               );
               if (!nestedSummary) return undefined;
-              helperPlans = nestedSummary.plans;
+              helperPlans = new Map([...propagatedPlanNames].map((planName) => [
+                planName, nestedSummary.plans.get(planName)!,
+              ]));
               continue;
             }
             if (helperStatement instanceof RequireNode) continue;

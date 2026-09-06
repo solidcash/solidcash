@@ -13255,9 +13255,14 @@ export default class SymbolTableTraversal extends AstTraversal {
       fn.tokenContainerTransferSiteCount ?? (fn.tokenContainerAccesses ?? []).reduce(
         (total, access) => total + access.transferCount + access.transferNftCount, 0,
       );
+    const deployWidth = (fn: FunctionDefinitionNode): number => {
+      const sites = this.listDeploySiteDataNftCounts(fn.body);
+      return sites.length === 1 ? 1 + sites[0] : 0;
+    };
     const handlers = contract.functions.filter((fn) => fn.graphEmissionHandler
       && ((fn.emitInfos?.length ?? 0) > 0 || (fn.transferInfos?.length ?? 0) > 0
-        || tokenTransferCount(fn) > 0 || (fn.ecrecoverCompute && (fn.ecrecoverCallCount ?? 0) > 0))
+        || tokenTransferCount(fn) > 0 || (fn.ecrecoverCompute && (fn.ecrecoverCallCount ?? 0) > 0)
+        || deployWidth(fn) > 0)
       && this.framesSettleEveryTransfer(fn));
     if (handlers.length === 0) return;
     const byName = new Map(handlers.map((fn) => [fn.name, fn]));
@@ -13336,6 +13341,8 @@ export default class SymbolTableTraversal extends AstTraversal {
       ecrecoverBase: 0,
       ecrecoverWidth: Math.max(0, ...handlers.map((fn) =>
         (fn.ecrecoverCompute ? (fn.ecrecoverCallCount ?? 0) * 2 : 0))),
+      deployBase: 0,
+      deployWidth: Math.max(0, ...handlers.map(deployWidth)),
     };
     route.graphEffectFrame = frame;
     if (loopDispatch && frame.tokenTransferWidth > 0) {
@@ -13362,19 +13369,28 @@ export default class SymbolTableTraversal extends AstTraversal {
     // own effects would have.
     route.blockLayout = this.computeBlockLayout(route);
     const offsetOf = (
-      kind: 'event' | 'transfer' | 'tcTransfer' | 'ecrecoverSideCar', slotIndex: number,
+      kind: 'event' | 'transfer' | 'tcTransfer' | 'ecrecoverSideCar' | 'deploy', slotIndex: number,
     ): number | undefined =>
       route.blockLayout!.slots.find((slot) => slot.kind === kind && slot.slotIndex === slotIndex)?.offset;
     frame.eventOffset = offsetOf('event', frame.eventBase);
     frame.transferOffset = offsetOf('transfer', frame.transferBase);
     frame.tokenTransferOffset = offsetOf('tcTransfer', frame.tokenTransferBase);
     frame.ecrecoverOffset = offsetOf('ecrecoverSideCar', frame.ecrecoverBase ?? 0);
+    frame.deployOffset = offsetOf('deploy', frame.deployBase ?? 0);
+    const deployOffset = frame.deployOffset;
+    if (deployOffset !== undefined) {
+      frame.deployInputOffset = deployOffset - route.blockLayout!.slots
+        .filter((slot) => slot.offset < deployOffset
+          && ['transfer', 'tcTransfer', 'event', 'returnEvent', 'deployDataNft'].includes(slot.kind))
+        .length;
+    }
     // Token-container INPUT identity lives on the route's one co-spent slot. Share that layout with the
     // OP_INVOKE handler so a `tokenContainer` OP_UTXO uses the compile-time offset, never a row-relative
     // `tcTransfer` output index.
     for (const fn of handlers) {
       if (tokenTransferCount(fn) > 0 || ((fn.ecrecoverCallCount ?? 0) > 0)
-        || (fn.transferInfos?.length ?? 0) > 0 || (fn.emitInfos?.length ?? 0) > 0) {
+        || (fn.transferInfos?.length ?? 0) > 0 || (fn.emitInfos?.length ?? 0) > 0
+        || deployWidth(fn) > 0) {
         fn.blockLayout = route.blockLayout;
       }
     }
@@ -13450,6 +13466,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     const graphTransfers = (graphFrame?.sites ?? 0) * (graphFrame?.transferWidth ?? 0);
     const graphTokenTransfers = (graphFrame?.sites ?? 0) * (graphFrame?.tokenTransferWidth ?? 0);
     const graphEcrecover = (graphFrame?.sites ?? 0) * (graphFrame?.ecrecoverWidth ?? 0);
+    const graphDeployWidth = graphFrame?.deployWidth ?? 0;
 
     // Master
     slots.push({ kind: 'master', offset: offset++ });
@@ -13640,7 +13657,14 @@ export default class SymbolTableTraversal extends AstTraversal {
     // (see docs/deferrals.md "Factory deploy of a stateful child alongside vmap mapping writes").
     // deployTargets is not yet populated here; resolve counts from each InstantiationNode's
     // referenced contract (or deployedDataNftCount once the site has been visited).
-    if (node.modifiers.includes(FunctionModifier.DEPLOY)) {
+    if (node.messageBusRoute && graphDeployWidth > 0) {
+      for (let row = 0; row < (graphFrame?.sites ?? 0); row++) {
+        slots.push({ kind: 'deploy', offset: offset++, slotIndex: row });
+        for (let nftIdx = 1; nftIdx < graphDeployWidth; nftIdx++) {
+          slots.push({ kind: 'deployDataNft', offset: offset++, slotIndex: row, nftIndex: nftIdx - 1 });
+        }
+      }
+    } else if (node.modifiers.includes(FunctionModifier.DEPLOY)) {
       const deploySiteCounts = this.listDeploySiteDataNftCounts(node.body);
       const siteCount = Math.max(1, deploySiteCounts.length);
       for (let i = 0; i < siteCount; i++) {

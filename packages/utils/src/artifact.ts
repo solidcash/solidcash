@@ -346,6 +346,10 @@ export interface AbiFunction {
     tokenTransferWidth: number;
     tokenTransferOffset?: number;
     tokenNftTransfers: boolean;
+    deployBase?: number;
+    deployWidth?: number;
+    deployOffset?: number;
+    deployInputOffset?: number;
   };
   entryAccesses?: readonly EntryAccessAbi[];
   /** Compiler proof that the complete function body is exactly `return mapping[keys...]`, with each key a

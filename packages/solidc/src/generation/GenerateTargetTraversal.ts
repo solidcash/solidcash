@@ -1719,6 +1719,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // X29. An effect-carrying graph emission handler runs as ONE OP_INVOKE subroutine shared by every dispatch
     // site, so its event / transfer output index is not a compile-time constant: the route reserved one frame
     // per site and pushes the site ordinal as hidden context. Resolve against that frame instead.
+    if (kind === 'deploy' && this.emitGraphDeployInputIndex(locationData)) return;
     if (this.emitGraphEffectSlotIndex(kind, slotIndex, locationData)) return;
     let offset = this.getBlockSlotOffset(kind, slotIndex);
     // The 'deploy' slot is read as an INPUT index (the child genesis funding input). Output-only slots
@@ -1750,6 +1751,47 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(encodeInt(BigInt(offset)), locationData);
       this.emit(Op.OP_ADD, locationData);
     }
+  }
+
+  /** Push the vout-0 genesis input owned by the current kernel row. */
+  private emitGraphDeployInputIndex(locationData: SingleLocationData): boolean {
+    const frame = this.currentFunction.graphEffectFrame;
+    if (!frame || !this.currentFunction.graphEmissionHandler || (frame.deployWidth ?? 0) === 0) return false;
+    const siteName = this.stack.includes(GRAPH_EFFECT_SITE) ? GRAPH_EFFECT_SITE
+      : this.stack.includes('__message_bus_row') ? '__message_bus_row' : GRAPH_EFFECT_SITE;
+    this.emit(encodeInt(BigInt(this.getStackIndex(siteName))), locationData);
+    this.emit(Op.OP_PICK, locationData);
+    const inputOffset = frame.deployInputOffset ?? 0;
+    if (inputOffset > 0) {
+      this.emit(encodeInt(BigInt(inputOffset)), locationData);
+      this.emit(Op.OP_ADD, locationData);
+    }
+    this.emitMasterInputIndex(locationData, 1);
+    this.emit(Op.OP_ADD, locationData);
+    return true;
+  }
+
+  /** Push an output in the child-deployment span owned by the current kernel row. */
+  private emitGraphDeployOutputIndex(extra: number, locationData: SingleLocationData): boolean {
+    const frame = this.currentFunction.graphEffectFrame;
+    const width = frame?.deployWidth ?? 0;
+    if (!frame || !this.currentFunction.graphEmissionHandler || width === 0) return false;
+    const siteName = this.stack.includes(GRAPH_EFFECT_SITE) ? GRAPH_EFFECT_SITE
+      : this.stack.includes('__message_bus_row') ? '__message_bus_row' : GRAPH_EFFECT_SITE;
+    this.emit(encodeInt(BigInt(this.getStackIndex(siteName))), locationData);
+    this.emit(Op.OP_PICK, locationData);
+    if (width > 1) {
+      this.emit(encodeInt(BigInt(width)), locationData);
+      this.emit(Op.OP_MUL, locationData);
+    }
+    const constant = (frame.deployOffset ?? this.getBlockSlotOffset('deploy', frame.deployBase ?? 0)) + extra;
+    if (constant > 0) {
+      this.emit(encodeInt(BigInt(constant)), locationData);
+      this.emit(Op.OP_ADD, locationData);
+    }
+    this.emitMasterInputIndex(locationData, 1);
+    this.emit(Op.OP_ADD, locationData);
+    return true;
   }
 
   /**
@@ -1921,6 +1963,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    */
   private expandDeployDataNftLayout(node: FunctionDefinitionNode): void {
     if (!node.blockLayout || !node.deployTargets?.length) return;
+    // Kernel graph handlers share the route's already-expanded row frame. Re-expanding that shared layout from
+    // one handler's local deployTargets would erase every other row's data-NFT span.
+    if (node.graphEmissionHandler && (node.graphEffectFrame?.deployWidth ?? 0) > 0) return;
     const old = node.blockLayout.slots;
     const slots: BlockLayoutSlot[] = [];
     let offset = 0;
@@ -25995,9 +26040,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.pushToStack('(value)');
 
       // Compute output index from block layout deploy slot offset
-      this.emitMasterInputIndex(locationData);
-      this.emit(encodeInt(BigInt(this.getBlockSlotOffset('deploy', 0) + deployOffset)), locationData);
-      this.emit(Op.OP_ADD, locationData);
+      if (!this.emitGraphDeployOutputIndex(deployOffset, locationData)) {
+        this.emitMasterInputIndex(locationData);
+        this.emit(encodeInt(BigInt(this.getBlockSlotOffset('deploy', 0) + deployOffset)), locationData);
+        this.emit(Op.OP_ADD, locationData);
+      }
       this.emit(Op.OP_OUTPUTBYTECODE, locationData);
       this.pushToStack('(value)');
 
@@ -26016,9 +26063,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.pushToStack('(value)');
 
       // Get actual output token category
-      this.emitMasterInputIndex(locationData);
-      this.emit(encodeInt(BigInt(this.getBlockSlotOffset('deploy', 0) + deployOffset)), locationData);
-      this.emit(Op.OP_ADD, locationData);
+      if (!this.emitGraphDeployOutputIndex(deployOffset, locationData)) {
+        this.emitMasterInputIndex(locationData);
+        this.emit(encodeInt(BigInt(this.getBlockSlotOffset('deploy', 0) + deployOffset)), locationData);
+        this.emit(Op.OP_ADD, locationData);
+      }
       this.emit(Op.OP_OUTPUTTOKENCATEGORY, locationData);
       this.pushToStack('(value)');
 
@@ -26038,9 +26087,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         // Stack: [..., dataNftLbc]
 
         // Verify data NFT output locking bytecode
-        this.emitMasterInputIndex(locationData);
-        this.emit(encodeInt(BigInt(this.getBlockSlotOffset('deploy', 0) + nftOutputOffset)), locationData);
-        this.emit(Op.OP_ADD, locationData);
+        if (!this.emitGraphDeployOutputIndex(nftOutputOffset, locationData)) {
+          this.emitMasterInputIndex(locationData);
+          this.emit(encodeInt(BigInt(this.getBlockSlotOffset('deploy', 0) + nftOutputOffset)), locationData);
+          this.emit(Op.OP_ADD, locationData);
+        }
         this.emit(Op.OP_OUTPUTBYTECODE, locationData);
         this.pushToStack('(value)');
 
@@ -26058,9 +26109,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.popFromStack(2);
         this.pushToStack('(value)');
 
-        this.emitMasterInputIndex(locationData);
-        this.emit(encodeInt(BigInt(this.getBlockSlotOffset('deploy', 0) + nftOutputOffset)), locationData);
-        this.emit(Op.OP_ADD, locationData);
+        if (!this.emitGraphDeployOutputIndex(nftOutputOffset, locationData)) {
+          this.emitMasterInputIndex(locationData);
+          this.emit(encodeInt(BigInt(this.getBlockSlotOffset('deploy', 0) + nftOutputOffset)), locationData);
+          this.emit(Op.OP_ADD, locationData);
+        }
         this.emit(Op.OP_OUTPUTTOKENCATEGORY, locationData);
         this.pushToStack('(value)');
 
@@ -26113,9 +26166,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         // Stack: [..., defaultCommitment]
 
         // Get actual output commitment
-        this.emitMasterInputIndex(locationData);
-        this.emit(encodeInt(BigInt(this.getBlockSlotOffset('deploy', 0) + nftOutputOffset)), locationData);
-        this.emit(Op.OP_ADD, locationData);
+        if (!this.emitGraphDeployOutputIndex(nftOutputOffset, locationData)) {
+          this.emitMasterInputIndex(locationData);
+          this.emit(encodeInt(BigInt(this.getBlockSlotOffset('deploy', 0) + nftOutputOffset)), locationData);
+          this.emit(Op.OP_ADD, locationData);
+        }
         this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, locationData);
         this.pushToStack('(value)');
 

@@ -300,6 +300,12 @@ export interface GraphEffectFrame {
   ecrecoverBase?: number;
   ecrecoverWidth?: number;
   ecrecoverOffset?: number;
+  deployBase?: number;
+  /** Output slots per selected row: one child master followed by its data NFTs. */
+  deployWidth?: number;
+  deployOffset?: number;
+  /** Input-relative offset of the first row's vout-0 genesis input. */
+  deployInputOffset?: number;
 }
 
 export interface CustomModifierInvocation {

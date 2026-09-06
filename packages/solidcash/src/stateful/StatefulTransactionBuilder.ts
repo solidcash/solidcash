@@ -32,9 +32,6 @@ import {
   sha256 as sha256Sync,
   encodeInt,
   Op,
-  blockInputOffset,
-  blockInputSize,
-  isOutputOnlyBlockSlot,
 } from '@solidcash/utils';
 import {
   binToHex, hexToBin, isHex, encodeTransaction, createVirtualMachineBch2026, utf8ToBin,
@@ -4930,8 +4927,8 @@ export class StatefulTransactionBuilder {
       && (!hasExternalGroups || this.blockhashCoSpendSlotOrdinals !== undefined
         || this.compilerRouteDelegateBlock)) {
       const funderPool = [...this.funderUtxos];
-      // Input coordinates are the published layout with output-only slots projected away.
-      const positioned: (UnlockableUtxo | undefined)[] = new Array(blockInputSize(this.blockLayout));
+      // Position-indexed array: each element goes at its slot.offset
+      const positioned: (UnlockableUtxo | undefined)[] = new Array(this.blockLayout.blockSize);
       let dataNftIdx = 0, readOnlyIdx = 0, tcIdx = 0;
       let llcIdx = 0; // low-level call input index
       let bhIdx = 0; // blockhash co-spend index
@@ -4958,7 +4955,7 @@ export class StatefulTransactionBuilder {
       const trailingDisposalOffsets = new Set(
         this.trailingDisposalInputs.length === 0 ? [] : this.blockLayout.slots
           .filter((slot) => slot.kind === 'trailing')
-          .map((slot) => blockInputOffset(this.blockLayout!, slot.offset))
+          .map((slot) => slot.offset)
           .sort((left, right) => left - right)
           .slice(-this.trailingDisposalInputs.length),
       );
@@ -4970,68 +4967,66 @@ export class StatefulTransactionBuilder {
       );
 
       for (const slot of this.blockLayout.slots) {
-        if (isOutputOnlyBlockSlot(slot)) continue;
-        const inputOffset = blockInputOffset(this.blockLayout, slot.offset);
         switch (slot.kind) {
-          case 'master': positioned[inputOffset] = this.masterUtxo; break;
+          case 'master': positioned[slot.offset] = this.masterUtxo; break;
           case 'dataNft':
-            if (dataNftIdx < this.dataNftUtxos.length) positioned[inputOffset] = this.dataNftUtxos[dataNftIdx++];
+            if (dataNftIdx < this.dataNftUtxos.length) positioned[slot.offset] = this.dataNftUtxos[dataNftIdx++];
             break;
           case 'readOnlyDataNft':
             if (readOnlyIdx < this.readOnlyDataNftUtxos.length) {
-              positioned[inputOffset] = this.readOnlyDataNftUtxos[readOnlyIdx++];
+              positioned[slot.offset] = this.readOnlyDataNftUtxos[readOnlyIdx++];
             }
             break;
           case 'blockhashOracle':
             if ((this.blockhashCoSpendSlotOrdinals?.[bhIdx] ?? bhIdx) === bhOrdinal
               && bhIdx < this.blockhashCoSpendUtxos.length) {
-              positioned[inputOffset] = this.blockhashCoSpendUtxos[bhIdx++];
+              positioned[slot.offset] = this.blockhashCoSpendUtxos[bhIdx++];
             } else if (this.blockhashCoSpendSlotOrdinals) {
               const f = funderPool.shift();
-              if (f) positioned[inputOffset] = f;
+              if (f) positioned[slot.offset] = f;
             }
             bhOrdinal++;
             break;
           case 'keccakSideCar':
             if (kIdx < this.keccakComputeCoSpendUtxos.length) {
-              positioned[inputOffset] = this.keccakComputeCoSpendUtxos[kIdx++];
-            } else { const f = funderPool.shift(); if (f) positioned[inputOffset] = f; }
+              positioned[slot.offset] = this.keccakComputeCoSpendUtxos[kIdx++];
+            } else { const f = funderPool.shift(); if (f) positioned[slot.offset] = f; }
             break;
           case 'ecrecoverSideCar':
             if (erIdx < this.ecrecoverComputeCoSpendUtxos.length) {
-              positioned[inputOffset] = this.ecrecoverComputeCoSpendUtxos[erIdx++];
-            } else { const f = funderPool.shift(); if (f) positioned[inputOffset] = f; }
+              positioned[slot.offset] = this.ecrecoverComputeCoSpendUtxos[erIdx++];
+            } else { const f = funderPool.shift(); if (f) positioned[slot.offset] = f; }
             break;
           case 'entry': {
             // Delegate implementation inputs may intentionally occupy the same physical input offsets as grafted
             // proxy-state output slots. The implementation is the input; the entry NFT is produced only on output.
-            if (positioned[inputOffset]) break;
+            if (positioned[slot.offset]) break;
             const entryInput = slot.slotIndex !== undefined ? entryInputBySlot.get(slot.slotIndex) : undefined;
-            if (entryInput) positioned[inputOffset] = entryInput;
-            else { const f = funderPool.shift(); if (f) positioned[inputOffset] = f; }
+            if (entryInput) positioned[slot.offset] = entryInput;
+            else { const f = funderPool.shift(); if (f) positioned[slot.offset] = f; }
             break;
           }
           case 'satoshiContainer':
-            if (satoshiContainerInputs.length > 0) positioned[inputOffset] = satoshiContainerInputs[0];
+            if (satoshiContainerInputs.length > 0) positioned[slot.offset] = satoshiContainerInputs[0];
             break;
           case 'tokenContainer':
-            if (tcIdx < tokenContainerInputs.length) positioned[inputOffset] = tokenContainerInputs[tcIdx++];
-            else { const f = funderPool.shift(); if (f) positioned[inputOffset] = f; }
+            if (tcIdx < tokenContainerInputs.length) positioned[slot.offset] = tokenContainerInputs[tcIdx++];
+            else { const f = funderPool.shift(); if (f) positioned[slot.offset] = f; }
             break;
           case 'lowLevelCall':
             if (this.compilerRouteDelegateBlock) {
               // These are logical handler call slots inside the route block. The physical delegate implementation
               // is the route owner and lives after the complete block; nested participant groups are appended next.
               const f = funderPool.shift();
-              if (f) positioned[inputOffset] = f;
+              if (f) positioned[slot.offset] = f;
               break;
             }
             // Place the actual low-level call input (target master) at its block layout
             // position so the compiler's emitBlockSlotIndex reads the correct INPUTBYTECODE.
             if (llcIdx < lowLevelCallInputs.length) {
-              const callOffset = this.lowLevelCallInputBase ?? inputOffset;
-              if (callOffset !== inputOffset) {
-                for (let offset = inputOffset; offset < callOffset; offset++) {
+              const callOffset = this.lowLevelCallInputBase ?? slot.offset;
+              if (callOffset !== slot.offset) {
+                for (let offset = slot.offset; offset < callOffset; offset++) {
                   if (positioned[offset]) continue;
                   const placeholder = funderPool.shift();
                   if (placeholder) positioned[offset] = placeholder;
@@ -5046,21 +5041,22 @@ export class StatefulTransactionBuilder {
                   positioned[off++] = lowLevelCallInputs[llcIdx++];
                 }
               }
-            } else { const f = funderPool.shift(); if (f) positioned[inputOffset] = f; }
+            } else { const f = funderPool.shift(); if (f) positioned[slot.offset] = f; }
             break;
+          case 'transfer': case 'tcTransfer': case 'event': case 'returnEvent':
           case 'deploy': {
             const f = funderPool.shift();
-            if (f) positioned[inputOffset] = f;
+            if (f) positioned[slot.offset] = f;
             break;
           }
           case 'trailing': {
-            if (trailingDisposalOffsets.has(inputOffset)) {
-              positioned[inputOffset] = this.trailingDisposalInputs[trailingDisposalIdx++];
+            if (trailingDisposalOffsets.has(slot.offset)) {
+              positioned[slot.offset] = this.trailingDisposalInputs[trailingDisposalIdx++];
             } else if (trailingIdx < trailingInputs.length) {
-              positioned[inputOffset] = trailingInputs[trailingIdx++];
+              positioned[slot.offset] = trailingInputs[trailingIdx++];
             } else {
               const f = funderPool.shift();
-              if (f) positioned[inputOffset] = f;
+              if (f) positioned[slot.offset] = f;
             }
             break;
           }

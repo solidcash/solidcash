@@ -217,7 +217,6 @@ import {
   IntType, FixedType, MappingType, FunctionType,
   FunctionBlockLayout, BlockLayoutSlot, resolveLibraries, ExternalLibrary, parseTypeStrict,
   INLINE_MAX_BLOB_LENGTH, isDynamicStorageType, isChunkableValueType, encodeInt, implicitlyCastable, LocationI,
-  blockInputOffset,
 } from '@solidcash/utils';
 import { binToHex } from '@bitauth/libauth';
 import { walkInvocationAst } from '../analysis/InvocationAnalysis.js';
@@ -13380,7 +13379,10 @@ export default class SymbolTableTraversal extends AstTraversal {
     frame.deployOffset = offsetOf('deploy', frame.deployBase ?? 0);
     const deployOffset = frame.deployOffset;
     if (deployOffset !== undefined) {
-      frame.deployInputOffset = blockInputOffset(route.blockLayout!, deployOffset);
+      frame.deployInputOffset = deployOffset - route.blockLayout!.slots
+        .filter((slot) => slot.offset < deployOffset
+          && ['transfer', 'tcTransfer', 'event', 'returnEvent', 'deployDataNft'].includes(slot.kind))
+        .length;
     }
     // Token-container INPUT identity lives on the route's one co-spent slot. Share that layout with the
     // OP_INVOKE handler so a `tokenContainer` OP_UTXO uses the compile-time offset, never a row-relative

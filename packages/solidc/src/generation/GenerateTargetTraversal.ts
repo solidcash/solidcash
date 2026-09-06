@@ -69,7 +69,6 @@ import {
   isChunkableValueType,
   MAX_MESSAGE_BUS_BLOB_BYTES,
   outlineSharedSpans,
-  blockInputOffset,
 } from '@solidcash/utils';
 import {
   canonicalizeUpsertKeyExpression,
@@ -1727,9 +1726,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // (transfer/tcTransfer/event/returnEvent) each take a block-layout offset but consume NO input, so they
     // must be excluded from an input-relative offset - otherwise the funding input is read one-too-high per
     // preceding output-only slot (e.g. a value-RETURNING deploy function has a returnEvent output before it).
-    if (kind === 'deploy' && this.currentFunction.blockLayout) {
-      offset = blockInputOffset(this.currentFunction.blockLayout, offset);
-    }
+    if (kind === 'deploy') offset -= this.countOutputOnlySlotsBefore(offset);
     // Delegate state lives in the proxy block, but execution-owned resources belong to the co-spent
     // implementation block. This includes output-only effects and the self-preserving compute side-cars which
     // execute beside the implementation. Basing either family on the proxy can overlap proxy data or grafted
@@ -1948,6 +1945,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
     this.emit(Op.OP_IF, locationData);
     this.popFromStack();
+  }
+
+  /** Count output-only block-layout slots (they consume no input) strictly before `offset`. */
+  private countOutputOnlySlotsBefore(offset: number): number {
+    const layout = this.currentFunction.blockLayout;
+    if (!layout) return 0;
+    const outputOnly = new Set<BlockSlotKind>([
+      'transfer', 'tcTransfer', 'event', 'returnEvent', 'deployDataNft',
+    ]);
+    return layout.slots.filter((s) => outputOnly.has(s.kind) && s.offset < offset).length;
   }
 
   /**
@@ -13712,8 +13719,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // fails. A straight-line deploy keeps the fixed block-layout slot.
       if (this.scopeDepth > 0) {
         const slotBase = this.getBlockSlotOffset('deploy', 0);
-        const inputBase = this.currentFunction.blockLayout
-          ? blockInputOffset(this.currentFunction.blockLayout, slotBase) : slotBase;
+        const inputBase = slotBase - this.countOutputOnlySlotsBefore(slotBase);
         this.emitMasterInputIndex(locationData);
         if (inputBase > 0) {
           this.emit(encodeInt(BigInt(inputBase)), locationData);
@@ -25775,8 +25781,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     node: InstantiationNode, locationData: SingleLocationData, useCounter = false,
   ): void {
     const slotBase = this.getBlockSlotOffset('deploy', 0);
-    const inputBase = this.currentFunction.blockLayout
-      ? blockInputOffset(this.currentFunction.blockLayout, slotBase) : slotBase;
+    const inputBase = slotBase - this.countOutputOnlySlotsBefore(slotBase);
     const dataNftCount = node.deployedDataNftCount;
     // A LOOP `new C{value:}()` interleaves its value transfer as the LAST output of each child's group (there is
     // no fixed transfer slot for a runtime-variable count), so the per-child stride grows by 1.

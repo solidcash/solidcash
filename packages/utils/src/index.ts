@@ -1,4 +1,5 @@
 export * from './artifact.js';
+export * from './block-layout.js';
 export * from './bip68.js';
 export * from './bitauth-script.js';
 export * from './data.js';

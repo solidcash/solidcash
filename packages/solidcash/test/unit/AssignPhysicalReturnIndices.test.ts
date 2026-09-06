@@ -11,6 +11,7 @@ import {
   valueChunkBandWidth,
   continuationOutputBaseBeforeSuffix,
   selectValueChunkOutputBase,
+  selectExternalEventProbeInput,
   findDisposableValueChunkOutputBase,
   mintingSwapShift,
   chooseMintingSwapShift,
@@ -137,6 +138,16 @@ import {
   isDataNftIndexCommitment,
   type PhysicalReturnGroup,
 } from '../../src/stateful/StatefulTransactionBuilder.js';
+
+describe('external event probe input', () => {
+  it('uses delegate geometry across alpha-renaming and ignores a decoy legacy name', () => {
+    const renamedDelegate = { functionName: 'recordNotice', delegateCallGroupIndex: 3 };
+    const legacyNamedOrdinary = { functionName: 'publishJobEvent' };
+
+    expect(selectExternalEventProbeInput(renamedDelegate, 17, 9)).toBe(17);
+    expect(selectExternalEventProbeInput(legacyNamedOrdinary, -1, 9)).toBe(9);
+  });
+});
 
 const returnSlot = { kind: 'returnEvent' as const, offset: 7 };
 const tokenLayout = { blockSize: 8, slots: [{ kind: 'master' as const, offset: 0 }, returnSlot] };

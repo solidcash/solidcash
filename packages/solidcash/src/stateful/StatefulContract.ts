@@ -170,6 +170,7 @@ import {
   preferChunkCommitment,
   valueChunkIndexFromCommitment,
   selectValueChunkOutputBase,
+  selectExternalEventProbeInput,
 } from './StatefulTransactionBuilder.js';
 import {
   OnChainState, StateReader, type ParsedEvent, type EventFilter,
@@ -11329,26 +11330,19 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 bAbiFunc?.blockLayout?.slots ?? group.blockLayout.slots
               ).filter((s: { kind: string; offset: number }) => s.kind === 'event');
               if (eventSlots.length > 0) {
-              // Delegate output-only slots (events) are implementation-relative.
-              // Probe the impl input and read commitments at impl+offset, not proxy+offset.
-              // publishJobEvent evaluates at the named input (persist dest 17→21),
-              // which can differ from the LLC master after occupancy shifts.
-                const namedPublish = (
-                  delegateEventGroup?.functionName === 'publishJobEvent'
-                  || group.functionName === 'publishJobEvent'
-                  || group.logicalFunctionName === 'publishJobEvent'
-                ) ? stb.getPublishJobEventInputIndex() : -1;
-                const eventProbeIndex = namedPublish >= 0
-                  ? namedPublish
-                  : group.delegateCallGroupIndex !== undefined
-                    ? stb.getLowLevelCallMasterInputIndex(group.delegateCallGroupIndex)
-                    : bMasterIdx;
-                const eventOutputBase = eventProbeIndex >= 0 ? eventProbeIndex : bOutputBase;
+              // Delegate output-only slots are implementation-relative. The compiler-published delegate-group
+              // association identifies that execution input; source function names have no bearing on geometry.
+                const delegateEventInput = group.delegateCallGroupIndex === undefined
+                  ? -1 : stb.getLowLevelCallMasterInputIndex(group.delegateCallGroupIndex);
+                const eventProbeInput = selectExternalEventProbeInput(
+                  group, delegateEventInput, bMasterIdx,
+                );
+                const eventOutputBase = eventProbeInput >= 0 ? eventProbeInput : bOutputBase;
                 const probeBuilder2 = stb.build();
                 const transaction2 = probeBuilder2.buildLibauthTransaction();
                 const sourceOutputs2 = generateLibauthSourceOutputs(probeBuilder2.inputs);
                 const fullTrace2 = evaluateProbeTrace(this.inner.provider, {
-                  inputIndex: eventProbeIndex >= 0 ? eventProbeIndex : bMasterIdx,
+                  inputIndex: eventProbeInput >= 0 ? eventProbeInput : bMasterIdx,
                   sourceOutputs: sourceOutputs2,
                   transaction: transaction2,
                 });
@@ -11445,7 +11439,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                     group.eventOutputs = eventOutputs;
                     const progressiveProbe = stb.build();
                     const progressiveTrace = evaluateProbeTrace(this.inner.provider, {
-                      inputIndex: eventProbeIndex >= 0 ? eventProbeIndex : bMasterIdx,
+                      inputIndex: eventProbeInput >= 0 ? eventProbeInput : bMasterIdx,
                       sourceOutputs: generateLibauthSourceOutputs(progressiveProbe.inputs),
                       transaction: progressiveProbe.buildLibauthTransaction(),
                     });

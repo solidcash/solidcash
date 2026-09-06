@@ -4039,6 +4039,22 @@ export interface ExternalCallUtxoGroup {
   }>;
 }
 
+/**
+ * Select the input whose covenant emits an external-call event.
+ *
+ * A proxied call executes at its compiler-planned delegate group, so its event slots are relative to that
+ * implementation input. Ordinary calls execute at the callee master. Function names are deliberately absent:
+ * alpha-renaming either function cannot alter the transaction geometry published by `delegateCallGroupIndex`.
+ */
+export function selectExternalEventProbeInput(
+  group: Pick<ExternalCallUtxoGroup, 'delegateCallGroupIndex'>,
+  delegateInputIndex: number,
+  calleeInputIndex: number,
+): number {
+  if (group.delegateCallGroupIndex !== undefined && delegateInputIndex >= 0) return delegateInputIndex;
+  return calleeInputIndex;
+}
+
 export interface StatefulTransactionOptions extends TransactionBuilderOptions {
   masterUtxo: UnlockableUtxo;
   dataNftUtxos: UnlockableUtxo[];

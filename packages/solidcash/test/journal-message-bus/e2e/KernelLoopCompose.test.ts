@@ -5645,26 +5645,32 @@ describe('kernel composite counter-key settlement', () => {
   it('settles runtime-selected branch and switch continues in literal-bounded pure helper loops', async () => {
     const provider = createTestProvider();
     const artifact = compileString(`contract KernelRuntimeHelperContinue() {
-      mapping(int => int) records;
+      mapping(int => int) branchRecords;
+      mapping(int => int) switchRecords;
       function fillBranch(int[] memory values, int base, bool skip) internal pure {
         for (int cursor = 0; cursor < 2; cursor = cursor + 1) {
-          if (skip) { continue; }
+          if (cursor == 1) {
+            if (skip) { continue; }
+          }
           values[cursor] = base + cursor;
         }
       }
       function fillSwitch(int[] memory values, int base, int mode) internal pure {
         for (int cursor = 0; cursor < 2; cursor = cursor + 1) {
-          switch (mode) {
-            case 0: continue;
-            default: values[cursor] = base + cursor;
+          if (cursor == 1) {
+            switch (mode) {
+              case 0: continue;
+              default: break;
+            }
           }
+          values[cursor] = base + cursor;
         }
       }
       function applyBranch(int count, int base, bool skip) public {
         int[] memory values = new int[](count);
         fillBranch(values, base, skip);
         for (int cursor = 0; cursor < count; cursor = cursor + 1) {
-          this.records[values[cursor]] = cursor + 10;
+          this.branchRecords[values[cursor]] = cursor + 10;
         }
         require(true);
       }
@@ -5672,11 +5678,26 @@ describe('kernel composite counter-key settlement', () => {
         int[] memory values = new int[](count);
         fillSwitch(values, base, mode);
         for (int cursor = 0; cursor < count; cursor = cursor + 1) {
-          this.records[values[cursor]] = cursor + 20;
+          this.switchRecords[values[cursor]] = cursor + 20;
         }
         require(true);
       }
-      function check(int key, int expected) public { require(this.records[key] == expected); }
+      function checkFill(bool skip, int expected) public {
+        int[] memory values = new int[](2);
+        fillBranch(values, 30, skip);
+        require(values[1] == expected);
+      }
+      function checkFillSwitch(int mode, int expected) public {
+        int[] memory values = new int[](2);
+        fillSwitch(values, 40, mode);
+        require(values[1] == expected);
+      }
+      function checkBranch(int key, int expected) public {
+        require(this.branchRecords[key] == expected);
+      }
+      function checkSwitch(int key, int expected) public {
+        require(this.switchRecords[key] == expected);
+      }
     }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
     expect(artifact.messageBus?.handlers.filter((handler) => handler.name.startsWith('apply')))
       .toEqual(expect.arrayContaining([
@@ -5688,20 +5709,37 @@ describe('kernel composite counter-key settlement', () => {
       provider, inner, artifact.stateLayout!, {}, { saltContract: true },
     );
     const contract = StatefulContract.withCategory(inner, categoryId);
+    const fallthroughInner = new Contract(artifact, [], { provider });
+    const { categoryId: fallthroughCategoryId } = await setupStatefulUtxos(
+      provider, fallthroughInner, artifact.stateLayout!, {}, { saltContract: true },
+    );
+    const fallthroughContract = StatefulContract.withCategory(
+      fallthroughInner, fallthroughCategoryId,
+    );
+    await expect(fallthroughContract.call.checkFill(false, 31n).send()).resolves.toBeDefined();
+    await expect(contract.call.checkFillSwitch(0n, 0n).send()).resolves.toBeDefined();
+    await expect(fallthroughContract.call.checkFillSwitch(1n, 41n).send()).resolves.toBeDefined();
     await expect(contract.batch([{ function: 'applyBranch', args: [2n, 30n, true] }]).send())
       .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
-    await expect(contract.call.check(0n, 11n).send()).resolves.toBeDefined();
-    await expect(contract.batch([{ function: 'applyBranch', args: [2n, 30n, false] }]).send())
+    await expect(contract.call.checkBranch(30n, 10n).send()).resolves.toBeDefined();
+    await expect(contract.call.checkBranch(0n, 11n).send()).resolves.toBeDefined();
+    const fallthroughBranch = fallthroughContract.batch([{
+      function: 'applyBranch', args: [2n, 30n, false],
+    }]);
+    await expect(fallthroughBranch.send())
       .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
-    await expect(contract.call.check(30n, 10n).send()).resolves.toBeDefined();
-    await expect(contract.call.check(31n, 11n).send()).resolves.toBeDefined();
+    await expect(fallthroughContract.call.checkBranch(30n, 10n).send()).resolves.toBeDefined();
+    await expect(fallthroughContract.call.checkBranch(31n, 11n).send()).resolves.toBeDefined();
     await expect(contract.batch([{ function: 'applySwitch', args: [2n, 40n, 0n] }]).send())
       .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
-    await expect(contract.call.check(0n, 21n).send()).resolves.toBeDefined();
-    await expect(contract.batch([{ function: 'applySwitch', args: [2n, 40n, 1n] }]).send())
+    await expect(contract.call.checkSwitch(40n, 20n).send()).resolves.toBeDefined();
+    await expect(contract.call.checkSwitch(0n, 21n).send()).resolves.toBeDefined();
+    await expect(fallthroughContract.batch([{
+      function: 'applySwitch', args: [2n, 40n, 1n],
+    }]).send())
       .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
-    await expect(contract.call.check(40n, 20n).send()).resolves.toBeDefined();
-    await expect(contract.call.check(41n, 21n).send()).resolves.toBeDefined();
+    await expect(fallthroughContract.call.checkSwitch(40n, 20n).send()).resolves.toBeDefined();
+    await expect(fallthroughContract.call.checkSwitch(41n, 21n).send()).resolves.toBeDefined();
   }, 180_000);
 
   it('settles keys constructed before a counter-selected helper-loop break', async () => {
@@ -5778,6 +5816,45 @@ describe('kernel composite counter-key settlement', () => {
       .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
     await expect(contract.call.check(50n, 10n).send()).resolves.toBeDefined();
     await expect(contract.call.check(61n, 11n).send()).resolves.toBeDefined();
+  }, 180_000);
+
+  it('preserves a nested break beneath a counter-resolved helper branch', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(`contract KernelCounterNestedBreak() {
+      mapping(int => int) records;
+      function fill(int[] memory values, int base, bool stop) internal pure {
+        int cursor = 0;
+        while (cursor < 3) {
+          if (cursor == 1) {
+            if (stop) { break; }
+          }
+          values[cursor] = base + cursor;
+          cursor = cursor + 1;
+        }
+        values[2] = base + cursor + 10;
+      }
+      function apply(int count, int base, bool stop) public {
+        int[] memory values = new int[](count);
+        fill(values, base, stop);
+        for (int cursor = 0; cursor < count; cursor = cursor + 1) {
+          this.records[values[cursor]] = cursor + 10;
+        }
+        require(true);
+      }
+      function check(int key, int expected) public { require(this.records[key] == expected); }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'apply'))
+      .toMatchObject({ eligible: true });
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+    );
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    await expect(contract.batch([{ function: 'apply', args: [3n, 30n, true] }]).send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    await expect(contract.call.check(30n, 10n).send()).resolves.toBeDefined();
+    await expect(contract.call.check(0n, 11n).send()).resolves.toBeDefined();
+    await expect(contract.call.check(41n, 12n).send()).resolves.toBeDefined();
   }, 180_000);
 
   it('settles keys and a result produced before a counter-selected helper-loop return', async () => {

@@ -5335,6 +5335,8 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           loopControl?: 'break' | 'continue';
           /** Paths which break the immediately enclosing literal-bounded helper loop. */
           breakCondition?: ExpressionNode;
+          /** Paths which continue the immediately enclosing literal-bounded helper loop. */
+          continueCondition?: ExpressionNode;
         };
         type HelperScope = {
           arrayNames: ReadonlySet<string>;
@@ -5459,6 +5461,103 @@ export default class LowerVMapCounterLoops extends AstTraversal {
             if (expression.operator === BinaryOperator.DIV && right !== 0n) return left / right;
             if (expression.operator === BinaryOperator.MOD && right !== 0n) return left % right;
             return undefined;
+          };
+          const finishAfterConditionalBreak = (
+            candidate: HelperSummary,
+            tail: BlockNode,
+            location: Node['location'],
+          ): {
+            summary: HelperSummary;
+            breaksAlways: boolean;
+            breakCondition?: ExpressionNode;
+          } | undefined => {
+            if (!candidate.breakCondition) return undefined;
+            const breakCondition = cloneNode(candidate.breakCondition) as ExpressionNode;
+            const fallthrough = new UnaryOpNode(UnaryOperator.NOT, cloneNode(breakCondition));
+            fallthrough.location = location;
+            const completed = summarize(
+              tail, { ...candidate, breakCondition: undefined }, scope, visiting,
+            );
+            if (!completed || completed.returnValues) return undefined;
+            const pathArms = [
+              { ...completed, condition: fallthrough as ExpressionNode },
+              { ...candidate, breakCondition: undefined, condition: breakCondition },
+            ];
+            const mergedPlans = new Map([...candidate.plans].map(([name, plan]) => [
+              name,
+              mergePlan(name, plan, pathArms.map((arm) => ({
+                plan: arm.plans.get(name)!, condition: arm.condition,
+              }))),
+            ]));
+            const summary: HelperSummary = {
+              plans: mergedPlans,
+              values: mergeValues(candidate.values, pathArms),
+            };
+            if (completed.loopControl === 'break') return { summary, breaksAlways: true };
+            let combinedBreak = breakCondition;
+            if (completed.breakCondition) {
+              const laterBreak = new BinaryOpNode(
+                cloneNode(fallthrough), BinaryOperator.AND,
+                cloneNode(completed.breakCondition),
+              );
+              laterBreak.location = location;
+              const combined = new BinaryOpNode(combinedBreak, BinaryOperator.OR, laterBreak);
+              combined.location = location;
+              combinedBreak = combined;
+            }
+            return { summary, breaksAlways: false, breakCondition: combinedBreak };
+          };
+          const finishAfterConditionalContinue = (
+            candidate: HelperSummary,
+            tail: BlockNode,
+            location: Node['location'],
+          ): {
+            summary: HelperSummary;
+            continuesAlways: boolean;
+            continueCondition?: ExpressionNode;
+          } | undefined => {
+            if (!candidate.continueCondition) return undefined;
+            const continueCondition = cloneNode(candidate.continueCondition) as ExpressionNode;
+            const fallthrough = new UnaryOpNode(UnaryOperator.NOT, cloneNode(continueCondition));
+            fallthrough.location = location;
+            const completed = summarize(
+              tail, { ...candidate, continueCondition: undefined }, scope, visiting,
+            );
+            if (!completed || completed.returnValues || completed.loopControl === 'break'
+              || completed.breakCondition) return undefined;
+            const pathArms = [
+              { ...completed, condition: fallthrough as ExpressionNode },
+              { ...candidate, continueCondition: undefined, condition: continueCondition },
+            ];
+            const mergedPlans = new Map([...candidate.plans].map(([name, plan]) => [
+              name,
+              mergePlan(name, plan, pathArms.map((arm) => ({
+                plan: arm.plans.get(name)!, condition: arm.condition,
+              }))),
+            ]));
+            const summary: HelperSummary = {
+              plans: mergedPlans,
+              values: mergeValues(candidate.values, pathArms),
+            };
+            if (completed.loopControl === 'continue') return { summary, continuesAlways: true };
+            let combinedContinue = continueCondition;
+            if (completed.continueCondition) {
+              const laterContinue = new BinaryOpNode(
+                cloneNode(fallthrough), BinaryOperator.AND,
+                cloneNode(completed.continueCondition),
+              );
+              laterContinue.location = location;
+              const combined = new BinaryOpNode(
+                combinedContinue, BinaryOperator.OR, laterContinue,
+              );
+              combined.location = location;
+              combinedContinue = combined;
+            }
+            return {
+              summary,
+              continuesAlways: false,
+              continueCondition: combinedContinue,
+            };
           };
           const replayNestedCall = (nestedCall: FunctionCallNode): HelperSummary | undefined => {
             const nestedTargets = (this.functionsByName.get(nestedCall.identifier.name) ?? [])
@@ -5766,6 +5865,28 @@ export default class LowerVMapCounterLoops extends AstTraversal {
                     ? summarize(helperStatement.elseBlock, base, scope, visiting) : base;
                 if (!selectedSummary) return undefined;
                 if (selectedSummary.loopControl || selectedSummary.returnValues) return selectedSummary;
+                if (selectedSummary.breakCondition) {
+                  const tail = new BlockNode(body.slice(index + 1));
+                  tail.location = helperBlock.location;
+                  const completed = finishAfterConditionalBreak(
+                    selectedSummary, tail, helperStatement.location,
+                  );
+                  if (!completed) return undefined;
+                  return completed.breaksAlways
+                    ? { ...completed.summary, loopControl: 'break' }
+                    : { ...completed.summary, breakCondition: completed.breakCondition };
+                }
+                if (selectedSummary.continueCondition) {
+                  const tail = new BlockNode(body.slice(index + 1));
+                  tail.location = helperBlock.location;
+                  const completed = finishAfterConditionalContinue(
+                    selectedSummary, tail, helperStatement.location,
+                  );
+                  if (!completed) return undefined;
+                  return completed.continuesAlways
+                    ? { ...completed.summary, loopControl: 'continue' }
+                    : { ...completed.summary, continueCondition: completed.continueCondition };
+                }
                 helperPlans = selectedSummary.plans;
                 values = selectedSummary.values;
                 continue;
@@ -5778,7 +5899,8 @@ export default class LowerVMapCounterLoops extends AstTraversal {
               otherwise.location = condition.location;
               if (ifSummary.returnValues || elseSummary.returnValues) {
                 if (ifSummary.loopControl || elseSummary.loopControl
-                  || ifSummary.breakCondition || elseSummary.breakCondition) return undefined;
+                  || ifSummary.breakCondition || elseSummary.breakCondition
+                  || ifSummary.continueCondition || elseSummary.continueCondition) return undefined;
                 const tail = new BlockNode(body.slice(index + 1));
                 tail.location = helperBlock.location;
                 const finishReturn = (candidate: HelperSummary): HelperSummary | undefined =>
@@ -5822,6 +5944,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
                 if (ifSummary.loopControl === 'continue' || elseSummary.loopControl === 'continue') {
                   return undefined;
                 }
+                if (ifSummary.continueCondition || elseSummary.continueCondition) return undefined;
                 const tail = new BlockNode(body.slice(index + 1));
                 tail.location = helperBlock.location;
                 const finishPath = (candidate: HelperSummary): {
@@ -5833,55 +5956,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
                     return { summary: { ...candidate, loopControl: undefined }, breaksAlways: true };
                   }
                   if (candidate.breakCondition) {
-                    const breakCondition = cloneNode(candidate.breakCondition) as ExpressionNode;
-                    const fallthrough = new UnaryOpNode(
-                      UnaryOperator.NOT, cloneNode(breakCondition),
-                    );
-                    fallthrough.location = helperStatement.location;
-                    const completed = summarize(
-                      tail, { ...candidate, breakCondition: undefined }, scope, visiting,
-                    );
-                    if (!completed || completed.returnValues) return undefined;
-                    const pathArms = [
-                      { ...completed, condition: fallthrough as ExpressionNode },
-                      { ...candidate, breakCondition: undefined, condition: breakCondition },
-                    ];
-                    const mergedPlans = new Map([...candidate.plans].map(([name, plan]) => [
-                      name,
-                      mergePlan(name, plan, pathArms.map((arm) => ({
-                        plan: arm.plans.get(name)!, condition: arm.condition,
-                      }))),
-                    ]));
-                    if (completed.loopControl === 'break') {
-                      return {
-                        summary: {
-                          plans: mergedPlans,
-                          values: mergeValues(candidate.values, pathArms),
-                        },
-                        breaksAlways: true,
-                      };
-                    }
-                    let combinedBreak = breakCondition;
-                    if (completed.breakCondition) {
-                      const laterBreak = new BinaryOpNode(
-                        cloneNode(fallthrough), BinaryOperator.AND,
-                        cloneNode(completed.breakCondition),
-                      );
-                      laterBreak.location = helperStatement.location;
-                      const combined = new BinaryOpNode(
-                        combinedBreak, BinaryOperator.OR, laterBreak,
-                      );
-                      combined.location = helperStatement.location;
-                      combinedBreak = combined;
-                    }
-                    return {
-                      summary: {
-                        plans: mergedPlans,
-                        values: mergeValues(candidate.values, pathArms),
-                      },
-                      breaksAlways: false,
-                      breakCondition: combinedBreak,
-                    };
+                    return finishAfterConditionalBreak(candidate, tail, helperStatement.location);
                   }
                   const completed = summarize(tail, candidate, scope, visiting);
                   if (!completed || completed.returnValues) return undefined;
@@ -5944,26 +6019,45 @@ export default class LowerVMapCounterLoops extends AstTraversal {
                   breakCondition,
                 };
               }
-              if (ifSummary.loopControl === 'continue' || elseSummary.loopControl === 'continue') {
+              if (ifSummary.loopControl === 'continue' || elseSummary.loopControl === 'continue'
+                || ifSummary.continueCondition || elseSummary.continueCondition) {
                 // A runtime-selected continue has a finite join at the next fixed iteration. Replay the
                 // remainder only for arms which fall through, then merge both completed iteration histories.
                 // A selected break/return changes the future iteration domain and remains fenced separately.
                 const tail = new BlockNode(body.slice(index + 1));
                 tail.location = helperBlock.location;
-                const finishIteration = (candidate: HelperSummary): HelperSummary | undefined => {
+                const finishIteration = (candidate: HelperSummary): {
+                  summary: HelperSummary;
+                  continuesAlways: boolean;
+                  continueCondition?: ExpressionNode;
+                } | undefined => {
                   if (candidate.loopControl === 'continue') {
-                    return { ...candidate, loopControl: undefined };
+                    return {
+                      summary: { ...candidate, loopControl: undefined }, continuesAlways: true,
+                    };
+                  }
+                  if (candidate.continueCondition) {
+                    return finishAfterConditionalContinue(candidate, tail, helperStatement.location);
                   }
                   const completed = summarize(tail, candidate, scope, visiting);
-                  if (!completed || completed.returnValues || completed.loopControl === 'break') return undefined;
-                  return { ...completed, loopControl: undefined };
+                  if (!completed || completed.returnValues || completed.loopControl === 'break'
+                    || completed.breakCondition) return undefined;
+                  return {
+                    summary: {
+                      ...completed, loopControl: undefined, continueCondition: undefined,
+                    },
+                    continuesAlways: completed.loopControl === 'continue',
+                    ...(completed.continueCondition && {
+                      continueCondition: cloneNode(completed.continueCondition) as ExpressionNode,
+                    }),
+                  };
                 };
                 const completedIf = finishIteration(ifSummary);
                 const completedElse = finishIteration(elseSummary);
                 if (!completedIf || !completedElse) return undefined;
                 const completedArms = [
-                  { ...completedIf, condition },
-                  { ...completedElse, condition: otherwise as ExpressionNode },
+                  { ...completedIf.summary, condition },
+                  { ...completedElse.summary, condition: otherwise as ExpressionNode },
                 ];
                 const mergedPlans = new Map([...base.plans].map(([name, plan]) => [name, mergePlan(
                   name,
@@ -5972,14 +6066,46 @@ export default class LowerVMapCounterLoops extends AstTraversal {
                     plan: arm.plans.get(name)!, condition: arm.condition,
                   })),
                 )]));
+                const conditionalContinue = (
+                  path: typeof completedIf,
+                  pathCondition: ExpressionNode,
+                ): ExpressionNode | undefined => {
+                  if (path.continuesAlways) return cloneNode(pathCondition) as ExpressionNode;
+                  if (!path.continueCondition) return undefined;
+                  const selectedContinue = new BinaryOpNode(
+                    cloneNode(pathCondition), BinaryOperator.AND,
+                    cloneNode(path.continueCondition),
+                  );
+                  selectedContinue.location = helperStatement.location;
+                  return selectedContinue;
+                };
+                if (completedIf.continuesAlways && completedElse.continuesAlways) {
+                  return {
+                    plans: mergedPlans,
+                    values: mergeValues(base.values, completedArms),
+                    loopControl: 'continue',
+                  };
+                }
+                const ifContinue = conditionalContinue(completedIf, condition);
+                const elseContinue = conditionalContinue(completedElse, otherwise);
+                if (!ifContinue && !elseContinue) return undefined;
+                let continueCondition = ifContinue ?? elseContinue!;
+                if (ifContinue && elseContinue) {
+                  const combined = new BinaryOpNode(
+                    ifContinue, BinaryOperator.OR, elseContinue,
+                  );
+                  combined.location = helperStatement.location;
+                  continueCondition = combined;
+                }
                 return {
                   plans: mergedPlans,
                   values: mergeValues(base.values, completedArms),
-                  loopControl: 'continue',
+                  continueCondition,
                 };
               }
               if (ifSummary.loopControl || elseSummary.loopControl
-                || ifSummary.breakCondition || elseSummary.breakCondition) return undefined;
+                || ifSummary.breakCondition || elseSummary.breakCondition
+                || ifSummary.continueCondition || elseSummary.continueCondition) return undefined;
               const arms = [
                 { ...ifSummary, condition },
                 { ...elseSummary, condition: otherwise as ExpressionNode },
@@ -6026,8 +6152,27 @@ export default class LowerVMapCounterLoops extends AstTraversal {
                 if (!selectedSummary) return undefined;
                 if (selectedSummary.loopControl === 'continue'
                   || selectedSummary.returnValues) return selectedSummary;
+                // A break (including a conditional break nested beneath a branch) is local to the
+                // selected switch case. A continue still targets the enclosing helper loop.
                 helperPlans = selectedSummary.plans;
                 values = selectedSummary.values;
+                if (selectedSummary.continueCondition) {
+                  const tail = new BlockNode(body.slice(index + 1));
+                  tail.location = helperBlock.location;
+                  const completed = finishAfterConditionalContinue(
+                    {
+                      plans: helperPlans,
+                      values,
+                      continueCondition: selectedSummary.continueCondition,
+                    },
+                    tail,
+                    helperStatement.location,
+                  );
+                  if (!completed) return undefined;
+                  return completed.continuesAlways
+                    ? { ...completed.summary, loopControl: 'continue' }
+                    : { ...completed.summary, continueCondition: completed.continueCondition };
+                }
                 continue;
               }
               const fallbackCondition = new UnaryOpNode(UnaryOperator.NOT, anyCase!);
@@ -6038,20 +6183,54 @@ export default class LowerVMapCounterLoops extends AstTraversal {
                 ? summarize(helperStatement.defaultCase, base, scope, visiting) : base;
               if (!fallback || fallback.returnValues
                 || summaries.some((candidate) => !candidate || candidate.returnValues)) return undefined;
-              if (fallback.loopControl === 'continue'
-                || summaries.some((candidate) => candidate!.loopControl === 'continue')) {
+              if (fallback.loopControl === 'continue' || fallback.continueCondition
+                || summaries.some((candidate) => candidate!.loopControl === 'continue'
+                  || candidate!.continueCondition)) {
                 const tail = new BlockNode(body.slice(index + 1));
                 tail.location = helperBlock.location;
-                const finishIteration = (candidate: HelperSummary): HelperSummary | undefined => {
+                const finishIteration = (candidate: HelperSummary): {
+                  summary: HelperSummary;
+                  continuesAlways: boolean;
+                  continueCondition?: ExpressionNode;
+                } | undefined => {
                   if (candidate.loopControl === 'continue') {
-                    return { ...candidate, loopControl: undefined };
+                    return {
+                      summary: {
+                        ...candidate,
+                        loopControl: undefined,
+                        breakCondition: undefined,
+                      },
+                      continuesAlways: true,
+                    };
+                  }
+                  if (candidate.continueCondition) {
+                    return finishAfterConditionalContinue(
+                      { ...candidate, loopControl: undefined, breakCondition: undefined },
+                      tail,
+                      helperStatement.location,
+                    );
                   }
                   // A case-level break exits this switch and therefore reaches the enclosing block tail.
                   const completed = summarize(
-                    tail, { ...candidate, loopControl: undefined }, scope, visiting,
+                    tail, {
+                      ...candidate,
+                      loopControl: undefined,
+                      breakCondition: undefined,
+                    }, scope, visiting,
                   );
-                  if (!completed || completed.returnValues || completed.loopControl === 'break') return undefined;
-                  return { ...completed, loopControl: undefined };
+                  if (!completed || completed.returnValues || completed.loopControl === 'break'
+                    || completed.breakCondition) return undefined;
+                  return {
+                    summary: {
+                      ...completed,
+                      loopControl: undefined,
+                      continueCondition: undefined,
+                    },
+                    continuesAlways: completed.loopControl === 'continue',
+                    ...(completed.continueCondition && {
+                      continueCondition: cloneNode(completed.continueCondition) as ExpressionNode,
+                    }),
+                  };
                 };
                 const completedSummaries = summaries.map((candidate) => finishIteration(candidate!));
                 const completedFallback = finishIteration(fallback);
@@ -6059,10 +6238,10 @@ export default class LowerVMapCounterLoops extends AstTraversal {
                   return undefined;
                 }
                 const completedArms = [
-                  ...completedSummaries.map((summary, armIndex) => ({
-                    ...summary!, condition: conditions[armIndex] as ExpressionNode,
+                  ...completedSummaries.map((completed, armIndex) => ({
+                    ...completed!.summary, condition: conditions[armIndex] as ExpressionNode,
                   })),
-                  { ...completedFallback, condition: fallbackCondition as ExpressionNode },
+                  { ...completedFallback.summary, condition: fallbackCondition as ExpressionNode },
                 ];
                 const mergedPlans = new Map([...base.plans].map(([name, plan]) => [name, mergePlan(
                   name,
@@ -6071,16 +6250,57 @@ export default class LowerVMapCounterLoops extends AstTraversal {
                     plan: arm.plans.get(name)!, condition: arm.condition,
                   })),
                 )]));
+                if (completedFallback.continuesAlways
+                  && completedSummaries.every((candidate) => candidate!.continuesAlways)) {
+                  return {
+                    plans: mergedPlans,
+                    values: mergeValues(base.values, completedArms),
+                    loopControl: 'continue',
+                  };
+                }
+                const selectedContinue = (
+                  completed: NonNullable<typeof completedFallback>,
+                  armCondition: ExpressionNode,
+                ): ExpressionNode | undefined => {
+                  if (completed.continuesAlways) return cloneNode(armCondition) as ExpressionNode;
+                  if (!completed.continueCondition) return undefined;
+                  const condition = new BinaryOpNode(
+                    cloneNode(armCondition), BinaryOperator.AND,
+                    cloneNode(completed.continueCondition),
+                  );
+                  condition.location = helperStatement.location;
+                  return condition;
+                };
+                const continueConditions = [
+                  ...completedSummaries.map((completed, armIndex) => selectedContinue(
+                    completed!, conditions[armIndex],
+                  )),
+                  selectedContinue(completedFallback, fallbackCondition),
+                ].filter((candidate): candidate is ExpressionNode => candidate !== undefined);
+                if (continueConditions.length === 0) return undefined;
+                let continueCondition = continueConditions[0];
+                for (let conditionIndex = 1;
+                  conditionIndex < continueConditions.length; conditionIndex += 1) {
+                  const combined = new BinaryOpNode(
+                    continueCondition,
+                    BinaryOperator.OR,
+                    continueConditions[conditionIndex],
+                  );
+                  combined.location = helperStatement.location;
+                  continueCondition = combined;
+                }
                 return {
                   plans: mergedPlans,
                   values: mergeValues(base.values, completedArms),
-                  loopControl: 'continue',
+                  continueCondition,
                 };
               }
               const normalizedSummaries = summaries.map((candidate) => ({
-                ...candidate!, loopControl: undefined,
+                ...candidate!, loopControl: undefined, breakCondition: undefined,
               }));
-              const normalizedFallback = { ...fallback, loopControl: undefined };
+              const normalizedFallback = {
+                ...fallback, loopControl: undefined, breakCondition: undefined,
+              };
               const arms = [
                 ...normalizedSummaries.map((summary, armIndex) => ({
                   ...summary!, condition: conditions[armIndex] as ExpressionNode,

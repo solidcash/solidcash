@@ -16,6 +16,7 @@ import {
   BinaryOpNode,
   ExpressionNode,
   FunctionDefinitionNode,
+  SwitchNode,
 } from '../ast/AST.js';
 import { PrimitiveType } from '@solidcash/utils';
 import { UnaryOperator, BinaryOperator } from '../ast/Operator.js';
@@ -23,6 +24,7 @@ import { BreakOutsideLoopError, ContinueOutsideLoopError } from '../Errors.js';
 import { Location } from '../ast/Location.js';
 
 let breakFlagCounter = 0;
+let continueFlagCounter = 0;
 
 /**
  * Transforms break/continue statements into flag-based if-else structures.
@@ -41,6 +43,7 @@ let breakFlagCounter = 0;
  */
 export default function expandBreakContinue(ast: SourceFileNode): SourceFileNode {
   breakFlagCounter = 0;
+  continueFlagCounter = 0;
 
   for (const func of ast.freeFunctions) {
     transformFunctionBody(func);
@@ -307,9 +310,11 @@ function nestBreakContinue(
       const ifHasContinue = blockContainsBreakContinue(stmt.ifBlock, 'continue');
 
       if (ifHasBreak || ifHasContinue) {
-        // Transform: if (cond) { ...break/continue; } else { E; } remaining...
-        // Into: if (cond) { ...expanded; } else { E; remaining...; }
-        const transformedIfStmts = nestBreakContinue(stmt.ifBlock.statements ?? [], breakFlagName);
+        // Replay the tail through both arms. nestBreakContinue removes it only from paths which
+        // actually reach a break/continue; merely containing nested control does not mean the
+        // whole arm exits (for example `if (a) { if (b) continue; } tail();`).
+        const ifStatements = [...(stmt.ifBlock.statements ?? []), ...remaining];
+        const transformedIfStmts = nestBreakContinue(ifStatements, breakFlagName);
         const transformedIfBlock = new BlockNode(transformedIfStmts);
         transformedIfBlock.location = stmt.ifBlock.location;
 
@@ -334,7 +339,8 @@ function nestBreakContinue(
       const elseHasContinue = stmt.elseBlock ? blockContainsBreakContinue(stmt.elseBlock, 'continue') : false;
 
       if (elseHasBreak || elseHasContinue) {
-        const transformedElseStmts = nestBreakContinue(stmt.elseBlock!.statements ?? [], breakFlagName);
+        const elseStatements = [...(stmt.elseBlock!.statements ?? []), ...remaining];
+        const transformedElseStmts = nestBreakContinue(elseStatements, breakFlagName);
         const transformedElseBlock = new BlockNode(transformedElseStmts);
         transformedElseBlock.location = stmt.elseBlock!.location;
 
@@ -364,6 +370,33 @@ function nestBreakContinue(
     if (stmt instanceof WhileNode) {
       result.push(...transformWhileLoop(stmt));
       continue;
+    }
+
+    // A switch break is local to the switch, but a continue still targets the enclosing loop.
+    // Use one iteration-local flag so every non-continuing case reaches the outer block tail.
+    if (stmt instanceof SwitchNode && switchContainsContinue(stmt)) {
+      const continueFlagName = `csContinue${continueFlagCounter++}`;
+      result.push(createBoolVarDef(continueFlagName, false, stmt.location));
+      for (const candidate of stmt.cases) {
+        candidate.body.statements = transformSwitchContinues(
+          candidate.body.statements ?? [], continueFlagName,
+        );
+      }
+      if (stmt.defaultCase) {
+        stmt.defaultCase.statements = transformSwitchContinues(
+          stmt.defaultCase.statements ?? [], continueFlagName,
+        );
+      }
+      result.push(stmt);
+      if (remaining.length > 0) {
+        const guard = createNot(createIdentifier(continueFlagName, stmt.location), stmt.location);
+        const tail = new BlockNode(nestBreakContinue(remaining, breakFlagName));
+        tail.location = stmt.location;
+        const branch = new BranchNode(guard, tail);
+        branch.location = stmt.location;
+        result.push(branch);
+      }
+      break;
     }
 
     // Recurse into branches that don't contain break/continue at this level
@@ -404,6 +437,84 @@ function nestBreakContinue(
   return result;
 }
 
+/** Replace continues owned by the enclosing loop while preserving switch-local breaks. */
+function transformSwitchContinues(
+  statements: StatementNode[],
+  continueFlagName: string,
+): StatementNode[] {
+  const result: StatementNode[] = [];
+  for (let index = 0; index < statements.length; index += 1) {
+    const statement = statements[index];
+    const remaining = statements.slice(index + 1);
+    if (statement instanceof ContinueNode) {
+      result.push(createAssign(continueFlagName, true, statement.location));
+      break;
+    }
+    if (statement instanceof BreakNode) {
+      result.push(statement);
+      break;
+    }
+    if (statement instanceof DoWhileNode) {
+      result.push(...transformDoWhileLoop(statement));
+      continue;
+    }
+    if (statement instanceof WhileNode) {
+      result.push(...transformWhileLoop(statement));
+      continue;
+    }
+    if (statement instanceof SwitchNode) {
+      for (const candidate of statement.cases) {
+        candidate.body.statements = transformSwitchContinues(
+          candidate.body.statements ?? [], continueFlagName,
+        );
+      }
+      if (statement.defaultCase) {
+        statement.defaultCase.statements = transformSwitchContinues(
+          statement.defaultCase.statements ?? [], continueFlagName,
+        );
+      }
+      result.push(statement);
+    } else if (statement instanceof BranchNode) {
+      const branch = cloneBranch(statement);
+      branch.ifBlock.statements = transformSwitchContinues(
+        branch.ifBlock.statements ?? [], continueFlagName,
+      );
+      if (branch.elseBlock) branch.elseBlock.statements = transformSwitchContinues(
+        branch.elseBlock.statements ?? [], continueFlagName,
+      );
+      result.push(branch);
+    } else if (statement instanceof BlockNode) {
+      statement.statements = transformSwitchContinues(
+        statement.statements ?? [], continueFlagName,
+      );
+      result.push(statement);
+    } else if (statement instanceof TryCatchNode) {
+      statement.tryBlock.statements = transformSwitchContinues(
+        statement.tryBlock.statements ?? [], continueFlagName,
+      );
+      for (const clause of statement.catchClauses) clause.block.statements = transformSwitchContinues(
+        clause.block.statements ?? [], continueFlagName,
+      );
+      result.push(statement);
+    } else {
+      result.push(statement);
+      continue;
+    }
+    if (remaining.length > 0) {
+      const guard = createNot(createIdentifier(continueFlagName, statement.location), statement.location);
+      const tail = new BlockNode(transformSwitchContinues(
+        remaining, continueFlagName,
+      ));
+      tail.location = statement.location;
+      const branch = new BranchNode(guard, tail);
+      branch.location = statement.location;
+      result.push(branch);
+    }
+    break;
+  }
+  return result;
+}
+
 // --- Helpers -------------------------------------------------------------
 
 function containsBreakOrContinue(
@@ -422,9 +533,15 @@ function containsBreakOrContinue(
       if (blockContainsBreakContinue(s.tryBlock, kind)) return true;
     }
     if (s instanceof BlockNode && blockContainsBreakContinue(s, kind)) return true;
+    if (kind === 'continue' && s instanceof SwitchNode && switchContainsContinue(s)) return true;
     // Don't recurse into nested loops - their break/continue is scoped to them
   }
   return false;
+}
+
+function switchContainsContinue(node: SwitchNode): boolean {
+  return node.cases.some((candidate) => blockContainsBreakContinue(candidate.body, 'continue'))
+    || !!node.defaultCase && blockContainsBreakContinue(node.defaultCase, 'continue');
 }
 
 function blockContainsBreakContinue(

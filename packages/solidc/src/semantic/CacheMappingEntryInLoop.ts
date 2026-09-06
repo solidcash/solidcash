@@ -280,7 +280,8 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
     for (const e of this.collectCacheableEntries(fn.body)) {
       if (this.routeSnapshotKeysOnly && e.keys.length === 1
         && !e.keys.some((key) => key.kind === 'expression'
-          || (key.kind === 'id' && key.name.startsWith(VMAP_KEY_SNAPSHOT_PREFIX)))) continue;
+          || (key.kind === 'id' && key.name.startsWith(VMAP_KEY_SNAPSHOT_PREFIX)))
+        && !e.inLoop) continue;
       const local = `${PREFIX}${e.mapping}_${this.counter++}`;
       const dirty = `${local}_dirty`;
       new EntryRedirect(e.mapping, e.keys, local, dirty, e.valueType).visit(fn.body);
@@ -319,7 +320,7 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
   // read-once/mutate-local/write-once.
   private collectCacheableEntries(
     body: Node,
-  ): Array<{ mapping: string; keys: KeyKind[]; valueType: Type; fromModifier?: string }> {
+  ): Array<{ mapping: string; keys: KeyKind[]; valueType: Type; inLoop: boolean; fromModifier?: string }> {
     const info = new Map<string, EntryInfo>();
     const get = (mapping: string, rawKeys: Node | Node[], allowExpression = false): EntryInfo | null => {
       const keys = Array.isArray(rawKeys) ? rawKeys : [rawKeys];
@@ -432,7 +433,9 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
       }
     };
     scan(body, false);
-    const out: Array<{ mapping: string; keys: KeyKind[]; valueType: Type; fromModifier?: string }> = [];
+    const out: Array<{
+      mapping: string; keys: KeyKind[]; valueType: Type; inLoop: boolean; fromModifier?: string;
+    }> = [];
     for (const e of info.values()) {
       // A struct entry needs the local rebuild path for even one field write, but a read-only struct access must
       // stay read-only. Treating every struct entry as cacheable synthesized an unconditional whole-entry flush
@@ -455,7 +458,7 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
         if (mutatesExpressionDependency(body, dependencies)) continue;
       }
       out.push({
-        mapping: e.mapping, keys: e.keys,
+        mapping: e.mapping, keys: e.keys, inLoop: e.inLoop,
         valueType: (this.arrayMappings.get(e.mapping) ?? this.scalarMappings.get(e.mapping)?.valueType
           ?? this.structMappings.get(e.mapping))!,
         fromModifier: e.fromModifier,

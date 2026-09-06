@@ -2,7 +2,7 @@ import {
   ArrayAccessNode, ArrayPopNode, ArrayPushNode, AssignNode, BinaryOpNode, BlockNode, BoolLiteralNode,
   BranchNode, BreakNode, ContractNode,
   DeleteStateNode, DoWhileNode, FunctionCallNode, FunctionCallStatementNode, FunctionDefinitionNode, IdentifierNode,
-  ExpressionNode, MappingAccessNode, MappingAssignNode,
+  ExpressionNode, MappingAssignNode, MappingFieldAssignNode,
   NewArrayNode, Node, ReturnNode, SourceFileNode, StatementNode, UnaryOpNode,
   StateAccessNode, StateAssignNode, VariableDefinitionNode, WhileNode, IntLiteralNode,
 } from '../ast/AST.js';
@@ -256,7 +256,6 @@ export default class LowerTailRecursion extends AstTraversal {
     let sawFold = false;
     const scalarStateWrites = new Set<string>();
     let writesMapping = false;
-    let readsMapping = false;
     const continuationSteps: RecursiveFoldStep[] = [];
     let valid = true;
     const invariantParameters = new Map(group.map((fn) => {
@@ -283,7 +282,7 @@ export default class LowerTailRecursion extends AstTraversal {
     };
     const persistentEffects = new Set([
       'StateArrayPushNode', 'StateArrayPopNode', 'StateArrayAssignNode', 'StateArrayDeleteNode',
-      'MappingDeleteNode', 'MappingFieldAssignNode',
+      'MappingDeleteNode',
       'EmitStatementNode', 'ExternalFunctionCallNode', 'LowLevelCallNode',
       'LowLevelCallStatementNode', 'TransferStatementNode', 'AddressTransferStatementNode',
       'AddressSendExpressionNode', 'TokenContainerMethodStatementNode', 'SelfdestructStatementNode',
@@ -295,11 +294,9 @@ export default class LowerTailRecursion extends AstTraversal {
         if (candidate instanceof StateAssignNode || candidate instanceof DeleteStateNode) {
           if (!this.scalarStateNames.has(candidate.name)) valid = false;
           else scalarStateWrites.add(candidate.name);
-        } else if (candidate instanceof MappingAssignNode) {
+        } else if (candidate instanceof MappingAssignNode || candidate instanceof MappingFieldAssignNode) {
           writesMapping = true;
           if (!candidate.keys.every((key) => stableMappingKey(key, invariantParameters.get(fn)!))) valid = false;
-        } else if (candidate instanceof MappingAccessNode) {
-          readsMapping = true;
         } else if (persistentEffects.has(candidate.constructor.name)) valid = false;
         if (candidate instanceof FunctionCallNode && !names.has(candidate.identifier.name)
           && !this.structConstructorNames.has(candidate.identifier.name)) valid = false;
@@ -345,10 +342,6 @@ export default class LowerTailRecursion extends AstTraversal {
     if (writesMapping && continuationSteps.some((step) => step.kind === 'binary' && step.recursiveOnLeft)) {
       valid = false;
     }
-    // The invariant-entry cache currently publishes write-only recursion loops. A read in the same generated
-    // loop still asks codegen for an unallocated entry input slot, so retain the recursive-state path until the
-    // cache can bind read/write recursion as one authenticated transition.
-    if (writesMapping && readsMapping) valid = false;
     return valid && sawFold ? { variants } : undefined;
   }
 
@@ -667,13 +660,18 @@ export default class LowerTailRecursion extends AstTraversal {
   ): StatementNode[] {
     const target = members.get(call.identifier.name)!;
     const frame = this.counter++;
-    const temps = root.parameters.map((parameter, index) => this.stamp(new VariableDefinitionNode(
-      parameter.type, [], `__tail_${frame}_${parameter.name}`, call.parameters[index],
-    ), location));
-    const assignments = root.parameters.map((parameter, index) => this.stamp(new AssignNode(
-      this.stamp(new IdentifierNode(parameter.name), location),
-      this.stamp(new IdentifierNode(temps[index].name), location),
-    ), location));
+    const changed = root.parameters.flatMap((parameter, index) => {
+      const argument = call.parameters[index];
+      if (argument instanceof IdentifierNode && argument.name === parameter.name) return [];
+      const temp = this.stamp(new VariableDefinitionNode(
+        parameter.type, [], `__tail_${frame}_${parameter.name}`, argument,
+      ), location);
+      const assignment = this.stamp(new AssignNode(
+        this.stamp(new IdentifierNode(parameter.name), location),
+        this.stamp(new IdentifierNode(temp.name), location),
+      ), location);
+      return [{ temp, assignment }];
+    });
     const select = this.stamp(new AssignNode(
       this.stamp(new IdentifierNode(modeName), location),
       this.stamp(new IntLiteralNode(BigInt(target.index)), location),
@@ -681,7 +679,7 @@ export default class LowerTailRecursion extends AstTraversal {
     const repeat = this.stamp(new AssignNode(
       this.stamp(new IdentifierNode(repeatName), location), this.stamp(new BoolLiteralNode(true), location),
     ), location);
-    return [...temps, ...assignments, select, repeat];
+    return [...changed.map(({ temp }) => temp), ...changed.map(({ assignment }) => assignment), select, repeat];
   }
 
   visitFunctionDefinition(node: FunctionDefinitionNode): Node {
@@ -924,14 +922,17 @@ export default class LowerTailRecursion extends AstTraversal {
     repeatName: string, location: Node['location'],
   ): StatementNode[] {
     const frame = this.counter++;
-    const temps = fn.parameters.map((parameter, index) => {
+    const changed = fn.parameters.flatMap((parameter, index) => {
+      const argument = call.parameters[index];
+      if (argument instanceof IdentifierNode && argument.name === parameter.name) return [];
       const name = `__tail_${frame}_${parameter.name}`;
-      return this.stamp(new VariableDefinitionNode(parameter.type, [], name, call.parameters[index]), location);
+      const temp = this.stamp(new VariableDefinitionNode(parameter.type, [], name, argument), location);
+      const assignment = this.stamp(new AssignNode(
+        this.stamp(new IdentifierNode(parameter.name), location),
+        this.stamp(new IdentifierNode(name), location),
+      ), location);
+      return [{ temp, assignment }];
     });
-    const assignments = fn.parameters.map((parameter, index) => this.stamp(new AssignNode(
-      this.stamp(new IdentifierNode(parameter.name), location),
-      this.stamp(new IdentifierNode(temps[index].name), location),
-    ), location));
     const nextIteration = this.stamp(new BinaryOpNode(
       this.stamp(new IdentifierNode(iterationName), location), BinaryOperator.PLUS,
       this.stamp(new IntLiteralNode(1n), location),
@@ -942,7 +943,9 @@ export default class LowerTailRecursion extends AstTraversal {
     const repeat = this.stamp(new AssignNode(
       this.stamp(new IdentifierNode(repeatName), location), this.stamp(new BoolLiteralNode(true), location),
     ), location);
-    return [...temps, ...assignments, increment, repeat];
+    return [
+      ...changed.map(({ temp }) => temp), ...changed.map(({ assignment }) => assignment), increment, repeat,
+    ];
   }
 
   private stamp<T extends Node>(node: T, location: Node['location']): T {

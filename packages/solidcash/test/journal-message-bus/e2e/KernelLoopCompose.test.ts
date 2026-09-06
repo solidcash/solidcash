@@ -1789,23 +1789,28 @@ describe('kernel loop message-bus compose', () => {
     const provider = createTestProvider();
     const artifact = compileString(`contract KernelInvariantEntryRecursiveFold() {
       mapping(int => int) values;
-      function sum(int remaining, int key) public returns (int) {
-        this.values[key] = remaining + 10;
-        if (remaining == 0) return 0;
+      int result;
+      function sum(int remaining, int key) internal returns (int) {
+        this.values[key] = this.values[key] + 1;
+        if (remaining == 0) return this.values[key];
         return remaining + sum(remaining - 1, key);
       }
-      function check(int key, int expectedEntry) public {
-        require(this.values[key] == expectedEntry);
+      function run(int remaining, int key) public {
+        this.result = sum(remaining, key);
+        require(true);
+      }
+      function check(int key, int expectedEntry, int expectedResult) public {
+        require(this.values[key] == expectedEntry && this.result == expectedResult);
       }
     }`, KERNEL);
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'sum'))
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'run'))
       .toMatchObject({ eligible: true });
     const inner = new Contract(artifact, [], { provider });
     const { categoryId } = await setupStatefulUtxos(
-      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+      provider, inner, artifact.stateLayout!, { result: 0n }, { saltContract: true },
     );
     const contract = StatefulContract.withCategory(inner, categoryId);
-    const call = contract.batch([{ function: 'sum', args: [3n, 7n] }]);
+    const call = contract.batch([{ function: 'run', args: [3n, 7n] }]);
     const builder = await call.build();
     const vm = createVirtualMachineBch2026ForProvider(provider);
     const transaction = builder.buildLibauthTransaction();
@@ -1815,7 +1820,48 @@ describe('kernel loop message-bus compose', () => {
         .toBe(true);
     }
     await expect(call.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
-    await expect(StatefulContract.withCategory(inner, categoryId).call.check(7n, 10n).send())
+    await expect(StatefulContract.withCategory(inner, categoryId).call.check(7n, 4n, 10n).send())
+      .resolves.toBeDefined();
+  }, 180_000);
+
+  it('executes an invariant mapping-field update in a recursion fold', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(`contract KernelInvariantStructEntryRecursiveFold() {
+      struct Record { int value; bool active; }
+      mapping(int => Record) records;
+      int result;
+      function sum(int remaining, int key) internal returns (int) {
+        this.records[key].value = this.records[key].value + 1;
+        if (remaining == 0) return this.records[key].value;
+        return remaining + sum(remaining - 1, key);
+      }
+      function run(int remaining, int key) public {
+        this.result = sum(remaining, key);
+        require(true);
+      }
+      function check(int key, int expectedEntry, int expectedResult) public {
+        require(this.records[key].value == expectedEntry
+          && !this.records[key].active && this.result == expectedResult);
+      }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'run'))
+      .toMatchObject({ eligible: true });
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, { result: 0n }, { saltContract: true },
+    );
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    const call = contract.batch([{ function: 'run', args: [3n, 7n] }]);
+    const builder = await call.build();
+    const vm = createVirtualMachineBch2026ForProvider(provider);
+    const transaction = builder.buildLibauthTransaction();
+    const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+    for (let inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex += 1) {
+      expect(vm.stateSuccess(vm.evaluate({ inputIndex, sourceOutputs, transaction })), `input ${inputIndex}`)
+        .toBe(true);
+    }
+    await expect(call.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    await expect(StatefulContract.withCategory(inner, categoryId).call.check(7n, 4n, 10n).send())
       .resolves.toBeDefined();
   }, 180_000);
 

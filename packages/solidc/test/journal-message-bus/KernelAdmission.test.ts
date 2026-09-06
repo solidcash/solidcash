@@ -457,7 +457,7 @@ describe('required kernel admission', () => {
       .toMatchObject({ eligible: true });
   });
 
-  it('keeps a mapping read/write transition out of recursion-fold lowering', () => {
+  it('lowers an invariant mapping read/write transition in a recursion fold', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) values;
       function sum(int n, int key) public returns (int) {
@@ -468,12 +468,13 @@ describe('required kernel admission', () => {
       function control() public { require(true); }
     }`, KERNEL);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'sum'))
-      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+      .toMatchObject({ eligible: true });
+    expect(artifact.abi.find((entry) => entry.name === 'sum')?.recursiveStateHandler).toBeUndefined();
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control'))
       .toMatchObject({ eligible: true });
   });
 
-  it('keeps an invariant mapping-field update out of recursion-fold lowering', () => {
+  it('lowers an invariant mapping-field update in a recursion fold', () => {
     const artifact = compileString(`contract C() {
       struct Record { int value; bool active; }
       mapping(int => Record) values;
@@ -485,9 +486,29 @@ describe('required kernel admission', () => {
       function control() public { require(true); }
     }`, KERNEL);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'sum'))
-      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+      .toMatchObject({ eligible: true });
+    expect(artifact.abi.find((entry) => entry.name === 'sum')?.recursiveStateHandler).toBeUndefined();
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control'))
       .toMatchObject({ eligible: true });
+  });
+
+  it('propagates an invariant mapping recursion fold through an internal caller', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) values;
+      int result;
+      function sum(int n, int key) internal returns (int) {
+        this.values[key] = this.values[key] + 1;
+        if (n == 0) return this.values[key];
+        return n + sum(n - 1, key);
+      }
+      function run(int n, int key) public {
+        this.result = sum(n, key);
+        require(true);
+      }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'run'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.abi.find((entry) => entry.name === 'run')?.recursiveStateHandler).toBeUndefined();
   });
 
   it('keeps a varying-key mapping write out of recursion-fold lowering', () => {

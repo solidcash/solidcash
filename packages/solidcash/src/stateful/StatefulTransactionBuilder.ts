@@ -2711,6 +2711,84 @@ export function reassertTokenInsertNewLock(
   return true;
 }
 
+export type EntryInsertLockRepair = {
+  collection: string;
+  predecessorOffset: number;
+  candidateInsertedOffsets: number[];
+  insertedSlot: string;
+};
+
+/** Resolve compiler-planned sorted-entry predecessor/new-node lock pairs without relying on function names. */
+export function entryInsertLockRepairs(
+  group: CompilerTokenWriterGroup & {
+    blockLayout?: FunctionBlockLayout;
+    plannedEntryInserts?: ReadonlyArray<{
+      blockSlot: number; outputBlockSlot: number; newCommitment?: string;
+    }>;
+  },
+): EntryInsertLockRepair[] {
+  const artifact = group.logicalArtifact ?? group.externalContract?.inner?.artifact;
+  const logicalName = group.logicalFunctionName ?? group.functionName;
+  const abiFunction = group.compilerRoute?.abiFunction
+    ?? artifact?.abi.find((candidate) => candidate.name === logicalName);
+  const layout = abiFunction?.blockLayout ?? group.blockLayout;
+  const planned = group.plannedEntryInserts;
+  if (planned !== undefined || abiFunction?.entryAccesses !== undefined) {
+    if (!planned || !layout || !abiFunction?.entryAccesses) return [];
+    const repairs = new Map<string, EntryInsertLockRepair>();
+    for (const insert of planned) {
+      if (!Number.isInteger(insert.blockSlot) || insert.blockSlot < 0
+        || !Number.isInteger(insert.outputBlockSlot) || insert.outputBlockSlot < 0
+        || insert.blockSlot === insert.outputBlockSlot) continue;
+      const slot = layout.slots.find((candidate) => (
+        candidate.kind === 'entry' && candidate.offset === insert.blockSlot
+      ));
+      const access = slot?.slotIndex === undefined ? undefined : abiFunction.entryAccesses[slot.slotIndex];
+      const insertedSlot = insert.newCommitment?.slice(0, SLOT_HEX).toLowerCase() ?? '';
+      if (!access?.operations.includes('write') || insertedSlot.length !== SLOT_HEX) continue;
+      const candidateInsertedOffsets = layout.slots
+        .filter((candidate) => candidate.kind === 'entry' && candidate.offset !== insert.blockSlot)
+        .map((candidate) => candidate.offset);
+      if (candidateInsertedOffsets.length === 0) continue;
+      const repair = {
+        collection: access.collection,
+        predecessorOffset: insert.blockSlot,
+        candidateInsertedOffsets,
+        insertedSlot,
+      };
+      repairs.set(`${repair.collection}:${repair.predecessorOffset}:${repair.insertedSlot}`, repair);
+    }
+    return [...repairs.values()];
+  }
+  const legacyName = group.functionName ?? group.logicalFunctionName ?? abiFunction?.name;
+  return legacyName === 'transferFrom'
+    ? [{ collection: '', predecessorOffset: 2, candidateInsertedOffsets: [4], insertedSlot: '' }]
+    : [];
+}
+
+/** Apply exact planned INSERT lock repairs, matching the materialized NEW node by its committed key slot. */
+export function reassertDescribedEntryInsertLocks(
+  outputs: Parameters<typeof reassertTokenInsertNewLock>[0],
+  masterIndex: number,
+  categoryId: string,
+  group: Parameters<typeof entryInsertLockRepairs>[0],
+): number {
+  let changed = 0;
+  for (const repair of entryInsertLockRepairs(group)) {
+    for (const insertedOffset of repair.candidateInsertedOffsets) {
+      const commitment = outputs[masterIndex + insertedOffset]?.token?.nft?.commitment;
+      const commitmentHex = commitment instanceof Uint8Array ? binToHex(commitment) : commitment ?? '';
+      if (repair.insertedSlot !== ''
+        && !commitmentHex.toLowerCase().startsWith(repair.insertedSlot)) continue;
+      if (reassertTokenInsertNewLock(
+        outputs, masterIndex, categoryId, repair.predecessorOffset, insertedOffset,
+      )) changed += 1;
+      break;
+    }
+  }
+  return changed;
+}
+
 /**
  * The covenant counts outputs at the value-chunk redeem lock and EQUALVERIFYs
  * nNew. Extra same-lock occupants past the planned band fail that pin.
@@ -14456,12 +14534,10 @@ export class StatefulTransactionBuilder {
   private _reassertTokenInsertNewLocks(builder: TransactionBuilder): void {
     for (const group of this.externalCallUtxoGroups) {
       if (group.sharedGroupIndex !== undefined) continue;
-      if (!group.categoryId || (group.functionName !== 'transferFrom' && group.logicalFunctionName !== 'transferFrom')) {
-        continue;
-      }
+      if (!group.categoryId) continue;
       const master = this.findMintingInputIndex(group.categoryId);
       if (master < 0) continue;
-      reassertTokenInsertNewLock(builder.outputs, master, group.categoryId);
+      reassertDescribedEntryInsertLocks(builder.outputs, master, group.categoryId, group);
     }
   }
 

@@ -114,6 +114,8 @@ import {
   shouldInsertMintingMaster,
   stripSurplusMintingOutputs,
   reassertTokenInsertNewLock,
+  reassertDescribedEntryInsertLocks,
+  entryInsertLockRepairs,
   stripSurplusEmptyCollectionEntries,
   stripSurplusValueChunkLocks,
   reassertScidIdentityOutputs,
@@ -3212,5 +3214,91 @@ describe('assignPhysicalReturnIndices', () => {
     expect(binToHex(outputs[4].to as Uint8Array)).toBe(binToHex(pred));
     expect(outputs[4].token?.nft?.commitment).toBe('72');
     expect(reassertTokenInsertNewLock(outputs, 0, 'ft')).toBe(false);
+  });
+
+  it('derives insert-lock repair offsets from renamed compiler descriptors', () => {
+    const routed = {
+      functionName: 'moveUnitsFrom',
+      compilerRoute: { abiFunction: {
+        name: 'routeMoveUnitsFrom',
+        inputs: [],
+        writesState: true,
+        entryAccesses: [{
+          collection: 'ledger:mapping(bytes20 => int)',
+          keyParams: ['owner'],
+          operations: ['read', 'write'] as Array<'read' | 'write'>,
+        }, {
+          collection: 'ledger:mapping(bytes20 => int)',
+          keyParams: ['recipient'],
+          operations: ['write'] as Array<'write'>,
+        }, {
+          collection: 'permits:mapping(bytes20 => int)',
+          keyParams: ['spender'],
+          operations: ['write'] as Array<'write'>,
+        }],
+        blockLayout: {
+          blockSize: 8,
+          slots: [
+            { kind: 'master' as const, offset: 0 },
+            { kind: 'entry' as const, offset: 3, slotIndex: 0 },
+            { kind: 'entry' as const, offset: 5, slotIndex: 1 },
+            { kind: 'entry' as const, offset: 7, slotIndex: 2 },
+          ],
+        },
+      } },
+      plannedEntryInserts: [{
+        blockSlot: 3, outputBlockSlot: 8, newCommitment: 'ab'.repeat(32) + '00'.repeat(32),
+      }],
+    };
+    expect(entryInsertLockRepairs(routed)).toEqual([{
+      collection: 'ledger:mapping(bytes20 => int)',
+      predecessorOffset: 3,
+      candidateInsertedOffsets: [5, 7],
+      insertedSlot: 'ab'.repeat(32),
+    }]);
+    const predecessorLock = hexToBin(`aa20${'11'.repeat(32)}87`);
+    const wrongLock = hexToBin(`aa20${'22'.repeat(32)}87`);
+    const outputs: Parameters<typeof reassertDescribedEntryInsertLocks>[0] = Array.from(
+      { length: 8 }, () => ({ to: Uint8Array.of(0x51) }),
+    );
+    outputs[3] = {
+      to: predecessorLock,
+      token: { category: 'ft', nft: { capability: 'mutable', commitment: 'cd'.repeat(64) } },
+    };
+    outputs[5] = {
+      to: wrongLock,
+      token: { category: 'ft', nft: { capability: 'mutable', commitment: 'ef'.repeat(64) } },
+    };
+    outputs[7] = {
+      to: wrongLock,
+      token: { category: 'ft', nft: { capability: 'mutable', commitment: 'ab'.repeat(64) } },
+    };
+    expect(reassertDescribedEntryInsertLocks(outputs, 0, 'ft', routed)).toBe(1);
+    expect(outputs[5].to).toEqual(wrongLock);
+    expect(outputs[7].to).toEqual(predecessorLock);
+
+    // Published effect metadata makes a familiar name powerless when no planned INSERT exists.
+    expect(entryInsertLockRepairs({
+      ...routed,
+      functionName: 'transferFrom',
+      compilerRoute: { abiFunction: {
+        ...routed.compilerRoute.abiFunction,
+        name: 'transferFrom',
+        entryAccesses: [],
+      } },
+      plannedEntryInserts: [],
+    })).toEqual([]);
+    expect(entryInsertLockRepairs({
+      ...routed,
+      functionName: 'transferFrom',
+      plannedEntryInserts: [{
+        blockSlot: 2, outputBlockSlot: 8, newCommitment: 'ab'.repeat(64),
+      }],
+    })).toEqual([]);
+
+    // Descriptor-free artifacts retain the historical repair coordinates.
+    expect(entryInsertLockRepairs({ functionName: 'transferFrom' })).toEqual([{
+      collection: '', predecessorOffset: 2, candidateInsertedOffsets: [4], insertedSlot: '',
+    }]);
   });
 });

@@ -121,6 +121,8 @@ const persistedValueChunkWrites = new Map<string, {
   value: Uint8Array; lockingBytecode: Uint8Array; width: number;
   recipe: { slot: Uint8Array; root: Uint8Array; collection: string; categoryId: string };
 }>();
+type ObservedValueChunkState = { value: Uint8Array; lockingBytecode: Uint8Array };
+const observedValueChunkStatesByCategory = new Map<string, Map<string, ObservedValueChunkState>>();
 const stagedJobEventsValues = new Map<string, Uint8Array>();
 const createdDigestLocks = new Set<string>();
 const persistedCreatedValues = new Map<string, Uint8Array>();
@@ -132,6 +134,23 @@ function isCreatedPersistValue(value: Uint8Array | undefined): boolean {
   if (!value || value.length === 0) return false;
   const hex = binToHex(value);
   return hex.includes('4372656174') || hex.includes('00004cb4');
+}
+
+/**
+ * Retain authenticated value/lock observations until compiler descriptors can bind them to an exact resource.
+ * Category is only an observation bucket: descriptor reads authenticate collection hash and key slot before use.
+ */
+function rememberObservedValueChunkState(
+  categoryId: string,
+  value: Uint8Array | undefined,
+  lockingBytecode: Uint8Array | undefined,
+): void {
+  if (!value || !lockingBytecode) return;
+  const observations = observedValueChunkStatesByCategory.get(categoryId) ?? new Map();
+  const valueHex = binToHex(value);
+  const lockHex = binToHex(lockingBytecode);
+  observations.set(`${lockHex}:${valueHex}`, { value, lockingBytecode });
+  observedValueChunkStatesByCategory.set(categoryId, observations);
 }
 
 /**
@@ -1032,6 +1051,7 @@ export function rememberJobEventsValue(categoryId: string, value: Uint8Array): v
   const authoritative = stagedJobEventsValues.get(categoryId) ?? value;
   persistedJobEventsValues.delete(categoryId);
   persistedJobEventsValues.set(categoryId, authoritative);
+  rememberObservedValueChunkState(categoryId, authoritative, persistedJobEventsLocks.get(categoryId));
   if (isCreatedPersistValue(authoritative) && !persistedCreatedValues.has(categoryId)) {
     persistedCreatedValues.set(categoryId, authoritative);
   }
@@ -1058,6 +1078,7 @@ export function rememberJobEventsLock(categoryId: string, lock: Uint8Array): voi
   persistedJobEventsLocks.set(categoryId, lock);
   const value = persistedJobEventsValues.get(categoryId)
     ?? latestPersisted(persistedJobEventsValues, categoryId);
+  rememberObservedValueChunkState(categoryId, value, lock);
   const hex = value ? binToHex(value) : '';
   if (hex.includes('4372656174') || hex.includes('00004cb4')) {
     createdDigestLocks.add(categoryId);
@@ -1200,7 +1221,7 @@ export function rememberValueChunkUnlockRecipe(
   }
 }
 
-/** Authenticate a legacy observed continuation against an exact compiler/planner write identity. */
+/** Authenticate retained observations against one exact compiler/planner write identity. */
 export function persistedValueChunkWriteState(
   write: ValueChunkWriteDescriptor,
 ): { value: Uint8Array; lockingBytecode: Uint8Array; width: number; recipe: {
@@ -1209,24 +1230,16 @@ export function persistedValueChunkWriteState(
   const identity = valueChunkWriteIdentity(write);
   const cached = persistedValueChunkWrites.get(identity);
   if (cached) return cached;
-  const value = persistedJobEventsValues.get(write.categoryId);
-  const lockingBytecode = persistedJobEventsLocks.get(write.categoryId);
-  if (!value || !lockingBytecode || !/^[0-9a-f]{64}$/i.test(write.categoryId)
-    || !/^[0-9a-f]{64}$/i.test(write.keySlot)) return undefined;
-  try {
-    if (!rememberValueChunkUnlockRecipe(write, value, lockingBytecode)) return undefined;
-    const slot = hexToBin(write.keySlot);
-    const root = sha256Sync(value);
-    const state = {
-      value, lockingBytecode,
-      width: persistedJobEventsWidth(write.categoryId),
-      recipe: { slot, root, collection: write.collectionSignature, categoryId: write.categoryId },
-    };
-    persistedValueChunkWrites.set(identity, state);
-    return state;
-  } catch {
-    return undefined;
+  const currentValue = persistedJobEventsValues.get(write.categoryId);
+  const currentLock = persistedJobEventsLocks.get(write.categoryId);
+  const candidates = [...(observedValueChunkStatesByCategory.get(write.categoryId)?.values() ?? [])];
+  if (currentValue && currentLock) candidates.push({ value: currentValue, lockingBytecode: currentLock });
+  for (let index = candidates.length - 1; index >= 0; index -= 1) {
+    const { value, lockingBytecode } = candidates[index];
+    if (!rememberValueChunkUnlockRecipe(write, value, lockingBytecode)) continue;
+    return persistedValueChunkWrites.get(identity);
   }
+  return undefined;
 }
 
 /** Select one authenticated persisted resource, collapsing duplicate physical/logical descriptions. */
@@ -5662,6 +5675,7 @@ export class StatefulTransactionBuilder {
       for (const key of persistedValueChunkWrites.keys()) {
         if (key.startsWith(`${categoryId.toLowerCase()}:`)) persistedValueChunkWrites.delete(key);
       }
+      observedValueChunkStatesByCategory.delete(categoryId);
       stagedJobEventsValues.delete(categoryId);
       createdDigestLocks.delete(categoryId);
       persistedCreatedValues.delete(categoryId);
@@ -5676,6 +5690,7 @@ export class StatefulTransactionBuilder {
       persistedJobEventsSpends.clear();
       persistedJobEventsRecipes.clear();
       persistedValueChunkWrites.clear();
+      observedValueChunkStatesByCategory.clear();
       stagedJobEventsValues.clear();
       createdDigestLocks.clear();
       persistedCreatedValues.clear();

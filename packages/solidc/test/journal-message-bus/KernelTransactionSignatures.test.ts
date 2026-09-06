@@ -54,4 +54,40 @@ describe('kernel transaction-signature boundaries', () => {
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control'))
       .toMatchObject({ eligible: true });
   });
+
+  it('carries a data-only signature result as compact ABI bytes', () => {
+    const artifact = compileString(`contract DataResult() {
+      function expose(bytes value) public pure returns (sig) { return sig(value); }
+      function control() public { require(true); }
+    }`, KERNEL);
+
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'expose'))
+      .toMatchObject({ eligible: true, outputs: [{ type: 'sig' }] });
+  });
+
+  it('recursively carries a data-only signature field inside a result struct', () => {
+    const artifact = compileString(`contract StructuredDataResult() {
+      struct Result { int sequence; sig payload; }
+      function expose(bytes value) public pure returns (Result) {
+        return Result(7, sig(value));
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'expose'))
+      .toMatchObject({ eligible: true, outputs: [{ type: 'Result' }] });
+  });
+
+  it('keeps a signature-bearing result fenced when the handler reaches checkSig', () => {
+    const artifact = compileString(`contract CheckedResultFence() {
+      function expose(sig authorization, pubkey owner) public pure returns (sig) {
+        require(checkSig(authorization, owner));
+        return authorization;
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'expose'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_TX_SIGNATURE' });
+  });
 });

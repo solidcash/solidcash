@@ -4518,13 +4518,13 @@ describe('required kernel admission', () => {
     },
   );
 
-  it('keeps a transaction-signature result off the kernel route', () => {
+  it('captures a data-only transaction-signature result through compact ABI framing', () => {
     const artifact = compileString(`contract C() {
-      function echo(sig value) public pure returns (sig) { return value; }
+      function echo(bytes value) public pure returns (sig) { return sig(value); }
       function control() public { require(true); }
     }`, KERNEL);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'echo'))
-      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_TX_SIGNATURE' });
+      .toMatchObject({ eligible: true, outputs: [{ type: 'sig' }] });
   });
 
   it('captures a Rec[] result through the recursive ABI encoder', () => {

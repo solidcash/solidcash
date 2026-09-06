@@ -4049,10 +4049,11 @@ function synthesizeMessageBusRoute(
   const kernelResultEncodable = (type: Type): boolean => {
     if (type === PrimitiveType.BOOL || type === PrimitiveType.BIGINT || type === PrimitiveType.STRING
       || type === PrimitiveType.INT) return true;
-    // Native SolidCash ABI framing can carry raw public keys and data signatures. Transaction signatures stay
-    // excluded: publishing one in the result output would change the transaction preimage it signs. Solidity ABI
-    // mode has no canonical pubkey/datasig word type, so it retains the conservative result fence.
-    if (type === PrimitiveType.PUBKEY || type === PrimitiveType.DATASIG) {
+    // Native SolidCash ABI framing can carry these byte-string primitives. A returned `sig` is safe only when the
+    // handler cannot reach a transaction-signature check (enforced below); in that case it is data, not a witness
+    // signing the transaction which contains the return-event output. Solidity ABI mode has no canonical word
+    // type for these SolidCash primitives, so it retains the conservative result fence.
+    if (type === PrimitiveType.PUBKEY || type === PrimitiveType.SIG || type === PrimitiveType.DATASIG) {
       return !(compilerOptions.evmCompat || compilerOptions.solidityImportCompat);
     }
     if (type instanceof IntType || type instanceof FixedType || type instanceof BytesType) return true;
@@ -4086,9 +4087,13 @@ function synthesizeMessageBusRoute(
       fn.messageBusEligible = false;
       fn.messageBusRejectionReason = 'struct-state-getter-route-not-enabled';
     } else if (compilerOptions.messageBusKernel === true
+      && (fn.messageBusUsesTransactionSignature === true
+        || fn.parameters.some((parameter) =>
+          (transactionSignatureLeaves(parameter.type)?.length ?? 0) > 0))
       && fn.returnTypes.some((type) => (transactionSignatureLeaves(type)?.length ?? 0) > 0)) {
-      // Unlike an input witness, a returned transaction signature would be committed into an output of the
-      // transaction it signs. Classify that circular result as a signature fence, not a generic layout failure.
+      // A signature-bearing parameter is detached as a transaction-bound witness even when the source does not
+      // check it directly. Publishing that witness could make it commit to an output containing itself. With no
+      // such parameter and no reachable CHECKSIG/CHECKMULTISIG, a returned `sig` is compact opaque data instead.
       fn.messageBusEligible = false;
       fn.messageBusRejectionReason = 'KERNEL_TX_SIGNATURE';
     } else if (compilerOptions.messageBusKernel === true

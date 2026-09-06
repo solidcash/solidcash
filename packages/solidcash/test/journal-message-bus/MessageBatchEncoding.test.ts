@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { compileString } from 'solidc';
 import { messageBus } from '../../src/index.js';
 import { encodeFunctionArgument } from '../../src/Argument.js';
+import { provisionalInvocationResult } from '../../src/message-bus/compose.js';
 
 const SOURCE = `pragma solidcash >=0.8.0;
 contract MessageBatchEncoding() {
@@ -17,6 +18,11 @@ contract MessageBusReturningBatch() {
   function twice(int n) public pure returns (int) { return n * 2; }
   function positive(int n) public pure returns (bool) { return n > 0; }
   function pair(int n) public pure returns (int, bool) { return (n + 1, n > 0); }
+}`;
+
+const SIGNATURE_DATA_SOURCE = `pragma solidcash >=0.8.0;
+contract MessageBusSignatureData() {
+  function echo(bytes value) public pure returns (sig) { return sig(value); }
 }`;
 
 const COMPOSITE_SOURCE = `pragma solidcash >=0.8.0;
@@ -123,6 +129,28 @@ describe('messageBus.encodeMessageBatch', () => {
     expect(() => messageBus.decodeMessageBusResults(
       returning, encoded, scriptToBytecode([Uint8Array.from([...packed, 0])]),
     )).toThrow(/unchecked suffix/);
+  });
+
+  it('encodes and decodes a data-only sig as compact bytes without a signing witness', () => {
+    const signatureData = compileString(SIGNATURE_DATA_SOURCE, {
+      forceStateful: true,
+      messageBus: true,
+      messageBusKernel: true,
+    });
+    const value = new Uint8Array(65).fill(0x2a);
+    const encoded = messageBus.encodeMessageBatch(signatureData, [
+      { function: 'echo', args: [value] },
+    ]);
+
+    expect(encoded.routeWitnesses).toEqual([]);
+    expect(encoded.rows[0].argsHex).toBe(binToHex(scriptToBytecode([value])));
+    expect(encoded.results).toEqual([{ row: 0, types: ['sig'] }]);
+    expect(provisionalInvocationResult(signatureData, ['sig'])).toBe('00');
+
+    const commitment = scriptToBytecode([scriptToBytecode([value])]);
+    expect(messageBus.decodeMessageBusResults(signatureData, encoded, commitment)).toEqual([
+      { row: 0, type: 'sig', value },
+    ]);
   });
 
   it('uses one canonical inline representation for composite row arguments', () => {

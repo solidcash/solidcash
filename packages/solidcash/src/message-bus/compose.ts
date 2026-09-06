@@ -354,7 +354,10 @@ export const provisionalInvocationResult = (
 ): string => {
   if (!artifactUsesSolidityAbi(artifact)) {
     return binToHex(Uint8Array.from(resultTypes.flatMap((type) => [
-      ...encodePushdataValue(type === 'bool' ? true : 0n, type, artifact.structs),
+      // A transaction signature used as result data is a compact byte string, not a deferred signer. Seed it
+      // with canonical empty bytes; passing numeric zero to the byte encoder is neither typed nor encodable.
+      ...encodePushdataValue(type === 'bool' ? true : type === 'sig' ? new Uint8Array() : 0n,
+        type, artifact.structs),
     ])));
   }
   const layouts = resultTypes.map((type) => evmResultLayout(artifact, type));

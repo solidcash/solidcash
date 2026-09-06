@@ -172,6 +172,7 @@ import {
   selectValueChunkOutputBase,
   selectExternalEventProbeInput,
   persistedValueChunkWriteState,
+  selectPersistedValueChunkWrite,
   type ValueChunkWriteDescriptor,
 } from './StatefulTransactionBuilder.js';
 import {
@@ -1364,6 +1365,7 @@ function extractAllRouteValueChunks(
   fallbackBase = -1,
   plannedWidth = 0,
   categoryId?: string,
+  valueChunkWrites?: ReadonlyArray<ValueChunkWriteDescriptor>,
 ): Array<{ outputIndex: number; lockingBytecode: Uint8Array; commitment: string }> {
   lastExtractedComputedValue = undefined;
   let minChunks = plannedWidth;
@@ -1383,7 +1385,13 @@ function extractAllRouteValueChunks(
     pin?.lockingBytecode,
     minChunks,
   );
-  const persisted = categoryId ? persistedJobEventsValue(categoryId) : undefined;
+  const persistedWrite = valueChunkWrites === undefined
+    ? undefined : selectPersistedValueChunkWrite(valueChunkWrites, categoryId);
+  // Compatibility-only callers without compiler descriptors may still use the historical category cache.
+  // Descriptor-aware kernel calls must authenticate collection signature + key slot before borrowing state.
+  const persisted = valueChunkWrites === undefined
+    ? (categoryId ? persistedJobEventsValue(categoryId) : undefined)
+    : persistedWrite ? persistedValueChunkWriteState(persistedWrite)?.value : undefined;
   const persistWideEnough = persisted
     && Math.ceil((persisted.length - VALUE_HEAD_SIZE) / VALUE_CHUNK_SIZE) >= Math.max(1, minChunks);
   if ((!selected || (minChunks > 0
@@ -1409,7 +1417,9 @@ function extractAllRouteValueChunks(
   if (base < 0) return [];
   const redeemLock = pin?.lockingBytecode && isP2sh32LockingBytecode(pin.lockingBytecode)
     ? pin.lockingBytecode
-    : (categoryId ? persistedJobEventsLock(categoryId) : undefined);
+    : valueChunkWrites === undefined
+      ? (categoryId ? persistedJobEventsLock(categoryId) : undefined)
+      : persistedWrite ? persistedValueChunkWriteState(persistedWrite)?.lockingBytecode : undefined;
   if (categoryId && redeemLock) rememberJobEventsLock(categoryId, redeemLock);
   const lock = redeemLock ?? selected.lockingBytecode;
   return applyRedeemLockToChunks(
@@ -1465,6 +1475,7 @@ function deriveRouteValueChunks(
     explicitBase ?? sharedBand?.start ?? -1,
     usesSharedBand ? sharedBand?.nNew ?? 0 : group.valueChunkOutputCount ?? 0,
     usesSharedBand ? group.categoryId : undefined,
+    group.valueChunkWrites ?? describeValueChunkWrites(group),
   );
   if (witness && allChunks.length > 0) {
     for (const collection of chunkableArrayWriteCollections(witness.carrier, witness.abiFunction)) {
@@ -10437,8 +10448,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       return group.valueChunkWrites;
     });
     const persistedChunkWrite = isPersistedJobEventsReady()
-      ? valueChunkWrites.find((write) =>
-        write.operation === 'update' && persistedValueChunkWriteState(write) !== undefined)
+      ? selectPersistedValueChunkWrite(valueChunkWrites)
       : undefined;
     const persistWidthAtEntry = persistedChunkWrite
       ? persistedValueChunkWriteState(persistedChunkWrite)!.width : 0;
@@ -12307,6 +12317,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               band?.start ?? -1,
               band?.nNew ?? 0,
               chunkCategory,
+              [
+                ...(llc.valueChunkWrites ?? describeValueChunkWrites(llc)),
+                ...(proxyGroup?.valueChunkWrites ?? (proxyGroup ? describeValueChunkWrites(proxyGroup) : [])),
+              ],
             );
             if (debugTargetsThisDerivation) console.error('derive-phase2-nested-chunks-extracted', {
               iter, llcIndex, functionName: llc.functionName,

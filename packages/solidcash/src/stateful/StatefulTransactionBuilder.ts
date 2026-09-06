@@ -118,7 +118,7 @@ const persistedJobEventsRecipes = new Map<string, {
   categoryId: string;
 }>();
 const persistedValueChunkWrites = new Map<string, {
-  lockingBytecode: Uint8Array; width: number;
+  value: Uint8Array; lockingBytecode: Uint8Array; width: number;
   recipe: { slot: Uint8Array; root: Uint8Array; collection: string; categoryId: string };
 }>();
 const invalidatePersistedValueChunkWrites = (categoryId: string): void => {
@@ -1021,7 +1021,7 @@ const valueChunkWriteIdentity = (write: ValueChunkWriteDescriptor): string => [
 /** Authenticate a legacy observed continuation against an exact compiler/planner write identity. */
 export function persistedValueChunkWriteState(
   write: ValueChunkWriteDescriptor,
-): { lockingBytecode: Uint8Array; width: number; recipe: {
+): { value: Uint8Array; lockingBytecode: Uint8Array; width: number; recipe: {
     slot: Uint8Array; root: Uint8Array; collection: string; categoryId: string;
   } } | undefined {
   const identity = valueChunkWriteIdentity(write);
@@ -1037,7 +1037,7 @@ export function persistedValueChunkWriteState(
     const expected = getValueChunkLockingBytecode(write.categoryId, write.collectionSignature, slot, root);
     if (binToHex(expected) !== binToHex(lockingBytecode)) return undefined;
     const state = {
-      lockingBytecode,
+      value, lockingBytecode,
       width: persistedJobEventsWidth(write.categoryId),
       recipe: { slot, root, collection: write.collectionSignature, categoryId: write.categoryId },
     };
@@ -1046,6 +1046,18 @@ export function persistedValueChunkWriteState(
   } catch {
     return undefined;
   }
+}
+
+/** Select one authenticated persisted resource, collapsing duplicate physical/logical descriptions. */
+export function selectPersistedValueChunkWrite(
+  writes: ReadonlyArray<ValueChunkWriteDescriptor>,
+  categoryId?: string,
+): ValueChunkWriteDescriptor | undefined {
+  const candidates = writes.filter((write) => write.operation === 'update'
+    && (categoryId === undefined || write.categoryId === categoryId)
+    && persistedValueChunkWriteState(write) !== undefined);
+  const identities = new Map(candidates.map((write) => [valueChunkWriteIdentity(write), write]));
+  return identities.size === 1 ? [...identities.values()][0] : undefined;
 }
 
 /**
@@ -10655,13 +10667,11 @@ export class StatefulTransactionBuilder {
 
   /** Exact active persisted continuation, or undefined when the transaction owns an ambiguous set. */
   private _persistedValueChunkWrite(categoryId?: string): ValueChunkWriteDescriptor | undefined {
-    const candidates = [...this.externalCallUtxoGroups, ...this.lowLevelCallUtxoGroups]
-      .flatMap((group) => group.valueChunkWrites ?? [])
-      .filter((write) => write.operation === 'update'
-        && (categoryId === undefined || write.categoryId === categoryId)
-        && persistedValueChunkWriteState(write) !== undefined);
-    const identities = new Map(candidates.map((write) => [valueChunkWriteIdentity(write), write]));
-    return identities.size === 1 ? [...identities.values()][0] : undefined;
+    return selectPersistedValueChunkWrite(
+      [...this.externalCallUtxoGroups, ...this.lowLevelCallUtxoGroups]
+        .flatMap((group) => group.valueChunkWrites ?? []),
+      categoryId,
+    );
   }
 
   getLowLevelCallMasterInputIndex(groupIdx: number): number {

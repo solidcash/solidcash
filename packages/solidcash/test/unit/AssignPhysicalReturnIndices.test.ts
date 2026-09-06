@@ -128,6 +128,7 @@ import {
   rememberJobEventsValue,
   persistedJobEventsLock,
   persistedValueChunkWriteState,
+  selectPersistedValueChunkWrite,
   StatefulTransactionBuilder,
   groupChunkableArrayWriteCollection,
   groupWritesSingleChunkableArrayCollection,
@@ -202,6 +203,7 @@ describe('generic persisted value-chunk write identity', () => {
     });
     const exact = persistedValueChunkWriteState(renamed);
     expect(exact?.width).toBeGreaterThan(0);
+    expect(exact?.value).toEqual(value);
     expect(exact?.recipe).toMatchObject({
       collection: signature, categoryId, slot, root: sha256Sync(value),
     });
@@ -215,12 +217,39 @@ describe('generic persisted value-chunk write identity', () => {
 
     const [decoy] = describeValueChunkWrites(makeGroup('publishJobEvent', 'other:mapping(int => Notice[])'));
     expect(persistedValueChunkWriteState(decoy)).toBeUndefined();
+    expect(selectPersistedValueChunkWrite([decoy], categoryId)).toBeUndefined();
+    expect(selectPersistedValueChunkWrite([decoy, renamed], categoryId)).toEqual(renamed);
+    // The route and logical group may both describe one physical write; identity de-duplication keeps it exact.
+    expect(selectPersistedValueChunkWrite([renamed, { ...renamed }], categoryId)).toEqual(renamed);
     StatefulTransactionBuilder.clearPersistedJobEvents();
   });
 
   it('publishes insert identity separately from an update', () => {
     expect(describeValueChunkWrites(makeGroup('createNotice', signature, true))[0])
       .toMatchObject({ operation: 'insert', entryAccessSlot: 0, routeSlot: 0 });
+  });
+
+  it('refuses a category-free choice between two authenticated persisted resources', () => {
+    StatefulTransactionBuilder.clearPersistedJobEvents();
+    const [first] = describeValueChunkWrites(makeGroup('appendNotice'));
+    const firstValue = new Uint8Array(100).fill(3);
+    rememberJobEventsValue(first.categoryId, firstValue);
+    rememberJobEventsLock(first.categoryId, getValueChunkLockingBytecode(
+      first.categoryId, first.collectionSignature, slot, sha256Sync(firstValue),
+    ));
+
+    const secondCategory = 'cd'.repeat(32);
+    const second = { ...first, categoryId: secondCategory };
+    const secondValue = new Uint8Array(100).fill(4);
+    rememberJobEventsValue(secondCategory, secondValue);
+    rememberJobEventsLock(secondCategory, getValueChunkLockingBytecode(
+      secondCategory, second.collectionSignature, slot, sha256Sync(secondValue),
+    ));
+
+    expect(selectPersistedValueChunkWrite([first, second])).toBeUndefined();
+    expect(selectPersistedValueChunkWrite([first, second], secondCategory)).toEqual(second);
+    expect(persistedValueChunkWriteState(second)?.value).toEqual(secondValue);
+    StatefulTransactionBuilder.clearPersistedJobEvents();
   });
 
   it('ties insert mode to the matching route slot in a multi-collection writer', () => {

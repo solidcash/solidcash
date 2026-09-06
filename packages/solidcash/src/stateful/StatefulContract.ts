@@ -3691,6 +3691,16 @@ export function visibleHandlerInputs<T extends { name: string }>(inputs: readonl
   return inputs.filter((input) => !input.name.startsWith('__internal__'));
 }
 
+/** Prefer source-level arguments only when they exactly cover the function's visible ABI. */
+export function selectVisibleCallArguments<T>(
+  inputs: readonly { name: string }[],
+  logicalArguments: readonly T[] | undefined,
+  fallbackArguments: readonly T[],
+): readonly T[] {
+  return logicalArguments?.length === visibleHandlerInputs(inputs).length
+    ? logicalArguments : fallbackArguments;
+}
+
 /** Resolve a fixed entry access by its compiler-owned physical slot, including pre-slotIndex artifacts. */
 function entryAccessAt(fn: Pick<AbiFunction, 'entryAccesses'> | undefined, slotIndex: number): EntryAccessAbi | undefined {
   return fn?.entryAccesses?.find((access, denseIndex) => (access.slotIndex ?? denseIndex) === slotIndex);
@@ -18719,10 +18729,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         const bAbiFunc = group.compilerRoute?.abiFunction
           ?? bAbiAll.find((f) => f.name === group.functionName);
         const bAbiInputs = bAbiFunc?.inputs ?? [];
-        const isPublishJobEvent = (group.functionName ?? group.logicalFunctionName) === 'publishJobEvent';
-        const routeArgs = isPublishJobEvent
-          ? (group.logicalFunctionArgs ?? group.functionArgs)
-          : (group.compilerRoute ? group.compilerRoute.args : group.functionArgs);
+        const logicalAbiInputs = logicalExternalCallFunction(group)?.inputs ?? bAbiInputs;
+        const routeArgs = selectVisibleCallArguments(
+          logicalAbiInputs,
+          group.logicalFunctionArgs,
+          group.compilerRoute ? group.compilerRoute.args : group.functionArgs,
+        );
         const userArgCount = routeArgs.length;
 
         // Compiler routes may interleave hidden inputs with published witnesses (for example
@@ -22935,12 +22947,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           : this.categoryId;
         const encoded = childFn.inputs.map((input, inputIndex) => {
           if (!input.name.startsWith('__internal__')) {
-            const visibleInputCount = childFn.inputs.filter(
-              (candidate) => !candidate.name.startsWith('__internal__'),
-            ).length;
-            const logicalArgs = child.logicalFunctionArgs;
-            const visibleArgs = (child.functionName ?? child.logicalFunctionName) === 'publishJobEvent'
-              && logicalArgs?.length === visibleInputCount ? logicalArgs : child.functionArgs;
+            const visibleArgs = selectVisibleCallArguments(
+              childFn.inputs, child.logicalFunctionArgs, child.functionArgs,
+            );
             return visibleArgs[visible++];
           }
           if (input.name === '__internal__returnOutputIdx') {

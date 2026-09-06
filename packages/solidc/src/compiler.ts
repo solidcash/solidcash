@@ -16,7 +16,7 @@ import {
   optimiseBytecode, optimiseBytecodeOld, OPTIMISER_COMPAT_CHECK_MAX_OPS, PrimitiveType, scriptToAsm, scriptsEqual,
   scriptToBytecode, bytecodeToScript, decodeInt, Op, ATOMIC_MESSAGE_BUS_DOMAIN_HEX,
   ATOMIC_MESSAGE_BUS_MAX_PARTICIPANTS, ATOMIC_MESSAGE_BUS_MAX_ROWS,
-  SplitArtifactBundle, SplitStateFootprint, StructType, TupleType, Type,
+  ChildDeploymentSiteAbi, SplitArtifactBundle, SplitStateFootprint, StructType, TupleType, Type,
   ValueType, BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX,
   messageBusVerifierLockingBytecode,
 } from '@solidcash/utils';
@@ -2043,6 +2043,96 @@ const MESSAGE_BUS_REJECTION_REMEDIES: Record<string, string> = {
     + 'refuse MORE handlers than it adds. Either way, splitting the scalar-only handlers out gives them a '
     + 'route of their own',
 };
+
+/**
+ * Publish typed child-genesis geometry independently of kernel admission. The resolved deployment node and
+ * compiled child body are the authority; no contract, function, or application name participates.
+ */
+function childDeploymentSites(
+  root: FunctionDefinitionNode,
+  compiledBytecodes: ReadonlyMap<string, Uint8Array>,
+): ChildDeploymentSiteAbi[] {
+  const sites: ChildDeploymentSiteAbi[] = [];
+  const visibleInputs = root.parameters.filter((parameter) => !parameter.name.startsWith('__internal__'));
+  const inputIndex = new Map(visibleInputs.map((parameter, index) => [parameter.name, index]));
+  const active: FunctionDefinitionNode[] = [root];
+
+  const source = (expression: ExpressionNode): ChildDeploymentSiteAbi['constructorArgs'][number] => {
+    if (expression instanceof IdentifierNode && inputIndex.has(expression.name)) {
+      return { kind: 'handlerInput', inputIndex: inputIndex.get(expression.name)! };
+    }
+    return { kind: 'expression' };
+  };
+  const saltSource = (expression: ExpressionNode): NonNullable<ChildDeploymentSiteAbi['salt']> => {
+    if (expression instanceof IdentifierNode && inputIndex.has(expression.name)) {
+      return { kind: 'handlerInput', inputIndex: inputIndex.get(expression.name)! };
+    }
+    if (expression instanceof HexLiteralNode) return { kind: 'literal', value: binToHex(expression.value) };
+    return { kind: 'expression' };
+  };
+
+  const walk = (
+    value: unknown,
+    occurrence: ChildDeploymentSiteAbi['occurrence'],
+    seen: WeakSet<object>,
+  ): void => {
+    if (Array.isArray(value)) {
+      for (const item of value) walk(item, occurrence, seen);
+      return;
+    }
+    if (!(value instanceof Node) || seen.has(value)) return;
+    seen.add(value);
+
+    if (value instanceof InstantiationNode && value.isStatefulDeploy && value.referencedContract) {
+      const child = value.referencedContract;
+      const dataNftOutputCount = child.stateVariables.length === 0 ? 0
+        : Math.max(...child.stateVariables.map((state) => state.nftIndex ?? 0)) + 1;
+      const creationBytecode = compiledBytecodes.get(child.name);
+      if (!creationBytecode) throw new Error(`Missing compiled child body for deployment topology '${child.name}'`);
+      sites.push({
+        siteIndex: sites.length,
+        contractName: child.name,
+        occurrence,
+        genesisInputCount: 1,
+        masterOutputCount: 1,
+        dataNftOutputCount,
+        totalOutputCount: 1 + dataNftOutputCount,
+        categorySource: 'genesis-input-outpoint-txhash',
+        constructorArgs: value.parameters.map(source),
+        ...(value.callOptions?.salt && { salt: saltSource(value.callOptions.salt) }),
+        creationBytecode: binToHex(creationBytecode),
+      });
+    }
+
+    const nestedOccurrence = value instanceof WhileNode || value instanceof DoWhileNode
+      ? 'loop'
+      : value instanceof BranchNode || value instanceof SwitchNode || value instanceof TryCatchNode
+        ? occurrence === 'loop' || occurrence === 'recursive' ? occurrence : 'conditional'
+        : occurrence;
+    for (const [key, child] of Object.entries(value)) {
+      if (key === 'referencedContract' || key === 'resolvedFunction' || key === 'definition'
+        || key === 'symbolTable') continue;
+      walk(child, nestedOccurrence, seen);
+    }
+
+    if (value instanceof FunctionCallNode && value.resolvedFunction
+      && !value.resolvedFunction.isEntryPoint) {
+      const target = value.resolvedFunction;
+      if (active.includes(target)) {
+        // This preparatory metadata must not turn a recursive deployment into a finite row claim.
+        for (const site of sites) site.occurrence = 'recursive';
+        return;
+      }
+      active.push(target);
+      // A helper called twice represents two physical sites, so each expansion receives a fresh seen-set.
+      walk(target.body, nestedOccurrence, new WeakSet<object>());
+      active.pop();
+    }
+  };
+
+  walk(root.body, 'once', new WeakSet<object>());
+  return sites;
+}
 
 /**
  * State, by name, why a requested message-bus route does not exist.
@@ -8649,6 +8739,10 @@ function compileResolvedAst(
           })),
         }),
         ...(fn.usesMsgValue && { usesMsgValue: true }),
+        ...(() => {
+          const deployments = childDeploymentSites(fn, traversal.compiledBytecodes);
+          return deployments.length > 0 ? { childDeployments: deployments } : {};
+        })(),
         ...(() => {
           const sourceAbi = artifact.abi.find((candidate) =>
             candidate.selector === (fn.functionSelector ? binToHex(fn.functionSelector) : undefined));

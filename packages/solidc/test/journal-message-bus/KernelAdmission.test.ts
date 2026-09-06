@@ -1658,6 +1658,44 @@ describe('required kernel admission', () => {
     });
   });
 
+  it('publishes name-neutral child genesis geometry while kernel deployment execution stays fenced', () => {
+    const artifact = compileString(`contract Spawn(bytes32 seed) {
+        bytes32 first;
+        bytes32 second;
+        bytes32 third;
+        bytes32 fourth;
+        bytes32 fifth;
+      }
+      contract Coordinator() {
+        function materialize(bytes32 seed, bytes32 salt) public {
+          Spawn child = new Spawn{salt: salt}(seed);
+          require(true);
+        }
+        function control() public { require(true); }
+      }`, KERNEL);
+    const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'materialize');
+    expect(handler).toMatchObject({
+      eligible: false,
+      rejectionReason: 'KERNEL_LAYOUT',
+      childDeployments: [{
+        siteIndex: 0,
+        contractName: 'Spawn',
+        occurrence: 'once',
+        genesisInputCount: 1,
+        masterOutputCount: 1,
+        categorySource: 'genesis-input-outpoint-txhash',
+        constructorArgs: [{ kind: 'handlerInput', inputIndex: 0 }],
+        salt: { kind: 'handlerInput', inputIndex: 1 },
+      }],
+    });
+    const [site] = handler?.childDeployments ?? [];
+    expect(site.dataNftOutputCount).toBeGreaterThan(0);
+    expect(site.totalOutputCount).toBe(1 + site.dataNftOutputCount);
+    expect(site.creationBytecode).toMatch(/^[0-9a-f]+$/);
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'control'))
+      .not.toHaveProperty('childDeployments');
+  });
+
   it('admits a LockingBytecode constructor which is not a child deploy', () => {
     const artifact = compileString(`contract C() {
       function ping(bytes20 pkh) public {

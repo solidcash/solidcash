@@ -247,6 +247,30 @@ export interface FunctionBlockLayout {
 }
 
 /**
+ * Compiler-authored geometry for one typed stateful child-creation site reached by a message-bus handler.
+ *
+ * This is published even while the kernel admission gate remains closed, so transaction assemblers can grow
+ * against an exact, application-neutral topology rather than rediscovering `new C(...)` from contract names.
+ * One genesis input supplies the category; the corresponding output run is the child master followed by its
+ * mutable data NFTs.
+ */
+export interface ChildDeploymentSiteAbi {
+  siteIndex: number;
+  contractName: string;
+  occurrence: 'once' | 'conditional' | 'loop' | 'recursive';
+  genesisInputCount: 1;
+  masterOutputCount: 1;
+  dataNftOutputCount: number;
+  totalOutputCount: number;
+  categorySource: 'genesis-input-outpoint-txhash';
+  constructorArgs: readonly ({ kind: 'handlerInput'; inputIndex: number } | { kind: 'expression' })[];
+  salt?: { kind: 'handlerInput'; inputIndex: number } | { kind: 'literal'; value: string }
+    | { kind: 'expression' };
+  /** Exact child body embedded by the parent's address computation, before category/salt pinning. */
+  creationBytecode: string;
+}
+
+/**
  * Where a value the covenant depends on came from in the source the artifact was compiled from.
  *
  * The published TYPE of a value answers nothing about who chose it: `address t = address(target)` with
@@ -1053,6 +1077,8 @@ export interface Artifact {
         amount: ArgSource;
         callOption?: 'value';
       }[];
+      /** Typed child-creation sites in source execution order. Presence is topology only, not admission. */
+      childDeployments?: readonly ChildDeploymentSiteAbi[];
       eligible: boolean;
       rejectionReason?: string;
       rejectionCode?:

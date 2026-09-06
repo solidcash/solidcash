@@ -5676,6 +5676,44 @@ describe('kernel composite counter-key settlement', () => {
     await expect(contract.call.check(0n, 12n).send()).resolves.toBeDefined();
   }, 180_000);
 
+  it('settles keys and a result produced before a counter-selected helper-loop return', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(`contract KernelFixedHelperReturn() {
+      mapping(int => int) records;
+      function fill(int[] memory values, int base) internal pure returns (int) {
+        for (int cursor = 0; cursor < 3; cursor = cursor + 1) {
+          values[cursor] = base + cursor;
+          switch (cursor) {
+            case 1: return cursor;
+            default: break;
+          }
+        }
+        return 3;
+      }
+      function apply(int count, int base) public {
+        int[] memory values = new int[](count);
+        int stoppedAt = fill(values, base);
+        for (int cursor = 0; cursor < count; cursor = cursor + 1) {
+          this.records[values[cursor]] = stoppedAt + cursor + 10;
+        }
+        require(true);
+      }
+      function check(int key, int expected) public { require(this.records[key] == expected); }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'apply'))
+      .toMatchObject({ eligible: true });
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+    );
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    await expect(contract.batch([{ function: 'apply', args: [3n, 30n] }]).send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    await expect(contract.call.check(30n, 11n).send()).resolves.toBeDefined();
+    await expect(contract.call.check(31n, 12n).send()).resolves.toBeDefined();
+    await expect(contract.call.check(0n, 13n).send()).resolves.toBeDefined();
+  }, 180_000);
+
   it('retains constructed keys across mutations of a value-copied helper parameter', async () => {
     const provider = createTestProvider();
     const artifact = compileString(`contract KernelValueCopyArray() {

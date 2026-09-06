@@ -5418,7 +5418,6 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         const summarize = (
           helperBlock: BlockNode,
           source: HelperSummary,
-          allowTerminalReturn: boolean,
           scope: HelperScope,
           visiting: ReadonlySet<FunctionDefinitionNode>,
         ): HelperSummary | undefined => {
@@ -5503,7 +5502,6 @@ export default class LowerVMapCounterLoops extends AstTraversal {
             const nestedSummary = summarize(
               nestedTarget.body,
               { plans: nestedSourcePlans, values: nestedValues },
-              true,
               { arrayNames: nestedArrayNames, planNamesByParameter: nestedPlanNames },
               new Set(visiting).add(nestedTarget),
             );
@@ -5656,20 +5654,6 @@ export default class LowerVMapCounterLoops extends AstTraversal {
                 || (!ascending && !descending && comparison !== BinaryOperator.NE)) return undefined;
               const loopBody = new BlockNode(statements.slice(0, -1));
               loopBody.location = helperStatement.block.location;
-              const hasEscape = (candidate: Node): boolean => {
-                if (candidate instanceof ReturnNode) return true;
-                for (const key of Object.keys(candidate)) {
-                  if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type'
-                    || key === 'resolvedFunction' || key === 'functionReference' || key === 'collection'
-                    || key === 'stateVariable') continue;
-                  const value = (candidate as unknown as Record<string, unknown>)[key];
-                  if (value instanceof Node && hasEscape(value)) return true;
-                  if (Array.isArray(value)
-                    && value.some((item) => item instanceof Node && hasEscape(item))) return true;
-                }
-                return false;
-              };
-              if (hasEscape(loopBody)) return undefined;
               let loopPlans = copyPlans(helperPlans);
               let loopValues = new Map(values);
               let counter = initial.value;
@@ -5692,11 +5676,11 @@ export default class LowerVMapCounterLoops extends AstTraversal {
                 const iteration = summarize(
                   loopBody,
                   { plans: loopPlans, values: loopValues },
-                  false,
                   scope,
                   visiting,
                 );
-                if (!iteration || iteration.returnValues) return undefined;
+                if (!iteration) return undefined;
+                if (iteration.returnValues) return iteration;
                 loopPlans = iteration.plans;
                 loopValues = iteration.values;
                 if (iteration.loopControl === 'break') break;
@@ -5717,19 +5701,20 @@ export default class LowerVMapCounterLoops extends AstTraversal {
               const selected = literalValue(condition);
               if (typeof selected === 'boolean') {
                 const selectedSummary = selected
-                  ? summarize(helperStatement.ifBlock, base, false, scope, visiting)
+                  ? summarize(helperStatement.ifBlock, base, scope, visiting)
                   : helperStatement.elseBlock
-                    ? summarize(helperStatement.elseBlock, base, false, scope, visiting) : base;
+                    ? summarize(helperStatement.elseBlock, base, scope, visiting) : base;
                 if (!selectedSummary) return undefined;
-                if (selectedSummary.loopControl) return selectedSummary;
+                if (selectedSummary.loopControl || selectedSummary.returnValues) return selectedSummary;
                 helperPlans = selectedSummary.plans;
                 values = selectedSummary.values;
                 continue;
               }
-              const ifSummary = summarize(helperStatement.ifBlock, base, false, scope, visiting);
+              const ifSummary = summarize(helperStatement.ifBlock, base, scope, visiting);
               const elseSummary = helperStatement.elseBlock
-                ? summarize(helperStatement.elseBlock, base, false, scope, visiting) : base;
-              if (!ifSummary || !elseSummary || ifSummary.loopControl || elseSummary.loopControl) return undefined;
+                ? summarize(helperStatement.elseBlock, base, scope, visiting) : base;
+              if (!ifSummary || !elseSummary || ifSummary.loopControl || elseSummary.loopControl
+                || ifSummary.returnValues || elseSummary.returnValues) return undefined;
               const otherwise = new UnaryOpNode(UnaryOperator.NOT, cloneNode(condition));
               otherwise.location = condition.location;
               const arms = [
@@ -5774,9 +5759,10 @@ export default class LowerVMapCounterLoops extends AstTraversal {
                 const selectedBody = selectedIndex >= 0
                   ? helperStatement.cases[selectedIndex]?.body : helperStatement.defaultCase;
                 const selectedSummary = selectedBody
-                  ? summarize(selectedBody, base, false, scope, visiting) : base;
+                  ? summarize(selectedBody, base, scope, visiting) : base;
                 if (!selectedSummary) return undefined;
-                if (selectedSummary.loopControl === 'continue') return selectedSummary;
+                if (selectedSummary.loopControl === 'continue'
+                  || selectedSummary.returnValues) return selectedSummary;
                 helperPlans = selectedSummary.plans;
                 values = selectedSummary.values;
                 continue;
@@ -5784,12 +5770,12 @@ export default class LowerVMapCounterLoops extends AstTraversal {
               const fallbackCondition = new UnaryOpNode(UnaryOperator.NOT, anyCase!);
               fallbackCondition.location = helperStatement.location;
               const summaries = helperStatement.cases.map((candidate) =>
-                summarize(candidate.body, base, false, scope, visiting));
+                summarize(candidate.body, base, scope, visiting));
               const fallback = helperStatement.defaultCase
-                ? summarize(helperStatement.defaultCase, base, false, scope, visiting) : base;
-              if (!fallback || fallback.loopControl === 'continue'
+                ? summarize(helperStatement.defaultCase, base, scope, visiting) : base;
+              if (!fallback || fallback.loopControl === 'continue' || fallback.returnValues
                 || summaries.some((candidate) => !candidate
-                  || candidate.loopControl === 'continue')) return undefined;
+                  || candidate.loopControl === 'continue' || candidate.returnValues)) return undefined;
               const normalizedSummaries = summaries.map((candidate) => ({
                 ...candidate!, loopControl: undefined,
               }));
@@ -5821,7 +5807,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
             if (helperStatement instanceof BreakNode) {
               return { plans: helperPlans, values, loopControl: 'break' };
             }
-            if (helperStatement instanceof ReturnNode && allowTerminalReturn && index === body.length - 1) {
+            if (helperStatement instanceof ReturnNode) {
               const returnValues = helperStatement.expressions.map(replay);
               if (returnValues.some((value) => value === undefined)) return undefined;
               return { plans: helperPlans, values, returnValues: returnValues as ExpressionNode[] };
@@ -5833,7 +5819,6 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         const summary = summarize(
           target.body,
           { plans: initialPlans, values: initialValues },
-          true,
           initialScope,
           new Set([target]),
         );

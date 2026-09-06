@@ -1,7 +1,7 @@
 import {
   FunctionDefinitionNode, BlockNode, StatementNode, Node, WhileNode, DoWhileNode, BranchNode,
   ReturnNode, BreakNode, VariableDefinitionNode, AssignNode, IdentifierNode, BoolLiteralNode,
-  SourceFileNode, ContractNode, FunctionCallNode,
+  SourceFileNode, ContractNode, FunctionCallNode, SwitchNode,
 } from '../ast/AST.js';
 import { PrimitiveType } from '@solidcash/utils';
 import AstTraversal from '../ast/AstTraversal.js';
@@ -112,6 +112,10 @@ export default class DesugarReturnInLoop extends AstTraversal {
     if (node instanceof BranchNode) {
       return this.hasReturnInLoop(node.ifBlock, inLoop) || this.hasReturnInLoop(node.elseBlock, inLoop);
     }
+    if (node instanceof SwitchNode) {
+      return node.cases.some((candidate) => this.hasReturnInLoop(candidate.body, inLoop))
+        || this.hasReturnInLoop(node.defaultCase, inLoop);
+    }
     if (node instanceof BlockNode) return (node.statements ?? []).some((s) => this.hasReturnInLoop(s, inLoop));
     return false;
   }
@@ -153,6 +157,23 @@ export default class DesugarReturnInLoop extends AstTraversal {
         }
         out.push(s);
         had = had || ifHad || elHad;
+      } else if (s instanceof SwitchNode) {
+        let switchHad = false;
+        for (const candidate of s.cases) {
+          const [inner, innerHad] = this.transformStatements(candidate.body.statements ?? [], loopDepth);
+          candidate.body.statements = inner;
+          switchHad ||= innerHad;
+        }
+        if (s.defaultCase) {
+          const [inner, innerHad] = this.transformStatements(s.defaultCase.statements ?? [], loopDepth);
+          s.defaultCase.statements = inner;
+          switchHad ||= innerHad;
+        }
+        out.push(s);
+        // A stashed return's injected break exits only the switch. Propagate once more immediately outside
+        // the switch so it exits the enclosing loop (or returns from the function after the outermost loop).
+        if (switchHad) out.push(this.stampLoc(this.propagation(loopDepth), s.location));
+        had ||= switchHad;
       } else if (s instanceof BlockNode) {
         const [inner, innerHad] = this.transformStatements(s.statements ?? [], loopDepth);
         s.statements = inner;

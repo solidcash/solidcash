@@ -7470,12 +7470,14 @@ function compileResolvedAst(
   // can still point into the complete prepared contract, so even a nominally no-op visitor must not walk a
   // block-free facet before its route-only parameter lowering has been isolated on the facet clone.
   const earlyEntryFeatures = mergedCompilerOptions.messageBus ? surveyOptionalLowerings(ast) : undefined;
-  if (earlyEntryFeatures?.needsTailRecursion && earlyEntryFeatures.needsReturnInLoop) {
+  if (earlyEntryFeatures?.needsReturnInLoop
+    && (earlyEntryFeatures.needsTailRecursion || mergedCompilerOptions.messageBusKernel === true)) {
     // A base-case return owned by an existing source loop must first become the ordinary stash + outward-break
     // form. Tail-recursion lowering can then wrap that source loop in its compiler-owned repetition loop without
-    // confusing which loop an early return exits. The ordinary late pass is idempotent and remains the general
-    // non-kernel lowering boundary.
-    ast = ast.accept(new DesugarReturnInLoop(true)) as Ast;
+    // confusing which loop an early return exits. Kernel key replay likewise has to derive its symbolic array
+    // history from the same normalized control flow which executable code generation sees. The ordinary late
+    // pass is idempotent and remains the general non-kernel lowering boundary.
+    ast = ast.accept(new DesugarReturnInLoop(!mergedCompilerOptions.messageBusKernel)) as Ast;
   }
   if (earlyEntryFeatures?.needsTailRecursion) {
     ast = ast.accept(new LowerTailRecursion()) as Ast;

@@ -2037,6 +2037,98 @@ describe('messageBus.compose atomic transaction', () => {
     await expect(composition.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
   }, 120_000);
 
+  it('consumes mixed external result tuples with recursive static composites', async () => {
+    const provider = createMessageBusCapstoneTestProvider();
+    const sourceArtifact = compileString(`pragma solidity ^0.8.0;
+      struct Detail { uint16 code; uint8 status; }
+      struct Record { uint256 value; Detail detail; }
+      struct Envelope { Record record; bytes payload; }
+      contract CompositeTupleSource {
+        function snapshot() public pure returns (Record memory, uint16[2] memory, bytes memory, Envelope memory) {
+          uint16[2] memory marks = [uint16(4), uint16(6)];
+          return (Record(9, Detail(70, 1)), marks, hex"cafe",
+            Envelope(Record(12, Detail(80, 0)), hex"abcd"));
+        }
+      }
+    `, {
+      forceStateful: true, messageBus: true, messageBusKernel: true,
+      solidityImportCompat: true, suppressWarnings: true,
+    });
+    const sourceBase = new Contract(sourceArtifact, [], { provider });
+    const sourceSetup = await setupStatefulUtxos(
+      provider, sourceBase, sourceArtifact.stateLayout!, {}, { saltContract: true },
+    );
+    const source = StatefulContract.withCategory(
+      sourceBase.withCategory(hexToBin(sourceSetup.categoryId)), sourceSetup.categoryId,
+    );
+    const rootArtifact = compileString(`pragma solidity ^0.8.0;
+      struct Detail { uint16 code; uint8 status; }
+      struct Record { uint256 value; Detail detail; }
+      struct Envelope { Record record; bytes payload; }
+      interface ICompositeTupleSource {
+        function snapshot() external returns (Record memory, uint16[2] memory, bytes memory, Envelope memory);
+      }
+      contract CompositeTupleRoot(address source) {
+        function run() public {
+          (Record memory record, uint16[2] memory marks, bytes memory payload, Envelope memory wrapped) =
+            ICompositeTupleSource(source).snapshot();
+          require(record.value == 9 && record.detail.code == 70 && record.detail.status == 1
+            && marks[0] == 4 && marks[1] == 6 && payload == hex"cafe"
+            && wrapped.record.value == 12 && wrapped.record.detail.code == 80
+            && wrapped.record.detail.status == 0 && wrapped.payload == hex"abcd");
+        }
+      }
+    `, {
+      forceStateful: true, messageBus: true, messageBusKernel: true,
+      solidityImportCompat: true, suppressWarnings: true,
+    });
+    expect(sourceArtifact.messageBus?.handlers.find((handler) => handler.name === 'snapshot')?.eligible).toBe(true);
+    expect(rootArtifact.messageBus?.handlers.find((handler) => handler.name === 'run')?.eligible).toBe(true);
+    const rootBase = new Contract(rootArtifact, [source.inner.lockingBytecode], { provider });
+    const rootSetup = await setupStatefulUtxos(
+      provider, rootBase, rootArtifact.stateLayout!, {}, { saltContract: true },
+    );
+    const root = StatefulContract.withCategory(
+      rootBase.withCategory(hexToBin(rootSetup.categoryId)), rootSetup.categoryId,
+    );
+    const fee = await createBareP2pkhFeeFunder(provider, 500_000n);
+    const callsiteId = rootArtifact.abi.find((entry) => entry.name === 'run')!
+      .externalCalls!.find((call) => call.functionName === 'snapshot')!.callsiteId!;
+    const result = hexToBin(ethers.AbiCoder.defaultAbiCoder().encode(
+      ['tuple(uint256,tuple(uint16,uint8))', 'uint16[2]', 'bytes',
+        'tuple(tuple(uint256,tuple(uint16,uint8)),bytes)'],
+      [[9n, [70n, 1n]], [4n, 6n], '0xcafe', [[12n, [80n, 0n]], '0xabcd']],
+    ).slice(2));
+    const composition = messageBus.compose({
+      preparedCalls: [
+        { contract: root, functionName: 'run', args: [] },
+        { contract: source, functionName: 'snapshot', args: [], callsiteId, provisionalResultCommitment: result },
+      ],
+      funder: fee,
+      changeAddress: fee.unlocker.generateLockingBytecode(),
+    });
+
+    const built = await composition.build();
+    expect(vmRejects(built)).toBe(false);
+    const malformedOffset = Uint8Array.from(result);
+    // The bytes member follows a three-word Record and a two-word fixed array, so its head offset is word five.
+    // Point it outside the authenticated vector: OP_SPLIT must reject rather than accepting a truncated tail.
+    malformedOffset[(5 * 32) + 31] = 0xff;
+    const malformed = messageBus.compose({
+      preparedCalls: [
+        { contract: root, functionName: 'run', args: [] },
+        {
+          contract: source, functionName: 'snapshot', args: [], callsiteId,
+          provisionalResultCommitment: malformedOffset,
+        },
+      ],
+      funder: fee,
+      changeAddress: fee.unlocker.generateLockingBytecode(),
+    });
+    await expect(malformed.build()).rejects.toThrow(/prepared return commitment/);
+    await expect(composition.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+  }, 120_000);
+
   it('binds an emitted event row to its absolute physical output', async () => {
     const provider = createMessageBusCapstoneTestProvider();
     const calleeArtifact = compileString(`contract ComposeEventCallee() {

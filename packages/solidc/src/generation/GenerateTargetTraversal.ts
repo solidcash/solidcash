@@ -14446,6 +14446,21 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_DROP, loc);
   }
 
+  // Decode one already-isolated ABI-static value. Composite values recurse over their full inline ABI width;
+  // leaves consume exactly one word. Keeping this dispatch separate from tuple walking prevents a static struct
+  // or fixed array from being mistaken for one head word when it appears beside another return value.
+  private emitEvmStaticValueDecode(type: Type, loc: SingleLocationData): void {
+    if (type instanceof StructType) {
+      this.emitEvmStructDecode(type, loc);
+      return;
+    }
+    if (type instanceof ArrayType && type.bound !== undefined) {
+      this.emitEvmStaticArrayInlineDecode(type, loc);
+      return;
+    }
+    this.emitEvmWordToValue(type, loc);
+  }
+
   // evmCompat inverse of emitEvmStructTail: a DYNAMIC struct's ABI tuple -> the framed struct blob. Strip the
   // top-level offset, decode the fields into N values via the shared offset-following decoder, then re-frame:
   // pushdata-encode each field (in order) and concatenate. The re-frame uses pure-emit ROLL/CAT + net-0
@@ -14587,8 +14602,22 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (this.isEvmAbiWordType(type)) return true;
     if (type === PrimitiveType.STRING || (type instanceof BytesType && type.bound === undefined)) return true;
     if (type instanceof StructType) {
-      return !this.isDynamicAbiType(type)
-        && type.fields.every((field) => this.isEvmExternalResultDecodable(field.type));
+      if (!this.isDynamicAbiType(type)) {
+        return type.fields.every((field) => this.isEvmExternalResultDecodable(field.type));
+      }
+      // The shared tuple decoder can follow dynamic leaves and scalar-array tails inside one struct. Dynamic
+      // members which themselves need a nested offset base (dynamic structs/fixed arrays, or arrays of composite
+      // elements) stay fenced until that recursive base/span can be preserved independently.
+      return type.fields.every((field) => {
+        const member = field.type;
+        if (member === PrimitiveType.STRING || (member instanceof BytesType && member.bound === undefined)) {
+          return true;
+        }
+        if (member instanceof ArrayType && member.bound === undefined) {
+          return !this.isDynamicAbiType(member.elementType) && this.isEvmAbiWordType(member.elementType);
+        }
+        return !this.isDynamicAbiType(member) && this.isEvmExternalResultDecodable(member);
+      });
     }
     if (type instanceof ArrayType) {
       return !this.isDynamicAbiType(type.elementType)
@@ -14598,11 +14627,27 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   private isEvmExternalResultSchemaDecodable(schema: readonly Type[]): boolean {
-    if (schema.length === 1) return this.isEvmExternalResultDecodable(schema[0]);
-    // The existing tuple decoder follows dynamic bytes/string offsets and decodes scalar words. Composite tuple
-    // members require a recursive tuple-head walker because a static struct can occupy more than one ABI word.
-    return schema.every((type) => this.isEvmAbiWordType(type)
-      || type === PrimitiveType.STRING || (type instanceof BytesType && type.bound === undefined));
+    return schema.every((type) => this.isEvmExternalResultDecodable(type));
+  }
+
+  // Decode an all-static result tuple. ABI head positions advance by each member's recursive static width, not by
+  // one word. The values remain in declaration order on the VM stack (last value on top), matching the existing
+  // scalar tuple decoder and the call-expression stack contract.
+  private emitEvmStaticResultTupleDecode(
+    schema: readonly Type[], loc: SingleLocationData, trackedName: (index: number) => string,
+  ): void {
+    for (let i = 0; i < schema.length; i += 1) {
+      const width = this.abiStaticSize(schema[i]);
+      if (i < schema.length - 1) {
+        this.emit(encodeInt(BigInt(width)), loc);
+        this.emit(Op.OP_SPLIT, loc); // [prefix ABI, remaining ABI]
+        this.emit(Op.OP_SWAP, loc); // [remaining ABI, prefix ABI]
+      }
+      this.emitEvmStaticValueDecode(schema[i], loc);
+      if (i < schema.length - 1) this.emit(Op.OP_SWAP, loc); // [decoded prefix values..., remaining ABI]
+    }
+    this.popFromStack();
+    for (let i = 0; i < schema.length; i += 1) this.pushToStack(trackedName(i));
   }
 
   /** Decode one complete Solidity ABI result tuple into the source runtime representation. */
@@ -14627,7 +14672,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       return;
     }
     if (schema.length === 1 && single instanceof StructType) {
-      this.emitEvmStructDecode(single, loc);
+      if (this.isDynamicAbiType(single)) this.emitEvmStructDecodeDynamic(single, loc);
+      else this.emitEvmStructDecode(single, loc);
       if (trackedPrefix !== '(value)') this.stack[0] = trackedName(0);
       return;
     }
@@ -14638,9 +14684,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
       return;
     }
-    this.popFromStack();
-    this.emitEvmAbiDecode(schema, loc);
-    for (let i = 0; i < schema.length; i++) this.pushToStack(trackedName(i));
+    this.emitEvmStaticResultTupleDecode(schema, loc, trackedName);
   }
 
   // Decode one 32-byte big-endian EVM word (on top) into a SolidCash value. Inverse of emitEvmAbiWord.
@@ -14694,7 +14738,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const isArr = (t: Type): boolean => t instanceof ArrayType && t.bound === undefined;
     // Head bytes per field: a dynamic field is one offset word; a static value/composite is its full ABI static
     // size (a fixed-array or nested static struct occupies several words in the head). Positions are cumulative.
-    const headSizeOf = (t: Type): number => (dyn(t) || isArr(t) ? 32 : this.abiStaticSize(t));
+    const headSizeOf = (t: Type): number => (this.isDynamicAbiType(t) ? 32 : this.abiStaticSize(t));
     const headPos: number[] = []; let hAcc = 0;
     for (const st of schema) { headPos.push(hAcc); hAcc += headSizeOf(st); }
     this.popFromStack();
@@ -14715,12 +14759,32 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_DROP, loc);
       this.pushToStack('(value)');
 
-      if (!dyn(t) && !isArr(t)) {
+      if (!this.isDynamicAbiType(t)) {
         // static: the head bytes are the inline encoding. A value is one word; a fixed-array / nested static struct
         // is several - reconstruct the SolidCash composite so the caller re-frames it correctly.
-        if (t instanceof ArrayType && t.bound !== undefined) this.emitEvmWordsToArray(t.elementType, loc);
-        else if (t instanceof StructType) this.emitEvmStructDecode(t, loc);
-        else this.emitEvmWordToValue(t, loc);
+        this.emitEvmStaticValueDecode(t, loc);
+        continue;
+      }
+      if (t instanceof StructType) {
+        // The struct's top-level head word is relative to the outer result tuple. Isolate its suffix while the
+        // authenticated outer blob remains available, then prepend the canonical single-result offset word used
+        // by emitEvmStructDecodeDynamic. Inner field offsets remain relative to the struct tuple itself, so the
+        // recursive decoder follows the correct independent base even when this struct has tuple siblings.
+        this.emitEvmWordToValue(PrimitiveType.BIGINT, loc);
+        this.emit(Op.OP_DUP, loc); this.pushToStack('(struct-offset)');
+        this.emit(encodeInt(BigInt(this.getStackIndex('__decblob'))), loc);
+        this.emit(Op.OP_PICK, loc); this.pushToStack('(struct-base)');
+        this.emit(Op.OP_SWAP, loc);
+        this.emit(Op.OP_SPLIT, loc);
+        this.emit(Op.OP_NIP, loc); this.nipFromStack(); // [offset, struct tuple + following outer tails]
+        this.emit(Op.OP_NIP, loc); this.nipFromStack(); // [struct tuple + following outer tails]
+        this.emit(encodeInt(32n), loc); this.pushToStack('(struct-prefix)');
+        this.emitEvmWordFromUint(loc);
+        this.emit(Op.OP_SWAP, loc);
+        [this.stack[0], this.stack[1]] = [this.stack[1], this.stack[0]];
+        this.emit(Op.OP_CAT, loc);
+        this.popFromStack(2); this.pushToStack('(value)');
+        this.emitEvmStructDecodeDynamic(t, loc);
         continue;
       }
       const arr = isArr(schema[i]);

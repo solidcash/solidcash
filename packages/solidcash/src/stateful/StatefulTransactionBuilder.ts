@@ -1157,7 +1157,10 @@ export function resolveValueChunkWriteCategory(
   claimedCategoryId: string | undefined,
   legacyDefaultCategoryId: string,
 ): string | undefined {
-  if (selection.status === 'ambiguous') return claimedCategoryId;
+  // A physical probe can report a category, but it cannot disambiguate two
+  // compiler-described collection resources which share that category. The
+  // collection hash and key slot are part of the authenticated identity too.
+  if (selection.status === 'ambiguous') return undefined;
   if (selection.status === 'absent') return claimedCategoryId ?? legacyDefaultCategoryId;
   if (claimedCategoryId !== undefined
     && claimedCategoryId.toLowerCase() !== selection.categoryId.toLowerCase()) return undefined;
@@ -9555,10 +9558,12 @@ export class StatefulTransactionBuilder {
       commitment: string; lockingBytecode: Uint8Array; categoryId?: string; fixedIndex?: boolean;
     },
   ): boolean {
-    // A probe-supplied category is already bound to its physical group. Only the formerly unsafe missing case
-    // needs global write-identity resolution; descriptor ambiguity refuses to invent a caller-owned default.
-    const resolvedCategoryId = chunk.categoryId ?? resolveValueChunkWriteCategory(
-      this._valueChunkWriteCategorySelection(), undefined, this.categoryId,
+    // Probe observations identify physical bytes, not the full collection
+    // resource. Always reconcile their claimed category with the compiler's
+    // collection hash + key-slot identity. Descriptor-free legacy plans keep
+    // their historical category/default selection in the resolver.
+    const resolvedCategoryId = resolveValueChunkWriteCategory(
+      this._valueChunkWriteCategorySelection(), chunk.categoryId, this.categoryId,
     );
     if (!resolvedCategoryId) return false;
     const ownedChunk = { ...chunk, categoryId: resolvedCategoryId };

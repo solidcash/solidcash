@@ -285,7 +285,10 @@ describe('generic persisted value-chunk write identity', () => {
     expect(resolveValueChunkWriteCategory(exact, undefined, 'cd'.repeat(32))).toBe(categoryId);
     expect(resolveValueChunkWriteCategory(exact, 'cd'.repeat(32), categoryId)).toBeUndefined();
     expect(resolveValueChunkWriteCategory({ status: 'ambiguous' }, undefined, categoryId)).toBeUndefined();
+    expect(resolveValueChunkWriteCategory({ status: 'ambiguous' }, categoryId, categoryId)).toBeUndefined();
     expect(resolveValueChunkWriteCategory({ status: 'absent' }, undefined, categoryId)).toBe(categoryId);
+    expect(resolveValueChunkWriteCategory({ status: 'absent' }, 'ef'.repeat(32), categoryId))
+      .toBe('ef'.repeat(32));
   });
 
   it('selects token-band repair ownership by physical compiler layout, independent of handler name', () => {

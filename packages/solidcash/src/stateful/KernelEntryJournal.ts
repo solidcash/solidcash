@@ -302,6 +302,13 @@ export function encodeKernelEntryJournalAccesses(
         throw new Error('journal target and predecessor record ordinals must differ');
       }
     }
+    const requiresPredecessor = !access.presentBefore || !access.presentAfter;
+    if ((access.predecessorRecordOrdinal !== undefined) !== requiresPredecessor) {
+      throw new Error('journal access predecessor presence must match its topology transition');
+    }
+    if (!access.mutates && access.presentBefore !== access.presentAfter) {
+      throw new Error('a non-mutating journal access must preserve target presence');
+    }
     let flags = 0;
     if (access.presentBefore) flags |= ACCESS_FLAG_PRESENT_BEFORE;
     if (access.presentAfter) flags |= ACCESS_FLAG_PRESENT_AFTER;
@@ -349,12 +356,21 @@ export function decodeKernelEntryJournalAccesses(encoded: Uint8Array): Journaled
     if (predecessor === targetRecordOrdinal) {
       throw new Error('journal target and predecessor record ordinals must differ');
     }
+    const presentBefore = (flags & ACCESS_FLAG_PRESENT_BEFORE) !== 0;
+    const presentAfter = (flags & ACCESS_FLAG_PRESENT_AFTER) !== 0;
+    if (hasPredecessor !== (!presentBefore || !presentAfter)) {
+      throw new Error('journal access predecessor presence must match its topology transition');
+    }
+    const mutates = (flags & ACCESS_FLAG_MUTATES) !== 0;
+    if (!mutates && presentBefore !== presentAfter) {
+      throw new Error('a non-mutating journal access must preserve target presence');
+    }
     return {
       targetRecordOrdinal,
       ...(hasPredecessor && { predecessorRecordOrdinal: predecessor }),
-      presentBefore: (flags & ACCESS_FLAG_PRESENT_BEFORE) !== 0,
-      presentAfter: (flags & ACCESS_FLAG_PRESENT_AFTER) !== 0,
-      mutates: (flags & ACCESS_FLAG_MUTATES) !== 0,
+      presentBefore,
+      presentAfter,
+      mutates,
     };
   });
 }

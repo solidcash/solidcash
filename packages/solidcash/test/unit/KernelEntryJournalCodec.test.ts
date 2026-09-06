@@ -302,6 +302,14 @@ describe('kernel pending-entry journal codec', () => {
     expect(() => encodeKernelEntryJournalAccesses(ACCESS_COLLECTION_HASH, [{
       targetRecordOrdinal: 1, predecessorRecordOrdinal: 1, presentBefore: false, presentAfter: true, mutates: true,
     }])).toThrow('must differ');
+    expect(() => encodeKernelEntryJournalAccesses(ACCESS_COLLECTION_HASH, [{
+      targetRecordOrdinal: 1, predecessorRecordOrdinal: 0,
+      presentBefore: true, presentAfter: true, mutates: true,
+    }])).toThrow('match its topology transition');
+    expect(() => encodeKernelEntryJournalAccesses(ACCESS_COLLECTION_HASH, [{
+      targetRecordOrdinal: 1, predecessorRecordOrdinal: 0,
+      presentBefore: false, presentAfter: true, mutates: false,
+    }])).toThrow('must preserve target presence');
     expect(() => encodeKernelEntryJournalAccesses(bytes(19, 0), [])).toThrow('exactly 20');
     expect(() => decodeKernelEntryJournalAccesses(Uint8Array.of(0x06))).toThrow('truncated');
     const valid = encodeKernelEntryJournalAccesses(ACCESS_COLLECTION_HASH, [{
@@ -318,5 +326,17 @@ describe('kernel pending-entry journal codec', () => {
     nonCanonicalPredecessor[25] = 0; nonCanonicalPredecessor[26] = 0;
     expect(() => decodeKernelEntryJournalAccesses(nonCanonicalPredecessor))
       .toThrow('non-canonical predecessor');
+    const falseTopologyPredecessor = new Uint8Array(valid);
+    falseTopologyPredecessor[22] |= 0x04;
+    falseTopologyPredecessor[25] = 1; falseTopologyPredecessor[26] = 0;
+    expect(() => decodeKernelEntryJournalAccesses(falseTopologyPredecessor))
+      .toThrow('match its topology transition');
+    const falseCleanTransition = encodeKernelEntryJournalAccesses(ACCESS_COLLECTION_HASH, [{
+      targetRecordOrdinal: 1, predecessorRecordOrdinal: 0,
+      presentBefore: false, presentAfter: true, mutates: true,
+    }]);
+    falseCleanTransition[22] &= ~0x08;
+    expect(() => decodeKernelEntryJournalAccesses(falseCleanTransition))
+      .toThrow('must preserve target presence');
   });
 });

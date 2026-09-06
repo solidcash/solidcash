@@ -495,7 +495,8 @@ The access flags publish presence-before, presence-after, whether the predecesso
 the compiler-derived operation may mutate the value or topology; `0xffff` is the canonical absent-predecessor
 sentinel. At five bytes per operation, a canonical 64-iteration stream is 322
 bytes and remains one BCH stack item. The codec rejects oversized programs, unknown flags, reserved ordinals,
-non-canonical predecessor sentinels, and target/predecessor aliasing. Multiple streams remain separate items owned
+non-canonical predecessor sentinels, topology/predecessor disagreement, presence-changing reads, and
+target/predecessor aliasing. Multiple streams remain separate items owned
 by the selected row, so the total contract surface is not constrained to one 520-byte concatenation.
 Every `sortedUpsertLoopInfo` entry publishes its stable `journalAccessStreamIndex`; the SDK and covenant therefore
 address the selected row's stream vector without reconstructing compiler traversal order from collection names.

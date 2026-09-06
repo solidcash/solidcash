@@ -131,7 +131,9 @@ import {
   persistedValueChunkWriteState,
   selectPersistedValueChunkWrite,
   selectValueChunkWriteCategory,
+  resolveValueChunkWriteCategory,
   selectCompilerWriterEvent,
+  selectTokenBandRepairOwner,
   StatefulTransactionBuilder,
   groupChunkableArrayWriteCollection,
   groupWritesSingleChunkableArrayCollection,
@@ -229,6 +231,43 @@ describe('generic persisted value-chunk write identity', () => {
     expect(selectValueChunkWriteCategory([
       { ...renamed, collectionHash: '00'.repeat(32) },
     ])).toEqual({ status: 'ambiguous' });
+  });
+
+  it('binds missing chunk categories to exact renamed write identity', () => {
+    const [renamed] = describeValueChunkWrites(makeGroup('appendNotice'));
+    const exact = selectValueChunkWriteCategory([renamed]);
+    expect(resolveValueChunkWriteCategory(exact, undefined, 'cd'.repeat(32))).toBe(categoryId);
+    expect(resolveValueChunkWriteCategory(exact, 'cd'.repeat(32), categoryId)).toBeUndefined();
+    expect(resolveValueChunkWriteCategory({ status: 'ambiguous' }, undefined, categoryId)).toBeUndefined();
+    expect(resolveValueChunkWriteCategory({ status: 'absent' }, undefined, categoryId)).toBe(categoryId);
+  });
+
+  it('selects token-band repair ownership by physical compiler layout, independent of handler name', () => {
+    const participant = {
+      categoryId, functionName: 'settleNotice', blockLayout: {
+        blockSize: 5, slots: [{ kind: 'master', offset: 0 }, { kind: 'entry', offset: 1 }],
+      },
+    } as unknown as import('../../src/stateful/StatefulTransactionBuilder.js').PhysicalReturnGroup;
+    expect(selectTokenBandRepairOwner(
+      [participant], (candidate) => candidate === categoryId ? 12 : -1, { start: 14, end: 17 },
+    )).toEqual({ status: 'exact', groupIndex: 0, categoryId, masterIndex: 12 });
+    expect(selectTokenBandRepairOwner(
+      [participant], () => 12, { start: 20, end: 22 },
+    )).toEqual({ status: 'absent' });
+  });
+
+  it('fails closed when independent participants both claim token-band repair ownership', () => {
+    const otherCategory = 'cd'.repeat(32);
+    const participant = (id: string, name: string) => ({
+      categoryId: id, functionName: name, blockLayout: {
+        blockSize: 5, slots: [{ kind: 'master', offset: 0 }, { kind: 'entry', offset: 1 }],
+      },
+    }) as unknown as import('../../src/stateful/StatefulTransactionBuilder.js').PhysicalReturnGroup;
+    expect(selectTokenBandRepairOwner(
+      [participant(categoryId, 'settleNotice'), participant(otherCategory, 'settleAudit')],
+      (candidate) => candidate === categoryId ? 12 : 13,
+      { start: 14, end: 17 },
+    )).toEqual({ status: 'ambiguous' });
   });
 
   it('selects a renamed writer event from compiler route metadata and collapses duplicate views', () => {

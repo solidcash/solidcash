@@ -563,6 +563,33 @@ export function collidingParticipantGroupIndex(
   return -1;
 }
 
+export type TokenBandRepairOwnerSelection =
+  | { status: 'absent' }
+  | { status: 'ambiguous' }
+  | { status: 'exact'; groupIndex: number; categoryId: string; masterIndex: number };
+
+/** Select the unique compiler-laid-out participant whose physical block intersects a foreign dynamic band. */
+export function selectTokenBandRepairOwner(
+  groups: ReadonlyArray<PhysicalReturnGroup>,
+  findMintingInputIndex: (categoryId: string) => number,
+  band: { start: number; end: number } | undefined,
+): TokenBandRepairOwnerSelection {
+  if (!band) return { status: 'absent' };
+  const owners = new Map<string, Extract<TokenBandRepairOwnerSelection, { status: 'exact' }>>();
+  for (const [groupIndex, group] of groups.entries()) {
+    if (group.sharedGroupIndex !== undefined || liveChunkWidthForGroup(groups, groupIndex) > 0) continue;
+    const masterIndex = findMintingInputIndex(group.categoryId);
+    if (masterIndex < 0) continue;
+    const width = physicalParticipantWidth(group);
+    if (masterIndex > band.end || masterIndex + width <= band.start) continue;
+    owners.set(`${masterIndex}:${group.categoryId.toLowerCase()}`, {
+      status: 'exact', groupIndex, categoryId: group.categoryId, masterIndex,
+    });
+  }
+  if (owners.size === 0) return { status: 'absent' };
+  return owners.size === 1 ? [...owners.values()][0] : { status: 'ambiguous' };
+}
+
 /** Pads after a proxy [master, ...data] so FakeToken starts past impl+trailingBase+nNew. */
 export function proxyValueChunkPadCount(parts: {
   insertBase: number;
@@ -1060,6 +1087,19 @@ export function selectValueChunkWriteCategory(
   if (identities.size !== 1) return { status: 'ambiguous' };
   const write = [...identities.values()][0];
   return { status: 'exact', categoryId: write.categoryId, write };
+}
+
+/** Resolve a chunk's owner without allowing a caller/default category to contradict compiler write identity. */
+export function resolveValueChunkWriteCategory(
+  selection: ValueChunkWriteCategorySelection,
+  claimedCategoryId: string | undefined,
+  legacyDefaultCategoryId: string,
+): string | undefined {
+  if (selection.status === 'ambiguous') return claimedCategoryId;
+  if (selection.status === 'absent') return claimedCategoryId ?? legacyDefaultCategoryId;
+  if (claimedCategoryId !== undefined
+    && claimedCategoryId.toLowerCase() !== selection.categoryId.toLowerCase()) return undefined;
+  return selection.categoryId;
 }
 
 /** Bind an observed value and redeem lock to one exact compiler-described collection write. */
@@ -6125,9 +6165,7 @@ export class StatefulTransactionBuilder {
   }
 
   private _jobEventsPublishCategory(): string | undefined {
-    const writes = [...this.externalCallUtxoGroups, ...this.lowLevelCallUtxoGroups]
-      .flatMap((group) => group.valueChunkWrites ?? []);
-    const selection = selectValueChunkWriteCategory(writes);
+    const selection = this._valueChunkWriteCategorySelection();
     if (selection.status === 'exact') return selection.categoryId;
     if (selection.status !== 'absent') return undefined;
     const selected = this._chunkableValueWriteGroups();
@@ -6136,11 +6174,15 @@ export class StatefulTransactionBuilder {
     return categories.size === 1 ? [...categories][0] : undefined;
   }
 
-  /** Persist chunks are proxy-category; the LLC master is the impl minting category. */
-  private _persistJobEventsTokenCategory(): string | undefined {
+  private _valueChunkWriteCategorySelection(): ValueChunkWriteCategorySelection {
     const writes = [...this.externalCallUtxoGroups, ...this.lowLevelCallUtxoGroups]
       .flatMap((group) => group.valueChunkWrites ?? []);
-    const selection = selectValueChunkWriteCategory(writes);
+    return selectValueChunkWriteCategory(writes);
+  }
+
+  /** Persist chunks are proxy-category; the LLC master is the impl minting category. */
+  private _persistJobEventsTokenCategory(): string | undefined {
+    const selection = this._valueChunkWriteCategorySelection();
     if (selection.status === 'exact') return selection.categoryId;
     if (selection.status !== 'absent') return undefined;
     const selected = this._chunkableValueWriteGroups();
@@ -9195,6 +9237,13 @@ export class StatefulTransactionBuilder {
       commitment: string; lockingBytecode: Uint8Array; categoryId?: string; fixedIndex?: boolean;
     },
   ): boolean {
+    // A probe-supplied category is already bound to its physical group. Only the formerly unsafe missing case
+    // needs global write-identity resolution; descriptor ambiguity refuses to invent a caller-owned default.
+    const resolvedCategoryId = chunk.categoryId ?? resolveValueChunkWriteCategory(
+      this._valueChunkWriteCategorySelection(), undefined, this.categoryId,
+    );
+    if (!resolvedCategoryId) return false;
+    const ownedChunk = { ...chunk, categoryId: resolvedCategoryId };
     const valueChunkPin = chunk.lockingBytecode.length === 35
       && chunk.lockingBytecode[0] === 0xaa && chunk.lockingBytecode[1] === 0x20
       && chunk.lockingBytecode[34] === 0x87
@@ -9212,18 +9261,18 @@ export class StatefulTransactionBuilder {
       }
     }
     const existing = this.derivedChunkOutputs.get(outputIndex);
-    if (existing?.commitment === chunk.commitment
-      && binToHex(existing.lockingBytecode) === binToHex(chunk.lockingBytecode)
-      && existing.categoryId === chunk.categoryId
-      && existing.fixedIndex === chunk.fixedIndex) return false;
-    const kept = preferChunkCommitment(existing?.commitment, chunk.commitment);
-    if (existing && kept === existing.commitment && kept !== chunk.commitment) return false;
-    this.derivedChunkOutputs.set(outputIndex, !existing || kept === chunk.commitment
-      ? { ...chunk, commitment: kept }
+    if (existing?.commitment === ownedChunk.commitment
+      && binToHex(existing.lockingBytecode) === binToHex(ownedChunk.lockingBytecode)
+      && existing.categoryId === ownedChunk.categoryId
+      && existing.fixedIndex === ownedChunk.fixedIndex) return false;
+    const kept = preferChunkCommitment(existing?.commitment, ownedChunk.commitment);
+    if (existing && kept === existing.commitment && kept !== ownedChunk.commitment) return false;
+    this.derivedChunkOutputs.set(outputIndex, !existing || kept === ownedChunk.commitment
+      ? { ...ownedChunk, commitment: kept }
       : existing);
-    if (!chunk.fixedIndex && valueChunkPin && chunk.commitment.length >= 3 && chunk.commitment !== '00'
-      && !isEmptyValueChunkCommitment(chunk.commitment)) {
-      const categoryId = chunk.categoryId ?? this.categoryId;
+    if (!ownedChunk.fixedIndex && valueChunkPin && ownedChunk.commitment.length >= 3
+      && ownedChunk.commitment !== '00' && !isEmptyValueChunkCommitment(ownedChunk.commitment)) {
+      const categoryId = ownedChunk.categoryId;
       this.rememberJobEventsChunks(categoryId, [
         ...this.derivedChunkOutputs.values(),
       ].filter((entry) => (entry.categoryId ?? this.categoryId) === categoryId
@@ -9289,8 +9338,13 @@ export class StatefulTransactionBuilder {
    */
   private _applyDerivedValueChunks(builder: TransactionBuilder): boolean {
     const band = this.getPublishJobEventsBand();
-    const tokenWriterPresent = this.externalCallUtxoGroups.some((group) =>
-      isMintingBandSwapFunction(group.functionName ?? group.compilerRoute?.abiFunction.name));
+    const repairOwner = selectTokenBandRepairOwner(
+      this.externalCallUtxoGroups,
+      (categoryId) => this.findMintingInputIndex(categoryId),
+      band,
+    );
+    const tokenWriterPresent = repairOwner.status !== 'absent'
+      || this.mintingOutputSwap !== undefined;
     if (band && !tokenWriterPresent && this.derivedChunkOutputs.size > 0) {
       const keys = [...this.derivedChunkOutputs.entries()]
         .filter(([, chunk]) => !chunk.fixedIndex)
@@ -9318,10 +9372,7 @@ export class StatefulTransactionBuilder {
       if (masterIndex >= 0) protectedMasters.add(masterIndex);
     }
     const tokenWriterCategory = this.mintingOutputSwap?.categoryId
-      ?? this.externalCallUtxoGroups.find((group) =>
-        group.sharedGroupIndex === undefined
-        && isMintingBandSwapFunction(group.functionName ?? group.compilerRoute?.abiFunction.name))
-        ?.categoryId;
+      ?? (repairOwner.status === 'exact' ? repairOwner.categoryId : undefined);
     for (const [index, input] of this.allInputs.entries()) {
       if (input?.token?.nft?.capability === 'minting') protectedMasters.add(index);
       if (tokenWriterCategory && input?.token?.category === tokenWriterCategory) {
@@ -9332,16 +9383,15 @@ export class StatefulTransactionBuilder {
     for (const outputIndex of [...this.derivedChunkOutputs.keys()].sort((left, right) => left - right)) {
       const chunk = this.derivedChunkOutputs.get(outputIndex);
       if (!chunk) continue;
-      // Only the caller's own suffix chunks are skipped here. Nested
-      // publishJobEvent pins often omit categoryId; treating them as
-      // `this.categoryId` dropped the 20-25 jobEvents run on the view-only path.
+      // Only the caller's own suffix chunks are skipped here. Compiler-described nested chunks are normalized
+      // to their writer category when learned, so an absent category can never silently become the caller.
       if (this.delegateDynamicChunksAtSuffix && chunk.categoryId === this.categoryId) continue;
       if (protectedMasters.has(outputIndex)) continue;
       const existing = builder.outputs[outputIndex];
       if (existing) {
         // A minting 1:1 recreation is not an old value-chunk digest. Every
-        // P2SH32 used to match `existingIsChunkAddress`, so FakeToken's minting
-        // lock was replaced by jobEvents (timeout refund output 24).
+        // P2SH32 used to match `existingIsChunkAddress`, so a participant minting
+        // lock could be replaced by a value chunk.
         if (existing.token?.nft?.capability === 'minting') continue;
         const commitHex = String(existing.token?.nft?.commitment ?? '');
         const commitBytes = commitHex.length / 2;
@@ -9509,13 +9559,17 @@ export class StatefulTransactionBuilder {
    * impl+trailingBase. Leaves view tails (16/17) and minting masters alone.
    */
   private _materializeJobEventsBand(builder: TransactionBuilder): void {
-    const tokenWriterPresent = this.externalCallUtxoGroups.some((group) =>
-      isMintingBandSwapFunction(group.functionName ?? group.compilerRoute?.abiFunction.name
-        ?? group.logicalFunctionName));
-    // transferFrom/transfer already own the minting-band occupancy path.
-    // Materializing jobEvents over those 1:1s hangs derivation.
-    if (tokenWriterPresent) return;
     const band = this.getPublishJobEventsBand();
+    const repairOwner = selectTokenBandRepairOwner(
+      this.externalCallUtxoGroups,
+      (categoryId) => this.findMintingInputIndex(categoryId),
+      band,
+    );
+    const tokenWriterPresent = repairOwner.status !== 'absent'
+      || this.mintingOutputSwap !== undefined;
+    // A compiler-described participant already owns this physical band. Rewriting its 1:1 outputs is unsound;
+    // ambiguity is likewise a refusal, never permission to choose the first source-level handler.
+    if (tokenWriterPresent) return;
     if (!band) return;
     const categoryId = this._jobEventsPublishCategory();
     const fromDerived = [...this.derivedChunkOutputs.entries()]

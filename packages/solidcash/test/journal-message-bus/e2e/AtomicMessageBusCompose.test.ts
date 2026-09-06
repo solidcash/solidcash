@@ -1938,6 +1938,68 @@ describe('messageBus.compose atomic transaction', () => {
     expect((await root.getState()).labelLength).toBe(1n);
   }, 120_000);
 
+  it('composes a kernel row returning a dynamic array of structs', async () => {
+    const provider = createMessageBusCapstoneTestProvider();
+    const artifact = compileString(`pragma solidity ^0.8.0;
+      struct Rec { uint256 value; uint8 status; }
+      contract RecursiveResultSource {
+        Rec[] records;
+        function all() public view returns (Rec[] memory) { return records; }
+      }
+    `, {
+      forceStateful: true, messageBus: true, messageBusKernel: true,
+      solidityImportCompat: true, suppressWarnings: true,
+    });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'all')?.eligible).toBe(true);
+    const base = new Contract(artifact, [], { provider });
+    const setup = await setupStatefulUtxos(
+      provider, base, artifact.stateLayout!,
+      { records: [{ value: 7n, status: 1n }, { value: 9n, status: 0n }] },
+      { saltContract: true },
+    );
+    const contract = StatefulContract.withCategory(
+      base.withCategory(hexToBin(setup.categoryId)), setup.categoryId,
+    );
+    const rootArtifact = compileString(`pragma solidity ^0.8.0;
+      struct Rec { uint256 value; uint8 status; }
+      interface IRecursiveResultSource { function all() external returns (Rec[] memory); }
+      contract RecursiveResultRoot(address source) {
+        function run() public {
+          IRecursiveResultSource(source).all();
+          require(true);
+        }
+      }
+    `, {
+      forceStateful: true, messageBus: true, messageBusKernel: true,
+      solidityImportCompat: true, suppressWarnings: true,
+    });
+    const rootBase = new Contract(rootArtifact, [contract.inner.lockingBytecode], { provider });
+    const rootSetup = await setupStatefulUtxos(
+      provider, rootBase, rootArtifact.stateLayout!, {}, { saltContract: true },
+    );
+    const root = StatefulContract.withCategory(
+      rootBase.withCategory(hexToBin(rootSetup.categoryId)), rootSetup.categoryId,
+    );
+    const fee = await createBareP2pkhFeeFunder(provider, 500_000n);
+    const composition = messageBus.compose({
+      calls: [root.call.run(), contract.call.all()],
+      funder: fee,
+      changeAddress: fee.unlocker.generateLockingBytecode(),
+    });
+
+    const built = await composition.build();
+    expect(vmRejects(built)).toBe(false);
+    const hostile = await composition.build();
+    const returnOutput = hostile.outputs.find((output) => output.token?.category === setup.categoryId
+      && output.token.nft?.capability === 'none');
+    if (!returnOutput?.token?.nft) throw new Error('test could not locate the recursive return-event output');
+    const commitment = hexToBin(returnOutput.token.nft.commitment);
+    commitment[commitment.length - 1] ^= 1;
+    returnOutput.token.nft.commitment = binToHex(commitment);
+    expect(vmRejects(hostile)).toBe(true);
+    await expect(composition.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+  }, 120_000);
+
   it('binds an emitted event row to its absolute physical output', async () => {
     const provider = createMessageBusCapstoneTestProvider();
     const calleeArtifact = compileString(`contract ComposeEventCallee() {

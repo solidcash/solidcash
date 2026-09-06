@@ -2,7 +2,7 @@ import { binToHex, hexToBin, vmNumberToBigInt } from '@bitauth/libauth';
 import {
   BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX, decodePushdataValue, encodePushdataValue, scriptToBytecode,
   MESSAGE_BUS_VERIFIER_COMMITMENT_DOMAIN, sha256, buildEventNftCovenantScript,
-  buildAnonymousEventNftCovenantScript, computeEventNameHash,
+  buildAnonymousEventNftCovenantScript, computeEventNameHash, parseArrayTypeString,
 } from '@solidcash/utils';
 import type { Artifact } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
@@ -86,10 +86,10 @@ interface CallDescriptor extends PreparedAtomicMessageBusCall {
   artifact: Artifact;
 }
 
-const EVM_DYNAMIC_RESULT_TYPES = new Set(['bytes', 'string']);
 const evmStaticResultType = (type: string): boolean => type === 'bool'
   || type === 'int' || type === 'uint' || type === 'bigint'
   || /^u?int(?:8|16|24|32|40|48|56|64|72|80|88|96|104|112|120|128|136|144|152|160|168|176|184|192|200|208|216|224|232|240|248|256)$/.test(type)
+  || /^u?fixed(?:8|16|24|32|40|48|56|64|72|80|88|96|104|112|120|128|136|144|152|160|168|176|184|192|200|208|216|224|232|240|248|256)x\d+$/.test(type)
   || type === 'address' || type === 'address payable'
   || /^bytes(?:[1-9]|[12][0-9]|3[0-2])$/.test(type);
 
@@ -105,8 +105,87 @@ const evmWord = (value: number): Uint8Array => {
   return word;
 };
 
-/** Optimistic, type-correct seed which lets a route expose its authenticated result during fixed-point assembly. */
-const provisionalInvocationResult = (
+interface EvmResultLayout {
+  type: string;
+  kind: 'scalar' | 'bytes' | 'array' | 'struct';
+  dynamic: boolean;
+  staticSize: number;
+  bound?: number;
+  children: readonly EvmResultLayout[];
+}
+
+const concatBytes = (parts: readonly Uint8Array[]): Uint8Array =>
+  Uint8Array.from(parts.flatMap((part) => [...part]));
+
+/** Resolve the compiler's named result types against the artifact ABI into recursive Solidity layouts. */
+const evmResultLayout = (
+  artifact: Artifact, type: string, activeStructs = new Set<string>(),
+): EvmResultLayout | undefined => {
+  if (type === 'bytes' || type === 'string') {
+    return { type, kind: 'bytes', dynamic: true, staticSize: 0, children: [] };
+  }
+  if (evmStaticResultType(type) || artifact.enums?.some((candidate) => candidate.name === type)) {
+    return { type, kind: 'scalar', dynamic: false, staticSize: 32, children: [] };
+  }
+  const array = parseArrayTypeString(type);
+  if (array) {
+    const child = evmResultLayout(artifact, array.elementType, activeStructs);
+    if (!child) return undefined;
+    const dynamic = array.bound === undefined || child.dynamic;
+    return {
+      type, kind: 'array', dynamic, staticSize: dynamic ? 0 : array.bound! * child.staticSize,
+      ...(array.bound !== undefined && { bound: array.bound }), children: [child],
+    };
+  }
+  const struct = artifact.structs?.find((candidate) => candidate.name === type);
+  if (!struct || activeStructs.has(type)) return undefined;
+  const nested = new Set(activeStructs); nested.add(type);
+  const children = struct.fields.map((field) => evmResultLayout(artifact, field.type, nested));
+  if (children.some((child) => child === undefined)) return undefined;
+  const fields = children as EvmResultLayout[];
+  const dynamic = fields.some((field) => field.dynamic);
+  return {
+    type, kind: 'struct', dynamic,
+    staticSize: dynamic ? 0 : fields.reduce((sum, field) => sum + field.staticSize, 0), children: fields,
+  };
+};
+
+const evmTupleHeadSize = (fields: readonly EvmResultLayout[]): number =>
+  fields.reduce((sum, field) => sum + (field.dynamic ? 32 : field.staticSize), 0);
+
+const provisionalEvmValue = (layout: EvmResultLayout): Uint8Array => {
+  if (layout.kind === 'scalar') {
+    const word = new Uint8Array(32);
+    // Preserve the existing optimistic boolean seed at every recursively addressable result position.
+    if (layout.type === 'bool') word[31] = 1;
+    return word;
+  }
+  if (layout.kind === 'bytes' || (layout.kind === 'array' && layout.bound === undefined)) return evmWord(0);
+  if (layout.kind === 'array') {
+    return provisionalEvmTuple(Array.from({ length: layout.bound! }, () => layout.children[0]));
+  }
+  return provisionalEvmTuple(layout.children);
+};
+
+const provisionalEvmTuple = (fields: readonly EvmResultLayout[]): Uint8Array => {
+  const head: Uint8Array[] = [];
+  const tails: Uint8Array[] = [];
+  let tailOffset = evmTupleHeadSize(fields);
+  for (const field of fields) {
+    const encoded = provisionalEvmValue(field);
+    if (field.dynamic) {
+      head.push(evmWord(tailOffset));
+      tails.push(encoded);
+      tailOffset += encoded.length;
+    } else {
+      head.push(encoded);
+    }
+  }
+  return concatBytes([...head, ...tails]);
+};
+
+/** @internal Optimistic, type-correct seed used during fixed-point assembly and schema conformance tests. */
+export const provisionalInvocationResult = (
   artifact: Artifact, resultTypes: readonly string[],
 ): string => {
   if (!artifactUsesSolidityAbi(artifact)) {
@@ -114,28 +193,12 @@ const provisionalInvocationResult = (
       ...encodePushdataValue(type === 'bool' ? true : 0n, type, artifact.structs),
     ])));
   }
-  const unsupported = resultTypes.find((type) => !evmStaticResultType(type)
-    && !EVM_DYNAMIC_RESULT_TYPES.has(type));
-  if (unsupported) {
-    throw new Error(`messageBus: EVM ABI result type '${unsupported}' has no canonical provisional encoding`);
-  }
-  const head = new Uint8Array(resultTypes.length * 32);
-  const tails: Uint8Array[] = [];
-  let tailOffset = head.length;
-  for (let index = 0; index < resultTypes.length; index += 1) {
-    const type = resultTypes[index];
-    if (EVM_DYNAMIC_RESULT_TYPES.has(type)) {
-      head.set(evmWord(tailOffset), index * 32);
-      const empty = evmWord(0);
-      tails.push(empty);
-      tailOffset += empty.length;
-    } else if (type === 'bool') {
-      // Boolean gates are seeded true so a later caller can advance far enough to expose the authoritative
-      // callee result. A false result replaces this claim on the next authenticated convergence pass.
-      head[index * 32 + 31] = 1;
-    }
-  }
-  return binToHex(Uint8Array.from([...head, ...tails.flatMap((tail) => [...tail])]));
+  const layouts = resultTypes.map((type) => evmResultLayout(artifact, type));
+  const unsupported = layouts.findIndex((layout) => layout === undefined);
+  if (unsupported >= 0) throw new Error(
+    `messageBus: EVM ABI result type '${resultTypes[unsupported]}' has no canonical provisional encoding`,
+  );
+  return binToHex(provisionalEvmTuple(layouts as EvmResultLayout[]));
 };
 
 const decodeEvmWord = (bytes: Uint8Array, offset: number): number => {
@@ -146,28 +209,75 @@ const decodeEvmWord = (bytes: Uint8Array, offset: number): number => {
   return Number(value);
 };
 
-/** Length of one concatenated abi.encode(tuple) result in an EVM-framed route return vector. */
-const evmInvocationResultLength = (
-  vector: Uint8Array, cursor: number, resultTypes: readonly string[],
+const canonicalEvmScalar = (word: Uint8Array, layout: EvmResultLayout, artifact: Artifact): boolean => {
+  const enumeration = artifact.enums?.find((candidate) => candidate.name === layout.type);
+  if (!enumeration) return isCanonicalEvmScalarReturnVector(word, [layout.type]);
+  if (!isCanonicalEvmScalarReturnVector(word, ['uint8'])) return false;
+  const value = word.reduce((result, byte) => (result << 8n) | BigInt(byte), 0n);
+  return enumeration.members.some((member) => BigInt(member.value) === value);
+};
+
+const canonicalEvmValueLength = (
+  vector: Uint8Array, start: number, layout: EvmResultLayout, artifact: Artifact,
+): number | undefined => {
+  if (layout.kind === 'scalar') {
+    if (start + 32 > vector.length) return undefined;
+    return canonicalEvmScalar(vector.slice(start, start + 32), layout, artifact) ? 32 : undefined;
+  }
+  if (layout.kind === 'bytes') {
+    const length = decodeEvmWord(vector, start);
+    if (length === undefined) return undefined;
+    const padded = Math.ceil(length / 32) * 32;
+    const end = start + 32 + padded;
+    if (!Number.isSafeInteger(end) || end > vector.length) return undefined;
+    const padding = vector.slice(start + 32 + length, end);
+    return padding.every((byte) => byte === 0) ? 32 + padded : undefined;
+  }
+  if (layout.kind === 'array' && layout.bound === undefined) {
+    const count = decodeEvmWord(vector, start);
+    if (count === undefined || count > Math.floor(vector.length / 32)) return undefined;
+    const fields = Array.from({ length: count }, () => layout.children[0]);
+    const tupleLength = canonicalEvmTupleLength(vector, start + 32, fields, artifact);
+    return tupleLength === undefined ? undefined : 32 + tupleLength;
+  }
+  const fields = layout.kind === 'array'
+    ? Array.from({ length: layout.bound! }, () => layout.children[0]) : layout.children;
+  return canonicalEvmTupleLength(vector, start, fields, artifact);
+};
+
+const canonicalEvmTupleLength = (
+  vector: Uint8Array, start: number, fields: readonly EvmResultLayout[], artifact: Artifact,
+): number | undefined => {
+  const headLength = evmTupleHeadSize(fields);
+  if (!Number.isSafeInteger(headLength) || start + headLength > vector.length) return undefined;
+  let headOffset = 0;
+  let tailOffset = headLength;
+  for (const field of fields) {
+    if (field.dynamic) {
+      const relative = decodeEvmWord(vector, start + headOffset);
+      if (relative !== tailOffset || relative % 32 !== 0) return undefined;
+      const length = canonicalEvmValueLength(vector, start + relative, field, artifact);
+      if (length === undefined) return undefined;
+      tailOffset += length;
+      headOffset += 32;
+    } else {
+      const length = canonicalEvmValueLength(vector, start + headOffset, field, artifact);
+      if (length !== field.staticSize) return undefined;
+      headOffset += field.staticSize;
+    }
+  }
+  return tailOffset;
+};
+
+/** @internal Length of one canonical ABI tuple within a concatenated route result vector. */
+export const evmInvocationResultLength = (
+  vector: Uint8Array, cursor: number, resultTypes: readonly string[], artifact: Artifact,
 ): number => {
-  const unsupported = resultTypes.find((type) => !evmStaticResultType(type)
-    && !EVM_DYNAMIC_RESULT_TYPES.has(type));
-  if (unsupported) throw new Error(`messageBus: cannot split EVM ABI result type '${unsupported}'`);
-  const headLength = resultTypes.length * 32;
-  if (cursor + headLength > vector.length) throw new Error('messageBus: truncated EVM ABI result head');
-  const staticTypes = resultTypes.every((type) => evmStaticResultType(type));
-  if (staticTypes
-    && !isCanonicalEvmScalarReturnVector(vector.slice(cursor, cursor + headLength), resultTypes)) {
-    throw new Error('messageBus: non-canonical EVM ABI scalar result');
-  }
-  let length = headLength;
-  for (let index = 0; index < resultTypes.length; index += 1) {
-    if (!EVM_DYNAMIC_RESULT_TYPES.has(resultTypes[index])) continue;
-    const relative = decodeEvmWord(vector, cursor + index * 32);
-    const dataLength = decodeEvmWord(vector, cursor + relative);
-    length = Math.max(length, relative + 32 + Math.ceil(dataLength / 32) * 32);
-  }
-  if (cursor + length > vector.length) throw new Error('messageBus: truncated EVM ABI result tail');
+  const layouts = resultTypes.map((type) => evmResultLayout(artifact, type));
+  const unsupported = layouts.findIndex((layout) => layout === undefined);
+  if (unsupported >= 0) throw new Error(`messageBus: cannot split EVM ABI result type '${resultTypes[unsupported]}'`);
+  const length = canonicalEvmTupleLength(vector, cursor, layouts as EvmResultLayout[], artifact);
+  if (length === undefined) throw new Error('messageBus: malformed or non-canonical EVM ABI result');
   return length;
 };
 
@@ -179,7 +289,7 @@ const preparedInvocationResult = (
   const consumesExactly = (candidate: Uint8Array): boolean => {
     try {
       if (artifactUsesSolidityAbi(artifact)) {
-        return evmInvocationResultLength(candidate, 0, resultTypes) === candidate.length;
+        return evmInvocationResultLength(candidate, 0, resultTypes, artifact) === candidate.length;
       }
       let cursor = 0;
       for (const type of resultTypes) {
@@ -1729,7 +1839,9 @@ export class AtomicMessageBusComposition {
           const invocation = plan.invocations[invocationIndex];
           const start = cursor;
           if (artifactUsesSolidityAbi(participant.artifact)) {
-            cursor += evmInvocationResultLength(outer.value, cursor, invocation.resultTypes);
+            cursor += evmInvocationResultLength(
+              outer.value, cursor, invocation.resultTypes, participant.artifact,
+            );
           } else {
             for (const type of invocation.resultTypes) {
               cursor += decodePushdataValue(outer.value, cursor, type, participant.artifact.structs).bytesConsumed;

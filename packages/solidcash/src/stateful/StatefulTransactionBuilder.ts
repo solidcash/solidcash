@@ -2627,7 +2627,7 @@ export function selectChunkableValueWriteExecution(
     const artifact = group.logicalArtifact ?? group.externalContract?.inner?.artifact;
     const logicalName = group.logicalFunctionName ?? group.functionName;
     const abiFunction = group.compilerRoute?.abiFunction
-      ?? artifact?.abi.find((candidate) => candidate.name === logicalName);
+      ?? artifact?.abi.find((candidate: AbiFunction) => candidate.name === logicalName);
     if (abiFunction) executions.set(`${inputIndex}:${collection}`, { inputIndex, abiFunction, collection });
   }
   if (executions.size !== 1) return undefined;
@@ -2740,7 +2740,7 @@ export function entryInsertLockRepairs(
       if (!Number.isInteger(insert.blockSlot) || insert.blockSlot < 0
         || !Number.isInteger(insert.outputBlockSlot) || insert.outputBlockSlot < 0
         || insert.blockSlot === insert.outputBlockSlot) continue;
-      const slot = layout.slots.find((candidate) => (
+      const slot = layout.slots.find((candidate: FunctionBlockLayout['slots'][number]) => (
         candidate.kind === 'entry' && candidate.offset === insert.blockSlot
       ));
       const access = slot?.slotIndex === undefined ? undefined : abiFunction.entryAccesses[slot.slotIndex];
@@ -4411,6 +4411,67 @@ export interface ExternalCallUtxoGroup {
   dynamicChunkResources?: Array<{
     blockSlot: number; name: string; type: string; write: boolean;
   }>;
+}
+
+export type ProtectedLoopEntryCollectionSelection =
+  | { status: 'absent'; collections: readonly ['jobEvents'] }
+  | { status: 'exact'; collections: string[] }
+  | { status: 'ambiguous'; collections: string[] };
+
+/** Select collection locks which same-index INSERT repair must not use as disposable relocation pads. */
+export function selectProtectedLoopEntryCollections(
+  groups: ReadonlyArray<Pick<ExternalCallUtxoGroup,
+    'functionName' | 'logicalFunctionName' | 'compilerRoute' | 'logicalArtifact' | 'externalContract'
+    | 'blockLayout' | 'plannedEntryInserts' | 'valueChunkWrites'>>,
+): ProtectedLoopEntryCollectionSelection {
+  let described = false;
+  let ambiguous = false;
+  const collections = new Set<string>();
+  for (const group of groups) {
+    if (group.valueChunkWrites !== undefined) {
+      described = true;
+      for (const write of group.valueChunkWrites) {
+        try {
+          if (binToHex(computeCollectionHash(write.collectionSignature))
+            !== write.collectionHash.toLowerCase()) {
+            ambiguous = true;
+            continue;
+          }
+          collections.add(write.collection);
+          collections.add(write.collectionSignature);
+        } catch {
+          ambiguous = true;
+        }
+      }
+    }
+    if (group.plannedEntryInserts === undefined) continue;
+    described = true;
+    const artifact = group.logicalArtifact ?? group.externalContract?.inner?.artifact;
+    const logicalName = group.logicalFunctionName ?? group.functionName;
+    const abiFunction = group.compilerRoute?.abiFunction
+      ?? artifact?.abi.find((candidate: AbiFunction) => candidate.name === logicalName);
+    const layout = abiFunction?.blockLayout ?? group.blockLayout;
+    if (!abiFunction?.entryAccesses || !layout) {
+      if (group.plannedEntryInserts.length > 0) ambiguous = true;
+      continue;
+    }
+    for (const insert of group.plannedEntryInserts) {
+      const slot = layout.slots.find((candidate: FunctionBlockLayout['slots'][number]) => (
+        candidate.kind === 'entry' && candidate.offset === insert.blockSlot
+      ));
+      const access = slot?.slotIndex === undefined ? undefined : abiFunction.entryAccesses[slot.slotIndex];
+      if (!access?.operations.includes('write')) {
+        ambiguous = true;
+        continue;
+      }
+      collections.add(access.collection);
+    }
+  }
+  if (!described) return { status: 'absent', collections: ['jobEvents'] };
+  return {
+    status: ambiguous ? 'ambiguous' : 'exact',
+    collections: [...collections],
+  };
 }
 
 /**
@@ -7194,6 +7255,11 @@ export class StatefulTransactionBuilder {
         Number.POSITIVE_INFINITY,
       )
       : suffixStart;
+    const protectedCollections = selectProtectedLoopEntryCollections([
+      ...this.externalCallUtxoGroups,
+      ...this.lowLevelCallUtxoGroups,
+    ]);
+    const protectedNames = new Set(protectedCollections.collections);
     for (let index = 0; index < this.allInputs.length; index++) {
       const plannedInsert = plannedInsertByPredecessor.get(index);
       if (!plannedInsert) continue;
@@ -7265,7 +7331,9 @@ export class StatefulTransactionBuilder {
       };
       const skipLocks: Uint8Array[] = [];
       for (const variable of this.loopEntryVars) {
-        if (variable.collection === 'jobEvents' && variable.lockingBytecode.length > 0) {
+        const protectedByMetadata = protectedCollections.status === 'ambiguous'
+          || protectedNames.has(variable.collection);
+        if (protectedByMetadata && variable.lockingBytecode.length > 0) {
           skipLocks.push(variable.lockingBytecode);
         }
       }

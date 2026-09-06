@@ -140,6 +140,7 @@ import {
   resolveValueChunkWriteCategory,
   selectCompilerWriterEvent,
   selectTokenBandRepairOwner,
+  selectProtectedLoopEntryCollections,
   isCompilerDescribedMintingBandWriter,
   StatefulTransactionBuilder,
   groupChunkableArrayWriteCollection,
@@ -470,6 +471,35 @@ describe('generic persisted value-chunk write identity', () => {
     const decoy = { ...second, keySlot: '0a'.repeat(32) };
     expect(persistedValueChunkWriteState(decoy)).toBeUndefined();
     StatefulTransactionBuilder.clearPersistedJobEvents();
+  });
+
+  it('protects renamed active collection locks and ignores a legacy-named decoy', () => {
+    const renamed = makeGroup('appendNotice');
+    renamed.valueChunkWrites = describeValueChunkWrites(renamed);
+    const decoy = {
+      ...makeGroup('publishJobEvent'),
+      stateLayout: { variables: [], collections: [] },
+      valueChunkWrites: [],
+    };
+    const selected = selectProtectedLoopEntryCollections([renamed, decoy]);
+    expect(selected.status).toBe('exact');
+    expect(selected.collections).toContain('notices');
+    expect(selected.collections).toContain(signature);
+    expect(selected.collections).not.toContain('jobEvents');
+
+    const planned = makeGroup('createNotice', signature, true);
+    expect(selectProtectedLoopEntryCollections([planned])).toMatchObject({
+      status: 'exact', collections: ['notices'],
+    });
+    expect(selectProtectedLoopEntryCollections([])).toEqual({
+      status: 'absent', collections: ['jobEvents'],
+    });
+
+    const [malformed] = renamed.valueChunkWrites;
+    expect(selectProtectedLoopEntryCollections([{
+      ...renamed,
+      valueChunkWrites: [{ ...malformed, collectionHash: '00'.repeat(32) }],
+    }]).status).toBe('ambiguous');
   });
 
   it('publishes insert identity separately from an update', () => {

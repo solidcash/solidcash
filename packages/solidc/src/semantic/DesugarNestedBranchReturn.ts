@@ -109,10 +109,9 @@ export default class DesugarNestedBranchReturn extends AstTraversal {
   private hasReturnInsideUnsupportedControl(node: Node | undefined, unsupported = false): boolean {
     if (!node) return false;
     if (node instanceof ReturnNode) return unsupported;
-    // rewriteList intentionally leaves these constructs intact (and only rewrites a try body, not its catches).
-    // Do not append a synthetic tail return when any original return would survive inside one of them.
-    const nestedUnsupported = unsupported || node instanceof WhileNode || node instanceof DoWhileNode
-      || node instanceof SwitchNode || node instanceof UncheckedNode || node instanceof TryCatchNode;
+    // Loop exits require DesugarReturnInLoop's break/flag protocol. Do not append a synthetic tail return when an
+    // original return would survive inside a loop in this earlier kernel-only pass.
+    const nestedUnsupported = unsupported || node instanceof WhileNode || node instanceof DoWhileNode;
     for (const key of Object.keys(node)) {
       if (key === 'type' || key === 'symbolTable' || key === 'location' || key === 'definition'
         || key === 'symbol' || key === 'resolvedFunction' || key === 'functionReference'
@@ -249,8 +248,8 @@ export default class DesugarNestedBranchReturn extends AstTraversal {
         // Statements after an unconditional return are unreachable; drop them.
         return [out, true];
       }
-      if (s instanceof WhileNode || s instanceof DoWhileNode || s instanceof SwitchNode) {
-        out.push(s); // loop returns were already rewritten by DesugarReturnInLoop; switch is out of scope
+      if (s instanceof WhileNode || s instanceof DoWhileNode) {
+        out.push(s); // loop returns are handled by DesugarReturnInLoop at the ordinary lowering boundary
         continue;
       }
       let mayReturn = false;
@@ -266,7 +265,30 @@ export default class DesugarNestedBranchReturn extends AstTraversal {
       } else if (s instanceof TryCatchNode) {
         const [ts, tHad] = this.rewriteList(s.tryBlock.statements ?? []);
         s.tryBlock.statements = ts;
-        mayReturn = tHad;
+        let catchHad = false;
+        for (const clause of s.catchClauses) {
+          const [cs, cHad] = this.rewriteList(clause.block.statements ?? []);
+          clause.block.statements = cs;
+          catchHad ||= cHad;
+        }
+        mayReturn = tHad || catchHad;
+      } else if (s instanceof SwitchNode) {
+        let switchHad = false;
+        for (const switchCase of s.cases) {
+          const [caseStatements, caseHad] = this.rewriteList(switchCase.body.statements ?? []);
+          switchCase.body.statements = caseStatements;
+          switchHad ||= caseHad;
+        }
+        if (s.defaultCase) {
+          const [defaultStatements, defaultHad] = this.rewriteList(s.defaultCase.statements ?? []);
+          s.defaultCase.statements = defaultStatements;
+          switchHad ||= defaultHad;
+        }
+        mayReturn = switchHad;
+      } else if (s instanceof UncheckedNode) {
+        const [uncheckedStatements, uncheckedHad] = this.rewriteList(s.block.statements ?? []);
+        s.block.statements = uncheckedStatements;
+        mayReturn = uncheckedHad;
       } else if (s instanceof BlockNode) {
         const [bs, bHad] = this.rewriteList(s.statements ?? []);
         s.statements = bs;

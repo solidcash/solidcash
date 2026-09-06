@@ -1289,7 +1289,7 @@ describe('required kernel admission', () => {
       .toMatchObject({ eligible: true });
   });
 
-  it('does not partially normalize memory-helper returns inside unsupported control', () => {
+  it('normalizes memory-helper returns inside a finite switch', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) records;
       function choose(int[] memory values, int mode) internal pure returns (int) {
@@ -1309,7 +1309,7 @@ describe('required kernel admission', () => {
       function control() public { require(true); }
     }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'apply'))
-      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_UNBOUNDED_KEY' });
+      .toMatchObject({ eligible: true });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control'))
       .toMatchObject({ eligible: true });
   });

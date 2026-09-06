@@ -5473,6 +5473,16 @@ describe('kernel composite counter-key settlement', () => {
         int observed = choose(values, next, high);
         values[1] = observed;
       }
+      function chooseSwitch(int[] memory values, int mode) internal pure returns (int) {
+        switch (mode) {
+          case 0: values[0] = 10; return 11;
+          default: values[0] = 20; return 21;
+        }
+      }
+      function outerSwitch(int[] memory values, int mode) internal pure {
+        int observed = chooseSwitch(values, mode);
+        values[1] = observed;
+      }
       function write(int n, int a, int b) public {
         int[] memory left = new int[](n);
         int[] memory right = new int[](n);
@@ -5541,6 +5551,12 @@ describe('kernel composite counter-key settlement', () => {
         for (int i = 0; i < n; i = i + 1) { this.leftSlots[values[i]] = i + 120; }
         require(true);
       }
+      function writeSwitchReturn(int n, int mode) public {
+        int[] memory values = new int[](n);
+        outerSwitch(values, mode);
+        for (int i = 0; i < n; i = i + 1) { this.leftSlots[values[i]] = i + 130; }
+        require(true);
+      }
       function checkLeft(int key, int expected) public { require(this.leftSlots[key] == expected); }
       function checkRight(int key, int expected) public { require(this.rightSlots[key] == expected); }
     }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
@@ -5570,6 +5586,8 @@ describe('kernel composite counter-key settlement', () => {
     await expect(contract.batch([{
       function: 'writeConditionalReturn', args: [2n, 1700n, false],
     }]).send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    await expect(contract.batch([{ function: 'writeSwitchReturn', args: [2n, 1n] }]).send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
     await expect(contract.call.checkLeft(1900n, 30n).send()).resolves.toBeDefined();
     await expect(contract.call.checkLeft(2300n, 60n).send()).resolves.toBeDefined();
     await expect(contract.call.checkLeft(1301n, 70n).send()).resolves.toBeDefined();
@@ -5581,6 +5599,8 @@ describe('kernel composite counter-key settlement', () => {
     await expect(contract.call.checkLeft(1601n, 111n).send()).resolves.toBeDefined();
     await expect(contract.call.checkLeft(1710n, 120n).send()).resolves.toBeDefined();
     await expect(contract.call.checkLeft(1711n, 121n).send()).resolves.toBeDefined();
+    await expect(contract.call.checkLeft(20n, 130n).send()).resolves.toBeDefined();
+    await expect(contract.call.checkLeft(21n, 131n).send()).resolves.toBeDefined();
     await expect(contract.call.checkRight(800n, 20n).send()).resolves.toBeDefined();
     await expect(contract.call.checkRight(1000n, 40n).send()).resolves.toBeDefined();
     await expect(contract.call.checkRight(1300n, 80n).send()).resolves.toBeDefined();

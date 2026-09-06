@@ -5607,12 +5607,13 @@ describe('kernel composite counter-key settlement', () => {
     await expect(contract.call.checkRight(0n, 81n).send()).resolves.toBeDefined();
   }, 180_000);
 
-  it('settles keys constructed by a literal-bounded pure helper loop', async () => {
+  it('settles keys constructed by a literal-bounded pure helper loop with continue', async () => {
     const provider = createTestProvider();
     const artifact = compileString(`contract KernelFixedHelperLoop() {
       mapping(int => int) records;
       function fill(int[] memory values, int base) internal pure {
         for (int cursor = 0; cursor < 2; cursor = cursor + 1) {
+          if (cursor == 0) { continue; }
           values[cursor] = base + cursor;
         }
       }
@@ -5635,7 +5636,7 @@ describe('kernel composite counter-key settlement', () => {
     const contract = StatefulContract.withCategory(inner, categoryId);
     await expect(contract.batch([{ function: 'apply', args: [2n, 30n] }]).send())
       .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
-    await expect(contract.call.check(30n, 10n).send()).resolves.toBeDefined();
+    await expect(contract.call.check(0n, 10n).send()).resolves.toBeDefined();
     await expect(contract.call.check(31n, 11n).send()).resolves.toBeDefined();
   }, 180_000);
 

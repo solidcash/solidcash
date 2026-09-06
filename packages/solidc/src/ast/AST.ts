@@ -368,6 +368,8 @@ export class FunctionDefinitionNode extends Node implements Named {
     creationBytecode?: string;
     // True when a same-transaction child call is folded into the authenticated child genesis.
     hasFoldedChildCall?: boolean;
+    childLayoutDigest?: string;
+    genesisState?: import('@solidcash/utils').ChildDeploymentGenesisStateAbi;
   }[];
 
   lowLevelCalls?: { callMode: 'call' | 'staticcall' | 'delegatecall'; dataParamIndex?: number }[];
@@ -1473,6 +1475,8 @@ export class InstantiationNode extends ExpressionNode {
   // The child has a constructor whose writes could NOT be folded: the true genesis of unwritten fields is
   // unknown, so later call-folds must not resolve their reads to type defaults.
   ctorFoldFailed?: boolean;
+  /** True only when every constructor statement is a pure straight-line local/state assignment and was folded. */
+  constructorStateFoldComplete?: boolean;
 
   constructor(
     public identifier: IdentifierNode,

@@ -1784,7 +1784,7 @@ describe('required kernel admission', () => {
       .not.toHaveProperty('childDeployments');
   });
 
-  it('keeps constructor-initialized child state fenced until its exact genesis state is published', () => {
+  it('publishes and admits a complete fixed constructor genesis recipe', () => {
     const artifact = compileString(`contract Unit(int seed) {
         int marker;
         constructor() { this.marker = seed; }
@@ -1792,6 +1792,106 @@ describe('required kernel admission', () => {
       contract Coordinator() {
         function materialize(int seed) public { Unit child = new Unit(seed); require(true); }
         function control() public { require(true); }
+      }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'materialize'))
+      .toMatchObject({
+        eligible: true,
+        childDeployments: [{
+          childLayoutDigest: expect.stringMatching(/^[0-9a-f]{64}$/),
+          genesisState: {
+            kind: 'constructor',
+            fields: [{
+              name: 'marker', type: 'int256', nftIndex: 0, fieldIndex: 0,
+              value: { kind: 'handlerInput', inputIndex: 0 },
+            }],
+          },
+        }],
+      });
+    expect(artifact.abi.find((candidate) => candidate.name === 'materialize')?.deployTargets?.[0])
+      .toMatchObject({
+        childLayoutDigest: expect.stringMatching(/^[0-9a-f]{64}$/),
+        genesisState: { fields: [{ name: 'marker', value: { kind: 'handlerInput', inputIndex: 0 } }] },
+      });
+  });
+
+  it('publishes a Solidity-style constructor-parameter genesis recipe', () => {
+    const artifact = compileString(`contract Unit() {
+        int marker;
+        constructor(int seed) { this.marker = seed; }
+      }
+      contract Coordinator() {
+        function materialize(int seed) public { Unit child = new Unit(seed); require(true); }
+      }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'materialize'))
+      .toMatchObject({
+        eligible: true,
+        childDeployments: [{
+          constructorArgs: [{ kind: 'handlerInput', inputIndex: 0 }],
+          genesisState: { fields: [{ name: 'marker', value: { kind: 'handlerInput', inputIndex: 0 } }] },
+        }],
+      });
+  });
+
+  it.each([
+    'constructor(int seed) { require(seed > 0); this.marker = seed; }',
+    'constructor(int seed) { this.marker = helper(seed); } function helper(int x) internal returns (int) { return x; }',
+    'constructor() { this.owner = msg.sender; }',
+  ])('keeps constructor predicates, calls, and unmodeled sender fenced: %s', (constructor) => {
+    const state = constructor.includes('owner') ? 'address owner;' : 'int marker;';
+    const args = constructor.includes('constructor()') ? '' : 'seed';
+    const artifact = compileString(`contract Unit() { ${state} ${constructor} }
+      contract Coordinator() {
+        function materialize(int seed) public { Unit child = new Unit(${args}); require(true); }
+      }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'materialize'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+  });
+
+  it('keeps constructor casts outside the materializable recipe domain fenced', () => {
+    const artifact = compileString(`contract Unit() {
+        address owner;
+        constructor(bytes raw) { this.owner = address(raw); }
+      }
+      contract Coordinator() {
+        function materialize(bytes raw) public { Unit child = new Unit(raw); require(true); }
+      }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'materialize'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+  });
+
+  it.each([
+    'enum Status { Idle, Ready } contract Unit() { Status status; constructor(int seed) { this.status = Status(seed + 1); } }',
+    'struct Pair { int left; int right; } contract Unit() { Pair pair; constructor() { this.pair.left = 1; } }',
+  ])('keeps aggregate or nominal constructor state fenced: %s', (child) => {
+    const args = child.includes('constructor()') ? '' : '1';
+    const artifact = compileString(`${child}
+      contract Coordinator() {
+        function materialize() public { Unit unit = new Unit(${args}); require(true); }
+      }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'materialize'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+  });
+
+  it('normalizes a folded UDVT constructor expression to its materializable ABI primitive', () => {
+    const artifact = compileString(`type Id is uint32;
+      contract Unit() { Id id; constructor(uint32 seed) { this.id = Id.wrap(seed + 1); } }
+      contract Coordinator() {
+        function materialize(uint32 seed) public { Unit unit = new Unit(seed); require(true); }
+      }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'materialize'))
+      .toMatchObject({
+        eligible: true,
+        childDeployments: [{ genesisState: { fields: [{ type: 'uint32' }] } }],
+      });
+  });
+
+  it('keeps fixed-point constructor arithmetic fenced until recipe scaling is modeled', () => {
+    const artifact = compileString(`contract Unit() {
+        fixed128x18 marker;
+        constructor(fixed128x18 seed) { this.marker = seed * 2; }
+      }
+      contract Coordinator() {
+        function materialize(fixed128x18 seed) public { Unit unit = new Unit(seed); require(true); }
       }`, KERNEL);
     expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'materialize'))
       .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
@@ -1871,7 +1971,7 @@ describe('required kernel admission', () => {
     expect(overloads.every((candidate) => candidate.childDeployments?.length === 1)).toBe(true);
   });
 
-  it('admits typed row-local constructor and CREATE2 recipes while keeping folded constructor state fenced', () => {
+  it('admits typed row-local constructor and CREATE2 recipes while keeping post-new calls fenced', () => {
     const computed = compileString(`contract Unit(bytes32 seed) { int marker; function configure(int next) public {
         this.marker = next; require(true);
       } }

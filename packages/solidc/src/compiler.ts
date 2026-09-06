@@ -18,7 +18,7 @@ import {
   ATOMIC_MESSAGE_BUS_MAX_PARTICIPANTS, ATOMIC_MESSAGE_BUS_MAX_ROWS,
   ChildDeploymentSiteAbi, SplitArtifactBundle, SplitStateFootprint, StructType, TupleType, Type,
   ValueType, BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX,
-  messageBusVerifierLockingBytecode,
+  messageBusVerifierLockingBytecode, childStateLayoutDigest, abiTypeString,
 } from '@solidcash/utils';
 import { generateArtifact, generateDeclarationArtifact, occurrenceInfoOf } from './artifact/Artifact.js';
 import {
@@ -29,7 +29,7 @@ import {
   InstantiationNode,
   ArrayAccessNode, ArrayAssignNode, ArrayDeleteNode, ArrayPushNode, ArrayPopNode, CollectionIterationNode,
   CollectionIterationMode,
-  CollectionNode, StateAccessNode, StateArrayPushNode, StateArrayPopNode, StateArrayAssignNode,
+  CollectionNode, StateAccessNode, StateAssignNode, StateArrayPushNode, StateArrayPopNode, StateArrayAssignNode,
   FunctionCallStatementNode,
   LowLevelCallNode, LowLevelCallStatementNode, MappingAccessNode, MappingAssignNode, MappingDeleteNode,
   MappingFieldAssignNode,
@@ -156,7 +156,9 @@ import {
   walkInvocationAst,
 } from './analysis/InvocationAnalysis.js';
 import { BinaryOperator, NullaryOperator, UnaryOperator } from './ast/Operator.js';
-import { childDeploymentValueRecipe } from './deploymentRecipes.js';
+import {
+  childDeploymentGenesisState, childDeploymentValueRecipe,
+} from './deploymentRecipes.js';
 import { cloneNode } from './ast/clone.js';
 import { hasEffectiveCallValue } from './semantic/branchOps.js';
 
@@ -2052,6 +2054,7 @@ const MESSAGE_BUS_REJECTION_REMEDIES: Record<string, string> = {
 function childDeploymentSites(
   root: FunctionDefinitionNode,
   compiledBytecodes: ReadonlyMap<string, Uint8Array>,
+  commitmentLimit: number,
 ): ChildDeploymentSiteAbi[] {
   const sites: ChildDeploymentSiteAbi[] = [];
   const visibleInputs = root.parameters.filter((parameter) => !parameter.name.startsWith('__internal__'));
@@ -2087,6 +2090,21 @@ function childDeploymentSites(
         : Math.max(...child.stateVariables.map((state) => state.nftIndex ?? 0)) + 1;
       const creationBytecode = compiledBytecodes.get(child.name);
       if (!creationBytecode) throw new Error(`Missing compiled child body for deployment topology '${child.name}'`);
+      const genesisState = value.constructorStateFoldComplete === true
+        ? childDeploymentGenesisState(value.foldedStateInit, child.stateVariables, inputIndex, inputTypes)
+        : undefined;
+      const childLayoutDigest = childStateLayoutDigest({
+        variables: child.stateVariables.map((state) => ({
+          name: state.name,
+          type: abiTypeString(state.type),
+          nftIndex: state.nftIndex ?? 0,
+          fieldIndex: state.fieldIndex ?? 0,
+          ...(state.isDynamic && { dynamic: true }),
+          ...(state.isPacked && { packed: true }),
+        })),
+        dataNftCount: dataNftOutputCount,
+        commitmentLimit,
+      });
       sites.push({
         siteIndex: sites.length,
         contractName: child.name,
@@ -2099,6 +2117,8 @@ function childDeploymentSites(
         constructorArgs: value.parameters.map(source),
         ...(value.callOptions?.salt && { salt: saltSource(value.callOptions.salt) }),
         creationBytecode: binToHex(creationBytecode),
+        childLayoutDigest,
+        ...(genesisState && { genesisState }),
       });
     }
 
@@ -3912,10 +3932,7 @@ function synthesizeMessageBusRoute(
             if (statefulChildren.has(node.identifier.name)) {
               deploySites += 1;
               const child = statefulChildren.get(node.identifier.name)!;
-              if ((child.constructorDef?.body.statements?.length ?? 0) > 0) {
-                deploymentStateInitializationUnsupported = true;
-              }
-              if (node.hasFoldedChildCall || (node.foldedStateInit?.size ?? 0) > 0) {
+              if (node.hasFoldedChildCall) {
                 deploymentStateInitializationUnsupported = true;
               }
               const visibleInputs = new Map(fn.parameters
@@ -3923,8 +3940,35 @@ function synthesizeMessageBusRoute(
                 .map((parameter, index) => [parameter.name, index] as const));
               const visibleInputTypes = new Map(fn.parameters
                 .filter((parameter) => !parameter.name.startsWith('__internal__'))
-                .map((parameter) => [parameter.name, parameter.type.toString()] as const));
-              for (const argument of node.parameters.slice(0, child.parameters.length)) {
+                .map((parameter) => [parameter.name, abiTypeString(parameter.type)] as const));
+              const constructorStatements = child.constructorDef?.body.statements ?? [];
+              if (constructorStatements.length > 0) {
+                if (child.stateVariables.some((state) => state.type instanceof StructType
+                  || state.type instanceof EnumType)) {
+                  deploymentStateInitializationUnsupported = true;
+                }
+                // Admission precedes the full symbol pass. Run the canonical folder on a clone so proof
+                // construction cannot mutate or erase the production node's later deploy-then-call state.
+                const admissionNode = Object.assign(
+                  Object.create(Object.getPrototypeOf(node)) as InstantiationNode,
+                  node,
+                  { referencedContract: child,
+                    parameters: node.parameters.map((parameter) => cloneNode(parameter)), foldedStateInit: undefined,
+                    constructorStateFoldComplete: undefined, ctorFoldFailed: undefined },
+                );
+                if (!node.hasFoldedChildCall) {
+                  new SymbolTableTraversal(compilerOptions).tryFoldChildConstructor(admissionNode);
+                }
+                const genesisState = childDeploymentGenesisState(
+                  admissionNode.foldedStateInit, child.stateVariables, visibleInputs, visibleInputTypes, true,
+                );
+                if (admissionNode.constructorStateFoldComplete !== true || !genesisState) {
+                  deploymentStateInitializationUnsupported = true;
+                }
+              }
+              const declaredConstructorParameters = child.parameters.length > 0
+                ? child.parameters : (child.constructorDef?.parameters ?? []);
+              for (const argument of node.parameters.slice(0, declaredConstructorParameters.length)) {
                 const recipe = childDeploymentValueRecipe(argument, visibleInputs, false, visibleInputTypes);
                 if (!recipe) {
                   deploymentRecipeUnsupported = true;
@@ -3957,8 +4001,7 @@ function synthesizeMessageBusRoute(
           }
           // Folded deploy calls are deliberately omitted from the ordinary invocation walk. Inspect the
           // normalized tree directly so their constructor-state mutation cannot be mistaken for defaults.
-          if ((value instanceof InstantiationNode
-                && (value.hasFoldedChildCall || (value.foldedStateInit?.size ?? 0) > 0))
+          if ((value instanceof InstantiationNode && value.hasFoldedChildCall)
               || (value instanceof ExternalFunctionCallNode && value.foldedIntoDeploy)) {
             deploymentStateInitializationUnsupported = true;
           }
@@ -8830,7 +8873,7 @@ function compileResolvedAst(
     .map((parameter) => parameter.type.toString()).join(',')})`;
   const childDeploymentsBySignature = new Map<string, ChildDeploymentSiteAbi[]>();
   for (const fn of ast.contract.functions) {
-    const deployments = childDeploymentSites(fn, compiledBytecodes);
+    const deployments = childDeploymentSites(fn, compiledBytecodes, mergedCompilerOptions.commitmentLimit!);
     if (deployments.length > 0) childDeploymentsBySignature.set(deploymentTopologyKey(fn), deployments);
   }
   profileLog('resolved:referenced', referencedStarted, {

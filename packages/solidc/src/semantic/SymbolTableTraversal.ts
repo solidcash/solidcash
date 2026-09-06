@@ -2033,7 +2033,7 @@ export default class SymbolTableTraversal extends AstTraversal {
   // Fold the child constructor's writes into the deploy genesis, so the covenant verifies the TRUE initial
   // state instead of type defaults. All-or-nothing: an unfoldable ctor (control flow, msg.sender, external
   // reads, ...) leaves the default-genesis behavior unchanged. Runs once per `new C(...)` site.
-  private tryFoldChildConstructor(deployNode: InstantiationNode): void {
+  public tryFoldChildConstructor(deployNode: InstantiationNode): void {
     const contract = deployNode.referencedContract;
     const ctor = contract?.constructorDef;
     const statements = (ctor?.body as BlockNode | undefined)?.statements ?? [];
@@ -2041,7 +2041,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     const fieldType = (name: string): Type | undefined => contract.stateVariables
       .find((sv) => sv.name === name)?.type;
     const subs = new Map<string, ExpressionNode>();
-    const declared = ctor.parameters
+    const declared = (contract.parameters.length > 0 ? contract.parameters : ctor.parameters)
       .filter((p) => !p.name.startsWith('__internal__') && !p.name.startsWith('__ctorread_'));
     declared.forEach((p, i) => {
       if (i < deployNode.parameters.length) {
@@ -2058,6 +2058,10 @@ export default class SymbolTableTraversal extends AstTraversal {
       if (!this.foldStatementList([statement], subs, fieldExprs, fieldType)) failed = true;
     }
     deployNode.ctorFoldFailed = failed;
+    deployNode.constructorStateFoldComplete = !failed && statements.every((statement) =>
+      statement instanceof VariableDefinitionNode
+      || statement instanceof StateAssignNode
+      || statement instanceof AssignNode);
     if (fieldExprs.size === 0) return;
     const init = deployNode.foldedStateInit ?? new Map<string, ExpressionNode>();
     for (const [k, v] of fieldExprs) init.set(k, v);

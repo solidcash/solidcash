@@ -270,6 +270,18 @@ export type ChildDeploymentValueRecipe =
     right: ChildDeploymentValueRecipe;
   };
 
+/** Completely folded, constructor-only initial state for one child deployment site. */
+export interface ChildDeploymentGenesisStateAbi {
+  kind: 'constructor';
+  fields: readonly {
+    name: string;
+    type: string;
+    nftIndex: number;
+    fieldIndex: number;
+    value: ChildDeploymentValueRecipe;
+  }[];
+}
+
 export interface ChildDeploymentSiteAbi {
   siteIndex: number;
   contractName: string;
@@ -284,6 +296,10 @@ export interface ChildDeploymentSiteAbi {
     | ChildDeploymentValueRecipe | { kind: 'expression' };
   /** Exact child body embedded by the parent's address computation, before category/salt pinning. */
   creationBytecode: string;
+  /** Hash of the canonical child state geometry used to interpret `genesisState`. */
+  childLayoutDigest?: string;
+  /** Present only when the complete constructor transition was folded into pure row recipes. */
+  genesisState?: ChildDeploymentGenesisStateAbi;
 }
 
 /**
@@ -405,6 +421,8 @@ export interface AbiFunction {
     creationBytecode?: string;
     /** The deploy covenant folds a same-transaction child call and its post-call genesis must be VM-derived. */
     hasFoldedChildCall?: boolean;
+    childLayoutDigest?: string;
+    genesisState?: ChildDeploymentGenesisStateAbi;
   }[];
   tokenContainerAccesses?: readonly TokenContainerAccessAbi[];
   tokenContainerTransferSites?: readonly TokenContainerTransferSiteAbi[];

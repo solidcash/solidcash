@@ -11,6 +11,26 @@ import {
 import { hash256, sha256 } from './hash.js';
 import { keccak_256 } from '@noble/hashes/sha3.js';
 
+/** Stable digest of the physical state geometry used by child-genesis recipes. */
+export function childStateLayoutDigest(layout: Pick<StateLayout, 'variables' | 'dataNftCount' | 'commitmentLimit'>): string {
+  const canonical = {
+    version: 1,
+    dataNftCount: layout.dataNftCount,
+    commitmentLimit: layout.commitmentLimit,
+    variables: [...layout.variables]
+      .sort((left, right) => left.nftIndex - right.nftIndex || left.fieldIndex - right.fieldIndex)
+      .map((variable) => ({
+        name: variable.name,
+        type: variable.type.replace(/address payable/g, 'address'),
+        nftIndex: variable.nftIndex,
+        fieldIndex: variable.fieldIndex,
+        dynamic: variable.dynamic === true,
+        packed: variable.packed === true,
+      })),
+  };
+  return binToHex(sha256(utf8ToBin(JSON.stringify(canonical))));
+}
+
 /** A primitive pushdata value: integer, boolean, byte array, or string (UTF-8 encoded). */
 export type PrimitiveStateValue = bigint | boolean | Uint8Array | string;
 

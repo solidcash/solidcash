@@ -69,7 +69,10 @@ import {
   isChunkableValueType,
   MAX_MESSAGE_BUS_BLOB_BYTES,
   outlineSharedSpans,
+  childStateLayoutDigest,
+  abiTypeString,
 } from '@solidcash/utils';
+import { childDeploymentGenesisState } from '../deploymentRecipes.js';
 import {
   canonicalizeUpsertKeyExpression,
   findLengthMinusOneKeyCanonical,
@@ -13968,6 +13971,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.currentFunction.deployTargets = [];
       }
       const deployFnParamNames = new Set(this.currentFunction.parameters.map((p) => p.name));
+      const visibleDeployParams = this.currentFunction.parameters
+        .filter((parameter) => !parameter.name.startsWith('__internal__'));
+      const deployFnParamIndices = new Map(visibleDeployParams.map((parameter, index) => [parameter.name, index]));
+      const deployFnParamTypes = new Map(visibleDeployParams
+        .map((parameter) => [parameter.name, abiTypeString(parameter.type)]));
       const constructorArgs = node.parameters.map((p) => (
         p instanceof IdentifierNode && deployFnParamNames.has(p.name) ? p.name : null
       ));
@@ -13984,6 +13992,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       } else if (saltExpr) {
         salt = { computed: true };
       }
+      const genesisState = node.constructorStateFoldComplete === true
+        ? childDeploymentGenesisState(node.foldedStateInit, liveVars, deployFnParamIndices, deployFnParamTypes)
+        : undefined;
       this.currentFunction.deployTargets.push({
         contractName: node.referencedContract!.name,
         dataNftCount: node.deployedDataNftCount,
@@ -13993,6 +14004,19 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         // deployFrom builds the child with the same redeem script (not a divergent standalone artifact).
         creationBytecode: binToHex(bodyBytecode),
         ...(node.hasFoldedChildCall && { hasFoldedChildCall: true }),
+        childLayoutDigest: childStateLayoutDigest({
+          variables: liveVars.map((state) => ({
+            name: state.name,
+            type: abiTypeString(state.type),
+            nftIndex: state.nftIndex ?? 0,
+            fieldIndex: state.fieldIndex ?? 0,
+            ...(state.isDynamic && { dynamic: true }),
+            ...(state.isPacked && { packed: true }),
+          })),
+          dataNftCount: node.deployedDataNftCount,
+          commitmentLimit: this.compilerOptions.commitmentLimit ?? 128,
+        }),
+        ...(genesisState && { genesisState }),
       });
 
       // Multi-site deploy (2+ same-contract sites with a conditional): a FUNCTION-LEVEL runtime deploy counter

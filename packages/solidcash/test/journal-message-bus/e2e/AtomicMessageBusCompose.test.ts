@@ -9,6 +9,7 @@ import {
   ecrecoverComputeLockingBytecode,
   hash160,
   buildValueChunkCommitment, encodeChunkableValueTail, encodePushdataValue, splitValueIntoValueChunks,
+  parsePushdataCommitment,
 } from '@solidcash/utils';
 import type { Artifact } from '@solidcash/utils';
 import { keccak_256 } from '@noble/hashes/sha3.js';
@@ -626,16 +627,17 @@ describe('messageBus.compose atomic transaction', () => {
     expect(new Set(deployments.map((outputs) => binToHex(outputs[0].output.to)))).toHaveLength(4);
   }, 120_000);
 
-  it('materializes row-varying constructor and CREATE2 recipes for one deployment site', async () => {
+  it('materializes row-varying constructor genesis recipes for one deployment site', async () => {
     const provider = createMessageBusCapstoneTestProvider();
     const artifacts = compileStringMulti(`contract Child(int seed) {
         int marker;
+        constructor() { this.marker = seed; }
         function keep() public { require(true); }
       }
       interface IFactory { function create(int seed); }
       contract Factory() {
         function create(int seed) public {
-          Child child = new Child{salt: bytes32(seed + 100)}(seed + 10);
+          Child child = new Child(seed);
           require(true);
         }
       }
@@ -657,8 +659,8 @@ describe('messageBus.compose atomic transaction', () => {
     expect(handler).toMatchObject({
       eligible: true,
       childDeployments: [{
-        constructorArgs: [{ kind: 'binary', operator: '+', resultType: 'int' }],
-        salt: { kind: 'cast', resultType: 'bytes32' },
+        constructorArgs: [{ kind: 'handlerInput', inputIndex: 0 }],
+        genesisState: { fields: [{ name: 'marker', value: { kind: 'handlerInput', inputIndex: 0 } }] },
       }],
     });
     const fee = await createBareP2pkhFeeFunder(provider, 100_000n);
@@ -682,6 +684,26 @@ describe('messageBus.compose atomic transaction', () => {
       output.token?.category === genesis.utxo.txid && output.token.nft?.capability === 'minting')?.to);
     expect(childLocks.every((lockingBytecode) => lockingBytecode instanceof Uint8Array)).toBe(true);
     expect(binToHex(childLocks[0]!)).not.toBe(binToHex(childLocks[1]!));
+    const childDataIndices = [firstGenesis, secondGenesis].map((genesis) => transaction.outputs.findIndex((output) =>
+      output.token?.category === genesis.utxo.txid && output.token.nft?.capability === 'mutable'));
+    expect(childDataIndices.map((index) => parsePushdataCommitment(
+      transaction.outputs[index].token!.nft!.commitment, artifacts.Child.stateLayout!, 0,
+    ).marker)).toEqual([1n, 2n]);
+    const tampered = await messageBus.compose({
+      preparedCalls: [
+        { contract: driver, functionName: 'run', args: [] },
+        { contract: factory, functionName: 'create', args: [1n] },
+        { contract: factory, functionName: 'create', args: [2n] },
+      ],
+      funder: fee,
+      changeAddress: fee.unlocker.generateLockingBytecode(),
+      childDeployments: [
+        { invocationIndex: 1, siteIndex: 0, funder: firstGenesis },
+        { invocationIndex: 2, siteIndex: 0, funder: secondGenesis },
+      ],
+    }).build();
+    tampered.outputs[childDataIndices[1]].token!.nft!.commitment = '01';
+    expect(vmRejects(tampered)).toBe(true);
   }, 120_000);
 
   it('forwards detached signatures in composite arrays through a typed graph edge', async () => {

@@ -77,6 +77,7 @@ import {
   messageBusVerifierCommitment,
   bytecodeToScript,
   scriptToAsm,
+  childStateLayoutDigest,
 } from '@solidcash/utils';
 import {
   RUNTIME_LOOP_EVENT_ITERATION_LIMIT,
@@ -6023,8 +6024,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         + 'with factory.registerChild(artifact).',
       );
     }
+    const bakedConstructorArgumentCount = childArtifact.constructorInputs.length;
     let childConstructorArgs = options.childConstructorArgs;
-    if (!childConstructorArgs && deployTarget?.constructorArgs?.every((n) => n !== null)) {
+    if (bakedConstructorArgumentCount === 0) {
+      childConstructorArgs = [];
+    } else if (!childConstructorArgs && deployTarget?.constructorArgs?.every((n) => n !== null)) {
       const derived = deployTarget.constructorArgs.map((name) => {
         const idx = deployAbi.inputs.findIndex((inp) => inp.name === name);
         return idx >= 0 ? deployFunctionArgs[idx] : undefined;
@@ -6037,6 +6041,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         + `'${deployFunctionName}'. Pass childConstructorArgs (the new-C(...) args are not all plain parameters).`,
       );
     }
+    const bakedChildConstructorArgs = childConstructorArgs.slice(0, bakedConstructorArgumentCount);
     // create2 salt: build the child with the salt the deploy covenant pins (composed with the self-pin).
     // Resolve from an explicit childSalt, else the recorded `new C{salt}()` mapping (a forwarded deploy param
     // or a hex literal). A computed salt with no explicit childSalt is an error (the address can't be rebuilt).
@@ -6163,7 +6168,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         + 'recompile the factory so the SDK can derive the covenant-authenticated child address.',
       );
     }
-    const childContracts = fundingUtxos.map((fu) => new Contract(effectiveChildArtifact, childConstructorArgs as any, {
+    const childContracts = fundingUtxos.map((fu) => new Contract(effectiveChildArtifact, bakedChildConstructorArgs as any, {
       provider,
       addressType,
       category: hexToBin(fu.txid),
@@ -6176,14 +6181,33 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
     const childLayout = childArtifact.stateLayout!;
 
+    if (deployTarget?.childLayoutDigest
+      && childStateLayoutDigest(childLayout) !== deployTarget.childLayoutDigest.toLowerCase()) {
+      throw new Error(
+        `Child artifact '${childArtifact.contractName}' does not match the compiler-authenticated deployment state layout.`,
+      );
+    }
+
     // Compute child's initial state commitments
     const childSeedState: Record<string, StateValueType> = { ...(options.childInitialState ?? {}) };
-    if (childLayout.variables?.some((variable) => (
+    if (deployTarget?.genesisState) {
+      const { evaluateChildDeploymentRecipe } = await import('../message-bus/compose.js');
+      const inputTypes = deployAbi.inputs
+        .filter((input) => !input.name.startsWith('__internal__'))
+        .map((input) => input.type);
+      for (const field of deployTarget.genesisState.fields) {
+        childSeedState[field.name] = evaluateChildDeploymentRecipe(
+          field.value, deployFunctionArgs, inputTypes, artifactUsesSolidityAbi(factory.inner.artifact),
+        ) as StateValueType;
+      }
+    }
+    const legacyChildGenesisHeuristics = !deployTarget?.childLayoutDigest && !deployTarget?.genesisState;
+    if (legacyChildGenesisHeuristics && childLayout.variables?.some((variable) => (
       variable.name === 'factory' && variable.type.startsWith('address')
     )) && childSeedState.factory === undefined) {
       childSeedState.factory = addressToLockScript(factory.inner.address);
     }
-    if (childLayout.variables?.some((variable) => variable.name === 'unlocked')
+    if (legacyChildGenesisHeuristics && childLayout.variables?.some((variable) => variable.name === 'unlocked')
       && childSeedState.unlocked === undefined) {
       childSeedState.unlocked = 1n;
     }

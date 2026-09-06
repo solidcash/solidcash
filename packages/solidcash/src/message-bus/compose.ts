@@ -5,6 +5,7 @@ import {
   buildAnonymousEventNftCovenantScript, computeEventNameHash, parseArrayTypeString,
   buildInitialStateCommitments, bytecodeToScript, scriptToAsm, BytesType, FixedType, IntType, parseTypeStrict,
   PrimitiveType,
+  childStateLayoutDigest,
 } from '@solidcash/utils';
 import type { Artifact, ChildDeploymentValueRecipe } from '@solidcash/utils';
 import type { ConstructorArgument, FunctionArgument } from '../Argument.js';
@@ -181,7 +182,7 @@ const coerceRecipeValue = (
   throw new Error(`messageBus: deployment recipe type ${resultTypeName} is not materializable`);
 };
 
-const evaluateChildDeploymentRecipe = (
+export const evaluateChildDeploymentRecipe = (
   recipe: ChildDeploymentValueRecipe,
   args: readonly FunctionArgument[],
   inputTypes: readonly string[],
@@ -211,18 +212,21 @@ const evaluateChildDeploymentRecipe = (
     throw new Error(`messageBus: unsupported deployment recipe unary operator ${recipe.operator}`);
   }
   const leftValue = evaluateChildDeploymentRecipe(recipe.left, args, inputTypes, solidityAbi);
-  const rightValue = evaluateChildDeploymentRecipe(recipe.right, args, inputTypes, solidityAbi);
   const leftType = recipeType(recipe.left, inputTypes);
+  if (recipe.operator === '&&' || recipe.operator === '||') {
+    const left = numericRecipeValue(leftValue, leftType, solidityAbi) !== 0n;
+    if (recipe.operator === '&&' && !left) return false;
+    if (recipe.operator === '||' && left) return true;
+    const rightValue = evaluateChildDeploymentRecipe(recipe.right, args, inputTypes, solidityAbi);
+    const right = numericRecipeValue(rightValue, recipeType(recipe.right, inputTypes), solidityAbi) !== 0n;
+    return recipe.operator === '&&' ? left && right : left || right;
+  }
+  const rightValue = evaluateChildDeploymentRecipe(recipe.right, args, inputTypes, solidityAbi);
   const rightType = recipeType(recipe.right, inputTypes);
   if (recipe.operator === '==' || recipe.operator === '!=') {
     const equal = leftValue instanceof Uint8Array && rightValue instanceof Uint8Array
       ? binToHex(leftValue) === binToHex(rightValue) : leftValue === rightValue;
     return recipe.operator === '==' ? equal : !equal;
-  }
-  if (recipe.operator === '&&' || recipe.operator === '||') {
-    const left = numericRecipeValue(leftValue, leftType, solidityAbi) !== 0n;
-    const right = numericRecipeValue(rightValue, rightType, solidityAbi) !== 0n;
-    return recipe.operator === '&&' ? left && right : left || right;
   }
   const left = numericRecipeValue(leftValue, leftType, solidityAbi);
   const right = numericRecipeValue(rightValue, rightType, solidityAbi);
@@ -1370,9 +1374,15 @@ export class AtomicMessageBusComposition {
               `messageBus: registered child artifact '${site.contractName}' has deployment state geometry ${childArtifact.stateLayout.dataNftCount}, expected ${site.dataNftOutputCount}`,
             );
           }
+          if (site.childLayoutDigest
+            && childStateLayoutDigest(childArtifact.stateLayout) !== site.childLayoutDigest.toLowerCase()) {
+            throw new Error(
+              `messageBus: registered child artifact '${site.contractName}' does not match deployment state layout`,
+            );
+          }
           const inputTypes = handler?.inputs.map((input) => input.type) ?? [];
           const solidityAbi = artifactUsesSolidityAbi(participant.artifact);
-          const constructorArgs = site.constructorArgs.map((source) => {
+          const constructorArgs = site.constructorArgs.slice(0, childArtifact.constructorInputs.length).map((source) => {
             if (source.kind === 'expression') {
               throw new Error(`messageBus: child constructor expression at site ${site.siteIndex} is not materializable`);
             }
@@ -1398,18 +1408,21 @@ export class AtomicMessageBusComposition {
             ...childArtifact,
             bytecode: scriptToAsm(bytecodeToScript(hexToBin(site.creationBytecode))),
           } as Artifact;
-          // Only contract-level parameters are baked into the locking bytecode. Solidity constructor parameters
-          // live in stateLayout.constructorInputs; admission already requires an empty constructor body, so they
-          // cannot alter the default genesis commitment or the child's address.
-          const bakedConstructorArgs = constructorArgs.slice(0, childArtifact.constructorInputs.length);
-          const child = new Contract(effectiveArtifact, bakedConstructorArgs as never[], {
+          // Only contract-level parameters are baked into the locking bytecode. Solidity-style constructor
+          // parameters are consumed by the authenticated genesis recipe without changing the child's address.
+          const child = new Contract(effectiveArtifact, constructorArgs as never[], {
             provider,
             addressType: owner.inner.addressType,
             category: hexToBin(genesis.txid),
             ...(salt && { salt }),
           });
+          const genesisState = Object.fromEntries((site.genesisState?.fields ?? []).map((field) => [
+            field.name,
+            evaluateChildDeploymentRecipe(field.value, descriptor.args, inputTypes, solidityAbi),
+          ]));
           const commitments = buildInitialStateCommitments(
-            childArtifact.stateLayout, {}, provider.consensusLimits?.maximumNftCommitmentBytes,
+            childArtifact.stateLayout, genesisState as never,
+            provider.consensusLimits?.maximumNftCommitmentBytes,
           );
           if (commitments.length !== site.dataNftOutputCount) {
             throw new Error(`messageBus: child deployment site ${site.siteIndex} produced incomplete default state`);

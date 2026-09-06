@@ -394,6 +394,8 @@ export function atomicParticipantPolicyHash(artifact: Artifact): string {
       constructorArgs: site.constructorArgs,
       ...(site.salt && { salt: site.salt }),
       creationBytecode: site.creationBytecode.toLowerCase(),
+      childLayoutDigest: site.childLayoutDigest ?? '',
+      genesisState: site.genesisState ?? null,
     })),
   }));
   return binToHex(sha256.hash(utf8ToBin(JSON.stringify(policy))));

@@ -165,6 +165,13 @@ export class ValueType {
   toString(): string { return this.name; }
 }
 
+/** Canonical public artifact spelling for a resolved language type. */
+export function abiTypeString(type: Type | undefined): string {
+  if (!type) return 'address';
+  if (type instanceof ValueType) return type.underlyingType.toString();
+  return type.toString().replace(/address payable/g, 'address');
+}
+
 export class TupleType {
   constructor(
     public elements: Type[],

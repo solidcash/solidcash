@@ -3,6 +3,7 @@ import {
   computeCollectionSignature, computeFunctionSelectorHex, ExternalInterfaceInfo, MappingType, Type, ValueType,
   EnumType, StructType, ExternalLibraryAbi, BUILTIN_LIBRARIES, resolveLibraries, sidecarCodeRange, isChunkableValueType,
   ValueProvenance, ValueProvenanceKind,
+  abiTypeString,
 } from '@solidcash/utils';
 import { binToHex } from '@bitauth/libauth';
 import { version } from '../index.js';
@@ -29,15 +30,6 @@ import { applyUpsertFixedKeyRecovery, patchAbiUpsertFixedKeys } from '../generat
  * name is still surfaced in the ABI (function params); only the state-encoding key type is normalized. */
 function keyEncodingTypeString(type: Type): string {
   return type instanceof EnumType ? 'bigint' : type.toString();
-}
-
-/** Unwrap ValueType to its underlying type string for ABI serialization. */
-function abiTypeString(type: Type | undefined): string {
-  // A contract-reference type (e.g. an imported contract used as a parameter/event type) has no resolved Type;
-  // on BCH a contract handle is an address, so default to 'address' rather than crashing on undefined.toString().
-  if (!type) return 'address';
-  if (type instanceof ValueType) return type.underlyingType.toString();
-  return type.toString().replace(/address payable/g, 'address');
 }
 
 // Covenant-bypass / full-state modifiers: a function carrying one may touch any state, so treat as a writer.
@@ -1364,6 +1356,8 @@ function buildFunctionAbiMetadata(
         ...(dt.salt && { salt: dt.salt }),
         ...(dt.creationBytecode && { creationBytecode: dt.creationBytecode }),
         ...(dt.hasFoldedChildCall && { hasFoldedChildCall: true }),
+        ...(dt.childLayoutDigest && { childLayoutDigest: dt.childLayoutDigest }),
+        ...(dt.genesisState && { genesisState: dt.genesisState }),
       })),
     }),
     ...(func.externalReads && func.externalReads.length > 0 && {

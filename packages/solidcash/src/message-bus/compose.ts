@@ -1,11 +1,12 @@
-import { binToHex, hexToBin, vmNumberToBigInt } from '@bitauth/libauth';
+import { bigIntToVmNumber, binToHex, hexToBin, vmNumberToBigInt } from '@bitauth/libauth';
 import {
   BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX, decodePushdataValue, encodePushdataValue, scriptToBytecode,
   MESSAGE_BUS_VERIFIER_COMMITMENT_DOMAIN, sha256, buildEventNftCovenantScript,
   buildAnonymousEventNftCovenantScript, computeEventNameHash, parseArrayTypeString,
-  buildInitialStateCommitments, bytecodeToScript, scriptToAsm,
+  buildInitialStateCommitments, bytecodeToScript, scriptToAsm, BytesType, FixedType, IntType, parseTypeStrict,
+  PrimitiveType,
 } from '@solidcash/utils';
-import type { Artifact } from '@solidcash/utils';
+import type { Artifact, ChildDeploymentValueRecipe } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
 import type {
   ContractUnlocker, Output, TokenDetails, TransactionDetails, UnlockableUtxo, Unlocker, Utxo,
@@ -90,6 +91,155 @@ export interface PreparedAtomicMessageBusCall {
     results: ReadonlyMap<number, FunctionArgument>,
   ) => readonly FunctionArgument[] | undefined;
 }
+
+const recipeType = (
+  recipe: ChildDeploymentValueRecipe,
+  inputTypes: readonly string[],
+): string => recipe.resultType
+  ?? (recipe.kind === 'handlerInput' ? inputTypes[recipe.inputIndex] : undefined)
+  ?? (() => { throw new Error('messageBus: deployment recipe has no result type'); })();
+
+const numericRecipeValue = (value: FunctionArgument, typeName: string, solidityAbi: boolean): bigint => {
+  if (typeof value === 'bigint') return value;
+  if (typeof value === 'number' && Number.isSafeInteger(value)) return BigInt(value);
+  if (typeof value === 'boolean') return value ? 1n : 0n;
+  if (typeof value === 'string' && /^(?:-?\d+|0x[0-9a-f]+)$/i.test(value)) return BigInt(value);
+  if (value instanceof Uint8Array) {
+    const type = parseTypeStrict(typeName);
+    const bytes = solidityAbi && type instanceof BytesType && type.bound !== undefined
+      ? value.slice().reverse() : value;
+    const decoded = vmNumberToBigInt(bytes);
+    if (typeof decoded !== 'bigint') {
+      throw new Error(`messageBus: deployment recipe has a non-minimal numeric ${typeName}`);
+    }
+    return decoded;
+  }
+  throw new Error(`messageBus: deployment recipe expected a scalar numeric ${typeName}`);
+};
+
+const fixedVmNumber = (value: bigint, width: number): Uint8Array => {
+  const minimal = bigIntToVmNumber(value);
+  if (minimal.length > width) throw new Error(`messageBus: deployment recipe value does not fit bytes${width}`);
+  if (minimal.length === width) return minimal;
+  const result = new Uint8Array(width);
+  result.set(minimal);
+  if (value < 0n && minimal.length > 0) {
+    result[minimal.length - 1] &= 0x7f;
+    result[width - 1] |= 0x80;
+  }
+  return result;
+};
+
+const coerceRecipeValue = (
+  value: FunctionArgument,
+  sourceTypeName: string,
+  resultTypeName: string,
+  solidityAbi: boolean,
+): FunctionArgument => {
+  const sourceType = parseTypeStrict(sourceTypeName);
+  const resultType = parseTypeStrict(resultTypeName);
+  if (resultType === PrimitiveType.BOOL) {
+    return numericRecipeValue(value, sourceTypeName, solidityAbi) !== 0n;
+  }
+  if (resultType === PrimitiveType.BIGINT || resultType instanceof IntType || resultType instanceof FixedType) {
+    let numeric = numericRecipeValue(value, sourceTypeName, solidityAbi);
+    if ((sourceType === PrimitiveType.BIGINT || sourceType instanceof IntType)
+      && resultType instanceof FixedType) numeric *= resultType.scaleFactor;
+    if (sourceType instanceof FixedType
+      && (resultType === PrimitiveType.BIGINT || resultType instanceof IntType)) numeric /= sourceType.scaleFactor;
+    if (sourceType instanceof FixedType && resultType instanceof FixedType) {
+      numeric = resultType.decimals > sourceType.decimals
+        ? numeric * 10n ** BigInt(resultType.decimals - sourceType.decimals)
+        : numeric / 10n ** BigInt(sourceType.decimals - resultType.decimals);
+    }
+    if ((resultType instanceof IntType || resultType instanceof FixedType)
+      && (numeric < resultType.minValue || numeric > resultType.maxValue)) {
+      throw new Error(`messageBus: deployment recipe value ${numeric} is out of bounds for ${resultTypeName}`);
+    }
+    return numeric;
+  }
+  if (resultType instanceof BytesType) {
+    if (value instanceof Uint8Array) {
+      if (resultType.bound === undefined) return value;
+      if (!(sourceType instanceof BytesType)) {
+        throw new Error(`messageBus: deployment recipe cannot cast ${sourceTypeName} to ${resultTypeName}`);
+      }
+      return value.length > resultType.bound
+        ? value.slice(0, resultType.bound)
+        : Uint8Array.from([...value, ...new Uint8Array(resultType.bound - value.length)]);
+    }
+    const numeric = numericRecipeValue(value, sourceTypeName, solidityAbi);
+    if (resultType.bound === undefined) return bigIntToVmNumber(numeric);
+    const encoded = fixedVmNumber(numeric, resultType.bound);
+    return solidityAbi ? encoded.reverse() : encoded;
+  }
+  throw new Error(`messageBus: deployment recipe type ${resultTypeName} is not materializable`);
+};
+
+const evaluateChildDeploymentRecipe = (
+  recipe: ChildDeploymentValueRecipe,
+  args: readonly FunctionArgument[],
+  inputTypes: readonly string[],
+  solidityAbi: boolean,
+): FunctionArgument => {
+  const resultType = recipeType(recipe, inputTypes);
+  if (recipe.kind === 'handlerInput') {
+    if (recipe.inputIndex < 0 || recipe.inputIndex >= args.length) {
+      throw new Error(`messageBus: deployment recipe input ${recipe.inputIndex} is out of range`);
+    }
+    return args[recipe.inputIndex];
+  }
+  if (recipe.kind === 'intLiteral') return coerceRecipeValue(BigInt(recipe.value), 'bigint', resultType, solidityAbi);
+  if (recipe.kind === 'boolLiteral') return coerceRecipeValue(recipe.value, 'bool', resultType, solidityAbi);
+  if (recipe.kind === 'bytesLiteral') {
+    return coerceRecipeValue(hexToBin(recipe.value), `bytes${recipe.value.length / 2}`, resultType, solidityAbi);
+  }
+  if (recipe.kind === 'cast') {
+    const operand = evaluateChildDeploymentRecipe(recipe.operand, args, inputTypes, solidityAbi);
+    return coerceRecipeValue(operand, recipeType(recipe.operand, inputTypes), resultType, solidityAbi);
+  }
+  if (recipe.kind === 'unary') {
+    const operand = evaluateChildDeploymentRecipe(recipe.operand, args, inputTypes, solidityAbi);
+    const numeric = numericRecipeValue(operand, recipeType(recipe.operand, inputTypes), solidityAbi);
+    if (recipe.operator === '!') return coerceRecipeValue(numeric === 0n, 'bool', resultType, solidityAbi);
+    if (recipe.operator === '-') return coerceRecipeValue(-numeric, 'bigint', resultType, solidityAbi);
+    throw new Error(`messageBus: unsupported deployment recipe unary operator ${recipe.operator}`);
+  }
+  const leftValue = evaluateChildDeploymentRecipe(recipe.left, args, inputTypes, solidityAbi);
+  const rightValue = evaluateChildDeploymentRecipe(recipe.right, args, inputTypes, solidityAbi);
+  const leftType = recipeType(recipe.left, inputTypes);
+  const rightType = recipeType(recipe.right, inputTypes);
+  if (recipe.operator === '==' || recipe.operator === '!=') {
+    const equal = leftValue instanceof Uint8Array && rightValue instanceof Uint8Array
+      ? binToHex(leftValue) === binToHex(rightValue) : leftValue === rightValue;
+    return recipe.operator === '==' ? equal : !equal;
+  }
+  if (recipe.operator === '&&' || recipe.operator === '||') {
+    const left = numericRecipeValue(leftValue, leftType, solidityAbi) !== 0n;
+    const right = numericRecipeValue(rightValue, rightType, solidityAbi) !== 0n;
+    return recipe.operator === '&&' ? left && right : left || right;
+  }
+  const left = numericRecipeValue(leftValue, leftType, solidityAbi);
+  const right = numericRecipeValue(rightValue, rightType, solidityAbi);
+  let value: bigint | boolean;
+  switch (recipe.operator) {
+    case '+': value = left + right; break;
+    case '-': value = left - right; break;
+    case '*': value = left * right; break;
+    case '/':
+      if (right === 0n) throw new Error('messageBus: division by zero in deployment recipe');
+      value = left / right; break;
+    case '%':
+      if (right === 0n) throw new Error('messageBus: modulo by zero in deployment recipe');
+      value = left % right; break;
+    case '<': value = left < right; break;
+    case '<=': value = left <= right; break;
+    case '>': value = left > right; break;
+    case '>=': value = left >= right; break;
+    default: throw new Error(`messageBus: unsupported deployment recipe binary operator ${recipe.operator}`);
+  }
+  return coerceRecipeValue(value, typeof value === 'boolean' ? 'bool' : 'bigint', resultType, solidityAbi);
+};
 
 interface CallDescriptor extends PreparedAtomicMessageBusCall {
   artifact: Artifact;
@@ -1107,11 +1257,13 @@ export class AtomicMessageBusComposition {
               `messageBus: registered child artifact '${site.contractName}' has deployment state geometry ${childArtifact.stateLayout.dataNftCount}, expected ${site.dataNftOutputCount}`,
             );
           }
+          const inputTypes = handler?.inputs.map((input) => input.type) ?? [];
+          const solidityAbi = artifactUsesSolidityAbi(participant.artifact);
           const constructorArgs = site.constructorArgs.map((source) => {
-            if (source.kind !== 'handlerInput') {
+            if (source.kind === 'expression') {
               throw new Error(`messageBus: child constructor expression at site ${site.siteIndex} is not materializable`);
             }
-            return descriptor.args[source.inputIndex];
+            return evaluateChildDeploymentRecipe(source, descriptor.args, inputTypes, solidityAbi);
           });
           let salt: Uint8Array | undefined;
           if (site.salt?.kind === 'handlerInput') {
@@ -1120,8 +1272,13 @@ export class AtomicMessageBusComposition {
               : typeof value === 'string' && /^(?:0x)?[0-9a-f]+$/i.test(value)
                 ? hexToBin(value.replace(/^0x/i, '')) : undefined;
           } else if (site.salt?.kind === 'literal') salt = hexToBin(site.salt.value);
-          else if (site.salt) {
+          else if (site.salt?.kind === 'expression') {
             throw new Error(`messageBus: child salt expression at site ${site.siteIndex} is not materializable`);
+          } else if (site.salt) {
+            const value = evaluateChildDeploymentRecipe(site.salt, descriptor.args, inputTypes, solidityAbi);
+            salt = value instanceof Uint8Array ? value
+              : typeof value === 'string' && /^(?:0x)?[0-9a-f]+$/i.test(value)
+                ? hexToBin(value.replace(/^0x/i, '')) : undefined;
           }
           if (site.salt && !salt) throw new Error(`messageBus: invalid child salt at site ${site.siteIndex}`);
           const effectiveArtifact = {

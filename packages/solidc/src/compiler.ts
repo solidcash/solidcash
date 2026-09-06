@@ -156,6 +156,7 @@ import {
   walkInvocationAst,
 } from './analysis/InvocationAnalysis.js';
 import { BinaryOperator, NullaryOperator, UnaryOperator } from './ast/Operator.js';
+import { childDeploymentValueRecipe } from './deploymentRecipes.js';
 import { cloneNode } from './ast/clone.js';
 import { hasEffectiveCallValue } from './semantic/branchOps.js';
 
@@ -2055,20 +2056,17 @@ function childDeploymentSites(
   const sites: ChildDeploymentSiteAbi[] = [];
   const visibleInputs = root.parameters.filter((parameter) => !parameter.name.startsWith('__internal__'));
   const inputIndex = new Map(visibleInputs.map((parameter, index) => [parameter.name, index]));
+  const inputTypes = new Map(visibleInputs.map((parameter) => [parameter.name, parameter.type.toString()]));
   const active: Array<{ fn: FunctionDefinitionNode; siteStart: number }> = [{ fn: root, siteStart: 0 }];
 
-  const source = (expression: ExpressionNode): ChildDeploymentSiteAbi['constructorArgs'][number] => {
-    if (expression instanceof IdentifierNode && inputIndex.has(expression.name)) {
-      return { kind: 'handlerInput', inputIndex: inputIndex.get(expression.name)! };
-    }
-    return { kind: 'expression' };
-  };
+  const source = (expression: ExpressionNode): ChildDeploymentSiteAbi['constructorArgs'][number] =>
+    childDeploymentValueRecipe(expression, inputIndex, false, inputTypes) ?? { kind: 'expression' };
   const saltSource = (expression: ExpressionNode): NonNullable<ChildDeploymentSiteAbi['salt']> => {
     if (expression instanceof IdentifierNode && inputIndex.has(expression.name)) {
       return { kind: 'handlerInput', inputIndex: inputIndex.get(expression.name)! };
     }
     if (expression instanceof HexLiteralNode) return { kind: 'literal', value: binToHex(expression.value) };
-    return { kind: 'expression' };
+    return childDeploymentValueRecipe(expression, inputIndex, false, inputTypes) ?? { kind: 'expression' };
   };
 
   const walk = (
@@ -3865,17 +3863,20 @@ function synthesizeMessageBusRoute(
               if (node.hasFoldedChildCall || (node.foldedStateInit?.size ?? 0) > 0) {
                 deploymentStateInitializationUnsupported = true;
               }
-              const visibleInputs = new Set(fn.parameters
+              const visibleInputs = new Map(fn.parameters
                 .filter((parameter) => !parameter.name.startsWith('__internal__'))
-                .map((parameter) => parameter.name));
+                .map((parameter, index) => [parameter.name, index] as const));
+              const visibleInputTypes = new Map(fn.parameters
+                .filter((parameter) => !parameter.name.startsWith('__internal__'))
+                .map((parameter) => [parameter.name, parameter.type.toString()] as const));
               for (const argument of node.parameters.slice(0, child.parameters.length)) {
-                if (!(argument instanceof IdentifierNode) || !visibleInputs.has(argument.name)) {
+                const recipe = childDeploymentValueRecipe(argument, visibleInputs, false, visibleInputTypes);
+                if (!recipe || !['handlerInput', 'intLiteral', 'boolLiteral', 'bytesLiteral'].includes(recipe.kind)) {
                   deploymentRecipeUnsupported = true;
                 }
               }
               const salt = node.callOptions?.salt;
-              if (salt && !(salt instanceof HexLiteralNode)
-                  && (!(salt instanceof IdentifierNode) || !visibleInputs.has(salt.name))) {
+              if (salt && !childDeploymentValueRecipe(salt, visibleInputs, false, visibleInputTypes)) {
                 deploymentRecipeUnsupported = true;
               }
             } else unsupportedInstantiation = true;

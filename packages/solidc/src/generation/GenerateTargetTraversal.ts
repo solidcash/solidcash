@@ -4669,6 +4669,64 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
     }
     this.restoreCompactHelperIds(winningPool!);
+    // The first pass deliberately treats every OP_INVOKE as a hard boundary. Once it has settled, make one
+    // conservative follow-up pass that may move only invocations of compiler-authored structural helpers.
+    // Those helpers have a stable, stack-only ABI and are safe to nest; user/source entry points and outlining
+    // ids are intentionally absent from this allow-list. Keeping the original window-12 floor also prevents
+    // this pass from exposing the shorter structural fragments on which SDK derivation must not depend.
+    const nestedCompilerHelperIds = new Set(
+      this.definedBodyRecords.flatMap((record) =>
+        record.compilerHelperId === undefined ? [] : [record.compilerHelperId]),
+    );
+    if (result !== undefined && nestedCompilerHelperIds.size > 0) {
+      const nestedStarted = Date.now();
+      const nestedPool = this.snapshotCompactHelperIds();
+      const nested = outlineSharedSpans(
+        result.bodies.map((body, index) => ({
+          script: body.script,
+          locationData: body.locationData,
+          anchors: bodies[index].anchors?.map((anchor) => body.indexMap[anchor] ?? anchor),
+        })),
+        () => encodeInt(this.allocateCompactHelperId()),
+        () => this.peekCompactHelperIdPushBytes(),
+        'savings',
+        MINIMUM_WINDOW_ELEMENTS,
+        1024,
+        undefined,
+        6,
+        nestedCompilerHelperIds,
+      );
+      if ((globalThis as any).process?.env?.SOLIDC_DEBUG_OUTLINE_TIMING === '1') {
+        console.error('[outline-timing]', JSON.stringify({
+          width: this.peekCompactHelperIdPushBytes(),
+          ranking: 'savings',
+          minimumWindowElements: MINIMUM_WINDOW_ELEMENTS,
+          candidateGroupsPerRound: 1024,
+          bodyOrder: 'nested-compiler-helpers',
+          bodies: result.bodies.length,
+          functions: nested.functions.length,
+          savedBytes: nested.savedBytes,
+          elapsedMs: Date.now() - nestedStarted,
+        }));
+      }
+      if (nested.savedBytes > 0 && nested.functions.length > 0) {
+        result = {
+          bodies: nested.bodies.map((nestedBody, index) => ({
+            ...nestedBody,
+            // Compose both rewrites so all externally published instruction pointers remain relative to the
+            // original body, including compiler-helper debug records as well as public entry points.
+            indexMap: result!.bodies[index].indexMap.map((firstPos) =>
+              nestedBody.indexMap[firstPos] ?? firstPos),
+          })),
+          functions: [...result.functions, ...nested.functions],
+          savedBytes: result.savedBytes + nested.savedBytes,
+        };
+      } else {
+        // A rejected final round may have requested ids before its exact byte-cost check. No definition is
+        // emitted in the no-op case, so return every speculative allocation to the pool.
+        this.restoreCompactHelperIds(nestedPool);
+      }
+    }
     // Window 8 cannot seed a leftover 5–7 opcode span, even when that span repeats after the longer matches
     // have become OP_INVOKE barriers. A second, narrower pass on the rewritten bodies shares those leftovers
     // without reopening the already-claimed long spans. In ordinary compilation this remains off unless a kernel

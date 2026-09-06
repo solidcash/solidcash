@@ -3,7 +3,7 @@ import {
   computeCollectionSignature, computeFunctionSelectorHex, ExternalInterfaceInfo, MappingType, Type, ValueType,
   EnumType, StructType, ExternalLibraryAbi, BUILTIN_LIBRARIES, resolveLibraries, sidecarCodeRange, isChunkableValueType,
   ValueProvenance, ValueProvenanceKind,
-  abiTypeString,
+  abiTypeString, ChildDeploymentValueRecipe,
 } from '@solidcash/utils';
 import { binToHex } from '@bitauth/libauth';
 import { version } from '../index.js';
@@ -24,6 +24,7 @@ import { BinaryOperator, UnaryOperator } from '../ast/Operator.js';
 import { containsStatefulOperation } from '../semantic/EnsureFinalRequireTraversal.js';
 import { fixedForMaximum } from '../semantic/FixedForLoop.js';
 import { parameterCommitmentSource } from '../semantic/SymbolTableTraversal.js';
+import { childDeploymentValueRecipe } from '../deploymentRecipes.js';
 
 /** The mapping key type as the SDK must ENCODE it. An enum key is int-backed (the compiler stores/derives it as
  * its integer member value), so it encodes as 'bigint' - its VM representation - not the enum name. The enum
@@ -286,11 +287,15 @@ const transferEffects = (
   serializeCondition: (expression: ExpressionNode) => ExternalCallExpression | undefined,
 ): readonly { transferIndex: number; recipient: ReturnType<typeof expressionSource>;
   amount: ReturnType<typeof expressionSource>; callOption?: 'value';
+  recipientRecipe?: ChildDeploymentValueRecipe; amountRecipe?: ChildDeploymentValueRecipe;
   condition?: ExternalCallExpression | null }[] => {
   const transfers: {
     transferIndex: number; recipient: ExpressionNode; amount: ExpressionNode; callOption?: 'value';
     condition?: ExpressionNode; conditionUnsupported?: true;
   }[] = [];
+  const visibleInputs = fn.parameters.filter((parameter) => !parameter.name.startsWith('__internal__'));
+  const inputIndex = new Map(visibleInputs.map((parameter, index) => [parameter.name, index]));
+  const inputTypes = new Map(visibleInputs.map((parameter) => [parameter.name, abiTypeString(parameter.type)]));
   const seen = new Set<object>();
   const combine = (
     outer: ExpressionNode | undefined, inner: ExpressionNode, negate: boolean,
@@ -361,15 +366,21 @@ const transferEffects = (
     }
   };
   visit(fn.body);
-  return transfers.sort((a, b) => a.transferIndex - b.transferIndex).map((transfer) => ({
-    transferIndex: transfer.transferIndex,
-    recipient: expressionSource(transfer.recipient, fn, contract),
-    amount: expressionSource(transfer.amount, fn, contract),
-    ...(transfer.callOption && { callOption: transfer.callOption }),
-    ...(transfer.conditionUnsupported
-      ? { condition: null }
-      : transfer.condition ? { condition: serializeCondition(transfer.condition) ?? null } : {}),
-  }));
+  return transfers.sort((a, b) => a.transferIndex - b.transferIndex).map((transfer) => {
+    const recipientRecipe = childDeploymentValueRecipe(transfer.recipient, inputIndex, false, inputTypes);
+    const amountRecipe = childDeploymentValueRecipe(transfer.amount, inputIndex, false, inputTypes);
+    return {
+      transferIndex: transfer.transferIndex,
+      recipient: expressionSource(transfer.recipient, fn, contract),
+      amount: expressionSource(transfer.amount, fn, contract),
+      ...(recipientRecipe && { recipientRecipe }),
+      ...(amountRecipe && { amountRecipe }),
+      ...(transfer.callOption && { callOption: transfer.callOption }),
+      ...(transfer.conditionUnsupported
+        ? { condition: null }
+        : transfer.condition ? { condition: serializeCondition(transfer.condition) ?? null } : {}),
+    };
+  });
 };
 
 /**

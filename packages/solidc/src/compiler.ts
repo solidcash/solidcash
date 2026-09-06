@@ -3866,7 +3866,7 @@ function synthesizeMessageBusRoute(
         resource === `state:${name}` || resource === `collection:${name}`
         || resource.startsWith(`collection:${name}:`)));
     let hasTokenContainerEffect = false;
-    let hasSolidityAddressValueEffect = false;
+    let hasUnsupportedFixedTransferRecipe = false;
     let hasUnsupportedFixedTransferActivation = false;
     let consumesLowLevelReturn = false;
     let resizesDynamicArrayState = false;
@@ -3888,22 +3888,14 @@ function synthesizeMessageBusRoute(
         }
         if (!(value instanceof Node) || seen.has(value)) return;
         seen.add(value);
-        if ((value instanceof AddressTransferStatementNode || value instanceof AddressSendExpressionNode)
-          && !value.inlinedLibraryEffect
-          || (value instanceof FunctionCallNode && !value.inlinedLibraryEffect
-            && /\.(?:transfer|send)$/.test(value.identifier.name)
-            && fn.parameters.some((parameter) => parameter.type instanceof AddressType
-              && value.identifier.name.startsWith(`${parameter.name}.`)))
-          || (value instanceof MethodCallNode && value.object.type instanceof AddressType
-            && ['transfer', 'send'].includes(value.methodName))
-          || (value instanceof MethodCallNode && value.object instanceof IdentifierNode
-            && ['transfer', 'send'].includes(value.methodName)
-            && fn.parameters.some((parameter) => parameter.name === (value.object as IdentifierNode).name
-              && parameter.type instanceof AddressType))) {
-          hasSolidityAddressValueEffect = true;
-        }
         if ((value instanceof TransferStatementNode && value.runtimeLoopTransfer === undefined)
           || value instanceof AddressTransferStatementNode || value instanceof AddressSendExpressionNode) {
+          const recipient = value instanceof TransferStatementNode
+            ? value.lockingBytecode : value.addressExpression;
+          if (!childDeploymentValueRecipe(recipient, activationInputIndex, false, activationInputTypes)
+            || !childDeploymentValueRecipe(value.amount, activationInputIndex, false, activationInputTypes)) {
+            hasUnsupportedFixedTransferRecipe = true;
+          }
           if (conditional && !supported) hasUnsupportedFixedTransferActivation = true;
           return;
         }
@@ -3963,27 +3955,6 @@ function synthesizeMessageBusRoute(
           if (node instanceof IdentifierNode && dynamicState.has(node.name)
             && !candidateLocals.has(node.name)) reachesDynamicState = true;
           if (node instanceof TokenContainerMethodStatementNode) hasTokenContainerEffect = true;
-          if ((node instanceof AddressTransferStatementNode || node instanceof AddressSendExpressionNode)
-            && !node.inlinedLibraryEffect) {
-            hasSolidityAddressValueEffect = true;
-          }
-          if (!candidate.isLibraryFunction
-            && node instanceof FunctionCallNode && !node.inlinedLibraryEffect
-            && /\.(?:transfer|send)$/.test(node.identifier.name)
-            && candidate.parameters.some((parameter) => parameter.type instanceof AddressType
-              && node.identifier.name.startsWith(`${parameter.name}.`))) {
-            hasSolidityAddressValueEffect = true;
-          }
-          if (node instanceof MethodCallNode && node.object.type instanceof AddressType
-            && ['transfer', 'send'].includes(node.methodName)) {
-            hasSolidityAddressValueEffect = true;
-          }
-          if (node instanceof MethodCallNode && node.object instanceof IdentifierNode
-            && ['transfer', 'send'].includes(node.methodName)
-            && candidate.parameters.some((parameter) => parameter.name === (node.object as IdentifierNode).name
-              && parameter.type instanceof AddressType)) {
-            hasSolidityAddressValueEffect = true;
-          }
           if (node instanceof StateArrayAssignNode) {
             const state = contract.stateVariables.find((candidateState) => candidateState.name === node.name);
             if (state?.type instanceof ArrayType && state.type.elementType instanceof StructType) {
@@ -4141,10 +4112,7 @@ function synthesizeMessageBusRoute(
       && footprint.effects.includes('events')
       && (!namedClosureShape.acyclic || hasUnplannedRuntimeEvent(fn))) {
       reason = 'KERNEL_LAYOUT';
-    } else if (!reason && compilerOptions.messageBusKernel === true && hasSolidityAddressValueEffect) {
-      // These intrinsics currently reach a graph recipient representation which is not byte-identical to the
-      // handler's transfer covenant. Their direct ABI recipe remains useful, but advertising the kernel route
-      // would publish a surface whose honest composition fails preflight.
+    } else if (!reason && compilerOptions.messageBusKernel === true && hasUnsupportedFixedTransferRecipe) {
       reason = 'KERNEL_LAYOUT';
     } else if (!reason && compilerOptions.messageBusKernel === true && hasUnsupportedFixedTransferActivation) {
       reason = 'KERNEL_LAYOUT';

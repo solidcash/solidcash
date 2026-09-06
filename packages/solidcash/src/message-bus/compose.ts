@@ -1904,16 +1904,31 @@ export class AtomicMessageBusComposition {
             if (transfer.condition !== undefined && !(await contract._resolveCompilerEffectPredicate(
               transfer.condition, supplied.args, handler!, supplied.executionArtifact ?? participant.artifact,
             ))) continue;
-            const recipient = transfer.recipient.kind === 'forward'
-              && transfer.recipient.paramIndex !== undefined
-              ? supplied.args[transfer.recipient.paramIndex] : undefined;
-            const amountValue = transfer.amount.kind === 'forward' && transfer.amount.paramIndex !== undefined
-              ? supplied.args[transfer.amount.paramIndex]
-              : transfer.amount.kind === 'literal' && transfer.amount.value !== undefined
-                ? BigInt(transfer.amount.value) : undefined;
+            const executionArtifact = supplied.executionArtifact ?? participant.artifact;
+            const inputTypes = handler!.inputs.map((input) => input.type);
+            const solidityAbi = artifactUsesSolidityAbi(executionArtifact);
+            const recipientValue = transfer.recipientRecipe
+              ? evaluateChildDeploymentRecipe(
+                transfer.recipientRecipe, supplied.args, inputTypes, solidityAbi,
+              )
+              : transfer.recipient.kind === 'forward' && transfer.recipient.paramIndex !== undefined
+                ? supplied.args[transfer.recipient.paramIndex] : undefined;
+            let recipient = recipientValue;
+            if (typeof recipient === 'string') {
+              recipient = recipient.includes(':') ? addressToLockScript(recipient)
+                : hexToBin(recipient.startsWith('0x') ? recipient.slice(2) : recipient);
+            }
+            const amountValue = transfer.amountRecipe
+              ? evaluateChildDeploymentRecipe(
+                transfer.amountRecipe, supplied.args, inputTypes, solidityAbi,
+              )
+              : transfer.amount.kind === 'forward' && transfer.amount.paramIndex !== undefined
+                ? supplied.args[transfer.amount.paramIndex]
+                : transfer.amount.kind === 'literal' && transfer.amount.value !== undefined
+                  ? BigInt(transfer.amount.value) : undefined;
             if (!(recipient instanceof Uint8Array) || typeof amountValue !== 'bigint') {
               throw new Error(
-                `messageBus: BCH transfer in '${invocation.function}' is not a forwarded/literal canonical effect`,
+                `messageBus: BCH transfer in '${invocation.function}' is not a canonical typed effect`,
               );
             }
             const transferSlots = participant.blockLayout!.slots

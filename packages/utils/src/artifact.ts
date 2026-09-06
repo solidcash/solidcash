@@ -270,6 +270,21 @@ export type ChildDeploymentValueRecipe =
     right: ChildDeploymentValueRecipe;
   };
 
+/** A fixed BCH transfer whose operands are reproducible from one authenticated handler row. */
+export interface FixedBchTransferAbi {
+  /** Physical transfer register within the handler's per-row effect frame. */
+  transferIndex: number;
+  /** Legacy shallow sources retained for artifact consumers which do not yet evaluate recipes. */
+  recipient: ArgSource;
+  amount: ArgSource;
+  /** Canonical typed recipes used by kernel composition. Absence means the operand is not materializable. */
+  recipientRecipe?: ChildDeploymentValueRecipe;
+  amountRecipe?: ChildDeploymentValueRecipe;
+  callOption?: 'value';
+  /** Exact source-path predicate. Null explicitly means that source reachability is not reproducible. */
+  condition?: ExternalCallExpression | null;
+}
+
 /** Completely folded, constructor-only initial state for one child deployment site. */
 export interface ChildDeploymentGenesisStateAbi {
   kind: 'constructor';
@@ -416,14 +431,7 @@ export interface AbiFunction {
   runtimeLoopEvents?: readonly RuntimeLoopEventAbi[];
   runtimeLoopTransfers?: readonly RuntimeLoopTransferAbi[];
   transferCount?: number;
-  transfers?: readonly {
-    transferIndex: number;
-    recipient: ArgSource;
-    amount: ArgSource;
-    callOption?: 'value';
-    /** Exact source-path predicate for this physical effect recipe. Null means unsupported. */
-    condition?: ExternalCallExpression | null;
-  }[];
+  transfers?: readonly FixedBchTransferAbi[];
   deployTargets?: readonly {
     contractName: string; dataNftCount: number;
     // Per child constructor argument: the deploy-function parameter name it forwards (direct `new C(param)`),
@@ -985,12 +993,7 @@ export interface InvocationAnalysisFunction {
   externalOutStateReads?: readonly ExternalOutStateAbi[];
   emits?: readonly EmitAbi[];
   transferCount?: number;
-  transfers?: readonly {
-    transferIndex: number;
-    recipient: ArgSource;
-    amount: ArgSource;
-    callOption?: 'value';
-  }[];
+  transfers?: readonly FixedBchTransferAbi[];
   tokenContainerAccesses?: readonly TokenContainerAccessAbi[];
   dynamicReads?: readonly string[];
   dynamicWrites?: readonly string[];
@@ -1126,13 +1129,7 @@ export interface Artifact {
       ecrecoverArgParams?: readonly (readonly (string | null)[])[];
       /** One entry per transitive recovery call, including `false` for native/P2PKH projections. */
       ecrecoverEvmFlags?: readonly boolean[];
-      transfers?: readonly {
-        transferIndex: number;
-        recipient: ArgSource;
-        amount: ArgSource;
-        callOption?: 'value';
-        condition?: ExternalCallExpression | null;
-      }[];
+      transfers?: readonly FixedBchTransferAbi[];
       /** Typed child-creation sites in source execution order. Presence is topology only, not admission. */
       childDeployments?: readonly ChildDeploymentSiteAbi[];
       /** Compiler-authored lifecycle authority. Append-v1 preserves the existing state geometry and permits

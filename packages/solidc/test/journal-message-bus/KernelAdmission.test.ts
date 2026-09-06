@@ -5028,26 +5028,36 @@ describe('required kernel admission', () => {
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
   });
 
-  it('fences Solidity address.transfer until its graph recipient lowering is sound', () => {
+  it('admits Solidity address.transfer through a typed fixed-effect descriptor', () => {
     const artifact = compileString(`pragma solidity ^0.8.0;
       contract C {
         function denied(address payable to) public { to.transfer(1); require(true); }
         function control() public { require(true); }
       }`, { ...KERNEL, solidityImportCompat: true });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')).toMatchObject({
-      eligible: false, rejectionReason: 'KERNEL_LAYOUT',
+      eligible: true,
+      transfers: [{
+        transferIndex: 0,
+        recipientRecipe: { kind: 'handlerInput', inputIndex: 0 },
+        amountRecipe: { kind: 'intLiteral', value: '1' },
+      }],
     });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
   });
 
-  it('fences Solidity address.send until its graph recipient lowering is sound', () => {
+  it('admits Solidity address.send through a typed fixed-effect descriptor', () => {
     const artifact = compileString(`pragma solidity ^0.8.0;
       contract C {
         function denied(address payable to) public { require(to.send(1)); }
         function control() public { require(true); }
       }`, { ...KERNEL, solidityImportCompat: true });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')).toMatchObject({
-      eligible: false, rejectionReason: 'KERNEL_LAYOUT',
+      eligible: true,
+      transfers: [{
+        transferIndex: 0,
+        recipientRecipe: { kind: 'handlerInput', inputIndex: 0 },
+        amountRecipe: { kind: 'intLiteral', value: '1' },
+      }],
     });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
   });
@@ -5087,12 +5097,18 @@ describe('required kernel admission', () => {
           require(true);
         }
       }`, { ...KERNEL, solidityImportCompat: true });
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'pay')).toMatchObject({
-      eligible: false, rejectionReason: 'KERNEL_LAYOUT',
-    });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'pay')?.eligible).toBe(true);
     expect(artifact.abi.find((handler) => handler.name === 'pay')?.transfers).toEqual([
-      expect.objectContaining({ transferIndex: 0, recipient: { kind: 'forward', paramIndex: 1 } }),
-      expect.objectContaining({ transferIndex: 0, recipient: { kind: 'forward', paramIndex: 1 } }),
+      expect.objectContaining({
+        transferIndex: 0, recipient: { kind: 'forward', paramIndex: 1 },
+        recipientRecipe: { kind: 'handlerInput', inputIndex: 1 },
+        amountRecipe: { kind: 'handlerInput', inputIndex: 2 },
+      }),
+      expect.objectContaining({
+        transferIndex: 0, recipient: { kind: 'forward', paramIndex: 1 },
+        recipientRecipe: { kind: 'handlerInput', inputIndex: 1 },
+        amountRecipe: { kind: 'handlerInput', inputIndex: 2 },
+      }),
     ]);
   });
 
@@ -5175,15 +5191,19 @@ describe('required kernel admission', () => {
       .toMatchObject({ eligible: true, transfers: [{ transferIndex: 0 }, { transferIndex: 1 }] });
   });
 
-  it('fences address.transfer reached through an internal helper', () => {
+  it('admits address.transfer reached through an internal helper after typed inlining', () => {
     const artifact = compileString(`pragma solidity ^0.8.0;
       contract C {
-        function _pay(address payable to) internal { to.transfer(1); }
-        function denied(address payable to) public { _pay(to); require(true); }
+        function _pay(address payable sink) internal { sink.transfer(1); }
+        function denied(address payable beneficiary) public { _pay(beneficiary); require(true); }
         function control() public { require(true); }
       }`, { ...KERNEL, solidityImportCompat: true });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')).toMatchObject({
-      eligible: false, rejectionReason: 'KERNEL_LAYOUT',
+      eligible: true,
+      transfers: [{
+        recipientRecipe: { kind: 'handlerInput', inputIndex: 0 },
+        amountRecipe: { kind: 'intLiteral', value: '1' },
+      }],
     });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
   });

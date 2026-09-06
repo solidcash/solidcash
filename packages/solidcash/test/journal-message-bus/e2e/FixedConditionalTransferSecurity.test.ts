@@ -287,13 +287,16 @@ describe('fixed conditional BCH transfer transcript security', () => {
         { contract: driver, functionName: 'runLiteralSentinel', args: [] },
         { contract: vault, functionName: 'literalSentinel', args: [] },
       ], funder: fee, changeAddress: recipientA,
-    }).build()).rejects.toThrow(/transfer slot .* invalid|active transfer recipient.*OP_TRUE|not a forwarded\/literal canonical effect/i);
+    }).build()).rejects.toThrow(
+      /transfer slot .* invalid|active transfer recipient.*OP_TRUE|not a canonical typed effect|preflight failed.*OP_VERIFY/i,
+    );
   }, 240_000);
 
   it.each([
     ['address.transfer', 'transferStyle'],
     ['address.send', 'sendStyle'],
-  ] as const)('fences %s from the kernel until its recipient representation is runtime-safe', (_style, vaultFunction) => {
+  ] as const)('executes %s from its typed fixed-effect descriptor', async (_style, vaultFunction) => {
+    const provider = createMessageBusCapstoneTestProvider();
     const artifacts = compileStringMulti(`pragma solidity ^0.8.0;
       contract Vault {
         function transferStyle(address payable recipient, uint amount) public {
@@ -307,15 +310,58 @@ describe('fixed conditional BCH transfer transcript security', () => {
       forceStateful: true, messageBus: true, messageBusKernel: true,
       solidityImportCompat: true, maximumInputBytes: 1_000_000,
     });
+    const driverArtifacts = compileStringMulti(`pragma solidcash ^0.13.0;
+      interface IVault {
+        function transferStyle(address recipient, uint amount);
+        function sendStyle(address recipient, uint amount);
+      }
+      contract Driver(address vault) {
+        function runTransfer(address recipient, uint amount) public {
+          IVault(vault).transferStyle(recipient, amount);
+          require(true);
+        }
+        function runSend(address recipient, uint amount) public {
+          IVault(vault).sendStyle(recipient, amount);
+          require(true);
+        }
+      }`, {
+      forceStateful: true, messageBus: true, messageBusKernel: true, maximumInputBytes: 1_000_000,
+    });
     const handler = artifacts.Vault.messageBus?.handlers.find((candidate) => candidate.name === vaultFunction);
     expect(handler).toMatchObject({
-      eligible: false,
-      rejectionReason: 'KERNEL_LAYOUT',
+      eligible: true,
+      transfers: [{
+        transferIndex: 0,
+        recipientRecipe: { kind: 'handlerInput', inputIndex: 0 },
+        amountRecipe: { kind: 'handlerInput', inputIndex: 1 },
+      }],
     });
-    expect(artifacts.Vault.abi.find((candidate) => candidate.name === vaultFunction)?.transfers).toEqual([{
-      transferIndex: 0,
-      recipient: { kind: 'forward', paramIndex: 0 },
-      amount: { kind: 'forward', paramIndex: 1 },
-    }]);
-  });
+    const connect = async (artifact: Artifact, args: readonly unknown[] = []): Promise<StatefulContract> => {
+      const base = new Contract(artifact, args as never[], { provider });
+      const setup = await setupStatefulUtxos(provider, base, artifact.stateLayout!, {}, { saltContract: true });
+      return StatefulContract.withCategory(base.withCategory(hexToBin(setup.categoryId)), setup.categoryId);
+    };
+    const vault = await connect(artifacts.Vault);
+    const driver = await connect(driverArtifacts.Driver, [hexToBin(vault.inner.lockingBytecode)]);
+    await provider.addUtxo(getSatoshiContainerAddress(vault.inner, vault.categoryId), {
+      txid: (vaultFunction === 'transferStyle' ? 'e1' : 'e2').repeat(32), vout: 1, satoshis: 20_000n,
+    });
+    const fee = await createBareP2pkhFeeFunder(provider, 1_000_000n);
+    const recipient = fee.unlocker.generateLockingBytecode();
+    const builder = await messageBus.compose({
+      preparedCalls: [
+        {
+          contract: driver,
+          functionName: vaultFunction === 'transferStyle' ? 'runTransfer' : 'runSend',
+          args: [recipient, 2_000n],
+        },
+        { contract: vault, functionName: vaultFunction, args: [recipient, 2_000n] },
+      ],
+      funder: fee,
+      changeAddress: recipient,
+    }).build();
+    expect(vmRejects(builder)).toBe(false);
+    expect(builder.outputs.filter((output) => !output.token
+      && output.amount === 2_000n && binToHex(output.to as Uint8Array) === binToHex(recipient))).toHaveLength(1);
+  }, 240_000);
 });

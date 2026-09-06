@@ -1352,7 +1352,7 @@ describe('required kernel admission', () => {
       .toMatchObject({ eligible: true });
   });
 
-  it('refuses a runtime-selected continue in a literal-bounded pure helper loop', () => {
+  it('replays a runtime-selected continue in a literal-bounded pure helper loop', () => {
     const artifact = compileString(`contract Registry() {
       mapping(int => int) records;
       function fillFixed(int[] memory values, int base, bool skip) internal pure {
@@ -1372,7 +1372,7 @@ describe('required kernel admission', () => {
       function control() public { require(true); }
     }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'apply'))
-      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_UNBOUNDED_KEY' });
+      .toMatchObject({ eligible: true });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control'))
       .toMatchObject({ eligible: true });
   });
@@ -1404,7 +1404,7 @@ describe('required kernel admission', () => {
       .toMatchObject({ eligible: true });
   });
 
-  it('refuses a runtime-selected switch continue in a literal-bounded pure helper loop', () => {
+  it('replays a runtime-selected switch continue in a literal-bounded pure helper loop', () => {
     const artifact = compileString(`contract Registry() {
       mapping(int => int) records;
       function fillFixed(int[] memory values, int base, int mode) internal pure {
@@ -1426,7 +1426,7 @@ describe('required kernel admission', () => {
       function control() public { require(true); }
     }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'apply'))
-      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_UNBOUNDED_KEY' });
+      .toMatchObject({ eligible: true });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control'))
       .toMatchObject({ eligible: true });
   });

@@ -5713,10 +5713,47 @@ export default class LowerVMapCounterLoops extends AstTraversal {
               const ifSummary = summarize(helperStatement.ifBlock, base, scope, visiting);
               const elseSummary = helperStatement.elseBlock
                 ? summarize(helperStatement.elseBlock, base, scope, visiting) : base;
-              if (!ifSummary || !elseSummary || ifSummary.loopControl || elseSummary.loopControl
-                || ifSummary.returnValues || elseSummary.returnValues) return undefined;
+              if (!ifSummary || !elseSummary || ifSummary.returnValues || elseSummary.returnValues) {
+                return undefined;
+              }
               const otherwise = new UnaryOpNode(UnaryOperator.NOT, cloneNode(condition));
               otherwise.location = condition.location;
+              if (ifSummary.loopControl === 'continue' || elseSummary.loopControl === 'continue') {
+                // A runtime-selected continue has a finite join at the next fixed iteration. Replay the
+                // remainder only for arms which fall through, then merge both completed iteration histories.
+                // A selected break/return changes the future iteration domain and remains fenced separately.
+                if (ifSummary.loopControl === 'break' || elseSummary.loopControl === 'break') return undefined;
+                const tail = new BlockNode(body.slice(index + 1));
+                tail.location = helperBlock.location;
+                const finishIteration = (candidate: HelperSummary): HelperSummary | undefined => {
+                  if (candidate.loopControl === 'continue') {
+                    return { ...candidate, loopControl: undefined };
+                  }
+                  const completed = summarize(tail, candidate, scope, visiting);
+                  if (!completed || completed.returnValues || completed.loopControl === 'break') return undefined;
+                  return { ...completed, loopControl: undefined };
+                };
+                const completedIf = finishIteration(ifSummary);
+                const completedElse = finishIteration(elseSummary);
+                if (!completedIf || !completedElse) return undefined;
+                const completedArms = [
+                  { ...completedIf, condition },
+                  { ...completedElse, condition: otherwise as ExpressionNode },
+                ];
+                const mergedPlans = new Map([...base.plans].map(([name, plan]) => [name, mergePlan(
+                  name,
+                  plan,
+                  completedArms.map((arm) => ({
+                    plan: arm.plans.get(name)!, condition: arm.condition,
+                  })),
+                )]));
+                return {
+                  plans: mergedPlans,
+                  values: mergeValues(base.values, completedArms),
+                  loopControl: 'continue',
+                };
+              }
+              if (ifSummary.loopControl || elseSummary.loopControl) return undefined;
               const arms = [
                 { ...ifSummary, condition },
                 { ...elseSummary, condition: otherwise as ExpressionNode },
@@ -5773,9 +5810,47 @@ export default class LowerVMapCounterLoops extends AstTraversal {
                 summarize(candidate.body, base, scope, visiting));
               const fallback = helperStatement.defaultCase
                 ? summarize(helperStatement.defaultCase, base, scope, visiting) : base;
-              if (!fallback || fallback.loopControl === 'continue' || fallback.returnValues
-                || summaries.some((candidate) => !candidate
-                  || candidate.loopControl === 'continue' || candidate.returnValues)) return undefined;
+              if (!fallback || fallback.returnValues
+                || summaries.some((candidate) => !candidate || candidate.returnValues)) return undefined;
+              if (fallback.loopControl === 'continue'
+                || summaries.some((candidate) => candidate!.loopControl === 'continue')) {
+                const tail = new BlockNode(body.slice(index + 1));
+                tail.location = helperBlock.location;
+                const finishIteration = (candidate: HelperSummary): HelperSummary | undefined => {
+                  if (candidate.loopControl === 'continue') {
+                    return { ...candidate, loopControl: undefined };
+                  }
+                  // A case-level break exits this switch and therefore reaches the enclosing block tail.
+                  const completed = summarize(
+                    tail, { ...candidate, loopControl: undefined }, scope, visiting,
+                  );
+                  if (!completed || completed.returnValues || completed.loopControl === 'break') return undefined;
+                  return { ...completed, loopControl: undefined };
+                };
+                const completedSummaries = summaries.map((candidate) => finishIteration(candidate!));
+                const completedFallback = finishIteration(fallback);
+                if (!completedFallback || completedSummaries.some((candidate) => !candidate)) {
+                  return undefined;
+                }
+                const completedArms = [
+                  ...completedSummaries.map((summary, armIndex) => ({
+                    ...summary!, condition: conditions[armIndex] as ExpressionNode,
+                  })),
+                  { ...completedFallback, condition: fallbackCondition as ExpressionNode },
+                ];
+                const mergedPlans = new Map([...base.plans].map(([name, plan]) => [name, mergePlan(
+                  name,
+                  plan,
+                  completedArms.map((arm) => ({
+                    plan: arm.plans.get(name)!, condition: arm.condition,
+                  })),
+                )]));
+                return {
+                  plans: mergedPlans,
+                  values: mergeValues(base.values, completedArms),
+                  loopControl: 'continue',
+                };
+              }
               const normalizedSummaries = summaries.map((candidate) => ({
                 ...candidate!, loopControl: undefined,
               }));

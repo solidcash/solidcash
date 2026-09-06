@@ -5642,6 +5642,68 @@ describe('kernel composite counter-key settlement', () => {
     await expect(contract.call.check(31n, 11n).send()).resolves.toBeDefined();
   }, 180_000);
 
+  it('settles runtime-selected branch and switch continues in literal-bounded pure helper loops', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(`contract KernelRuntimeHelperContinue() {
+      mapping(int => int) records;
+      function fillBranch(int[] memory values, int base, bool skip) internal pure {
+        for (int cursor = 0; cursor < 2; cursor = cursor + 1) {
+          if (skip) { continue; }
+          values[cursor] = base + cursor;
+        }
+      }
+      function fillSwitch(int[] memory values, int base, int mode) internal pure {
+        for (int cursor = 0; cursor < 2; cursor = cursor + 1) {
+          switch (mode) {
+            case 0: continue;
+            default: values[cursor] = base + cursor;
+          }
+        }
+      }
+      function applyBranch(int count, int base, bool skip) public {
+        int[] memory values = new int[](count);
+        fillBranch(values, base, skip);
+        for (int cursor = 0; cursor < count; cursor = cursor + 1) {
+          this.records[values[cursor]] = cursor + 10;
+        }
+        require(true);
+      }
+      function applySwitch(int count, int base, int mode) public {
+        int[] memory values = new int[](count);
+        fillSwitch(values, base, mode);
+        for (int cursor = 0; cursor < count; cursor = cursor + 1) {
+          this.records[values[cursor]] = cursor + 20;
+        }
+        require(true);
+      }
+      function check(int key, int expected) public { require(this.records[key] == expected); }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.filter((handler) => handler.name.startsWith('apply')))
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({ name: 'applyBranch', eligible: true }),
+        expect.objectContaining({ name: 'applySwitch', eligible: true }),
+      ]));
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+    );
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    await expect(contract.batch([{ function: 'applyBranch', args: [2n, 30n, true] }]).send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    await expect(contract.call.check(0n, 11n).send()).resolves.toBeDefined();
+    await expect(contract.batch([{ function: 'applyBranch', args: [2n, 30n, false] }]).send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    await expect(contract.call.check(30n, 10n).send()).resolves.toBeDefined();
+    await expect(contract.call.check(31n, 11n).send()).resolves.toBeDefined();
+    await expect(contract.batch([{ function: 'applySwitch', args: [2n, 40n, 0n] }]).send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    await expect(contract.call.check(0n, 21n).send()).resolves.toBeDefined();
+    await expect(contract.batch([{ function: 'applySwitch', args: [2n, 40n, 1n] }]).send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    await expect(contract.call.check(40n, 20n).send()).resolves.toBeDefined();
+    await expect(contract.call.check(41n, 21n).send()).resolves.toBeDefined();
+  }, 180_000);
+
   it('settles keys constructed before a counter-selected helper-loop break', async () => {
     const provider = createTestProvider();
     const artifact = compileString(`contract KernelFixedHelperBreak() {

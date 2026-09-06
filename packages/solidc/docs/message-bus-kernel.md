@@ -595,10 +595,13 @@ effects too; capturing its ordinary return value does not invalidate the constru
 also carry a replayed scalar return tuple into subsequent scalar and array expressions in their caller. Pure memory
 helpers with several branch returns are normalized to one flag-backed terminal return before kernel admission, so
 the planner and executable row share the same continuation form. The flag-backed rewrite descends through finite
-switches, unchecked blocks, and try/catch arms. Returns inside loops remain fenced until their loop-exit protocol
-runs before kernel admission. Literal-bounded pure helper loops are replayed symbolically without rewriting the
-executable helper. Ascending and descending `for`, `while`, and `do-while` progressions with a nonzero literal step
-are supported when their comparison has a literal endpoint and their body has no `break`, `continue`, or `return`.
+switches, unchecked blocks, and try/catch arms. Returns inside loops run through their ordinary loop-exit protocol
+before kernel admission, so symbolic replay and executable code generation observe the same control flow.
+Literal-bounded pure helper loops are replayed symbolically without rewriting the loop itself. Ascending and
+descending `for`, `while`, and `do-while` progressions with a nonzero literal step are supported when their
+comparison has a literal endpoint. Counter-resolved `break`, `continue`, and `return` paths are replayed directly.
+Runtime-selected `continue` paths merge at the next fixed iteration; runtime-selected `break` and `return` remain
+fenced because they shorten the future iteration domain.
 Reversed comparison operands and exact `!=` endpoints use the same replay. A shared 256-iteration budget covers
 nested loops and nested helper calls; exceeding it conservatively leaves the handler `KERNEL_UNBOUNDED_KEY`.
 Direct source assignments use the same point-in-time resolver, including literal and runtime array indices.

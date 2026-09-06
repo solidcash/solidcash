@@ -5410,6 +5410,10 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           };
           return resolve(replaceSnapshots(expression, values));
         };
+        // Fixed helper loops are replayed symbolically rather than rewritten in the executable AST. Keep a
+        // shared budget across nested helper calls/loops so a source with many small nested bounds cannot turn
+        // admission into an exponential compile-time expansion.
+        let fixedHelperIterationBudget = 256;
         const summarize = (
           helperBlock: BlockNode,
           source: HelperSummary,
@@ -5567,6 +5571,109 @@ export default class LowerVMapCounterLoops extends AstTraversal {
               length.location = helperStatement.location;
               length.type = plan.length.type;
               plan.length = length;
+              continue;
+            }
+            if (helperStatement instanceof WhileNode || helperStatement instanceof DoWhileNode) {
+              const condition = helperStatement.condition;
+              const statements = helperStatement.block.statements ?? [];
+              const update = statements[statements.length - 1];
+              if (!(condition instanceof BinaryOpNode)
+                || !(update instanceof AssignNode)
+                || !(update.expression instanceof BinaryOpNode)
+                || !(condition.left instanceof IdentifierNode
+                  && condition.right instanceof IntLiteralNode)
+                  && !(condition.right instanceof IdentifierNode
+                    && condition.left instanceof IntLiteralNode)) return undefined;
+              const counterOnLeft = condition.left instanceof IdentifierNode;
+              const counterNode = (counterOnLeft ? condition.left : condition.right) as IdentifierNode;
+              const bound = (counterOnLeft ? condition.right : condition.left) as IntLiteralNode;
+              const comparison = counterOnLeft ? condition.operator : ({
+                [BinaryOperator.LT]: BinaryOperator.GT,
+                [BinaryOperator.LE]: BinaryOperator.GE,
+                [BinaryOperator.GT]: BinaryOperator.LT,
+                [BinaryOperator.GE]: BinaryOperator.LE,
+                [BinaryOperator.NE]: BinaryOperator.NE,
+              } as Partial<Record<BinaryOperator, BinaryOperator>>)[condition.operator];
+              if (comparison === undefined) return undefined;
+              const counterName = counterNode.name;
+              if (update.identifier.name !== counterName) return undefined;
+              const initial = values.get(counterName);
+              const addedOnLeft = update.expression.operator === BinaryOperator.PLUS
+                && update.expression.left instanceof IdentifierNode
+                && update.expression.left.name === counterName
+                && update.expression.right instanceof IntLiteralNode
+                ? update.expression.right : undefined;
+              const addedOnRight = update.expression.operator === BinaryOperator.PLUS
+                && update.expression.right instanceof IdentifierNode
+                && update.expression.right.name === counterName
+                && update.expression.left instanceof IntLiteralNode
+                ? update.expression.left : undefined;
+              const subtracted = update.expression.operator === BinaryOperator.MINUS
+                && update.expression.left instanceof IdentifierNode
+                && update.expression.left.name === counterName
+                && update.expression.right instanceof IntLiteralNode
+                ? update.expression.right : undefined;
+              const magnitude = addedOnLeft ?? addedOnRight ?? subtracted;
+              const step = magnitude && subtracted ? -magnitude.value : magnitude?.value;
+              const ascending = comparison === BinaryOperator.LT || comparison === BinaryOperator.LE;
+              const descending = comparison === BinaryOperator.GT || comparison === BinaryOperator.GE;
+              if (!(initial instanceof IntLiteralNode) || step === undefined || step === 0n
+                || (ascending && step < 0n) || (descending && step > 0n)
+                || (!ascending && !descending && comparison !== BinaryOperator.NE)) return undefined;
+              const loopBody = new BlockNode(statements.slice(0, -1));
+              loopBody.location = helperStatement.block.location;
+              const hasEscape = (candidate: Node): boolean => {
+                if (candidate instanceof ReturnNode || candidate instanceof BreakNode
+                  || candidate instanceof ContinueNode) return true;
+                for (const key of Object.keys(candidate)) {
+                  if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type'
+                    || key === 'resolvedFunction' || key === 'functionReference' || key === 'collection'
+                    || key === 'stateVariable') continue;
+                  const value = (candidate as unknown as Record<string, unknown>)[key];
+                  if (value instanceof Node && hasEscape(value)) return true;
+                  if (Array.isArray(value)
+                    && value.some((item) => item instanceof Node && hasEscape(item))) return true;
+                }
+                return false;
+              };
+              if (hasEscape(loopBody)) return undefined;
+              let loopPlans = copyPlans(helperPlans);
+              let loopValues = new Map(values);
+              let counter = initial.value;
+              const continues = (): boolean => {
+                if (comparison === BinaryOperator.LT) return counter < bound.value;
+                if (comparison === BinaryOperator.LE) return counter <= bound.value;
+                if (comparison === BinaryOperator.GT) return counter > bound.value;
+                if (comparison === BinaryOperator.GE) return counter >= bound.value;
+                return counter !== bound.value;
+              };
+              let firstPostTestIteration = helperStatement instanceof DoWhileNode;
+              while (firstPostTestIteration || continues()) {
+                firstPostTestIteration = false;
+                fixedHelperIterationBudget -= 1;
+                if (fixedHelperIterationBudget < 0) return undefined;
+                const counterValue = new IntLiteralNode(counter);
+                counterValue.location = counterNode.location;
+                counterValue.type = counterNode.type ?? new IntType(true, 256);
+                loopValues.set(counterName, counterValue);
+                const iteration = summarize(
+                  loopBody,
+                  { plans: loopPlans, values: loopValues },
+                  false,
+                  scope,
+                  visiting,
+                );
+                if (!iteration || iteration.returnValues) return undefined;
+                loopPlans = iteration.plans;
+                loopValues = iteration.values;
+                counter += step;
+              }
+              const finalCounter = new IntLiteralNode(counter);
+              finalCounter.location = counterNode.location;
+              finalCounter.type = counterNode.type ?? new IntType(true, 256);
+              loopValues.set(counterName, finalCounter);
+              helperPlans = loopPlans;
+              values = loopValues;
               continue;
             }
             if (helperStatement instanceof BranchNode) {

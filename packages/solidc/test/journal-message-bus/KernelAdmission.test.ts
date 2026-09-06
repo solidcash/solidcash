@@ -1264,6 +1264,97 @@ describe('required kernel admission', () => {
       .toMatchObject({ eligible: true });
   });
 
+  it('replays a literal-bounded pure helper loop without changing runtime loop semantics', () => {
+    const artifact = compileString(`contract Registry() {
+      mapping(int => int) records;
+      function fillFixed(int[] memory values, int base) internal pure {
+        for (int cursor = 0; cursor < 2; cursor = cursor + 1) {
+          values[cursor] = base + cursor;
+        }
+      }
+      function apply(int count, int base) public {
+        int[] memory values = new int[](count);
+        fillFixed(values, base);
+        for (int cursor = 0; cursor < count; cursor = cursor + 1) {
+          this.records[values[cursor]] = cursor;
+        }
+        require(true);
+      }
+      function seed(int key) public { this.records[key] = 1; require(true); }
+      function control() public { require(true); }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'apply'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control'))
+      .toMatchObject({ eligible: true });
+  });
+
+  it.each([
+    ['a descending for loop', `for (int cursor = 2; cursor >= 0; cursor = cursor - 1) {
+      values[cursor] = base + cursor;
+    }`],
+    ['a reversed comparison and commuted step', `for (int cursor = 0; 3 > cursor; cursor = 1 + cursor) {
+      values[cursor] = base + cursor;
+    }`],
+    ['a post-test loop', `int cursor = 0; do {
+      values[cursor] = base + cursor;
+      cursor = cursor + 1;
+    } while (cursor < 3);`],
+    ['a source while loop', `int cursor = 0; while (cursor < 3) {
+      values[cursor] = base + cursor;
+      cursor = cursor + 1;
+    }`],
+    ['an exact endpoint', `for (int cursor = 0; cursor != 4; cursor = cursor + 2) {
+      values[cursor / 2] = base + cursor;
+    }`],
+  ])('replays keys constructed by %s in a pure helper', (_label, helperLoop) => {
+    const artifact = compileString(`contract Registry() {
+      mapping(int => int) records;
+      function fillFixed(int[] memory values, int base) internal pure { ${helperLoop} }
+      function apply(int count, int base) public {
+        int[] memory values = new int[](count);
+        fillFixed(values, base);
+        for (int cursor = 0; cursor < count; cursor = cursor + 1) {
+          this.records[values[cursor]] = cursor;
+        }
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'apply'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control'))
+      .toMatchObject({ eligible: true });
+  });
+
+  it.each([
+    ['an exhausted symbolic replay budget', `for (int cursor = 0; cursor < 257; cursor = cursor + 1) {
+      values[cursor] = base + cursor;
+    }`],
+    ['a loop-local continue', `for (int cursor = 0; cursor < 2; cursor = cursor + 1) {
+      if (cursor == 0) { continue; }
+      values[cursor] = base + cursor;
+    }`],
+  ])('refuses a pure helper loop with %s', (_label, helperLoop) => {
+    const artifact = compileString(`contract Registry() {
+      mapping(int => int) records;
+      function fillFixed(int[] memory values, int base) internal pure { ${helperLoop} }
+      function apply(int count, int base) public {
+        int[] memory values = new int[](count);
+        fillFixed(values, base);
+        for (int cursor = 0; cursor < count; cursor = cursor + 1) {
+          this.records[values[cursor]] = cursor;
+        }
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'apply'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_UNBOUNDED_KEY' });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control'))
+      .toMatchObject({ eligible: true });
+  });
+
   it('replays helper-side constructed-key resizing through the shared memory alias', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) slots;

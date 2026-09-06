@@ -5607,6 +5607,38 @@ describe('kernel composite counter-key settlement', () => {
     await expect(contract.call.checkRight(0n, 81n).send()).resolves.toBeDefined();
   }, 180_000);
 
+  it('settles keys constructed by a literal-bounded pure helper loop', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(`contract KernelFixedHelperLoop() {
+      mapping(int => int) records;
+      function fill(int[] memory values, int base) internal pure {
+        for (int cursor = 0; cursor < 2; cursor = cursor + 1) {
+          values[cursor] = base + cursor;
+        }
+      }
+      function apply(int count, int base) public {
+        int[] memory values = new int[](count);
+        fill(values, base);
+        for (int cursor = 0; cursor < count; cursor = cursor + 1) {
+          this.records[values[cursor]] = cursor + 10;
+        }
+        require(true);
+      }
+      function check(int key, int expected) public { require(this.records[key] == expected); }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'apply'))
+      .toMatchObject({ eligible: true });
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+    );
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    await expect(contract.batch([{ function: 'apply', args: [2n, 30n] }]).send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    await expect(contract.call.check(30n, 10n).send()).resolves.toBeDefined();
+    await expect(contract.call.check(31n, 11n).send()).resolves.toBeDefined();
+  }, 180_000);
+
   it('retains constructed keys across mutations of a value-copied helper parameter', async () => {
     const provider = createTestProvider();
     const artifact = compileString(`contract KernelValueCopyArray() {

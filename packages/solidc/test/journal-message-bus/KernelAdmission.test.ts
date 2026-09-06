@@ -167,7 +167,7 @@ describe('required kernel admission', () => {
     });
   });
 
-  it('admits same-layout upgrades with compiler-authored lifecycle authority', () => {
+  it('admits append-only in-place upgrades with compiler-authored lifecycle authority', () => {
     const artifact = compileString(`contract C() {
       int count;
       function migrate() upgrade { require(true); }
@@ -176,10 +176,13 @@ describe('required kernel admission', () => {
       handler.name === 'migrate');
     expect(artifact.messageBus?.convention).toBe('kernel-row-loop');
     expect(upgrade).toMatchObject({
-      eligible: true, lifecycle: { kind: 'upgrade', layout: 'same' },
+      eligible: true, lifecycle: { kind: 'upgrade', layout: 'in-place-append-v1' },
     });
     expect(artifact.messageBus?.route.inputs).toContainEqual({
       name: '__internal__upgradeBytecode', type: 'bytes',
+    });
+    expect(artifact.messageBus?.route.inputs).toContainEqual({
+      name: '__internal__upgradeStateSuffix', type: 'bytes',
     });
     expect(artifact.messageBus?.atomicMessageBus?.protocolVersions).toEqual([1, 2]);
   });
@@ -193,7 +196,7 @@ describe('required kernel admission', () => {
     expect(handlers).toHaveLength(2);
     expect(handlers.find((handler) => handler.lifecycle?.kind === 'upgrade')).toMatchObject({
       eligible: false, rejectionReason: 'KERNEL_LIFECYCLE',
-      lifecycle: { kind: 'upgrade', layout: 'same' },
+      lifecycle: { kind: 'upgrade', layout: 'in-place-append-v1' },
     });
     expect(handlers.find((handler) => handler.lifecycle === undefined)).toMatchObject({ eligible: true });
   });
@@ -205,7 +208,7 @@ describe('required kernel admission', () => {
       function replace() upgrade { require(true); }
     }`, 'replace')).toMatchObject({
       eligible: false, rejectionReason: 'KERNEL_FOREIGN_DELEGATE',
-      lifecycle: { kind: 'upgrade', layout: 'same' },
+      lifecycle: { kind: 'upgrade', layout: 'in-place-append-v1' },
     });
   });
 
@@ -216,7 +219,7 @@ describe('required kernel admission', () => {
       function control() public { require(true); }
     }`, 'migrate')).toMatchObject({
       eligible: false, rejectionReason: 'KERNEL_TX_SIGNATURE',
-      lifecycle: { kind: 'upgrade', layout: 'same' },
+      lifecycle: { kind: 'upgrade', layout: 'in-place-append-v1' },
     });
   });
 

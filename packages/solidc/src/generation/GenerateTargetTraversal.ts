@@ -76,7 +76,6 @@ import {
 import { childDeploymentGenesisState } from '../deploymentRecipes.js';
 import {
   canonicalizeUpsertKeyExpression,
-  findLengthMinusOneKeyCanonical,
 } from './upsertKeySources.js';
 import { MAX_INPUT_BYTESIZE } from '../constants.js';
 import { hasEffectiveCallValue } from '../semantic/branchOps.js';
@@ -21622,6 +21621,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           firstField = false;
         }
 
+        // An authenticated kernel upgrade may append canonical fixed-field encodings to the final existing
+        // data NFT. The old-layout route still reconstructs every prior field, then binds the exact hidden suffix.
+        if (node.messageBusUpgradeRoute === true && compactOffset === this.dataNftCount) {
+          const suffixDepth = this.getStackIndex('__internal__upgradeStateSuffix');
+          this.emit(encodeInt(BigInt(suffixDepth)), locationData);
+          this.emit(Op.OP_PICK, locationData);
+          this.pushToStack('(upgrade_state_suffix)');
+          this.emit(Op.OP_CAT, locationData);
+          this.popFromStack(2);
+          this.pushToStack('(value)');
+        }
+
         // Verify output commitment matches reconstructed commitment
         this.emitDataNftOutputCommitment(compactOffset, locationData);
         this.pushToStack('(value)');
@@ -21631,7 +21642,26 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
       } else {
         // Read-only NFT: verify commitment preservation (input == output)
-        this.emitDataNftCommitmentPreservation(compactOffset, locationData);
+        if (node.messageBusUpgradeRoute === true && compactOffset === this.dataNftCount) {
+          this.emit(Op.OP_INPUTINDEX, locationData);
+          this.emit(encodeInt(BigInt(compactOffset)), locationData);
+          this.emit(Op.OP_ADD, locationData);
+          this.emit(Op.OP_UTXOTOKENCOMMITMENT, locationData);
+          this.pushToStack('(upgrade_state_prefix)');
+          const suffixDepth = this.getStackIndex('__internal__upgradeStateSuffix');
+          this.emit(encodeInt(BigInt(suffixDepth)), locationData);
+          this.emit(Op.OP_PICK, locationData);
+          this.pushToStack('(upgrade_state_suffix)');
+          this.emit(Op.OP_CAT, locationData);
+          this.popFromStack(2);
+          this.pushToStack('(value)');
+          this.emitDataNftOutputCommitment(compactOffset, locationData);
+          this.pushToStack('(value)');
+          this.emit(Op.OP_EQUALVERIFY, locationData);
+          this.popFromStack(2);
+        } else {
+          this.emitDataNftCommitmentPreservation(compactOffset, locationData);
+        }
       }
 
       this.emitDataNftPreservation(compactOffset, locationData);
@@ -22416,11 +22446,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * the inner `keys[i]` key. Walk the write's AST keys and see through a single-assign local so the ABI still
    * carries the invariant outer-key expression.
    */
-  /** `uint id = this.arr.length - 1` in `node`, as the SDK evalComputedKey label. */
-  private findLengthMinusOneKeyCanonical(node: Node | undefined): string | undefined {
-    return findLengthMinusOneKeyCanonical(node, new Set(this.stateVariables.map((variable) => variable.name)));
-  }
-
   private recoverUpsertFixedKeySources(writeNode: MappingAssignNode | MappingDeleteNode): KeySourceInfo[] {
     const recovered: KeySourceInfo[] = [];
     for (const key of writeNode.keys ?? []) {
@@ -22663,12 +22688,20 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (deterministic) return deterministic;
       return (source.canonical ?? '').match(/^arridx\(id:(\w+),.+\)$/)?.[1];
     };
-    const fixedCount = (sources: readonly KeySourceInfo[]): number => (
-      sources.filter((src, index) => varyingSourceName(src, index) === undefined).length
-    );
     let metadataKeySources = keySources.length >= writeKeySources.length ? keySources : writeKeySources;
     const recoveredFromKeys = this.recoverUpsertFixedKeySources(writeNode);
-    if (fixedCount(recoveredFromKeys) > fixedCount(metadataKeySources)) {
+    const unresolvedSource = (source: KeySourceInfo): boolean => {
+      const name = source.kind === 'param' ? source.paramName
+        : source.canonical?.startsWith('id:') ? source.canonical.slice(3) : undefined;
+      return !!name && !this.currentFunction.parameters.some((parameter) => parameter.name === name);
+    };
+    const metadataFixedSources = metadataKeySources.filter((source, index) =>
+      varyingSourceName(source, index) === undefined);
+    const recoveredFixedSources = recoveredFromKeys.filter((source, index) =>
+      varyingSourceName(source, index) === undefined);
+    if (recoveredFixedSources.length > metadataFixedSources.length
+      || (metadataFixedSources.length > 0 && metadataFixedSources.every(unresolvedSource)
+        && recoveredFixedSources.some((source) => !unresolvedSource(source)))) {
       metadataKeySources = recoveredFromKeys;
     }
     const fixedKeyParams: string[] = [];
@@ -22676,15 +22709,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       varyingSourceName(src, index) === undefined);
     // A nested mapping can reach codegen with only its varying inner key, or with an inlined outer-key local
     // which is not a parameter of this function.
-    const unresolvedLocal = fixedKeySources.length > 0 && fixedKeySources.every((source) => {
-      const name = source.kind === 'param' ? source.paramName
-        : source.canonical?.startsWith('id:') ? source.canonical.slice(3) : undefined;
-      return !!name && !this.currentFunction.parameters.some((parameter) => parameter.name === name);
-    });
-    if ((fixedKeySources.length === 0 || unresolvedLocal) && (collection.allKeyTypes?.length ?? 1) > 1) {
-      const computed = this.findLengthMinusOneKeyCanonical(this.currentFunction.body);
-      if (computed) fixedKeySources = [{ kind: 'expression', canonical: computed }];
-    }
     let varyingArrayParam: string | undefined;
     const varyingKeyIndices: number[] = [];
     for (const [index, src] of metadataKeySources.entries()) {

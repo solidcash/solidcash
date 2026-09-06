@@ -136,26 +136,6 @@ function writeAtomic(file: string, contents: string | Uint8Array): void {
   fs.renameSync(temporary, file);
 }
 
-/** Restore `jobs.length-1` on upsert ABI after a cache hit from an older compiler. */
-function patchProjectArtifactUpsertKeys(artifact: ArtifactMap[string]): void {
-  const patchAbi = (abi: ArtifactMap[string]['abi'] | undefined): void => {
-    for (const fn of abi ?? []) {
-      const writes = fn.dynamicWrites ?? [];
-      if (writes.length !== 1) continue;
-      for (const info of fn.sortedUpsertLoopInfo ?? []) {
-        if (info.fixedKeySources && info.fixedKeySources.length > 0) continue;
-        const patched = info as unknown as { fixedKeySources: Array<{ kind: string; expressionLabel: string }> };
-        patched.fixedKeySources = [{
-          kind: 'expression',
-          expressionLabel: `binop:-(unop:.length(state:${writes[0]}),lit:1)`,
-        }];
-      }
-    }
-  };
-  patchAbi(artifact.abi);
-  if (artifact.delegateArtifact) patchAbi(artifact.delegateArtifact.abi);
-}
-
 /** Compile a Solidity-compatible source set as one Hardhat-style project compilation job.
  *
  * The import DAG selects roots. Persistent job keys include every transitive dependency hash, compiler options,
@@ -236,7 +216,6 @@ export function compileSolidityProject(
       // primary-contract context, and publishing that imported copy makes focused compiles overwrite canonical
       // dependency artifacts. Filtering here also keeps one-file iteration proportional to the selected source.
       if (!ownedDeclarations.has(name)) continue;
-      patchProjectArtifactUpsertKeys(artifact);
       if (artifact.abi?.some((fn) => fn.modifiers?.includes('delegate'))) {
         artifact.delegateProxyStateOutputCountPinned = true;
       }

@@ -159,17 +159,17 @@ describe('compileSolidityProject', () => {
     expect(calls).toBe(1);
   });
 
-  it('restores jobs.length-1 on upsert ABI that omitted fixedKeySources', () => {
+  it('does not infer a fixed upsert key from an unrelated dynamic write', () => {
     const [file] = project({ 'Root.sol': 'contract Root {}' });
     const compile = (): any => ({
       Root: {
         abi: [{
-          name: 'publishJobPost',
-          dynamicWrites: ['jobs'],
+          name: 'update',
+          dynamicWrites: ['records'],
           sortedUpsertLoopInfo: [{
-            collection: 'whitelistWorkers',
+            collection: 'permissions',
             fixedKeyParams: [],
-            varyingArrayParam: 'allowedWorkers_',
+            varyingArrayParam: 'members',
             valueConst: '1',
             op: 'set',
           }],
@@ -177,10 +177,32 @@ describe('compileSolidityProject', () => {
       },
     });
     const result = compileSolidityProject([file], {}, compile);
-    expect(result.artifacts.Root.abi[0].sortedUpsertLoopInfo[0].fixedKeySources).toEqual([{
+    expect(result.artifacts.Root.abi[0].sortedUpsertLoopInfo[0].fixedKeySources).toBeUndefined();
+  });
+
+  it('retains the compiler-published fixed upsert key', () => {
+    const [file] = project({ 'Root.sol': 'contract Root {}' });
+    const fixedKeySources = [{
       kind: 'expression',
-      expressionLabel: 'binop:-(unop:.length(state:jobs),lit:1)',
-    }]);
+      expressionLabel: 'binop:-(unop:.length(state:records),lit:1)',
+    }];
+    const compile = (): any => ({
+      Root: {
+        abi: [{
+          name: 'append',
+          dynamicWrites: ['records'],
+          sortedUpsertLoopInfo: [{
+            collection: 'permissions',
+            fixedKeySources,
+            varyingArrayParam: 'members',
+            valueConst: '1',
+            op: 'set',
+          }],
+        }],
+      },
+    });
+    const result = compileSolidityProject([file], {}, compile);
+    expect(result.artifacts.Root.abi[0].sortedUpsertLoopInfo[0].fixedKeySources).toEqual(fixedKeySources);
   });
 
   it('does not trust preserved mtime and size when file contents changed', () => {

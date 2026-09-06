@@ -3003,7 +3003,7 @@ function synthesizeMessageBusRoute(
     }
     // A delegate route covenants the proxy master while its implementation executes from an interior slot.
     // Replacing either identity needs an explicit two-owner lifecycle protocol; treating it as the direct
-    // same-layout case would make the delegate preservation branch and the upgrade branch disagree.
+    // prefix-preserving case would make the delegate preservation branch and the upgrade branch disagree.
     if (compilerOptions.messageBusKernel === true
       && fn.modifiers.includes(FunctionModifier.UPGRADE)
       && (compilerOptions.autoDelegate === true || inferredSolidityImplementation
@@ -4926,6 +4926,8 @@ function synthesizeMessageBusRoute(
       (fn.messageBusKeyWitnesses ?? []).every((binding) => kernelRepresentablePerRow(binding)));
   const kernelUpgradeMode = kernelLoopDispatch
     && eligible.some((fn) => fn.modifiers.includes(FunctionModifier.UPGRADE));
+  const kernelUpgradeDataNftCount = contract.stateVariables.length === 0 ? 0
+    : Math.max(...contract.stateVariables.map((state) => state.nftIndex)) + 1;
   // A V2 manifest changes at least one participant covenant identity. Until transaction signatures are required
   // to use ALL, every selected signature-checking row must be rejected in such a graph: NONE can replace all
   // outputs and SINGLE can preserve the signer's corresponding output while replacing another participant's —
@@ -6175,8 +6177,8 @@ function synthesizeMessageBusRoute(
         || parameter.name === KERNEL_JOURNAL_ACCESS_STREAMS) && kernelLoopDispatch
         ? `${type}[] ${parameter.name}` : `${type} ${parameter.name}`;
     }));
-  // A same-layout upgrade authenticates the complete fixed state block even when its source body does not read
-  // or write a field. Its manifest therefore carries preservation rows which the specialized verifier must
+  // An in-place append upgrade authenticates the complete old state prefix even when its source body does not
+  // read or write a field. Its manifest therefore carries preservation rows which the specialized verifier must
   // parse and count just like rows inferred from an ordinary handler footprint.
   const resourceVerificationMode = kernelUpgradeMode || eligible.some((fn) => {
     const footprint = eligibleFootprint(fn);
@@ -6214,7 +6216,9 @@ function synthesizeMessageBusRoute(
     ? ['bigint __internal__activeVerifierIndex'] : [];
   const routeParameters = [
     'bytes batchBlob', ...verifierBinderRouteParameters, ...graphRouteParameters,
-    ...(kernelUpgradeMode ? ['bytes __internal__upgradeBytecode'] : []),
+    ...(kernelUpgradeMode ? [
+      'bytes __internal__upgradeBytecode', 'bytes __internal__upgradeStateSuffix',
+    ] : []),
     ...localCallerRouteParameters,
     ...routeSignatureParameters, ...routeKeyParameters, ...routeCounterPermParameters,
   ].join(', ');
@@ -7005,8 +7009,11 @@ function synthesizeMessageBusRoute(
             if (outputSlot != activeReturnOutput) {
               require(tx.outputs[outputSlot].lockingBytecode == tx.inputs[slot].lockingBytecode);
               require(tx.outputs[outputSlot].tokenCategory == tx.inputs[slot].tokenCategory);
-              require(tx.outputs[outputSlot].nftCommitment == tx.inputs[slot].nftCommitment);
               require(tx.outputs[outputSlot].tokenAmount == tx.inputs[slot].tokenAmount);
+              if (${kernelUpgradeMode && kernelUpgradeDataNftCount > 0
+    ? `outputSlot != activeOutputBase + ${kernelUpgradeDataNftCount}` : 'true'}) {
+                require(tx.outputs[outputSlot].nftCommitment == tx.inputs[slot].nftCommitment);
+              }
             }
           }
           // The return coordinate publishes a mutable participant NFT, but it is authenticated separately by
@@ -7125,7 +7132,7 @@ function synthesizeMessageBusRoute(
   const atomicCallManifestLoader = `
       function __message_bus_verify_atomic(
         bigint activeInputIndex, bigint expectedLocalRows, bytes localBatch
-        ${!kernelUpgradeMode ? '' : ', bytes __internal__upgradeBytecode'}
+        ${!kernelUpgradeMode ? '' : ', bytes __internal__upgradeBytecode, bytes __internal__upgradeStateSuffix'}
         ${!useBoundRoute ? '' : ', bigint __internal__activeVerifierIndex'}
         ${!graphExecutionContext ? '' : `,
         bigint suppliedFixedSize, bigint suppliedBlockSize, bytes suppliedEmissions, bytes suppliedCallers,
@@ -7160,7 +7167,7 @@ function synthesizeMessageBusRoute(
           tx.inputs[${atomicParticipantInput}].outpointIndex != 4294967295) {
           bytes __internal__atomicBindingDigest = __message_bus_verify_atomic(
             ${atomicParticipantInput}, rowCount, batchBlob
-            ${!kernelUpgradeMode ? '' : ', __internal__upgradeBytecode'}
+            ${!kernelUpgradeMode ? '' : ', __internal__upgradeBytecode, __internal__upgradeStateSuffix'}
             ${!useBoundRoute ? '' : ', __internal__activeVerifierIndex'}
             ${!graphExecutionContext ? '' : `,
             __internal__graphFixedSize, __internal__graphBlockSize,
@@ -7404,6 +7411,7 @@ function synthesizeMessageBusRoute(
     ? `require(__message_bus_upgrade_count <= 1);
         if (__message_bus_upgrade_count == 0) {
           require(__internal__upgradeBytecode == tx.inputs[this.activeInputIndex].lockingBytecode);
+          require(__internal__upgradeStateSuffix.length == 0);
         } else {
           require(__message_bus_upgrade_position == rowCount - 1);
           require(__internal__upgradeBytecode != tx.inputs[this.activeInputIndex].lockingBytecode);
@@ -7563,7 +7571,7 @@ function synthesizeMessageBusRoute(
     const verifierHost = `${preamble}    contract __MessageBusVerifierHost() {
       function ${MESSAGE_BUS_VERIFY_ATOMIC_PROGRAM}(
         bigint activeInputIndex, bigint expectedLocalRows, bytes localBatch
-        ${!kernelUpgradeMode ? '' : ', bytes __internal__upgradeBytecode'}
+        ${!kernelUpgradeMode ? '' : ', bytes __internal__upgradeBytecode, bytes __internal__upgradeStateSuffix'}
         ${!graphExecutionContext ? '' : `,
         bigint suppliedFixedSize, bigint suppliedBlockSize, bytes suppliedEmissions, bytes suppliedCallers,
         bigint suppliedSettlementBoundary, bytes suppliedCompletionPositions, bytes suppliedSettlementTable`}
@@ -7582,7 +7590,7 @@ function synthesizeMessageBusRoute(
       function __invoke_message_bus_verifier_program() public {
         bytes got = ${MESSAGE_BUS_VERIFY_ATOMIC_PROGRAM}(
           0, 0, hex""
-          ${!kernelUpgradeMode ? '' : ', hex"51"'}
+          ${!kernelUpgradeMode ? '' : ', hex"51", hex""'}
           ${!graphExecutionContext ? '' : ', 0, 0, hex"", hex"", 0, hex"", hex""'}
         );
         require(got.length != 0x7fffffffffffffff);
@@ -9604,7 +9612,7 @@ function compileResolvedAst(
         }),
         ...(fn.usesMsgValue && { usesMsgValue: true }),
         ...(fn.modifiers.includes(FunctionModifier.UPGRADE) && {
-          lifecycle: { kind: 'upgrade' as const, layout: 'same' as const },
+          lifecycle: { kind: 'upgrade' as const, layout: 'in-place-append-v1' as const },
         }),
         ...(fn.messageBusUsesTransactionSignature === true && { usesTransactionSignature: true }),
         ...(() => {
@@ -9780,7 +9788,7 @@ function compileResolvedAst(
               })),
             eligible: false,
             ...(fn.modifiers.includes(FunctionModifier.UPGRADE) && {
-              lifecycle: { kind: 'upgrade' as const, layout: 'same' as const },
+              lifecycle: { kind: 'upgrade' as const, layout: 'in-place-append-v1' as const },
             }),
             ...(fn.messageBusUsesTransactionSignature === true && { usesTransactionSignature: true }),
             rejectionReason: kernelReason,

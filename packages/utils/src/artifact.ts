@@ -1135,8 +1135,9 @@ export interface Artifact {
       }[];
       /** Typed child-creation sites in source execution order. Presence is topology only, not admission. */
       childDeployments?: readonly ChildDeploymentSiteAbi[];
-      /** Compiler-authored lifecycle authority. `same` forbids participant state-block growth. */
-      lifecycle?: { kind: 'upgrade'; layout: 'same' };
+      /** Compiler-authored lifecycle authority. Append-v1 preserves the existing state geometry and permits
+       * only a canonical fixed-field suffix in the final existing data NFT. */
+      lifecycle?: { kind: 'upgrade'; layout: 'same' | 'in-place-append-v1' };
       /** The selected handler's compiler-resolved call closure can execute CHECKSIG/CHECKMULTISIG. */
       usesTransactionSignature?: boolean;
       eligible: boolean;
@@ -1405,32 +1406,8 @@ export function formatSplitArtifactBundle(bundle: SplitArtifactBundle, format: '
   return JSON.stringify(bundle, null, 2);
 }
 
-/** Restore `arr.length-1` on nested vmap upserts when codegen omitted fixedKeySources. */
-function patchArtifactUpsertFixedKeys(artifact: Artifact): void {
-  const patchAbi = (abi: Artifact['abi'] | undefined): void => {
-    for (const fn of abi ?? []) {
-      const writes = fn.dynamicWrites ?? [];
-      if (writes.length !== 1) continue;
-      for (const info of fn.sortedUpsertLoopInfo ?? []) {
-        if (info.fixedKeySources && info.fixedKeySources.length > 0) continue;
-        const patched = info as unknown as { fixedKeySources: KeySourceAbi[] };
-        patched.fixedKeySources = [{
-          kind: 'expression',
-          expressionLabel: `binop:-(unop:.length(state:${writes[0]}),lit:1)`,
-        }];
-      }
-    }
-  };
-  patchAbi(artifact.abi);
-  if (artifact.delegateArtifact) patchAbi(artifact.delegateArtifact.abi);
-}
-
 export function formatArtifact(artifact: Artifact, format: 'json' | 'ts'): string {
-  patchArtifactUpsertFixedKeys(artifact);
-  // Stringifying a live compile artifact can rebuild ABI via lazy getters (delegate variant).
-  // Re-apply after parse so published JSON keeps `jobs.length-1` even if those copies dropped it.
   const normalisedArtifact = JSON.parse(JSON.stringify(artifact)) as Artifact;
-  patchArtifactUpsertFixedKeys(normalisedArtifact);
   if (artifact.delegateProxyStateOutputCountPinned
     || normalisedArtifact.abi?.some((fn) => fn.modifiers?.includes('delegate'))) {
     normalisedArtifact.delegateProxyStateOutputCountPinned = true;

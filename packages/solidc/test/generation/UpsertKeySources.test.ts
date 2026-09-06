@@ -3,6 +3,67 @@ import { compileString, parseCode } from '../../src/compiler.js';
 import { findLengthMinusOneKeyCanonical } from '../../src/generation/upsertKeySources.js';
 
 describe('generic upsert fixed-key recovery', () => {
+  it('publishes the actual appended-record key for a nested upsert loop', () => {
+    const artifact = compileString(`pragma solidity ^0.8.0;
+      contract Registry {
+        uint[] records;
+        mapping(uint => mapping(address => bool)) permissions;
+        function append(uint value, address[] memory members) public {
+          records.push(value);
+          uint ordinal = records.length - 1;
+          for (uint i = 0; i < members.length; i++) {
+            permissions[ordinal][members[i]] = true;
+          }
+          require(true);
+        }
+      }
+    `, {
+      forceStateful: true,
+      solidityImportCompat: true,
+      messageBus: true,
+      messageBusGraphContext: true,
+      optimizeForCompilationSpeed: true,
+      maximumInputBytes: 1_000_000,
+      suppressWarnings: true,
+    });
+    expect(artifact.abi.find((candidate) => candidate.name === 'append')?.sortedUpsertLoopInfo?.[0]
+      .fixedKeySources).toEqual([{
+      kind: 'expression',
+      expressionLabel: 'binop:-(unop:.length(state:records),lit:1)',
+    }]);
+  });
+
+  it('does not attach an unrelated appended-record key to a different nested upsert', () => {
+    const artifact = compileString(`pragma solidity ^0.8.0;
+      contract Registry {
+        uint[] records;
+        mapping(uint => mapping(address => bool)) permissions;
+        function update(uint value, uint group, address[] memory members) public {
+          records.push(value);
+          uint lastRecord = records.length - 1;
+          for (uint i = 0; i < members.length; i++) {
+            permissions[group][members[i]] = lastRecord >= 0;
+          }
+          require(true);
+        }
+      }
+    `, {
+      forceStateful: true,
+      solidityImportCompat: true,
+      messageBus: true,
+      messageBusGraphContext: true,
+      optimizeForCompilationSpeed: true,
+      maximumInputBytes: 1_000_000,
+      suppressWarnings: true,
+    });
+    const sources = artifact.abi.find((candidate) => candidate.name === 'update')
+      ?.sortedUpsertLoopInfo?.[0].fixedKeySources;
+    expect(sources).toEqual([{ kind: 'param', paramName: 'group' }]);
+    expect(sources).not.toContainEqual(expect.objectContaining({
+      expressionLabel: 'binop:-(unop:.length(state:records),lit:1)',
+    }));
+  });
+
   it('does not inject kernel permutation parameters into a legacy internal helper', () => {
     const artifact = compileString(`contract Registry() {
       mapping(address => bool) flags;

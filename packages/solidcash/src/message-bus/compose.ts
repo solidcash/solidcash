@@ -7,8 +7,9 @@ import {
   parseTypeStrict, PrimitiveType,
   childStateLayoutDigest,
   validateChildDeploymentGenesisState,
+  getDefaultStateValue,
 } from '@solidcash/utils';
-import type { Artifact, ChildDeploymentValueRecipe } from '@solidcash/utils';
+import type { Artifact, ChildDeploymentValueRecipe, StateValue, StructDefinitionInfo } from '@solidcash/utils';
 import type { ConstructorArgument, FunctionArgument } from '../Argument.js';
 import type {
   ContractUnlocker, Output, TokenDetails, TransactionDetails, UnlockableUtxo, Unlocker, Utxo,
@@ -83,10 +84,11 @@ export interface PreparedAtomicMessageBusCall {
   executionArtifact?: Artifact;
   /** Pinned delegate executor co-spent inside this participant's block. */
   executor?: StatefulContract;
-  /** Authenticated same-layout replacement selected for this participant's upgrade row. */
+  /** Authenticated in-place replacement selected for this participant's upgrade row. */
   upgradeTarget?: {
     artifact: Artifact;
     constructorArgs: readonly ConstructorArgument[];
+    appendedState?: Readonly<Record<string, StateValue>>;
   };
   /**
    * Return-event commitment already derived while discovering this call graph. This is only an optimistic
@@ -716,21 +718,84 @@ const semanticJson = (value: unknown): string => JSON.stringify(
   value, (_key, field) => typeof field === 'bigint' ? field.toString() : field,
 );
 
-const sameStateGeometry = (previous: Artifact, replacement: Artifact): boolean => {
-  if (!previous.stateLayout || !replacement.stateLayout) return false;
-  const comparable = (artifact: Artifact): unknown => {
-    const layout = artifact.stateLayout;
-    if (!layout) return undefined;
-    return {
-      dataNftCount: layout.dataNftCount,
-      commitmentLimit: layout.commitmentLimit,
-      variables: layout.variables,
-      collections: layout.collections ?? [],
-      mappings: layout.mappings ?? [],
-      structs: layout.structs ?? [],
-    };
-  };
-  return semanticJson(comparable(previous)) === semanticJson(comparable(replacement));
+const hasDynamicStateMember = (
+  type: string,
+  structs: readonly StructDefinitionInfo[] | undefined,
+  visiting = new Set<string>(),
+): boolean => {
+  if (type === 'bytes' || type === 'string') return true;
+  const array = parseArrayTypeString(type);
+  if (array) return array.bound === undefined || hasDynamicStateMember(array.elementType, structs, visiting);
+  const definition = structs?.find((candidate) => candidate.name === type);
+  if (!definition) return false;
+  if (visiting.has(type)) return true;
+  const nested = new Set(visiting);
+  nested.add(type);
+  return definition.fields.some((field) => hasDynamicStateMember(field.type, structs, nested));
+};
+
+const appendOnlyStateSuffix = (
+  previous: Artifact,
+  replacement: Artifact,
+  supplied: Readonly<Record<string, StateValue>> = {},
+): Uint8Array => {
+  const oldLayout = previous.stateLayout;
+  const newLayout = replacement.stateLayout;
+  if (!oldLayout || !newLayout) throw new Error('messageBus: upgrade requires two stateful artifacts');
+  if (oldLayout.dataNftCount !== newLayout.dataNftCount
+    || oldLayout.commitmentLimit !== newLayout.commitmentLimit) {
+    throw new Error('messageBus: replacement does not preserve the existing data NFT geometry');
+  }
+  if (semanticJson(oldLayout.collections ?? []) !== semanticJson(newLayout.collections ?? [])
+    || semanticJson(oldLayout.mappings ?? []) !== semanticJson(newLayout.mappings ?? [])) {
+    throw new Error('messageBus: replacement does not preserve the existing collection geometry');
+  }
+  if (newLayout.variables.length < oldLayout.variables.length
+    || oldLayout.variables.some((variable, index) =>
+      semanticJson(variable) !== semanticJson(newLayout.variables[index]))) {
+    throw new Error('messageBus: replacement does not preserve the existing state-variable geometry');
+  }
+  const oldStructs = new Map((oldLayout.structs ?? []).map((definition) => [definition.name, definition]));
+  const newStructs = new Map((newLayout.structs ?? []).map((definition) => [definition.name, definition]));
+  for (const [name, definition] of oldStructs) {
+    if (semanticJson(definition) !== semanticJson(newStructs.get(name))) {
+      throw new Error(`messageBus: replacement changes existing struct '${name}'`);
+    }
+  }
+  const appended = newLayout.variables.slice(oldLayout.variables.length);
+  if (appended.length === 0) {
+    if (Object.keys(supplied).length > 0) {
+      throw new Error('messageBus: appendedState names fields which were not appended');
+    }
+    return new Uint8Array();
+  }
+  if (oldLayout.dataNftCount === 0) {
+    throw new Error('messageBus: append-only upgrade requires an existing data NFT');
+  }
+  const finalNft = oldLayout.dataNftCount - 1;
+  const oldTail = oldLayout.variables.filter((variable) => variable.nftIndex === finalNft);
+  let nextField = oldTail.length === 0 ? 0 : Math.max(...oldTail.map((variable) => variable.fieldIndex)) + 1;
+  for (const variable of appended) {
+    if (variable.nftIndex !== finalNft || variable.fieldIndex !== nextField
+      || variable.dynamic === true || variable.packed === true
+      || hasDynamicStateMember(variable.type, newLayout.structs)) {
+      throw new Error(
+        'messageBus: replacement fields must be a contiguous fixed-size suffix in the final existing data NFT',
+      );
+    }
+    nextField += 1;
+  }
+  const appendedNames = new Set(appended.map((variable) => variable.name));
+  const unknown = Object.keys(supplied).filter((name) => !appendedNames.has(name));
+  if (unknown.length > 0) {
+    throw new Error(`messageBus: appendedState may only initialize new fields (${unknown.join(', ')})`);
+  }
+  const parts = appended.map((variable) => encodePushdataValue(
+    supplied[variable.name] ?? getDefaultStateValue(variable.type, newLayout.structs),
+    variable.type,
+    newLayout.structs,
+  ));
+  return concat(...parts);
 };
 
 interface DeferredComputeController {
@@ -755,6 +820,7 @@ type DeferredComputeBuilder = TransactionBuilder & {
 
 const graphRouteContext = (
   finalized: ReturnType<typeof finalizeAtomicInvocationGraph>, participant: number,
+  upgradeStateSuffixes: ReadonlyMap<string, Uint8Array> = new Map(),
 ): Readonly<Record<string, FunctionArgument>> => {
   const execution = finalized.plan.participants[participant];
   const rows = finalized.callManifest.rows;
@@ -822,6 +888,8 @@ const graphRouteContext = (
     } : {}),
     ...(needsUpgradeBytecode ? {
       __internal__upgradeBytecode: hexToBin(execution.outputLockingBytecode ?? execution.lockingBytecode),
+      __internal__upgradeStateSuffix: upgradeStateSuffixes.get(execution.lockingBytecode.toLowerCase())
+        ?? new Uint8Array(),
     } : {}),
     ...(execution.executionKind === 1 ? {
       // The delegate route executes against the owner block rooted at this participant's physical master. The
@@ -867,6 +935,7 @@ export class AtomicMessageBusComposition {
       throw new Error('messageBus: all participants must use the same network provider');
     }
     const upgradeOutputs = new Map<string, string>();
+    const upgradeStateSuffixes = new Map<string, Uint8Array>();
     const upgradeDeclarations = new Map<string, number>();
     for (const descriptor of descriptors) {
       if (!descriptor.upgradeTarget) continue;
@@ -879,11 +948,11 @@ export class AtomicMessageBusComposition {
       if (declarations !== 1) {
         throw new Error('messageBus: an upgraded participant requires exactly one replacement target');
       }
-      if (!sameStateGeometry(descriptor.contract.inner.artifact, descriptor.upgradeTarget.artifact)) {
-        throw new Error(
-          `messageBus: replacement '${descriptor.upgradeTarget.artifact.contractName}' does not have identical state geometry`,
-        );
-      }
+      const stateSuffix = appendOnlyStateSuffix(
+        descriptor.contract.inner.artifact,
+        descriptor.upgradeTarget.artifact,
+        descriptor.upgradeTarget.appendedState,
+      );
       const replacement = new Contract(
         descriptor.upgradeTarget.artifact,
         [...descriptor.upgradeTarget.constructorArgs] as ConstructorArgument[],
@@ -898,6 +967,7 @@ export class AtomicMessageBusComposition {
         throw new Error('messageBus: an upgrade replacement must change the participant locking bytecode');
       }
       upgradeOutputs.set(owner, outputLockingBytecode);
+      upgradeStateSuffixes.set(owner, stateSuffix);
     }
 
     const stateByContract = new Map<StatefulContract, Promise<Record<string, unknown>>>();
@@ -1132,6 +1202,16 @@ export class AtomicMessageBusComposition {
         `messageBus: prepared ${descriptors.length} call(s), but the compiled graph reaches `
         + `${plan.invocations.length}`,
       );
+    }
+    for (const [index, descriptor] of descriptors.entries()) {
+      if (!descriptor.upgradeTarget) continue;
+      const invocation = plan.invocations[index];
+      const artifact = plan.participants[invocation.callee].artifact;
+      const handler = artifact.messageBus?.handlers.find((candidate) =>
+        candidate.selector?.toLowerCase() === invocation.selectorHex.toLowerCase());
+      if (handler?.lifecycle?.kind !== 'upgrade') {
+        throw new Error('messageBus: a replacement target must be attached to its compiler-authored upgrade call');
+      }
     }
     if (upgradeOutputs.size > 0) {
       const legacyParticipant = plan.participants.find((participant) =>
@@ -1772,7 +1852,7 @@ export class AtomicMessageBusComposition {
         const localCall = contract._batchRaw(
           participant.batch.blob,
           participant.batch.routeWitnesses as FunctionArgument[],
-          graphRouteContext(graph, participant.participant),
+          graphRouteContext(graph, participant.participant, upgradeStateSuffixes),
           graph.layout.participantInputs[participant.participant],
           returnBlob !== undefined,
           returnCommitment,
@@ -1884,6 +1964,38 @@ export class AtomicMessageBusComposition {
             );
           }
           local.outputs[0] = { ...masterOutput, to: hexToBin(authenticatedOutputLockingBytecode) };
+          const suffix = upgradeStateSuffixes.get(participant.lockingBytecode.toLowerCase())
+            ?? new Uint8Array();
+          if (suffix.length > 0) {
+            const dataNftCount = participant.artifact.stateLayout?.dataNftCount ?? 0;
+            const tailOffset = dataNftCount;
+            const tailInput = local.inputs[tailOffset];
+            const tailOutput = local.outputs[tailOffset];
+            const prefixHex = tailOutput?.token?.nft?.commitment;
+            if (!tailInput?.token?.nft || !tailOutput?.token?.nft || prefixHex === undefined
+              || tailInput.token.category !== tailOutput.token.category
+              || tailInput.token.amount !== tailOutput.token.amount
+              || tailInput.token.nft.capability !== tailOutput.token.nft.capability
+              || tailInput.satoshis !== tailOutput.amount) {
+              throw new Error(
+                `messageBus: participant ${participant.participant} final data NFT geometry is not preserved`,
+              );
+            }
+            const prefix = hexToBin(prefixHex);
+            const limit = participant.artifact.stateLayout?.commitmentLimit ?? 128;
+            if (prefix.length + suffix.length > limit) {
+              throw new Error(
+                `messageBus: appended state exceeds the ${limit}-byte final NFT commitment limit`,
+              );
+            }
+            local.outputs[tailOffset] = {
+              ...tailOutput,
+              token: {
+                ...tailOutput.token!,
+                nft: { ...tailOutput.token!.nft!, commitment: binToHex(concat(prefix, suffix)) },
+              },
+            };
+          }
         }
         // Runtime event occurrences occupy compiler-owned trailing slots, so they cannot appear as fixed
         // `blockLayout.kind === event` coordinates. Preserve the exact row, schema, and physical offset published
@@ -2193,7 +2305,7 @@ export class AtomicMessageBusComposition {
         // selector while its implementation unlocker owns the route arguments. The compiler-planned participant
         // batch is the common canonical source used to build either shape and is what the verifier must bind.
         const batchBlob = participant.batch.blob;
-        const routeContext = graphRouteContext(graph, participant.participant);
+        const routeContext = graphRouteContext(graph, participant.participant, upgradeStateSuffixes);
         const verifierGraphArgumentNames = [
           '__internal__graphFixedSize', '__internal__graphBlockSize', '__internal__graphEmissions',
           '__internal__graphCallers', '__internal__graphSettlementBoundary',

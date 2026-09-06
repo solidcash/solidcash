@@ -7,10 +7,8 @@ import {
   CastNode,
   ExpressionNode,
   FieldAccessNode,
-  FunctionDefinitionNode,
   IdentifierNode,
   IntLiteralNode,
-  KeySourceInfo,
   Node,
   StateAccessNode,
   UnaryOpNode,
@@ -91,79 +89,6 @@ export function findLengthMinusOneKeyCanonical(
   };
   walk(node);
   return found.size === 1 ? [...found][0] : undefined;
-}
-
-function isUnresolvedFixedSource(source: KeySourceInfo, fn: FunctionDefinitionNode): boolean {
-  const name = source.kind === 'param' ? source.paramName
-    : source.canonical?.startsWith('id:') ? source.canonical.slice(3) : undefined;
-  return !!name && !fn.parameters.some((parameter) => parameter.name === name);
-}
-
-/** `arr.length-1` when the function writes exactly one known dynamic state array. */
-export function inferLengthMinusOneFromDynamicWrites(
-  writes: readonly string[] | undefined,
-  stateVarNames?: ReadonlySet<string>,
-): string | undefined {
-  const names = (writes ?? []).filter((name) => !stateVarNames || stateVarNames.has(name));
-  if (names.length !== 1) return undefined;
-  return `binop:-(unop:.length(state:${names[0]}),lit:1)`;
-}
-
-/**
- * Fill `sortedUpsertLoopInfo.fixedKeySources` when route/inline lowering dropped the outer
- * an invariant `stateArray.length - 1` key. Runs at artifact emission so the ABI matches the body even if codegen
- * recorded the loop on a cloned helper.
- */
-export function applyUpsertFixedKeyRecovery(
-  fn: FunctionDefinitionNode,
-  stateVarNames: ReadonlySet<string>,
-): void {
-  const infos = fn.sortedUpsertLoopInfo;
-  if (!infos || infos.length === 0) return;
-  const computed = findLengthMinusOneKeyCanonical(fn.body, stateVarNames)
-    ?? inferLengthMinusOneFromDynamicWrites(fn.dynamicWrites, stateVarNames);
-  if (!computed) return;
-  for (const info of infos) {
-    const sources = info.fixedKeySources ?? [];
-    const missing = sources.length === 0 || sources.every((source) => isUnresolvedFixedSource(source, fn));
-    if (!missing) continue;
-    info.fixedKeySources = [{ kind: 'expression', canonical: computed }];
-  }
-}
-
-type AbiUpsertFn = {
-  dynamicWrites?: readonly string[];
-  sortedUpsertLoopInfo?: readonly {
-    fixedKeySources?: readonly { kind?: string; expressionLabel?: string; canonical?: string }[];
-  }[];
-};
-
-/** Repair published ABI upsert metadata when the body walk could not see an unambiguous array-tail key. */
-export function patchAbiUpsertFixedKeys(
-  abi: readonly AbiUpsertFn[] | undefined,
-  stateVarNames?: ReadonlySet<string>,
-): void {
-  if (!abi) return;
-  for (const fn of abi) {
-    const infos = fn.sortedUpsertLoopInfo;
-    if (!infos?.length) continue;
-    const label = inferLengthMinusOneFromDynamicWrites(fn.dynamicWrites, stateVarNames);
-    if (!label) continue;
-    for (const info of infos) {
-      if (info.fixedKeySources?.length) continue;
-      (info as { fixedKeySources: { kind: string; expressionLabel: string }[] }).fixedKeySources = [
-        { kind: 'expression', expressionLabel: label },
-      ];
-    }
-  }
-}
-
-export function patchArtifactUpsertFixedKeys(
-  artifact: { abi?: readonly AbiUpsertFn[]; delegateArtifact?: { abi?: readonly AbiUpsertFn[] } },
-  stateVarNames?: ReadonlySet<string>,
-): void {
-  patchAbiUpsertFixedKeys(artifact.abi, stateVarNames);
-  if (artifact.delegateArtifact) patchAbiUpsertFixedKeys(artifact.delegateArtifact.abi, stateVarNames);
 }
 
 export function contractStateVarNames(collections: { name: string }[], variables: { name: string; type?: unknown }[]):

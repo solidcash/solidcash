@@ -29864,13 +29864,18 @@ export class StatefulFunctionCall {
   }
 
   /** Select the compiler-authenticated replacement for a message-bus `upgrade` invocation. */
-  upgradeTo<T extends Artifact>(artifact: T, constructorArgs: readonly ConstructorArgument[]): this {
+  upgradeTo<T extends Artifact>(
+    artifact: T,
+    constructorArgs: readonly ConstructorArgument[],
+    options: { appendedState?: Readonly<Record<string, StateValueType>> } = {},
+  ): this {
     if (this.messageBusUpgradeTarget !== undefined) {
       throw new Error('messageBus: an upgrade target has already been selected for this prepared call');
     }
     this.messageBusUpgradeTarget = Object.freeze({
       artifact,
       constructorArgs: Object.freeze([...constructorArgs]),
+      ...(options.appendedState && { appendedState: Object.freeze({ ...options.appendedState }) }),
     });
     return this;
   }

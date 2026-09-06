@@ -132,6 +132,7 @@ import {
   StatefulTransactionBuilder,
   groupChunkableArrayWriteCollection,
   groupWritesSingleChunkableArrayCollection,
+  selectChunkableValueWriteExecution,
   placeSameIndexTwin,
   placeInsertNewAt,
   shouldOverwriteForSameIndexTwin,
@@ -188,6 +189,25 @@ describe('generic persisted value-chunk write identity', () => {
       }] }),
     } as unknown as import('../../src/stateful/StatefulTransactionBuilder.js').ExternalCallUtxoGroup;
   };
+
+  it('selects a renamed physical value writer from metadata and rejects a named decoy', () => {
+    const renamed = makeGroup('appendNotice');
+    const decoy = {
+      ...makeGroup('publishJobEvent'),
+      stateLayout: { variables: [], collections: [] },
+    };
+    expect(selectChunkableValueWriteExecution([
+      { group: renamed, inputIndex: 17 },
+      { group: decoy, inputIndex: 9 },
+    ])).toMatchObject({ inputIndex: 17, abiFunction: { name: 'appendNotice' } });
+  });
+
+  it('fails closed when independent chunkable writers claim different physical inputs', () => {
+    expect(selectChunkableValueWriteExecution([
+      { group: makeGroup('appendNotice'), inputIndex: 17 },
+      { group: makeGroup('appendAudit'), inputIndex: 23 },
+    ])).toBeUndefined();
+  });
 
   it('authenticates an alpha-renamed update and rejects a same-category decoy collection', () => {
     StatefulTransactionBuilder.clearPersistedJobEvents();

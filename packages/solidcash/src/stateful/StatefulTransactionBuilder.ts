@@ -2383,6 +2383,7 @@ type ChunkableArrayWriteGroup = {
     abiFunction?: AbiFunction;
     rowArguments?: readonly { handler: AbiFunction }[];
   };
+  valueChunkWrites?: readonly ValueChunkWriteDescriptor[];
 };
 
 function groupChunkableArrayWriteCollections(group: ChunkableArrayWriteGroup): string[] {
@@ -2426,6 +2427,27 @@ export function groupWritesSingleChunkableArrayCollection(group: Parameters<
   typeof groupChunkableArrayWriteCollection
 >[0]): boolean {
   return groupChunkableArrayWriteCollection(group) !== undefined;
+}
+
+/** Resolve a single physical chunkable-value writer from compiler metadata, independent of ABI names. */
+export function selectChunkableValueWriteExecution(
+  candidates: ReadonlyArray<{ group: ChunkableArrayWriteGroup; inputIndex: number }>,
+): { inputIndex: number; abiFunction: AbiFunction } | undefined {
+  const executions = new Map<number, AbiFunction>();
+  for (const { group, inputIndex } of candidates) {
+    if (inputIndex < 0) continue;
+    const ownsWrite = (group.valueChunkWrites?.length ?? 0) > 0
+      || groupWritesSingleChunkableArrayCollection(group);
+    if (!ownsWrite) continue;
+    const artifact = group.logicalArtifact ?? group.externalContract?.inner?.artifact;
+    const logicalName = group.logicalFunctionName ?? group.functionName;
+    const abiFunction = group.compilerRoute?.abiFunction
+      ?? artifact?.abi.find((candidate) => candidate.name === logicalName);
+    if (abiFunction) executions.set(inputIndex, abiFunction);
+  }
+  if (executions.size !== 1) return undefined;
+  const [inputIndex, abiFunction] = [...executions.entries()][0];
+  return { inputIndex, abiFunction };
 }
 
 /** Same-index mutable jobEvents entry UTXOs. View tails must not replace these. */
@@ -5370,7 +5392,25 @@ export class StatefulTransactionBuilder {
     }
   }
 
+  /** One physical executor for the active chunkable array write. Duplicate logical rows collapse by input. */
+  private _chunkableValueWriteExecution(): { inputIndex: number; abiFunction: AbiFunction } | undefined {
+    return selectChunkableValueWriteExecution([
+      ...this.lowLevelCallUtxoGroups.map((group, index) => ({
+        group, inputIndex: this.getLowLevelCallMasterInputIndex(index),
+      })),
+      ...this.externalCallUtxoGroups.flatMap((group, index) => (
+        // A delegated logical group is represented by its implementation executor above.
+        group.delegateCallGroupIndex === undefined ? [{
+          group, inputIndex: this.getExternalCallMasterInputIndex(index),
+        }] : []
+      )),
+    ]);
+  }
+
   private _publishJobEventAbi(): AbiFunction | undefined {
+    const structural = this._chunkableValueWriteExecution();
+    if (structural) return structural.abiFunction;
+    // Compatibility only for artifacts predating chunkable collection/write metadata.
     for (const group of [...this.lowLevelCallUtxoGroups, ...this.externalCallUtxoGroups]) {
       const abi = (group.externalContract?.inner?.artifact?.abi ?? []) as AbiFunction[];
       const fromAbi = abi.find((fn) => fn.name === 'publishJobEvent');
@@ -5427,8 +5467,11 @@ export class StatefulTransactionBuilder {
 
   /** The input that actually evaluates publishJobEvent (`OP_INPUTINDEX`). */
   private _publishJobEventInputIndex(): number {
+    const structural = this._chunkableValueWriteExecution();
+    if (structural) return structural.inputIndex;
     // Dest is INPUTINDEX+4 of the earliest executing publishJobEvent. Occupied
-    // dests are displaced; do not relocate dest because persist sits at +4.
+    // dests are displaced; do not relocate dest because persist sits at +4. Compatibility only: old artifacts
+    // without chunkable-write metadata still identify this executor by their historical ABI function name.
     const candidates: number[] = [];
     for (const [index, input] of this.allInputs.entries()) {
       const name = (input as { unlocker?: { abiFunction?: { name?: string } } })

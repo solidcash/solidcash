@@ -131,6 +131,7 @@ import {
   persistedValueChunkWriteState,
   selectPersistedValueChunkWrite,
   selectValueChunkWriteCategory,
+  selectCompilerWriterEvent,
   StatefulTransactionBuilder,
   groupChunkableArrayWriteCollection,
   groupWritesSingleChunkableArrayCollection,
@@ -228,6 +229,68 @@ describe('generic persisted value-chunk write identity', () => {
     expect(selectValueChunkWriteCategory([
       { ...renamed, collectionHash: '00'.repeat(32) },
     ])).toEqual({ status: 'ambiguous' });
+  });
+
+  it('selects a renamed writer event from compiler route metadata and collapses duplicate views', () => {
+    const eventOutput = {
+      eventSignature: 'NoticeAppended(int,bytes)',
+      commitment: '01aa',
+      lockingBytecode: Uint8Array.of(0xaa, 0x20, ...new Uint8Array(32), 0x87),
+    };
+    const candidate = {
+      categoryId,
+      blockLayout: {
+        blockSize: 3,
+        slots: [{ kind: 'master', offset: 0 }, { kind: 'event', offset: 2, slotIndex: 0 }],
+      },
+      compilerRoute: {
+        abiFunction: {
+          name: 'appendNotice', inputs: [], emits: [{
+            eventName: 'NoticeAppended', eventSignature: eventOutput.eventSignature, emitIndex: 0,
+          }],
+          blockLayout: {
+            blockSize: 3,
+            slots: [{ kind: 'master', offset: 0 }, { kind: 'event', offset: 2, slotIndex: 0 }],
+          },
+        },
+        eventSignaturesBySlot: [eventOutput.eventSignature],
+      },
+      eventOutputs: [eventOutput],
+    } as unknown as import('../../src/stateful/StatefulTransactionBuilder.js').ExternalCallUtxoGroup;
+    expect(selectCompilerWriterEvent([candidate, { ...candidate }])).toMatchObject({
+      status: 'exact', categoryId, slotOffset: 2,
+      eventSignature: 'NoticeAppended(int,bytes)', eventOutput,
+    });
+  });
+
+  it('fails closed on conflicting writer event slots, declarations, or observations', () => {
+    const base = {
+      categoryId,
+      blockLayout: {
+        blockSize: 3,
+        slots: [{ kind: 'master', offset: 0 }, { kind: 'event', offset: 2, slotIndex: 0 }],
+      },
+      compilerRoute: {
+        abiFunction: { name: 'appendNotice', inputs: [], blockLayout: {
+          blockSize: 3,
+          slots: [{ kind: 'master', offset: 0 }, { kind: 'event', offset: 2, slotIndex: 0 }],
+        } },
+        eventSignaturesBySlot: ['NoticeAppended(int,bytes)'],
+      },
+    } as unknown as import('../../src/stateful/StatefulTransactionBuilder.js').ExternalCallUtxoGroup;
+    expect(selectCompilerWriterEvent([
+      base,
+      { ...base, compilerRoute: {
+        ...base.compilerRoute, eventSignaturesBySlot: ['AuditAppended(int,bytes)'],
+      } },
+    ])).toEqual({ status: 'ambiguous' });
+    expect(selectCompilerWriterEvent([{
+      ...base,
+      eventOutputs: [{
+        eventSignature: 'AuditAppended(int,bytes)', commitment: '01bb',
+        lockingBytecode: Uint8Array.of(0x51),
+      }],
+    }])).toEqual({ status: 'ambiguous' });
   });
 
   it('fails closed when independent chunkable writers claim different physical inputs', () => {

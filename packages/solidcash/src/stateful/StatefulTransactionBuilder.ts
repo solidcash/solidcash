@@ -4249,6 +4249,51 @@ export function selectExternalEventProbeInput(
   return calleeInputIndex;
 }
 
+type CompilerWriterEventCandidate = Pick<ExternalCallUtxoGroup,
+  'categoryId' | 'blockLayout' | 'compilerRoute' | 'eventOutputs'>;
+
+export type CompilerWriterEventSelection =
+  | { status: 'absent' }
+  | { status: 'ambiguous' }
+  | {
+    status: 'exact'; categoryId: string; slotOffset: number; eventSignature: string;
+    eventOutput?: NonNullable<ExternalCallUtxoGroup['eventOutputs']>[number];
+  };
+
+/** Collapse physical/logical views of one compiler-described writer event; conflicting claims fail closed. */
+export function selectCompilerWriterEvent(
+  candidates: ReadonlyArray<CompilerWriterEventCandidate>,
+): CompilerWriterEventSelection {
+  const claims = new Map<string, Extract<CompilerWriterEventSelection, { status: 'exact' }>>();
+  for (const candidate of candidates) {
+    const fn = candidate.compilerRoute?.abiFunction;
+    const layout = fn?.blockLayout ?? candidate.blockLayout;
+    const slots = layout?.slots.filter((slot) => slot.kind === 'event') ?? [];
+    const routedSignatures = candidate.compilerRoute?.eventSignaturesBySlot;
+    for (const [ordinal, slot] of slots.entries()) {
+      const declared = routedSignatures !== undefined
+        ? routedSignatures[ordinal]
+        : fn?.emits?.find((emit) => emit.emitIndex === ordinal)?.eventSignature;
+      const observed = candidate.eventOutputs?.[ordinal];
+      if (declared && observed && declared !== observed.eventSignature) return { status: 'ambiguous' };
+      const eventSignature = declared ?? observed?.eventSignature;
+      if (!eventSignature) continue;
+      const key = `${candidate.categoryId.toLowerCase()}:${slot.offset}:${eventSignature}`;
+      const prior = claims.get(key);
+      if (prior?.eventOutput && observed && (
+        prior.eventOutput.commitment !== observed.commitment
+        || binToHex(prior.eventOutput.lockingBytecode) !== binToHex(observed.lockingBytecode)
+      )) return { status: 'ambiguous' };
+      claims.set(key, {
+        status: 'exact', categoryId: candidate.categoryId, slotOffset: slot.offset,
+        eventSignature, eventOutput: observed ?? prior?.eventOutput,
+      });
+    }
+  }
+  if (claims.size === 0) return { status: 'absent' };
+  return claims.size === 1 ? [...claims.values()][0] : { status: 'ambiguous' };
+}
+
 export interface StatefulTransactionOptions extends TransactionBuilderOptions {
   masterUtxo: UnlockableUtxo;
   dataNftUtxos: UnlockableUtxo[];
@@ -7095,20 +7140,33 @@ export class StatefulTransactionBuilder {
   }
 
   /**
-   * publishJobEvent's event slot is impl+offset. Occupancy parks SCID/short
-   * data-NFT clones there; the emit pin still names that coordinate.
+   * Reassert the chunkable writer's compiler-owned event coordinate after occupancy repairs.
+   * Older artifacts without write metadata retain their historical event reconstruction below.
    */
   private _reassertNestedEmitEvents(builder: TransactionBuilder): void {
-    const publishFn = this._chunkableValueWriteAbi();
-    const eventOffset = publishFn?.blockLayout?.slots.find((slot) => slot.kind === 'event')?.offset ?? 4;
     const selectedWriter = this._chunkableValueWriteGroups();
     const proxyGroup = selectedWriter.external;
     const llcIndex = selectedWriter.lowLevelIndex;
+    const llcGroup = selectedWriter.lowLevel;
+    const eventSelection = selectCompilerWriterEvent(
+      [proxyGroup, llcGroup].filter((group): group is ExternalCallUtxoGroup => group !== undefined),
+    );
+    if (eventSelection.status === 'ambiguous') return;
+    const legacyEventFallback = eventSelection.status === 'absent'
+      && !this._hasChunkableValueWriteMetadata();
+    if (eventSelection.status === 'absent' && !legacyEventFallback) return;
+    const publishFn = this._chunkableValueWriteAbi();
+    const eventOffset = eventSelection.status === 'exact'
+      ? eventSelection.slotOffset
+      : publishFn?.blockLayout?.slots.find((slot) => slot.kind === 'event')?.offset ?? 4;
     const impl = this._chunkableValueWriteInputIndex();
-    const dest = this._scaledEmitOutputIndex(builder.outputs.length)
-      ?? publishJobEventOutputIndex(impl, eventOffset);
+    const dest = eventSelection.status === 'exact'
+      ? (impl < 0 ? -1 : impl + eventOffset)
+      : this._scaledEmitOutputIndex(builder.outputs.length)
+        ?? publishJobEventOutputIndex(impl, eventOffset);
     const persistEmitEarly = this._shouldRematerializePersistUpdate();
     if (dest < 0 || (impl >= 0 && dest <= impl)) {
+      if (!legacyEventFallback) return;
       const fallback = publishJobEventOutputIndex(impl, eventOffset);
       if (fallback >= 0) {
         relocateJobEventEmitToDest(builder.outputs, fallback, {
@@ -7118,10 +7176,15 @@ export class StatefulTransactionBuilder {
       }
       return;
     }
-    const categoryId = this._jobEventsPublishCategory();
-    const emitInfo = publishFn?.emits?.[0];
-    const derived = proxyGroup?.eventOutputs?.[0]
-      ?? (llcIndex >= 0 ? this.lowLevelCallUtxoGroups[llcIndex].eventOutputs?.[0] : undefined);
+    const categoryId = eventSelection.status === 'exact'
+      ? eventSelection.categoryId : this._jobEventsPublishCategory();
+    const emitInfo = eventSelection.status === 'exact'
+      ? { eventSignature: eventSelection.eventSignature }
+      : publishFn?.emits?.[0];
+    const derived = eventSelection.status === 'exact'
+      ? eventSelection.eventOutput
+      : proxyGroup?.eventOutputs?.[0]
+        ?? llcGroup?.eventOutputs?.[0];
     const debugEventIndex = Number.parseInt(
       (globalThis as { process?: { env?: Record<string, string> } }).process?.env
         ?.SOLIDC_DEBUG_EVENT_INDEX ?? '',
@@ -7147,18 +7210,14 @@ export class StatefulTransactionBuilder {
           logicalFunctionName: this.lowLevelCallUtxoGroups[llcIndex].logicalFunctionName,
           route: this.lowLevelCallUtxoGroups[llcIndex].compilerRoute?.abiFunction.name,
         } : undefined,
-        matchingExternalGroups: this.externalCallUtxoGroups.flatMap((group, index) => {
-          const names = [group.logicalFunctionName, group.functionName, group.compilerRoute?.abiFunction?.name];
-          return names.includes('publishJobEvent') ? [{
-            index,
-            categoryId: group.categoryId,
-            functionName: group.functionName,
-            logicalFunctionName: group.logicalFunctionName,
-            delegateCallGroupIndex: group.delegateCallGroupIndex,
-            sharedGroupIndex: group.sharedGroupIndex,
-            route: group.compilerRoute?.abiFunction.name,
-          }] : [];
-        }),
+        selectedWriterViews: [proxyGroup, llcGroup].filter((group) => group !== undefined).map((group) => ({
+          categoryId: group.categoryId,
+          functionName: group.functionName,
+          logicalFunctionName: group.logicalFunctionName,
+          delegateCallGroupIndex: group.delegateCallGroupIndex,
+          sharedGroupIndex: group.sharedGroupIndex,
+          route: group.compilerRoute?.abiFunction.name,
+        })),
       });
     }
     if (!categoryId) return;
@@ -7167,62 +7226,70 @@ export class StatefulTransactionBuilder {
     const addressType = proxyGroup?.externalContract?.inner?.addressType
       ?? (llcIndex >= 0 ? this.lowLevelCallUtxoGroups[llcIndex].externalContract?.inner?.addressType : undefined)
       ?? 'p2sh32';
-    const emitSignature = emitInfo?.eventSignature ?? 'JobEvent(uint256,JobEventData)';
-    const lockingBytecode = scriptToLockingBytecode(
-      buildEventNftCovenantScript(hexToBin(categoryId), computeEventNameHash(emitSignature)),
-      addressType,
+    const emitSignature = emitInfo?.eventSignature
+      ?? (legacyEventFallback ? 'JobEvent(uint256,JobEventData)' : undefined);
+    if (!emitSignature) return;
+    const lockingBytecode = derived?.lockingBytecode ?? scriptToLockingBytecode(
+      buildEventNftCovenantScript(hexToBin(categoryId), computeEventNameHash(emitSignature)), addressType,
     );
-    const visibleArgs = proxyGroup?.logicalFunctionArgs ?? proxyGroup?.functionArgs
-      ?? (llcIndex >= 0
-        ? this.lowLevelCallUtxoGroups[llcIndex].logicalFunctionArgs
-          ?? this.lowLevelCallUtxoGroups[llcIndex].functionArgs
-        : undefined);
-    const structs = proxyGroup?.externalContract?.inner?.artifact?.structs
-      ?? (llcIndex >= 0
-        ? this.lowLevelCallUtxoGroups[llcIndex].externalContract?.inner?.artifact?.structs
-        : undefined);
-    const now = BigInt((this.builderOptions.provider as { getBlockTime?: () => number })
-      .getBlockTime?.() ?? 0);
-    const eventType = visibleArgs && visibleArgs.length >= 2
-      ? jobEventTypeOf(visibleArgs[1]) : undefined;
-    const emptyAddressEvent = eventType !== undefined
-      && (Array.isArray(visibleArgs![1])
-        ? jobEventFieldEmpty(visibleArgs![1][1])
-        : jobEventFieldEmpty((visibleArgs![1] as { address_?: unknown }).address_));
-    // Closed (7) dest stays `0057000000` — the MD data-NFT pin EQUALVERIFYs that.
-    // CollateralWithdrawn (16) dest is `0060000004||time` — the impl emit pin.
-    const stampWithdraw = emptyAddressEvent && eventType === 16 && now > 0n;
-    const emitEvent = stampWithdraw
-      ? stampEmptyJobEventTimestamp(visibleArgs![1], now)
-      : visibleArgs?.[1];
-    const constructedCommit = emptyAddressEvent && emitEvent !== undefined
-      ? encodeJobEventEmitCommitment(visibleArgs![0], emitEvent, structs)
-      : undefined;
+    let constructedCommit: string | undefined;
+    if (legacyEventFallback) {
+      const visibleArgs = proxyGroup?.logicalFunctionArgs ?? proxyGroup?.functionArgs
+        ?? (llcIndex >= 0
+          ? this.lowLevelCallUtxoGroups[llcIndex].logicalFunctionArgs
+            ?? this.lowLevelCallUtxoGroups[llcIndex].functionArgs
+          : undefined);
+      const structs = proxyGroup?.externalContract?.inner?.artifact?.structs
+        ?? (llcIndex >= 0
+          ? this.lowLevelCallUtxoGroups[llcIndex].externalContract?.inner?.artifact?.structs
+          : undefined);
+      const now = BigInt((this.builderOptions.provider as { getBlockTime?: () => number })
+        .getBlockTime?.() ?? 0);
+      const eventType = visibleArgs && visibleArgs.length >= 2
+        ? jobEventTypeOf(visibleArgs[1]) : undefined;
+      const emptyAddressEvent = eventType !== undefined
+        && (Array.isArray(visibleArgs![1])
+          ? jobEventFieldEmpty(visibleArgs![1][1])
+          : jobEventFieldEmpty((visibleArgs![1] as { address_?: unknown }).address_));
+      // Compatibility for the historical timestamped event encoding, before traces published exact outputs.
+      const stampWithdraw = emptyAddressEvent && eventType === 16 && now > 0n;
+      const emitEvent = stampWithdraw
+        ? stampEmptyJobEventTimestamp(visibleArgs![1], now)
+        : visibleArgs?.[1];
+      constructedCommit = emptyAddressEvent && emitEvent !== undefined
+        ? encodeJobEventEmitCommitment(visibleArgs![0], emitEvent, structs)
+        : undefined;
+    }
+    const eventCommitment = constructedCommit ?? derived?.commitment;
+    if (!legacyEventFallback && !eventCommitment) return;
     const persistEmit = this._shouldRematerializePersistUpdate();
-    placePublishJobEventOutput(builder.outputs, dest, {
+    const placed = placePublishJobEventOutput(builder.outputs, dest, {
       to: lockingBytecode,
       amount: 1200n,
       token: {
         amount: 0n,
         category: categoryId,
-        nft: { capability: 'none', commitment: constructedCommit ?? derived?.commitment ?? '' },
+        nft: { capability: 'none', commitment: eventCommitment ?? '' },
       },
     }, {
-      clearClonedStub: persistEmit,
-      refuseEmpty: persistEmit && !constructedCommit,
-      consumedMutableOk: persistEmit,
+      clearClonedStub: legacyEventFallback && persistEmit,
+      refuseEmpty: legacyEventFallback && persistEmit && !constructedCommit,
+      consumedMutableOk: legacyEventFallback && persistEmit,
       destInput: this.allInputs[dest],
     });
+    if (!placed && !legacyEventFallback) return;
     if (persistEmit && dest >= 0) {
       this.forcedJobEventsBandStart = dest + 1;
       this._placeJobEventsPredecessorInputs(this.pendingJobEventsPredecessors);
       this._materializeJobEventsBand(builder);
       this._reassertPersistedJobEventsOneToOnes(builder, dest);
     }
-    const executingDest = dest >= 0
+    const executingDest = legacyEventFallback && dest >= 0
       ? dest
-      : publishJobEventOutputIndex(this._chunkableValueWriteInputIndex(), eventOffset);
-    if (executingDest >= 0) {
+      : legacyEventFallback
+        ? publishJobEventOutputIndex(this._chunkableValueWriteInputIndex(), eventOffset)
+        : -1;
+    if (legacyEventFallback && executingDest >= 0) {
       relocateJobEventEmitToDest(builder.outputs, executingDest, {
         consumedMutableOk: persistEmit,
         preferCreated: this._rootIsPublishJobPost(),

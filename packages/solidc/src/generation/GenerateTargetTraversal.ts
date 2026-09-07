@@ -5883,6 +5883,23 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
       this.transfersPreallocatedAtFunctionStart = true;
     }
+
+    // The legacy message-bus dispatcher is a tree of nested selector branches whose leaves inline complete
+    // handlers. Event indices belong to the dispatcher-wide semantic frame, not to the mutable list of leaves
+    // visited so far. Allocate that complete frame before entering the tree: arm cleanup may discard values
+    // created below its saved stack depth, while `preAllocatedEmits` deliberately survives across sibling arms.
+    // Deriving an index from `pendingEmits.length` inside such an arm could therefore remember a register which
+    // no longer existed and make a later sibling fail while replacing `__internal__emit_N`.
+    //
+    // Keep this on the compatibility route only. Kernel rows own separate event frames/runtime journals, and
+    // ordinary entry points retain their established allocation order and bytecode.
+    if (this.isCompilerMessageBusRoute(node) && this.compilerOptions.messageBusKernel !== true
+      && this.emitInfos.length > 0) {
+      const loc = { location: node.location, positionHint: PositionHint.START } as SingleLocationData;
+      for (const { emitIndex } of this.emitInfos) {
+        if (!this.preAllocatedEmits.has(emitIndex)) this.preAllocateEmit(emitIndex, loc);
+      }
+    }
     node.body = this.visit(node.body) as BlockNode;
 
     // After Instantiation visits, deployTargets carries the true child dataNftCount (including oracle

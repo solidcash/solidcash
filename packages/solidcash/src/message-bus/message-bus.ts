@@ -11,6 +11,8 @@ import { MessageBusDiagnosticError } from './diagnostics.js';
 
 export interface MessageBatchCall {
   function: string;
+  /** Exact ABI entry-point selector. Required when `function` names distinct overloads. */
+  selector?: string;
   /** Authenticated graph call mode. Presence selects the message-bus v2 per-row mode framing. */
   callMode?: 'call' | 'staticcall';
   args?: readonly FunctionArgument[];
@@ -18,6 +20,57 @@ export interface MessageBatchCall {
   msgValue?: bigint;
   /** Graph-authenticated caller identity bytecode for msg.sender-keyed resources. */
   logicalCaller?: FunctionArgument;
+}
+
+const normalizeFunctionSelector = (selector: string): string | undefined => {
+  const normalized = selector.startsWith('0x') || selector.startsWith('0X') ? selector.slice(2) : selector;
+  return /^[0-9a-fA-F]{8}$/.test(normalized) ? normalized.toLowerCase() : undefined;
+};
+
+/** Resolve one ABI entry point without guessing between distinct same-name selectors. */
+export function resolveMessageBusAbiFunction(
+  artifact: Artifact, name: string, selector?: string,
+): Artifact['abi'][number] | undefined {
+  const matches = artifact.abi.filter((candidate) => candidate.name === name);
+  if (selector !== undefined) {
+    const normalized = normalizeFunctionSelector(selector);
+    if (normalized === undefined) {
+      throw new Error(`messageBus: function selector '${selector}' must be exactly four hexadecimal bytes`);
+    }
+    const selected = matches.find((candidate) => candidate.selector?.toLowerCase() === normalized);
+    if (!selected) {
+      throw new Error(
+        `messageBus: selector ${normalized} does not identify ABI function '${name}' in '${artifact.contractName}'`,
+      );
+    }
+    return selected;
+  }
+  if (matches.length > 1
+    && new Set(matches.map((candidate) => candidate.selector ?? '')).size > 1) {
+    throw new Error(
+      `messageBus: participant artifact declares ${matches.length} distinct ABI functions named '${name}'`,
+    );
+  }
+  return matches[0];
+}
+
+/** Resolve the message-bus handler paired with one exact (or legacy-unambiguous) ABI entry point. */
+export function resolveMessageBusHandler(
+  artifact: Artifact, name: string, selector?: string,
+): NonNullable<Artifact['messageBus']>['handlers'][number] | undefined {
+  const abiFunction = resolveMessageBusAbiFunction(artifact, name, selector);
+  const matches = artifact.messageBus?.handlers.filter((candidate) => candidate.name === name) ?? [];
+  if (abiFunction?.selector !== undefined) {
+    return matches.find((candidate) =>
+      candidate.selector.toLowerCase() === abiFunction.selector!.toLowerCase());
+  }
+  if (matches.length > 1
+    && new Set(matches.map((candidate) => candidate.selector.toLowerCase())).size > 1) {
+    throw new Error(
+      `messageBus: participant artifact declares ${matches.length} distinct message-bus handlers named '${name}'`,
+    );
+  }
+  return matches[0];
 }
 
 export interface EncodedMessageBatch {
@@ -361,12 +414,13 @@ export function encodeMessageBatch(
   // supplied witness when their expression cannot be evaluated locally.
   const literalKeyWitness = (
     handlerName: string,
+    handlerSelector: string,
     binding: NonNullable<typeof capability.handlers[number]['batchKeyWitnesses']>[number],
   ): FunctionArgument | undefined => {
     if (binding.source !== 'expression') return undefined;
     const routeAccess = capability.route.entryAccesses?.find((access) => access.keyParams.some((param) =>
       param.replace(/^__message_bus_ek_/, '') === binding.routeInput));
-    const direct = artifact.abi.find((candidate) => candidate.name === handlerName);
+    const direct = resolveMessageBusAbiFunction(artifact, handlerName, handlerSelector);
     const match = binding.routeInput.match(/_(\d+)(?:_row)?$/);
     const keyIndex = match ? Number(match[1]) : undefined;
     if (keyIndex === undefined) return undefined;
@@ -418,7 +472,7 @@ export function encodeMessageBatch(
     const choices: Array<Array<{ value: FunctionArgument; encoded: Uint8Array }>> = [];
     let rowBase = `${base}_row`;
     for (const invocation of invocations) {
-      const handler = capability.handlers.find((candidate) => candidate.name === invocation.function);
+      const handler = resolveMessageBusHandler(artifact, invocation.function, invocation.selector);
       if (!handler) continue;
       const bindings = handler.batchKeyWitnesses ?? [];
       const shared = bindings.find((binding) => binding.routeInput === base);
@@ -464,7 +518,7 @@ export function encodeMessageBatch(
     row: number; function: string; selectorHex: string; argsHex: string;
   }[] = [];
   const rows = invocations.map((invocation, rowIndex) => {
-    const handler = capability.handlers.find((candidate) => candidate.name === invocation.function);
+    const handler = resolveMessageBusHandler(artifact, invocation.function, invocation.selector);
     if (!handler) throw new Error(`Unknown message-bus batch handler '${invocation.function}'`);
     if (!handler.eligible) {
       throw new Error(`Handler '${invocation.function}' is not batch eligible: ${handler.rejectionReason}`);
@@ -586,7 +640,7 @@ export function encodeMessageBatch(
         ? invocation.logicalCaller
         : binding.source === 'expression'
           ? unboundRouteWitnesses[binding.perRow ? `${binding.routeInput}_r${rowIndex}` : binding.routeInput]
-            ?? literalKeyWitness(handler.name, binding)
+            ?? literalKeyWitness(handler.name, handler.selector, binding)
           : args[binding.inputIndex];
       if (value === undefined) {
         throw new MessageBusDiagnosticError(

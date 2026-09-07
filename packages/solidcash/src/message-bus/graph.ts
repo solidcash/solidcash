@@ -4,7 +4,8 @@ import type {
 } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
 import {
-  encodeMessageBatch, type EncodedMessageBatch, type MessageBatchCall,
+  encodeMessageBatch, resolveMessageBusAbiFunction, resolveMessageBusHandler,
+  type EncodedMessageBatch, type MessageBatchCall,
 } from './message-bus.js';
 import { MessageBusDiagnosticError } from './diagnostics.js';
 import {
@@ -52,6 +53,8 @@ export interface CompiledGraphInvocation {
   parent: number | null;
   callee: number;
   function: string;
+  /** Exact ABI entry-point selector. Required when `function` names distinct overloads. */
+  selector?: string;
   args?: readonly FunctionArgument[];
   /** Compiler-stable identity of the parent callsite reached by this invocation. */
   consumerCallsiteId?: number;
@@ -158,7 +161,8 @@ export function selectedGraphEventOffsets(
     const maximumRows = capability?.maximumRows ?? 0;
     const selectedHandlers = participant.invocations.map((invocationIndex) => {
       const invocation = plan.invocations[invocationIndex];
-      return capability?.handlers.find((handler) => handler.name === invocation.function);
+      return capability?.handlers.find((handler) => handler.name === invocation.function
+        && handler.selector.toLowerCase() === invocation.selectorHex.toLowerCase());
     });
     const canonicalPrefix = maximumRows > 0 && eventSlots.length === maximumRows
       && eventSlots.slice(0, maximumRows).every((slot, index) => slot.slotIndex === index);
@@ -629,7 +633,8 @@ export function finalizeAtomicInvocationGraph(
       const emittingInvocations = participant.invocations.flatMap((invocationIndex) => {
         const invocation = plan.invocations[invocationIndex];
         const handler = participant.artifact.messageBus?.handlers.find((candidate) =>
-          candidate.name === invocation.function);
+          candidate.name === invocation.function
+          && candidate.selector.toLowerCase() === invocation.selectorHex.toLowerCase());
         return Array.from({ length: handler?.emits?.length ?? 0 }, () => invocationIndex);
       });
       if (maximumRows < 1 || (effect.runtimeRow === undefined && slot.slotIndex === undefined)
@@ -1509,15 +1514,10 @@ function assertNoStaleEmissionCloneReads(
  * the callManifest would then commit the wrong selector and argument vector consistently. Entries agreeing on
  * their selector are the same target and are not ambiguous.
  */
-export function resolveGraphAbiFunction(artifact: Artifact, name: string): AbiFunction | undefined {
-  const matches = artifact.abi.filter((candidate) => candidate.name === name);
-  if (matches.length > 1
-    && new Set(matches.map((candidate) => candidate.selector ?? '')).size > 1) {
-    throw new Error(
-      `messageBus: participant artifact declares ${matches.length} distinct ABI functions named '${name}'`,
-    );
-  }
-  return matches[0];
+export function resolveGraphAbiFunction(
+  artifact: Artifact, name: string, selector?: string,
+): AbiFunction | undefined {
+  return resolveMessageBusAbiFunction(artifact, name, selector);
 }
 
 type GraphCallerParticipant = Pick<CompiledGraphParticipant, 'lockingBytecode'>;
@@ -1701,7 +1701,7 @@ export function planCompiledGraph(
     if (invocation.callMode !== undefined) return 'call';
     const parentInvocation = invocations[invocation.parent];
     const parentFunction = resolveGraphAbiFunction(
-      participants[parentInvocation.callee].artifact, parentInvocation.function,
+      participants[parentInvocation.callee].artifact, parentInvocation.function, parentInvocation.selector,
     );
     const modes = [...new Set((parentFunction?.externalCalls ?? [])
       .filter((call) => invocation.consumerCallsiteId !== undefined
@@ -1749,10 +1749,15 @@ export function planCompiledGraph(
         },
       );
     }
-    const rowHandler = participants[invocation.callee].artifact.messageBus?.handlers.find((handler) =>
-      handler.name === invocation.function);
+    const abiFunction = resolveGraphAbiFunction(
+      participants[invocation.callee].artifact, invocation.function, invocation.selector,
+    );
+    const rowHandler = resolveMessageBusHandler(
+      participants[invocation.callee].artifact, invocation.function, abiFunction?.selector,
+    );
     perOwner[invocation.callee].push({
       function: invocation.function,
+      ...(abiFunction?.selector !== undefined && { selector: abiFunction.selector }),
       args: invocation.args,
       // Graph admission rejects every unbound incoming `{value: ...}` call option. A nested payable row with
       // no compiler-authored transfer therefore has exactly zero logical BCH value. Transfer-bearing rows derive
@@ -1784,7 +1789,7 @@ export function planCompiledGraph(
       );
     }
     const participant = participants[invocation.callee];
-    const abiFunction = resolveGraphAbiFunction(participant.artifact, invocation.function);
+    const abiFunction = resolveGraphAbiFunction(participant.artifact, invocation.function, invocation.selector);
     // An absent ABI entry is refused rather than skipped, matching `deriveCompiledGraphPlan`'s `functionAbi`.
     // Skipping it silently disabled the call-option check for the one artifact shape that can hide the
     // evidence: the direct-mode `transferCount`/`blockLayout` an option publishes live on this entry, so a row
@@ -1807,8 +1812,12 @@ export function planCompiledGraph(
     if (invocation.parent !== null) {
       const parentInvocation = invocations[invocation.parent];
       const parentParticipant = participants[parentInvocation.callee];
-      const parentHandler = parentParticipant.artifact.messageBus?.handlers
-        .find((candidate) => candidate.name === parentInvocation.function);
+      const parentAbi = resolveGraphAbiFunction(
+        parentParticipant.artifact, parentInvocation.function, parentInvocation.selector,
+      );
+      const parentHandler = resolveMessageBusHandler(
+        parentParticipant.artifact, parentInvocation.function, parentAbi?.selector,
+      );
       if (parentHandler?.transfers?.some((transfer) => transfer.callOption === 'value')) {
         bits |= CALL_OPTION_VALUE;
       }
@@ -1912,7 +1921,9 @@ export function planCompiledGraph(
     } else {
       const parentInvocation = invocations[invocation.parent];
       const parentArtifact = participants[parentInvocation.callee].artifact;
-      const parentFunction = resolveGraphAbiFunction(parentArtifact, parentInvocation.function);
+      const parentFunction = resolveGraphAbiFunction(
+        parentArtifact, parentInvocation.function, parentInvocation.selector,
+      );
       const candidates = parentFunction?.externalCalls?.filter((call) =>
         invocation.consumerCallsiteId !== undefined
           ? call.callsiteId === invocation.consumerCallsiteId
@@ -1999,7 +2010,7 @@ export function planCompiledGraph(
     const children = childrenOf[parent];
     const parentInvocation = invocations[parent];
     const parentFunction = resolveGraphAbiFunction(
-      participants[parentInvocation.callee].artifact, parentInvocation.function,
+      participants[parentInvocation.callee].artifact, parentInvocation.function, parentInvocation.selector,
     );
     // X179: the floor, ordered before the ceiling and before the `children.length === 0` skip, because a
     // handler planned with NO children is exactly the shape it refuses - the skip is what let a dropped edge

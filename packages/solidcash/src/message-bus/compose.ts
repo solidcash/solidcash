@@ -39,7 +39,9 @@ import {
   type AtomicDeploymentSlotEffect, type AtomicEventSlotEffect, type AtomicResourceSlotEffect,
   type AtomicSidecarSlotEffect, type AtomicTokenSlotEffect, type AtomicValueSlotEffect,
 } from './graph.js';
-import { encodeMessageBatch } from './message-bus.js';
+import {
+  encodeMessageBatch, resolveMessageBusAbiFunction, resolveMessageBusHandler,
+} from './message-bus.js';
 import {
   convergeMessageBusComputedResourceOutputs, finalizedByteGateOptionsForProvider, preflightMessageBusTransaction,
 } from './preflight.js';
@@ -71,6 +73,8 @@ export interface ComposeAtomicMessageBusOptions {
 export interface PreparedAtomicMessageBusCall {
   contract: StatefulContract;
   functionName: string;
+  /** Exact ABI entry-point selector. Required when `functionName` names distinct overloads. */
+  selector?: string;
   args: readonly FunctionArgument[];
   /** @internal Compiler-stable identity of this invocation in its parent function. */
   callsiteId?: number;
@@ -919,6 +923,12 @@ export class AtomicMessageBusComposition {
         const descriptor = call._messageBusCompositionDescriptor();
         return { ...descriptor, artifact: descriptor.contract.inner.artifact };
       });
+    for (const descriptor of descriptors) {
+      const selected = resolveMessageBusAbiFunction(
+        descriptor.artifact, descriptor.functionName, descriptor.selector,
+      );
+      if (selected?.selector !== undefined) descriptor.selector = selected.selector;
+    }
     if (descriptors.length < 2) {
       throw new Error('messageBus: atomic composition requires at least two prepared calls');
     }
@@ -981,12 +991,11 @@ export class AtomicMessageBusComposition {
     };
     const descriptorWitnesses = await Promise.all(descriptors.map(async (descriptor) => {
       const artifact = descriptor.artifact;
-      const handler = artifact.messageBus?.handlers.find((candidate) =>
-        candidate.name === descriptor.functionName);
+      const abi = resolveMessageBusAbiFunction(artifact, descriptor.functionName, descriptor.selector);
+      const handler = resolveMessageBusHandler(artifact, descriptor.functionName, abi?.selector);
       const expressionBindings = handler?.batchKeyWitnesses?.filter((binding) =>
         binding.source === 'expression') ?? [];
       if (expressionBindings.length === 0) return Object.freeze({}) as Readonly<Record<string, FunctionArgument>>;
-      const abi = artifact.abi.find((candidate) => candidate.name === descriptor.functionName);
       if (!abi) throw new Error(`messageBus: ABI for '${descriptor.functionName}' is missing`);
       const state = await stateOf(descriptor.contract);
       const witnesses: Record<string, FunctionArgument> = {};
@@ -1024,8 +1033,10 @@ export class AtomicMessageBusComposition {
       const row = ownerRows.get(owner) ?? 0;
       ownerRows.set(owner, row + 1);
       const aggregate = ownerWitnesses.get(owner) ?? {};
-      const handler = descriptor.artifact.messageBus?.handlers.find((candidate) =>
-        candidate.name === descriptor.functionName);
+      const abi = resolveMessageBusAbiFunction(
+        descriptor.artifact, descriptor.functionName, descriptor.selector,
+      );
+      const handler = resolveMessageBusHandler(descriptor.artifact, descriptor.functionName, abi?.selector);
       for (const binding of handler?.batchKeyWitnesses?.filter((candidate) =>
         candidate.source === 'expression') ?? []) {
         const value = descriptorWitnesses[index][binding.routeInput];
@@ -1088,6 +1099,7 @@ export class AtomicMessageBusComposition {
     const plan = deriveCompiledGraphPlan({
       root: workParticipants[0],
       function: descriptors[0].functionName,
+      ...(descriptors[0].selector !== undefined && { selector: descriptors[0].selector }),
       args: descriptors[0].args,
       rootCaller,
       targets: {},
@@ -1104,6 +1116,7 @@ export class AtomicMessageBusComposition {
         next += 1;
         return {
           participant: workParticipants[next - 1],
+          ...(descriptor.selector !== undefined && { selector: descriptor.selector }),
           ...(descriptor.targetLockingBytecode !== undefined && {
             targetLockingBytecode: descriptor.targetLockingBytecode,
           }),
@@ -1119,8 +1132,8 @@ export class AtomicMessageBusComposition {
         }
         return reached.length > 0 || this.options.preparedCalls ? reached : undefined;
       },
-      occurrence: ({ participant, function: ownerFunction, callsiteId, kind }) => {
-        const abiFunction = participant.artifact.abi.find((candidate) => candidate.name === ownerFunction);
+      occurrence: ({ participant, function: ownerFunction, selector, callsiteId, kind }) => {
+        const abiFunction = resolveMessageBusAbiFunction(participant.artifact, ownerFunction, selector);
         const callsite = abiFunction?.externalCalls?.find((candidate) => candidate.callsiteId === callsiteId);
         if (!callsite) {
           throw new Error(`messageBus: compiler omitted occurrence metadata for callsite ${callsiteId}`);
@@ -1140,8 +1153,9 @@ export class AtomicMessageBusComposition {
           const matches = callsite.rawFunctionName
             ? reached.functionName === callsite.rawFunctionName
             : callsite.rawSelector
-              ? reached.artifact.abi.find((candidate) => candidate.name === reached.functionName)
-                ?.selector?.toLowerCase() === callsite.rawSelector.toLowerCase()
+              ? resolveMessageBusAbiFunction(
+                reached.artifact, reached.functionName, reached.selector,
+              )?.selector?.toLowerCase() === callsite.rawSelector.toLowerCase()
               : reached.functionName === callsite.functionName;
           if (!matches) break;
           count += 1;
@@ -1173,6 +1187,7 @@ export class AtomicMessageBusComposition {
         return {
           participant: workParticipants[next - 1],
           function: descriptor.functionName,
+          ...(descriptor.selector !== undefined && { selector: descriptor.selector }),
           args: descriptor.args,
           ...(descriptor.targetLockingBytecode !== undefined && {
             targetLockingBytecode: descriptor.targetLockingBytecode,
@@ -1276,7 +1291,8 @@ export class AtomicMessageBusComposition {
         );
       }
       const handler = supplied.artifact.messageBus?.handlers.find((candidate) =>
-        candidate.name === supplied.functionName);
+        candidate.name === supplied.functionName
+        && candidate.selector.toLowerCase() === invocation.selectorHex.toLowerCase());
       const validationWitnesses = Object.fromEntries((handler?.batchKeyWitnesses ?? [])
         .filter((binding) => binding.source === 'expression')
         .map((binding) => [
@@ -1289,6 +1305,7 @@ export class AtomicMessageBusComposition {
         .map((input, witnessIndex) => [input.name, participantExecution.batch.routeWitnesses[witnessIndex]]));
       const suppliedRow = encodeMessageBatch(supplied.artifact, [{
         function: supplied.functionName,
+        selector: invocation.selectorHex,
         args: supplied.args,
         callMode: invocation.callMode,
         ...(invocation.caller !== null && handler?.usesMsgValue
@@ -1403,6 +1420,7 @@ export class AtomicMessageBusComposition {
         return {
           contract: descriptor.contract,
           functionName: descriptor.functionName,
+          ...(descriptor.selector !== undefined && { selector: descriptor.selector }),
           args,
           ...(descriptor.callsiteId !== undefined && { callsiteId: descriptor.callsiteId }),
           ...(descriptor.targetLockingBytecode !== undefined && {
@@ -1454,7 +1472,9 @@ export class AtomicMessageBusComposition {
       (invocationIndex) => {
         const invocation = plan.invocations[invocationIndex];
         return participant.artifact.messageBus?.handlers.some((handler) =>
-          handler.name === invocation.function && (handler.runtimeLoopEvents?.length ?? 0) > 0);
+          handler.name === invocation.function
+          && handler.selector.toLowerCase() === invocation.selectorHex.toLowerCase()
+          && (handler.runtimeLoopEvents?.length ?? 0) > 0);
       },
     ));
     const resourceSlots = plan.participants.flatMap((participant) =>
@@ -1773,7 +1793,8 @@ export class AtomicMessageBusComposition {
       return participant.invocations.flatMap((invocationIndex) => {
         const invocation = plan.invocations[invocationIndex];
         const handler = participant.artifact.messageBus?.handlers.find((candidate) =>
-          candidate.name === invocation.function);
+          candidate.name === invocation.function
+          && candidate.selector.toLowerCase() === invocation.selectorHex.toLowerCase());
         const signatures = [
           ...(handler?.emits ?? []).map((emitted) => emitted.eventSignature),
           ...(handler?.runtimeLoopEvents ?? []).flatMap((loop) => loop.eventSignatures),

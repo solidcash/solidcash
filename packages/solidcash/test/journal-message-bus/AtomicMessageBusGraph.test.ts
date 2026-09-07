@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Artifact } from '@solidcash/utils';
+import { compileString } from 'solidc';
 import { messageBus } from '../../src/index.js';
 
 const artifact = (selector: string, inputType = 'int'): Artifact => ({
@@ -48,6 +49,74 @@ const plan = (): messageBus.CompiledGraphPlan => ({
 });
 
 describe('atomic compiled invocation graph', () => {
+  it('retains an exact overload selector and refuses ambiguity or mismatch', () => {
+    const overloaded = compileString(`pragma solidcash >=0.8.0;
+      contract OverloadedGraph() {
+        int stored;
+        function apply(int next) public { this.stored = next; require(true); }
+        function apply(bool enabled) public {
+          if (enabled) { this.stored = 1; } else { this.stored = 0; }
+          require(true);
+        }
+      }`, { forceStateful: true, messageBus: true });
+    const selected = overloaded.abi.find((candidate) =>
+      candidate.name === 'apply' && candidate.inputs[0]?.type === 'bool')!;
+    const participant = { artifact: overloaded, lockingBytecode: '51' };
+    const exact = messageBus.planCompiledGraph([participant], [{
+      parent: null, callee: 0, function: 'apply', selector: selected.selector, args: [true],
+    }]);
+    expect(exact.invocations[0].selectorHex).toBe(selected.selector);
+    expect(exact.participants[0].batch.rows[0].selectorHex).toBe(selected.selector);
+    const derived = messageBus.deriveCompiledGraphPlan({
+      root: participant,
+      function: 'apply',
+      selector: selected.selector,
+      args: [true],
+      targets: {},
+    });
+    expect(derived.invocations[0].selectorHex).toBe(selected.selector);
+
+    const rootInputs: { name: string; type: string }[] = [];
+    const root = {
+      artifact: {
+        contractName: 'SelectorRoot',
+        abi: [{
+          name: 'run', selector: '11111111', inputs: rootInputs, outputs: [],
+          externalCalls: [{
+            callsiteId: 1, interfaceName: 'IOverloaded', functionName: 'apply',
+            requiredDataNftIndices: [],
+            argSources: [{ kind: 'literal' as const, type: 'bool', value: 'true' }],
+          }],
+        }],
+        messageBus: {
+          version: 1, selector: '53434231', maximumRows: 2, maximumBlobBytes: 256,
+          route: {
+            name: '__message_bus1', selector: '53434231', inputs: [], outputs: [],
+            blockLayout: { blockSize: 1, slots: [{ kind: 'master', offset: 0 }] },
+          },
+          handlers: [{ name: 'run', selector: '11111111', inputs: rootInputs, outputs: [], eligible: true }],
+        },
+        invocationAnalysis: { version: 1, protocolVersions: [1], functions: [], components: [] },
+      } as unknown as Artifact,
+      lockingBytecode: '52',
+    };
+    const target = { participant, selector: selected.selector };
+    const nested = messageBus.deriveCompiledGraphPlan({
+      root, function: 'run', targets: {}, target: () => target,
+    });
+    expect(nested.invocations.map((invocation) => invocation.selectorHex))
+      .toEqual(['11111111', selected.selector]);
+    expect(() => messageBus.deriveCompiledGraphPlan({
+      root, function: 'run', targets: {}, target: () => participant,
+    })).toThrow(/distinct ABI functions/);
+    expect(() => messageBus.planCompiledGraph([participant], [{
+      parent: null, callee: 0, function: 'apply', args: [true],
+    }])).toThrow(/distinct ABI functions/);
+    expect(() => messageBus.planCompiledGraph([participant], [{
+      parent: null, callee: 0, function: 'apply', selector: 'ffffffff', args: [true],
+    }])).toThrow(/does not identify ABI function 'apply'/);
+  });
+
   it('uses a runtime occurrence proof for a bounded conditional raw edge', () => {
     const capability = (
       name: string,

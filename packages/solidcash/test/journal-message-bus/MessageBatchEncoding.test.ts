@@ -60,12 +60,36 @@ contract SharedLiteralCollectionEncoding() {
   }
 }`;
 
+const OVERLOADED_SOURCE = `pragma solidcash >=0.8.0;
+contract OverloadedBatchEncoding() {
+  int counter;
+  function apply(int value) public { this.counter = value; require(true); }
+  function apply(bool enabled) public { this.counter = enabled ? 1 : 0; require(true); }
+}`;
+
 const artifact = compileString(SOURCE, {
   forceStateful: true,
   messageBus: true,
 });
 
 describe('messageBus.encodeMessageBatch', () => {
+  it('selects an exact non-first overload and rejects ambiguous or mismatched identities', () => {
+    const overloaded = compileString(OVERLOADED_SOURCE, { forceStateful: true, messageBus: true });
+    const handlers = overloaded.messageBus!.handlers.filter((handler) => handler.name === 'apply');
+    const boolHandler = handlers.find((handler) => handler.inputs[0]?.type === 'bool')!;
+    expect(boolHandler).toBeDefined();
+
+    const encoded = messageBus.encodeMessageBatch(overloaded, [{
+      function: 'apply', selector: boolHandler.selector, args: [true],
+    }]);
+    expect(encoded.rows[0]).toMatchObject({ function: 'apply', selectorHex: boolHandler.selector });
+    expect(() => messageBus.encodeMessageBatch(overloaded, [{ function: 'apply', args: [true] }]))
+      .toThrow(/distinct ABI functions/);
+    expect(() => messageBus.encodeMessageBatch(overloaded, [{
+      function: 'apply', selector: 'ffffffff', args: [true],
+    }])).toThrow(/does not identify ABI function 'apply'/);
+  });
+
   it('encodes real compiler handlers in canonical execution order', () => {
     const encoded = messageBus.encodeMessageBatch(artifact, [
       { function: 'add', args: [2n] },

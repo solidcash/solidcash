@@ -1,8 +1,9 @@
 import {
-  ArrayAccessNode, ArrayPopNode, ArrayPushNode, AssignNode, BinaryOpNode, BlockNode, BoolLiteralNode, CastNode,
+  ArrayAccessNode, ArrayAssignNode, ArrayDeleteNode, ArrayPopNode, ArrayPushNode, AssignNode, BinaryOpNode,
+  BlockNode, BoolLiteralNode, CastNode,
   BranchNode, BreakNode, ContractNode,
   DeleteStateNode, DoWhileNode, EmitStatementNode, FunctionCallNode, FunctionCallStatementNode,
-  FunctionDefinitionNode, IdentifierNode,
+  FunctionDefinitionNode, FunctionModifier, IdentifierNode,
   ExpressionNode, ExternalCallExpression, FieldAccessNode, LiteralNode, MappingAccessNode, MappingAssignNode,
   MappingDeleteNode, MappingFieldAssignNode,
   NewArrayNode, Node, RequireNode, ReturnNode, SourceFileNode, StatementNode, UnaryOpNode,
@@ -114,6 +115,7 @@ interface AffineRecursiveMappingRead {
  */
 export default class LowerTailRecursion extends AstTraversal {
   private counter = 0;
+  private finiteArraySpecializationBudget = 256;
   private scalarStateNames = new Set<string>();
   private structConstructorNames = new Set<string>();
   private sortedMappingNames = new Set<string>();
@@ -429,6 +431,19 @@ export default class LowerTailRecursion extends AstTraversal {
     this.structConstructorNames = new Set(node.structDefinitions.map((definition) => definition.name));
     this.sortedMappingNames = new Set(node.collections.filter((collection) =>
       collection.sorted && collection.type instanceof MappingType).map((collection) => collection.name));
+    const functionsByName = new Map<string, FunctionDefinitionNode[]>();
+    for (const fn of node.functions) {
+      const overloads = functionsByName.get(fn.name) ?? [];
+      overloads.push(fn);
+      functionsByName.set(fn.name, overloads);
+    }
+    // Run before tail/control normalization: literal base selection and recursive source order are still explicit.
+    // The specialized block replaces the source call, so later memory lowering and kernel key replay consume the
+    // same finite executable statements rather than independently reconstructing recursion metadata.
+    this.finiteArraySpecializationBudget = 256;
+    for (const fn of node.functions) {
+      if (fn.body) this.specializeFiniteArrayCalls(fn.body, functionsByName);
+    }
     this.lowerMutualGroups(node.functions);
     node.functions = node.functions.map((fn) => this.visit(fn) as FunctionDefinitionNode);
     if (node.constructorDef) node.constructorDef = this.visit(node.constructorDef) as FunctionDefinitionNode;
@@ -438,6 +453,223 @@ export default class LowerTailRecursion extends AstTraversal {
     this.structConstructorNames = parentStructConstructorNames;
     this.sortedMappingNames = parentSortedMappingNames;
     return node;
+  }
+
+  private finiteLiteral(expression: ExpressionNode): bigint | boolean | undefined {
+    if (expression instanceof IntLiteralNode) return expression.value;
+    if (expression instanceof BoolLiteralNode) return expression.value;
+    if (expression instanceof CastNode) return this.finiteLiteral(expression.expression);
+    if (expression instanceof UnaryOpNode) {
+      const value = this.finiteLiteral(expression.expression);
+      if (expression.operator === UnaryOperator.NOT && typeof value === 'boolean') return !value;
+      if (expression.operator === UnaryOperator.NEGATE && typeof value === 'bigint') return -value;
+      if (expression.operator === UnaryOperator.INVERT && typeof value === 'bigint') return ~value;
+      return undefined;
+    }
+    if (!(expression instanceof BinaryOpNode)) return undefined;
+    const left = this.finiteLiteral(expression.left);
+    const right = this.finiteLiteral(expression.right);
+    if (left === undefined || right === undefined) return undefined;
+    if (typeof left === 'bigint' && typeof right === 'bigint') {
+      if (expression.operator === BinaryOperator.PLUS) return left + right;
+      if (expression.operator === BinaryOperator.MINUS) return left - right;
+      if (expression.operator === BinaryOperator.MUL) return left * right;
+      if (expression.operator === BinaryOperator.DIV && right !== 0n) return left / right;
+      if (expression.operator === BinaryOperator.MOD && right !== 0n) return left % right;
+      if (expression.operator === BinaryOperator.LT) return left < right;
+      if (expression.operator === BinaryOperator.LE) return left <= right;
+      if (expression.operator === BinaryOperator.GT) return left > right;
+      if (expression.operator === BinaryOperator.GE) return left >= right;
+      if (expression.operator === BinaryOperator.EQ) return left === right;
+      if (expression.operator === BinaryOperator.NE) return left !== right;
+    }
+    if (typeof left === 'boolean' && typeof right === 'boolean') {
+      if (expression.operator === BinaryOperator.AND) return left && right;
+      if (expression.operator === BinaryOperator.OR) return left || right;
+      if (expression.operator === BinaryOperator.EQ) return left === right;
+      if (expression.operator === BinaryOperator.NE) return left !== right;
+    }
+    return undefined;
+  }
+
+  private specializeNode<T extends Node>(
+    source: T,
+    scalars: ReadonlyMap<string, ExpressionNode>,
+    arrays: ReadonlyMap<string, string>,
+  ): T {
+    const replace = (candidate: Node): Node => {
+      if (candidate instanceof IdentifierNode && scalars.has(candidate.name)) {
+        const value = cloneNode(scalars.get(candidate.name)!) as ExpressionNode;
+        value.location = candidate.location;
+        return value;
+      }
+      const value = cloneNode(candidate) as Node;
+      const named = value as unknown as { name?: unknown };
+      if (typeof named.name === 'string' && arrays.has(named.name)) named.name = arrays.get(named.name)!;
+      for (const key of Object.keys(value)) {
+        if (['location', 'definition', 'symbol', 'type', 'resolvedFunction', 'functionReference', 'collection']
+          .includes(key)) continue;
+        const child = (value as unknown as Record<string, unknown>)[key];
+        if (child instanceof Node) (value as unknown as Record<string, unknown>)[key] = replace(child);
+        else if (Array.isArray(child)) {
+          (value as unknown as Record<string, unknown>)[key] = child.map((item) =>
+            item instanceof Node ? replace(item) : item);
+        }
+      }
+      return value;
+    };
+    return replace(source) as T;
+  }
+
+  private finiteArraySpecialization(
+    statement: FunctionCallStatementNode,
+    functionsByName: ReadonlyMap<string, FunctionDefinitionNode[]>,
+  ): BlockNode | undefined {
+    const call = statement.call;
+    const targets = (functionsByName.get(call.identifier.name) ?? [])
+      .filter((candidate) => candidate.parameters.length === call.parameters.length);
+    if (targets.length !== 1) return undefined;
+    const target = targets[0];
+    if (!target.body || target.returnTypes.length !== 0
+      || !target.modifiers.includes(FunctionModifier.PURE)
+      || !(target.modifiers.includes(FunctionModifier.INTERNAL)
+        || target.modifiers.includes(FunctionModifier.PRIVATE))
+      || this.countSelfCalls(target.body, target.name) !== 1) return undefined;
+
+    const rootScalars = new Map<string, ExpressionNode>();
+    const rootArrays = new Map<string, string>();
+    for (let index = 0; index < target.parameters.length; index += 1) {
+      const parameter = target.parameters[index];
+      const argument = call.parameters[index];
+      if (parameter.type instanceof ArrayType) {
+        if (!(argument instanceof IdentifierNode) || !parameter.modifier.includes('memory')) return undefined;
+        rootArrays.set(parameter.name, argument.name);
+      } else {
+        // Specialization erases parameter binding and branch/recursive-argument evaluation. Only BCH-native
+        // bigint arithmetic is unbounded, so folding a checked int/uint/fixed expression here could otherwise
+        // erase a source overflow even when the final recursive path reaches a literal base case.
+        if (parameter.type !== PrimitiveType.BIGINT || !(argument instanceof IntLiteralNode)) return undefined;
+        if (this.finiteLiteral(argument) === undefined) return undefined;
+        rootScalars.set(parameter.name, argument);
+      }
+    }
+    if (rootArrays.size === 0) return undefined;
+
+    let reachedBaseReturn = false;
+    const expand = (
+      block: BlockNode,
+      scalars: ReadonlyMap<string, ExpressionNode>,
+      arrays: ReadonlyMap<string, string>,
+    ): { statements: StatementNode[]; returned: boolean } | undefined => {
+      const expanded: StatementNode[] = [];
+      for (const source of block.statements ?? []) {
+        if (source instanceof BranchNode) {
+          const condition = this.specializeNode(source.condition, scalars, arrays);
+          const selected = this.finiteLiteral(condition);
+          if (typeof selected !== 'boolean') return undefined;
+          const arm = selected ? source.ifBlock : source.elseBlock;
+          if (!arm) continue;
+          const selectedStatements = expand(arm, scalars, arrays);
+          if (!selectedStatements) return undefined;
+          expanded.push(...selectedStatements.statements);
+          if (selectedStatements.returned) return { statements: expanded, returned: true };
+          continue;
+        }
+        if (source instanceof ReturnNode) {
+          if (source.expressions.length !== 0) return undefined;
+          reachedBaseReturn = true;
+          return { statements: expanded, returned: true };
+        }
+        if (source instanceof FunctionCallStatementNode
+          && source.call.identifier.name === target.name
+          && source.call.parameters.length === target.parameters.length) {
+          this.finiteArraySpecializationBudget -= 1;
+          if (this.finiteArraySpecializationBudget < 0) return undefined;
+          const nextScalars = new Map<string, ExpressionNode>();
+          const nextArrays = new Map<string, string>();
+          let numericMeasure = false;
+          let strictlyDecreases = false;
+          for (let index = 0; index < target.parameters.length; index += 1) {
+            const parameter = target.parameters[index];
+            const argument = this.specializeNode(source.call.parameters[index], scalars, arrays);
+            if (parameter.type instanceof ArrayType) {
+              if (!(argument instanceof IdentifierNode)
+                || ![...arrays.values()].includes(argument.name)) return undefined;
+              nextArrays.set(parameter.name, argument.name);
+              continue;
+            }
+            const current = scalars.get(parameter.name);
+            const currentLiteral = current && this.finiteLiteral(current);
+            const nextLiteral = this.finiteLiteral(argument);
+            if (currentLiteral === undefined || nextLiteral === undefined
+              || typeof currentLiteral !== typeof nextLiteral) return undefined;
+            if (typeof currentLiteral === 'bigint' && typeof nextLiteral === 'bigint') {
+              numericMeasure = true;
+              if (nextLiteral > currentLiteral) return undefined;
+              if (nextLiteral < currentLiteral) strictlyDecreases = true;
+            } else if (nextLiteral !== currentLiteral) return undefined;
+            nextScalars.set(parameter.name, argument);
+          }
+          if (!numericMeasure || !strictlyDecreases) return undefined;
+          const nested = expand(target.body, nextScalars, nextArrays);
+          if (!nested) return undefined;
+          expanded.push(...nested.statements);
+          continue;
+        }
+        if (source instanceof ArrayAssignNode || source instanceof ArrayDeleteNode
+          || source instanceof ArrayPushNode || source instanceof ArrayPopNode) {
+          const mutation = this.specializeNode(source, scalars, arrays);
+          if (![...arrays.values()].includes(mutation.name)) return undefined;
+          expanded.push(mutation);
+          continue;
+        }
+        if (source instanceof BlockNode) {
+          const nested = expand(source, scalars, arrays);
+          if (!nested) return undefined;
+          expanded.push(...nested.statements);
+          if (nested.returned) return { statements: expanded, returned: true };
+          continue;
+        }
+        return undefined;
+      }
+      return { statements: expanded, returned: false };
+    };
+    const result = expand(target.body, rootScalars, rootArrays);
+    if (!result || !reachedBaseReturn) return undefined;
+    const block = new BlockNode(result.statements);
+    block.location = statement.location;
+    block.scoped = true;
+    return block;
+  }
+
+  private specializeFiniteArrayCalls(
+    block: BlockNode,
+    functionsByName: ReadonlyMap<string, FunctionDefinitionNode[]>,
+  ): void {
+    const statements: StatementNode[] = [];
+    for (const statement of block.statements ?? []) {
+      const specialized = statement instanceof FunctionCallStatementNode
+        ? this.finiteArraySpecialization(statement, functionsByName) : undefined;
+      if (specialized) {
+        // Keep the specialized mutations in their caller's lexical array scope. Introducing a nested scoped
+        // block here would make later memory lowering allocate a distinct local-array frame while kernel replay
+        // still attributes the writes to the caller array.
+        statements.push(...(specialized.statements ?? []));
+        continue;
+      }
+      if (statement instanceof BlockNode) this.specializeFiniteArrayCalls(statement, functionsByName);
+      else if (statement instanceof BranchNode) {
+        this.specializeFiniteArrayCalls(statement.ifBlock, functionsByName);
+        if (statement.elseBlock) this.specializeFiniteArrayCalls(statement.elseBlock, functionsByName);
+      } else if (statement instanceof SwitchNode) {
+        for (const arm of statement.cases) this.specializeFiniteArrayCalls(arm.body, functionsByName);
+        if (statement.defaultCase) this.specializeFiniteArrayCalls(statement.defaultCase, functionsByName);
+      } else if (statement instanceof WhileNode || statement instanceof DoWhileNode) {
+        this.specializeFiniteArrayCalls(statement.block, functionsByName);
+      }
+      statements.push(statement);
+    }
+    block.statements = statements;
   }
 
   /**

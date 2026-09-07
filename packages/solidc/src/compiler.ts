@@ -8767,7 +8767,7 @@ function compileResolvedAst(
     // pass is idempotent and remains the general non-kernel lowering boundary.
     ast = ast.accept(new DesugarReturnInLoop(!mergedCompilerOptions.messageBusKernel)) as Ast;
   }
-  if (earlyEntryFeatures?.needsTailRecursion) {
+  if (earlyEntryFeatures?.needsTailRecursion || mergedCompilerOptions.messageBusKernel === true) {
     ast = ast.accept(new LowerTailRecursion()) as Ast;
   }
   if (mergedCompilerOptions.messageBusKernel === true

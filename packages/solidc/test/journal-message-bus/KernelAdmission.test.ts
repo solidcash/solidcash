@@ -1594,6 +1594,7 @@ describe('required kernel admission', () => {
     ['pushed-depth local pick', '07 00 OP_PICK OP_NUMEQUALVERIFY'],
     ['balanced local alt-stack use', 'OP_1 OP_TOALTSTACK OP_FROMALTSTACK OP_DROP'],
     ['pure data hashing', 'OP_1 OP_SHA256 OP_DROP'],
+    ['pure byte inversion', '0xa50f OP_INVERT 0x5af0 OP_EQUALVERIFY'],
     ['balanced conditional', 'OP_1 OP_IF OP_2 OP_DROP OP_ELSE OP_3 OP_DROP OP_ENDIF'],
     ['balanced nested conditionals', `OP_1 OP_IF
       OP_0 OP_NOTIF OP_4 OP_DROP OP_ELSE OP_5 OP_DROP OP_ENDIF
@@ -1642,6 +1643,7 @@ describe('required kernel admission', () => {
     ['unbalanced alt stack', 'OP_1 OP_TOALTSTACK'],
     ['dynamic stack reach', 'OP_1 OP_PICK OP_DROP'],
     ['runtime-selected stack reach', 'OP_7 OP_TXVERSION OP_PICK OP_2DROP'],
+    ['byte inversion borrowed from compiler stack', 'OP_INVERT OP_DROP'],
     ['transaction signature check', 'OP_0 OP_0 OP_CHECKSIG OP_DROP'],
     ['active-bytecode signature context', 'OP_ACTIVEBYTECODE OP_DROP'],
     ['inspection index borrowed from compiler stack', 'OP_OUTPUTVALUE OP_DROP'],

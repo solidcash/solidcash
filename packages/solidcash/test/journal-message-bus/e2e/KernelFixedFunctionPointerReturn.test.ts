@@ -21,8 +21,8 @@ const vmAccepts = (builder: TransactionBuilder): boolean => {
   ) === true);
 };
 
-describe('kernel fixed function-pointer return BCH VM', () => {
-  it('decodes a fixed self pointer in a multi-return and rejects a forged pointer field', async () => {
+describe('kernel finite self function-pointer return BCH VM', () => {
+  it('decodes both finite self targets in a multi-return and rejects a forged pointer field', async () => {
     const provider = createMessageBusCapstoneTestProvider();
     const artifacts = compileStringMulti(`pragma solidity ^0.8.0;
       interface Sink {
@@ -30,9 +30,11 @@ describe('kernel fixed function-pointer return BCH VM', () => {
       }
       contract C {
         function target(uint value) external pure returns (uint) { return value + 1; }
-        function pointer(address sink) public returns (function(uint) external returns (uint), uint) {
+        function alternate(uint value) external pure returns (uint) { return value + 2; }
+        function pointer(address sink, bool choose) public
+          returns (function(uint) external returns (uint), uint) {
           Sink(sink).touch();
-          return (this.target, 23);
+          return (choose ? this.target : this.alternate, 23);
         }
       }
       contract Leaf {
@@ -58,16 +60,16 @@ describe('kernel fixed function-pointer return BCH VM', () => {
     const contract = await connect(artifact);
     const leaf = await connect(artifacts.Leaf);
     const funder = await createBareP2pkhFeeFunder(provider, 500_000n);
-    const composition = messageBus.compose({
+    const composition = (choose: boolean): ReturnType<typeof messageBus.compose> => messageBus.compose({
       preparedCalls: [
-        { contract, functionName: 'pointer', args: [leaf.inner.lockingBytecode] },
+        { contract, functionName: 'pointer', args: [leaf.inner.lockingBytecode, choose] },
         { contract: leaf, functionName: 'touch', args: [] },
       ],
       funder,
       changeAddress: funder.unlocker.generateLockingBytecode(),
     });
 
-    const canonical = await composition.build();
+    const canonical = await composition(true).build();
     expect(vmAccepts(canonical)).toBe(true);
     const returnOutput = canonical.outputs.find((output) => output.token?.category === contract.categoryId
       && output.token.nft?.capability === 'none');
@@ -82,7 +84,22 @@ describe('kernel fixed function-pointer return BCH VM', () => {
     expect(typeof decodedPointer).toBe('bigint');
     expect(decodedValue).toBe(23n);
 
-    const hostile = await composition.build();
+    const alternate = await composition(false).build();
+    expect(vmAccepts(alternate)).toBe(true);
+    const alternateReturn = alternate.outputs.find((output) => output.token?.category === contract.categoryId
+      && output.token.nft?.capability === 'none');
+    if (!alternateReturn?.token?.nft) throw new Error('test could not locate the alternate return output');
+    const alternateOuter = decodeAuthenticationInstructions(hexToBin(alternateReturn.token.nft.commitment));
+    if (alternateOuter.length !== 1 || !('data' in alternateOuter[0])
+      || alternateOuter[0].data.length !== 64) {
+      throw new Error('alternate return output is not one canonical two-word result vector');
+    }
+    const alternatePointer = decodeEvmScalarReturn(alternateOuter[0].data.slice(0, 32), 'int256');
+    expect(typeof alternatePointer).toBe('bigint');
+    expect(alternatePointer).not.toBe(decodedPointer);
+    expect(decodeEvmScalarReturn(alternateOuter[0].data.slice(32), 'uint256')).toBe(23n);
+
+    const hostile = await composition(true).build();
     const hostileReturn = hostile.outputs.find((output) => output.token?.category === contract.categoryId
       && output.token.nft?.capability === 'none');
     if (!hostileReturn?.token?.nft) throw new Error('test could not locate the hostile return output');
@@ -91,7 +108,9 @@ describe('kernel fixed function-pointer return BCH VM', () => {
     if (outer.length !== 1 || !('data' in outer[0])) throw new Error('return output is not one bytes field');
     if (outer[0].data.length !== 64) throw new Error('return vector is not a two-word tuple');
     const forgedVector = outer[0].data.slice();
-    forgedVector[31] ^= 1;
+    // Substitute the other valid member of the proven finite set. The branch chose `target`, so even an otherwise
+    // admissible local function ID must fail when it is not the exact runtime result.
+    forgedVector.set(alternateOuter[0].data.slice(0, 32), 0);
     outer[0] = { ...outer[0], data: forgedVector };
     hostileReturn.token.nft.commitment = binToHex(encodeAuthenticationInstructions(outer));
     expect(vmAccepts(hostile)).toBe(false);

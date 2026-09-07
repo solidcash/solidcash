@@ -516,6 +516,9 @@ export class FunctionDefinitionNode extends Node implements Named {
   // Per-result form of returnedSelfFunctionName. An entry exists only when every reachable explicit return fixes
   // that external-function result slot to the same `this.method`; absent slots retain their ordinary ABI type.
   returnedSelfFunctionNames?: Array<string | undefined>;
+  // Complete finite direct-self target set for each external-function result. Multiple entries mean source
+  // control flow selects among immutable local function IDs; no foreign address or caller pointer is admitted.
+  returnedSelfFunctionTargetSets?: Array<string[] | undefined>;
   // Distinct identifier-arg blockhash(n) reads in the function (counted by SynthesizeBlockOracle before
   // codegen). Each rides its OWN consecutive blockhashOracle block-layout slot; the k-th read reads
   // input[base + k]. SymbolTable allocates this many slots (min 1 when usesBlockhash).

@@ -4798,7 +4798,7 @@ function synthesizeMessageBusRoute(
     const fixedSelfFunctionPointerResult = (index: number): boolean =>
       fn.returnTypes[index] instanceof FunctionType
       && (fn.returnTypes[index] as FunctionType).isExternal
-      && fn.returnedSelfFunctionNames?.[index] !== undefined;
+      && (fn.returnedSelfFunctionTargetSets?.[index]?.length ?? 0) > 0;
     const state = contract.stateVariables.find((candidate) => candidate.name === fn.name);
     const collection = collectionByName.get(fn.name);
     const keyedMappingGetter = collection?.type instanceof MappingType && fn.parameters.length > 0;
@@ -6204,7 +6204,7 @@ function synthesizeMessageBusRoute(
       const fixedSelfFunctionPointerResult = (index: number): boolean =>
         fn.returnTypes[index] instanceof FunctionType
         && (fn.returnTypes[index] as FunctionType).isExternal
-        && fn.returnedSelfFunctionNames?.[index] !== undefined;
+        && (fn.returnedSelfFunctionTargetSets?.[index]?.length ?? 0) > 0;
       const condition = `${handlerIndex === 0 ? 'if' : 'else if'} (rowSelector == hex"${selector(fn)}")`;
       const upgradeAuthorization = kernelUpgradeMode && fn.modifiers.includes(FunctionModifier.UPGRADE)
         ? `__message_bus_upgrade_count = __message_bus_upgrade_count + 1;
@@ -10113,7 +10113,7 @@ function compileResolvedAst(
             // The fixed self-pointer result is deliberately published as its physical data layout. A functionId
             // is an immutable integer in this bytecode, not a portable external callable `(address, selector)`.
             type: type instanceof FunctionType && type.isExternal
-              && fn.returnedSelfFunctionNames?.[index] !== undefined
+              && (fn.returnedSelfFunctionTargetSets?.[index]?.length ?? 0) > 0
               ? 'int256' : type.toString().replace(/address payable/g, 'address'),
           })),
         }),

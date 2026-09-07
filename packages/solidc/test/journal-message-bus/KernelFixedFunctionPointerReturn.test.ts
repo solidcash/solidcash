@@ -48,6 +48,17 @@ describe('kernel fixed function-pointer return layout', () => {
     `)).toMatchObject({ eligible: true, outputs: [{ type: 'int256' }] });
   });
 
+  it.each([
+    ['a ternary', 'return choose ? this.first : this.second;'],
+    ['distinct terminating returns', 'if (choose) return this.second; return this.first;'],
+  ])('admits a finite direct-self target set selected by %s', (_shape, body) => {
+    expect(handler(`
+      function pointer(bool choose) public view returns (function(uint) external returns (uint)) {
+        ${body}
+      }
+    `)).toMatchObject({ eligible: true, outputs: [{ type: 'int256' }] });
+  });
+
   it('admits a proven self pointer as one component of a multi-return', () => {
     expect(handler(`
       function pointer() public view returns (function(uint) external returns (uint), uint) {
@@ -68,18 +79,16 @@ describe('kernel fixed function-pointer return layout', () => {
     `)).toMatchObject({ eligible: true, outputs: [{ type: 'int256' }, { type: 'uint256' }] });
   });
 
+  it('admits independent scalar values across a finite multi-return pointer set', () => {
+    expect(handler(`
+      function pointer(bool choose) public view returns (function(uint) external returns (uint), uint) {
+        if (choose) return (this.second, 7);
+        return (this.first, 9);
+      }
+    `)).toMatchObject({ eligible: true, outputs: [{ type: 'int256' }, { type: 'uint256' }] });
+  });
+
   it.each([
-    ['runtime target', `
-      function pointer(bool choose) public view returns (function(uint) external returns (uint)) {
-        return choose ? this.first : this.second;
-      }
-    `],
-    ['early runtime target', `
-      function pointer(bool choose) public view returns (function(uint) external returns (uint)) {
-        if (choose) return this.second;
-        return this.first;
-      }
-    `],
     ['caller-supplied target', `
       function pointer(function(uint) external returns (uint) selected) public pure
         returns (function(uint) external returns (uint)) {
@@ -92,7 +101,6 @@ describe('kernel fixed function-pointer return layout', () => {
 
   it.each([
     ['foreign', 'Foreign(remote).target'],
-    ['different self', 'this.second'],
   ])('does not let a final fixed tuple hide an earlier %s pointer', (_kind, early) => {
     const artifact = compileString(`pragma solidity ^0.8.0;
       interface Foreign { function target(uint value) external returns (uint); }
@@ -118,9 +126,9 @@ describe('kernel fixed function-pointer return layout', () => {
       }
     `],
     ['runtime-ambiguous', `
-      function pointer(bool choose) public view
+      function pointer(bool choose, function(uint) external returns (uint) selected) public view
         returns (function(uint) external returns (uint), uint) {
-        return (choose ? this.first : this.second, 7);
+        return (choose ? this.first : selected, 7);
       }
     `],
   ])('refuses a %s pointer component in a multi-return', (_kind, members) => {

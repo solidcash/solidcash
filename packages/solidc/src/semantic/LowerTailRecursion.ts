@@ -598,6 +598,7 @@ export default class LowerTailRecursion extends AstTraversal {
 
     const rootScalars = new Map<string, ExpressionNode>();
     const rootArrays = new Map<string, string>();
+    const argumentPrelude: VariableDefinitionNode[] = [];
     for (let index = 0; index < target.parameters.length; index += 1) {
       const parameter = target.parameters[index];
       const argument = call.parameters[index];
@@ -609,10 +610,25 @@ export default class LowerTailRecursion extends AstTraversal {
         // stays in range. Direct identifiers are also safe invariant bindings: specialization substitutes the
         // caller value into a helper which admits no scalar mutation or effectful statement. More involved
         // expressions remain unspecialized because parameter evaluation-once could otherwise be duplicated.
-        if (!(argument instanceof IntLiteralNode || argument instanceof BoolLiteralNode
-          || argument instanceof IdentifierNode || argument instanceof CastNode)) return undefined;
-        if (!(argument instanceof IdentifierNode) && this.finiteLiteral(argument) === undefined) return undefined;
-        rootScalars.set(parameter.name, argument);
+        const literal = this.finiteLiteral(argument);
+        if (literal !== undefined) {
+          rootScalars.set(parameter.name, argument);
+          continue;
+        }
+        // Restore the helper's ordinary call-by-value boundary before erasing the call. Besides admitting direct
+        // identifiers, this safely admits arbitrary runtime scalar expressions as invariant recipe inputs: each
+        // expression is evaluated exactly once, in argument order, and every specialized recursive edge may only
+        // forward the compiler-owned snapshot unchanged. The separately required finite literal measure still
+        // proves termination, so a runtime argument cannot control expansion depth.
+        const snapshotName = `__internal__finiteArrayArg_${this.counter++}_${parameter.name}`;
+        const snapshot = this.stamp(new VariableDefinitionNode(
+          parameter.type, [], snapshotName, cloneNode(argument),
+        ), argument.location ?? statement.location);
+        snapshot.allowUnused = true;
+        argumentPrelude.push(snapshot);
+        const snapshotRead = this.stamp(new IdentifierNode(snapshotName), argument.location ?? statement.location);
+        snapshotRead.type = parameter.type;
+        rootScalars.set(parameter.name, snapshotRead);
       }
     }
     if (rootArrays.size === 0) return undefined;
@@ -719,7 +735,7 @@ export default class LowerTailRecursion extends AstTraversal {
     };
     const result = expand(target.body, rootScalars, rootArrays, true);
     if (!result || !reachedBaseTermination) return undefined;
-    const block = new BlockNode(result.statements);
+    const block = new BlockNode([...argumentPrelude, ...result.statements]);
     block.location = statement.location;
     block.scoped = true;
     return block;

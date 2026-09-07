@@ -73,6 +73,27 @@ describe('finite recursive constructed-array AST specialization', () => {
       .varyingKeyExpressions).toEqual([expect.objectContaining({ kind: 'ternary' })]);
   });
 
+  it('snapshots an invariant runtime expression once before specializing recursive frames', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) slots;
+      function fill(int[] memory keys, int base, uint8 remaining) internal pure {
+        if (remaining == 0) { return; }
+        fill(keys, base, remaining - 1);
+        keys[remaining - 1] = base + remaining;
+      }
+      function write(int count, int seed, int offset) public {
+        int[] memory keys = new int[](count);
+        fill(keys, seed * 2 + offset, uint8(2));
+        for (int cursor = 0; cursor < count; cursor = cursor + 1) {
+          this.slots[keys[cursor]] = cursor + 1;
+        }
+        require(count == 2);
+      }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'write'))
+      .toMatchObject({ eligible: true });
+  });
+
   it('does not mistake nested-block fallthrough for termination before a later recursive edge', () => {
     expect(handler(`
       function fill(bigint[] memory keys, bigint remaining) internal pure {
@@ -131,6 +152,13 @@ describe('finite recursive constructed-array AST specialization', () => {
         }
       }
     `, 'fill(keys, runtimeLimit);'],
+    ['changing runtime scalar', `
+      function fill(bigint[] memory keys, bigint base, bigint remaining) internal pure {
+        if (remaining == 0) { return; }
+        fill(keys, base + 1, remaining - 1);
+        keys[remaining - 1] = base;
+      }
+    `, 'fill(keys, bigint(runtimeLimit), 2);'],
   ])('keeps %s fenced', (_name, helper, call) => {
     expect(handler(helper, call)).toMatchObject({
       eligible: false,

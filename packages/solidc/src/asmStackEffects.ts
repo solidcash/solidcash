@@ -92,6 +92,10 @@ const EFFECTS: Record<number, StackEffect> = {
 
   // --- Bitwise / comparison ---
   [Op.OP_INVERT]: { pops: 1, pushes: 1 },
+  [Op.OP_LSHIFTNUM]: { pops: 2, pushes: 1 },
+  [Op.OP_RSHIFTNUM]: { pops: 2, pushes: 1 },
+  [Op.OP_LSHIFTBIN]: { pops: 2, pushes: 1 },
+  [Op.OP_RSHIFTBIN]: { pops: 2, pushes: 1 },
   [Op.OP_AND]: { pops: 2, pushes: 1 },
   [Op.OP_OR]: { pops: 2, pushes: 1 },
   [Op.OP_XOR]: { pops: 2, pushes: 1 },

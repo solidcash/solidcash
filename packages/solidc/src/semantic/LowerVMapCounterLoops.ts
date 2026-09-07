@@ -855,14 +855,17 @@ export default class LowerVMapCounterLoops extends AstTraversal {
     const writeKeyShape = (
       write: ArrayAssignNode | ArrayDeleteNode | MappingAssignNode | MappingDeleteNode | MappingFieldAssignNode,
     ): string => keyExpressions(write).map(expressionShape).join('|');
-    const isCounterWriteLoop = (loop: WhileNode | DoWhileNode, logical: string): boolean => {
-      let found = false;
+    const counterLoopWork = (loop: WhileNode | DoWhileNode, logical: string): {
+      counterWrite: boolean; event: boolean;
+    } => {
+      let counterWrite = false;
+      let event = false;
       const walk = (x: Node): void => {
-        if (found || (x !== loop.block && (x instanceof WhileNode || x instanceof DoWhileNode))) return;
+        if (x !== loop.block && (x instanceof WhileNode || x instanceof DoWhileNode)) return;
         if (isWrite(x) && this.collections.has(x.name) && counterKeyIndex(x, logical) >= 0) {
-          found = true;
-          return;
+          counterWrite = true;
         }
+        if (x instanceof EmitStatementNode) event = true;
         for (const key of Object.keys(x)) {
           if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type'
             || key === 'resolvedFunction') continue;
@@ -872,12 +875,18 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         }
       };
       walk(loop.block);
-      return found;
+      return { counterWrite, event };
     };
     // Analyze every candidate before mutating the AST. This keeps the lowering transactional: one unsupported
     // loop cannot leak an unused compiler-owned permutation into an otherwise ordinary ABI.
-    const counterWriteLoops = [...canonicalLoops].filter(([loop, canonical]) =>
-      isCounterWriteLoop(loop, canonical.logical));
+    // An event-only canonical loop still needs an authenticated exact domain even though it has no mapping stream
+    // to sort. Give it the same bounded hidden counter witness used by mapping/event loops; the SDK already derives
+    // that witness from the encoded pre/post-test domain, including the zero-iteration pre-test case. Other
+    // effect-only loops remain outside this pass until their own typed recipe lowering enrolls them explicitly.
+    const counterWorkLoops = [...canonicalLoops].filter(([loop, canonical]) => {
+      const work = counterLoopWork(loop, canonical.logical);
+      return work.counterWrite || work.event;
+    });
     const visibleParameters = node.parameters.filter((parameter) =>
       !parameter.name.startsWith('__internal__'));
     const publicParameterNames = new Set(visibleParameters.map((parameter) => parameter.name));
@@ -2015,7 +2024,9 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       // try body use those same paths; nested loops still need richer path metadata. This is a construct rule, not
       // a contract/schema allow-list; every
       // event definition and argument expression uses the same record format.
-      const runtimeEmits: Array<{ emit: EmitStatementNode; condition?: ExpressionNode }> = [];
+      const runtimeEmits: Array<{
+        emit: EmitStatementNode; condition?: ExpressionNode; staticArguments?: ExpressionNode[];
+      }> = [];
       let conditionalRuntimeEmit = false;
       const collectRuntimeEmits = (
         x: Node,
@@ -2023,15 +2034,23 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       ): void => {
         if (x instanceof EmitStatementNode) {
           const values = loopCarriedValuesAt(x);
+          const staticArguments = keyed.length === 0 ? x.args.map((argument) =>
+            runtimePathExpressionSupported(argument, logical, new Set(), stateValues, values)
+              ? expandRuntimePathExpression(argument, logical, new Set(), stateValues, values)
+              : undefined) : undefined;
           if (condition && !runtimePathExpressionSupported(
             condition, logical, new Set(), stateValues, values,
-          )) conditionalRuntimeEmit = true;
+          ) || staticArguments?.some((argument) => argument === undefined)) conditionalRuntimeEmit = true;
           else {
             const expanded = condition && expandRuntimePathExpression(
               condition, logical, new Set(), stateValues, values,
             );
             if (condition && !expanded) conditionalRuntimeEmit = true;
-            else runtimeEmits.push({ emit: x, ...(expanded && { condition: expanded }) });
+            else runtimeEmits.push({
+              emit: x,
+              ...(expanded && { condition: expanded }),
+              ...(staticArguments && { staticArguments: staticArguments as ExpressionNode[] }),
+            });
           }
           return;
         }
@@ -2306,7 +2325,9 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         }
       };
       if (sourceWhile || postTest) inspectSourceContinues(block);
-      if (keyed.length === 0 || !selectionConditionSupported
+      if ((keyed.length === 0 && runtimeEmits.length === 0)
+        || (keyed.length === 0 && breakPaths.length > 0)
+        || !selectionConditionSupported
         || keyed.some((write) => hasObservableEffect(write))
         || conditionalRuntimeEmit
         || conditionalRuntimeTransfer
@@ -3238,6 +3259,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         collections: string[];
         collectionWrites: typeof keyed;
         selectionCondition?: ExpressionNode;
+        domainOnly: boolean;
       }>();
       for (const [stream, collectionWrites] of keyedByStream) {
         const collection = stream.slice(0, stream.indexOf('\0'));
@@ -3254,8 +3276,17 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         } else {
           permutationGroups.set(mergeKey, {
             collections: [collection], collectionWrites: [...collectionWrites], selectionCondition,
+            domainOnly: false,
           });
         }
+      }
+      if (permutationGroups.size === 0 && runtimeEmits.length > 0) {
+        // No physical collection consumes this permutation. It is nevertheless covenant-authenticated below and
+        // is the exact repeat source for the runtime event stream. Keeping an empty collection/write projection
+        // prevents event-only loops from manufacturing a fake mapping resource or a journal cardinality remainder.
+        permutationGroups.set('__event_domain__', {
+          collections: [], collectionWrites: [], selectionCondition: undefined, domainOnly: true,
+        });
       }
       const groups = [...permutationGroups.values()].map((plan, index) => {
         const groupSerial = index === 0 ? serial : this.serial++;
@@ -3278,6 +3309,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           mask: `__internal__vmapCounterMask_${groupSerial}`,
           inputCount: undefined as string | undefined,
           outputCount: undefined as string | undefined,
+          domainOnly: plan.domainOnly,
         };
       });
       if (groups.some((group) => group.selectionCondition && !group.expandedSelectionCondition)) return false;
@@ -3626,9 +3658,14 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         const eventLoopIndex = node.runtimeLoopEvents?.length ?? 0;
         node.runtimeLoopEvents = [
           ...(node.runtimeLoopEvents ?? []),
-          { loopIndex: eventLoopIndex, permutationParam: primaryGroup.hidden },
+          {
+            loopIndex: eventLoopIndex,
+            permutationParam: primaryGroup.hidden,
+            ...(primaryGroup.domainOnly && { staticArguments: true as const }),
+          },
         ];
-        runtimeEmits.forEach(({ emit, condition }, siteIndex) => {
+        runtimeEmits.forEach(({ emit, condition, staticArguments }, siteIndex) => {
+          if (staticArguments) emit.args = staticArguments;
           emit.runtimeLoopEvent = { loopIndex: eventLoopIndex, siteIndex };
           emit.runtimeLoopEventCondition = condition;
           emit.runtimeLoopEventCounter = {
@@ -3720,6 +3757,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           group.expandedSelectionCondition ? BinaryOperator.LE : BinaryOperator.EQ,
           iterationCount(),
         ), 'vmap counter permutation length mismatch')));
+        if (group.domainOnly) continue;
         prelude.push(at(new VariableDefinitionNode(
           new IntType(true, 256), [], group.mask, lit(0n),
         )));
@@ -3732,6 +3770,9 @@ export default class LowerVMapCounterLoops extends AstTraversal {
 
       const logicalAndProofStatements: StatementNode[] = [];
       for (const group of groups) {
+        // Domain-only event loops consume only the authenticated witness length. Their arguments derive the
+        // logical source counter from the iteration ordinal, so witness elements are intentionally irrelevant.
+        if (group.domainOnly) continue;
         logicalAndProofStatements.push(at(new VariableDefinitionNode(
           counterType, [], group.logicalValue,
           group.expandedSelectionCondition
@@ -3913,9 +3954,9 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       for (const collection of keyedCollections) runtimeCountCollections.add(collection);
       return true;
     };
-    const counterWriteLoopSet = new Set(counterWriteLoops.map(([loop]) => loop));
-    const allSafe = counterWriteLoops.length > 0
-      && counterWriteLoops.every(([loop]) => tryLower(loop, false));
+    const counterWorkLoopSet = new Set(counterWorkLoops.map(([loop]) => loop));
+    const allSafe = counterWorkLoops.length > 0
+      && counterWorkLoops.every(([loop]) => tryLower(loop, false));
     // Events outside an admitted loop must join the same trailing stream or their fixed output family would move
     // an `emit after` ahead of all repeated records. Serializable nested if/else predicates provide an exact
     // pre-probe count. Stable switch arms are the same finite predicate family. Try/catch, nested-loop sites, and
@@ -3927,7 +3968,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       candidate: Node,
       conditions: readonly { expression: ExpressionNode; negated: boolean }[],
     ): void => {
-      if (counterWriteLoopSet.has(candidate as WhileNode | DoWhileNode)) return;
+      if (counterWorkLoopSet.has(candidate as WhileNode | DoWhileNode)) return;
       if (candidate instanceof EmitStatementNode) {
         const condition = runtimePathCondition(conditions);
         if (condition && !runtimePathExpressionSupported(condition)) unsupportedOuterEvent = true;
@@ -3993,7 +4034,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
     };
     collectOuterEvents(node.body, []);
     const planStatementIndices = (node.body.statements ?? []).flatMap((statement, index) => {
-      if (counterWriteLoopSet.has(statement as WhileNode | DoWhileNode)) return [index];
+      if (counterWorkLoopSet.has(statement as WhileNode | DoWhileNode)) return [index];
       let hasOuterEmit = false;
       const findOuterEmit = (candidate: Node): void => {
         if (candidate instanceof EmitStatementNode) { hasOuterEmit = true; return; }
@@ -4030,7 +4071,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
     // remainder composes disjoint runs over one physical collection; the SDK rejects an actual repeated
     // predecessor as a read-your-writes transition until pending-output planning is available.
     if (allSafe && orderedEventPlanSafe) {
-      for (const [loop] of counterWriteLoops) tryLower(loop, true);
+      for (const [loop] of counterWorkLoops) tryLower(loop, true);
 
       const priorSegments = new Map((node.runtimeLoopEvents ?? [])
         .map((segment) => [segment.loopIndex, segment]));
@@ -4071,6 +4112,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           const loopIndex = orderedSegments.length;
           emits.forEach((emit, siteIndex) => { emit.runtimeLoopEvent = { loopIndex, siteIndex }; });
           orderedSegments.push({ loopIndex, permutationParam: prior.permutationParam,
+            ...(prior.staticArguments && { staticArguments: true as const }),
             ...(publishEffectOrder && { effectSequence: sequence }) });
         }
         const transfers = effects.filter((effect): effect is TransferStatementNode | TokenContainerMethodStatementNode =>
@@ -4090,7 +4132,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         effectSequence += 1;
       };
       const appendInSourceOrder = (candidate: Node): void => {
-        if (counterWriteLoopSet.has(candidate as WhileNode | DoWhileNode)) {
+        if (counterWorkLoopSet.has(candidate as WhileNode | DoWhileNode)) {
           appendLoop(candidate as WhileNode | DoWhileNode);
           return;
         }

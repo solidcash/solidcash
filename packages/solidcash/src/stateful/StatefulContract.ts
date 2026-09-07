@@ -25207,7 +25207,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         executionSelfAddress,
       );
       for (const loop of source.runtimeLoopEvents ?? []) {
-        if ((loop.iterationDomain && loop.arguments?.length !== loop.eventSignatures.length)
+        if (((loop.arguments !== undefined || loop.iterationDomain !== undefined)
+          && loop.arguments?.length !== loop.eventSignatures.length)
           || (loop.conditions !== undefined && loop.conditions.length !== loop.eventSignatures.length)
           || (loop.effectOrder !== undefined && loop.effectOrder.length !== loop.eventSignatures.length)) {
           throw new Error(`Runtime event metadata for '${source.name}' does not match its event sites.`);
@@ -25334,7 +25335,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               throw new Error(`No locking bytecode provided for runtime-loop event: ${eventSignature}`);
             }
             let commitment: string | undefined;
-            if (loop.iterationDomain) {
+            if (loop.arguments !== undefined) {
               const argumentExpressions = loop.arguments?.[siteIndex];
               const eventDefinition = eventDefs.find((candidate) => candidate.signature === eventSignature);
               if (!argumentExpressions || !eventDefinition

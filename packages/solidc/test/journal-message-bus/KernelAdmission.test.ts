@@ -5904,6 +5904,63 @@ describe('required kernel admission', () => {
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
   });
 
+  it('admits bounded canonical event-only for, while, and do-while loops', () => {
+    const artifact = compileString(`event Tick(int value);
+      contract C() {
+        function fromFor(int n) public {
+          for (int i = 0; i < n; i = i + 1) { emit Tick(i); }
+          require(true);
+        }
+        function fromWhile(int n) public {
+          int i = 0;
+          while (i < n) { emit Tick(i); i = i + 1; }
+          require(true);
+        }
+        function fromDoWhile(int n) public {
+          int i = 0;
+          do { emit Tick(i); i = i + 1; } while (i < n);
+          require(true);
+        }
+      }`, KERNEL);
+    for (const [name, permutation] of [
+      ['fromFor', /^__internal__vmapCounterPerm_n_\d+$/],
+      ['fromWhile', /^__internal__vmapCounterPerm_n_\d+$/],
+      ['fromDoWhile', /^__internal__vmapCounterPerm_n_\d+_post$/],
+    ] as const) {
+      const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === name);
+      expect(handler).toMatchObject({ eligible: true });
+      expect(handler?.emits).toBeUndefined();
+      expect(handler?.runtimeLoopEvents).toEqual([{
+        permutationParam: expect.stringMatching(permutation),
+        eventSignatures: ['Tick(int256)'],
+        arguments: [[{
+          kind: 'source',
+          source: { kind: 'loopIndex', initialValue: '0', stepValue: '1' },
+        }]],
+      }]);
+    }
+  });
+
+  it('fences event-only arguments with unmodeled loop-carried local or state values', () => {
+    const artifact = compileString(`event Tick(int value);
+      contract C() {
+        int total;
+        function fromLocal(int n) public {
+          int next = 0;
+          for (int i = 0; i < n; i = i + 1) { next = i + 2; emit Tick(next); }
+          require(true);
+        }
+        function fromState(int n) public {
+          for (int i = 0; i < n; i = i + 1) { this.total = this.total + 1; emit Tick(this.total); }
+          require(true);
+        }
+      }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'fromLocal'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'fromState'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+  });
+
   it('keeps an inlined effectful helper result adjacent to a repeated event', () => {
     const artifact = compileString(`event Hit(int i);
       contract C() {

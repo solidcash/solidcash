@@ -4428,7 +4428,7 @@ describe('kernel composite counter-key settlement', () => {
       { repeatCount: 1, eventSignatures: ['After(int256)'] },
     ]);
     expect(write.emits).toBeUndefined();
-    expect(artifact.messageBus?.route.blockLayout?.trailingCapacity).toBe(3 * 64 + 2);
+    expect(artifact.messageBus?.route.blockLayout?.trailingCapacity).toBe(3 * 64 + 3);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write')?.eligible).toBe(true);
 
     const inner = new Contract(artifact, [], { provider });
@@ -4506,6 +4506,58 @@ describe('kernel composite counter-key settlement', () => {
       { function: 'write', args: [1n] },
       { function: 'write', args: [1n] },
     ]).build()).rejects.toThrow(/read-your-writes transition/);
+  }, 180_000);
+
+  it('settles bounded event-only pre-test and post-test counter loops', async () => {
+    const exercise = async (
+      source: string, functionName: string, cases: readonly { bound: bigint; commitments: string[] }[],
+    ): Promise<void> => {
+      const provider = createTestProvider();
+      const artifact = compileString(source, KERNEL);
+      const inner = new Contract(artifact, [], { provider });
+      const { categoryId } = await setupStatefulUtxos(
+        provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+      );
+      const contract = StatefulContract.withCategory(inner, categoryId);
+      for (const testCase of cases) {
+        const builder = await contract.batch([{
+          function: functionName, args: [testCase.bound],
+        }]).build();
+        const commitments = builder.buildLibauthTransaction().outputs
+          .filter((output) => output.token?.nft?.capability === 'none')
+          .map((output) => binToHex(output.token!.nft!.commitment));
+        expect(commitments).toEqual(testCase.commitments);
+        const vm = createVirtualMachineBch2026ForProvider(provider);
+        const transaction = builder.buildLibauthTransaction();
+        const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+        for (let inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex += 1) {
+          const evaluation = vm.evaluate({ inputIndex, sourceOutputs, transaction });
+          expect(vm.stateSuccess(evaluation),
+            `${functionName}(${testCase.bound}), input ${inputIndex}`).toBe(true);
+        }
+      }
+    };
+
+    await exercise(`contract PreTestEvents() {
+      event Tick(int value);
+      function run(int n) public {
+        for (int i = 0; i < n; i = i + 1) { emit Tick(i); }
+        require(true);
+      }
+    }`, 'run', [
+      { bound: 0n, commitments: [] },
+      { bound: 3n, commitments: ['00', '51', '52'] },
+    ]);
+    await exercise(`contract PostTestEvents() {
+      event Tick(int value);
+      function run(int n) public {
+        int i = 0;
+        do { emit Tick(i); i = i + 1; } while (i < n);
+        require(true);
+      }
+    }`, 'run', [
+      { bound: 0n, commitments: ['00'] },
+    ]);
   }, 180_000);
 
   it('replays affine recursive events at each current-frame value across source renaming', async () => {

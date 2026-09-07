@@ -2644,6 +2644,8 @@ export interface RuntimeLoopEventInfo {
     continueCondition: ExternalCallExpression;
     maximumIterations: number;
   };
+  /** Compiler-only marker: serialize per-site arguments for this permutation-backed logical domain. */
+  staticArguments?: true;
   /** Function-local execution segment shared by every runtime effect produced at this source position. */
   effectSequence?: number;
 }

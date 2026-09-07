@@ -1261,11 +1261,10 @@ function buildFunctionAbiMetadata(
           emit.runtimeLoopEventCondition, emit.runtimeLoopEventCounter, new Set(), preservedLocals,
         ) ?? null
         : null);
-      const serializedArguments = loop.iterationDomain === undefined ? undefined : eventSites.map((emit) =>
-        emit.args.map((argument) => serializeCondition(
+      const serializedArguments = loop.iterationDomain === undefined && loop.staticArguments !== true
+        ? undefined : eventSites.map((emit) => emit.args.map((argument) => serializeCondition(
           argument, emit.runtimeLoopEventCounter, new Set(), preservedLocals,
-        )),
-      );
+        )));
       if (eventSites.some((emit, index) => emit.runtimeLoopEventCondition && conditions[index] === null)) {
         throw new Error(`Runtime event condition in '${func.name}' cannot be represented in artifact metadata`);
       }

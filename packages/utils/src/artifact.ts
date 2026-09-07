@@ -145,7 +145,8 @@ export interface RuntimeLoopEventAbi {
    * permutationParam and repeatCount. Expressions may reference counterName through an `identifier` node. */
   iterationDomain?: RuntimeLoopIterationDomainAbi;
   eventSignatures: readonly string[];
-  /** Replayable per-site event arguments, aligned with eventSignatures. Required for iteration domains. */
+  /** Replayable per-site event arguments, aligned with eventSignatures. Required for iteration domains. For a
+   * permutation-backed segment, loopIndex sources encode the logical source counter independently of key order. */
   arguments?: readonly (readonly ExternalCallExpression[])[];
   /** Per-site runtime predicates, aligned with eventSignatures. Missing entries are unconditional. */
   conditions?: readonly (ExternalCallExpression | null)[];

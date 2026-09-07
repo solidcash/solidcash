@@ -7,6 +7,7 @@ import {
   ParserATNSimulator, PredictionContextCache, PredictionMode,
 } from 'antlr4';
 import { binToHex } from '@bitauth/libauth';
+import { ConsensusBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-consensus.js';
 import {
   AbiFunctionReference, Artifact, ArtifactMap, ArrayType, AddressType, asmToBytecode, BytesType, CompilerOptions,
   FixedType, IntType,
@@ -170,6 +171,11 @@ import {
 } from './deploymentRecipes.js';
 import { cloneNode } from './ast/clone.js';
 import { hasEffectiveCallValue } from './semantic/branchOps.js';
+
+// A participant's row results are concatenated into one VM byte string before that complete return vector is
+// hash-committed. This is therefore a cumulative participant-route bound, not a per-row allowance. Source the
+// ceiling from the active BCH-2026 consensus profile rather than the unrelated 520-byte batch-publication cap.
+const MAX_KERNEL_RESULT_BYTES = ConsensusBch2026.maximumStackItemLength;
 
 export const DEFAULT_COMPILER_OPTIONS: CompilerOptions = {
   enforceFunctionParameterTypes: true,
@@ -4663,22 +4669,44 @@ function synthesizeMessageBusRoute(
     .map((definition) => definition.name));
   const routeEnumNames = new Set([...ast.enumDefinitions, ...contract.enumDefinitions]
     .map((definition) => definition.name));
-  const kernelStaticCompositeLayout = (type: Type, active = new Set<object>()): boolean => {
-    if (type === PrimitiveType.STRING || (type instanceof BytesType && type.bound === undefined)) return false;
-    if (type instanceof ValueType) return kernelStaticCompositeLayout(type.underlyingType, active);
-    if (type instanceof ArrayType || type instanceof StructType) {
-      if (active.has(type) || (type instanceof ArrayType && type.bound === undefined)) return false;
+  // A fixed-cardinality result may contain dynamically-sized byte/string leaves without making its value graph
+  // unbounded: the generated route applies one conservative bound to the complete encoded result below. Array
+  // cardinality is different. Every array nested beneath a composite result must have a source-level bound so the
+  // compiler never treats a caller-selected dynamic element count as a finite struct expansion.
+  const kernelBoundedCompositeResultLayout = (type: Type, active = new Set<object>()): boolean => {
+    if (type instanceof ValueType) return kernelBoundedCompositeResultLayout(type.underlyingType, active);
+    if (type instanceof ArrayType) {
+      if (type.bound === undefined || active.has(type)) return false;
       active.add(type);
-      const finite = type instanceof ArrayType
-        ? kernelStaticCompositeLayout(type.elementType, active)
-        : type.fields.every((field) => kernelStaticCompositeLayout(field.type, active));
+      const encodable = kernelBoundedCompositeResultLayout(type.elementType, active);
       active.delete(type);
-      return finite;
+      return encodable;
     }
-    return type === PrimitiveType.BOOL || type === PrimitiveType.BIGINT || type === PrimitiveType.INT
-      || type instanceof IntType || type instanceof FixedType || type instanceof EnumType
-      || type instanceof AddressType || (type instanceof BytesType && type.bound !== undefined);
+    if (type instanceof StructType) {
+      if (active.has(type)) return false;
+      active.add(type);
+      const encodable = type.fields.every((field) =>
+        kernelBoundedCompositeResultLayout(field.type, active));
+      active.delete(type);
+      return encodable;
+    }
+    return kernelResultEncodable(type, active, true);
   };
+  const hasDynamicCompositeLeaf = (type: Type, active = new Set<object>()): boolean => {
+    if (type === PrimitiveType.STRING || (type instanceof BytesType && type.bound === undefined)) return true;
+    if (type instanceof ValueType) return hasDynamicCompositeLeaf(type.underlyingType, active);
+    if (!(type instanceof ArrayType || type instanceof StructType) || active.has(type)) return false;
+    active.add(type);
+    const found = type instanceof ArrayType
+      ? hasDynamicCompositeLeaf(type.elementType, active)
+      : type.fields.some((field) => hasDynamicCompositeLeaf(field.type, active));
+    active.delete(type);
+    return found;
+  };
+  const boundedStructArrayWithDynamicLeaves = (type: Type): boolean =>
+    type instanceof ArrayType && type.bound !== undefined && containsStruct(type.elementType)
+    && hasDynamicCompositeLeaf(type.elementType)
+    && kernelBoundedCompositeResultLayout(type.elementType);
   const containsStruct = (type: Type, active = new Set<object>()): boolean => {
     if (type instanceof StructType) return true;
     if (type instanceof ValueType) return containsStruct(type.underlyingType, active);
@@ -4715,9 +4743,10 @@ function synthesizeMessageBusRoute(
       if (active.has(type)) return false;
       // A top-level dynamic array of scalar words has a bounded transport envelope, but a dynamic array of
       // composite values has no compiler-proven element count or finite expansion budget. Fixed arrays take the
-      // static composite path below; unbounded struct arrays remain behind KERNEL_LAYOUT.
+      // bounded composite path below; unbounded struct arrays and dynamic arrays nested within their elements
+      // remain behind KERNEL_LAYOUT. Dynamic bytes/string leaves are bounded as part of the complete result blob.
       if (type instanceof ArrayType && containsStruct(type.elementType)) {
-        if (type.bound === undefined || !kernelStaticCompositeLayout(type.elementType)) return false;
+        if (type.bound === undefined || !kernelBoundedCompositeResultLayout(type.elementType)) return false;
       }
       if (type instanceof ArrayType && aggregateField && type.bound === undefined) return false;
       active.add(type);
@@ -6680,8 +6709,13 @@ function synthesizeMessageBusRoute(
   const returnDeclaration = resultMode
     ? ' returns (bytes)'
     : '';
+  const boundedDynamicCompositeResultMode = eligible.some((fn) =>
+    fn.returnTypes.some((type) => boundedStructArrayWithDynamicLeaves(type)));
   const returnStatement = resultMode
-    ? 'return __message_bus_results;'
+    // A newly admitted dynamic composite is consumed as one authenticated VM byte string. Give that finite slice
+    // an explicit ceiling without narrowing existing scalar/dynamic result routes as an unrelated side effect.
+    ? `${boundedDynamicCompositeResultMode
+      ? `require(__message_bus_results.length <= ${MAX_KERNEL_RESULT_BYTES}); ` : ''}return __message_bus_results;`
     : '';
   const graphPrologue = '';
   const graphCallManifestLoader = '';

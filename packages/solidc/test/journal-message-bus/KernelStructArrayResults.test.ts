@@ -31,11 +31,11 @@ describe('kernel arrays of struct results', () => {
     });
   });
 
-  it('keeps an unbounded array of structs behind the layout fence', () => {
+  it('admits a runtime-constructed dynamic array under the cumulative result envelope', () => {
     const artifact = compileString(source('Record[]'), OPTIONS);
     expect(artifact.messageBus?.handlers.find((entry) => entry.name === 'read')).toMatchObject({
-      eligible: false,
-      rejectionReason: 'KERNEL_LAYOUT',
+      eligible: true,
+      outputs: [{ type: 'Record[]' }],
     });
   });
 

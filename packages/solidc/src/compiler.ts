@@ -5206,6 +5206,7 @@ function synthesizeMessageBusRoute(
     const collection = collectionByName.get(fn.name);
     const keyedMappingGetter = collection?.type instanceof MappingType && fn.parameters.length > 0;
     const kernelGetter = compilerOptions.messageBusKernel === true;
+    const directAggregateState = directWholeAggregateStateGetter(fn);
     if (!kernelGetter && (collection || state?.type instanceof ArrayType) && !keyedMappingGetter) {
       // Public collection getters are synthesized into the function list for direct ABI dispatch, but are not
       // published as message-bus handlers. Excluding them here avoids repeatedly compiling an unobservable route
@@ -5218,11 +5219,15 @@ function synthesizeMessageBusRoute(
       fn.messageBusEligible = false;
       fn.messageBusRejectionReason = 'struct-state-getter-route-not-enabled';
     } else if (compilerOptions.messageBusKernel === true
-      && directWholeAggregateStateGetter(fn)
-      && !fixedKernelStructLayout(fn.returnTypes[0])) {
-      // State-backed result materialization is deliberately finite: recursive layouts and dynamically-sized
-      // arrays do not have one bounded row-local representation. Pure constructed results keep the ordinary
-      // aggregate codec; this fence is specific to a whole value loaded directly from a state NFT.
+      && directAggregateState
+      && !fixedKernelStructLayout(fn.returnTypes[0])
+      && !(directAggregateState.type instanceof ArrayType
+        && directAggregateState.type.bound === undefined
+        && containsStruct(directAggregateState.type.elementType)
+        && kernelBoundedCompositeResultLayout(directAggregateState.type.elementType))) {
+      // A direct, nonrecursive dynamic struct array follows the ordinary authenticated dynamic-read run: its
+      // count comes from the state NFT and every ordered chunk input is verified before the recursive result
+      // codec sees one bounded blob. Keep other unresolved/indirect state provenance behind the layout fence.
       fn.messageBusEligible = false;
       fn.messageBusRejectionReason = 'KERNEL_LAYOUT';
     } else if (compilerOptions.messageBusKernel === true

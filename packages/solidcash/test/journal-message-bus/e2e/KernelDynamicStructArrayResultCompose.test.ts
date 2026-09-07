@@ -28,6 +28,86 @@ const vmAccepts = (builder: TransactionBuilder): boolean => {
 };
 
 describe('kernel dynamic arrays of struct result composition', () => {
+  it('materializes a state-backed struct array from authenticated ordered chunks', async () => {
+    const provider = createMessageBusCapstoneTestProvider();
+    const artifact = compileString(`pragma solidity ^0.8.0;
+      struct Record { uint256 id; string note; }
+      contract Source {
+        Record[] records;
+        function seed(string memory first, string memory second) public {
+          records.push(Record(7, first));
+          records.push(Record(9, second));
+          require(true);
+        }
+        function read() public view returns (Record[] memory) { return records; }
+      }`, { ...OPTIONS, messageBusHandlers: ['read'] });
+    expect(artifact.messageBus?.handlers.find((entry) => entry.name === 'read'))
+      .toMatchObject({ eligible: true, outputs: [{ type: 'Record[]' }] });
+    expect(artifact.abi.find((entry) => entry.name === 'read')?.dynamicReads).toEqual(['records']);
+    const base = new Contract(artifact, [], { provider });
+    const setup = await setupStatefulUtxos(
+      provider, base, artifact.stateLayout!, {}, { saltContract: true },
+    );
+    const source = StatefulContract.withCategory(
+      base.withCategory(hexToBin(setup.categoryId)), setup.categoryId,
+    );
+    await source.call.seed('a'.repeat(700), 'b'.repeat(700)).send();
+
+    const built = await source.batch([{ function: 'read', args: [] }]).build();
+    expect(vmAccepts(built)).toBe(true);
+    const transaction = built.buildLibauthTransaction();
+    const sourceOutputs = generateLibauthSourceOutputs(built.inputs);
+    const routeInput = built.inputs.findIndex((input) => 'contract' in input.unlocker
+      && input.unlocker.abiFunction.name === artifact.messageBus!.route.name);
+    const trailingBase = artifact.messageBus!.route.blockLayout!.trailingBase!;
+    const firstChunk = routeInput + trailingBase;
+    expect(routeInput).toBeGreaterThanOrEqual(0);
+    expect(transaction.inputs.length).toBeGreaterThan(firstChunk + 1);
+    const vm = createVirtualMachineBch2026ForProvider(provider);
+    const rejected = (
+      candidateTransaction: typeof transaction, candidateSources: typeof sourceOutputs,
+    ): boolean => vm.stateSuccess(vm.evaluate({
+      inputIndex: routeInput, sourceOutputs: candidateSources, transaction: candidateTransaction,
+    })) !== true;
+
+    const forgedSources = sourceOutputs.map((output) => ({
+      ...output,
+      lockingBytecode: output.lockingBytecode.slice(),
+      token: output.token === undefined ? undefined : {
+        ...output.token,
+        category: output.token.category.slice(),
+        nft: output.token.nft === undefined ? undefined : {
+          ...output.token.nft, commitment: output.token.nft.commitment.slice(),
+        },
+      },
+    }));
+    forgedSources[firstChunk].token!.nft!.commitment[0] ^= 1;
+    expect(rejected(transaction, forgedSources)).toBe(true);
+
+    const reorderedSources = sourceOutputs.slice();
+    [reorderedSources[firstChunk], reorderedSources[firstChunk + 1]] =
+      [reorderedSources[firstChunk + 1], reorderedSources[firstChunk]];
+    expect(rejected(transaction, reorderedSources)).toBe(true);
+
+    const missingTransaction = {
+      ...transaction,
+      inputs: transaction.inputs.filter((_input, index) => index !== firstChunk),
+    };
+    const missingSources = sourceOutputs.filter((_output, index) => index !== firstChunk);
+    expect(rejected(missingTransaction, missingSources)).toBe(true);
+
+    // Every row reuses the same authenticated state chunks, but its canonical ABI result is appended separately.
+    // The kernel's limit is cumulative over that complete result vector rather than per state read.
+    const belowLimit = await source.batch(Array.from({ length: 5 }, () => ({
+      function: 'read', args: [],
+    }))).build();
+    expect(vmAccepts(belowLimit)).toBe(true);
+    const excessive = await source.batch(Array.from({ length: 6 }, () => ({
+      function: 'read', args: [],
+    }))).build();
+    expect(vmAccepts(excessive)).toBe(false);
+  }, 120_000);
+
   it('canonically encodes nested dynamic leaves and rejects result tampering', async () => {
     const provider = createMessageBusCapstoneTestProvider();
     const sourceArtifact = compileString(`pragma solidity ^0.8.0;

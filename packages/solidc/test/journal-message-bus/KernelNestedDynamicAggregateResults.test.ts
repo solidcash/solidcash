@@ -80,14 +80,20 @@ describe('kernel nested dynamic aggregate results', () => {
         }`, 'read')).toThrow(/cannot be used as return values|recursive/i);
   });
 
-  it('keeps an unbounded top-level array of structs behind KERNEL_LAYOUT', () => {
-    const selected = handler(`pragma solidity ^0.8.0;
+  it('publishes an authenticated dynamic-read run for a state-backed struct array', () => {
+    const artifact = compileString(`pragma solidity ^0.8.0;
       struct Record { uint256 value; string[] labels; }
       contract Source {
         Record[] records;
         function read() public view returns (Record[] memory) { return records; }
         function control() public { require(true); }
-      }`, 'read');
-    expect(selected).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+      }`, OPTIONS);
+    expect(artifact.messageBus?.handlers.find((entry) => entry.name === 'read'))
+      .toMatchObject({ eligible: true, outputs: [{ type: 'Record[]' }] });
+    expect(artifact.abi.find((entry) => entry.name === 'read')?.dynamicReads).toEqual(['records']);
+    expect(artifact.messageBus?.route.dynamicReads).toEqual(['records']);
+    expect(artifact.messageBus?.route.blockLayout).toMatchObject({
+      trailingBase: expect.any(Number), trailingCapacity: 64,
+    });
   });
 });

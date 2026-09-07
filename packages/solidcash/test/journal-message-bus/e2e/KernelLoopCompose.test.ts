@@ -786,6 +786,17 @@ contract KernelSelectedCounterMapping() {
     }
     require(true);
   }
+  function writeSwitchSelected(int n, bool keepCaseOne) public {
+    for (int i = 0; i < n; i = i + 1) {
+      switch (i % 3) {
+        case 0: { continue; }
+        case 1: { if (!keepCaseOne) { continue; } break; }
+        default: { break; }
+      }
+      this.m[i] = i + 1000;
+    }
+    require(true);
+  }
   function writeWhileSplit(int n) public {
     int i = 0;
     while (i < n) {
@@ -2908,6 +2919,8 @@ describe('kernel counter-key mapping loop compose', () => {
     });
     const writeHandler = artifact.abi.find((candidate) => candidate.name === 'write')!;
     const oddsHandler = artifact.abi.find((candidate) => candidate.name === 'writeOdds')!;
+    const switchSelectedHandler = artifact.abi.find((candidate) =>
+      candidate.name === 'writeSwitchSelected')!;
     const whileSplitHandler = artifact.abi.find((candidate) => candidate.name === 'writeWhileSplit')!;
     const doWhileSplitHandler = artifact.abi.find((candidate) => candidate.name === 'writeDoWhileSplit')!;
     const untilHandler = artifact.abi.find((candidate) => candidate.name === 'writeUntil')!;
@@ -2927,6 +2940,9 @@ describe('kernel counter-key mapping loop compose', () => {
     expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'writeOdds'))
       .toMatchObject({ eligible: true });
     expect(oddsHandler.sortedUpsertLoopInfo?.[0].iterationCondition).toBeDefined();
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'writeSwitchSelected'))
+      .toMatchObject({ eligible: true });
+    expect(switchSelectedHandler.sortedUpsertLoopInfo?.[0].iterationCondition).toBeDefined();
     expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'writeWhileSplit'))
       .toMatchObject({ eligible: true });
     expect(whileSplitHandler.sortedUpsertLoopInfo).toEqual([
@@ -3111,6 +3127,48 @@ describe('kernel counter-key mapping loop compose', () => {
     await expect(routedContinue.send()).resolves.toMatchObject({
       txid: expect.stringMatching(/^[0-9a-f]{64}$/),
     });
+
+    const switchSelected = StatefulContract.withCategory(inner, categoryId)
+      .call.writeSwitchSelected(6n, true);
+    const switchSelectedBuilder = await switchSelected.build();
+    const switchSelectedInputIndex = switchSelectedBuilder.inputs.findIndex((input) =>
+      'abiFunction' in input.unlocker && input.unlocker.abiFunction.name === 'writeSwitchSelected');
+    const switchSelectedInput = switchSelectedBuilder.inputs[switchSelectedInputIndex];
+    if (!switchSelectedInput || !('params' in switchSelectedInput.unlocker)) {
+      throw new Error('direct writeSwitchSelected input is missing');
+    }
+    const switchSelectedPermutationIndex = switchSelectedHandler.inputs.findIndex((input) =>
+      input.name.startsWith('__internal__vmapCounterPerm_'));
+    const switchSelectedPermutation = switchSelectedInput.unlocker
+      .params[switchSelectedPermutationIndex] as bigint[];
+    expect([...switchSelectedPermutation].sort((left, right) => Number(left - right)))
+      .toEqual([1n, 2n, 4n, 5n]);
+    const originalSwitchSelectedUnlocker = switchSelectedInput.unlocker;
+    const recreateSwitchSelectedUnlocker = originalSwitchSelectedUnlocker.contract
+      .createCompilerRouteUnlocker(
+        originalSwitchSelectedUnlocker.abiFunction,
+        hexToBin(switchSelectedHandler.selector!),
+      );
+    const switchSelectedVm = createVirtualMachineBch2026ForProvider(provider);
+    for (const hostile of [[1n, 2n, 4n], [0n, 1n, 2n, 4n, 5n]]) {
+      const hostileParams = [...originalSwitchSelectedUnlocker.params];
+      hostileParams[switchSelectedPermutationIndex] = hostile;
+      switchSelectedBuilder.inputs[switchSelectedInputIndex].unlocker =
+        recreateSwitchSelectedUnlocker(...hostileParams);
+      const transaction = switchSelectedBuilder.buildLibauthTransaction();
+      const sourceOutputs = generateLibauthSourceOutputs(switchSelectedBuilder.inputs);
+      expect(switchSelectedVm.stateSuccess(switchSelectedVm.evaluate({
+        inputIndex: switchSelectedInputIndex, sourceOutputs, transaction,
+      })), `hostile switch-selected witness ${hostile.join(',')}`).not.toBe(true);
+    }
+    switchSelectedBuilder.inputs[switchSelectedInputIndex].unlocker = originalSwitchSelectedUnlocker;
+    await expect(switchSelected.send()).resolves.toMatchObject({
+      txid: expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
+    for (const key of [1n, 2n, 4n, 5n]) {
+      await expect(StatefulContract.withCategory(inner, categoryId).call.check(key, key + 1000n).send())
+        .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    }
 
     const whileContinued = StatefulContract.withCategory(inner, categoryId)
       .batch([{ function: 'writeWhileSplit', args: [6n] }]);

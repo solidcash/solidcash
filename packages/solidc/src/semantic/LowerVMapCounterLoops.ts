@@ -1826,29 +1826,74 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         result.location = right.location;
         return result;
       };
-      const fallthrough = (x: Node): ExpressionNode | undefined => {
-        if (x instanceof ContinueNode || x instanceof BreakNode || x instanceof ReturnNode) {
-          return new BoolLiteralNode(false);
+      type FlowSummary = { next?: ExpressionNode; switchBreaks: Array<ExpressionNode | undefined> };
+      const flowSummary = (x: Node, capturesSwitchBreak = false): FlowSummary => {
+        if (x instanceof ContinueNode || x instanceof ReturnNode
+          || (x instanceof BreakNode && !capturesSwitchBreak)) {
+          return { next: new BoolLiteralNode(false), switchBreaks: [] };
         }
-        if (x instanceof WhileNode || x instanceof DoWhileNode) return undefined;
+        if (x instanceof BreakNode) {
+          return { next: new BoolLiteralNode(false), switchBreaks: [undefined] };
+        }
+        if (x instanceof WhileNode || x instanceof DoWhileNode) return { switchBreaks: [] };
         if (x instanceof BlockNode) {
           let active: ExpressionNode | undefined;
-          for (const statement of x.statements ?? []) active = pathAnd(active, fallthrough(statement));
-          return active;
+          const switchBreaks: Array<ExpressionNode | undefined> = [];
+          for (const statement of x.statements ?? []) {
+            const child = flowSummary(statement, capturesSwitchBreak);
+            switchBreaks.push(...child.switchBreaks.map((condition) => pathAnd(active, condition)));
+            active = pathAnd(active, child.next);
+          }
+          return { next: active, switchBreaks };
         }
         if (x instanceof BranchNode) {
-          const ifFallthrough = fallthrough(x.ifBlock);
-          const elseFallthrough = x.elseBlock ? fallthrough(x.elseBlock) : undefined;
+          const ifFlow = flowSummary(x.ifBlock, capturesSwitchBreak);
+          const elseFlow = x.elseBlock
+            ? flowSummary(x.elseBlock, capturesSwitchBreak) : { switchBreaks: [] };
           // Both arms (including an absent else) reaching the next statement makes that statement
           // unconditional. Preserve the compact `undefined === true` representation instead of publishing
           // `p || !p`, which is logically true but forces the SDK to replay a spurious effect predicate.
-          if (!ifFallthrough && !elseFallthrough) return undefined;
-          const ifPath = pathAnd(x.condition, ifFallthrough);
-          const elsePath = pathAnd(pathNot(x.condition), elseFallthrough);
-          return pathOr(ifPath, elsePath);
+          const next = !ifFlow.next && !elseFlow.next ? undefined : pathOr(
+            pathAnd(x.condition, ifFlow.next), pathAnd(pathNot(x.condition), elseFlow.next),
+          );
+          return {
+            next,
+            switchBreaks: [
+              ...ifFlow.switchBreaks.map((condition) => pathAnd(x.condition, condition)),
+              ...elseFlow.switchBreaks.map((condition) => pathAnd(pathNot(x.condition), condition)),
+            ],
+          };
         }
-        return undefined;
+        if (x instanceof SwitchNode) {
+          const matches = x.cases.map((candidate) => {
+            const equality = new BinaryOpNode(
+              cloneNode(x.expression), BinaryOperator.EQ, cloneNode(candidate.value),
+            );
+            equality.location = candidate.value.location ?? x.location;
+            return equality;
+          });
+          let result = x.cases.reduce<ExpressionNode | undefined>((active, candidate, index) => {
+            const arm = flowSummary(candidate.body, true);
+            const armExit = arm.switchBreaks.reduce(
+              (combined, condition) => pathOr(combined, condition), arm.next,
+            );
+            return pathOr(active, pathAnd(matches[index], armExit));
+          }, new BoolLiteralNode(false));
+          const unmatched = matches.reduce<ExpressionNode | undefined>(
+            (active, match) => pathAnd(active, pathNot(match)), undefined,
+          );
+          const fallback = x.defaultCase ? flowSummary(x.defaultCase, true) : undefined;
+          const fallbackExit = fallback?.switchBreaks.reduce(
+            (combined, condition) => pathOr(combined, condition), fallback.next,
+          );
+          result = pathOr(result, pathAnd(
+            unmatched, fallback ? fallbackExit : undefined,
+          ));
+          return { next: result, switchBreaks: [] };
+        }
+        return { switchBreaks: [] };
       };
+      const fallthrough = (x: Node): ExpressionNode | undefined => flowSummary(x).next;
       const collectWrites = (
         x: Node,
         condition?: ExpressionNode,
@@ -3310,27 +3355,72 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         expandRuntimePathExpression(
           expression, logical, new Set(), stateValuesAt(site), loopCarriedValuesAt(site),
         ) ?? expression;
-      const phasedFallthrough = (x: Node): ExpressionNode | undefined => {
-        if (x instanceof ContinueNode || x instanceof BreakNode || x instanceof ReturnNode) {
-          return new BoolLiteralNode(false);
+      const phasedFlowSummary = (x: Node, capturesSwitchBreak = false): FlowSummary => {
+        if (x instanceof ContinueNode || x instanceof ReturnNode
+          || (x instanceof BreakNode && !capturesSwitchBreak)) {
+          return { next: new BoolLiteralNode(false), switchBreaks: [] };
         }
-        if (x instanceof WhileNode || x instanceof DoWhileNode) return undefined;
+        if (x instanceof BreakNode) {
+          return { next: new BoolLiteralNode(false), switchBreaks: [undefined] };
+        }
+        if (x instanceof WhileNode || x instanceof DoWhileNode) return { switchBreaks: [] };
         if (x instanceof BlockNode) {
           let active: ExpressionNode | undefined;
-          for (const statement of x.statements ?? []) active = pathAnd(active, phasedFallthrough(statement));
-          return active;
+          const switchBreaks: Array<ExpressionNode | undefined> = [];
+          for (const statement of x.statements ?? []) {
+            const child = phasedFlowSummary(statement, capturesSwitchBreak);
+            switchBreaks.push(...child.switchBreaks.map((condition) => pathAnd(active, condition)));
+            active = pathAnd(active, child.next);
+          }
+          return { next: active, switchBreaks };
         }
         if (x instanceof BranchNode) {
           const condition = conditionAt(x.condition, x);
-          const ifFallthrough = phasedFallthrough(x.ifBlock);
-          const elseFallthrough = x.elseBlock ? phasedFallthrough(x.elseBlock) : undefined;
-          if (!ifFallthrough && !elseFallthrough) return undefined;
-          return pathOr(
-            pathAnd(condition, ifFallthrough), pathAnd(pathNot(condition), elseFallthrough),
+          const ifFlow = phasedFlowSummary(x.ifBlock, capturesSwitchBreak);
+          const elseFlow = x.elseBlock
+            ? phasedFlowSummary(x.elseBlock, capturesSwitchBreak) : { switchBreaks: [] };
+          const next = !ifFlow.next && !elseFlow.next ? undefined : pathOr(
+            pathAnd(condition, ifFlow.next), pathAnd(pathNot(condition), elseFlow.next),
           );
+          return {
+            next,
+            switchBreaks: [
+              ...ifFlow.switchBreaks.map((candidate) => pathAnd(condition, candidate)),
+              ...elseFlow.switchBreaks.map((candidate) => pathAnd(pathNot(condition), candidate)),
+            ],
+          };
         }
-        return undefined;
+        if (x instanceof SwitchNode) {
+          const expression = conditionAt(x.expression, x);
+          const matches = x.cases.map((candidate) => {
+            const equality = new BinaryOpNode(
+              cloneNode(expression), BinaryOperator.EQ, cloneNode(candidate.value),
+            );
+            equality.location = candidate.value.location ?? x.location;
+            return equality;
+          });
+          let result = x.cases.reduce<ExpressionNode | undefined>((active, candidate, index) => {
+            const arm = phasedFlowSummary(candidate.body, true);
+            const armExit = arm.switchBreaks.reduce(
+              (combined, candidateCondition) => pathOr(combined, candidateCondition), arm.next,
+            );
+            return pathOr(active, pathAnd(matches[index], armExit));
+          }, new BoolLiteralNode(false));
+          const unmatched = matches.reduce<ExpressionNode | undefined>(
+            (active, match) => pathAnd(active, pathNot(match)), undefined,
+          );
+          const fallback = x.defaultCase ? phasedFlowSummary(x.defaultCase, true) : undefined;
+          const fallbackExit = fallback?.switchBreaks.reduce(
+            (combined, candidateCondition) => pathOr(combined, candidateCondition), fallback.next,
+          );
+          result = pathOr(result, pathAnd(
+            unmatched, fallback ? fallbackExit : undefined,
+          ));
+          return { next: result, switchBreaks: [] };
+        }
+        return { switchBreaks: [] };
       };
+      const phasedFallthrough = (x: Node): ExpressionNode | undefined => phasedFlowSummary(x).next;
       // Rebuild paths after deriving source-position recipes. The discovery traversal above intentionally runs
       // first because those recipes depend on the set and positions of keyed writes. Expanding each atomic branch
       // before composing fallthrough preserves `local` values observed on opposite sides of an assignment.

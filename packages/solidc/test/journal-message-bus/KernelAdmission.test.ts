@@ -4652,6 +4652,27 @@ describe('required kernel admission', () => {
       .iterationCondition).toBeDefined();
   });
 
+  it('derives the exact selected domain across switch-local continue and break', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) m;
+      function write(int n, bool keepCaseOne) public {
+        for (int i = 0; i < n; i = i + 1) {
+          switch (i % 3) {
+            case 0: { continue; }
+            case 1: { if (!keepCaseOne) { continue; } break; }
+            default: { break; }
+          }
+          this.m[i] = i;
+        }
+        require(true);
+      }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.abi.find((handler) => handler.name === 'write')?.sortedUpsertLoopInfo?.[0]
+      .iterationCondition).toEqual(expect.objectContaining({ kind: 'binary', operator: '||' }));
+  });
+
   it('admits a break-controlled counter-keyed mapping loop with an exact terminated domain', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) m;

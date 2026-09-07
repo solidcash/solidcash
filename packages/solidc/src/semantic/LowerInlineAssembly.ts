@@ -2378,20 +2378,23 @@ function lowerCond(expr: YulExpressionNode): ExpressionNode {
   return loc(new BinaryOpNode(lowerValue(expr), BinaryOperator.NE, intLit(0n, expr)), expr);
 }
 
-// `pair := create2(0, add(code, 0x20), mload(code), salt)` where `bytes code = type(C).creationCode`: deploy the
-// SolidCash contract C. Lower to `new C{salt: salt}()` (an InstantiationNode) - runs pre-semantic, so the deploy
-// modifier inference, self-pin covenant, salt bake and SDK deployFrom all engage downstream. The child's ctor args
-// come from creationCode (none extra here); a same-tx `C(pair).initialize(..)` folds as a deploy-then-call. Value
-// must be 0 (a funded deploy needs an output). Any un-recognised offset/size/type leaves it for the yul diagnostic.
-function tryCreate2Instantiation(value: YulExpressionNode, src: YulNode): InstantiationNode | undefined {
-  if (!(value instanceof YulFunctionCallNode) || value.name !== 'create2' || value.args.length !== 4) return undefined;
+// `pair := create(0, add(code, 0x20), mload(code))` (or CREATE2's salted four-argument form) where
+// `bytes code = type(C).creationCode`: deploy the SolidCash contract C. Lower to an InstantiationNode before
+// semantic analysis so both forms reuse the typed child-layout descriptor, self-pin covenant, and SDK genesis
+// materialization. The child's ctor args come from creationCode (none extra here); a same-tx call may still fold
+// into initialization. A runtime bytes buffer has no compiler-authored child layout and deliberately stays on the
+// address-only lowering path below. Value must be zero: funded creation needs a separately modelled BCH output.
+function tryTypedCreateInstantiation(value: YulExpressionNode, src: YulNode): InstantiationNode | undefined {
+  if (!(value instanceof YulFunctionCallNode)) return undefined;
+  const salted = value.name === 'create2' && value.args.length === 4;
+  if (!(salted || (value.name === 'create' && value.args.length === 3))) return undefined;
   if (!(isIntLiteral(value.args[0]) && BigInt(value.args[0].raw) === 0n)) return undefined;
   const codeLocal = resolveWholeBytesLocal(value.args[1], value.args[2]);
   if (!codeLocal) return undefined;
   const contractName = currentCreationCodeLocals.get(codeLocal);
   if (!contractName) return undefined;
   const inst = loc(new InstantiationNode(loc(new IdentifierNode(contractName), src), []), src);
-  inst.callOptions = { salt: lowerValue(value.args[3]) };
+  if (salted) inst.callOptions = { salt: lowerValue(value.args[3]) };
   return inst;
 }
 
@@ -2452,12 +2455,11 @@ function lowerStatement(stmt: YulStatementNode): StatementNode {
       && !isIntLiteral(stmt.value.args[0])) {
       return lowerClzBinding(stmt.value, stmt.names[0], true, stmt);
     }
-    // `let pair := create2(0, add(code,0x20), mload(code), salt)` -> `address pair = new C{salt}()` (deploy). Emit
-    // the InstantiationNode DIRECTLY (no CastNode wrap) so deploy-result-local registration + deploy-then-call fold
-    // (SymbolTableTraversal, keyed on `expression instanceof InstantiationNode`) engage.
-    const declCreate2 = tryCreate2Instantiation(stmt.value, stmt);
-    if (declCreate2) {
-      return loc(new VariableDefinitionNode(new AddressType(false), [], stmt.names[0], declCreate2), stmt);
+    // Typed CREATE/CREATE2 becomes `address pair = new C...` (deploy). Emit the InstantiationNode DIRECTLY (no
+    // CastNode wrap) so deploy-result-local registration and deploy-then-call folding engage.
+    const declaredCreate = tryTypedCreateInstantiation(stmt.value, stmt);
+    if (declaredCreate) {
+      return loc(new VariableDefinitionNode(new AddressType(false), [], stmt.names[0], declaredCreate), stmt);
     }
     // `let buf := mload(0x40)` allocates a fresh free-memory byte buffer; track its mstore writes, emit nothing.
     // In the runtime path there is no compile-time buffer - it lowers to a real `mload(0x40)` read (the free
@@ -2616,11 +2618,10 @@ function lowerStatement(stmt: YulStatementNode): StatementNode {
       && !isIntLiteral(stmt.value.args[0])) {
       return lowerClzBinding(stmt.value, name, false, stmt);
     }
-    // `pair := create2(0, add(code,0x20), mload(code), salt)` -> `pair = new C{salt}()` (deploy). Emit the
-    // InstantiationNode DIRECTLY (bypass the target-type CastNode wrap below) so the deploy-result-local /
-    // deploy-then-call fold machinery (keyed on `expression instanceof InstantiationNode`) engages.
-    const asgCreate2 = tryCreate2Instantiation(stmt.value, stmt);
-    if (asgCreate2) return loc(new AssignNode(loc(new IdentifierNode(name), stmt), asgCreate2), stmt);
+    // Typed CREATE/CREATE2 becomes `pair = new C...` (deploy). Keep the InstantiationNode direct so the
+    // deploy-result-local and deploy-then-call machinery can recognize it.
+    const assignedCreate = tryTypedCreateInstantiation(stmt.value, stmt);
+    if (assignedCreate) return loc(new AssignNode(loc(new IdentifierNode(name), stmt), assignedCreate), stmt);
     // `ok := call/staticcall/delegatecall(...)` -> a low-level call binding onto the existing var.
     if (isLowLevelCall(stmt.value)) return lowerLowLevelCall(stmt.value, name, false, stmt);
     // `slot := keccak256(0,64)` mapping-slot idiom (assignment form) -> record m[k]; drop the dead keccak binding.

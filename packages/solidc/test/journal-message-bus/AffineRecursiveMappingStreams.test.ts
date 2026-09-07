@@ -376,10 +376,10 @@ describe('affine recursive mapping streams', () => {
   });
 
   it.each([
-    ['a runtime outer key', 'this.source[partition][cursor]'],
-    ['a varying non-final component', 'this.source[cursor][7]'],
-    ['two varying key components', 'this.source[cursor][cursor + 1]'],
-  ])('refuses nested recursive reads with %s', (_label, read) => {
+    ['a recursion-invariant runtime outer key', 'this.source[partition][cursor]', [1]],
+    ['a varying non-final component', 'this.source[cursor][7]', [0]],
+    ['two varying key components', 'this.source[cursor][cursor + 1]', [0, 1]],
+  ])('authenticates nested recursive reads with %s', (_label, read, varyingKeyIndices) => {
     const artifact = compileString(`contract C() {
       mapping(int => mapping(int => int)) source;
       mapping(int => int) destination;
@@ -393,9 +393,72 @@ describe('affine recursive mapping streams', () => {
     }`, KERNEL);
 
     expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'apply'))
-      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+      .toMatchObject({ eligible: true });
+    const stream = artifact.abi.find((candidate) => candidate.name === 'apply')?.sortedUpsertLoopInfo?.[0];
+    expect(stream).toMatchObject({ collection: 'source', op: 'read' });
+    expect(stream?.varyingKeyIndices ?? [1]).toEqual(varyingKeyIndices);
+    if (read.includes('partition')) expect(stream?.fixedKeyParams).toContain('partition');
+    if (varyingKeyIndices.length > 1) expect(stream?.varyingKeyExpressions).toHaveLength(2);
     expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'control'))
       .toMatchObject({ eligible: true });
+  });
+
+  it('proves disjoint tuple streams when their affine components require conflicting frame deltas', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => mapping(int => int)) source;
+      mapping(int => int) destination;
+      function apply(int cursor) public returns (int) {
+        if (cursor == 0) return 0;
+        int result = apply(cursor - 1);
+        this.destination[cursor] = this.source[cursor][cursor]
+          + this.source[cursor + 1][cursor] + result;
+        return result;
+      }
+    }`, KERNEL);
+
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'apply'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.abi.find((candidate) => candidate.name === 'apply')?.sortedUpsertLoopInfo
+      ?.filter((stream) => stream.collection === 'source')).toHaveLength(2);
+  });
+
+  it('does not assume distinct recursion-invariant parameters produce disjoint tuple prefixes', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => mapping(int => int)) source;
+      mapping(int => int) destination;
+      function apply(int cursor, int left, int right) public returns (int) {
+        if (cursor == 0) return 0;
+        int result = apply(cursor - 1, left, right);
+        this.destination[cursor] = this.source[left][cursor] + this.source[right][cursor] + result;
+        return result;
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'apply'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+  });
+
+  it.each([
+    ['a recursively changing outer parameter', 'this.source[partition][cursor]',
+      'apply(cursor - 1, partition + 1)'],
+    ['an expression derived from an invariant parameter', 'this.source[partition + 1][cursor]',
+      'apply(cursor - 1, partition)'],
+  ])('refuses nested recursive reads with %s', (_label, read, recursiveCall) => {
+    const artifact = compileString(`contract C() {
+      mapping(int => mapping(int => int)) source;
+      mapping(int => int) destination;
+      function apply(int cursor, int partition) public returns (int) {
+        if (cursor == 0) return partition;
+        int result = ${recursiveCall};
+        this.destination[cursor] = ${read} + result;
+        return result;
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'apply'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
   });
 
   it.each([

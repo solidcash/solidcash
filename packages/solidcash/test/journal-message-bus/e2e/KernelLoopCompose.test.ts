@@ -1620,6 +1620,111 @@ describe('kernel loop message-bus compose', () => {
     await expect(kernelAccepts(64n)).resolves.toBe(false);
   }, 180_000);
 
+  it('authenticates recursive nested reads with non-final and repeated varying key positions', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(`contract KernelRecursiveTupleReads() {
+      mapping(int => mapping(int => int)) source;
+      mapping(int => int) nonFinalResults;
+      mapping(int => int) repeatedResults;
+      function seed(int outer, int inner, int value) public {
+        this.source[outer][inner] = value;
+        require(true);
+      }
+      function copyNonFinal(int remaining) public returns (int) {
+        if (remaining == 0) return 0;
+        int result = copyNonFinal(remaining - 1);
+        this.nonFinalResults[remaining] = this.source[remaining][7] + result;
+        return result;
+      }
+      function copyRepeated(int remaining) public returns (int) {
+        if (remaining == 0) return 0;
+        int result = copyRepeated(remaining - 1);
+        this.repeatedResults[remaining] = this.source[remaining][remaining + 1] + result;
+        return result;
+      }
+      function checkNonFinal(int key, int expected) public {
+        require(this.nonFinalResults[key] == expected);
+      }
+      function checkRepeated(int key, int expected) public {
+        require(this.repeatedResults[key] == expected);
+      }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+    );
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    for (let key = 1n; key <= 3n; key += 1n) {
+      await contract.call.seed(key, 7n, key + 10n).send();
+      await contract.call.seed(key, key + 1n, key + 20n).send();
+    }
+
+    const execute = async (
+      functionName: 'copyNonFinal' | 'copyRepeated', varyingKeyIndices: number[], expectedBase: bigint,
+    ): Promise<void> => {
+      const abi = artifact.abi.find((candidate) => candidate.name === functionName)!;
+      const sourceRead = abi.sortedUpsertLoopInfo?.find((stream) => stream.collection === 'source');
+      expect(sourceRead).toMatchObject({ op: 'read', varyingKeyIndices });
+      if (varyingKeyIndices.length > 1) expect(sourceRead?.varyingKeyExpressions).toHaveLength(2);
+      const call = contract.batch([{ function: functionName, args: [3n] }]);
+      const builder = await call.build();
+      const routeInputIndex = builder.inputs.findIndex((input) =>
+        'abiFunction' in input.unlocker && input.unlocker.abiFunction.name === artifact.messageBus!.route.name);
+      expect(routeInputIndex).toBeGreaterThanOrEqual(0);
+      const routeUnlocker = builder.inputs[routeInputIndex].unlocker;
+      if (!('params' in routeUnlocker)) throw new Error('message-bus route input has no contract parameters');
+      const transaction = builder.buildLibauthTransaction();
+      const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+      const vm = createVirtualMachineBch2026ForProvider(provider);
+      for (let inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex += 1) {
+        expect(vm.stateSuccess(vm.evaluate({ inputIndex, sourceOutputs, transaction })), `input ${inputIndex}`)
+          .toBe(true);
+      }
+      const routeSelector = artifact.messageBus!.route.selector;
+      if (!routeSelector) throw new Error('message-bus route has no selector');
+      const recreateRouteUnlocker = routeUnlocker.contract.createCompilerRouteUnlocker(
+        routeUnlocker.abiFunction, hexToBin(routeSelector),
+      );
+      const witnessIndex = artifact.messageBus!.route.inputs.findIndex((input) =>
+        input.name === sourceRead?.oldValuesWitnessParam);
+      expect(witnessIndex).toBeGreaterThanOrEqual(0);
+      const forgedWitnessParams = [...routeUnlocker.params];
+      const witnessRows = routeUnlocker.params[witnessIndex] as bigint[][];
+      forgedWitnessParams[witnessIndex] = [[witnessRows[0][0] + 1n, ...witnessRows[0].slice(1)]];
+      builder.inputs[routeInputIndex].unlocker = recreateRouteUnlocker(...forgedWitnessParams);
+      expect(vm.stateSuccess(vm.evaluate({
+        inputIndex: routeInputIndex,
+        sourceOutputs: generateLibauthSourceOutputs(builder.inputs),
+        transaction: builder.buildLibauthTransaction(),
+      })), 'forged old-value vector').not.toBe(true);
+
+      const journalIndex = artifact.messageBus!.route.inputs.findIndex((input) =>
+        input.name === '__internal__kernelJournalAccessStreams');
+      expect(journalIndex).toBeGreaterThanOrEqual(0);
+      const journalRows = routeUnlocker.params[journalIndex] as Uint8Array[][];
+      const forgedStream = new Uint8Array(journalRows[0][sourceRead!.journalAccessStreamIndex]);
+      forgedStream[forgedStream.length - 1] ^= 1;
+      const forgedJournalParams = [...routeUnlocker.params];
+      forgedJournalParams[journalIndex] = [journalRows[0].map((stream, index) =>
+        index === sourceRead!.journalAccessStreamIndex ? forgedStream : stream)];
+      builder.inputs[routeInputIndex].unlocker = recreateRouteUnlocker(...forgedJournalParams);
+      expect(vm.stateSuccess(vm.evaluate({
+        inputIndex: routeInputIndex,
+        sourceOutputs: generateLibauthSourceOutputs(builder.inputs),
+        transaction: builder.buildLibauthTransaction(),
+      })), 'forged journal entry stream').not.toBe(true);
+      builder.inputs[routeInputIndex].unlocker = routeUnlocker;
+
+      await expect(call.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+      const check = functionName === 'copyNonFinal' ? contract.call.checkNonFinal : contract.call.checkRepeated;
+      for (let key = 1n; key <= 3n; key += 1n) {
+        await expect(check(key, key + expectedBase).send()).resolves.toBeDefined();
+      }
+    };
+    await execute('copyNonFinal', [0], 10n);
+    await execute('copyRepeated', [0, 1], 20n);
+  }, 180_000);
+
   it('executes resource-free non-tail recursion through one row', async () => {
     const provider = createTestProvider();
     const artifact = compileString(`contract KernelPureRecursion() {

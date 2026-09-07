@@ -15822,6 +15822,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     return type.fields.some((field) => this.typeContainsTransactionSignature(field.type, nested));
   }
 
+  /** True when the complete top-level value is detached transaction-signature transport. */
+  private typeIsEntireTransactionSignature(type: Type): boolean {
+    return type === PrimitiveType.SIG
+      || (type instanceof ArrayType && this.typeIsEntireTransactionSignature(type.elementType));
+  }
+
   /** Replace transaction-signature leaves with empty bytes while retaining canonical composite framing. */
   private emitSanitizeTransactionSignatures(type: Type, locationData: SingleLocationData): void {
     const tracked = [...this.stack];
@@ -17701,7 +17707,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // original checkSig remains authoritative. A direct sig parameter is omitted wholesale; a composite retains
     // its non-signature fields and is sanitized below after evaluation.
     const callManifestArgumentParameters = argumentParameters.filter((parameter) =>
-      parameter.type !== PrimitiveType.SIG);
+      !this.typeIsEntireTransactionSignature(parameter.type!));
     if (rawCall && !canonicalRawParameters) {
       if (!callManifestArgumentParameters[0]) {
         throw new Error('Raw graph call lacks its canonical calldata argument');

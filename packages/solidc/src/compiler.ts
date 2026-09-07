@@ -4785,13 +4785,12 @@ function synthesizeMessageBusRoute(
     .map((definition) => definition.name));
   // A fixed-cardinality result may contain runtime-sized leaves: the generated route applies one conservative
   // bound to the complete encoded result below, and the recursive ABI codec walks those leaves without statically
-  // expanding their element count. Arrays of structs remain different: a top-level unbounded struct array has no
-  // admitted materialization profile, while a fixed struct-array has a compiler-known outer expansion.
+  // expanding their element count. The same runtime codec can materialize an array of structs when its complete
+  // aggregate type graph is acyclic and mapping-free; its dynamic cardinality is bounded by that result envelope.
   const kernelBoundedCompositeResultLayout = (type: Type, active = new Set<object>()): boolean => {
     if (type instanceof ValueType) return kernelBoundedCompositeResultLayout(type.underlyingType, active);
     if (type instanceof ArrayType) {
-      if (active.has(type)
-        || (type.bound === undefined && containsStruct(type.elementType))) return false;
+      if (active.has(type)) return false;
       active.add(type);
       const encodable = kernelBoundedCompositeResultLayout(type.elementType, active);
       active.delete(type);
@@ -4818,9 +4817,9 @@ function synthesizeMessageBusRoute(
     active.delete(type);
     return found;
   };
-  const boundedStructArrayWithDynamicLeaves = (type: Type): boolean =>
-    type instanceof ArrayType && type.bound !== undefined && containsStruct(type.elementType)
-    && hasDynamicCompositeLeaf(type.elementType)
+  const structArrayResultRequiresEnvelope = (type: Type): boolean =>
+    type instanceof ArrayType && containsStruct(type.elementType)
+    && (type.bound === undefined || hasDynamicCompositeLeaf(type.elementType))
     && kernelBoundedCompositeResultLayout(type.elementType);
   const containsStruct = (type: Type, active = new Set<object>()): boolean => {
     if (type instanceof StructType) return true;
@@ -4856,11 +4855,10 @@ function synthesizeMessageBusRoute(
       // a returned value must have a finite materialized ABI representation. Detect the type-graph back edge here
       // rather than overflowing this admission walk or letting later code generation partially expand it.
       if (active.has(type)) return false;
-      // A top-level dynamic array of scalar/dynamic leaves and a runtime array nested in one fixed outer aggregate
-      // are bounded by the participant's complete 10,000-byte result envelope. A top-level dynamic array of
-      // structs still has no admitted materialization profile. Fixed struct arrays take the bounded composite path.
+      // Dynamic arrays, including arrays of nonrecursive structs, are bounded by the participant's complete
+      // 10,000-byte result envelope. Keep recursive and mapping-bearing aggregate graphs outside the codec.
       if (type instanceof ArrayType && containsStruct(type.elementType)) {
-        if (type.bound === undefined || !kernelBoundedCompositeResultLayout(type.elementType)) return false;
+        if (!kernelBoundedCompositeResultLayout(type.elementType)) return false;
       }
       active.add(type);
       const encodable = type instanceof StructType
@@ -4875,9 +4873,11 @@ function synthesizeMessageBusRoute(
     if (type instanceof TupleType) return false;
     return false;
   };
-  const directWholeStructStateGetter = (fn: FunctionDefinitionNode): StateVariableNode | undefined => {
+  const directWholeAggregateStateGetter = (fn: FunctionDefinitionNode): StateVariableNode | undefined => {
     if (fn.parameters.length !== 0 || fn.returnTypes.length !== 1
-      || !(fn.returnTypes[0] instanceof StructType)) return undefined;
+      || (!(fn.returnTypes[0] instanceof StructType)
+        && !(fn.returnTypes[0] instanceof ArrayType && fn.returnTypes[0].bound === undefined
+          && containsStruct(fn.returnTypes[0])))) return undefined;
     const returns: ReturnNode[] = [];
     walkInvocationAst(fn.body, (node) => {
       if (node instanceof ReturnNode) returns.push(node);
@@ -4888,8 +4888,14 @@ function synthesizeMessageBusRoute(
     const stateVariable = expression instanceof StateAccessNode
       ? expression.stateVariable
       : expression instanceof IdentifierNode && expression.definition instanceof StateVariableNode
-        ? expression.definition : undefined;
-    if (!stateVariable || !(stateVariable.type instanceof StructType)) return undefined;
+        ? expression.definition
+        : expression instanceof IdentifierNode
+          // Solidity-compatible bare state identifiers are unresolved at this early admission boundary. The
+          // exact one-statement return shape above has no declaration which could shadow the contract binding.
+          ? contract.stateVariables.find((candidate) => candidate.name === expression.name) : undefined;
+    if (!stateVariable || (!(stateVariable.type instanceof StructType)
+      && !(stateVariable.type instanceof ArrayType && stateVariable.type.bound === undefined
+        && containsStruct(stateVariable.type)))) return undefined;
     return stateVariable;
   };
   const fixedKernelStructLayout = (type: Type, active = new Set<object>()): boolean => {
@@ -5115,7 +5121,7 @@ function synthesizeMessageBusRoute(
       fn.messageBusEligible = false;
       fn.messageBusRejectionReason = 'struct-state-getter-route-not-enabled';
     } else if (compilerOptions.messageBusKernel === true
-      && directWholeStructStateGetter(fn)
+      && directWholeAggregateStateGetter(fn)
       && !fixedKernelStructLayout(fn.returnTypes[0])) {
       // State-backed result materialization is deliberately finite: recursive layouts and dynamically-sized
       // arrays do not have one bounded row-local representation. Pure constructed results keep the ordinary
@@ -6540,7 +6546,7 @@ function synthesizeMessageBusRoute(
         : (graphHandlerInvokeNames.get(fn) ?? siblingHandlerInvokeNames.get(fn)
         ?? fixedArrayHandlerInvokeNames.get(fn) ?? fn.name);
       const invoke = (args: string, selectedInvokeName = invokeName): string => {
-        const structStateGetter = directWholeStructStateGetter(fn);
+        const structStateGetter = directWholeAggregateStateGetter(fn);
         if (structStateGetter) {
           const stateReference = routeStateReference(structStateGetter.name);
           if (!captureResults) return `${stateReference};`;
@@ -7032,7 +7038,7 @@ function synthesizeMessageBusRoute(
     ? ' returns (bytes)'
     : '';
   const boundedDynamicCompositeResultMode = eligible.some((fn) => fn.returnTypes.some((type) =>
-    boundedStructArrayWithDynamicLeaves(type)
+    structArrayResultRequiresEnvelope(type)
       || (type instanceof StructType && hasDynamicCompositeLeaf(type))
       || (type instanceof ArrayType && type.bound !== undefined && hasDynamicCompositeLeaf(type))));
   const returnStatement = resultMode

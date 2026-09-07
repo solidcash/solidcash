@@ -14660,6 +14660,22 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   // element is the SolidCash-encoded value. Recursive: a bytes/string element is lengthWord ++ data ++ pad; an
   // inner value-element array (uint[][]) is lengthWord ++ M 32-byte words rebuilt into a SolidCash array blob.
   private emitEvmDecodeElement(elemType: Type, loc: SingleLocationData): void {
+    if (elemType instanceof StructType && this.isDynamicAbiType(elemType)) {
+      // An array-element offset points at the struct tuple without the outer single-result offset word. Measure
+      // that tuple from its own offset base, isolate it from following element tails, then reuse the authenticated
+      // dynamic-struct decoder. The surrounding array scan keeps its tracker frozen, so expose only its three
+      // known physical loop slots while the nested decoder runs and restore the enclosing tracker afterward.
+      const savedStack = [...this.stack];
+      this.emit(Op.OP_DUP, loc);
+      this.emitEvmValueSpan(elemType, loc);
+      this.emit(Op.OP_SPLIT, loc); // [array accumulator, exact struct tuple, following element tails]
+      this.emit(Op.OP_SWAP, loc); // [array accumulator, following element tails, exact struct tuple]
+      this.stack = ['(struct tuple)', '(following elements)', '(array accumulator)', ...savedStack.slice(1)];
+      this.emitPrependEvmSingleOffset(loc);
+      this.emitEvmStructDecodeDynamic(elemType, loc);
+      this.stack = savedStack;
+      return;
+    }
     if (elemType instanceof ArrayType && elemType.bound === undefined) {
       if (this.isDynamicAbiType(elemType.elementType)) {
         this.emitEvmDecodeDynElementArray(elemType.elementType, loc); // inner array of dynamic elems (bytes[][]/string[][])
@@ -15198,8 +15214,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   // External result channels need one representation decision shared by ordinary calls and kernel graph rows.
   // This subset is recursive and type-directed: arbitrary static composites and dynamic arrays of static
-  // composites are supported, while a dynamic composite element remains fenced until its tail-span decoder can
-  // preserve the following element without trusting offsets from an unauthenticated producer.
+  // composites and dynamic struct elements are supported. Other dynamic composite elements remain fenced until
+  // their tail-span decoder can preserve the following element without trusting unauthenticated offsets.
   private isEvmExternalResultDecodable(type: Type): boolean {
     if (this.isEvmAbiWordType(type)) return true;
     if (type === PrimitiveType.STRING || (type instanceof BytesType && type.bound === undefined)) return true;
@@ -15241,6 +15257,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private isEvmExternalResultArrayElementDecodable(type: Type): boolean {
     if (!this.isDynamicAbiType(type)) return this.isEvmExternalResultDecodable(type);
     if (type === PrimitiveType.STRING || (type instanceof BytesType && type.bound === undefined)) return true;
+    if (type instanceof StructType) return this.isEvmExternalResultDecodable(type);
     return type instanceof ArrayType && type.bound === undefined
       && this.isEvmExternalResultArrayElementDecodable(type.elementType);
   }

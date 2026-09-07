@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { Artifact } from '@solidcash/utils';
 import { compileString } from 'solidc';
-import { messageBus } from '../../src/index.js';
+import { messageBus, SignatureTemplate } from '../../src/index.js';
 
 const artifact = (selector: string, inputType = 'int'): Artifact => ({
   messageBus: {
@@ -49,6 +49,55 @@ const plan = (): messageBus.CompiledGraphPlan => ({
 });
 
 describe('atomic compiled invocation graph', () => {
+  it('projects forwarded and constructed signature arrays out of child invocation bytes', () => {
+    const leafArtifact = compileString(`contract SignatureArrayLeaf() {
+      function authorize(sig[] proofs, pubkey[] authorities, int amount) public {
+        require(checkMultiSig(proofs, authorities));
+      }
+    }`, { forceStateful: true, messageBus: true, messageBusKernel: true });
+    const rootArtifact = compileString(`interface ISignatureArrayLeaf {
+      function authorize(sig[] proofs, pubkey[] authorities, int amount);
+    }
+    contract SignatureArrayRoot(address target) {
+      function forward(sig[] proofs, pubkey[] authorities, int amount) public {
+        ISignatureArrayLeaf(target).authorize(proofs, authorities, amount);
+        require(true);
+      }
+      function construct(sig first, sig second, pubkey[] authorities, int amount) public {
+        ISignatureArrayLeaf(target).authorize([first, second], authorities, amount);
+        require(true);
+      }
+    }`, { forceStateful: true, messageBus: true, messageBusKernel: true });
+    const leaf = { artifact: leafArtifact, lockingBytecode: '52' };
+    const root = {
+      artifact: rootArtifact, lockingBytecode: '51', constructorArgs: [Uint8Array.of(0x52)],
+    };
+    const proofs = [
+      new SignatureTemplate(new Uint8Array(32).fill(1)),
+      new SignatureTemplate(new Uint8Array(32).fill(2)),
+    ];
+    const authorities = [new Uint8Array(33).fill(3), new Uint8Array(33).fill(4)];
+    const derive = (functionName: 'forward' | 'construct') => messageBus.deriveCompiledGraphPlan({
+      root,
+      function: functionName,
+      args: functionName === 'forward'
+        ? [proofs, authorities, 7n]
+        : [proofs[0], proofs[1], authorities, 7n],
+      targets: {},
+      target: () => leaf,
+      expressionArgument: ({ argument }) => argument === 0 ? proofs : undefined,
+    });
+    const forwarded = derive('forward');
+    const constructed = derive('construct');
+    expect(forwarded.invocations.map((invocation) => invocation.function))
+      .toEqual(['forward', 'authorize']);
+    expect(constructed.invocations.map((invocation) => invocation.function))
+      .toEqual(['construct', 'authorize']);
+    expect(forwarded.invocations[1].argsHex).toBe(constructed.invocations[1].argsHex);
+    expect(forwarded.participants[1].batch.routeWitnesses[0]).toEqual([proofs]);
+    expect(constructed.participants[1].batch.routeWitnesses[0]).toEqual([proofs]);
+  });
+
   it('retains an exact overload selector and refuses ambiguity or mismatch', () => {
     const overloaded = compileString(`pragma solidcash >=0.8.0;
       contract OverloadedGraph() {

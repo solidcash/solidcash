@@ -17706,8 +17706,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Both caller emission and callee row projection therefore omit the same typed leaves while the callee's
     // original checkSig remains authoritative. A direct sig parameter is omitted wholesale; a composite retains
     // its non-signature fields and is sanitized below after evaluation.
-    const callManifestArgumentParameters = argumentParameters.filter((parameter) =>
-      !this.typeIsEntireTransactionSignature(parameter.type!));
+    const callManifestArgumentParameters = argumentParameters
+      .map((parameter, sourceIndex) => ({ parameter, sourceIndex }))
+      .filter(({ parameter }) => !this.typeIsEntireTransactionSignature(parameter.type!));
     if (rawCall && !canonicalRawParameters) {
       if (!callManifestArgumentParameters[0]) {
         throw new Error('Raw graph call lacks its canonical calldata argument');
@@ -17719,13 +17720,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.pushToStack('(__graph_args)');
     } else {
       for (let i = 0; i < callManifestArgumentParameters.length; i++) {
-        let parameter = callManifestArgumentParameters[i];
+        let { parameter } = callManifestArgumentParameters[i];
+        const { sourceIndex } = callManifestArgumentParameters[i];
         const evaluateArgument = parametersAreCallArguments
-          || (slot.argSources?.[i]?.kind) === 'expression'
+          || (slot.argSources?.[sourceIndex]?.kind) === 'expression'
           || !(parameter instanceof IdentifierNode);
         if (evaluateArgument) {
           parameter = this.visit(parameter);
-          callManifestArgumentParameters[i] = parameter;
+          callManifestArgumentParameters[i].parameter = parameter;
         } else {
           this.emit(encodeInt(BigInt(this.getStackIndex((parameter as IdentifierNode).name))), locationData);
           this.emit(Op.OP_PICK, locationData);

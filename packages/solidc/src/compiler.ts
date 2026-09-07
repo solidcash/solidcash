@@ -8,7 +8,8 @@ import {
 } from 'antlr4';
 import { binToHex } from '@bitauth/libauth';
 import {
-  Artifact, ArtifactMap, ArrayType, AddressType, asmToBytecode, BytesType, CompilerOptions, FixedType, IntType,
+  AbiFunctionReference, Artifact, ArtifactMap, ArrayType, AddressType, asmToBytecode, BytesType, CompilerOptions,
+  FixedType, IntType,
   computeBytecodeFingerprintWithConstructorArgs, computeFunctionSelector, computeFunctionSignature,
   encodeComputedBlockhashKey, EnumType, FunctionType, generateSourceMap, MappingType,
   MAX_MESSAGE_BUS_BLOB_BYTES,
@@ -179,6 +180,40 @@ export const DEFAULT_COMPILER_OPTIONS: CompilerOptions = {
   // compatibility escape hatch for artifacts which must reproduce the historical clone/unroll ABI.
   messageBusKernel: true,
 };
+
+function normalizeAbiSelector(selector: string): string | undefined {
+  const normalized = selector.startsWith('0x') || selector.startsWith('0X') ? selector.slice(2) : selector;
+  return /^[0-9a-fA-F]{8}$/.test(normalized) ? normalized.toLowerCase() : undefined;
+}
+
+/** Selector identity of a source ABI entry point; compiler-internal physical operands never affect it. */
+function sourceFunctionSelectorHex(fn: FunctionDefinitionNode): string {
+  return binToHex(computeFunctionSelector(computeFunctionSignature(
+    fn.name,
+    fn.parameters
+      .filter((parameter) => !parameter.name.startsWith('__internal__'))
+      .map((parameter) => parameter.type.toString().replace(/address payable/g, 'address')),
+  )));
+}
+
+function messageBusHandlerSelected(
+  fn: FunctionDefinitionNode,
+  requested: CompilerOptions['messageBusHandlers'],
+): boolean {
+  if (requested === undefined) return true;
+  const selector = sourceFunctionSelectorHex(fn).toLowerCase();
+  return requested.some((reference) => {
+    if (typeof reference === 'string') return reference === fn.name;
+    const requestedSelector = normalizeAbiSelector(reference.selector);
+    return reference.name === fn.name && requestedSelector !== undefined && requestedSelector === selector;
+  });
+}
+
+function exactMessageBusHandlerReference(
+  handler: NonNullable<Artifact['messageBus']>['handlers'][number],
+): AbiFunctionReference {
+  return { name: handler.name, selector: handler.selector };
+}
 
 function scanSourceImports(code: string): string[] {
   const specs: string[] = [];
@@ -1344,7 +1379,7 @@ function compileStringUnchecked(code: string, compilerOptions: CompileOptions = 
     const speculativeHandlers = artifact.messageBus.handlers;
     const admittedMessageBusHandlers = speculativeHandlers
       .filter((handler) => handler.eligible)
-      .map((handler) => handler.name);
+      .map(exactMessageBusHandlerReference);
     // The bound route replaces the speculative embedded-verifier artifact wholesale. Release that often-large
     // object before parsing/code-generating the second pass, otherwise a one-CPU compatibility compile holds two
     // complete contracts at the peak (Unicrow exceeds the practical heap despite selecting only `pay`).
@@ -1504,7 +1539,7 @@ function attachDelegateVariant(
         const speculativeHandlers = variant.messageBus.handlers;
         const admittedMessageBusHandlers = speculativeHandlers
           .filter((handler) => handler.eligible)
-          .map((handler) => handler.name);
+          .map(exactMessageBusHandlerReference);
         const bindingOptions = normalizeCompilerOptions({
           ...variantOptions,
           messageBusHandlers: admittedMessageBusHandlers,
@@ -2617,8 +2652,6 @@ function synthesizeMessageBusRoute(
   const synthesizeStarted = Date.now();
   const contract = ast.contract;
   assertNoReservedMessageBusSelector(contract.functions);
-  const requestedHandlerNames = compilerOptions.messageBusHandlers === undefined
-    ? undefined : new Set(compilerOptions.messageBusHandlers);
   const entryFunctions = compilerOptions.messageBusKernel === true
     ? [
       ...contract.functions,
@@ -2627,7 +2660,7 @@ function synthesizeMessageBusRoute(
     ]
     : contract.functions;
   const functions = entryFunctions.filter((fn) => fn.isEntryPoint && !fn.isAbstract
-    && (requestedHandlerNames === undefined || requestedHandlerNames.has(fn.name)));
+    && messageBusHandlerSelected(fn, compilerOptions.messageBusHandlers));
   // Record every entry point's span BEFORE any refusal is decided and before anything downstream
   // can throw, so the fallback can attribute a later route-generation failure to the handler containing it.
   for (const fn of functions) {
@@ -4860,11 +4893,7 @@ function synthesizeMessageBusRoute(
     }
   }
 
-  const selector = (fn: FunctionDefinitionNode): string => binToHex(computeFunctionSelector(
-    computeFunctionSignature(fn.name, fn.parameters
-      .filter((parameter) => !parameter.name.startsWith('__internal__'))
-      .map((parameter) => parameter.type.toString().replace(/address payable/g, 'address'))),
-  ));
+  const selector = sourceFunctionSelectorHex;
   const routeMaximumRows = resourceShapedHandler
     ? (compilerOptions.maximumInputBytes !== undefined
       && compilerOptions.maximumInputBytes > MAX_INPUT_BYTESIZE
@@ -8300,9 +8329,10 @@ function compileResolvedAst(
     if (requestedHandlers === undefined) {
       validateLowLevelCallShapes(ast.contract);
     } else {
-      const requested = new Set(requestedHandlers);
       for (const fn of ast.contract.functions) {
-        if (fn.isEntryPoint && requested.has(fn.name)) validateFunctionLowLevelCallShapes(fn);
+        if (fn.isEntryPoint && messageBusHandlerSelected(fn, requestedHandlers)) {
+          validateFunctionLowLevelCallShapes(fn);
+        }
       }
     }
   }
@@ -8405,9 +8435,10 @@ function compileResolvedAst(
     if (requestedHandlers === undefined) {
       validateLowLevelCallShapes(ast.contract);
     } else {
-      const requested = new Set(requestedHandlers);
       for (const fn of ast.contract.functions) {
-        if (fn.isEntryPoint && requested.has(fn.name)) validateFunctionLowLevelCallShapes(fn);
+        if (fn.isEntryPoint && messageBusHandlerSelected(fn, requestedHandlers)) {
+          validateFunctionLowLevelCallShapes(fn);
+        }
       }
     }
   }

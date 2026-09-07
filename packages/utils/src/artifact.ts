@@ -5,6 +5,13 @@ export interface ResolvedImport {
 
 export type ImportResolverFn = (importPath: string, currentFile: string) => ResolvedImport | undefined;
 
+/** Exact ABI entry-point identity for overload-safe compiler and SDK selection. */
+export interface AbiFunctionReference {
+  name: string;
+  /** Four-byte function selector as eight hexadecimal characters (the optional `0x` prefix is accepted). */
+  selector: string;
+}
+
 export interface CompilerOptions {
   /** Validation ceiling for private/mock networks; defaults to BCH's 10,000-byte consensus limit. */
   maximumInputBytes?: number;
@@ -97,9 +104,11 @@ export interface CompilerOptions {
   // one shared message bus. The resolved value is what the artifact publishes.
   messageBus?: boolean;
   // Optional compile-time surface for large compatibility projects. Direct ABI entry points remain unchanged;
-  // only these named functions are cloned into the authenticated message-bus route. Omitted means all eligible
-  // entry points. This avoids cloning dozens of unrelated external handlers when one atomic DAG needs a few.
-  messageBusHandlers?: readonly string[];
+  // only these functions are cloned into the authenticated message-bus route. A legacy string selects every
+  // overload with that name; an exact reference selects only the entry point with both that name and selector.
+  // Omitted means all eligible entry points. This avoids cloning dozens of unrelated external handlers when one
+  // atomic DAG needs a few.
+  messageBusHandlers?: readonly (string | AbiFunctionReference)[];
   // Compile an otherwise graph-free message-bus participant with the atomic graph envelope. Leaf participants
   // still need per-row logical callers when one composed transaction reaches them from different parents.
   // Omitted preserves the compact local-caller route used by standalone batching.

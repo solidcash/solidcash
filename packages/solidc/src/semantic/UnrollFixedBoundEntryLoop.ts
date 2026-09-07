@@ -7,7 +7,6 @@ import {
   BlockNode,
   StatementNode,
   WhileNode,
-  DoWhileNode,
   VariableDefinitionNode,
   IntLiteralNode,
   IdentifierNode,
@@ -203,8 +202,7 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
     let hasIndirectCall = false;
     const walk = (n: Node | undefined): void => {
       if (!n) return;
-      if (n instanceof WhileNode || n instanceof DoWhileNode
-        || (this.fixedCollectionIterations && n instanceof CollectionIterationNode)) {
+      if (n instanceof WhileNode || (this.fixedCollectionIterations && n instanceof CollectionIterationNode)) {
         hasCandidateLoop = true;
       }
       if (n instanceof IndirectCallNode
@@ -265,26 +263,6 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
     return node;
   }
 
-  visitWhile(node: WhileNode): Node {
-    if (this.hasMappingWrite(node.block.statements ?? [])
-      && this.hasControlFlowEscape(node.block.statements ?? [])) {
-      // Keep provenance even when literal-bound recognition below returns early. Mapping settlement allocates one
-      // reached row per syntactic collection site, so neither runtime-selected nor statically selected escape sets
-      // may be represented by expanding repeated writes to that same site.
-      node.mappingEscapeReplayForbidden = true;
-    }
-    return super.visitWhile(node);
-  }
-
-  visitDoWhile(node: DoWhileNode): Node {
-    if (this.hasMappingWrite(node.block.statements ?? [])
-      && this.hasControlFlowEscape(node.block.statements ?? [])) {
-      // Do-while loops never pass through the fixed `for` recognizer below, but the same one-site mapping journal
-      // limitation applies. Preserve the refusal marker before break/continue lowering rewrites the source escape.
-      node.mappingEscapeReplayForbidden = true;
-    }
-    return super.visitDoWhile(node);
-  }
 
   private tryUnroll(init: VariableDefinitionNode, w: WhileNode): StatementNode[] | undefined {
     const varName = init.name;
@@ -348,14 +326,6 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
       : (!hasMappingWrite && !this.hasKeccakCall(bodyStmts)
         && !this.hasChildDeployment(bodyStmts))) return undefined;
     const hasSourceEscape = this.hasControlFlowEscape(bodyStmts);
-    if (hasSourceEscape && hasMappingWrite) {
-      // A mapping journal can allocate only one reached row per syntactic collection site. Even when the loop
-      // control decision is statically known, expanding repeated writes to that same site does not preserve the
-      // source write set, so every mapping escape loop remains a runtime-key resource.
-      w.fixedUnrollForbidden = true;
-      w.mappingEscapeReplayForbidden = true;
-      return undefined;
-    }
     if (hasSourceEscape && !this.hasChildDeployment(bodyStmts)) {
       w.fixedUnrollForbidden = true;
       return undefined;

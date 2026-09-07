@@ -23,8 +23,8 @@ const compile = (body: string): { handler: Handler | undefined } => {
   };
 };
 
-describe('fixed-bound mapping loops with source escapes', () => {
-  it('keeps static continue and break decisions fenced over a non-unit induction domain', () => {
+describe('mapping loops with source escapes', () => {
+  it('keeps a mixed multi-site escape domain fenced when no exact loop form exists', () => {
     const { handler } = compile(`for (int i = 1; i < 10; i = i + 2) {
       this.before[i] = i;
       if (i == 3) continue;
@@ -35,12 +35,12 @@ describe('fixed-bound mapping loops with source escapes', () => {
     expect(handler).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_UNBOUNDED_KEY' });
   });
 
-  it('keeps a statically skipped write suffix fenced', () => {
+  it('publishes a statically selected write suffix through the exact row loop', () => {
     const { handler } = compile(`for (int i = 0; i < 4; i = i + 1) {
       if (i % 2 == 0) continue;
       this.after[i] = i;
     }`);
-    expect(handler).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_UNBOUNDED_KEY' });
+    expect(handler).toMatchObject({ eligible: true });
   });
 
   it.each([
@@ -48,29 +48,39 @@ describe('fixed-bound mapping loops with source escapes', () => {
     ['runtime break', 'if (skip) break;'],
     ['state-selected continue', 'if (this.stopped) continue;'],
     ['state-selected break', 'if (this.stopped) break;'],
-  ])('keeps %s outside fixed mapping-write unrolling', (_label, escape) => {
+  ])('publishes %s through an authenticated exact escape domain', (_label, escape) => {
     const { handler } = compile(`for (int i = 0; i < 4; i = i + 1) {
       this.before[i] = i;
       ${escape}
       this.after[i] = i;
     }`);
-    expect(handler).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_UNBOUNDED_KEY' });
+    expect(handler).toMatchObject({ eligible: true });
   });
 
-  it('keeps a runtime-bound mapping escape set fenced', () => {
+  it('publishes a runtime-bound mapping escape set through the exact row loop', () => {
     const { handler } = compile(`for (int i = 0; i < n; i = i + 1) {
       this.before[i] = i;
       if (skip) continue;
       this.after[i] = i;
     }`);
-    expect(handler).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_UNBOUNDED_KEY' });
+    expect(handler).toMatchObject({ eligible: true });
   });
 
-  it.each(['break', 'continue'])('keeps a do-while mapping %s set fenced', (escape) => {
+  it('publishes a terminating do-while break domain', () => {
     const { handler } = compile(`int i = 0;
       do {
         this.before[i] = i;
-        if (skip) ${escape};
+        if (skip) break;
+        i = i + 1;
+      } while (i < n);`);
+    expect(handler).toMatchObject({ eligible: true });
+  });
+
+  it('keeps a non-progressing do-while continue fenced', () => {
+    const { handler } = compile(`int i = 0;
+      do {
+        this.before[i] = i;
+        if (skip) continue;
         i = i + 1;
       } while (i < n);`);
     expect(handler).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_UNBOUNDED_KEY' });

@@ -1044,8 +1044,6 @@ export class DoWhileNode extends StatementNode {
   sourceAuthoredLoop?: boolean;
   /** A fixed-loop expansion saw source break/continue/return and must stay rolled on later passes. */
   fixedUnrollForbidden: boolean = false;
-  /** This loop combines mapping writes with an escape; repeated same-site writes cannot be statically settled. */
-  mappingEscapeReplayForbidden: boolean = false;
 
   constructor(
     public condition: ExpressionNode,
@@ -1067,8 +1065,6 @@ export class WhileNode extends StatementNode {
   sourceAuthoredLoop?: boolean;
   /** A fixed-loop expansion saw source break/continue/return and must stay rolled on later passes. */
   fixedUnrollForbidden: boolean = false;
-  /** This loop combines mapping writes with an escape; repeated same-site writes cannot be statically settled. */
-  mappingEscapeReplayForbidden: boolean = false;
 
   constructor(
     public condition: ExpressionNode,

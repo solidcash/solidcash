@@ -2965,11 +2965,6 @@ function synthesizeMessageBusRoute(
         // eslint-disable-next-line @typescript-eslint/no-loop-func
         walkInvocationAst(candidate.body, (node) => {
           if (unsupported) return;
-          if ((node instanceof WhileNode || node instanceof DoWhileNode)
-            && node.mappingEscapeReplayForbidden) {
-            unsupported = true;
-            return;
-          }
           if (node instanceof TransferStatementNode || node instanceof TokenContainerMethodStatementNode) {
             const effectOccurrence = occurrenceInfoOf(candidate, node);
             if (effectOccurrence.occurrence !== 'loop'

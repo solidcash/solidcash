@@ -90,4 +90,72 @@ describe('kernel transaction-signature boundaries', () => {
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'expose'))
       .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_TX_SIGNATURE' });
   });
+
+  it.each([
+    ['an alias', `sig result = sig(value); return result;`, ''],
+    ['return branches', `if (choose) return sig(left); return sig(right);`,
+      ', bool choose, bytes left, bytes right'],
+    ['a pure helper', 'return convert(value);',
+      ' function convert(bytes input) internal pure returns (sig) { return sig(input); }'],
+  ])('proves a data-only signature through %s', (_label, body, extra) => {
+    const parameters = extra.startsWith(',') ? `sig witness${extra}` : 'sig witness, bytes value';
+    const helper = extra.startsWith(' ') ? extra : '';
+    const artifact = compileString(`contract DataFlow() {
+      ${helper}
+      function expose(${parameters}) public pure returns (sig) { ${body} }
+      function control() public { require(true); }
+    }`, KERNEL);
+
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'expose'))
+      .toMatchObject({ eligible: true, outputs: [{ type: 'sig' }] });
+  });
+
+  it.each([
+    ['an aliased signature parameter', `sig result = witness; return result;`, ''],
+    ['a signature-dependent branch',
+      `if (bytes(witness).length > 0) return sig(left); return sig(right);`,
+      ', bytes left, bytes right'],
+    ['a pure identity helper', 'return identity(witness);',
+      ' function identity(sig value) internal pure returns (sig) { return value; }'],
+    ['a helper reaching checkSig', 'return convert(value, witness, owner);',
+      ` function convert(bytes input, sig authorization, pubkey key) internal pure returns (sig) {
+          require(checkSig(authorization, key)); return sig(input);
+        }`],
+  ])('rejects %s as transaction-signature-derived', (_label, body, extra) => {
+    const parameters = extra.startsWith(',')
+      ? `sig witness${extra}`
+      : extra.includes('checkSig') ? 'sig witness, bytes value, pubkey owner' : 'sig witness';
+    const helper = extra.startsWith(' ') ? extra : '';
+    const artifact = compileString(`contract DataFlowFence() {
+      ${helper}
+      function expose(${parameters}) public pure returns (sig) { ${body} }
+      function control() public { require(true); }
+    }`, KERNEL);
+
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'expose'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_TX_SIGNATURE' });
+  });
+
+  it('requires every signature leaf in aggregates to be independently proven', () => {
+    const artifact = compileString(`contract AggregateDataFlow() {
+      struct Result { sig left; int sequence; sig right; }
+      function safe(bytes left, bytes right) public pure returns (Result) {
+        return Result(sig(left), 7, sig(right));
+      }
+      function unsafe(sig witness, bytes value) public pure returns (Result) {
+        return Result(sig(value), 7, witness);
+      }
+      function tuple(bytes left, bytes right) public pure returns (sig, int, sig) {
+        return (sig(left), 7, sig(right));
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'safe'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'tuple'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'unsafe'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_TX_SIGNATURE' });
+  });
 });

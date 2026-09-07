@@ -5924,7 +5924,9 @@ describe('required kernel admission', () => {
       .toMatchObject({ eligible: true, outputs: [{ type: 'sig' }] });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'dataSig'))
       .toMatchObject({ eligible: true, outputs: [{ type: 'datasig' }] });
-    for (const name of ['circular', 'aliased', 'checked']) {
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'aliased'))
+      .toMatchObject({ eligible: true, outputs: [{ type: 'sig' }] });
+    for (const name of ['circular', 'checked']) {
       expect(artifact.messageBus?.handlers.find((handler) => handler.name === name)).toMatchObject({
         eligible: false, rejectionReason: 'KERNEL_TX_SIGNATURE',
       });

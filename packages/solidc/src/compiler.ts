@@ -25,11 +25,11 @@ import {
 import { generateArtifact, generateDeclarationArtifact, occurrenceInfoOf } from './artifact/Artifact.js';
 import {
   Ast, AssignNode, BinaryOpNode, BlockNode, BoolLiteralNode, ContractNode, ContractReferenceNode, EmitStatementNode,
-  ExpressionNode, FieldAccessNode,
+  ExpressionNode, FieldAccessNode, LiteralNode,
   FunctionCallNode, FunctionDefinitionNode, InterfaceFunctionNode, InterfaceNode,
   ExternalFunctionCallNode, ExternalOutputStateAccessNode, FunctionModifier, HexLiteralNode, IdentifierNode,
   InstantiationNode,
-  ArrayAccessNode, ArrayAssignNode, ArrayDeleteNode, ArrayPushNode, ArrayPopNode, CollectionIterationNode,
+  ArrayAccessNode, ArrayAssignNode, ArrayDeleteNode, ArrayNode, ArrayPushNode, ArrayPopNode, CollectionIterationNode,
   CollectionIterationMode,
   CollectionNode, StateAccessNode, StateAssignNode, StateArrayPushNode, StateArrayPopNode, StateArrayAssignNode,
   FunctionCallStatementNode,
@@ -41,7 +41,7 @@ import {
   TypeIntrospectionNode, AbiDecodeNode, ReturnNode,
   TokenContainerMethodStatementNode, SelfdestructStatementNode,
   AssemblyStatementNode, CastNode, IntLiteralNode, TryCatchNode,
-  WhileNode, DoWhileNode, UnaryOpNode, BreakNode, ContinueNode,
+  WhileNode, DoWhileNode, TernaryOpNode, UnaryOpNode, BreakNode, ContinueNode,
   BranchNode, UncheckedNode, SwitchNode, StateVariableNode, StateVariableVisibility,
 } from './ast/AST.js';
 import AstBuilder from './ast/AstBuilder.js';
@@ -4800,32 +4800,192 @@ function synthesizeMessageBusRoute(
     active.delete(type);
     return encodable;
   };
-  const returnsOnlyAuthenticatedDataSignature = (fn: FunctionDefinitionNode): boolean => {
-    if (fn.returnTypes.length !== 1 || fn.returnTypes[0] !== PrimitiveType.SIG
-      || fn.messageBusUsesTransactionSignature === true) return false;
-    const returns: ReturnNode[] = [];
-    walkInvocationAst(fn.body, (node) => { if (node instanceof ReturnNode) returns.push(node); });
-    if (returns.length !== 1 || fn.body?.statements?.length !== 1
-      || fn.body.statements[0] !== returns[0]) return false;
-    return returns.every((returned) => {
-      if (returned.expressions.length !== 1) return false;
-      const expression = returned.expressions[0];
-      if (!(expression instanceof CastNode) || !expression.sourceCast
-        || expression.type !== PrimitiveType.SIG
-        || !(expression.expression instanceof IdentifierNode)) return false;
-      const source = expression.expression;
-      const definition = source.definition?.definition;
-      // Whole-AST cloning deliberately retains identifier Symbol objects, so their definition can be the
-      // pristine parameter rather than this function clone; some lowering clones intentionally drop it. The
-      // name fallback is safe only for this exact one-statement body: there is no local declaration, helper body,
-      // or branch scope which could shadow the handler parameter.
-      const parameter = fn.parameters.find((candidate) => definition === candidate
-        || (definition instanceof ParameterNode && definition.location === candidate.location
-          && definition.name === candidate.name)
-        || (definition === undefined && candidate.name === source.name));
-      return parameter !== undefined
-        && (transactionSignatureLeaves(parameter.type)?.length ?? 0) === 0;
+  type SignatureProvenance = 'independent' | 'unproven' | 'transaction-signature';
+  const joinSignatureProvenance = (...values: SignatureProvenance[]): SignatureProvenance =>
+    values.includes('transaction-signature') ? 'transaction-signature'
+      : values.includes('unproven') ? 'unproven' : 'independent';
+  type SignatureEnvironment = ReadonlyMap<string, SignatureProvenance>;
+  const signatureAnalysisStack = new Set<FunctionDefinitionNode>();
+  const resolvedPureSignatureHelper = (call: FunctionCallNode): FunctionDefinitionNode | undefined => {
+    if (call.resolvedFunction?.modifiers.includes(FunctionModifier.PURE)) return call.resolvedFunction;
+    const definition = call.identifier.definition?.definition;
+    if (definition instanceof FunctionDefinitionNode && definition.modifiers.includes(FunctionModifier.PURE)) {
+      return definition;
+    }
+    const candidates = (signatureClosureByName.get(call.identifier.name) ?? []).filter((candidate) =>
+      candidate.modifiers.includes(FunctionModifier.PURE)
+      && candidate.parameters.length === call.parameters.length
+      && candidate.parameters.every((parameter, index) =>
+        call.parameters[index].type === undefined
+          || parameter.type.toString() === call.parameters[index].type?.toString()));
+    return candidates.length === 1 ? candidates[0] : undefined;
+  };
+  const localSignatureSources = (
+    fn: FunctionDefinitionNode, identifier: IdentifierNode,
+  ): ExpressionNode[] | undefined => {
+    const definition = identifier.definition?.definition;
+    const declarations: VariableDefinitionNode[] = [];
+    const assignments: AssignNode[] = [];
+    walkInvocationAst(fn.body, (candidate) => {
+      if (candidate instanceof VariableDefinitionNode && candidate.name === identifier.name) declarations.push(candidate);
+      if (candidate instanceof AssignNode && candidate.identifier.name === identifier.name) assignments.push(candidate);
     });
+    const declaration = definition instanceof VariableDefinitionNode
+      ? declarations.find((candidate) => candidate === definition
+        || (candidate.location === definition.location && candidate.name === definition.name))
+      : declarations.length === 1 ? declarations[0] : undefined;
+    if (!declaration) return undefined;
+    const writes = assignments.filter((assignment) => {
+      const target = assignment.identifier.definition?.definition;
+      return target === definition || target === declaration
+        || (target === undefined && declarations.length === 1);
+    });
+    return [declaration.expression, ...writes.map((assignment) => assignment.expression)]
+      .filter((expression): expression is ExpressionNode => expression !== undefined);
+  };
+  const signatureDependency = (
+    expression: ExpressionNode, fn: FunctionDefinitionNode, environment: SignatureEnvironment,
+    resolving = new Set<string>(),
+  ): SignatureProvenance => {
+    if (expression instanceof IdentifierNode) {
+      if (environment.has(expression.name)) return environment.get(expression.name)!;
+      const definition = expression.definition?.definition;
+      const namedParameters = fn.parameters.filter((candidate) => candidate.name === expression.name);
+      let shadowedByLocal = false;
+      walkInvocationAst(fn.body, (candidate) => {
+        if (candidate instanceof VariableDefinitionNode && candidate.name === expression.name) shadowedByLocal = true;
+      });
+      const parameter = fn.parameters.find((candidate) => candidate === definition
+        || (definition instanceof ParameterNode && candidate.location === definition.location
+          && candidate.name === definition.name)
+        || (namedParameters.length === 1 && !shadowedByLocal && candidate.name === expression.name));
+      if (parameter) return containsTransactionSignature(parameter.type)
+        ? 'transaction-signature' : 'independent';
+      if (resolving.has(expression.name)) return 'unproven';
+      const sources = localSignatureSources(fn, expression);
+      return !sources || sources.length === 0 ? 'unproven' : joinSignatureProvenance(...sources.map((source) =>
+        signatureDependency(source, fn, environment, new Set(resolving).add(expression.name))));
+    }
+    if (expression instanceof FunctionCallNode) {
+      if ([GlobalFunction.CHECKSIG, GlobalFunction.CHECKMULTISIG]
+        .includes(expression.identifier.name as GlobalFunction)) return 'transaction-signature';
+      const helper = resolvedPureSignatureHelper(expression);
+      if (!helper || signatureAnalysisStack.has(helper)) return 'unproven';
+      const helperEnvironment = new Map<string, SignatureProvenance>();
+      helper.parameters.forEach((parameter, index) => helperEnvironment.set(
+        parameter.name,
+        expression.parameters[index]
+          ? signatureDependency(expression.parameters[index], fn, environment, resolving) : 'unproven',
+      ));
+      const returns: ReturnNode[] = [];
+      walkInvocationAst(helper.body, (candidate) => { if (candidate instanceof ReturnNode) returns.push(candidate); });
+      if (returns.length === 0 || returns.some((returned) => returned.expressions.length === 0)) return 'unproven';
+      signatureAnalysisStack.add(helper);
+      const result = joinSignatureProvenance(...returns.flatMap((returned) => returned.expressions)
+        .map((returned) => signatureDependency(returned, helper, helperEnvironment)));
+      signatureAnalysisStack.delete(helper);
+      return result;
+    }
+    if (expression instanceof CastNode) return signatureDependency(expression.expression, fn, environment, resolving);
+    if (expression instanceof StateAccessNode || expression instanceof LiteralNode) return 'independent';
+    if (expression instanceof ExternalFunctionCallNode || expression instanceof LowLevelCallNode
+      || expression instanceof MethodCallNode) return 'unproven';
+    const dependencies: SignatureProvenance[] = [];
+    for (const [key, child] of Object.entries(expression)) {
+      if (['resolvedFunction', 'definition', 'symbolTable', 'location', 'type', 'collection', 'identifier']
+        .includes(key)) continue;
+      if (child instanceof ExpressionNode) dependencies.push(signatureDependency(child, fn, environment, resolving));
+      else if (Array.isArray(child)) {
+        for (const item of child) if (item instanceof ExpressionNode) {
+          dependencies.push(signatureDependency(item, fn, environment, resolving));
+        }
+      }
+    }
+    return joinSignatureProvenance(...dependencies);
+  };
+  const signatureResultExpressionProvenance = (
+    expression: ExpressionNode, type: Type, fn: FunctionDefinitionNode, environment: SignatureEnvironment,
+    resolving = new Set<string>(),
+  ): SignatureProvenance => {
+    if (!containsTransactionSignature(type)) return 'independent';
+    if (expression instanceof IdentifierNode) {
+      if (resolving.has(expression.name)) return 'unproven';
+      const sources = localSignatureSources(fn, expression);
+      if (sources && sources.length > 0) return joinSignatureProvenance(...sources.map((source) =>
+        signatureResultExpressionProvenance(
+          source, type, fn, environment, new Set(resolving).add(expression.name),
+        )));
+      return signatureDependency(expression, fn, environment, resolving);
+    }
+    if (expression instanceof TernaryOpNode) return joinSignatureProvenance(
+      signatureDependency(expression.condition, fn, environment, resolving),
+      signatureResultExpressionProvenance(expression.ifTrue, type, fn, environment, resolving),
+      signatureResultExpressionProvenance(expression.ifFalse, type, fn, environment, resolving),
+    );
+    if (expression instanceof FunctionCallNode) {
+      const helper = resolvedPureSignatureHelper(expression);
+      if (!helper || signatureAnalysisStack.has(helper)) {
+        // A struct constructor has no function declaration and is handled by the typed aggregate case below.
+        if (!(type instanceof StructType && expression.identifier.name === type.name)) return 'unproven';
+      } else {
+        const helperEnvironment = new Map<string, SignatureProvenance>();
+        helper.parameters.forEach((parameter, index) => helperEnvironment.set(
+          parameter.name,
+          expression.parameters[index]
+            ? signatureDependency(expression.parameters[index], fn, environment, resolving) : 'unproven',
+        ));
+        signatureAnalysisStack.add(helper);
+        const result = signatureFunctionReturnProvenance(helper, helperEnvironment);
+        signatureAnalysisStack.delete(helper);
+        return result;
+      }
+    }
+    if (type === PrimitiveType.SIG) {
+      return expression instanceof CastNode && expression.sourceCast && expression.type === PrimitiveType.SIG
+        ? signatureDependency(expression.expression, fn, environment, resolving) : 'unproven';
+    }
+    if (type instanceof StructType && expression instanceof FunctionCallNode
+      && expression.identifier.name === type.name && expression.parameters.length === type.fields.length) {
+      const parameters = expression.fieldNames?.length === expression.parameters.length
+        ? type.fields.map((field) => expression.parameters[expression.fieldNames!.indexOf(field.name)])
+        : expression.parameters;
+      if (parameters.some((parameter) => parameter === undefined)) return 'unproven';
+      return joinSignatureProvenance(...type.fields.map((field, index) =>
+        signatureResultExpressionProvenance(parameters[index], field.type, fn, environment, resolving)));
+    }
+    if (type instanceof ArrayType && expression instanceof ArrayNode) {
+      return joinSignatureProvenance(...expression.elements.map((element) =>
+        signatureResultExpressionProvenance(element, type.elementType, fn, environment, resolving)));
+    }
+    return 'unproven';
+  };
+  function signatureFunctionReturnProvenance(
+    fn: FunctionDefinitionNode, environment: SignatureEnvironment = new Map(),
+  ): SignatureProvenance {
+    if (fn.messageBusUsesTransactionSignature === true) return 'transaction-signature';
+    let control: SignatureProvenance = 'independent';
+    walkInvocationAst(fn.body, (candidate) => {
+      if (candidate instanceof BranchNode || candidate instanceof WhileNode || candidate instanceof DoWhileNode) {
+        control = joinSignatureProvenance(control,
+          signatureDependency(candidate.condition, fn, environment));
+      } else if (candidate instanceof SwitchNode) {
+        control = joinSignatureProvenance(control,
+          signatureDependency(candidate.expression, fn, environment));
+      }
+    });
+    const returns: ReturnNode[] = [];
+    walkInvocationAst(fn.body, (candidate) => { if (candidate instanceof ReturnNode) returns.push(candidate); });
+    if (returns.length === 0 || returns.some((returned) => returned.expressions.length !== fn.returnTypes.length)) {
+      return 'unproven';
+    }
+    return joinSignatureProvenance(control, ...returns.flatMap((returned) =>
+      returned.expressions.map((expression, index) => signatureResultExpressionProvenance(
+        expression, fn.returnTypes[index], fn, environment,
+      ))));
+  }
+  const returnsOnlyIndependentDataSignatures = (fn: FunctionDefinitionNode): boolean => {
+    const p = signatureFunctionReturnProvenance(fn);
+    return fn.returnTypes.some((type) => containsTransactionSignature(type)) && p === 'independent';
   };
   for (const fn of eligible) {
     // A fixed self external-function reference is represented by its immutable local functionId throughout the
@@ -4864,11 +5024,11 @@ function synthesizeMessageBusRoute(
         || fn.parameters.some((parameter) =>
           (transactionSignatureLeaves(parameter.type)?.length ?? 0) > 0))
       && fn.returnTypes.some((type) => containsTransactionSignature(type))
-      && !returnsOnlyAuthenticatedDataSignature(fn)) {
+      && !returnsOnlyIndependentDataSignatures(fn)) {
       // A signature-bearing parameter is detached as a transaction-bound witness even when the source does not
-      // check it directly. Publishing that witness could make it commit to an output containing itself. A direct
-      // source cast from a separately authenticated non-signature ABI parameter is independent opaque data; all
-      // aliases, helpers and aggregate signature results remain fenced until their provenance can be proved.
+      // check it directly. Publishing that witness could make it commit to an output containing itself. Signature
+      // result leaves are safe opaque data only when every source, helper edge and controlling branch is proven
+      // independent of transaction-signature parameters and reachable CHECKSIG/CHECKMULTISIG operations.
       fn.messageBusEligible = false;
       fn.messageBusRejectionReason = 'KERNEL_TX_SIGNATURE';
     } else if (compilerOptions.messageBusKernel === true

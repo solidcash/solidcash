@@ -23,7 +23,14 @@ describe('kernel data-only signature result composition', () => {
   it('keeps a returned data sig independent from its detached witness and rejects commitment tampering', async () => {
     const provider = createMessageBusCapstoneTestProvider();
     const artifact = compileString(`contract Source() {
-      function data(sig witness, bytes value) public pure returns (sig) { return sig(value); }
+      function convert(bytes value) internal pure returns (sig) {
+        sig result = sig(value);
+        return result;
+      }
+      function data(sig witness, bytes left, bytes right, bool choose) public pure returns (sig) {
+        if (choose) return convert(left);
+        return convert(right);
+      }
     }`, {
       forceStateful: true,
       messageBus: true,
@@ -41,11 +48,13 @@ describe('kernel data-only signature result composition', () => {
       base.withCategory(hexToBin(setup.categoryId)), setup.categoryId,
     );
     const consumerArtifact = compileString(`
-      interface SourceApi { function data(sig witness, bytes value) external returns (sig); }
+      interface SourceApi {
+        function data(sig witness, bytes left, bytes right, bool choose) external returns (sig);
+      }
       contract Consumer(address source) {
-        function verify(sig witness, bytes value) public {
-          sig result = SourceApi(source).data(witness, value);
-          require(bytes(result) == value);
+        function verify(sig witness, bytes left, bytes right, bool choose) public {
+          sig result = SourceApi(source).data(witness, left, right, choose);
+          require(bytes(result) == left);
         }
       }
     `, {
@@ -59,6 +68,7 @@ describe('kernel data-only signature result composition', () => {
       consumerBase.withCategory(hexToBin(consumerSetup.categoryId)), consumerSetup.categoryId,
     );
     const value = new Uint8Array(65).fill(0x2a);
+    const alternate = new Uint8Array(65).fill(0x55);
     const expectedResult = scriptToBytecode([value]);
     const callsiteId = consumerArtifact.abi.find((entry) => entry.name === 'verify')!
       .externalCalls!.find((call) => call.functionName === 'data')!.callsiteId!;
@@ -67,11 +77,11 @@ describe('kernel data-only signature result composition', () => {
       preparedCalls: [{
         contract: consumer,
         functionName: 'verify',
-        args: [new SignatureTemplate(alicePriv), value],
+        args: [new SignatureTemplate(alicePriv), value, alternate, true],
       }, {
         contract: source,
         functionName: 'data',
-        args: [new SignatureTemplate(alicePriv), value],
+        args: [new SignatureTemplate(alicePriv), value, alternate, true],
         callsiteId,
         provisionalResultCommitment: expectedResult,
       }],

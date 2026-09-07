@@ -1085,7 +1085,7 @@ function findCandidates(
     const left = bodyIds[leftBody];
     const right = bodyIds[rightBody];
     if (leftStart >= left.length || rightStart >= right.length) return 0;
-    // Marketplace leftover corpora have hundreds of bodies. Memoizing every diagonal as an Int32Array of
+    // Large leftover corpora can have hundreds of bodies. Memoizing every diagonal as an Int32Array of
     // the full body length spent more time allocating than it saved on repeated scans.
     let n = 0;
     const leftLimit = left.length - leftStart;
@@ -1410,7 +1410,7 @@ export function outlineSharedSpans(
   // `origins` tracks, per current position, the original instruction index it came from, so require/log
   // instruction pointers can be remapped once the rewriting settles.
   // Most leftover bodies are never rewritten. Alias the caller's arrays until the first splice so idle
-  // Marketplace helper tails are not copied on every follow-up pass.
+  // Large helper tails are not copied on every follow-up pass.
   const working = bodies.map((body) => ({
     script: body.script,
     locationData: body.locationData,

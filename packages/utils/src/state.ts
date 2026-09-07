@@ -1579,7 +1579,7 @@ export function decodePackedEventArray(
   }
   // User-defined struct names are resolved by decodePushdataValue below, not by the primitive type parser.
   // Calling parseTypeStrict first made every chunked `Struct[]` mapping unreadable even when its artifact
-  // supplied the complete struct table (MarketplaceData.jobEvents is the representative shape).
+  // supplied the complete struct table (a mapping value containing a struct array is a representative shape).
   const structElement = structs?.some((definition) => definition.name === arrInfo.elementType) === true;
   const elemType = structElement ? undefined : parseTypeStrict(arrInfo.elementType);
   if (elemType !== undefined && isFixedWidthType(elemType)) {

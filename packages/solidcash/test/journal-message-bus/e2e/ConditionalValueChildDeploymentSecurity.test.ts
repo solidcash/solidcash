@@ -487,6 +487,56 @@ describe('conditional value-bearing child deployment transcript security', () =>
 
   }, 240_000);
 
+  it('replays a transfer predicate after a proven single-pass local loop', async () => {
+    const provider = createMessageBusCapstoneTestProvider();
+    const artifacts = compileStringMulti(`interface IFactory {
+        function pay(bool take, bool change, bytes recipient, int amount);
+      }
+      contract Factory() {
+        function pay(bool take, bool change, bytes recipient, int amount) public {
+          bool selected = take;
+          while (change) { selected = !selected; change = false; }
+          if (selected) this.transfer(recipient, amount);
+          require(true);
+        }
+      }
+      contract Driver(address factory) {
+        function run(bool take, bool change, bytes recipient, int amount) public {
+          IFactory(factory).pay(take, change, recipient, amount);
+          require(true);
+        }
+      }`, { forceStateful: true, messageBus: true, messageBusKernel: true, maximumInputBytes: 1_000_000 });
+    const connect = async (artifact: Artifact, args: readonly unknown[] = []): Promise<StatefulContract> => {
+      const base = new Contract(artifact, args as never[], { provider });
+      const setup = await setupStatefulUtxos(provider, base, artifact.stateLayout!, {}, { saltContract: true });
+      return StatefulContract.withCategory(base.withCategory(hexToBin(setup.categoryId)), setup.categoryId);
+    };
+    const factory = await connect(artifacts.Factory);
+    const driver = await connect(artifacts.Driver, [hexToBin(factory.inner.lockingBytecode)]);
+    const payHandler = artifacts.Factory.messageBus?.handlers.find((candidate) => candidate.name === 'pay');
+    expect(payHandler, JSON.stringify(payHandler))
+      .toMatchObject({ eligible: true, transfers: [{ condition: { kind: 'ternary' } }] });
+    await provider.addUtxo(getSatoshiContainerAddress(factory.inner, factory.categoryId), {
+      txid: 'd1'.repeat(32), vout: 1, satoshis: 20_000n,
+    });
+    const fee = await createBareP2pkhFeeFunder(provider, 1_000_000n);
+    const recipient = fee.unlocker.generateLockingBytecode();
+    const build = (take: boolean, change: boolean): Promise<TransactionBuilder> => messageBus.compose({
+      preparedCalls: [
+        { contract: driver, functionName: 'run', args: [take, change, recipient, 2_000n] },
+        { contract: factory, functionName: 'pay', args: [take, change, recipient, 2_000n] },
+      ],
+      funder: fee,
+      changeAddress: recipient,
+    }).build();
+    const toggledOn = await build(false, true);
+    const unchangedOff = await build(false, false);
+    expect(vmRejects(toggledOn)).toBe(false);
+    expect(vmRejects(unchangedOff)).toBe(false);
+    expect(rowsFor(toggledOn, 1, 3)).toHaveLength(1);
+    expect(rowsFor(unchangedOff, 1, 3)).toHaveLength(0);
+  }, 120_000);
+
   it('binds heterogeneous transfer suffixes and keeps active recipients disjoint from OP_TRUE padding', async () => {
     const provider = createMessageBusCapstoneTestProvider();
     const artifacts = compileStringMulti(`interface IFactory {

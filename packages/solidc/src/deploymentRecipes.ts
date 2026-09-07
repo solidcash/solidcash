@@ -4,7 +4,7 @@ import {
   computeCollectionSignature, EnumType, MappingType, PrimitiveType, StructDefinitionInfo, StructType, Type,
 } from '@solidcash/utils';
 import {
-  ArrayNode, AssignNode, BinaryOpNode, BlockNode, BoolLiteralNode, BranchNode, BreakNode, CastNode,
+  ArrayNode, AssemblyStatementNode, AssignNode, BinaryOpNode, BlockNode, BoolLiteralNode, BranchNode, BreakNode, CastNode,
   CollectionIterationNode,
   ContinueNode, DeleteLocalNode, DoWhileNode, ExpressionNode, FunctionDefinitionNode, HexLiteralNode, IdentifierNode,
   FunctionCallNode, InstantiationNode, IntLiteralNode, Node, ReturnNode, RevertNode, SwitchNode, TryCatchNode,
@@ -406,6 +406,36 @@ export function analyzeFixedBchEffectRecipes(
   };
   const resolvedDefinition = (identifier: IdentifierNode, environment: Environment): object | undefined =>
     identifier.definition?.definition ?? environment.definitions.get(identifier.name);
+  const singlePassWhileCondition = (
+    statement: WhileNode, environment: Environment,
+  ): ChildDeploymentValueRecipe | undefined => {
+    if (!(statement.condition instanceof IdentifierNode)) return undefined;
+    const conditionDefinition = resolvedDefinition(statement.condition, environment);
+    const statements = statement.block.statements ?? [];
+    const terminal = statements.at(-1);
+    if (!conditionDefinition || !(terminal instanceof AssignNode)
+      || resolvedDefinition(terminal.identifier, environment) !== conditionDefinition
+      || !(terminal.expression instanceof BoolLiteralNode) || terminal.expression.value !== false) return undefined;
+    // The terminal false assignment proves at most one iteration only when every successful path reaches it.
+    // Keep this recognizer intentionally structural: nested control flow, abrupt exits, and another loop would
+    // need their own dominance proof rather than inheriting this straight-line one.
+    const unsafeControl = (value: unknown, seen = new WeakSet<object>()): boolean => {
+      if (Array.isArray(value)) return value.some((item) => unsafeControl(item, seen));
+      if (!(value instanceof Node) || seen.has(value)) return false;
+      seen.add(value);
+      if (value !== statement && (value instanceof BranchNode || value instanceof WhileNode
+        || value instanceof DoWhileNode || value instanceof SwitchNode || value instanceof TryCatchNode
+        || value instanceof UncheckedNode || value instanceof CollectionIterationNode
+        || value instanceof BreakNode || value instanceof ContinueNode || value instanceof ReturnNode
+        || value instanceof RevertNode || value instanceof AssemblyStatementNode)) return true;
+      return Object.entries(value).some(([key, child]) => ![
+        'definition', 'referencedContract', 'resolvedFunction', 'symbolTable',
+      ].includes(key) && unsafeControl(child, seen));
+    };
+    if (unsafeControl(statement.block)) return undefined;
+    const condition = recipe(statement.condition, environment);
+    return condition?.resultType === 'bool' ? condition : undefined;
+  };
   const invalidateAssignments = (
     value: unknown, environment: Environment, seen = new WeakSet<object>(),
   ): void => {
@@ -579,6 +609,18 @@ export function analyzeFixedBchEffectRecipes(
         const scoped = { aliases: environment.aliases, definitions: new Map(environment.definitions) };
         processBlock(statement, scoped, activation, activationSupported, unsafe);
         continue;
+      }
+      if (statement instanceof WhileNode && !unsafe) {
+        const condition = singlePassWhileCondition(statement, environment);
+        if (condition) {
+          snapshotEffects(statement.condition, environment, activation, activationSupported, false);
+          const bodyEnvironment = cloneEnvironment(environment);
+          processBlock(
+            statement.block, bodyEnvironment, conjunction(activation, condition), activationSupported, false,
+          );
+          mergeBranchAliases(environment, bodyEnvironment, cloneEnvironment(environment), condition);
+          continue;
+        }
       }
       const repeated = statement instanceof WhileNode || statement instanceof DoWhileNode
         || statement instanceof CollectionIterationNode;

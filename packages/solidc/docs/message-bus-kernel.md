@@ -313,7 +313,8 @@ enumerable mapping iteration, `try`/`catch` around a typed call, public dynamic-
 call, and fallback that both writes a mapping of `msg.sig` and makes a typed call), Solidity
 `address.transfer` / `.send` (the same satoshi-transfer effect as `this.transfer`),
 if/else and finite-switch satoshi transfers (including typed joins of replayable predicates, recipients, and
-amounts), `address.transfer` inside an internal helper, UDVT `wrap`/`unwrap`
+amounts), fixed transfers after a structurally proven zero-or-one-pass local `while` whose condition is cleared on
+every successful path, `address.transfer` inside an internal helper, UDVT `wrap`/`unwrap`
 then a mapping write, typed calls with a struct-array argument (`I.r(Rec[])`),
 library-wrapped IERC20 transfer (`using SafeTransfer for IERC20`),
 mapping-of-struct-array field writes (`m[k][i].x = v`), modifier-keyed mapping RMW
@@ -340,8 +341,14 @@ straight-line initialized locals and a terminal single-value return; helper effe
 reads, ambiguous overloads, and recursive helper call graphs fail closed. Exact counter loops of at most 64 iterations
 are expanded before topology assignment, giving every deployment a distinct source-ordered authenticated span and
 literal-substituted constructor recipe. Dynamic leaves, cyclic aggregates, runtime-count or escaping deployment loops,
-and opaque constructor state remain `KERNEL_LAYOUT`. The child layout digest authenticates the reachable nested struct field
-names, types, and order, so the SDK cannot reinterpret the same commitment with different aggregate geometry.
+and opaque constructor state remain `KERNEL_LAYOUT`. Straight-line constructor `require` predicates are replayed before
+the child locking-bytecode temporaries are created when they reduce to the same pure parent-context expression grammar;
+state/transaction/message reads, transaction signatures, effectful helpers, and control-dependent predicates remain
+fenced. The child layout digest authenticates variable and collection topology, including reachable nested struct field
+names, types, and order. Each active deployment envelope carries that digest and the pinned verifier checks it against
+the compiler-owned deployment-site registry, so the SDK cannot reinterpret the same output transcript with different
+child geometry. This descriptor binding is only a provenance prerequisite: collection-entry initializer recipes and
+their entry-NFT materialization are still required before collection genesis can leave `KERNEL_LAYOUT`.
 Compiler-owned public entry points are finalized before kernel admission. In particular, a contract using an
 oracle-backed `block.*` register publishes `__updateBlockOracle` as an ordinary eligible row with its detached
 transaction-signature witness; it is not appended later as an unexamined ABI-only function. Public state getters
@@ -414,8 +421,11 @@ Straight-line scalar assignments and finite `if`/`else` assignment joins before 
 snapshots, so the authenticated key is the value at the source write boundary rather than the function-entry value.
 A constructed local array may also pop once under a monotone literal comparison over a constant-step affine
 counter: the compiler derives the exact first satisfying occurrence and authenticates the closed prefix count.
-Runtime thresholds or steps, unequal conditional pop widths, and pop-then-push mutation of a pre-existing suffix
-remain fenced because they require a runtime recurrence or authenticated suffix trace.
+For an immutable public runtime threshold and compiler-proven constant step, the compiler instead publishes an
+authenticated prefix-boundary trace of exactly `N + 1` counts: the first value is zero and every source-order iteration
+proves that the next value advances by exactly the original predicate. The permutation still affects mapping keys only.
+Runtime steps, mutable or loop-carried thresholds, selected write domains, unequal conditional pop widths outside this
+single-pop monotone form, and pop-then-push mutation of a pre-existing suffix remain fenced.
 A stable,
 serializable per-iteration write guard (including an immutable loop-local alias) publishes the exact selected
 logical subset: the SDK sorts only selected keys, while the covenant proves range, uniqueness, predicate
@@ -597,8 +607,9 @@ has the same fixed push width. They may also select different nonnegative widths
 across logical iterations, including an optional zero-width arm; the recurrence carries the selected width and each
 push site's symbolic ordinal. Every value recipe retains the complete branch predicate for its logical iteration.
 Conditional pop paths may have different widths, including a missing zero-width arm, when the selection is invariant
-across logical iterations; the symbolic length uses the exact runtime-selected width. Counter-dependent unequal-width
-pop paths remain fenced because their prior length requires a prefix sum of earlier branch outcomes.
+across logical iterations; the symbolic length uses the exact runtime-selected width. The monotone single-pop runtime-
+threshold form described above uses its authenticated prefix-boundary trace. Other counter-dependent unequal-width pop
+paths remain fenced because their prior length requires a more general prefix sum of earlier branch outcomes.
 Reads between push sites use the same recipes with the point-in-time symbolic length, so they see every prior
 iteration and only the pushes already executed in the current iteration; reads before the first push retain the
 original array prefix. A fixed positive number of unconditional top-level `pop` operations similarly shortens the

@@ -1683,8 +1683,10 @@ function buildFunctionAbiMetadata(
     }),
     ...(func.sortedUpsertLoopInfo && func.sortedUpsertLoopInfo.length > 0 && {
       sortedUpsertLoopInfo: func.sortedUpsertLoopInfo.map((info) => {
+        const prefixCountLocals = info.prefixCountWitnessParam
+          ? new Set([info.prefixCountWitnessParam]) : new Set<string>();
         const varyingKeyExpressions = info.varyingKeyExpressions?.map((expression) =>
-          serializeCondition(expression, info.iterationCounter));
+          serializeCondition(expression, info.iterationCounter, new Set(), prefixCountLocals));
         const condition = info.condition && serializeCondition(info.condition);
         const iterationCondition = info.iterationCondition && serializeCondition(
           info.iterationCondition,
@@ -1723,6 +1725,9 @@ function buildFunctionAbiMetadata(
             update.expression, info.iterationCounter, new Set(), traceLocals,
           ),
         }));
+        const prefixCountCondition = info.prefixCountCondition && serializeCondition(
+          info.prefixCountCondition, info.iterationCounter,
+        );
         if (info.condition && !condition) {
           throw new Error(`Runtime loop condition in '${func.name}' cannot be represented in artifact metadata`);
         }
@@ -1758,6 +1763,9 @@ function buildFunctionAbiMetadata(
           || (!!info.valueTraceAfterUpdates?.[index].condition && !update.condition))) {
           throw new Error(`Runtime loop value trace trailing update in '${func.name}' cannot be represented`);
         }
+        if (info.prefixCountCondition && !prefixCountCondition) {
+          throw new Error(`Runtime loop prefix-count predicate in '${func.name}' cannot be represented`);
+        }
         return {
           ...info,
           varyingKeyExpressions: varyingKeyExpressions as ExternalCallExpression[] | undefined,
@@ -1775,6 +1783,7 @@ function buildFunctionAbiMetadata(
           valueTraceAfterUpdates: valueTraceAfterUpdates as Array<{
             condition?: ExternalCallExpression; expression: ExternalCallExpression;
           }> | undefined,
+          prefixCountCondition,
           iterationCounter: undefined,
           ...(info.fixedKeySources && { fixedKeySources: info.fixedKeySources.map((source) => ({
             kind: source.kind,

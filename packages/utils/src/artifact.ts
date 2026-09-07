@@ -706,6 +706,10 @@ export interface SortedUpsertLoopAbi {
     condition?: ExternalCallExpression;
     expression: ExternalCallExpression;
   }[];
+  /** Compiler-owned prefix-boundary trace: N+1 counts around N conditional constructed-array resizes. */
+  prefixCountWitnessParam?: string;
+  /** Source-order predicate which advances prefixCountWitnessParam by exactly one. */
+  prefixCountCondition?: ExternalCallExpression;
   mutation?: 'push' | 'pop' | 'setAt';
   mutationValueArrayParam?: string;
   /** Compiler-owned logical indices selecting mutationValueArrayParam without reordering the public array. */

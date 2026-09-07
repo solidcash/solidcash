@@ -746,6 +746,7 @@ describe('atomic compiled invocation graph', () => {
             siteIndex: 0, contractName: 'NeutralChild', occurrence: 'once',
             genesisInputCount: 1, masterOutputCount: 1, dataNftOutputCount: 1, totalOutputCount: 2,
             categorySource: 'genesis-input-outpoint-txhash', constructorArgs: [], creationBytecode: '51',
+            childLayoutDigest: 'ab'.repeat(32),
           }],
         }],
       },
@@ -813,18 +814,34 @@ describe('atomic compiled invocation graph', () => {
     };
     const finalize = (
       selected: readonly messageBus.AtomicDeploymentSlotEffect[], selectedPlan = deploymentPlan,
-    ) => messageBus.finalizeAtomicInvocationGraph(
+    ): ReturnType<typeof messageBus.finalizeAtomicInvocationGraph> => messageBus.finalizeAtomicInvocationGraph(
       selectedPlan, ['aa'.repeat(32), 'bb'.repeat(32)], { 1: '2a' }, [], [], [], [], [], undefined, selected,
     );
     const finalized = finalize([effect]);
     expect(finalized.callManifest.rows[2]).toEqual({
       kind: 5, owner: 0, consumer: 0, slot: 1, mode: 0, sourceOffset: 1, targetOffset: 1,
       selectorHex: '00000000', position: 1, parent: 0, depth: 0, subtreeEnd: 0,
-      subjectHex: '', argsHex: `0000${category}`, resultHex: '',
-      effectHex: `0200b004000000000000020100510000b004000000000000010100520100aa`,
+      subjectHex: '', argsHex: `0000${category}${'ab'.repeat(32)}`, resultHex: '',
+      effectHex: '0200b004000000000000020100510000b004000000000000010100520100aa',
     });
     expect(messageBus.decodeAtomicMessageBusCallManifest(finalized.bytes).rows[2])
       .toEqual(finalized.callManifest.rows[2]);
+    const descriptorlessArtifact = {
+      ...deploymentArtifact,
+      messageBus: {
+        ...deploymentArtifact.messageBus!,
+        handlers: [{
+          ...deploymentArtifact.messageBus!.handlers[0],
+          childDeployments: deploymentArtifact.messageBus!.handlers[0].childDeployments!.map((site) => ({
+            ...site, childLayoutDigest: undefined,
+          })),
+        }],
+      },
+    } as Artifact;
+    expect(() => finalize([effect], {
+      ...deploymentPlan,
+      participants: [{ ...deploymentPlan.participants[0], artifact: descriptorlessArtifact }, base.participants[1]],
+    })).toThrow(/no authenticated child layout descriptor/);
 
     const narrowArtifact = {
       ...deploymentArtifact,
@@ -846,7 +863,7 @@ describe('atomic compiled invocation graph', () => {
     // A route reserves its widest child frame for every row. The narrower reached site owns the canonical
     // prefix only; the compiler-authenticated suffix remains a neutral balanced slot, not a forged child NFT.
     expect(finalize([{ ...effect, outputs: effect.outputs.slice(0, 1) }], narrowPlan).callManifest.rows[2])
-      .toMatchObject({ kind: 5, effectHex: `0100b004000000000000020100510000` });
+      .toMatchObject({ kind: 5, effectHex: '0100b004000000000000020100510000' });
 
     const overloadedArtifact = {
       ...deploymentArtifact,
@@ -925,7 +942,7 @@ describe('atomic compiled invocation graph', () => {
       genesisInputCount: 1 as const, masterOutputCount: 1 as const,
       dataNftOutputCount, totalOutputCount: 1 + dataNftOutputCount,
       categorySource: 'genesis-input-outpoint-txhash' as const,
-      constructorArgs: [], creationBytecode: '51',
+      constructorArgs: [], creationBytecode: '51', childLayoutDigest: `${siteIndex + 1}`.repeat(64),
     });
     const deploymentArtifact = {
       ...base.participants[0].artifact,
@@ -996,7 +1013,7 @@ describe('atomic compiled invocation graph', () => {
     };
     const finalize = (
       effects: readonly messageBus.AtomicDeploymentSlotEffect[], selectedPlan = deploymentPlan,
-    ) => messageBus.finalizeAtomicInvocationGraph(
+    ): ReturnType<typeof messageBus.finalizeAtomicInvocationGraph> => messageBus.finalizeAtomicInvocationGraph(
       selectedPlan, ['aa'.repeat(32), 'bb'.repeat(32)], { 1: '2a' }, [], [], [], [], [], undefined, effects,
     );
 
@@ -1005,8 +1022,8 @@ describe('atomic compiled invocation graph', () => {
     expect(finalized.callManifest.rows.slice(2).map((row) => ({
       kind: row.kind, slot: row.slot, parent: row.parent, argsHex: row.argsHex,
     }))).toEqual([
-      { kind: 5, slot: 1, parent: 0, argsHex: `0000${wideCategory}` },
-      { kind: 5, slot: 4, parent: 0, argsHex: `0100${narrowCategory}` },
+      { kind: 5, slot: 1, parent: 0, argsHex: `0000${wideCategory}${'1'.repeat(64)}` },
+      { kind: 5, slot: 4, parent: 0, argsHex: `0100${narrowCategory}${'2'.repeat(64)}` },
     ]);
 
     expect(() => finalize([wide])).toThrow(/exactly cover reached deployment invocations/);

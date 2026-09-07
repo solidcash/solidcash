@@ -216,6 +216,7 @@ const VMAP_RUNTIME_OUTPUT_COUNT_PREFIX = '__internal__vmapRuntimeOutputCount_';
 const VMAP_COUNTER_PERM_PREFIX = '__internal__vmapCounterPerm_';
 const VMAP_COUNTER_OLD_PREFIX = '__internal__vmapCounterOld_';
 const VMAP_COUNTER_VALUE_PREFIX = '__internal__vmapCounterValue_';
+const VMAP_COUNTER_PREFIX_COUNT_PREFIX = '__internal__vmapCounterPrefixCount_';
 const VMAP_COUNTER_INPUT_COUNT_PREFIX = '__internal__vmapCounterInputCount_';
 const VMAP_COUNTER_OUTPUT_COUNT_PREFIX = '__internal__vmapCounterOutputCount_';
 const KERNEL_JOURNAL_ACCESS_STREAMS = '__internal__kernelJournalAccessStreams';
@@ -4944,7 +4945,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       resolvedCallerInternalWitnesses[input.name] = rowValues as FunctionArgument;
     }
     for (const input of capability.route.inputs) {
-      if (!input.name.startsWith(VMAP_COUNTER_VALUE_PREFIX)
+      if ((!input.name.startsWith(VMAP_COUNTER_VALUE_PREFIX)
+        && !input.name.startsWith(VMAP_COUNTER_PREFIX_COUNT_PREFIX))
         || resolvedCallerInternalWitnesses[input.name] !== undefined) continue;
       const rowValues = Array.from({ length: effectiveRowArguments?.length ?? 0 }, () => []);
       for (const row of effectiveRowArguments ?? []) {
@@ -16908,6 +16910,50 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         }
         replaceLoopArgument(witnessIndex, valueTrace as ConstructorArgument[]);
       }
+      const keyExpressionBindings = new Map<string, FunctionArgument>();
+      if (info.prefixCountWitnessParam) {
+        if (!info.prefixCountCondition) {
+          throw new Error(`vmap prefix-count trace ${info.collection}: incomplete compiler metadata`);
+        }
+        const witnessIndex = loopAbiFunction.inputs.findIndex(
+          (input) => input.name === info.prefixCountWitnessParam,
+        );
+        if (witnessIndex < 0) {
+          throw new Error(`vmap prefix-count trace ${info.collection}: missing witness ABI input`);
+        }
+        const traceOccurrences = valueTraceDomain?.length ?? keysArr.length;
+        loopPredicateState = await this._hydrateExternalPredicateState(
+          [info.prefixCountCondition],
+          conditionArgs,
+          entryArtifact,
+          loopPredicateState,
+          visibleInputs,
+          executionSelfAddress,
+          Array.from({ length: traceOccurrences }, (_value, occurrence) => occurrence),
+        );
+        const prefixCountTrace: bigint[] = [0n];
+        let count = 0n;
+        for (let occurrence = 0; occurrence < traceOccurrences; occurrence += 1) {
+          const selected = this._evaluateExternalExpression(
+            info.prefixCountCondition,
+            conditionArgs,
+            entryArtifact,
+            loopPredicateState,
+            visibleInputs,
+            undefined,
+            occurrence,
+            false,
+            executionSelfAddress,
+          );
+          if (typeof selected !== 'boolean') {
+            throw new Error(`vmap prefix-count trace ${info.collection}: could not resolve predicate`);
+          }
+          if (selected) count += 1n;
+          prefixCountTrace.push(count);
+        }
+        replaceLoopArgument(witnessIndex, prefixCountTrace);
+        keyExpressionBindings.set(info.prefixCountWitnessParam, prefixCountTrace);
+      }
       if (keyExpressions?.length) {
         loopPredicateState = await this._hydrateExternalPredicateState(
           keyExpressions,
@@ -16933,6 +16979,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               occurrence,
               false,
               executionSelfAddress,
+              keyExpressionBindings,
             );
             if (value === undefined) {
               throw new Error(`vmap upsert loop ${info.collection}: cannot resolve key component ${index}`);

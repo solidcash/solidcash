@@ -420,6 +420,9 @@ export class FunctionDefinitionNode extends Node implements Named {
     valueTraceInitial?: ExpressionNode;
     valueTraceUpdates?: Array<{ condition?: ExpressionNode; expression: ExpressionNode }>;
     valueTraceAfterUpdates?: Array<{ condition?: ExpressionNode; expression: ExpressionNode }>;
+    /** Authenticated prefix-boundary counts (N+1 values) used by a constructed-array key recurrence. */
+    prefixCountWitnessParam?: string;
+    prefixCountCondition?: ExpressionNode;
     valueArrayOffset?: string;
     mutation?: 'push' | 'pop' | 'setAt';
     mutationValueArrayParam?: string; mutationValueScalarParam?: string; mutationValueConst?: string;
@@ -464,6 +467,12 @@ export class FunctionDefinitionNode extends Node implements Named {
   runtimeCounterLoopBounds?: Map<string, ExpressionNode>;
   /** Original key tuples keyed by `<permutation>\0<collection>`, before physical-loop rewriting. */
   runtimeCounterLoopKeyExpressions?: Map<string, ExpressionNode[]>;
+  /** Constructed-array prefix-count trace keyed by `<permutation>\0<collection>`. */
+  runtimeCounterLoopPrefixCountTraces?: Map<string, {
+    witnessParam: string;
+    condition: ExpressionNode;
+  }>;
+
   /** Source counter descriptor keyed by compiler-owned permutation parameter. */
   runtimeCounterLoopCounters?: Map<string, {
     name: string; initialValue: bigint; stepValue: bigint; stepExpression?: ExpressionNode;
@@ -1476,12 +1485,16 @@ export class InstantiationNode extends ExpressionNode {
   // child is deployed in its post-foo state. Maps a child state-var name to the (parent-context) expression
   // its value should hold; the deploy covenant emits this instead of the default for that field.
   foldedStateInit?: Map<string, ExpressionNode>;
+
+  // Replayable constructor preconditions, rewritten into the deploying function's expression context.
+  foldedConstructorPredicates?: ExpressionNode[];
+
   // Unlike constructor folding, this requires the SDK to derive the child's post-call genesis from the VM.
   hasFoldedChildCall?: boolean;
   // The child has a constructor whose writes could NOT be folded: the true genesis of unwritten fields is
   // unknown, so later call-folds must not resolve their reads to type defaults.
   ctorFoldFailed?: boolean;
-  /** True only when every constructor statement is a pure straight-line local/state assignment and was folded. */
+  /** True only when every constructor statement is a pure straight-line local/state assignment/require and folded. */
   constructorStateFoldComplete?: boolean;
 
   constructor(

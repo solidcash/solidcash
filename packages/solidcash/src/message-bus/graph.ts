@@ -902,6 +902,12 @@ export function finalizeAtomicInvocationGraph(
         }
       });
       const internalCategory = (genesis.match(/../g) as string[]).reverse().join('');
+      const descriptorDigest = site.childLayoutDigest?.toLowerCase() ?? '';
+      if (!/^[0-9a-f]{64}$/.test(descriptorDigest)) {
+        throw new Error(
+          `messageBus: deployment site ${effect.siteIndex} has no authenticated child layout descriptor`,
+        );
+      }
       const effectHex = uint16LeHex(effect.outputs.length, 'deployment output count')
         + effect.outputs.map((output, index) => {
           const lockingBytecode = output.lockingBytecodeHex.toLowerCase();
@@ -918,7 +924,7 @@ export function finalizeAtomicInvocationGraph(
         slot: effect.offset, mode: 0, sourceOffset: effect.offset, targetOffset: effect.offset,
         selectorHex: '00000000', position: effect.offset, parent: effect.invocation, depth: invocation.depth,
         subtreeEnd: effect.invocation, subjectHex: '',
-        argsHex: uint16LeHex(effect.siteIndex, 'deployment site index') + internalCategory,
+        argsHex: uint16LeHex(effect.siteIndex, 'deployment site index') + internalCategory + descriptorDigest,
         resultHex: '', effectHex,
       };
     });

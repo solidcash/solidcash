@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { bytecodeToAsm, StructType } from '@solidcash/utils';
-import { compileString } from '../../src/compiler.js';
+import { compileString, compileStringMulti } from '../../src/compiler.js';
 import { FunctionCallNode, IdentifierNode } from '../../src/ast/AST.js';
 import { childDeploymentValueRecipe } from '../../src/deploymentRecipes.js';
 
@@ -2005,10 +2005,15 @@ describe('required kernel admission', () => {
   });
 
   it.each([
-    'constructor(int seed) { require(seed > 0); this.marker = seed; }',
     'constructor(int seed) { this.marker = helper(seed); } function helper(int x) internal returns (int) { return x; }',
     'constructor() { this.owner = msg.sender; }',
-  ])('keeps constructor predicates, calls, and unmodeled sender fenced: %s', (constructor) => {
+    'constructor(int seed) { require(this.marker == seed); this.marker = seed; }',
+    'constructor(int seed) { require(tx.locktime > seed); this.marker = seed; }',
+    'constructor(int seed) { require(msg.value == seed); this.marker = seed; }',
+    'constructor(int seed) { require(helper(seed) > 0); this.marker = seed; } '
+      + 'function helper(int x) internal returns (int) { this.marker = x; return x; }',
+    'constructor(int seed) { if (seed > 0) { require(seed < 65); } this.marker = seed; }',
+  ])('keeps resource-dependent or non-straight-line constructor logic fenced: %s', (constructor) => {
     const state = constructor.includes('owner') ? 'address owner;' : 'int marker;';
     const args = constructor.includes('constructor()') ? '' : 'seed';
     const artifact = compileString(`contract Unit() { ${state} ${constructor} }
@@ -2017,6 +2022,37 @@ describe('required kernel admission', () => {
       }`, KERNEL);
     expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'materialize'))
       .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+  });
+
+  it('keeps signature-dependent constructor predicates fenced', () => {
+    const artifact = compileString(`contract Unit() {
+        int marker;
+        constructor(sig proof, pubkey key) { require(checkSig(proof, key)); this.marker = 1; }
+      }
+      contract Coordinator() {
+        function materialize(sig proof, pubkey key) public {
+          Unit child = new Unit(proof, key);
+          require(true);
+        }
+      }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'materialize')?.eligible)
+      .toBe(false);
+  });
+
+  it('authenticates a replayable helper-produced constructor predicate', () => {
+    const artifact = compileString(`contract Unit() {
+        int marker;
+        constructor(int seed) { require(acceptable(seed)); this.marker = seed; }
+        function acceptable(int value) private pure returns (bool) {
+          int adjusted = value + 1;
+          return adjusted > 1 && adjusted < 65;
+        }
+      }
+      contract Coordinator() {
+        function materialize(int seed) public { Unit child = new Unit(seed); require(true); }
+      }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'materialize'))
+      .toMatchObject({ eligible: true, childDeployments: [{ genesisState: { kind: 'constructor' } }] });
   });
 
   it('keeps constructor casts outside the materializable recipe domain fenced', () => {
@@ -3774,6 +3810,86 @@ describe('required kernel admission', () => {
     ]) {
       expect(artifact.messageBus?.handlers.find((handler) => handler.name === name))
         .toMatchObject({ eligible: true });
+    }
+  });
+
+  it('authenticates runtime-threshold conditional-pop prefix counts over a constant-step domain', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) slots;
+      function write(int n, int threshold) public {
+        int[] xs = new int[](8);
+        xs[0] = 10; xs[1] = 11; xs[2] = 12; xs[3] = 13;
+        xs[4] = 14; xs[5] = 15; xs[6] = 16; xs[7] = 17;
+        for (int i = 1; i < n; i = i + 2) {
+          if (i >= threshold) xs.pop();
+          this.slots[xs[7 - (i - 1) / 2]] = i;
+        }
+        require(true);
+      }
+      function mutated(int n, int threshold) public {
+        int[] xs = new int[](8);
+        for (int i = 1; i < n; i = i + 2) {
+          if (i >= threshold) xs.pop();
+          this.slots[xs[0]] = i;
+          threshold = threshold + 1;
+        }
+        require(true);
+      }
+      function runtimeStep(int n, int threshold, int stride) public {
+        int[] xs = new int[](8);
+        for (int i = 1; i < n; i = i + stride) {
+          if (i >= threshold) xs.pop();
+          this.slots[xs[0]] = i;
+        }
+        require(true);
+      }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
+      .toMatchObject({ eligible: true });
+    const info = artifact.abi.find((handler) => handler.name === 'write')?.sortedUpsertLoopInfo?.[0];
+    expect(info).toMatchObject({
+      prefixCountWitnessParam: expect.stringMatching(/^__internal__vmapCounterPrefixCount_/),
+      prefixCountCondition: expect.objectContaining({ kind: 'binary', operator: '>=' }),
+    });
+    expect(artifact.abi.find((handler) => handler.name === 'write')?.inputs)
+      .toContainEqual(expect.objectContaining({ name: info?.prefixCountWitnessParam, type: 'int256[]' }));
+    for (const name of ['mutated', 'runtimeStep']) {
+      expect(artifact.messageBus?.handlers.find((handler) => handler.name === name)).toMatchObject({
+        eligible: false, rejectionReason: 'KERNEL_UNBOUNDED_KEY',
+      });
+    }
+  });
+
+  it('keeps prefix-count traces fenced from selected write domains and rolls back a mixed-loop candidate', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) slots;
+      function guarded(int n, int threshold) public {
+        int[] xs = new int[](8);
+        for (int i = 1; i < n; i = i + 2) {
+          if (i >= threshold) xs.pop();
+          if (i % 2 == 1) this.slots[xs[7 - (i - 1) / 2]] = i;
+        }
+        require(true);
+      }
+      function mixed(int n, int threshold, int stride) public {
+        int[] first = new int[](8);
+        for (int i = 1; i < n; i = i + 2) {
+          if (i >= threshold) first.pop();
+          this.slots[first[7 - (i - 1) / 2]] = i;
+        }
+        int[] second = new int[](8);
+        for (int j = 1; j < n; j = j + stride) {
+          this.slots[second[0]] = j;
+        }
+        require(true);
+      }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    for (const name of ['guarded', 'mixed']) {
+      expect(artifact.messageBus?.handlers.find((handler) => handler.name === name)).toMatchObject({
+        eligible: false, rejectionReason: 'KERNEL_UNBOUNDED_KEY',
+      });
+      expect(artifact.abi.find((handler) => handler.name === name)?.inputs
+        .some((input) => input.name.startsWith('__internal__vmapCounterPrefixCount_'))).toBe(false);
     }
   });
 
@@ -5657,11 +5773,32 @@ describe('required kernel admission', () => {
     });
   });
 
-  it('keeps a fixed transfer predicate after a loop-carried assignment fenced', () => {
-    const artifact = compileString(`contract C() {
+  it('replays a fixed transfer predicate after an exact self-terminating local loop', () => {
+    const source = `contract C() {
       function pay(bool take, bool change, bytes recipient, int amount) public {
         bool selected = take;
         while (change) { selected = !selected; change = false; }
+        if (selected) this.transfer(recipient, amount);
+        require(true);
+      }
+    }`;
+    const artifact = compileString(source, { ...KERNEL, messageBusGraphContext: true });
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'pay')).toMatchObject({
+      eligible: true,
+      transfers: [{ condition: { kind: 'ternary' } }],
+    });
+    expect(artifact.abi.find((candidate) => candidate.name === 'pay')?.transfers).toEqual([
+      expect.objectContaining({ transferIndex: 0, condition: expect.anything() }),
+    ]);
+    expect(compileStringMulti(source, KERNEL).C.messageBus?.handlers
+      .find((candidate) => candidate.name === 'pay')).toMatchObject({ eligible: true });
+  });
+
+  it('keeps a conditionally self-clearing local loop outside fixed-effect replay', () => {
+    const artifact = compileString(`contract C() {
+      function pay(bool take, bool change, bool clear, bytes recipient, int amount) public {
+        bool selected = take;
+        while (change) { selected = !selected; if (clear) { change = false; } }
         if (selected) this.transfer(recipient, amount);
         require(true);
       }
@@ -5669,9 +5806,25 @@ describe('required kernel admission', () => {
     expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'pay')).toMatchObject({
       eligible: false, rejectionReason: 'KERNEL_LAYOUT',
     });
-    expect(artifact.abi.find((candidate) => candidate.name === 'pay')?.transfers).toEqual([
-      expect.objectContaining({ transferIndex: 0, condition: null }),
-    ]);
+  });
+
+  it('replays fixed transfer operands after an exact self-terminating local loop', () => {
+    const artifact = compileString(`contract C() {
+      function pay(bool change, bytes first, bytes second, int base) public {
+        bytes recipient = first;
+        int amount = base;
+        while (change) { recipient = second; amount = base + 7; change = false; }
+        this.transfer(recipient, amount);
+        require(true);
+      }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'pay')).toMatchObject({
+      eligible: true,
+      transfers: [{
+        recipientRecipe: { kind: 'conditional', resultType: 'bytes' },
+        amountRecipe: { kind: 'conditional', resultType: 'int256' },
+      }],
+    });
   });
 
   it('admits heterogeneous graph BCH widths with a narrower conditional handler', () => {

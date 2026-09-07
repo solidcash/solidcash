@@ -417,6 +417,7 @@ export default class SymbolTableTraversal extends AstTraversal {
   private genesisHelperContract?: ContractNode;
   private genesisHelperStack: Set<FunctionDefinitionNode> = new Set();
   private insideGenesisPureHelper: boolean = false;
+  private insideGenesisPredicate: boolean = false;
   private insideConstructor: boolean = false;
   private insideFunctionPointerStateAssignment: boolean = false;
   private tupleStateTempCounter: number = 0;
@@ -1585,6 +1586,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     const compilerOwnedParameter = node.name.startsWith('__internal__vmapCounterPerm_')
       || node.name.startsWith('__internal__vmapCounterOld_')
       || node.name.startsWith('__internal__vmapCounterValue_')
+      || node.name.startsWith('__internal__vmapCounterPrefixCount_')
       || node.name.startsWith('__internal__vmapCounterInputCount_')
       || node.name.startsWith('__internal__vmapCounterOutputCount_')
       || node.name.startsWith('__internal__vmapRuntimeInputCount_')
@@ -1905,7 +1907,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (expr instanceof LiteralNode) return expr;
     // Pure helper replay is intentionally narrower than direct constructor folding: transaction/message
     // projections and state reads must not become hidden helper inputs. Unknown node kinds also fail closed below.
-    if (this.insideGenesisPureHelper
+    if ((this.insideGenesisPureHelper || this.insideGenesisPredicate)
       && (expr instanceof NullaryOpNode || expr instanceof StateAccessNode)) return null;
     // A child constructor or same-transaction initializer observes the deploying contract as msg.sender.
     // While folding that transition into the parent's deploy covenant, this is exactly the active input's
@@ -1921,7 +1923,12 @@ export default class SymbolTableTraversal extends AstTraversal {
     }
     if (expr instanceof IdentifierNode) {
       const sub = subs.get(expr.name);
-      if (sub) return cloneNode(sub); // forwarded arg or earlier local
+      if (sub) {
+        if (this.insideGenesisPredicate
+          && (sub.type === PrimitiveType.SIG || sub.type === PrimitiveType.DATASIG)) return null;
+        return cloneNode(sub); // forwarded arg or earlier local
+      }
+      if (this.insideGenesisPredicate) return null;
       // A not-yet-analyzed child body reads state as a BARE identifier (the StateAccess rewrite happens
       // in the child's own pass): resolve it like a state read when it names a child field.
       const prior = fieldExprs.get(expr.name);
@@ -2099,6 +2106,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     statements: StatementNode[], subs: Map<string, ExpressionNode>,
     fieldExprs: Map<string, ExpressionNode>, fieldType: (name: string) => Type | undefined,
     writableFieldType: (name: string) => Type | undefined = fieldType,
+    constructorPredicates?: ExpressionNode[],
   ): false | { returnValue?: ExpressionNode, wrote: boolean } {
     let returnValue: ExpressionNode | undefined;
     let wrote = false;
@@ -2133,7 +2141,19 @@ export default class SymbolTableTraversal extends AstTraversal {
           return false;
         }
       } else if (stmt instanceof RequireNode) {
-        // requires are not enforced at deploy (documented fold semantics), wherever they appear
+        if (!constructorPredicates) continue;
+        const priorInsidePredicate = this.insideGenesisPredicate;
+        this.insideGenesisPredicate = true;
+        try {
+          const predicate = this.foldGenesisExpr(
+            cloneNode(stmt.expression), subs, fieldExprs, fieldType, PrimitiveType.BOOL,
+          );
+          if (!predicate) return false;
+          predicate.type = PrimitiveType.BOOL;
+          constructorPredicates.push(predicate);
+        } finally {
+          this.insideGenesisPredicate = priorInsidePredicate;
+        }
       } else if (isLast && stmt instanceof ReturnNode && stmt.expressions.length === 1) {
         const folded = this.foldGenesisExpr(cloneNode(stmt.expressions[0]), subs, fieldExprs, fieldType);
         if (!folded) return false;
@@ -2185,6 +2205,8 @@ export default class SymbolTableTraversal extends AstTraversal {
       }
     });
     const fieldExprs = new Map<string, ExpressionNode>();
+    const constructorPredicates: ExpressionNode[] = [];
+    deployNode.foldedConstructorPredicates = undefined;
     // Constructor inheritance may prepend an unrelated, non-foldable initialization (e.g. Uniswap's EIP-712
     // DOMAIN_SEPARATOR) before a later independent `factory = msg.sender`. Retain every safely foldable prefix/
     // suffix statement while remembering that reads of all other fields remain unknown. The substitutions map is
@@ -2196,7 +2218,9 @@ export default class SymbolTableTraversal extends AstTraversal {
     this.genesisHelperStack = new Set();
     try {
       for (const statement of statements) {
-        if (!this.foldStatementList([statement], subs, fieldExprs, fieldType)) failed = true;
+        if (!this.foldStatementList(
+          [statement], subs, fieldExprs, fieldType, fieldType, constructorPredicates,
+        )) failed = true;
       }
     } finally {
       this.genesisHelperContract = priorHelperContract;
@@ -2206,7 +2230,12 @@ export default class SymbolTableTraversal extends AstTraversal {
     deployNode.constructorStateFoldComplete = !failed && statements.every((statement) =>
       statement instanceof VariableDefinitionNode
       || statement instanceof StateAssignNode
-      || statement instanceof AssignNode);
+      || statement instanceof AssignNode
+      || statement instanceof RequireNode);
+    if (!failed && constructorPredicates.length > 0) {
+      deployNode.foldedConstructorPredicates = constructorPredicates;
+      this.protectFoldedExprVars(constructorPredicates);
+    }
     if (fieldExprs.size === 0) return;
     const init = deployNode.foldedStateInit ?? new Map<string, ExpressionNode>();
     for (const [k, v] of fieldExprs) init.set(k, v);

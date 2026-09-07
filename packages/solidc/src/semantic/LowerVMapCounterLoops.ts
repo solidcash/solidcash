@@ -30,6 +30,7 @@ import {
 export const VMAP_COUNTER_PERM_PREFIX = '__internal__vmapCounterPerm_';
 export const VMAP_COUNTER_OLD_PREFIX = '__internal__vmapCounterOld_';
 export const VMAP_COUNTER_VALUE_PREFIX = '__internal__vmapCounterValue_';
+export const VMAP_COUNTER_PREFIX_COUNT_PREFIX = '__internal__vmapCounterPrefixCount_';
 export const VMAP_COUNTER_INPUT_COUNT_PREFIX = '__internal__vmapCounterInputCount_';
 export const VMAP_COUNTER_OUTPUT_COUNT_PREFIX = '__internal__vmapCounterOutputCount_';
 export const VMAP_RUNTIME_INPUT_COUNT_PREFIX = '__internal__vmapRuntimeInputCount_';
@@ -84,6 +85,17 @@ export default class LowerVMapCounterLoops extends AstTraversal {
   private externalTypeNames = new Set<string>();
   private structTypeNames = new Set<string>();
   private serial = 0;
+  private readonly constructedArrayPrefixCountTraces = new WeakMap<WhileNode | DoWhileNode, Array<{
+    witnessParam: string;
+    condition: ExpressionNode;
+  }>>();
+
+  private readonly constructedArrayPrefixCountOriginalKeys = new WeakMap<StatementNode, ExpressionNode[]>();
+  private readonly constructedArrayPrefixCountChecks = new WeakSet<RequireNode>();
+  private readonly constructedArrayPrefixCountUses = new WeakMap<StatementNode, Array<{
+    witnessParam: string;
+    condition: ExpressionNode;
+  }>>();
 
   visitSourceFile(node: SourceFileNode): Node {
     this.externalTypeNames = new Set([
@@ -696,6 +708,35 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       node,
       canonicalLoops,
     );
+    const rollbackConstructedArrayPrefixCounts = (): void => {
+      const restore = (block: BlockNode): void => {
+        const statements: StatementNode[] = [];
+        for (const statement of block.statements ?? []) {
+          if (statement instanceof RequireNode
+            && this.constructedArrayPrefixCountChecks.has(statement)) continue;
+          const original = this.constructedArrayPrefixCountOriginalKeys.get(statement);
+          if (original) {
+            if (statement instanceof ArrayAssignNode || statement instanceof ArrayDeleteNode) {
+              statement.index = cloneNode(original[0]);
+            } else if (statement instanceof MappingAssignNode || statement instanceof MappingDeleteNode
+              || statement instanceof MappingFieldAssignNode) {
+              statement.keys = original.map((key) => cloneNode(key));
+            }
+          }
+          if (statement instanceof WhileNode || statement instanceof DoWhileNode) restore(statement.block);
+          else if (statement instanceof BranchNode) {
+            restore(statement.ifBlock);
+            if (statement.elseBlock) restore(statement.elseBlock);
+          } else if (statement instanceof SwitchNode) {
+            for (const switchCase of statement.cases) restore(switchCase.body);
+            if (statement.defaultCase) restore(statement.defaultCase);
+          } else if (statement instanceof BlockNode) restore(statement);
+          statements.push(statement);
+        }
+        block.statements = statements;
+      };
+      restore(node.body);
+    };
     const isWrite = (s: Node): s is ArrayAssignNode | ArrayDeleteNode | MappingAssignNode | MappingDeleteNode
     | MappingFieldAssignNode =>
       s instanceof ArrayAssignNode || s instanceof ArrayDeleteNode
@@ -1588,6 +1629,9 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       }
       const keyed = writes.filter((write) =>
         this.collections.has(write.name) && counterKeyIndex(write, logical) >= 0);
+      const prefixCountTraces = [...new Map(keyed.flatMap((write) =>
+        (this.constructedArrayPrefixCountUses.get(write) ?? []).map((trace) => [trace.witnessParam, trace]))).values()];
+      if (keyed.some((write) => (this.constructedArrayPrefixCountUses.get(write)?.length ?? 0) > 1)) return false;
       for (const write of keyed) {
         if (!(write instanceof MappingAssignNode)
           || (!write.arrayPush && !write.arrayPop && write.arrayIndex === undefined)) continue;
@@ -2232,6 +2276,10 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       if (breakPaths.length > 0 && !writeSelectionCondition) {
         writeSelectionCondition = new BoolLiteralNode(true);
       }
+      // The first prefix-count protocol authenticates one count for every canonical source iteration. A compact
+      // selected permutation or an early break has a different occurrence domain, so keep those combinations
+      // frozen until the artifact carries an explicit full source-domain descriptor for the trace.
+      if (prefixCountTraces.length > 0 && (writeSelectionCondition || breakPaths.length > 0)) return false;
       const selectionConditionSupported = keyedSelectionConditions.every((condition) => !condition
           || runtimePathExpressionSupported(
             condition, logical, new Set(), stateValues, loopCarriedLocalValues,
@@ -3169,13 +3217,18 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           });
         }
       }
-      if ((!writeSelectionCondition && hasCounterDependentGuard(block))
-        || hasSiblingMappingRead(block) || hasUnsafeRead(block)
-        || hasUnsupportedOldEntryExpression
-        || (!writeSelectionCondition && hasLoopCarriedWriteGuard(block))
-        || keyed.some((write) => !structRuntimeRmws.has(write as ArrayAssignNode | MappingAssignNode)
+      const unsupportedCounterGuard = !writeSelectionCondition && hasCounterDependentGuard(block);
+      const unsupportedSiblingRead = hasSiblingMappingRead(block);
+      const unsupportedRead = hasUnsafeRead(block);
+      const unsupportedCarriedGuard = !writeSelectionCondition && hasLoopCarriedWriteGuard(block);
+      const unsupportedMutation = keyed.some((write) =>
+        !structRuntimeRmws.has(write as ArrayAssignNode | MappingAssignNode)
           && !valueTracePlans.has(write as MappingAssignNode)
-          && dependsOnLoopMutation(write, new Set(), true))) return false;
+          && dependsOnLoopMutation(write, new Set(), true));
+      if (unsupportedCounterGuard || unsupportedSiblingRead || unsupportedRead
+        || hasUnsupportedOldEntryExpression || unsupportedCarriedGuard || unsupportedMutation) {
+        return false;
+      }
 
       if (!apply) return true;
 
@@ -3433,6 +3486,16 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         ? id(logical)
         : binary(binary(id(logical), BinaryOperator.MINUS, lit(start)),
           BinaryOperator.DIV, proofStepValue());
+      const prefixCountRead = (
+        trace: (typeof prefixCountTraces)[number], index: ExpressionNode,
+      ): ArrayAccessNode => {
+        const witness = id(trace.witnessParam);
+        witness.type = new ArrayType(new IntType(true, 256));
+        const read = new ArrayAccessNode(witness, index);
+        read.location = location;
+        read.type = new IntType(true, 256);
+        return read;
+      };
       const permRead = (group: typeof groups[number]): ArrayAccessNode => {
         const a = new IdentifierNode(group.hidden); a.location = location;
         const r = new ArrayAccessNode(a, physical(group)); r.location = location; return r;
@@ -3540,6 +3603,13 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           (node.runtimeCounterLoopKeyExpressions ??= new Map()).set(
             keyRecipe, originalKeys.map((key) => cloneNode(key)),
           );
+        }
+        const prefixCountTrace = this.constructedArrayPrefixCountUses.get(write)?.[0];
+        if (prefixCountTrace) {
+          (node.runtimeCounterLoopPrefixCountTraces ??= new Map()).set(keyRecipe, {
+            witnessParam: prefixCountTrace.witnessParam,
+            condition: cloneNode(prefixCountTrace.condition),
+          });
         }
         const expression = write instanceof ArrayAssignNode ? write.value
           : write instanceof MappingAssignNode ? write.expression : undefined;
@@ -3743,6 +3813,16 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           ? 'vmap counter loop bound must be between 0 and 64'
           : 'vmap counter loop iteration count must be between 0 and 64',
       )));
+      for (const trace of prefixCountTraces) {
+        prelude.push(at(new RequireNode(binary(
+          at(new UnaryOpNode(UnaryOperator.SIZE, id(trace.witnessParam))),
+          BinaryOperator.EQ,
+          binary(iterationCount(), BinaryOperator.PLUS, lit(1n)),
+        ), 'vmap counter prefix-count trace length mismatch')));
+        prelude.push(at(new RequireNode(binary(
+          prefixCountRead(trace, lit(0n)), BinaryOperator.EQ, lit(0n),
+        ), 'vmap counter prefix-count trace must start at zero')));
+      }
       for (const group of groups) {
         const traceParams = [...valueTracePlans.values()]
           .filter((trace) => keyed.some((write) => groupByWrite.get(write) === group
@@ -3771,6 +3851,17 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       }
 
       const logicalAndProofStatements: StatementNode[] = [];
+      for (const trace of prefixCountTraces) {
+        const rank = sourceRank();
+        const selected = at(new TernaryOpNode(
+          cloneNode(trace.condition), lit(1n), lit(0n),
+        ));
+        logicalAndProofStatements.push(at(new RequireNode(binary(
+          prefixCountRead(trace, binary(cloneNode(rank), BinaryOperator.PLUS, lit(1n))),
+          BinaryOperator.EQ,
+          binary(prefixCountRead(trace, rank), BinaryOperator.PLUS, selected),
+        ), 'vmap counter prefix-count trace mismatch')));
+      }
       for (const group of groups) {
         // Domain-only event loops consume only the authenticated witness length. Their arguments derive the
         // logical source counter from the iteration ordinal, so witness elements are intentionally irrelevant.
@@ -3929,6 +4020,13 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         parameter.location = node.location;
         added.push(parameter);
       }
+      for (const trace of prefixCountTraces) {
+        const parameter = new ParameterNode(
+          new ArrayType(new IntType(true, 256)), trace.witnessParam,
+        );
+        parameter.location = node.location;
+        added.push(parameter);
+      }
       for (const plan of runtimeReadPlans) {
         const valueType = this.collectionsByName.get(plan.synthetic.name)!.innermostValueType;
         const parameter = new ParameterNode(new ArrayType(valueType), plan.witnessParam);
@@ -3959,6 +4057,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
     const counterWorkLoopSet = new Set(counterWorkLoops.map(([loop]) => loop));
     const allSafe = counterWorkLoops.length > 0
       && counterWorkLoops.every(([loop]) => tryLower(loop, false));
+    if (!allSafe) rollbackConstructedArrayPrefixCounts();
     // Events outside an admitted loop must join the same trailing stream or their fixed output family would move
     // an `emit after` ahead of all repeated records. Serializable nested if/else predicates provide an exact
     // pre-probe count. Stable switch arms are the same finite predicate family. Try/catch, nested-loop sites, and
@@ -4243,6 +4342,8 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       writes: ArrayWrite[];
       /** A fixed number of unconditional pushes per canonical source iteration. */
       recurrence?: ArrayRecurrence;
+      /** Exact N+1 prefix-boundary count witness for a conditional pop recurrence. */
+      prefixCountTrace?: { witnessParam: string; condition: ExpressionNode };
     };
     const plans = new Map<string, ArrayPlan>();
     const walk = (root: Node, visit: (candidate: Node) => void): void => {
@@ -4699,11 +4800,30 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       active: Map<string, ArrayPlan>,
     ): RequireNode[] => {
       const checks: RequireNode[] = [];
+      const originalKeys = statement instanceof ArrayAssignNode || statement instanceof ArrayDeleteNode
+        ? [cloneNode(statement.index) as ExpressionNode]
+        : statement instanceof MappingAssignNode || statement instanceof MappingFieldAssignNode
+          || statement instanceof MappingDeleteNode
+          ? statement.keys.map((key) => cloneNode(key) as ExpressionNode) : undefined;
+      const prefixCountUses = new Map<string, { witnessParam: string; condition: ExpressionNode }>();
+      for (const key of originalKeys ?? []) walk(key, (candidate) => {
+        const arrayName = candidate instanceof ArrayAccessNode && candidate.array instanceof IdentifierNode
+          ? candidate.array.name
+          : candidate instanceof TupleIndexOpNode && candidate.tuple instanceof IdentifierNode
+            ? candidate.tuple.name : undefined;
+        const trace = arrayName === undefined ? undefined : active.get(arrayName)?.prefixCountTrace;
+        if (trace) prefixCountUses.set(trace.witnessParam, trace);
+      });
       if (statement instanceof ArrayAssignNode || statement instanceof ArrayDeleteNode) {
         statement.index = replaceArrayReads(statement.index, active, checks);
       } else if (statement instanceof MappingAssignNode || statement instanceof MappingFieldAssignNode
         || statement instanceof MappingDeleteNode) {
         statement.keys = statement.keys.map((key) => replaceArrayReads(key, active, checks));
+      }
+      if (prefixCountUses.size > 0 && originalKeys) {
+        this.constructedArrayPrefixCountOriginalKeys.set(statement, originalKeys);
+        this.constructedArrayPrefixCountUses.set(statement, [...prefixCountUses.values()]);
+        for (const check of checks) this.constructedArrayPrefixCountChecks.add(check);
       }
       return checks;
     };
@@ -4749,6 +4869,10 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           ...(plan.recurrence.stepExpression && {
             stepExpression: cloneNode(plan.recurrence.stepExpression) as ExpressionNode,
           }),
+        } }),
+        ...(plan.prefixCountTrace && { prefixCountTrace: {
+          witnessParam: plan.prefixCountTrace.witnessParam,
+          condition: cloneNode(plan.prefixCountTrace.condition) as ExpressionNode,
         } }),
       }]),
     );
@@ -6456,11 +6580,12 @@ export default class LowerVMapCounterLoops extends AstTraversal {
                 pushSchedule!.widthExpression, unavailablePushWidthNames,
               )) fixedPushes = false;
             // A variable pop width normally has a closed recurrence only when it is invariant across logical
-            // iterations. The exact `counter > start ? 1 : 0` ascending form (and descending mirror) has the
-            // finite prefix sum `max(occurrence - 1, 0)`; other counter-dependent widths and loop-carried
-            // selectors remain fenced.
+            // iterations. Literal monotone thresholds retain their compact closed form. A monotone comparison
+            // against an immutable public threshold instead uses an authenticated prefix-boundary trace:
+            // this avoids subtraction/division around an untrusted runtime boundary while preserving the exact
+            // source predicate. Runtime steps and loop-carried thresholds remain fenced.
             const unavailablePopNames = new Set(loopAssignedNames).add(name).add(canonical.logical);
-            const conditionalPopFirstOccurrence = (() => {
+            const conditionalPopShape = (() => {
               if (!fixedPops || !popSchedule!.widthExpression || canonical.stepExpression) return undefined;
               const unwrapZeroSum = (expression: ExpressionNode): ExpressionNode => {
                 if (expression instanceof BinaryOpNode && expression.operator === BinaryOperator.PLUS) {
@@ -6480,13 +6605,11 @@ export default class LowerVMapCounterLoops extends AstTraversal {
                 || !(selected.condition instanceof BinaryOpNode)) return undefined;
               const condition = selected.condition;
               const direct = condition.left instanceof IdentifierNode
-                && condition.left.name === canonical.logical
-                && condition.right instanceof IntLiteralNode;
+                && condition.left.name === canonical.logical;
               const reversed = condition.right instanceof IdentifierNode
-                && condition.right.name === canonical.logical
-                && condition.left instanceof IntLiteralNode;
+                && condition.right.name === canonical.logical;
               if (!direct && !reversed) return undefined;
-              const threshold = ((direct ? condition.right : condition.left) as IntLiteralNode).value;
+              const thresholdExpression = direct ? condition.right : condition.left;
               const operator = direct ? condition.operator : (() => {
                 if (condition.operator === BinaryOperator.GT) return BinaryOperator.LT;
                 if (condition.operator === BinaryOperator.GE) return BinaryOperator.LE;
@@ -6494,31 +6617,57 @@ export default class LowerVMapCounterLoops extends AstTraversal {
                 if (condition.operator === BinaryOperator.LE) return BinaryOperator.GE;
                 return condition.operator;
               })();
-              if (canonical.step > 0n) {
-                if (operator === BinaryOperator.GT) {
-                  return canonical.start > threshold
-                    ? 0n : (threshold - canonical.start) / canonical.step + 1n;
-                }
-                if (operator === BinaryOperator.GE) {
-                  return canonical.start >= threshold
-                    ? 0n : (threshold - canonical.start + canonical.step - 1n) / canonical.step;
-                }
-                return undefined;
-              }
-              const magnitude = -canonical.step;
-              if (operator === BinaryOperator.LT) {
-                return canonical.start < threshold
-                  ? 0n : (canonical.start - threshold) / magnitude + 1n;
-              }
-              if (operator === BinaryOperator.LE) {
-                return canonical.start <= threshold
-                  ? 0n : (canonical.start - threshold + magnitude - 1n) / magnitude;
-              }
+              const monotone = canonical.step > 0n
+                ? operator === BinaryOperator.GT || operator === BinaryOperator.GE
+                : operator === BinaryOperator.LT || operator === BinaryOperator.LE;
+              if (!monotone) return undefined;
+              if (thresholdExpression instanceof IntLiteralNode) return {
+                condition: cloneNode(condition) as ExpressionNode,
+                operator,
+                threshold: thresholdExpression.value,
+              };
+              if (thresholdExpression instanceof IdentifierNode
+                && node.parameters.some((parameter) => !parameter.name.startsWith('__internal__')
+                  && parameter.name === thresholdExpression.name)
+                && !allReassignedNames.has(thresholdExpression.name)) return {
+                condition: cloneNode(condition) as ExpressionNode,
+                operator,
+                runtimeThreshold: true as const,
+              };
               return undefined;
             })();
+            const conditionalPopFirstOccurrence = (() => {
+              if (!conditionalPopShape || conditionalPopShape.runtimeThreshold
+                || conditionalPopShape.threshold === undefined) return undefined;
+              const threshold = conditionalPopShape.threshold;
+              const operator = conditionalPopShape.operator;
+              if (canonical.step > 0n) {
+                if (operator === BinaryOperator.GT) return canonical.start > threshold
+                  ? 0n : (threshold - canonical.start) / canonical.step + 1n;
+                return canonical.start >= threshold
+                  ? 0n : (threshold - canonical.start + canonical.step - 1n) / canonical.step;
+              }
+              const magnitude = -canonical.step;
+              if (operator === BinaryOperator.LT) return canonical.start < threshold
+                ? 0n : (canonical.start - threshold) / magnitude + 1n;
+              return canonical.start <= threshold
+                ? 0n : (canonical.start - threshold + magnitude - 1n) / magnitude;
+            })();
+            const conditionalPopPrefixTrace = conditionalPopShape?.runtimeThreshold ? (() => {
+              const witnessParam = `${VMAP_COUNTER_PREFIX_COUNT_PREFIX}${this.serial++}`;
+              const trace = {
+                witnessParam,
+                condition: replaceSnapshots(conditionalPopShape.condition, snapshots),
+              };
+              const traces = this.constructedArrayPrefixCountTraces.get(statement) ?? [];
+              traces.push(trace);
+              this.constructedArrayPrefixCountTraces.set(statement, traces);
+              return trace;
+            })() : undefined;
             if (fixedPops && popSchedule!.widthExpression
               && containsNamedIdentifier(popSchedule!.widthExpression, unavailablePopNames)
-              && conditionalPopFirstOccurrence === undefined) fixedPops = false;
+              && conditionalPopFirstOccurrence === undefined
+              && !conditionalPopPrefixTrace) fixedPops = false;
             const balancedResizes = !!balancedSchedule && balancedSchedule.sites > 0
               && balancedSchedule.delta === 0 && balancedSchedule.minimum >= 0;
             if (balancedResizes) continue;
@@ -6582,32 +6731,43 @@ export default class LowerVMapCounterLoops extends AstTraversal {
               ? replaceSnapshots(symbolicResizeWidth, snapshots)
               : new IntLiteralNode(BigInt(resizeWidth));
             resizeWidthExpression.location = statement.location;
-            const precedingResizes = conditionalPopFirstOccurrence !== undefined
+            const precedingResizes = conditionalPopPrefixTrace
               ? (() => {
-                const first = new IntLiteralNode(conditionalPopFirstOccurrence);
-                const afterThreshold = new BinaryOpNode(
-                  cloneNode(occurrence), BinaryOperator.GT, cloneNode(first),
-                );
-                afterThreshold.location = statement.location;
-                const prior = new BinaryOpNode(
-                  cloneNode(occurrence), BinaryOperator.MINUS, first,
-                );
-                prior.location = statement.location;
-                const selected = new TernaryOpNode(afterThreshold, prior, new IntLiteralNode(0n));
-                selected.location = statement.location;
-                return selected;
+                const witness = new IdentifierNode(conditionalPopPrefixTrace.witnessParam);
+                witness.location = statement.location;
+                witness.type = new ArrayType(new IntType(true, 256));
+                const read = new ArrayAccessNode(witness, cloneNode(occurrence));
+                read.location = statement.location;
+                read.type = new IntType(true, 256);
+                return read;
               })()
-              : !symbolicResizeWidth && resizeWidth === 1
-                ? occurrence
-                : new BinaryOpNode(
-                  occurrence, BinaryOperator.MUL, resizeWidthExpression,
-                );
+              : conditionalPopFirstOccurrence !== undefined
+                ? (() => {
+                  const first = new IntLiteralNode(conditionalPopFirstOccurrence);
+                  const afterThreshold = new BinaryOpNode(
+                    cloneNode(occurrence), BinaryOperator.GT, cloneNode(first),
+                  );
+                  afterThreshold.location = statement.location;
+                  const prior = new BinaryOpNode(
+                    cloneNode(occurrence), BinaryOperator.MINUS, first,
+                  );
+                  prior.location = statement.location;
+                  const selected = new TernaryOpNode(afterThreshold, prior, new IntLiteralNode(0n));
+                  selected.location = statement.location;
+                  return selected;
+                })()
+                : !symbolicResizeWidth && resizeWidth === 1
+                  ? occurrence
+                  : new BinaryOpNode(
+                    occurrence, BinaryOperator.MUL, resizeWidthExpression,
+                  );
             precedingResizes.location = statement.location;
             const length = new BinaryOpNode(
               cloneNode(plan.length), fixedPushes ? BinaryOperator.PLUS : BinaryOperator.MINUS, precedingResizes,
             );
             length.location = statement.location;
             length.type = plan.length.type;
+            if (conditionalPopPrefixTrace) plan.prefixCountTrace = conditionalPopPrefixTrace;
             if (fixedPushes) {
               plan.recurrence = {
                 counter: canonical.logical,

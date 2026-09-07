@@ -6323,6 +6323,105 @@ describe('kernel composite counter-key settlement', () => {
     }
   }, 180_000);
 
+  it('authenticates a runtime-threshold constructed-array prefix-count trace', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(`contract RuntimeThresholdKeys() {
+      mapping(int => int) slots;
+      function write(int n, int threshold) public {
+        int[] xs = new int[](5);
+        xs[0] = 10; xs[1] = 11; xs[2] = 12; xs[3] = 13; xs[4] = 14;
+        for (int i = 1; i < n; i = i + 2) {
+          if (i >= threshold) xs.pop();
+          this.slots[xs[4 - (i - 1) / 2]] = i + 20;
+        }
+        require(true);
+      }
+      function descending(int floor, int threshold) public {
+        int[] xs = new int[](5);
+        xs[0] = 10; xs[1] = 11; xs[2] = 12; xs[3] = 13; xs[4] = 14;
+        for (int i = 9; i > floor; i = i - 2) {
+          if (i <= threshold) xs.pop();
+          this.slots[xs[4 - (9 - i) / 2]] = i + 20;
+        }
+        require(true);
+      }
+      function seed(int key) public { this.slots[key] = 0; require(true); }
+      function check(int key, int expected) public { require(this.slots[key] == expected); }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'descending'))
+      .toMatchObject({ eligible: true });
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+    );
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    await expect(contract.batch([{ function: 'write', args: [0n, 5n] }]).send()).resolves.toBeDefined();
+    for (const key of [10n, 11n, 12n, 13n, 14n]) await contract.call.seed(key).send();
+
+    const call = contract.batch([{ function: 'write', args: [10n, 5n] }]);
+    const builder = await call.build();
+    const routeInputIndex = builder.inputs.findIndex((input) =>
+      'abiFunction' in input.unlocker && input.unlocker.abiFunction.name === artifact.messageBus!.route.name);
+    expect(routeInputIndex).toBeGreaterThanOrEqual(0);
+    const routeUnlocker = builder.inputs[routeInputIndex].unlocker;
+    if (!('params' in routeUnlocker)) throw new Error('message-bus route input has no contract parameters');
+    const writeAbi = artifact.abi.find((candidate) => candidate.name === 'write')!;
+    const loopInfo = writeAbi.sortedUpsertLoopInfo?.[0];
+    const permutationRouteIndex = artifact.messageBus!.route.inputs.findIndex((input) =>
+      input.name === loopInfo?.varyingArrayParam);
+    const prefixRouteIndex = artifact.messageBus!.route.inputs.findIndex((input) =>
+      input.name === loopInfo?.prefixCountWitnessParam);
+    expect(prefixRouteIndex).toBeGreaterThanOrEqual(0);
+    const rowPermutation = (routeUnlocker.params[permutationRouteIndex] as bigint[][])[0];
+    const rowPrefixCounts = (routeUnlocker.params[prefixRouteIndex] as bigint[][])[0];
+    expect(rowPrefixCounts).toEqual([0n, 0n, 0n, 1n, 2n, 3n]);
+
+    const evaluateRoute = (): boolean => {
+      const vm = createVirtualMachineBch2026ForProvider(provider);
+      return vm.stateSuccess(vm.evaluate({
+        inputIndex: routeInputIndex,
+        sourceOutputs: generateLibauthSourceOutputs(builder.inputs),
+        transaction: builder.buildLibauthTransaction(),
+      }));
+    };
+    expect(evaluateRoute()).toBe(true);
+    const routeSelector = artifact.messageBus!.route.selector;
+    if (!routeSelector) throw new Error('message-bus route has no selector');
+    const withRouteParams = (params: typeof routeUnlocker.params): typeof routeUnlocker =>
+      routeUnlocker.contract.createCompilerRouteUnlocker(
+        routeUnlocker.abiFunction, hexToBin(routeSelector),
+      )(...params);
+
+    const hostileTraceParams = [...routeUnlocker.params];
+    hostileTraceParams[prefixRouteIndex] = [[0n, 0n, 1n, 1n, 2n, 3n]];
+    builder.inputs[routeInputIndex].unlocker = withRouteParams(hostileTraceParams);
+    expect(evaluateRoute()).not.toBe(true);
+
+    const hostilePermutationParams = [...routeUnlocker.params];
+    hostilePermutationParams[permutationRouteIndex] = [[99n, ...rowPermutation.slice(1)]];
+    builder.inputs[routeInputIndex].unlocker = withRouteParams(hostilePermutationParams);
+    expect(evaluateRoute()).not.toBe(true);
+    builder.inputs[routeInputIndex].unlocker = routeUnlocker;
+
+    await expect(call.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    for (const [key, expected] of [
+      [14n, 21n], [13n, 23n], [12n, 25n], [11n, 27n], [10n, 29n],
+    ] as const) {
+      await expect(contract.call.check(key, expected).send()).resolves.toBeDefined();
+    }
+    await expect(contract.batch([{ function: 'descending', args: [10n, 5n] }]).send())
+      .resolves.toBeDefined();
+    await expect(contract.batch([{ function: 'descending', args: [0n, 5n] }]).send())
+      .resolves.toBeDefined();
+    for (const [key, expected] of [
+      [14n, 29n], [13n, 27n], [12n, 25n], [11n, 23n], [10n, 21n],
+    ] as const) {
+      await expect(contract.call.check(key, expected).send()).resolves.toBeDefined();
+    }
+  }, 180_000);
+
   it('settles symbolic push widths, ordinals, and historical branch predicates', async () => {
     const provider = createTestProvider();
     const artifact = compileString(`contract KernelVariablePushSwitch() {

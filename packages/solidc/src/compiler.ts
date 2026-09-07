@@ -117,6 +117,7 @@ import LowerVMapCounterLoops, {
   VMAP_COUNTER_OUTPUT_COUNT_PREFIX,
   VMAP_COUNTER_PERM_PREFIX,
   VMAP_COUNTER_VALUE_PREFIX,
+  VMAP_COUNTER_PREFIX_COUNT_PREFIX,
   VMAP_RUNTIME_INPUT_COUNT_PREFIX,
   VMAP_RUNTIME_OUTPUT_COUNT_PREFIX,
 } from './semantic/LowerVMapCounterLoops.js';
@@ -2199,6 +2200,7 @@ function proveStraightLineChildInitializations(
         referencedContract: child,
         parameters: deployment.parameters.map((parameter) => cloneNode(parameter)),
         foldedStateInit: undefined,
+        foldedConstructorPredicates: undefined,
         hasFoldedChildCall: undefined,
         constructorStateFoldComplete: undefined,
         ctorFoldFailed: undefined,
@@ -2728,6 +2730,7 @@ function synthesizeMessageBusRoute(
   const kernelDeploymentHandlers = new Set<FunctionDefinitionNode>();
   const kernelDeploymentSiteCounts = new Map<FunctionDefinitionNode, number>();
   const kernelDeploymentSiteWidths = new Map<FunctionDefinitionNode, number[]>();
+  const kernelDeploymentSiteDescriptorDigests = new Map<FunctionDefinitionNode, string[]>();
   const kernelConditionalDeploymentSites = new Map<FunctionDefinitionNode, boolean[]>();
   const logicalMsgSenderHandlers = new Set<FunctionDefinitionNode>();
   const localEffectFrameHandlers = new Set<FunctionDefinitionNode>();
@@ -4182,6 +4185,7 @@ function synthesizeMessageBusRoute(
       let deploymentValueRecipeUnsupported = false;
       let deploymentStateInitializationUnsupported = false;
       let deploymentRecipeUnsupported = false;
+      const deploymentSiteDescriptorDigests: string[] = [];
       const deploymentSiteWidths: number[] = [];
       const deploymentSiteConditional: boolean[] = [];
       const deployedLocalNames = new Set<string>();
@@ -4231,6 +4235,7 @@ function synthesizeMessageBusRoute(
                   node,
                   { referencedContract: child,
                     parameters: node.parameters.map((parameter) => cloneNode(parameter)), foldedStateInit: undefined,
+                    foldedConstructorPredicates: undefined,
                     constructorStateFoldComplete: undefined, ctorFoldFailed: undefined },
                 );
                 if (!foldedProof) {
@@ -4296,6 +4301,20 @@ function synthesizeMessageBusRoute(
             deploymentSiteWidths.push(1 + packedStateDataNftCount(
               child, compilerOptions.commitmentLimit ?? 128,
             ));
+            deploymentSiteDescriptorDigests.push(childStateLayoutDigest({
+              variables: child.stateVariables.map((state) => ({
+                name: state.name,
+                type: state.type instanceof EnumType ? 'bigint' : abiTypeString(state.type),
+                nftIndex: state.nftIndex ?? 0,
+                fieldIndex: state.fieldIndex ?? 0,
+                ...(state.isDynamic && { dynamic: true }),
+                ...(state.isPacked && { packed: true }),
+              })),
+              dataNftCount: packedStateDataNftCount(child, compilerOptions.commitmentLimit ?? 128),
+              commitmentLimit: compilerOptions.commitmentLimit ?? 128,
+              structs: childDeploymentStructDefinitions(child.stateVariables),
+              collections: childDeploymentCollectionDefinitions(child.collections),
+            }));
             deploymentSiteConditional.push(conditional);
             if (conditional) {
               deployUnderControlFlow = true;
@@ -4382,6 +4401,7 @@ function synthesizeMessageBusRoute(
         kernelDeploymentHandlers.add(fn);
         kernelDeploymentSiteCounts.set(fn, deploySites);
         kernelDeploymentSiteWidths.set(fn, deploymentSiteWidths);
+        kernelDeploymentSiteDescriptorDigests.set(fn, deploymentSiteDescriptorDigests);
         kernelConditionalDeploymentSites.set(fn, deploymentSiteConditional);
       }
       // Expression keys (including nested `if` / helper-inlined writes), parameter-array loops, literal
@@ -4875,17 +4895,22 @@ function synthesizeMessageBusRoute(
     .map((fn) => {
       const siteCount = kernelDeploymentSiteCounts.get(fn) ?? 0;
       const widths = kernelDeploymentSiteWidths.get(fn) ?? [];
+      const descriptorDigests = kernelDeploymentSiteDescriptorDigests.get(fn) ?? [];
       const conditionalSites = kernelConditionalDeploymentSites.get(fn) ?? [];
       let spanOffset = 0;
       const pairs = Array.from({ length: siteCount }, (_, siteIndex) => {
         const width = widths[siteIndex] ?? 0;
+        const descriptorDigest = descriptorDigests[siteIndex];
+        if (!descriptorDigest || !/^[0-9a-f]{64}$/.test(descriptorDigest)) {
+          throw new Error(`Kernel deployment site ${siteIndex} has no canonical child layout descriptor`);
+        }
         const offset = spanOffset;
         spanOffset += width;
         return `activeDeploymentParents = bytes.concat(activeDeploymentParents,
                 toPaddedBytes(row, 2), toPaddedBytes(${siteIndex}, 2), bytes1(${conditionalSites[siteIndex] ? 1 : 0}),
                 toPaddedBytes(activeFixedSize - ${routeMaximumRows * kernelDeploymentFrameWidth}
                   + consumedLocalRows * ${kernelDeploymentFrameWidth} + ${offset}, 2),
-                toPaddedBytes(${width}, 2));`;
+                toPaddedBytes(${width}, 2), hex"${descriptorDigest}");`;
       })
         .join('\n              ');
       return `if (callManifest.slice(rowStart + 10, rowStart + 14) == hex"${selector(fn)}") {
@@ -6023,6 +6048,7 @@ function synthesizeMessageBusRoute(
                 if (parameter.name.startsWith(VMAP_COUNTER_PERM_PREFIX)
                   || parameter.name.startsWith(VMAP_COUNTER_OLD_PREFIX)
                   || parameter.name.startsWith(VMAP_COUNTER_VALUE_PREFIX)
+                  || parameter.name.startsWith(VMAP_COUNTER_PREFIX_COUNT_PREFIX)
                   || parameter.name.startsWith(VMAP_COUNTER_INPUT_COUNT_PREFIX)
                   || parameter.name.startsWith(VMAP_COUNTER_OUTPUT_COUNT_PREFIX)) {
                   return kernelLoopDispatch ? `${parameter.name}[${rowExpression}]` : parameter.name;
@@ -6195,6 +6221,7 @@ function synthesizeMessageBusRoute(
       if (!parameter.name.startsWith(VMAP_COUNTER_PERM_PREFIX)
         && !parameter.name.startsWith(VMAP_COUNTER_OLD_PREFIX)
         && !parameter.name.startsWith(VMAP_COUNTER_VALUE_PREFIX)
+        && !parameter.name.startsWith(VMAP_COUNTER_PREFIX_COUNT_PREFIX)
         && !parameter.name.startsWith(VMAP_COUNTER_INPUT_COUNT_PREFIX)
         && !parameter.name.startsWith(VMAP_COUNTER_OUTPUT_COUNT_PREFIX)
         && !parameter.name.startsWith(VMAP_RUNTIME_INPUT_COUNT_PREFIX)
@@ -6213,6 +6240,7 @@ function synthesizeMessageBusRoute(
       return (parameter.name.startsWith(VMAP_COUNTER_PERM_PREFIX)
         || parameter.name.startsWith(VMAP_COUNTER_OLD_PREFIX)
         || parameter.name.startsWith(VMAP_COUNTER_VALUE_PREFIX)
+        || parameter.name.startsWith(VMAP_COUNTER_PREFIX_COUNT_PREFIX)
         || parameter.name.startsWith(VMAP_COUNTER_INPUT_COUNT_PREFIX)
         || parameter.name.startsWith(VMAP_COUNTER_OUTPUT_COUNT_PREFIX)
         || parameter.name === KERNEL_JOURNAL_ACCESS_STREAMS) && kernelLoopDispatch
@@ -6797,7 +6825,7 @@ function synthesizeMessageBusRoute(
               callManifest.slice(rowStart + 5, rowStart + 6), hex"00"
             ));
             require(rowSubject.length == 0 && rowResult.length == 0
-              && ((deploymentMode == 0 && rowArguments.length == 34 && rowEffect.length >= 15)
+              && ((deploymentMode == 0 && rowArguments.length == 66 && rowEffect.length >= 15)
                 || (deploymentMode == 1 && rowArguments.length == 2 && rowEffect.length == 2)));
             bigint deploymentSite = int(bytes.concat(rowArguments.slice(0, 2), hex"00"));
             bigint expectedDeploymentParentMatches = 0;
@@ -6805,8 +6833,9 @@ function synthesizeMessageBusRoute(
             bigint expectedDeploymentTarget = 65535;
             bigint expectedDeploymentWidth = 0;
             bigint settledDeploymentParentMatches = 0;
+            bytes expectedDeploymentDescriptor;
             for (bigint deploymentParent = 0; deploymentParent < activeDeploymentParents.length;
-              deploymentParent = deploymentParent + 9) {
+              deploymentParent = deploymentParent + 41) {
               if (int(bytes.concat(activeDeploymentParents.slice(
                 deploymentParent, deploymentParent + 2
               ), hex"00")) == parent && int(bytes.concat(activeDeploymentParents.slice(
@@ -6822,6 +6851,9 @@ function synthesizeMessageBusRoute(
                 expectedDeploymentWidth = int(bytes.concat(activeDeploymentParents.slice(
                   deploymentParent + 7, deploymentParent + 9
                 ), hex"00"));
+                expectedDeploymentDescriptor = activeDeploymentParents.slice(
+                  deploymentParent + 9, deploymentParent + 41
+                );
               }
             }
             for (bigint deploymentParent = 0; deploymentParent < settledDeploymentParents.length;
@@ -6836,7 +6868,9 @@ function synthesizeMessageBusRoute(
             }
             require(expectedDeploymentParentMatches == 1 && settledDeploymentParentMatches == 0
               && (deploymentMode == 0 || expectedConditionalDeployment == 1)
-              && targetOffset == expectedDeploymentTarget);
+              && targetOffset == expectedDeploymentTarget
+              && rowArguments.length == (deploymentMode == 0 ? 66 : 2)
+              && (deploymentMode == 1 || rowArguments.slice(34, 66) == expectedDeploymentDescriptor));
             settledDeploymentParents = bytes.concat(
               settledDeploymentParents, toPaddedBytes(parent, 2), toPaddedBytes(deploymentSite, 2)
             );
@@ -7124,7 +7158,7 @@ function synthesizeMessageBusRoute(
         require(activeValueRows == physicalValueOutputs);
         require(activeTokenRows == physicalTokenOutputs);
         require(activeDeploymentRows == activeDeploymentInvocations
-          && settledDeploymentParents.length * 9 == activeDeploymentParents.length * 4);
+          && settledDeploymentParents.length * 41 == activeDeploymentParents.length * 4);
         require(activeSidecarRows * 2 == activeSidecarTargets.length);
         require(cursor == callManifest.length && consumedLocalRows == expectedLocalRows
           && batchCursor == localBatch.length);

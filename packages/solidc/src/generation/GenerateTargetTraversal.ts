@@ -13954,6 +13954,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
     if (node.isStatefulDeploy) this.emitGraphStaticDirty(node);
 
+    // Replay constructor preconditions before creating any redeem-script/category temporaries. Folded
+    // identifiers are expressed in this exact parent-function stack context; evaluating later would shift
+    // their PICK depths beneath the child locking bytecode and could authenticate the wrong operand.
+    for (const predicate of node.foldedConstructorPredicates ?? []) {
+      this.scopeDepth += 1;
+      this.visit(predicate);
+      this.scopeDepth -= 1;
+      this.emit(Op.OP_VERIFY, locationData);
+      this.popFromStack();
+    }
+
     // Step 1: Build redeem script on stack (same pattern as visitContractReference).
     // Only CONTRACT-LEVEL parameters (solidcash-style) are redeem-script data pushes. A Solidity-style
     // child's constructor(args) do not enter the address - the SDK instantiates it with no constructor
@@ -22932,11 +22943,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // collection + varying array + predicate so the SDK co-spends both runs.
     const valueTraceWitness = writeNode instanceof MappingAssignNode
       ? writeNode.messageBusRuntimeValueTrace?.witnessParam : undefined;
+    const prefixCountTrace = this.currentFunction.runtimeCounterLoopPrefixCountTraces
+      ?.get(`${varyingArrayParam}\0${collection.name}`);
     const existingInfo = infos.find((x) => x.collection === collection.name
       && x.varyingArrayParam === varyingArrayParam
       && (x.predicateArrayParam ?? '') === (decodedKeyRecipe?.predicateArrayParam ?? '')
       && (x.predicateEquals ?? '') === (decodedKeyRecipe?.predicateEquals ?? '')
-      && (x.valueTraceWitnessParam ?? '') === (valueTraceWitness ?? ''));
+      && (x.valueTraceWitnessParam ?? '') === (valueTraceWitness ?? '')
+      && (x.prefixCountWitnessParam ?? '') === (prefixCountTrace?.witnessParam ?? ''));
     if (existingInfo && (existingInfo.fixedKeySources?.length ?? 0) === 0 && fixedKeySources.length > 0) {
       existingInfo.fixedKeySources = fixedKeySources;
     }
@@ -22983,6 +22997,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           valueTraceInitial: writeNode.messageBusRuntimeValueTrace.initial,
           valueTraceUpdates: writeNode.messageBusRuntimeValueTrace.updates,
           valueTraceAfterUpdates: writeNode.messageBusRuntimeValueTrace.afterUpdates,
+        }),
+        ...(prefixCountTrace && {
+          prefixCountWitnessParam: prefixCountTrace.witnessParam,
+          prefixCountCondition: prefixCountTrace.condition,
         }),
         ...(valueRuntimeExpression && { valueRuntimeExpression: true }),
         ...(valueArrayOffset !== undefined && { valueArrayOffset }),

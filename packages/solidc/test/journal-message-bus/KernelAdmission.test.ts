@@ -6380,11 +6380,35 @@ describe('required kernel admission', () => {
     });
   });
 
-  it('does not claim reachability through an opaque terminating guard', () => {
+  it('authenticates reachability through a pre-state terminating guard', () => {
     const artifact = compileString(`contract C() {
       bool stopped;
       function pay(bytes recipient, int amount) public returns (int) {
         if (this.stopped) return 7;
+        this.transfer(recipient, amount);
+        return 9;
+      }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'pay')).toMatchObject({
+      eligible: true,
+      transfers: [{
+        condition: {
+          kind: 'unary', operator: '!', expression: { kind: 'state', name: 'stopped' },
+        },
+      }],
+    });
+    expect(artifact.abi.find((candidate) => candidate.name === 'pay')?.transfers?.[0])
+      .toMatchObject({
+        condition: {
+          kind: 'unary', operator: '!', expression: { kind: 'state', name: 'stopped' },
+        },
+      });
+  });
+
+  it('does not claim reachability through a transaction-derived terminating guard', () => {
+    const artifact = compileString(`contract C() {
+      function pay(bytes recipient, int amount) public returns (int) {
+        if (tx.locktime > 0) return 7;
         this.transfer(recipient, amount);
         return 9;
       }

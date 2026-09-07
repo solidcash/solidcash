@@ -350,6 +350,56 @@ describe('kernel switch and try fixed effects', () => {
     expect(handler).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
   });
 
+  it('expands an exact bounded child-deployment loop into source-ordered physical sites', () => {
+    const { handler } = select(`
+      contract Unit(int seed) { int marker; constructor() { this.marker = seed; } }
+      contract Store() {
+        function apply(int base) public {
+          for (int i = 0; i < 3; i = i + 1) { Unit child = new Unit(base + i); }
+          require(true);
+        }
+      }
+    `);
+    expect(handler).toMatchObject({ eligible: true });
+    expect(handler.childDeployments).toHaveLength(3);
+    expect(handler.childDeployments?.map((site) => ({
+      siteIndex: site.siteIndex, occurrence: site.occurrence,
+      spanOffset: site.spanOffset, spanWidth: site.spanWidth,
+    }))).toEqual([
+      { siteIndex: 0, occurrence: 'once', spanOffset: 0, spanWidth: 2 },
+      { siteIndex: 1, occurrence: 'once', spanOffset: 2, spanWidth: 2 },
+      { siteIndex: 2, occurrence: 'once', spanOffset: 4, spanWidth: 2 },
+    ]);
+    expect(handler.childDeployments?.map((site) => site.constructorArgs[0])).toEqual([
+      expect.objectContaining({
+        kind: 'binary', operator: '+', right: expect.objectContaining({ kind: 'intLiteral', value: '0' }),
+      }),
+      expect.objectContaining({
+        kind: 'binary', operator: '+', right: expect.objectContaining({ kind: 'intLiteral', value: '1' }),
+      }),
+      expect.objectContaining({
+        kind: 'binary', operator: '+', right: expect.objectContaining({ kind: 'intLiteral', value: '2' }),
+      }),
+    ]);
+  });
+
+  it.each([
+    ['a source break', 'for (int i = 0; i < 3; i = i + 1) { if (i == 1) { break; } Unit child = new Unit(i); }'],
+    ['more than 64 iterations', 'for (int i = 0; i < 65; i = i + 1) { Unit child = new Unit(i); }'],
+    ['a runtime count', 'for (int i = 0; i < count; i = i + 1) { Unit child = new Unit(i); }'],
+  ])('keeps a child-deployment loop with %s fenced', (_label, loop) => {
+    const { handler } = select(`
+      contract Unit(int seed) { int marker; constructor() { this.marker = seed; } }
+      contract Store() {
+        function apply(int count) public {
+          ${loop}
+          require(count >= 0);
+        }
+      }
+    `);
+    expect(handler).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+  });
+
   it('publishes exact switch predicates for runtime counter-loop events', () => {
     const { handler } = select(`
       event Mark(int value);

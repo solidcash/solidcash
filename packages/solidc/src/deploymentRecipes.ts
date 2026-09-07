@@ -21,9 +21,10 @@ import {
   StateVariableNode,
   StringConcatNode,
   DeleteStateNode,
+  NullaryOpNode,
 } from './ast/AST.js';
 import { GlobalFunction } from './ast/Globals.js';
-import { BinaryOperator, UnaryOperator } from './ast/Operator.js';
+import { BinaryOperator, NullaryOperator, UnaryOperator } from './ast/Operator.js';
 import { containsStatefulOperation } from './semantic/EnsureFinalRequireTraversal.js';
 import { hasEffectiveCallValue } from './semantic/branchOps.js';
 
@@ -665,6 +666,12 @@ export function analyzeFixedBchEffectRecipes(
         : 'kind' in child && recipeUsesTransactionSignature(child as ChildDeploymentValueRecipe, seen)));
   };
   const recipe = (expression: ExpressionNode, environment: Environment): ChildDeploymentValueRecipe | undefined => {
+    // Graph lowering replaces msg.sender with this compiler-owned row local before final artifact analysis.
+    // Both spellings name the manifest-authenticated logical caller, not a user-controlled ABI input.
+    if ((expression instanceof NullaryOpNode && expression.operator === NullaryOperator.MSG_SENDER)
+      || (expression instanceof IdentifierNode && expression.name === '__message_bus_graph_caller')) {
+      return { kind: 'logicalCaller', resultType: 'address' };
+    }
     const resolved = childDeploymentValueRecipe(
       expression, handlerInputs, true, handlerInputTypes, environment.aliases, environment.definitions,
       undefined, new Set(), helperFunctions,

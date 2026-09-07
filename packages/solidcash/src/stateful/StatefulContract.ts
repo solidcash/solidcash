@@ -5007,7 +5007,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       );
     }
     let routeWitness = 0;
-    const routeArgs = capability.route.inputs.map((input): FunctionArgument => {
+    // The ordinary builder injects its local msg.sender category after the visible ABI arguments. A finalized
+    // graph supplies that field explicitly, so retain it only when graph context already resolved the witness.
+    const materializedRouteInputs = capability.route.inputs.filter((input) =>
+      input.name !== '__internal__msgSenderCategory'
+      || resolvedCallerInternalWitnesses[input.name] !== undefined);
+    const routeArgs = materializedRouteInputs.map((input): FunctionArgument => {
       if (input.name === 'batchBlob') return blob;
       if (input.name.startsWith('__internal__')) {
         const value = resolvedCallerInternalWitnesses[input.name];
@@ -32586,6 +32591,11 @@ export class StatefulFunctionCall {
         if (plan.transfer.condition !== undefined && !(await this.parentContract!._resolveCompilerEffectPredicate(
           plan.transfer.condition, plan.args, handlerAbi, plan.executionArtifact, authenticatedState,
         ))) continue;
+        // An owner-local route authenticates msg.sender as tx.origin. The ordinary builder guarantees that a
+        // connected signer contributes that native P2PKH input; use the same identity for compiler-authored
+        // fixed effects rather than accepting a caller supplied as an ABI value.
+        const sender = this.parentContract!._signer ?? this.parentContract!._logicalNonceSigner;
+        const logicalCaller = sender ? addressToLockScript(sender.getAddress()) : undefined;
         materialized.push({
           outputSlot: plan.outputSlot,
           ...materializeFixedBchTransfer(
@@ -32595,6 +32605,7 @@ export class StatefulFunctionCall {
             plan.executionArtifact,
             this.parentContract!.inner.provider,
             authenticatedState as Readonly<Record<string, FunctionArgument>>,
+            logicalCaller,
           ),
         });
       }

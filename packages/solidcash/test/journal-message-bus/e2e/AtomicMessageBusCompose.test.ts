@@ -3199,6 +3199,84 @@ describe('messageBus.compose atomic transaction', () => {
     await expect(composition.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
   }, 120_000);
 
+  it('materializes a fixed BCH recipient from an authenticated nested logical caller', async () => {
+    const provider = createMessageBusCapstoneTestProvider();
+    const nestedArtifact = compileString(`contract LogicalCallerRecipientNested() {
+      function refund() public { this.transfer(msg.sender, 2000); require(true); }
+    }`, {
+      forceStateful: true, messageBus: true, messageBusKernel: true, messageBusGraphContext: true,
+    });
+    expect(nestedArtifact.messageBus?.handlers.find((handler) => handler.name === 'refund'))
+      .toMatchObject({ eligible: true, transfers: [{ recipientRecipe: { kind: 'logicalCaller' } }] });
+    const nestedBase = new Contract(nestedArtifact, [], { provider });
+    const nestedSetup = await setupStatefulUtxos(
+      provider, nestedBase, nestedArtifact.stateLayout!, {}, { saltContract: true },
+    );
+    const nestedInner = nestedBase.withCategory(hexToBin(nestedSetup.categoryId));
+    const nested = StatefulContract.withCategory(nestedInner, nestedSetup.categoryId);
+    await provider.addUtxo(getSatoshiContainerAddress(nestedInner, nestedSetup.categoryId), {
+      txid: 'd1'.repeat(32), vout: 1, satoshis: 20_000n,
+    });
+
+    const rootArtifact = compileString(`
+      interface ILogicalCallerRecipientNested { function refund(); }
+      contract LogicalCallerRecipientRoot(address nested) {
+        function run() public {
+          ILogicalCallerRecipientNested(nested).refund();
+          require(true);
+        }
+      }
+    `, { forceStateful: true, messageBus: true, messageBusKernel: true, messageBusGraphContext: true });
+    expect(rootArtifact.messageBus?.handlers.find((handler) => handler.name === 'run'))
+      .toMatchObject({ eligible: true });
+    const rootBase = new Contract(rootArtifact, [nestedInner.lockingBytecode], { provider });
+    const rootSetup = await setupStatefulUtxos(
+      provider, rootBase, rootArtifact.stateLayout!, {}, { saltContract: true },
+    );
+    const rootInner = rootBase.withCategory(hexToBin(rootSetup.categoryId));
+    const root = StatefulContract.withCategory(rootInner, rootSetup.categoryId);
+    const fee = await createBareP2pkhFeeFunder(provider, 1_000_000n);
+    const rootCaller = fee.unlocker.generateLockingBytecode();
+    const composition = messageBus.compose({
+      calls: [root.call.run(), nested.call.refund()],
+      funder: fee,
+      changeAddress: rootCaller,
+    });
+
+    const built = await composition.build();
+    const nestedRefund = built.outputs.findIndex((output) => output.amount === 2000n && !output.token
+      && typeof output.to !== 'string' && binToHex(output.to) === rootInner.lockingBytecode);
+    expect(nestedRefund).toBeGreaterThan(0);
+    expect(vmRejects(built)).toBe(false);
+
+    const hostile = await composition.build();
+    hostile.outputs[nestedRefund].to = rootCaller;
+    expect(vmRejects(hostile)).toBe(true);
+  }, 120_000);
+
+  it('materializes a local batch BCH recipient from authenticated tx.origin', async () => {
+    const provider = createMessageBusCapstoneTestProvider();
+    const localArtifact = compileString(`contract LogicalCallerRecipientLocal() {
+      function refund() public { this.transfer(msg.sender, 2000); require(true); }
+    }`, { forceStateful: true, messageBus: true, messageBusKernel: true });
+    const localBase = new Contract(localArtifact, [], { provider });
+    const localSetup = await setupStatefulUtxos(
+      provider, localBase, localArtifact.stateLayout!, {}, { saltContract: true },
+    );
+    const localInner = localBase.withCategory(hexToBin(localSetup.categoryId));
+    await provider.addUtxo(getSatoshiContainerAddress(localInner, localSetup.categoryId), {
+      txid: 'd3'.repeat(32), vout: 1, satoshis: 20_000n,
+    });
+    const signer = new Signer(alicePriv, provider);
+    await provider.addUtxo(signer.getAddress(), randomUtxo({ satoshis: 100_000n }));
+    const local = StatefulContract.withCategory(localInner, localSetup.categoryId).connect(signer);
+    const direct = await local.batch([{ function: 'refund', args: [] }]).build();
+    const signerLock = new SignatureTemplate(alicePriv).unlockP2PKH().generateLockingBytecode();
+    expect(direct.outputs.some((output) => output.amount === 2000n && !output.token
+      && typeof output.to !== 'string' && binToHex(output.to) === binToHex(signerLock))).toBe(true);
+    expect(vmRejects(direct)).toBe(false);
+  }, 120_000);
+
   it('authenticates repeated fungible-token calls against one container and recipient settlement', async () => {
     const provider = createMessageBusCapstoneTestProvider();
     const calleeArtifact = compileString(`contract ComposeTokenCallee() {

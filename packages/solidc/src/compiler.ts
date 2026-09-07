@@ -10345,7 +10345,12 @@ function compileResolvedAst(
         (transfer.recipientRecipe === undefined && transfer.derivedRecipient === undefined)
         || transfer.amountRecipe === undefined
         || transfer.condition === null) === true;
-      if (!incomplete) continue;
+      // A row-local logical caller is materializable for a leaf participant and for an owner-local batch. An
+      // emitting handler which also owns a caller-directed BCH effect still needs a combined graph settlement
+      // frame: the current route verifies those two roles independently and rejects the honest root spend.
+      const callerTransferBesideEmission = (abi?.externalCalls?.length ?? 0) > 0
+        && abi?.transfers?.some((transfer) => transfer.recipientRecipe?.kind === 'logicalCaller') === true;
+      if (!incomplete && !callerTransferBesideEmission) continue;
       fn.messageBusEligible = false;
       fn.messageBusRejectionReason = 'KERNEL_LAYOUT';
     }

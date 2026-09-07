@@ -269,6 +269,7 @@ export const evaluateChildDeploymentRecipe = (
   inputTypes: readonly string[],
   solidityAbi: boolean,
   state: Readonly<Record<string, FunctionArgument>> = {},
+  logicalCaller?: FunctionArgument,
 ): FunctionArgument => {
   const resultType = recipeType(recipe, inputTypes);
   if (recipe.kind === 'handlerInput') {
@@ -282,6 +283,12 @@ export const evaluateChildDeploymentRecipe = (
       throw new Error(`messageBus: authenticated state recipe '${recipe.name}' is unavailable`);
     }
     return state[recipe.name];
+  }
+  if (recipe.kind === 'logicalCaller') {
+    if (logicalCaller === undefined) {
+      throw new Error('messageBus: authenticated logical caller recipe is unavailable');
+    }
+    return logicalCaller;
   }
   if (recipe.kind === 'aggregate') {
     return recipe.elements.map((element) =>
@@ -448,6 +455,7 @@ export const materializeFixedBchTransfer = (
   executionArtifact: Artifact,
   provider: NetworkProvider,
   state: Readonly<Record<string, FunctionArgument>> = {},
+  logicalCaller?: FunctionArgument,
 ): { lockingBytecode: Uint8Array; amount: bigint } => {
   const solidityAbi = artifactUsesSolidityAbi(executionArtifact);
   const recipientValue = transfer.derivedRecipient
@@ -482,7 +490,7 @@ export const materializeFixedBchTransfer = (
       return hexToBin(child.lockingBytecode);
     })()
     : transfer.recipientRecipe
-      ? evaluateChildDeploymentRecipe(transfer.recipientRecipe, args, inputTypes, solidityAbi, state)
+      ? evaluateChildDeploymentRecipe(transfer.recipientRecipe, args, inputTypes, solidityAbi, state, logicalCaller)
       : transfer.recipient.kind === 'forward' && transfer.recipient.paramIndex !== undefined
         ? args[transfer.recipient.paramIndex] : undefined;
   let lockingBytecode = recipientValue;
@@ -491,7 +499,7 @@ export const materializeFixedBchTransfer = (
       : hexToBin(lockingBytecode.startsWith('0x') ? lockingBytecode.slice(2) : lockingBytecode);
   }
   const amountValue = transfer.amountRecipe
-    ? evaluateChildDeploymentRecipe(transfer.amountRecipe, args, inputTypes, solidityAbi, state)
+    ? evaluateChildDeploymentRecipe(transfer.amountRecipe, args, inputTypes, solidityAbi, state, logicalCaller)
     : transfer.amount.kind === 'forward' && transfer.amount.paramIndex !== undefined
       ? args[transfer.amount.paramIndex]
       : transfer.amount.kind === 'literal' && transfer.amount.value !== undefined
@@ -2190,9 +2198,13 @@ export class AtomicMessageBusComposition {
             ))) continue;
             const executionArtifact = supplied.executionArtifact ?? participant.artifact;
             const inputTypes = handler!.inputs.map((input) => input.type);
+            const logicalCaller = invocation.caller === null
+              ? rootCaller : hexToBin(graphInvocationCallerIdentity(
+                plan.participants, plan.invocations, invocation,
+              ).lockingBytecode);
             const materialized = materializeFixedBchTransfer(
               transfer, supplied.args, inputTypes, executionArtifact, provider,
-              authenticatedState,
+              authenticatedState, logicalCaller,
             );
             const transferSlots = participant.blockLayout!.slots
               .filter((slot) => slot.kind === 'transfer' && slot.slotIndex !== undefined);

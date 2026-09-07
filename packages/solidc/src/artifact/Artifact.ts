@@ -262,9 +262,16 @@ export const occurrenceInfoOf = (
 
 const expressionSource = (
   expression: ExpressionNode, fn: FunctionDefinitionNode, contract: ContractNode,
-): { kind: 'forward' | 'constructorArg' | 'literal' | 'expression';
+): { kind: 'forward' | 'constructorArg' | 'literal' | 'msgSender' | 'expression';
   paramIndex?: number; paramName?: string; value?: string; type?: string } => {
   const shaped = expression as unknown as { name?: string; value?: unknown; type?: Type };
+  if (expression.constructor.name === 'NullaryOpNode'
+    && (expression as unknown as { operator?: string }).operator === 'msg.sender') {
+    return { kind: 'msgSender' };
+  }
+  if (expression.constructor.name === 'IdentifierNode' && shaped.name === '__message_bus_graph_caller') {
+    return { kind: 'msgSender' };
+  }
   if (expression.constructor.name === 'IdentifierNode' && shaped.name) {
     const visible = fn.parameters.filter((parameter) => !parameter.name.startsWith('__internal__'));
     const parameterIndex = visible.findIndex((parameter) => parameter.name === shaped.name);
@@ -585,6 +592,9 @@ const transferEffects = (
     }
     if (recipe.kind === 'state') {
       return { kind: 'state', name: recipe.name };
+    }
+    if (recipe.kind === 'logicalCaller') {
+      throw new Error('Logical-caller recipe cannot be used as a fixed-effect activation');
     }
     if (recipe.kind === 'intLiteral') {
       // External-call expressions use the VM's canonical integer literal spelling; casts around bounded values

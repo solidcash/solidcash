@@ -271,6 +271,8 @@ export interface FunctionBlockLayout {
 /** A pure value expression which an SDK can reproduce from a decoded handler row and authenticated pre-state. */
 export type ChildDeploymentValueRecipe =
   | { kind: 'handlerInput'; inputIndex: number; resultType?: string }
+  /** The graph-authenticated logical caller for this invocation row. */
+  | { kind: 'logicalCaller'; resultType: 'address' }
   /** A scalar decoded from the authenticated incoming participant state commitment. */
   | { kind: 'state'; name: string; resultType: string }
   | { kind: 'intLiteral'; value: string; resultType: string }

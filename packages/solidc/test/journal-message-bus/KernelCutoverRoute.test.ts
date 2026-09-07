@@ -1344,9 +1344,33 @@ contract C() {
   function control() public { require(true); }
 }
 `, OPTIONS);
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === '__receive')?.eligible).toBe(true);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === '__receive')).toMatchObject({
+      eligible: true,
+      transfers: [{
+        recipient: { kind: 'msgSender' },
+        recipientRecipe: { kind: 'logicalCaller', resultType: 'address' },
+      }],
+    });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
     expect(artifact.abi.some((fn) => clonePrefix.test(fn.name))).toBe(false);
+  });
+
+  it('fences a caller-directed BCH effect beside a graph emission until their settlement frames compose', () => {
+    const artifact = compileString(`
+pragma solidcash ^0.13.0;
+interface I { function next(); }
+contract C(address child) {
+  function refundAndCall() public {
+    this.transfer(msg.sender, 1);
+    I(child).next();
+    require(true);
+  }
+  function control() public { require(true); }
+}
+`, OPTIONS);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'refundAndCall'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
   });
 
   it('dispatches fallback with a typed call from the runtime row loop', () => {

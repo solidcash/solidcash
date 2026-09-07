@@ -39,6 +39,29 @@ describe('finite recursive constructed-array AST specialization', () => {
     expect(handler(finite, 'fill(keys, keys, 50, 2);')).toMatchObject({ eligible: true });
   });
 
+  it('treats literal-selected natural function fallthrough as the void recursive base case', () => {
+    expect(handler(`
+      function fill(bigint[] memory keys, bigint base, bigint remaining) internal pure {
+        if (remaining > 0) {
+          keys[remaining - 1] = base + remaining;
+          fill(keys, base, remaining - 1);
+        }
+      }
+    `, 'fill(keys, 50, 2);')).toMatchObject({ eligible: true });
+  });
+
+  it('does not mistake nested-block fallthrough for termination before a later recursive edge', () => {
+    expect(handler(`
+      function fill(bigint[] memory keys, bigint remaining) internal pure {
+        if (remaining > 0) { keys[remaining - 1] = remaining; }
+        fill(keys, remaining - 1);
+      }
+    `, 'fill(keys, 2);')).toMatchObject({
+      eligible: false,
+      rejectionReason: 'KERNEL_UNBOUNDED_KEY',
+    });
+  });
+
   it.each([
     ['runtime scalar', finite, 'fill(keys, keys, 50, runtimeLimit);'],
     ['no progress', `
@@ -77,6 +100,14 @@ describe('finite recursive constructed-array AST specialization', () => {
         keys[remaining - 1] = base + remaining;
       }
     `, 'fill(keys, 50, 2);'],
+    ['non-literal natural termination', `
+      function fill(bigint[] memory keys, bigint remaining) internal pure {
+        if (remaining > 0) {
+          keys[remaining - 1] = remaining;
+          fill(keys, remaining - 1);
+        }
+      }
+    `, 'fill(keys, runtimeLimit);'],
   ])('keeps %s fenced', (_name, helper, call) => {
     expect(handler(helper, call)).toMatchObject({
       eligible: false,
@@ -99,14 +130,16 @@ describe('finite recursive constructed-array AST specialization', () => {
     `, 'a(keys, 2);')).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_UNBOUNDED_KEY' });
   });
 
-  it('keeps specialization within 256 frames', () => {
-    expect(handler(`
+  it('keeps natural-fallthrough specialization within 256 frames', () => {
+    const helper = `
       function fill(bigint[] memory keys, bigint remaining) internal pure {
-        if (remaining == 0) { return; }
-        fill(keys, remaining - 1);
-        keys[0] = remaining;
+        if (remaining > 0) {
+          fill(keys, remaining - 1);
+          keys[0] = remaining;
+        }
       }
-    `, 'fill(keys, 257);')).toMatchObject({
+    `;
+    expect(handler(helper, 'fill(keys, 257);')).toMatchObject({
       eligible: false,
       rejectionReason: 'KERNEL_UNBOUNDED_KEY',
     });

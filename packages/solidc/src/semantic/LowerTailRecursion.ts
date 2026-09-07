@@ -555,11 +555,12 @@ export default class LowerTailRecursion extends AstTraversal {
     }
     if (rootArrays.size === 0) return undefined;
 
-    let reachedBaseReturn = false;
+    let reachedBaseTermination = false;
     const expand = (
       block: BlockNode,
       scalars: ReadonlyMap<string, ExpressionNode>,
       arrays: ReadonlyMap<string, string>,
+      functionBody = false,
     ): { statements: StatementNode[]; returned: boolean } | undefined => {
       const expanded: StatementNode[] = [];
       for (const source of block.statements ?? []) {
@@ -577,7 +578,7 @@ export default class LowerTailRecursion extends AstTraversal {
         }
         if (source instanceof ReturnNode) {
           if (source.expressions.length !== 0) return undefined;
-          reachedBaseReturn = true;
+          reachedBaseTermination = true;
           return { statements: expanded, returned: true };
         }
         if (source instanceof FunctionCallStatementNode
@@ -611,7 +612,7 @@ export default class LowerTailRecursion extends AstTraversal {
             nextScalars.set(parameter.name, argument);
           }
           if (!numericMeasure || !strictlyDecreases) return undefined;
-          const nested = expand(target.body, nextScalars, nextArrays);
+          const nested = expand(target.body, nextScalars, nextArrays, true);
           if (!nested) return undefined;
           expanded.push(...nested.statements);
           continue;
@@ -632,10 +633,16 @@ export default class LowerTailRecursion extends AstTraversal {
         }
         return undefined;
       }
+      // A void helper's closing brace is an ordinary return. Recognize it only at the function-body boundary:
+      // falling out of a selected nested block is not itself a base case because later statements in the
+      // surrounding function may still recurse. Literal specialization has already selected every condition,
+      // and every recursive edge above proves a strictly decreasing bigint measure under the shared 256-frame
+      // budget, so reaching this boundary is the exact natural base termination.
+      if (functionBody) reachedBaseTermination = true;
       return { statements: expanded, returned: false };
     };
-    const result = expand(target.body, rootScalars, rootArrays);
-    if (!result || !reachedBaseReturn) return undefined;
+    const result = expand(target.body, rootScalars, rootArrays, true);
+    if (!result || !reachedBaseTermination) return undefined;
     const block = new BlockNode(result.statements);
     block.location = statement.location;
     block.scoped = true;

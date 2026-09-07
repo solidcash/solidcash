@@ -6,7 +6,7 @@ import {
   ExpressionNode, ExternalCallExpression, FieldAccessNode, LiteralNode, MappingAccessNode, MappingAssignNode,
   MappingDeleteNode, MappingFieldAssignNode,
   NewArrayNode, Node, RequireNode, ReturnNode, SourceFileNode, StatementNode, UnaryOpNode,
-  StateAccessNode, StateAssignNode, TernaryOpNode, VariableDefinitionNode, WhileNode, IntLiteralNode,
+  StateAccessNode, StateAssignNode, SwitchNode, TernaryOpNode, VariableDefinitionNode, WhileNode, IntLiteralNode,
 } from '../ast/AST.js';
 import AstTraversal from '../ast/AstTraversal.js';
 import { cloneNode } from '../ast/clone.js';
@@ -167,6 +167,9 @@ export default class LowerTailRecursion extends AstTraversal {
       } else if (effect instanceof BranchNode) {
         collectRequirements(effect.ifBlock);
         if (effect.elseBlock) collectRequirements(effect.elseBlock);
+      } else if (effect instanceof SwitchNode) {
+        for (const arm of effect.cases) collectRequirements(arm.body);
+        if (effect.defaultCase) collectRequirements(effect.defaultCase);
       }
     };
     for (const effect of effects) collectRequirements(effect);
@@ -1203,6 +1206,31 @@ export default class LowerTailRecursion extends AstTraversal {
         ), statement.condition.location);
         return collectEffectTree(statement.elseBlock, conjunction(path, inverse));
       }
+      if (statement instanceof SwitchNode) {
+        if (!this.affineEventExpression(
+          statement.expression, node, zeroSide.name, true, replayAliases,
+        )) return false;
+        const caseLabels = statement.cases.map((arm) => arm.value instanceof LiteralNode
+          ? `${arm.value.constructor.name}:${arm.value.toString()}` : undefined);
+        if (caseLabels.some((label) => label === undefined)
+          || new Set(caseLabels).size !== caseLabels.length) return false;
+        let unmatched = path;
+        for (const arm of statement.cases) {
+          if (!this.affineEventExpression(
+            arm.value, node, zeroSide.name, true, replayAliases,
+          )) return false;
+          const match = this.stamp(new BinaryOpNode(
+            statement.expression, BinaryOperator.EQ, arm.value,
+          ), arm.location ?? statement.location);
+          if (!collectEffectTree(arm.body, conjunction(unmatched, match))) return false;
+          const inverse = this.stamp(new UnaryOpNode(
+            UnaryOperator.NOT, match,
+          ), arm.location ?? statement.location);
+          unmatched = conjunction(unmatched, inverse);
+        }
+        return !statement.defaultCase || collectEffectTree(statement.defaultCase, unmatched);
+      }
+      if (statement instanceof BreakNode) return true;
       return false;
     };
     if (effects.length === 0 || !effects.every((effect) => collectEffectTree(effect))
@@ -1302,6 +1330,27 @@ export default class LowerTailRecursion extends AstTraversal {
         ), statement.condition.location);
         return collect(statement.elseBlock, conjunction(path, inverse));
       }
+      if (statement instanceof SwitchNode) {
+        if (!this.affineEventExpression(statement.expression, node, zeroSide.name, true)) return false;
+        const caseLabels = statement.cases.map((arm) => arm.value instanceof LiteralNode
+          ? `${arm.value.constructor.name}:${arm.value.toString()}` : undefined);
+        if (caseLabels.some((label) => label === undefined)
+          || new Set(caseLabels).size !== caseLabels.length) return false;
+        let unmatched = path;
+        for (const arm of statement.cases) {
+          if (!this.affineEventExpression(arm.value, node, zeroSide.name, true)) return false;
+          const match = this.stamp(new BinaryOpNode(
+            statement.expression, BinaryOperator.EQ, arm.value,
+          ), arm.location ?? statement.location);
+          if (!collect(arm.body, conjunction(unmatched, match))) return false;
+          const inverse = this.stamp(new UnaryOpNode(
+            UnaryOperator.NOT, match,
+          ), arm.location ?? statement.location);
+          unmatched = conjunction(unmatched, inverse);
+        }
+        return !statement.defaultCase || collect(statement.defaultCase, unmatched);
+      }
+      if (statement instanceof BreakNode) return true;
       return false;
     };
     if (!effects.every((effect) => collect(effect))

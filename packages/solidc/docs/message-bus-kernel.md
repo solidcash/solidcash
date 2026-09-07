@@ -557,12 +557,13 @@ Rows whose physical inputs overlap remain fenced until the planner can build a c
 transitions. Multiple collections in one admitted loop share a permutation only when their complete key expression
 and selected domain are identical.
 Affine post-recursion mapping assignments may consume authenticated mapping values during unwind. The read must
-use the same `counter +/- literal` key grammar as the destination stream. A direct top-level post-recursion
-`require` may also own an authenticated read-only stream, including in a requirement-only recursion with no mapping
-write or event anchor; each exact AST occurrence is bound to its source-order read so an equivalent expression in
-another predicate cannot consume it accidentally. Conditional or nested requirement reads still need an explicit
-selected-domain descriptor and remain fenced, as do reads in event arguments, destination keys, and state-derived
-predicates. A read of the destination's
+use the same `counter +/- literal` key grammar as the destination stream. A post-recursion `require` may also own
+an authenticated read-only stream, including in a requirement-only recursion with no mapping write or event anchor;
+each exact AST occurrence is bound to its source-order read so an equivalent expression in another predicate cannot
+consume it accidentally. Nested `if`/`else` requirements and switches with pairwise-distinct literal case labels
+publish compact selected-source witnesses. Switch arms retain first-match semantics by including every preceding
+non-match predicate. Dynamic case labels, reads in event arguments or destination keys, and state- or
+mapping-derived path predicates remain fenced. A read of the destination's
 exact entry is an ordinary authenticated read-modify-write. Other streams sharing a collection are admitted only
 when a constant positive recursion stride proves their complete 64-frame affine domains disjoint. Runtime strides
 and intersecting domains fail closed rather than relying on transaction construction to discover an alias.

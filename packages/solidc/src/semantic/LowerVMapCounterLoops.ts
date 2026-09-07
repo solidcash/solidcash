@@ -1112,8 +1112,11 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       const containsReadRequirement = (statement: StatementNode): boolean => {
         if (statement instanceof RequireNode) return containsCounterMappingRead(statement.expression);
         if (statement instanceof BlockNode) return (statement.statements ?? []).some(containsReadRequirement);
-        return statement instanceof BranchNode && (containsReadRequirement(statement.ifBlock)
-          || (!!statement.elseBlock && containsReadRequirement(statement.elseBlock)));
+        if (statement instanceof BranchNode) return containsReadRequirement(statement.ifBlock)
+          || (!!statement.elseBlock && containsReadRequirement(statement.elseBlock));
+        return statement instanceof SwitchNode && (statement.cases.some((arm) =>
+          containsReadRequirement(arm.body))
+          || (!!statement.defaultCase && containsReadRequirement(statement.defaultCase)));
       };
       const readRequirement = (loop.block.statements ?? []).some(containsReadRequirement);
       const walk = (x: Node): void => {
@@ -1876,6 +1879,19 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           if (statement.elseBlock) collectRuntimeReadRequirements(
             statement.elseBlock, pathAnd(condition, pathNot(statement.condition)),
           );
+          return;
+        }
+        if (statement instanceof SwitchNode) {
+          let unmatched = condition;
+          for (const arm of statement.cases) {
+            const match = new BinaryOpNode(
+              cloneNode(statement.expression), BinaryOperator.EQ, cloneNode(arm.value),
+            );
+            match.location = arm.location ?? statement.location;
+            collectRuntimeReadRequirements(arm.body, pathAnd(unmatched, match));
+            unmatched = pathAnd(unmatched, pathNot(match));
+          }
+          if (statement.defaultCase) collectRuntimeReadRequirements(statement.defaultCase, unmatched);
         }
       };
       const containsRuntimeCollectionRead = (candidate: Node): boolean => {

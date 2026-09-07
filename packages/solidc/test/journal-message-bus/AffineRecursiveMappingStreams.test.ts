@@ -421,12 +421,67 @@ describe('affine recursive mapping streams', () => {
     expect(streams?.every((stream) => stream.oldValuesWitnessDomain === 'selected-source')).toBe(true);
   });
 
+  it('authenticates recursive switch requirements with first-match selected domains', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) first;
+      mapping(int => int) second;
+      mapping(int => int) fallbackValues;
+      function apply(int cursor, int floor) public returns (int) {
+        if (cursor == 0) return floor;
+        int result = apply(cursor - 1, floor);
+        switch (cursor % 3) {
+          case 1: require(this.first[cursor + 1] == result + cursor + 1); break;
+          case 2: require(this.second[cursor + 65] == result + cursor + 65); break;
+          default: require(this.fallbackValues[cursor + 129] == result + cursor + 129); break;
+        }
+        return result;
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+    const streams = artifact.abi.find((candidate) => candidate.name === 'apply')?.sortedUpsertLoopInfo;
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'apply'))
+      .toMatchObject({ eligible: true });
+    expect(streams?.map((stream) => [stream.collection, stream.op])).toEqual([
+      ['first', 'read'], ['second', 'read'], ['fallbackValues', 'read'],
+    ]);
+    expect(streams?.every((stream) => stream.iterationCondition !== undefined)).toBe(true);
+    expect(streams?.every((stream) => stream.oldValuesWitnessDomain === 'selected-source')).toBe(true);
+    // Later cases include the preceding non-match path, retaining source switch first-match semantics.
+    expect(streams?.[1].iterationCondition).not.toEqual(streams?.[0].iterationCondition);
+  });
+
+  it('keeps runtime-equal switch cases outside recursive selected read streams', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) first;
+      mapping(int => int) second;
+      function apply(int cursor, int firstCase, int secondCase) public returns (int) {
+        if (cursor == 0) return 0;
+        int result = apply(cursor - 1, firstCase, secondCase);
+        switch (cursor % 3) {
+          case firstCase: require(this.first[cursor] >= result); break;
+          case secondCase: require(this.second[cursor + 65] >= result); break;
+          default: break;
+        }
+        return result;
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'apply'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+    expect(artifact.abi.find((candidate) => candidate.name === 'apply')?.sortedUpsertLoopInfo)
+      .toBeUndefined();
+  });
+
   it.each([
     ['a state-derived nested requirement', `if (this.gate > floor) {
       require(this.observed[cursor] >= floor);
     }`],
     ['a mapping-dependent condition', `if (this.observed[cursor] >= floor) {
       require(cursor > 0);
+    }`],
+    ['a mapping-dependent switch selector', `switch (this.observed[cursor]) {
+      case 1: require(cursor > 0); break;
+      default: break;
     }`],
     ['overlapping distinct consumers', `require(this.observed[cursor] >= floor);
       require(this.observed[cursor] >= result);`],

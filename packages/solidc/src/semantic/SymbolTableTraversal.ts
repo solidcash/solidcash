@@ -414,6 +414,9 @@ export default class SymbolTableTraversal extends AstTraversal {
   private conditionalBranchDepth: number = 0;
 
   private conditionalRefNames: Set<string> = new Set();
+  private genesisHelperContract?: ContractNode;
+  private genesisHelperStack: Set<FunctionDefinitionNode> = new Set();
+  private insideGenesisPureHelper: boolean = false;
   private insideConstructor: boolean = false;
   private insideFunctionPointerStateAssignment: boolean = false;
   private tupleStateTempCounter: number = 0;
@@ -1900,6 +1903,10 @@ export default class SymbolTableTraversal extends AstTraversal {
     fieldType: (name: string) => Type | undefined, expectedType?: Type,
   ): ExpressionNode | null {
     if (expr instanceof LiteralNode) return expr;
+    // Pure helper replay is intentionally narrower than direct constructor folding: transaction/message
+    // projections and state reads must not become hidden helper inputs. Unknown node kinds also fail closed below.
+    if (this.insideGenesisPureHelper
+      && (expr instanceof NullaryOpNode || expr instanceof StateAccessNode)) return null;
     // A child constructor or same-transaction initializer observes the deploying contract as msg.sender.
     // While folding that transition into the parent's deploy covenant, this is exactly the active input's
     // locking bytecode. Preserve the EVM sequencing without introducing the child's impossible co-spend.
@@ -1966,7 +1973,9 @@ export default class SymbolTableTraversal extends AstTraversal {
       const structType = expr.type instanceof StructType ? expr.type
         : expectedType instanceof StructType ? expectedType : this.structMap.get(expr.identifier.name);
       if (!structType || expr.identifier.name !== structType.name || expr.resolvedFunction
-        || expr.parameters.length !== structType.fields.length) return null;
+        || expr.parameters.length !== structType.fields.length) {
+        return this.foldPureGenesisHelperCall(expr, subs, fieldExprs, fieldType, expectedType);
+      }
       const parameters = expr.parameters.map((parameter, index) =>
         this.foldGenesisExpr(parameter, subs, fieldExprs, fieldType, structType.fields[index].type));
       if (parameters.some((parameter) => parameter === null)) return null;
@@ -2020,6 +2029,66 @@ export default class SymbolTableTraversal extends AstTraversal {
       return expr;
     }
     return null;
+  }
+
+  private foldPureGenesisHelperCall(
+    call: FunctionCallNode,
+    callerSubs: Map<string, ExpressionNode>,
+    callerFields: Map<string, ExpressionNode>,
+    callerFieldType: (name: string) => Type | undefined,
+    expectedType?: Type,
+  ): ExpressionNode | null {
+    const candidates = call.resolvedFunction ? [call.resolvedFunction]
+      : (this.genesisHelperContract?.functions ?? []).filter((candidate) =>
+        candidate.name === call.identifier.name && candidate.parameters.length === call.parameters.length);
+    if (candidates.length !== 1) return null;
+    const helper = candidates[0];
+    if (!this.genesisHelperContract?.functions.includes(helper)
+      || !helper.modifiers.includes(FunctionModifier.PURE)
+      || !(helper.modifiers.includes(FunctionModifier.INTERNAL)
+        || helper.modifiers.includes(FunctionModifier.PRIVATE))
+      || helper.returnTypes.length !== 1 || this.genesisHelperStack.has(helper)) return null;
+    const body = helper.body as BlockNode | undefined;
+    const statements = body?.statements;
+    if (!statements || statements.length === 0) return null;
+    const foldedArguments = call.parameters.map((parameter, index) => this.foldGenesisExpr(
+      parameter, callerSubs, callerFields, callerFieldType, helper.parameters[index]?.type,
+    ));
+    if (foldedArguments.some((argument) => argument === null)) return null;
+    const helperSubs = new Map<string, ExpressionNode>();
+    helper.parameters.forEach((parameter, index) => helperSubs.set(parameter.name, foldedArguments[index]!));
+    const noFields = new Map<string, ExpressionNode>();
+    const noFieldType = (): Type | undefined => undefined;
+    const priorInsideHelper = this.insideGenesisPureHelper;
+    this.insideGenesisPureHelper = true;
+    this.genesisHelperStack.add(helper);
+    try {
+      for (let index = 0; index < statements.length; index += 1) {
+        const statement = statements[index];
+        const last = index === statements.length - 1;
+        if (statement instanceof VariableDefinitionNode && statement.expression && !last) {
+          const folded = this.foldGenesisExpr(
+            cloneNode(statement.expression), helperSubs, noFields, noFieldType, statement.type,
+          );
+          if (!folded) return null;
+          helperSubs.set(statement.name, folded);
+          continue;
+        }
+        if (last && statement instanceof ReturnNode && statement.expressions.length === 1) {
+          const folded = this.foldGenesisExpr(
+            cloneNode(statement.expressions[0]), helperSubs, noFields, noFieldType,
+            expectedType ?? helper.returnTypes[0],
+          );
+          if (folded && expectedType) folded.type = expectedType;
+          return folded;
+        }
+        return null;
+      }
+      return null;
+    } finally {
+      this.genesisHelperStack.delete(helper);
+      this.insideGenesisPureHelper = priorInsideHelper;
+    }
   }
 
   // Fold a straight-line statement list (`T local = expr;` / `this.field = expr;` / optional trailing
@@ -2121,8 +2190,17 @@ export default class SymbolTableTraversal extends AstTraversal {
     // suffix statement while remembering that reads of all other fields remain unknown. The substitutions map is
     // shared, so straight-line locals still feed later foldable writes.
     let failed = false;
-    for (const statement of statements) {
-      if (!this.foldStatementList([statement], subs, fieldExprs, fieldType)) failed = true;
+    const priorHelperContract = this.genesisHelperContract;
+    const priorHelperStack = this.genesisHelperStack;
+    this.genesisHelperContract = contract;
+    this.genesisHelperStack = new Set();
+    try {
+      for (const statement of statements) {
+        if (!this.foldStatementList([statement], subs, fieldExprs, fieldType)) failed = true;
+      }
+    } finally {
+      this.genesisHelperContract = priorHelperContract;
+      this.genesisHelperStack = priorHelperStack;
     }
     deployNode.ctorFoldFailed = failed;
     deployNode.constructorStateFoldComplete = !failed && statements.every((statement) =>

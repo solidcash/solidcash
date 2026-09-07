@@ -2210,6 +2210,64 @@ describe('required kernel admission', () => {
       });
   });
 
+  it('folds finite declaration-identified pure constructor helpers into nested aggregate genesis recipes', () => {
+    const artifact = compileString(`enum Phase { Initial, Active, Complete }
+      struct Metrics { Phase phase; fixed128x2 weight; }
+      struct Batch { Metrics[2] items; }
+      contract Unit() {
+        Batch batch;
+        constructor(int seed) { this.batch = makeBatch(seed); }
+        function makeMetrics(int seed, int offset) internal pure returns (Metrics) {
+          fixed128x2 weight = fixed128x2(seed + offset);
+          return Metrics(Phase(seed), weight);
+        }
+        function makeBatch(int seed) private pure returns (Batch) {
+          return Batch([makeMetrics(seed, 10), makeMetrics(seed, 20)]);
+        }
+      }
+      contract Coordinator() {
+        function materialize(int seed) public { Unit unit = new Unit(seed); require(true); }
+      }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'materialize'))
+      .toMatchObject({
+        eligible: true,
+        childDeployments: [{ genesisState: { fields: [{
+          name: 'batch', value: {
+            kind: 'aggregate', resultType: 'Batch', elements: [{
+              kind: 'aggregate', resultType: 'Metrics[2]', elements: [
+                { kind: 'aggregate', resultType: 'Metrics' },
+                { kind: 'aggregate', resultType: 'Metrics' },
+              ],
+            }],
+          },
+        }] } }],
+      });
+  });
+
+  it.each([
+    ['effectful', 'function helper(int x) internal returns (int) { this.marker = x; return x; }'],
+    ['view/state-dependent', 'function helper(int x) internal view returns (int) { return this.marker + x; }'],
+    ['view/transaction-dependent', 'function helper(int x) internal view returns (int) { return tx.locktime + x; }'],
+    ['view/message-dependent', 'function helper(int x) internal view returns (int) { return msg.value + x; }'],
+    ['guarded', 'function helper(int x) internal pure returns (int) { require(x > 0); return x; }'],
+    ['recursive', 'function helper(int x) internal pure returns (int) { return helper(x); }'],
+    ['mutually recursive', 'function helper(int x) internal pure returns (int) { return other(x); } '
+      + 'function other(int x) internal pure returns (int) { return helper(x); }'],
+    ['same-arity overloaded', 'function helper(int x) internal pure returns (int) { return x; } '
+      + 'function helper(bool x) internal pure returns (int) { return x ? 1 : 0; }'],
+  ])('keeps %s constructor helpers outside genesis replay', (_label, helper) => {
+    const artifact = compileString(`contract Unit() {
+        int marker;
+        constructor(int seed) { this.marker = helper(seed); }
+        ${helper}
+      }
+      contract Coordinator() {
+        function materialize(int seed) public { Unit unit = new Unit(seed); require(true); }
+      }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'materialize'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+  });
+
   it.each([
     'struct Payload { bytes data; int count; } contract Unit() { Payload payload; '
       + 'constructor(bytes raw) { this.payload = Payload(raw, 1); } }',

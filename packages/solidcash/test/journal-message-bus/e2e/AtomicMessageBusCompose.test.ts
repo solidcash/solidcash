@@ -639,12 +639,18 @@ describe('messageBus.compose atomic transaction', () => {
         constructor() {
           this.marker = seed;
           this.phase = Phase(seed);
-          this.pair = seed == 1 ? Pair(seed, [
-            Metrics(Phase(seed), fixed128x2(seed + 10)),
-            Metrics(Phase(seed), fixed128x2(seed + 20))
-          ]) : Pair(seed, [
-            Metrics(Phase(seed), fixed128x2(seed + 30)),
-            Metrics(Phase(seed), fixed128x2(seed + 40))
+          this.pair = makePair(seed);
+        }
+        function makeMetrics(int value, int offset) private pure returns (Metrics) {
+          return Metrics(Phase(value), fixed128x2(value + offset));
+        }
+        function makePair(int value) internal pure returns (Pair) {
+          return value == 1 ? Pair(value, [
+            makeMetrics(value, 10),
+            makeMetrics(value, 20)
+          ]) : Pair(value, [
+            makeMetrics(value, 30),
+            makeMetrics(value, 40)
           ]);
         }
         function keep() public { require(true); }

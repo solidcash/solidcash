@@ -2064,7 +2064,7 @@ export default class AstBuilder
     const customModCtxs = ctx.customModifierInvocation_list();
     if (customModCtxs && customModCtxs.length > 0) {
       functionDefinition.customModifiers = customModCtxs
-        .filter((m) => !this.tryParseSplitMergeModifier(m, functionDefinition))
+        .filter((m) => !this.tryParseLifecycleModifier(m, functionDefinition))
         .map(
           (m: CustomModifierInvocationContext): CustomModifierInvocation => ({
             name: this.customModifierName(m),
@@ -2272,7 +2272,7 @@ export default class AstBuilder
         );
       }
       functionDefinition.customModifiers = customModCtxs
-        .filter((m) => !this.tryParseSplitMergeModifier(m, functionDefinition))
+        .filter((m) => !this.tryParseLifecycleModifier(m, functionDefinition))
         .map(
           (m: CustomModifierInvocationContext): CustomModifierInvocation => ({
             name: this.customModifierName(m),
@@ -2390,7 +2390,7 @@ export default class AstBuilder
         throw new ParseError('Custom modifiers are not allowed on free functions', Location.fromCtx(customModCtxs[0]));
       }
       functionDefinition.customModifiers = customModCtxs
-        .filter((m) => !this.tryParseSplitMergeModifier(m, functionDefinition))
+        .filter((m) => !this.tryParseLifecycleModifier(m, functionDefinition))
         .map((m): CustomModifierInvocation => ({
           name: this.customModifierName(m),
           args: m.expressionList() ? this.buildCallArguments(m.expressionList()!) : [],
@@ -2496,16 +2496,22 @@ export default class AstBuilder
   }
 
   /**
-   * Check if a custom modifier invocation is actually a split/merge modifier.
-   * split(paramName) and merge(paramName) use the custom modifier syntax but
-   * are handled specially - they set splitCountParam/mergeCountParam on the function.
-   * Returns true if the invocation was consumed as split/merge.
+   * Check if a custom modifier invocation is actually a contextual lifecycle modifier.
+   * `deploy`, split(paramName), and merge(paramName) use the custom modifier syntax but are handled specially;
+   * keeping deploy contextual permits an ordinary function named `deploy` without reserving a lexer token.
+   * Returns true if the invocation was consumed as a lifecycle modifier.
    */
-  private tryParseSplitMergeModifier(
+  private tryParseLifecycleModifier(
     ctx: CustomModifierInvocationContext,
     functionDefinition: FunctionDefinitionNode,
   ): boolean {
     const name = this.customModifierName(ctx);
+    // Keep `deploy` contextual rather than reserving it in the lexer: Solidity contracts commonly use `deploy`
+    // as an ordinary function name. In modifier position, the argument-free spelling is the lifecycle keyword.
+    if (name === 'deploy' && !ctx.expressionList()) {
+      functionDefinition.modifiers.push(FunctionModifier.DEPLOY);
+      return true;
+    }
     if (name !== 'split' && name !== 'merge') return false;
 
     const exprList = ctx.expressionList();

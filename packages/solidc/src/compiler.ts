@@ -2784,8 +2784,13 @@ function synthesizeMessageBusRoute(
     disallowedModifiers.delete(FunctionModifier.DELEGATE);
   }
   // Kernel upgrades retain the participant's fixed state block and authenticate one replacement master identity.
-  // Legacy unroll has no transaction-wide target channel, so its lifecycle fence remains unchanged.
-  if (compilerOptions.messageBusKernel === true) disallowedModifiers.delete(FunctionModifier.UPGRADE);
+  // A typed child deployment likewise has an existing compiler-described, participant-relative deployment window;
+  // its exact supported subset is decided by kernelDeploySupported below. Legacy unroll has neither transaction-wide
+  // channel, so its lifecycle fence remains unchanged.
+  if (compilerOptions.messageBusKernel === true) {
+    disallowedModifiers.delete(FunctionModifier.UPGRADE);
+    disallowedModifiers.delete(FunctionModifier.DEPLOY);
+  }
   let eligible: FunctionDefinitionNode[] = [];
   const graphTailHandlers = new Set<FunctionDefinitionNode>();
   const graphRuntimeHandlers = new Set<FunctionDefinitionNode>();
@@ -4625,6 +4630,11 @@ function synthesizeMessageBusRoute(
       } else if (deploys && !kernelDeploySupported
         && (reason === undefined || kernelAdmissionReason(reason) === 'KERNEL_LAYOUT')) {
         reason = 'KERNEL_LAYOUT';
+      } else if (reason === undefined && fn.modifiers.includes(FunctionModifier.DEPLOY)
+        && !kernelDeploySupported) {
+        // `deploy` also covers legacy/create3-style lifecycle routes with no typed child site. Only the exact
+        // typed `new Child(...)` topology above has compiler-authored child metadata and a balanced graph window.
+        reason = 'KERNEL_LIFECYCLE';
       } else if (reason !== undefined) reason = kernelAdmissionReason(reason);
     }
     fn.messageBusEligible = reason === undefined;

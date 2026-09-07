@@ -138,7 +138,7 @@ const transplantDeploymentSpan = (
   }
 };
 
-describe('conditional child deployment transcript security', () => {
+describe('explicit conditional child deployment transcript security', () => {
   it('binds active and inactive genesis spans to the repeated row source predicate', async () => {
     const provider = createMessageBusCapstoneTestProvider();
     const artifacts = compileStringMulti(`contract Unit() {
@@ -148,7 +148,7 @@ describe('conditional child deployment transcript security', () => {
       }
       interface IFactory { function materialize(bool enabled); }
       contract Factory() {
-        function materialize(bool enabled) public {
+        function materialize(bool enabled) deploy {
           if (enabled) { Unit child = new Unit(); }
           require(true);
         }

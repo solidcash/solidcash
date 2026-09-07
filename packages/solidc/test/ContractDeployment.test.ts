@@ -55,10 +55,10 @@ describe('conditional deploy (new C() inside a branch/loop)', () => {
   });
 });
 
-// The `deploy` modifier has been REMOVED from the grammar - it is always inferred from the deploy form: `new C()` /
-// `new C{salt}()` (which mint the child's genesis), or a create3/deployFrom factory reading a genesis input's
-// outpoint txhash. Writing `deploy` explicitly is now a parse-time "undefined modifier" error.
-describe('deploy modifier is inferred from the deploy form (the `deploy` keyword was removed from the grammar)', () => {
+// The `deploy` modifier is inferred from `new C()` / `new C{salt}()` (which mint the child's genesis), or a
+// create3/deployFrom factory reading a genesis input's outpoint txhash. The explicit keyword is equivalent for a
+// typed deployment and remains useful for ABI intent.
+describe('deploy modifier is inferred from the deploy form and may be written explicitly', () => {
   const CHILD = 'contract Child { int x; constructor(int v) { x = v; }'
     + ' function authorize(pubkey pk, sig s) unsafe { require(checkSig(s, pk)); } }';
   const factory = (): string => `${CHILD} contract F(pubkey a) { int c;`
@@ -74,11 +74,11 @@ describe('deploy modifier is inferred from the deploy form (the `deploy` keyword
     expect(make?.blockLayout?.slots.some((s) => s.kind === 'deploy')).toBe(true);
   });
 
-  it('writing an explicit `deploy` modifier is now rejected (keyword removed from the grammar)', () => {
-    expect(() => compileString(`${CHILD} contract F(pubkey a) { int c;`
+  it('accepts an explicit `deploy` modifier on the same typed deployment form', () => {
+    const explicit = compileString(`${CHILD} contract F(pubkey a) { int c;`
       + ' function make(sig s, int v) deploy { Child ch = new Child(v); this.c = this.c + 1; }'
-      + ' function authorize(pubkey pk, sig s) unsafe { require(checkSig(s, pk)); } }'))
-      .toThrow(/[Uu]ndefined modifier/);
+      + ' function authorize(pubkey pk, sig s) unsafe { require(checkSig(s, pk)); } }');
+    expect(explicit.abi.find((f) => f.name === 'make')?.modifiers).toEqual(['deploy']);
   });
 });
 

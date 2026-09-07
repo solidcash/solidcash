@@ -2157,6 +2157,39 @@ describe('required kernel admission', () => {
       });
   });
 
+  it('admits explicit deploy with the same typed child topology as inferred deploy', () => {
+    const compile = (modifier: string) => compileString(`contract Unit() {
+        int marker;
+        constructor(int seed) { this.marker = seed; }
+      }
+      contract Coordinator() {
+        function materialize(int seed) ${modifier} {
+          Unit child = new Unit(seed);
+          require(true);
+        }
+      }`, KERNEL);
+    const inferred = compile('');
+    const explicit = compile('deploy');
+    const handler = (artifact: ReturnType<typeof compileString>) => artifact.messageBus?.handlers.find(
+      (candidate) => candidate.name === 'materialize',
+    );
+    expect(handler(explicit)).toMatchObject({ eligible: true });
+    expect(handler(explicit)?.childDeployments).toEqual(handler(inferred)?.childDeployments);
+    expect(explicit.messageBus?.route.blockLayout).toEqual(inferred.messageBus?.route.blockLayout);
+  });
+
+  it('keeps explicit deploy without a materializable typed child site fenced', () => {
+    const artifact = compileString(`contract Coordinator() {
+      int marker;
+      function lifecycleOnly() deploy { require(true); }
+      function control() public { require(true); }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'lifecycleOnly'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LIFECYCLE' });
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'control'))
+      .toMatchObject({ eligible: true });
+  });
+
   it.each([
     'constructor(int seed) { this.marker = helper(seed); } function helper(int x) internal returns (int) { return x; }',
     'constructor() { this.owner = msg.sender; }',

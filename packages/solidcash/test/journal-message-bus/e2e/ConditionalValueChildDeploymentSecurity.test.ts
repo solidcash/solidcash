@@ -662,4 +662,72 @@ describe('conditional value-bearing child deployment transcript security', () =>
       /transfer slot .* invalid|active transfer recipient.*OP_TRUE|not a canonical typed effect|preflight failed.*OP_VERIFY/i,
     );
   }, 240_000);
+
+  it('authenticates sha256-derived child activation, constructor state, and value', async () => {
+    const provider = createMessageBusCapstoneTestProvider();
+    const artifacts = compileStringMulti(`contract Unit(bytes32 digest) {
+        bytes32 stored;
+        constructor() { this.stored = digest; }
+        function keep() public { require(true); }
+      }
+      interface IFactory { function materialize(bytes seed, bytes expected, uint amount); }
+      contract Factory() {
+        function materialize(bytes seed, bytes expected, uint amount) public {
+          if (sha256(seed) == sha256(expected)) {
+            Unit child = new Unit{value: amount}(sha256(seed));
+          }
+          require(true);
+        }
+      }
+      contract Driver(address factory) {
+        function run(bytes seed, bytes expected, uint amount) public {
+          IFactory(factory).materialize(seed, expected, amount);
+          require(true);
+        }
+      }`, { forceStateful: true, messageBus: true, messageBusKernel: true, maximumInputBytes: 1_000_000 });
+    const connect = async (artifact: Artifact, args: readonly unknown[] = []): Promise<StatefulContract> => {
+      const base = new Contract(artifact, args as never[], { provider });
+      const setup = await setupStatefulUtxos(provider, base, artifact.stateLayout!, {}, { saltContract: true });
+      return StatefulContract.withCategory(base.withCategory(hexToBin(setup.categoryId)), setup.categoryId);
+    };
+    const factory = (await connect(artifacts.Factory)).registerChild(artifacts.Unit);
+    const driver = await connect(artifacts.Driver, [hexToBin(factory.inner.lockingBytecode)]);
+    expect(artifacts.Factory.messageBus?.handlers.find((handler) => handler.name === 'materialize'))
+      .toMatchObject({
+        eligible: true,
+        childDeployments: [{
+          activation: { kind: 'binary', operator: '==', left: { kind: 'hash' }, right: { kind: 'hash' } },
+          constructorArgs: [{ kind: 'hash', algorithm: 'sha256' }],
+          value: { amount: { kind: 'handlerInput', inputIndex: 2 } },
+        }],
+      });
+
+    await provider.addUtxo(getSatoshiContainerAddress(factory.inner, factory.categoryId), {
+      txid: 'a4'.repeat(32), vout: 1, satoshis: 20_000n,
+    });
+    const fee = await createBareP2pkhFeeFunder(provider, 1_000_000n);
+    const genesis = await createBareP2pkhFeeFunder(provider, 20_000n);
+    const seed = hexToBin('cafe01');
+    const other = hexToBin('cafe02');
+    const compose = (expected: Uint8Array, active: boolean): Promise<TransactionBuilder> => messageBus.compose({
+      preparedCalls: [
+        { contract: driver, functionName: 'run', args: [seed, expected, 4_000n] },
+        { contract: factory, functionName: 'materialize', args: [seed, expected, 4_000n] },
+      ],
+      funder: fee,
+      changeAddress: fee.unlocker.generateLockingBytecode(),
+      childDeployments: active ? [{ invocationIndex: 1, siteIndex: 0, funder: genesis }] : [],
+    }).build();
+
+    const selected = await compose(seed, true);
+    const skipped = await compose(other, false);
+    expect(vmRejects(selected)).toBe(false);
+    expect(vmRejects(skipped)).toBe(false);
+    const dataOutput = selected.outputs.find((output) => output.token?.category === genesis.utxo.txid
+      && output.token.nft?.capability === 'mutable')!;
+    const state = parsePushdataCommitment(dataOutput.token!.nft!.commitment, artifacts.Unit.stateLayout!, 0);
+    expect(binToHex(state.stored as Uint8Array)).toBe(binToHex(sha256(seed)));
+    dataOutput.token!.nft!.commitment = '01';
+    expect(vmRejects(selected)).toBe(true);
+  }, 120_000);
 });

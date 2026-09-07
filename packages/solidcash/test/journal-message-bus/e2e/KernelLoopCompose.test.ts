@@ -6857,6 +6857,78 @@ describe('kernel composite counter-key settlement', () => {
     }
   }, 180_000);
 
+  it('authenticates pop-then-push keys from a runtime-sized constructed-array prefix', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(`contract PopThenPushPrefix() {
+      mapping(int => int) slots;
+      function write(int n) public {
+        int[] xs = new int[](n);
+        for (int i = 0; i < n; i = i + 1) {
+          xs.pop();
+          xs.push(i + 1);
+          this.slots[xs[i]] = i;
+        }
+        require(true);
+      }
+      function seed(int key, int value) public { this.slots[key] = value; require(true); }
+      function check(int key, int expected) public { require(this.slots[key] == expected); }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
+      .toMatchObject({ eligible: true });
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+    );
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    for (const key of [0n, 1n, 4n]) await contract.call.seed(key, 99n).send();
+
+    await expect(contract.batch([{ function: 'write', args: [0n] }]).send()).resolves.toBeDefined();
+    await expect(contract.call.check(0n, 99n).send()).resolves.toBeDefined();
+    await expect(contract.batch([{ function: 'write', args: [1n] }]).send()).resolves.toBeDefined();
+    await expect(contract.call.check(1n, 0n).send()).resolves.toBeDefined();
+
+    const call = contract.batch([{ function: 'write', args: [4n] }]);
+    const builder = await call.build();
+    const transaction = builder.buildLibauthTransaction();
+    const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+    const vm = createVirtualMachineBch2026ForProvider(provider);
+    for (let inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex += 1) {
+      expect(vm.stateSuccess(vm.evaluate({ inputIndex, sourceOutputs, transaction })), `input ${inputIndex}`)
+        .toBe(true);
+    }
+
+    const writeInfo = artifact.abi.find((handler) => handler.name === 'write')?.sortedUpsertLoopInfo?.[0];
+    const routeInputIndex = builder.inputs.findIndex((input) =>
+      'abiFunction' in input.unlocker && input.unlocker.abiFunction.name === artifact.messageBus!.route.name);
+    const routeUnlocker = builder.inputs[routeInputIndex].unlocker;
+    if (!('params' in routeUnlocker) || writeInfo?.journalAccessStreamIndex === undefined) {
+      throw new Error('pop-then-push fixture has no kernel journal stream');
+    }
+    const journalIndex = artifact.messageBus!.route.inputs.findIndex((input) =>
+      input.name === '__internal__kernelJournalAccessStreams');
+    const journalRows = routeUnlocker.params[journalIndex];
+    const stream = Array.isArray(journalRows) && Array.isArray(journalRows[0])
+      ? journalRows[0][writeInfo.journalAccessStreamIndex] : undefined;
+    if (!(stream instanceof Uint8Array)) throw new Error('pop-then-push fixture has no row journal');
+    expect(decodeKernelEntryJournalAccesses(stream).map((access) => access.targetRecordOrdinal))
+      .toEqual([0, 0, 0, 1]);
+
+    const collection = artifact.stateLayout!.collections.find((candidate) => candidate.name === 'slots')!;
+    const entryLock = addressToLockScript(getEntryNftAddress(inner, categoryId, collection.signature));
+    const hostile = builder.buildLibauthTransaction();
+    const entryOutput = hostile.outputs.find((output) =>
+      binToHex(output.lockingBytecode) === binToHex(entryLock)
+      && output.token?.nft?.capability === 'mutable');
+    expect(entryOutput).toBeDefined();
+    entryOutput!.token!.nft!.commitment[entryOutput!.token!.nft!.commitment.length - 1] ^= 1;
+    expect(vm.stateSuccess(vm.evaluate({ inputIndex: routeInputIndex, sourceOutputs, transaction: hostile })))
+      .not.toBe(true);
+
+    await expect(call.send()).resolves.toBeDefined();
+    await expect(contract.call.check(0n, 2n).send()).resolves.toBeDefined();
+    await expect(contract.call.check(4n, 3n).send()).resolves.toBeDefined();
+  }, 180_000);
+
   it('authenticates an affine-threshold constructed-array pop recurrence', async () => {
     const provider = createTestProvider();
     const artifact = compileString(`contract ConditionalPopKeys() {

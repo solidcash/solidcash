@@ -451,6 +451,90 @@ describe('fixed conditional BCH transfer transcript security', () => {
     );
   }, 240_000);
 
+  it('authenticates bytes.concat recipients selected by branch and switch joins', async () => {
+    const provider = createMessageBusCapstoneTestProvider();
+    const artifacts = compileStringMulti(`interface IVault {
+        function branch(bool alternate, bytes fallbackRecipient, bytes first, bytes second, uint amount);
+        function select(int choice, bytes fallbackRecipient, bytes first, bytes second, uint amount);
+      }
+      contract Vault() {
+        function branch(bool alternate, bytes fallbackRecipient, bytes first, bytes second, uint amount) public {
+          bytes recipient = fallbackRecipient;
+          if (alternate) recipient = bytes.concat(first, second);
+          this.transfer(recipient, amount);
+          require(true);
+        }
+        function select(int choice, bytes fallbackRecipient, bytes first, bytes second, uint amount) public {
+          bytes recipient = fallbackRecipient;
+          switch (choice) { case 1: recipient = bytes.concat(first, second); break; default: break; }
+          this.transfer(recipient, amount);
+          require(true);
+        }
+      }
+      contract Driver(address vault) {
+        function runBranch(bool alternate, bytes fallbackRecipient, bytes first, bytes second, uint amount) public {
+          IVault(vault).branch(alternate, fallbackRecipient, first, second, amount); require(true);
+        }
+        function runSwitch(int choice, bytes fallbackRecipient, bytes first, bytes second, uint amount) public {
+          IVault(vault).select(choice, fallbackRecipient, first, second, amount); require(true);
+        }
+      }`, { forceStateful: true, messageBus: true, messageBusKernel: true, maximumInputBytes: 1_000_000 });
+    const connect = async (artifact: Artifact, args: readonly unknown[] = []): Promise<StatefulContract> => {
+      const base = new Contract(artifact, args as never[], { provider });
+      const setup = await setupStatefulUtxos(provider, base, artifact.stateLayout!, {}, { saltContract: true });
+      return StatefulContract.withCategory(base.withCategory(hexToBin(setup.categoryId)), setup.categoryId);
+    };
+    const vault = await connect(artifacts.Vault);
+    const driver = await connect(artifacts.Driver, [hexToBin(vault.inner.lockingBytecode)]);
+    for (const name of ['branch', 'select']) {
+      expect(artifacts.Vault.messageBus?.handlers.find((handler) => handler.name === name)).toMatchObject({
+        eligible: true,
+        transfers: [{ recipientRecipe: { kind: 'conditional', ifTrue: { kind: 'concat' } } }],
+      });
+    }
+    await provider.addUtxo(getSatoshiContainerAddress(vault.inner, vault.categoryId), {
+      txid: 'a5'.repeat(32), vout: 1, satoshis: 20_000n,
+    });
+    const fee = await createBareP2pkhFeeFunder(provider, 1_000_000n);
+    const joinedRecipient = fee.unlocker.generateLockingBytecode();
+    const fallbackRecipient = new Uint8Array(joinedRecipient);
+    fallbackRecipient[3] ^= 1;
+    expect(binToHex(joinedRecipient)).not.toBe(binToHex(fallbackRecipient));
+    const first = joinedRecipient.slice(0, 11);
+    const second = joinedRecipient.slice(11);
+    const build = (kind: 'branch' | 'switch', selected: boolean): Promise<TransactionBuilder> => {
+      const driverName = kind === 'branch' ? 'runBranch' : 'runSwitch';
+      const vaultName = kind === 'branch' ? 'branch' : 'select';
+      const selector = kind === 'branch' ? selected : (selected ? 1n : 0n);
+      const args = [selector, fallbackRecipient, first, second, 3_000n];
+      return messageBus.compose({
+        preparedCalls: [
+          { contract: driver, functionName: driverName, args },
+          { contract: vault, functionName: vaultName, args },
+        ],
+        funder: fee,
+        changeAddress: fallbackRecipient,
+      }).build();
+    };
+    for (const kind of ['branch', 'switch'] as const) {
+      for (const selected of [false, true]) {
+        const transaction = await build(kind, selected);
+        expect(vmRejects(transaction)).toBe(false);
+        const row = valueRows(transaction)[0];
+        const outputIndex = participantBase(envelopeOf(transaction), row.owner) + row.targetOffset;
+        expect(transaction.outputs[outputIndex]).toMatchObject({
+          amount: 3_000n,
+          to: selected ? joinedRecipient : fallbackRecipient,
+        });
+        const hostile = await build(kind, selected);
+        const hostileRow = valueRows(hostile)[0];
+        const hostileOutput = participantBase(envelopeOf(hostile), hostileRow.owner) + hostileRow.targetOffset;
+        hostile.outputs[hostileOutput].to = selected ? fallbackRecipient : joinedRecipient;
+        expect(vmRejects(hostile), `${kind}/${selected}`).toBe(true);
+      }
+    }
+  }, 180_000);
+
   it.each([
     ['address.transfer', 'transferStyle'],
     ['address.send', 'sendStyle'],

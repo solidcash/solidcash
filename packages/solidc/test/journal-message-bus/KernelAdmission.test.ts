@@ -1017,9 +1017,9 @@ describe('required kernel admission', () => {
   });
 
   it.each([
-    ['multiple varying parameters', 'descend(cursor - 1, other - 1);'],
-    ['a non-affine step', 'descend(cursor / 2, other);'],
-  ])('refuses void recursive event metadata for %s', (_label, recursiveCall) => {
+    ['multiple varying parameters', 'descend(cursor - 1, other - 1);', true],
+    ['a non-affine step', 'descend(cursor / 2, other);', false],
+  ])('classifies void recursive event metadata for %s', (_label, recursiveCall, eligible) => {
     const artifact = compileString(`contract C() {
       event Seen(int value);
       function descend(int cursor, int other) public {
@@ -1030,7 +1030,7 @@ describe('required kernel admission', () => {
       function control() public { require(true); }
     }`, KERNEL);
     expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'descend'))
-      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+      .toMatchObject(eligible ? { eligible: true } : { eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
   });
 
   it('keeps recursive event-domain admission invariant under source renaming', () => {
@@ -1056,9 +1056,9 @@ describe('required kernel admission', () => {
   });
 
   it.each([
-    ['multiple varying parameters', 'return descend(cursor - 1, other - 1);'],
-    ['a non-affine step', 'return descend(cursor / 2, other);'],
-  ])('refuses recursive event metadata for %s', (_label, recursiveReturn) => {
+    ['multiple varying parameters', 'return descend(cursor - 1, other - 1);', true],
+    ['a non-affine step', 'return descend(cursor / 2, other);', false],
+  ])('classifies recursive event metadata for %s', (_label, recursiveReturn, eligible) => {
     const artifact = compileString(`contract C() {
       event Seen(int value);
       function descend(int cursor, int other) public returns (int) {
@@ -1069,7 +1069,7 @@ describe('required kernel admission', () => {
       function control() public { require(true); }
     }`, KERNEL);
     expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'descend'))
-      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+      .toMatchObject(eligible ? { eligible: true } : { eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
   });
 
   it('refuses an event-bearing recursive closure without an exact occurrence plan', () => {
@@ -2069,13 +2069,13 @@ describe('required kernel admission', () => {
 
   it.each([
     ['a loop occurrence', `
-      while (take) { Child child = new Child{value: amount}(); break; }`],
-    ['an unmaterializable predicate', `
+      while (take) { Child child = new Child{value: amount}(); break; }`, false],
+    ['a sha256-derived predicate', `
       if (sha256(seed) == hex"0000000000000000000000000000000000000000000000000000000000000000") {
         Child child = new Child{value: amount}();
-      }`],
-  ])('keeps conditional value-bearing deployment fenced for %s', (_label, body) => {
-    expect(denied(`contract Child() { int marker; }
+      }`, true],
+  ])('classifies conditional value-bearing deployment for %s', (_label, body, eligible) => {
+    const handler = denied(`contract Child() { int marker; }
       contract Parent() {
         int created;
         function create(bool take, int amount, bytes seed) public {
@@ -2083,7 +2083,10 @@ describe('required kernel admission', () => {
           this.created = 1;
           require(true);
         }
-      }`, 'create')).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+      }`, 'create');
+    expect(handler).toMatchObject(eligible
+      ? { eligible: true }
+      : { eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
   });
 
   it('publishes and admits a complete fixed constructor genesis recipe', () => {
@@ -2608,7 +2611,7 @@ describe('required kernel admission', () => {
       .toMatchObject({ eligible: true });
   });
 
-  it('keeps byte concatenation aliases fenced until nonnumeric recipe arithmetic is modeled', () => {
+  it('publishes byte concatenation aliases as constructor recipes', () => {
     const artifact = compileString(`contract Unit(bytes4 marker) { bytes4 stored; constructor() {
         this.stored = marker;
       } }
@@ -2620,7 +2623,10 @@ describe('required kernel admission', () => {
         }
       }`, KERNEL);
     expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'materialize'))
-      .toMatchObject({ eligible: false });
+      .toMatchObject({
+        eligible: true,
+        childDeployments: [{ constructorArgs: [{ kind: 'concat', resultType: 'bytes4' }] }],
+      });
   });
 
   it('publishes scaled fixed-point constructor arithmetic', () => {
@@ -3020,7 +3026,7 @@ describe('required kernel admission', () => {
     expect(make.blockLayout?.slots.filter((slot) => slot.kind === 'deployDataNft')).toHaveLength(0);
   });
 
-  it('keeps effectful and unmodeled child recipes fenced per resolved overload', () => {
+  it('publishes arithmetic and hash child recipes per resolved overload', () => {
     const artifact = compileString(`contract Unit(bytes32 seed) { int marker; }
       contract Coordinator() {
         function make(bytes32 seed) public {
@@ -3037,7 +3043,10 @@ describe('required kernel admission', () => {
       eligible: true,
       childDeployments: [{ constructorArgs: [{ kind: 'cast', resultType: 'bytes32' }] }],
     });
-    expect(byInput.get('bytes')).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+    expect(byInput.get('bytes')).toMatchObject({
+      eligible: true,
+      childDeployments: [{ constructorArgs: [{ kind: 'hash', algorithm: 'sha256' }] }],
+    });
   });
 
   it('inlines a straight-line helper deployment and admits one pure conditional deployment', () => {
@@ -4082,11 +4091,12 @@ describe('required kernel admission', () => {
   });
 
   it.each([
-    ['pops into its pre-existing prefix before pushing', 'xs.pop(); xs.push(i + 1); this.slots[xs[i]] = i;'],
-    ['uses a runtime pop threshold', 'if (i > n - 2) xs.pop(); this.slots[xs[0]] = i;'],
+    ['pops into its pre-existing prefix before pushing',
+      'xs.pop(); xs.push(i + 1); this.slots[xs[i]] = i;', true],
+    ['uses a runtime pop threshold', 'if (i > n - 2) xs.pop(); this.slots[xs[0]] = i;', false],
     ['has a counter-selected unequal pop width',
-      'if (i > 0) { xs.pop(); xs.pop(); } else xs.pop(); this.slots[xs[0]] = i;'],
-  ])('refuses a constructed array which %s', (_label, body) => {
+      'if (i > 0) { xs.pop(); xs.pop(); } else xs.pop(); this.slots[xs[0]] = i;', false],
+  ])('classifies a constructed array which %s', (_label, body, eligible) => {
     const artifact = compileString(`contract C() {
       mapping(int => int) slots;
       function denied(int n) public {
@@ -4097,7 +4107,9 @@ describe('required kernel admission', () => {
       function control() public { require(true); }
     }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied'))
-      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_UNBOUNDED_KEY' });
+      .toMatchObject(eligible
+        ? { eligible: true }
+        : { eligible: false, rejectionReason: 'KERNEL_UNBOUNDED_KEY' });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control'))
       .toMatchObject({ eligible: true });
   });
@@ -6277,8 +6289,8 @@ describe('required kernel admission', () => {
 
   it.each([
     ['a state-derived arm', 'recipient = this.destination;', 'bytes destination;'],
-    ['an opaque arm', 'recipient = bytes.concat(first, second);', ''],
-  ])('keeps fixed transfer joins with %s fenced', (_label, arm, state) => {
+    ['a concat arm', 'recipient = bytes.concat(first, second);', ''],
+  ])('classifies fixed transfer joins with %s', (_label, arm, state) => {
     const artifact = compileString(`contract C() {
       ${state}
       function pay(bool alternate, bytes first, bytes second, int amount) public {
@@ -6288,11 +6300,17 @@ describe('required kernel admission', () => {
         require(true);
       }
     }`, KERNEL);
-    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'pay')).toMatchObject({
-      eligible: false, rejectionReason: 'KERNEL_LAYOUT',
-    });
-    expect(artifact.abi.find((candidate) => candidate.name === 'pay')?.transfers?.[0])
-      .not.toHaveProperty('recipientRecipe');
+    const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'pay');
+    if (_label === 'a concat arm') {
+      expect(handler).toMatchObject({
+        eligible: true,
+        transfers: [{ recipientRecipe: { kind: 'conditional', ifTrue: { kind: 'concat' } } }],
+      });
+    } else {
+      expect(handler).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+      expect(artifact.abi.find((candidate) => candidate.name === 'pay')?.transfers?.[0])
+        .not.toHaveProperty('recipientRecipe');
+    }
   });
 
   it('publishes typed conditional recipes for finite switch joins', () => {
@@ -6321,9 +6339,9 @@ describe('required kernel admission', () => {
   });
 
   it.each([
-    ['an opaque arm', 'case 1: recipient = bytes.concat(first, second); break;'],
+    ['a concat arm', 'case 1: recipient = bytes.concat(first, second); break;'],
     ['an ambiguous nested break', 'case 1: if (take) break; recipient = second; break;'],
-  ])('keeps a fixed transfer switch join with %s fenced', (_label, arm) => {
+  ])('classifies a fixed transfer switch join with %s', (_label, arm) => {
     const artifact = compileString(`contract C() {
       function pay(int choice, bool take, bytes first, bytes second, int amount) public {
         bytes recipient = first;
@@ -6332,9 +6350,13 @@ describe('required kernel admission', () => {
         require(true);
       }
     }`, KERNEL);
-    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'pay')).toMatchObject({
-      eligible: false, rejectionReason: 'KERNEL_LAYOUT',
-    });
+    const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'pay');
+    if (_label === 'a concat arm') {
+      expect(handler).toMatchObject({
+        eligible: true,
+        transfers: [{ recipientRecipe: { kind: 'conditional', ifTrue: { kind: 'concat' } } }],
+      });
+    } else expect(handler).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
   });
 
   it('replays a fixed transfer predicate after an exact self-terminating local loop', () => {

@@ -2085,19 +2085,48 @@ export default class AstBuilder
       && functionDefinition.returnTypes[0] instanceof FunctionType
       && functionDefinition.returnTypes[0].isExternal
       && (functionDefinition.body.statements?.length ?? 0) > 0) {
-      const statement = functionDefinition.body.statements![functionDefinition.body.statements!.length - 1];
-      const returned = statement instanceof ReturnNode && statement.expressions.length === 1
-        ? statement.expressions[0] : undefined;
-      if (returned instanceof StateAccessNode && this.currentContractFunctionNames.has(returned.name)) {
-        this.selfExternalFunctionReturnAliases.set(name, returned.name);
-        functionDefinition.returnedSelfFunctionName = returned.name;
-      } else if (statement instanceof AssignNode
-        && functionDefinition.returnNames?.includes(statement.identifier.name)
-        && statement.expression instanceof StateAccessNode
-        && this.currentContractFunctionNames.has(statement.expression.name)) {
-        // Named-return form: `returns (function() external p) { p = this.f; }`.
-        this.selfExternalFunctionReturnAliases.set(name, statement.expression.name);
-        functionDefinition.returnedSelfFunctionName = statement.expression.name;
+      const functionBodyStatements = functionDefinition.body.statements!;
+      const tail = functionBodyStatements[functionBodyStatements.length - 1];
+      const selfTarget = (expression: ExpressionNode | undefined): string | undefined =>
+        expression instanceof StateAccessNode && this.currentContractFunctionNames.has(expression.name)
+          ? expression.name : undefined;
+      const returnedTargets: Array<string | undefined> = [];
+      const collectReturns = (value: unknown, seen = new WeakSet<object>()): void => {
+        if (Array.isArray(value)) {
+          value.forEach((item) => collectReturns(item, seen));
+          return;
+        }
+        if (!(value instanceof Node) || seen.has(value)) return;
+        seen.add(value);
+        if (value instanceof ReturnNode) {
+          returnedTargets.push(value.expressions.length === 1
+            ? selfTarget(value.expressions[0]) : undefined);
+          return;
+        }
+        for (const [key, child] of Object.entries(value)) {
+          if (!['location', 'definition', 'referencedContract', 'resolvedFunction', 'symbolTable', 'type']
+            .includes(key)) collectReturns(child, seen);
+        }
+      };
+      collectReturns(functionDefinition.body);
+      const namedReturn = functionDefinition.returnNames?.length === 1
+        ? functionDefinition.returnNames[0] : undefined;
+      // The physical self pointer is one integer functionId, but a foreign or runtime-selected external pointer
+      // has a different representation. Prove the complete return surface rather than inferring identity from the
+      // last visited statement: the tail must terminate every fallthrough path, and every earlier explicit return
+      // must name that same self target. Named returns are kept deliberately strict: an unconditional final
+      // assignment dominates natural fallthrough, and an early return would need path-sensitive assignment proof.
+      const tailDirectTarget = tail instanceof ReturnNode && tail.expressions.length === 1
+        ? selfTarget(tail.expressions[0]) : undefined;
+      const tailNamedTarget = namedReturn && tail instanceof AssignNode
+        && tail.identifier.name === namedReturn ? selfTarget(tail.expression) : undefined;
+      const fixedTarget = tailDirectTarget
+        && returnedTargets.length > 0 && returnedTargets.every((target) => target === tailDirectTarget)
+        ? tailDirectTarget
+        : tailNamedTarget && returnedTargets.length === 0 ? tailNamedTarget : undefined;
+      if (fixedTarget) {
+        this.selfExternalFunctionReturnAliases.set(name, fixedTarget);
+        functionDefinition.returnedSelfFunctionName = fixedTarget;
       }
     }
     // Record a struct-returning function (for inline storage-pointer writes `Lib.f(slot).value = v`).

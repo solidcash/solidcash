@@ -5,7 +5,8 @@ import {
   computeCollectionSignature, EnumType, MappingType, PrimitiveType, StructDefinitionInfo, StructType, Type,
 } from '@solidcash/utils';
 import {
-  ArrayNode, AssemblyStatementNode, AssignNode, BinaryOpNode, BlockNode, BoolLiteralNode, BranchNode, BreakNode, CastNode,
+  ArrayNode, AssemblyStatementNode, AssignNode, BinaryOpNode, BlockNode, BoolLiteralNode, BranchNode, BreakNode,
+  BytesConcatNode, CastNode,
   CollectionIterationNode,
   ContinueNode, DeleteLocalNode, DoWhileNode, ExpressionNode, FunctionDefinitionNode, HexLiteralNode, IdentifierNode,
   FunctionCallNode, InstantiationNode, IntLiteralNode, Node, ReturnNode, RevertNode, SwitchNode, TryCatchNode,
@@ -15,6 +16,7 @@ import {
   AddressSendExpressionNode,
   StateAccessNode,
   StateAssignNode,
+  StringConcatNode,
   DeleteStateNode,
 } from './ast/AST.js';
 import { GlobalFunction } from './ast/Globals.js';
@@ -169,6 +171,27 @@ export function childDeploymentValueRecipe(
   if (expression instanceof HexLiteralNode) {
     return declaredType
       ? { kind: 'bytesLiteral', value: binToHex(expression.value), resultType: declaredType } : undefined;
+  }
+  if (expression instanceof BytesConcatNode || expression instanceof StringConcatNode) {
+    // The surface builtins deliberately accept bytes/string mixtures, but the recipe evaluator exposes a typed
+    // value rather than an untyped stack item. Admit only homogeneous calls so reproducing the value cannot depend
+    // on an implicit bytes/string interpretation at the child ABI boundary. The AST's own result type is
+    // authoritative: bytes.concat is always dynamic bytes, while string.concat is always string; operand bytesN
+    // widths remain attached to their nested recipes.
+    // Early kernel admission runs before TypeCheckTraversal has stamped the node, so use the intrinsic's fixed
+    // surface result in that phase. Later analyses retain the identical type from the typed AST.
+    const resultType = declaredType ?? (expression instanceof BytesConcatNode ? 'bytes' : 'string');
+    if (expression.parameters.length === 0) return undefined;
+    const operands = expression.parameters.map((parameter) => childDeploymentValueRecipe(
+      parameter, handlerInputs, true, handlerInputTypes, aliases, aliasDefinitions,
+      undefined, structStack,
+    ));
+    const operandTypeSupported = expression instanceof BytesConcatNode
+      ? (type: string | undefined): boolean => /^bytes(?:[1-9]|[12]\d|3[0-2])?$/.test(type ?? '')
+      : (type: string | undefined): boolean => type === 'string';
+    return operands.every((operand) => operand && operandTypeSupported(operand.resultType))
+      ? { kind: 'concat', resultType, operands: operands as ChildDeploymentValueRecipe[] }
+      : undefined;
   }
   if (expression instanceof FunctionCallNode && pureHashFunctions.has(expression.identifier.name)
     && !expression.resolvedFunction && expression.parameters.length === 1) {

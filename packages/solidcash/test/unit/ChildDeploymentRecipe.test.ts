@@ -125,6 +125,32 @@ describe('child deployment recipe evaluation', () => {
     )).toEqual(sha256.hash(hexToBin('abcdcafe')));
   });
 
+  it('round-trips compiler-emitted static bytes.concat and string.concat recipes', () => {
+    const artifact = compileString(`
+      contract Payload(bytes5 joined, bytes32 digest) { bytes32 stored; constructor() { this.stored = digest; } }
+      contract Factory() {
+        function create(bytes2 first, bytes3 second, string left, string right) public {
+          Payload child = new Payload(
+            bytes5(bytes.concat(first, second)),
+            sha256(string.concat(left, right))
+          );
+          require(true);
+        }
+      }
+    `, { forceStateful: true, messageBus: true, messageBusKernel: true });
+    const deployment = artifact.messageBus?.handlers.find((handler) => handler.name === 'create')
+      ?.childDeployments?.[0];
+    expect(deployment).toBeDefined();
+    const args = [hexToBin('abcd'), hexToBin('cafe01'), 'Stra', 'ße'];
+    const inputTypes = ['bytes2', 'bytes3', 'string', 'string'];
+    expect(evaluateChildDeploymentRecipe(
+      deployment!.constructorArgs[0] as ChildDeploymentValueRecipe, args, inputTypes, false,
+    )).toEqual(hexToBin('abcdcafe01'));
+    expect(evaluateChildDeploymentRecipe(
+      deployment!.constructorArgs[1] as ChildDeploymentValueRecipe, args, inputTypes, false,
+    )).toEqual(sha256.hash(utf8ToBin('Straße')));
+  });
+
   it('hashes a numeric recipe using its VM stack encoding', () => {
     expect(evaluateChildDeploymentRecipe({
       kind: 'hash', algorithm: 'sha256', resultType: 'bytes32',

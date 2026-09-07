@@ -86,6 +86,68 @@ describe('pure child deployment recipes', () => {
     });
   });
 
+  it('publishes the dedicated bytes.concat and string.concat AST forms', () => {
+    const bytesArtifact = compileString(`
+      contract Payload(bytes5 joined) { bytes5 stored; constructor() { this.stored = joined; } }
+      contract Factory() {
+        function create(bytes2 first, bytes3 second) public {
+          Payload child = new Payload(bytes5(bytes.concat(first, second))); require(true);
+        }
+      }
+    `, KERNEL);
+    expect(bytesArtifact.messageBus?.handlers.find((handler) => handler.name === 'create')).toMatchObject({
+      eligible: true,
+      childDeployments: [{ constructorArgs: [{
+        kind: 'cast', resultType: 'bytes5', operand: {
+          kind: 'concat', resultType: 'bytes', operands: [
+            { kind: 'handlerInput', inputIndex: 0, resultType: 'bytes2' },
+            { kind: 'handlerInput', inputIndex: 1, resultType: 'bytes3' },
+          ],
+        },
+      }] }],
+    });
+
+    const stringArtifact = compileString(`
+      contract Payload(bytes32 digest) { bytes32 stored; constructor() { this.stored = digest; } }
+      contract Factory() {
+        function create(string left, string right) public {
+          Payload child = new Payload(sha256(string.concat(left, right))); require(true);
+        }
+      }
+    `, KERNEL);
+    expect(stringArtifact.messageBus?.handlers.find((handler) => handler.name === 'create')).toMatchObject({
+      eligible: true,
+      childDeployments: [{ constructorArgs: [{
+        kind: 'hash', algorithm: 'sha256', resultType: 'bytes32',
+        operand: {
+          kind: 'concat', resultType: 'string', operands: [
+            { kind: 'handlerInput', inputIndex: 0, resultType: 'string' },
+            { kind: 'handlerInput', inputIndex: 1, resultType: 'string' },
+          ],
+        },
+      }] }],
+    });
+  });
+
+  it.each([
+    ['mixed byte/string operands', 'bytes', 'bytes part, string suffix', 'bytes.concat(part, suffix)'],
+    ['mixed string/byte operands', 'string', 'string part, bytes suffix', 'string.concat(part, suffix)'],
+    ['transaction-dependent operands', 'bytes', 'bytes part', 'bytes.concat(part, tx.inputs[0].lockingBytecode)'],
+  ])('keeps static concat with %s out of child recipes', (_label, childType, parameters, expression) => {
+    const artifact = compileString(`
+      contract Payload(${childType} joined) { bytes32 stored; constructor() { this.stored = sha256(joined); } }
+      contract Factory() {
+        function create(${parameters}) public { Payload child = new Payload(${expression}); require(true); }
+      }
+    `, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'create'))
+      .toMatchObject({
+        eligible: false,
+        rejectionReason: 'KERNEL_LAYOUT',
+        childDeployments: [{ constructorArgs: [{ kind: 'expression' }] }],
+      });
+  });
+
   it('publishes numeric hashing with one explicit VM-stack operand', () => {
     const artifact = compileString(`
       contract Payload(bytes32 digest) { bytes32 stored; constructor() { this.stored = digest; } }

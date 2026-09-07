@@ -1900,7 +1900,7 @@ export default class SymbolTableTraversal extends AstTraversal {
   // at default (zero) state, so a `this.<field>` read resolves to the field's value WRITTEN EARLIER in foo
   // (fieldExprs) or its type default. Identifiers resolve to a forwarded arg or an earlier local (subs).
   // Allowed node shapes: literals, those identifiers/state-reads, and pure arithmetic/comparison/bitwise/
-  // cast/ternary. Anything else (calls, control flow, unknown identifiers) is unfoldable. Mutates `expr`.
+  // concat/cast/ternary. Anything else (calls, control flow, unknown identifiers) is unfoldable. Mutates `expr`.
   private foldGenesisExpr(
     expr: ExpressionNode, subs: Map<string, ExpressionNode>, fieldExprs: Map<string, ExpressionNode>,
     fieldType: (name: string) => Type | undefined, expectedType?: Type,
@@ -1973,6 +1973,16 @@ export default class SymbolTableTraversal extends AstTraversal {
       aggregate.location = expr.location;
       aggregate.type = arrayType;
       return this.foldGenesisExpr(aggregate, subs, fieldExprs, fieldType, arrayType);
+    }
+    if (expr instanceof BytesConcatNode || expr instanceof StringConcatNode) {
+      const parameters = expr.parameters.map((parameter) =>
+        this.foldGenesisExpr(parameter, subs, fieldExprs, fieldType));
+      if (parameters.some((parameter) => parameter === null)) return null;
+      expr.parameters = parameters as ExpressionNode[];
+      // Constructor proofing also runs before the ordinary type pass. These intrinsics have fixed surface result
+      // types, so stamp the same type TypeCheckTraversal will assign before recipe analysis consumes the clone.
+      expr.type ??= expr instanceof BytesConcatNode ? new BytesType() : PrimitiveType.STRING;
+      return expr;
     }
     if (expr instanceof FunctionCallNode) {
       // A fixed-layout struct constructor is a pure aggregate value. Preserve its field order while folding

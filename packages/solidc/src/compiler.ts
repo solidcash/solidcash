@@ -4220,9 +4220,6 @@ function synthesizeMessageBusRoute(
                 .map((parameter) => [parameter.name, abiTypeString(parameter.type)] as const));
               const constructorStatements = child.constructorDef?.body.statements ?? [];
               if (constructorStatements.length > 0 || foldedProof) {
-                if (child.stateVariables.some((state) => state.type instanceof StructType)) {
-                  deploymentStateInitializationUnsupported = true;
-                }
                 // Admission precedes the full symbol pass. Run the canonical folder on a clone so proof
                 // construction cannot mutate or erase the production node's later deploy-then-call state.
                 const admissionNode = foldedProof ?? Object.assign(

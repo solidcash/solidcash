@@ -1,12 +1,13 @@
 import { binToHex } from '@bitauth/libauth';
 import {
-  abiTypeString, ChildDeploymentGenesisStateAbi, ChildDeploymentValueRecipe, EnumType,
+  abiTypeString, ChildDeploymentGenesisStateAbi, ChildDeploymentValueRecipe, EnumType, StructType,
 } from '@solidcash/utils';
 import {
   AssignNode, BinaryOpNode, BlockNode, BoolLiteralNode, BranchNode, CastNode, CollectionIterationNode,
   DeleteLocalNode, DoWhileNode, ExpressionNode, FunctionDefinitionNode, HexLiteralNode, IdentifierNode,
-  InstantiationNode, IntLiteralNode, Node, ReturnNode, SwitchNode, TryCatchNode, TupleAssignmentNode, UnaryOpNode,
-  UncheckedNode, VariableDefinitionNode, WhileNode, TransferStatementNode, AddressTransferStatementNode,
+  FunctionCallNode, InstantiationNode, IntLiteralNode, Node, ReturnNode, SwitchNode, TryCatchNode,
+  TupleAssignmentNode, UnaryOpNode, UncheckedNode, VariableDefinitionNode, WhileNode, TransferStatementNode,
+  AddressTransferStatementNode,
   AddressSendExpressionNode,
 } from './ast/AST.js';
 import { BinaryOperator, UnaryOperator } from './ast/Operator.js';
@@ -25,6 +26,11 @@ const unaryOperators = new Set<UnaryOperator>([
 const materializableCastType = /^(?:bool|bigint|u?int(?:8|16|24|32|40|48|56|64|72|80|88|96|104|112|120|128|136|144|152|160|168|176|184|192|200|208|216|224|232|240|248|256)?|(?:u?fixed)(?:\d+x\d+)?|bytes(?:[1-9]|[12]\d|3[0-2])?)$/;
 // eslint-disable-next-line max-len
 const numericRecipeType = /^(?:bigint|u?int(?:8|16|24|32|40|48|56|64|72|80|88|96|104|112|120|128|136|144|152|160|168|176|184|192|200|208|216|224|232|240|248|256)?)$/;
+// eslint-disable-next-line max-len
+const materializableGenesisLeafType = /^(?:bool|bigint|u?int(?:8|16|24|32|40|48|56|64|72|80|88|96|104|112|120|128|136|144|152|160|168|176|184|192|200|208|216|224|232|240|248|256)?|(?:u?fixed)(?:\d+x\d+)?|bytes(?:[1-9]|[12]\d|3[0-2])|address|pubkey|datasig)$/;
+
+const physicalRecipeType = (type: { toString(): string }): string =>
+  type instanceof EnumType ? 'bigint' : abiTypeString(type as never);
 
 const fixedRecipeDecimals = (type: string | undefined): number | undefined => {
   if (!type) return undefined;
@@ -71,6 +77,28 @@ export function childDeploymentValueRecipe(
   if (expression instanceof HexLiteralNode) {
     return declaredType
       ? { kind: 'bytesLiteral', value: binToHex(expression.value), resultType: declaredType } : undefined;
+  }
+  if (expression instanceof FunctionCallNode && expression.type instanceof StructType
+    && expression.identifier.name === expression.type.name && !expression.resolvedFunction) {
+    const structType = expression.type;
+    if (expression.parameters.length !== structType.fields.length
+      || structType.fields.some((field) => field.type instanceof StructType
+        || !materializableGenesisLeafType.test(physicalRecipeType(field.type)))) return undefined;
+    const elements = expression.parameters.map((parameter, index) => {
+      let element = childDeploymentValueRecipe(
+        parameter, handlerInputs, true, handlerInputTypes, aliases, aliasDefinitions,
+      );
+      const targetType = physicalRecipeType(structType.fields[index].type);
+      const sourceType = element?.resultType ?? recipeType(parameter);
+      if (element && sourceType && sourceType !== targetType) {
+        if (!materializableCastType.test(targetType)) return undefined;
+        element = { kind: 'cast', resultType: targetType, operand: element };
+      }
+      return element;
+    });
+    return elements.every((element) => element !== undefined)
+      ? { kind: 'aggregate', resultType: structType.name, elements: elements as ChildDeploymentValueRecipe[] }
+      : undefined;
   }
   if (expression instanceof CastNode) {
     const operand = childDeploymentValueRecipe(
@@ -215,25 +243,22 @@ export function analyzeFixedBchEffectRecipes(
   const sameRecipe = (
     left: ChildDeploymentValueRecipe, right: ChildDeploymentValueRecipe,
   ): boolean => JSON.stringify(left) === JSON.stringify(right);
-  const mergeBooleanRecipe = (
+  const mergeConditionalRecipe = (
     condition: ChildDeploymentValueRecipe,
     whenTrue: ChildDeploymentValueRecipe,
     whenFalse: ChildDeploymentValueRecipe,
   ): ChildDeploymentValueRecipe | undefined => {
     if (sameRecipe(whenTrue, whenFalse)) return whenTrue;
-    if (condition.resultType !== 'bool' || whenTrue.resultType !== 'bool' || whenFalse.resultType !== 'bool') {
+    if (condition.resultType !== 'bool' || !whenTrue.resultType
+      || whenTrue.resultType !== whenFalse.resultType) {
       return undefined;
     }
-    // Pure boolean phi: (condition && true-arm) || (!condition && false-arm). Recipe operands are restricted to
-    // authenticated handler inputs, literals, casts, and pure scalar operators, so replaying this in the SDK
-    // neither observes state written by an arm nor repeats an effectful source expression.
+    // Typed pure phi. Recipe operands are restricted to authenticated handler inputs, literals, casts, and pure
+    // scalar operators, so replaying this in the SDK neither observes state written by an arm nor repeats an
+    // effectful source expression.
     return {
-      kind: 'binary', operator: '||', resultType: 'bool',
-      left: { kind: 'binary', operator: '&&', resultType: 'bool', left: condition, right: whenTrue },
-      right: {
-        kind: 'binary', operator: '&&', resultType: 'bool',
-        left: negate(condition), right: whenFalse,
-      },
+      kind: 'conditional', resultType: whenTrue.resultType,
+      condition, ifTrue: whenTrue, ifFalse: whenFalse,
     };
   };
   const mergeBranchAliases = (
@@ -248,7 +273,7 @@ export function analyzeFixedBchEffectRecipes(
       const trueRecipe = whenTrue.aliases.get(definition);
       const falseRecipe = whenFalse.aliases.get(definition);
       const merged = trueRecipe && falseRecipe && (sameRecipe(trueRecipe, falseRecipe)
-        ? trueRecipe : condition && mergeBooleanRecipe(condition, trueRecipe, falseRecipe));
+        ? trueRecipe : condition && mergeConditionalRecipe(condition, trueRecipe, falseRecipe));
       if (merged) environment.aliases.set(definition, merged);
       else environment.aliases.delete(definition);
     }
@@ -609,10 +634,10 @@ export function childDeploymentGenesisState(
     const variable = variables.find((candidate) => candidate.name === name);
     if (!variable || (!allowUnpackedLayout
       && (variable.nftIndex === undefined || variable.fieldIndex === undefined))) return undefined;
-    const type = variable.type instanceof EnumType ? 'bigint' : abiTypeString(variable.type as never);
-    // Dynamic/aggregate state needs chunk/struct-aware recipe encoding. Keep this first slice fixed and scalar.
-    // eslint-disable-next-line max-len
-    if (!/^(?:bool|bigint|u?int(?:8|16|24|32|40|48|56|64|72|80|88|96|104|112|120|128|136|144|152|160|168|176|184|192|200|208|216|224|232|240|248|256)?|(?:u?fixed)(?:\d+x\d+)?|bytes(?:[1-9]|[12]\d|3[0-2])|address|pubkey|datasig)$/.test(type)) return undefined;
+    const type = physicalRecipeType(variable.type);
+    // Flat fixed-layout structs are materialized as ordered aggregate recipes; dynamic or nested layouts remain
+    // fenced until their chunk topology and recursive encoding can be authenticated explicitly.
+    if (!(variable.type instanceof StructType) && !materializableGenesisLeafType.test(type)) return undefined;
     const value = childDeploymentValueRecipe(
       expression, handlerInputs, false, handlerInputTypes, aliases, aliasDefinitions,
     );

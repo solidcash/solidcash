@@ -235,6 +235,10 @@ export const evaluateChildDeploymentRecipe = (
     }
     return args[recipe.inputIndex];
   }
+  if (recipe.kind === 'aggregate') {
+    return recipe.elements.map((element) =>
+      evaluateChildDeploymentRecipe(element, args, inputTypes, solidityAbi)) as ConstructorArgument[];
+  }
   if (recipe.kind === 'intLiteral') return coerceRecipeValue(BigInt(recipe.value), 'bigint', resultType, solidityAbi);
   if (recipe.kind === 'boolLiteral') return coerceRecipeValue(recipe.value, 'bool', resultType, solidityAbi);
   if (recipe.kind === 'bytesLiteral') {
@@ -265,6 +269,18 @@ export const evaluateChildDeploymentRecipe = (
       return coerceRecipeValue(-numeric, operandTypeName, resultType, solidityAbi);
     }
     throw new Error(`messageBus: unsupported deployment recipe unary operator ${recipe.operator}`);
+  }
+  if (recipe.kind === 'conditional') {
+    const conditionType = recipeType(recipe.condition, inputTypes);
+    if (conditionType !== 'bool'
+      || recipeType(recipe.ifTrue, inputTypes) !== resultType
+      || recipeType(recipe.ifFalse, inputTypes) !== resultType) {
+      throw new Error('messageBus: conditional recipe branches must match its declared type');
+    }
+    const condition = evaluateChildDeploymentRecipe(recipe.condition, args, inputTypes, solidityAbi);
+    const selected = numericRecipeValue(condition, conditionType, solidityAbi) !== 0n
+      ? recipe.ifTrue : recipe.ifFalse;
+    return evaluateChildDeploymentRecipe(selected, args, inputTypes, solidityAbi);
   }
   const leftValue = evaluateChildDeploymentRecipe(recipe.left, args, inputTypes, solidityAbi);
   const leftType = recipeType(recipe.left, inputTypes);

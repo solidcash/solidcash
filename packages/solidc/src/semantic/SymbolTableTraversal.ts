@@ -1897,7 +1897,7 @@ export default class SymbolTableTraversal extends AstTraversal {
   // cast/ternary. Anything else (calls, control flow, unknown identifiers) is unfoldable. Mutates `expr`.
   private foldGenesisExpr(
     expr: ExpressionNode, subs: Map<string, ExpressionNode>, fieldExprs: Map<string, ExpressionNode>,
-    fieldType: (name: string) => Type | undefined,
+    fieldType: (name: string) => Type | undefined, expectedType?: Type,
   ): ExpressionNode | null {
     if (expr instanceof LiteralNode) return expr;
     // A child constructor or same-transaction initializer observes the deploying contract as msg.sender.
@@ -1920,13 +1920,42 @@ export default class SymbolTableTraversal extends AstTraversal {
       const prior = fieldExprs.get(expr.name);
       if (prior) return cloneNode(prior);
       const t = fieldType(expr.name);
-      return t ? createDefaultValueExpression(t, expr.location!) : null; // unknown name -> not foldable
+      if (!t) return null;
+      const value = createDefaultValueExpression(t, expr.location!);
+      value.type = t;
+      return value;
     }
     if (expr instanceof StateAccessNode) {
       const prior = fieldExprs.get(expr.name);
       if (prior) return cloneNode(prior);
       const t = fieldType(expr.name);
-      return t ? createDefaultValueExpression(t, expr.location!) : null; // fresh read = type default
+      if (!t) return null;
+      const value = createDefaultValueExpression(t, expr.location!);
+      value.type = t;
+      return value;
+    }
+    if (expr instanceof FunctionCallNode) {
+      // A fixed-layout struct constructor is a pure aggregate value. Preserve its field order while folding
+      // every field into the deploying handler's context; deployment recipe analysis decides whether each
+      // resulting leaf has a materializable scalar representation.
+      const structType = expr.type instanceof StructType ? expr.type
+        : expectedType instanceof StructType ? expectedType : this.structMap.get(expr.identifier.name);
+      if (!structType || expr.identifier.name !== structType.name || expr.resolvedFunction
+        || expr.parameters.length !== structType.fields.length) return null;
+      const parameters = expr.parameters.map((parameter, index) =>
+        this.foldGenesisExpr(parameter, subs, fieldExprs, fieldType, structType.fields[index].type));
+      if (parameters.some((parameter) => parameter === null)) return null;
+      expr.parameters = parameters as ExpressionNode[];
+      expr.type = structType;
+      return expr;
+    }
+    if (expr instanceof FieldAccessNode) {
+      const aggregate = this.foldGenesisExpr(expr.expression, subs, fieldExprs, fieldType);
+      const structType = aggregate?.type instanceof StructType ? aggregate.type
+        : aggregate instanceof FunctionCallNode ? this.structMap.get(aggregate.identifier.name) : undefined;
+      const fieldIndex = structType?.fields.findIndex((field) => field.name === expr.name) ?? -1;
+      if (!(aggregate instanceof FunctionCallNode) || !structType || fieldIndex < 0) return null;
+      return cloneNode(aggregate.parameters[fieldIndex]);
     }
     if (expr instanceof BinaryOpNode) {
       const l = this.foldGenesisExpr(expr.left, subs, fieldExprs, fieldType);
@@ -1987,14 +2016,18 @@ export default class SymbolTableTraversal extends AstTraversal {
         if (!folded) return false;
         subs.set(stmt.name, folded); // inline this local into later expressions
       } else if (stmt instanceof StateAssignNode) {
-        const folded = this.foldGenesisExpr(cloneNode(stmt.expression), subs, fieldExprs, fieldType);
+        const folded = this.foldGenesisExpr(
+          cloneNode(stmt.expression), subs, fieldExprs, fieldType, writableFieldType(stmt.name),
+        );
         if (!folded) return false;
         fieldExprs.set(stmt.name, folded);
         wrote = true;
       } else if (stmt instanceof AssignNode && stmt.identifier instanceof IdentifierNode) {
         // A not-yet-analyzed child body writes state as a BARE assign (the StateAssign rewrite happens in
         // the child's own pass): a local reassign updates subs, a child-field name is a state write.
-        const folded = this.foldGenesisExpr(cloneNode(stmt.expression), subs, fieldExprs, fieldType);
+        const folded = this.foldGenesisExpr(
+          cloneNode(stmt.expression), subs, fieldExprs, fieldType, writableFieldType(stmt.identifier.name),
+        );
         if (!folded) return false;
         if (subs.has(stmt.identifier.name)) {
           subs.set(stmt.identifier.name, folded);

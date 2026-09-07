@@ -4621,6 +4621,62 @@ describe('kernel composite counter-key settlement', () => {
     ]);
   }, 180_000);
 
+  it('settles event-only canonical continues in source order', async () => {
+    const exercise = async (body: string, zeroCommitments: readonly string[] = []): Promise<void> => {
+      const provider = createTestProvider();
+      const artifact = compileString(`contract EventContinue() {
+        event Before(int value);
+        event After(int value);
+        function run(int n) public {
+          ${body}
+          require(true);
+        }
+      }`, KERNEL);
+      const inner = new Contract(artifact, [], { provider });
+      const { categoryId } = await setupStatefulUtxos(
+        provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+      );
+      const contract = StatefulContract.withCategory(inner, categoryId);
+      for (const [bound, commitments] of [
+        [0n, zeroCommitments],
+        [4n, ['00', '51', '51', '52', '53', '53']],
+      ] as const) {
+        const builder = await contract.batch([{ function: 'run', args: [bound] }]).build();
+        const transaction = builder.buildLibauthTransaction();
+        expect(transaction.outputs
+          .filter((output) => output.token?.nft?.capability === 'none')
+          .map((output) => binToHex(output.token!.nft!.commitment)))
+          .toEqual(commitments);
+        const vm = createVirtualMachineBch2026ForProvider(provider);
+        const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+        for (let inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex += 1) {
+          expect(vm.stateSuccess(vm.evaluate({ inputIndex, sourceOutputs, transaction })),
+            `run(${bound}), input ${inputIndex}`).toBe(true);
+        }
+      }
+    };
+
+    await exercise(`for (int i = 0; i < n; i = i + 1) {
+      emit Before(i);
+      if (i % 2 == 0) continue;
+      emit After(i);
+    }`);
+    await exercise(`int i = 0;
+      while (i < n) {
+        emit Before(i);
+        if (i % 2 == 0) { i = i + 1; continue; }
+        emit After(i);
+        i = i + 1;
+      }`);
+    await exercise(`int i = 0;
+      do {
+        emit Before(i);
+        if (i % 2 == 0) { i = i + 1; continue; }
+        emit After(i);
+        i = i + 1;
+      } while (i < n);`, ['00']);
+  }, 180_000);
+
   it('replays affine recursive events at each current-frame value across source renaming', async () => {
     const variants = [
       { contractName: 'DescendingStream', functionName: 'descend', counterName: 'cursor', eventName: 'Seen' },

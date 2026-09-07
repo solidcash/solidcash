@@ -266,14 +266,22 @@ export interface FunctionBlockLayout {
  * One genesis input supplies the category; the corresponding output run is the child master followed by its
  * mutable data NFTs.
  */
-/** A pure scalar expression which an SDK can reproduce from one decoded handler row. */
+/** A pure value expression which an SDK can reproduce from one decoded handler row. */
 export type ChildDeploymentValueRecipe =
   | { kind: 'handlerInput'; inputIndex: number; resultType?: string }
   | { kind: 'intLiteral'; value: string; resultType: string }
   | { kind: 'boolLiteral'; value: boolean; resultType: string }
   | { kind: 'bytesLiteral'; value: string; resultType: string }
   | { kind: 'cast'; resultType: string; operand: ChildDeploymentValueRecipe }
+  | { kind: 'aggregate'; resultType: string; elements: readonly ChildDeploymentValueRecipe[] }
   | { kind: 'unary'; operator: '!' | '-'; resultType: string; operand: ChildDeploymentValueRecipe }
+  | {
+    kind: 'conditional';
+    resultType: string;
+    condition: ChildDeploymentValueRecipe;
+    ifTrue: ChildDeploymentValueRecipe;
+    ifFalse: ChildDeploymentValueRecipe;
+  }
   | {
     kind: 'binary';
     operator: '*' | '/' | '%' | '+' | '-' | '<' | '<=' | '>' | '>=' | '==' | '!=' | '&&' | '||';
@@ -325,7 +333,7 @@ export interface ChildDeploymentSiteAbi {
   categorySource: 'genesis-input-outpoint-txhash';
   constructorArgs: readonly (ChildDeploymentValueRecipe | { kind: 'expression' })[];
   salt?: { kind: 'handlerInput'; inputIndex: number } | { kind: 'literal'; value: string }
-    | ChildDeploymentValueRecipe | { kind: 'expression' };
+  | ChildDeploymentValueRecipe | { kind: 'expression' };
   /** BCH sent by this creation site in its separately reserved transfer slot. The recipient is always the
    * compiler-authenticated child locking bytecode and is therefore intentionally not caller-supplied metadata. */
   value?: {

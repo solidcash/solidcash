@@ -2050,11 +2050,75 @@ describe('required kernel admission', () => {
       });
   });
 
-  it('keeps aggregate constructor state fenced', () => {
+  it('publishes a fixed-layout struct constructor state recipe', () => {
     const artifact = compileString(`struct Pair { int left; int right; }
       contract Unit() { Pair pair; constructor() { this.pair.left = 1; } }
       contract Coordinator() {
         function materialize() public { Unit unit = new Unit(); require(true); }
+      }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'materialize'))
+      .toMatchObject({
+        eligible: true,
+        childDeployments: [{ genesisState: { fields: [{
+          name: 'pair', type: 'Pair', value: {
+            kind: 'aggregate', resultType: 'Pair',
+            elements: [
+              { kind: 'cast', resultType: 'int256', operand: { kind: 'intLiteral', value: '1' } },
+              { kind: 'cast', resultType: 'int256', operand: { kind: 'intLiteral', value: '0' } },
+            ],
+          },
+        }] } }],
+      });
+  });
+
+  it('publishes a whole fixed-layout struct constructor state recipe from handler inputs', () => {
+    const artifact = compileString(`struct Pair { int left; bool enabled; }
+      contract Unit() { Pair pair; constructor(int left, bool enabled) { this.pair = Pair(left, enabled); } }
+      contract Coordinator() {
+        function materialize(int left, bool enabled) public {
+          Unit unit = new Unit(left, enabled);
+          require(true);
+        }
+      }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'materialize'))
+      .toMatchObject({
+        eligible: true,
+        childDeployments: [{ genesisState: { fields: [{
+          name: 'pair', type: 'Pair', value: {
+            kind: 'aggregate', resultType: 'Pair',
+            elements: [
+              { kind: 'handlerInput', inputIndex: 0, resultType: 'int256' },
+              { kind: 'handlerInput', inputIndex: 1 },
+            ],
+          },
+        }] } }],
+      });
+  });
+
+  it('does not reinterpret an ordinary struct-returning helper as a struct constructor', () => {
+    const artifact = compileString(`struct Pair { int left; int right; }
+      contract Unit() {
+        Pair pair;
+        constructor(int seed) { this.pair = makePair(seed); }
+        function makePair(int seed) internal returns (Pair) { return Pair(seed, 0); }
+      }
+      contract Coordinator() {
+        function materialize(int seed) public { Unit unit = new Unit(seed); require(true); }
+      }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'materialize'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+  });
+
+  it.each([
+    'struct Payload { bytes data; int count; } contract Unit() { Payload payload; '
+      + 'constructor(bytes raw) { this.payload = Payload(raw, 1); } }',
+    'struct Inner { int value; } struct Outer { Inner inner; int tag; } '
+      + 'contract Unit() { Outer outer; constructor() { this.outer = Outer(Inner(1), 2); } }',
+  ])('keeps dynamic or nested struct constructor state fenced: %s', (child) => {
+    const args = child.includes('constructor(bytes') ? '0x01' : '';
+    const artifact = compileString(`${child}
+      contract Coordinator() {
+        function materialize() public { Unit unit = new Unit(${args}); require(true); }
       }`, KERNEL);
     expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'materialize'))
       .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
@@ -5262,14 +5326,62 @@ describe('required kernel admission', () => {
     expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'pay')).toMatchObject({
       eligible: true,
       transfers: [{ condition: {
-        kind: 'binary', operator: '||',
-        left: { kind: 'binary', operator: '&&' },
-        right: { kind: 'binary', operator: '&&' },
+        kind: 'ternary',
+        condition: { kind: 'source', source: { kind: 'forward', paramIndex: 1 } },
       } }],
     });
     expect(artifact.abi.find((candidate) => candidate.name === 'pay')?.transfers).toEqual([
       expect.objectContaining({ transferIndex: 0, condition: expect.anything() }),
     ]);
+  });
+
+  it('publishes typed conditional recipes for fixed transfer recipient and amount joins', () => {
+    const artifact = compileString(`contract C() {
+      function pay(bool alternate, bytes first, bytes second, int base) public {
+        bytes recipient = first;
+        int amount = base;
+        if (alternate) { recipient = second; amount = base + 7; }
+        this.transfer(recipient, amount);
+        require(true);
+      }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'pay')).toMatchObject({
+      eligible: true,
+      transfers: [{
+        recipientRecipe: {
+          kind: 'conditional', resultType: 'bytes',
+          condition: { kind: 'handlerInput', inputIndex: 0 },
+          ifTrue: { kind: 'handlerInput', inputIndex: 2 },
+          ifFalse: { kind: 'handlerInput', inputIndex: 1 },
+        },
+        amountRecipe: {
+          kind: 'conditional', resultType: 'int256',
+          condition: { kind: 'handlerInput', inputIndex: 0 },
+          ifTrue: { kind: 'cast', operand: { kind: 'binary', operator: '+' } },
+          ifFalse: { kind: 'handlerInput', inputIndex: 3 },
+        },
+      }],
+    });
+  });
+
+  it.each([
+    ['a state-derived arm', 'recipient = this.destination;', 'bytes destination;'],
+    ['an opaque arm', 'recipient = bytes.concat(first, second);', ''],
+  ])('keeps fixed transfer joins with %s fenced', (_label, arm, state) => {
+    const artifact = compileString(`contract C() {
+      ${state}
+      function pay(bool alternate, bytes first, bytes second, int amount) public {
+        bytes recipient = first;
+        if (alternate) { ${arm} }
+        this.transfer(recipient, amount);
+        require(true);
+      }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'pay')).toMatchObject({
+      eligible: false, rejectionReason: 'KERNEL_LAYOUT',
+    });
+    expect(artifact.abi.find((candidate) => candidate.name === 'pay')?.transfers?.[0])
+      .not.toHaveProperty('recipientRecipe');
   });
 
   it('keeps a fixed transfer predicate after a loop-carried assignment fenced', () => {
@@ -6016,6 +6128,51 @@ describe('required kernel admission', () => {
     expect(after?.runtimeLoopEvents?.[0].conditions).toMatchObject([{
       kind: 'unary', operator: '!', expression: { kind: 'binary', operator: '==' },
     }]);
+  });
+
+  it('publishes source-reachability predicates for event-only canonical continues', () => {
+    const artifact = compileString(`contract C() {
+      event Before(int value);
+      event After(int value);
+      function fromFor(int n) public {
+        for (int i = 0; i < n; i = i + 1) {
+          emit Before(i);
+          if (i % 2 == 0) continue;
+          emit After(i);
+        }
+        require(true);
+      }
+      function fromWhile(int n) public {
+        int i = 0;
+        while (i < n) {
+          emit Before(i);
+          if (i % 2 == 0) { i = i + 1; continue; }
+          emit After(i);
+          i = i + 1;
+        }
+        require(true);
+      }
+      function fromDoWhile(int n) public {
+        int i = 0;
+        do {
+          emit Before(i);
+          if (i % 2 == 0) { i = i + 1; continue; }
+          emit After(i);
+          i = i + 1;
+        } while (i < n);
+        require(true);
+      }
+    }`, KERNEL);
+    for (const name of ['fromFor', 'fromWhile', 'fromDoWhile']) {
+      const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === name);
+      expect(handler).toMatchObject({ eligible: true });
+      expect(handler?.runtimeLoopEvents?.[0]).toMatchObject({
+        eventSignatures: ['Before(int256)', 'After(int256)'],
+        conditions: [null, {
+          kind: 'unary', operator: '!', expression: { kind: 'binary', operator: '==' },
+        }],
+      });
+    }
   });
 
   it('fences event-only arguments with unmodeled loop-carried local or state values', () => {

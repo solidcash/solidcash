@@ -362,6 +362,17 @@ const transferEffects = (
     if (recipe.kind === 'unary') {
       return { kind: 'unary', operator: recipe.operator, expression: activationExpression(recipe.operand) };
     }
+    if (recipe.kind === 'aggregate') {
+      throw new Error('Aggregate recipe cannot be used as a fixed-effect activation');
+    }
+    if (recipe.kind === 'conditional') {
+      return {
+        kind: 'ternary',
+        condition: activationExpression(recipe.condition),
+        ifTrue: activationExpression(recipe.ifTrue),
+        ifFalse: activationExpression(recipe.ifFalse),
+      };
+    }
     return {
       kind: 'binary', operator: recipe.operator,
       left: activationExpression(recipe.left), right: activationExpression(recipe.right),

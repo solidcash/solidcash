@@ -37,7 +37,9 @@ describe('child deployment recipe evaluation', () => {
   });
 
   it('matches scaled fixed-point unary and binary VM arithmetic', () => {
-    const evaluate = (operator: Parameters<typeof fixedBinary>[0], left: bigint, right: bigint) =>
+    const evaluate = (
+      operator: Parameters<typeof fixedBinary>[0], left: bigint, right: bigint,
+    ): ReturnType<typeof evaluateChildDeploymentRecipe> =>
       evaluateChildDeploymentRecipe(fixedBinary(operator), [left, right], ['fixed128x2', 'fixed128x2'], true);
     expect(evaluate('+', 125n, 250n)).toBe(375n);
     expect(evaluate('-', 125n, 250n)).toBe(-125n);
@@ -62,6 +64,26 @@ describe('child deployment recipe evaluation', () => {
       kind: 'cast', resultType: 'int256',
       operand: { kind: 'handlerInput', inputIndex: 0, resultType: 'fixed128x2' },
     }, [-199n], ['fixed128x2'], true)).toBe(-1n);
+  });
+
+  it('selects one typed pure branch lazily and rejects mismatched branch types', () => {
+    const conditional: ChildDeploymentValueRecipe = {
+      kind: 'conditional', resultType: 'uint256',
+      condition: { kind: 'handlerInput', inputIndex: 0, resultType: 'bool' },
+      ifTrue: { kind: 'handlerInput', inputIndex: 1, resultType: 'uint256' },
+      ifFalse: { kind: 'handlerInput', inputIndex: 2, resultType: 'uint256' },
+    };
+    expect(evaluateChildDeploymentRecipe(
+      conditional, [true, 7n, 9n], ['bool', 'uint256', 'uint256'], true,
+    )).toBe(7n);
+    expect(evaluateChildDeploymentRecipe(
+      conditional, [false, 7n, 9n], ['bool', 'uint256', 'uint256'], true,
+    )).toBe(9n);
+    expect(() => evaluateChildDeploymentRecipe({
+      ...conditional,
+      ifFalse: { kind: 'handlerInput', inputIndex: 2, resultType: 'bytes' },
+    }, [false, 7n, Uint8Array.of(0x51)], ['bool', 'uint256', 'bytes'], true))
+      .toThrow(/branches must match/);
   });
 
   it('refuses malformed fixed-point recipes with mixed scales or scalar kinds', () => {

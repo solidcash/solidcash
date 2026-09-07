@@ -37,6 +37,14 @@ const LOCAL_OPCODES = new Set<number>([
   Op.OP_OUTPUTTOKENCATEGORY, Op.OP_OUTPUTTOKENCOMMITMENT, Op.OP_OUTPUTTOKENAMOUNT,
 ]);
 
+// These opcodes observe the enclosing execution frame, so their results cannot participate in a kernel handler:
+// direct calls and routed rows intentionally have different stack depths and active bytecode. An immediately
+// adjacent OP_DROP erases the observation before it can influence control flow, validation, or output state.
+const DISCARDED_AMBIENT_READ_OPCODES = new Set<number>([
+  Op.OP_DEPTH,
+  Op.OP_ACTIVEBYTECODE,
+]);
+
 // The code generator's StackEffect describes the net tracker update. Duplicating/inspecting operators consume no
 // slots in that model, but still require values to exist. These minima prove they cannot reach beneath values the
 // assembly block itself produced.
@@ -110,11 +118,10 @@ export function isKernelSafeNativeAssembly(node: AssemblyStatementNode): boolean
       main.push(pushedScriptNumber(element));
       continue;
     }
-    // OP_DEPTH observes the compiler-managed frame as well as values created by this block, so its result cannot
-    // participate in a kernel computation. The adjacent discard is nevertheless an exact semantic no-op on every
+    // An adjacent discard makes these otherwise route-dependent observations exact semantic no-ops on every
     // enclosing stack: neither opcode can fail and no observed value escapes. Keep the spelling deliberately
-    // atomic; even one intervening opcode could branch, verify, or select data using a route-dependent depth.
-    if (element === Op.OP_DEPTH && script[index + 1] === Op.OP_DROP) {
+    // atomic; even one intervening opcode could branch, verify, hash, or select data using the observed value.
+    if (DISCARDED_AMBIENT_READ_OPCODES.has(element) && script[index + 1] === Op.OP_DROP) {
       index += 1;
       continue;
     }

@@ -1867,6 +1867,7 @@ describe('required kernel admission', () => {
     ['absolute locktime constraint', 'OP_1 OP_CHECKLOCKTIMEVERIFY OP_DROP'],
     ['relative locktime constraint', 'OP_1 OP_CHECKSEQUENCEVERIFY OP_DROP'],
     ['immediately discarded ambient depth', 'OP_DEPTH OP_DROP'],
+    ['immediately discarded active bytecode', 'OP_ACTIVEBYTECODE OP_DROP'],
   ])('admits isolated native assembly with read-only %s', (_description, asm) => {
     const artifact = compileString(`pragma solidcash >=0.8.0;
       contract C() {
@@ -1901,7 +1902,8 @@ describe('required kernel admission', () => {
     ['data-signature predicate borrowing three compiler values', 'OP_CHECKDATASIG OP_DROP'],
     ['data-signature verifier borrowing one compiler value', 'OP_0 OP_0 OP_CHECKDATASIGVERIFY'],
     ['transaction signature check', 'OP_0 OP_0 OP_CHECKSIG OP_DROP'],
-    ['active-bytecode signature context', 'OP_ACTIVEBYTECODE OP_DROP'],
+    ['hashed active-bytecode context', 'OP_ACTIVEBYTECODE OP_SHA256 OP_DROP'],
+    ['copied active-bytecode context', 'OP_ACTIVEBYTECODE OP_DUP OP_2DROP'],
     ['inspection index borrowed from compiler stack', 'OP_OUTPUTVALUE OP_DROP'],
     ['locktime threshold borrowed from compiler stack', 'OP_CHECKLOCKTIMEVERIFY'],
     ['sequence threshold borrowed from compiler stack', 'OP_CHECKSEQUENCEVERIFY'],
@@ -2027,7 +2029,7 @@ describe('required kernel admission', () => {
       int value;
       function denied(S calldata arg, int next) public {
         assembly { sstore(value.slot, next) }
-        assembly { OP_ACTIVEBYTECODE OP_DROP }
+        assembly { OP_ACTIVEBYTECODE OP_SHA256 OP_DROP }
         require(true);
       }
       function control() public { require(true); }
@@ -4748,7 +4750,7 @@ describe('required kernel admission', () => {
   it('publishes KERNEL_* handlers when every entry point is refused', () => {
     const artifact = compileString(`pragma solidcash >=0.8.0;
       contract C() {
-        function denied() public { assembly { OP_ACTIVEBYTECODE OP_DROP } require(true); }
+        function denied() public { assembly { OP_ACTIVEBYTECODE OP_SHA256 OP_DROP } require(true); }
       }`, KERNEL);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')).toMatchObject({
       eligible: false,
@@ -8913,7 +8915,7 @@ describe('required kernel admission', () => {
 
   it('publishes available:false when every kernel handler is refused', () => {
     const artifact = compileString(`contract C() {
-      function denied() public { assembly { OP_ACTIVEBYTECODE OP_DROP } require(true); }
+      function denied() public { assembly { OP_ACTIVEBYTECODE OP_SHA256 OP_DROP } require(true); }
     }`, KERNEL);
     expect(artifact.messageBus?.available).toBe(false);
     expect(artifact.messageBus?.convention).toBe('kernel-row-loop');

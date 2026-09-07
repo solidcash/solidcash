@@ -18,13 +18,16 @@ const vmAccepts = (builder: TransactionBuilder): boolean => {
   ) === true);
 };
 
-describe('kernel native assembly discarded OP_DEPTH', () => {
-  it('executes independently of the route frame and preserves state authentication', async () => {
+describe('kernel native assembly discarded ambient reads', () => {
+  it.each([
+    ['stack depth', 'OP_DEPTH OP_DROP'],
+    ['active bytecode', 'OP_ACTIVEBYTECODE OP_DROP'],
+  ])('executes a discarded %s independently of the route frame and preserves state authentication', async (_name, asm) => {
     const provider = createMessageBusCapstoneTestProvider();
     const artifact = compileString(`contract Register() {
       int marker;
       function update(int next) public {
-        assembly { OP_DEPTH OP_DROP }
+        assembly { ${asm} }
         this.marker = next;
         require(true);
       }

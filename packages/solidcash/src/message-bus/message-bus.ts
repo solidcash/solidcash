@@ -99,6 +99,7 @@ export interface EncodedMessageBatch {
 /** Evaluate the immutable argument/literal predicate language used by fixed effect recipes. */
 export function evaluateFixedEffectPredicate(
   expression: ExternalCallExpression, args: readonly FunctionArgument[],
+  state: Readonly<Record<string, FunctionArgument>> = {},
 ): unknown {
   if (expression.kind === 'literal') {
     if (expression.type === 'bigint' && typeof expression.value === 'string') return BigInt(expression.value);
@@ -111,10 +112,12 @@ export function evaluateFixedEffectPredicate(
   }
   if (expression.kind === 'source' && expression.source?.kind === 'forward'
     && expression.source.paramIndex !== undefined) return args[expression.source.paramIndex];
+  if (expression.kind === 'state') return Object.hasOwn(state, expression.name ?? '')
+    ? state[expression.name!] : undefined;
   if (expression.kind === 'cast') return expression.expression
-    ? evaluateFixedEffectPredicate(expression.expression, args) : undefined;
+    ? evaluateFixedEffectPredicate(expression.expression, args, state) : undefined;
   if (expression.kind === 'unary' && expression.expression) {
-    const value = evaluateFixedEffectPredicate(expression.expression, args);
+    const value = evaluateFixedEffectPredicate(expression.expression, args, state);
     if (expression.operator === '!') return typeof value === 'boolean' ? !value : undefined;
     if (expression.operator === '-' && typeof value === 'bigint') return -value;
     if (expression.operator === '.length' && (typeof value === 'string' || value instanceof Uint8Array
@@ -122,11 +125,11 @@ export function evaluateFixedEffectPredicate(
     return undefined;
   }
   if (expression.kind === 'binary' && expression.left && expression.right) {
-    const left = evaluateFixedEffectPredicate(expression.left, args);
+    const left = evaluateFixedEffectPredicate(expression.left, args, state);
     if (left === undefined) return undefined;
     if (expression.operator === '&&' && typeof left === 'boolean' && !left) return false;
     if (expression.operator === '||' && typeof left === 'boolean' && left) return true;
-    const right = evaluateFixedEffectPredicate(expression.right, args);
+    const right = evaluateFixedEffectPredicate(expression.right, args, state);
     if (right === undefined) return undefined;
     const equal = left instanceof Uint8Array && right instanceof Uint8Array
       ? left.length === right.length && left.every((byte, index) => byte === right[index])
@@ -151,9 +154,9 @@ export function evaluateFixedEffectPredicate(
     }
   }
   if (expression.kind === 'ternary' && expression.condition && expression.ifTrue && expression.ifFalse) {
-    const selected = evaluateFixedEffectPredicate(expression.condition, args);
+    const selected = evaluateFixedEffectPredicate(expression.condition, args, state);
     return typeof selected === 'boolean'
-      ? evaluateFixedEffectPredicate(selected ? expression.ifTrue : expression.ifFalse, args) : undefined;
+      ? evaluateFixedEffectPredicate(selected ? expression.ifTrue : expression.ifFalse, args, state) : undefined;
   }
   return undefined;
 }

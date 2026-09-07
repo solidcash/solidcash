@@ -18,6 +18,7 @@ import {
   AddressSendExpressionNode,
   StateAccessNode,
   StateAssignNode,
+  StateVariableNode,
   StringConcatNode,
   DeleteStateNode,
 } from './ast/AST.js';
@@ -589,6 +590,7 @@ export interface FixedBchEffectRecipeAnalysis {
 export function analyzeFixedBchEffectRecipes(
   fn: FunctionDefinitionNode,
   helperFunctions: readonly FunctionDefinitionNode[] = [],
+  stateVariables: readonly StateVariableNode[] = [],
 ): WeakMap<FixedBchEffectNode, FixedBchEffectRecipeAnalysis> {
   const visibleInputs = fn.parameters.filter((parameter) => !parameter.name.startsWith('__internal__'));
   const handlerInputs = new Map(visibleInputs.map((parameter, index) => [parameter.name, index]));
@@ -611,6 +613,32 @@ export function analyzeFixedBchEffectRecipes(
     }
     return definition;
   };
+  const stateVariableTypes = new Map(stateVariables.map((variable) => [variable.name, variable.type]));
+  // Seed only direct scalar reads from the authenticated incoming state. Subsequent source-ordered writes and
+  // stateful calls update or delete these aliases below, so a transfer can never silently reuse stale pre-state.
+  // Collections and transaction signatures are deliberately absent from the executable recipe language.
+  const collectPreState = (value: unknown, seen = new WeakSet<object>()): void => {
+    if (Array.isArray(value)) {
+      value.forEach((item) => collectPreState(item, seen));
+      return;
+    }
+    if (!(value instanceof Node) || seen.has(value)) return;
+    seen.add(value);
+    if (value instanceof StateAccessNode) {
+      const stateType = value.type ?? value.stateVariable?.type ?? stateVariableTypes.get(value.name);
+      const resultType = stateType ? physicalRecipeType(stateType) : undefined;
+      if (resultType && materializableGenesisLeafType.test(resultType) && resultType !== 'sig') {
+        const definition = stateDefinition(value.name);
+        initialAliases.set(definition, { kind: 'state', name: value.name, resultType });
+        initialDefinitions.set(`this.${value.name}`, definition);
+      }
+    }
+    for (const [key, child] of Object.entries(value)) {
+      if (['definition', 'referencedContract', 'resolvedFunction', 'symbolTable'].includes(key)) continue;
+      collectPreState(child, seen);
+    }
+  };
+  collectPreState(fn.body);
   const result = new WeakMap<FixedBchEffectNode, FixedBchEffectRecipeAnalysis>();
   type Environment = {
     aliases: Map<object, ChildDeploymentValueRecipe>;

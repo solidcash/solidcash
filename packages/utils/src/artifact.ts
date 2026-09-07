@@ -268,9 +268,11 @@ export interface FunctionBlockLayout {
  * One genesis input supplies the category; the corresponding output run is the child master followed by its
  * mutable data NFTs.
  */
-/** A pure value expression which an SDK can reproduce from one decoded handler row. */
+/** A pure value expression which an SDK can reproduce from a decoded handler row and authenticated pre-state. */
 export type ChildDeploymentValueRecipe =
   | { kind: 'handlerInput'; inputIndex: number; resultType?: string }
+  /** A scalar decoded from the authenticated incoming participant state commitment. */
+  | { kind: 'state'; name: string; resultType: string }
   | { kind: 'intLiteral'; value: string; resultType: string }
   | { kind: 'boolLiteral'; value: boolean; resultType: string }
   | { kind: 'bytesLiteral'; value: string; resultType: string }

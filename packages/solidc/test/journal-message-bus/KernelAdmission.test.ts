@@ -6097,7 +6097,6 @@ describe('required kernel admission', () => {
   });
 
   it.each([
-    ['an unassigned state read', '', 'this.quantity'],
     ['a loop-carried state write', 'while (repeat) { this.quantity = amount; }', 'this.quantity'],
   ])('keeps fixed transfer operands with %s fenced', (_label, setup, amountExpression) => {
     const artifact = compileString(`contract C() {
@@ -6111,6 +6110,40 @@ describe('required kernel admission', () => {
     expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'pay')).toMatchObject({
       eligible: false, rejectionReason: 'KERNEL_LAYOUT',
     });
+  });
+
+  it('replays direct authenticated pre-state transfer operands before any source-ordered write', () => {
+    const artifact = compileString(`contract C() {
+      address destination;
+      int quantity;
+      function pay() public {
+        this.transfer(this.destination, this.quantity);
+        require(true);
+      }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'pay')).toMatchObject({
+      eligible: true,
+      transfers: [{
+        recipientRecipe: { kind: 'state', name: 'destination', resultType: 'address' },
+        amountRecipe: { kind: 'state', name: 'quantity', resultType: 'int256' },
+      }],
+    });
+  });
+
+  it('does not reuse authenticated pre-state after an unreplayable source-ordered write', () => {
+    const artifact = compileString(`contract C() {
+      int quantity;
+      function pay(bytes recipient) public {
+        this.quantity = tx.locktime;
+        this.transfer(recipient, this.quantity);
+        require(true);
+      }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'pay')).toMatchObject({
+      eligible: false, rejectionReason: 'KERNEL_LAYOUT',
+    });
+    expect(artifact.abi.find((candidate) => candidate.name === 'pay')?.transfers?.[0])
+      .not.toHaveProperty('amountRecipe');
   });
 
   it('replays a fixed transfer predicate through dominating mutable local aliases', () => {
@@ -6274,7 +6307,7 @@ describe('required kernel admission', () => {
     });
   });
 
-  it('fails closed for a fixed transfer after an opaque require path', () => {
+  it('replays a direct authenticated pre-state predicate through a require path', () => {
     const artifact = compileString(`contract C() {
       bool enabled;
       function pay(bytes recipient, int amount) public {
@@ -6284,10 +6317,10 @@ describe('required kernel admission', () => {
       }
     }`, KERNEL);
     expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'pay')).toMatchObject({
-      eligible: false, rejectionReason: 'KERNEL_LAYOUT',
+      eligible: true, transfers: [{ condition: { kind: 'state', name: 'enabled' } }],
     });
     expect(artifact.abi.find((candidate) => candidate.name === 'pay')?.transfers?.[0])
-      .toMatchObject({ condition: null });
+      .toMatchObject({ condition: { kind: 'state', name: 'enabled' } });
   });
 
   it.each([

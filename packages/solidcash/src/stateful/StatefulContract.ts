@@ -9183,9 +9183,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     args: readonly FunctionArgument[],
     handler: AbiFunction,
     executionArtifact: Artifact = this.inner.artifact,
+    authenticatedState?: Readonly<Record<string, FunctionArgument>>,
   ): Promise<boolean> {
     void executionArtifact;
-    const result = evaluateFixedEffectPredicate(expression, args);
+    const state = authenticatedState ?? await this.getState() as Readonly<Record<string, FunctionArgument>>;
+    const result = evaluateFixedEffectPredicate(expression, args, state);
     if (typeof result !== 'boolean') {
       throw new Error(`Could not resolve fixed BCH-transfer predicate in '${handler.name}'.`);
     }
@@ -32516,6 +32518,7 @@ export class StatefulFunctionCall {
     if (effectiveTransfers.length === 0 && this.compilerTransferRecipes.length > 0) {
       const { materializeFixedBchTransfer } = await import('../message-bus/compose.js');
       const materialized: typeof this.transfers = [];
+      const authenticatedState = await this.parentContract!.getState();
       for (const plan of this.compilerTransferRecipes) {
         if (plan.transfer.condition === null) {
           throw new Error(`messageBus: BCH transfer predicate in '${plan.handler.name}' is not canonical`);
@@ -32524,7 +32527,7 @@ export class StatefulFunctionCall {
           candidate.selector === plan.handler.selector || candidate.name === plan.handler.name);
         if (!handlerAbi) throw new Error(`Message-bus handler ABI '${plan.handler.name}' is missing`);
         if (plan.transfer.condition !== undefined && !(await this.parentContract!._resolveCompilerEffectPredicate(
-          plan.transfer.condition, plan.args, handlerAbi, plan.executionArtifact,
+          plan.transfer.condition, plan.args, handlerAbi, plan.executionArtifact, authenticatedState,
         ))) continue;
         materialized.push({
           outputSlot: plan.outputSlot,
@@ -32534,6 +32537,7 @@ export class StatefulFunctionCall {
             plan.handler.inputs.map((input) => input.type),
             plan.executionArtifact,
             this.parentContract!.inner.provider,
+            authenticatedState as Readonly<Record<string, FunctionArgument>>,
           ),
         });
       }

@@ -669,6 +669,94 @@ describe('fixed conditional BCH transfer transcript security', () => {
     expect(vmRejects(active)).toBe(true);
   }, 240_000);
 
+  it('materializes direct pre-state transfer recipes from authenticated participant state', async () => {
+    const provider = createMessageBusCapstoneTestProvider();
+    const artifacts = compileStringMulti(`interface IPayer { function pay(); }
+      contract Payer() {
+        bool enabled;
+        address destination;
+        uint quantity;
+        function pay() public {
+          if (this.enabled) this.transfer(this.destination, this.quantity);
+          require(true);
+        }
+      }
+      contract Driver(address payer) {
+        function run() public { IPayer(payer).pay(); require(true); }
+      }`, { forceStateful: true, messageBus: true, messageBusKernel: true, maximumInputBytes: 1_000_000 });
+    expect(artifacts.Payer.messageBus?.handlers.find((handler) => handler.name === 'pay')).toMatchObject({
+      eligible: true,
+      transfers: [{
+        recipientRecipe: { kind: 'state', name: 'destination', resultType: 'address' },
+        amountRecipe: { kind: 'state', name: 'quantity', resultType: 'uint256' },
+        condition: { kind: 'state', name: 'enabled' },
+      }],
+    });
+    const fee = await createBareP2pkhFeeFunder(provider, 1_000_000n);
+    const recipient = fee.unlocker.generateLockingBytecode();
+    const payerBase = new Contract(artifacts.Payer, [], { provider });
+    const payerSetup = await setupStatefulUtxos(provider, payerBase, artifacts.Payer.stateLayout!, {
+      enabled: true, destination: recipient, quantity: 2_000n,
+    }, { saltContract: true });
+    const payer = StatefulContract.withCategory(
+      payerBase.withCategory(hexToBin(payerSetup.categoryId)), payerSetup.categoryId,
+    );
+    const driverBase = new Contract(artifacts.Driver, [hexToBin(payer.inner.lockingBytecode)], { provider });
+    const driverSetup = await setupStatefulUtxos(
+      provider, driverBase, artifacts.Driver.stateLayout!, {}, { saltContract: true },
+    );
+    const driver = StatefulContract.withCategory(
+      driverBase.withCategory(hexToBin(driverSetup.categoryId)), driverSetup.categoryId,
+    );
+    await provider.addUtxo(getSatoshiContainerAddress(payer.inner, payer.categoryId), {
+      txid: 'e3'.repeat(32), vout: 1, satoshis: 20_000n,
+    });
+    const builder = await messageBus.compose({
+      preparedCalls: [
+        { contract: driver, functionName: 'run', args: [] },
+        { contract: payer, functionName: 'pay', args: [] },
+      ],
+      funder: fee,
+      changeAddress: recipient,
+    }).build();
+    expect(vmRejects(builder)).toBe(false);
+    const transfer = builder.outputs.find((output) => !output.token && output.amount === 2_000n
+      && binToHex(output.to as Uint8Array) === binToHex(recipient));
+    expect(transfer).toBeDefined();
+    transfer!.amount += 1n;
+    expect(vmRejects(builder)).toBe(true);
+
+    const disabledBase = new Contract(artifacts.Payer, [], { provider });
+    const disabledSetup = await setupStatefulUtxos(provider, disabledBase, artifacts.Payer.stateLayout!, {
+      enabled: false, destination: recipient, quantity: 2_000n,
+    }, { saltContract: true });
+    const disabled = StatefulContract.withCategory(
+      disabledBase.withCategory(hexToBin(disabledSetup.categoryId)), disabledSetup.categoryId,
+    );
+    const disabledDriverBase = new Contract(
+      artifacts.Driver, [hexToBin(disabled.inner.lockingBytecode)], { provider },
+    );
+    const disabledDriverSetup = await setupStatefulUtxos(
+      provider, disabledDriverBase, artifacts.Driver.stateLayout!, {}, { saltContract: true },
+    );
+    const disabledDriver = StatefulContract.withCategory(
+      disabledDriverBase.withCategory(hexToBin(disabledDriverSetup.categoryId)), disabledDriverSetup.categoryId,
+    );
+    await provider.addUtxo(getSatoshiContainerAddress(disabled.inner, disabled.categoryId), {
+      txid: 'e4'.repeat(32), vout: 1, satoshis: 20_000n,
+    });
+    const inactive = await messageBus.compose({
+      preparedCalls: [
+        { contract: disabledDriver, functionName: 'run', args: [] },
+        { contract: disabled, functionName: 'pay', args: [] },
+      ],
+      funder: fee,
+      changeAddress: recipient,
+    }).build();
+    expect(vmRejects(inactive)).toBe(false);
+    expect(valueRows(inactive)).toHaveLength(0);
+  }, 240_000);
+
   it('authenticates a fixed transfer after a successful early-return path', async () => {
     const provider = createMessageBusCapstoneTestProvider();
     const artifacts = compileStringMulti(`interface IPayer {

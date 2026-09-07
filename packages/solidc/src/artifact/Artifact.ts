@@ -575,13 +575,16 @@ const transferEffects = (
     nested.add(definition);
     return operandRecipe(definition.expression, nested);
   };
-  const fixedEffectRecipes = analyzeFixedBchEffectRecipes(fn, contract.functions);
+  const fixedEffectRecipes = analyzeFixedBchEffectRecipes(fn, contract.functions, contract.stateVariables);
   const contractRecipientRecipes = analyzeChildDeploymentRecipes(fn);
   const activationExpression = (
     recipe: ChildDeploymentValueRecipe,
   ): ExternalCallExpression => {
     if (recipe.kind === 'handlerInput') {
       return { kind: 'source', source: { kind: 'forward', paramIndex: recipe.inputIndex } };
+    }
+    if (recipe.kind === 'state') {
+      return { kind: 'state', name: recipe.name };
     }
     if (recipe.kind === 'intLiteral') {
       // External-call expressions use the VM's canonical integer literal spelling; casts around bounded values

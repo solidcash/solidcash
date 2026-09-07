@@ -296,6 +296,60 @@ describe('kernel switch and try fixed effects', () => {
     expect(handler).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
   });
 
+  it('replays branch-local and post-branch child constructor values', () => {
+    const local = select(`
+      contract Unit(int seed) { int marker; constructor() { this.marker = seed; } }
+      contract Store() {
+        function apply(bool enabled, int seed) public {
+          if (enabled) { int adjusted = seed + 10; Unit selected = new Unit(adjusted); }
+          else { Unit fallbackUnit = new Unit(seed); }
+          require(true);
+        }
+      }
+    `).handler;
+    expect(local).toMatchObject({
+      eligible: true,
+      childDeployments: [
+        { constructorArgs: [{ kind: 'cast', operand: { kind: 'binary', operator: '+' } }] },
+        { constructorArgs: [{ kind: 'handlerInput', inputIndex: 1 }] },
+      ],
+    });
+
+    const joined = select(`
+      contract Unit(int seed) { int marker; constructor() { this.marker = seed; } }
+      contract Store() {
+        function apply(bool enabled, int seed) public {
+          int adjusted = seed;
+          if (enabled) { adjusted = seed + 10; }
+          Unit child = new Unit(adjusted);
+          require(true);
+        }
+      }
+    `).handler;
+    expect(joined).toMatchObject({
+      eligible: true,
+      childDeployments: [{ constructorArgs: [{
+        kind: 'conditional', condition: { kind: 'handlerInput', inputIndex: 0 },
+        ifFalse: { kind: 'handlerInput', inputIndex: 1 },
+      }] }],
+    });
+  });
+
+  it('keeps abrupt branch exits fenced from deployment joins', () => {
+    const { handler } = select(`
+      contract Unit(int seed) { int marker; constructor() { this.marker = seed; } }
+      contract Store() {
+        function apply(bool enabled, int seed) public {
+          int adjusted = seed;
+          if (enabled) { adjusted = seed + 10; revert("stop"); }
+          Unit child = new Unit(adjusted);
+          require(true);
+        }
+      }
+    `);
+    expect(handler).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+  });
+
   it('publishes exact switch predicates for runtime counter-loop events', () => {
     const { handler } = select(`
       event Mark(int value);

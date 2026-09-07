@@ -331,9 +331,11 @@ Fixed-point scalar, array, and struct-field results use their scaled signed/unsi
 same recursive encoder.
 Native `pubkey` and `datasig` results use compact ABI framing. A transaction `sig` result remains refused because
 committing it into an output would change the transaction preimage signed by that value.
-Straight-line and finite-conditional child deployments publish compiler-owned frames for replayable constructor,
-value, and salt expressions. Folded genesis state supports scalar, enum, fixed-point, and recursively nested
-fixed-layout struct values; dynamic leaves, cyclic aggregates, loop-carried deployment topology, and opaque
+Straight-line and finite `if`/`else`/`switch` child deployments publish compiler-owned frames for replayable
+constructor, value, and salt expressions. Arm-local values and post-control-flow joins use typed conditional
+recipes with implicit unchanged paths and switch first-match semantics. Folded genesis state supports scalar,
+enum, fixed-point, recursively nested fixed-layout struct and fixed-array values, including a replayable ternary
+which selects a complete aggregate; dynamic leaves, cyclic aggregates, loop-carried deployment topology, and opaque
 constructor state remain `KERNEL_LAYOUT`. The child layout digest authenticates the reachable nested struct field
 names, types, and order, so the SDK cannot reinterpret the same commitment with different aggregate geometry.
 Compiler-owned public entry points are finalized before kernel admission. In particular, a contract using an
@@ -406,6 +408,10 @@ if a concrete runtime key aliases the fixed source, construction refuses the dup
 read-your-writes transition.
 Straight-line scalar assignments and finite `if`/`else` assignment joins before that loop are replayed as immutable
 snapshots, so the authenticated key is the value at the source write boundary rather than the function-entry value.
+A constructed local array may also pop once under a monotone literal comparison over a constant-step affine
+counter: the compiler derives the exact first satisfying occurrence and authenticates the closed prefix count.
+Runtime thresholds or steps, unequal conditional pop widths, and pop-then-push mutation of a pre-existing suffix
+remain fenced because they require a runtime recurrence or authenticated suffix trace.
 A stable,
 serializable per-iteration write guard (including an immutable loop-local alias) publishes the exact selected
 logical subset: the SDK sorts only selected keys, while the covenant proves range, uniqueness, predicate

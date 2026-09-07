@@ -6460,8 +6460,8 @@ export default class LowerVMapCounterLoops extends AstTraversal {
             // finite prefix sum `max(occurrence - 1, 0)`; other counter-dependent widths and loop-carried
             // selectors remain fenced.
             const unavailablePopNames = new Set(loopAssignedNames).add(name).add(canonical.logical);
-            const popAfterInitialIteration = (() => {
-              if (!fixedPops || !popSchedule!.widthExpression) return false;
+            const conditionalPopFirstOccurrence = (() => {
+              if (!fixedPops || !popSchedule!.widthExpression || canonical.stepExpression) return undefined;
               const unwrapZeroSum = (expression: ExpressionNode): ExpressionNode => {
                 if (expression instanceof BinaryOpNode && expression.operator === BinaryOperator.PLUS) {
                   if (expression.left instanceof IntLiteralNode && expression.left.value === 0n) {
@@ -6477,24 +6477,48 @@ export default class LowerVMapCounterLoops extends AstTraversal {
               if (!(selected instanceof TernaryOpNode)
                 || !(selected.ifTrue instanceof IntLiteralNode) || selected.ifTrue.value !== 1n
                 || !(selected.ifFalse instanceof IntLiteralNode) || selected.ifFalse.value !== 0n
-                || !(selected.condition instanceof BinaryOpNode)) return false;
+                || !(selected.condition instanceof BinaryOpNode)) return undefined;
               const condition = selected.condition;
               const direct = condition.left instanceof IdentifierNode
                 && condition.left.name === canonical.logical
-                && condition.right instanceof IntLiteralNode && condition.right.value === canonical.start;
+                && condition.right instanceof IntLiteralNode;
               const reversed = condition.right instanceof IdentifierNode
                 && condition.right.name === canonical.logical
-                && condition.left instanceof IntLiteralNode && condition.left.value === canonical.start;
+                && condition.left instanceof IntLiteralNode;
+              if (!direct && !reversed) return undefined;
+              const threshold = ((direct ? condition.right : condition.left) as IntLiteralNode).value;
+              const operator = direct ? condition.operator : (() => {
+                if (condition.operator === BinaryOperator.GT) return BinaryOperator.LT;
+                if (condition.operator === BinaryOperator.GE) return BinaryOperator.LE;
+                if (condition.operator === BinaryOperator.LT) return BinaryOperator.GT;
+                if (condition.operator === BinaryOperator.LE) return BinaryOperator.GE;
+                return condition.operator;
+              })();
               if (canonical.step > 0n) {
-                return (direct && condition.operator === BinaryOperator.GT)
-                  || (reversed && condition.operator === BinaryOperator.LT);
+                if (operator === BinaryOperator.GT) {
+                  return canonical.start > threshold
+                    ? 0n : (threshold - canonical.start) / canonical.step + 1n;
+                }
+                if (operator === BinaryOperator.GE) {
+                  return canonical.start >= threshold
+                    ? 0n : (threshold - canonical.start + canonical.step - 1n) / canonical.step;
+                }
+                return undefined;
               }
-              return (direct && condition.operator === BinaryOperator.LT)
-                || (reversed && condition.operator === BinaryOperator.GT);
+              const magnitude = -canonical.step;
+              if (operator === BinaryOperator.LT) {
+                return canonical.start < threshold
+                  ? 0n : (canonical.start - threshold) / magnitude + 1n;
+              }
+              if (operator === BinaryOperator.LE) {
+                return canonical.start <= threshold
+                  ? 0n : (canonical.start - threshold + magnitude - 1n) / magnitude;
+              }
+              return undefined;
             })();
             if (fixedPops && popSchedule!.widthExpression
               && containsNamedIdentifier(popSchedule!.widthExpression, unavailablePopNames)
-              && !popAfterInitialIteration) fixedPops = false;
+              && conditionalPopFirstOccurrence === undefined) fixedPops = false;
             const balancedResizes = !!balancedSchedule && balancedSchedule.sites > 0
               && balancedSchedule.delta === 0 && balancedSchedule.minimum >= 0;
             if (balancedResizes) continue;
@@ -6558,17 +6582,18 @@ export default class LowerVMapCounterLoops extends AstTraversal {
               ? replaceSnapshots(symbolicResizeWidth, snapshots)
               : new IntLiteralNode(BigInt(resizeWidth));
             resizeWidthExpression.location = statement.location;
-            const precedingResizes = popAfterInitialIteration
+            const precedingResizes = conditionalPopFirstOccurrence !== undefined
               ? (() => {
-                const afterInitial = new BinaryOpNode(
-                  cloneNode(occurrence), BinaryOperator.GT, new IntLiteralNode(0n),
+                const first = new IntLiteralNode(conditionalPopFirstOccurrence);
+                const afterThreshold = new BinaryOpNode(
+                  cloneNode(occurrence), BinaryOperator.GT, cloneNode(first),
                 );
-                afterInitial.location = statement.location;
+                afterThreshold.location = statement.location;
                 const prior = new BinaryOpNode(
-                  cloneNode(occurrence), BinaryOperator.MINUS, new IntLiteralNode(1n),
+                  cloneNode(occurrence), BinaryOperator.MINUS, first,
                 );
                 prior.location = statement.location;
-                const selected = new TernaryOpNode(afterInitial, prior, new IntLiteralNode(0n));
+                const selected = new TernaryOpNode(afterThreshold, prior, new IntLiteralNode(0n));
                 selected.location = statement.location;
                 return selected;
               })()

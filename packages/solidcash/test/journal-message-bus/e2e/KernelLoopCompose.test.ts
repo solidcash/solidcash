@@ -6255,16 +6255,16 @@ describe('kernel composite counter-key settlement', () => {
     }
   }, 180_000);
 
-  it('authenticates a constructed-array pop after the initial logical iteration', async () => {
+  it('authenticates an affine-threshold constructed-array pop recurrence', async () => {
     const provider = createTestProvider();
     const artifact = compileString(`contract ConditionalPopKeys() {
       mapping(int => int) slots;
       function write(int n) public {
-        int[] xs = new int[](n);
-        xs[0] = 10; xs[1] = 11; xs[2] = 12; xs[3] = 13;
-        for (int i = 0; i < n; i = i + 1) {
-          if (i > 0) xs.pop();
-          this.slots[xs[n - i - 1]] = i + 20;
+        int[] xs = new int[](5);
+        xs[0] = 10; xs[1] = 11; xs[2] = 12; xs[3] = 13; xs[4] = 14;
+        for (int i = 1; i < n; i = i + 2) {
+          if (i >= 5) xs.pop();
+          this.slots[xs[4 - (i - 1) / 2]] = i + 20;
         }
         require(true);
       }
@@ -6278,8 +6278,9 @@ describe('kernel composite counter-key settlement', () => {
       provider, inner, artifact.stateLayout!, {}, { saltContract: true },
     );
     const contract = StatefulContract.withCategory(inner, categoryId);
-    for (const key of [10n, 11n, 12n, 13n]) await contract.call.seed(key).send();
-    const call = contract.batch([{ function: 'write', args: [4n] }]);
+    await expect(contract.batch([{ function: 'write', args: [0n] }]).send()).resolves.toBeDefined();
+    for (const key of [10n, 11n, 12n, 13n, 14n]) await contract.call.seed(key).send();
+    const call = contract.batch([{ function: 'write', args: [10n] }]);
     const builder = await call.build();
     const routeInputIndex = builder.inputs.findIndex((input) =>
       'abiFunction' in input.unlocker && input.unlocker.abiFunction.name === artifact.messageBus!.route.name);
@@ -6291,7 +6292,7 @@ describe('kernel composite counter-key settlement', () => {
     const permutationRouteIndex = artifact.messageBus!.route.inputs.findIndex((input) =>
       input.name === permutationName);
     const rowPermutation = (routeUnlocker.params[permutationRouteIndex] as bigint[][])[0];
-    expect([...rowPermutation].sort((left, right) => Number(left - right))).toEqual([0n, 1n, 2n, 3n]);
+    expect([...rowPermutation].sort((left, right) => Number(left - right))).toEqual([1n, 3n, 5n, 7n, 9n]);
 
     const honestVm = createVirtualMachineBch2026ForProvider(provider);
     expect(honestVm.stateSuccess(honestVm.evaluate({
@@ -6315,7 +6316,9 @@ describe('kernel composite counter-key settlement', () => {
     builder.inputs[routeInputIndex].unlocker = routeUnlocker;
 
     await expect(call.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
-    for (const [key, expected] of [[13n, 20n], [12n, 21n], [11n, 22n], [10n, 23n]] as const) {
+    for (const [key, expected] of [
+      [14n, 21n], [13n, 23n], [12n, 25n], [11n, 27n], [10n, 29n],
+    ] as const) {
       await expect(contract.call.check(key, expected).send()).resolves.toBeDefined();
     }
   }, 180_000);

@@ -1,6 +1,6 @@
 import { binToHex } from '@bitauth/libauth';
 import {
-  abiTypeString, ArrayType, ChildDeploymentGenesisStateAbi, ChildDeploymentValueRecipe, EnumType,
+  abiTypeString, ArrayType, ChildDeploymentGenesisStateAbi, ChildDeploymentValueRecipe, EnumType, PrimitiveType,
   StructDefinitionInfo, StructType, Type,
 } from '@solidcash/utils';
 import {
@@ -8,7 +8,8 @@ import {
   CollectionIterationNode,
   ContinueNode, DeleteLocalNode, DoWhileNode, ExpressionNode, FunctionDefinitionNode, HexLiteralNode, IdentifierNode,
   FunctionCallNode, InstantiationNode, IntLiteralNode, Node, ReturnNode, RevertNode, SwitchNode, TryCatchNode,
-  TupleAssignmentNode, UnaryOpNode, UncheckedNode, VariableDefinitionNode, WhileNode, TransferStatementNode,
+  TernaryOpNode, TupleAssignmentNode, UnaryOpNode, UncheckedNode, VariableDefinitionNode, WhileNode,
+  TransferStatementNode,
   AddressTransferStatementNode,
   AddressSendExpressionNode,
 } from './ast/AST.js';
@@ -165,6 +166,26 @@ export function childDeploymentValueRecipe(
     return elements.every((element) => element !== undefined)
       ? { kind: 'aggregate', resultType: structType.name, elements: elements as ChildDeploymentValueRecipe[] }
       : undefined;
+  }
+  if (expression instanceof TernaryOpNode) {
+    const condition = childDeploymentValueRecipe(
+      expression.condition, handlerInputs, true, handlerInputTypes, aliases, aliasDefinitions,
+      PrimitiveType.BOOL, structStack,
+    );
+    const resultValueType = expectedType ?? expression.type;
+    if (!resultValueType || !materializableGenesisType(resultValueType, structStack)) return undefined;
+    const ifTrue = childDeploymentValueRecipe(
+      expression.ifTrue, handlerInputs, true, handlerInputTypes, aliases, aliasDefinitions,
+      resultValueType, structStack,
+    );
+    const ifFalse = childDeploymentValueRecipe(
+      expression.ifFalse, handlerInputs, true, handlerInputTypes, aliases, aliasDefinitions,
+      resultValueType, structStack,
+    );
+    const resultType = physicalRecipeType(resultValueType);
+    if (!condition || condition.resultType !== 'bool' || !ifTrue || !ifFalse
+      || ifTrue.resultType !== resultType || ifFalse.resultType !== resultType) return undefined;
+    return { kind: 'conditional', resultType, condition, ifTrue, ifFalse };
   }
   if (expression instanceof CastNode) {
     const operand = childDeploymentValueRecipe(
@@ -578,7 +599,7 @@ export function analyzeChildDeploymentRecipes(
     }
     return false;
   };
-  const childSwitchArmJoinSafe = (block: BlockNode): boolean => {
+  const childControlArmJoinSafe = (block: BlockNode): boolean => {
     const statements = block.statements ?? [];
     const permittedBreak = statements.at(-1) instanceof BreakNode ? statements.at(-1) : undefined;
     const containsAbruptExit = (value: unknown, seen = new WeakSet<object>()): boolean => {
@@ -713,14 +734,38 @@ export function analyzeChildDeploymentRecipes(
         continue;
       }
       if (statement instanceof BranchNode) {
-        // The branch predicate is authenticated separately as a deployment activation recipe. A `new` in an
-        // arm may still use immutable row inputs and dominating aliases; do not poison those value recipes merely
-        // because their physical occurrence is conditional. Branch-local aliases and joined assignments remain
-        // unresolved here and therefore fail closed as before.
         snapshotExpression(statement.condition, statementUnsafe);
-        snapshotExpression(statement.ifBlock, statementUnsafe);
-        if (statement.elseBlock) snapshotExpression(statement.elseBlock, statementUnsafe);
-        invalidateAssignments(statement);
+        const incomingAliases = new Map(aliases);
+        const incomingDefinitions = new Map(aliasDefinitions);
+        const condition = !statementUnsafe ? childDeploymentValueRecipe(
+          statement.condition, handlerInputs, true, handlerInputTypes, incomingAliases, incomingDefinitions,
+        ) : undefined;
+        const branchSupported = condition?.resultType === 'bool'
+          && childControlArmJoinSafe(statement.ifBlock)
+          && (!statement.elseBlock || childControlArmJoinSafe(statement.elseBlock));
+        // These callbacks execute synchronously and cannot escape this analysis iteration.
+        // eslint-disable-next-line @typescript-eslint/no-loop-func
+        const processArm = (armBlock: BlockNode): Map<object, ChildDeploymentValueRecipe> => {
+          aliases = new Map(incomingAliases);
+          aliasDefinitions = new Map(incomingDefinitions);
+          processBlock(armBlock, statementUnsafe || !branchSupported);
+          return new Map(aliases);
+        };
+        const trueAliases = processArm(statement.ifBlock);
+        const falseAliases = statement.elseBlock ? processArm(statement.elseBlock) : incomingAliases;
+        aliases = new Map(incomingAliases);
+        aliasDefinitions = incomingDefinitions;
+        if (!branchSupported) {
+          invalidateAssignments(statement);
+          priorReturn ||= containsReturn(statement);
+          continue;
+        }
+        const joined = new Map<object, ChildDeploymentValueRecipe>();
+        for (const definition of incomingDefinitions.values()) {
+          const recipe = joinedRecipe(condition, trueAliases.get(definition), falseAliases.get(definition));
+          if (recipe) joined.set(definition, recipe);
+        }
+        aliases = joined;
         priorReturn ||= containsReturn(statement);
         continue;
       }
@@ -741,8 +786,8 @@ export function analyzeChildDeploymentRecipes(
         });
         const switchSupported = discriminant !== undefined
           && matches.every((match) => match !== undefined)
-          && statement.cases.every((arm) => childSwitchArmJoinSafe(arm.body))
-          && (!statement.defaultCase || childSwitchArmJoinSafe(statement.defaultCase));
+          && statement.cases.every((arm) => childControlArmJoinSafe(arm.body))
+          && (!statement.defaultCase || childControlArmJoinSafe(statement.defaultCase));
         // Invoked synchronously for each arm; no callback escapes this switch-analysis iteration.
         // eslint-disable-next-line @typescript-eslint/no-loop-func
         const processArm = (armBlock: BlockNode): Map<object, ChildDeploymentValueRecipe> => {

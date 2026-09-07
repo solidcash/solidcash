@@ -2182,6 +2182,34 @@ describe('required kernel admission', () => {
       });
   });
 
+  it('publishes a typed conditional recipe selecting between fixed aggregate constructor values', () => {
+    const artifact = compileString(`struct Pair { int first; int second; }
+      contract Unit() {
+        Pair pair;
+        constructor(bool choose, int seed) {
+          this.pair = choose ? Pair(seed, seed + 1) : Pair(seed, seed + 2);
+        }
+      }
+      contract Coordinator() {
+        function materialize(bool choose, int seed) public {
+          Unit unit = new Unit(choose, seed);
+          require(true);
+        }
+      }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'materialize'))
+      .toMatchObject({
+        eligible: true,
+        childDeployments: [{ genesisState: { fields: [{
+          name: 'pair', value: {
+            kind: 'conditional', resultType: 'Pair',
+            condition: { kind: 'handlerInput', inputIndex: 0, resultType: 'bool' },
+            ifTrue: { kind: 'aggregate', resultType: 'Pair' },
+            ifFalse: { kind: 'aggregate', resultType: 'Pair' },
+          },
+        }] } }],
+      });
+  });
+
   it.each([
     'struct Payload { bytes data; int count; } contract Unit() { Payload payload; '
       + 'constructor(bytes raw) { this.payload = Payload(raw, 1); } }',
@@ -2280,8 +2308,6 @@ describe('required kernel admission', () => {
     'int adjusted; Unit unit = new Unit(adjusted);',
     'int adjusted = tx.locktime; Unit unit = new Unit(adjusted);',
     'unchecked { int adjusted = seed + 1; Unit unit = new Unit(adjusted); }',
-    'if (seed > 0) { int adjusted = seed + 1; Unit unit = new Unit(adjusted); }',
-    'int adjusted = seed; if (seed > 0) { adjusted = seed + 1; } Unit unit = new Unit(adjusted);',
     'int[] values = new int[](1); Unit unit = new Unit(values[0]);',
     'int adjusted = seed + 1; delete adjusted; Unit unit = new Unit(adjusted);',
     // Tuple writes are conservatively invalidated until per-slot recipes are modeled.
@@ -3603,7 +3629,7 @@ describe('required kernel admission', () => {
 
   it.each([
     ['pops into its pre-existing prefix before pushing', 'xs.pop(); xs.push(i + 1); this.slots[xs[i]] = i;'],
-    ['pops after a later counter threshold', 'if (i > 1) xs.pop(); this.slots[xs[0]] = i;'],
+    ['uses a runtime pop threshold', 'if (i > n - 2) xs.pop(); this.slots[xs[0]] = i;'],
     ['has a counter-selected unequal pop width',
       'if (i > 0) { xs.pop(); xs.pop(); } else xs.pop(); this.slots[xs[0]] = i;'],
   ])('refuses a constructed array which %s', (_label, body) => {
@@ -3622,7 +3648,7 @@ describe('required kernel admission', () => {
       .toMatchObject({ eligible: true });
   });
 
-  it('replays one pop after the initial canonical iteration', () => {
+  it('replays monotone literal-threshold pop prefix sums over affine counters', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) slots;
       function write(int n) public {
@@ -3643,8 +3669,51 @@ describe('required kernel admission', () => {
         }
         require(true);
       }
+      function writeNonUnit(int n) public {
+        int[] xs = new int[](8);
+        for (int i = 1; i < n; i = i + 2) {
+          if (i >= 5) xs.pop();
+          this.slots[xs[0]] = i;
+        }
+        require(true);
+      }
+      function writeReversed(int n) public {
+        int[] xs = new int[](8);
+        for (int i = 1; i < n; i = i + 2) {
+          if (5 <= i) xs.pop();
+          this.slots[xs[0]] = i;
+        }
+        require(true);
+      }
+      function writeDescendingNonUnit(int n) public {
+        int[] xs = new int[](8);
+        for (int i = 9; i >= n; i = i - 2) {
+          if (i <= 5) xs.pop();
+          this.slots[xs[0]] = i;
+        }
+        require(true);
+      }
+      function writeImmediate(int n) public {
+        int[] xs = new int[](8);
+        for (int i = 2; i < n; i = i + 2) {
+          if (i >= 0) xs.pop();
+          this.slots[xs[0]] = i;
+        }
+        require(true);
+      }
+      function writeBeyondDomain(int n) public {
+        int[] xs = new int[](8);
+        for (int i = 2; i < n; i = i + 2) {
+          if (i > 100) xs.pop();
+          this.slots[xs[0]] = i;
+        }
+        require(true);
+      }
     }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
-    for (const name of ['write', 'writeDescending']) {
+    for (const name of [
+      'write', 'writeDescending', 'writeNonUnit', 'writeReversed', 'writeDescendingNonUnit',
+      'writeImmediate', 'writeBeyondDomain',
+    ]) {
       expect(artifact.messageBus?.handlers.find((handler) => handler.name === name))
         .toMatchObject({ eligible: true });
     }

@@ -2002,11 +2002,12 @@ export default class SymbolTableTraversal extends AstTraversal {
       return expr;
     }
     if (expr instanceof TernaryOpNode) {
-      const c = this.foldGenesisExpr(expr.condition, subs, fieldExprs, fieldType);
-      const t = this.foldGenesisExpr(expr.ifTrue, subs, fieldExprs, fieldType);
-      const f = this.foldGenesisExpr(expr.ifFalse, subs, fieldExprs, fieldType);
+      const c = this.foldGenesisExpr(expr.condition, subs, fieldExprs, fieldType, PrimitiveType.BOOL);
+      const t = this.foldGenesisExpr(expr.ifTrue, subs, fieldExprs, fieldType, expectedType);
+      const f = this.foldGenesisExpr(expr.ifFalse, subs, fieldExprs, fieldType, expectedType);
       if (!c || !t || !f) return null;
       expr.condition = c; expr.ifTrue = t; expr.ifFalse = f;
+      if (expectedType) expr.type = expectedType;
       return expr;
     }
     // Index into a folded array value (`return m_s[i]` where m_s's genesis is a forwarded array arg):

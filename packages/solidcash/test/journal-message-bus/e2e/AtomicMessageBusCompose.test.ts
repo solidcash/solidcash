@@ -639,9 +639,12 @@ describe('messageBus.compose atomic transaction', () => {
         constructor() {
           this.marker = seed;
           this.phase = Phase(seed);
-          this.pair = Pair(seed, [
+          this.pair = seed == 1 ? Pair(seed, [
             Metrics(Phase(seed), fixed128x2(seed + 10)),
             Metrics(Phase(seed), fixed128x2(seed + 20))
+          ]) : Pair(seed, [
+            Metrics(Phase(seed), fixed128x2(seed + 30)),
+            Metrics(Phase(seed), fixed128x2(seed + 40))
           ]);
         }
         function keep() public { require(true); }
@@ -677,14 +680,10 @@ describe('messageBus.compose atomic transaction', () => {
           { name: 'marker', value: { kind: 'cast', operand: { kind: 'binary' } } },
           { name: 'phase', type: 'bigint', value: { kind: 'cast', resultType: 'bigint' } },
           { name: 'pair', type: 'Pair', value: {
-            kind: 'aggregate', resultType: 'Pair',
-            elements: [
-              { kind: 'cast', resultType: 'int256' },
-              { kind: 'aggregate', resultType: 'Metrics[2]', elements: [
-                { kind: 'aggregate', resultType: 'Metrics' },
-                { kind: 'aggregate', resultType: 'Metrics' },
-              ] },
-            ],
+            kind: 'conditional', resultType: 'Pair',
+            condition: { kind: 'binary', operator: '==' },
+            ifTrue: { kind: 'aggregate', resultType: 'Pair' },
+            ifFalse: { kind: 'aggregate', resultType: 'Pair' },
           } },
         ] },
       }],
@@ -727,7 +726,7 @@ describe('messageBus.compose atomic transaction', () => {
         { phase: 1n, weight: 1_100n }, { phase: 1n, weight: 2_100n },
       ] },
       { first: 2n, metrics: [
-        { phase: 2n, weight: 1_200n }, { phase: 2n, weight: 2_200n },
+        { phase: 2n, weight: 3_200n }, { phase: 2n, weight: 4_200n },
       ] },
     ]);
     const tampered = await messageBus.compose({

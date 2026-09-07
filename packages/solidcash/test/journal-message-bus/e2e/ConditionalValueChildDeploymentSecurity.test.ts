@@ -193,6 +193,71 @@ describe('conditional value-bearing child deployment transcript security', () =>
     expect(vmRejects(tampered)).toBe(true);
   }, 120_000);
 
+  it('materializes a pure branch join into one child constructor frame', async () => {
+    const provider = createMessageBusCapstoneTestProvider();
+    const artifacts = compileStringMulti(`contract Unit(int seed) {
+        int marker;
+        constructor() { this.marker = seed; }
+        function keep() public { require(true); }
+      }
+      interface IFactory { function create(bool enabled, int seed); }
+      contract Factory() {
+        function create(bool enabled, int seed) public {
+          int adjusted = seed;
+          if (enabled) { adjusted = seed + 10; }
+          Unit child = new Unit(adjusted);
+          require(true);
+        }
+      }
+      contract Driver(address factory) {
+        function run(bool enabled, int seed) public {
+          IFactory(factory).create(enabled, seed);
+          require(true);
+        }
+      }`, { forceStateful: true, messageBus: true, messageBusKernel: true, maximumInputBytes: 1_000_000 });
+    const connect = async (artifact: Artifact, args: readonly unknown[] = []): Promise<StatefulContract> => {
+      const base = new Contract(artifact, args as never[], { provider });
+      const setup = await setupStatefulUtxos(provider, base, artifact.stateLayout!, {}, { saltContract: true });
+      return StatefulContract.withCategory(base.withCategory(hexToBin(setup.categoryId)), setup.categoryId);
+    };
+    const factory = (await connect(artifacts.Factory)).registerChild(artifacts.Unit);
+    const driver = await connect(artifacts.Driver, [hexToBin(factory.inner.lockingBytecode)]);
+    const handler = artifacts.Factory.messageBus?.handlers.find((candidate) => candidate.name === 'create');
+    expect(handler).toMatchObject({
+      eligible: true,
+      childDeployments: [{ occurrence: 'once', constructorArgs: [{ kind: 'conditional' }] }],
+    });
+    const fee = await createBareP2pkhFeeFunder(provider, 1_000_000n);
+    const selectedGenesis = await createBareP2pkhFeeFunder(provider, 20_000n);
+    const fallbackGenesis = await createBareP2pkhFeeFunder(provider, 20_000n);
+    const build = (
+      enabled: boolean, seed: bigint, genesis: Awaited<ReturnType<typeof createBareP2pkhFeeFunder>>,
+    ): Promise<TransactionBuilder> => messageBus.compose({
+      preparedCalls: [
+        { contract: driver, functionName: 'run', args: [enabled, seed] },
+        { contract: factory, functionName: 'create', args: [enabled, seed] },
+      ],
+      funder: fee,
+      changeAddress: fee.unlocker.generateLockingBytecode(),
+      childDeployments: [{ invocationIndex: 1, siteIndex: 0, funder: genesis }],
+    }).build();
+    const selected = await build(true, 3n, selectedGenesis);
+    const fallback = await build(false, 4n, fallbackGenesis);
+    expect(vmRejects(selected)).toBe(false);
+    expect(vmRejects(fallback)).toBe(false);
+    const marker = (transaction: TransactionBuilder, category: string): unknown => parsePushdataCommitment(
+      transaction.outputs.find((output) => output.token?.category === category
+        && output.token.nft?.capability === 'mutable')!.token!.nft!.commitment,
+      artifacts.Unit.stateLayout!, 0,
+    ).marker;
+    expect([marker(selected, selectedGenesis.utxo.txid), marker(fallback, fallbackGenesis.utxo.txid)])
+      .toEqual([13n, 4n]);
+    const tampered = await build(true, 3n, selectedGenesis);
+    tampered.outputs.find((output) => output.token?.category === selectedGenesis.utxo.txid
+      && output.token.nft?.capability === 'mutable')!.token!.nft!.commitment = '01';
+    expect(vmRejects(tampered)).toBe(true);
+  }, 120_000);
+
   it('binds the predicate, exact genesis, exact value row, neutral false frame, and container debit', async () => {
     const provider = createMessageBusCapstoneTestProvider();
     const artifacts = compileStringMulti(`contract Unit() {

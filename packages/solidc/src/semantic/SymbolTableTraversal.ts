@@ -2206,6 +2206,25 @@ export default class SymbolTableTraversal extends AstTraversal {
     writableFieldType: (name: string) => Type | undefined = fieldType,
     constructorPredicates?: ExpressionNode[],
   ): false | { returnValue?: ExpressionNode, wrote: boolean } {
+    type PredicateTrackedExpression = ExpressionNode & { constructorPredicateUnsafe?: boolean };
+    const predicateSourceUnsafe = (value: unknown, seen = new WeakSet<object>()): boolean => {
+      if (Array.isArray(value)) return value.some((item) => predicateSourceUnsafe(item, seen));
+      if (!(value instanceof Node) || seen.has(value)) return false;
+      seen.add(value);
+      if (value instanceof NullaryOpNode || value instanceof StateAccessNode) return true;
+      if (value instanceof IdentifierNode) {
+        if (value.type === PrimitiveType.SIG || value.type === PrimitiveType.DATASIG) return true;
+        const substituted = subs.get(value.name) as PredicateTrackedExpression | undefined;
+        if (substituted?.constructorPredicateUnsafe || (substituted && predicateSourceUnsafe(substituted, seen))) {
+          return true;
+        }
+        // A not-yet-analyzed child state read is still a bare identifier at constructor-fold time.
+        if (!substituted && fieldType(value.name)) return true;
+      }
+      return Object.entries(value).some(([key, child]) => ![
+        'definition', 'referencedContract', 'resolvedFunction', 'symbolTable',
+      ].includes(key) && predicateSourceUnsafe(child, seen));
+    };
     let returnValue: ExpressionNode | undefined;
     let wrote = false;
     for (let i = 0; i < statements.length; i += 1) {
@@ -2213,30 +2232,61 @@ export default class SymbolTableTraversal extends AstTraversal {
       const isLast = i === statements.length - 1;
       if (stmt instanceof VariableDefinitionNode) {
         if (!stmt.expression) return false; // uninitialized local
-        const folded = this.foldGenesisExpr(cloneNode(stmt.expression), subs, fieldExprs, fieldType);
+        const constructorPredicateUnsafe = constructorPredicates !== undefined
+          && predicateSourceUnsafe(stmt.expression);
+        const folded = this.foldGenesisExpr(
+          cloneNode(stmt.expression), subs, fieldExprs, fieldType, stmt.type,
+        );
         if (!folded) return false;
+        // Constructor locals are folded before the ordinary type-checking pass reaches the
+        // synthesized deployment recipe. Preserve the declaration's assignment conversion so
+        // later branch joins and recipe serialization retain an exact result type.
+        folded.type ??= stmt.type;
+        if (constructorPredicateUnsafe) {
+          Object.defineProperty(folded, 'constructorPredicateUnsafe', {
+            value: true, configurable: true,
+          });
+        }
         subs.set(stmt.name, folded); // inline this local into later expressions
       } else if (stmt instanceof BranchNode) {
-        // Constructor guards are published separately and would need activation-aware predicates at a branch.
-        // This slice is limited to post-new initializer calls, whose final `require(true)` is effect-free.
-        if (constructorPredicates) return false;
-        const hasNonTrivialGuard = (value: unknown, seen = new WeakSet<object>()): boolean => {
-          if (Array.isArray(value)) return value.some((item) => hasNonTrivialGuard(item, seen));
+        const constructorBranch = constructorPredicates !== undefined;
+        // Constructor guards are published as a separate conjunction. A guard inside an arm would require an
+        // activation implication, so constructor branches remain state-selection only. Post-new initializer
+        // branches may retain the historical no-op `require(true)`, but no path-dependent guard.
+        const hasUnsupportedBranchControl = (value: unknown, seen = new WeakSet<object>()): boolean => {
+          if (Array.isArray(value)) return value.some((item) => hasUnsupportedBranchControl(item, seen));
           if (!(value instanceof Node) || seen.has(value)) return false;
           seen.add(value);
           if (value instanceof RequireNode) {
-            return !(value.expression instanceof BoolLiteralNode) || value.expression.value !== true;
+            return constructorBranch
+              || !(value.expression instanceof BoolLiteralNode) || value.expression.value !== true;
           }
+          if (constructorBranch && (value instanceof AssertNode || value instanceof RevertNode
+            || value instanceof ReturnNode || value instanceof WhileNode || value instanceof DoWhileNode
+            || value instanceof CollectionIterationNode || value instanceof TryCatchNode
+            || value instanceof InstantiationNode || value instanceof ExternalFunctionCallNode
+            || value instanceof TransferStatementNode || value instanceof AddressTransferStatementNode
+            || value instanceof AddressSendExpressionNode || value instanceof EmitStatementNode
+            || value instanceof SelfdestructStatementNode)) return true;
           return Object.entries(value).some(([key, child]) => ![
             'definition', 'referencedContract', 'resolvedFunction', 'symbolTable',
-          ].includes(key) && hasNonTrivialGuard(child, seen));
+          ].includes(key) && hasUnsupportedBranchControl(child, seen));
         };
-        if (hasNonTrivialGuard(stmt.ifBlock) || (stmt.elseBlock && hasNonTrivialGuard(stmt.elseBlock))) {
+        if (hasUnsupportedBranchControl(stmt.ifBlock)
+          || (stmt.elseBlock && hasUnsupportedBranchControl(stmt.elseBlock))) {
           return false;
         }
-        const condition = this.foldGenesisExpr(
-          cloneNode(stmt.condition), subs, fieldExprs, fieldType, PrimitiveType.BOOL,
-        );
+        if (constructorBranch && predicateSourceUnsafe(stmt.condition)) return false;
+        const priorInsidePredicate = this.insideGenesisPredicate;
+        if (constructorBranch) this.insideGenesisPredicate = true;
+        let condition: ExpressionNode | null = null;
+        try {
+          condition = this.foldGenesisExpr(
+            cloneNode(stmt.condition), subs, fieldExprs, fieldType, PrimitiveType.BOOL,
+          );
+        } finally {
+          this.insideGenesisPredicate = priorInsidePredicate;
+        }
         if (!condition) return false;
         condition.type = PrimitiveType.BOOL;
         const incomingSubs = new Map(subs);
@@ -2258,10 +2308,33 @@ export default class SymbolTableTraversal extends AstTraversal {
         const joined = (
           whenTrue: ExpressionNode, whenFalse: ExpressionNode, type: Type,
         ): ExpressionNode => {
-          if (whenTrue === whenFalse) return cloneNode(whenTrue);
-          const result = new TernaryOpNode(cloneNode(condition), cloneNode(whenTrue), cloneNode(whenFalse));
+          const predicateUnsafe = constructorBranch && (
+            (whenTrue as PredicateTrackedExpression).constructorPredicateUnsafe === true
+            || (whenFalse as PredicateTrackedExpression).constructorPredicateUnsafe === true
+          );
+          if (whenTrue === whenFalse) {
+            const cloned = cloneNode(whenTrue);
+            if (predicateUnsafe) Object.defineProperty(cloned, 'constructorPredicateUnsafe', {
+              value: true, configurable: true,
+            });
+            return cloned;
+          }
+          const assigned = (value: ExpressionNode): ExpressionNode => {
+            const cloned = cloneNode(value);
+            if (!constructorBranch || value.type === type) return cloned;
+            const cast = new CastNode(type, cloned, false);
+            cast.location = value.location ?? stmt.location;
+            return cast;
+          };
+          // The ordinary type pass inserts each arm's assignment conversion only in the source branch. The
+          // synthesized ternary bypasses those assignments, so retain the same conversion explicitly at the
+          // join (also giving early recipe analysis an exact physical result type).
+          const result = new TernaryOpNode(cloneNode(condition), assigned(whenTrue), assigned(whenFalse));
           result.location = stmt.location;
           result.type = type;
+          if (predicateUnsafe) Object.defineProperty(result, 'constructorPredicateUnsafe', {
+            value: true, configurable: true,
+          });
           return result;
         };
         // Branch-local declarations do not escape. Existing locals do, so join only the incoming lexical set.
@@ -2505,6 +2578,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       statement instanceof VariableDefinitionNode
       || statement instanceof StateAssignNode
       || statement instanceof AssignNode
+      || statement instanceof BranchNode
       || statement instanceof MappingAssignNode
       || statement instanceof RequireNode);
     if (!failed && constructorPredicates.length > 0) {

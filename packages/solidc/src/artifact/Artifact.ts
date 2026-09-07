@@ -291,25 +291,89 @@ const expressionSource = (
   return { kind: 'expression' };
 };
 
-/** Publish a finite replay program for a complete two-arm dynamic constructor assignment. */
+/**
+ * Publish finite replay programs for constructor-time dynamic state.
+ *
+ * This is intentionally a small symbolic interpreter rather than an AST pattern match. Constructors commonly
+ * initialise scalar bookkeeping around several independent dynamic values, and Solidity spells an else-if as a
+ * nested branch in the outer else block. Walking statements in source order also matters for local aliases:
+ *
+ *     string chosen = left;
+ *     if (flip) chosen = right;
+ *     this.label = chosen;
+ *
+ * Only a value assigned exactly once on every path is published. An expression which reads state, calls a
+ * helper, crosses an unsupported control-flow construct, or otherwise cannot be represented by
+ * ExternalCallExpression remains absent. The SDK then uses its authoritative VM-probe fallback.
+ */
 const dynamicWriteSourcesOf = (
   func: FunctionDefinitionNode, contract: ContractNode | undefined,
 ): Readonly<Record<string, ExternalCallExpression>> => {
-  const bodyStatements = func.body?.statements ?? [];
-  if (func.name !== '__construct' || bodyStatements.length !== 1) return {};
-  const branch = bodyStatements[0];
-  const ifStatements = branch instanceof BranchNode ? (branch.ifBlock.statements ?? []) : [];
-  const elseStatements = branch instanceof BranchNode ? (branch.elseBlock?.statements ?? []) : [];
-  if (!(branch instanceof BranchNode) || !branch.elseBlock
-    || ifStatements.length !== 1 || elseStatements.length !== 1) return {};
-  const ifWrite = ifStatements[0];
-  const elseWrite = elseStatements[0];
-  if (!(ifWrite instanceof StateAssignNode) || !(elseWrite instanceof StateAssignNode)
-    || ifWrite.name !== elseWrite.name || !func.dynamicWrites?.includes(ifWrite.name)) return {};
-
+  if (func.name !== '__construct' || !func.body) return {};
+  const dynamicNames = new Set(func.dynamicWrites ?? []);
+  if (dynamicNames.size === 0) return {};
+  // This replay deliberately models only terminating straight-line/if control flow. Treat abrupt completion and
+  // every other control-flow family as an all-metadata boundary: otherwise `if (stop) return; this.s = value`
+  // would look like one write on both paths even though the first path never reaches it. Constructors are finite,
+  // but even a statically bounded loop needs a path-sensitive trip-count/write proof which this format lacks.
+  const unsupportedControl = new Set([
+    'ReturnNode', 'RevertNode', 'BreakNode', 'ContinueNode', 'TryCatchNode',
+    'WhileNode', 'DoWhileNode', 'CollectionIterationNode', 'SwitchNode',
+  ]);
+  let unsupportedControlFlow = false;
+  const scanControlFlow = (value: unknown, seen = new Set<object>()): void => {
+    if (unsupportedControlFlow || !(value instanceof Node) || seen.has(value)) return;
+    seen.add(value);
+    if (unsupportedControl.has(value.constructor.name)) {
+      unsupportedControlFlow = true;
+      return;
+    }
+    for (const [key, child] of Object.entries(value)) {
+      if (['location', 'definition', 'resolvedFunction', 'functionReference', 'symbolTable',
+        'stateVariable', 'collection'].includes(key)) continue;
+      if (child instanceof Node) scanControlFlow(child, seen);
+      else if (Array.isArray(child)) child.forEach((item) => scanControlFlow(item, seen));
+    }
+  };
+  scanControlFlow(func.body);
+  if (unsupportedControlFlow) return {};
   const visible = func.parameters.filter((parameter) => !parameter.name.startsWith('__internal__'));
-  const serialize = (expression: ExpressionNode): ExternalCallExpression | undefined => {
+  type Binding = ExternalCallExpression | undefined;
+  type Write = { minimum: number; maximum: number; value?: ExternalCallExpression };
+  type ReplayState = {
+    bindings: Map<object, Binding>;
+    blockedNames: Set<string>;
+    writes: Map<string, Write>;
+  };
+  const initial: ReplayState = {
+    bindings: new Map(),
+    blockedNames: new Set(),
+    writes: new Map([...dynamicNames].map((name) => [name, { minimum: 0, maximum: 0 }])),
+  };
+  const cloneState = (state: ReplayState): ReplayState => ({
+    bindings: new Map(state.bindings),
+    blockedNames: new Set(state.blockedNames),
+    writes: new Map([...state.writes].map(([name, write]) => [name, { ...write }])),
+  });
+  const sameExpression = (left: Binding, right: Binding): boolean =>
+    left !== undefined && right !== undefined && JSON.stringify(left) === JSON.stringify(right);
+  const joinExpression = (
+    condition: Binding, ifTrue: Binding, ifFalse: Binding,
+  ): Binding => {
+    if (sameExpression(ifTrue, ifFalse)) return ifTrue;
+    return condition && ifTrue && ifFalse
+      ? { kind: 'ternary', condition, ifTrue, ifFalse }
+      : undefined;
+  };
+  const definitionOf = (identifier: IdentifierNode): object | undefined => {
+    const definition = identifier.definition?.definition;
+    return definition && typeof definition === 'object' ? definition : undefined;
+  };
+  const serialize = (expression: ExpressionNode, state: ReplayState): ExternalCallExpression | undefined => {
     if (expression instanceof IdentifierNode) {
+      const definition = definitionOf(expression);
+      if (definition && state.bindings.has(definition)) return state.bindings.get(definition);
+      if (state.blockedNames.has(expression.name)) return undefined;
       const parameterIndex = visible.findIndex((parameter) => parameter.name === expression.name);
       if (parameterIndex >= 0) {
         return { kind: 'source', source: { kind: 'forward', paramIndex: parameterIndex } };
@@ -333,32 +397,135 @@ const dynamicWriteSourcesOf = (
       return { kind: 'literal', value: binToHex(shaped.value), type: shaped.type?.toString() ?? 'bytes' };
     }
     if (expression instanceof CastNode) {
-      const inner = serialize(expression.expression);
+      const inner = serialize(expression.expression, state);
       return inner && { kind: 'cast', type: expression.type.toString(), expression: inner };
     }
     if (expression instanceof UnaryOpNode) {
-      const inner = serialize(expression.expression);
+      const inner = serialize(expression.expression, state);
       return inner && { kind: 'unary', operator: expression.operator, expression: inner };
     }
     if (expression instanceof BinaryOpNode) {
-      const left = serialize(expression.left);
-      const right = serialize(expression.right);
+      const left = serialize(expression.left, state);
+      const right = serialize(expression.right, state);
       return left && right && { kind: 'binary', operator: expression.operator, left, right };
     }
     if (expression instanceof TernaryOpNode) {
-      const condition = serialize(expression.condition);
-      const ifTrue = serialize(expression.ifTrue);
-      const ifFalse = serialize(expression.ifFalse);
+      const condition = serialize(expression.condition, state);
+      const ifTrue = serialize(expression.ifTrue, state);
+      const ifFalse = serialize(expression.ifFalse, state);
       return condition && ifTrue && ifFalse && { kind: 'ternary', condition, ifTrue, ifFalse };
     }
     return undefined;
   };
-  const condition = serialize(branch.condition);
-  const ifTrue = serialize(ifWrite.expression);
-  const ifFalse = serialize(elseWrite.expression);
-  return condition && ifTrue && ifFalse
-    ? { [ifWrite.name]: { kind: 'ternary', condition, ifTrue, ifFalse } }
-    : {};
+
+  const invalidateUnknownMutations = (node: Node, state: ReplayState): void => {
+    const seen = new Set<object>();
+    const visit = (value: unknown): void => {
+      if (!(value instanceof Node) || seen.has(value)) return;
+      seen.add(value);
+      if (value instanceof AssignNode) {
+        const definition = definitionOf(value.identifier);
+        if (definition) state.bindings.set(definition, undefined);
+        else state.blockedNames.add(value.identifier.name);
+      }
+      if (value instanceof FunctionCallNode && value.resolvedFunction instanceof FunctionDefinitionNode) {
+        // A call can mutate state transitively and reference-like locals through aliases. Without inlining its
+        // effect summary, neither the current write count nor any existing local substitution remains sound.
+        for (const key of state.bindings.keys()) state.bindings.set(key, undefined);
+        for (const write of state.writes.values()) {
+          write.maximum = Number.POSITIVE_INFINITY;
+          write.value = undefined;
+        }
+      }
+      const named = value as unknown as { name?: string };
+      if (named.name && dynamicNames.has(named.name)
+        && /(?:Assign|Push|Pop|Delete)Node$/.test(value.constructor.name)) {
+        const write = state.writes.get(named.name)!;
+        write.maximum = Number.POSITIVE_INFINITY;
+        write.value = undefined;
+      }
+      for (const [key, child] of Object.entries(value)) {
+        if (['location', 'definition', 'symbolTable', 'stateVariable', 'collection'].includes(key)) continue;
+        if (child instanceof Node) visit(child);
+        else if (Array.isArray(child)) child.forEach(visit);
+      }
+    };
+    visit(node);
+  };
+
+  const processBlock = (block: BlockNode, state: ReplayState): ReplayState => {
+    for (const statement of block.statements ?? []) {
+      if (statement instanceof VariableDefinitionNode) {
+        if (statement.expression) invalidateUnknownMutations(statement.expression, state);
+        state.bindings.set(statement, statement.expression
+          ? serialize(statement.expression, state) : undefined);
+        continue;
+      }
+      if (statement instanceof AssignNode) {
+        invalidateUnknownMutations(statement.expression, state);
+        const value = serialize(statement.expression, state);
+        const definition = definitionOf(statement.identifier);
+        if (definition) state.bindings.set(definition, value);
+        else {
+          state.blockedNames.add(statement.identifier.name);
+          // Do not let a later unresolved identifier accidentally resolve as a pristine parameter.
+        }
+        continue;
+      }
+      if (statement instanceof StateAssignNode && dynamicNames.has(statement.name)) {
+        invalidateUnknownMutations(statement.expression, state);
+        const write = state.writes.get(statement.name)!;
+        write.minimum += 1;
+        write.maximum += 1;
+        write.value = serialize(statement.expression, state);
+        continue;
+      }
+      if (statement instanceof BranchNode) {
+        invalidateUnknownMutations(statement.condition, state);
+        const condition = serialize(statement.condition, state);
+        const incomingBindingKeys = new Set(state.bindings.keys());
+        const ifState = processBlock(statement.ifBlock, cloneState(state));
+        const elseState = statement.elseBlock
+          ? processBlock(statement.elseBlock, cloneState(state)) : cloneState(state);
+
+        for (const key of incomingBindingKeys) {
+          state.bindings.set(key, joinExpression(
+            condition, ifState.bindings.get(key), elseState.bindings.get(key),
+          ));
+        }
+        state.blockedNames = new Set([...ifState.blockedNames, ...elseState.blockedNames]);
+        for (const name of dynamicNames) {
+          const ifWrite = ifState.writes.get(name)!;
+          const elseWrite = elseState.writes.get(name)!;
+          state.writes.set(name, {
+            minimum: Math.min(ifWrite.minimum, elseWrite.minimum),
+            maximum: Math.max(ifWrite.maximum, elseWrite.maximum),
+            value: joinExpression(condition, ifWrite.value, elseWrite.value),
+          });
+        }
+        continue;
+      }
+      if (statement instanceof BlockNode) {
+        const incomingBindingKeys = new Set(state.bindings.keys());
+        const nested = processBlock(statement, cloneState(state));
+        for (const key of incomingBindingKeys) state.bindings.set(key, nested.bindings.get(key));
+        state.blockedNames = nested.blockedNames;
+        state.writes = nested.writes;
+        continue;
+      }
+
+      // Requirements, scalar state writes, events, and other side-effect-free-for-replay statements may sit
+      // beside a dynamic initialiser. If an unfamiliar construct hides a relevant mutation, fail closed only
+      // for the affected value/binding rather than discarding independent constructor metadata.
+      invalidateUnknownMutations(statement, state);
+    }
+    return state;
+  };
+
+  const completed = processBlock(func.body, initial);
+  return Object.fromEntries([...completed.writes]
+    .filter(([, write]) => write.minimum === 1 && write.maximum === 1 && write.value !== undefined)
+    .map(([name, write]) => [name, write.value!]));
 };
 
 const transferEffects = (

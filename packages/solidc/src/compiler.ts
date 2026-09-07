@@ -36,7 +36,7 @@ import {
   LowLevelCallNode, LowLevelCallStatementNode, MappingAccessNode, MappingAssignNode, MappingDeleteNode,
   MappingFieldAssignNode,
   MethodCallNode, MethodCallStatementNode, Node, ParameterNode, RequireNode, RevertNode,
-  NullaryOpNode, TupleAssignmentNode, VariableDefinitionNode,
+  NullaryOpNode, TupleAssignmentNode, VariableDefinitionNode, DeleteLocalNode,
   SourceFileNode, StatementNode, TransferStatementNode, AddressTransferStatementNode, AddressSendExpressionNode,
   TypeIntrospectionNode, AbiDecodeNode, ReturnNode,
   TokenContainerMethodStatementNode, SelfdestructStatementNode,
@@ -3221,10 +3221,12 @@ function synthesizeMessageBusRoute(
     }
     return found;
   };
-  // A detached scalar signature can authorize an upgrade without circularly entering the committed row when
-  // every reachable transaction-signature check consumes that exact, immutable parameter. The generated route
-  // additionally requires SIGHASH_ALL below. Aliases, casts, multisig arrays, helper edges, and reassigned
-  // parameters remain fenced until their provenance has an equally exact proof.
+  // A detached signature can authorize an upgrade without circularly entering the committed row when every
+  // reachable transaction-signature check consumes the exact immutable root parameter. This includes a scalar
+  // checkSig witness and the one-dimensional sig[] / sig[N] vector consumed directly by checkMultiSig. The
+  // generated route additionally requires SIGHASH_ALL on every reached signature below. Aliases, casts, computed
+  // arrays, helper edges, and reassigned/mutated parameters remain fenced until their provenance has an equally
+  // exact proof.
   const directAllOutputSignatureParameters = (root: FunctionDefinitionNode): number[] | undefined => {
     if (analyseFunctionFootprint(root, byName, footprintCache).effects.includes('external-call')) return undefined;
     const indices = new Set<number>();
@@ -3259,13 +3261,17 @@ function synthesizeMessageBusRoute(
             GlobalFunction.CHECKSIG, GlobalFunction.CHECKMULTISIG,
           ].includes(node.identifier.name as GlobalFunction)) return;
           found = true;
-          if (candidate !== root || node.identifier.name !== GlobalFunction.CHECKSIG) {
+          if (candidate !== root) {
             unsupported = true;
             return;
           }
           const signature = node.parameters[0];
           const index = signature instanceof IdentifierNode ? parameterIndex(signature) : -1;
-          if (index < 0 || root.parameters[index].type !== PrimitiveType.SIG) {
+          const parameterType = index < 0 ? undefined : root.parameters[index].type;
+          const exactType = node.identifier.name === GlobalFunction.CHECKSIG
+            ? parameterType === PrimitiveType.SIG
+            : parameterType instanceof ArrayType && parameterType.elementType === PrimitiveType.SIG;
+          if (index < 0 || !exactType) {
             unsupported = true;
             return;
           }
@@ -3284,9 +3290,19 @@ function synthesizeMessageBusRoute(
         // detached signatureBytecode published to the signer. Keep this policy on leaf handler topology.
         unsupported = true;
       }
-      if (!(node instanceof AssignNode)) return;
-      const index = parameterIndex(node.identifier);
-      if (index >= 0 && indices.has(index)) {
+      if (node instanceof AssignNode) {
+        const index = parameterIndex(node.identifier);
+        if (index >= 0 && indices.has(index)) unsupported = true;
+        return;
+      }
+      if (node instanceof DeleteLocalNode) {
+        const index = parameterIndex(node.identifier);
+        if (index >= 0 && indices.has(index)) unsupported = true;
+        return;
+      }
+      if ((node instanceof ArrayAssignNode || node instanceof ArrayDeleteNode
+        || node instanceof ArrayPushNode || node instanceof ArrayPopNode)
+        && [...indices].some((index) => root.parameters[index].name === node.name)) {
         unsupported = true;
       }
     });
@@ -6500,9 +6516,20 @@ function synthesizeMessageBusRoute(
       const signatureAuthorization = allOutputSignatureParameters.length > 0
         ? allOutputSignatureParameters.map((parameterIndex) => {
           const witness = `${kernelSignatureWitnessName(handlerIndex, parameterIndex)}[${rowExpression}]`;
-          const requireAll = `require(${witness}.length > 0
-            && (${witness}.slice(${witness}.length - 1, ${witness}.length) == hex"41"
-              || ${witness}.slice(${witness}.length - 1, ${witness}.length) == hex"61"));`;
+          const signatureType = fn.parameters[parameterIndex].type;
+          const requireSignatureAll = (signature: string): string => `require(${signature}.length > 0
+            && (${signature}.slice(${signature}.length - 1, ${signature}.length) == hex"41"
+              || ${signature}.slice(${signature}.length - 1, ${signature}.length) == hex"61"));`;
+          const requireAll = signatureType instanceof ArrayType
+            ? (() => {
+              const index = `__message_bus_policy_index_${handlerIndex}_${parameterIndex}`;
+              const signature = `__message_bus_policy_signature_${handlerIndex}_${parameterIndex}`;
+              return `require(${witness}.length > 0);
+                for (int ${index} = 0; ${index} < ${witness}.length; ${index} = ${index} + 1) {
+                  sig ${signature} = ${witness}[${index}]; ${requireSignatureAll(signature)}
+                }`;
+            })()
+            : requireSignatureAll(witness);
           return fn.modifiers.includes(FunctionModifier.UPGRADE)
             ? requireAll : `if (__message_bus_version == 2) { ${requireAll} }`;
         }).join(' ')

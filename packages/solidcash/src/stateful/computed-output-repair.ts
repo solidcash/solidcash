@@ -148,14 +148,20 @@ export function canApplyRepairedNftCommitment(args: {
   proposed: Uint8Array;
   hasLockingBytecode: boolean;
   fixedStateSlot: boolean;
+  explicitOverride?: boolean;
   authenticatedMutableSlot?: boolean;
   maximumCommitmentBytes?: number;
 }): RepairedNftApply {
   const {
     capability, currentCommitmentHex, proposed, hasLockingBytecode, fixedStateSlot,
+    explicitOverride = false,
     authenticatedMutableSlot = false,
     maximumCommitmentBytes = 128,
   } = args;
+  // An imperative SDK override is a caller assertion, not a derivation placeholder. If it disagrees with the
+  // covenant, leave the mismatch intact so final preflight refuses it instead of silently substituting the
+  // covenant-observed value. Auto-derived and delegated fixed state remains repairable.
+  if (explicitOverride) return 'skip';
   if (capability !== 'mutable' && capability !== 'none') return 'skip';
   if (isScidIdentityCommitment(currentCommitmentHex) || isScidIdentityCommitment(proposed)) {
     return 'skip';

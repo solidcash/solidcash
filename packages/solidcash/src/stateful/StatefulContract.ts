@@ -32391,7 +32391,7 @@ export class StatefulFunctionCall {
 
     // Apply manual overrides (these take precedence over auto-derived values)
     for (const { name, value } of this.stateOverrides) {
-      builder.setState(name, value);
+      builder.setState(name, value, true);
     }
 
     // Apply entry overrides
@@ -32870,7 +32870,7 @@ export class StatefulFunctionCall {
    * New builder already has auto-derived values; user overrides replace them.
    */
   private _reApplyOverrides(builder: StatefulTransactionBuilder): void {
-    for (const { name, value } of this.stateOverrides) builder.setState(name, value);
+    for (const { name, value } of this.stateOverrides) builder.setState(name, value, true);
     for (const { slotIndex, value } of this.entryOverrides) builder.setEntry(slotIndex, value);
     for (const slotIndex of this.entryDeleteSlots) builder.deleteEntry(slotIndex);
     if (this.containerDepositAmount > 0n) builder.setContainerDepositAmount(this.containerDepositAmount);

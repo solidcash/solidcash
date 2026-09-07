@@ -232,6 +232,25 @@ describe('canApplyRepairedNftCommitment', () => {
     })).toBe('skip');
   });
 
+  it('leaves an explicit fixed-state override for final covenant refusal', () => {
+    const proposed = hexToBin('0164');
+    expect(canApplyRepairedNftCommitment({
+      capability: 'mutable',
+      currentCommitmentHex: '02e70300',
+      proposed,
+      hasLockingBytecode: false,
+      fixedStateSlot: true,
+      explicitOverride: true,
+    })).toBe('skip');
+    expect(canApplyRepairedNftCommitment({
+      capability: 'mutable',
+      currentCommitmentHex: '00',
+      proposed,
+      hasLockingBytecode: false,
+      fixedStateSlot: true,
+    })).toBe('apply-commit');
+  });
+
   it('uses an advertised larger ceiling only for authenticated physical state', () => {
     const proposed = new Uint8Array(246).fill(0xab);
     expect(canApplyRepairedNftCommitment({

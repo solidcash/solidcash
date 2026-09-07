@@ -4797,6 +4797,9 @@ export class StatefulTransactionBuilder {
   private stateUpdates: Map<
   string, StateValue
   > = new Map();
+
+  /** Data-NFT coordinates explicitly asserted through the public `.setState()` call API. */
+  private explicitStateOverrideNftIndices: Set<number> = new Set();
   private lastOptimisticPermutationCount: number = 1;
 
   // Exact data-NFT commitments learned from covenant traces. Parsing and rebuilding a commitment can lose
@@ -9168,6 +9171,7 @@ export class StatefulTransactionBuilder {
   setState(
     name: string,
     value: StateValue,
+    explicitOverride = false,
   ): this {
     const variable = this.stateLayout.variables.find((v) => v.name === name);
     if (!variable) {
@@ -9176,6 +9180,7 @@ export class StatefulTransactionBuilder {
         const base = name.slice(0, -4);
         const dynamicVariable = this.stateLayout.variables.find((v) => v.name === base && v.dynamic);
         if (dynamicVariable) {
+          if (explicitOverride) this.explicitStateOverrideNftIndices.add(dynamicVariable.nftIndex);
           this.stateRawCommitments.delete(dynamicVariable.nftIndex);
           this.stateUpdates.set(name, value);
           return this;
@@ -9183,6 +9188,7 @@ export class StatefulTransactionBuilder {
       }
       throw new Error(`Unknown state variable: ${name}`);
     }
+    if (explicitOverride) this.explicitStateOverrideNftIndices.add(variable.nftIndex);
     this.stateRawCommitments.delete(variable.nftIndex);
     this.stateUpdates.set(name, value);
     return this;
@@ -9248,17 +9254,20 @@ export class StatefulTransactionBuilder {
     return this._externalDataNftOwner(outputIndex, categoryId) !== undefined;
   }
 
+  private _rootStateNftIndexAt(outputIndex: number, categoryId: string): number | undefined {
+    if (categoryId !== this.categoryId) return undefined;
+    // build() emits the root master followed by required data NFTs in this order, independent of any later
+    // balanced participant blocks.
+    return this.requiredNftIndices[outputIndex - 1];
+  }
+
   private _setRootStateRawCommitmentAt(
     outputIndex: number,
     categoryId: string,
     commitmentHex: string,
   ): boolean {
-    if (categoryId !== this.categoryId) return false;
-    // build() emits the root master followed by required data NFTs in this
-    // order, independent of any later balanced participant blocks.
-    const requiredOrdinal = outputIndex - 1;
-    const nftIndex = this.requiredNftIndices[requiredOrdinal];
-    if (requiredOrdinal < 0 || nftIndex === undefined) return false;
+    const nftIndex = this._rootStateNftIndexAt(outputIndex, categoryId);
+    if (nftIndex === undefined) return false;
     this.stateRawCommitments.set(nftIndex, commitmentHex);
     return true;
   }
@@ -15974,12 +15983,17 @@ export class StatefulTransactionBuilder {
         const authenticatedDynamicChunkSlot = this.dynamicChunkVars.some((variable) => (
           binToHex(variable.lockingBytecode) === binToHex(outputLockingBytecode)
         ));
+        const rootStateNftIndex = this._rootStateNftIndexAt(
+          found.outputIndex, output.token.category ?? '',
+        );
         const action = canApplyRepairedNftCommitment({
           capability: output.token.nft.capability,
           currentCommitmentHex: currentHex,
           proposed: found.commitment,
           hasLockingBytecode: found.lockingBytecode !== undefined,
           fixedStateSlot: fixedStateSlots.has(found.outputIndex),
+          explicitOverride: rootStateNftIndex !== undefined
+            && this.explicitStateOverrideNftIndices.has(rootStateNftIndex),
           authenticatedMutableSlot: authenticatedDynamicChunkSlot,
           maximumCommitmentBytes: fixedStateSlots.has(found.outputIndex)
             ? (this.builderOptions.provider?.consensusLimits?.maximumNftCommitmentBytes ?? 128)

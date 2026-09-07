@@ -152,7 +152,6 @@ describe('affine recursive mapping streams', () => {
     ['a non-affine induction', 'walk(depth / 2, seed)', 'emit Seen(result + depth);'],
     ['a zero induction step', 'walk(depth - 0, seed)', 'emit Seen(result + depth);'],
     ['a wrong-direction induction', 'walk(depth + 2, seed)', 'emit Seen(result + depth);'],
-    ['multiple varying arguments', 'walk(depth - 1, seed + 1)', 'emit Seen(result + depth);'],
     ['an ambiguous recursive occurrence',
       'depth % 2 == 0 ? walk(depth - 1, seed) : walk(depth - 1, seed)',
       'emit Seen(result + depth);'],
@@ -168,6 +167,20 @@ describe('affine recursive mapping streams', () => {
           return result;
         }
       }`, KERNEL)).toThrow(/event would be dropped|recursive/i);
+  });
+
+  it('retains unwind admission for an independently affine recursive parameter', () => {
+    const artifact = compileString(`contract C() {
+      event Seen(int value);
+      function walk(int depth, int seed) public returns (int) {
+        if (depth == 0) return seed;
+        int result = walk(depth - 1, seed + 1);
+        emit Seen(result + depth);
+        return result;
+      }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'walk'))
+      .toMatchObject({ eligible: true, runtimeLoopEvents: [expect.anything()] });
   });
 
   it('publishes separate pre-order and unwind domains for mixed void events', () => {

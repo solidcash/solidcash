@@ -301,4 +301,103 @@ describe('affine void recursive event settlement', () => {
     };
     expect(vm.stateSuccess(vm.evaluate({ inputIndex: 0, sourceOutputs, transaction: hostile }))).not.toBe(true);
   }, 180_000);
+
+  it('settles affine-counter progression in exact pre-order and unwind order at the 64-frame boundary', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(`contract RecursiveCounterDelta() {
+      event Seen(bigint value);
+      function descend(bigint cursor, bigint value, bigint stride, bigint bias) public {
+        emit Seen(value);
+        if (cursor == 0) return;
+        descend(cursor - stride, value + cursor + bias, stride, bias);
+        emit Seen(value);
+      }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'descend')).toMatchObject({
+      eligible: true,
+      runtimeLoopEvents: [
+        { iterationDomain: { initialValue: { value: '0' }, maximumIterations: 64 } },
+        { iterationDomain: { initialValue: { value: '1' }, maximumIterations: 64 } },
+      ],
+    });
+
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+    );
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    const builder = await contract.call.descend(6n, 10n, 2n, 1n).build();
+    const transaction = builder.buildLibauthTransaction();
+    const events = transaction.outputs.filter((output) => output.token?.nft?.capability === 'none');
+    expect(events.map((output) => binToHex(output.token!.nft!.commitment)))
+      .toEqual(['5a', '0111', '0116', '0119', '0116', '0111', '5a']);
+
+    const vm = createVirtualMachineBch2026ForProvider(provider);
+    const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+    for (let inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex += 1) {
+      expect(vm.stateSuccess(vm.evaluate({ inputIndex, sourceOutputs, transaction })), `input ${inputIndex}`)
+        .toBe(true);
+    }
+    const eventIndex = transaction.outputs.findIndex((output) => output.token?.nft?.capability === 'none');
+    const eventOutput = transaction.outputs[eventIndex];
+    const hostile = {
+      ...transaction,
+      outputs: transaction.outputs.map((output, index) => index === eventIndex ? {
+        ...output,
+        token: {
+          ...eventOutput.token!,
+          nft: { ...eventOutput.token!.nft!, commitment: Uint8Array.of(9) },
+        },
+      } : output),
+    };
+    expect(vm.stateSuccess(vm.evaluate({ inputIndex: 0, sourceOutputs, transaction: hostile }))).not.toBe(true);
+
+    await expect(contract.call.descend(126n, 0n, 2n, 0n).build()).resolves.toBeDefined();
+    await expect(contract.call.descend(128n, 0n, 2n, 0n).build())
+      .rejects.toThrow(/exceeds its compiler-published maximum/);
+    const inexact = await contract.call.descend(5n, 10n, 2n, 1n).build();
+    expect(vm.stateSuccess(vm.evaluate({
+      inputIndex: 0,
+      sourceOutputs: generateLibauthSourceOutputs(inexact.inputs),
+      transaction: inexact.buildLibauthTransaction(),
+    }))).not.toBe(true);
+  }, 180_000);
+
+  it('fences checked regrouping while bigint progression remains unrestricted', async () => {
+    const provider = createTestProvider();
+    const checkedArtifact = compileString(`contract CheckedCounterDelta() {
+      event Seen(uint8 value);
+      function descend(uint8 cursor, uint8 value) public {
+        emit Seen(value);
+        if (cursor == 0) return;
+        descend(cursor - 1, value + cursor);
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+    // All 20 source-ordered updates fit (the terminal value is 210), while the regrouped gross term would be
+    // 20 * 20 = 400 before triangular correction. Refuse the replay instead of changing checked semantics.
+    expect(checkedArtifact.messageBus?.handlers.find((handler) => handler.name === 'descend'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+
+    const bigintArtifact = compileString(`contract BigintCounterDelta() {
+      event Seen(bigint value);
+      function descend(bigint cursor, bigint value) public {
+        emit Seen(value);
+        if (cursor == 0) return;
+        descend(cursor - 1, value + cursor);
+      }
+    }`, KERNEL);
+    const bigintInner = new Contract(bigintArtifact, [], { provider });
+    const { categoryId: bigintCategory } = await setupStatefulUtxos(
+      provider, bigintInner, bigintArtifact.stateLayout!, {}, { saltContract: true },
+    );
+    const bigint = StatefulContract.withCategory(bigintInner, bigintCategory);
+    const unrestricted = await bigint.call.descend(2n, 253n).build();
+    const vm = createVirtualMachineBch2026ForProvider(provider);
+    expect(vm.stateSuccess(vm.evaluate({
+      inputIndex: 0,
+      sourceOutputs: generateLibauthSourceOutputs(unrestricted.inputs),
+      transaction: unrestricted.buildLibauthTransaction(),
+    }))).toBe(true);
+  }, 180_000);
 });

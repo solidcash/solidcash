@@ -70,6 +70,8 @@ interface AffineParameterProgression {
   parameterIndex: number;
   subtract: boolean;
   stepExpression: ExpressionNode;
+  /** Coefficient of the descending induction parameter in a counter-dependent additive step. */
+  counterSlope?: ExpressionNode;
 }
 
 interface AffineEventRecursion {
@@ -286,6 +288,34 @@ export default class LowerTailRecursion extends AstTraversal {
         && argument.right instanceof IdentifierNode && argument.right.name === parameter.name) {
         stepExpression = argument.left;
       }
+      // Source expressions naturally associate `value + cursor + invariant` to the left. Peel an additive
+      // spine containing exactly one positive occurrence of the carried parameter and retain the other terms as
+      // its per-frame delta. This is normalization by syntax, not by identifier spelling or contract shape.
+      if (!stepExpression && index !== inductionIndex) {
+        const terms: Array<{ expression: ExpressionNode; negative: boolean }> = [];
+        let parameterTerms = 0;
+        const flatten = (candidate: ExpressionNode, negative = false): void => {
+          if (candidate instanceof BinaryOpNode
+            && (candidate.operator === BinaryOperator.PLUS || candidate.operator === BinaryOperator.MINUS)) {
+            flatten(candidate.left, negative);
+            flatten(candidate.right, candidate.operator === BinaryOperator.MINUS ? !negative : negative);
+          } else if (candidate instanceof IdentifierNode && candidate.name === parameter.name) {
+            if (negative) parameterTerms = 2;
+            else parameterTerms += 1;
+          } else terms.push({ expression: candidate, negative });
+        };
+        flatten(argument);
+        if (parameterTerms === 1 && terms.length > 0) {
+          stepExpression = terms.reduce<ExpressionNode | undefined>((sum, term) => {
+            const signed = term.negative
+              ? this.stamp(new UnaryOpNode(UnaryOperator.NEGATE, term.expression), term.expression.location)
+              : term.expression;
+            return sum ? this.stamp(new BinaryOpNode(
+              sum, BinaryOperator.PLUS, signed,
+            ), argument.location) : signed;
+          }, undefined);
+        }
+      }
       if (!stepExpression) return undefined;
       progressions.push({ parameterIndex: index, subtract, stepExpression });
     }
@@ -293,10 +323,22 @@ export default class LowerTailRecursion extends AstTraversal {
     for (const progression of progressions) {
       let changingDependency = false;
       this.walkNodes(progression.stepExpression, (candidate) => {
-        if (candidate instanceof IdentifierNode && changingNames.has(candidate.name)) changingDependency = true;
+        if (candidate instanceof IdentifierNode && changingNames.has(candidate.name)
+          && candidate.name !== node.parameters[inductionIndex].name) changingDependency = true;
       });
-      if (changingDependency
-        || !this.affineEventExpression(progression.stepExpression, node, '', false)) return undefined;
+      if (changingDependency) return undefined;
+      const counterSlope = this.affineCounterSlope(
+        progression.stepExpression, node, node.parameters[inductionIndex].name,
+      );
+      if (counterSlope === false) return undefined;
+      if (counterSlope) {
+        // The prefix formula regroups per-frame additions. That is exact for bigint, but not for checked bounded
+        // arithmetic: a closed-form intermediate may overflow even when every source-ordered update succeeds.
+        // Require both the carried value and its counter to be BCH-native bigint rather than weakening checks.
+        if (node.parameters[progression.parameterIndex].type !== PrimitiveType.BIGINT
+          || node.parameters[inductionIndex].type !== PrimitiveType.BIGINT) return undefined;
+        progression.counterSlope = counterSlope;
+      }
     }
     const induction = progressions.find(({ parameterIndex }) => parameterIndex === inductionIndex);
     if (!induction?.subtract
@@ -304,6 +346,69 @@ export default class LowerTailRecursion extends AstTraversal {
       return undefined;
     }
     return progressions;
+  }
+
+  /**
+   * Prove that an additive recursive step is affine in the descending counter and return its coefficient.
+   * Counter-free subexpressions stay opaque, but must be replayable integral expressions. A multiplication may
+   * have at most one counter-dependent side. Division, modulo, casts, ternaries, and other operators over the
+   * counter are intentionally refused because their per-frame integer/width semantics are not affine.
+   */
+  private affineCounterSlope(
+    expression: ExpressionNode, node: FunctionDefinitionNode, inductionName: string,
+  ): ExpressionNode | undefined | false {
+    const containsInduction = (candidate: Node): boolean => {
+      let found = false;
+      this.walkNodes(candidate, (part) => {
+        if (part instanceof IdentifierNode && part.name === inductionName) found = true;
+      });
+      return found;
+    };
+    const counterFree = (candidate: ExpressionNode): boolean =>
+      !containsInduction(candidate)
+      && this.affineEventExpression(candidate, node, inductionName, false) !== undefined
+      && this.isAffineIntegralExpression(candidate, node);
+    const combine = (
+      left: ExpressionNode | undefined, operator: BinaryOperator, right: ExpressionNode | undefined,
+      location: Node['location'],
+    ): ExpressionNode | undefined => {
+      if (!left) return right && (operator === BinaryOperator.MINUS
+        ? this.stamp(new UnaryOpNode(UnaryOperator.NEGATE, right), location) : right);
+      if (!right) return left;
+      return this.stamp(new BinaryOpNode(left, operator, right), location);
+    };
+    const slope = (candidate: ExpressionNode): ExpressionNode | undefined | false => {
+      if (!containsInduction(candidate)) return counterFree(candidate) ? undefined : false;
+      if (candidate instanceof IdentifierNode) {
+        return candidate.name === inductionName
+          ? this.stamp(new IntLiteralNode(1n), candidate.location) : false;
+      }
+      if (candidate instanceof UnaryOpNode && candidate.operator === UnaryOperator.NEGATE) {
+        const inner = slope(candidate.expression);
+        return inner === false || inner === undefined ? false
+          : this.stamp(new UnaryOpNode(UnaryOperator.NEGATE, inner), candidate.location);
+      }
+      if (!(candidate instanceof BinaryOpNode)) return false;
+      if (candidate.operator === BinaryOperator.PLUS || candidate.operator === BinaryOperator.MINUS) {
+        const left = slope(candidate.left);
+        const right = slope(candidate.right);
+        if (left === false || right === false) return false;
+        return combine(left, candidate.operator, right, candidate.location);
+      }
+      if (candidate.operator !== BinaryOperator.MUL) return false;
+      const leftDepends = containsInduction(candidate.left);
+      const rightDepends = containsInduction(candidate.right);
+      if (leftDepends === rightDepends) return false;
+      const dependent = leftDepends ? candidate.left : candidate.right;
+      const invariant = leftDepends ? candidate.right : candidate.left;
+      if (!counterFree(invariant)) return false;
+      const coefficient = slope(dependent);
+      if (coefficient === false || coefficient === undefined) return false;
+      return this.stamp(new BinaryOpNode(
+        coefficient, BinaryOperator.MUL, cloneNode(invariant),
+      ), candidate.location);
+    };
+    return slope(expression);
   }
 
   visitSourceFile(node: SourceFileNode): Node {
@@ -1898,10 +2003,37 @@ export default class LowerTailRecursion extends AstTraversal {
         cloneNode(inductionStep),
       ), location), BinaryOperator.MINUS, rank,
     ), location) : rank;
-    const offset = progression.stepExpression instanceof IntLiteralNode
-      && progression.stepExpression.value === 1n
-      ? depth
-      : this.stamp(new BinaryOpNode(depth, BinaryOperator.MUL, cloneNode(progression.stepExpression)), location);
+    let offset: ExpressionNode;
+    if (!progression.counterSlope) {
+      offset = progression.stepExpression instanceof IntLiteralNode
+        && progression.stepExpression.value === 1n
+        ? depth
+        : this.stamp(new BinaryOpNode(
+          cloneNode(depth), BinaryOperator.MUL, cloneNode(progression.stepExpression),
+        ), location);
+    } else {
+      // cursor(j) = cursor(0) - j * inductionStep. For an affine delta `a * cursor + b`, the exact prefix is
+      // depth * delta(cursor(0)) - a * inductionStep * depth * (depth - 1) / 2. Keeping the source delta intact
+      // retains its checked expression shape; bigint users additionally receive the unrestricted closed form.
+      const gross = this.stamp(new BinaryOpNode(
+        cloneNode(depth), BinaryOperator.MUL, cloneNode(progression.stepExpression),
+      ), location);
+      const triangular = this.stamp(new BinaryOpNode(
+        this.stamp(new BinaryOpNode(
+          cloneNode(depth), BinaryOperator.MUL,
+          this.stamp(new BinaryOpNode(
+            cloneNode(depth), BinaryOperator.MINUS, this.stamp(new IntLiteralNode(1n), location),
+          ), location),
+        ), location),
+        BinaryOperator.DIV, this.stamp(new IntLiteralNode(2n), location),
+      ), location);
+      const drift = this.stamp(new BinaryOpNode(
+        this.stamp(new BinaryOpNode(
+          cloneNode(progression.counterSlope), BinaryOperator.MUL, cloneNode(inductionStep),
+        ), location), BinaryOperator.MUL, triangular,
+      ), location);
+      offset = this.stamp(new BinaryOpNode(gross, BinaryOperator.MINUS, drift), location);
+    }
     return this.stamp(new BinaryOpNode(
       this.stamp(new IdentifierNode(parameter.name), location),
       progression.subtract ? BinaryOperator.MINUS : BinaryOperator.PLUS,

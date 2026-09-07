@@ -6950,14 +6950,18 @@ export default class LowerVMapCounterLoops extends AstTraversal {
               const update = statements[statements.length - 1];
               if (!(condition instanceof BinaryOpNode)
                 || !(update instanceof AssignNode)
-                || !(update.expression instanceof BinaryOpNode)
-                || !(condition.left instanceof IdentifierNode
-                  && condition.right instanceof IntLiteralNode)
-                  && !(condition.right instanceof IdentifierNode
-                    && condition.left instanceof IntLiteralNode)) return undefined;
-              const counterOnLeft = condition.left instanceof IdentifierNode;
+                || !(update.expression instanceof BinaryOpNode)) return undefined;
+              const counterName = update.identifier.name;
+              const counterOnLeft = condition.left instanceof IdentifierNode
+                && condition.left.name === counterName;
+              const counterOnRight = condition.right instanceof IdentifierNode
+                && condition.right.name === counterName;
+              if (counterOnLeft === counterOnRight) return undefined;
               const counterNode = (counterOnLeft ? condition.left : condition.right) as IdentifierNode;
-              const bound = (counterOnLeft ? condition.right : condition.left) as IntLiteralNode;
+              const boundExpression = counterOnLeft ? condition.right : condition.left;
+              const bound = replay(boundExpression);
+              const boundValue = bound ? literalValue(bound) : undefined;
+              if (typeof boundValue !== 'bigint') return undefined;
               const comparison = counterOnLeft ? condition.operator : ({
                 [BinaryOperator.LT]: BinaryOperator.GT,
                 [BinaryOperator.LE]: BinaryOperator.GE,
@@ -6966,29 +6970,49 @@ export default class LowerVMapCounterLoops extends AstTraversal {
                 [BinaryOperator.NE]: BinaryOperator.NE,
               } as Partial<Record<BinaryOperator, BinaryOperator>>)[condition.operator];
               if (comparison === undefined) return undefined;
-              const counterName = counterNode.name;
-              if (update.identifier.name !== counterName) return undefined;
               const initial = values.get(counterName);
               const addedOnLeft = update.expression.operator === BinaryOperator.PLUS
                 && update.expression.left instanceof IdentifierNode
                 && update.expression.left.name === counterName
-                && update.expression.right instanceof IntLiteralNode
                 ? update.expression.right : undefined;
               const addedOnRight = update.expression.operator === BinaryOperator.PLUS
                 && update.expression.right instanceof IdentifierNode
                 && update.expression.right.name === counterName
-                && update.expression.left instanceof IntLiteralNode
                 ? update.expression.left : undefined;
               const subtracted = update.expression.operator === BinaryOperator.MINUS
                 && update.expression.left instanceof IdentifierNode
                 && update.expression.left.name === counterName
-                && update.expression.right instanceof IntLiteralNode
                 ? update.expression.right : undefined;
-              const magnitude = addedOnLeft ?? addedOnRight ?? subtracted;
-              const step = magnitude && subtracted ? -magnitude.value : magnitude?.value;
+              const magnitudeExpression = addedOnLeft ?? addedOnRight ?? subtracted;
+              const magnitude = magnitudeExpression ? replay(magnitudeExpression) : undefined;
+              const magnitudeValue = magnitude ? literalValue(magnitude) : undefined;
+              if (typeof magnitudeValue !== 'bigint') return undefined;
+              const step = subtracted ? -magnitudeValue : magnitudeValue;
+              const progressionNames = new Set<string>();
+              walk(boundExpression, (candidate) => {
+                if (candidate instanceof IdentifierNode) progressionNames.add(candidate.name);
+              });
+              walk(magnitudeExpression!, (candidate) => {
+                if (candidate instanceof IdentifierNode) progressionNames.add(candidate.name);
+              });
+              let progressionMutated = false;
+              walk(helperStatement.block, (candidate) => {
+                if (candidate === update) return;
+                if ((candidate instanceof AssignNode || candidate instanceof DeleteLocalNode)
+                  && progressionNames.has(candidate.identifier.name)) progressionMutated = true;
+                if (candidate instanceof TupleAssignmentNode
+                  && candidate.elements.some((element) => element.name !== undefined
+                    && progressionNames.has(element.name))) progressionMutated = true;
+                if (candidate instanceof UnaryOpNode && candidate.expression instanceof IdentifierNode
+                  && progressionNames.has(candidate.expression.name)
+                  && [UnaryOperator.POSTFIX_INCREMENT, UnaryOperator.PREFIX_INCREMENT,
+                    UnaryOperator.POSTFIX_DECREMENT, UnaryOperator.PREFIX_DECREMENT]
+                    .includes(candidate.operator)) progressionMutated = true;
+              });
               const ascending = comparison === BinaryOperator.LT || comparison === BinaryOperator.LE;
               const descending = comparison === BinaryOperator.GT || comparison === BinaryOperator.GE;
               if (!(initial instanceof IntLiteralNode) || step === undefined || step === 0n
+                || progressionMutated
                 || (ascending && step < 0n) || (descending && step > 0n)
                 || (!ascending && !descending && comparison !== BinaryOperator.NE)) return undefined;
               const loopBody = new BlockNode(statements.slice(0, -1));
@@ -6999,11 +7023,11 @@ export default class LowerVMapCounterLoops extends AstTraversal {
               let stoppedCondition: ExpressionNode | undefined;
               const conditionalExits: { condition: ExpressionNode; counter: IntLiteralNode }[] = [];
               const continues = (): boolean => {
-                if (comparison === BinaryOperator.LT) return counter < bound.value;
-                if (comparison === BinaryOperator.LE) return counter <= bound.value;
-                if (comparison === BinaryOperator.GT) return counter > bound.value;
-                if (comparison === BinaryOperator.GE) return counter >= bound.value;
-                return counter !== bound.value;
+                if (comparison === BinaryOperator.LT) return counter < boundValue;
+                if (comparison === BinaryOperator.LE) return counter <= boundValue;
+                if (comparison === BinaryOperator.GT) return counter > boundValue;
+                if (comparison === BinaryOperator.GE) return counter >= boundValue;
+                return counter !== boundValue;
               };
               let firstPostTestIteration = helperStatement instanceof DoWhileNode;
               while (firstPostTestIteration || continues()) {

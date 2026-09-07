@@ -7,6 +7,7 @@ import {
   BlockNode,
   StatementNode,
   WhileNode,
+  DoWhileNode,
   VariableDefinitionNode,
   IntLiteralNode,
   IdentifierNode,
@@ -202,7 +203,8 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
     let hasIndirectCall = false;
     const walk = (n: Node | undefined): void => {
       if (!n) return;
-      if (n instanceof WhileNode || (this.fixedCollectionIterations && n instanceof CollectionIterationNode)) {
+      if (n instanceof WhileNode || n instanceof DoWhileNode
+        || (this.fixedCollectionIterations && n instanceof CollectionIterationNode)) {
         hasCandidateLoop = true;
       }
       if (n instanceof IndirectCallNode
@@ -272,6 +274,16 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
       node.mappingEscapeReplayForbidden = true;
     }
     return super.visitWhile(node);
+  }
+
+  visitDoWhile(node: DoWhileNode): Node {
+    if (this.hasMappingWrite(node.block.statements ?? [])
+      && this.hasControlFlowEscape(node.block.statements ?? [])) {
+      // Do-while loops never pass through the fixed `for` recognizer below, but the same one-site mapping journal
+      // limitation applies. Preserve the refusal marker before break/continue lowering rewrites the source escape.
+      node.mappingEscapeReplayForbidden = true;
+    }
+    return super.visitDoWhile(node);
   }
 
   private tryUnroll(init: VariableDefinitionNode, w: WhileNode): StatementNode[] | undefined {

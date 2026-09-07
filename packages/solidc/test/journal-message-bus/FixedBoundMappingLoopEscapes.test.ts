@@ -65,4 +65,14 @@ describe('fixed-bound mapping loops with source escapes', () => {
     }`);
     expect(handler).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_UNBOUNDED_KEY' });
   });
+
+  it.each(['break', 'continue'])('keeps a do-while mapping %s set fenced', (escape) => {
+    const { handler } = compile(`int i = 0;
+      do {
+        this.before[i] = i;
+        if (skip) ${escape};
+        i = i + 1;
+      } while (i < n);`);
+    expect(handler).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_UNBOUNDED_KEY' });
+  });
 });

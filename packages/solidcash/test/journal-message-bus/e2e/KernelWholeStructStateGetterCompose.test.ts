@@ -130,4 +130,138 @@ describe('kernel whole-struct state getter composition', () => {
       /prepared return commitment|BCH-2026 preflight failed/,
     );
   }, 120_000);
+
+  it('reads a whole flattened dynamic struct after an earlier row mutates its sibling leaves', async () => {
+    const provider = createMessageBusCapstoneTestProvider();
+    const sourceArtifact = compileString(`pragma solidity ^0.8.0;
+      struct Detail { string note; uint256[] marks; }
+      struct Record { uint256 value; Detail detail; }
+      contract Source {
+        Record record;
+        function mutate(uint256 field, uint256 value, string memory note, uint256 mark) public {
+          if (field == 0) record.value = value;
+          else if (field == 1) record.detail.note = note;
+          else record.detail.marks.push(mark);
+          require(true);
+        }
+        function read() public view returns (Record memory) { return record; }
+      }`, OPTIONS);
+    for (const name of ['mutate', 'read']) {
+      expect(sourceArtifact.messageBus?.handlers.find((entry) => entry.name === name))
+        .toMatchObject({ eligible: true });
+    }
+    const sourceBase = new Contract(sourceArtifact, [], { provider });
+    const sourceSetup = await setupStatefulUtxos(provider, sourceBase, sourceArtifact.stateLayout!, {
+      record__value: 1n,
+      record__detail__note: '',
+      record__detail__marks: [],
+    }, { saltContract: true });
+    const source = StatefulContract.withCategory(
+      sourceBase.withCategory(hexToBin(sourceSetup.categoryId)), sourceSetup.categoryId,
+    );
+
+    const consumerArtifact = compileString(`pragma solidity ^0.8.0;
+      struct Detail { string note; uint256[] marks; }
+      struct Record { uint256 value; Detail detail; }
+      interface Store {
+        function mutate(uint256 field, uint256 value, string memory note, uint256 mark) external;
+        function read() external returns (Record memory);
+      }
+      contract Consumer(address source) {
+        function verify() public {
+          Store(source).mutate(0, 9, "", 0);
+          Store(source).mutate(1, 0, "new", 0);
+          Store(source).mutate(2, 0, "", 6);
+          Record memory record = Store(source).read();
+          require(record.value == 9 && record.detail.note == "new"
+            && record.detail.marks.length == 1 && record.detail.marks[0] == 6);
+        }
+      }`, OPTIONS);
+    const consumerBase = new Contract(consumerArtifact, [source.inner.lockingBytecode], { provider });
+    const consumerSetup = await setupStatefulUtxos(
+      provider, consumerBase, consumerArtifact.stateLayout!, {}, { saltContract: true },
+    );
+    const consumer = StatefulContract.withCategory(
+      consumerBase.withCategory(hexToBin(consumerSetup.categoryId)), consumerSetup.categoryId,
+    );
+    const expected = hexToBin(ethers.AbiCoder.defaultAbiCoder().encode(
+      ['tuple(uint256,tuple(string,uint256[]))'], [[9n, ['new', [6n]]]],
+    ).slice(2));
+    const funder = await createBareP2pkhFeeFunder(provider, 500_000n);
+    const built = await messageBus.compose({
+      preparedCalls: [
+        { contract: consumer, functionName: 'verify', args: [] },
+        { contract: source, functionName: 'mutate', args: [0n, 9n, '', 0n] },
+        { contract: source, functionName: 'mutate', args: [1n, 0n, 'new', 0n] },
+        { contract: source, functionName: 'mutate', args: [2n, 0n, '', 6n] },
+        {
+          contract: source, functionName: 'read', args: [],
+          provisionalResultCommitment: expected,
+        },
+      ],
+      funder,
+      changeAddress: funder.unlocker.generateLockingBytecode(),
+    }).build();
+    expect(vmAccepts(built)).toBe(true);
+    const transaction = built.buildLibauthTransaction();
+    const resultOutput = transaction.outputs.find((output) => output.token?.nft?.capability === 'none'
+      && binToHex(output.token.category) === sourceSetup.categoryId);
+    expect(resultOutput).toBeDefined();
+
+    const sourceOutputs = generateLibauthSourceOutputs(built.inputs);
+    const sourceRouteInput = built.inputs.findIndex((input) => 'contract' in input.unlocker
+      && input.unlocker.contract.artifact.contractName === 'Source'
+      && input.unlocker.abiFunction.name === sourceArtifact.messageBus!.route.name);
+    const tampered = {
+      ...transaction,
+      outputs: transaction.outputs.map((output) => output !== resultOutput ? output : ({
+        ...output,
+        token: { ...output.token!, nft: { ...output.token!.nft!,
+          commitment: Uint8Array.from(output.token!.nft!.commitment, (byte, offset) =>
+            offset === output.token!.nft!.commitment.length - 1 ? byte ^ 1 : byte) } },
+      })),
+    };
+    const vm = createVirtualMachineBch2026ForProvider(provider);
+    expect(vm.stateSuccess(vm.evaluate({ inputIndex: sourceRouteInput, sourceOutputs, transaction: tampered })))
+      .not.toBe(true);
+  }, 120_000);
+
+  it('enforces the cumulative 10KB result ceiling for whole flattened dynamic state structs', async () => {
+    const provider = createMessageBusCapstoneTestProvider();
+    const chunk = 'a'.repeat(410);
+    const repeatedChunk = Array.from({ length: 12 }, () => 'chunk').join(', ');
+    const artifact = compileString(`pragma solidity ^0.8.0;
+      struct Record { string note; uint256[] marks; }
+      contract Source {
+        Record record;
+        function expand() public {
+          string memory chunk = "${chunk}";
+          record.note = string.concat(${repeatedChunk});
+          require(record.note.length > 0);
+        }
+        function read() public view returns (Record memory) { return record; }
+      }`, OPTIONS);
+    const base = new Contract(artifact, [], { provider });
+    const setup = await setupStatefulUtxos(provider, base, artifact.stateLayout!, {
+      record__note: '', record__marks: [],
+    }, { saltContract: true });
+    const source = StatefulContract.withCategory(
+      base.withCategory(hexToBin(setup.categoryId)), setup.categoryId,
+    );
+    await source.call.expand().send();
+    const single = await source.batch([{ function: 'read', args: [] }]).build();
+    expect(vmAccepts(single)).toBe(true);
+    const doubled = await source.batch([
+      { function: 'read', args: [] },
+      { function: 'read', args: [] },
+    ]).build();
+    const transaction = doubled.buildLibauthTransaction();
+    const sourceOutputs = generateLibauthSourceOutputs(doubled.inputs);
+    const sourceRouteInput = doubled.inputs.findIndex((input) => 'contract' in input.unlocker
+      && input.unlocker.contract.artifact.contractName === 'Source'
+      && input.unlocker.abiFunction.name === artifact.messageBus!.route.name);
+    const vm = createVirtualMachineBch2026ForProvider(provider);
+    expect(vm.stateSuccess(vm.evaluate({ inputIndex: sourceRouteInput, sourceOutputs, transaction })))
+      .not.toBe(true);
+  }, 120_000);
 });

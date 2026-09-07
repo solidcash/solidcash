@@ -140,6 +140,27 @@ describe('required kernel admission', () => {
       .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
   });
 
+  it('admits a whole flattened state struct with dynamic value leaves', () => {
+    const artifact = compileString(`pragma solidity ^0.8.0;
+      contract C() {
+        struct Detail { string note; uint256[] marks; }
+        struct Rec { uint256 value; Detail detail; }
+        Rec record;
+        function mutate(uint256 field, uint256 value, string memory note, uint256 mark) public {
+          if (field == 0) record.value = value;
+          else if (field == 1) record.detail.note = note;
+          else record.detail.marks.push(mark);
+          require(true);
+        }
+        function read() public view returns (Rec memory) { return record; }
+      }
+    `, { ...KERNEL, solidityImportCompat: true });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'mutate'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'read'))
+      .toMatchObject({ eligible: true, outputs: [{ type: 'Rec' }] });
+  });
+
   it('admits one helper which directly combines dynamic state and a collection entry', () => {
     const artifact = compileString(`contract C() {
       string note;

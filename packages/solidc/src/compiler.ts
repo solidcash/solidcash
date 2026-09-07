@@ -4876,19 +4876,6 @@ function synthesizeMessageBusRoute(
     if (!stateVariable || !(stateVariable.type instanceof StructType)) return undefined;
     return stateVariable;
   };
-  const flattenedWholeStructStateGetter = (fn: FunctionDefinitionNode): boolean => {
-    const statements = fn.body?.statements;
-    if (fn.returnTypes.length !== 1 || !(fn.returnTypes[0] instanceof StructType)
-      || statements?.length !== 1 || !(statements[0] instanceof ReturnNode)
-      || statements[0].expressions.length !== 1) return false;
-    const expression = statements[0].expressions[0];
-    if (!(expression instanceof FunctionCallNode)
-      || expression.identifier.name !== fn.returnTypes[0].name
-      || expression.parameters.length !== fn.returnTypes[0].fields.length) return false;
-    const stateNames = new Set(contract.stateVariables.map((state) => state.name));
-    return expression.parameters.every((parameter) => parameter instanceof IdentifierNode
-      && (parameter.definition?.definition instanceof StateVariableNode || stateNames.has(parameter.name)));
-  };
   const fixedKernelStructLayout = (type: Type, active = new Set<object>()): boolean => {
     if (type instanceof ArrayType) {
       return type.bound !== undefined && fixedKernelStructLayout(type.elementType, active);
@@ -5131,14 +5118,6 @@ function synthesizeMessageBusRoute(
       // independent of transaction-signature parameters and reachable CHECKSIG/CHECKMULTISIG operations.
       fn.messageBusEligible = false;
       fn.messageBusRejectionReason = 'KERNEL_TX_SIGNATURE';
-    } else if (compilerOptions.messageBusKernel === true
-      && flattenedWholeStructStateGetter(fn)
-      && fn.returnTypes.some((type) => type instanceof StructType && hasDynamicCompositeLeaf(type))) {
-      // A flattened whole-state struct and its dynamic sibling chunks do not yet have one route-local value
-      // provenance. Mapping-entry structs are independently authenticated collection values and pure constructed
-      // structs have no state resource, so neither is caught by this storage-specific fence.
-      fn.messageBusEligible = false;
-      fn.messageBusRejectionReason = 'KERNEL_LAYOUT';
     } else if (compilerOptions.messageBusKernel === true
       && fn.returnTypes.some((type, index) =>
         !fixedSelfFunctionPointerResult(index) && !kernelResultEncodable(type))) {

@@ -335,8 +335,12 @@ Straight-line and finite `if`/`else`/`switch` child deployments publish compiler
 constructor, value, and salt expressions. Arm-local values and post-control-flow joins use typed conditional
 recipes with implicit unchanged paths and switch first-match semantics. Folded genesis state supports scalar,
 enum, fixed-point, recursively nested fixed-layout struct and fixed-array values, including a replayable ternary
-which selects a complete aggregate; dynamic leaves, cyclic aggregates, loop-carried deployment topology, and opaque
-constructor state remain `KERNEL_LAYOUT`. The child layout digest authenticates the reachable nested struct field
+which selects a complete aggregate. Internal/private pure constructor helpers may build those values from
+straight-line initialized locals and a terminal single-value return; helper effects, guards, state/transaction/message
+reads, ambiguous overloads, and recursive helper call graphs fail closed. Exact counter loops of at most 64 iterations
+are expanded before topology assignment, giving every deployment a distinct source-ordered authenticated span and
+literal-substituted constructor recipe. Dynamic leaves, cyclic aggregates, runtime-count or escaping deployment loops,
+and opaque constructor state remain `KERNEL_LAYOUT`. The child layout digest authenticates the reachable nested struct field
 names, types, and order, so the SDK cannot reinterpret the same commitment with different aggregate geometry.
 Compiler-owned public entry points are finalized before kernel admission. In particular, a contract using an
 oracle-backed `block.*` register publishes `__updateBlockOracle` as an ordinary eligible row with its detached

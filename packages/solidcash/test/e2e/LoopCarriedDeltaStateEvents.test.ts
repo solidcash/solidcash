@@ -25,9 +25,9 @@ describe('loop-carried delta scalar-state event recurrences', () => {
         }
         function checkedOverflow(int initialDelta, int increment, pubkey pk, sig s) public {
           int delta = initialDelta;
-          for (int cursor = 1; cursor < 6; cursor = cursor + 2) {
-            this.total = this.total + bigint(delta);
+          for (int cursor = 0; cursor < 2; cursor = cursor + 1) {
             delta = delta + increment;
+            this.total = this.total + bigint(delta);
             emit Phase(this.total);
           }
           require(checkSig(s, pk));
@@ -41,7 +41,7 @@ describe('loop-carried delta scalar-state event recurrences', () => {
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'accumulate'))
       .toMatchObject({ eligible: true });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'checkedOverflow'))
-      .toMatchObject({ eligible: false });
+      .toMatchObject({ eligible: true });
 
     const funding = new Contract(p2pkhArtifact, [alicePkh], { provider });
     let nonce = 0x8f00;
@@ -74,9 +74,17 @@ describe('loop-carried delta scalar-state event recurrences', () => {
       .then(() => 'ACCEPTED').catch((error: Error) => error.message);
     expectScriptRejection(outcome, 0);
 
-    // This bounded local is deliberately not polynomial-replayed. Its original checked update remains on-chain.
-    await fund();
+    // Repeated checked additions stay in range, but the old regrouped `rank * increment` projection overflows.
+    // Exact replay must accept the source-valid call.
     const maximum = (1n << 255n) - 1n;
+    await fund();
+    const safeIncrement = (3n * maximum) / 4n;
+    await expect(contract.checkedOverflow(-maximum, safeIncrement, alicePub, signature).send())
+      .resolves.toBeDefined();
+
+    // The exact fallback replays this bounded local without regrouping; the original checked update remains
+    // on-chain and rejects on the same source operation.
+    await fund();
     await expect(contract.checkedOverflow(maximum, 1n, alicePub, signature).send()).rejects.toThrow();
   });
 });

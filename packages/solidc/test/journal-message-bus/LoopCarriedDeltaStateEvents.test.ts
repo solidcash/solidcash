@@ -78,7 +78,7 @@ describe('loop-carried delta scalar-state event recurrences', () => {
       .not.toEqual(handler?.runtimeLoopEvents?.[0].arguments?.[1]);
   });
 
-  it('keeps bounded checked arithmetic fenced from polynomial regrouping', () => {
+  it('replays bounded checked arithmetic without polynomial regrouping', () => {
     const artifact = compileString(`event Phase(int value);
       contract C() {
         int total;
@@ -93,10 +93,13 @@ describe('loop-carried delta scalar-state event recurrences', () => {
         }
       }`, KERNEL);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'accumulate'))
-      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+      .toMatchObject({ eligible: true });
   });
 
-  it.each(['this.other', 'this.source[0]'])('keeps a %s initializer fenced', (initializer) => {
+  it.each([
+    ['this.other', true],
+    ['this.source[0]', false],
+  ] as const)('classifies a %s initializer by authenticated scalar shape', (initializer, eligible) => {
     const artifact = compileString(`event Phase(bigint value);
       contract C() {
         bigint total;
@@ -113,14 +116,11 @@ describe('loop-carried delta scalar-state event recurrences', () => {
         }
       }`, KERNEL);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'accumulate'))
-      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+      .toMatchObject(eligible ? { eligible: true }
+        : { eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
   });
 
   it.each([
-    ['a state-derived initializer', `int replacement = this.other;
-      delta = delta + replacement; this.total = this.total + delta;`],
-    ['a state-dependent update', `delta = delta + this.other;
-      this.total = this.total + delta;`],
     ['a resource-dependent update', `delta = delta + this.source[cursor];
       this.total = this.total + delta;`],
     ['an effect-dependent update', `delta = delta + derive(cursor);
@@ -131,13 +131,20 @@ describe('loop-carried delta scalar-state event recurrences', () => {
       delta = delta + increment; coupled = coupled + increment;`],
     ['a conditional update', `if (flag) { delta = delta + 1; } else { delta = delta + 2; }
       this.total = this.total + delta;`],
-    ['a truncating update', `delta = delta + increment / 2;
-      this.total = this.total + delta;`],
     ['a continue-crossed recurrence', `this.total = this.total + delta;
       delta = delta + increment; if (flag) { continue; }`],
     ['a break-crossed recurrence', `this.total = this.total + delta;
       delta = delta + increment; if (flag) { break; }`],
   ])('keeps %s fenced', (_label, body) => {
     expect(handlerFor(body)).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+  });
+
+  it.each([
+    ['an authenticated scalar-state update', `delta = delta + this.other;
+      this.total = this.total + delta;`],
+    ['a truncating update', `delta = delta + increment / 2;
+      this.total = this.total + delta;`],
+  ])('exactly replays %s', (_label, body) => {
+    expect(handlerFor(body)).toMatchObject({ eligible: true });
   });
 });

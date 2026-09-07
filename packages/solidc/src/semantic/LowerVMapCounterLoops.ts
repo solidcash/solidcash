@@ -1766,6 +1766,29 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         return reference;
       };
       const unitDomain = !stepExpression && start === 0n && step === 1n;
+      const exactReplayIterations = (() => {
+        if (stepExpression || !(boundExpression instanceof IntLiteralNode)) return MAX_COUNTER_ITERATIONS;
+        const bound = boundExpression.value;
+        const inDomain = (value: bigint): boolean => exactBound
+          ? value !== bound
+          : step > 0n ? value < bound : value > bound;
+        let value = start;
+        let iterations = 0;
+        if (postTest) {
+          do {
+            iterations += 1;
+            value += step;
+          } while (iterations < MAX_COUNTER_ITERATIONS && inDomain(value));
+        } else {
+          while (iterations < MAX_COUNTER_ITERATIONS && inDomain(value)) {
+            iterations += 1;
+            value += step;
+          }
+        }
+        // A zero-trip loop never evaluates an event expression, but retaining one unreachable choice keeps the
+        // expression structurally well-formed without expanding the general 64-rank ceiling.
+        return Math.max(1, iterations);
+      })();
       const writes: Array<ArrayAssignNode | ArrayDeleteNode | MappingAssignNode | MappingDeleteNode
       | MappingFieldAssignNode> = [];
       const writePaths = new Map<Node, ExpressionNode | undefined>();
@@ -2574,10 +2597,14 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       };
       const recurrenceCrossesBreak = hasOuterBreak(block);
       const definitionCounts = new Map<string, number>();
+      const effectfulHelperResultLocals = new Set<string>();
       const countDefinitions = (candidate: Node): void => {
         if (candidate !== block && (candidate instanceof WhileNode || candidate instanceof DoWhileNode)) return;
         if (candidate instanceof VariableDefinitionNode) {
           definitionCounts.set(candidate.name, (definitionCounts.get(candidate.name) ?? 0) + 1);
+          if (candidate.inlinedReturningHelperPure === false) {
+            effectfulHelperResultLocals.add(candidate.name);
+          }
         }
         for (const [key, value] of Object.entries(candidate)) {
           if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type'
@@ -2589,9 +2616,25 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         }
       };
       countDefinitions(block);
+      const readsEffectfulHelperResult = (candidate: Node): boolean => {
+        if (candidate instanceof IdentifierNode && effectfulHelperResultLocals.has(candidate.name)) return true;
+        for (const [key, value] of Object.entries(candidate)) {
+          if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type'
+            || key === 'resolvedFunction' || key === 'collection' || key === 'stateVariable') continue;
+          if (value instanceof Node && readsEffectfulHelperResult(value)) return true;
+          if (Array.isArray(value)
+            && value.some((item) => item instanceof Node && readsEffectfulHelperResult(item))) return true;
+        }
+        return false;
+      };
       // Prefixing an affine recurrence regroups its additions into rank products. Restrict newly replayed
       // loop-carried locals and their target state to arbitrary-precision integers: a bounded checked source can
       // execute safely while an equivalent regrouping overflows (or vice versa), which would reject a valid call.
+      const authenticatedScalarStateValue = (expression: ExpressionNode): boolean => {
+        if (!(expression instanceof StateAccessNode) || handlerClosureStateWrites.has(expression.name)) return false;
+        const stateType = this.stateTypes.get(expression.name);
+        return stateType === PrimitiveType.BIGINT || stateType instanceof IntType;
+      };
       const independentAffineLocal = (name: string): boolean => {
         const updates = topLevelAssignments.get(name) ?? [];
         const initializer = predicateOuterInitializers.get(name)
@@ -2601,7 +2644,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           || countAssignmentsTo(block, name) !== updates.length
           || updates.some((update) => !(block.statements ?? []).includes(update.statement))
           || hasObservableEffect(initializer)
-          || readsState(initializer)
+          || (readsState(initializer) && !authenticatedScalarStateValue(initializer))
           || readsCollection(initializer)
           || containsTruncatingArithmetic(initializer)
           || readsLoopAssignedLocal(initializer)) return false;
@@ -2615,7 +2658,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
             && expression.left instanceof IdentifierNode && expression.left.name === name
             && !containsIdentifier(expression.right, logical)
             && !hasObservableEffect(expression.right)
-            && !readsState(expression.right)
+            && (!readsState(expression.right) || authenticatedScalarStateValue(expression.right))
             && !readsCollection(expression.right)
             && !containsTruncatingArithmetic(expression.right)
             && !readsLoopAssignedLocal(expression.right);
@@ -2767,6 +2810,103 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           intercept: multiplyAffineTerm(left.intercept, right.intercept),
         };
       };
+      type ExactLocalRecurrence = {
+        initializer: ExpressionNode;
+        updates: Array<{ statement: AssignNode; index: number }>;
+      };
+      const exactLocalRecurrences = new Map<string, ExactLocalRecurrence>();
+      for (const [localName, localUpdates] of topLevelAssignments) {
+        const initializer = predicateOuterInitializers.get(localName)
+          ?? (visibleParameters.some((parameter) => parameter.name === localName)
+            ? new IdentifierNode(localName) : undefined);
+        if (!initializer || localUpdates.length === 0
+          || countAssignmentsTo(block, localName) !== localUpdates.length
+          || localUpdates.some((update) => !(block.statements ?? []).includes(update.statement))
+          || recurrenceCrossesContinue
+          || hasObservableEffect(initializer) || readsCollection(initializer)
+          || readsLoopAssignedLocal(initializer) || readsEffectfulHelperResult(initializer)) continue;
+        let supportedLocal = true;
+        for (const { statement } of localUpdates) {
+          const expression = statement.expression;
+          if (!(expression instanceof BinaryOpNode)
+            || !(expression.operator === BinaryOperator.PLUS || expression.operator === BinaryOperator.MINUS)
+            || !(expression.left instanceof IdentifierNode) || expression.left.name !== localName
+            || hasObservableEffect(expression.right) || readsCollection(expression.right)
+            || readsEffectfulHelperResult(expression.right)
+            || readsLoopAssignedState(expression.right)
+            || [...topLevelAssignments.keys()].some((other) => other !== localName
+              && containsIdentifier(expression.right, other))
+            || !runtimePathExpressionSupported(
+              expression.right, logical, new Set(), stateValues, loopCarriedLocalValues,
+            )) {
+            supportedLocal = false;
+            break;
+          }
+        }
+        if (supportedLocal) exactLocalRecurrences.set(localName, {
+          initializer: cloneNode(initializer), updates: localUpdates,
+        });
+      }
+      const substituteExactValue = (
+        source: ExpressionNode,
+        counterValue: bigint,
+        localName?: string,
+        localValue?: ExpressionNode,
+      ): ExpressionNode => {
+        const replace = (candidate: Node): Node => {
+          if (candidate instanceof IdentifierNode && candidate.name === logical) {
+            const literal = new IntLiteralNode(counterValue);
+            literal.location = candidate.location;
+            return literal;
+          }
+          if (localName && localValue && candidate instanceof IdentifierNode
+            && candidate.name === localName) {
+            const value = cloneNode(localValue);
+            value.location = candidate.location;
+            return value;
+          }
+          const value = cloneNode(candidate) as Node;
+          for (const [key, child] of Object.entries(value)) {
+            if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type'
+              || key === 'resolvedFunction' || key === 'collection' || key === 'stateVariable') continue;
+            if (child instanceof Node) {
+              (value as unknown as Record<string, unknown>)[key] = replace(child);
+            } else if (Array.isArray(child)) {
+              (value as unknown as Record<string, unknown>)[key] = child.map((item) =>
+                item instanceof Node ? replace(item) : item);
+            }
+          }
+          return value;
+        };
+        return replace(source) as ExpressionNode;
+      };
+      const exactLocalValueAt = (
+        localName: string,
+        occurrence: number,
+        beforeStatementIndex: number,
+      ): ExpressionNode | undefined => {
+        const recurrence = exactLocalRecurrences.get(localName);
+        if (!recurrence) return undefined;
+        const expandedInitializer = expandRuntimePathExpression(
+          recurrence.initializer, logical, new Set(), stateValues, loopCarriedLocalValues,
+        );
+        if (!expandedInitializer) return undefined;
+        let current = expandedInitializer;
+        const applyUpdate = (update: { statement: AssignNode; index: number }, rankValue: number): void => {
+          const counterValue = start + BigInt(rankValue) * step;
+          current = substituteExactValue(
+            update.statement.expression, counterValue, localName, current,
+          );
+        };
+        for (let rankValue = 0; rankValue < occurrence; rankValue += 1) {
+          for (const update of recurrence.updates) applyUpdate(update, rankValue);
+        }
+        for (const update of recurrence.updates) {
+          if (update.index >= beforeStatementIndex) break;
+          applyUpdate(update, occurrence);
+        }
+        return current;
+      };
       for (const [name, updates] of topLevelStateAssignments) {
         if (countStateAssignmentsTo(block, name) !== updates.length) continue;
         const observationPositions = (block.statements ?? []).flatMap((statement, index) => (
@@ -2852,6 +2992,18 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         let supported = true;
         let usesDeterministicAlias = false;
         let usesIndependentRecurrence = false;
+        const exactDeltas: Array<{
+          operator: BinaryOperator.PLUS | BinaryOperator.MINUS;
+          expression: ExpressionNode;
+          index: number;
+          locals: Set<string>;
+          aliases: Map<string, ExpressionNode>;
+        }> = [];
+        let polynomialSupported = true;
+        // Polynomial prefixing regroups arithmetic. Bounded Solidity integers must instead execute the original
+        // operations in source order even when their delta happens to be algebraically polynomial: an
+        // intermediate `rank * increment` can overflow while every repeated source addition remains in range.
+        let exactReplayRequired = this.stateTypes.get(name) !== PrimitiveType.BIGINT;
         for (const { statement, index } of updates) {
           const recurrence = statement.expression;
           const aliases = deterministicAliasesAt.get(index) ?? new Map<string, ExpressionNode>();
@@ -2875,18 +3027,22 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           if (recurrence instanceof BinaryOpNode) collectCarriedLocals(recurrence.right);
           const independentRecurrence = referencedCarriedLocals.size <= 1
             && [...referencedCarriedLocals].every((local) => {
-              return statementLocals.has(local)
-                && independentAffineLocal(local);
+              return (statementLocals.has(local) && independentAffineLocal(local))
+                || exactLocalRecurrences.has(local);
             });
           if (!(recurrence instanceof BinaryOpNode)
             || !(recurrence.operator === BinaryOperator.PLUS || recurrence.operator === BinaryOperator.MINUS)
             || !(recurrence.left instanceof StateAccessNode) || recurrence.left.name !== name
             || !independentRecurrence
-            || (referencedCarriedLocals.size > 0
-              && this.stateTypes.get(name) !== PrimitiveType.BIGINT)
             || !runtimePathExpressionSupported(recurrence.right, logical, new Set(), stateValues,
               localValues)
-            || unsupportedLoopAlias(recurrence.right, new Map([...aliases, ...statementLocals]))
+            || unsupportedLoopAlias(recurrence.right, new Map([
+              ...aliases, ...statementLocals,
+              ...[...referencedCarriedLocals].flatMap((local) => {
+                const initializer = exactLocalRecurrences.get(local)?.initializer;
+                return initializer ? [[local, initializer] as const] : [];
+              }),
+            ]))
             || readsLoopAssignedState(recurrence.right)
             || readsCollection(recurrence.right)) {
             supported = false;
@@ -2901,13 +3057,88 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           usesDeterministicAlias ||= [...aliases.keys()].some((alias) =>
             containsIdentifier(recurrence.right, alias));
           usesIndependentRecurrence ||= referencedCarriedLocals.size > 0;
+          exactReplayRequired ||= [...referencedCarriedLocals].some((local) =>
+            (predicateOuterTypes.get(local)
+              ?? visibleParameters.find((parameter) => parameter.name === local)?.type)
+              !== PrimitiveType.BIGINT);
           const delta = expandedDelta && counterPolynomial(expandedDelta);
-          if (!delta) { supported = false; break; }
-          deltas.push(recurrence.operator === BinaryOperator.PLUS
-            ? delta : scalePolynomial(delta, new IntLiteralNode(-1n)));
+          if (delta) {
+            deltas.push(recurrence.operator === BinaryOperator.PLUS
+              ? delta : scalePolynomial(delta, new IntLiteralNode(-1n)));
+          } else polynomialSupported = false;
+          exactDeltas.push({
+            operator: recurrence.operator,
+            expression: cloneNode(recurrence.right),
+            index,
+            locals: referencedCarriedLocals,
+            aliases: new Map(aliases),
+          });
         }
-        if (!supported || !base || deltas.length === 0 || recurrenceCrossesContinue
+        if (!supported || !base || exactDeltas.length === 0 || recurrenceCrossesContinue
           || ((usesDeterministicAlias || usesIndependentRecurrence) && recurrenceCrossesBreak)) continue;
+        if (exactReplayRequired || !polynomialSupported || deltas.length !== exactDeltas.length) {
+          const rank = unitDomain
+            ? new IdentifierNode(logical)
+            : new BinaryOpNode(
+              new BinaryOpNode(new IdentifierNode(logical), BinaryOperator.MINUS, new IntLiteralNode(start)),
+              BinaryOperator.DIV, stepValue(),
+            );
+          const exactDeltaAt = (
+            delta: typeof exactDeltas[number], occurrence: number,
+          ): ExpressionNode | undefined => {
+            let expression = cloneNode(delta.expression) as ExpressionNode;
+            for (const local of delta.locals) {
+              const localValue = exactLocalValueAt(local, occurrence, delta.index);
+              if (!localValue) return undefined;
+              expression = substituteExactValue(
+                expression, start + BigInt(occurrence) * step, local, localValue,
+              );
+            }
+            const expanded = expandRuntimePathExpression(
+              expression, logical, new Set(), stateValues,
+              new Map([...loopCarriedLocalValues, ...delta.aliases]),
+            );
+            return expanded && substituteExactValue(
+              expanded, start + BigInt(occurrence) * step,
+            );
+          };
+          for (const position of observationPositions) {
+            const phase = updates.filter((update) => update.index < position).length;
+            const choices: ExpressionNode[] = [];
+            let sourceValue = cloneNode(base) as ExpressionNode;
+            let exactSupported = true;
+            for (let occurrence = 0; occurrence < exactReplayIterations; occurrence += 1) {
+              let atSite = cloneNode(sourceValue) as ExpressionNode;
+              for (const delta of exactDeltas.slice(0, phase)) {
+                const operand = exactDeltaAt(delta, occurrence);
+                if (!operand) { exactSupported = false; break; }
+                atSite = new BinaryOpNode(atSite, delta.operator, operand);
+              }
+              if (!exactSupported) break;
+              choices.push(atSite);
+              for (const delta of exactDeltas) {
+                const operand = exactDeltaAt(delta, occurrence);
+                if (!operand) { exactSupported = false; break; }
+                sourceValue = new BinaryOpNode(sourceValue, delta.operator, operand);
+              }
+              if (!exactSupported) break;
+            }
+            if (!exactSupported || choices.length !== exactReplayIterations) continue;
+            let value = choices[exactReplayIterations - 1];
+            for (let occurrence = exactReplayIterations - 2; occurrence >= 0; occurrence -= 1) {
+              value = new TernaryOpNode(
+                new BinaryOpNode(cloneNode(rank), BinaryOperator.EQ,
+                  new IntLiteralNode(BigInt(occurrence))),
+                choices[occurrence], value,
+              );
+            }
+            value.location = updates[0].statement.location;
+            const siteValues = loopCarriedStateValuesByStatement.get(position) ?? new Map();
+            siteValues.set(name, value);
+            loopCarriedStateValuesByStatement.set(position, siteValues);
+          }
+          continue;
+        }
         const netDelta = deltas.reduce(
           (sum, delta) => combinePolynomial(sum, delta, BinaryOperator.PLUS),
           {} as CounterPolynomial,

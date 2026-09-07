@@ -44,7 +44,7 @@ describe('geometric scalar-state event recurrences', () => {
       contract C() {
         int total;
         function multiply(int limit, int factor) public {
-          for (int cursor = 0; cursor < limit; cursor = cursor + 1) {
+          for (int cursor = 1; cursor < limit; cursor = cursor + 2) {
             ${update}
             emit Tick(this.total);
           }
@@ -55,18 +55,115 @@ describe('geometric scalar-state event recurrences', () => {
       .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
   });
 
-  it('keeps a state-derived factor fenced', () => {
+  it('publishes an authenticated read-only scalar pre-state factor', () => {
     const artifact = compileString(`event Tick(int value);
       contract C() {
         int total;
         int factor;
         function multiply(int limit) public {
-          for (int cursor = 0; cursor < limit; cursor = cursor + 1) {
+          for (int cursor = 1; cursor < limit; cursor = cursor + 2) {
             this.total = this.total * this.factor;
             emit Tick(this.total);
           }
           require(true);
         }
+      }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'multiply'))
+      .toMatchObject({ eligible: true });
+  });
+
+  it.each([
+    ['a directly written factor', `int factor;
+      function alter() internal { this.factor = this.factor + 1; }
+      function multiply(int limit) public {
+        this.factor = this.factor + 1;
+        for (int cursor = 0; cursor < limit; cursor = cursor + 1) {
+          this.total = this.total * this.factor;
+          emit Tick(this.total);
+        }
+        require(true);
+      }`],
+    ['a transitively written factor', `int factor;
+      function alter() internal { this.factor = this.factor + 1; }
+      function multiply(int limit) public {
+        alter();
+        for (int cursor = 0; cursor < limit; cursor = cursor + 1) {
+          this.total = this.total * this.factor;
+          emit Tick(this.total);
+        }
+        require(true);
+      }`],
+    ['a directly deleted factor', `int factor;
+      function multiply(int limit) public {
+        delete this.factor;
+        for (int cursor = 0; cursor < limit; cursor = cursor + 1) {
+          this.total = this.total * this.factor;
+          emit Tick(this.total);
+        }
+        require(true);
+      }`],
+    ['a transitively deleted factor', `int factor;
+      function erase() internal { delete this.factor; }
+      function multiply(int limit) public {
+        erase();
+        for (int cursor = 0; cursor < limit; cursor = cursor + 1) {
+          this.total = this.total * this.factor;
+          emit Tick(this.total);
+        }
+        require(true);
+      }`],
+    ['a mapping value factor', `mapping(int => int) factors;
+      function multiply(int limit) public {
+        for (int cursor = 0; cursor < limit; cursor = cursor + 1) {
+          this.total = this.total * this.factors[0];
+          emit Tick(this.total);
+        }
+        require(true);
+      }`],
+    ['an array element factor', `int[] factors;
+      function multiply(int limit) public {
+        for (int cursor = 0; cursor < limit; cursor = cursor + 1) {
+          this.total = this.total * this.factors[0];
+          emit Tick(this.total);
+        }
+        require(true);
+      }`],
+    ['a dynamic-state-derived factor', `bytes seed;
+      function multiply(int limit) public {
+        for (int cursor = 0; cursor < limit; cursor = cursor + 1) {
+          this.total = this.total * int(this.seed.length);
+          emit Tick(this.total);
+        }
+        require(true);
+      }`],
+    ['a transaction-derived factor', `function multiply(int limit) public {
+        for (int cursor = 0; cursor < limit; cursor = cursor + 1) {
+          this.total = this.total * tx.inputs.length;
+          emit Tick(this.total);
+        }
+        require(true);
+      }`],
+    ['a signature-derived factor', `function multiply(int limit, pubkey key, sig proof) public {
+        int factor = int(bigint(checkSig(proof, key)));
+        for (int cursor = 0; cursor < limit; cursor = cursor + 1) {
+          this.total = this.total * factor;
+          emit Tick(this.total);
+        }
+        require(true);
+      }`],
+    ['a nonlinear state factor', `int factor;
+      function multiply(int limit) public {
+        for (int cursor = 0; cursor < limit; cursor = cursor + 1) {
+          this.total = this.total * (this.factor * this.factor);
+          emit Tick(this.total);
+        }
+        require(true);
+      }`],
+  ])('keeps %s fenced', (_label, body) => {
+    const artifact = compileString(`event Tick(int value);
+      contract C() {
+        int total;
+        ${body}
       }`, KERNEL);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'multiply'))
       .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });

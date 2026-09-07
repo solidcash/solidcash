@@ -4,7 +4,7 @@ import {
   AssignNode, BinaryOpNode, BlockNode, BoolLiteralNode, BranchNode, BreakNode, CastNode, CollectionNode, ContinueNode,
   ContractNode,
   DoWhileNode,
-  DeleteLocalNode,
+  DeleteLocalNode, DeleteStateNode,
   EmitStatementNode, ExpressionNode, ExpressionStatementNode, ExternalFunctionCallNode, FunctionCallNode,
   FunctionCallStatementNode,
   FieldAccessNode, FunctionDefinitionNode, IdentifierNode, IntLiteralNode, LiteralNode, MappingAccessNode,
@@ -93,6 +93,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
   private collectionsByName = new Map<string, CollectionNode>();
   private stateTypes = new Map<string, Type>();
   private functionsByName = new Map<string, FunctionDefinitionNode[]>();
+  private closureStateWrites = new Map<FunctionDefinitionNode, Set<string>>();
   private eventfulFunctionNames = new Set<string>();
   private externalTypeNames = new Set<string>();
   private structTypeNames = new Set<string>();
@@ -134,6 +135,48 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       const overloads = this.functionsByName.get(fn.name) ?? [];
       overloads.push(fn);
       this.functionsByName.set(fn.name, overloads);
+    }
+    // A geometric event projection may read a scalar factor from authenticated pre-state only when the complete
+    // handler call closure leaves that slot unchanged. Calls are not resolved yet at this pass, so conservatively
+    // join every same-name, same-arity contract overload. Cycles terminate at the ordinary set fixed point.
+    const directStateWrites = new Map<FunctionDefinitionNode, Set<string>>();
+    const directCallees = new Map<FunctionDefinitionNode, Set<FunctionDefinitionNode>>();
+    for (const fn of node.functions) {
+      const writes = new Set<string>();
+      const callees = new Set<FunctionDefinitionNode>();
+      const scan = (candidate: Node): void => {
+        if (candidate instanceof StateAssignNode || candidate instanceof DeleteStateNode) writes.add(candidate.name);
+        if (candidate instanceof FunctionCallNode && !candidate.lexicalIndirectCall) {
+          for (const target of this.functionsByName.get(candidate.identifier.name) ?? []) {
+            if (target.parameters.length === candidate.parameters.length) callees.add(target);
+          }
+        }
+        for (const [key, value] of Object.entries(candidate)) {
+          if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type'
+            || key === 'resolvedFunction' || key === 'functionReference' || key === 'collection'
+            || key === 'stateVariable') continue;
+          if (value instanceof Node) scan(value);
+          else if (Array.isArray(value)) for (const item of value) if (item instanceof Node) scan(item);
+        }
+      };
+      scan(fn.body);
+      directStateWrites.set(fn, writes);
+      directCallees.set(fn, callees);
+    }
+    this.closureStateWrites = new Map([...directStateWrites].map(([fn, writes]) => [fn, new Set(writes)]));
+    let closureChanged = true;
+    while (closureChanged) {
+      closureChanged = false;
+      for (const fn of node.functions) {
+        const writes = this.closureStateWrites.get(fn)!;
+        for (const callee of directCallees.get(fn) ?? []) {
+          for (const name of this.closureStateWrites.get(callee) ?? []) {
+            if (writes.has(name)) continue;
+            writes.add(name);
+            closureChanged = true;
+          }
+        }
+      }
     }
     // Returning event helpers with a linearizable tail are beta-reduced before this pass, so their emits already
     // appear at their exact caller positions and participate in the ordinary runtime stream. A surviving
@@ -185,6 +228,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
     const added: ParameterNode[] = [];
     const runtimeCountCollections = new Set<string>();
     const prelude: StatementNode[] = [];
+    const handlerClosureStateWrites = this.closureStateWrites.get(node) ?? new Set<string>();
     const keySnapshotPrelude: StatementNode[] = [];
     // The compiler invokes this pass both before speculative admission and, when needed, before final codegen.
     // Hidden parameters are the durable marker that this function was already lowered. Do not inspect or mutate
@@ -2731,13 +2775,22 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         // A multiplicative recurrence is expanded as a bounded, rank-selected chain of the original source
         // multiplications. This deliberately does not rewrite it as `base * factor ** rank`: preserving each
         // multiplication and selecting lazily preserves checked-overflow behavior even for zero bases and runtime
-        // factors. Every factor must be invariant and resource-free; mixed additive/geometric updates, division,
-        // modulo, powers, loop-carried factors, and state-derived factors remain fenced.
+        // factors. Every factor must be invariant and resource-free. A direct fixed scalar state access is also
+        // safe: its input commitment authenticates the value, provided the complete handler call closure never
+        // writes that slot. More complex state expressions remain fenced so collection/dynamic reads, mixed
+        // factors, and nonlinear state projections cannot masquerade as one fixed geometric ratio.
         const geometricFactors: ExpressionNode[] = [];
         let geometricBase: ExpressionNode | undefined;
         let geometric = updates.length > 0 && !recurrenceCrossesContinue;
         for (const { statement } of updates) {
           const recurrence = statement.expression;
+          const stateFactor = recurrence instanceof BinaryOpNode
+            && recurrence.right instanceof StateAccessNode ? recurrence.right : undefined;
+          const stateFactorType = stateFactor && this.stateTypes.get(stateFactor.name);
+          const supportedStateFactor = stateFactor !== undefined
+            && stateFactor.name !== name
+            && (stateFactorType instanceof IntType || stateFactorType === PrimitiveType.BIGINT)
+            && !handlerClosureStateWrites.has(stateFactor.name);
           if (!(recurrence instanceof BinaryOpNode)
             || recurrence.operator !== BinaryOperator.MUL
             || !(recurrence.left instanceof StateAccessNode) || recurrence.left.name !== name
@@ -2746,7 +2799,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
               loopCarriedLocalValues)
             || readsLoopAssignedLocal(recurrence.right)
             || readsLoopAssignedState(recurrence.right)
-            || readsState(recurrence.right)
+            || (readsState(recurrence.right) && !supportedStateFactor)
             || readsCollection(recurrence.right)
             || containsTruncatingArithmetic(recurrence.right)) {
             geometric = false;

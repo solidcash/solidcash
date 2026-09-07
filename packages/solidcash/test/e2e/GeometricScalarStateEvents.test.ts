@@ -1,34 +1,37 @@
+import { binToHex, encodeTransaction } from '@bitauth/libauth';
 import { describe, expect, it } from 'vitest';
 import { compileString } from 'solidc';
 import { Contract, SignatureTemplate, StatefulContract } from '../../src/index.js';
 import { alicePkh, alicePriv, alicePub } from '../fixture/vars.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
-import { createTestProvider } from '../test-util.js';
+import { createFeeFunder, createTestProvider, expectScriptRejection } from '../test-util.js';
 
 describe('geometric scalar-state event recurrences', () => {
-  it('verifies exact source-phase commitments without exponentiation overflow assumptions', async () => {
+  it('authenticates a fixed pre-state factor, exact phases, tampering, and the 64-rank boundary', async () => {
     const provider = createTestProvider();
     const signature = new SignatureTemplate(alicePriv);
     const artifact = compileString(`event Phase(int value);
       contract C() {
         int total;
-        function reset(int value, pubkey pk, sig s) public {
+        int factor;
+        function reset(int value, int multiplier, pubkey pk, sig s) public {
           this.total = value;
+          this.factor = multiplier;
           require(checkSig(s, pk));
         }
-        function multiply(int limit, int factor, pubkey pk, sig s) public {
-          for (int cursor = 1; cursor < limit; cursor = cursor + 2) {
-            emit Phase(this.total);
-            this.total = this.total * factor;
-            emit Phase(this.total);
+        function multiply(int limit) public {
+          for (int cursor = 0; cursor < limit; cursor = cursor + 1) {
+            this.total = this.total * this.factor;
+            if (cursor == limit - 1) { emit Phase(this.total); }
           }
-          require(checkSig(s, pk) && limit == 6);
+          require(limit > 0 && limit <= 65);
         }
       }`, {
       forceStateful: true,
       messageBus: true,
       messageBusKernel: true,
       maximumInputBytes: 1_000_000,
+      suppressWarnings: true,
     });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'multiply'))
       .toMatchObject({ eligible: true });
@@ -52,23 +55,40 @@ describe('geometric scalar-state event recurrences', () => {
       const receipt = await (await pending.send()).wait!();
       return receipt.events?.map((event) => event.args.value as bigint) ?? [];
     };
-
     // `factor ** rank` would overflow here even though every original source multiplication remains exactly zero.
     await fund();
     const maximum = (1n << 255n) - 1n;
-    await expect(phaseValues(contract.multiply(6n, maximum, alicePub, signature)))
-      .resolves.toEqual([0n, 0n, 0n, 0n, 0n, 0n]);
+    await expect(contract.reset(0n, maximum, alicePub, signature).send()).resolves.toBeDefined();
+    await fund();
+    await expect(phaseValues(contract.multiply(3n))).resolves.toEqual([0n]);
 
     await fund();
-    await expect(contract.reset(3n, alicePub, signature).send()).resolves.toBeDefined();
+    await expect(contract.reset(3n, 2n, alicePub, signature).send()).resolves.toBeDefined();
     await fund();
-    await expect(phaseValues(contract.multiply(6n, 2n, alicePub, signature)))
-      .resolves.toEqual([3n, 6n, 6n, 12n, 12n, 24n]);
+    await expect(phaseValues(contract.multiply(3n))).resolves.toEqual([24n]);
+
+    const builder = await contract.multiply(3n).build();
+    const { utxo, unlocker } = await createFeeFunder(provider, 20_000n);
+    builder.addInput(utxo, unlocker);
+    const eventOutput = builder.outputs.find((output) => output.token?.nft?.capability === 'none');
+    expect(eventOutput).toBeDefined();
+    eventOutput!.token!.nft!.commitment = '0101';
+    const raw = binToHex(encodeTransaction(builder.buildLibauthTransaction()));
+    const outcome = await provider.sendRawTransaction(raw)
+      .then(() => 'ACCEPTED').catch((error: Error) => error.message);
+    expectScriptRejection(outcome, 0);
 
     // The lowering only derives event arguments; it does not replace or weaken the source's checked multiply.
     await fund();
-    await expect(contract.reset(maximum, alicePub, signature).send()).resolves.toBeDefined();
+    await expect(contract.reset(maximum, 2n, alicePub, signature).send()).resolves.toBeDefined();
     await fund();
-    await expect(contract.multiply(6n, 2n, alicePub, signature).send()).rejects.toThrow();
+    await expect(contract.multiply(3n).send()).rejects.toThrow();
+
+    await fund();
+    await expect(contract.reset(1n, 1n, alicePub, signature).send()).resolves.toBeDefined();
+    await fund();
+    await expect(phaseValues(contract.multiply(64n))).resolves.toEqual([1n]);
+    await expect(contract.multiply(65n).build())
+      .rejects.toThrow(/compiler-published maximum|64/i);
   });
 });

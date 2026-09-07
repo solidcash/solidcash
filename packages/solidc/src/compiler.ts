@@ -4260,8 +4260,7 @@ function synthesizeMessageBusRoute(
                   admissionNode.foldedCollectionEntries, visibleInputs, visibleInputTypes,
                   analyzed.aliases, analyzed.aliasDefinitions,
                 );
-                if (admissionNode.constructorStateFoldComplete !== true || !genesisState || !genesisEntries
-                  || genesisEntries.length > 1) {
+                if (admissionNode.constructorStateFoldComplete !== true || !genesisState || !genesisEntries) {
                   deploymentStateInitializationUnsupported = true;
                 } else {
                   deploymentEntryCountsByChild.set(child.name, genesisEntries.length);
@@ -7757,6 +7756,16 @@ function remapTemplateRowNames(node: Node, fromRow: number, toRow: number): void
   const toSuffix = `_r${toRow}`;
   const toValue = `__message_bus_value_${toRow}_`;
   walkInvocationAst(node, (child) => {
+    // Tuple-assignment targets are plain element records rather than IdentifierNodes. Remap their existing-local
+    // names explicitly: otherwise a cloned row declares `value_N_*` but its multi-result assignment still writes
+    // `value_0_*`, which either aliases the first row or fails symbol resolution when that row is in another arm.
+    if (child instanceof TupleAssignmentNode) {
+      for (const element of child.elements) {
+        if (element.name) {
+          element.name = element.name.replace(fromSuffix, toSuffix).replace(fromValue, toValue);
+        }
+      }
+    }
     const named = child as { name?: string };
     if (typeof named.name !== 'string' || named.name === MB_ROW_PLACEHOLDER) return;
     named.name = named.name.replace(fromSuffix, toSuffix).replace(fromValue, toValue);
@@ -9428,7 +9437,15 @@ function compileResolvedAst(
     delete (mergedCompilerOptions as InternalCompilerOptions).__singlePassVerifierSource;
   }
   // Code generation
-  const traversal = new GenerateTargetTraversal(mergedCompilerOptions);
+  // Kernel entry wrappers and row-handler clones are one cross-body optimisation domain. The ordinary
+  // per-entry peephole freezes each optimized body into a separate OP_DEFINE push before the cross-body
+  // outliner sees it; on a large neutral corpus that retained 263KB of clone bodies, while the bounded
+  // structural-helper probe plus exact-span outliner retained 50KB. Both paths emit the same unoptimized
+  // semantics and the whole-program optimiser below still runs. Canonicalize kernel codegen onto the compact
+  // path so bytecode size does not depend on the front-end compilation-speed preference.
+  const traversal = new GenerateTargetTraversal(mergedCompilerOptions.messageBusKernel === true
+    ? { ...mergedCompilerOptions, optimizeForCompilationSpeed: true }
+    : mergedCompilerOptions);
   traversal.compiledBytecodes = compiledBytecodes;
   try {
     ast = ast.accept(traversal) as Ast;

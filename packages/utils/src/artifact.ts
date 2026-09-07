@@ -140,6 +140,8 @@ export interface EmitAbi {
 /** One segment of the source-ordered runtime event plan. Exactly one repeat source is present. */
 export interface RuntimeLoopEventAbi {
   permutationParam?: string;
+  /** Exact bound expression when the permutation's source domain is not recoverable from its legacy name. */
+  iterationBound?: ExternalCallExpression;
   repeatCount?: number;
   /** Exact do-while recurrence domain for a compiler-lowered affine loop. This is mutually exclusive with
    * permutationParam and repeatCount. Expressions may reference counterName through an `identifier` node. */

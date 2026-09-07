@@ -47,7 +47,9 @@ import AstTraversal from '../ast/AstTraversal.js';
 import { cloneNode } from '../ast/clone.js';
 import { createDefaultValueExpression } from '../ast/defaults.js';
 import { BinaryOperator } from '../ast/Operator.js';
-import { ArrayType, IntType, Type } from '@solidcash/utils';
+import {
+  ArrayType, IntType, MappingType, Type,
+} from '@solidcash/utils';
 
 interface Candidate {
   fn: FunctionDefinitionNode;
@@ -285,6 +287,19 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
         if (candidate instanceof FunctionCallNode && candidate.identifier.name === fn.name) unsupported = true;
         if (candidate instanceof MappingAccessNode || candidate instanceof MappingAssignNode
           || candidate instanceof MappingDeleteNode) {
+          // A synthesized public getter can reach this late pass with a mapping-value array index still appended
+          // to `keys` (the ordinary resolver normally separates it into `arrayIndex`). It is not a second physical
+          // mapping key: normalize the same representation here before deciding whether the helper is journalable.
+          // Array-element journal helpers remain deliberately unsupported; leaving the index in `keys` instead
+          // threaded the whole array as though it were one indexed element and later emitted `array.field` reads.
+          const collection = collections.get(candidate.name);
+          if ((candidate instanceof MappingAccessNode || candidate instanceof MappingAssignNode)
+            && candidate.arrayIndex === undefined
+            && collection?.type instanceof MappingType
+            && collection.innermostValueType instanceof ArrayType
+            && candidate.keys.length === collection.allKeyTypes.length + 1) {
+            candidate.arrayIndex = candidate.keys.pop();
+          }
           if (candidate instanceof MappingAccessNode && dynamicArrays.has(candidate.name)) return;
           if (runtimeLoopSlots.has(candidate.entrySlotIndex) || isRuntimeCounterEntry(candidate)) return;
           if ((candidate instanceof MappingAccessNode && candidate.arrayIndex)

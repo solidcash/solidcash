@@ -9,7 +9,7 @@ import {
   CollectionIterationNode,
   ContinueNode, DeleteLocalNode, DoWhileNode, ExpressionNode, FunctionDefinitionNode, HexLiteralNode, IdentifierNode,
   FunctionCallNode, InstantiationNode, IntLiteralNode, Node, ReturnNode, RevertNode, SwitchNode, TryCatchNode,
-  TernaryOpNode, TupleAssignmentNode, UnaryOpNode, UncheckedNode, VariableDefinitionNode, WhileNode,
+  RequireNode, TernaryOpNode, TupleAssignmentNode, UnaryOpNode, UncheckedNode, VariableDefinitionNode, WhileNode,
   TransferStatementNode,
   AddressTransferStatementNode,
   AddressSendExpressionNode,
@@ -90,7 +90,10 @@ export const childDeploymentCollectionDefinitions = (
     ...(collection.type.bound !== undefined && { bound: collection.type.bound }),
   }),
   ...(collection.immutable && { immutable: true }),
-  ...(collection.sorted && { sorted: true }),
+  // Every mapping uses the verified sorted-entry backend. Canonicalize that mandatory property from the
+  // collection type itself: early kernel admission runs before the later normalization pass stamps `.sorted`,
+  // and layout authentication must be phase-independent.
+  ...((collection.type instanceof MappingType || collection.sorted) && { sorted: true }),
   ...(collection.enumerable && { enumerable: true }),
 }));
 
@@ -298,23 +301,31 @@ export function childDeploymentGenesisEntries(
   const result: ChildDeploymentGenesisEntryAbi[] = [];
   for (const entry of entries) {
     const collection = entry.collection;
-    if (!(collection.type instanceof ArrayType) || collection.type.bound === undefined
-      || collection.type.elementType instanceof ArrayType
-      || collection.type.elementType instanceof MappingType
-      || collection.type.elementType instanceof StructType) return undefined;
+    const arrayType = collection.type instanceof ArrayType && collection.type.bound !== undefined
+      && !(collection.type.elementType instanceof ArrayType)
+      && !(collection.type.elementType instanceof MappingType)
+      && materializableGenesisType(collection.type.elementType) ? collection.type : undefined;
+    const mappingType = collection.type instanceof MappingType
+      && !(collection.type.valueType instanceof ArrayType)
+      && !(collection.type.valueType instanceof MappingType)
+      && materializableGenesisType(collection.type.valueType) ? collection.type : undefined;
+    if (!arrayType && !mappingType) return undefined;
+    const keyType = arrayType ? PrimitiveType.BIGINT : mappingType!.keyType;
+    const valueType = arrayType ? arrayType.elementType : mappingType!.valueType;
+    if (!materializableGenesisType(keyType) || !materializableGenesisType(valueType)) return undefined;
     const key = childDeploymentValueRecipe(
-      entry.key, handlerInputs, true, handlerInputTypes, aliases, aliasDefinitions, PrimitiveType.BIGINT,
+      entry.key, handlerInputs, true, handlerInputTypes, aliases, aliasDefinitions, keyType,
     );
     const value = childDeploymentValueRecipe(
       entry.value, handlerInputs, true, handlerInputTypes, aliases, aliasDefinitions,
-      collection.type.elementType,
+      valueType,
     );
-    if (!key || !numericRecipeType.test(key.resultType ?? '') || !value) return undefined;
+    if (!key || !materializableGenesisLeafType.test(key.resultType ?? '') || !value) return undefined;
     result.push({
       collection: collection.name,
       collectionSignature: computeCollectionSignature(collection.name, collection.type.toString()),
-      keyType: 'bigint',
-      valueType: physicalRecipeType(collection.type.elementType),
+      keyType: physicalRecipeType(keyType),
+      valueType: physicalRecipeType(valueType),
       key,
       value,
     });
@@ -405,9 +416,19 @@ export function analyzeFixedBchEffectRecipes(
   ): ChildDeploymentValueRecipe => outer === undefined ? inner : ({
     kind: 'binary', operator: '&&', resultType: 'bool', left: outer, right: inner,
   });
+  const disjunction = (
+    left: ChildDeploymentValueRecipe | undefined, right: ChildDeploymentValueRecipe | undefined,
+  ): ChildDeploymentValueRecipe | undefined => {
+    if (left === undefined || right === undefined) return undefined;
+    if (JSON.stringify(left) === JSON.stringify(right)) return left;
+    return { kind: 'binary', operator: '||', resultType: 'bool', left, right };
+  };
   const sameRecipe = (
     left: ChildDeploymentValueRecipe, right: ChildDeploymentValueRecipe,
   ): boolean => JSON.stringify(left) === JSON.stringify(right);
+  const sameOptionalRecipe = (
+    left: ChildDeploymentValueRecipe | undefined, right: ChildDeploymentValueRecipe | undefined,
+  ): boolean => left === undefined || right === undefined ? left === right : sameRecipe(left, right);
   const mergeConditionalRecipe = (
     condition: ChildDeploymentValueRecipe,
     whenTrue: ChildDeploymentValueRecipe,
@@ -459,8 +480,7 @@ export function analyzeFixedBchEffectRecipes(
       if (!(value instanceof Node) || seen.has(value)) return false;
       seen.add(value);
       if (value === permittedBreak) return false;
-      if (value instanceof BreakNode || value instanceof ContinueNode
-        || value instanceof ReturnNode || value instanceof RevertNode) return true;
+      if (value instanceof BreakNode || value instanceof ContinueNode) return true;
       return Object.entries(value).some(([key, child]) => ![
         'definition', 'referencedContract', 'resolvedFunction', 'symbolTable',
       ].includes(key) && containsAbruptExit(child, seen));
@@ -582,15 +602,22 @@ export function analyzeFixedBchEffectRecipes(
       snapshotEffects(child, environment, activation, activationSupported, unsafe, seen);
     }
   };
+  type Flow = {
+    fallsThrough: boolean;
+    activation?: ChildDeploymentValueRecipe;
+    activationSupported: boolean;
+  };
   const processBlock = (
     block: BlockNode, environment: Environment,
     activation?: ChildDeploymentValueRecipe, activationSupported = true, unsafe = false,
-  ): void => {
+  ): Flow => {
+    let continuationActivation = activation;
+    let continuationSupported = activationSupported;
     for (const statement of block.statements ?? []) {
       if (statement instanceof VariableDefinitionNode) {
         if (statement.expression) invalidateStatefulCalls(statement.expression, environment);
         if (statement.expression) snapshotEffects(
-          statement.expression, environment, activation, activationSupported, unsafe,
+          statement.expression, environment, continuationActivation, continuationSupported, unsafe,
         );
         const key = statement as object;
         const bound = !unsafe && statement.expression
@@ -604,7 +631,7 @@ export function analyzeFixedBchEffectRecipes(
       }
       if (statement instanceof AssignNode) {
         invalidateStatefulCalls(statement.expression, environment);
-        snapshotEffects(statement.expression, environment, activation, activationSupported, unsafe);
+        snapshotEffects(statement.expression, environment, continuationActivation, continuationSupported, unsafe);
         const key = resolvedDefinition(statement.identifier, environment);
         const targetType = key && (key as { type?: { toString(): string } }).type;
         const bound = !unsafe && key && targetType
@@ -618,7 +645,7 @@ export function analyzeFixedBchEffectRecipes(
       }
       if (statement instanceof StateAssignNode) {
         invalidateStatefulCalls(statement.expression, environment);
-        snapshotEffects(statement.expression, environment, activation, activationSupported, unsafe);
+        snapshotEffects(statement.expression, environment, continuationActivation, continuationSupported, unsafe);
         const key = stateDefinition(statement.name);
         environment.definitions.set(`this.${statement.name}`, key);
         const targetType = statement.stateVariable?.type;
@@ -630,71 +657,140 @@ export function analyzeFixedBchEffectRecipes(
         else environment.aliases.delete(key);
         continue;
       }
+      if (statement instanceof RequireNode) {
+        invalidateStatefulCalls(statement.expression, environment);
+        snapshotEffects(
+          statement.expression, environment, continuationActivation, continuationSupported, unsafe,
+        );
+        const condition = !unsafe ? recipe(statement.expression, environment) : undefined;
+        continuationSupported = continuationSupported && condition?.resultType === 'bool';
+        continuationActivation = condition ? conjunction(continuationActivation, condition) : undefined;
+        continue;
+      }
       if (statement instanceof BranchNode) {
         invalidateStatefulCalls(statement.condition, environment);
-        snapshotEffects(statement.condition, environment, activation, activationSupported, unsafe);
+        snapshotEffects(
+          statement.condition, environment, continuationActivation, continuationSupported, unsafe,
+        );
         const condition = !unsafe ? recipe(statement.condition, environment) : undefined;
-        const branchSupported = activationSupported && condition !== undefined;
+        const branchSupported = continuationSupported && condition?.resultType === 'bool';
         const ifEnvironment = cloneEnvironment(environment);
-        processBlock(
+        const ifActivation = condition ? conjunction(continuationActivation, condition) : undefined;
+        const ifFlow = processBlock(
           statement.ifBlock, ifEnvironment,
-          condition ? conjunction(activation, condition) : undefined, branchSupported, unsafe,
+          ifActivation, branchSupported, unsafe,
         );
         const elseEnvironment = cloneEnvironment(environment);
+        const elseActivation = condition ? conjunction(continuationActivation, negate(condition)) : undefined;
+        let elseFlow: Flow = {
+          fallsThrough: true, activation: elseActivation, activationSupported: branchSupported,
+        };
         if (statement.elseBlock) {
-          processBlock(
+          elseFlow = processBlock(
             statement.elseBlock, elseEnvironment,
-            condition ? conjunction(activation, negate(condition)) : undefined, branchSupported, unsafe,
+            elseActivation, branchSupported, unsafe,
           );
         }
-        mergeBranchAliases(environment, ifEnvironment, elseEnvironment, condition);
+        if (!ifFlow.fallsThrough && !elseFlow.fallsThrough) {
+          return { fallsThrough: false, activationSupported: branchSupported };
+        }
+        if (ifFlow.fallsThrough && elseFlow.fallsThrough) {
+          mergeBranchAliases(environment, ifEnvironment, elseEnvironment, condition);
+          const armsUnrefined = sameOptionalRecipe(ifFlow.activation, ifActivation)
+            && sameOptionalRecipe(elseFlow.activation, elseActivation);
+          continuationActivation = armsUnrefined
+            ? continuationActivation : disjunction(ifFlow.activation, elseFlow.activation);
+          continuationSupported = ifFlow.activationSupported && elseFlow.activationSupported
+            && (armsUnrefined || continuationActivation !== undefined);
+        } else {
+          const survivingEnvironment = ifFlow.fallsThrough ? ifEnvironment : elseEnvironment;
+          environment.aliases = new Map(survivingEnvironment.aliases);
+          continuationActivation = ifFlow.fallsThrough ? ifFlow.activation : elseFlow.activation;
+          continuationSupported = ifFlow.fallsThrough
+            ? ifFlow.activationSupported : elseFlow.activationSupported;
+        }
+        for (const [name, definition] of stateDefinitions) {
+          environment.definitions.set(`this.${name}`, definition);
+        }
         continue;
       }
       if (statement instanceof SwitchNode) {
         invalidateStatefulCalls(statement.expression, environment);
-        snapshotEffects(statement.expression, environment, activation, activationSupported, unsafe);
+        snapshotEffects(
+          statement.expression, environment, continuationActivation, continuationSupported, unsafe,
+        );
         const discriminant = !unsafe ? recipe(statement.expression, environment) : undefined;
+        const armValues = statement.cases.map((arm) => !unsafe ? recipe(arm.value, environment) : undefined);
         let unmatched: ChildDeploymentValueRecipe | undefined;
-        let switchSupported = activationSupported && discriminant !== undefined;
-        const armEnvironments: Environment[] = [];
+        const switchSupported = continuationSupported && discriminant !== undefined
+          && armValues.every((armValue) => armValue !== undefined)
+          && statement.cases.every((arm) => switchArmJoinSafe(arm.body))
+          && (!statement.defaultCase || switchArmJoinSafe(statement.defaultCase));
+        const arms: { environment: Environment; flow: Flow; entry?: ChildDeploymentValueRecipe }[] = [];
         const matchesByArm: ChildDeploymentValueRecipe[] = [];
-        for (const arm of statement.cases) {
-          const armValue = !unsafe ? recipe(arm.value, environment) : undefined;
-          switchSupported &&= armValue !== undefined && switchArmJoinSafe(arm.body);
+        for (const [index, arm] of statement.cases.entries()) {
+          const armValue = armValues[index];
           const matches = discriminant && armValue ? {
             kind: 'binary', operator: '==', resultType: 'bool', left: discriminant, right: armValue,
           } as ChildDeploymentValueRecipe : undefined;
           const firstMatch = matches && unmatched ? conjunction(unmatched, matches) : matches;
           const armEnvironment = cloneEnvironment(environment);
-          processBlock(
+          const entry = firstMatch ? conjunction(continuationActivation, firstMatch) : undefined;
+          const flow = processBlock(
             arm.body, armEnvironment,
-            firstMatch ? conjunction(activation, firstMatch) : undefined, switchSupported, unsafe,
+            entry, switchSupported, unsafe,
           );
-          armEnvironments.push(armEnvironment);
+          arms.push({ environment: armEnvironment, flow, entry });
           if (matches) {
             matchesByArm.push(matches);
             unmatched = conjunction(unmatched, negate(matches));
           }
         }
         const defaultEnvironment = cloneEnvironment(environment);
+        const defaultEntry = unmatched ? conjunction(continuationActivation, unmatched) : continuationActivation;
+        let defaultFlow: Flow = {
+          fallsThrough: true, activation: defaultEntry, activationSupported: switchSupported,
+        };
         if (statement.defaultCase) {
-          switchSupported &&= switchArmJoinSafe(statement.defaultCase);
-          processBlock(
+          defaultFlow = processBlock(
             statement.defaultCase, defaultEnvironment,
-            unmatched ? conjunction(activation, unmatched) : activation, switchSupported, unsafe,
+            defaultEntry, switchSupported, unsafe,
           );
         }
         if (!switchSupported || matchesByArm.length !== statement.cases.length) {
           invalidateAssignments(statement, environment);
+          continuationActivation = undefined;
+          continuationSupported = false;
           continue;
         }
         let joined = defaultEnvironment;
-        for (let index = armEnvironments.length - 1; index >= 0; index -= 1) {
+        let joinedFlow = defaultFlow;
+        for (let index = arms.length - 1; index >= 0; index -= 1) {
+          const arm = arms[index];
+          if (!arm.flow.fallsThrough) continue;
+          if (!joinedFlow.fallsThrough) {
+            joined = arm.environment;
+            joinedFlow = arm.flow;
+            continue;
+          }
           const next = cloneEnvironment(environment);
-          mergeBranchAliases(next, armEnvironments[index], joined, matchesByArm[index]);
+          mergeBranchAliases(next, arm.environment, joined, matchesByArm[index]);
           joined = next;
+          joinedFlow = {
+            fallsThrough: true,
+            activation: disjunction(arm.flow.activation, joinedFlow.activation),
+            activationSupported: arm.flow.activationSupported && joinedFlow.activationSupported,
+          };
         }
+        if (!joinedFlow.fallsThrough) return { fallsThrough: false, activationSupported: switchSupported };
         environment.aliases = joined.aliases;
+        const everyArmFallsThroughUnrefined = arms.every((arm) => arm.flow.fallsThrough
+          && sameOptionalRecipe(arm.flow.activation, arm.entry))
+          && defaultFlow.fallsThrough && sameOptionalRecipe(defaultFlow.activation, defaultEntry);
+        continuationActivation = everyArmFallsThroughUnrefined
+          ? continuationActivation : joinedFlow.activation;
+        continuationSupported = joinedFlow.activationSupported
+          && (everyArmFallsThroughUnrefined || continuationActivation !== undefined);
         for (const [name, definition] of stateDefinitions) {
           environment.definitions.set(`this.${name}`, definition);
         }
@@ -702,42 +798,83 @@ export function analyzeFixedBchEffectRecipes(
       }
       if (statement instanceof TryCatchNode) {
         invalidateStatefulCalls(statement.expression, environment);
-        snapshotEffects(statement.expression, environment, activation, activationSupported, unsafe);
-        processBlock(statement.tryBlock, environment, activation, activationSupported, unsafe);
+        snapshotEffects(
+          statement.expression, environment, continuationActivation, continuationSupported, unsafe,
+        );
+        const tryFlow = processBlock(
+          statement.tryBlock, environment, continuationActivation, continuationSupported, unsafe,
+        );
         invalidateAssignments(statement.expression, environment);
         invalidateAssignments(statement.tryBlock, environment);
+        // Bitcoin Script cannot recover from opcode failure, so catch clauses are dead. Among successful spends,
+        // the try body is the only continuation and its reachability result is exact.
+        if (!tryFlow.fallsThrough) return tryFlow;
+        continuationActivation = tryFlow.activation;
+        continuationSupported = tryFlow.activationSupported;
         continue;
       }
       if (statement instanceof UncheckedNode) {
-        processBlock(
-          statement.block, cloneEnvironment(environment), activation, activationSupported, true,
+        const uncheckedFlow = processBlock(
+          statement.block, cloneEnvironment(environment), continuationActivation, continuationSupported, true,
         );
         invalidateAssignments(statement, environment);
+        if (!uncheckedFlow.fallsThrough) return uncheckedFlow;
+        continuationActivation = uncheckedFlow.activation;
+        continuationSupported = false;
         continue;
       }
       if (statement instanceof BlockNode) {
         const scoped = { aliases: environment.aliases, definitions: new Map(environment.definitions) };
-        processBlock(statement, scoped, activation, activationSupported, unsafe);
+        const blockFlow = processBlock(
+          statement, scoped, continuationActivation, continuationSupported, unsafe,
+        );
+        environment.aliases = scoped.aliases;
+        if (!blockFlow.fallsThrough) return blockFlow;
+        continuationActivation = blockFlow.activation;
+        continuationSupported = blockFlow.activationSupported;
         continue;
       }
       if (statement instanceof WhileNode && !unsafe) {
         const condition = singlePassWhileCondition(statement, environment);
         if (condition) {
-          snapshotEffects(statement.condition, environment, activation, activationSupported, false);
-          const bodyEnvironment = cloneEnvironment(environment);
-          processBlock(
-            statement.block, bodyEnvironment, conjunction(activation, condition), activationSupported, false,
+          snapshotEffects(
+            statement.condition, environment, continuationActivation, continuationSupported, false,
           );
-          mergeBranchAliases(environment, bodyEnvironment, cloneEnvironment(environment), condition);
+          const bodyEnvironment = cloneEnvironment(environment);
+          const bodyEntry = conjunction(continuationActivation, condition);
+          const bodyFlow = processBlock(
+            statement.block, bodyEnvironment, bodyEntry, continuationSupported, false,
+          );
+          const skippedEnvironment = cloneEnvironment(environment);
+          if (bodyFlow.fallsThrough) {
+            mergeBranchAliases(environment, bodyEnvironment, skippedEnvironment, condition);
+            const bodyUnrefined = sameOptionalRecipe(bodyFlow.activation, bodyEntry);
+            continuationActivation = bodyUnrefined
+              ? continuationActivation
+              : disjunction(bodyFlow.activation, conjunction(continuationActivation, negate(condition)));
+            continuationSupported = bodyFlow.activationSupported
+              && (bodyUnrefined || continuationActivation !== undefined);
+          } else {
+            environment.aliases = skippedEnvironment.aliases;
+            continuationActivation = conjunction(continuationActivation, negate(condition));
+          }
           continue;
         }
       }
       const repeated = statement instanceof WhileNode || statement instanceof DoWhileNode
         || statement instanceof CollectionIterationNode;
       invalidateStatefulCalls(statement, environment);
-      snapshotEffects(statement, environment, activation, activationSupported, unsafe || repeated);
+      snapshotEffects(
+        statement, environment, continuationActivation, continuationSupported, unsafe || repeated,
+      );
       invalidateAssignments(statement, environment);
+      if (statement instanceof ReturnNode || statement instanceof RevertNode) {
+        return { fallsThrough: false, activationSupported: continuationSupported };
+      }
     }
+    return {
+      fallsThrough: true, activation: continuationActivation, activationSupported: continuationSupported,
+    };
   };
   processBlock(fn.body, { aliases: initialAliases, definitions: initialDefinitions });
   return result;

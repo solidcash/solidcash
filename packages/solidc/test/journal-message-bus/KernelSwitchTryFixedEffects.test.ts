@@ -400,7 +400,7 @@ describe('kernel switch and try fixed effects', () => {
     expect(handler).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
   });
 
-  it('binds fixed-array child collection geometry while keeping initialized entries fenced', () => {
+  it('binds fixed-array child collection geometry while admitting replayable initialized entries', () => {
     const compile = (bound: number): Handler => select(`
       contract Unit(int seed) {
         int[${bound}] values;
@@ -413,8 +413,10 @@ describe('kernel switch and try fixed effects', () => {
     `).handler;
     const pair = compile(2);
     const triple = compile(3);
-    expect(pair).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
-    expect(triple).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+    expect(pair).toMatchObject({ eligible: true });
+    expect(triple).toMatchObject({ eligible: true });
+    expect(pair.childDeployments?.[0].genesisEntries).toHaveLength(1);
+    expect(triple.childDeployments?.[0].genesisEntries).toHaveLength(1);
     expect(pair.childDeployments?.[0].childLayoutDigest).toMatch(/^[0-9a-f]{64}$/);
     expect(triple.childDeployments?.[0].childLayoutDigest).toMatch(/^[0-9a-f]{64}$/);
     expect(pair.childDeployments?.[0].childLayoutDigest)

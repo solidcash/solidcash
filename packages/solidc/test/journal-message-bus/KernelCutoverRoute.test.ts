@@ -1397,7 +1397,7 @@ contract C {
     expect(artifact.messageBus?.route.inputs.some((input) => /_r\d+$/.test(input.name))).toBe(false);
   });
 
-  it('keeps a recursive mapping handler off the kernel route as KERNEL_LAYOUT', () => {
+  it('keeps a non-normalized void recursive mapping continuation off the kernel route as KERNEL_LAYOUT', () => {
     const artifact = compileString(`
 pragma solidcash ^0.13.0;
 contract C() {

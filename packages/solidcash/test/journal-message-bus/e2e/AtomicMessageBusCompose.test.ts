@@ -628,54 +628,64 @@ describe('messageBus.compose atomic transaction', () => {
     expect(new Set(deployments.map((outputs) => binToHex(outputs[0].output.to)))).toHaveLength(4);
   }, 120_000);
 
-  it('materializes and authenticates one fixed-array constructor entry NFT', async () => {
+  it('materializes and authenticates fixed-layout struct collection constructor entries', async () => {
     const provider = createMessageBusCapstoneTestProvider();
-    const artifacts = compileStringMulti(`contract EntryChild(int32 seed) {
-        int32[1] values;
-        constructor() { this.values[0] = seed; }
+    const artifacts = compileStringMulti(`struct Cell { int32 amount; bool enabled; }
+      contract RecordCollectionChild() {
+        Cell[2] rows;
+        mapping(bigint => Cell) keyed;
+        constructor() {
+          this.rows[0] = Cell(5, true);
+          this.rows[1] = Cell(6, false);
+          this.keyed[7] = Cell(8, true);
+          this.keyed[7] = Cell(9, false);
+        }
         function keep() public { require(true); }
       }
-      contract EntryFactory() {
-        function create(int32 seed) public { EntryChild child = new EntryChild(seed); require(true); }
+      contract GenesisCoordinator() {
+        function create() public {
+          RecordCollectionChild child = new RecordCollectionChild(); require(true);
+        }
       }
-      interface IEntryFactory { function create(int32 seed); }
-      contract EntryDriver(address factory) {
-        function run(int32 seed) public { IEntryFactory(factory).create(seed); require(true); }
+      interface IGenesisCoordinator { function create(); }
+      contract GenesisDriver(address coordinator) {
+        function run() public { IGenesisCoordinator(coordinator).create(); require(true); }
       }`, { forceStateful: true, messageBus: true, messageBusKernel: true });
-    const factoryBase = new Contract(artifacts.EntryFactory, [], { provider });
+    const factoryBase = new Contract(artifacts.GenesisCoordinator, [], { provider });
     const setup = await setupStatefulUtxos(
-      provider, factoryBase, artifacts.EntryFactory.stateLayout!, {}, { saltContract: true },
+      provider, factoryBase, artifacts.GenesisCoordinator.stateLayout!, {}, { saltContract: true },
     );
     const factory = StatefulContract.withCategory(
       factoryBase.withCategory(hexToBin(setup.categoryId)), setup.categoryId,
-    ).registerChild(artifacts.EntryChild);
-    const driverBase = new Contract(artifacts.EntryDriver, [hexToBin(factory.inner.lockingBytecode)], { provider });
+    ).registerChild(artifacts.RecordCollectionChild);
+    const driverBase = new Contract(artifacts.GenesisDriver, [hexToBin(factory.inner.lockingBytecode)], { provider });
     const driverSetup = await setupStatefulUtxos(
-      provider, driverBase, artifacts.EntryDriver.stateLayout!, {}, { saltContract: true },
+      provider, driverBase, artifacts.GenesisDriver.stateLayout!, {}, { saltContract: true },
     );
     const driver = StatefulContract.withCategory(
       driverBase.withCategory(hexToBin(driverSetup.categoryId)), driverSetup.categoryId,
     );
-    const handler = artifacts.EntryFactory.messageBus?.handlers.find((candidate) => candidate.name === 'create');
+    const handler = artifacts.GenesisCoordinator.messageBus?.handlers.find((candidate) => candidate.name === 'create');
     expect(handler).toMatchObject({
       eligible: true,
       childDeployments: [{
-        entryNftOutputCount: 1,
-        totalOutputCount: 2,
-        genesisEntries: [{
-          collection: 'values', collectionSignature: 'values:int32[1]',
-          keyType: 'bigint', valueType: 'int32',
-          key: { kind: 'intLiteral', value: '0' },
-          value: { kind: 'handlerInput', inputIndex: 0, resultType: 'int32' },
-        }],
+        entryNftOutputCount: 3,
+        totalOutputCount: 4,
+        genesisEntries: [
+          {
+            collection: 'rows', valueType: 'Cell', value: { kind: 'aggregate', resultType: 'Cell' },
+          },
+          { collection: 'rows', valueType: 'Cell', value: { kind: 'aggregate', resultType: 'Cell' } },
+          { collection: 'keyed', valueType: 'Cell', value: { kind: 'aggregate', resultType: 'Cell' } },
+        ],
       }],
     });
     const fee = await createBareP2pkhFeeFunder(provider, 100_000n);
     const genesis = await createBareP2pkhFeeFunder(provider, 20_000n);
     const build = (): Promise<TransactionBuilder> => messageBus.compose({
       preparedCalls: [
-        { contract: driver, functionName: 'run', args: [37n] },
-        { contract: factory, functionName: 'create', args: [37n] },
+        { contract: driver, functionName: 'run', args: [] },
+        { contract: factory, functionName: 'create', args: [] },
       ],
       funder: fee,
       changeAddress: fee.unlocker.generateLockingBytecode(),
@@ -685,15 +695,27 @@ describe('messageBus.compose atomic transaction', () => {
     expect(vmRejects(valid)).toBe(false);
     const childOutputs = valid.outputs.map((output, index) => ({ output, index }))
       .filter(({ output }) => output.token?.category === genesis.utxo.txid);
-    expect(childOutputs).toHaveLength(2);
+    expect(childOutputs).toHaveLength(4);
+    const structs = artifacts.RecordCollectionChild.stateLayout!.structs;
     expect(childOutputs[1].output.token?.nft).toMatchObject({
-      capability: 'mutable', commitment: buildEntryCommitment(0n, 'bigint', 37n, 'int32'),
+      capability: 'mutable', commitment: buildEntryCommitment(0n, 'bigint', [5n, true], 'Cell', structs),
+    });
+    expect(childOutputs[2].output.token?.nft).toMatchObject({
+      capability: 'mutable', commitment: buildEntryCommitment(1n, 'bigint', [6n, false], 'Cell', structs),
+    });
+    expect(childOutputs[3].output.token?.nft).toMatchObject({
+      capability: 'mutable', commitment: buildEntryCommitment(7n, 'bigint', [9n, false], 'Cell', structs),
     });
     const forged = await build();
-    const entryOutput = forged.outputs.find((output) => output.token?.category === genesis.utxo.txid
-      && output.token.nft?.capability === 'mutable')!;
-    entryOutput.token!.nft!.commitment = buildEntryCommitment(0n, 'bigint', 38n, 'int32');
+    const entryOutputs = forged.outputs.filter((output) => output.token?.category === genesis.utxo.txid
+      && output.token.nft?.capability === 'mutable');
+    entryOutputs[1].token!.nft!.commitment = buildEntryCommitment(1n, 'bigint', [10n, false], 'Cell', structs);
     expect(vmRejects(forged)).toBe(true);
+    const forgedAddress = await build();
+    const forgedAddressEntries = forgedAddress.outputs.filter((output) => output.token?.category === genesis.utxo.txid
+      && output.token.nft?.capability === 'mutable');
+    forgedAddressEntries[1].to = hexToBin('6a');
+    expect(vmRejects(forgedAddress)).toBe(true);
   }, 120_000);
 
   it('replays pure-helper constructor preconditions and rejects false or tampered genesis', async () => {

@@ -99,24 +99,41 @@ describe('constructor-genesis fold (Solidity-style deploy-then-call, e2e)', () =
     expect(childState.rate).toBe(5n);
   });
 
-  it('deployFrom materializes an authenticated fixed-array constructor entry', async () => {
-    const artifacts = compileStringMulti(`contract EntryChild(int32 seed) {
-        int32[1] values;
-        constructor() { this.values[0] = seed; }
+  it('deployFrom materializes authenticated fixed-array and mapping constructor entries', async () => {
+    const artifacts = compileStringMulti(`struct Metric { int32 amount; bool enabled; }
+      contract RecordCollectionChild(int32 seed) {
+        int32[2] values;
+        mapping(int32 => int32) keyed;
+        Metric[2] records;
+        mapping(int32 => Metric) keyedRecords;
+        constructor() {
+          this.values[0] = seed;
+          this.values[1] = seed + 1;
+          this.keyed[seed] = seed + 2;
+          this.records[0] = Metric(seed + 3, true);
+          this.records[1] = Metric(seed + 4, false);
+          this.keyedRecords[seed] = Metric(seed + 5, true);
+          this.keyedRecords[seed] = Metric(seed + 6, false);
+        }
         function check(int32 expected) public { require(this.values[0] == expected); }
       }
-      contract EntryFactory() {
-        function make(int32 seed) public { EntryChild child = new EntryChild(seed); require(true); }
+      contract GenesisCoordinator() {
+        function make(int32 seed) public {
+          RecordCollectionChild child = new RecordCollectionChild(seed); require(true);
+        }
       }`);
-    const make = artifacts.EntryFactory.abi.find((candidate) => candidate.name === 'make')!;
+    const make = artifacts.GenesisCoordinator.abi.find((candidate) => candidate.name === 'make')!;
     expect(make.deployTargets?.[0]).toMatchObject({
-      entryNftCount: 1,
-      genesisEntries: [{ collection: 'values' }],
+      entryNftCount: 6,
+      genesisEntries: [
+        { collection: 'values' }, { collection: 'values' }, { collection: 'keyed' },
+        { collection: 'records' }, { collection: 'records' }, { collection: 'keyedRecords' },
+      ],
     });
 
     const factoryFunding: Utxo = { txid: 'fc3d'.repeat(16), vout: 0, satoshis: 200_000n };
     await provider.addUtxo(p2pkh.address, factoryFunding);
-    const deployedFactory = await StatefulContract.deploy(artifacts.EntryFactory, [], {
+    const deployedFactory = await StatefulContract.deploy(artifacts.GenesisCoordinator, [], {
       provider,
       fundingUtxo: factoryFunding,
       funder: p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv)),
@@ -130,7 +147,7 @@ describe('constructor-genesis fold (Solidity-style deploy-then-call, e2e)', () =
       factory: deployedFactory.contract,
       deployFunctionName: 'make',
       deployFunctionArgs: [37n],
-      childArtifact: artifacts.EntryChild,
+      childArtifact: artifacts.RecordCollectionChild,
       childConstructorArgs: [37n],
       fundingUtxo: childFunding,
       funder: p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv)),
@@ -138,7 +155,19 @@ describe('constructor-genesis fold (Solidity-style deploy-then-call, e2e)', () =
     });
     const entries = getTxOutputs(result.tx).filter((output) => output.token?.category === result.childCategoryId
       && output.token.nft?.capability === 'mutable');
-    expect(entries).toHaveLength(1);
+    expect(entries).toHaveLength(6);
     expect(entries[0].token?.nft?.commitment).toBe(buildEntryCommitment(0n, 'bigint', 37n, 'int32'));
+    expect(entries[1].token?.nft?.commitment).toBe(buildEntryCommitment(1n, 'bigint', 38n, 'int32'));
+    expect(entries[2].token?.nft?.commitment).toBe(buildEntryCommitment(37n, 'int32', 39n, 'int32'));
+    const structs = artifacts.RecordCollectionChild.stateLayout!.structs;
+    expect(entries[3].token?.nft?.commitment).toBe(buildEntryCommitment(
+      0n, 'bigint', [40n, true], 'Metric', structs,
+    ));
+    expect(entries[4].token?.nft?.commitment).toBe(buildEntryCommitment(
+      1n, 'bigint', [41n, false], 'Metric', structs,
+    ));
+    expect(entries[5].token?.nft?.commitment).toBe(buildEntryCommitment(
+      37n, 'int32', [43n, false], 'Metric', structs,
+    ));
   });
 });

@@ -149,7 +149,7 @@ every kernel toy.
 
 | Code | Means | Not this |
 | --- | --- | --- |
-| `KERNEL_LIFECYCLE` | `deploy`, `upgrade`, `selfdestruct`, `split`, `merge`, or `unsafe` as a **bus row** | Implementation functions that run in this participant's delegate/proxy frame |
+| `KERNEL_LIFECYCLE` | `deploy`, `selfdestruct`, `split`, `merge`, or `unsafe` as a **bus row**, plus an `upgrade` whose replacement identity/state suffix cannot use the authenticated in-place append layout | An in-place append `upgrade` with compiler-authored replacement bytecode/state-suffix channels; implementation functions that run in this participant's delegate/proxy frame |
 | `KERNEL_TX_SIGNATURE` | A transaction-signature check with no signature parameter that can be finalized and bound outside the committed message blob, or any returned transaction-signature leaf (including one inside an array, struct/ABI tuple, or multi-result tuple) which would circularly change its own signed output preimage | Any finite input `sig` shape (one aligned outer row dimension per detached leaf, preserving nested array dimensions and the non-signature fields of struct/ABI tuples); `ecrecover` / ECDSA over **data** (existing compute sidecar) |
 | `KERNEL_UNBOUNDED_KEY` | A locally constructed key array whose length is not derivable within the bounded replay model; a counter-keyed mapping loop whose exact iteration domain is not one of the canonical forms; mutation of its counter or a bound mutation which cannot be reduced to a finite source expression; nested-loop control flow or a predicate with unsupported/mutated provenance | Parameter-keyed, `msg.sender`-keyed, expression-keyed (`m[records.length-1]`), parameter-array loop (`m[k][xs[i]]`), bounded locally constructed arrays with replayable dominating writes, canonical ascending `for (int i = S; i < n; i = i + D)` / `i = D + i` / `i <= n` and descending `for (int i = S; i > n; i = i - D)` / `i >= n` domains for positive constant or replayable runtime `D`, plus `i != n` when the signed step reaches the endpoint exactly (also through replayable straight-line or finite conditional bound assignments, and with either comparison operand orientation), or equivalent canonical source `while` and `do-while` forms over `m[i]` / nested `m[k][i]`, multiple sequential loops whose runtime keys are disjoint (including loops over one physical collection), same- or cross-collection counter-derived reads carried by independent authenticated streams, a stable depth-one scalar entry keyed by a public parameter/literal/`msg.sender`/`tx.origin` or a pure expression over public arguments beside those counter writes, or those rewrites beneath serializable outer and inner `if`/`else`/`switch`/`continue`/`break`/`return` paths and the reachable body of `try`/`catch`; loop predicates may consume scalar state updated by replayable straight-line, finite `if`/`else`, or finite `switch` assignments before the loop; typed calls and path-predicated event, BCH-transfer, fungible-token-transfer, and NFT-transfer sites remain in source order |
 | `KERNEL_FOREIGN_DELEGATE` | `delegatecall` to a foreign executor treated as this participant's owner | `delegate` on this contract's own implementation |
@@ -161,7 +161,7 @@ Legacy `messageBusRejectionReason` strings (`dynamic-and-collection-route-not-en
 stay stable.
 
 The frozen catalog is not a list of features supplied by legacy. Legacy also refuses transaction-signature
-arrays, lifecycle/unsafe rows, opaque assembly, and foreign delegate execution (under its older diagnostic
+arrays, lifecycle/unsafe rows (including the kernel-supported in-place append upgrade), opaque assembly, and foreign delegate execution (under its older diagnostic
 names). The compatibility escape exists for bytecode/ABI reproduction and for the small set of historically
 admitted clone-owned layouts; it is not a general fallback for a kernel refusal. In particular, default kernel
 compilation never silently emits the legacy unroll: if an admitted survivor cannot use the row loop, that is an
@@ -212,9 +212,10 @@ The cardinality must be known before VM derivation. Events and counter journals 
 carry serialized predicates; the SDK evaluates them from public arguments, immutable local aliases, the source
 counter, scalar state, and authenticated mapping entries which the handler does not mutate. This plans the exact
 direct or routed output/journal stream while the covenant independently counts and binds only sites actually
-reached. Sites beneath another runtime loop, an unreachable catch arm, or a predicate with unsupported/mutated
-provenance remain `KERNEL_UNBOUNDED_KEY`; stable `switch` paths and the reachable body of `try` use the same
-serialized path plan as `if`/`else`. Event arguments may use ordinary expressions, resource-free builtins, and
+reached. Unplanned event sites beneath another runtime loop, an unreachable catch arm, or a predicate with
+unsupported/mutated provenance remain `KERNEL_LAYOUT`; counter journals whose domain cannot be bounded remain
+`KERNEL_UNBOUNDED_KEY`. Stable `switch` paths and the reachable body of `try` use the same serialized path plan as
+`if`/`else`. Event arguments may use ordinary expressions, resource-free builtins, and
 returning helpers. After helper inlining, an effectful helper body and its result definition remain adjacent to
 the event in the source-order physical loop, so consuming that already-computed local neither duplicates nor
 permutes the helper effect. BCH and fungible-token transfer operands use the same rule and the same authenticated,
@@ -331,7 +332,8 @@ Solidity field tuple), and dynamic arrays of structs or enums returned through t
 (journal cache defaults are type-correct empty/`0` rather than `int` 0).
 Fixed-point scalar, array, and struct-field results use their scaled signed/unsigned integer representation in that
 same recursive encoder.
-Native `pubkey` and `datasig` results use compact ABI framing. A transaction `sig` result remains refused because
+Native `pubkey` and `datasig` results use compact ABI framing. A data-only `sig` value constructed from ordinary
+bytes uses the same compact framing, but returning a transaction-participating signature remains refused because
 committing it into an output would change the transaction preimage signed by that value.
 Straight-line and finite `if`/`else`/`switch` child deployments publish compiler-owned frames for replayable
 constructor, value, and salt expressions. Arm-local values and post-control-flow joins use typed conditional
@@ -348,13 +350,18 @@ state/transaction/message reads, transaction signatures, effectful helpers, and 
 fenced. The child layout digest authenticates variable and collection topology, including reachable nested struct field
 names, types, and order. Each active deployment envelope carries that digest and the pinned verifier checks it against
 the compiler-owned deployment-site registry, so the SDK cannot reinterpret the same output transcript with different
-child geometry. A constructor may currently create one top-level fixed-size scalar-array entry at a literal index.
-The compiler publishes typed key/value recipes, duplicate writes to that same index collapse to the final value, the
-SDK materializes the exact entry NFT, and both the participant and pinned verifier authenticate its output. Two or
-more distinct constructor-created entries, mappings, dynamic arrays, nested/struct-valued entries, runtime keys, and
-recursive collection shapes remain `KERNEL_LAYOUT`. The one-entry limit is the current verifier-size capacity: even a
-minimal two-entry factory generated a 10,083-byte route, beyond the 10,000-byte consensus input-script limit. It is
-not tied to any contract or function name.
+child geometry. A constructor may create several top-level fixed-size scalar-array entries at literal indices. The
+compiler publishes typed key/value recipes, duplicate writes to the same index collapse to the final value, the SDK
+materializes the exact entry NFTs, and both the participant and pinned verifier authenticate every output. The entry
+covenant address is reconstructed once per collection; later outputs of that collection are bound to the first
+authenticated address, avoiding verifier growth from repeated covenant reconstruction. Distinct collection addresses
+use the same name-neutral reconstruction machinery. The two-distinct-entry kernel fixture remains below the
+10,000-byte consensus input-script limit. Top-level scalar mappings with a single replayable key, or with
+compile-time-distinct literal keys, use the same entry pipeline. Fixed arrays and scalar-keyed mappings may store
+fixed-layout struct values; their existing aggregate recipes and authenticated struct definitions drive the same
+compiler and SDK codec, and repeated provably identical mapping keys collapse to the final value. Potentially
+colliding distinct runtime keys, dynamic key/value types, collection-valued entries (including nested arrays and
+mappings), dynamic or cyclic aggregates, and recursive collection shapes remain `KERNEL_LAYOUT`.
 Compiler-owned public entry points are finalized before kernel admission. In particular, a contract using an
 oracle-backed `block.*` register publishes `__updateBlockOracle` as an ordinary eligible row with its detached
 transaction-signature witness; it is not appended later as an unexamined ABI-only function. Public state getters
@@ -364,9 +371,10 @@ Homogeneous mutually tail-recursive functions—matching parameter and result fr
 lowered as one program-counter loop for each callable entry, including cycles longer than two. Self-recursive
 functions also support explicit value-returning and void base-case `return` statements nested in pre-existing source
 loops. The kernel therefore executes the finite source transition without cloning a recursive route frame. Resource-free
-non-tail recursion remains an ordinary `OP_INVOKE` recursion and is also row-safe. Recursion which carries journal/layout
-resources after its recursive call, heterogeneous/overloaded recursion cycles, and result types the wrapper cannot encode
-stay `KERNEL_LAYOUT`. Enum scalar results
+non-tail recursion remains an ordinary `OP_INVOKE` recursion and is also row-safe. Affine post-recursion mapping/event
+streams use the authenticated unwind domain described below. Other recursive continuations which cannot be normalized
+to one finite source-ordered resource stream, heterogeneous/overloaded recursion cycles, and result types the wrapper
+cannot encode stay `KERNEL_LAYOUT`. Enum scalar results
 and public enum getters use `int` locals; enum arrays encode each element as an unsigned ABI word.
 Counter-keyed mapping loops with zero or direction-mismatched steps, mutated bounds, or extra counter mutations
 stay `KERNEL_UNBOUNDED_KEY`. A runtime step may be any replayable expression over public arguments, immutable

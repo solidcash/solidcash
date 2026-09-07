@@ -3,7 +3,7 @@ import {
   binToHex, decodeAuthenticationInstructions, encodeAuthenticationInstructions, hexToBin,
 } from '@bitauth/libauth';
 import { compileStringMulti } from 'solidc';
-import { sha256 } from '@solidcash/utils';
+import { buildEntryCommitment, sha256 } from '@solidcash/utils';
 import type { Artifact } from '@solidcash/utils';
 import { describe, expect, it } from 'vitest';
 import { Contract, StatefulContract, messageBus } from '../../../src/index.js';
@@ -142,7 +142,8 @@ describe('conditional child deployment transcript security', () => {
   it('binds active and inactive genesis spans to the repeated row source predicate', async () => {
     const provider = createMessageBusCapstoneTestProvider();
     const artifacts = compileStringMulti(`contract Unit() {
-        int marker;
+        int32[2] values;
+        constructor() { this.values[0] = 7; this.values[1] = 8; }
         function keep() public { require(true); }
       }
       interface IFactory { function materialize(bool enabled); }
@@ -170,7 +171,8 @@ describe('conditional child deployment transcript security', () => {
     expect(handler).toMatchObject({
       eligible: true,
       childDeployments: [{
-        occurrence: 'conditional', siteIndex: 0, spanOffset: 0, spanWidth: 2,
+        occurrence: 'conditional', siteIndex: 0, spanOffset: 0, spanWidth: 3,
+        entryNftOutputCount: 2,
         activation: { kind: 'handlerInput', inputIndex: 0, resultType: 'bool' },
       }],
     });
@@ -203,6 +205,20 @@ describe('conditional child deployment transcript security', () => {
     expect(deploymentRow(bothActive, 2).mode).toBe(0);
     expect(deploymentRow(secondInactive, 1).mode).toBe(0);
     expect(deploymentRow(secondInactive, 2).mode).toBe(1);
+
+    // The second finite constructor entry is independently authenticated even though it reuses the first
+    // entry's already-checked collection covenant address.
+    const forgedSecondCommitment = await build(false);
+    const firstEntryOutputs = forgedSecondCommitment.outputs.filter((output) =>
+      output.token?.category === firstGenesis.utxo.txid && output.token.nft?.capability === 'mutable');
+    expect(firstEntryOutputs).toHaveLength(2);
+    firstEntryOutputs[1].token!.nft!.commitment = buildEntryCommitment(1n, 'bigint', 9n, 'int32');
+    expect(vmRejects(forgedSecondCommitment)).toBe(true);
+    const forgedSecondAddress = await build(false);
+    const firstAddressOutputs = forgedSecondAddress.outputs.filter((output) =>
+      output.token?.category === firstGenesis.utxo.txid && output.token.nft?.capability === 'mutable');
+    firstAddressOutputs[1].to = Uint8Array.of(0x51);
+    expect(vmRejects(forgedSecondAddress)).toBe(true);
 
     // False source branch + a fully valid active row/genesis/output span. Every digest is rebound, so only the
     // handler's source-path execution bit and fixed span checks can reject this transcript.

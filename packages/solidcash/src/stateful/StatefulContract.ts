@@ -178,6 +178,7 @@ import {
   persistedValueChunkWriteState,
   selectPersistedValueChunkWrite,
   selectValueChunkWriteCategory,
+  permitsLegacyNamedValueChunkFallback,
   rememberValueChunkUnlockRecipe,
   selectValueChunkCommitmentObservations,
   type ValueChunkTraceObservation,
@@ -1624,6 +1625,9 @@ export function computedStateWriterGroupIndex(
   });
   if (writers.length === 1) return writers[0];
   if (described.length > 0) return undefined;
+  if (!permitsLegacyNamedValueChunkFallback(candidateIndices.map((index) => groups[index]))) {
+    return undefined;
+  }
   // Compatibility only for artifacts predating compiler-published entry effects.
   return candidateIndices.find((index) => {
     const name = groups[index]?.compilerRoute?.abiFunction.name ?? groups[index]?.functionName;
@@ -1639,6 +1643,7 @@ export function chunkableWriterGroupIndex(groups: readonly ExternalCallUtxoGroup
   });
   if (candidates.length === 1) return candidates[0];
   if (groups.some(hasPublishedEntryEffects)) return -1;
+  if (!permitsLegacyNamedValueChunkFallback(groups)) return -1;
   // Compatibility only for artifacts predating compiler-published entry effects.
   return groups.findIndex((group) => group.functionName === 'publishJobEvent');
 }
@@ -4857,9 +4862,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         const visible = visibleHandlerInputs(row.handler.inputs);
         const loopInfo = row.handler.sortedUpsertLoopInfo
           ?.find((info) => info.varyingArrayParam === input.name);
+        const eventLoop = row.handler.runtimeLoopEvents
+          ?.find((loop) => loop.permutationParam === input.name);
+        const domainInfo = loopInfo ?? (eventLoop?.iterationBound
+          ? { iterationBound: eventLoop.iterationBound } as SortedUpsertLoopAbi : undefined);
         const countIndex = visible.findIndex((candidate) => candidate.name === permutationSpec.countName);
         const countValue = countIndex < 0 ? undefined : row.args[countIndex];
-        if (countValue === undefined && !loopInfo?.iterationBound) {
+        if (countValue === undefined && !domainInfo?.iterationBound) {
           throw new Error(`vmap counter loop bound '${permutationSpec.countName}' must be a public argument`);
         }
         const active = loopInfo?.condition ? this._evaluateExternalExpression(
@@ -4873,7 +4882,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         // chain reads. Publish an empty placeholder; _createBuilder recomputes the exact permutation after loading
         // authenticated state. Parameter-only false paths can avoid even validating an unreachable large bound.
         const resolvedDomain = active === true ? this._vmapCounterDomain(
-          loopInfo, permutationSpec, countValue, [...row.args], executionArtifact, visible,
+          domainInfo, permutationSpec, countValue, [...row.args], executionArtifact, visible,
         ) : [];
         const domain = resolvedDomain ?? [];
         const selectedDomain: bigint[] = [];
@@ -6388,8 +6397,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // Compute child's initial state commitments
     const childSeedState: Record<string, StateValueType> = { ...(options.childInitialState ?? {}) };
     const needsGenesisRecipeEvaluator = !!deployTarget.genesisState || (deployTarget.genesisEntries?.length ?? 0) > 0;
-    const evaluateGenesisRecipe = needsGenesisRecipeEvaluator
-      ? (await import('../message-bus/compose.js')).evaluateChildDeploymentRecipe : undefined;
+    const genesisRecipeModule = needsGenesisRecipeEvaluator
+      ? await import('../message-bus/compose.js') : undefined;
+    const evaluateGenesisRecipe = genesisRecipeModule?.evaluateChildDeploymentRecipe;
     const genesisInputTypes = deployAbi.inputs
       .filter((input) => !input.name.startsWith('__internal__'))
       .map((input) => input.type);
@@ -6403,7 +6413,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const childGenesisEntries = (deployTarget.genesisEntries ?? []).map((entry) => {
       const collection = childLayout.collections?.find((candidate) => candidate.name === entry.collection
         && candidate.signature === entry.collectionSignature);
-      if (!collection || collection.kind !== 'array' || collection.bound === undefined
+      if (!collection || !['array', 'mapping'].includes(collection.kind)
+        || (collection.kind === 'array' && collection.bound === undefined)
         || collection.keyType !== entry.keyType || collection.valueType !== entry.valueType) {
         throw new Error(
           `Constructor entry '${entry.collection}' does not match child '${childArtifact.contractName}' layout.`,
@@ -6415,13 +6426,21 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       const value = evaluateGenesisRecipe!(
         entry.value, deployFunctionArgs, genesisInputTypes, artifactUsesSolidityAbi(factory.inner.artifact),
       );
-      if (typeof key !== 'bigint' || key < 0n || key >= BigInt(collection.bound)) {
+      if (collection.kind === 'array'
+        && (typeof key !== 'bigint' || key < 0n || key >= BigInt(collection.bound!))) {
         throw new Error(`Constructor entry '${entry.collection}' has an invalid fixed-array key.`);
       }
+      const solidityAbi = artifactUsesSolidityAbi(factory.inner.artifact);
+      const materializedKey = genesisRecipeModule!.materializeChildDeploymentEntryScalar(
+        key, entry.keyType, solidityAbi,
+      );
+      const materializedValue = genesisRecipeModule!.materializeChildDeploymentEntryValue(
+        value, entry.valueType, solidityAbi, childLayout.structs,
+      );
       return {
         collectionSignature: entry.collectionSignature,
         commitment: buildEntryCommitment(
-          key, entry.keyType, value as StateValue, entry.valueType, childLayout.structs,
+          materializedKey, entry.keyType, materializedValue, entry.valueType, childLayout.structs,
           provider.consensusLimits?.maximumNftCommitmentBytes,
         ),
       };
@@ -14818,8 +14837,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       // the authenticated row blob, not as a route parameter).
       if (Array.isArray(args[hiddenIdx])) continue;
       const loopInfo = abiFunction?.sortedUpsertLoopInfo?.find((info) => info.varyingArrayParam === input.name);
+      const eventLoop = abiFunction?.runtimeLoopEvents?.find((loop) => loop.permutationParam === input.name);
+      const domainInfo = loopInfo ?? (eventLoop?.iterationBound
+        ? { iterationBound: eventLoop.iterationBound } as SortedUpsertLoopAbi : undefined);
       const countIdx = abiFunction!.inputs.findIndex((p) => p.name === permutationSpec.countName);
-      if (countIdx < 0 && !loopInfo?.iterationBound) {
+      if (countIdx < 0 && !domainInfo?.iterationBound) {
         throw new Error(`vmap counter loop bound '${permutationSpec.countName}' must be a public argument`);
       }
       const visibleInputs = visibleHandlerInputs(abiFunction!.inputs);
@@ -14852,7 +14874,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         throw new Error(`Could not resolve runtime loop predicate for '${abiFunction!.name}'.`);
       }
       const candidateDomain = active ? this._vmapCounterDomain(
-        loopInfo,
+        domainInfo,
         permutationSpec,
         countIdx < 0 ? undefined : args[countIdx],
         visibleArgs,
@@ -25293,6 +25315,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             .filter((condition): condition is ExternalCallExpression => condition !== null),
           ...(source.runtimeLoopEvents ?? []).flatMap((loop) => loop.arguments ?? []).flat(),
           ...(source.runtimeLoopEvents ?? []).flatMap((loop) => loop.iterationBreakCondition ?? []),
+          ...(source.runtimeLoopEvents ?? []).flatMap((loop) => loop.iterationBound ?? []),
           ...(source.runtimeLoopEvents ?? []).flatMap((loop) => loop.iterationDomain
             ? [
               loop.iterationDomain.initialValue,

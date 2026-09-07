@@ -580,4 +580,126 @@ describe('fixed conditional BCH transfer transcript security', () => {
     transferOutput!.to = first;
     expect(vmRejects(active)).toBe(true);
   }, 240_000);
+
+  it('authenticates a fixed transfer after a successful early-return path', async () => {
+    const provider = createMessageBusCapstoneTestProvider();
+    const artifacts = compileStringMulti(`interface IPayer {
+        function pay(bool stop, address recipient, uint amount);
+        function guarded(bool enabled, bool alternate, address first, address second, uint amount);
+      }
+      contract Payer() {
+        address fallbackRecipient;
+        function pay(bool stop, address recipient, uint amount) public {
+          address selected = recipient;
+          if (stop) {
+            selected = this.fallbackRecipient;
+            require(true);
+            return;
+          }
+          this.transfer(selected, amount);
+          require(true);
+        }
+        function guarded(bool enabled, bool alternate, address first, address second, uint amount) public {
+          address selected = first;
+          if (alternate) selected = second;
+          require(enabled);
+          this.transfer(selected, amount);
+          require(true);
+        }
+      }
+      contract Driver(address payer) {
+        function run(bool stop, address recipient, uint amount) public {
+          IPayer(payer).pay(stop, recipient, amount);
+          require(true);
+        }
+        function runGuarded(bool enabled, bool alternate, address first, address second, uint amount) public {
+          IPayer(payer).guarded(enabled, alternate, first, second, amount);
+          require(true);
+        }
+      }`, {
+      forceStateful: true, messageBus: true, messageBusKernel: true, maximumInputBytes: 1_000_000,
+    });
+    expect(artifacts.Payer.messageBus?.handlers.find((handler) => handler.name === 'pay')).toMatchObject({
+      eligible: true,
+      transfers: [{
+        recipientRecipe: { kind: 'handlerInput', inputIndex: 1 },
+        amountRecipe: { kind: 'handlerInput', inputIndex: 2 },
+        condition: { kind: 'unary', operator: '!' },
+      }],
+    });
+    expect(artifacts.Payer.messageBus?.handlers.find((handler) => handler.name === 'guarded')).toMatchObject({
+      eligible: true,
+      transfers: [{
+        recipientRecipe: { kind: 'conditional', resultType: 'address' },
+        amountRecipe: { kind: 'handlerInput', inputIndex: 4 },
+        condition: { kind: 'source', source: { kind: 'forward', paramIndex: 0 } },
+      }],
+    });
+    const connect = async (artifact: Artifact, args: readonly unknown[] = []): Promise<StatefulContract> => {
+      const base = new Contract(artifact, args as never[], { provider });
+      const setup = await setupStatefulUtxos(provider, base, artifact.stateLayout!, {}, { saltContract: true });
+      return StatefulContract.withCategory(base.withCategory(hexToBin(setup.categoryId)), setup.categoryId);
+    };
+    const payer = await connect(artifacts.Payer);
+    const driver = await connect(artifacts.Driver, [hexToBin(payer.inner.lockingBytecode)]);
+    const fee = await createBareP2pkhFeeFunder(provider, 1_000_000n);
+    const recipient = fee.unlocker.generateLockingBytecode();
+    const build = async (stop: boolean, tag: string): Promise<TransactionBuilder> => {
+      await provider.addUtxo(getSatoshiContainerAddress(payer.inner, payer.categoryId), {
+        txid: tag.repeat(32), vout: 1, satoshis: 20_000n,
+      });
+      return messageBus.compose({
+        preparedCalls: [
+          { contract: driver, functionName: 'run', args: [stop, recipient, 2_000n] },
+          { contract: payer, functionName: 'pay', args: [stop, recipient, 2_000n] },
+        ],
+        funder: fee,
+        changeAddress: recipient,
+      }).build();
+    };
+    const active = await build(false, 'd3');
+    const stopped = await build(true, 'd4');
+    expect(vmRejects(active)).toBe(false);
+    expect(vmRejects(stopped)).toBe(false);
+    expect(valueRows(active)).toHaveLength(1);
+    expect(valueRows(stopped)).toHaveLength(0);
+    const row = valueRows(active)[0];
+    const activeOutput = participantBase(envelopeOf(active), row.owner) + row.targetOffset;
+    const stoppedOutput = participantBase(envelopeOf(stopped), row.owner) + row.targetOffset;
+    expect(active.outputs[activeOutput]).toMatchObject({ to: recipient, amount: 2_000n });
+    expect(stopped.outputs[stoppedOutput]).toMatchObject({ to: Uint8Array.of(0x51), amount: 1_000n });
+
+    active.outputs[activeOutput].amount += 1n;
+    expect(vmRejects(active)).toBe(true);
+    stopped.outputs[stoppedOutput].to = Uint8Array.of(0x52);
+    expect(vmRejects(stopped)).toBe(true);
+
+    const guarded = async (enabled: boolean, tag: string): Promise<TransactionBuilder> => {
+      await provider.addUtxo(getSatoshiContainerAddress(payer.inner, payer.categoryId), {
+        txid: tag.repeat(32), vout: 1, satoshis: 20_000n,
+      });
+      return messageBus.compose({
+        preparedCalls: [
+          {
+            contract: driver, functionName: 'runGuarded',
+            args: [enabled, true, recipient, Uint8Array.of(0x52), 3_000n],
+          },
+          {
+            contract: payer, functionName: 'guarded',
+            args: [enabled, true, recipient, Uint8Array.of(0x52), 3_000n],
+          },
+        ],
+        funder: fee,
+        changeAddress: recipient,
+      }).build();
+    };
+    const guardPasses = await guarded(true, 'd5');
+    expect(vmRejects(guardPasses)).toBe(false);
+    await expect(guarded(false, 'd6')).rejects.toThrow(/preflight failed.*OP_VERIFY/i);
+    const guardedRow = valueRows(guardPasses)[0];
+    const guardedOutput = participantBase(envelopeOf(guardPasses), guardedRow.owner) + guardedRow.targetOffset;
+    expect(guardPasses.outputs[guardedOutput]).toMatchObject({ to: Uint8Array.of(0x52), amount: 3_000n });
+    guardPasses.outputs[guardedOutput].to = recipient;
+    expect(vmRejects(guardPasses)).toBe(true);
+  }, 240_000);
 });

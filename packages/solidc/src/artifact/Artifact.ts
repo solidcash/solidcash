@@ -468,9 +468,10 @@ const transferEffects = (
       ...(recipientRecipe && { recipientRecipe }),
       ...(amountRecipe && { amountRecipe }),
       ...(transfer.callOption && { callOption: transfer.callOption }),
-      ...(transfer.conditionUnsupported
+      ...(transfer.conditionUnsupported || (effect && !effect.activationSupported)
         ? { condition: null }
-        : transfer.condition ? { condition: effect?.activationSupported && condition ? condition : null } : {}),
+        : condition ? { condition }
+          : transfer.condition ? { condition: null } : {}),
     };
   });
 };
@@ -1280,6 +1281,11 @@ function buildFunctionAbiMetadata(
       const iterationBreakCondition = loop.iterationBreakCondition && serializeCondition(
         loop.iterationBreakCondition, eventSites[0]?.runtimeLoopEventCounter, new Set(), preservedLocals,
       );
+      const sourceBound = loop.permutationParam
+        ? func.runtimeCounterLoopBounds?.get(loop.permutationParam) : undefined;
+      const iterationBound = sourceBound && serializeCondition(
+        sourceBound, undefined, new Set(), preservedLocals,
+      );
       if (eventSites.some((emit, index) => emit.runtimeLoopEventCondition && conditions[index] === null)) {
         throw new Error(`Runtime event condition in '${func.name}' cannot be represented in artifact metadata`);
       }
@@ -1289,8 +1295,12 @@ function buildFunctionAbiMetadata(
       if (loop.iterationBreakCondition && !iterationBreakCondition) {
         throw new Error(`Runtime event break condition in '${func.name}' cannot be represented in artifact metadata`);
       }
+      if (sourceBound && !iterationBound) {
+        throw new Error(`Runtime event bound in '${func.name}' cannot be represented in artifact metadata`);
+      }
       return {
         ...(loop.permutationParam !== undefined && { permutationParam: loop.permutationParam }),
+        ...(iterationBound && { iterationBound }),
         ...(loop.repeatCount !== undefined && { repeatCount: loop.repeatCount }),
         ...(loop.iterationDomain !== undefined && { iterationDomain: loop.iterationDomain }),
         eventSignatures: eventSites.map((emit) => emit.eventDefinition!.signature),

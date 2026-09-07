@@ -2,6 +2,43 @@ import { describe, expect, it } from 'vitest';
 import { compileString } from '../../src/compiler.js';
 
 describe('message-bus heavy work is per function', () => {
+  it('keeps kernel bytecode independent of the diagnostic input-size ceiling', () => {
+    const arithmetic = Array.from({ length: 60 }, (_unused, index) =>
+      `next = (next * 3 + ${index + 2}) % 1000003;`).join('\n');
+    const handlers = Array.from({ length: 24 }, (_unused, index) => `
+      function apply${index}(int key, int value) public {
+        int next = value;
+        ${arithmetic}
+        this.values[key] = next;
+        require(next >= 0);
+      }
+    `).join('\n');
+    const source = `
+      contract Ledger {
+        mapping(int => int) values;
+        ${handlers}
+      }
+    `;
+    const compile = (maximumInputBytes: number, optimizeForCompilationSpeed = true) => compileString(source, {
+      messageBus: true,
+      messageBusKernel: true,
+      optimizeForCompilationSpeed,
+      maximumInputBytes,
+      suppressWarnings: true,
+    });
+
+    const lowerCeiling = compile(200_000);
+    const higherCeiling = compile(300_000);
+    const ordinaryCodegen = compile(300_000, false);
+    expect(lowerCeiling.messageBus?.convention).toBe('kernel-row-loop');
+    expect(lowerCeiling.debug?.bytecode).toBe(higherCeiling.debug?.bytecode);
+    const fastBytes = (lowerCeiling.debug?.bytecode.length ?? Infinity) / 2;
+    const ordinaryBytes = (ordinaryCodegen.debug?.bytecode.length ?? Infinity) / 2;
+    expect(fastBytes).toBeLessThan(20_000);
+    expect(ordinaryBytes).toBeLessThan(20_000);
+    expect(Math.abs(fastBytes - ordinaryBytes)).toBeLessThan(1_000);
+  });
+
   it('rejects lifecycle handlers without cloning a graph helper for them', () => {
     const artifact = compileString(`
       contract Vault {

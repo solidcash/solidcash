@@ -348,6 +348,53 @@ export const evaluateChildDeploymentRecipe = (
   );
 };
 
+/** Normalize a replayed scalar into the physical state-codec domain used by entry commitments. */
+export const materializeChildDeploymentEntryScalar = (
+  value: FunctionArgument, typeName: string, solidityAbi: boolean,
+): bigint | boolean | Uint8Array => {
+  const type = parseTypeStrict(typeName);
+  if (type === PrimitiveType.BOOL) return numericRecipeValue(value, typeName, solidityAbi) !== 0n;
+  if (type === PrimitiveType.BIGINT || type instanceof IntType || type instanceof FixedType) {
+    return numericRecipeValue(value, typeName, solidityAbi);
+  }
+  if (type instanceof AddressType || type instanceof BytesType
+    || type === PrimitiveType.PUBKEY || type === PrimitiveType.DATASIG) {
+    return hexToBin(canonicalRecipeEqualityValue(value, typeName, solidityAbi) as string);
+  }
+  throw new Error(`messageBus: deployment entry scalar type ${typeName} is not materializable`);
+};
+
+/** Normalize a replayed fixed-layout aggregate into the state codec's positional representation. */
+export const materializeChildDeploymentEntryValue = (
+  value: FunctionArgument, typeName: string, solidityAbi: boolean,
+  structs: readonly StructDefinitionInfo[] = [], visited: ReadonlySet<string> = new Set(),
+): StateValue => {
+  const struct = structs.find((candidate) => candidate.name === typeName);
+  if (struct) {
+    if (visited.has(typeName)) {
+      throw new Error(`messageBus: cyclic deployment entry struct ${typeName} is not materializable`);
+    }
+    if (!Array.isArray(value) || value.length !== struct.fields.length) {
+      throw new Error(`messageBus: deployment entry struct ${typeName} has an invalid aggregate value`);
+    }
+    const nested = new Set(visited);
+    nested.add(typeName);
+    return struct.fields.map((field, index) => materializeChildDeploymentEntryValue(
+      value[index], field.type, solidityAbi, structs, nested,
+    ));
+  }
+  const array = parseArrayTypeString(typeName);
+  if (array) {
+    if (array.bound === undefined || !Array.isArray(value) || value.length !== array.bound) {
+      throw new Error(`messageBus: deployment entry array ${typeName} is not a fixed-layout aggregate`);
+    }
+    return value.map((element) => materializeChildDeploymentEntryValue(
+      element, array.elementType, solidityAbi, structs, visited,
+    ));
+  }
+  return materializeChildDeploymentEntryScalar(value, typeName, solidityAbi);
+};
+
 interface CallDescriptor extends PreparedAtomicMessageBusCall {
   artifact: Artifact;
 }
@@ -1714,7 +1761,8 @@ export class AtomicMessageBusComposition {
           for (const entry of site.genesisEntries ?? []) {
             const collection = childArtifact.stateLayout.collections?.find((candidate) =>
               candidate.name === entry.collection && candidate.signature === entry.collectionSignature);
-            if (!collection || collection.kind !== 'array' || collection.bound === undefined
+            if (!collection || !['array', 'mapping'].includes(collection.kind)
+              || (collection.kind === 'array' && collection.bound === undefined)
               || collection.keyType !== entry.keyType || collection.valueType !== entry.valueType) {
               throw new Error(
                 `messageBus: child deployment entry '${entry.collection}' does not match the authenticated layout`,
@@ -1722,9 +1770,14 @@ export class AtomicMessageBusComposition {
             }
             const key = evaluateChildDeploymentRecipe(entry.key, descriptor.args, inputTypes, solidityAbi);
             const value = evaluateChildDeploymentRecipe(entry.value, descriptor.args, inputTypes, solidityAbi);
-            if (typeof key !== 'bigint' || key < 0n || key >= BigInt(collection.bound)) {
+            if (collection.kind === 'array'
+              && (typeof key !== 'bigint' || key < 0n || key >= BigInt(collection.bound!))) {
               throw new Error(`messageBus: child deployment entry '${entry.collection}' has an invalid fixed-array key`);
             }
+            const materializedKey = materializeChildDeploymentEntryScalar(key, entry.keyType, solidityAbi);
+            const materializedValue = materializeChildDeploymentEntryValue(
+              value, entry.valueType, solidityAbi, childArtifact.stateLayout.structs,
+            );
             outputs.push({
               to: getEntryNftLockingBytecode(child, genesis.txid, entry.collectionSignature),
               amount: 1200n,
@@ -1734,7 +1787,7 @@ export class AtomicMessageBusComposition {
                 nft: {
                   capability: 'mutable',
                   commitment: buildEntryCommitment(
-                    key, entry.keyType, value as StateValue, entry.valueType,
+                    materializedKey, entry.keyType, materializedValue, entry.valueType,
                     childArtifact.stateLayout.structs,
                     provider.consensusLimits?.maximumNftCommitmentBytes,
                   ),

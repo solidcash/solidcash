@@ -22,11 +22,13 @@ describe('affine recursive mapping streams', () => {
   it('emits selected post-recursion events in unwind order and authenticates the zero-frame case', async () => {
     const provider = createMessageBusCapstoneTestProvider();
     const artifact = compileString(`contract UnwindEvents() {
-      event Seen(int value);
+      event Selected(int value);
+      event Visited(int value);
       function apply(int cursor, int offset) public returns (int) {
-        if (cursor == 0) return offset;
+        if (cursor == 0) return offset + 7;
         int result = apply(cursor - 1, offset);
-        if (cursor % 2 == 1) emit Seen(cursor + offset);
+        if (cursor % 2 == 1) emit Selected(result + cursor);
+        emit Visited(cursor + offset);
         return result;
       }
     }`, KERNEL);
@@ -44,7 +46,7 @@ describe('affine recursive mapping streams', () => {
         function initiate(int cursor, int offset) public {
           emit Requested(offset);
           int result = IEffectTarget(target).apply(cursor, offset);
-          require(result == offset);
+          require(result == offset + 7);
         }
       }
     `, KERNEL);
@@ -71,21 +73,34 @@ describe('affine recursive mapping streams', () => {
       expect(vm.stateSuccess(vm.evaluate({ inputIndex, sourceOutputs, transaction })),
         `honest input ${inputIndex}`).toBe(true);
     }
-    const eventLock = addressToLockScript(getEventNftAddress(
-      inner.withCategory(hexToBin(categoryId)), categoryId, 'Seen(int256)',
+    const selectedLock = addressToLockScript(getEventNftAddress(
+      inner.withCategory(hexToBin(categoryId)), categoryId, 'Selected(int256)',
+    ));
+    const visitedLock = addressToLockScript(getEventNftAddress(
+      inner.withCategory(hexToBin(categoryId)), categoryId, 'Visited(int256)',
     ));
     const eventOutput = transaction.outputs.findIndex((output) => output.token?.nft
-      && binToHex(output.lockingBytecode) === binToHex(eventLock));
+      && binToHex(output.lockingBytecode) === binToHex(selectedLock));
     expect(eventOutput).toBeGreaterThanOrEqual(0);
-    expect(transaction.outputs.filter((output) => output.token?.nft
-      && binToHex(output.lockingBytecode) === binToHex(eventLock))
-      .map((output) => binToHex(output.token!.nft!.commitment))).toEqual(['5b', '5d']);
     const callerEventLock = addressToLockScript(getEventNftAddress(
       callerInner.withCategory(hexToBin(callerSetup.categoryId)), callerSetup.categoryId, 'Requested(int256)',
     ));
-    expect(transaction.outputs.filter((output) => output.token?.nft
-      && binToHex(output.lockingBytecode) === binToHex(callerEventLock))
-      .map((output) => binToHex(output.token!.nft!.commitment))).toEqual(['5a']);
+    const eventLocks = new Map([
+      [binToHex(callerEventLock), 'Requested'],
+      [binToHex(selectedLock), 'Selected'],
+      [binToHex(visitedLock), 'Visited'],
+    ]);
+    expect(transaction.outputs.flatMap((output) => {
+      const event = eventLocks.get(binToHex(output.lockingBytecode));
+      return event && output.token?.nft
+        ? [[event, binToHex(output.token.nft.commitment)]] : [];
+    })).toEqual([
+      ['Requested', '5a'],
+      ['Selected', '0112'], ['Visited', '5b'],
+      ['Visited', '5c'],
+      ['Selected', '0114'], ['Visited', '5d'],
+      ['Visited', '5e'],
+    ]);
     const hostile = {
       ...transaction,
       outputs: transaction.outputs.map((output, index) => index !== eventOutput ? output : ({
@@ -148,9 +163,9 @@ describe('affine recursive mapping streams', () => {
     const provider = createTestProvider();
     const artifact = compileString(`contract UnwindStreams() {
       mapping(int => int) selected;
-      function apply(int cursor, int threshold) public returns (int) {
+      function apply(int cursor, int threshold, int stride) public returns (int) {
         if (cursor == 0) return threshold;
-        int result = apply(cursor - 1, threshold);
+        int result = apply(cursor - stride, threshold, stride);
         if (cursor > threshold) this.selected[cursor] = result + cursor;
         return result;
       }
@@ -175,7 +190,7 @@ describe('affine recursive mapping streams', () => {
       ];
     });
     const contract = StatefulContract.withCategory(inner, categoryId);
-    const call = contract.batch([{ function: 'apply', args: [4n, 2n] }]);
+    const call = contract.batch([{ function: 'apply', args: [8n, 4n, 2n] }]);
     const builder = await call.build();
     const routeInputIndex = builder.inputs.findIndex((input) =>
       'abiFunction' in input.unlocker && input.unlocker.abiFunction.name === artifact.messageBus!.route.name);
@@ -185,7 +200,7 @@ describe('affine recursive mapping streams', () => {
       input.name === stream.varyingArrayParam);
     const permutations = routeUnlocker.params[permutationIndex] as bigint[][];
     expect(permutations).toHaveLength(1);
-    expect(permutations[0]).toHaveLength(2); // unwind frames 1 and 2 are false; only 3 and 4 are selected.
+    expect(permutations[0]).toHaveLength(2); // unwind frames 2 and 4 are false; only 6 and 8 are selected.
 
     const vm = createVirtualMachineBch2026ForProvider(provider);
     const recreateRouteUnlocker = routeUnlocker.contract.createCompilerRouteUnlocker(
@@ -225,11 +240,22 @@ describe('affine recursive mapping streams', () => {
       expect(vm.stateSuccess(vm.evaluate({ inputIndex, sourceOutputs, transaction })),
         `honest input ${inputIndex}`).toBe(true);
     }
+
+    const inexact = contract.batch([{ function: 'apply', args: [7n, 4n, 2n] }]);
+    const inexactBuilder = await inexact.build();
+    const inexactRouteIndex = inexactBuilder.inputs.findIndex((input) =>
+      'abiFunction' in input.unlocker && input.unlocker.abiFunction.name === artifact.messageBus!.route.name);
+    const inexactTransaction = inexactBuilder.buildLibauthTransaction();
+    expect(vm.stateSuccess(vm.evaluate({
+      inputIndex: inexactRouteIndex,
+      sourceOutputs: generateLibauthSourceOutputs(inexactBuilder.inputs),
+      transaction: inexactTransaction,
+    })), 'non-divisible recursion endpoint').not.toBe(true);
     await call.send();
     const selected = await contract.getEntries('selected');
     const valueAt = (key: bigint): unknown => selected.find((entry) =>
       binToHex(entry.slot) === binToHex(keyToSlotMulti([bigIntToVmNumber(key)])))?.value;
-    expect([1n, 2n, 3n, 4n].map(valueAt)).toEqual([undefined, undefined, 5n, 6n]);
+    expect([2n, 4n, 6n, 8n].map(valueAt)).toEqual([undefined, undefined, 10n, 12n]);
   }, 60_000);
 
   it('settles source-ordered set and affine-key delete streams across two collections', async () => {

@@ -4,6 +4,7 @@ import {
   AssignNode, BinaryOpNode, BlockNode, BoolLiteralNode, BranchNode, BreakNode, CastNode, CollectionNode, ContinueNode,
   ContractNode,
   DoWhileNode,
+  DeleteLocalNode,
   EmitStatementNode, ExpressionNode, ExpressionStatementNode, ExternalFunctionCallNode, FunctionCallNode,
   FunctionCallStatementNode,
   FieldAccessNode, FunctionDefinitionNode, IdentifierNode, IntLiteralNode, LiteralNode, MappingAccessNode,
@@ -13,7 +14,7 @@ import {
   ReturnNode,
   StateAccessNode, StateArrayAssignNode, StateArrayDeleteNode, StateArrayPopNode, StateArrayPushNode,
   StateAssignNode, StatementNode, SwitchNode, TernaryOpNode, TokenContainerMethodStatementNode, TransferStatementNode,
-  TryCatchNode, TupleIndexOpNode, UnaryOpNode, VariableDefinitionNode, WhileNode, FunctionModifier,
+  TryCatchNode, TupleAssignmentNode, TupleIndexOpNode, UnaryOpNode, VariableDefinitionNode, WhileNode, FunctionModifier,
 } from '../ast/AST.js';
 import AstTraversal from '../ast/AstTraversal.js';
 import { cloneNode } from '../ast/clone.js';
@@ -176,6 +177,179 @@ export default class LowerVMapCounterLoops extends AstTraversal {
     // Hidden parameters are the durable marker that this function was already lowered. Do not inspect or mutate
     // the generated proof statements on the second pass.
     if (node.parameters.some((parameter) => parameter.name.startsWith(PREFIX))) return node;
+    const normalizedMutableEventCounters = new WeakMap<WhileNode | DoWhileNode, {
+      counter: string; bound: ExpressionNode;
+    }>();
+    /**
+     * A parameter can itself be the source counter (`while (remaining > 0) { emit E(remaining); remaining--; }`).
+     * Preserve that source mutation, but expose the finite domain through a compiler-owned rank initialized at
+     * zero. This is a semantic normalization, not an application-shaped special case: the ordinary canonical
+     * counter machinery still owns cardinality, event ordering, and the 64-iteration proof. Only strict unit-step
+     * progressions with one trailing counter mutation are normalized. In particular, a continue or a second
+     * mutation could bypass/double the step and therefore remains fail-closed.
+     */
+    const normalizeMutableParameterEventLoops = (root: BlockNode): void => {
+      const visibleParameters = new Map(node.parameters
+        .filter((parameter) => !parameter.name.startsWith('__internal__'))
+        .map((parameter) => [parameter.name, parameter]));
+      const contains = (candidate: Node, predicate: (value: Node) => boolean): boolean => {
+        if (predicate(candidate)) return true;
+        for (const [key, value] of Object.entries(candidate)) {
+          if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type'
+            || key === 'resolvedFunction' || key === 'functionReference') continue;
+          if (value instanceof Node && contains(value, predicate)) return true;
+          if (Array.isArray(value)
+            && value.some((item) => item instanceof Node && contains(item, predicate))) return true;
+        }
+        return false;
+      };
+      const boundarySupported = (expression: ExpressionNode, counter: string): boolean => {
+        if (expression instanceof IntLiteralNode) return true;
+        if (expression instanceof IdentifierNode) {
+          return expression.name !== counter && visibleParameters.has(expression.name);
+        }
+        if (expression instanceof CastNode || expression instanceof UnaryOpNode) {
+          return expression instanceof CastNode || expression.operator === UnaryOperator.NEGATE
+            ? boundarySupported(expression.expression, counter) : false;
+        }
+        return expression instanceof BinaryOpNode
+          && (expression.operator === BinaryOperator.PLUS || expression.operator === BinaryOperator.MINUS)
+          && boundarySupported(expression.left, counter) && boundarySupported(expression.right, counter);
+      };
+      const writesAnyIdentifier = (candidate: Node, names: ReadonlySet<string>): boolean => {
+        if (candidate instanceof AssignNode || candidate instanceof DeleteLocalNode) {
+          return names.has(candidate.identifier.name);
+        }
+        if (candidate instanceof TupleAssignmentNode) {
+          return candidate.elements.some((element) => element.name !== undefined && names.has(element.name));
+        }
+        return candidate instanceof UnaryOpNode
+          && candidate.expression instanceof IdentifierNode
+          && names.has(candidate.expression.name)
+          && [UnaryOperator.POSTFIX_INCREMENT, UnaryOperator.PREFIX_INCREMENT,
+            UnaryOperator.POSTFIX_DECREMENT, UnaryOperator.PREFIX_DECREMENT]
+            .includes(candidate.operator);
+      };
+      for (let index = 0; index < (root.statements?.length ?? 0); index += 1) {
+        const statement = root.statements![index];
+        if (!(statement instanceof WhileNode || statement instanceof DoWhileNode)
+          || !(statement.condition instanceof BinaryOpNode)
+          || !contains(statement.block, (candidate) => candidate instanceof EmitStatementNode)) {
+          if (statement instanceof BlockNode) normalizeMutableParameterEventLoops(statement);
+          else if (statement instanceof BranchNode) {
+            normalizeMutableParameterEventLoops(statement.ifBlock);
+            if (statement.elseBlock) normalizeMutableParameterEventLoops(statement.elseBlock);
+          } else if (statement instanceof SwitchNode) {
+            for (const arm of statement.cases) normalizeMutableParameterEventLoops(arm.body);
+            if (statement.defaultCase) normalizeMutableParameterEventLoops(statement.defaultCase);
+          }
+          continue;
+        }
+        const condition = statement.condition;
+        const body = statement.block.statements ?? [];
+        const candidateNames = [condition.left, condition.right]
+          .filter((candidate): candidate is IdentifierNode => candidate instanceof IdentifierNode
+            && visibleParameters.has(candidate.name))
+          .map((candidate) => candidate.name);
+        const counter = candidateNames.find((name) => {
+          const update = normalizeDiscardedCounterUpdate(body.at(-1), name);
+          return update?.identifier.name === name;
+        });
+        if (!counter) continue;
+        const leftCounter = condition.left instanceof IdentifierNode && condition.left.name === counter;
+        const rightCounter = condition.right instanceof IdentifierNode && condition.right.name === counter;
+        if (leftCounter === rightCounter) continue;
+        const boundary = leftCounter ? condition.right : condition.left;
+        const comparison = leftCounter ? condition.operator : ({
+          [BinaryOperator.LT]: BinaryOperator.GT,
+          [BinaryOperator.GT]: BinaryOperator.LT,
+        } as Partial<Record<BinaryOperator, BinaryOperator>>)[condition.operator];
+        if ((comparison !== BinaryOperator.LT && comparison !== BinaryOperator.GT)
+          || !boundarySupported(boundary, counter)
+          || contains(statement.block, (candidate) => candidate instanceof ContinueNode
+            || (candidate !== statement.block
+              && (candidate instanceof WhileNode || candidate instanceof DoWhileNode)))) continue;
+        const sourceUpdate = normalizeDiscardedCounterUpdate(body.at(-1), counter);
+        const expression = sourceUpdate?.expression;
+        const counterOnLeft = expression instanceof BinaryOpNode
+          && expression.left instanceof IdentifierNode && expression.left.name === counter;
+        const magnitude = counterOnLeft && expression.right instanceof IntLiteralNode
+          ? expression.right.value : undefined;
+        const sourceStep = expression instanceof BinaryOpNode && magnitude === 1n
+          ? expression.operator === BinaryOperator.PLUS ? 1n
+            : expression.operator === BinaryOperator.MINUS ? -1n : undefined
+          : undefined;
+        const advances = (comparison === BinaryOperator.LT && sourceStep === 1n)
+          || (comparison === BinaryOperator.GT && sourceStep === -1n);
+        const counterWriteCount = (() => {
+          let count = 0;
+          contains(statement.block, (candidate) => {
+            if (writesAnyIdentifier(candidate, new Set([counter]))) count += 1;
+            return false;
+          });
+          return count;
+        })();
+        const boundaryNames = new Set<string>();
+        contains(boundary, (candidate) => {
+          if (candidate instanceof IdentifierNode) boundaryNames.add(candidate.name);
+          return false;
+        });
+        const priorMutatesDomain = root.statements!.slice(0, index).some((candidate) =>
+          contains(candidate, (value) => writesAnyIdentifier(value, new Set([counter, ...boundaryNames]))));
+        const bodyMutatesBoundary = contains(statement.block,
+          (candidate) => writesAnyIdentifier(candidate, boundaryNames));
+        if (!advances || counterWriteCount !== 1 || !sourceUpdate
+          || sourceUpdate !== body.at(-1) || priorMutatesDomain) continue;
+        if (bodyMutatesBoundary) continue;
+
+        const serial = this.serial++;
+        const countName = `__internal__mutableCounterCount_${serial}`;
+        const rankName = `__internal__mutableCounterRank_${serial}`;
+        const counterRead = new IdentifierNode(counter);
+        counterRead.location = condition.location;
+        counterRead.type = visibleParameters.get(counter)?.type;
+        const positiveDifference = comparison === BinaryOperator.LT
+          ? new BinaryOpNode(cloneNode(boundary), BinaryOperator.MINUS, counterRead)
+          : new BinaryOpNode(counterRead, BinaryOperator.MINUS, cloneNode(boundary));
+        positiveDifference.location = condition.location;
+        positiveDifference.type = visibleParameters.get(counter)?.type;
+        // The snapshot is evaluated before the source pre-test. Guard the subtraction so an unsigned counter
+        // which already lies outside the loop domain still has the source's zero iterations rather than an
+        // eager underflow. A do-while consumes one occurrence from this zero bound by the ordinary post-test rule.
+        const tripCount = new TernaryOpNode(cloneNode(condition), positiveDifference, new IntLiteralNode(0n));
+        tripCount.location = condition.location;
+        tripCount.type = visibleParameters.get(counter)?.type;
+        const counterType = visibleParameters.get(counter)?.type instanceof IntType
+          ? visibleParameters.get(counter)!.type : new IntType(true, 256);
+        const countDefinition = new VariableDefinitionNode(counterType, [], countName, tripCount);
+        countDefinition.location = statement.location;
+        countDefinition.allowUnused = true;
+        const rankDefinition = new VariableDefinitionNode(
+          counterType, [], rankName, new IntLiteralNode(0n),
+        );
+        rankDefinition.location = statement.location;
+        rankDefinition.allowUnused = true;
+        const rankCondition = new BinaryOpNode(
+          new IdentifierNode(rankName), BinaryOperator.LT, new IdentifierNode(countName),
+        );
+        rankCondition.location = condition.location;
+        rankCondition.type = condition.type;
+        statement.condition = rankCondition;
+        body[body.length - 1] = sourceUpdate;
+        const rankUpdate = new AssignNode(
+          new IdentifierNode(rankName),
+          new BinaryOpNode(
+            new IdentifierNode(rankName), BinaryOperator.PLUS, new IntLiteralNode(1n),
+          ),
+        );
+        rankUpdate.location = sourceUpdate.location;
+        body.push(rankUpdate);
+        statement.block.statements = body;
+        root.statements!.splice(index, 0, countDefinition, rankDefinition);
+        index += 2;
+        normalizedMutableEventCounters.set(statement, { counter, bound: cloneNode(tripCount) });
+      }
+    };
     type CanonicalLoop = {
       logical: string;
       count: string;
@@ -237,6 +411,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       assignment.location = statement.location;
       return assignment;
     };
+    normalizeMutableParameterEventLoops(node.body);
     const findCanonicalLoops = (
       x: Node,
       pathConditions: Array<{ expression: ExpressionNode; negated: boolean }> = [],
@@ -664,12 +839,13 @@ export default class LowerVMapCounterLoops extends AstTraversal {
               ...boundResolution.countNames,
               ...boundDefinitions.map((definition) => definition.name),
               ...boundResolution.assignments.map((assignment) => assignment.identifier.name),
-            ],
+            ].filter((name) => name !== normalizedMutableEventCounters.get(loop)?.counter),
             boundDefinitions,
             boundAssignments: boundResolution.assignments,
             boundOffset: boundResolution.offset,
-            ...(boundResolution.metadataExpression
-              && { boundExpression: boundResolution.metadataExpression }),
+            ...((normalizedMutableEventCounters.get(loop)?.bound ?? boundResolution.metadataExpression)
+              && { boundExpression: normalizedMutableEventCounters.get(loop)?.bound
+                ?? boundResolution.metadataExpression }),
             start: (variable.expression as IntLiteralNode).value,
             step: directionalStep,
             ...(runtimeStep && { stepExpression: runtimeStep }),
@@ -798,7 +974,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         || (x.call.object instanceof FunctionCallNode
           && this.externalTypeNames.has(x.call.object.identifier.name)))) return false;
       if (x instanceof EmitStatementNode) {
-        if (!runtimeEmits.has(x)) return true;
+        if (!runtimeEmits.has(x) && !x.runtimeLoopEvent) return true;
         // Returning helpers are inlined before this pass: their effects and result definition remain immediately
         // before the emit in the source-order physical loop. A surviving effectful call in the argument itself is
         // still unsafe, but consuming the already-computed local does not duplicate or permute that effect.
@@ -906,7 +1082,10 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         if (isWrite(x) && this.collections.has(x.name) && counterKeyIndex(x, logical) >= 0) {
           counterWrite = true;
         }
-        if (x instanceof EmitStatementNode) event = true;
+        // A preceding semantic pass may already own this exact occurrence domain (notably affine recursion).
+        // Such a site still participates in source-order assembly below, but must not be enrolled in a second
+        // counter permutation or reserve its 64 outputs twice.
+        if (x instanceof EmitStatementNode && !x.runtimeLoopEvent) event = true;
         for (const key of Object.keys(x)) {
           if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type'
             || key === 'resolvedFunction') continue;
@@ -1415,6 +1594,16 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           localValues,
         );
       }
+      if (expression instanceof IdentifierNode && expression.name !== counterName
+        && localValues.has(expression.name)) {
+        if (resolving.has(expression.name)) return undefined;
+        const remainingLocals = new Map(localValues);
+        remainingLocals.delete(expression.name);
+        return expandRuntimePathExpression(
+          cloneNode(localValues.get(expression.name)!), counterName,
+          new Set(resolving).add(expression.name), stateValues, remainingLocals,
+        );
+      }
       if (expression instanceof IdentifierNode
         && expression.name !== counterName
         && !visibleParameters.some((parameter) => parameter.name === expression.name)) {
@@ -1914,6 +2103,69 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           continue;
         }
 
+        // A straight-line affine self recurrence has the same closed form as the scalar-state recurrence below.
+        // This notably covers a public parameter used as its own source counter after the normalization above,
+        // but remains name- and role-independent: any local `x = x +/- invariant` observed by an event can use
+        // the authenticated logical rank. Counter-dependent, coupled, conditional, and continue-skipped deltas
+        // are deliberately excluded here rather than approximated.
+        const recurrenceDeltas: ExpressionNode[] = [];
+        let affineRecurrence = updates.length > 0;
+        for (const { statement } of updates) {
+          const expression = statement.expression;
+          if (!(expression instanceof BinaryOpNode)
+            || !(expression.operator === BinaryOperator.PLUS || expression.operator === BinaryOperator.MINUS)
+            || !(expression.left instanceof IdentifierNode) || expression.left.name !== name
+            || containsIdentifier(expression.right, logical)
+            || [...topLevelAssignments.keys()].some((assigned) => assigned !== name
+              && containsIdentifier(expression.right, assigned))
+            || !runtimePathExpressionSupported(
+              expression.right, logical, new Set(), stateValues, loopCarriedLocalValues,
+            )) {
+            affineRecurrence = false;
+            break;
+          }
+          const delta = expandRuntimePathExpression(
+            expression.right, logical, new Set(), stateValues, loopCarriedLocalValues,
+          );
+          if (!delta) { affineRecurrence = false; break; }
+          recurrenceDeltas.push(expression.operator === BinaryOperator.PLUS
+            ? delta : new BinaryOpNode(new IntLiteralNode(0n), BinaryOperator.MINUS, delta));
+        }
+        if (affineRecurrence && !recurrenceCrossesContinue) {
+          const normalizedSourceCounter = normalizedMutableEventCounters.get(loop)?.counter === name
+            && initializer instanceof IdentifierNode && initializer.name === name;
+          const expandedInitializer = normalizedSourceCounter
+            ? cloneNode(initializer)
+            : runtimePathExpressionSupported(
+              initializer, logical, new Set(), stateValues, loopCarriedLocalValues,
+            ) && expandRuntimePathExpression(
+              initializer, logical, new Set(), stateValues, loopCarriedLocalValues,
+            );
+          if (expandedInitializer) {
+            const netDelta = recurrenceDeltas.reduce<ExpressionNode | undefined>((sum, delta) =>
+              sum ? new BinaryOpNode(sum, BinaryOperator.PLUS, cloneNode(delta)) : cloneNode(delta), undefined);
+            for (const position of observationPositions) {
+              const phase = updates.filter((update) => update.index < position).length;
+              let value: ExpressionNode = cloneNode(expandedInitializer);
+              if (netDelta) {
+                value = new BinaryOpNode(
+                  value, BinaryOperator.PLUS,
+                  new BinaryOpNode(cloneNode(rank), BinaryOperator.MUL, cloneNode(netDelta)),
+                );
+              }
+              for (const delta of recurrenceDeltas.slice(0, phase)) {
+                value = new BinaryOpNode(value, BinaryOperator.PLUS, cloneNode(delta));
+              }
+              value.location = updates[0].statement.location;
+              locateGenerated(value);
+              const siteValues = loopCarriedLocalValuesByStatement.get(position) ?? new Map();
+              siteValues.set(name, value);
+              loopCarriedLocalValuesByStatement.set(position, siteValues);
+            }
+            continue;
+          }
+        }
+
         // Straight-line unconditional assignments which do not read themselves have an exact closed form at every
         // source-order phase. A use after assignment K observes fK(i); a use before the first assignment observes
         // the initializer at rank zero and the final assignment evaluated at i-step thereafter. Preserve one value
@@ -2059,9 +2311,25 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         }
         return false;
       };
+      const containsLocalDefinition = (candidate: Node, name: string): boolean => {
+        if (candidate !== block && (candidate instanceof WhileNode || candidate instanceof DoWhileNode)) {
+          return false;
+        }
+        if (candidate instanceof VariableDefinitionNode && candidate.name === name) return true;
+        for (const [key, value] of Object.entries(candidate)) {
+          if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type'
+            || key === 'resolvedFunction' || key === 'collection' || key === 'stateVariable') continue;
+          if (value instanceof Node && containsLocalDefinition(value, name)) return true;
+          if (Array.isArray(value)
+            && value.some((item) => item instanceof Node && containsLocalDefinition(item, name))) return true;
+        }
+        return false;
+      };
       const readsLoopAssignedLocal = (candidate: Node): boolean => {
         if (candidate instanceof IdentifierNode
-          && countAssignmentsTo(block, candidate.name) > 0) return true;
+          && candidate.name !== logical
+          && (countAssignmentsTo(block, candidate.name) > 0
+            || containsLocalDefinition(block, candidate.name))) return true;
         for (const [key, value] of Object.entries(candidate)) {
           if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type'
             || key === 'resolvedFunction' || key === 'collection' || key === 'stateVariable') continue;
@@ -2082,9 +2350,64 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         }
         return false;
       };
+      type CounterAffine = { slope?: ExpressionNode; intercept?: ExpressionNode };
+      const addAffineTerm = (
+        left: ExpressionNode | undefined, right: ExpressionNode | undefined, operator = BinaryOperator.PLUS,
+      ): ExpressionNode | undefined => {
+        if (!left) return right && (operator === BinaryOperator.MINUS
+          ? new BinaryOpNode(new IntLiteralNode(0n), BinaryOperator.MINUS, cloneNode(right))
+          : cloneNode(right));
+        if (!right) return cloneNode(left);
+        return new BinaryOpNode(cloneNode(left), operator, cloneNode(right));
+      };
+      const combineAffine = (
+        left: CounterAffine, right: CounterAffine, operator: BinaryOperator.PLUS | BinaryOperator.MINUS,
+      ): CounterAffine => ({
+        slope: addAffineTerm(left.slope, right.slope, operator),
+        intercept: addAffineTerm(left.intercept, right.intercept, operator),
+      });
+      const multiplyAffineTerm = (
+        left: ExpressionNode | undefined, right: ExpressionNode,
+      ): ExpressionNode | undefined => {
+        if (!left || (left instanceof IntLiteralNode && left.value === 0n)
+          || (right instanceof IntLiteralNode && right.value === 0n)) return undefined;
+        if (left instanceof IntLiteralNode && left.value === 1n) return cloneNode(right);
+        if (right instanceof IntLiteralNode && right.value === 1n) return cloneNode(left);
+        return new BinaryOpNode(cloneNode(left), BinaryOperator.MUL, cloneNode(right));
+      };
+      const scaleAffine = (affine: CounterAffine, factor: ExpressionNode): CounterAffine => ({
+        slope: multiplyAffineTerm(affine.slope, factor),
+        intercept: multiplyAffineTerm(affine.intercept, factor),
+      });
+      // Decompose only expressions which are provably affine in the logical source counter. In particular,
+      // integer division/modulo, products of two counter-dependent terms, casts, and calls are deliberately not
+      // treated as algebraic identities: their per-iteration truncation, width, or other semantics need not equal
+      // a polynomial prefix. Counter-free subexpressions remain opaque replayable coefficients/constants.
+      const counterAffine = (candidate: ExpressionNode): CounterAffine | undefined => {
+        if (!containsIdentifier(candidate, logical)) return { intercept: cloneNode(candidate) };
+        if (candidate instanceof IdentifierNode && candidate.name === logical) {
+          return { slope: new IntLiteralNode(1n) };
+        }
+        if (candidate instanceof UnaryOpNode && candidate.operator === UnaryOperator.NEGATE) {
+          const inner = counterAffine(candidate.expression);
+          return inner && scaleAffine(inner, new IntLiteralNode(-1n));
+        }
+        if (!(candidate instanceof BinaryOpNode)) return undefined;
+        if (candidate.operator === BinaryOperator.PLUS || candidate.operator === BinaryOperator.MINUS) {
+          const left = counterAffine(candidate.left);
+          const right = counterAffine(candidate.right);
+          return left && right && combineAffine(left, right, candidate.operator);
+        }
+        if (candidate.operator !== BinaryOperator.MUL) return undefined;
+        const leftDepends = containsIdentifier(candidate.left, logical);
+        const rightDepends = containsIdentifier(candidate.right, logical);
+        if (leftDepends === rightDepends) return undefined;
+        const dependent = counterAffine(leftDepends ? candidate.left : candidate.right);
+        return dependent && scaleAffine(dependent, leftDepends ? candidate.right : candidate.left);
+      };
       for (const [name, updates] of topLevelStateAssignments) {
         if (countStateAssignmentsTo(block, name) !== updates.length) continue;
-        const deltas: ExpressionNode[] = [];
+        const deltas: CounterAffine[] = [];
         let base: ExpressionNode | undefined;
         let supported = true;
         for (const { statement } of updates) {
@@ -2094,9 +2417,6 @@ export default class LowerVMapCounterLoops extends AstTraversal {
             || !(recurrence.left instanceof StateAccessNode) || recurrence.left.name !== name
             || !runtimePathExpressionSupported(recurrence.right, logical, new Set(), stateValues,
               loopCarriedLocalValues)
-            // `base + rank * delta` is exact only for a source-order invariant delta. Counter-dependent deltas
-            // require a separately proven prefix sum, and another loop-mutated scalar requires a coupled system.
-            || containsIdentifier(recurrence.right, logical)
             || readsLoopAssignedLocal(recurrence.right)
             || readsLoopAssignedState(recurrence.right)
             || readsCollection(recurrence.right)) {
@@ -2106,30 +2426,52 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           // The recurrence begins from the value which actually dominates the loop. A preceding scalar assignment
           // (including one expressed in terms of pre-state) must not silently collapse back to contract pre-state.
           base ??= cloneNode(stateValues.get(name) ?? recurrence.left);
-          const delta = cloneNode(recurrence.right);
+          const delta = counterAffine(recurrence.right);
+          if (!delta) { supported = false; break; }
           deltas.push(recurrence.operator === BinaryOperator.PLUS
-            ? delta : new BinaryOpNode(new IntLiteralNode(0n), BinaryOperator.MINUS, delta));
+            ? delta : scaleAffine(delta, new IntLiteralNode(-1n)));
         }
         if (!supported || !base || deltas.length === 0 || recurrenceCrossesContinue) continue;
         const observationPositions = (block.statements ?? []).flatMap((statement, index) => (
           !updates.some((update) => update.index === index) && containsStateAccess(statement, name) ? [index] : []
         ));
-        const netDelta = deltas.reduce((sum, delta) => sum === undefined
-          ? cloneNode(delta) : new BinaryOpNode(sum, BinaryOperator.PLUS, cloneNode(delta)),
-        undefined as ExpressionNode | undefined)!;
+        const netDelta = deltas.reduce((sum, delta) => combineAffine(sum, delta, BinaryOperator.PLUS), {});
         const rank = unitDomain
           ? new IdentifierNode(logical)
           : new BinaryOpNode(
             new BinaryOpNode(new IdentifierNode(logical), BinaryOperator.MINUS, new IntLiteralNode(start)),
             BinaryOperator.DIV, stepValue(),
           );
+        const triangularRank = new BinaryOpNode(
+          new BinaryOpNode(
+            cloneNode(rank), BinaryOperator.MUL,
+            new BinaryOpNode(cloneNode(rank), BinaryOperator.MINUS, new IntLiteralNode(1n)),
+          ),
+          BinaryOperator.DIV,
+          new IntLiteralNode(2n),
+        );
+        const counterPrefix = addAffineTerm(
+          multiplyAffineTerm(cloneNode(rank), new IntLiteralNode(start)),
+          multiplyAffineTerm(stepValue(), triangularRank),
+        )!;
+        const prefixValue = (delta: CounterAffine): ExpressionNode | undefined => addAffineTerm(
+          multiplyAffineTerm(delta.slope, counterPrefix),
+          multiplyAffineTerm(delta.intercept, rank),
+        );
+        const currentValue = (delta: CounterAffine): ExpressionNode | undefined => addAffineTerm(
+          multiplyAffineTerm(delta.slope, new IdentifierNode(logical)),
+          delta.intercept,
+        );
         for (const position of observationPositions) {
           const phase = updates.filter((update) => update.index < position).length;
-          const priorIterations = new BinaryOpNode(cloneNode(rank), BinaryOperator.MUL, cloneNode(netDelta));
-          const phaseDelta = deltas.slice(0, phase).reduce((sum, delta) => sum === undefined
-            ? cloneNode(delta) : new BinaryOpNode(sum, BinaryOperator.PLUS, cloneNode(delta)),
+          const priorIterations = prefixValue(netDelta);
+          const phaseDelta = deltas.slice(0, phase).reduce((sum, delta) => addAffineTerm(
+            sum, currentValue(delta),
+          ),
           undefined as ExpressionNode | undefined);
-          let value: ExpressionNode = new BinaryOpNode(cloneNode(base), BinaryOperator.PLUS, priorIterations);
+          let value: ExpressionNode = priorIterations
+            ? new BinaryOpNode(cloneNode(base), BinaryOperator.PLUS, priorIterations)
+            : cloneNode(base);
           if (phaseDelta) value = new BinaryOpNode(value, BinaryOperator.PLUS, phaseDelta);
           value.location = updates[0].statement.location;
           const siteValues = loopCarriedStateValuesByStatement.get(position) ?? new Map();
@@ -2245,10 +2587,12 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         condition?: ExpressionNode,
       ): void => {
         if (x instanceof EmitStatementNode) {
+          if (x.runtimeLoopEvent) return;
           const values = loopCarriedValuesAt(x);
           const effectStateValues = stateValuesAt(x);
           const position = (block.statements ?? []).findIndex((statement) => containsNode(statement, x));
           const replayedStateNames = loopCarriedStateValuesByStatement.get(position);
+          const replayedLocalNames = loopCarriedLocalValuesByStatement.get(position);
           const staticArguments = keyed.length === 0 ? x.args.map((argument) =>
             runtimePathExpressionSupported(argument, logical, new Set(), effectStateValues, values)
               ? expandRuntimePathExpression(argument, logical, new Set(), effectStateValues, values)
@@ -2265,8 +2609,10 @@ export default class LowerVMapCounterLoops extends AstTraversal {
               emit: x,
               ...(expanded && { condition: expanded }),
               ...(staticArguments && { staticArguments: staticArguments as ExpressionNode[] }),
-              ...(staticArguments && replayedStateNames && x.args.some((argument) =>
-                [...replayedStateNames.keys()].some((name) => containsStateAccess(argument, name))) && {
+              ...(staticArguments && ((replayedStateNames && x.args.some((argument) =>
+                [...replayedStateNames.keys()].some((name) => containsStateAccess(argument, name))))
+                || (replayedLocalNames && x.args.some((argument) =>
+                  [...replayedLocalNames.keys()].some((name) => containsIdentifier(argument, name))))) && {
                 metadataArguments: staticArguments as ExpressionNode[],
               }),
             });
@@ -3603,7 +3949,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       // A replayable straight-line assignment may mutate the parameter/local named by the source loop condition.
       // The length check is in the function prelude, but range proofs also execute inside the source loop after
       // those assignments. Snapshot the expanded pre-assignment recipe once so both sites authenticate one domain.
-      const boundSnapshot = boundAssignments.length > 0
+      const boundSnapshot = (boundAssignments.length > 0 || normalizedMutableEventCounters.has(loop))
         ? `__internal__vmapCounterBound_${serial}` : undefined;
       if (boundSnapshot) {
         prelude.push(at(new VariableDefinitionNode(
@@ -4388,7 +4734,10 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           const prior = priorSegments.get(emits[0].runtimeLoopEvent!.loopIndex)!;
           const loopIndex = orderedSegments.length;
           emits.forEach((emit, siteIndex) => { emit.runtimeLoopEvent = { loopIndex, siteIndex }; });
-          orderedSegments.push({ loopIndex, permutationParam: prior.permutationParam,
+          orderedSegments.push({ loopIndex,
+            ...(prior.permutationParam !== undefined && { permutationParam: prior.permutationParam }),
+            ...(prior.repeatCount !== undefined && { repeatCount: prior.repeatCount }),
+            ...(prior.iterationDomain !== undefined && { iterationDomain: prior.iterationDomain }),
             ...(prior.staticArguments && { staticArguments: true as const }),
             ...(prior.iterationBreakCondition && {
               iterationBreakCondition: prior.iterationBreakCondition,

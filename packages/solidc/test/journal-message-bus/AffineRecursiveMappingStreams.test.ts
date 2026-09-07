@@ -32,6 +32,157 @@ describe('affine recursive mapping streams', () => {
     expect(artifact.messageBus?.route.blockLayout?.trailingCapacity).toBe(64);
   });
 
+  it('publishes exact unwind sites, predicates, and invariant recursive results across source renaming', () => {
+    const variants = [
+      { contract: 'FirstShape', fn: 'fold', depth: 'remaining', seed: 'origin', result: 'resolved' },
+      { contract: 'SecondShape', fn: 'advance', depth: 'cursor', seed: 'basis', result: 'answer' },
+    ];
+    const plans = variants.map((variant) => {
+      const artifact = compileString(`contract ${variant.contract}() {
+        event Selected(int value);
+        event Visited(int value);
+        function ${variant.fn}(int ${variant.depth}, int ${variant.seed}) public returns (int) {
+          if (${variant.depth} == 0) return ${variant.seed} + 7;
+          int ${variant.result} = ${variant.fn}(${variant.depth} - 1, ${variant.seed});
+          if (${variant.result} > ${variant.depth}) emit Selected(${variant.result} + ${variant.depth});
+          emit Visited(${variant.depth});
+          return ${variant.result};
+        }
+      }`, KERNEL);
+      const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === variant.fn);
+      expect(handler).toMatchObject({ eligible: true });
+      expect(handler?.runtimeLoopEvents).toEqual([
+        expect.objectContaining({
+          eventSignatures: ['Selected(int256)', 'Visited(int256)'],
+          effectOrder: [0, 1],
+          conditions: [expect.anything(), expect.anything()],
+          arguments: [[expect.anything()], [expect.anything()]],
+        }),
+      ]);
+      expect(artifact.messageBus?.route.blockLayout?.trailingCapacity).toBe(2 * 64);
+      return handler!.runtimeLoopEvents!.map((plan) => ({
+        arguments: plan.arguments,
+        conditions: plan.conditions,
+        effectOrder: plan.effectOrder,
+      }));
+    });
+    expect(plans[1]).toEqual(plans[0]);
+  });
+
+  it('retains one unwind event domain beside an independently permuted mapping stream', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) values;
+      event Seen(int value);
+      function fold(int depth, int seed) public returns (int) {
+        if (depth == 0) return seed + 3;
+        int result = fold(depth - 1, seed);
+        this.values[depth] = result + depth;
+        emit Seen(result + depth);
+        return result;
+      }
+    }`, KERNEL);
+    const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'fold');
+    expect(handler).toMatchObject({
+      eligible: true,
+      runtimeLoopEvents: [expect.objectContaining({
+        iterationDomain: expect.anything(), eventSignatures: ['Seen(int256)'],
+      })],
+    });
+    expect(artifact.abi.find((candidate) => candidate.name === 'fold')?.sortedUpsertLoopInfo)
+      .toEqual([expect.objectContaining({ collection: 'values', op: 'set' })]);
+    // One event per frame, one mapping update per frame, and one mapping predecessor endpoint.
+    expect(artifact.messageBus?.route.blockLayout?.trailingCapacity).toBe(64 + 64 + 1);
+  });
+
+  it('lowers exact non-unit pre-order and unwind streams independently of source names', () => {
+    const variants = [
+      { contract: 'FirstStride', fn: 'apply', cursor: 'cursor', step: 'step', map: 'values' },
+      { contract: 'SecondStride', fn: 'fold', cursor: 'position', step: 'stride', map: 'records' },
+    ];
+    const plans = variants.map((variant) => {
+      const artifact = compileString(`contract ${variant.contract}() {
+        mapping(int => int) ${variant.map};
+        event Seen(int value);
+        function ${variant.fn}(int ${variant.cursor}, int ${variant.step}) public returns (int) {
+          if (${variant.cursor} == 0) return ${variant.step} + 5;
+          int result = ${variant.fn}(${variant.cursor} - ${variant.step}, ${variant.step});
+          this.${variant.map}[${variant.cursor}] = result + ${variant.cursor};
+          emit Seen(result + ${variant.cursor});
+          return result;
+        }
+      }`, KERNEL);
+      const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === variant.fn);
+      expect(handler).toMatchObject({
+        eligible: true,
+        runtimeLoopEvents: [expect.objectContaining({
+          iterationDomain: expect.objectContaining({ maximumIterations: 64 }),
+          eventSignatures: ['Seen(int256)'],
+        })],
+      });
+      expect(artifact.abi.find((candidate) => candidate.name === variant.fn)?.sortedUpsertLoopInfo)
+        .toEqual([expect.objectContaining({ collection: variant.map, op: 'set' })]);
+      return {
+        events: handler?.runtimeLoopEvents?.map((event) => ({
+          iterationDomain: event.iterationDomain,
+          arguments: event.arguments,
+          conditions: event.conditions,
+        })),
+        capacity: artifact.messageBus?.route.blockLayout?.trailingCapacity,
+      };
+    });
+    expect(plans[1]).toEqual(plans[0]);
+
+    const preOrder = compileString(`contract PreOrderStride() {
+      mapping(int => int) values;
+      event Seen(int value);
+      function descend(int cursor, int step) public returns (int) {
+        this.values[cursor] = cursor + 10;
+        emit Seen(cursor);
+        if (cursor == 0) return 0;
+        return descend(cursor - step, step);
+      }
+    }`, KERNEL);
+    expect(preOrder.messageBus?.handlers.find((candidate) => candidate.name === 'descend'))
+      .toMatchObject({ eligible: true, runtimeLoopEvents: [expect.anything()] });
+    expect(preOrder.abi.find((candidate) => candidate.name === 'descend')?.sortedUpsertLoopInfo)
+      .toEqual([expect.objectContaining({ collection: 'values', op: 'set' })]);
+  });
+
+  it.each([
+    ['a non-affine induction', 'walk(depth / 2, seed)', 'emit Seen(result + depth);'],
+    ['a zero induction step', 'walk(depth - 0, seed)', 'emit Seen(result + depth);'],
+    ['a wrong-direction induction', 'walk(depth + 2, seed)', 'emit Seen(result + depth);'],
+    ['multiple varying arguments', 'walk(depth - 1, seed + 1)', 'emit Seen(result + depth);'],
+    ['an ambiguous recursive occurrence',
+      'depth % 2 == 0 ? walk(depth - 1, seed) : walk(depth - 1, seed)',
+      'emit Seen(result + depth);'],
+    ['a non-replayable result dependency', 'walk(depth - 1, seed)',
+      'int adjusted = result + depth; emit Seen(adjusted);'],
+  ])('keeps %s outside the post-recursion event plan', (_label, recursiveExpression, effects) => {
+    expect(() => compileString(`contract C() {
+        event Seen(int value);
+        function walk(int depth, int seed) public returns (int) {
+          if (depth == 0) return seed;
+          int result = ${recursiveExpression};
+          ${effects}
+          return result;
+        }
+      }`, KERNEL)).toThrow(/event would be dropped|recursive/i);
+  });
+
+  it('keeps a state-derived recursive step outside the exact stream', () => {
+    expect(() => compileString(`contract C() {
+      int stride;
+      event Seen(int value);
+      function walk(int cursor) public returns (int) {
+        if (cursor == 0) return 0;
+        int result = walk(cursor - this.stride);
+        emit Seen(result + cursor);
+        return result;
+      }
+    }`, KERNEL)).toThrow(/event would be dropped|recursive/i);
+  });
+
   it('lowers void post-recursion effects with replayable requirements', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) selected;
@@ -77,7 +228,9 @@ describe('affine recursive mapping streams', () => {
   });
 
   it.each([
-    ['a non-unit recursive step', 'apply(cursor - 2, threshold)', 'this.selected[cursor] = result;'],
+    ['a zero recursive step', 'apply(cursor - 0, threshold)', 'this.selected[cursor] = result;'],
+    ['a mutated invariant step', 'apply(cursor - threshold, threshold + 1)',
+      'this.selected[cursor] = result;'],
     ['a post-recursion mapping read', 'apply(cursor - 1, threshold)',
       'this.selected[cursor] = this.removed[cursor];'],
     ['two post-recursion streams for one collection', 'apply(cursor - 1, threshold)',

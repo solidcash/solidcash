@@ -4657,10 +4657,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Speed-hinted / trace-stable compiles used to skip outlining entirely. Large contracts still repeat
     // helper tails across bodies; a single cheap attempt recovers those bytes. Require-site anchors
     // below keep SDK instruction-pointer attribution intact.
-    const maximumInputBytes = this.compilerOptions.maximumInputBytes ?? MAX_INPUT_BYTESIZE;
-    const speedHintOutline = this.compilerOptions.optimizeForCompilationSpeed === true
-      && maximumInputBytes > MAX_INPUT_BYTESIZE
-      && scriptToBytecode(this.output).length <= Math.floor(maximumInputBytes / 4);
+    const emittedBytesBeforeOutline = scriptToBytecode(this.output).length;
+    // `maximumInputBytes` is a diagnostic/deployment ceiling, not an optimisation knob. The former
+    // `size <= ceiling / 4` test made identical source choose different outlining plans when a caller merely
+    // changed its ceiling. Select the bounded large-program search from the emitted program itself. Kernel
+    // programs use it in either compiler mode because entry wrappers and row clones expose the same repeated
+    // tails regardless of whether the caller requested the faster front-end path.
+    const largeBodyOutline = emittedBytesBeforeOutline > MAX_INPUT_BYTESIZE * 10
+      && (this.compilerOptions.optimizeForCompilationSpeed === true
+        || (this.currentContractHasMessageBus && this.compilerOptions.messageBusKernel === true));
     if (!this.isSubroutineUseProbe) this.releaseUnusedSingleByteIdsForOutlining();
     const bodies = this.definedBodyRecords.map((record) => {
       // Pin every require/console.log site. The SDK attributes a failing evaluation by matching the VM's
@@ -4685,7 +4690,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // contract that cost 47 bytes more than never admitting them. Neither width dominates, so run both and keep
     // whichever actually emitted less. Attempts are independent: each starts from the same bodies and has the
     // identifier pool restored underneath it.
-    const widths = speedHintOutline
+    const widths = largeBodyOutline
       ? [this.peekCompactHelperIdPushBytes()]
       : [
         this.peekCompactHelperIdPushBytes(),
@@ -4703,16 +4708,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // the best result is near the consensus size boundary, where the shorter shared journal-verifier spans can
       // change deployability. Ordinary contracts retain the same 12-vs-10 competition. Speed-hinted large-contract
       // compiles measured window 8 as strictly dominating 12/10/9/7 on savedBytes, so they run 8 only.
-      const minimumWindows = speedHintOutline
+      const minimumWindows = largeBodyOutline
         ? [8]
         : this.currentContractHasMessageBus
           ? this.compilerOptions.messageBusKernel === true ? [12, 10] : [12]
           : [12, 10];
-      const candidateGroupsPerRound = speedHintOutline ? 12288 : 1024;
+      const candidateGroupsPerRound = largeBodyOutline ? 12288 : 1024;
       const originalOrder = bodies.map((_body, index) => index);
       const shortestOrder = [...originalOrder].sort((left, right) =>
         bodies[left].script.length - bodies[right].script.length);
-      const bodyOrder: 'original' | 'shortest' = speedHintOutline ? 'shortest' : 'original';
+      const bodyOrder: 'original' | 'shortest' = largeBodyOutline ? 'shortest' : 'original';
       const orderedBodies = bodyOrder === 'shortest'
         ? shortestOrder.map((index) => bodies[index])
         : bodies;
@@ -4738,7 +4743,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           minimumWindowElements,
           candidateGroupsPerRound,
           undefined,
-          speedHintOutline ? 1 : 6,
+          largeBodyOutline ? 1 : 6,
         );
         if ((globalThis as any).process?.env?.SOLIDC_DEBUG_OUTLINE_TIMING === '1') {
           console.error('[outline-timing]', JSON.stringify({
@@ -4828,17 +4833,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
     // Window 8 cannot seed a leftover 5–7 opcode span, even when that span repeats after the longer matches
     // have become OP_INVOKE barriers. A second, narrower pass on the rewritten bodies shares those leftovers
-    // without reopening the already-claimed long spans. In ordinary compilation this remains off unless a kernel
-    // artifact is close enough to the consensus size boundary that the extra search can decide deployability.
-    // Large-contract corpus: leftover window-5 saved ~5KB in ~500ms after window-8 already saved ~86KB.
-    // Skip that pass once the first round did the heavy sharing (pin 175546 -> 180748).
-    const skipSpeedHintLeftover = speedHintOutline && (result?.savedBytes ?? 0) >= 40_000;
-    const estimatedOutlinedBytes = scriptToBytecode(this.output).length - (result?.savedBytes ?? 0);
-    const kernelSizePressureLeftover = !speedHintOutline
-      && this.currentContractHasMessageBus && this.compilerOptions.messageBusKernel === true
-      && estimatedOutlinedBytes >= MAX_INPUT_BYTESIZE - 512
-      && estimatedOutlinedBytes <= MAX_INPUT_BYTESIZE + 512;
-    if ((speedHintOutline || kernelSizePressureLeftover) && !skipSpeedHintLeftover
+    // without reopening the already-claimed long spans. Every kernel artifact runs this exact-byte reduction:
+    // deployability must not depend on selecting the compilation-speed option or on a caller's diagnostic ceiling.
+    // Keep it enabled for speed-hinted large contracts even after a productive first pass: the first pass turns
+    // repeated entry/handler scaffolding into invocation-delimited fragments, and a 39-handler corpus measurement
+    // recovered another 4,608 bytes in 61ms (127,429 -> 122,821) from precisely those tails.
+    const kernelOutline = this.currentContractHasMessageBus && this.compilerOptions.messageBusKernel === true;
+    if ((largeBodyOutline || kernelOutline)
       && result !== undefined && result.functions.length > 0) {
       const leftoverStart = Date.now();
       // First-pass outlining walks from -12 into three-byte pushes. Unused two-byte slots (typically
@@ -4916,7 +4917,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Leftover outlining can leave trampoline helpers that are only `<id> OP_INVOKE`. Fold those aliases
     // only on speed-hinted compiles: production message-bus traces and density budgets are pinned to the
     // unfolder window-12/10 result.
-    if (speedHintOutline && result !== undefined && result.functions.length > 0) {
+    if (largeBodyOutline && result !== undefined && result.functions.length > 0) {
       const idKey = (id: Uint8Array): string => binToHex(id);
       const aliases = new Map<string, Uint8Array>();
       const kept = result.functions.filter((fn) => {
@@ -4961,7 +4962,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         bodies: bodies.length,
         functions: outcome.functions.length,
         savedBytes: outcome.savedBytes,
-        speedHintOutline,
+        largeBodyOutline,
       }));
     }
     if (outcome.functions.length === 0) return;
@@ -26243,8 +26244,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * `useCounter` true (loop deploy): the deploy count is runtime-variable, so the genesis input/output indices
    * are offset by a runtime deploy counter (`this.inlineDeployCounterName`, deploys-fired-so-far): input =
    * masterInputIndex + inputBase + counter; master output = masterInputIndex + slotBase + counter*stride
-   * (stride = 1 + dataNftCount); the counter is incremented after each verification. The counter is a stack var
-   * initialized to 0 before the enclosing loop's OP_BEGIN and dropped after OP_UNTIL.
+   * (stride = master + data NFTs + constructor entries + optional value output); the counter is incremented
+   * after each verification. The counter is a stack var initialized to 0 before the enclosing loop's OP_BEGIN
+   * and dropped after OP_UNTIL.
    */
   private emitInlineDeployVerification(
     node: InstantiationNode, locationData: SingleLocationData, useCounter = false,
@@ -26427,15 +26429,26 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
 
     // --- finite constructor-created entry NFTs follow the data-NFT run in source order ---
+    // A collection's entry covenant depends only on the child category and collection signature. Authenticate
+    // that reconstruction once, then bind later entries of the same collection to the already-authenticated
+    // output bytecode. This is transitive (first == expected and each later == first) and avoids embedding the
+    // sizeable category-parameterized entry covenant once per constructor write.
+    const authenticatedEntryLbcExtra = new Map<string, number>();
     for (const [entryIndex, entry] of genesisEntries.entries()) {
       const extra = 1 + dataNftCount + entryIndex;
-      this.emit(encodeInt(BigInt(this.getStackIndex(categoryName))), locationData);
-      this.emit(Op.OP_PICK, locationData);
-      this.pushToStack('(value)');
-      this.emitEntryP2sh32(
-        computeCollectionHash(computeCollectionSignature(entry.collection.name, entry.collection.type.toString())),
-        locationData,
-      );
+      const collectionSignature = computeCollectionSignature(entry.collection.name, entry.collection.type.toString());
+      const authenticatedExtra = authenticatedEntryLbcExtra.get(collectionSignature);
+      if (authenticatedExtra === undefined) {
+        this.emit(encodeInt(BigInt(this.getStackIndex(categoryName))), locationData);
+        this.emit(Op.OP_PICK, locationData);
+        this.pushToStack('(value)');
+        this.emitEntryP2sh32(computeCollectionHash(collectionSignature), locationData);
+        authenticatedEntryLbcExtra.set(collectionSignature, extra);
+      } else {
+        emitOutIndex(authenticatedExtra);
+        this.emit(Op.OP_OUTPUTBYTECODE, locationData);
+        this.pushToStack('(value)');
+      }
       emitOutIndex(extra);
       this.emit(Op.OP_OUTPUTBYTECODE, locationData);
       this.pushToStack('(value)');
@@ -26462,7 +26475,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const savedStack = [...this.stack];
       this.scopeDepth += 1;
       this.visit(entry.key);
-      this.emitPushdataEncode(PrimitiveType.BIGINT, locationData);
+      this.emitPushdataEncode(entry.collection.keyType, locationData);
       this.visit(entry.value);
       this.emitPushdataEncode(entry.collection.innermostValueType, locationData);
       this.scopeDepth -= 1;
@@ -26764,6 +26777,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.popFromStack(2);
       }
 
+      // As in the inline verifier, reconstruct each distinct entry covenant once. Later entries in the same
+      // collection compare against that authenticated output, retaining exact address binding with much less
+      // verifier bytecode than repeating the parameterized covenant construction.
+      const authenticatedEntryLbcOffsets = new Map<string, number>();
       for (const [entryIndex, entry] of genesisEntries.entries()) {
         const entryOutputOffset = deployOffset + 1 + dataNftCount + entryIndex;
         const emitEntryOutputIndex = (): void => {
@@ -26773,14 +26790,24 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
             this.emit(Op.OP_ADD, locationData);
           }
         };
-        const entryCategoryIndex = this.getStackIndex(categoryStackName);
-        this.emit(encodeInt(BigInt(entryCategoryIndex)), locationData);
-        this.emit(Op.OP_PICK, locationData);
-        this.pushToStack('(value)');
-        this.emitEntryP2sh32(
-          computeCollectionHash(computeCollectionSignature(entry.collection.name, entry.collection.type.toString())),
-          locationData,
-        );
+        const collectionSignature = computeCollectionSignature(entry.collection.name, entry.collection.type.toString());
+        const authenticatedOffset = authenticatedEntryLbcOffsets.get(collectionSignature);
+        if (authenticatedOffset === undefined) {
+          const entryCategoryIndex = this.getStackIndex(categoryStackName);
+          this.emit(encodeInt(BigInt(entryCategoryIndex)), locationData);
+          this.emit(Op.OP_PICK, locationData);
+          this.pushToStack('(value)');
+          this.emitEntryP2sh32(computeCollectionHash(collectionSignature), locationData);
+          authenticatedEntryLbcOffsets.set(collectionSignature, entryOutputOffset);
+        } else {
+          if (!this.emitGraphDeployOutputIndex(authenticatedOffset, locationData)) {
+            this.emitMasterInputIndex(locationData);
+            this.emit(encodeInt(BigInt(this.getBlockSlotOffset('deploy', 0) + authenticatedOffset)), locationData);
+            this.emit(Op.OP_ADD, locationData);
+          }
+          this.emit(Op.OP_OUTPUTBYTECODE, locationData);
+          this.pushToStack('(value)');
+        }
         emitEntryOutputIndex();
         this.emit(Op.OP_OUTPUTBYTECODE, locationData);
         this.pushToStack('(value)');
@@ -26807,7 +26834,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         const savedStack = [...this.stack];
         this.scopeDepth += 1;
         this.visit(entry.key);
-        this.emitPushdataEncode(PrimitiveType.BIGINT, locationData);
+        this.emitPushdataEncode(entry.collection.keyType, locationData);
         this.visit(entry.value);
         this.emitPushdataEncode(entry.collection.innermostValueType, locationData);
         this.scopeDepth -= 1;

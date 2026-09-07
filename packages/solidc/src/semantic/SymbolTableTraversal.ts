@@ -2219,34 +2219,95 @@ export default class SymbolTableTraversal extends AstTraversal {
     this.genesisHelperContract = contract;
     this.genesisHelperStack = new Set();
     try {
+      const fixedGenesisValueType = (type: Type, stack: ReadonlySet<StructType> = new Set()): boolean => {
+        if (type instanceof ArrayType) {
+          return type.bound !== undefined && Number.isSafeInteger(type.bound) && type.bound >= 0
+            && fixedGenesisValueType(type.elementType, stack);
+        }
+        if (type instanceof MappingType) return false;
+        if (!(type instanceof StructType)) {
+          const physical = type instanceof EnumType ? 'bigint' : type.toString();
+          // eslint-disable-next-line max-len
+          return /^(?:bool|bigint|u?int(?:\d+)?|(?:u?fixed)(?:\d+x\d+)?|bytes(?:[1-9]|[12]\d|3[0-2])|address|pubkey|datasig)$/.test(physical);
+        }
+        if (stack.has(type)) return false;
+        const nested = new Set(stack);
+        nested.add(type);
+        return type.fields.every((field) => fixedGenesisValueType(field.type, nested));
+      };
+      const staticCollectionKey = (expression: ExpressionNode, type: Type): string | undefined => {
+        const physical = type instanceof EnumType ? 'bigint' : type.toString();
+        if (/^(?:bigint|u?int(?:\d+)?)$/.test(physical) && expression instanceof IntLiteralNode) {
+          return `number:${expression.value}`;
+        }
+        if (physical === 'bool' && expression instanceof BoolLiteralNode) return `bool:${expression.value}`;
+        if (/^(?:bytes(?:[1-9]|[12]\d|3[0-2])|address|pubkey|datasig)$/.test(physical)
+          && expression instanceof HexLiteralNode) return `bytes:${binToHex(expression.value)}`;
+        // Constructor substitutions have already resolved lexical aliases into the deploying handler's
+        // identifiers. Parameter names are unique in that ABI frame, so repeated clones of one input remain
+        // provably the same typed key even though cloneNode does not retain definition object identity.
+        if (expression instanceof IdentifierNode) return `handler-input:${expression.name}`;
+        return undefined;
+      };
       for (const statement of statements) {
         if (statement instanceof MappingAssignNode) {
           const collection = statement.collection ?? contract.collections.find((candidate) =>
             candidate.name === statement.name);
           const fixedArrayType = collection?.type instanceof ArrayType ? collection.type : undefined;
+          const scalarMappingType = collection?.type instanceof MappingType
+            && !(collection.type.valueType instanceof ArrayType)
+            && !(collection.type.valueType instanceof MappingType)
+            && fixedGenesisValueType(collection.type.valueType)
+            ? collection.type : undefined;
           const fixedScalarArray = fixedArrayType !== undefined
             && fixedArrayType.bound !== undefined
-            && !(collection?.innermostValueType instanceof ArrayType)
-            && !(collection?.innermostValueType instanceof MappingType)
-            && !(collection?.innermostValueType instanceof StructType);
-          const key = statement.keys.length === 1 && statement.keys[0] instanceof IntLiteralNode
+            && !(fixedArrayType.elementType instanceof ArrayType)
+            && !(fixedArrayType.elementType instanceof MappingType)
+            && fixedGenesisValueType(fixedArrayType.elementType);
+          const keyType = fixedScalarArray ? PrimitiveType.BIGINT : scalarMappingType?.keyType;
+          const valueType = fixedScalarArray ? fixedArrayType?.elementType : scalarMappingType?.valueType;
+          if (!collection || (!fixedScalarArray && !scalarMappingType) || !keyType || !valueType) {
+            failed = true;
+            continue;
+          }
+          const key = statement.keys.length === 1
             ? this.foldGenesisExpr(
-              cloneNode(statement.keys[0]), subs, fieldExprs, fieldType, PrimitiveType.BIGINT,
+              cloneNode(statement.keys[0]), subs, fieldExprs, fieldType, keyType,
             ) : undefined;
-          const value = fixedScalarArray && !statement.arrayIndex && !statement.arrayPush && !statement.arrayPop
+          const value = !statement.arrayIndex && !statement.arrayPush && !statement.arrayPop
             ? this.foldGenesisExpr(
-              cloneNode(statement.expression), subs, fieldExprs, fieldType, collection!.innermostValueType,
+              cloneNode(statement.expression), subs, fieldExprs, fieldType, valueType,
             ) : undefined;
           const literalIndex = statement.keys[0] instanceof IntLiteralNode ? statement.keys[0].value : -1n;
-          if (!collection || !fixedScalarArray || !key || !value || literalIndex < 0n
-            || literalIndex >= BigInt(fixedArrayType!.bound!)) {
+          if (!key || !value
+            || (fixedScalarArray && (literalIndex < 0n || literalIndex >= BigInt(fixedArrayType!.bound!)))) {
             failed = true;
             continue;
           }
           const entries: NonNullable<InstantiationNode['foldedCollectionEntries']> =
             deployNode.foldedCollectionEntries ?? [];
+          const keyIdentity = staticCollectionKey(key, keyType);
+          const sameCollection = entries.filter((entry) => entry.collection === collection);
+          const priorKeyIdentities = sameCollection.map((entry) => staticCollectionKey(entry.key, keyType));
+          const repeatsReplayableKey = keyIdentity !== undefined
+            && priorKeyIdentities.some((identity) => identity === keyIdentity);
+          const hasRuntimeKey = keyIdentity?.startsWith('handler-input:') === true
+            || priorKeyIdentities.some((identity) => identity?.startsWith('handler-input:') === true);
+          // One replayable runtime key is exact. Two keys in the same mapping also need a compile-time proof
+          // that they are equal (replace the earlier write) or distinct; otherwise the SDK could materialize
+          // duplicate entry NFTs for a legal handler-input combination. This test is deliberately symmetric:
+          // a literal following a runtime key can collide just as readily as a runtime key following a literal.
+          if (scalarMappingType && sameCollection.length > 0
+            && (!keyIdentity
+              || priorKeyIdentities.some((identity) => identity === undefined)
+              || (hasRuntimeKey && !repeatsReplayableKey))) {
+            failed = true;
+            continue;
+          }
           const prior = entries.findIndex((entry) => entry.collection === collection
-            && entry.key instanceof IntLiteralNode && entry.key.value === literalIndex);
+            && (fixedScalarArray
+              ? entry.key instanceof IntLiteralNode && entry.key.value === literalIndex
+              : keyIdentity !== undefined && staticCollectionKey(entry.key, keyType) === keyIdentity));
           const folded = { collection, key, value };
           if (prior >= 0) entries[prior] = folded;
           else entries.push(folded);

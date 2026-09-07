@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { bytecodeToAsm, StructType } from '@solidcash/utils';
+import { asmToBytecode, bytecodeToAsm, StructType } from '@solidcash/utils';
 import { compileString, compileStringMulti } from '../../src/compiler.js';
 import { FunctionCallNode, IdentifierNode } from '../../src/ast/AST.js';
 import { childDeploymentValueRecipe } from '../../src/deploymentRecipes.js';
@@ -715,7 +715,7 @@ describe('required kernel admission', () => {
       ...Object.values(artifact.debug?.functionDebug ?? {}).flatMap((debug) => debug.requires),
       ...Object.values(artifact.debug?.invokeDebug ?? {}).flatMap((debug) => debug.requires),
     ].map((entry) => entry.message);
-    expect(requireMessages).toContain('recursive mapping frame count must be between 1 and 64');
+    expect(requireMessages).toContain('recursive affine frame count must be exact and between 0 and 64');
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control'))
       .toMatchObject({ eligible: true });
   });
@@ -752,7 +752,7 @@ describe('required kernel admission', () => {
   });
 
   it.each([
-    ['a non-unit recursive step', 'this.values[n] = n;', 'return sum(n - 2);'],
+    ['a wrong-direction recursive step', 'this.values[n] = n;', 'return sum(n + 1);'],
     ['a recursive result continuation', 'this.values[n] = n;', 'return n + sum(n - 1);'],
     ['a state-dependent conditional recursive write',
       'if (this.values[n] > 1) { this.values[n] = n; }', 'return sum(n - 1);'],
@@ -1043,7 +1043,7 @@ describe('required kernel admission', () => {
       .toMatchObject({ eligible: true });
   });
 
-  it('refuses a general unbounded event loop without runtime occurrence metadata', () => {
+  it('publishes runtime occurrence metadata for a canonical mutable-parameter event loop', () => {
     const artifact = compileString(`contract C() {
       event Hit(int value);
       function repeat(int n) public {
@@ -1056,7 +1056,14 @@ describe('required kernel admission', () => {
       function control() public { require(true); }
     }`, KERNEL);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'repeat'))
-      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+      .toMatchObject({
+        eligible: true,
+        runtimeLoopEvents: [{
+          permutationParam: expect.stringMatching(/^__internal__vmapCounterPerm_/),
+          iterationBound: expect.any(Object),
+          eventSignatures: ['Hit(int256)'],
+        }],
+      });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control'))
       .toMatchObject({ eligible: true });
   });
@@ -2660,7 +2667,7 @@ describe('required kernel admission', () => {
       });
   });
 
-  it('admits one fixed-array genesis entry, collapses duplicate writes, and fences wider entry genesis', () => {
+  it('admits several fixed-array genesis entries and collapses duplicate writes', () => {
     const artifact = compileString(`contract OneEntry(int32 seed) {
         int32[1] values;
         constructor() { this.values[0] = seed; this.values[0] = seed + 1; }
@@ -2685,8 +2692,19 @@ describe('required kernel admission', () => {
         }],
       }],
     });
-    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'two'))
-      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'two')).toMatchObject({
+      eligible: true,
+      childDeployments: [{
+        entryNftOutputCount: 2,
+        totalOutputCount: 3,
+        genesisEntries: [
+          { collection: 'values', key: { kind: 'intLiteral', value: '0' } },
+          { collection: 'values', key: { kind: 'intLiteral', value: '1' } },
+        ],
+      }],
+    });
+    const routeBytes = asmToBytecode(artifact.bytecode).length;
+    expect(routeBytes, 'two-entry kernel route exceeds the consensus limit').toBeLessThanOrEqual(10_000);
     expect(artifact.abi.find((candidate) => candidate.name === 'one')?.deployTargets?.[0]).toMatchObject({
       entryNftCount: 1,
       genesisEntries: [{
@@ -2694,6 +2712,143 @@ describe('required kernel admission', () => {
         key: { kind: 'intLiteral', value: '0' },
         value: { kind: 'binary', operator: '+', right: { kind: 'intLiteral', value: '1' } },
       }],
+    });
+  });
+
+  it('publishes scalar mapping genesis recipes and rejects ambiguous or dynamic-key layouts', () => {
+    const supported = compileString(`contract RuntimeEntry(bytes20 owner, int32 seed) {
+        mapping(bytes20 => int32) values;
+        constructor() { this.values[owner] = seed; }
+      }
+      contract LiteralEntries(int32 seed) {
+        mapping(int => int32) values;
+        constructor() {
+          this.values[7] = seed;
+          this.values[7] = seed + 1;
+          this.values[9] = seed + 2;
+        }
+      }
+      contract Coordinator() {
+        function runtime(bytes20 owner, int32 seed) public {
+          RuntimeEntry child = new RuntimeEntry(owner, seed); require(true);
+        }
+        function literals(int32 seed) public { LiteralEntries child = new LiteralEntries(seed); require(true); }
+      }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(supported.messageBus?.handlers.find((candidate) => candidate.name === 'runtime')).toMatchObject({
+      eligible: true,
+      childDeployments: [{ genesisEntries: [{
+        collection: 'values', keyType: 'bytes20', valueType: 'int32',
+        key: { kind: 'handlerInput', inputIndex: 0, resultType: 'bytes20' },
+        value: { kind: 'handlerInput', inputIndex: 1, resultType: 'int32' },
+      }] }],
+    });
+    expect(supported.messageBus?.handlers.find((candidate) => candidate.name === 'literals')).toMatchObject({
+      eligible: true,
+      childDeployments: [{ entryNftOutputCount: 2, genesisEntries: [
+        { key: { kind: 'intLiteral', value: '7' }, value: { kind: 'binary', operator: '+' } },
+        { key: { kind: 'intLiteral', value: '9' }, value: { kind: 'binary', operator: '+' } },
+      ] }],
+    });
+    expect(asmToBytecode(supported.bytecode).length).toBeLessThanOrEqual(10_000);
+
+    const refused = compileString(`contract Ambiguous(int first, int second, int value) {
+        mapping(int => int) values;
+        constructor() { this.values[first] = value; this.values[second] = value + 1; }
+      }
+      contract Dynamic(bytes key, int value) {
+        mapping(bytes => int) values;
+        constructor() { this.values[key] = value; }
+      }
+      contract CrossLiteral(int value) {
+        mapping(int => int) values;
+        constructor() { this.values[1] = value; this.values[hex"01"] = value + 1; }
+      }
+      contract RuntimeThenLiteral(int key, int value) {
+        mapping(int => int) values;
+        constructor() { this.values[key] = value; this.values[7] = value + 1; }
+      }
+      contract LiteralThenRuntime(int key, int value) {
+        mapping(int => int) values;
+        constructor() { this.values[7] = value; this.values[key] = value + 1; }
+      }
+      contract Coordinator() {
+        function ambiguous(int first, int second, int value) public {
+          Ambiguous child = new Ambiguous(first, second, value); require(true);
+        }
+        function dynamic(bytes key, int value) public { Dynamic child = new Dynamic(key, value); require(true); }
+        function crossLiteral(int value) public { CrossLiteral child = new CrossLiteral(value); require(true); }
+        function runtimeThenLiteral(int key, int value) public {
+          RuntimeThenLiteral child = new RuntimeThenLiteral(key, value); require(true);
+        }
+        function literalThenRuntime(int key, int value) public {
+          LiteralThenRuntime child = new LiteralThenRuntime(key, value); require(true);
+        }
+      }`, KERNEL);
+    for (const name of [
+      'ambiguous', 'dynamic', 'crossLiteral', 'runtimeThenLiteral', 'literalThenRuntime',
+    ]) {
+      expect(refused.messageBus?.handlers.find((candidate) => candidate.name === name))
+        .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+    }
+  });
+
+  it('publishes fixed-layout struct entry recipes and fences dynamic aggregate layouts', () => {
+    const artifact = compileString(`struct Cell { int32 amount; bool enabled; }
+      contract RecordStore(int32 seed) {
+        Cell[2] rows;
+        mapping(int32 => Cell) keyed;
+        constructor() {
+          this.rows[0] = Cell(seed, true);
+          this.rows[1] = Cell(seed + 1, false);
+          this.keyed[seed] = Cell(seed + 2, true);
+          this.keyed[seed] = Cell(seed + 3, false);
+        }
+      }
+      contract GenesisCoordinator() {
+        function create(int32 seed) public { RecordStore child = new RecordStore(seed); require(true); }
+      }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'create')).toMatchObject({
+      eligible: true,
+      childDeployments: [{
+        entryNftOutputCount: 3,
+        genesisEntries: [
+          { collection: 'rows', valueType: 'Cell', value: { kind: 'aggregate', resultType: 'Cell' } },
+          { collection: 'rows', valueType: 'Cell', value: { kind: 'aggregate', resultType: 'Cell' } },
+          {
+            collection: 'keyed', valueType: 'Cell',
+            value: { kind: 'aggregate', resultType: 'Cell', elements: [
+              { kind: 'cast', resultType: 'int32' },
+              { kind: 'boolLiteral', value: false },
+            ] },
+          },
+        ],
+      }],
+    });
+    expect(asmToBytecode(artifact.bytecode).length).toBeLessThanOrEqual(10_000);
+
+    const dynamic = compileString(`struct DynamicCell { string label; int32 amount; }
+      contract DynamicStore() {
+        DynamicCell[1] rows;
+        constructor() { this.rows[0] = DynamicCell("x", 1); }
+      }
+      contract NestedCollectionStore() {
+        mapping(int => int32[2]) groups;
+        constructor() { this.groups[1] = [1, 2]; }
+      }
+      contract DynamicCoordinator() {
+        function dynamic() public { DynamicStore child = new DynamicStore(); require(true); }
+        function nested() public {
+          NestedCollectionStore child = new NestedCollectionStore(); require(true);
+        }
+      }
+      `, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(dynamic.messageBus?.handlers.find((candidate) => candidate.name === 'dynamic')).toMatchObject({
+      eligible: false,
+      rejectionReason: 'KERNEL_LAYOUT',
+    });
+    expect(dynamic.messageBus?.handlers.find((candidate) => candidate.name === 'nested')).toMatchObject({
+      eligible: false,
+      rejectionReason: 'KERNEL_LAYOUT',
     });
   });
 
@@ -5863,6 +6018,111 @@ describe('required kernel admission', () => {
     });
   });
 
+  it('keeps only the reachable branch environment and predicate after return or revert', () => {
+    const artifact = compileString(`contract C() {
+      function afterReturn(bool stop, bytes first, bytes second, int amount) public returns (int) {
+        bytes recipient = first;
+        if (stop) { recipient = bytes.concat(first, second); return 7; }
+        this.transfer(recipient, amount);
+        return 9;
+      }
+      function afterRevert(bool stop, bytes first, bytes second, int amount) public {
+        bytes recipient = first;
+        if (stop) { recipient = bytes.concat(first, second); revert("stopped"); }
+        this.transfer(recipient, amount);
+        require(true);
+      }
+    }`, KERNEL);
+    for (const name of ['afterReturn', 'afterRevert']) {
+      expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === name)).toMatchObject({
+        eligible: true,
+        transfers: [{
+          recipientRecipe: { kind: 'handlerInput', inputIndex: 1 },
+          amountRecipe: { kind: 'handlerInput', inputIndex: 3 },
+          condition: {
+            kind: 'unary', operator: '!',
+            expression: { kind: 'source', source: { kind: 'forward', paramIndex: 0 } },
+          },
+        }],
+      });
+    }
+  });
+
+  it('joins only fallthrough switch arms after a terminating case', () => {
+    const artifact = compileString(`contract C() {
+      function pay(int choice, bytes first, bytes second, int amount) public {
+        bytes recipient = first;
+        switch (choice) {
+          case 1: recipient = bytes.concat(first, second); revert("stopped");
+          case 2: recipient = second; break;
+          default: break;
+        }
+        this.transfer(recipient, amount);
+        require(true);
+      }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'pay')).toMatchObject({
+      eligible: true,
+      transfers: [{
+        recipientRecipe: { kind: 'conditional', resultType: 'bytes' },
+        amountRecipe: { kind: 'handlerInput', inputIndex: 3 },
+        condition: { kind: 'binary', operator: '||' },
+      }],
+    });
+  });
+
+  it('does not claim reachability through an opaque terminating guard', () => {
+    const artifact = compileString(`contract C() {
+      bool stopped;
+      function pay(bytes recipient, int amount) public returns (int) {
+        if (this.stopped) return 7;
+        this.transfer(recipient, amount);
+        return 9;
+      }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'pay')).toMatchObject({
+      eligible: false, rejectionReason: 'KERNEL_LAYOUT',
+    });
+    expect(artifact.abi.find((candidate) => candidate.name === 'pay')?.transfers?.[0])
+      .toMatchObject({ condition: null });
+  });
+
+  it('refines a later fixed transfer by a replayable successful require path', () => {
+    const artifact = compileString(`contract C() {
+      function pay(bool enabled, bool alternate, bytes first, bytes second, int amount) public {
+        bytes recipient = first;
+        if (alternate) recipient = second;
+        require(enabled);
+        this.transfer(recipient, amount);
+        require(true);
+      }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'pay')).toMatchObject({
+      eligible: true,
+      transfers: [{
+        recipientRecipe: { kind: 'conditional', resultType: 'bytes' },
+        amountRecipe: { kind: 'handlerInput', inputIndex: 4 },
+        condition: { kind: 'source', source: { kind: 'forward', paramIndex: 0 } },
+      }],
+    });
+  });
+
+  it('fails closed for a fixed transfer after an opaque require path', () => {
+    const artifact = compileString(`contract C() {
+      bool enabled;
+      function pay(bytes recipient, int amount) public {
+        require(this.enabled);
+        this.transfer(recipient, amount);
+        require(true);
+      }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'pay')).toMatchObject({
+      eligible: false, rejectionReason: 'KERNEL_LAYOUT',
+    });
+    expect(artifact.abi.find((candidate) => candidate.name === 'pay')?.transfers?.[0])
+      .toMatchObject({ condition: null });
+  });
+
   it.each([
     ['a state-derived arm', 'recipient = this.destination;', 'bytes destination;'],
     ['an opaque arm', 'recipient = bytes.concat(first, second);', ''],
@@ -6668,6 +6928,110 @@ describe('required kernel admission', () => {
     }
   });
 
+  it('normalizes canonical mutable-parameter event loops across source names and pre/post forms', () => {
+    const compileVariant = (counter: string, boundary: string): ReturnType<typeof compileString> => compileString(`event Pulse(int value);
+      contract C() {
+        function descending(int ${counter}) public {
+          while (${counter} > 0) { emit Pulse(${counter}); ${counter} = ${counter} - 1; }
+          require(true);
+        }
+        function ascending(int ${counter}, int ${boundary}) public {
+          while (${counter} < ${boundary}) { emit Pulse(${counter}); ${counter} = ${counter} + 1; }
+          require(true);
+        }
+        function postTest(int ${counter}) public {
+          do { emit Pulse(${counter}); ${counter} = ${counter} - 1; } while (${counter} > 0);
+          require(true);
+        }
+        function postAscending(int ${counter}, int ${boundary}) public {
+          do { emit Pulse(${counter}); ${counter} = ${counter} + 1; } while (${counter} < ${boundary});
+          require(true);
+        }
+        function control() public { require(true); }
+      }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    const artifacts = [compileVariant('remaining', 'ceiling'), compileVariant('cursor', 'limit')];
+    for (const artifact of artifacts) for (const name of [
+      'descending', 'ascending', 'postTest', 'postAscending',
+    ]) {
+      const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === name);
+      expect(handler).toMatchObject({
+        eligible: true,
+        runtimeLoopEvents: [{
+          permutationParam: expect.stringMatching(/^__internal__vmapCounterPerm_/),
+          iterationBound: { kind: 'ternary' },
+          eventSignatures: ['Pulse(int256)'],
+          arguments: [[{ kind: 'binary', operator: '+' }]],
+        }],
+      });
+    }
+    const projection = (artifact: ReturnType<typeof compileVariant>): unknown => artifact.messageBus?.handlers
+      .map((handler) => ({
+        name: handler.name,
+        eligible: handler.eligible,
+        loops: handler.runtimeLoopEvents?.map((loop) => ({
+          signatures: loop.eventSignatures,
+          arguments: loop.arguments,
+          post: loop.permutationParam.endsWith('_post'),
+        })),
+      }));
+    expect(projection(artifacts[0])).toEqual(projection(artifacts[1]));
+  });
+
+  it('fences mutable-parameter event loops with an ambiguous or skippable source step', () => {
+    const artifact = compileString(`event Pulse(int value);
+      contract C() {
+        function twice(int remaining) public {
+          while (remaining > 0) {
+            emit Pulse(remaining);
+            remaining = remaining - 1;
+            remaining = remaining - 1;
+          }
+          require(true);
+        }
+        function skipped(int remaining, bool skip) public {
+          while (remaining > 0) {
+            emit Pulse(remaining);
+            if (skip) continue;
+            remaining = remaining - 1;
+          }
+          require(true);
+        }
+        function changedBound(int cursor, int limit) public {
+          while (cursor < limit) {
+            emit Pulse(cursor);
+            limit = limit + 1;
+            cursor = cursor + 1;
+          }
+          require(true);
+        }
+        function tupleChangedBound(int cursor, int limit) public {
+          int spare = 0;
+          while (cursor < limit) {
+            emit Pulse(cursor);
+            (limit, spare) = (limit + 1, spare);
+            cursor = cursor + 1;
+          }
+          require(true);
+        }
+        function tupleChangedCounter(int cursor, int limit) public {
+          int spare = 0;
+          while (cursor < limit) {
+            emit Pulse(cursor);
+            (cursor, spare) = (cursor, spare);
+            cursor = cursor + 1;
+          }
+          require(true);
+        }
+        function control() public { require(true); }
+      }`, KERNEL);
+    for (const name of [
+      'twice', 'skipped', 'changedBound', 'tupleChangedBound', 'tupleChangedCounter',
+    ]) {
+      expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === name))
+        .toMatchObject({ eligible: false });
+    }
+  });
+
   it('publishes exact break and site-reachability predicates for event-only counter loops', () => {
     const artifact = compileString(`event Tick(int value);
       contract C() {
@@ -6888,9 +7252,24 @@ describe('required kernel admission', () => {
           }
           require(true);
         }
-        function counterDependent(int n) public {
+        function quadraticCounter(int n) public {
           for (int i = 0; i < n; i = i + 1) {
-            this.total = this.total + i;
+            this.total = this.total + i * i;
+            emit Tick(this.total);
+          }
+          require(true);
+        }
+        function truncatedCounter(int n) public {
+          for (int i = 0; i < n; i = i + 1) {
+            this.total = this.total + i / 2;
+            emit Tick(this.total);
+          }
+          require(true);
+        }
+        function counterLocalAlias(int n) public {
+          for (int i = 0; i < n; i = i + 1) {
+            int current = i + 1;
+            this.total = this.total + current;
             emit Tick(this.total);
           }
           require(true);
@@ -6905,7 +7284,9 @@ describe('required kernel admission', () => {
           require(true);
         }
       }`, KERNEL);
-    for (const name of ['nonAffine', 'resourceDependent', 'counterDependent', 'localDelta']) {
+    for (const name of [
+      'nonAffine', 'resourceDependent', 'quadraticCounter', 'truncatedCounter', 'counterLocalAlias', 'localDelta',
+    ]) {
       expect(artifact.messageBus?.handlers.find((handler) => handler.name === name))
         .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
     }
@@ -6947,6 +7328,71 @@ describe('required kernel admission', () => {
     expect(handler?.runtimeLoopEvents?.[0].arguments).toHaveLength(2);
     expect(handler?.runtimeLoopEvents?.[0].arguments?.[0])
       .not.toEqual(handler?.runtimeLoopEvents?.[0].arguments?.[1]);
+  });
+
+  it('publishes exact affine-counter prefix sums across canonical loop domains', () => {
+    const artifact = compileString(`event Phase(int value);
+      contract C() {
+        int total;
+        function ascending(int n, int factor) public {
+          for (int i = 1; i < n; i = i + 2) {
+            emit Phase(this.total);
+            this.total = this.total + (factor * i + 3);
+            emit Phase(this.total);
+          }
+          require(true);
+        }
+        function descending(int limit) public {
+          for (int i = 6; i > limit; i = i - 2) {
+            this.total = this.total - (i - 1);
+            emit Phase(this.total);
+          }
+          require(true);
+        }
+      }`, KERNEL);
+    for (const name of ['ascending', 'descending']) {
+      const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === name);
+      expect(handler?.rejectionReason).toBeUndefined();
+      expect(handler).toMatchObject({
+        eligible: true,
+        runtimeLoopEvents: [{
+          eventSignatures: name === 'ascending'
+            ? ['Phase(int256)', 'Phase(int256)'] : ['Phase(int256)'],
+        }],
+      });
+      expect(handler?.runtimeLoopEvents?.[0].arguments).toBeDefined();
+    }
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'ascending')
+      ?.runtimeLoopEvents?.[0].arguments).toHaveLength(2);
+  });
+
+  it('keeps affine-counter recurrence admission invariant under source renaming', () => {
+    const compileRenamed = (
+      contract: string, operation: string, state: string, counter: string,
+      bound: string, coefficient: string, event: string,
+    ): ReturnType<typeof compileString> => compileString(`event ${event}(int value);
+      contract ${contract}() {
+        int ${state};
+        function ${operation}(int ${bound}, int ${coefficient}) public {
+          for (int ${counter} = 1; ${counter} < ${bound}; ${counter} = ${counter} + 2) {
+            this.${state} = this.${state} + (${coefficient} * ${counter} + 3);
+            emit ${event}(this.${state});
+          }
+          require(true);
+        }
+      }`, KERNEL);
+    const eventShape = (artifact: ReturnType<typeof compileString>, operation: string): unknown => {
+      const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === operation);
+      expect(handler?.eligible).toBe(true);
+      return JSON.parse(JSON.stringify(handler?.runtimeLoopEvents, (key, value: unknown) => {
+        if (key === 'name' || key === 'counterName' || key === 'permutationParam') return '<name>';
+        if (typeof value === 'string' && /^[A-Za-z_$][A-Za-z0-9_$]*\(/u.test(value)) return '<event>';
+        return value;
+      }));
+    };
+    const first = compileRenamed('Accumulator', 'advance', 'total', 'cursor', 'limit', 'factor', 'Phase');
+    const second = compileRenamed('Register', 'apply', 'stored', 'position', 'end', 'scale', 'Observed');
+    expect(eventShape(second, 'apply')).toEqual(eventShape(first, 'advance'));
   });
 
   it('keeps loop-carried local and scalar-state event values in source order beside permuted writes', () => {

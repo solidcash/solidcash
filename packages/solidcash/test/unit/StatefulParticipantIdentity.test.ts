@@ -27,8 +27,11 @@ const layout: StateLayout = {
   ],
 };
 
-function group(name: string, abi: AbiFunction): ExternalCallUtxoGroup {
-  const artifact = { abi: [abi], stateLayout: layout } as unknown as Artifact;
+function group(name: string, abi: AbiFunction, kernel = false): ExternalCallUtxoGroup {
+  const artifact = {
+    abi: [abi], stateLayout: layout,
+    ...(kernel && { messageBus: { convention: 'kernel-row-loop' } }),
+  } as unknown as Artifact;
   return {
     categoryId: '00'.repeat(32),
     stateLayout: layout,
@@ -83,5 +86,21 @@ describe('compiler-owned participant identity', () => {
       name: 'transferFrom', selector: '00000000', inputs: [], outputs: [], writesState: true,
     } as AbiFunction);
     expect(computedStateWriterGroupIndex([legacy], [0])).toBe(0);
+  });
+
+  it('does not recover application names from descriptor-free kernel artifacts', () => {
+    const namedComputed = group('transferFrom', {
+      name: 'transferFrom', selector: '00000000', inputs: [], outputs: [], writesState: true,
+    } as AbiFunction, true);
+    const namedChunkable = group('publishJobEvent', {
+      name: 'publishJobEvent', selector: '00000000', inputs: [], outputs: [], writesState: true,
+    } as AbiFunction, true);
+    const renamedChunkable = group('appendNotice', {
+      name: 'appendNotice', selector: '00000000', inputs: [], outputs: [], writesState: true,
+    } as AbiFunction, true);
+
+    expect(computedStateWriterGroupIndex([namedComputed], [0])).toBeUndefined();
+    expect(chunkableWriterGroupIndex([namedChunkable])).toBe(-1);
+    expect(chunkableWriterGroupIndex([renamedChunkable])).toBe(-1);
   });
 });

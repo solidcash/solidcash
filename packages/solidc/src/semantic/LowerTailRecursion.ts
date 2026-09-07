@@ -35,10 +35,12 @@ interface RecursiveFoldShape {
 interface AffineMappingRecursion {
   inductionIndex: number;
   baseIndex: number;
+  stepExpression: ExpressionNode;
 }
 
 interface AffinePostEffectRecursion {
   inductionIndex: number;
+  stepExpression: ExpressionNode;
   resultDefinition: VariableDefinitionNode;
   baseReturn: ReturnNode;
   effects: StatementNode[];
@@ -47,6 +49,7 @@ interface AffinePostEffectRecursion {
 
 interface AffineVoidPostEffectRecursion {
   inductionIndex: number;
+  stepExpression: ExpressionNode;
   effects: StatementNode[];
   emits: Array<{ node: EmitStatementNode; condition?: ExpressionNode }>;
 }
@@ -85,6 +88,22 @@ export default class LowerTailRecursion extends AstTraversal {
   private scalarStateNames = new Set<string>();
   private structConstructorNames = new Set<string>();
   private sortedMappingNames = new Set<string>();
+
+  /** Prove the sole changing recursive argument is `counter - positiveInvariant`. Positivity is checked both
+   * statically when possible and by the lowered function for runtime recipes; all other arguments must retain
+   * their source-frame values, making a parameter-derived step invariant across recursive frames. */
+  private descendingAffineStep(
+    call: FunctionCallNode, node: FunctionDefinitionNode, inductionIndex: number, inductionName: string,
+  ): ExpressionNode | undefined {
+    const next = call.parameters[inductionIndex];
+    if (!(next instanceof BinaryOpNode) || next.operator !== BinaryOperator.MINUS
+      || !(next.left instanceof IdentifierNode) || next.left.name !== inductionName) return undefined;
+    if (call.parameters.some((argument, index) => index !== inductionIndex
+      && (!(argument instanceof IdentifierNode) || argument.name !== node.parameters[index].name))) return undefined;
+    if (!this.affineEventExpression(next.right, node, inductionName, false)) return undefined;
+    if (next.right instanceof IntLiteralNode && next.right.value <= 0n) return undefined;
+    return next.right;
+  }
 
   visitSourceFile(node: SourceFileNode): Node {
     this.lowerMutualGroups(node.freeFunctions);
@@ -881,6 +900,10 @@ export default class LowerTailRecursion extends AstTraversal {
         mappingWrites.push(statement);
         return true;
       }
+      if (statement instanceof EmitStatementNode) {
+        return statement.args.every((argument) =>
+          this.affineEventExpression(argument, node, '', true) !== undefined);
+      }
       if (statement instanceof BlockNode) {
         return (statement.statements ?? []).every(collectEffectTree);
       }
@@ -925,12 +948,8 @@ export default class LowerTailRecursion extends AstTraversal {
       return key.left instanceof IdentifierNode && key.left.name === zeroSide.name;
     };
     if (inductionIndex < 0 || mappingWrites.some((write) => !affineKey(write.keys[0]))) return undefined;
-    const next = call.parameters[inductionIndex];
-    if (!(next instanceof BinaryOpNode) || next.operator !== BinaryOperator.MINUS
-      || !(next.left instanceof IdentifierNode) || next.left.name !== zeroSide.name
-      || !(next.right instanceof IntLiteralNode) || next.right.value !== 1n) return undefined;
-    if (call.parameters.some((argument, index) => index !== inductionIndex
-      && (!(argument instanceof IdentifierNode) || argument.name !== node.parameters[index].name))) return undefined;
+    const stepExpression = this.descendingAffineStep(call, node, inductionIndex, zeroSide.name);
+    if (!stepExpression) return undefined;
     // The restricted prefix makes branch reachability replayable. Reject hidden collection/effect work inside its
     // values or the base expression; those need a general authenticated frame trace rather than this rank stream.
     let unsupported = false;
@@ -943,7 +962,7 @@ export default class LowerTailRecursion extends AstTraversal {
         || candidate instanceof DeleteStateNode || candidate instanceof WhileNode
         || candidate instanceof DoWhileNode || candidate instanceof FunctionCallNode) unsupported = true;
     });
-    return unsupported ? undefined : { inductionIndex, baseIndex: bases[0].index };
+    return unsupported ? undefined : { inductionIndex, baseIndex: bases[0].index, stepExpression };
   }
 
   /** Recognize the call-stack-ordered counterpart of the pre-recursion stream above:
@@ -982,12 +1001,21 @@ export default class LowerTailRecursion extends AstTraversal {
       parameter.name === zeroSide.name && parameter.type instanceof IntType);
     if (inductionIndex < 0) return undefined;
     const call = resultDefinition.expression;
-    const next = call.parameters[inductionIndex];
-    if (!(next instanceof BinaryOpNode) || next.operator !== BinaryOperator.MINUS
-      || !(next.left instanceof IdentifierNode) || next.left.name !== zeroSide.name
-      || !(next.right instanceof IntLiteralNode) || next.right.value !== 1n
-      || call.parameters.some((argument, index) => index !== inductionIndex
-        && (!(argument instanceof IdentifierNode) || argument.name !== node.parameters[index].name))) return undefined;
+    const stepExpression = this.descendingAffineStep(call, node, inductionIndex, zeroSide.name);
+    if (!stepExpression) return undefined;
+
+    // The post-call result is invariant across retained frames because the only accepted final return is the
+    // unchanged recursive result. Make that exact base-case value available while proving event predicates and
+    // arguments. This is a definition-identity-free source recipe (not a spelling convention): ambiguous or
+    // cyclic locals still fail in affineEventExpression.
+    const replayAliases = new Map<string, ExpressionNode>([[
+      resultDefinition.name,
+      this.replaceIdentifier(
+        cloneNode(base.ifBlock.statements![0].expressions[0]) as ExpressionNode,
+        zeroSide.name,
+        () => this.stamp(new IntLiteralNode(0n), base.ifBlock.statements![0].location),
+      ) as ExpressionNode,
+    ]]);
 
     const mappingWrites: Array<MappingAssignNode | MappingDeleteNode> = [];
     const emits: AffinePostEffectRecursion['emits'] = [];
@@ -1006,18 +1034,22 @@ export default class LowerTailRecursion extends AstTraversal {
       }
       if (statement instanceof EmitStatementNode) {
         if (statement.args.some((argument) =>
-          !this.affineEventExpression(argument, node, zeroSide.name, true))) return false;
+          !this.affineEventExpression(argument, node, zeroSide.name, true, replayAliases))) return false;
         emits.push({ node: statement, condition: path });
         return true;
       }
       if (statement instanceof RequireNode) {
-        return this.affineEventExpression(statement.expression, node, zeroSide.name, true) !== undefined;
+        return this.affineEventExpression(
+          statement.expression, node, zeroSide.name, true, replayAliases,
+        ) !== undefined;
       }
       if (statement instanceof BlockNode) {
         return (statement.statements ?? []).every((nested) => collectEffectTree(nested, path));
       }
       if (statement instanceof BranchNode) {
-        if (!this.affineEventExpression(statement.condition, node, zeroSide.name, true)) return false;
+        if (!this.affineEventExpression(
+          statement.condition, node, zeroSide.name, true, replayAliases,
+        )) return false;
         if (!collectEffectTree(statement.ifBlock, conjunction(path, statement.condition))) return false;
         if (!statement.elseBlock) return true;
         const inverse = this.stamp(new UnaryOpNode(
@@ -1048,7 +1080,8 @@ export default class LowerTailRecursion extends AstTraversal {
         || candidate instanceof DoWhileNode || candidate instanceof FunctionCallNode) unsupported = true;
     });
     return unsupported ? undefined : {
-      inductionIndex, resultDefinition, baseReturn: base.ifBlock.statements![0] as ReturnNode, effects, emits,
+      inductionIndex, stepExpression, resultDefinition,
+      baseReturn: base.ifBlock.statements![0] as ReturnNode, effects, emits,
     };
   }
 
@@ -1074,12 +1107,8 @@ export default class LowerTailRecursion extends AstTraversal {
       parameter.name === zeroSide.name && parameter.type instanceof IntType);
     if (inductionIndex < 0) return undefined;
     const call = recursiveStatement.call;
-    const next = call.parameters[inductionIndex];
-    if (!(next instanceof BinaryOpNode) || next.operator !== BinaryOperator.MINUS
-      || !(next.left instanceof IdentifierNode) || next.left.name !== zeroSide.name
-      || !(next.right instanceof IntLiteralNode) || next.right.value !== 1n
-      || call.parameters.some((argument, index) => index !== inductionIndex
-        && (!(argument instanceof IdentifierNode) || argument.name !== node.parameters[index].name))) return undefined;
+    const stepExpression = this.descendingAffineStep(call, node, inductionIndex, zeroSide.name);
+    if (!stepExpression) return undefined;
 
     const writes: Array<MappingAssignNode | MappingDeleteNode> = [];
     const emits: AffineVoidPostEffectRecursion['emits'] = [];
@@ -1132,16 +1161,27 @@ export default class LowerTailRecursion extends AstTraversal {
         || candidate instanceof DeleteStateNode || candidate instanceof WhileNode
         || candidate instanceof DoWhileNode || candidate instanceof FunctionCallNode) unsupported = true;
     });
-    return unsupported ? undefined : { inductionIndex, effects, emits };
+    return unsupported ? undefined : { inductionIndex, stepExpression, effects, emits };
   }
 
   /** Serialize only expressions whose value can be reconstructed from the public call frame and current
    * induction value. In particular, state reads and local temporaries are excluded: replaying either would need
    * an authenticated per-frame trace rather than an affine domain. */
-  private isAffineIntegralExpression(expression: ExpressionNode, node: FunctionDefinitionNode): boolean {
+  private isAffineIntegralExpression(
+    expression: ExpressionNode,
+    node: FunctionDefinitionNode,
+    aliases: ReadonlyMap<string, ExpressionNode> = new Map(),
+    resolvingAliases: ReadonlySet<string> = new Set(),
+  ): boolean {
     if (expression.type === PrimitiveType.INT || expression.type === PrimitiveType.BIGINT
       || expression.type instanceof IntType || expression instanceof IntLiteralNode) return true;
     if (expression instanceof IdentifierNode) {
+      const alias = aliases.get(expression.name);
+      if (alias) {
+        return !resolvingAliases.has(expression.name) && this.isAffineIntegralExpression(
+          alias, node, aliases, new Set(resolvingAliases).add(expression.name),
+        );
+      }
       const parameter = node.parameters.find((candidate) => candidate.name === expression.name);
       return parameter?.type === PrimitiveType.INT || parameter?.type === PrimitiveType.BIGINT
         || parameter?.type instanceof IntType;
@@ -1149,20 +1189,24 @@ export default class LowerTailRecursion extends AstTraversal {
     if (expression instanceof CastNode) return /^(?:u?int)(?:\d+)?$/.test(expression.type.toString());
     if (expression instanceof FieldAccessNode && expression.name === 'length') return true;
     if (expression instanceof UnaryOpNode && expression.operator === UnaryOperator.NEGATE) {
-      return this.isAffineIntegralExpression(expression.expression, node);
+      return this.isAffineIntegralExpression(expression.expression, node, aliases, resolvingAliases);
     }
     if (expression instanceof BinaryOpNode && ['+', '-', '*', '/', '%'].includes(expression.operator)) {
-      return this.isAffineIntegralExpression(expression.left, node)
-        && this.isAffineIntegralExpression(expression.right, node);
+      return this.isAffineIntegralExpression(expression.left, node, aliases, resolvingAliases)
+        && this.isAffineIntegralExpression(expression.right, node, aliases, resolvingAliases);
     }
-    if (expression instanceof TernaryOpNode) return this.isAffineIntegralExpression(expression.ifTrue, node)
-      && this.isAffineIntegralExpression(expression.ifFalse, node);
+    if (expression instanceof TernaryOpNode) {
+      return this.isAffineIntegralExpression(expression.ifTrue, node, aliases, resolvingAliases)
+        && this.isAffineIntegralExpression(expression.ifFalse, node, aliases, resolvingAliases);
+    }
     return false;
   }
 
   private affineEventExpression(
     expression: ExpressionNode, node: FunctionDefinitionNode, inductionName: string,
     allowInduction: boolean,
+    aliases: ReadonlyMap<string, ExpressionNode> = new Map(),
+    resolvingAliases: ReadonlySet<string> = new Set(),
   ): ExternalCallExpression | undefined {
     if (expression instanceof LiteralNode) {
       if (typeof expression.value === 'bigint') {
@@ -1178,6 +1222,14 @@ export default class LowerTailRecursion extends AstTraversal {
       if (expression.name === inductionName) {
         return allowInduction ? { kind: 'identifier', name: expression.name } : undefined;
       }
+      const alias = aliases.get(expression.name);
+      if (alias) {
+        if (resolvingAliases.has(expression.name)) return undefined;
+        return this.affineEventExpression(
+          alias, node, inductionName, allowInduction, aliases,
+          new Set(resolvingAliases).add(expression.name),
+        );
+      }
       const visible = node.parameters.filter((parameter) => !parameter.name.startsWith('__internal__'));
       const index = visible.findIndex((parameter) => parameter.name === expression.name);
       return index < 0 ? undefined : { kind: 'source', source: { kind: 'forward', paramIndex: index } };
@@ -1185,33 +1237,49 @@ export default class LowerTailRecursion extends AstTraversal {
     if (expression instanceof CastNode) {
       const target = expression.type.toString();
       if (target !== 'bytes' && !/^(?:u?int)(?:\d+)?$/.test(target)) return undefined;
-      const inner = this.affineEventExpression(expression.expression, node, inductionName, allowInduction);
+      const inner = this.affineEventExpression(
+        expression.expression, node, inductionName, allowInduction, aliases, resolvingAliases,
+      );
       return inner && { kind: 'cast', type: target, expression: inner };
     }
     if (expression instanceof UnaryOpNode) {
       if (!['!', '-'].includes(expression.operator)) return undefined;
-      const inner = this.affineEventExpression(expression.expression, node, inductionName, allowInduction);
+      const inner = this.affineEventExpression(
+        expression.expression, node, inductionName, allowInduction, aliases, resolvingAliases,
+      );
       return inner && { kind: 'unary', operator: expression.operator, expression: inner };
     }
     if (expression instanceof BinaryOpNode) {
       if (!['&&', '||', '==', '!=', '+', '-', '*', '/', '%', '<', '<=', '>', '>=']
         .includes(expression.operator)) return undefined;
       if (['+', '-', '*', '/', '%', '<', '<=', '>', '>='].includes(expression.operator)) {
-        if (!this.isAffineIntegralExpression(expression.left, node)
-          || !this.isAffineIntegralExpression(expression.right, node)) return undefined;
+        if (!this.isAffineIntegralExpression(expression.left, node, aliases, resolvingAliases)
+          || !this.isAffineIntegralExpression(expression.right, node, aliases, resolvingAliases)) return undefined;
       }
-      const left = this.affineEventExpression(expression.left, node, inductionName, allowInduction);
-      const right = this.affineEventExpression(expression.right, node, inductionName, allowInduction);
+      const left = this.affineEventExpression(
+        expression.left, node, inductionName, allowInduction, aliases, resolvingAliases,
+      );
+      const right = this.affineEventExpression(
+        expression.right, node, inductionName, allowInduction, aliases, resolvingAliases,
+      );
       return left && right && { kind: 'binary', operator: expression.operator, left, right };
     }
     if (expression instanceof TernaryOpNode) {
-      const condition = this.affineEventExpression(expression.condition, node, inductionName, allowInduction);
-      const ifTrue = this.affineEventExpression(expression.ifTrue, node, inductionName, allowInduction);
-      const ifFalse = this.affineEventExpression(expression.ifFalse, node, inductionName, allowInduction);
+      const condition = this.affineEventExpression(
+        expression.condition, node, inductionName, allowInduction, aliases, resolvingAliases,
+      );
+      const ifTrue = this.affineEventExpression(
+        expression.ifTrue, node, inductionName, allowInduction, aliases, resolvingAliases,
+      );
+      const ifFalse = this.affineEventExpression(
+        expression.ifFalse, node, inductionName, allowInduction, aliases, resolvingAliases,
+      );
       return condition && ifTrue && ifFalse && { kind: 'ternary', condition, ifTrue, ifFalse };
     }
     if (expression instanceof FieldAccessNode && expression.name === 'length') {
-      const inner = this.affineEventExpression(expression.expression, node, inductionName, allowInduction);
+      const inner = this.affineEventExpression(
+        expression.expression, node, inductionName, allowInduction, aliases, resolvingAliases,
+      );
       return inner && { kind: 'unary', operator: '.length', expression: inner };
     }
     return undefined;
@@ -1346,24 +1414,21 @@ export default class LowerTailRecursion extends AstTraversal {
   }
 
   private replaceAffineInduction(
-    node: Node, inductionName: string, rankName: string,
+    node: Node, inductionName: string, rankName: string, stepExpression: ExpressionNode,
   ): Node {
     if (node instanceof IdentifierNode && node.name === inductionName) {
-      return this.stamp(new BinaryOpNode(
-        this.stamp(new IdentifierNode(inductionName), node.location), BinaryOperator.MINUS,
-        this.stamp(new IdentifierNode(rankName), node.location),
-      ), node.location);
+      return this.affineFrameAtRank(node, rankName, stepExpression, false);
     }
     for (const [key, child] of Object.entries(node)) {
       if (['resolvedFunction', 'definition', 'symbolTable', 'location', 'type'].includes(key)
         || (node instanceof FunctionCallNode && key === 'identifier')) continue;
       if (child instanceof Node) {
         (node as unknown as Record<string, unknown>)[key] = this.replaceAffineInduction(
-          child, inductionName, rankName,
+          child, inductionName, rankName, stepExpression,
         );
       } else if (Array.isArray(child)) {
         (node as unknown as Record<string, unknown>)[key] = child.map((item) => item instanceof Node
-          ? this.replaceAffineInduction(item, inductionName, rankName) : item);
+          ? this.replaceAffineInduction(item, inductionName, rankName, stepExpression) : item);
       }
     }
     return node;
@@ -1388,6 +1453,46 @@ export default class LowerTailRecursion extends AstTraversal {
     return node;
   }
 
+  private affineFrameAtRank(
+    induction: IdentifierNode, rankName: string, stepExpression: ExpressionNode, unwind: boolean,
+  ): ExpressionNode {
+    const rank = this.stamp(new IdentifierNode(rankName), induction.location);
+    const offset = stepExpression instanceof IntLiteralNode && stepExpression.value === 1n
+      ? rank
+      : this.stamp(new BinaryOpNode(
+        rank, BinaryOperator.MUL, cloneNode(stepExpression),
+      ), induction.location);
+    return unwind ? offset : this.stamp(new BinaryOpNode(
+      cloneNode(induction), BinaryOperator.MINUS, offset,
+    ), induction.location);
+  }
+
+  /** The accepted recursion reaches zero exactly. These guards make the iterative replacement fail closed for a
+   * zero/negative runtime step, an endpoint between steps, or a call whose exact recursive frame count exceeds
+   * the journal ceiling. `maximumQuotient` is 63 for a pre-order stream (which also visits zero) and 64 for an
+   * unwind stream (whose zero frame has no effect). */
+  private affineFrameGuards(
+    node: FunctionDefinitionNode, induction: IdentifierNode, stepExpression: ExpressionNode,
+    maximumQuotient: bigint,
+  ): RequireNode[] {
+    const at = <T extends Node>(value: T): T => this.stamp(value, node.location);
+    const step = (): ExpressionNode => cloneNode(stepExpression);
+    const cursor = (): IdentifierNode => at(new IdentifierNode(induction.name));
+    const message = 'recursive affine frame count must be exact and between 0 and 64';
+    return [
+      at(new RequireNode(at(new BinaryOpNode(step(), BinaryOperator.GT, at(new IntLiteralNode(0n)))), message)),
+      at(new RequireNode(at(new BinaryOpNode(cursor(), BinaryOperator.GE, at(new IntLiteralNode(0n)))), message)),
+      at(new RequireNode(at(new BinaryOpNode(
+        at(new BinaryOpNode(cursor(), BinaryOperator.MOD, step())), BinaryOperator.EQ,
+        at(new IntLiteralNode(0n)),
+      )), message)),
+      at(new RequireNode(at(new BinaryOpNode(
+        at(new BinaryOpNode(cursor(), BinaryOperator.DIV, step())), BinaryOperator.LE,
+        at(new IntLiteralNode(maximumQuotient)),
+      )), message)),
+    ];
+  }
+
   /** Publish the post-recursion unwind as an exact event domain. Runtime event domains are do-while-shaped, so
    * the zero-frame call exposes one metadata rank whose per-site guard is false; no physical event is emitted. */
   private publishAffinePostEvents(
@@ -1401,6 +1506,13 @@ export default class LowerTailRecursion extends AstTraversal {
     const visibleIndex = node.parameters.slice(0, plan.inductionIndex)
       .filter((parameter) => !parameter.name.startsWith('__internal__')).length;
     const loopIndex = node.runtimeLoopEvents?.length ?? 0;
+    const serializedStep = this.affineEventExpression(plan.stepExpression, node, induction.name, false);
+    if (!serializedStep) return;
+    const quotient: ExternalCallExpression = {
+      kind: 'binary', operator: BinaryOperator.DIV,
+      left: { kind: 'source', source: { kind: 'forward', paramIndex: visibleIndex } },
+      right: serializedStep,
+    };
     node.runtimeLoopEvents = [...(node.runtimeLoopEvents ?? []), {
       loopIndex,
       iterationDomain: {
@@ -1410,7 +1522,7 @@ export default class LowerTailRecursion extends AstTraversal {
         continueCondition: {
           kind: 'binary', operator: BinaryOperator.LT,
           left: { kind: 'identifier', name: rankName },
-          right: { kind: 'source', source: { kind: 'forward', paramIndex: visibleIndex } },
+          right: quotient,
         },
         maximumIterations: 64,
       },
@@ -1423,14 +1535,21 @@ export default class LowerTailRecursion extends AstTraversal {
     });
     if (clonedEmits.length !== plan.emits.length) return;
     clonedEmits.forEach((emit, siteIndex) => {
+      const frame = (): ExpressionNode => this.affineFrameAtRank(
+        this.stamp(new IdentifierNode(induction.name), emit.location), rankName,
+        plan.stepExpression, true,
+      );
       const sourceCondition = plan.emits[siteIndex].condition;
       const condition = sourceCondition ? this.replaceIdentifier(
         cloneNode(sourceCondition) as ExpressionNode, induction.name,
-        () => this.stamp(new IdentifierNode(rankName), sourceCondition.location),
+        frame,
       ) as ExpressionNode : undefined;
       const reachedFrame = this.stamp(new BinaryOpNode(
         this.stamp(new IdentifierNode(rankName), emit.location), BinaryOperator.LE,
-        this.stamp(new IdentifierNode(induction.name), emit.location),
+        this.stamp(new BinaryOpNode(
+          this.stamp(new IdentifierNode(induction.name), emit.location), BinaryOperator.DIV,
+          cloneNode(plan.stepExpression),
+        ), emit.location),
       ), emit.location);
       emit.runtimeLoopEvent = { loopIndex, siteIndex };
       emit.runtimeLoopEventCondition = condition
@@ -1455,7 +1574,10 @@ export default class LowerTailRecursion extends AstTraversal {
     ), plan.resultDefinition.location);
     const effects = plan.effects.map((effect) => this.replaceIdentifier(
       cloneNode(effect) as StatementNode, induction.name,
-      () => this.stamp(new IdentifierNode(rankName), effect.location),
+      () => this.affineFrameAtRank(
+        this.stamp(new IdentifierNode(induction.name), effect.location), rankName,
+        plan.stepExpression, true,
+      ),
     ) as StatementNode);
     this.publishAffinePostEvents(node, plan, rankName, effects);
     const increment = this.stamp(new AssignNode(
@@ -1468,7 +1590,10 @@ export default class LowerTailRecursion extends AstTraversal {
     const loop = this.stamp(new WhileNode(
       this.stamp(new BinaryOpNode(
         this.stamp(new IdentifierNode(rankName), node.location), BinaryOperator.LE,
-        this.stamp(new IdentifierNode(induction.name), node.location),
+        this.stamp(new BinaryOpNode(
+          this.stamp(new IdentifierNode(induction.name), node.location), BinaryOperator.DIV,
+          cloneNode(plan.stepExpression),
+        ), node.location),
       ), node.location),
       this.stamp(new BlockNode([...effects, increment]), node.location),
     ), node.location);
@@ -1479,19 +1604,14 @@ export default class LowerTailRecursion extends AstTraversal {
     rank.isLoopVariable = true;
     rank.loopInitialValue = 1n;
     rank.loopStepValue = 1n;
-    const nonNegative = this.stamp(new RequireNode(this.stamp(new BinaryOpNode(
-      this.stamp(new IdentifierNode(induction.name), node.location), BinaryOperator.GE,
-      this.stamp(new IntLiteralNode(0n), node.location),
-    ), node.location), 'recursive unwind frame count must be between 0 and 64'), node.location);
-    const bounded = this.stamp(new RequireNode(this.stamp(new BinaryOpNode(
-      this.stamp(new IdentifierNode(induction.name), node.location), BinaryOperator.LE,
-      this.stamp(new IntLiteralNode(64n), node.location),
-    ), node.location), 'recursive unwind frame count must be between 0 and 64'), node.location);
+    const guards = this.affineFrameGuards(
+      node, this.stamp(new IdentifierNode(induction.name), node.location), plan.stepExpression, 64n,
+    );
     const finalReturn = this.stamp(new ReturnNode([
       this.stamp(new IdentifierNode(result.name), node.location),
     ]), node.location);
     node.body = this.stamp(new BlockNode([
-      nonNegative, bounded, result, rank, loop, finalReturn,
+      ...guards, result, rank, loop, finalReturn,
     ]), node.location);
   }
 
@@ -1502,7 +1622,10 @@ export default class LowerTailRecursion extends AstTraversal {
     const rankName = `__tail_unwind_rank_${frame}`;
     const effects = plan.effects.map((effect) => this.replaceIdentifier(
       cloneNode(effect) as StatementNode, induction.name,
-      () => this.stamp(new IdentifierNode(rankName), effect.location),
+      () => this.affineFrameAtRank(
+        this.stamp(new IdentifierNode(induction.name), effect.location), rankName,
+        plan.stepExpression, true,
+      ),
     ) as StatementNode);
     this.publishAffinePostEvents(node, plan, rankName, effects);
     const increment = this.stamp(new AssignNode(
@@ -1515,7 +1638,10 @@ export default class LowerTailRecursion extends AstTraversal {
     const loop = this.stamp(new WhileNode(
       this.stamp(new BinaryOpNode(
         this.stamp(new IdentifierNode(rankName), node.location), BinaryOperator.LE,
-        this.stamp(new IdentifierNode(induction.name), node.location),
+        this.stamp(new BinaryOpNode(
+          this.stamp(new IdentifierNode(induction.name), node.location), BinaryOperator.DIV,
+          cloneNode(plan.stepExpression),
+        ), node.location),
       ), node.location),
       this.stamp(new BlockNode([...effects, increment]), node.location),
     ), node.location);
@@ -1526,15 +1652,10 @@ export default class LowerTailRecursion extends AstTraversal {
     rank.isLoopVariable = true;
     rank.loopInitialValue = 1n;
     rank.loopStepValue = 1n;
-    const nonNegative = this.stamp(new RequireNode(this.stamp(new BinaryOpNode(
-      this.stamp(new IdentifierNode(induction.name), node.location), BinaryOperator.GE,
-      this.stamp(new IntLiteralNode(0n), node.location),
-    ), node.location), 'recursive unwind frame count must be between 0 and 64'), node.location);
-    const bounded = this.stamp(new RequireNode(this.stamp(new BinaryOpNode(
-      this.stamp(new IdentifierNode(induction.name), node.location), BinaryOperator.LE,
-      this.stamp(new IntLiteralNode(64n), node.location),
-    ), node.location), 'recursive unwind frame count must be between 0 and 64'), node.location);
-    node.body = this.stamp(new BlockNode([nonNegative, bounded, rank, loop]), node.location);
+    const guards = this.affineFrameGuards(
+      node, this.stamp(new IdentifierNode(induction.name), node.location), plan.stepExpression, 64n,
+    );
+    node.body = this.stamp(new BlockNode([...guards, rank, loop]), node.location);
   }
 
   private lowerAffineMappingRecursion(
@@ -1543,7 +1664,7 @@ export default class LowerTailRecursion extends AstTraversal {
     const induction = node.parameters[plan.inductionIndex];
     const rankName = `__tail_rank_${frame}`;
     const transformed = this.replaceAffineInduction(
-      cloneNode(node.body!) as BlockNode, induction.name, rankName,
+      cloneNode(node.body!) as BlockNode, induction.name, rankName, plan.stepExpression,
     ) as BlockNode;
     const recursiveReturn = transformed.statements!.pop() as ReturnNode;
     if (!this.isSelfCall(recursiveReturn.expressions[0], node.name)) return;
@@ -1564,7 +1685,10 @@ export default class LowerTailRecursion extends AstTraversal {
     ), node.location);
     transformed.statements!.push(increment);
     const bound = this.stamp(new BinaryOpNode(
-      this.stamp(new IdentifierNode(induction.name), node.location), BinaryOperator.PLUS,
+      this.stamp(new BinaryOpNode(
+        this.stamp(new IdentifierNode(induction.name), node.location), BinaryOperator.DIV,
+        cloneNode(plan.stepExpression),
+      ), node.location), BinaryOperator.PLUS,
       this.stamp(new IntLiteralNode(1n), node.location),
     ), node.location);
     const loop = this.stamp(new WhileNode(
@@ -1579,14 +1703,9 @@ export default class LowerTailRecursion extends AstTraversal {
     rank.isLoopVariable = true;
     rank.loopInitialValue = 0n;
     rank.loopStepValue = 1n;
-    const nonNegative = this.stamp(new RequireNode(this.stamp(new BinaryOpNode(
-      this.stamp(new IdentifierNode(induction.name), node.location), BinaryOperator.GE,
-      this.stamp(new IntLiteralNode(0n), node.location),
-    ), node.location), 'recursive mapping frame count must be between 1 and 64'), node.location);
-    const bounded = this.stamp(new RequireNode(this.stamp(new BinaryOpNode(
-      this.stamp(new IdentifierNode(induction.name), node.location), BinaryOperator.LE,
-      this.stamp(new IntLiteralNode(63n), node.location),
-    ), node.location), 'recursive mapping frame count must be between 1 and 64'), node.location);
+    const guards = this.affineFrameGuards(
+      node, this.stamp(new IdentifierNode(induction.name), node.location), plan.stepExpression, 63n,
+    );
     const unnamedResults = node.returnNames.length === 0;
     const results = unnamedResults ? returnNames.map((name, index) => this.stamp(
       new VariableDefinitionNode(node.returnTypes[index], [], name), node.location,
@@ -1594,7 +1713,7 @@ export default class LowerTailRecursion extends AstTraversal {
     const finalReturn = unnamedResults ? this.stamp(new ReturnNode(returnNames.map((name) =>
       this.stamp(new IdentifierNode(name), node.location))), node.location) : undefined;
     node.body = this.stamp(new BlockNode([
-      ...results, nonNegative, bounded, rank, loop, ...(finalReturn ? [finalReturn] : []),
+      ...results, ...guards, rank, loop, ...(finalReturn ? [finalReturn] : []),
     ]), node.location);
   }
 

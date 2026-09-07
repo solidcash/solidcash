@@ -6324,23 +6324,140 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       const replacedTailResizeSchedule = (
         candidate: BlockNode,
         arrayName: string,
+        variantNames: ReadonlySet<string>,
       ): boolean => {
-        const statements = candidate.statements ?? [];
-        let leadingPops = 0;
-        while (leadingPops < statements.length
-          && statements[leadingPops] instanceof ArrayPopNode
-          && (statements[leadingPops] as ArrayPopNode).name === arrayName) leadingPops += 1;
-        if (leadingPops === 0) return false;
-        let pushes = 0;
-        for (let index = leadingPops; index < statements.length; index += 1) {
-          const statement = statements[index];
-          if (statement instanceof ArrayPushNode && statement.name === arrayName) {
-            pushes += 1;
-            continue;
+        type TailPath = {
+          pops: number;
+          pushes: number;
+          observedBeforePop: boolean;
+          observedAfterPop: boolean;
+        };
+        const MAX_TAIL_PATH_STATES = 256;
+        let sawReplacement = false;
+        const deduplicate = (paths: TailPath[]): TailPath[] | undefined => {
+          if (paths.length > MAX_TAIL_PATH_STATES) return undefined;
+          const unique = new Map<string, TailPath>();
+          for (const path of paths) {
+            unique.set(
+              `${path.pops}:${path.pushes}:${path.observedBeforePop ? 1 : 0}:${path.observedAfterPop ? 1 : 0}`,
+              path,
+            );
           }
-          if (mutatedArrays(statement).has(arrayName)) return false;
+          return [...unique.values()];
+        };
+        const observesArray = (root: Node): boolean => {
+          let observed = false;
+          walk(root, (value) => {
+            if (value instanceof IdentifierNode && value.name === arrayName) observed = true;
+          });
+          return observed;
+        };
+        const invariantSelector = (root: Node): boolean => {
+          let invariant = true;
+          walk(root, (value) => {
+            if (value instanceof IdentifierNode && variantNames.has(value.name)) invariant = false;
+            if (value instanceof StateAccessNode || value instanceof MappingAccessNode
+              || value instanceof ExternalFunctionCallNode || value instanceof FunctionCallNode
+              || value instanceof MethodCallNode) invariant = false;
+          });
+          return invariant;
+        };
+        const advance = (
+          sourceBlock: BlockNode,
+          incoming: TailPath[],
+        ): TailPath[] | undefined => {
+          let paths = incoming;
+          for (const statement of sourceBlock.statements ?? []) {
+            if (statement instanceof ArrayPopNode && statement.name === arrayName) {
+              const next: TailPath[] = [];
+              for (const path of paths) {
+                // Once replacement values are installed, a later pop could expose one from a prior logical
+                // iteration on the next pass. Keep the proof to one discard phase followed by one rebuild phase.
+                if (path.pushes > 0 || path.observedBeforePop || path.observedAfterPop) return undefined;
+                next.push({ ...path, pops: path.pops + 1, observedAfterPop: false });
+              }
+              paths = next;
+              continue;
+            }
+            if (statement instanceof ArrayPushNode && statement.name === arrayName) {
+              const next: TailPath[] = [];
+              for (const path of paths) {
+                if (path.pops === 0 || path.pushes >= path.pops) return undefined;
+                next.push({ ...path, pushes: path.pushes + 1 });
+              }
+              paths = next;
+              continue;
+            }
+            if ((statement instanceof ArrayAssignNode || statement instanceof ArrayDeleteNode)
+              && statement.name === arrayName) return undefined;
+            if (statement instanceof AssignNode && statement.identifier.name === arrayName) return undefined;
+            if (statement instanceof BranchNode) {
+              if (!invariantSelector(statement.condition)) return undefined;
+              const conditioned = paths.map((path) => ({
+                ...path,
+                observedBeforePop: path.observedBeforePop
+                  || (path.pops === 0 && observesArray(statement.condition)),
+                observedAfterPop: path.observedAfterPop
+                  || (path.pops > 0 && observesArray(statement.condition)),
+              }));
+              const ifPaths = advance(statement.ifBlock, conditioned);
+              const elsePaths = statement.elseBlock
+                ? advance(statement.elseBlock, conditioned) : conditioned;
+              if (!ifPaths || !elsePaths) return undefined;
+              const merged = deduplicate([...ifPaths, ...elsePaths]);
+              if (!merged) return undefined;
+              paths = merged;
+              continue;
+            }
+            if (statement instanceof SwitchNode) {
+              if (!invariantSelector(statement.expression)) return undefined;
+              const conditioned = paths.map((path) => ({
+                ...path,
+                observedBeforePop: path.observedBeforePop
+                  || (path.pops === 0 && observesArray(statement.expression)),
+                observedAfterPop: path.observedAfterPop
+                  || (path.pops > 0 && observesArray(statement.expression)),
+              }));
+              const arms: TailPath[] = [];
+              for (const arm of statement.cases) {
+                if (observesArray(arm.value)) return undefined;
+                const armPaths = advance(arm.body, conditioned);
+                if (!armPaths) return undefined;
+                arms.push(...armPaths);
+              }
+              if (statement.defaultCase) {
+                const fallback = advance(statement.defaultCase, conditioned);
+                if (!fallback) return undefined;
+                arms.push(...fallback);
+              } else arms.push(...conditioned);
+              const merged = deduplicate(arms);
+              if (!merged) return undefined;
+              paths = merged;
+              continue;
+            }
+            if (statement instanceof BreakNode || statement instanceof ContinueNode
+              || statement instanceof ReturnNode) return undefined;
+            if (mutatedArrays(statement).has(arrayName)) return undefined;
+            if (observesArray(statement)) {
+              paths = paths.map((path) => ({
+                ...path,
+                observedBeforePop: path.observedBeforePop || path.pops === 0,
+                observedAfterPop: path.observedAfterPop || path.pops > 0,
+              }));
+            }
+          }
+          return paths;
+        };
+        const paths = advance(candidate, [{
+          pops: 0, pushes: 0, observedBeforePop: false, observedAfterPop: false,
+        }]);
+        if (!paths) return false;
+        for (const path of paths) {
+          if (path.pops === 0 && path.pushes === 0) continue;
+          sawReplacement = true;
+          if (path.observedBeforePop || path.pops !== path.pushes) return false;
         }
-        return pushes === leadingPops;
+        return sawReplacement;
       };
       const replayFiniteArrayHelper = (
         statement: StatementNode,
@@ -7481,7 +7598,6 @@ export default class LowerVMapCounterLoops extends AstTraversal {
             const pushSchedule = fixedPushSchedule(statement.block, name);
             const popSchedule = fixedPopSchedule(statement.block, name);
             const balancedSchedule = balancedResizeSchedule(statement.block, name);
-            const replacedTailSchedule = replacedTailResizeSchedule(statement.block, name);
             let mutationCount = 0;
             let resizeCount = 0;
             const loopAssignedNames = new Set<string>();
@@ -7496,6 +7612,13 @@ export default class LowerVMapCounterLoops extends AstTraversal {
                 if (candidate.identifier.name === name) mutationCount += 1;
               }
             });
+            const runtimeStepMutated = canonical.stepExpression !== undefined
+              && containsNamedIdentifier(canonical.stepExpression, loopAssignedNames);
+            const replacedTailSchedule = !runtimeStepMutated && replacedTailResizeSchedule(
+              statement.block,
+              name,
+              new Set(loopAssignedNames).add(canonical.logical),
+            );
             // A fixed number of same-kind resizes has a closed length recurrence. An invariant conditional width is
             // closed too: occurrence * (condition ? A : B). Pushes additionally publish a symbolic ordinal and one
             // conditionally selected value recipe per source site; pops only shorten the already-known prefix. A

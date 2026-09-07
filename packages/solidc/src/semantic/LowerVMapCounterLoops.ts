@@ -6455,12 +6455,46 @@ export default class LowerVMapCounterLoops extends AstTraversal {
               && containsNamedIdentifier(
                 pushSchedule!.widthExpression, unavailablePushWidthNames,
               )) fixedPushes = false;
-            // A variable pop width has a closed recurrence only when it is invariant across logical iterations.
-            // Counter-dependent widths require a prefix sum of prior branch outcomes, while assignments made by
-            // the loop would require a loop-carried value recurrence. Keep those wider forms fenced.
+            // A variable pop width normally has a closed recurrence only when it is invariant across logical
+            // iterations. The exact `counter > start ? 1 : 0` ascending form (and descending mirror) has the
+            // finite prefix sum `max(occurrence - 1, 0)`; other counter-dependent widths and loop-carried
+            // selectors remain fenced.
             const unavailablePopNames = new Set(loopAssignedNames).add(name).add(canonical.logical);
+            const popAfterInitialIteration = (() => {
+              if (!fixedPops || !popSchedule!.widthExpression) return false;
+              const unwrapZeroSum = (expression: ExpressionNode): ExpressionNode => {
+                if (expression instanceof BinaryOpNode && expression.operator === BinaryOperator.PLUS) {
+                  if (expression.left instanceof IntLiteralNode && expression.left.value === 0n) {
+                    return unwrapZeroSum(expression.right);
+                  }
+                  if (expression.right instanceof IntLiteralNode && expression.right.value === 0n) {
+                    return unwrapZeroSum(expression.left);
+                  }
+                }
+                return expression;
+              };
+              const selected = unwrapZeroSum(popSchedule!.widthExpression);
+              if (!(selected instanceof TernaryOpNode)
+                || !(selected.ifTrue instanceof IntLiteralNode) || selected.ifTrue.value !== 1n
+                || !(selected.ifFalse instanceof IntLiteralNode) || selected.ifFalse.value !== 0n
+                || !(selected.condition instanceof BinaryOpNode)) return false;
+              const condition = selected.condition;
+              const direct = condition.left instanceof IdentifierNode
+                && condition.left.name === canonical.logical
+                && condition.right instanceof IntLiteralNode && condition.right.value === canonical.start;
+              const reversed = condition.right instanceof IdentifierNode
+                && condition.right.name === canonical.logical
+                && condition.left instanceof IntLiteralNode && condition.left.value === canonical.start;
+              if (canonical.step > 0n) {
+                return (direct && condition.operator === BinaryOperator.GT)
+                  || (reversed && condition.operator === BinaryOperator.LT);
+              }
+              return (direct && condition.operator === BinaryOperator.LT)
+                || (reversed && condition.operator === BinaryOperator.GT);
+            })();
             if (fixedPops && popSchedule!.widthExpression
-              && containsNamedIdentifier(popSchedule!.widthExpression, unavailablePopNames)) fixedPops = false;
+              && containsNamedIdentifier(popSchedule!.widthExpression, unavailablePopNames)
+              && !popAfterInitialIteration) fixedPops = false;
             const balancedResizes = !!balancedSchedule && balancedSchedule.sites > 0
               && balancedSchedule.delta === 0 && balancedSchedule.minimum >= 0;
             if (balancedResizes) continue;
@@ -6524,11 +6558,25 @@ export default class LowerVMapCounterLoops extends AstTraversal {
               ? replaceSnapshots(symbolicResizeWidth, snapshots)
               : new IntLiteralNode(BigInt(resizeWidth));
             resizeWidthExpression.location = statement.location;
-            const precedingResizes = !symbolicResizeWidth && resizeWidth === 1
-              ? occurrence
-              : new BinaryOpNode(
-                occurrence, BinaryOperator.MUL, resizeWidthExpression,
-              );
+            const precedingResizes = popAfterInitialIteration
+              ? (() => {
+                const afterInitial = new BinaryOpNode(
+                  cloneNode(occurrence), BinaryOperator.GT, new IntLiteralNode(0n),
+                );
+                afterInitial.location = statement.location;
+                const prior = new BinaryOpNode(
+                  cloneNode(occurrence), BinaryOperator.MINUS, new IntLiteralNode(1n),
+                );
+                prior.location = statement.location;
+                const selected = new TernaryOpNode(afterInitial, prior, new IntLiteralNode(0n));
+                selected.location = statement.location;
+                return selected;
+              })()
+              : !symbolicResizeWidth && resizeWidth === 1
+                ? occurrence
+                : new BinaryOpNode(
+                  occurrence, BinaryOperator.MUL, resizeWidthExpression,
+                );
             precedingResizes.location = statement.location;
             const length = new BinaryOpNode(
               cloneNode(plan.length), fixedPushes ? BinaryOperator.PLUS : BinaryOperator.MINUS, precedingResizes,

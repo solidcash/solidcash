@@ -1,10 +1,11 @@
 import { binToHex } from '@bitauth/libauth';
 import {
-  abiTypeString, ChildDeploymentGenesisStateAbi, ChildDeploymentValueRecipe, EnumType, StructDefinitionInfo,
-  StructType, Type,
+  abiTypeString, ArrayType, ChildDeploymentGenesisStateAbi, ChildDeploymentValueRecipe, EnumType,
+  StructDefinitionInfo, StructType, Type,
 } from '@solidcash/utils';
 import {
-  AssignNode, BinaryOpNode, BlockNode, BoolLiteralNode, BranchNode, BreakNode, CastNode, CollectionIterationNode,
+  ArrayNode, AssignNode, BinaryOpNode, BlockNode, BoolLiteralNode, BranchNode, BreakNode, CastNode,
+  CollectionIterationNode,
   ContinueNode, DeleteLocalNode, DoWhileNode, ExpressionNode, FunctionDefinitionNode, HexLiteralNode, IdentifierNode,
   FunctionCallNode, InstantiationNode, IntLiteralNode, Node, ReturnNode, RevertNode, SwitchNode, TryCatchNode,
   TupleAssignmentNode, UnaryOpNode, UncheckedNode, VariableDefinitionNode, WhileNode, TransferStatementNode,
@@ -33,6 +34,18 @@ const materializableGenesisLeafType = /^(?:bool|bigint|u?int(?:8|16|24|32|40|48|
 const physicalRecipeType = (type: { toString(): string }): string =>
   type instanceof EnumType ? 'bigint' : abiTypeString(type as never);
 
+const materializableGenesisType = (type: Type, stack: ReadonlySet<StructType> = new Set()): boolean => {
+  if (type instanceof ArrayType) {
+    return type.bound !== undefined && Number.isSafeInteger(type.bound) && type.bound >= 0
+      && materializableGenesisType(type.elementType, stack);
+  }
+  if (!(type instanceof StructType)) return materializableGenesisLeafType.test(physicalRecipeType(type));
+  if (stack.has(type)) return false;
+  const nested = new Set(stack);
+  nested.add(type);
+  return type.fields.every((field) => materializableGenesisType(field.type, nested));
+};
+
 /** Physical definitions reachable from child state, used by both its codec and authenticated layout digest. */
 export const childDeploymentStructDefinitions = (
   variables: readonly { type: Type }[],
@@ -40,6 +53,10 @@ export const childDeploymentStructDefinitions = (
   const definitions: StructDefinitionInfo[] = [];
   const seen = new Set<StructType>();
   const visit = (type: Type): void => {
+    if (type instanceof ArrayType) {
+      visit(type.elementType);
+      return;
+    }
     if (!(type instanceof StructType) || seen.has(type)) return;
     seen.add(type);
     definitions.push({
@@ -76,6 +93,7 @@ export function childDeploymentValueRecipe(
   handlerInputTypes?: ReadonlyMap<string, string>,
   aliases?: ReadonlyMap<object, ChildDeploymentValueRecipe>,
   aliasDefinitions?: ReadonlyMap<string, object>,
+  expectedType?: Type,
   structStack: ReadonlySet<StructType> = new Set(),
 ): ChildDeploymentValueRecipe | undefined {
   if (expression instanceof IdentifierNode) {
@@ -99,6 +117,29 @@ export function childDeploymentValueRecipe(
     return declaredType
       ? { kind: 'bytesLiteral', value: binToHex(expression.value), resultType: declaredType } : undefined;
   }
+  if (expression instanceof ArrayNode
+    && (expectedType instanceof ArrayType || expression.type instanceof ArrayType)) {
+    const arrayType = expectedType instanceof ArrayType ? expectedType : expression.type as ArrayType;
+    if (arrayType.bound === undefined || expression.elements.length !== arrayType.bound
+      || !materializableGenesisType(arrayType, structStack)) return undefined;
+    const elements = expression.elements.map((elementExpression) => {
+      let element = childDeploymentValueRecipe(
+        elementExpression, handlerInputs, true, handlerInputTypes, aliases, aliasDefinitions,
+        arrayType.elementType, structStack,
+      );
+      const targetType = physicalRecipeType(arrayType.elementType);
+      const sourceType = element?.resultType ?? recipeType(elementExpression);
+      if (element && sourceType && sourceType !== targetType) {
+        if (arrayType.elementType instanceof StructType || arrayType.elementType instanceof ArrayType
+          || !materializableCastType.test(targetType)) return undefined;
+        element = { kind: 'cast', resultType: targetType, operand: element };
+      }
+      return element;
+    });
+    return elements.every((element) => element !== undefined)
+      ? { kind: 'aggregate', resultType: arrayType.toString(), elements: elements as ChildDeploymentValueRecipe[] }
+      : undefined;
+  }
   if (expression instanceof FunctionCallNode && expression.type instanceof StructType
     && expression.identifier.name === expression.type.name && !expression.resolvedFunction) {
     const structType = expression.type;
@@ -107,15 +148,15 @@ export function childDeploymentValueRecipe(
     nestedStructStack.add(structType);
     const elements = expression.parameters.map((parameter, index) => {
       const fieldType = structType.fields[index].type;
-      if (!(fieldType instanceof StructType)
-        && !materializableGenesisLeafType.test(physicalRecipeType(fieldType))) return undefined;
+      if (!materializableGenesisType(fieldType, nestedStructStack)) return undefined;
       let element = childDeploymentValueRecipe(
-        parameter, handlerInputs, true, handlerInputTypes, aliases, aliasDefinitions, nestedStructStack,
+        parameter, handlerInputs, true, handlerInputTypes, aliases, aliasDefinitions,
+        fieldType, nestedStructStack,
       );
       const targetType = physicalRecipeType(fieldType);
       const sourceType = element?.resultType ?? recipeType(parameter);
       if (element && sourceType && sourceType !== targetType) {
-        if (fieldType instanceof StructType) return undefined;
+        if (fieldType instanceof StructType || fieldType instanceof ArrayType) return undefined;
         if (!materializableCastType.test(targetType)) return undefined;
         element = { kind: 'cast', resultType: targetType, operand: element };
       }
@@ -127,14 +168,16 @@ export function childDeploymentValueRecipe(
   }
   if (expression instanceof CastNode) {
     const operand = childDeploymentValueRecipe(
-      expression.expression, handlerInputs, true, handlerInputTypes, aliases, aliasDefinitions, structStack,
+      expression.expression, handlerInputs, true, handlerInputTypes, aliases, aliasDefinitions,
+      undefined, structStack,
     );
     return operand && declaredType && materializableCastType.test(declaredType)
       ? { kind: 'cast', resultType: declaredType, operand } : undefined;
   }
   if (expression instanceof UnaryOpNode && unaryOperators.has(expression.operator)) {
     const operand = childDeploymentValueRecipe(
-      expression.expression, handlerInputs, true, handlerInputTypes, aliases, aliasDefinitions, structStack,
+      expression.expression, handlerInputs, true, handlerInputTypes, aliases, aliasDefinitions,
+      undefined, structStack,
     );
     const resultType = declaredType ?? (expression.operator === UnaryOperator.NOT ? 'bool' : operand?.resultType);
     const operandFixedDecimals = fixedRecipeDecimals(operand?.resultType);
@@ -148,10 +191,12 @@ export function childDeploymentValueRecipe(
   }
   if (expression instanceof BinaryOpNode && binaryOperators.has(expression.operator)) {
     const left = childDeploymentValueRecipe(
-      expression.left, handlerInputs, true, handlerInputTypes, aliases, aliasDefinitions, structStack,
+      expression.left, handlerInputs, true, handlerInputTypes, aliases, aliasDefinitions,
+      undefined, structStack,
     );
     const right = childDeploymentValueRecipe(
-      expression.right, handlerInputs, true, handlerInputTypes, aliases, aliasDefinitions, structStack,
+      expression.right, handlerInputs, true, handlerInputTypes, aliases, aliasDefinitions,
+      undefined, structStack,
     );
     const booleanResult = [BinaryOperator.LT, BinaryOperator.LE, BinaryOperator.GT, BinaryOperator.GE,
       BinaryOperator.EQ, BinaryOperator.NE, BinaryOperator.AND, BinaryOperator.OR].includes(expression.operator);
@@ -516,7 +561,7 @@ export function analyzeChildDeploymentRecipes(
   const visibleInputs = fn.parameters.filter((parameter) => !parameter.name.startsWith('__internal__'));
   const handlerInputs = new Map(visibleInputs.map((parameter, index) => [parameter.name, index]));
   const handlerInputTypes = new Map(visibleInputs.map((parameter) => [parameter.name, abiTypeString(parameter.type)]));
-  const aliases = new Map<object, ChildDeploymentValueRecipe>(visibleInputs.map((parameter, inputIndex) => [
+  let aliases = new Map<object, ChildDeploymentValueRecipe>(visibleInputs.map((parameter, inputIndex) => [
     parameter,
     { kind: 'handlerInput', inputIndex, resultType: abiTypeString(parameter.type) } as ChildDeploymentValueRecipe,
   ]));
@@ -532,6 +577,36 @@ export function analyzeChildDeploymentRecipes(
       if (containsReturn(child, seen)) return true;
     }
     return false;
+  };
+  const childSwitchArmJoinSafe = (block: BlockNode): boolean => {
+    const statements = block.statements ?? [];
+    const permittedBreak = statements.at(-1) instanceof BreakNode ? statements.at(-1) : undefined;
+    const containsAbruptExit = (value: unknown, seen = new WeakSet<object>()): boolean => {
+      if (Array.isArray(value)) return value.some((item) => containsAbruptExit(item, seen));
+      if (!(value instanceof Node) || seen.has(value)) return false;
+      seen.add(value);
+      if (value === permittedBreak) return false;
+      if (value instanceof BreakNode || value instanceof ContinueNode
+        || value instanceof ReturnNode || value instanceof RevertNode) return true;
+      return Object.entries(value).some(([key, child]) => ![
+        'definition', 'referencedContract', 'resolvedFunction', 'symbolTable',
+      ].includes(key) && containsAbruptExit(child, seen));
+    };
+    return !containsAbruptExit(block);
+  };
+  const joinedRecipe = (
+    condition: ChildDeploymentValueRecipe,
+    whenTrue: ChildDeploymentValueRecipe | undefined,
+    whenFalse: ChildDeploymentValueRecipe | undefined,
+  ): ChildDeploymentValueRecipe | undefined => {
+    if (!whenTrue || !whenFalse) return undefined;
+    if (JSON.stringify(whenTrue) === JSON.stringify(whenFalse)) return whenTrue;
+    if (condition.resultType !== 'bool' || !whenTrue.resultType
+      || whenTrue.resultType !== whenFalse.resultType) return undefined;
+    return {
+      kind: 'conditional', resultType: whenTrue.resultType,
+      condition, ifTrue: whenTrue, ifFalse: whenFalse,
+    };
   };
 
   const snapshotExpression = (value: unknown, unsafe: boolean, seen = new WeakSet<object>()): void => {
@@ -650,12 +725,51 @@ export function analyzeChildDeploymentRecipes(
         continue;
       }
       if (statement instanceof SwitchNode) {
-        // Arm activation is authenticated separately. Sites may use row inputs and aliases which dominate the
-        // switch, but assignments made by any arm cannot escape the join as a single value recipe.
         snapshotExpression(statement.expression, statementUnsafe);
-        for (const arm of statement.cases) snapshotExpression(arm.body, statementUnsafe);
-        if (statement.defaultCase) snapshotExpression(statement.defaultCase, statementUnsafe);
-        invalidateAssignments(statement);
+        const incomingAliases = new Map(aliases);
+        const incomingDefinitions = new Map(aliasDefinitions);
+        const discriminant = !statementUnsafe ? childDeploymentValueRecipe(
+          statement.expression, handlerInputs, true, handlerInputTypes, incomingAliases, incomingDefinitions,
+        ) : undefined;
+        const matches = statement.cases.map((arm) => {
+          const armValue = !statementUnsafe ? childDeploymentValueRecipe(
+            arm.value, handlerInputs, true, handlerInputTypes, incomingAliases, incomingDefinitions,
+          ) : undefined;
+          return discriminant && armValue ? {
+            kind: 'binary', operator: '==', resultType: 'bool', left: discriminant, right: armValue,
+          } as ChildDeploymentValueRecipe : undefined;
+        });
+        const switchSupported = discriminant !== undefined
+          && matches.every((match) => match !== undefined)
+          && statement.cases.every((arm) => childSwitchArmJoinSafe(arm.body))
+          && (!statement.defaultCase || childSwitchArmJoinSafe(statement.defaultCase));
+        // Invoked synchronously for each arm; no callback escapes this switch-analysis iteration.
+        // eslint-disable-next-line @typescript-eslint/no-loop-func
+        const processArm = (armBlock: BlockNode): Map<object, ChildDeploymentValueRecipe> => {
+          aliases = new Map(incomingAliases);
+          aliasDefinitions = new Map(incomingDefinitions);
+          processBlock(armBlock, statementUnsafe || !switchSupported);
+          return new Map(aliases);
+        };
+        const armAliases = statement.cases.map((arm) => processArm(arm.body));
+        const defaultAliases = statement.defaultCase ? processArm(statement.defaultCase) : incomingAliases;
+        aliases = new Map(incomingAliases);
+        aliasDefinitions = incomingDefinitions;
+        if (!switchSupported) {
+          invalidateAssignments(statement);
+          priorReturn ||= containsReturn(statement);
+          continue;
+        }
+        let joined = new Map(defaultAliases);
+        for (let index = armAliases.length - 1; index >= 0; index -= 1) {
+          const next = new Map<object, ChildDeploymentValueRecipe>();
+          for (const definition of incomingDefinitions.values()) {
+            const recipe = joinedRecipe(matches[index]!, armAliases[index].get(definition), joined.get(definition));
+            if (recipe) next.set(definition, recipe);
+          }
+          joined = next;
+        }
+        aliases = joined;
         priorReturn ||= containsReturn(statement);
         continue;
       }
@@ -686,7 +800,7 @@ export function analyzeChildDeploymentRecipes(
 /** Serialize a complete constructor-only folded state transition. */
 export function childDeploymentGenesisState(
   foldedState: ReadonlyMap<string, ExpressionNode> | undefined,
-  variables: readonly { name: string; type: { toString(): string }; nftIndex?: number; fieldIndex?: number }[],
+  variables: readonly { name: string; type: Type; nftIndex?: number; fieldIndex?: number }[],
   handlerInputs: ReadonlyMap<string, number>,
   handlerInputTypes?: ReadonlyMap<string, string>,
   allowUnpackedLayout = false,
@@ -699,11 +813,11 @@ export function childDeploymentGenesisState(
     if (!variable || (!allowUnpackedLayout
       && (variable.nftIndex === undefined || variable.fieldIndex === undefined))) return undefined;
     const type = physicalRecipeType(variable.type);
-    // Flat fixed-layout structs are materialized as ordered aggregate recipes; dynamic or nested layouts remain
-    // fenced until their chunk topology and recursive encoding can be authenticated explicitly.
-    if (!(variable.type instanceof StructType) && !materializableGenesisLeafType.test(type)) return undefined;
+    // Finite fixed-layout structs and arrays are materialized as ordered aggregate recipes. Dynamic or cyclic
+    // layouts remain fenced until their chunk topology and recursive encoding can be authenticated explicitly.
+    if (!materializableGenesisType(variable.type)) return undefined;
     const value = childDeploymentValueRecipe(
-      expression, handlerInputs, false, handlerInputTypes, aliases, aliasDefinitions,
+      expression, handlerInputs, false, handlerInputTypes, aliases, aliasDefinitions, variable.type,
     );
     if (!value) return undefined;
     fields.push({

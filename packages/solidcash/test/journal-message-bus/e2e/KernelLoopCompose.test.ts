@@ -6255,6 +6255,71 @@ describe('kernel composite counter-key settlement', () => {
     }
   }, 180_000);
 
+  it('authenticates a constructed-array pop after the initial logical iteration', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(`contract ConditionalPopKeys() {
+      mapping(int => int) slots;
+      function write(int n) public {
+        int[] xs = new int[](n);
+        xs[0] = 10; xs[1] = 11; xs[2] = 12; xs[3] = 13;
+        for (int i = 0; i < n; i = i + 1) {
+          if (i > 0) xs.pop();
+          this.slots[xs[n - i - 1]] = i + 20;
+        }
+        require(true);
+      }
+      function seed(int key) public { this.slots[key] = 0; require(true); }
+      function check(int key, int expected) public { require(this.slots[key] == expected); }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
+      .toMatchObject({ eligible: true });
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+    );
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    for (const key of [10n, 11n, 12n, 13n]) await contract.call.seed(key).send();
+    const call = contract.batch([{ function: 'write', args: [4n] }]);
+    const builder = await call.build();
+    const routeInputIndex = builder.inputs.findIndex((input) =>
+      'abiFunction' in input.unlocker && input.unlocker.abiFunction.name === artifact.messageBus!.route.name);
+    expect(routeInputIndex).toBeGreaterThanOrEqual(0);
+    const routeUnlocker = builder.inputs[routeInputIndex].unlocker;
+    if (!('params' in routeUnlocker)) throw new Error('message-bus route input has no contract parameters');
+    const writeAbi = artifact.abi.find((candidate) => candidate.name === 'write')!;
+    const permutationName = writeAbi.sortedUpsertLoopInfo?.[0].varyingArrayParam;
+    const permutationRouteIndex = artifact.messageBus!.route.inputs.findIndex((input) =>
+      input.name === permutationName);
+    const rowPermutation = (routeUnlocker.params[permutationRouteIndex] as bigint[][])[0];
+    expect([...rowPermutation].sort((left, right) => Number(left - right))).toEqual([0n, 1n, 2n, 3n]);
+
+    const honestVm = createVirtualMachineBch2026ForProvider(provider);
+    expect(honestVm.stateSuccess(honestVm.evaluate({
+      inputIndex: routeInputIndex,
+      sourceOutputs: generateLibauthSourceOutputs(builder.inputs),
+      transaction: builder.buildLibauthTransaction(),
+    }))).toBe(true);
+    const routeSelector = artifact.messageBus!.route.selector;
+    if (!routeSelector) throw new Error('message-bus route has no selector');
+    const hostileParams = [...routeUnlocker.params];
+    hostileParams[permutationRouteIndex] = [[99n, ...rowPermutation.slice(1)]];
+    builder.inputs[routeInputIndex].unlocker = routeUnlocker.contract.createCompilerRouteUnlocker(
+      routeUnlocker.abiFunction, hexToBin(routeSelector),
+    )(...hostileParams);
+    const hostileVm = createVirtualMachineBch2026ForProvider(provider);
+    expect(hostileVm.stateSuccess(hostileVm.evaluate({
+      inputIndex: routeInputIndex,
+      sourceOutputs: generateLibauthSourceOutputs(builder.inputs),
+      transaction: builder.buildLibauthTransaction(),
+    }))).not.toBe(true);
+    builder.inputs[routeInputIndex].unlocker = routeUnlocker;
+
+    await expect(call.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    for (const [key, expected] of [[13n, 20n], [12n, 21n], [11n, 22n], [10n, 23n]] as const) {
+      await expect(contract.call.check(key, expected).send()).resolves.toBeDefined();
+    }
+  }, 180_000);
+
   it('settles symbolic push widths, ordinals, and historical branch predicates', async () => {
     const provider = createTestProvider();
     const artifact = compileString(`contract KernelVariablePushSwitch() {

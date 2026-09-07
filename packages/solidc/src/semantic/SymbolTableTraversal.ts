@@ -1934,6 +1934,31 @@ export default class SymbolTableTraversal extends AstTraversal {
       value.type = t;
       return value;
     }
+    if (expr instanceof ArrayNode) {
+      const arrayType = expectedType instanceof ArrayType ? expectedType
+        : expr.type instanceof ArrayType ? expr.type : undefined;
+      if (!arrayType || arrayType.bound === undefined || expr.elements.length !== arrayType.bound) return null;
+      const elements = expr.elements.map((element) =>
+        this.foldGenesisExpr(element, subs, fieldExprs, fieldType, arrayType.elementType));
+      if (elements.some((element) => element === null)) return null;
+      expr.elements = elements as ExpressionNode[];
+      expr.type = arrayType;
+      expr.blobEncoded = true;
+      return expr;
+    }
+    if (expr instanceof NewArrayNode) {
+      const arrayType = expectedType instanceof ArrayType ? expectedType
+        : expr.type instanceof ArrayType ? expr.type : undefined;
+      if (!arrayType || arrayType.bound === undefined || !(expr.size instanceof IntLiteralNode)
+        || expr.size.value !== BigInt(arrayType.bound)) return null;
+      const aggregate = new ArrayNode(Array.from(
+        { length: arrayType.bound },
+        () => createDefaultValueExpression(arrayType.elementType, expr.location!),
+      ));
+      aggregate.location = expr.location;
+      aggregate.type = arrayType;
+      return this.foldGenesisExpr(aggregate, subs, fieldExprs, fieldType, arrayType);
+    }
     if (expr instanceof FunctionCallNode) {
       // A fixed-layout struct constructor is a pure aggregate value. Preserve its field order while folding
       // every field into the deploying handler's context; deployment recipe analysis decides whether each

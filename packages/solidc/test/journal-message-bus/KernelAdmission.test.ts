@@ -2150,6 +2150,38 @@ describe('required kernel admission', () => {
     expect(childDeploymentValueRecipe(outer, new Map())).toBeUndefined();
   });
 
+  it('publishes fixed arrays of nested structs, enums, and fixed-point leaves as bounded aggregates', () => {
+    const artifact = compileString(`enum Phase { Initial, Active, Complete }
+      struct Metrics { Phase phase; fixed128x2 weight; }
+      struct Batch { Metrics[2] snapshots; }
+      contract Unit() {
+        Batch batch;
+        constructor(int seed) {
+          this.batch = Batch([
+            Metrics(Phase(seed), fixed128x2(seed + 10)),
+            Metrics(Phase(seed + 1), fixed128x2(seed + 20))
+          ]);
+        }
+      }
+      contract Coordinator() {
+        function materialize(int seed) public { Unit unit = new Unit(seed); require(true); }
+      }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'materialize'))
+      .toMatchObject({
+        eligible: true,
+        childDeployments: [{ genesisState: { fields: [{
+          name: 'batch', type: 'Batch', value: {
+            kind: 'aggregate', resultType: 'Batch', elements: [{
+              kind: 'aggregate', resultType: 'Metrics[2]', elements: [
+                { kind: 'aggregate', resultType: 'Metrics' },
+                { kind: 'aggregate', resultType: 'Metrics' },
+              ],
+            }],
+          },
+        }] } }],
+      });
+  });
+
   it.each([
     'struct Payload { bytes data; int count; } contract Unit() { Payload payload; '
       + 'constructor(bytes raw) { this.payload = Payload(raw, 1); } }',
@@ -3571,7 +3603,9 @@ describe('required kernel admission', () => {
 
   it.each([
     ['pops into its pre-existing prefix before pushing', 'xs.pop(); xs.push(i + 1); this.slots[xs[i]] = i;'],
-    ['conditionally pops inside the loop', 'if (i > 0) xs.pop(); this.slots[xs[i]] = i;'],
+    ['pops after a later counter threshold', 'if (i > 1) xs.pop(); this.slots[xs[0]] = i;'],
+    ['has a counter-selected unequal pop width',
+      'if (i > 0) { xs.pop(); xs.pop(); } else xs.pop(); this.slots[xs[0]] = i;'],
   ])('refuses a constructed array which %s', (_label, body) => {
     const artifact = compileString(`contract C() {
       mapping(int => int) slots;
@@ -3586,6 +3620,34 @@ describe('required kernel admission', () => {
       .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_UNBOUNDED_KEY' });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control'))
       .toMatchObject({ eligible: true });
+  });
+
+  it('replays one pop after the initial canonical iteration', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) slots;
+      function write(int n) public {
+        int[] xs = new int[](n);
+        xs[0] = 10; xs[1] = 11; xs[2] = 12; xs[3] = 13;
+        for (int i = 0; i < n; i = i + 1) {
+          if (i > 0) xs.pop();
+          this.slots[xs[n - i - 1]] = i;
+        }
+        require(true);
+      }
+      function writeDescending(int n) public {
+        int[] xs = new int[](4);
+        xs[0] = 10; xs[1] = 11; xs[2] = 12; xs[3] = 13;
+        for (int i = 3; i >= n; i = i - 1) {
+          if (i < 3) xs.pop();
+          this.slots[xs[i]] = i;
+        }
+        require(true);
+      }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    for (const name of ['write', 'writeDescending']) {
+      expect(artifact.messageBus?.handlers.find((handler) => handler.name === name))
+        .toMatchObject({ eligible: true });
+    }
   });
 
   it('replays a path-balanced transient push/pop schedule independently per iteration', () => {

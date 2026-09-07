@@ -28,9 +28,6 @@ const literal = (value: string): Record<string, unknown> => ({ kind: 'literal', 
 const equals = (paramIndex: number, value: string): Record<string, unknown> => ({
   kind: 'binary', operator: '==', left: source(paramIndex), right: literal(value),
 });
-const notEquals = (paramIndex: number, value: string): Record<string, unknown> => ({
-  kind: 'binary', operator: '!=', left: source(paramIndex), right: literal(value),
-});
 const negated = (expression: unknown): Record<string, unknown> => ({
   kind: 'unary', operator: '!', expression,
 });
@@ -93,7 +90,7 @@ describe('kernel switch and try fixed effects', () => {
         transferIndex: 0, recipient: forwarded(1), condition: casePredicate,
       }),
       expect.objectContaining({
-        transferIndex: 0, recipient: forwarded(2), condition: notEquals(0, '7'),
+        transferIndex: 0, recipient: forwarded(2), condition: negated(casePredicate),
       }),
     ]);
   });
@@ -156,11 +153,11 @@ describe('kernel switch and try fixed effects', () => {
     expect(handler).toMatchObject({ eligible: true });
     expect(handler.transfers?.map((transfer) => transfer.condition)).toEqual([
       { kind: 'binary', operator: '&&', left: source(0), right: equals(1, '3') },
-      { kind: 'binary', operator: '&&', left: source(0), right: notEquals(1, '3') },
+      { kind: 'binary', operator: '&&', left: source(0), right: negated(equals(1, '3')) },
     ]);
   });
 
-  it('refuses a fixed effect when a reassigned switch discriminator has no immutable recipe', () => {
+  it('replays a reassigned pure switch discriminator', () => {
     const { handler } = select(`
       contract Store() {
         function apply(int choice, bytes recipient) public {
@@ -172,7 +169,16 @@ describe('kernel switch and try fixed effects', () => {
       }
     `);
 
-    expect(handler).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+    expect(handler).toMatchObject({
+      eligible: true,
+      transfers: [{
+        condition: {
+          kind: 'binary', operator: '==',
+          left: { kind: 'cast', expression: { kind: 'binary', operator: '+' } },
+          right: { kind: 'literal', value: '1' },
+        },
+      }],
+    });
   });
 
   it('publishes mutually exclusive activation recipes for switch-selected deployments', () => {
@@ -200,6 +206,94 @@ describe('kernel switch and try fixed effects', () => {
       { siteIndex: 0, occurrence: 'conditional', operator: '==', inputIndex: 0 },
       { siteIndex: 1, occurrence: 'conditional', operator: '!=', inputIndex: 0 },
     ]);
+  });
+
+  it('uses first-match deployment activations and arm-local constructor recipes', () => {
+    const { handler } = select(`
+      contract Unit(int seed) { int marker; constructor() { this.marker = seed; } }
+      contract Store() {
+        function apply(int choice, int seed) public {
+          switch (choice) {
+            case 5: int adjusted = seed + 10; Unit first = new Unit(adjusted); break;
+            case 5: int adjusted = seed + 20; Unit second = new Unit(adjusted); break;
+            default: Unit fallbackUnit = new Unit(seed); break;
+          }
+          require(true);
+        }
+      }
+    `);
+
+    expect(handler).toMatchObject({ eligible: true });
+    const sites = handler.childDeployments!;
+    expect(sites).toHaveLength(3);
+    expect(sites.map((site) => site.activation)).toEqual([
+      expect.objectContaining({ kind: 'binary', operator: '==' }),
+      expect.objectContaining({
+        kind: 'binary', operator: '&&',
+        left: expect.objectContaining({ kind: 'binary', operator: '!=' }),
+        right: expect.objectContaining({ kind: 'binary', operator: '==' }),
+      }),
+      expect.objectContaining({
+        kind: 'binary', operator: '&&',
+        left: expect.objectContaining({ kind: 'binary', operator: '!=' }),
+        right: expect.objectContaining({ kind: 'binary', operator: '!=' }),
+      }),
+    ]);
+    expect(sites.map((site) => site.constructorArgs?.[0])).toEqual([
+      expect.objectContaining({ kind: 'cast', operand: expect.objectContaining({ kind: 'binary', operator: '+' }) }),
+      expect.objectContaining({ kind: 'cast', operand: expect.objectContaining({ kind: 'binary', operator: '+' }) }),
+      expect.objectContaining({ kind: 'handlerInput', inputIndex: 1 }),
+    ]);
+  });
+
+  it('joins an implicit switch default into a post-switch deployment recipe', () => {
+    const { handler } = select(`
+      contract Unit(int seed) { int marker; constructor() { this.marker = seed; } }
+      contract Store() {
+        function apply(int choice, int seed) public {
+          int adjusted = seed;
+          switch (choice) {
+            case 1: adjusted = seed + 10; break;
+            case 2: adjusted = seed + 20; break;
+          }
+          Unit child = new Unit(adjusted);
+          require(true);
+        }
+      }
+    `);
+
+    expect(handler).toMatchObject({ eligible: true });
+    expect(handler.childDeployments).toEqual([
+      expect.objectContaining({
+        occurrence: 'once',
+        constructorArgs: [expect.objectContaining({
+          kind: 'conditional',
+          ifFalse: expect.objectContaining({
+            kind: 'conditional',
+            ifFalse: expect.objectContaining({ kind: 'handlerInput', inputIndex: 1 }),
+          }),
+        })],
+      }),
+    ]);
+  });
+
+  it('keeps ambiguous switch exits fenced from deployment joins', () => {
+    const { handler } = select(`
+      contract Unit(int seed) { int marker; constructor() { this.marker = seed; } }
+      contract Store() {
+        function apply(int choice, int seed) public {
+          int adjusted = seed;
+          switch (choice) {
+            case 1: if (seed > 0) { break; } adjusted = seed + 10; break;
+            default: adjusted = seed + 20; break;
+          }
+          Unit child = new Unit(adjusted);
+          require(true);
+        }
+      }
+    `);
+
+    expect(handler).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
   });
 
   it('publishes exact switch predicates for runtime counter-loop events', () => {

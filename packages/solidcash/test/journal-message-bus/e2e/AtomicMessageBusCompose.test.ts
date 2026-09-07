@@ -632,14 +632,17 @@ describe('messageBus.compose atomic transaction', () => {
     const artifacts = compileStringMulti(`contract Child(int seed) {
         enum Phase { Initial, Active, Complete }
         struct Metrics { Phase phase; fixed128x2 weight; }
-        struct Pair { int first; Metrics metrics; }
+        struct Pair { int first; Metrics[2] metrics; }
         int marker;
         Phase phase;
         Pair pair;
         constructor() {
           this.marker = seed;
           this.phase = Phase(seed);
-          this.pair = Pair(seed, Metrics(Phase(seed), fixed128x2(seed + 10)));
+          this.pair = Pair(seed, [
+            Metrics(Phase(seed), fixed128x2(seed + 10)),
+            Metrics(Phase(seed), fixed128x2(seed + 20))
+          ]);
         }
         function keep() public { require(true); }
       }
@@ -677,9 +680,9 @@ describe('messageBus.compose atomic transaction', () => {
             kind: 'aggregate', resultType: 'Pair',
             elements: [
               { kind: 'cast', resultType: 'int256' },
-              { kind: 'aggregate', resultType: 'Metrics', elements: [
-                { kind: 'cast', resultType: 'bigint' },
-                { kind: 'cast', resultType: 'fixed128x2', operand: { kind: 'binary', operator: '+' } },
+              { kind: 'aggregate', resultType: 'Metrics[2]', elements: [
+                { kind: 'aggregate', resultType: 'Metrics' },
+                { kind: 'aggregate', resultType: 'Metrics' },
               ] },
             ],
           } },
@@ -709,14 +712,23 @@ describe('messageBus.compose atomic transaction', () => {
     expect(binToHex(childLocks[0]!)).not.toBe(binToHex(childLocks[1]!));
     const childDataIndices = [firstGenesis, secondGenesis].map((genesis) => transaction.outputs.findIndex((output) =>
       output.token?.category === genesis.utxo.txid && output.token.nft?.capability === 'mutable'));
-    const childStates = childDataIndices.map((index) => parsePushdataCommitment(
-      transaction.outputs[index].token!.nft!.commitment, artifacts.Child.stateLayout!, 0,
+    const childStates = [firstGenesis, secondGenesis].map((genesis) => Object.assign({},
+      ...transaction.outputs
+        .filter((output) => output.token?.category === genesis.utxo.txid
+          && output.token.nft?.capability === 'mutable')
+        .map((output, nftIndex) => parsePushdataCommitment(
+          output.token!.nft!.commitment, artifacts.Child.stateLayout!, nftIndex,
+        )),
     ));
     expect(childStates.map((state) => state.marker)).toEqual([1n, 2n]);
     expect(childStates.map((state) => state.phase)).toEqual([1n, 2n]);
     expect(childStates.map((state) => state.pair)).toEqual([
-      { first: 1n, metrics: { phase: 1n, weight: 1_100n } },
-      { first: 2n, metrics: { phase: 2n, weight: 1_200n } },
+      { first: 1n, metrics: [
+        { phase: 1n, weight: 1_100n }, { phase: 1n, weight: 2_100n },
+      ] },
+      { first: 2n, metrics: [
+        { phase: 2n, weight: 1_200n }, { phase: 2n, weight: 2_200n },
+      ] },
     ]);
     const tampered = await messageBus.compose({
       preparedCalls: [

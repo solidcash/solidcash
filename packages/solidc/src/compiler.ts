@@ -2336,8 +2336,10 @@ function childDeploymentSites(
         const matches: ChildDeploymentSiteAbi['activation'] = discriminant && armValue ? {
           kind: 'binary', operator: '==', resultType: 'bool', left: discriminant, right: armValue,
         } : undefined;
+        // The generated switch is a cascading IF/ELSE chain. Include every prior miss in this arm's activation
+        // so even repeated/equivalent case expressions cannot authorize a later site when an earlier case won.
         walk(arm.body, nestedOccurrence, new WeakSet<object>(),
-          matches ? combineActivation(activation, matches) : undefined);
+          matches ? combineActivation(defaultActivation, matches) : undefined);
         const misses: ChildDeploymentSiteAbi['activation'] = discriminant && armValue ? {
           kind: 'binary', operator: '!=', resultType: 'bool', left: discriminant, right: armValue,
         } : undefined;

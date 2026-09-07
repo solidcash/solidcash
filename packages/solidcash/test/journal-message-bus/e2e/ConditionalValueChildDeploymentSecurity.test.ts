@@ -3,7 +3,7 @@ import {
   binToHex, decodeAuthenticationInstructions, encodeAuthenticationInstructions, hexToBin,
 } from '@bitauth/libauth';
 import { compileStringMulti } from 'solidc';
-import { sha256 } from '@solidcash/utils';
+import { parsePushdataCommitment, sha256 } from '@solidcash/utils';
 import type { Artifact } from '@solidcash/utils';
 import { describe, expect, it } from 'vitest';
 import { Contract, StatefulContract, messageBus } from '../../../src/index.js';
@@ -112,6 +112,87 @@ const rowsFor = (builder: TransactionBuilder, parent: number, kind: number): Ato
   envelopeOf(builder).rows.filter((row) => row.kind === kind && row.parent === parent);
 
 describe('conditional value-bearing child deployment transcript security', () => {
+  it('enforces first-match switch deployment sites and arm-local constructor values', async () => {
+    const provider = createMessageBusCapstoneTestProvider();
+    const artifacts = compileStringMulti(`contract Unit(int seed) {
+        int marker;
+        constructor() { this.marker = seed; }
+        function keep() public { require(true); }
+      }
+      interface IFactory { function select(int choice, int seed); }
+      contract Factory() {
+        function select(int choice, int seed) public {
+          switch (choice) {
+            case 5: int firstValue = seed + 10; Unit first = new Unit(firstValue); break;
+            case 5: int shadowedValue = seed + 20; Unit shadowed = new Unit(shadowedValue); break;
+            default: Unit fallbackUnit = new Unit(seed); break;
+          }
+          require(true);
+        }
+      }
+      contract Driver(address factory) {
+        function run(int choice, int seed) public {
+          IFactory(factory).select(choice, seed);
+          require(true);
+        }
+      }`, { forceStateful: true, messageBus: true, messageBusKernel: true, maximumInputBytes: 1_000_000 });
+    const connect = async (artifact: Artifact, args: readonly unknown[] = []): Promise<StatefulContract> => {
+      const base = new Contract(artifact, args as never[], { provider });
+      const setup = await setupStatefulUtxos(provider, base, artifact.stateLayout!, {}, { saltContract: true });
+      return StatefulContract.withCategory(base.withCategory(hexToBin(setup.categoryId)), setup.categoryId);
+    };
+    const factory = (await connect(artifacts.Factory)).registerChild(artifacts.Unit);
+    const driver = await connect(artifacts.Driver, [hexToBin(factory.inner.lockingBytecode)]);
+    const handler = artifacts.Factory.messageBus?.handlers.find((candidate) => candidate.name === 'select');
+    expect(handler).toMatchObject({ eligible: true });
+    expect(handler?.childDeployments?.map((site) => site.siteIndex)).toEqual([0, 1, 2]);
+
+    const fee = await createBareP2pkhFeeFunder(provider, 1_000_000n);
+    const firstGenesis = await createBareP2pkhFeeFunder(provider, 20_000n);
+    const fallbackGenesis = await createBareP2pkhFeeFunder(provider, 20_000n);
+    const shadowedGenesis = await createBareP2pkhFeeFunder(provider, 20_000n);
+    const build = (
+      choice: bigint, seed: bigint, siteIndex: number,
+      genesis: Awaited<ReturnType<typeof createBareP2pkhFeeFunder>>,
+    ): Promise<TransactionBuilder> => messageBus.compose({
+      preparedCalls: [
+        { contract: driver, functionName: 'run', args: [choice, seed] },
+        { contract: factory, functionName: 'select', args: [choice, seed] },
+      ],
+      funder: fee,
+      changeAddress: fee.unlocker.generateLockingBytecode(),
+      childDeployments: [{ invocationIndex: 1, siteIndex, funder: genesis }],
+    }).build();
+
+    await expect(messageBus.compose({
+      preparedCalls: [
+        { contract: driver, functionName: 'run', args: [5n, 3n] },
+        { contract: factory, functionName: 'select', args: [5n, 3n] },
+      ],
+      funder: fee,
+      changeAddress: fee.unlocker.generateLockingBytecode(),
+      childDeployments: [{ invocationIndex: 1, siteIndex: 1, funder: shadowedGenesis }],
+    }).build()).rejects.toThrow(/inactive child deployment.*site 1|missing child genesis.*site 0/);
+
+    const selected = await build(5n, 3n, 0, firstGenesis);
+    const fallback = await build(9n, 4n, 2, fallbackGenesis);
+    expect(vmRejects(selected)).toBe(false);
+    expect(vmRejects(fallback)).toBe(false);
+    const commitments = [[selected, firstGenesis], [fallback, fallbackGenesis]].map(([transaction, genesis]) =>
+      (transaction as TransactionBuilder).outputs.find((output) =>
+        output.token?.category === (genesis as typeof firstGenesis).utxo.txid
+        && output.token.nft?.capability === 'mutable')!.token!.nft!.commitment);
+    expect(commitments.map((commitment) => parsePushdataCommitment(
+      commitment, artifacts.Unit.stateLayout!, 0,
+    ).marker)).toEqual([13n, 4n]);
+
+    const tampered = await build(9n, 4n, 2, fallbackGenesis);
+    const fallbackOutput = tampered.outputs.find((output) =>
+      output.token?.category === fallbackGenesis.utxo.txid && output.token.nft?.capability === 'mutable')!;
+    fallbackOutput.token!.nft!.commitment = '01';
+    expect(vmRejects(tampered)).toBe(true);
+  }, 120_000);
+
   it('binds the predicate, exact genesis, exact value row, neutral false frame, and container debit', async () => {
     const provider = createMessageBusCapstoneTestProvider();
     const artifacts = compileStringMulti(`contract Unit() {

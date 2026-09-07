@@ -719,6 +719,16 @@ describe('nested struct encode/decode roundtrip', () => {
     expect(inner.y).toBe(8n);
     expect(outer.z).toBe(9n);
   });
+
+  it('roundtrips a fixed array of nested structs', () => {
+    const aggregateStructs: readonly StructDefinitionInfo[] = [
+      ...structs,
+      { name: 'Batch', fields: [{ name: 'items', type: 'Inner[2]' }] },
+    ];
+    const value = { items: [{ x: 1n, y: 2n }, { x: 3n, y: 4n }] };
+    const encoded = encodePushdataValue(value, 'Batch', aggregateStructs);
+    expect(decodePushdataValue(encoded, 0, 'Batch', aggregateStructs).value).toEqual(value);
+  });
 });
 
 describe('nested struct getDefaultStateValue', () => {

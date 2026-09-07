@@ -1,0 +1,62 @@
+import { compileString } from '../../src/compiler.js';
+import { describe, expect, it } from 'vitest';
+
+const OPTIONS = {
+  forceStateful: true,
+  messageBus: true,
+  messageBusKernel: true,
+  maximumInputBytes: 1_000_000,
+  solidityImportCompat: true,
+  suppressWarnings: true,
+} as const;
+
+describe('kernel whole-struct state getters', () => {
+  it('admits a finite fixed-layout nested struct as one ABI result', () => {
+    const artifact = compileString(`pragma solidity ^0.8.0;
+      struct Detail { uint16 code; uint8 status; }
+      struct Record { uint256 value; Detail detail; bytes4 tag; uint16[2] marks; }
+      contract Source {
+        Record record;
+        function read() public view returns (Record memory) { return record; }
+      }`, OPTIONS);
+
+    expect(artifact.stateLayout).toMatchObject({
+      variables: [{ name: 'record', type: 'Record' }],
+    });
+    expect(artifact.messageBus?.handlers.find((entry) => entry.name === 'read')).toMatchObject({
+      eligible: true,
+      outputs: [{ type: 'Record' }],
+    });
+  });
+
+  it('keeps a state-backed struct result behind the signature self-commit fence', () => {
+    const artifact = compileString(`
+      struct Record { bigint amount; sig authorization; }
+      contract Source(pubkey owner) {
+        Record record;
+        function read(sig proof) public view returns (Record) {
+          require(checkSig(proof, owner));
+          return this.record;
+        }
+      }`, { ...OPTIONS, solidityImportCompat: false });
+
+    expect(artifact.messageBus?.handlers.find((entry) => entry.name === 'read')).toMatchObject({
+      eligible: false,
+      rejectionReason: 'KERNEL_TX_SIGNATURE',
+    });
+  });
+
+  it('rejects a whole state struct containing a dynamic array', () => {
+    const artifact = compileString(`pragma solidity ^0.8.0;
+      struct Record { uint256 value; uint16[] marks; }
+      contract Source {
+        Record record;
+        function read() public view returns (Record memory) { return record; }
+      }`, OPTIONS);
+
+    expect(artifact.messageBus?.handlers.find((entry) => entry.name === 'read')).toMatchObject({
+      eligible: false,
+      rejectionReason: 'KERNEL_LAYOUT',
+    });
+  });
+});

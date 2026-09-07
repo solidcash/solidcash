@@ -41,7 +41,7 @@ import {
   TokenContainerMethodStatementNode, SelfdestructStatementNode,
   AssemblyStatementNode, CastNode, IntLiteralNode, TryCatchNode,
   WhileNode, DoWhileNode, UnaryOpNode, BreakNode, ContinueNode,
-  BranchNode, UncheckedNode, SwitchNode, StateVariableVisibility,
+  BranchNode, UncheckedNode, SwitchNode, StateVariableNode, StateVariableVisibility,
 } from './ast/AST.js';
 import AstBuilder from './ast/AstBuilder.js';
 import { Class, GlobalFunction } from './ast/Globals.js';
@@ -4668,7 +4668,9 @@ function synthesizeMessageBusRoute(
     .map((definition) => definition.name));
   const routeEnumNames = new Set([...ast.enumDefinitions, ...contract.enumDefinitions]
     .map((definition) => definition.name));
-  const kernelResultEncodable = (type: Type, active = new Set<object>()): boolean => {
+  const kernelResultEncodable = (
+    type: Type, active = new Set<object>(), aggregateField = false,
+  ): boolean => {
     if (type === PrimitiveType.BOOL || type === PrimitiveType.BIGINT || type === PrimitiveType.STRING
       || type === PrimitiveType.INT) return true;
     // Native SolidCash ABI framing can carry these byte-string primitives. A returned `sig` is safe only when the
@@ -4685,16 +4687,17 @@ function synthesizeMessageBusRoute(
       return true;
     }
     if (type instanceof EnumType) return true;
-    if (type instanceof ValueType) return kernelResultEncodable(type.underlyingType, active);
+    if (type instanceof ValueType) return kernelResultEncodable(type.underlyingType, active, aggregateField);
     if (type instanceof StructType || type instanceof ArrayType) {
       // Solidity permits recursive storage aggregates (for example a struct containing an array of itself), but
       // a returned value must have a finite materialized ABI representation. Detect the type-graph back edge here
       // rather than overflowing this admission walk or letting later code generation partially expand it.
       if (active.has(type)) return false;
+      if (type instanceof ArrayType && aggregateField && type.bound === undefined) return false;
       active.add(type);
       const encodable = type instanceof StructType
-        ? type.fields.every((field) => kernelResultEncodable(field.type, active))
-        : kernelResultEncodable(type.elementType, active);
+        ? type.fields.every((field) => kernelResultEncodable(field.type, active, true))
+        : kernelResultEncodable(type.elementType, active, aggregateField);
       active.delete(type);
       return encodable;
     }
@@ -4703,6 +4706,34 @@ function synthesizeMessageBusRoute(
     // representation, so do not confuse the two shapes.
     if (type instanceof TupleType) return false;
     return false;
+  };
+  const directWholeStructStateGetter = (fn: FunctionDefinitionNode): StateVariableNode | undefined => {
+    if (fn.parameters.length !== 0 || fn.returnTypes.length !== 1
+      || !(fn.returnTypes[0] instanceof StructType)) return undefined;
+    const returns: ReturnNode[] = [];
+    walkInvocationAst(fn.body, (node) => {
+      if (node instanceof ReturnNode) returns.push(node);
+    });
+    if (fn.body?.statements?.length !== 1 || fn.body.statements[0] !== returns[0]
+      || returns.length !== 1 || returns[0].expressions.length !== 1) return undefined;
+    const expression = returns[0].expressions[0];
+    const stateVariable = expression instanceof StateAccessNode
+      ? expression.stateVariable
+      : expression instanceof IdentifierNode && expression.definition instanceof StateVariableNode
+        ? expression.definition : undefined;
+    if (!stateVariable || !(stateVariable.type instanceof StructType)) return undefined;
+    return stateVariable;
+  };
+  const fixedKernelStructLayout = (type: Type, active = new Set<object>()): boolean => {
+    if (type instanceof ArrayType) {
+      return type.bound !== undefined && fixedKernelStructLayout(type.elementType, active);
+    }
+    if (!(type instanceof StructType)) return kernelResultEncodable(type);
+    if (active.has(type)) return false;
+    active.add(type);
+    const encodable = type.fields.every((field) => fixedKernelStructLayout(field.type, active));
+    active.delete(type);
+    return encodable;
   };
   for (const fn of eligible) {
     // A fixed self external-function reference is represented by its immutable local functionId throughout the
@@ -4728,6 +4759,14 @@ function synthesizeMessageBusRoute(
       // The legacy wrapper cannot spell a field-shaped `rec()` projection as one whole struct value.
       fn.messageBusEligible = false;
       fn.messageBusRejectionReason = 'struct-state-getter-route-not-enabled';
+    } else if (compilerOptions.messageBusKernel === true
+      && directWholeStructStateGetter(fn)
+      && !fixedKernelStructLayout(fn.returnTypes[0])) {
+      // State-backed result materialization is deliberately finite: recursive layouts and dynamically-sized
+      // arrays do not have one bounded row-local representation. Pure constructed results keep the ordinary
+      // aggregate codec; this fence is specific to a whole value loaded directly from a state NFT.
+      fn.messageBusEligible = false;
+      fn.messageBusRejectionReason = 'KERNEL_LAYOUT';
     } else if (compilerOptions.messageBusKernel === true
       && (fn.messageBusUsesTransactionSignature === true
         || fn.parameters.some((parameter) =>
@@ -6124,6 +6163,14 @@ function synthesizeMessageBusRoute(
         : (graphHandlerInvokeNames.get(fn) ?? siblingHandlerInvokeNames.get(fn)
         ?? fixedArrayHandlerInvokeNames.get(fn) ?? fn.name);
       const invoke = (args: string, selectedInvokeName = invokeName): string => {
+        const structStateGetter = directWholeStructStateGetter(fn);
+        if (structStateGetter) {
+          const stateReference = routeStateReference(structStateGetter.name);
+          if (!captureResults) return `${stateReference};`;
+          return `__message_bus_results = bytes.concat(
+        __message_bus_results, abi.encode(${stateReference})
+      );`;
+        }
         const getterState = fn.parameters.length === 0
           ? contract.stateVariables.find((state) => state.name === fn.name)
           : undefined;

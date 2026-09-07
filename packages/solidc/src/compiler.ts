@@ -4898,21 +4898,22 @@ function synthesizeMessageBusRoute(
     }
     return kernelResultEncodable(type, active, true);
   };
-  const hasDynamicCompositeLeaf = (type: Type, active = new Set<object>()): boolean => {
+  // True when the encoded value has runtime cardinality. This is deliberately a graph walk rather than a list
+  // of newly admitted aggregate shapes: the route concatenates every row result into one BCH stack item, so a
+  // top-level `bytes`, a dynamic primitive array, and a dynamic leaf several structs deep consume the same
+  // cumulative budget. Cycles are rejected by kernelResultEncodable below; treating a back edge as dynamic here
+  // keeps this classifier total without weakening that fence.
+  const hasRuntimeSizedResultLeaf = (type: Type, active = new Set<object>()): boolean => {
     if (type === PrimitiveType.STRING || (type instanceof BytesType && type.bound === undefined)) return true;
-    if (type instanceof ValueType) return hasDynamicCompositeLeaf(type.underlyingType, active);
+    if (type instanceof ValueType) return hasRuntimeSizedResultLeaf(type.underlyingType, active);
     if (!(type instanceof ArrayType || type instanceof StructType) || active.has(type)) return false;
     active.add(type);
     const found = type instanceof ArrayType
-      ? type.bound === undefined || hasDynamicCompositeLeaf(type.elementType, active)
-      : type.fields.some((field) => hasDynamicCompositeLeaf(field.type, active));
+      ? type.bound === undefined || hasRuntimeSizedResultLeaf(type.elementType, active)
+      : type.fields.some((field) => hasRuntimeSizedResultLeaf(field.type, active));
     active.delete(type);
     return found;
   };
-  const structArrayResultRequiresEnvelope = (type: Type): boolean =>
-    type instanceof ArrayType && containsStruct(type.elementType)
-    && (type.bound === undefined || hasDynamicCompositeLeaf(type.elementType))
-    && kernelBoundedCompositeResultLayout(type.elementType);
   const containsStruct = (type: Type, active = new Set<object>()): boolean => {
     if (type instanceof StructType) return true;
     if (type instanceof ValueType) return containsStruct(type.underlyingType, active);
@@ -7133,14 +7134,12 @@ function synthesizeMessageBusRoute(
   const returnDeclaration = resultMode
     ? ' returns (bytes)'
     : '';
-  const boundedDynamicCompositeResultMode = eligible.some((fn) => fn.returnTypes.some((type) =>
-    structArrayResultRequiresEnvelope(type)
-      || (type instanceof StructType && hasDynamicCompositeLeaf(type))
-      || (type instanceof ArrayType && type.bound !== undefined && hasDynamicCompositeLeaf(type))));
+  const boundedDynamicResultMode = eligible.some((fn) =>
+    fn.returnTypes.some((type) => hasRuntimeSizedResultLeaf(type)));
   const returnStatement = resultMode
-    // A newly admitted dynamic composite is consumed as one authenticated VM byte string. Give that finite slice
-    // an explicit ceiling without narrowing existing scalar/dynamic result routes as an unrelated side effect.
-    ? `${boundedDynamicCompositeResultMode
+    // Every row result is concatenated into one authenticated VM byte string. Bound the complete vector for any
+    // runtime-sized result graph, including top-level bytes/string/arrays and dynamic leaves inside aggregates.
+    ? `${boundedDynamicResultMode
       ? `require(__message_bus_results.length <= ${MAX_KERNEL_RESULT_BYTES}); ` : ''}return __message_bus_results;`
     : '';
   const graphPrologue = '';

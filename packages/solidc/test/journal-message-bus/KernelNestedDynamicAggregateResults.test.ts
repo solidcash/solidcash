@@ -1,5 +1,6 @@
-import { compileString } from '../../src/compiler.js';
+import { bytecodeToAsm } from '@solidcash/utils';
 import { describe, expect, it } from 'vitest';
+import { compileString } from '../../src/compiler.js';
 
 const OPTIONS = {
   forceStateful: true,
@@ -14,6 +15,31 @@ const handler = (source: string, name: string) => compileString(source, OPTIONS)
   .messageBus?.handlers.find((candidate) => candidate.name === name);
 
 describe('kernel nested dynamic aggregate results', () => {
+  it('caps mixed top-level and nested runtime-sized results as one cumulative vector', () => {
+    const artifact = compileString(`pragma solidity ^0.8.0;
+      struct Envelope { string[] labels; }
+      contract Source {
+        function read(bytes memory payload) public pure
+          returns (bytes memory, uint256[] memory, Envelope memory) {
+          uint256[] memory values = new uint256[](1);
+          values[0] = payload.length;
+          string[] memory labels = new string[](1);
+          labels[0] = "ready";
+          return (payload, values, Envelope(labels));
+        }
+      }`, OPTIONS);
+    expect(artifact.messageBus?.handlers.find((entry) => entry.name === 'read'))
+      .toMatchObject({ eligible: true, outputs: [
+        { type: 'bytes' }, { type: 'uint256[]' }, { type: 'Envelope' },
+      ] });
+    const route = artifact.functionBodies?.['53434231'];
+    expect(route).toBeDefined();
+    const asm = bytecodeToAsm(Uint8Array.from(Buffer.from(route!, 'hex')));
+    // 0x2710 (10,000) is minimally encoded little-endian as 0x1027. The guard applies after every row result
+    // has been concatenated, so separate dynamic components and repeated rows share one BCH item budget.
+    expect(asm).toMatch(/OP_SIZE OP_NIP 1027 OP_LESSTHANOREQUAL OP_VERIFY/);
+  });
+
   it('admits a mapping-backed struct result containing nested runtime arrays', () => {
     const selected = handler(`pragma solidity ^0.8.0;
       struct Record { uint256 id; string title; string[] labels; bytes payload; }

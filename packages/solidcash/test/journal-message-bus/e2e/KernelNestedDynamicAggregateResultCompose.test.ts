@@ -161,4 +161,39 @@ describe('kernel nested dynamic aggregate result composition', () => {
     expect(vm.stateSuccess(vm.evaluate({ inputIndex: sourceRouteInput, sourceOutputs, transaction })))
       .not.toBe(true);
   }, 120_000);
+
+  it('enforces the same cumulative ceiling for top-level dynamic results', async () => {
+    const provider = createMessageBusCapstoneTestProvider();
+    const chunk = 'b'.repeat(415);
+    const repeatedChunk = Array.from({ length: 12 }, () => 'chunk').join(', ');
+    const artifact = compileString(`pragma solidity ^0.8.0;
+      contract Source {
+        function read() public pure returns (string memory) {
+          string memory chunk = "${chunk}";
+          return string.concat(${repeatedChunk});
+        }
+      }`, OPTIONS);
+    const base = new Contract(artifact, [], { provider });
+    const setup = await setupStatefulUtxos(
+      provider, base, artifact.stateLayout!, {}, { saltContract: true },
+    );
+    const source = StatefulContract.withCategory(
+      base.withCategory(hexToBin(setup.categoryId)), setup.categoryId,
+    );
+    expect(provider.consensusLimits?.maximumStackItemBytes).toBeGreaterThan(10_000);
+    const single = await source.batch([{ function: 'read', args: [] }]).build();
+    expect(vmAccepts(single)).toBe(true);
+    const doubled = await source.batch([
+      { function: 'read', args: [] },
+      { function: 'read', args: [] },
+    ]).build();
+    const transaction = doubled.buildLibauthTransaction();
+    const sourceOutputs = generateLibauthSourceOutputs(doubled.inputs);
+    const sourceRouteInput = doubled.inputs.findIndex((input) => 'contract' in input.unlocker
+      && input.unlocker.contract.artifact.contractName === 'Source'
+      && input.unlocker.abiFunction.name === artifact.messageBus!.route.name);
+    const vm = createVirtualMachineBch2026ForProvider(provider);
+    expect(vm.stateSuccess(vm.evaluate({ inputIndex: sourceRouteInput, sourceOutputs, transaction })))
+      .not.toBe(true);
+  }, 120_000);
 });

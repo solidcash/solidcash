@@ -27,25 +27,32 @@ describe('post-new folded child initialization transcript security', () => {
     const artifacts = compileStringMulti(`contract Unit(int seed) {
         int baseline;
         int configured;
+        int marker;
         constructor() { this.baseline = seed; }
-        function initialize(int next) public {
-          this.configured = this.baseline + next;
+        function initialize(int next, bool choose) public {
+          if (choose) {
+            this.configured = this.baseline + next;
+            this.marker = int(1);
+          } else {
+            this.configured = this.baseline - next;
+            this.marker = int(2);
+          }
           require(true);
         }
       }
-      interface ICoordinator { function materialize(int seed, int next); }
+      interface ICoordinator { function materialize(int seed, int next, bool choose); }
       contract Coordinator() {
         int created;
-        function materialize(int seed, int next) public {
+        function materialize(int seed, int next, bool choose) public {
           Unit unit = new Unit(seed);
-          unit.initialize(next);
+          unit.initialize(next, choose);
           this.created = this.created + 1;
           require(true);
         }
       }
       contract Driver(address coordinator) {
-        function run(int seed, int next) public {
-          ICoordinator(coordinator).materialize(seed, next);
+        function run(int seed, int next, bool choose) public {
+          ICoordinator(coordinator).materialize(seed, next, choose);
           require(true);
         }
       }`, {
@@ -65,7 +72,9 @@ describe('post-new folded child initialization transcript security', () => {
       eligible: true,
       childDeployments: [{
         siteIndex: 0, hasFoldedChildCall: true,
-        genesisState: { kind: 'constructor', fields: [{ name: 'baseline' }, { name: 'configured' }] },
+        genesisState: { kind: 'constructor', fields: [
+          { name: 'baseline' }, { name: 'configured' }, { name: 'marker' },
+        ] },
       }],
     });
 
@@ -73,10 +82,10 @@ describe('post-new folded child initialization transcript security', () => {
     const genesis = await createBareP2pkhFeeFunder(provider, 20_000n);
     const seed = 7n;
     const next = 11n;
-    const compose = (contract = coordinator): Promise<TransactionBuilder> => messageBus.compose({
+    const compose = (contract = coordinator, choose = true): Promise<TransactionBuilder> => messageBus.compose({
       preparedCalls: [
-        { contract: driver, functionName: 'run', args: [seed, next] },
-        { contract, functionName: 'materialize', args: [seed, next] },
+        { contract: driver, functionName: 'run', args: [seed, next, choose] },
+        { contract, functionName: 'materialize', args: [seed, next, choose] },
       ],
       funder: fee,
       changeAddress: fee.unlocker.generateLockingBytecode(),
@@ -93,7 +102,13 @@ describe('post-new folded child initialization transcript security', () => {
     expect(childDataOutput).toBeGreaterThanOrEqual(0);
     expect(parsePushdataCommitment(
       canonical.outputs[childDataOutput].token!.nft!.commitment, artifacts.Unit.stateLayout!, 0,
-    )).toMatchObject({ baseline: seed, configured: seed + next });
+    )).toMatchObject({ baseline: seed, configured: seed + next, marker: 1n });
+
+    const alternate = await compose(coordinator, false);
+    expect(vmRejects(alternate)).toBe(false);
+    expect(parsePushdataCommitment(
+      alternate.outputs[childDataOutput].token!.nft!.commitment, artifacts.Unit.stateLayout!, 0,
+    )).toMatchObject({ baseline: seed, configured: seed - next, marker: 2n });
 
     const wrongCommitment = await compose();
     wrongCommitment.outputs[childDataOutput].token!.nft!.commitment = '01';

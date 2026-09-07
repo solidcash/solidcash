@@ -2216,6 +2216,78 @@ export default class SymbolTableTraversal extends AstTraversal {
         const folded = this.foldGenesisExpr(cloneNode(stmt.expression), subs, fieldExprs, fieldType);
         if (!folded) return false;
         subs.set(stmt.name, folded); // inline this local into later expressions
+      } else if (stmt instanceof BranchNode) {
+        // Constructor guards are published separately and would need activation-aware predicates at a branch.
+        // This slice is limited to post-new initializer calls, whose final `require(true)` is effect-free.
+        if (constructorPredicates) return false;
+        const hasNonTrivialGuard = (value: unknown, seen = new WeakSet<object>()): boolean => {
+          if (Array.isArray(value)) return value.some((item) => hasNonTrivialGuard(item, seen));
+          if (!(value instanceof Node) || seen.has(value)) return false;
+          seen.add(value);
+          if (value instanceof RequireNode) {
+            return !(value.expression instanceof BoolLiteralNode) || value.expression.value !== true;
+          }
+          return Object.entries(value).some(([key, child]) => ![
+            'definition', 'referencedContract', 'resolvedFunction', 'symbolTable',
+          ].includes(key) && hasNonTrivialGuard(child, seen));
+        };
+        if (hasNonTrivialGuard(stmt.ifBlock) || (stmt.elseBlock && hasNonTrivialGuard(stmt.elseBlock))) {
+          return false;
+        }
+        const condition = this.foldGenesisExpr(
+          cloneNode(stmt.condition), subs, fieldExprs, fieldType, PrimitiveType.BOOL,
+        );
+        if (!condition) return false;
+        condition.type = PrimitiveType.BOOL;
+        const incomingSubs = new Map(subs);
+        const incomingFields = new Map(fieldExprs);
+        const trueSubs = new Map(incomingSubs);
+        const trueFields = new Map(incomingFields);
+        const trueResult = this.foldStatementList(
+          stmt.ifBlock.statements ?? [], trueSubs, trueFields, fieldType, writableFieldType,
+          constructorPredicates,
+        );
+        if (!trueResult || trueResult.returnValue) return false;
+        const falseSubs = new Map(incomingSubs);
+        const falseFields = new Map(incomingFields);
+        const falseResult = stmt.elseBlock ? this.foldStatementList(
+          stmt.elseBlock.statements ?? [], falseSubs, falseFields, fieldType, writableFieldType,
+          constructorPredicates,
+        ) : { wrote: false };
+        if (!falseResult || falseResult.returnValue) return false;
+        const joined = (
+          whenTrue: ExpressionNode, whenFalse: ExpressionNode, type: Type,
+        ): ExpressionNode => {
+          if (whenTrue === whenFalse) return cloneNode(whenTrue);
+          const result = new TernaryOpNode(cloneNode(condition), cloneNode(whenTrue), cloneNode(whenFalse));
+          result.location = stmt.location;
+          result.type = type;
+          return result;
+        };
+        // Branch-local declarations do not escape. Existing locals do, so join only the incoming lexical set.
+        for (const [name, incoming] of incomingSubs) {
+          const trueValue = trueSubs.get(name) ?? incoming;
+          const falseValue = falseSubs.get(name) ?? incoming;
+          if (trueValue === incoming && falseValue === incoming) {
+            subs.set(name, incoming);
+            continue;
+          }
+          const type = incoming.type;
+          if (!type) return false;
+          subs.set(name, joined(trueValue, falseValue, type));
+        }
+        const fieldNames = new Set([...incomingFields.keys(), ...trueFields.keys(), ...falseFields.keys()]);
+        for (const name of fieldNames) {
+          const type = writableFieldType(name);
+          if (!type) return false;
+          const fallback = incomingFields.get(name)
+            ?? (fieldType(name) ? createDefaultValueExpression(type, stmt.location!) : undefined);
+          const trueValue = trueFields.get(name) ?? fallback;
+          const falseValue = falseFields.get(name) ?? fallback;
+          if (!trueValue || !falseValue) return false;
+          fieldExprs.set(name, joined(trueValue, falseValue, type));
+        }
+        wrote ||= trueResult.wrote || falseResult.wrote;
       } else if (stmt instanceof StateAssignNode) {
         const folded = this.foldGenesisExpr(
           cloneNode(stmt.expression), subs, fieldExprs, fieldType, writableFieldType(stmt.name),

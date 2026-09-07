@@ -2094,13 +2094,24 @@ export default class SymbolTableTraversal extends AstTraversal {
       || !(helper.modifiers.includes(FunctionModifier.INTERNAL)
         || helper.modifiers.includes(FunctionModifier.PRIVATE))
       || helper.returnTypes.length !== 1 || this.genesisHelperStack.has(helper)) return null;
-    const helperResultType = helper.returnTypes[0] instanceof EnumType
-      ? 'bigint' : helper.returnTypes[0].toString();
-    // This path models one recipe value. Aggregates and signatures have multi-item/resource-backed stack
-    // representations, so they remain outside the helper subset even if their source modifier says pure.
-    // eslint-disable-next-line max-len
-    const scalarHelperType = /^(?:bool|bigint|u?int(?:\d+)?|(?:u?fixed)(?:\d+x\d+)?|bytes(?:[1-9]|[12]\d|3[0-2])?|string|address|pubkey|datasig)$/;
-    if (!scalarHelperType.test(helperResultType)) return null;
+    const fixedHelperResult = (type: Type, stack = new Set<StructType>()): boolean => {
+      if (type instanceof ArrayType) {
+        return type.bound !== undefined && Number.isSafeInteger(type.bound) && type.bound >= 0
+          && fixedHelperResult(type.elementType, stack);
+      }
+      if (type instanceof MappingType) return false;
+      if (type instanceof StructType) {
+        if (stack.has(type)) return false;
+        const nested = new Set(stack);
+        nested.add(type);
+        return type.fields.every((field) => fixedHelperResult(field.type, nested));
+      }
+      const physical = type instanceof EnumType ? 'bigint' : type.toString();
+      // Signatures and dynamic values remain outside recipe replay even if their source modifier says pure.
+      // eslint-disable-next-line max-len
+      return /^(?:bool|bigint|u?int(?:\d+)?|(?:u?fixed)(?:\d+x\d+)?|bytes(?:[1-9]|[12]\d|3[0-2])?|address|pubkey|datasig)$/.test(physical);
+    };
+    if (!fixedHelperResult(helper.returnTypes[0])) return null;
     const body = helper.body as BlockNode | undefined;
     const statements = body?.statements;
     if (!statements || statements.length === 0) return null;

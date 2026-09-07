@@ -1392,6 +1392,7 @@ export function childDeploymentGenesisState(
   allowUnpackedLayout = false,
   aliases?: ReadonlyMap<object, ChildDeploymentValueRecipe>,
   aliasDefinitions?: ReadonlyMap<string, object>,
+  helperFunctions: readonly FunctionDefinitionNode[] = [],
 ): ChildDeploymentGenesisStateAbi | undefined {
   const fields: ChildDeploymentGenesisStateAbi['fields'][number][] = [];
   for (const [name, expression] of foldedState ?? []) {
@@ -1404,6 +1405,7 @@ export function childDeploymentGenesisState(
     if (!materializableGenesisType(variable.type)) return undefined;
     const value = childDeploymentValueRecipe(
       expression, handlerInputs, false, handlerInputTypes, aliases, aliasDefinitions, variable.type,
+      new Set(), helperFunctions,
     );
     if (!value) return undefined;
     fields.push({

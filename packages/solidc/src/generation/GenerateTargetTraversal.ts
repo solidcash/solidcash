@@ -14187,7 +14187,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         salt = { computed: true };
       }
       const genesisState = node.constructorStateFoldComplete === true
-        ? childDeploymentGenesisState(node.foldedStateInit, liveVars, deployFnParamIndices, deployFnParamTypes)
+        ? childDeploymentGenesisState(
+          node.foldedStateInit, liveVars, deployFnParamIndices, deployFnParamTypes,
+          false, undefined, undefined, node.referencedContract?.functions,
+        )
         : undefined;
       const genesisEntries = node.constructorStateFoldComplete === true
         ? childDeploymentGenesisEntries(

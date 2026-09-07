@@ -2315,7 +2315,7 @@ function childDeploymentSites(
       const genesisState = value.constructorStateFoldComplete === true
         ? childDeploymentGenesisState(
           value.foldedStateInit, child.stateVariables, inputIndex, inputTypes, false, analyzed?.aliases,
-          analyzed?.aliasDefinitions,
+          analyzed?.aliasDefinitions, child.functions,
         )
         : undefined;
       const genesisEntries = value.constructorStateFoldComplete === true
@@ -4422,7 +4422,7 @@ function synthesizeMessageBusRoute(
                 }
                 const genesisState = analyzed && childDeploymentGenesisState(
                   admissionNode.foldedStateInit, child.stateVariables, visibleInputs, visibleInputTypes, true,
-                  analyzed.aliases, analyzed.aliasDefinitions,
+                  analyzed.aliases, analyzed.aliasDefinitions, child.functions,
                 );
                 const genesisEntries = analyzed && childDeploymentGenesisEntries(
                   admissionNode.foldedCollectionEntries, visibleInputs, visibleInputTypes,

@@ -3887,6 +3887,39 @@ export function visibleHandlerInputs<T extends { name: string }>(inputs: readonl
   return inputs.filter((input) => !input.name.startsWith('__internal__'));
 }
 
+function canonicalAbiFunctionSignature(fn: AbiFunction): string {
+  return `${fn.name}(${visibleHandlerInputs(fn.inputs).map((input) => input.type).join(',')})`;
+}
+
+function resolveStatefulAbiFunction(
+  artifact: Artifact,
+  identifier: string,
+  args: readonly FunctionArgument[],
+  selector?: string,
+): AbiFunction {
+  const signatureMatch = artifact.abi.find((candidate) => canonicalAbiFunctionSignature(candidate) === identifier);
+  const name = signatureMatch?.name ?? identifier;
+  const sameName = artifact.abi.filter((candidate) => candidate.name === name);
+  let candidates = signatureMatch ? [signatureMatch] : sameName;
+  if (selector !== undefined) {
+    const normalized = selector.replace(/^0x/i, '').toLowerCase();
+    if (!/^[0-9a-f]{8}$/.test(normalized)) {
+      throw new Error(`Function selector '${selector}' must be exactly four hexadecimal bytes.`);
+    }
+    candidates = candidates.filter((candidate) => candidate.selector?.toLowerCase() === normalized);
+  }
+  if (candidates.length === 0) {
+    throw new Error(`No function '${identifier}' with the requested selector on ${artifact.contractName}.`);
+  }
+  if (candidates.length === 1) return candidates[0];
+  const arityMatches = candidates.filter((candidate) => visibleHandlerInputs(candidate.inputs).length === args.length);
+  if (arityMatches.length === 1) return arityMatches[0];
+  throw new Error(
+    `Ambiguous call to overloaded function '${name}'. Use explicit signature or selector: `
+    + sameName.map(canonicalAbiFunctionSignature).join(', '),
+  );
+}
+
 /** Prefer source-level arguments only when they exactly cover the function's visible ABI. */
 export function selectVisibleCallArguments<T>(
   inputs: readonly { name: string }[],
@@ -4565,29 +4598,92 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     }
 
     // A deploy-modifier function returns a thenable DeployFunctionCall (funds + runs via the connected signer);
-    // every other function returns a StatefulFunctionCall wrapping a lazily-built transaction builder.
+    // every other function returns a StatefulFunctionCall wrapping a lazily-built transaction builder. Mirror
+    // Contract.unlock's overload surface: signatures are exact, while a bare name is available only when unique
+    // or when visible arity alone selects one overload.
     this.call = {} as AbiToFunctionMap<TArtifact['abi'], StatefulFunctionCall, DeployFunctionCall>;
     this.functions = {} as AbiToFunctionMap<TArtifact['abi'], Promise<StatefulTransactionBuilder>>;
+    const groups = new Map<string, AbiFunction[]>();
     for (const abiFunction of contract.artifact.abi) {
+      const group = groups.get(abiFunction.name) ?? [];
+      group.push(abiFunction);
+      groups.set(abiFunction.name, group);
+    }
+    const signatureOf = canonicalAbiFunctionSignature;
+    const visibleArity = (abiFunction: AbiFunction): number => visibleHandlerInputs(abiFunction.inputs).length;
+    type NamespaceCall = (...args: any[]) => StatefulFunctionCall | DeployFunctionCall;
+    const callerFor = (abiFunction: AbiFunction): NamespaceCall => {
       const caller = abiFunction.modifiers?.includes('deploy')
         ? (...args: any[]): DeployFunctionCall => new DeployFunctionCall(
           this as StatefulContract, abiFunction.name, args as FunctionArgument[],
         )
         : (...args: any[]): StatefulFunctionCall => new StatefulFunctionCall(
-          () => this._createBuilder(abiFunction.name, args),
-          this as StatefulContract, abiFunction.name, args,
+          () => this._createBuilder(abiFunction.name, args, { abiFunction }),
+          this as StatefulContract, abiFunction.name, args, undefined, abiFunction.selector,
         );
-      // @ts-ignore - dynamic property assignment
-      this.call[abiFunction.name] = caller;
-      // @ts-ignore - dynamic property assignment
-      this.functions[abiFunction.name] = (...args: any[]) => this._createBuilder(abiFunction.name, args);
+      return caller as NamespaceCall;
+    };
+    for (const [name, group] of groups) {
+      const callers = group.map((abiFunction) => ({ abiFunction, caller: callerFor(abiFunction) }));
+      if (group.length > 1) {
+        for (const { abiFunction, caller } of callers) {
+          (this.call as unknown as Record<string, NamespaceCall>)[signatureOf(abiFunction)] = caller;
+          (this.functions as unknown as Record<string, (...args: any[]) => Promise<StatefulTransactionBuilder>>)
+            [signatureOf(abiFunction)] = (...args: any[]) => this._createBuilder(
+              abiFunction.name, args, { abiFunction },
+            );
+        }
+      }
+      const arities = callers.map(({ abiFunction }) => visibleArity(abiFunction));
+      const aritySelectsExactly = new Set(arities).size === callers.length;
+      const bareCaller: NamespaceCall = group.length === 1
+        ? callers[0].caller
+        : aritySelectsExactly
+          ? (...args: FunctionArgument[]) => {
+            const selected = callers.find(({ abiFunction }) => visibleArity(abiFunction) === args.length);
+            if (!selected) {
+              throw new Error(
+                `No overload of function '${name}' accepts ${args.length} arguments. Available signatures: `
+                + callers.map(({ abiFunction }) => signatureOf(abiFunction)).join(', '),
+              );
+            }
+            return selected.caller(...args);
+          }
+          : (..._args: FunctionArgument[]) => {
+            throw new Error(
+              `Ambiguous call to overloaded function '${name}'. Use explicit signature: `
+              + callers.map(({ abiFunction }) => signatureOf(abiFunction)).join(', '),
+            );
+          };
+      (this.call as unknown as Record<string, NamespaceCall>)[name] = bareCaller;
+      (this.functions as unknown as Record<string, (...args: any[]) => Promise<StatefulTransactionBuilder>>)[name]
+        = (...args: any[]) => {
+          const selected = group.length === 1 ? group[0]
+            : aritySelectsExactly ? group.find((abiFunction) => visibleArity(abiFunction) === args.length)
+              : undefined;
+          if (!selected) return Promise.reject(new Error(
+            group.length > 1 && !aritySelectsExactly
+              ? `Ambiguous call to overloaded function '${name}'. Use explicit signature: `
+                + group.map(signatureOf).join(', ')
+              : `No overload of function '${name}' accepts ${args.length} arguments.`,
+          ));
+          return this._createBuilder(selected.name, args, { abiFunction: selected });
+        };
     }
 
     // ethers-v5 `contract.callStatic.fn(...)` read namespace (each fn reads its return value without sending).
     this.callStatic = {};
-    for (const abiFunction of contract.artifact.abi) {
-      this.callStatic[abiFunction.name] = (...args: FunctionArgument[]): Promise<StateValueType> =>
-        this._deriveReturnValue(abiFunction.name, args) as Promise<StateValueType>;
+    const staticNamespace = this.callStatic as Record<string, (...args: FunctionArgument[]) => Promise<StateValueType>>;
+    for (const [name, group] of groups) {
+      const staticFor = (abiFunction: AbiFunction) => (...args: FunctionArgument[]): Promise<StateValueType> =>
+        this._deriveReturnValue(abiFunction.name, args, undefined, abiFunction) as Promise<StateValueType>;
+      if (group.length > 1) {
+        for (const abiFunction of group) staticNamespace[signatureOf(abiFunction)] = staticFor(abiFunction);
+      }
+      staticNamespace[name] = (...args: FunctionArgument[]) => {
+        const selected = resolveStatefulAbiFunction(contract.artifact, name, args);
+        return this._deriveReturnValue(selected.name, args, undefined, selected) as Promise<StateValueType>;
+      };
     }
 
     // Token container sugar (sc.tokens[categoryHex]).
@@ -4641,17 +4737,25 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
    * wrapper.
    */
   batch(
-    invocations: readonly { function: string; args?: readonly FunctionArgument[] }[],
+    invocations: readonly { function: string; selector?: string; args?: readonly FunctionArgument[] }[],
   ): StatefulFunctionCall {
     // Owner-local batch construction is synchronous, but argument-only computed entry keys are still completely
     // derivable here. Publish them as the route witnesses encodeMessageBatch expects; state-dependent expressions
     // remain on the async graph-composition path, which can load authenticated state before evaluating them.
     const computedRouteWitnesses: Record<string, FunctionArgument> = {};
     const computedRouteWitnessHex = new Map<string, string>();
-    invocations.forEach((invocation, rowIndex) => {
+    const resolvedInvocations = invocations.map((invocation) => {
+      const args = invocation.args ?? [];
+      const abi = resolveStatefulAbiFunction(
+        this.inner.artifact, invocation.function, args, invocation.selector,
+      );
+      return { function: abi.name, selector: abi.selector, args, abi };
+    });
+    resolvedInvocations.forEach((invocation, rowIndex) => {
       const handler = this.inner.artifact.messageBus?.handlers.find((candidate) =>
-        candidate.name === invocation.function);
-      const abi = this.inner.artifact.abi.find((candidate) => candidate.name === invocation.function);
+        candidate.name === invocation.function
+        && candidate.selector.toLowerCase() === invocation.selector?.toLowerCase());
+      const abi = invocation.abi;
       if (!handler || !abi) return;
       for (const binding of handler.batchKeyWitnesses ?? []) {
         if (binding.source !== 'expression' || !binding.expressionLabel) continue;
@@ -4676,13 +4780,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     });
     const { blob, routeWitnesses } = encodeMessageBatch(
       this.inner.artifact,
-      invocations,
+      resolvedInvocations,
       computedRouteWitnesses,
     );
-    const rowArguments = invocations.map((invocation) => {
-      const handler = this.inner.artifact.abi.find((candidate) => candidate.name === invocation.function);
-      if (!handler) throw new Error(`Message-bus handler ABI '${invocation.function}' is missing`);
-      return { args: invocation.args ?? [], handler };
+    const rowArguments = resolvedInvocations.map((invocation) => {
+      if (!invocation.abi) throw new Error(`Message-bus handler ABI '${invocation.function}' is missing`);
+      return { args: invocation.args, handler: invocation.abi };
     });
     return this._batchRaw(blob, routeWitnesses, {}, 0, false, undefined, false, undefined, rowArguments);
   }
@@ -24601,6 +24704,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // the mapped name, fall back to the ABI name so receive/fallback-only contracts still dispatch.
     const unlockName = functionName === '__fallback' ? 'fallback'
       : functionName === '__receive' ? 'receive' : functionName;
+    const exactUnlockName = overrides?.abiFunction
+      && this.inner.artifact.abi.filter((candidate) => candidate.name === overrides.abiFunction!.name).length > 1
+      ? canonicalAbiFunctionSignature(overrides.abiFunction)
+      : undefined;
     let buildStateInputUnlocker: () => Unlocker;
     if (overrides?.compilerRouteSelector && abiFunction && physicalAbiFunction
       && physicalAbiFunction !== abiFunction) {
@@ -24623,13 +24730,15 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           `Internal error: cannot resolve physical route witness '${input.name}' for function '${functionName}'.`,
         );
       });
-      const physicalUnlockFn = (this.inner.unlock as any)[unlockName]
+      const physicalUnlockFn = (exactUnlockName && (this.inner.unlock as any)[exactUnlockName])
+        ?? (this.inner.unlock as any)[unlockName]
         ?? (this.inner.unlock as any)[functionName];
       buildStateInputUnlocker = () => physicalUnlockFn(...physicalArgs);
     } else {
       const unlockFn = overrides?.compilerRouteSelector && abiFunction
         ? this.inner.createCompilerRouteUnlocker(abiFunction, overrides.compilerRouteSelector)
-        : ((this.inner.unlock as any)[unlockName] ?? (this.inner.unlock as any)[functionName]);
+        : ((exactUnlockName && (this.inner.unlock as any)[exactUnlockName])
+          ?? (this.inner.unlock as any)[unlockName] ?? (this.inner.unlock as any)[functionName]);
       buildStateInputUnlocker = () => unlockFn(...finalArgs);
     }
     let stateInputUnlocker = buildStateInputUnlocker();
@@ -27802,7 +27911,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
    * ethers-style array (tuple). Typechain `.toObject()`/`.toArray()` accessors are attached at this boundary.
    */
   async _deriveReturnValue(
-    functionName: string, args: FunctionArgument[], calls?: CallInfo[],
+    functionName: string, args: FunctionArgument[], calls?: CallInfo[], exactAbiFunction?: AbiFunction,
   ): Promise<StateValue> {
     const directMappingRead = directMappingReadPlan(this.inner.artifact, functionName);
     if (directMappingRead) {
@@ -27824,7 +27933,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       }
       return 0n;
     }
-    const abiFunction = this.inner.artifact.abi.find((f) => f.name === functionName);
+    const abiFunction = exactAbiFunction ?? this.inner.artifact.abi.find((f) => f.name === functionName);
     const delegatedReturn = calls
       ?.filter((call): call is Extract<CallInfo, { type: 'stateful' }> => call.type === 'stateful')
       .map((call) => ({
@@ -27888,7 +27997,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     }
     // emitReturn makes _createBuilder lay out the return-event output; the probe then extracts its commitment.
     const builder = await this._createBuilder(
-      functionName, args, { emitReturn: true, returnProbeOnly: true, calls },
+      functionName, args, { emitReturn: true, returnProbeOnly: true, calls, abiFunction },
     );
     let blob = (builder as any).__derivedReturnBlob as Uint8Array | undefined
       ?? this._deriveReturnBlob(builder, slot.offset);
@@ -29902,6 +30011,7 @@ export class StatefulFunctionCall {
       emitReturn?: boolean; returnBlob?: Uint8Array; omitLocalFeeTail?: boolean;
       logicalIdentity?: ResolvedLogicalIdentity;
     },
+    private readonly functionSelector?: string,
   ) {
     // Prevent unhandled rejection if the builder fails before send() is called
     // (e.g. when withExternalCall() causes send() to rebuild from scratch)
@@ -29917,6 +30027,17 @@ export class StatefulFunctionCall {
     if (functionName === '__forward' && parentContract?._signer) {
       this.signerUtxosPromise = signerUtxoSnapshot(parentContract._signer);
     }
+  }
+
+  /** Exact source ABI selected when this call was prepared (the compiler route, when present, is physical). */
+  private _selectedAbiFunction(): AbiFunction | undefined {
+    if (!this.parentContract || this.functionName === undefined) return undefined;
+    if (this.functionSelector !== undefined) {
+      const selector = this.functionSelector.toLowerCase();
+      return this.parentContract.inner.artifact.abi.find((candidate) => candidate.name === this.functionName
+        && candidate.selector?.toLowerCase() === selector);
+    }
+    return this.parentContract.inner.artifact.abi.find((candidate) => candidate.name === this.functionName);
   }
 
   /** @internal Attach one compiler-published child genesis frame to this prepared route call. */
@@ -29958,6 +30079,7 @@ export class StatefulFunctionCall {
   _messageBusCompositionDescriptor(): {
     contract: StatefulContract;
     functionName: string;
+    selector?: string;
     args: readonly FunctionArgument[];
     upgradeTarget?: PreparedAtomicMessageBusCall['upgradeTarget'];
   } {
@@ -29981,6 +30103,7 @@ export class StatefulFunctionCall {
     return Object.freeze({
       contract: this.parentContract,
       functionName: this.functionName,
+      ...(this.functionSelector !== undefined && { selector: this.functionSelector }),
       args: Object.freeze([...(this.functionArgs as FunctionArgument[])]),
       ...(this.messageBusUpgradeTarget !== undefined && { upgradeTarget: this.messageBusUpgradeTarget }),
     });
@@ -30106,6 +30229,7 @@ export class StatefulFunctionCall {
     return this.parentContract._deriveReturnValue(
       this.functionName, (this.functionArgs ?? []) as FunctionArgument[],
       this.callInfos.length > 0 ? this.callInfos : undefined,
+      this._selectedAbiFunction(),
     ) as Promise<StateValueType>;
   }
 
@@ -30120,7 +30244,7 @@ export class StatefulFunctionCall {
       if (!this.parentContract || this.functionName === undefined) {
         throw new Error('withValue is only available on a contract function call.');
       }
-      const abiFunction = this.parentContract.inner.artifact.abi.find((f) => f.name === this.functionName);
+      const abiFunction = this._selectedAbiFunction();
       if (!abiFunction?.modifiers?.includes('payable')) {
         throw new Error(`Cannot attach value to non-payable function '${this.functionName}'.`);
       }
@@ -30161,9 +30285,7 @@ export class StatefulFunctionCall {
     } else {
       // Simplified form: resolve function name + args from ABI metadata
       const slotIndex = this.externalCallInfos.length;
-      const abiFunction = this.parentContract?.inner.artifact.abi.find(
-        (f: { name: string }) => f.name === this.functionName,
-      ) as any;
+      const abiFunction = this._selectedAbiFunction() as any;
       const ec = abiFunction?.externalCalls?.[slotIndex];
       if (!ec) {
         throw new Error(
@@ -31933,9 +32055,7 @@ export class StatefulFunctionCall {
   private async _trySplitMergeBuild(): Promise<TransactionBuilder | undefined> {
     if (!this.parentContract || !this.functionName) return undefined;
 
-    const abiFunc = this.parentContract.inner.artifact.abi.find(
-      (f) => f.name === this.functionName,
-    );
+    const abiFunc = this._selectedAbiFunction();
     if (!abiFunc) return undefined;
 
     const isSplit = abiFunc.modifiers?.includes('split');
@@ -31968,7 +32088,7 @@ export class StatefulFunctionCall {
   private async _resolveLibrariesFromRegistry(): Promise<void> {
     if (!this.parentContract || !this.functionName) return;
     const consumer = this.parentContract;
-    const abiFunc = consumer.inner.artifact.abi.find((f) => f.name === this.functionName);
+    const abiFunc = this._selectedAbiFunction();
     const libCalls = abiFunc?.libraryDelegateCalls;
     if (!libCalls?.length) return;
     for (const lc of libCalls) {
@@ -32004,7 +32124,7 @@ export class StatefulFunctionCall {
   // library function via withDelegatecall. A manual withDelegatecall for the same function takes precedence.
   private _autoWireLibraryDelegatecalls(): void {
     if (!this.parentContract || !this.functionName) return;
-    const abiFunc = this.parentContract.inner.artifact.abi.find((f) => f.name === this.functionName);
+    const abiFunc = this._selectedAbiFunction();
     const libCalls = abiFunc?.libraryDelegateCalls;
     if (!libCalls || libCalls.length === 0) return;
     for (const lc of libCalls) {
@@ -32068,6 +32188,7 @@ export class StatefulFunctionCall {
     if (needsRebuild) {
       builder = await this.parentContract!._createBuilder(
         this.functionName!, this.functionArgs!, {
+          ...(this._selectedAbiFunction() && { abiFunction: this._selectedAbiFunction() }),
           externalCalls: this.externalCallInfos.length > 0 ? this.externalCallInfos : undefined,
           calls: this.callInfos.length > 0 ? this.callInfos : undefined,
           signerUtxos,

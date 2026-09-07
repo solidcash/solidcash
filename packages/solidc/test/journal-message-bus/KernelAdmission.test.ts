@@ -1592,6 +1592,8 @@ describe('required kernel admission', () => {
     ['local duplication', 'OP_1 OP_DUP OP_DROP OP_DROP'],
     ['literal-depth local pick', 'OP_7 OP_0 OP_PICK OP_NUMEQUALVERIFY'],
     ['pushed-depth local pick', '07 00 OP_PICK OP_NUMEQUALVERIFY'],
+    ['literal-depth local roll', 'OP_7 OP_8 OP_1 OP_ROLL OP_7 OP_NUMEQUALVERIFY OP_8 OP_NUMEQUALVERIFY'],
+    ['pushed-depth local roll', '07 08 01 OP_ROLL 07 OP_NUMEQUALVERIFY 08 OP_NUMEQUALVERIFY'],
     ['balanced local alt-stack use', 'OP_1 OP_TOALTSTACK OP_FROMALTSTACK OP_DROP'],
     ['pure data hashing', 'OP_1 OP_SHA256 OP_DROP'],
     ['closed data-signature predicate', 'OP_0 OP_0 OP_0 OP_CHECKDATASIG OP_DROP'],
@@ -1651,6 +1653,8 @@ describe('required kernel admission', () => {
     ['unbalanced alt stack', 'OP_1 OP_TOALTSTACK'],
     ['dynamic stack reach', 'OP_1 OP_PICK OP_DROP'],
     ['runtime-selected stack reach', 'OP_7 OP_TXVERSION OP_PICK OP_2DROP'],
+    ['local roll reaching the compiler stack', 'OP_1 OP_ROLL'],
+    ['runtime-selected local roll', 'OP_7 OP_TXVERSION OP_ROLL OP_DROP'],
     ['byte inversion borrowed from compiler stack', 'OP_INVERT OP_DROP'],
     ['numeric left-shift value borrowed from compiler stack', 'OP_1 OP_LSHIFTNUM OP_DROP'],
     ['numeric right-shift value borrowed from compiler stack', 'OP_1 OP_RSHIFTNUM OP_DROP'],
@@ -1730,6 +1734,15 @@ describe('required kernel admission', () => {
         require(value == value);
       }
     }`)).not.toThrow();
+  });
+
+  it('does not preserve compiler stack identities across a non-isolated native roll', () => {
+    expect(() => compileString(`contract C() {
+      function direct(int value) public {
+        assembly { OP_1 OP_ROLL }
+        require(value == value);
+      }
+    }`)).toThrow(/variable 'value' does not exist on the stack/);
   });
 
   it('admits lowerable Yul after translating it to ordinary kernel state operations', () => {

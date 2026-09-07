@@ -2,7 +2,8 @@ import { Op } from '@solidcash/utils';
 
 /**
  * Net stack effect of an opcode, used to keep the assembly-block stack tracker in sync.
- * Opcodes with data-dependent effects (OP_ROLL, OP_IFDUP, OP_CHECKMULTISIG) are absent and rejected.
+ * Opcodes with data-dependent heights (OP_IFDUP, OP_CHECKMULTISIG) are absent and rejected. OP_ROLL's
+ * selected value is data-dependent, but its height change is always one consumed depth operand.
  * The OP_IF and OP_BEGIN families are analyzed structurally by analyzeAssemblyStack rather than listed here.
  * Reordering opcodes pop their touched slots and push the same count of anonymous slots (depth exact, names dropped).
  */
@@ -78,6 +79,7 @@ const EFFECTS: Record<number, StackEffect> = {
   [Op.OP_NIP]: { pops: 2, pushes: 1 },
   [Op.OP_OVER]: { pops: 0, pushes: 1 },
   [Op.OP_PICK]: { pops: 1, pushes: 1 },
+  [Op.OP_ROLL]: { pops: 1, pushes: 0 },
   [Op.OP_ROT]: { pops: 3, pushes: 3 },
   [Op.OP_SWAP]: { pops: 2, pushes: 2 },
   [Op.OP_TUCK]: { pops: 2, pushes: 3 },

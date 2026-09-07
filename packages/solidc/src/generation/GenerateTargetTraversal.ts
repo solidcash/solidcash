@@ -223,6 +223,7 @@ import {
   BlockLayoutUnavailableError, StackVariableUnavailableError,
 } from '../Errors.js';
 import { analyzeInlineAssembly } from '../semantic/InlineAssemblyDiagnostics.js';
+import { isKernelSafeNativeAssembly } from '../semantic/NativeAssemblyKernelSafety.js';
 import { analyseContractInvocations } from '../analysis/InvocationAnalysis.js';
 import { cloneNode } from '../ast/clone.js';
 import { substituteInExpression } from '../semantic/InheritanceExpansionTransformation.js';
@@ -8670,6 +8671,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     const script = asmToScript(node.assemblyBody);
     const locationData = { location: node.location, positionHint: PositionHint.START };
+    const isolatedAssembly = isKernelSafeNativeAssembly(node);
 
     // Mirror each element's stack effect onto the tracker so later variable refs resolve correctly. A raw
     // conditional snapshots the post-condition stack, visits each arm independently, then joins equal-height
@@ -8730,6 +8732,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         throw new Error(`Untrackable opcode in assembly block: ${element}`);
       }
       this.popFromStack(effect.pops);
+      if (element === Op.OP_ROLL && !isolatedAssembly) {
+        // A runtime-selected roll can reorder any compiler-managed value below its depth operand. Do not retain
+        // stale symbolic identities: a later source-level reference must fail closed rather than address the
+        // wrong physical slot. Closed kernel-safe blocks prove their roll depth stays within local values.
+        this.stack = this.stack.map(() => '(asm)');
+      }
       for (let i = 0; i < effect.pushes; i += 1) this.pushToStack('(asm)');
     }
 

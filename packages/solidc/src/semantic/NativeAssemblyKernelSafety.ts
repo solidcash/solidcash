@@ -14,7 +14,7 @@ const LOCAL_OPCODES = new Set<number>([
   Op.OP_VERIFY, Op.OP_IF, Op.OP_NOTIF, Op.OP_ELSE, Op.OP_ENDIF, Op.OP_BEGIN, Op.OP_UNTIL,
   Op.OP_TOALTSTACK, Op.OP_FROMALTSTACK,
   Op.OP_2DROP, Op.OP_2DUP, Op.OP_3DUP, Op.OP_2OVER, Op.OP_2ROT, Op.OP_2SWAP,
-  Op.OP_DROP, Op.OP_DUP, Op.OP_NIP, Op.OP_OVER, Op.OP_PICK, Op.OP_ROT, Op.OP_SWAP, Op.OP_TUCK,
+  Op.OP_DROP, Op.OP_DUP, Op.OP_NIP, Op.OP_OVER, Op.OP_PICK, Op.OP_ROLL, Op.OP_ROT, Op.OP_SWAP, Op.OP_TUCK,
   Op.OP_CAT, Op.OP_SPLIT, Op.OP_NUM2BIN, Op.OP_BIN2NUM, Op.OP_SIZE, Op.OP_REVERSEBYTES,
   Op.OP_INVERT, Op.OP_LSHIFTNUM, Op.OP_RSHIFTNUM, Op.OP_LSHIFTBIN, Op.OP_RSHIFTBIN,
   Op.OP_AND, Op.OP_OR, Op.OP_XOR, Op.OP_EQUAL, Op.OP_EQUALVERIFY,
@@ -161,12 +161,13 @@ export function isKernelSafeNativeAssembly(node: AssemblyStatementNode): boolean
     const fromAlt = element === Op.OP_FROMALTSTACK ? alt.at(-1) : undefined;
     if (element === Op.OP_FROMALTSTACK && alt.length === 0) return false;
 
-    let picked: bigint | undefined;
-    if (element === Op.OP_PICK) {
+    let selected: bigint | undefined;
+    if (element === Op.OP_PICK || element === Op.OP_ROLL) {
       const depth = main.at(-1);
-      // After OP_PICK consumes its depth, every selectable item must still have been produced by this block.
+      // After the indexed operator consumes its depth, every selectable item must still have been produced by
+      // this block. In particular, a locally-pushed depth may never reach into the compiler-managed stack.
       if (depth === undefined || depth < 0n || depth >= BigInt(main.length - 1)) return false;
-      picked = main[main.length - 2 - Number(depth)];
+      selected = main[main.length - 2 - Number(depth)];
     }
 
     const minimumDepth = MINIMUM_MAIN_DEPTH.get(element) ?? effect.pops;
@@ -179,7 +180,11 @@ export function isKernelSafeNativeAssembly(node: AssemblyStatementNode): boolean
       alt.pop();
       pushed[0] = fromAlt;
     } else if (element === Op.OP_PICK) {
-      pushed[0] = picked;
+      pushed[0] = selected;
+    } else if (element === Op.OP_ROLL) {
+      // Its depth operand has already been popped. Move, rather than copy, the selected local value.
+      main.splice(main.length - 1 - Number(popped[0]), 1);
+      main.push(selected);
     }
     main.push(...pushed);
 

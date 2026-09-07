@@ -561,21 +561,19 @@ export function encodePushdataValue(
     }
   }
 
-  // Generic pushdata encode for int, int-like types, bytes1, bytes0, unbounded bytes, sig, datasig
-  // At this point, struct types have already been handled and returned above
+  // Generic pushdata encode for int, int-like types, bytes1, bytes0, unbounded bytes, sig, datasig.
+  // At this point, struct types have already been handled and returned above. In particular, bytes remain
+  // opaque: a byte string which happens to contain a valid CashAddress spelling is still that byte string.
+  // CashAddress conversion belongs exclusively to the address-typed branch below (and to any explicitly gated
+  // compatibility adapter whose historical wire schema stored an address in a bytes field).
   let primitiveValue = value as PrimitiveStateValue;
-  // JobEventData.address_ is `bytes` but holds a packed BCH address (p2pkh=25, p2sh20=23, p2sh32=35).
-  // A CashAddress string (or UTF-8 of one) must become locking bytecode, not UTF-8 pushdata.
-  if (type === 'bytes' || /^bytes\d+$/.test(type)) {
-    primitiveValue = lockingBytecodeFromAddressBytes(primitiveValue);
-  }
   // Solidity address(0) is empty locking bytecode. ethers.ZeroAddress is the 20-zero hex string; encoding
   // that as UTF-8 or 20 zero bytes fails the emit EQUALVERIFY against the compiler's OP_0.
   if (type === 'address' || type === 'address payable') {
     if (typeof primitiveValue === 'string' && /^(0x)?0*$/i.test(primitiveValue)) {
       primitiveValue = new Uint8Array(0);
     } else {
-      primitiveValue = lockingBytecodeFromAddressBytes(primitiveValue);
+      primitiveValue = lockingBytecodeFromAddressValue(primitiveValue);
       if (
         primitiveValue instanceof Uint8Array
         && primitiveValue.length > 0
@@ -702,7 +700,8 @@ function isPackedLockingBytecode(bytes: Uint8Array): boolean {
       && bytes[2] === 0x14 && bytes[23] === 0x88 && bytes[24] === 0xac);
 }
 
-function lockingBytecodeFromAddressBytes(value: PrimitiveStateValue): PrimitiveStateValue {
+/** Normalize the SDK spellings accepted only for an address-typed value. */
+function lockingBytecodeFromAddressValue(value: PrimitiveStateValue): PrimitiveStateValue {
   const fromCashAddress = (text: string): Uint8Array | undefined => {
     if (!text.includes(':')) return undefined;
     const decoded = cashAddressToLockingBytecode(text);

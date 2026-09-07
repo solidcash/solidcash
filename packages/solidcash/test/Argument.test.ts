@@ -98,14 +98,17 @@ describe('encodeFunctionArgument: struct field-name independence', () => {
     const renamed = { payload: aliceAddress, observedAt: 0n };
 
     const expected = encodeFunctionArgument({
-      address_: addressToLockScript(aliceAddress), timestamp_: 0n,
+      address_: new TextEncoder().encode(aliceAddress), timestamp_: 0n,
     }, 'Named', namedStructs);
     expect(encodeFunctionArgument(named, 'Named', namedStructs)).toEqual(expected);
     expect(encodeFunctionArgument(renamed, 'Renamed', renamedStructs)).toEqual(expected);
+    expect(expected).not.toEqual(encodeFunctionArgument({
+      address_: addressToLockScript(aliceAddress), timestamp_: 0n,
+    }, 'Named', namedStructs));
     expect(named.address_).toBe(aliceAddress);
   });
 
-  it('keeps the exact legacy JobEventData adapter explicit and non-mutating', () => {
+  it('does not make a JobEventData type name alter bytes semantics', () => {
     const structs = [{
       name: 'JobEventData',
       fields: [
@@ -118,6 +121,10 @@ describe('encodeFunctionArgument: struct field-name independence', () => {
     const event = { type_: 1n, address_: aliceAddress, data_: '', timestamp_: 0n };
 
     expect(encodeFunctionArgument(event, 'JobEventData', structs)).toEqual(encodeFunctionArgument({
+      ...event,
+      address_: new TextEncoder().encode(aliceAddress),
+    }, 'JobEventData', structs));
+    expect(encodeFunctionArgument(event, 'JobEventData', structs)).not.toEqual(encodeFunctionArgument({
       ...event,
       address_: addressToLockScript(aliceAddress),
     }, 'JobEventData', structs));

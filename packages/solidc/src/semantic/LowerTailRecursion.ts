@@ -1209,20 +1209,6 @@ export default class LowerTailRecursion extends AstTraversal {
       ?.find(({ parameterIndex }) => parameterIndex === inductionIndex)?.stepExpression;
     if (!parameterProgressions || !stepExpression) return undefined;
 
-    // The unchanged recursive result can be reconstructed only if its terminating value does not depend on an
-    // auxiliary changing parameter. Event predicates and arguments are replayed independently from source-frame
-    // values plus rank, but admitting such a dependency here would silently change the function's return value.
-    const changingReturnDependencies = new Set(parameterProgressions
-      .filter(({ parameterIndex }) => parameterIndex !== inductionIndex)
-      .map(({ parameterIndex }) => node.parameters[parameterIndex].name));
-    let returnDependsOnChangingParameter = false;
-    this.walkNodes(base.ifBlock.statements![0], (candidate) => {
-      if (candidate instanceof IdentifierNode && changingReturnDependencies.has(candidate.name)) {
-        returnDependsOnChangingParameter = true;
-      }
-    });
-    if (returnDependsOnChangingParameter) return undefined;
-
     // The post-call result is invariant across retained frames because the only accepted final return is the
     // unchanged recursive result. Make that exact base-case value available while proving event predicates and
     // arguments. This is a definition-identity-free source recipe (not a spelling convention): ambiguous or
@@ -2160,9 +2146,16 @@ export default class LowerTailRecursion extends AstTraversal {
   ): void {
     const induction = node.parameters[plan.inductionIndex];
     const rankName = `__tail_unwind_rank_${frame}`;
-    const baseExpression = this.replaceIdentifier(
-      cloneNode(plan.baseReturn.expressions[0]) as ExpressionNode, induction.name,
-      () => this.stamp(new IntLiteralNode(0n), plan.baseReturn.location),
+    const terminalRankName = `__tail_terminal_rank_${frame}`;
+    const terminalRank = this.stamp(new VariableDefinitionNode(
+      induction.type, [], terminalRankName, this.stamp(new BinaryOpNode(
+        this.stamp(new IdentifierNode(induction.name), node.location), BinaryOperator.DIV,
+        cloneNode(plan.stepExpression),
+      ), node.location),
+    ), node.location);
+    const baseExpression = this.replaceAffineProgressions(
+      cloneNode(plan.baseReturn.expressions[0]) as ExpressionNode, node, plan.parameterProgressions,
+      terminalRankName, plan.inductionIndex, plan.stepExpression, false,
     ) as ExpressionNode;
     const result = this.stamp(new VariableDefinitionNode(
       plan.resultDefinition.type, [...plan.resultDefinition.modifier], plan.resultDefinition.name, baseExpression,
@@ -2203,7 +2196,7 @@ export default class LowerTailRecursion extends AstTraversal {
       this.stamp(new IdentifierNode(result.name), node.location),
     ]), node.location);
     node.body = this.stamp(new BlockNode([
-      ...guards, result, rank, loop, finalReturn,
+      ...guards, terminalRank, result, rank, loop, finalReturn,
     ]), node.location);
   }
 

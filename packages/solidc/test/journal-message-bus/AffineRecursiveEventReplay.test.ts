@@ -65,7 +65,6 @@ describe('affine recursive event replay', () => {
   it.each([
     ['a changing step', 'descend(cursor - 1, value + cursor, reverse - 3)'],
     ['a nonlinear progression', 'descend(cursor - 1, value * 2, reverse - 3)'],
-    ['a return dependent on changing state', 'descend(cursor - 1, value + 2, reverse - 3)', 'value'],
   ])('keeps non-void unwind replay outside the affine subset for %s', (
     _label, recursiveCall, baseReturn = '7',
   ) => {
@@ -75,6 +74,37 @@ describe('affine recursive event replay', () => {
           if (cursor == 0) return ${baseReturn};
           bigint result = ${recursiveCall};
           emit Seen(value + reverse);
+          return result;
+        }
+        function control() public { require(true); }
+      }`)).toThrow(/emits an event and is invoked internally|KERNEL_LAYOUT/);
+  });
+
+  it('reconstructs changing auxiliary parameters in the terminal base return', () => {
+    const handler = selected(`contract C() {
+      event Seen(bigint value);
+      function descend(bigint cursor, bigint value, bigint reverse) public returns (bigint) {
+        if (cursor == 0) return value - reverse;
+        bigint result = descend(cursor - 1, value + 2, reverse - 3);
+        emit Seen(value + result);
+        return result;
+      }
+    }`);
+    expect(handler).toMatchObject({ eligible: true });
+  });
+
+  it.each([
+    ['a state read', 'this.saved'],
+    ['an opaque function call', 'identity(value)'],
+  ])('rejects terminal base reconstruction containing %s', (_label, baseReturn) => {
+    expect(() => selected(`contract C() {
+        bigint saved;
+        event Seen(bigint value);
+        function identity(bigint x) internal pure returns (bigint) { return x; }
+        function descend(bigint cursor, bigint value) public returns (bigint) {
+          if (cursor == 0) return ${baseReturn};
+          bigint result = descend(cursor - 1, value + 2);
+          emit Seen(value);
           return result;
         }
         function control() public { require(true); }

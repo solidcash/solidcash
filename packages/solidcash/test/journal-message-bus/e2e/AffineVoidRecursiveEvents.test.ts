@@ -65,9 +65,9 @@ describe('affine void recursive event settlement', () => {
       event Seen(bigint value, bigint reverse);
       function descend(bigint cursor, bigint value, bigint reverse, bigint stride, bigint delta)
         public returns (bigint) {
-        if (cursor == 0) return 7;
+        if (cursor == 0) return value - reverse;
         bigint result = descend(cursor - stride, value + delta, reverse - 3, stride, delta);
-        require(result == 7);
+        require(result == 8);
         if (value % 2 == 0) emit Seen(value, reverse);
         return result;
       }
@@ -99,8 +99,8 @@ describe('affine void recursive event settlement', () => {
         .toBe(true);
     }
 
-    await expect(contract.call.descend(128n, 0n, 0n, 2n, 1n).build()).resolves.toBeDefined();
-    await expect(contract.call.descend(130n, 0n, 0n, 2n, 1n).build())
+    await expect(contract.call.descend(128n, 0n, 248n, 2n, 1n).build()).resolves.toBeDefined();
+    await expect(contract.call.descend(130n, 0n, 252n, 2n, 1n).build())
       .rejects.toThrow(/exceeds its compiler-published maximum/);
     const inexact = await contract.call.descend(5n, 10n, 20n, 2n, 3n).build();
     expect(vm.stateSuccess(vm.evaluate({

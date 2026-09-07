@@ -2659,6 +2659,13 @@ export function permitsLegacyValueChunkEventReconstruction(
   return !hasChunkableValueWriteMetadata && permitsLegacyNamedValueChunkFallback(groups);
 }
 
+/** Legacy delegate event placement is unavailable once either the artifact or the active layout owns the frame. */
+export function permitsLegacyDelegateEventRepair(
+  groups: ReadonlyArray<ChunkableArrayWriteGroup>, compilerOwnedDelegateBlock: boolean,
+): boolean {
+  return !compilerOwnedDelegateBlock && permitsLegacyNamedValueChunkFallback(groups);
+}
+
 function groupChunkableArrayWriteCollections(group: ChunkableArrayWriteGroup): string[] {
   const route = group.compilerRoute;
   const artifact = group.logicalArtifact ?? group.externalContract?.inner?.artifact;
@@ -4510,7 +4517,7 @@ export interface ExternalCallUtxoGroup {
 }
 
 export type ProtectedLoopEntryCollectionSelection =
-  | { status: 'absent'; collections: readonly ['jobEvents'] }
+  | { status: 'absent'; collections: readonly string[] }
   | { status: 'exact'; collections: string[] }
   | { status: 'ambiguous'; collections: string[] };
 
@@ -4563,7 +4570,10 @@ export function selectProtectedLoopEntryCollections(
       collections.add(access.collection);
     }
   }
-  if (!described) return { status: 'absent', collections: ['jobEvents'] };
+  if (!described) return {
+    status: 'absent',
+    collections: permitsLegacyNamedValueChunkFallback(groups) ? ['jobEvents'] : [],
+  };
   return {
     status: ambiguous ? 'ambiguous' : 'exact',
     collections: [...collections],
@@ -13855,10 +13865,13 @@ export class StatefulTransactionBuilder {
     const displacedDelegateIdentities: Array<{
       to: Uint8Array; amount: bigint; token: NonNullable<Output['token']>;
     }> = [];
+    const permitsLegacyNestedDelegateEventRepair = permitsLegacyDelegateEventRepair([
+      ...this.externalCallUtxoGroups, ...this.lowLevelCallUtxoGroups,
+    ], this.compilerRouteDelegateBlock);
     for (const [llcIndex, llc] of this.lowLevelCallUtxoGroups.entries()) {
       // Compiler-owned delegate routes materialize every declared event and entry inside their balanced frame.
       // The legacy nested-delegate repair below is only for layouts without that physical ownership boundary.
-      if (this.compilerRouteDelegateBlock) continue;
+      if (!permitsLegacyNestedDelegateEventRepair) continue;
       if (llc.callMode !== 'delegatecall') continue;
       const implIndex = this.getLowLevelCallMasterInputIndex(llcIndex);
       if (implIndex < 0) continue;

@@ -149,6 +149,7 @@ import {
   selectChunkableValueWriteExecution,
   permitsLegacyNamedValueChunkFallback,
   permitsLegacyValueChunkEventReconstruction,
+  permitsLegacyDelegateEventRepair,
   placeSameIndexTwin,
   placeInsertNewAt,
   shouldOverwriteForSameIndexTwin,
@@ -233,6 +234,19 @@ describe('generic persisted value-chunk write identity', () => {
     expect(permitsLegacyValueChunkEventReconstruction([legacyRenamed], false)).toBe(true);
     expect(permitsLegacyValueChunkEventReconstruction([legacyRenamed], true)).toBe(false);
     expect(permitsLegacyValueChunkEventReconstruction([legacyRenamed, kernelNamedDecoy], false)).toBe(false);
+  });
+
+  it('keeps nested delegate event repair legacy-only across misleading names', () => {
+    const legacyNamed = { functionName: 'publishJobEvent' };
+    const legacyRenamed = { functionName: 'appendNotice' };
+    const kernelArtifact = {
+      messageBus: { convention: 'kernel-row-loop' },
+    } as unknown as Artifact;
+    const kernelNamedDecoy = { functionName: 'publishJobEvent', logicalArtifact: kernelArtifact };
+
+    expect(permitsLegacyDelegateEventRepair([legacyNamed, legacyRenamed], false)).toBe(true);
+    expect(permitsLegacyDelegateEventRepair([legacyNamed], true)).toBe(false);
+    expect(permitsLegacyDelegateEventRepair([legacyRenamed, kernelNamedDecoy], false)).toBe(false);
   });
 
   it('selects a renamed physical value writer from metadata and rejects a named decoy', () => {
@@ -575,6 +589,12 @@ describe('generic persisted value-chunk write identity', () => {
     expect(selectProtectedLoopEntryCollections([])).toEqual({
       status: 'absent', collections: ['jobEvents'],
     });
+    const kernelArtifact = {
+      messageBus: { convention: 'kernel-row-loop' },
+    } as unknown as Artifact;
+    expect(selectProtectedLoopEntryCollections([{
+      functionName: 'publishJobEvent', logicalArtifact: kernelArtifact,
+    }])).toEqual({ status: 'absent', collections: [] });
 
     const [malformed] = renamed.valueChunkWrites;
     expect(selectProtectedLoopEntryCollections([{

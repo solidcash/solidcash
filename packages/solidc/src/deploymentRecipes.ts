@@ -1,7 +1,7 @@
 import { binToHex } from '@bitauth/libauth';
 import {
-  abiTypeString, ArrayType, ChildDeploymentGenesisStateAbi, ChildDeploymentValueRecipe, EnumType, PrimitiveType,
-  StructDefinitionInfo, StructType, Type,
+  abiTypeString, ArrayType, ChildDeploymentGenesisStateAbi, ChildDeploymentValueRecipe, CollectionInfo,
+  computeCollectionSignature, EnumType, MappingType, PrimitiveType, StructDefinitionInfo, StructType, Type,
 } from '@solidcash/utils';
 import {
   ArrayNode, AssignNode, BinaryOpNode, BlockNode, BoolLiteralNode, BranchNode, BreakNode, CastNode,
@@ -69,6 +69,25 @@ export const childDeploymentStructDefinitions = (
   for (const variable of variables) visit(variable.type);
   return definitions;
 };
+
+/** Collection geometry embedded in a child layout digest; entries remain separate NFTs, never inline state. */
+export const childDeploymentCollectionDefinitions = (
+  collections: readonly { name: string; type: ArrayType | MappingType; keyType: Type; innermostValueType: Type;
+    immutable: boolean; sorted: boolean; enumerable: boolean }[],
+): CollectionInfo[] => collections.map((collection) => ({
+  name: collection.name,
+  signature: computeCollectionSignature(collection.name, collection.type.toString()),
+  kind: collection.type instanceof ArrayType ? 'array' : 'mapping',
+  keyType: abiTypeString(collection.keyType),
+  valueType: abiTypeString(collection.innermostValueType),
+  ...(collection.type instanceof ArrayType && {
+    elementType: abiTypeString(collection.type.elementType),
+    ...(collection.type.bound !== undefined && { bound: collection.type.bound }),
+  }),
+  ...(collection.immutable && { immutable: true }),
+  ...(collection.sorted && { sorted: true }),
+  ...(collection.enumerable && { enumerable: true }),
+}));
 
 const fixedRecipeDecimals = (type: string | undefined): number | undefined => {
   if (!type) return undefined;

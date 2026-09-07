@@ -15,7 +15,7 @@ import { keccak_256 } from '@noble/hashes/sha3.js';
 
 /** Stable digest of the physical state geometry used by child-genesis recipes. */
 export function childStateLayoutDigest(
-  layout: Pick<StateLayout, 'variables' | 'dataNftCount' | 'commitmentLimit' | 'structs'>,
+  layout: Pick<StateLayout, 'variables' | 'dataNftCount' | 'commitmentLimit' | 'structs' | 'collections'>,
 ): string {
   const definitions = new Map((layout.structs ?? []).map((definition) => [definition.name, definition]));
   const reachable = new Map<string, StructDefinitionInfo>();
@@ -36,7 +36,20 @@ export function childStateLayoutDigest(
         name: field.name, type: field.type.replace(/address payable/g, 'address'),
       })),
     }));
+  const collections = [...(layout.collections ?? [])]
+    .sort((left, right) => left.signature.localeCompare(right.signature))
+    .map((collection) => ({
+      name: collection.name,
+      signature: collection.signature,
+      kind: collection.kind,
+      bound: collection.bound ?? null,
+      immutable: collection.immutable === true,
+      sorted: collection.sorted === true,
+      enumerable: collection.enumerable === true,
+    }));
   const canonical = {
+    // Preserve the established digest for collection-free children. Collection-bearing layouts were previously
+    // undercommitted and intentionally acquire the additive topology below.
     version: 1,
     dataNftCount: layout.dataNftCount,
     commitmentLimit: layout.commitmentLimit,
@@ -50,6 +63,7 @@ export function childStateLayoutDigest(
         dynamic: variable.dynamic === true,
         packed: variable.packed === true,
       })),
+    ...(collections.length > 0 && { collections }),
     ...(structs.length > 0 && { structs }),
   };
   return binToHex(sha256(utf8ToBin(JSON.stringify(canonical))));

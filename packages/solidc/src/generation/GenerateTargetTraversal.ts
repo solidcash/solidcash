@@ -73,7 +73,9 @@ import {
   abiTypeString,
   BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX,
 } from '@solidcash/utils';
-import { childDeploymentGenesisState, childDeploymentStructDefinitions } from '../deploymentRecipes.js';
+import {
+  childDeploymentCollectionDefinitions, childDeploymentGenesisState, childDeploymentStructDefinitions,
+} from '../deploymentRecipes.js';
 import {
   canonicalizeUpsertKeyExpression,
 } from './upsertKeySources.js';
@@ -14137,6 +14139,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           dataNftCount: node.deployedDataNftCount,
           commitmentLimit: this.compilerOptions.commitmentLimit ?? 128,
           structs: childDeploymentStructDefinitions(liveVars),
+          collections: childDeploymentCollectionDefinitions(node.referencedContract!.collections),
         }),
         ...(genesisState && { genesisState }),
       });

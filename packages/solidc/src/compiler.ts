@@ -161,8 +161,8 @@ import {
 } from './analysis/InvocationAnalysis.js';
 import { BinaryOperator, NullaryOperator, UnaryOperator } from './ast/Operator.js';
 import {
-  analyzeChildDeploymentRecipes, analyzeFixedBchEffectRecipes, childDeploymentGenesisState,
-  childDeploymentStructDefinitions, childDeploymentValueRecipe,
+  analyzeChildDeploymentRecipes, analyzeFixedBchEffectRecipes, childDeploymentCollectionDefinitions,
+  childDeploymentGenesisState, childDeploymentStructDefinitions, childDeploymentValueRecipe,
 } from './deploymentRecipes.js';
 import { cloneNode } from './ast/clone.js';
 import { hasEffectiveCallValue } from './semantic/branchOps.js';
@@ -2280,6 +2280,7 @@ function childDeploymentSites(
         dataNftCount: dataNftOutputCount,
         commitmentLimit,
         structs: childDeploymentStructDefinitions(child.stateVariables),
+        collections: childDeploymentCollectionDefinitions(child.collections),
       });
       const spanWidth = 1 + dataNftOutputCount;
       sites.push({

@@ -400,6 +400,27 @@ describe('kernel switch and try fixed effects', () => {
     expect(handler).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
   });
 
+  it('binds fixed-array child collection geometry while keeping initialized entries fenced', () => {
+    const compile = (bound: number): Handler => select(`
+      contract Unit(int seed) {
+        int[${bound}] values;
+        constructor() { this.values[0] = seed; }
+        function keep() public { require(true); }
+      }
+      contract Store() {
+        function apply(int seed) public { Unit child = new Unit(seed); require(true); }
+      }
+    `).handler;
+    const pair = compile(2);
+    const triple = compile(3);
+    expect(pair).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+    expect(triple).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+    expect(pair.childDeployments?.[0].childLayoutDigest).toMatch(/^[0-9a-f]{64}$/);
+    expect(triple.childDeployments?.[0].childLayoutDigest).toMatch(/^[0-9a-f]{64}$/);
+    expect(pair.childDeployments?.[0].childLayoutDigest)
+      .not.toBe(triple.childDeployments?.[0].childLayoutDigest);
+  });
+
   it('publishes exact switch predicates for runtime counter-loop events', () => {
     const { handler } = select(`
       event Mark(int value);

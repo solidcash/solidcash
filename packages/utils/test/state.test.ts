@@ -795,6 +795,27 @@ describe('nested struct state commitment roundtrip', () => {
     })).not.toBe(digest);
   });
 
+  it('binds entry-backed collection geometry into the child layout digest', () => {
+    const scalarOnly = childStateLayoutDigest(layout);
+    const fixedArray = {
+      ...layout,
+      collections: [{
+        name: 'values', signature: 'values:int256[2]', kind: 'array' as const,
+        keyType: 'bigint', valueType: 'int256', elementType: 'int256', bound: 2,
+      }],
+    };
+    const digest = childStateLayoutDigest(fixedArray);
+    expect(digest).not.toBe(scalarOnly);
+    expect(childStateLayoutDigest({
+      ...fixedArray,
+      collections: [{ ...fixedArray.collections[0], bound: 3, signature: 'values:int256[3]' }],
+    })).not.toBe(digest);
+    expect(childStateLayoutDigest({
+      ...fixedArray,
+      collections: [{ ...fixedArray.collections[0], name: 'other', signature: 'other:int256[2]' }],
+    })).not.toBe(digest);
+  });
+
   it('should build and parse commitment with nested struct state', () => {
     const values = { data: { inner: { x: 7n, y: 8n }, z: 9n } };
     const commitment = buildPushdataCommitment(layout, values, 0);

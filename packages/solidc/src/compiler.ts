@@ -188,11 +188,18 @@ function normalizeAbiSelector(selector: string): string | undefined {
 
 /** Selector identity of a source ABI entry point; compiler-internal physical operands never affect it. */
 function sourceFunctionSelectorHex(fn: FunctionDefinitionNode): string {
+  // Fallback/receive parameters describe their compatibility execution context, not selector-dispatched ABI
+  // arguments. SymbolTableTraversal assigns both special entries their reserved zero-argument selector, so exact
+  // handler selection must derive the same identity even when `fallback(bytes input)` exposes calldata in its
+  // body. Ordinary functions continue to exclude only compiler-owned physical operands.
+  const parameterTypes = fn.isFallback || fn.isReceive
+    ? []
+    : fn.parameters
+      .filter((parameter) => !parameter.name.startsWith('__internal__'))
+      .map((parameter) => parameter.type.toString().replace(/address payable/g, 'address'));
   return binToHex(computeFunctionSelector(computeFunctionSignature(
     fn.name,
-    fn.parameters
-      .filter((parameter) => !parameter.name.startsWith('__internal__'))
-      .map((parameter) => parameter.type.toString().replace(/address payable/g, 'address')),
+    parameterTypes,
   )));
 }
 

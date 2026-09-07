@@ -57,7 +57,7 @@ describe('kernel arrays of struct results', () => {
     });
   });
 
-  it('keeps an unbounded nested array cardinality behind the layout fence', () => {
+  it('admits runtime-cardinality byte arrays inside a fixed struct aggregate', () => {
     const artifact = compileString(`pragma solidity ^0.8.0;
       struct Record { uint256 value; bytes[] payloads; }
       contract Source {
@@ -66,8 +66,7 @@ describe('kernel arrays of struct results', () => {
           return records;
         }
       }`, OPTIONS);
-    expect(artifact.messageBus?.handlers.find((entry) => entry.name === 'read')).toMatchObject({
-      eligible: false, rejectionReason: 'KERNEL_LAYOUT',
-    });
+    expect(artifact.messageBus?.handlers.find((entry) => entry.name === 'read'))
+      .toMatchObject({ eligible: true, outputs: [{ type: 'Record[2]' }] });
   });
 });

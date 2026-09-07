@@ -6742,7 +6742,7 @@ function synthesizeMessageBusRoute(
                 == int(bytes.concat(rowArguments, hex"00")));
               require(tx.outputs[targetSlot].value
                 == int(bytes.concat(rowEffect, hex"00")));
-              if (__message_bus_row_owner == activeParticipant) { activeSatoshiContainerRows = activeSatoshiContainerRows + 1; }
+              activeSatoshiContainerRows = activeSatoshiContainerRows + 1;
             } else if (resourceMode == 4) {
               require((rowArguments.length == 32 || rowArguments.length == 33)
                 && rowResult.length >= 8 && rowEffect.length >= 1);
@@ -6767,7 +6767,7 @@ function synthesizeMessageBusRoute(
                   == rowEffect.slice(9 + outputCategoryLength, rowEffect.length));
                 require(tx.inputs[sourceSlot].value == tx.outputs[targetSlot].value);
               }
-              if (__message_bus_row_owner == activeParticipant) { activeTokenContainerRows = activeTokenContainerRows + 1; }
+              activeTokenContainerRows = activeTokenContainerRows + 1;
             } else {
               require(rowArguments.length == 33 && rowArguments.slice(32, 33) == hex"01");
               if (resourceMode != 1) {
@@ -6801,12 +6801,10 @@ function synthesizeMessageBusRoute(
               if (resourceMode == 0 || resourceMode == 5) {
                 require(tx.inputs[sourceSlot].value == tx.outputs[targetSlot].value);
               }
-              if (__message_bus_row_owner == activeParticipant) {
-                if (resourceMode == 0 || resourceMode == 5) {
-                  activeResourceEndpoints = activeResourceEndpoints + 2;
-                } else {
-                  activeResourceEndpoints = activeResourceEndpoints + 1;
-                }
+              if (resourceMode == 0 || resourceMode == 5) {
+                activeResourceEndpoints = activeResourceEndpoints + 2;
+              } else {
+                activeResourceEndpoints = activeResourceEndpoints + 1;
               }
             }
           }` : ''}
@@ -6814,10 +6812,9 @@ function synthesizeMessageBusRoute(
             require(rowArguments.length == 0 && rowResult.length == 0 && rowEffect.length > 0);
             require(rowSubject == tx.outputs[targetSlot].lockingBytecode);
             require(rowEffect == tx.outputs[targetSlot].nftCommitment);
-            require(tx.outputs[targetSlot].tokenCategory == activeCategory
-              || __message_bus_row_owner != activeParticipant);
+            require(tx.outputs[targetSlot].tokenCategory == activeCategory);
             require(tx.outputs[targetSlot].tokenAmount == 0);
-            if (__message_bus_row_owner == activeParticipant) { activeEventRows = activeEventRows + 1; }
+            activeEventRows = activeEventRows + 1;
           }` : ''}
           ${valueEffectMode ? `if (kind == 3 && __message_bus_row_owner == activeParticipant) {
             require(rowArguments.length == 0 && rowResult.length == 0 && rowEffect.length == 8);
@@ -6828,7 +6825,7 @@ function synthesizeMessageBusRoute(
               && tx.outputs[targetSlot].tokenCategory.length == 0);
             require(tx.outputs[targetSlot].lockingBytecode == rowSubject);
             require(tx.outputs[targetSlot].value == int(bytes.concat(rowEffect, hex"00")));
-            if (__message_bus_row_owner == activeParticipant) { activeValueRows = activeValueRows + 1; }
+            activeValueRows = activeValueRows + 1;
           }` : ''}
           ${tokenContainerMode ? `if (kind == 4 && __message_bus_row_owner == activeParticipant) {
             bigint tokenMode = int(bytes.concat(callManifest.slice(rowStart + 5, rowStart + 6), hex"00"));
@@ -6851,7 +6848,7 @@ function synthesizeMessageBusRoute(
               require(tx.outputs[targetSlot].tokenAmount == 0
                 && tx.outputs[targetSlot].nftCommitment == rowEffect);
             }
-            if (__message_bus_row_owner == activeParticipant) { activeTokenRows = activeTokenRows + 1; }
+            activeTokenRows = activeTokenRows + 1;
           }` : ''}
           if (kind == 5 && __message_bus_row_owner == activeParticipant) {
             bigint deploymentMode = int(bytes.concat(
@@ -7002,10 +6999,8 @@ function synthesizeMessageBusRoute(
               && tx.outputs[targetSlot].value
                 == int(bytes.concat(rowEffect.slice(0, 8), hex"00"))
               && tx.outputs[targetSlot].nftCommitment == rowEffect.slice(8, rowEffect.length));
-            if (__message_bus_row_owner == activeParticipant) {
-              activeSidecarRows = activeSidecarRows + 1;
-              activeSidecarTargets = bytes.concat(activeSidecarTargets, toPaddedBytes(targetSlot, 2));
-            }
+            activeSidecarRows = activeSidecarRows + 1;
+            activeSidecarTargets = bytes.concat(activeSidecarTargets, toPaddedBytes(targetSlot, 2));
           }` : ''}
           bigint priorBoundary = int(bytes.concat(
             participantBoundaries.slice(consumer * 2, consumer * 2 + 2), hex"00"

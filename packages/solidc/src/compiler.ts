@@ -4137,8 +4137,6 @@ function synthesizeMessageBusRoute(
       let deploymentInLoop = false;
       let conditionalActivationUnsupported = false;
       let deployWithValue = false;
-      let valueDeployTransferIndex = -1;
-      let hasAnotherValueTransfer = false;
       let deploymentValueRecipeUnsupported = false;
       let deploymentStateInitializationUnsupported = false;
       let deploymentRecipeUnsupported = false;
@@ -4165,13 +4163,6 @@ function synthesizeMessageBusRoute(
         // Synchronous traversal; `deploys` is the accumulator for this immediately enclosing handler scan.
         // eslint-disable-next-line @typescript-eslint/no-loop-func
         walkInvocationAst(candidate.body, (node) => {
-          if (node instanceof TransferStatementNode || node instanceof AddressTransferStatementNode
-            || node instanceof AddressSendExpressionNode
-            || (node instanceof LowLevelCallStatementNode && hasEffectiveCallValue(node.callOptions?.value))
-            || (node instanceof MethodCallNode && hasEffectiveCallValue(node.callOptions?.value))
-            || (node instanceof ExternalFunctionCallNode && hasEffectiveCallValue(node.callOptions?.value))) {
-            hasAnotherValueTransfer = true;
-          }
           // `new LockingBytecodeP2PKH(pkh)` is an InstantiationNode but not a child deploy; it is a
           // compile-time locking-bytecode constructor and does not need a handler-owned block layout.
           if (node instanceof InstantiationNode && !lockingBytecode.has(node.identifier.name)) {
@@ -4230,7 +4221,6 @@ function synthesizeMessageBusRoute(
             } else unsupportedInstantiation = true;
             if (hasEffectiveCallValue(node.callOptions?.value)) {
               deployWithValue = true;
-              valueDeployTransferIndex = node.transferIndex;
               if (!analyzed?.value || typeof analyzed.value.resultType !== 'string'
                 || !/^(?:bigint|u?int(?:8|16|24|32|40|48|56|64|72|80|88|96|104|112|120|128|136|144|152|160|168|176|184|192|200|208|216|224|232|240|248|256)?)$/
                   .test(analyzed.value.resultType)) {
@@ -4321,9 +4311,10 @@ function synthesizeMessageBusRoute(
         };
         nestedDeploy(candidate.body);
       }
-      const supportedValueDeploy = !deployWithValue || (deploySites === 1
-        && !hasAnotherValueTransfer && valueDeployTransferIndex === 0
-        && !deploymentValueRecipeUnsupported);
+      // Every value-bearing deployment publishes its own typed amount recipe and transfer ordinal. The route's
+      // value frame is already indexed by those ordinals, so multiple deployments and ordinary transfers compose
+      // without a special occurrence protocol; admission only needs every deployment amount to be materializable.
+      const supportedValueDeploy = !deployWithValue || !deploymentValueRecipeUnsupported;
       const supportedConditionalDeploy = !deployUnderControlFlow
         || (conditionalDeploySites >= 1 && !deploymentInLoop
           && !conditionalActivationUnsupported);

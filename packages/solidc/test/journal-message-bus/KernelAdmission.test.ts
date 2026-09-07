@@ -1823,14 +1823,37 @@ describe('required kernel admission', () => {
   });
 
   it.each([
-    ['two value sites', 'Unit first = new Unit{value: amount}(); Unit second = new Unit{value: amount}();'],
-    ['another BCH transfer', 'Unit child = new Unit{value: amount}(); this.transfer(hex"51", 1);'],
-  ])('keeps non-singular value-bearing deployment shape fenced: %s', (_label, body) => {
-    expect(denied(`contract Unit() { int marker; }
+    [
+      'multiple deployment effects',
+      'Unit first = new Unit{value: amount}(); Unit second = new Unit{value: amount}();',
+      [
+        { siteIndex: 0, occurrence: 'once', spanOffset: 0, spanWidth: 2, transferIndex: 0 },
+        { siteIndex: 1, occurrence: 'once', spanOffset: 2, spanWidth: 2, transferIndex: 1 },
+      ],
+      [],
+    ],
+    [
+      'a deployment effect and an ordinary transfer effect',
+      'Unit child = new Unit{value: amount}(); this.transfer(hex"51", 1);',
+      [{ siteIndex: 0, occurrence: 'once', spanOffset: 0, spanWidth: 2, transferIndex: 0 }],
+      [1],
+    ],
+  ])('admits independently described value-bearing effects: %s', (_label, body, deployments, transfers) => {
+    const artifact = compileString(`contract Unit() { int marker; }
       contract Factory() {
         int created;
         function create(int amount) public { ${body} this.created = 1; require(true); }
-      }`, 'create')).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+      }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'create');
+    expect(handler).toMatchObject({ eligible: true });
+    expect(handler?.childDeployments?.map((site) => ({
+      siteIndex: site.siteIndex,
+      occurrence: site.occurrence,
+      spanOffset: site.spanOffset,
+      spanWidth: site.spanWidth,
+      transferIndex: site.value?.transferIndex,
+    }))).toEqual(deployments);
+    expect(handler?.transfers?.map((transfer) => transfer.transferIndex) ?? []).toEqual(transfers);
   });
 
   it('admits one value-bearing child deployment behind a materializable pure predicate', () => {
@@ -1875,10 +1898,41 @@ describe('required kernel admission', () => {
     ]);
   });
 
+  it('admits a conditional value-bearing deployment alongside an ordinary transfer', () => {
+    const artifact = compileString(`contract Child() { int marker; }
+      contract Parent() {
+        int created;
+        function create(bool take, int amount) public {
+          if (take) { Child child = new Child{value: amount}(); }
+          this.transfer(hex"51", 1);
+          this.created = 1;
+          require(true);
+        }
+      }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'create');
+    expect(handler).toMatchObject({ eligible: true });
+    expect(handler?.childDeployments?.map((site) => ({
+      siteIndex: site.siteIndex,
+      occurrence: site.occurrence,
+      spanOffset: site.spanOffset,
+      spanWidth: site.spanWidth,
+      activation: site.activation,
+      transferIndex: site.value?.transferIndex,
+    }))).toEqual([{
+      siteIndex: 0,
+      occurrence: 'conditional',
+      spanOffset: 0,
+      spanWidth: 2,
+      activation: { kind: 'handlerInput', inputIndex: 0, resultType: 'bool' },
+      transferIndex: 0,
+    }]);
+    expect(handler?.transfers?.map((transfer) => ({
+      transferIndex: transfer.transferIndex,
+      condition: transfer.condition,
+    }))).toEqual([{ transferIndex: 1, condition: undefined }]);
+  });
+
   it.each([
-    ['another BCH transfer', `
-      if (take) { Child child = new Child{value: amount}(); }
-      this.transfer(hex"51", 1);`],
     ['a loop occurrence', `
       while (take) { Child child = new Child{value: amount}(); break; }`],
     ['an unmaterializable predicate', `

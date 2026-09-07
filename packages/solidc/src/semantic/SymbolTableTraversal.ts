@@ -13254,16 +13254,23 @@ export default class SymbolTableTraversal extends AstTraversal {
     const declared = fn.transferInfos?.length ?? 0;
     if (declared === 0) return true;
     let valueCalls = 0;
+    let childDeploymentValueCalls = 0;
     walkInvocationAst(fn.body, (node) => {
       if ((node instanceof ExternalFunctionCallNode || node instanceof MethodCallNode
         || (node instanceof InstantiationNode && node.isStatefulDeploy))
-        && hasEffectiveCallValue(node.callOptions?.value)) valueCalls += 1;
+        && hasEffectiveCallValue(node.callOptions?.value)) {
+        valueCalls += 1;
+        if (node instanceof InstantiationNode && node.isStatefulDeploy) childDeploymentValueCalls += 1;
+      }
     });
     // if/else arms are mutually exclusive: sum-of-nodes counted both `this.transfer` statements and
     // disagreed with `collectTransferStatements` (max of arms), so the clone never joined the route frame
     // and `__message_bus1` compiled the transfer with no `transfer[0]` slot.
     const thisTransfers = countTransfersMinMax(fn.body, isDirectOwnerTransferNode).max;
-    if (thisTransfers > 0 && valueCalls > 0) {
+    // Stateful child deployments publish the same global transfer ordinal used by direct owner transfers.
+    // Their per-site descriptors therefore compose in one route frame; the total declared width is settled by
+    // those ordinals rather than by treating call-option and statement effects as mutually exclusive families.
+    if (thisTransfers > 0 && valueCalls !== childDeploymentValueCalls) {
       throw new GraphEmissionEffectError(
         fn, fn.name.replace(/^__message_bus_(graph|resource|handler|array)_/, ''),
         'a value call option alongside an emit or transfer',

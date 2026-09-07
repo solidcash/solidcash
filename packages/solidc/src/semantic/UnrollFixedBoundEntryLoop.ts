@@ -26,10 +26,12 @@ import {
   FunctionCallNode,
   IndirectCallNode,
   MethodCallNode,
+  InstantiationNode,
   NewArrayNode,
   CollectionIterationNode,
   ArrayAccessNode,
   CastNode,
+  StateAccessNode,
 } from '../ast/AST.js';
 import { GlobalFunction } from '../ast/Globals.js';
 import { BinaryOperator, UnaryOperator } from '../ast/Operator.js';
@@ -48,8 +50,9 @@ const MAX_UNROLL = 64;
  * by EntryWriteInLoopError, because one fixed entry slot can't hold N runtime entries). Distinct constant-index
  * keys get distinct entry slots, so the unrolled form is equivalent to hand-written static writes.
  *
- * Restricted to be sound: only fires when the body contains a mapping write, a keccak256 call, or an indirect
- * external function-pointer call (else unrolling is needless), never when the body has break/continue/return
+ * Restricted to be sound: only fires when the body contains a mapping write, a keccak256 call, a contract
+ * instantiation, or an indirect external function-pointer call (else unrolling is needless), never when the body
+ * has break/continue/return
  * (unrolling changes their control flow), and
  * N <= MAX_UNROLL (avoid code blow-up). Runs before break/continue expansion + SymbolTableTraversal so the static
  * writes / keccak calls get their slots. A fixed-bound keccak256 loop unrolls to N syntactic calls (N compute
@@ -57,6 +60,7 @@ const MAX_UNROLL = 64;
  */
 export default class UnrollFixedBoundEntryLoop extends AstTraversal {
   private mappingNames = new Set<string>();
+  private contractNames = new Set<string>();
   private varTypes = new Map<string, Type>();
   private stateVarTypes = new Map<string, Type>();
   private collectionTypes = new Map<string, Type>();
@@ -80,6 +84,7 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
   }
 
   visitSourceFile(node: SourceFileNode): Node {
+    this.contractNames = new Set([node.contract.name, ...node.importedContracts.map((contract) => contract.name)]);
     if (node.contract) node.contract = this.visit(node.contract) as ContractNode;
     node.importedContracts = node.importedContracts.map((c) => this.visit(c) as ContractNode);
     node.freeFunctions = node.freeFunctions.map((f) => this.visit(f) as FunctionDefinitionNode);
@@ -294,7 +299,15 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
     // which belong only to the unused direct source body. Empty loops above are still erased as dead code.
     if (this.currentGraphRuntime) return undefined;
 
-    // Only unroll a NON-empty loop whose body writes a mapping OR calls keccak256 (else needless). A keccak256 in
+    // This pass runs both before route admission and again after break/continue normalization. Remember a
+    // source escape on the loop itself: the normalization necessarily replaces the raw ContinueNode/BreakNode,
+    // but that must not make a later pass mistake the rewritten loop for an exactly-repeatable resource set.
+    if (w.fixedUnrollForbidden) return undefined;
+
+    // Only unroll a NON-empty loop whose body writes a mapping, calls keccak256, or deploys a child (else
+    // needless). A child deployment has the same fixed-resource requirement as a mapping write: each exact
+    // iteration owns an independent genesis input/output span and must therefore become an ordinary syntactic
+    // site before message-bus admission assigns site and transfer ordinals. A keccak256 in
     // a runtime loop needs one compute side-car per RUNTIME call, but the block layout allocates one per SYNTACTIC
     // call; unrolling a fixed-bound loop turns the N runtime calls into N syntactic calls (each an independent
     // slot, resolved by the complex-arg probe). Never unroll with break/continue/return (changes control flow).
@@ -304,8 +317,12 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
     // the direct ABI (per-element selector and master-index witnesses) that shipped broadcast callers use.
     const hasIndirectCall = this.hasIndirectCall(bodyStmts);
     if (this.indirectCallsOnly ? !hasIndirectCall
-      : (!this.hasMappingWrite(bodyStmts) && !this.hasKeccakCall(bodyStmts))) return undefined;
-    if (this.hasControlFlowEscape(bodyStmts)) return undefined;
+      : (!this.hasMappingWrite(bodyStmts) && !this.hasKeccakCall(bodyStmts)
+        && !this.hasChildDeployment(bodyStmts))) return undefined;
+    if (this.hasControlFlowEscape(bodyStmts)) {
+      w.fixedUnrollForbidden = true;
+      return undefined;
+    }
 
     // A pointer-table dispatch loop with a FIXED literal trip count reaches exactly `values.length` rows. Record
     // that ceiling so the artifact can publish one bounded loop callsite instead of N indistinguishable rows.
@@ -351,7 +368,12 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
       if (expr.expression instanceof IdentifierNode) {
         const local = this.newArrayLocalSizes.get(expr.expression.name);
         if (local !== undefined) return local;
-        const t = this.varTypes.get(expr.expression.name) ?? this.stateVarTypes.get(expr.expression.name);
+        const t = this.varTypes.get(expr.expression.name) ?? this.stateVarTypes.get(expr.expression.name)
+          ?? this.collectionTypes.get(expr.expression.name);
+        if (t instanceof ArrayType && t.bound !== undefined) return BigInt(t.bound);
+      }
+      if (expr.expression instanceof StateAccessNode) {
+        const t = this.stateVarTypes.get(expr.expression.name);
         if (t instanceof ArrayType && t.bound !== undefined) return BigInt(t.bound);
       }
       if (expr.expression instanceof NewArrayNode && expr.expression.size instanceof IntLiteralNode) {
@@ -393,6 +415,11 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
     return this.anyNode(stmts, (n) => n instanceof FunctionCallNode && n.identifier.name === GlobalFunction.KECCAK256);
   }
 
+  private hasChildDeployment(stmts: Node[]): boolean {
+    return this.anyNode(stmts, (n) => n instanceof InstantiationNode
+      && this.contractNames.has(n.identifier.name));
+  }
+
   private hasIndirectCall(stmts: Node[]): boolean {
     return this.anyNode(stmts, (n) => n instanceof IndirectCallNode
       || (n instanceof MethodCallNode && n.selectorArrayVar !== undefined));
@@ -431,8 +458,17 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
       }
       return undefined;
     };
+    if (node instanceof InstantiationNode && node.callOptions) {
+      for (const option of ['value', 'gas', 'salt'] as const) {
+        const expression = node.callOptions[option];
+        if (!expression) continue;
+        const replaced = replace(expression);
+        if (replaced) node.callOptions[option] = replaced as typeof expression;
+        else this.substituteVar(expression, varName, value);
+      }
+    }
     for (const key in node) {
-      if (key === 'location') continue;
+      if (key === 'location' || key === 'callOptions') continue;
       const v = (node as unknown as Record<string, unknown>)[key];
       const rep = replace(v);
       if (rep) {

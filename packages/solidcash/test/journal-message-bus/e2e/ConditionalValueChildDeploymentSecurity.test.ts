@@ -397,6 +397,8 @@ describe('conditional value-bearing child deployment transcript security', () =>
       ],
       funder: fee,
       changeAddress: recipient,
-    }).build()).rejects.toThrow(/transfer slot .* invalid|active transfer recipient.*OP_TRUE|not a forwarded\/literal canonical effect/i);
+    }).build()).rejects.toThrow(
+      /transfer slot .* invalid|active transfer recipient.*OP_TRUE|not a canonical typed effect|preflight failed.*OP_VERIFY/i,
+    );
   }, 240_000);
 });

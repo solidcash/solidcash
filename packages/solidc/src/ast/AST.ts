@@ -1022,6 +1022,8 @@ export class CatchClauseNode extends Node {
 
 export class DoWhileNode extends StatementNode {
   forLoopUpdateCount: number = 0;
+  /** A fixed-loop expansion saw source break/continue/return and must stay rolled on later passes. */
+  fixedUnrollForbidden: boolean = false;
 
   constructor(
     public condition: ExpressionNode,
@@ -1039,6 +1041,8 @@ export class WhileNode extends StatementNode {
   // Number of trailing block statements that form a desugared for-loop update (see AstBuilder.visitForStatement).
   // Used by BreakContinueTransformation so `continue` still runs the update.
   forLoopUpdateCount: number = 0;
+  /** A fixed-loop expansion saw source break/continue/return and must stay rolled on later passes. */
+  fixedUnrollForbidden: boolean = false;
 
   constructor(
     public condition: ExpressionNode,

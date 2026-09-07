@@ -1208,6 +1208,24 @@ export interface Artifact {
       /** Compiler-authored lifecycle authority. Append-v1 preserves the existing state geometry and permits
        * only a canonical fixed-field suffix in the final existing data NFT. */
       lifecycle?: { kind: 'upgrade'; layout: 'same' | 'in-place-append-v1' };
+      /** Participant-local lifecycle geometry. Metadata only until a callManifest version authenticates it. */
+      lifecycleTopology?: {
+        version: 1;
+        kind: 'split' | 'merge';
+        coordinate: 'participant';
+        inputSpans: readonly {
+          mode: 'preserve' | 'consume';
+          offset: number;
+          count: { source: 'fixed'; value: number }
+          | { source: 'parameter'; parameterIndex: number; addend: number };
+        }[];
+        outputSpans: readonly {
+          mode: 'preserve' | 'create';
+          offset: number;
+          count: { source: 'fixed'; value: number }
+          | { source: 'parameter'; parameterIndex: number; addend: number };
+        }[];
+      };
       /** The selected handler's compiler-resolved call closure can execute CHECKSIG/CHECKMULTISIG. */
       usesTransactionSignature?: boolean;
       /** Transaction-signature witnesses whose hash type is covenanted by the generated route. */

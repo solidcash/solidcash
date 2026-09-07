@@ -10185,6 +10185,35 @@ function compileResolvedAst(
   const deploymentTopologyKey = (fn: FunctionDefinitionNode): string => `${fn.name}(${fn.parameters
     .filter((parameter) => !parameter.name.startsWith('__internal__'))
     .map((parameter) => parameter.type.toString()).join(',')})`;
+  const lifecycleTopologyOf = (fn: FunctionDefinitionNode) => {
+    const kind = fn.modifiers.includes(FunctionModifier.SPLIT) ? 'split' as const
+      : fn.modifiers.includes(FunctionModifier.MERGE) ? 'merge' as const : undefined;
+    const countName = kind === 'split' ? fn.splitCountParam
+      : kind === 'merge' ? fn.mergeCountParam : undefined;
+    if (!kind || !countName) return undefined;
+    const visible = fn.parameters.filter((parameter) => !parameter.name.startsWith('__internal__'));
+    const parameterIndex = visible.findIndex((parameter) => parameter.name === countName);
+    if (parameterIndex < 0) return undefined;
+    const fixedOne = { source: 'fixed' as const, value: 1 };
+    const parameterCount = { source: 'parameter' as const, parameterIndex, addend: 0 };
+    return {
+      version: 1 as const,
+      kind,
+      coordinate: 'participant' as const,
+      inputSpans: kind === 'split'
+        ? [{ mode: 'preserve' as const, offset: 0, count: fixedOne }]
+        : [
+          { mode: 'preserve' as const, offset: 0, count: fixedOne },
+          { mode: 'consume' as const, offset: 1, count: parameterCount },
+        ],
+      outputSpans: kind === 'split'
+        ? [
+          { mode: 'preserve' as const, offset: 0, count: fixedOne },
+          { mode: 'create' as const, offset: 1, count: parameterCount },
+        ]
+        : [{ mode: 'preserve' as const, offset: 0, count: fixedOne }],
+    };
+  };
   const childDeploymentsBySignature = new Map<string, ChildDeploymentSiteAbi[]>();
   for (const fn of ast.contract.functions) {
     const deployments = childDeploymentSites(
@@ -10545,6 +10574,7 @@ function compileResolvedAst(
         ...(fn.modifiers.includes(FunctionModifier.UPGRADE) && {
           lifecycle: { kind: 'upgrade' as const, layout: 'in-place-append-v1' as const },
         }),
+        ...(lifecycleTopologyOf(fn) && { lifecycleTopology: lifecycleTopologyOf(fn) }),
         ...(fn.messageBusUsesTransactionSignature === true && { usesTransactionSignature: true }),
         ...(() => {
           if (fn.messageBusAllOutputSignatureParameters === undefined
@@ -10745,6 +10775,7 @@ function compileResolvedAst(
             ...(fn.modifiers.includes(FunctionModifier.UPGRADE) && {
               lifecycle: { kind: 'upgrade' as const, layout: 'in-place-append-v1' as const },
             }),
+            ...(lifecycleTopologyOf(fn) && { lifecycleTopology: lifecycleTopologyOf(fn) }),
             ...(fn.messageBusUsesTransactionSignature === true && { usesTransactionSignature: true }),
             rejectionReason: kernelReason,
             rejectionCode: classifyMessageBusRejection(kernelReason),

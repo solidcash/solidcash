@@ -3,7 +3,9 @@ import { compileString } from '../direct-compile.js';
 import { compileString as compileKernelString } from 'solidc';
 import { binToHex } from '@bitauth/libauth';
 import { Contract, StatefulContract } from '../../src/index.js';
+import { addressToLockScript } from '../../src/utils.js';
 import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
+import { aliceAddress } from '../fixture/vars.js';
 
 // ethers-style `contract.fn.staticCall()`: read a view function's return value(s) via a read-only VM probe (no
 // send), decoded against the ABI output type(s). This is the value-returning read pattern (EA getJob/getUsers).
@@ -64,6 +66,34 @@ describe('StatefulFunctionCall.staticCall() - value-returning reads', () => {
     expect(named.timestamp_).toBe(0n);
     expect(binToHex(renamed.payload as Uint8Array)).toBe(payloadHex);
     expect(renamed.observedAt).toBe(0n);
+  });
+
+  it('keeps kernel struct argument encoding independent of address_ field names', async () => {
+    const lockingBytecodeHex = binToHex(addressToLockScript(aliceAddress));
+    const art = compileKernelString(`pragma solidcash >=0.8.0;
+      contract ArgumentNames() {
+        struct Named { bytes address_; bigint timestamp_; }
+        struct Renamed { bytes payload; bigint observedAt; }
+        function named(Named value) view returns (bool) {
+          return value.address_ == hex"${lockingBytecodeHex}" && value.timestamp_ == 0;
+        }
+        function renamed(Renamed value) view returns (bool) {
+          return value.payload == hex"${lockingBytecodeHex}" && value.observedAt == 0;
+        }
+      }`, { forceStateful: true, messageBus: true, messageBusKernel: true });
+    expect(art.messageBus?.convention).toBe('kernel-row-loop');
+    const provider = createTestProvider();
+    const contract = new Contract(art, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, contract, art.stateLayout!, {}, { saltContract: true },
+    );
+    const sc = new StatefulContract(categoryId, art, provider) as unknown as {
+      named: (value: Record<string, unknown>) => { staticCall: () => Promise<boolean> };
+      renamed: (value: Record<string, unknown>) => { staticCall: () => Promise<boolean> };
+    };
+
+    expect(await sc.named({ address_: aliceAddress, timestamp_: 0n }).staticCall()).toBe(true);
+    expect(await sc.renamed({ payload: aliceAddress, observedAt: 0n }).staticCall()).toBe(true);
   });
 
   it('reads a struct view return with .toObject()', async () => {

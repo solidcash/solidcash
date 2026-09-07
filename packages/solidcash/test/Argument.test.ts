@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { encodeInt } from '@solidcash/utils';
 import { encodeFunctionArgument, SignatureTemplate } from '../src/index.js';
-import { alicePriv, bobPriv } from './fixture/vars.js';
+import { addressToLockScript } from '../src/utils.js';
+import { aliceAddress, alicePriv, bobPriv } from './fixture/vars.js';
 
 describe('encodeFunctionArgument: empty arrays', () => {
   it('preserves the zero count prefix through the outer unlocking-script push', () => {
@@ -79,5 +80,47 @@ describe('encodeFunctionArgument: ethers BigNumber / numeric objects', () => {
 
   it('still rejects a plain non-numeric object', () => {
     expect(() => encodeFunctionArgument({ foo: 1 } as unknown as bigint, 'uint256')).toThrow(/object/);
+  });
+});
+
+describe('encodeFunctionArgument: struct field-name independence', () => {
+  const namedStructs = [{
+    name: 'Named',
+    fields: [{ name: 'address_', type: 'bytes' }, { name: 'timestamp_', type: 'uint32' }],
+  }];
+  const renamedStructs = [{
+    name: 'Renamed',
+    fields: [{ name: 'payload', type: 'bytes' }, { name: 'observedAt', type: 'uint32' }],
+  }];
+
+  it('does not reinterpret a bytes field because it is named address_', () => {
+    const named = { address_: aliceAddress, timestamp_: 0n };
+    const renamed = { payload: aliceAddress, observedAt: 0n };
+
+    const expected = encodeFunctionArgument({
+      address_: addressToLockScript(aliceAddress), timestamp_: 0n,
+    }, 'Named', namedStructs);
+    expect(encodeFunctionArgument(named, 'Named', namedStructs)).toEqual(expected);
+    expect(encodeFunctionArgument(renamed, 'Renamed', renamedStructs)).toEqual(expected);
+    expect(named.address_).toBe(aliceAddress);
+  });
+
+  it('keeps the exact legacy JobEventData adapter explicit and non-mutating', () => {
+    const structs = [{
+      name: 'JobEventData',
+      fields: [
+        { name: 'type_', type: 'uint8' },
+        { name: 'address_', type: 'bytes' },
+        { name: 'data_', type: 'bytes' },
+        { name: 'timestamp_', type: 'uint32' },
+      ],
+    }];
+    const event = { type_: 1n, address_: aliceAddress, data_: '', timestamp_: 0n };
+
+    expect(encodeFunctionArgument(event, 'JobEventData', structs)).toEqual(encodeFunctionArgument({
+      ...event,
+      address_: addressToLockScript(aliceAddress),
+    }, 'JobEventData', structs));
+    expect(event.address_).toBe(aliceAddress);
   });
 });

@@ -4668,6 +4668,31 @@ function synthesizeMessageBusRoute(
     .map((definition) => definition.name));
   const routeEnumNames = new Set([...ast.enumDefinitions, ...contract.enumDefinitions]
     .map((definition) => definition.name));
+  const kernelStaticCompositeLayout = (type: Type, active = new Set<object>()): boolean => {
+    if (type === PrimitiveType.STRING || (type instanceof BytesType && type.bound === undefined)) return false;
+    if (type instanceof ValueType) return kernelStaticCompositeLayout(type.underlyingType, active);
+    if (type instanceof ArrayType || type instanceof StructType) {
+      if (active.has(type) || (type instanceof ArrayType && type.bound === undefined)) return false;
+      active.add(type);
+      const finite = type instanceof ArrayType
+        ? kernelStaticCompositeLayout(type.elementType, active)
+        : type.fields.every((field) => kernelStaticCompositeLayout(field.type, active));
+      active.delete(type);
+      return finite;
+    }
+    return type === PrimitiveType.BOOL || type === PrimitiveType.BIGINT || type === PrimitiveType.INT
+      || type instanceof IntType || type instanceof FixedType || type instanceof EnumType
+      || type instanceof AddressType || (type instanceof BytesType && type.bound !== undefined);
+  };
+  const containsStruct = (type: Type, active = new Set<object>()): boolean => {
+    if (type instanceof StructType) return true;
+    if (type instanceof ValueType) return containsStruct(type.underlyingType, active);
+    if (!(type instanceof ArrayType) || active.has(type)) return false;
+    active.add(type);
+    const found = containsStruct(type.elementType, active);
+    active.delete(type);
+    return found;
+  };
   const kernelResultEncodable = (
     type: Type, active = new Set<object>(), aggregateField = false,
   ): boolean => {
@@ -4693,6 +4718,12 @@ function synthesizeMessageBusRoute(
       // a returned value must have a finite materialized ABI representation. Detect the type-graph back edge here
       // rather than overflowing this admission walk or letting later code generation partially expand it.
       if (active.has(type)) return false;
+      // A top-level dynamic array of scalar words has a bounded transport envelope, but a dynamic array of
+      // composite values has no compiler-proven element count or finite expansion budget. Fixed arrays take the
+      // static composite path below; unbounded struct arrays remain behind KERNEL_LAYOUT.
+      if (type instanceof ArrayType && containsStruct(type.elementType)) {
+        if (type.bound === undefined || !kernelStaticCompositeLayout(type.elementType)) return false;
+      }
       if (type instanceof ArrayType && aggregateField && type.bound === undefined) return false;
       active.add(type);
       const encodable = type instanceof StructType

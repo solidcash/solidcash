@@ -14781,8 +14781,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emitEvmFixedArrayTailDynamic(type, loc);
     } else if (type instanceof ArrayType && type.bound !== undefined && !this.isDynamicAbiType(type)) {
       // fixed-size array of static elements (uint256[3]): inline element words, no length word - the ABI static
-      // encoding. packed=true skips the length word and emits each element padded to 32, which is exactly that.
-      this.emitEvmArrayTail(type.elementType, loc, true);
+      // encoding. Scalar elements use the packed loop directly. Composite elements reuse the framed-element
+      // array encoder, then discard its dynamic-array length word to leave the fixed array's inline ABI tuple.
+      if (isFixedWidthType(type.elementType)) this.emitEvmArrayTail(type.elementType, loc, true);
+      else {
+        this.emitEvmStaticCompositeArrayTail(type.elementType, loc);
+        this.emitDropFirst32(loc);
+      }
     } else if (type === PrimitiveType.STRING || (type instanceof BytesType && type.bound === undefined)) {
       this.emitEvmDynamicTail(loc);
     } else if (type instanceof StructType) {

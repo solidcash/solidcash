@@ -9354,6 +9354,38 @@ function compileResolvedAst(
   const artifact = generateArtifact(
     ast, optimisationResult.script, code, debug, mergedCompilerOptions, functionBodies, fingerprint,
   );
+  // Route synthesis precedes the final symbol/type passes because collection and effect handlers must be cloned
+  // before their physical layouts are lowered. Solidity address transfers, however, only become dedicated typed
+  // AST nodes during those later passes. The ABI serializer above is therefore the first shared boundary at which
+  // every fixed BCH effect has its final, SDK-consumable operand and activation descriptors.
+  //
+  // Refuse any handler whose descriptor is incomplete before publishing messageBus.handlers. The ordinary
+  // verifier-binding flow consumes these verdicts and recompiles the pristine AST with only eligible handler
+  // names, so the shipped route is resynthesized without this dispatch arm rather than merely relabeled. Reading
+  // the emitted descriptor also keeps admission and composition on one recipe language: no second AST evaluator,
+  // source-name convention, or Solidity intrinsic heuristic is introduced here.
+  if (mergedCompilerOptions.messageBus && mergedCompilerOptions.messageBusKernel === true) {
+    const sourceHandlers = [
+      ...ast.contract.functions,
+      ast.contract.fallbackDef,
+      ast.contract.receiveDef,
+    ].filter((fn): fn is FunctionDefinitionNode => !!fn && fn.isEntryPoint && !fn.messageBusRoute);
+    for (const fn of sourceHandlers) {
+      if (fn.messageBusEligible !== true) continue;
+      const selector = fn.functionSelector ? binToHex(fn.functionSelector) : undefined;
+      const abi = artifact.abi.find((candidate) => selector !== undefined
+        ? candidate.selector === selector
+        : fn === ast.contract.fallbackDef ? candidate.isFallback === true
+          : fn === ast.contract.receiveDef ? candidate.isReceive === true
+            : false);
+      const incomplete = abi?.transfers?.some((transfer) =>
+        transfer.recipientRecipe === undefined || transfer.amountRecipe === undefined
+        || transfer.condition === null) === true;
+      if (!incomplete) continue;
+      fn.messageBusEligible = false;
+      fn.messageBusRejectionReason = 'KERNEL_LAYOUT';
+    }
+  }
   mark('artifact');
   profileLog('resolved', resolvedStarted, {
     contract: artifact.contractName,

@@ -791,6 +791,8 @@ export interface EntryAccessAbi {
   keyParams: string[];
   keySources?: readonly KeySourceAbi[];  // optional for backward compat with old artifacts
   operations: readonly string[];
+  /** Compiler proof that this entry stores a dynamic-array value in authenticated continuation chunks. */
+  chunkableArrayValue?: true;
   // A write slot gated off when its key aliases the delete slot at this index (swap-remove of the last key).
   aliasCondDeleteSlot?: number;
   runtimeAliasPriorSlots?: readonly number[];

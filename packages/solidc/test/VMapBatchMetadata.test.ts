@@ -2,6 +2,19 @@ import { describe, it, expect } from 'vitest';
 import { compileString } from './direct-compile.js';
 
 describe('vmap fixed-write batch metadata', () => {
+  it('publishes chunkable-array identity on a nested collection writer', () => {
+    const artifact = compileString(`contract Data() {
+      mapping(int => int[]) notices;
+      function appendNotice(int key, int value) {
+        this.notices[key].push(value);
+        require(true);
+      }
+    }`);
+    const append = artifact.abi.find((fn) => fn.name === 'appendNotice');
+    expect(append?.entryAccesses?.find((access) => access.collection === 'notices'))
+      .toMatchObject({ operations: ['read', 'write'], chunkableArrayValue: true });
+  });
+
   it('groups distinct fixed writes to one collection by final entry slot', () => {
     const artifact = compileString(`contract C {
       mapping(int => int) m;

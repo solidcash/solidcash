@@ -1526,6 +1526,7 @@ function buildFunctionAbiMetadata(
           }),
         }),
         operations: ea.operations,
+        ...(ea.chunkableArrayValue && { chunkableArrayValue: true }),
         ...(ea.aliasCondDeleteSlot !== undefined && { aliasCondDeleteSlot: ea.aliasCondDeleteSlot }),
         ...(ea.runtimeAliasPriorSlots?.length
           && { runtimeAliasPriorSlots: ea.runtimeAliasPriorSlots }),

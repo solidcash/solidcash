@@ -1769,7 +1769,8 @@ function chunkableArrayWriteCollections(
         && !activeWriteCollections.includes(access.collection))) return [];
     const collection = group.stateLayout.collections?.find((candidate) =>
       candidate.name === access.collection || candidate.signature === access.collection);
-    return collection?.chunkableValue === true && collection.valueType.endsWith('[]')
+    return access.chunkableArrayValue === true
+      || (collection?.chunkableValue === true && collection.valueType.endsWith('[]'))
       ? [access.collection] : [];
   })))];
 }

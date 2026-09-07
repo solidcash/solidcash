@@ -5054,6 +5054,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       // A computed value leaves it undefined - the SDK guards chunk persistence off for it (read fails closed).
       const vt = node.collection.innermostValueType;
       const chunkableValue = node.collection.sorted && isChunkableValueType(vt);
+      const chunkableArrayValue = chunkableValue && vt.toString().endsWith('[]');
       // Only a WHOLE-value direct-param assign (`m[k] = p`) records the source param. An element/push/pop write's
       // expression is the element, not the whole array value (that value is computed by the RMW -> derived from trace).
       const wholeValueWrite = !node.arrayIndex && !node.arrayPush && !node.arrayPop;
@@ -5091,6 +5092,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         const alreadyWrote = existing.operations.includes('write');
         if (!existing.operations.includes('write')) existing.operations.push('write');
         if (rmw && !existing.operations.includes('read')) existing.operations.push('read');
+        if (chunkableArrayValue) existing.chunkableArrayValue = true;
         if (valueParam && existing.valueParam === undefined) existing.valueParam = valueParam;
         if (alreadyWrote) existing.valueSource = valueSource;
         else if (valueSource && existing.valueSource === undefined) existing.valueSource = valueSource;
@@ -5099,6 +5101,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         map.set(slotKey, {
           collection: node.collection.name, collectionSignature: collSig,
           keyParams, keySources, operations: rmw ? ['read', 'write'] : ['write'], slotIndex: -1,
+          ...(chunkableArrayValue && { chunkableArrayValue: true }),
           ...(valueParam !== undefined && { valueParam }),
           ...(valueSource !== undefined && { valueSource }),
         });

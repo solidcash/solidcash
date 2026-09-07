@@ -81,6 +81,18 @@ describe('compiler-owned participant identity', () => {
     expect(chunkableWriterGroupIndex([decoy, renamed])).toBe(1);
   });
 
+  it('selects a chunkable writer from self-contained entry metadata without a state layout lookup', () => {
+    const renamed = group('appendNotice', {
+      ...fn('appendNotice', 'notices', ['write']),
+      entryAccesses: [{
+        collection: 'notices', keyParams: [], operations: ['write'], chunkableArrayValue: true,
+      }],
+    } as AbiFunction);
+    renamed.stateLayout = { ...layout, collections: [] };
+    (renamed.externalContract!.inner!.artifact as Artifact).stateLayout = renamed.stateLayout;
+    expect(chunkableWriterGroupIndex([renamed])).toBe(0);
+  });
+
   it('retains the name fallback only when old artifacts publish no entry effects', () => {
     const legacy = group('transferFrom', {
       name: 'transferFrom', selector: '00000000', inputs: [], outputs: [], writesState: true,

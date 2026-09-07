@@ -252,6 +252,8 @@ export interface EntryAccessInfo {
   keyParams: string[];          // kept for backward compat
   keySources: KeySourceInfo[];  // detailed source info per key
   operations: ('read' | 'write' | 'delete')[];
+  /** The collection stores a dynamic-array value in authenticated continuation chunks. */
+  chunkableArrayValue?: true;
   slotIndex: number;
   // A pure-write mapping assign whose key varies per iteration of a RUNTIME loop (`for(i<n) m[k[i]]=v[i]`). It
   // has no fixed entry slot; the covenant emits a runtime-counter-indexed trailing entry output per iteration

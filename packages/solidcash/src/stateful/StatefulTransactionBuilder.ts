@@ -2652,7 +2652,9 @@ function groupChunkableArrayWriteCollections(group: ChunkableArrayWriteGroup): s
         candidate === access.collection || candidate === collection?.name || candidate === collection?.signature
       ));
       if (!access.operations.includes('write') || !active) continue;
-      if (collection?.chunkableValue === true && collection.valueType.endsWith('[]')) {
+      if (access.chunkableArrayValue === true) {
+        matches.add(collection?.name ?? access.collection);
+      } else if (collection?.chunkableValue === true && collection.valueType.endsWith('[]')) {
         matches.add(collection.name);
       }
     }

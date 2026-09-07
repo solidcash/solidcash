@@ -318,6 +318,52 @@ describe('affine recursive mapping streams', () => {
     expect(artifact.messageBus?.route.blockLayout?.trailingCapacity).toBe(2 * 64 + 2);
   });
 
+  it('authenticates one affine nested read stream under a literal outer key', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => mapping(int => int)) source;
+      mapping(int => int) destination;
+      function apply(int cursor, int fallbackValue) public returns (int) {
+        if (cursor == 0) return fallbackValue;
+        int result = apply(cursor - 1, fallbackValue);
+        this.destination[cursor] = this.source[7][cursor + 1] + result;
+        return result;
+      }
+    }`, KERNEL);
+    const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'apply');
+    const operationInfo = artifact.abi.find((candidate) => candidate.name === 'apply')?.sortedUpsertLoopInfo;
+
+    expect(handler).toMatchObject({ eligible: true });
+    expect(operationInfo?.map((info) => [info.collection, info.op])).toEqual([
+      ['source', 'read'], ['destination', 'set'],
+    ]);
+    expect(operationInfo?.[0]).toMatchObject({
+      varyingKeyExpressions: [expect.anything(), expect.anything()],
+    });
+  });
+
+  it.each([
+    ['a runtime outer key', 'this.source[partition][cursor]'],
+    ['a varying non-final component', 'this.source[cursor][7]'],
+    ['two varying key components', 'this.source[cursor][cursor + 1]'],
+  ])('refuses nested recursive reads with %s', (_label, read) => {
+    const artifact = compileString(`contract C() {
+      mapping(int => mapping(int => int)) source;
+      mapping(int => int) destination;
+      function apply(int cursor, int partition) public returns (int) {
+        if (cursor == 0) return partition;
+        int result = apply(cursor - 1, partition);
+        this.destination[cursor] = ${read} + result;
+        return result;
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'apply'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'control'))
+      .toMatchObject({ eligible: true });
+  });
+
   it.each([
     ['value', `function apply(int cursor, int floor) public returns (int) {
       if (cursor == 0) return floor;

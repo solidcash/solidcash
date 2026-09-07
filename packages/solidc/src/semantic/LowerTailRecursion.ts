@@ -132,6 +132,20 @@ export default class LowerTailRecursion extends AstTraversal {
     return undefined;
   }
 
+  /**
+   * Resolve the counter-varying final component of a recursive mapping read. Composite keys are admitted only
+   * when every preceding component is a source literal, so the existing counter-loop witness can reconstruct and
+   * authenticate the complete slot without a second per-frame trace. The SDK's ordinary composite-key stream
+   * defines its omitted varyingKeyIndices as the final component, so accepting any other position here would
+   * make the witness sorter and covenant authenticate different tuples.
+   */
+  private affineRecursiveReadKeyOffset(
+    keys: readonly ExpressionNode[], inductionName: string,
+  ): bigint | undefined {
+    if (keys.length === 0 || keys.slice(0, -1).some((key) => !(key instanceof LiteralNode))) return undefined;
+    return this.affineRecursiveKeyOffset(keys[keys.length - 1], inductionName);
+  }
+
   /** Collect collection reads which the counter-loop pass can turn into authenticated old-value vectors. A
    * mapping assignment consumes its vector in physical key order. Requirements consume their vectors in
    * recursive source order, carrying finite replayable if/else reachability into the selected domain. Predicates,
@@ -154,8 +168,8 @@ export default class LowerTailRecursion extends AstTraversal {
     const collect = (node: Node, consumer: StatementNode): void => {
       if (node instanceof MappingAccessNode) {
         // A collection-dependent key would require authenticating the inner read before deriving the outer row.
-        if (node.keys.length !== 1 || node.keys.some(containsMappingRead)
-          || this.affineRecursiveKeyOffset(node.keys[0], inductionName) === undefined) valid = false;
+        if (node.keys.length === 0 || node.keys.some(containsMappingRead)
+          || this.affineRecursiveReadKeyOffset(node.keys, inductionName) === undefined) valid = false;
         else reads.push({ node, consumer });
         return;
       }
@@ -188,6 +202,10 @@ export default class LowerTailRecursion extends AstTraversal {
       }
     };
     for (const effect of effects) collectRequirements(effect);
+    // This first composite slice owns one exact physical stream. Multiple composite read streams need a complete
+    // tuple-domain disjointness proof (including crossed varying positions), not the scalar offset comparison
+    // below; retain that larger case behind KERNEL_LAYOUT.
+    if (reads.filter((read) => read.node.keys.length > 1).length > 1) return undefined;
     return valid ? reads : undefined;
   }
 
@@ -221,7 +239,7 @@ export default class LowerTailRecursion extends AstTraversal {
       }
     }
     for (const read of reads) {
-      const readOffset = this.affineRecursiveKeyOffset(read.node.keys[0], inductionName)!;
+      const readOffset = this.affineRecursiveReadKeyOffset(read.node.keys, inductionName)!;
       for (const write of writes) {
         if (write.name !== read.node.name) continue;
         const sameEntryRmw = write === read.consumer && readOffset === writeOffsets.get(write);
@@ -233,11 +251,11 @@ export default class LowerTailRecursion extends AstTraversal {
     // same entry NFT twice. Different offsets inside one consumer likewise need independent disjoint streams.
     for (let left = 0; left < reads.length; left += 1) {
       const leftRead = reads[left];
-      const leftOffset = this.affineRecursiveKeyOffset(leftRead.node.keys[0], inductionName)!;
+      const leftOffset = this.affineRecursiveReadKeyOffset(leftRead.node.keys, inductionName)!;
       for (let right = left + 1; right < reads.length; right += 1) {
         const rightRead = reads[right];
         if (leftRead.node.name !== rightRead.node.name) continue;
-        const rightOffset = this.affineRecursiveKeyOffset(rightRead.node.keys[0], inductionName)!;
+        const rightOffset = this.affineRecursiveReadKeyOffset(rightRead.node.keys, inductionName)!;
         if (leftRead.consumer === rightRead.consumer && leftOffset === rightOffset) continue;
         if (!disjoint(leftOffset, rightOffset)) return false;
       }

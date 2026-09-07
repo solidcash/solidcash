@@ -276,6 +276,13 @@ export type ChildDeploymentValueRecipe =
   | { kind: 'bytesLiteral'; value: string; resultType: string }
   | { kind: 'cast'; resultType: string; operand: ChildDeploymentValueRecipe }
   | { kind: 'aggregate'; resultType: string; elements: readonly ChildDeploymentValueRecipe[] }
+  | { kind: 'concat'; resultType: string; operands: readonly ChildDeploymentValueRecipe[] }
+  | {
+    kind: 'hash';
+    algorithm: 'ripemd160' | 'sha1' | 'sha256' | 'hash160' | 'hash256';
+    resultType: string;
+    operand: ChildDeploymentValueRecipe;
+  }
   | { kind: 'unary'; operator: '!' | '-'; resultType: string; operand: ChildDeploymentValueRecipe }
   | {
     kind: 'conditional';

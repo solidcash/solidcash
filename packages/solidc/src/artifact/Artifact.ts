@@ -436,6 +436,9 @@ const transferEffects = (
     if (recipe.kind === 'aggregate') {
       throw new Error('Aggregate recipe cannot be used as a fixed-effect activation');
     }
+    if (recipe.kind === 'concat' || recipe.kind === 'hash') {
+      throw new Error('Byte operation recipe cannot be used as a fixed-effect activation');
+    }
     if (recipe.kind === 'conditional') {
       return {
         kind: 'ternary',

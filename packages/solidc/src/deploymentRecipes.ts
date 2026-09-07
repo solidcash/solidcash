@@ -17,6 +17,7 @@ import {
   StateAssignNode,
   DeleteStateNode,
 } from './ast/AST.js';
+import { GlobalFunction } from './ast/Globals.js';
 import { BinaryOperator, UnaryOperator } from './ast/Operator.js';
 import { containsStatefulOperation } from './semantic/EnsureFinalRequireTraversal.js';
 import { hasEffectiveCallValue } from './semantic/branchOps.js';
@@ -35,6 +36,26 @@ const unaryOperators = new Set<UnaryOperator>([
 const materializableCastType = /^(?:address|bool|bigint|u?int(?:8|16|24|32|40|48|56|64|72|80|88|96|104|112|120|128|136|144|152|160|168|176|184|192|200|208|216|224|232|240|248|256)?|(?:u?fixed)(?:\d+x\d+)?|bytes(?:[1-9]|[12]\d|3[0-2])?)$/;
 // eslint-disable-next-line max-len
 const numericRecipeType = /^(?:bigint|u?int(?:8|16|24|32|40|48|56|64|72|80|88|96|104|112|120|128|136|144|152|160|168|176|184|192|200|208|216|224|232|240|248|256)?)$/;
+const concatenableRecipeType = /^(?:bytes(?:[1-9]|[12]\d|3[0-2])?|string)$/;
+// Hash opcodes consume one VM stack item. Numeric/fixed/bool values therefore have an exact minimal VM-number
+// representation, while signatures, aggregates, collections, and other multi-item values remain fenced.
+// eslint-disable-next-line max-len
+const hashableRecipeType = /^(?:bool|bigint|u?int(?:8|16|24|32|40|48|56|64|72|80|88|96|104|112|120|128|136|144|152|160|168|176|184|192|200|208|216|224|232|240|248|256)?|(?:u?fixed)(?:\d+x\d+)?|bytes(?:[1-9]|[12]\d|3[0-2])?|string|address|pubkey|datasig)$/;
+const pureHashFunctions = new Set<string>([
+  GlobalFunction.RIPEMD160, GlobalFunction.SHA1, GlobalFunction.SHA256,
+  GlobalFunction.HASH160, GlobalFunction.HASH256,
+]);
+const pureHashResultType = (algorithm: string): string =>
+  algorithm === GlobalFunction.SHA256 || algorithm === GlobalFunction.HASH256 ? 'bytes32' : 'bytes20';
+const concatenationResultType = (left: string | undefined, right: string | undefined): string | undefined => {
+  if (left === 'string' && right === 'string') return 'string';
+  const leftBytes = /^bytes(\d+)?$/.exec(left ?? '');
+  const rightBytes = /^bytes(\d+)?$/.exec(right ?? '');
+  if (!leftBytes || !rightBytes) return undefined;
+  if (!leftBytes[1] || !rightBytes[1]) return 'bytes';
+  const width = Number(leftBytes[1]) + Number(rightBytes[1]);
+  return width <= 32 ? `bytes${width}` : 'bytes';
+};
 // eslint-disable-next-line max-len
 const materializableGenesisLeafType = /^(?:bool|bigint|u?int(?:8|16|24|32|40|48|56|64|72|80|88|96|104|112|120|128|136|144|152|160|168|176|184|192|200|208|216|224|232|240|248|256)?|(?:u?fixed)(?:\d+x\d+)?|bytes(?:[1-9]|[12]\d|3[0-2])|address|pubkey|datasig)$/;
 
@@ -149,6 +170,21 @@ export function childDeploymentValueRecipe(
     return declaredType
       ? { kind: 'bytesLiteral', value: binToHex(expression.value), resultType: declaredType } : undefined;
   }
+  if (expression instanceof FunctionCallNode && pureHashFunctions.has(expression.identifier.name)
+    && !expression.resolvedFunction && expression.parameters.length === 1) {
+    const operand = childDeploymentValueRecipe(
+      expression.parameters[0], handlerInputs, true, handlerInputTypes, aliases, aliasDefinitions,
+      undefined, structStack,
+    );
+    const resultType = declaredType ?? (expectedType ? physicalRecipeType(expectedType) : undefined)
+      ?? pureHashResultType(expression.identifier.name);
+    return operand && resultType && hashableRecipeType.test(operand.resultType ?? '') ? {
+      kind: 'hash',
+      algorithm: expression.identifier.name as Extract<ChildDeploymentValueRecipe, { kind: 'hash' }>['algorithm'],
+      resultType,
+      operand,
+    } : undefined;
+  }
   if (expression instanceof ArrayNode
     && (expectedType instanceof ArrayType || expression.type instanceof ArrayType)) {
     const arrayType = expectedType instanceof ArrayType ? expectedType : expression.type as ArrayType;
@@ -254,7 +290,15 @@ export function childDeploymentValueRecipe(
       BinaryOperator.EQ, BinaryOperator.NE, BinaryOperator.AND, BinaryOperator.OR].includes(expression.operator);
     const fixedBooleanResult = [BinaryOperator.LT, BinaryOperator.LE, BinaryOperator.GT, BinaryOperator.GE,
       BinaryOperator.EQ, BinaryOperator.NE].includes(expression.operator);
-    const resultType = declaredType ?? (booleanResult ? 'bool' : left?.resultType);
+    const resultType = declaredType ?? (expectedType ? physicalRecipeType(expectedType) : undefined)
+      ?? (booleanResult ? 'bool' : expression.operator === BinaryOperator.PLUS
+        ? concatenationResultType(left?.resultType, right?.resultType) : left?.resultType);
+    if (expression.operator === BinaryOperator.PLUS && left && right && resultType
+      && concatenableRecipeType.test(left.resultType ?? '')
+      && concatenableRecipeType.test(right.resultType ?? '')
+      && concatenableRecipeType.test(resultType)) {
+      return { kind: 'concat', resultType, operands: [left, right] };
+    }
     const equality = expression.operator === BinaryOperator.EQ || expression.operator === BinaryOperator.NE;
     const logical = expression.operator === BinaryOperator.AND || expression.operator === BinaryOperator.OR;
     let supportedOperands = equality || (logical
@@ -360,7 +404,7 @@ const bindRecipe = (
 };
 
 type FixedBchEffectNode = TransferStatementNode | AddressTransferStatementNode | AddressSendExpressionNode
-  | InstantiationNode;
+| InstantiationNode;
 
 export interface FixedBchEffectRecipeAnalysis {
   recipient?: ChildDeploymentValueRecipe;
@@ -959,9 +1003,12 @@ export function analyzeChildDeploymentRecipes(
     if (value instanceof InstantiationNode) {
       const siteAliases = new Map(aliases);
       const siteAliasDefinitions = new Map(aliasDefinitions);
-      const constructorArgs = value.parameters.map((parameter) => (unsafe ? undefined
+      const constructorParameters = value.referencedContract?.parameters.length
+        ? value.referencedContract.parameters : value.referencedContract?.constructorDef?.parameters ?? [];
+      const constructorArgs = value.parameters.map((parameter, index) => (unsafe ? undefined
         : childDeploymentValueRecipe(
           parameter, handlerInputs, false, handlerInputTypes, siteAliases, siteAliasDefinitions,
+          constructorParameters[index]?.type,
         )));
       const salt = value.callOptions?.salt && !unsafe
         ? childDeploymentValueRecipe(

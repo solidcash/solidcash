@@ -1,7 +1,7 @@
-import { bigIntToVmNumber, binToHex, hexToBin, utf8ToBin, vmNumberToBigInt } from '@bitauth/libauth';
+import { bigIntToVmNumber, binToHex, binToUtf8, hexToBin, sha1, utf8ToBin, vmNumberToBigInt } from '@bitauth/libauth';
 import {
   BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX, decodePushdataValue, encodePushdataValue, scriptToBytecode,
-  MESSAGE_BUS_VERIFIER_COMMITMENT_DOMAIN, sha256, buildEventNftCovenantScript,
+  MESSAGE_BUS_VERIFIER_COMMITMENT_DOMAIN, sha256, ripemd160, hash160, hash256, buildEventNftCovenantScript,
   buildAnonymousEventNftCovenantScript, computeEventNameHash, parseArrayTypeString,
   buildEntryCommitment, buildInitialStateCommitments, bytecodeToScript, scriptToAsm,
   AddressType, BytesType, FixedType, IntType,
@@ -134,6 +134,30 @@ const numericRecipeValue = (value: FunctionArgument, typeName: string, solidityA
   throw new Error(`messageBus: deployment recipe expected a scalar numeric ${typeName}`);
 };
 
+const byteRecipeValue = (value: FunctionArgument, typeName: string, solidityAbi: boolean): Uint8Array => {
+  const type = parseTypeStrict(typeName);
+  if (type === PrimitiveType.BOOL || type === PrimitiveType.BIGINT
+    || type instanceof IntType || type instanceof FixedType) {
+    return bigIntToVmNumber(numericRecipeValue(value, typeName, solidityAbi));
+  }
+  if (type === PrimitiveType.STRING) {
+    if (typeof value === 'string') return utf8ToBin(value);
+    if (value instanceof Uint8Array) return value;
+    throw new Error('messageBus: deployment recipe expected string bytes');
+  }
+  if (type instanceof AddressType && typeof value === 'string' && value.includes(':')) {
+    return addressToLockScript(value);
+  }
+  const byteType = type instanceof AddressType || type instanceof BytesType
+    || type === PrimitiveType.PUBKEY || type === PrimitiveType.DATASIG;
+  if (!byteType) throw new Error(`messageBus: deployment recipe type ${typeName} is not byte-represented`);
+  if (value instanceof Uint8Array) return value;
+  if (typeof value === 'string') {
+    return hexToBin(value.startsWith('0x') ? value.slice(2) : value);
+  }
+  throw new Error(`messageBus: deployment recipe expected byte sequence ${typeName}`);
+};
+
 const fixedVmNumber = (value: bigint, width: number): Uint8Array => {
   const minimal = bigIntToVmNumber(value);
   if (minimal.length > width) throw new Error(`messageBus: deployment recipe value does not fit bytes${width}`);
@@ -255,6 +279,51 @@ export const evaluateChildDeploymentRecipe = (
   if (recipe.kind === 'aggregate') {
     return recipe.elements.map((element) =>
       evaluateChildDeploymentRecipe(element, args, inputTypes, solidityAbi)) as ConstructorArgument[];
+  }
+  if (recipe.kind === 'concat') {
+    if (recipe.operands.length === 0) {
+      throw new Error('messageBus: deployment concat recipe requires at least one operand');
+    }
+    const parsedResult = parseTypeStrict(resultType);
+    if (!(parsedResult instanceof BytesType) && parsedResult !== PrimitiveType.STRING) {
+      throw new Error(`messageBus: deployment concat recipe cannot produce ${resultType}`);
+    }
+    const values = recipe.operands.map((operand) => {
+      const operandTypeName = recipeType(operand, inputTypes);
+      const operandType = parseTypeStrict(operandTypeName);
+      if (!(operandType instanceof BytesType) && operandType !== PrimitiveType.STRING) {
+        throw new Error(`messageBus: deployment concat operand ${operandTypeName} is not concatenable`);
+      }
+      return byteRecipeValue(
+        evaluateChildDeploymentRecipe(operand, args, inputTypes, solidityAbi), operandTypeName, solidityAbi,
+      );
+    });
+    const joined = Uint8Array.from(values.flatMap((value) => [...value]));
+    if (parsedResult instanceof BytesType && parsedResult.bound !== undefined && joined.length !== parsedResult.bound) {
+      throw new Error(`messageBus: deployment concat recipe produced ${joined.length} bytes for ${resultType}`);
+    }
+    return parsedResult === PrimitiveType.STRING ? binToUtf8(joined) : joined;
+  }
+  if (recipe.kind === 'hash') {
+    const expectedResultTypes = {
+      ripemd160: 'bytes20', sha1: 'bytes20', sha256: 'bytes32', hash160: 'bytes20', hash256: 'bytes32',
+    } as const;
+    if (resultType !== expectedResultTypes[recipe.algorithm]) {
+      throw new Error(`messageBus: deployment ${recipe.algorithm} recipe cannot produce ${resultType}`);
+    }
+    const operand = byteRecipeValue(
+      evaluateChildDeploymentRecipe(recipe.operand, args, inputTypes, solidityAbi),
+      recipeType(recipe.operand, inputTypes),
+      solidityAbi,
+    );
+    switch (recipe.algorithm) {
+      case 'ripemd160': return ripemd160(operand);
+      case 'sha1': return sha1.hash(operand);
+      case 'sha256': return sha256(operand);
+      case 'hash160': return hash160(operand);
+      case 'hash256': return hash256(operand);
+      default: throw new Error('messageBus: unsupported deployment hash recipe');
+    }
   }
   if (recipe.kind === 'intLiteral') return coerceRecipeValue(BigInt(recipe.value), 'bigint', resultType, solidityAbi);
   if (recipe.kind === 'boolLiteral') return coerceRecipeValue(recipe.value, 'bool', resultType, solidityAbi);

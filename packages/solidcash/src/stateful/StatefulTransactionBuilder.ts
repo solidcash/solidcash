@@ -1158,6 +1158,27 @@ export function isInitialValueChunkWrite(
   return selection.status === 'exact' ? selection.write.operation === 'insert' : legacyNamedInitial;
 }
 
+/**
+ * Scope persisted continuation readiness to the active compiler-described resource.
+ * Process-global readiness is retained only for descriptor-free pre-kernel plans.
+ */
+export function persistedValueChunkReadiness(parts: {
+  selection: ValueChunkWriteCategorySelection;
+  hasWriteMetadata: boolean;
+  permitsLegacyFallback: boolean;
+  descriptorReady: boolean;
+  legacyReady: boolean;
+}): boolean {
+  if (parts.selection.status === 'ambiguous') {
+    throw new Error('Ambiguous compiler-described value-chunk write identity');
+  }
+  if (parts.selection.status === 'exact') return parts.descriptorReady;
+  if (parts.hasWriteMetadata) {
+    throw new Error('Chunkable value write metadata did not produce one exact resource descriptor');
+  }
+  return parts.permitsLegacyFallback && parts.legacyReady;
+}
+
 /** Descriptor-owned rematerialization decision; `undefined` delegates to old-artifact compatibility. */
 export function shouldRematerializeDescribedValueChunkWrite(parts: {
   selection: ValueChunkWriteCategorySelection;
@@ -5855,12 +5876,14 @@ export class StatefulTransactionBuilder {
   /** Exact descriptor readiness, with global readiness retained only for old descriptor-free plans. */
   private _isPersistedChunkableValueWriteReady(): boolean {
     const selection = this._valueChunkWriteCategorySelection();
-    if (selection.status === 'ambiguous') isInitialValueChunkWrite(selection);
-    if (selection.status === 'exact') return this._persistedChunkableValueWriteState() !== undefined;
-    if (this._hasChunkableValueWriteMetadata()) {
-      throw new Error('Chunkable value write metadata did not produce one exact resource descriptor');
-    }
-    return isPersistedJobEventsReady();
+    return persistedValueChunkReadiness({
+      selection,
+      hasWriteMetadata: this._hasChunkableValueWriteMetadata(),
+      permitsLegacyFallback: this._permitsLegacyNamedValueChunkFallback(),
+      descriptorReady: selection.status === 'exact'
+        && this._persistedChunkableValueWriteState() !== undefined,
+      legacyReady: isPersistedJobEventsReady(),
+    });
   }
 
   private _shouldStampPersistUpdateDigestLock(): boolean {
@@ -14289,7 +14312,7 @@ export class StatefulTransactionBuilder {
     );
     this._reassertNestedEmitEvents(builder);
     this._reassertDelegateImplEvents(builder);
-    if (isPersistedJobEventsReady()) this._packJobsSuffix(builder);
+    if (this._isPersistedChunkableValueWriteReady()) this._packJobsSuffix(builder);
     debugAtomicOutputStage('conservation-repairs');
     const chunkBand = this.getPublishJobEventsBand();
     const publishCategory = this._jobEventsPublishCategory();
@@ -14311,7 +14334,7 @@ export class StatefulTransactionBuilder {
     this._reassertScaledPreserveOneToOnes(builder);
     this._reassertNestedEmitEvents(builder);
     this._reassertDelegateImplEvents(builder);
-    if (isPersistedJobEventsReady()) {
+    if (this._isPersistedChunkableValueWriteReady()) {
       this._reassertPersistedJobEventsOneToOnes(
         builder, this._scaledEmitOutputIndex(builder.outputs.length) ?? -1,
       );
@@ -16485,7 +16508,7 @@ export class StatefulTransactionBuilder {
     this._reassertScaledPreserveOneToOnes(finalBuilder);
     this._reassertNestedEmitEvents(finalBuilder);
     this._reassertDelegateImplEvents(finalBuilder);
-    if (isPersistedJobEventsReady()) {
+    if (this._isPersistedChunkableValueWriteReady()) {
       this._reassertPersistedJobEventsOneToOnes(
         finalBuilder, this._scaledEmitOutputIndex(finalBuilder.outputs.length) ?? -1,
       );
@@ -16493,7 +16516,7 @@ export class StatefulTransactionBuilder {
     this._reassertDelegateImplEvents(finalBuilder);
     this._reassertMintingOneToOne(finalBuilder);
     this._reassertFixedStateOutputs(finalBuilder);
-    if (isPersistedJobEventsReady()) {
+    if (this._isPersistedChunkableValueWriteReady()) {
       this._reassertPersistedJobEventsOneToOnes(
         finalBuilder, this._scaledEmitOutputIndex(finalBuilder.outputs.length) ?? -1,
       );
@@ -16559,7 +16582,7 @@ export class StatefulTransactionBuilder {
     if (reboundViews) this._applyDerivedValueChunks(finalBuilder);
     this._materializeJobEventsBand(finalBuilder);
     this._ensureLiveJobEventsBand(finalBuilder);
-    if (isPersistedJobEventsReady()) {
+    if (this._isPersistedChunkableValueWriteReady()) {
       this._reassertPersistedJobEventsOneToOnes(
         finalBuilder, this._scaledEmitOutputIndex(finalBuilder.outputs.length) ?? -1,
       );
@@ -16571,7 +16594,7 @@ export class StatefulTransactionBuilder {
     this._reassertNestedEmitEvents(finalBuilder);
     this._reassertDelegateImplEvents(finalBuilder);
     this._reassertFixedStateOutputs(finalBuilder);
-    if (isPersistedJobEventsReady()) {
+    if (this._isPersistedChunkableValueWriteReady()) {
       this._reassertPersistedJobEventsOneToOnes(
         finalBuilder, this._scaledEmitOutputIndex(finalBuilder.outputs.length) ?? -1,
       );

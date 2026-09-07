@@ -136,6 +136,7 @@ import {
   selectPersistedValueChunkWrite,
   selectValueChunkWriteCategory,
   isInitialValueChunkWrite,
+  persistedValueChunkReadiness,
   shouldRematerializeDescribedValueChunkWrite,
   resolveValueChunkWriteCategory,
   selectCompilerWriterEvent,
@@ -295,6 +296,53 @@ describe('generic persisted value-chunk write identity', () => {
       status: 'exact', categoryId, write: { ...renamed },
     });
     expect(selectValueChunkWriteCategory([])).toEqual({ status: 'absent' });
+  });
+
+  it('scopes persisted readiness to a renamed resource and rejects cross-builder legacy leakage', () => {
+    const [renamed] = describeValueChunkWrites(makeGroup('appendNotice'));
+    const exact = selectValueChunkWriteCategory([renamed]);
+    expect(persistedValueChunkReadiness({
+      selection: exact,
+      hasWriteMetadata: true,
+      permitsLegacyFallback: false,
+      descriptorReady: false,
+      legacyReady: true,
+    })).toBe(false);
+    expect(persistedValueChunkReadiness({
+      selection: exact,
+      hasWriteMetadata: true,
+      permitsLegacyFallback: false,
+      descriptorReady: true,
+      legacyReady: false,
+    })).toBe(true);
+    expect(persistedValueChunkReadiness({
+      selection: { status: 'absent' },
+      hasWriteMetadata: false,
+      permitsLegacyFallback: false,
+      descriptorReady: false,
+      legacyReady: true,
+    })).toBe(false);
+    expect(persistedValueChunkReadiness({
+      selection: { status: 'absent' },
+      hasWriteMetadata: false,
+      permitsLegacyFallback: true,
+      descriptorReady: false,
+      legacyReady: true,
+    })).toBe(true);
+    expect(() => persistedValueChunkReadiness({
+      selection: { status: 'absent' },
+      hasWriteMetadata: true,
+      permitsLegacyFallback: false,
+      descriptorReady: false,
+      legacyReady: true,
+    })).toThrow(/did not produce one exact resource descriptor/);
+    expect(() => persistedValueChunkReadiness({
+      selection: { status: 'ambiguous' },
+      hasWriteMetadata: true,
+      permitsLegacyFallback: false,
+      descriptorReady: false,
+      legacyReady: true,
+    })).toThrow(/Ambiguous compiler-described value-chunk write identity/);
   });
 
   it('fails closed on same-category resource ambiguity or malformed compiler identity', () => {

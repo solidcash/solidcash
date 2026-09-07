@@ -187,7 +187,7 @@ describe('required kernel admission', () => {
     expect(artifact.messageBus?.atomicMessageBus?.protocolVersions).toEqual([1, 2]);
   });
 
-  it('refuses overloaded upgrades until graph invocations carry a selector', () => {
+  it('admits an overloaded upgrade by exact selector without granting lifecycle authority to its sibling', () => {
     const artifact = compileString(`contract C() {
       function migrate() upgrade { require(true); }
       function migrate(int ignored) public { require(ignored == ignored); }
@@ -195,10 +195,13 @@ describe('required kernel admission', () => {
     const handlers = artifact.messageBus?.handlers.filter((handler) => handler.name === 'migrate') ?? [];
     expect(handlers).toHaveLength(2);
     expect(handlers.find((handler) => handler.lifecycle?.kind === 'upgrade')).toMatchObject({
-      eligible: false, rejectionReason: 'KERNEL_LIFECYCLE',
+      eligible: true,
       lifecycle: { kind: 'upgrade', layout: 'in-place-append-v1' },
     });
-    expect(handlers.find((handler) => handler.lifecycle === undefined)).toMatchObject({ eligible: true });
+    const ordinary = handlers.find((handler) => handler.lifecycle === undefined);
+    expect(ordinary).toMatchObject({ eligible: true });
+    expect(new Set(handlers.map((handler) => handler.selector)).size).toBe(2);
+    expect(ordinary).not.toHaveProperty('lifecycle');
   });
 
   it('refuses upgrades on a delegate-owned route until proxy replacement semantics are explicit', () => {

@@ -80,6 +80,68 @@ const setup = async (): Promise<{
 };
 
 describe('kernel in-place append upgrade composition', () => {
+  it('selects an overloaded upgrade by canonical signature and preserves its selector identity', async () => {
+    const provider = createMessageBusCapstoneTestProvider();
+    const currentArtifact = compileString(`contract OverloadedCurrent() {
+      int stored;
+      function replace(int expected) public upgrade { require(expected == expected); }
+      function replace(bool enabled) public { this.stored = enabled ? 1 : 0; require(true); }
+    }`, KERNEL);
+    const replacementArtifact = compileString(`contract OverloadedReplacement() {
+      int stored;
+      function read() public view returns (int) { return this.stored; }
+    }`, KERNEL);
+    const coordinatorArtifact = compileString(`interface IOverloadedVersion {
+      function replace(int expected);
+    }
+    contract OverloadedCoordinator() {
+      function execute(address target, int expected) public {
+        IOverloadedVersion(target).replace(expected);
+        require(true);
+      }
+    }`, KERNEL);
+    const currentBase = new Contract(currentArtifact, [], { provider });
+    const currentSetup = await setupStatefulUtxos(
+      provider, currentBase, currentArtifact.stateLayout!, {}, { saltContract: true },
+    );
+    const current = StatefulContract.withCategory(
+      currentBase.withCategory(hexToBin(currentSetup.categoryId)), currentSetup.categoryId,
+    );
+    const coordinatorBase = new Contract(coordinatorArtifact, [], { provider });
+    const coordinatorSetup = await setupStatefulUtxos(
+      provider, coordinatorBase, coordinatorArtifact.stateLayout!, {}, { saltContract: true },
+    );
+    const coordinator = StatefulContract.withCategory(
+      coordinatorBase.withCategory(hexToBin(coordinatorSetup.categoryId)), coordinatorSetup.categoryId,
+    );
+    const fee = await createBareP2pkhFeeFunder(provider, 500_000n);
+    const upgradeHandler = currentArtifact.messageBus?.handlers.find((handler) =>
+      handler.name === 'replace' && handler.inputs[0]?.type === 'int256');
+    const ordinaryHandler = currentArtifact.messageBus?.handlers.find((handler) =>
+      handler.name === 'replace' && handler.inputs[0]?.type === 'bool');
+    expect(upgradeHandler).toMatchObject({
+      eligible: true, lifecycle: { kind: 'upgrade', layout: 'in-place-append-v1' },
+    });
+    expect(ordinaryHandler).toMatchObject({ eligible: true });
+    expect(ordinaryHandler).not.toHaveProperty('lifecycle');
+    const overload = (current.call as unknown as Record<string, (expected: bigint) => ReturnType<
+      typeof current.call.replace
+    >>)['replace(int256)'](0n);
+    expect(overload._messageBusCompositionDescriptor()).toMatchObject({
+      functionName: 'replace', selector: upgradeHandler?.selector, args: [0n],
+    });
+    const builder = await messageBus.compose({
+      calls: [
+        coordinator.call.execute(current.inner.lockingBytecode, 0n),
+        overload.upgradeTo(replacementArtifact, []),
+      ],
+      funder: fee,
+      changeAddress: fee.unlocker.generateLockingBytecode(),
+    }).build();
+    assertAuthenticatingVmEvidence(builder);
+    expect(() => messageBus.preflightMessageBusTransaction(builder)).not.toThrow();
+  }, 180_000);
+
   it('authenticates one final upgrade row and preserves the master NFT geometry', async () => {
     const { current, currentArtifact, replacementArtifact, coordinator, coordinatorArtifact, fee } = await setup();
     expect(currentArtifact.messageBus?.handlers.find((handler) => handler.name === 'replace'))

@@ -3051,16 +3051,6 @@ function synthesizeMessageBusRoute(
         ? 'KERNEL_LIFECYCLE' : 'lifecycle-or-unsafe-handler';
       continue;
     }
-    // Public graph invocations currently identify handlers by name. Until that surface carries a selector,
-    // admitting one lifecycle overload would let composition either reject the call as ambiguous or select the
-    // wrong sibling. Publish lifecycle metadata for the exact selector below, but do not advertise it as callable.
-    if (compilerOptions.messageBusKernel === true
-      && fn.modifiers.includes(FunctionModifier.UPGRADE)
-      && (byName.get(fn.name)?.filter((candidate) => candidate.isEntryPoint).length ?? 0) > 1) {
-      fn.messageBusEligible = false;
-      fn.messageBusRejectionReason = 'KERNEL_LIFECYCLE';
-      continue;
-    }
     // A delegate route covenants the proxy master while its implementation executes from an interior slot.
     // Replacing either identity needs an explicit two-owner lifecycle protocol; treating it as the direct
     // prefix-preserving case would make the delegate preservation branch and the upgrade branch disagree.
@@ -5250,6 +5240,9 @@ function synthesizeMessageBusRoute(
   const overloadedHandlerNames = new Set(eligible
     .map((handler) => handler.name)
     .filter((name, index, names) => names.indexOf(name) !== index));
+  const overloadedUpgradeHandlerNames = new Set([...overloadedHandlerNames].filter((name) =>
+    eligible.some((handler) => handler.name === name
+      && handler.modifiers.includes(FunctionModifier.UPGRADE))));
   const nameMessageBusClone = (
     handler: FunctionDefinitionNode, family: string, source: FunctionDefinitionNode,
   ): void => {
@@ -5704,6 +5697,32 @@ function synthesizeMessageBusRoute(
     handler.forceCollectionJournalPool = true;
     normalizeBareEntryAccesses(handler);
     fixedArrayHandlerInvokeNames.set(sourceHandler, handler.name);
+    contract.functions.push(handler);
+  }
+  // Upgrade dispatch must retain exact lifecycle authority after SDK selection. Generated route calls carry
+  // compiler-owned context operands which are deliberately absent from source ABI overload resolution;
+  // specialized collection/effect passes above already give those handlers unique clones, so do the same for
+  // every remaining member of an overloaded upgrade family. Cloning the ordinary siblings too prevents their
+  // shared source name from acquiring the upgrade member's augmented argument shape.
+  for (const sourceHandler of eligible) {
+    if (!overloadedUpgradeHandlerNames.has(sourceHandler.name)
+      || sourceHandler === resourceShapedHandler
+      || graphHandlerInvokeNames.has(sourceHandler)
+      || siblingHandlerInvokeNames.has(sourceHandler)
+      || fixedArrayHandlerInvokeNames.has(sourceHandler)) continue;
+    const handler = cloneMessageBusHandler(sourceHandler, cheapAdmission);
+    nameMessageBusClone(handler, 'handler', sourceHandler);
+    handler.modifiers = [FunctionModifier.INTERNAL];
+    handler.functionId = undefined;
+    handler.functionSelector = undefined;
+    handler.messageBusEligible = undefined;
+    handler.messageBusRejectionReason = undefined;
+    handler.messageBusKeyWitnesses = undefined;
+    if (eligibleFootprint(sourceHandler).effects.length > 0 || graphTailHandlers.has(sourceHandler)) {
+      markGraphEmissionClone(handler, sourceHandler);
+    }
+    bindEntryKeyParameters(handler, sourceHandler);
+    siblingHandlerInvokeNames.set(sourceHandler, handler.name);
     contract.functions.push(handler);
   }
   // A function may legally have the same name as its containing contract (notably the tiny

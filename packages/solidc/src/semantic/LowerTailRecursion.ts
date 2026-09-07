@@ -141,7 +141,8 @@ export default class LowerTailRecursion extends AstTraversal {
    * the recursive call carries unchanged. LowerVMapCounterLoops already publishes explicit varyingKeyIndices and
    * complete derived-key expressions, so this proof need not privilege the final tuple component. */
   private affineRecursiveReadKeyShape(
-    keys: readonly ExpressionNode[], inductionName: string, invariantNames: ReadonlySet<string>,
+    keys: readonly ExpressionNode[], node: FunctionDefinitionNode,
+    inductionName: string, invariantNames: ReadonlySet<string>,
   ): AffineRecursiveKeyComponent[] | undefined {
     if (keys.length === 0) return undefined;
     let varying = false;
@@ -164,6 +165,22 @@ export default class LowerTailRecursion extends AstTraversal {
         shape.push({ kind: 'fixed', identity: `parameter:${key.name}`, literal: false });
         continue;
       }
+      // The recursive call carries every name in invariantNames unchanged. Reuse the existing finite expression
+      // serializer to prove a derived tuple component is a deterministic function of that public frame (casts,
+      // arithmetic, and ternaries), with no state/local read or induction dependency. Its canonical recipe is also
+      // the resource identity: equal recipes may share one stream, while unequal runtime recipes conservatively
+      // remain potentially aliasing.
+      const recipe = this.affineEventExpression(key, node, inductionName, false);
+      if (recipe) {
+        const dependencies = new Set<string>();
+        this.walkNodes(key, (candidate) => {
+          if (candidate instanceof IdentifierNode) dependencies.add(candidate.name);
+        });
+        if ([...dependencies].every((name) => invariantNames.has(name))) {
+          shape.push({ kind: 'fixed', identity: `expression:${JSON.stringify(recipe)}`, literal: false });
+          continue;
+        }
+      }
       return undefined;
     }
     return varying ? shape : undefined;
@@ -174,8 +191,8 @@ export default class LowerTailRecursion extends AstTraversal {
    * recursive source order, carrying finite replayable if/else reachability into the selected domain. Predicates,
    * event arguments, destination keys, and other effects remain outside this slice. */
   private affineRecursiveMappingReads(
-    effects: readonly StatementNode[], writes: readonly AffineRecursiveMappingWrite[], inductionName: string,
-    invariantNames: ReadonlySet<string>,
+    effects: readonly StatementNode[], writes: readonly AffineRecursiveMappingWrite[],
+    functionNode: FunctionDefinitionNode, inductionName: string, invariantNames: ReadonlySet<string>,
   ): AffineRecursiveMappingRead[] | undefined {
     const reads: AffineRecursiveMappingRead[] = [];
     let valid = true;
@@ -193,7 +210,9 @@ export default class LowerTailRecursion extends AstTraversal {
       if (node instanceof MappingAccessNode) {
         // A collection-dependent key would require authenticating the inner read before deriving the outer row.
         if (node.keys.length === 0 || node.keys.some(containsMappingRead)
-          || this.affineRecursiveReadKeyShape(node.keys, inductionName, invariantNames) === undefined) valid = false;
+          || this.affineRecursiveReadKeyShape(
+            node.keys, functionNode, inductionName, invariantNames,
+          ) === undefined) valid = false;
         else reads.push({ node, consumer });
         return;
       }
@@ -236,7 +255,8 @@ export default class LowerTailRecursion extends AstTraversal {
    * than the 63-frame span. Runtime steps cannot establish cross-stream disjointness and fail closed. */
   private affineRecursiveResourcesSound(
     writes: readonly AffineRecursiveMappingWrite[], reads: readonly AffineRecursiveMappingRead[],
-    inductionName: string, invariantNames: ReadonlySet<string>, stepExpression: ExpressionNode,
+    functionNode: FunctionDefinitionNode, inductionName: string,
+    invariantNames: ReadonlySet<string>, stepExpression: ExpressionNode,
   ): boolean {
     const writeOffsets = new Map<AffineRecursiveMappingWrite, bigint>();
     for (const write of writes) {
@@ -255,8 +275,12 @@ export default class LowerTailRecursion extends AstTraversal {
     const readDomainsDisjoint = (
       left: AffineRecursiveMappingRead, right: AffineRecursiveMappingRead,
     ): boolean => {
-      const leftShape = this.affineRecursiveReadKeyShape(left.node.keys, inductionName, invariantNames);
-      const rightShape = this.affineRecursiveReadKeyShape(right.node.keys, inductionName, invariantNames);
+      const leftShape = this.affineRecursiveReadKeyShape(
+        left.node.keys, functionNode, inductionName, invariantNames,
+      );
+      const rightShape = this.affineRecursiveReadKeyShape(
+        right.node.keys, functionNode, inductionName, invariantNames,
+      );
       if (!leftShape || !rightShape || leftShape.length !== rightShape.length || step === undefined) return false;
       let requiredRankDelta: bigint | undefined;
       for (let index = 0; index < leftShape.length; index += 1) {
@@ -287,7 +311,9 @@ export default class LowerTailRecursion extends AstTraversal {
       }
     }
     for (const read of reads) {
-      const readShape = this.affineRecursiveReadKeyShape(read.node.keys, inductionName, invariantNames)!;
+      const readShape = this.affineRecursiveReadKeyShape(
+        read.node.keys, functionNode, inductionName, invariantNames,
+      )!;
       for (const write of writes) {
         if (write.name !== read.node.name) continue;
         if (readShape.length !== 1 || readShape[0].kind !== 'varying') return false;
@@ -301,11 +327,15 @@ export default class LowerTailRecursion extends AstTraversal {
     // same entry NFT twice. Different offsets inside one consumer likewise need independent disjoint streams.
     for (let left = 0; left < reads.length; left += 1) {
       const leftRead = reads[left];
-      const leftShape = this.affineRecursiveReadKeyShape(leftRead.node.keys, inductionName, invariantNames)!;
+      const leftShape = this.affineRecursiveReadKeyShape(
+        leftRead.node.keys, functionNode, inductionName, invariantNames,
+      )!;
       for (let right = left + 1; right < reads.length; right += 1) {
         const rightRead = reads[right];
         if (leftRead.node.name !== rightRead.node.name) continue;
-        const rightShape = this.affineRecursiveReadKeyShape(rightRead.node.keys, inductionName, invariantNames)!;
+        const rightShape = this.affineRecursiveReadKeyShape(
+          rightRead.node.keys, functionNode, inductionName, invariantNames,
+        )!;
         const samePlan = leftShape.length === rightShape.length && leftShape.every((component, index) => {
           const other = rightShape[index];
           return component.kind === other.kind && (component.kind === 'varying'
@@ -1765,11 +1795,11 @@ export default class LowerTailRecursion extends AstTraversal {
     const invariantNames = new Set(node.parameters.map((parameter) => parameter.name)
       .filter((name) => !changingParameters.has(name)));
     const mappingReads = this.affineRecursiveMappingReads(
-      effects, mappingWrites, zeroSide.name, invariantNames,
+      effects, mappingWrites, node, zeroSide.name, invariantNames,
     );
     if (!mappingReads || mappingWrites.length + mappingReads.length + emits.length === 0
       || !this.affineRecursiveResourcesSound(
-        mappingWrites, mappingReads, zeroSide.name, invariantNames, stepExpression,
+        mappingWrites, mappingReads, node, zeroSide.name, invariantNames, stepExpression,
       )) return undefined;
 
     // Calls, collection reads, or additional persistent effects inside base/value expressions need a genuine
@@ -1889,11 +1919,11 @@ export default class LowerTailRecursion extends AstTraversal {
     const invariantNames = new Set(node.parameters.map((parameter) => parameter.name)
       .filter((name) => !changingParameters.has(name)));
     const mappingReads = this.affineRecursiveMappingReads(
-      effects, writes, zeroSide.name, invariantNames,
+      effects, writes, node, zeroSide.name, invariantNames,
     );
     if (!mappingReads || writes.length + mappingReads.length + emits.length === 0
       || !this.affineRecursiveResourcesSound(
-        writes, mappingReads, zeroSide.name, invariantNames, stepExpression,
+        writes, mappingReads, node, zeroSide.name, invariantNames, stepExpression,
       )) return undefined;
     let unsupported = false;
     const allowed = new Set<Node>([

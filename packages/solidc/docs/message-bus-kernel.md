@@ -167,6 +167,13 @@ admitted clone-owned layouts; it is not a general fallback for a kernel refusal.
 compilation never silently emits the legacy unroll: if an admitted survivor cannot use the row loop, that is an
 internal compiler invariant violation.
 
+Selfdestruct remains a topology fence rather than an admission shortcut. The statement form commits the whole
+transaction to exactly one recipient output, while an atomic graph preserves several participant/verifier blocks.
+The modifier form also retires the master and fixed state NFTs, which the balanced participant model deliberately
+requires to survive. Supporting either form therefore needs an explicit retirement geometry with an authenticated
+recipient and fixed-resource deletion metadata; substituting balanced public or burn outputs would change the
+language operation rather than implement it.
+
 If a toy needs a capability that is not in this table, change **this spec** and the toys. Do not add
 `__message_bus_*` clone families or admission-ladder flags.
 

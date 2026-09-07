@@ -190,6 +190,18 @@ describe('required kernel admission', () => {
     });
   });
 
+  it('does not mistake an implied selfdestruct for a topology-preserving row', () => {
+    const artifact = compileString(`contract C() {
+      address beneficiary;
+      function retire() public { selfdestruct(this.beneficiary); }
+      function control() public { require(true); }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'retire'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LIFECYCLE' });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control'))
+      .toMatchObject({ eligible: true });
+  });
+
   it('admits topology-preserving unsafe tier 2 while keeping narrower tiers fenced', () => {
     const artifact = compileString(`contract C() {
       int stored;

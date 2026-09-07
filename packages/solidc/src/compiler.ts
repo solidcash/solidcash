@@ -4705,6 +4705,14 @@ function synthesizeMessageBusRoute(
     return false;
   };
   for (const fn of eligible) {
+    // A fixed self external-function reference is represented by its immutable local functionId throughout the
+    // executable and compact result codecs. Admit only the singleton shape whose source return analysis proved
+    // one concrete `this.method`; runtime/foreign pointers and pointer-bearing aggregate results remain callable
+    // control metadata without a route-local ABI representation.
+    const fixedSelfFunctionPointerResult = fn.returnTypes.length === 1
+      && fn.returnTypes[0] instanceof FunctionType
+      && fn.returnTypes[0].isExternal
+      && fn.returnedSelfFunctionName !== undefined;
     const state = contract.stateVariables.find((candidate) => candidate.name === fn.name);
     const collection = collectionByName.get(fn.name);
     const keyedMappingGetter = collection?.type instanceof MappingType && fn.parameters.length > 0;
@@ -4731,6 +4739,7 @@ function synthesizeMessageBusRoute(
       fn.messageBusEligible = false;
       fn.messageBusRejectionReason = 'KERNEL_TX_SIGNATURE';
     } else if (compilerOptions.messageBusKernel === true
+      && !fixedSelfFunctionPointerResult
       && fn.returnTypes.some((type) => !kernelResultEncodable(type))) {
       // Result concatenation uses `abi.encode` in the generated wrapper. Keep only types for which that encoder
       // has a complete runtime representation; scalar enums encode through the `int` locals below.
@@ -6098,6 +6107,10 @@ function synthesizeMessageBusRoute(
     markDispatch = false,
   ): string =>
     eligible.map((fn, handlerIndex) => {
+      const fixedSelfFunctionPointerResult = fn.returnTypes.length === 1
+        && fn.returnTypes[0] instanceof FunctionType
+        && fn.returnTypes[0].isExternal
+        && fn.returnedSelfFunctionName !== undefined;
       const condition = `${handlerIndex === 0 ? 'if' : 'else if'} (rowSelector == hex"${selector(fn)}")`;
       const upgradeAuthorization = kernelUpgradeMode && fn.modifiers.includes(FunctionModifier.UPGRADE)
         ? `__message_bus_upgrade_count = __message_bus_upgrade_count + 1;
@@ -6144,12 +6157,14 @@ function synthesizeMessageBusRoute(
         const names = fn.returnTypes.map((_type, index) =>
           `__message_bus_value_${rowIndex === undefined ? 'i' : rowIndex}_${handlerIndex}_${index}`);
         const localType = (type: Type): string =>
-          type instanceof EnumType ? 'int' : type.toString().replace(/address payable/g, 'address');
+          type instanceof EnumType || type instanceof FunctionType
+            ? 'int' : type.toString().replace(/address payable/g, 'address');
         const declarations = fn.returnTypes.map((type, index) =>
           `${localType(type)} ${names[index]};`).join(' ');
         const invokeExpr = `${selectedInvokeName}(${args})`;
         const assignment = fn.returnTypes.length === 1
-          ? `${names[0]} = ${fn.returnTypes[0] instanceof EnumType ? `int(${invokeExpr})` : invokeExpr};`
+          ? `${names[0]} = ${fn.returnTypes[0] instanceof EnumType ? `int(${invokeExpr})`
+            : fixedSelfFunctionPointerResult ? `unsafe_int(${invokeExpr})` : invokeExpr};`
           : `(${names.join(', ')}) = ${invokeExpr};`;
         return `${declarations} ${assignment} __message_bus_results = bytes.concat(
         __message_bus_results, abi.encode(${names.join(', ')})
@@ -9978,7 +9993,11 @@ function compileResolvedAst(
         }),
         ...(fn.returnTypes.length > 0 && {
           outputs: fn.returnTypes.map((type) => ({
-            type: type.toString().replace(/address payable/g, 'address'),
+            // The fixed self-pointer result is deliberately published as its physical data layout. A functionId
+            // is an immutable integer in this bytecode, not a portable external callable `(address, selector)`.
+            type: fn.returnTypes.length === 1 && type instanceof FunctionType && type.isExternal
+              && fn.returnedSelfFunctionName !== undefined
+              ? 'int256' : type.toString().replace(/address payable/g, 'address'),
           })),
         }),
         ...(fn.usesMsgValue && { usesMsgValue: true }),

@@ -48,7 +48,7 @@ describe('kernel aggregate return admission', () => {
     });
   });
 
-  it('keeps a singleton stack aggregate without an ABI value representation fenced', () => {
+  it('publishes a fixed self function pointer as its physical integer function id', () => {
     const source = `pragma solidity ^0.8.0;
       contract C {
         function target(uint value) external pure returns (uint) { return value; }
@@ -58,8 +58,8 @@ describe('kernel aggregate return admission', () => {
       }`;
 
     expect(handler(source, 'pointer', true)).toMatchObject({
-      eligible: false,
-      rejectionReason: 'KERNEL_LAYOUT',
+      eligible: true,
+      outputs: [{ type: 'int256' }],
     });
   });
 

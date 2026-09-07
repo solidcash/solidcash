@@ -169,6 +169,24 @@ describe('required kernel admission', () => {
     });
   });
 
+  it('admits topology-preserving unsafe tier 2 while keeping narrower tiers fenced', () => {
+    const artifact = compileString(`contract C() {
+      int stored;
+      function validate(int expected) unsafe(2) { require(this.stored == expected); }
+      function uncheckedMaster() unsafe(1) { require(true); }
+      function uncheckedAll() unsafe { require(true); }
+      function control() public { require(true); }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'validate'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'uncheckedMaster'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LIFECYCLE' });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'uncheckedAll'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LIFECYCLE' });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control'))
+      .toMatchObject({ eligible: true });
+  });
+
   it('admits append-only in-place upgrades with compiler-authored lifecycle authority', () => {
     const artifact = compileString(`contract C() {
       int count;

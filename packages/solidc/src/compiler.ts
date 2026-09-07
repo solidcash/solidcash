@@ -2790,6 +2790,10 @@ function synthesizeMessageBusRoute(
   if (compilerOptions.messageBusKernel === true) {
     disallowedModifiers.delete(FunctionModifier.UPGRADE);
     disallowedModifiers.delete(FunctionModifier.DEPLOY);
+    // unsafe(2) is topology-preserving: semantic validation already forbids writes, entries, transfers, calls,
+    // deployment, and events, while codegen preserves the master, minting uniqueness, and participant value.
+    // The narrower unsafe tiers deliberately remain lifecycle fences below.
+    disallowedModifiers.delete(FunctionModifier.UNSAFE);
   }
   let eligible: FunctionDefinitionNode[] = [];
   const graphTailHandlers = new Set<FunctionDefinitionNode>();
@@ -4343,6 +4347,9 @@ function synthesizeMessageBusRoute(
       reason = 'batched-handler-forward-call-not-enabled';
     // Result-consuming effect handlers remain behind their authenticated graph OP_INVOKE frame. X29's
     // per-dispatch effect-site ordinal binds their event/transfer outputs, so no separate refusal is needed.
+    } else if (!reason && compilerOptions.messageBusKernel === true
+      && fn.modifiers.includes(FunctionModifier.UNSAFE) && fn.unsafeTier !== 2) {
+      reason = 'lifecycle-or-unsafe-handler';
     } else if (!reason && fn.modifiers.some((modifier) => disallowedModifiers.has(modifier))) {
       reason = 'lifecycle-or-unsafe-handler';
     } else if (!reason && (footprint.unknown

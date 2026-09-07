@@ -91,4 +91,86 @@ describe('kernel transaction-bound upgrade signature', () => {
       vm.evaluate({ inputIndex, sourceOutputs: sources, transaction: tamperedTransaction }),
     ) === true)).toBe(false);
   }, 180_000);
+
+  it('allows an all-output-signed ordinary leaf in a graph containing another participant upgrade', async () => {
+    const provider = createMessageBusCapstoneTestProvider();
+    const currentArtifact = compileString(`contract Current() {
+      int marker;
+      function replace() public upgrade { require(true); }
+    }`, KERNEL);
+    const replacementArtifact = compileString(`contract Replacement() {
+      int marker;
+      function read() public view returns (int) { return this.marker; }
+    }`, KERNEL);
+    const currentBase = new Contract(currentArtifact, [], { provider });
+    const currentSetup = await setupStatefulUtxos(
+      provider, currentBase, currentArtifact.stateLayout!, { marker: 9n }, { saltContract: true },
+    );
+    const current = StatefulContract.withCategory(
+      currentBase.withCategory(hexToBin(currentSetup.categoryId)), currentSetup.categoryId,
+    );
+    const authorizerArtifact = compileString(`contract Authorizer(pubkey authority) {
+      int approvals;
+      function authorize(sig proof) public {
+        this.approvals = this.approvals + 1;
+        require(checkSig(proof, authority));
+      }
+    }`, KERNEL);
+    expect(authorizerArtifact.messageBus?.handlers.find((handler) => handler.name === 'authorize'))
+      .toMatchObject({
+        eligible: true,
+        transactionSignaturePolicy: { hashType: 'all', parameterIndices: [0] },
+      });
+    const authorizerBase = new Contract(authorizerArtifact, [alicePub], { provider });
+    const authorizerSetup = await setupStatefulUtxos(
+      provider, authorizerBase, authorizerArtifact.stateLayout!, { approvals: 0n }, { saltContract: true },
+    );
+    const authorizer = StatefulContract.withCategory(
+      authorizerBase.withCategory(hexToBin(authorizerSetup.categoryId)), authorizerSetup.categoryId,
+    );
+    const coordinatorArtifact = compileString(`interface IAuthorizer { function authorize(sig proof); }
+      interface ICurrent { function replace(); }
+      contract Coordinator(address authorizer, address target) {
+        function execute(sig proof) public {
+          IAuthorizer(authorizer).authorize(proof);
+          ICurrent(target).replace();
+          require(true);
+        }
+      }`, KERNEL);
+    const coordinatorBase = new Contract(coordinatorArtifact, [
+      hexToBin(authorizer.inner.lockingBytecode), hexToBin(current.inner.lockingBytecode),
+    ], { provider });
+    const coordinatorSetup = await setupStatefulUtxos(
+      provider, coordinatorBase, coordinatorArtifact.stateLayout!, {}, { saltContract: true },
+    );
+    const coordinator = StatefulContract.withCategory(
+      coordinatorBase.withCategory(hexToBin(coordinatorSetup.categoryId)), coordinatorSetup.categoryId,
+    );
+    const build = async (signature: SignatureTemplate): Promise<TransactionBuilder> => {
+      const fee = await createBareP2pkhFeeFunder(provider, 500_000n);
+      return messageBus.compose({
+        calls: [
+          coordinator.call.execute(signature),
+          authorizer.call.authorize(signature),
+          current.call.replace().upgradeTo(replacementArtifact, []),
+        ],
+        funder: fee,
+        changeAddress: fee.unlocker.generateLockingBytecode(),
+      }).build();
+    };
+
+    const valid = await build(new SignatureTemplate(alicePriv));
+    expect(vmAccepts(valid)).toBe(true);
+    await expect(build(new SignatureTemplate(alicePriv, HashType.SIGHASH_NONE)))
+      .rejects.toThrow(/BCH-2026 preflight failed.*OP_VERIFY/);
+
+    const tampered = await build(new SignatureTemplate(alicePriv, HashType.SIGHASH_ALL));
+    const transaction = tampered.buildLibauthTransaction();
+    transaction.outputs.at(-1)!.valueSatoshis += 1n;
+    const sources = generateLibauthSourceOutputs(tampered.inputs);
+    const vm = createVirtualMachineBch2026ForProvider(provider);
+    expect(transaction.inputs.every((_input, inputIndex) => vm.stateSuccess(
+      vm.evaluate({ inputIndex, sourceOutputs: sources, transaction }),
+    ) === true)).toBe(false);
+  }, 180_000);
 });

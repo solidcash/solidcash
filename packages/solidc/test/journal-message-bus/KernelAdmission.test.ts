@@ -321,6 +321,35 @@ describe('required kernel admission', () => {
     }));
   });
 
+  it('publishes the SIGHASH_ALL policy for an ordinary direct scalar signature check', () => {
+    const artifact = compileString(`contract C(pubkey authority) {
+      function signed(sig proof) public { require(checkSig(proof, authority)); }
+      function control() public { require(true); }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'signed')).toMatchObject({
+      eligible: true, usesTransactionSignature: true,
+      transactionSignaturePolicy: { hashType: 'all', parameterIndices: [0] },
+    });
+  });
+
+  it.each([
+    ['a local alias', 'sig selected = proof; require(checkSig(selected, authority));', 'sig proof'],
+    ['a reassigned parameter', 'proof = sig(hex"00"); require(checkSig(proof, authority));', 'sig proof'],
+    ['a multisig array', 'require(checkMultiSig(proofs, keys));', 'sig[] proofs, pubkey[] keys'],
+    ['an outgoing graph edge', `require(checkSig(proof, authority));
+      ITarget(target).run(); require(true);`, 'sig proof, address target'],
+  ])('does not publish an all-output policy for an ordinary signature reached through %s',
+    (_label, body, parameters) => {
+      const artifact = compileString(`interface ITarget { function run(); }
+      contract C(pubkey authority) {
+        function signed(${parameters}) public { ${body} }
+        function control() public { require(true); }
+      }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+      const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'signed');
+      expect(handler).toMatchObject({ eligible: true, usesTransactionSignature: true });
+      expect(handler).not.toHaveProperty('transactionSignaturePolicy');
+    });
+
   it('admits a synthesized block-oracle updater at the entry-point synthesis boundary', () => {
     const artifact = compileString(`contract C(pubkey owner) {
       mapping(int => int) values;

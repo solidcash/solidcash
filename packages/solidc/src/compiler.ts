@@ -3226,7 +3226,9 @@ function synthesizeMessageBusRoute(
   // additionally requires SIGHASH_ALL below. Aliases, casts, multisig arrays, helper edges, and reassigned
   // parameters remain fenced until their provenance has an equally exact proof.
   const directAllOutputSignatureParameters = (root: FunctionDefinitionNode): number[] | undefined => {
+    if (analyseFunctionFootprint(root, byName, footprintCache).effects.includes('external-call')) return undefined;
     const indices = new Set<number>();
+    const interfaceReceivers = interfaceTypedReceivers(root);
     let found = false;
     let unsupported = false;
     const parameterIndex = (identifier: IdentifierNode): number => {
@@ -3273,6 +3275,15 @@ function synthesizeMessageBusRoute(
     }
     if (!found || unsupported) return undefined;
     walkInvocationAst(root.body, (node) => {
+      if (node instanceof ExternalFunctionCallNode || contractTypedReceiverCall(node, interfaceReceivers)
+        || node instanceof LowLevelCallNode
+        || (node instanceof MethodCallNode && !intrinsicNamespaceMethodCall(node))
+        || (node instanceof FunctionCallNode && node.identifier.name.includes('.')
+          && !['abi', 'bytes', 'string'].includes(node.identifier.name.split('.')[0]))) {
+        // Outgoing graph handlers execute through a hidden-argument clone whose OP_INVOKE body is not yet the
+        // detached signatureBytecode published to the signer. Keep this policy on leaf handler topology.
+        unsupported = true;
+      }
       if (!(node instanceof AssignNode)) return;
       const index = parameterIndex(node.identifier);
       if (index >= 0 && indices.has(index)) {
@@ -3284,6 +3295,13 @@ function synthesizeMessageBusRoute(
   const kernelAllOutputSignatureParameters = new Map<FunctionDefinitionNode, number[]>();
   for (const fn of functions) {
     fn.messageBusUsesTransactionSignature = reachesTransactionSignatureCheck(fn);
+    const allOutputParameters = compilerOptions.messageBusKernel === true
+      && fn.messageBusUsesTransactionSignature === true
+      ? directAllOutputSignatureParameters(fn) : undefined;
+    if (allOutputParameters) {
+      kernelAllOutputSignatureParameters.set(fn, allOutputParameters);
+      fn.messageBusAllOutputSignatureParameters = allOutputParameters;
+    }
     if (fn.modifiers.some((modifier) => disallowedModifiers.has(modifier))) {
       fn.messageBusEligible = false;
       fn.messageBusRejectionReason = compilerOptions.messageBusKernel === true
@@ -3313,14 +3331,11 @@ function synthesizeMessageBusRoute(
     if (compilerOptions.messageBusKernel === true
       && fn.modifiers.includes(FunctionModifier.UPGRADE)
       && fn.messageBusUsesTransactionSignature === true) {
-      const allOutputParameters = directAllOutputSignatureParameters(fn);
       if (!allOutputParameters) {
         fn.messageBusEligible = false;
         fn.messageBusRejectionReason = 'KERNEL_TX_SIGNATURE';
         continue;
       }
-      kernelAllOutputSignatureParameters.set(fn, allOutputParameters);
-      fn.messageBusAllOutputSignatureParameters = allOutputParameters;
     }
     const footprint = analyseFunctionFootprint(fn, byName, footprintCache);
     let routeSensitive = false;
@@ -6506,9 +6521,11 @@ function synthesizeMessageBusRoute(
       const signatureAuthorization = allOutputSignatureParameters.length > 0
         ? allOutputSignatureParameters.map((parameterIndex) => {
           const witness = `${kernelSignatureWitnessName(handlerIndex, parameterIndex)}[${rowExpression}]`;
-          return `require(${witness}.length > 0
+          const requireAll = `require(${witness}.length > 0
             && (${witness}.slice(${witness}.length - 1, ${witness}.length) == hex"41"
               || ${witness}.slice(${witness}.length - 1, ${witness}.length) == hex"61"));`;
+          return fn.modifiers.includes(FunctionModifier.UPGRADE)
+            ? requireAll : `if (__message_bus_version == 2) { ${requireAll} }`;
         }).join(' ')
         : kernelV2SignatureFence && fn.messageBusUsesTransactionSignature === true
           ? '__message_bus_signature_count = __message_bus_signature_count + 1;' : '';
@@ -8084,38 +8101,34 @@ function synthesizeMessageBusRoute(
           bigint __message_bus_pushOpcode = int(bytes.concat(
             __message_bus_unlock.slice(__message_bus_push_at, __message_bus_push_at + 1), hex"00"
           ));
+          bigint __message_bus_payload_at;
           if (batchBlob.length <= 75) {
             require(__message_bus_pushOpcode == batchBlob.length);
-            require(__message_bus_unlock.slice(
-              __message_bus_push_at + 1, __message_bus_push_at + 1 + batchBlob.length
-            ) == batchBlob);
+            __message_bus_payload_at = __message_bus_push_at + 1;
           } else if (batchBlob.length <= 255) {
             require(__message_bus_pushOpcode == 76);
             // The VM's push parser already defines batchBlob's byte count from this PUSHDATA1 length byte, and
             // minimal-data rules require this opcode for the 76..255-byte range. Do not reinterpret bytes >= 0x80
             // through Script-number casts: their sign-bit encoding is not the unsigned push length.
-            require(__message_bus_unlock.slice(
-              __message_bus_push_at + 2, __message_bus_push_at + 2 + batchBlob.length
-            ) == batchBlob);
+            __message_bus_payload_at = __message_bus_push_at + 2;
           } else if (batchBlob.length <= 65535) {
             require(__message_bus_pushOpcode == 77);
             bigint __message_bus_pushLength = int(bytes.concat(__message_bus_unlock.slice(
               __message_bus_push_at + 1, __message_bus_push_at + 3
             ), hex"00"));
             require(__message_bus_pushLength == batchBlob.length);
-            require(__message_bus_unlock.slice(
-              __message_bus_push_at + 3, __message_bus_push_at + 3 + batchBlob.length
-            ) == batchBlob);
+            __message_bus_payload_at = __message_bus_push_at + 3;
           } else {
             require(__message_bus_pushOpcode == 78);
             bigint __message_bus_pushLength = int(bytes.concat(__message_bus_unlock.slice(
               __message_bus_push_at + 1, __message_bus_push_at + 5
             ), hex"00"));
             require(__message_bus_pushLength == batchBlob.length);
-            require(__message_bus_unlock.slice(
-              __message_bus_push_at + 5, __message_bus_push_at + 5 + batchBlob.length
-            ) == batchBlob);
+            __message_bus_payload_at = __message_bus_push_at + 5;
           }
+          require(__message_bus_unlock.slice(
+            __message_bus_payload_at, __message_bus_payload_at + batchBlob.length
+          ) == batchBlob);
         }
         require(batchBlob.slice(0, 4) == hex"53434231");
         bigint __message_bus_version = int(bytes.concat(batchBlob.slice(4, 5), hex"00"));

@@ -7680,7 +7680,6 @@ export default class LowerVMapCounterLoops extends AstTraversal {
                   maximum: bound.right.value - 1n,
                 }
                 : undefined;
-              if (typeof boundValue !== 'bigint' && !runtimeBoundRange) return undefined;
               const comparison = counterOnLeft ? condition.operator : ({
                 [BinaryOperator.LT]: BinaryOperator.GT,
                 [BinaryOperator.LE]: BinaryOperator.GE,
@@ -7735,6 +7734,63 @@ export default class LowerVMapCounterLoops extends AstTraversal {
                 || (ascending && step < 0n) || (descending && step > 0n)
                 || (!ascending && !descending && comparison !== BinaryOperator.NE)) return undefined;
               if (runtimeBoundRange && comparison === BinaryOperator.NE) return undefined;
+              // A canonical full-array initialization has a closed symbolic form even when the allocation
+              // length is runtime-sized: `for (i = 0; i < xs.length; i++) xs[i] = f(i)`. Record that one
+              // source-ordered recurrence instead of expanding an untrusted number of helper iterations. The
+              // later mapping-key rewrite still compares the executable array element with this recipe, so the
+              // helper remains authoritative and a forged settlement witness cannot choose another key domain.
+              // Keep this exact: unit ascending pre-test traversal, writes only to the selected counter position,
+              // and the same symbolic length for every mutated array. More general partial/strided domains need
+              // an explicit congruence predicate before they can share ArrayWrite.recurrence.
+              if (typeof boundValue !== 'bigint' && !runtimeBoundRange) {
+                const symbolicFullArrayWrite = helperStatement instanceof WhileNode
+                  && comparison === BinaryOperator.LT && initial.value === 0n && step === 1n
+                  && statements.slice(0, -1).length > 0
+                  && statements.slice(0, -1).every((candidate) =>
+                    candidate instanceof ArrayAssignNode || candidate instanceof RequireNode);
+                if (!symbolicFullArrayWrite || !bound) return undefined;
+                const symbolicCounter = cloneNode(counterNode) as IdentifierNode;
+                const symbolicValues = new Map(values);
+                symbolicValues.set(counterName, symbolicCounter);
+                const plannedWrites: { plan: ArrayPlan; value: ExpressionNode; location: Node['location'] }[] = [];
+                for (const candidate of statements.slice(0, -1)) {
+                  if (candidate instanceof RequireNode) continue;
+                  if (!(candidate instanceof ArrayAssignNode)) return undefined;
+                  const planName = scope.planNamesByParameter.get(candidate.name);
+                  const plan = planName === undefined ? undefined : helperPlans.get(planName);
+                  if (!plan) return undefined;
+                  const index = replayExpression(
+                    candidate.index, symbolicValues, helperPlans, scope,
+                  );
+                  const value = replayExpression(
+                    candidate.value, symbolicValues, helperPlans, scope,
+                  );
+                  const boundIdentity = canonicalizeUpsertKeyExpression(bound, new Set());
+                  const lengthIdentity = canonicalizeUpsertKeyExpression(plan.length, new Set());
+                  if (!(index instanceof IdentifierNode) || index.name !== counterName || !value
+                    || !boundIdentity || !lengthIdentity || boundIdentity !== lengthIdentity) return undefined;
+                  plannedWrites.push({ plan, value, location: candidate.location });
+                }
+                if (plannedWrites.length === 0) return undefined;
+                for (const planned of plannedWrites) {
+                  const baseLength = new IntLiteralNode(0n);
+                  baseLength.location = planned.location;
+                  planned.plan.writes.push({
+                    index: cloneNode(symbolicCounter) as ExpressionNode,
+                    value: planned.value,
+                    recurrence: {
+                      counter: counterName,
+                      start: 0n,
+                      step: 1n,
+                      baseLength,
+                      pushesPerIteration: 1,
+                      ordinal: 0,
+                    },
+                  });
+                }
+                values.set(counterName, cloneNode(bound) as ExpressionNode);
+                continue;
+              }
               const exhaustedBound = typeof boundValue === 'bigint'
                 ? boundValue
                 : ascending ? runtimeBoundRange!.maximum : runtimeBoundRange!.minimum;

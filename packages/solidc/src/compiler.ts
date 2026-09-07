@@ -3036,6 +3036,94 @@ function synthesizeMessageBusRoute(
    */
   const hasUnplannedRuntimeEvent = (source: FunctionDefinitionNode): boolean => {
     const closure = collectNamedFunctionClosure(source, byName);
+    const closureWrites = analyseFunctionFootprint(source, byName, footprintCache).writes;
+    const scalarState = (name: string): boolean => {
+      const type = contract.stateVariables.find((state) => state.name === name)?.type;
+      return type !== undefined
+        && !(type instanceof ArrayType || type instanceof MappingType || type instanceof StructType)
+        && !isDynamicStorageType(type);
+    };
+    const localInitializers = new Map<string, ExpressionNode[]>();
+    for (const name of closure) for (const candidate of byName.get(name) ?? []) {
+      walkInvocationAst(candidate.body, (node) => {
+        if (!(node instanceof VariableDefinitionNode) || !node.expression) return;
+        const initializers = localInitializers.get(node.name) ?? [];
+        initializers.push(node.expression);
+        localInitializers.set(node.name, initializers);
+      });
+    }
+    const coefficientSupported = (
+      expression: ExpressionNode,
+      resolving = new Set<Node | string>(),
+      seen = new Set<Node>(),
+    ): boolean => {
+      if (seen.has(expression)) return true;
+      seen.add(expression);
+      if (expression instanceof StateAccessNode) {
+        return scalarState(expression.name) && !closureWrites.includes(`state:${expression.name}`);
+      }
+      if (expression instanceof MappingAccessNode || expression instanceof ArrayAccessNode
+        || expression instanceof NullaryOpNode) return false;
+      if (expression instanceof IdentifierNode) {
+        const declaration = expression.definition?.definition;
+        const parameter = declaration instanceof ParameterNode
+          ? declaration : source.parameters.find((candidate) => candidate.name === expression.name);
+        const bindingType = expression.definition?.type ?? parameter?.type;
+        if (bindingType && (transactionSignatureLeaves(bindingType)?.length ?? 0) > 0) {
+          return false;
+        }
+        const marker = declaration ?? expression.name;
+        if (resolving.has(marker)) return false;
+        if (declaration instanceof VariableDefinitionNode && declaration.expression) {
+          return coefficientSupported(
+            declaration.expression, new Set(resolving).add(marker), seen,
+          );
+        }
+        const initializers = localInitializers.get(expression.name) ?? [];
+        if (initializers.length > 1) return false;
+        if (initializers.length === 1) return coefficientSupported(
+          initializers[0], new Set(resolving).add(marker), seen,
+        );
+      }
+      for (const [key, value] of Object.entries(expression)) {
+        if (['location', 'resolvedFunction', 'functionReference', 'definition', 'symbolTable',
+          'referencedContract', 'stateVariable', 'collection', 'type'].includes(key)) continue;
+        if (value instanceof ExpressionNode && !coefficientSupported(value, resolving, seen)) return false;
+        if (Array.isArray(value) && value.some((item) =>
+          item instanceof ExpressionNode && !coefficientSupported(item, resolving, seen))) return false;
+      }
+      return true;
+    };
+    const containsPlannedEvent = (root: Node): boolean => {
+      if (root instanceof EmitStatementNode && root.runtimeLoopEvent !== undefined) return true;
+      return Object.entries(root).some(([key, value]) => {
+        if (['location', 'resolvedFunction', 'functionReference', 'definition', 'symbolTable',
+          'referencedContract', 'stateVariable', 'collection', 'type'].includes(key)) return false;
+        if (value instanceof Node) return containsPlannedEvent(value);
+        return Array.isArray(value)
+          && value.some((item) => item instanceof Node && containsPlannedEvent(item));
+      });
+    };
+    const unsupportedRecurrenceCoefficient = (root: Node, inPlannedLoop = false): boolean => {
+      const plannedLoop = inPlannedLoop
+        || ((root instanceof WhileNode || root instanceof DoWhileNode) && containsPlannedEvent(root));
+      if (plannedLoop && root instanceof StateAssignNode
+        && root.expression instanceof BinaryOpNode
+        && (root.expression.operator === '+' || root.expression.operator === '-')
+        && root.expression.left instanceof StateAccessNode
+        && root.expression.left.name === root.name) {
+        return !coefficientSupported(root.expression.right);
+      }
+      for (const [key, value] of Object.entries(root)) {
+        if (['location', 'resolvedFunction', 'functionReference', 'definition', 'symbolTable',
+          'referencedContract', 'stateVariable', 'collection', 'type'].includes(key)) continue;
+        if (value instanceof Node && unsupportedRecurrenceCoefficient(value, plannedLoop)) return true;
+        if (Array.isArray(value)
+          && value.some((item) => item instanceof Node
+            && unsupportedRecurrenceCoefficient(item, plannedLoop))) return true;
+      }
+      return false;
+    };
     let unsupported = false;
     for (const name of closure) {
       for (const candidate of byName.get(name) ?? []) {
@@ -3046,6 +3134,8 @@ function synthesizeMessageBusRoute(
           const occurrence = occurrenceInfoOf(candidate, node);
           if (occurrence.occurrence === 'loop' && occurrence.maximumOccurrences === undefined) unsupported = true;
         });
+        if ((candidate.runtimeLoopEvents?.length ?? 0) > 0
+          && unsupportedRecurrenceCoefficient(candidate.body)) unsupported = true;
       }
     }
     return unsupported;

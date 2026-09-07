@@ -61,6 +61,13 @@ interface AffineEventRecursion {
   emits: Array<{ node: EmitStatementNode; condition?: ExpressionNode }>;
 }
 
+type AffineRecursiveMappingWrite = MappingAssignNode | MappingDeleteNode;
+
+interface AffineRecursiveMappingRead {
+  node: MappingAccessNode;
+  consumer: MappingAssignNode;
+}
+
 /**
  * Lower conservative self- or mutually tail-recursive helpers to ordinary loops before helper inlining:
  *
@@ -88,6 +95,103 @@ export default class LowerTailRecursion extends AstTraversal {
   private scalarStateNames = new Set<string>();
   private structConstructorNames = new Set<string>();
   private sortedMappingNames = new Set<string>();
+
+  /** Return the constant component of the deliberately narrow recursive key grammar `counter +/- literal`.
+   * Keeping the coefficient exactly one lets resource domains be compared without an SMT-style expression
+   * solver. The recursive step supplies the common progression for every retained frame. */
+  private affineRecursiveKeyOffset(key: ExpressionNode, inductionName: string): bigint | undefined {
+    if (key instanceof IdentifierNode && key.name === inductionName) return 0n;
+    if (!(key instanceof BinaryOpNode) || !(key.right instanceof IntLiteralNode)
+      || !(key.left instanceof IdentifierNode) || key.left.name !== inductionName) return undefined;
+    if (key.operator === BinaryOperator.PLUS) return key.right.value;
+    if (key.operator === BinaryOperator.MINUS) return -key.right.value;
+    return undefined;
+  }
+
+  /** Collect collection reads which the counter-loop pass can turn into authenticated old-value vectors. Reads
+   * are admitted only inside a mapping assignment value: predicates, event arguments, keys, and requirements do
+   * not have a row-local consumer and therefore still need a general effect trace. */
+  private affineRecursiveMappingReads(
+    writes: readonly AffineRecursiveMappingWrite[], inductionName: string,
+  ): AffineRecursiveMappingRead[] | undefined {
+    const reads: AffineRecursiveMappingRead[] = [];
+    let valid = true;
+    const containsMappingRead = (node: Node): boolean => {
+      if (node instanceof MappingAccessNode) return true;
+      return Object.entries(node).some(([key, child]) => {
+        if (['resolvedFunction', 'definition', 'symbolTable', 'location', 'type', 'collection'].includes(key)) {
+          return false;
+        }
+        if (child instanceof Node) return containsMappingRead(child);
+        return Array.isArray(child) && child.some((item) => item instanceof Node && containsMappingRead(item));
+      });
+    };
+    const collect = (node: Node, consumer: MappingAssignNode): void => {
+      if (node instanceof MappingAccessNode) {
+        // A collection-dependent key would require authenticating the inner read before deriving the outer row.
+        if (node.keys.length !== 1 || node.keys.some(containsMappingRead)
+          || this.affineRecursiveKeyOffset(node.keys[0], inductionName) === undefined) valid = false;
+        else reads.push({ node, consumer });
+        return;
+      }
+      for (const [key, child] of Object.entries(node)) {
+        if (['resolvedFunction', 'definition', 'symbolTable', 'location', 'type', 'collection'].includes(key)) {
+          continue;
+        }
+        if (child instanceof Node) collect(child, consumer);
+        else if (Array.isArray(child)) {
+          for (const item of child) if (item instanceof Node) collect(item, consumer);
+        }
+      }
+    };
+    for (const write of writes) {
+      if (!(write instanceof MappingAssignNode)) continue;
+      // A read used to derive the destination key has no typed value-vector slot in the row IR.
+      if (write.keys.some(containsMappingRead)) return undefined;
+      collect(write.expression, write);
+    }
+    return valid ? reads : undefined;
+  }
+
+  /** Prove that every physical entry is owned by at most one recursive resource stream. A same-key read nested
+   * in its own assignment is an ordinary authenticated RMW. Every other read/write or write/write pair sharing a
+   * collection must have disjoint affine domains for all retained frames. For a constant positive step, two
+   * `counter + offset` progressions intersect exactly when their offset difference is a step multiple no larger
+   * than the 63-frame span. Runtime steps cannot establish cross-stream disjointness and fail closed. */
+  private affineRecursiveResourcesSound(
+    writes: readonly AffineRecursiveMappingWrite[], reads: readonly AffineRecursiveMappingRead[],
+    inductionName: string, stepExpression: ExpressionNode,
+  ): boolean {
+    const writeOffsets = new Map<AffineRecursiveMappingWrite, bigint>();
+    for (const write of writes) {
+      if (write.keys.length !== 1) return false;
+      const offset = this.affineRecursiveKeyOffset(write.keys[0], inductionName);
+      if (offset === undefined) return false;
+      writeOffsets.set(write, offset);
+    }
+    const step = stepExpression instanceof IntLiteralNode && stepExpression.value > 0n
+      ? stepExpression.value : undefined;
+    const disjoint = (left: bigint, right: bigint): boolean => {
+      if (step === undefined) return false;
+      const difference = left >= right ? left - right : right - left;
+      return difference % step !== 0n || difference / step > 63n;
+    };
+    for (let left = 0; left < writes.length; left += 1) {
+      for (let right = left + 1; right < writes.length; right += 1) {
+        if (writes[left].name === writes[right].name
+          && !disjoint(writeOffsets.get(writes[left])!, writeOffsets.get(writes[right])!)) return false;
+      }
+    }
+    for (const read of reads) {
+      const readOffset = this.affineRecursiveKeyOffset(read.node.keys[0], inductionName)!;
+      for (const write of writes) {
+        if (write.name !== read.node.name) continue;
+        const sameEntryRmw = write === read.consumer && readOffset === writeOffsets.get(write);
+        if (!sameEntryRmw && !disjoint(readOffset, writeOffsets.get(write)!)) return false;
+      }
+    }
+    return true;
+  }
 
   /** Prove the sole changing recursive argument is `counter - positiveInvariant`. Positivity is checked both
    * statically when possible and by the lowered function for runtime recipes; all other arguments must retain
@@ -1062,14 +1166,18 @@ export default class LowerTailRecursion extends AstTraversal {
     if (effects.length === 0 || !effects.every((effect) => collectEffectTree(effect))
       || mappingWrites.length + emits.length === 0
       || mappingWrites.some((write) => !this.sortedMappingNames.has(write.name)
-        || write.keys.length !== 1 || !affineKey(write.keys[0]))
-      || new Set(mappingWrites.map((write) => write.name)).size !== mappingWrites.length) return undefined;
+        || write.keys.length !== 1 || !affineKey(write.keys[0]))) return undefined;
+    const mappingReads = this.affineRecursiveMappingReads(mappingWrites, zeroSide.name);
+    if (!mappingReads || !this.affineRecursiveResourcesSound(
+      mappingWrites, mappingReads, zeroSide.name, stepExpression,
+    )) return undefined;
 
     // Calls, collection reads, or additional persistent effects inside base/value expressions need a genuine
     // authenticated frame environment. The accepted mapping statements themselves are the only effects here.
     let unsupported = false;
     const allowedEffects = new Set<Node>([
-      ...mappingWrites, ...emits.map(({ node: emit }) => emit),
+      ...mappingWrites, ...mappingReads.map(({ node: read }) => read),
+      ...emits.map(({ node: emit }) => emit),
     ]);
     this.walkNodes(node.body, (candidate) => {
       if (allowedEffects.has(candidate) || candidate === call) return;
@@ -1149,10 +1257,15 @@ export default class LowerTailRecursion extends AstTraversal {
     };
     if (!effects.every((effect) => collect(effect)) || writes.length + emits.length === 0
       || writes.some((write) => !this.sortedMappingNames.has(write.name)
-        || write.keys.length !== 1 || !affineKey(write.keys[0]))
-      || new Set(writes.map((write) => write.name)).size !== writes.length) return undefined;
+        || write.keys.length !== 1 || !affineKey(write.keys[0]))) return undefined;
+    const mappingReads = this.affineRecursiveMappingReads(writes, zeroSide.name);
+    if (!mappingReads || !this.affineRecursiveResourcesSound(
+      writes, mappingReads, zeroSide.name, stepExpression,
+    )) return undefined;
     let unsupported = false;
-    const allowed = new Set<Node>([...writes, ...emits.map(({ node: emit }) => emit)]);
+    const allowed = new Set<Node>([
+      ...writes, ...mappingReads.map(({ node: read }) => read), ...emits.map(({ node: emit }) => emit),
+    ]);
     this.walkNodes(node.body, (candidate) => {
       if (allowed.has(candidate) || candidate === call) return;
       if (candidate instanceof MappingAssignNode || candidate instanceof MappingDeleteNode

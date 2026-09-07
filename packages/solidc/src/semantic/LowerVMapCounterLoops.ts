@@ -123,10 +123,11 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       overloads.push(fn);
       this.functionsByName.set(fn.name, overloads);
     }
-    // A helper-owned fixed event cannot be interleaved with the caller's runtime event stream. Compute a
-    // conservative transitive name set before visiting any function so overloads and forward references behave
-    // identically. Such calls remain fenced in a counter-loop handler until event context is threaded through
-    // ordinary internal subroutines.
+    // Returning event helpers with a linearizable tail are beta-reduced before this pass, so their emits already
+    // appear at their exact caller positions and participate in the ordinary runtime stream. A surviving
+    // helper-owned fixed event cannot be interleaved soundly (for example, a short-circuited call which must not
+    // be hoisted). Compute a conservative transitive set before visiting any function and keep only those
+    // non-linearizable calls fenced.
     this.eventfulFunctionNames = new Set();
     const bodyContains = (root: Node | undefined, predicate: (candidate: Node) => boolean): boolean => {
       if (!root) return false;
@@ -4583,7 +4584,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
     // Events outside an admitted loop must join the same trailing stream or their fixed output family would move
     // an `emit after` ahead of all repeated records. Serializable nested if/else predicates provide an exact
     // pre-probe count. Stable switch arms are the same finite predicate family. Try/catch, nested-loop sites, and
-    // eventful internal helpers remain frozen until the runtime plan carries richer path/call context.
+    // non-linearizable eventful internal helpers remain frozen until the runtime plan carries richer call context.
     const outerEmits: Array<{ emit: EmitStatementNode; condition?: ExpressionNode }> = [];
     let unsupportedOuterEvent = false;
     let eventfulHelperCall = false;

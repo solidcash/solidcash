@@ -37,6 +37,7 @@ import {
   MethodCallNode,
   CastNode,
   AbiEncodeCallNode,
+  EmitStatementNode,
   NullaryOpNode,
   FunctionModifier,
 } from '../ast/AST.js';
@@ -55,11 +56,12 @@ import { substituteInFunction } from './InheritanceExpansionTransformation.js';
 import { tagModifierStateAccess } from './ModifierExpansionTransformation.js';
 
 /**
- * Inlines internal/private functions that RETURN a value and READ a state entry (a mapping/collection
- * element). Entry-access input slots live only in an entry-point's block layout, so such a function cannot
- * compile as an OP_INVOKE subroutine ("Block layout not available"). The sibling InlineStoragePointerCalls
- * pass handles the VOID case at statement call sites; this handles the RETURNING case at EXPRESSION call
- * sites by hoisting the callee body before the enclosing statement and replacing the call with a temp:
+ * Inlines internal/private functions that RETURN a value and need their physical caller's context: state-entry
+ * reads, scalar journals, event effects, and typed/low-level call frames. Entry-access input slots and event
+ * settlement frames live only in an entry point, so such a function cannot compile as an ordinary OP_INVOKE
+ * subroutine. The sibling InlineStoragePointerCalls pass handles the VOID case at statement call sites; this
+ * handles the RETURNING case at EXPRESSION call sites by hoisting the callee body before the enclosing statement
+ * and replacing the call with a temp:
  *
  * ```
  * function f() external view returns (uint) { return earned[a] + _calc(a); }
@@ -284,7 +286,8 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     // transitively performs a low-level/external call inline into its entry point instead of becoming an
     // OP_INVOKE subroutine with covenant parameters that no call site can supply (benchmark verifier shape).
     for (const fn of [...node.functions, ...this.freeFns]) {
-      if (this.transitivelyContainsLowLevelCall(fn) || this.transitivelyContainsExternalCall(fn)) {
+      if (this.transitivelyContainsLowLevelCall(fn) || this.transitivelyContainsExternalCall(fn)
+        || this.transitivelyContainsEvent(fn)) {
         this.normalizeForwardedMultiReturn(fn);
         this.normalizeSimpleEarlyReturn(fn);
         this.analysisNodes.delete(fn);
@@ -318,7 +321,8 @@ export default class InlineReturningStateHelpers extends AstTraversal {
         && !this.inlinedFns.has(fn.name) && !valueReferenced.has(fn.name) && this.eligibleShape(fn)
         && (this.readsEntry(fn) || this.touchesScalarState(fn)
           || this.containsMsgSender(fn) || this.containsKeccak(fn)
-          || this.transitivelyContainsLowLevelCall(fn) || this.transitivelyContainsExternalCall(fn))) {
+          || this.transitivelyContainsLowLevelCall(fn) || this.transitivelyContainsExternalCall(fn)
+          || this.transitivelyContainsEvent(fn))) {
         this.inlinedFns.add(fn.name);
         this.keepDefFns.add(fn.name);
       }
@@ -408,7 +412,8 @@ export default class InlineReturningStateHelpers extends AstTraversal {
       // threaded at an entry point, so a subroutine holding it surfaces phantom params at the call site. Transitive
       // so a helper reaching the external call only through another inlined helper inlines too.
       } else if (this.eligibleShape(fn)
-        && (this.transitivelyContainsLowLevelCall(fn) || this.transitivelyContainsExternalCall(fn))) {
+        && (this.transitivelyContainsLowLevelCall(fn) || this.transitivelyContainsExternalCall(fn)
+          || this.transitivelyContainsEvent(fn))) {
         this.inlinedFns.add(fn.name);
       }
     }
@@ -544,7 +549,8 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     if (!(fn.isFreeFunction || fn.visibility === 'private' || fn.visibility === 'internal')) return false;
     if (!this.eligibleShape(fn)) return false;
     return this.readsEntry(fn) || this.touchesScalarState(fn) || this.containsLowLevelCall(fn)
-      || this.containsMsgSender(fn) || this.transitivelyContainsExternalCall(fn);
+      || this.containsMsgSender(fn) || this.transitivelyContainsExternalCall(fn)
+      || this.transitivelyContainsEvent(fn);
   }
 
   /**
@@ -697,6 +703,27 @@ export default class InlineReturningStateHelpers extends AstTraversal {
       const callee = this.lookupOverload(n.identifier.name, n.parameters.length);
       if (callee && callee !== fn && this.eligibleShape(callee)
         && this.transitivelyContainsExternalCall(callee, seen)) return true;
+    }
+    return false;
+  }
+
+  /**
+   * Events, like external-call and entry journals, are owned by the physical entry-point frame. A returning
+   * helper cannot independently settle its event when invoked through OP_INVOKE: its temporary event value is
+   * discarded when the helper frame returns. Inline every structurally linearizable helper in the call chain so
+   * the event stays at its exact source position in the caller. This is deliberately transitive and
+   * overload/arity-aware; it neither guesses from names nor hoists calls from short-circuit/conditional positions.
+   */
+  private transitivelyContainsEvent(fn: FunctionDefinitionNode, seen: Set<string> = new Set()): boolean {
+    if (this.nodesOf(fn).some((node) => node instanceof EmitStatementNode)) return true;
+    const key = inlineKey(fn.name, fn.parameters.length);
+    if (seen.has(key)) return false;
+    const next = new Set(seen).add(key);
+    for (const node of this.nodesOf(fn)) {
+      if (!(node instanceof FunctionCallNode)) continue;
+      const callee = this.lookupOverload(node.identifier.name, node.parameters.length);
+      if (callee && callee !== fn && this.eligibleShape(callee)
+        && this.transitivelyContainsEvent(callee, next)) return true;
     }
     return false;
   }

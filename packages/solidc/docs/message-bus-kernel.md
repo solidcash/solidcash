@@ -216,9 +216,13 @@ reached. Unplanned event sites beneath another runtime loop, an unreachable catc
 unsupported/mutated provenance remain `KERNEL_LAYOUT`; counter journals whose domain cannot be bounded remain
 `KERNEL_UNBOUNDED_KEY`. Stable `switch` paths and the reachable body of `try` use the same serialized path plan as
 `if`/`else`. Event arguments may use ordinary expressions, resource-free builtins, and
-returning helpers. After helper inlining, an effectful helper body and its result definition remain adjacent to
-the event in the source-order physical loop, so consuming that already-computed local neither duplicates nor
-permutes the helper effect. BCH and fungible-token transfer operands use the same rule and the same authenticated,
+returning helpers. An internally invoked returning helper which itself emits, including a transitive helper chain,
+is beta-reduced at an unconditional call site (while a public definition remains dispatchable) so its events join
+the caller's stream at their exact source
+positions. Helpers reached only through short-circuit or otherwise conditional expression evaluation remain
+fenced rather than being hoisted. After helper inlining, an effectful helper body and its result definition remain
+adjacent to the event in the source-order physical loop, so consuming that already-computed local neither duplicates
+nor permutes the helper effect. BCH and fungible-token transfer operands use the same rule and the same authenticated,
 source-ordered runtime effect span. A mapping value may also consume an effectful helper result when inlining leaves
 a resource-free, replayable result expression: the helper effects and original result definition remain in source
 order, while only that pure result expression is replayed against the authenticated logical key. Results which still
@@ -362,6 +366,10 @@ fixed-layout struct values; their existing aggregate recipes and authenticated s
 compiler and SDK codec, and repeated provably identical mapping keys collapse to the final value. Potentially
 colliding distinct runtime keys, dynamic key/value types, collection-valued entries (including nested arrays and
 mappings), dynamic or cyclic aggregates, and recursive collection shapes remain `KERNEL_LAYOUT`.
+Constructing a zero-state child without a value option is only a redeem-script/address expression: it mints no
+category or participant block and therefore executes directly in the row without reserving a deployment span.
+Adding `{value: ...}` makes the same expression a real BCH effect and remains fenced until its recipient and amount
+are published through the fixed-effect recipe protocol.
 Compiler-owned public entry points are finalized before kernel admission. In particular, a contract using an
 oracle-backed `block.*` register publishes `__updateBlockOracle` as an ordinary eligible row with its detached
 transaction-signature witness; it is not appended later as an unexamined ABI-only function. Public state getters
@@ -533,6 +541,12 @@ disjoint key ranges in one physical collection; each row owns its authenticated 
 Rows whose physical inputs overlap remain fenced until the planner can build a complete journal from pending row
 transitions. Multiple collections in one admitted loop share a permutation only when their complete key expression
 and selected domain are identical.
+Affine post-recursion mapping assignments may consume authenticated mapping values during unwind. The read must
+appear in an assignment value and use the same `counter +/- literal` key grammar as the destination stream; reads
+in predicates, event arguments, requirements, and destination keys remain fenced. A read of the destination's
+exact entry is an ordinary authenticated read-modify-write. Other streams sharing a collection are admitted only
+when a constant positive recursion stride proves their complete 64-frame affine domains disjoint. Runtime strides
+and intersecting domains fail closed rather than relying on transaction construction to discover an alias.
 The runtime-entry closure now reserves a pending-journal record count beside its input cursor and threads that count
 through every `OP_INVOKE` copy-in/copy-out frame, including void, returning, and neutral shared-caller paths.
 Individual bounded records will reside on the shared altstack rather than one concatenated byte item, so the legal

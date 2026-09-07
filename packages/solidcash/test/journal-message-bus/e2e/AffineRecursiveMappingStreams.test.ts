@@ -19,6 +19,155 @@ const KERNEL = {
 } as const;
 
 describe('affine recursive mapping streams', () => {
+  it('settles disjoint post-recursion streams which share one collection', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(`contract DisjointUnwind(bytes densityPadding) {
+      mapping(int => int) values;
+      function apply(int cursor) public returns (int) {
+        if (cursor == 0) return 0;
+        int result = apply(cursor - 1);
+        this.values[cursor] = cursor + 10;
+        this.values[cursor + 64] = cursor + 20;
+        return result;
+      }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'apply'))
+      .toMatchObject({ eligible: true });
+    const inner = new Contract(artifact, [new Uint8Array(256)], { provider });
+    const zero = slotValueToBytes(0n);
+    const existing = [1n, 2n, 65n, 66n].map((key) => ({
+      slot: keyToSlotMulti([bigIntToVmNumber(key)]),
+    })).sort((left, right) => bytesToSlotValue(left.slot) < bytesToSlotValue(right.slot) ? -1 : 1);
+    const { categoryId } = await provider.addTokenUtxosDynamic((category) => {
+      const pinned = inner.withCategory(hexToBin(category));
+      return [
+        { address: pinned.tokenAddress, satoshis: 10_000n,
+          token: { amount: 0n, nft: { capability: 'minting' as const, commitment: '' } } },
+        { address: getEntryNftAddress(pinned, category, 'values'), satoshis: 1_200n,
+          token: { amount: 0n, nft: { capability: 'mutable' as const,
+            commitment: binToHex(encodeEntryCommitment(zero, existing[0].slot)) } } },
+        ...existing.map(({ slot }, index) => ({
+          address: getEntryNftAddress(pinned, category, 'values'), satoshis: 1_200n,
+          token: { amount: 0n, nft: { capability: 'mutable' as const,
+            commitment: binToHex(encodeEntryCommitment(
+              slot, existing[index + 1]?.slot ?? zero, bigIntToVmNumber(0n),
+            )) } },
+        })),
+        { address: getMessageBusVerifierAddress(pinned, category), satoshis: 1_200n,
+          token: { amount: 0n, nft: { capability: 'mutable' as const,
+            commitment: binToHex(messageBusVerifierCommitment(0)) } } },
+      ];
+    });
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    const call = contract.batch([{ function: 'apply', args: [2n] }]);
+    const fee = await createBareP2pkhFeeFunder(provider, 500_000n);
+    call.addInput(fee.utxo, fee.unlocker);
+    call.addOutput({ to: fee.unlocker.generateLockingBytecode(), amount: 1_200n });
+    const builder = await call.build();
+    const transaction = builder.buildLibauthTransaction();
+    const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+    const vm = createVirtualMachineBch2026ForProvider(provider);
+    for (let inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex += 1) {
+      expect(vm.stateSuccess(vm.evaluate({ inputIndex, sourceOutputs, transaction })),
+        `honest input ${inputIndex}`).toBe(true);
+    }
+    await call.send();
+    const values = await contract.getEntries('values');
+    const valueAt = (key: bigint): unknown => values.find((entry) =>
+      binToHex(entry.slot) === binToHex(keyToSlotMulti([bigIntToVmNumber(key)])))?.value;
+    expect([1n, 2n, 65n, 66n].map(valueAt)).toEqual([11n, 12n, 21n, 22n]);
+  }, 60_000);
+
+  it('authenticates mapping values consumed by post-recursion unwind frames', async () => {
+    const provider = createTestProvider();
+    // Two independently authenticated 64-row resources put this deliberately small fixture just beyond BCH's
+    // operation-density ratio. A constructor byte vector increases locking-program density without changing the
+    // handler or its resource semantics.
+    const artifact = compileString(`contract UnwindReads(bytes densityPadding) {
+      mapping(int => int) source;
+      mapping(int => int) destination;
+      function apply(int cursor, int fallbackValue) public returns (int) {
+        if (cursor == 0) return fallbackValue;
+        int result = apply(cursor - 1, fallbackValue);
+        this.destination[cursor] = this.source[cursor] + result;
+        return result;
+      }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'apply'))
+      .toMatchObject({ eligible: true });
+    const inner = new Contract(artifact, [new Uint8Array(256)], { provider });
+    const zero = slotValueToBytes(0n);
+    const sourceEntries = [[1n, 10n], [2n, 20n], [3n, 30n]] as const;
+    const sourceNodes = sourceEntries.map(([key, value]) => ({
+      slot: keyToSlotMulti([bigIntToVmNumber(key)]), value,
+    })).sort((left, right) => bytesToSlotValue(left.slot) < bytesToSlotValue(right.slot) ? -1 : 1);
+    const { categoryId } = await provider.addTokenUtxosDynamic((category) => {
+      const pinned = inner.withCategory(hexToBin(category));
+      return [
+        { address: pinned.tokenAddress, satoshis: 10_000n,
+          token: { amount: 0n, nft: { capability: 'minting' as const, commitment: '' } } },
+        { address: getEntryNftAddress(pinned, category, 'source'), satoshis: 1_200n,
+          token: { amount: 0n, nft: { capability: 'mutable' as const,
+            commitment: binToHex(encodeEntryCommitment(zero, sourceNodes[0].slot)) } } },
+        ...sourceNodes.map(({ slot, value }, index) => ({
+          address: getEntryNftAddress(pinned, category, 'source'), satoshis: 1_200n,
+          token: { amount: 0n, nft: { capability: 'mutable' as const,
+            commitment: binToHex(encodeEntryCommitment(
+              slot, sourceNodes[index + 1]?.slot ?? zero, bigIntToVmNumber(value),
+            )) } },
+        })),
+        { address: getEntryNftAddress(pinned, category, 'destination'), satoshis: 1_200n,
+          token: { amount: 0n, nft: { capability: 'mutable' as const,
+            commitment: binToHex(encodeEntryCommitment(zero, zero)) } } },
+        { address: getMessageBusVerifierAddress(pinned, category), satoshis: 1_200n,
+          token: { amount: 0n, nft: { capability: 'mutable' as const,
+            commitment: binToHex(messageBusVerifierCommitment(0)) } } },
+      ];
+    });
+    const contract = StatefulContract.withCategory(inner, categoryId);
+
+    const call = contract.batch([{ function: 'apply', args: [3n, 5n] }]);
+    // Supply fees for the three inserted destination entries.
+    const fee = await createBareP2pkhFeeFunder(provider, 500_000n);
+    call.addInput(fee.utxo, fee.unlocker);
+    call.addOutput({ to: fee.unlocker.generateLockingBytecode(), amount: 1_200n });
+    const builder = await call.build();
+    const transaction = builder.buildLibauthTransaction();
+    const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+    const routeInputIndex = builder.inputs.findIndex((input) =>
+      'abiFunction' in input.unlocker && input.unlocker.abiFunction.name === artifact.messageBus!.route.name);
+    const vm = createVirtualMachineBch2026ForProvider(provider);
+    for (let inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex += 1) {
+      expect(vm.stateSuccess(vm.evaluate({ inputIndex, sourceOutputs, transaction })),
+        `honest input ${inputIndex}`).toBe(true);
+    }
+
+    const sourceLock = addressToLockScript(getEntryNftAddress(
+      inner.withCategory(hexToBin(categoryId)), categoryId, 'source',
+    ));
+    const preservedSource = transaction.outputs.findIndex((output) => output.token?.nft
+      && binToHex(output.lockingBytecode) === binToHex(sourceLock)
+      && output.token.nft.commitment.length > 64);
+    expect(preservedSource).toBeGreaterThanOrEqual(0);
+    const hostile = {
+      ...transaction,
+      outputs: transaction.outputs.map((output, index) => index !== preservedSource ? output : ({
+        ...output,
+        token: { ...output.token!, nft: { ...output.token!.nft!,
+          commitment: Uint8Array.from(output.token!.nft!.commitment, (byte, offset) =>
+            offset === output.token!.nft!.commitment.length - 1 ? byte ^ 1 : byte) } },
+      })),
+    };
+    expect(vm.stateSuccess(vm.evaluate({ inputIndex: routeInputIndex, sourceOutputs, transaction: hostile })))
+      .not.toBe(true);
+
+    await call.send();
+    const destination = await contract.getEntries('destination');
+    const valueAt = (key: bigint): unknown => destination.find((entry) =>
+      binToHex(entry.slot) === binToHex(keyToSlotMulti([bigIntToVmNumber(key)])))?.value;
+    expect([1n, 2n, 3n].map(valueAt)).toEqual([15n, 25n, 35n]);
+  }, 60_000);
+
   it('emits selected post-recursion events in unwind order and authenticates the zero-frame case', async () => {
     const provider = createMessageBusCapstoneTestProvider();
     const artifact = compileString(`contract UnwindEvents() {

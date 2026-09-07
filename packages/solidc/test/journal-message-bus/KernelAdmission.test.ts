@@ -1750,10 +1750,13 @@ describe('required kernel admission', () => {
     },
   );
 
-  it('refuses a deploy-in-handler as KERNEL_LAYOUT', () => {
-    expect(denied(`contract Child() { }
+  it('refuses a runtime-count stateful deployment loop as KERNEL_LAYOUT', () => {
+    expect(denied(`contract Child() { int marker; }
       contract C() {
-        function denied() public { Child child = new Child(); require(true); }
+        function denied(int count) public {
+          for (int i = 0; i < count; i = i + 1) { Child child = new Child(); }
+          require(true);
+        }
         function control() public { require(true); }
       }`, 'denied')).toMatchObject({
       eligible: false,
@@ -1797,6 +1800,42 @@ describe('required kernel admission', () => {
     expect(site.creationBytecode).toMatch(/^[0-9a-f]+$/);
     expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'control'))
       .not.toHaveProperty('childDeployments');
+  });
+
+  it('treats zero-state child construction as a row-local address expression', () => {
+    const artifact = compileString(`contract Blueprint(int seed) {
+        function check(int value) public pure { require(value == seed); }
+      }
+      contract Factory() {
+        address latest;
+        function make(int seed) public {
+          Blueprint child = new Blueprint(seed);
+          this.latest = address(child);
+          require(true);
+        }
+        function salted(int seed, bytes32 salt) public {
+          Blueprint child = new Blueprint{salt: salt}(seed);
+          this.latest = address(child);
+          require(true);
+        }
+        function funded(int seed, int amount) public {
+          Blueprint child = new Blueprint{value: amount}(seed);
+          this.latest = address(child);
+          require(true);
+        }
+      }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    for (const name of ['make', 'salted']) {
+      const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === name);
+      expect(handler).toMatchObject({ eligible: true });
+      expect(handler).not.toHaveProperty('childDeployments');
+      expect(artifact.abi.find((candidate) => candidate.name === name)).not.toHaveProperty('deployTargets');
+    }
+    // A value option creates a real BCH effect. Keep it fenced until the stateless recipient and amount are
+    // represented by the same authenticated fixed-effect recipes as ordinary transfers.
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'funded')).toMatchObject({
+      eligible: false,
+      rejectionReason: 'KERNEL_LAYOUT',
+    });
   });
 
   it('admits one straight-line value-bearing child with a typed amount recipe', () => {
@@ -7660,6 +7699,69 @@ describe('required kernel admission', () => {
       },
     ]);
     expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'control')?.eligible).toBe(true);
+  });
+
+  it('orders an internal-helper event inside a canonical counter loop', () => {
+    const artifact = compileString(`event Observed(int value);
+      contract C() {
+        mapping(int => int) values;
+        function record(int value) internal returns (int) {
+          emit Observed(value);
+          return value + 1;
+        }
+        function transform(int value, bool enabled) internal returns (int) {
+          if (enabled) emit Observed(value * 2);
+          int next = record(value + 1);
+          emit Observed(next);
+          return next + 1;
+        }
+        function apply(int count) public {
+          for (int cursor = 0; cursor < count; cursor = cursor + 1) {
+            emit Observed(cursor);
+            this.values[cursor] = transform(cursor, cursor != 1);
+            emit Observed(cursor + 10);
+          }
+          require(true);
+        }
+      }`, KERNEL);
+    const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'apply');
+    expect(handler).toMatchObject({
+      eligible: true,
+      runtimeLoopEvents: [{
+        permutationParam: expect.stringMatching(/^__internal__vmapCounterPerm_count_/),
+        eventSignatures: [
+          'Observed(int256)', 'Observed(int256)', 'Observed(int256)', 'Observed(int256)', 'Observed(int256)',
+        ],
+      }],
+    });
+    expect(handler?.runtimeLoopEvents?.[0].conditions).toMatchObject([
+      null,
+      {
+        kind: 'binary', operator: '!=', left: { kind: 'source', source: { kind: 'loopIndex' } },
+        right: { kind: 'literal', value: '1' },
+      },
+      null,
+      null,
+      null,
+    ]);
+  });
+
+  it('does not hoist an eventful returning helper out of a short-circuit position', () => {
+    expect(() => compileString(`event Observed(int value);
+      contract C() {
+        mapping(int => int) values;
+        function record(int value) internal returns (int) {
+          emit Observed(value);
+          return value;
+        }
+        function apply(int count, bool enabled) public {
+          for (int cursor = 0; cursor < count; cursor = cursor + 1) {
+            bool selected = enabled && record(cursor) > 0;
+            this.values[cursor] = selected ? 1 : 0;
+          }
+          require(true);
+        }
+      }`, KERNEL)).toThrow(/Helper 'record' emits an event/);
   });
 
   it('publishes path metadata for a conditionally reached counter loop', () => {

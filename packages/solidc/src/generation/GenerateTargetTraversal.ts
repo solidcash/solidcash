@@ -540,7 +540,7 @@ function graphHandlerUnsupportedEffect(
     if (Array.isArray(n)) { for (const item of n) walk(item); return; }
     if (!(n instanceof Node) || seen.has(n)) return;
     seen.add(n);
-    if (n instanceof InstantiationNode && n.referencedContract && !deploymentRouteContext) {
+    if (n instanceof InstantiationNode && n.isStatefulDeploy && n.referencedContract && !deploymentRouteContext) {
       found = { reason: 'graph-handler-deploy-not-enabled', node: n };
       return;
     }
@@ -569,7 +569,7 @@ function countInstantiationDeploySites(body: Node | undefined): number {
     if (Array.isArray(n)) { for (const it of n) walk(it); return; }
     if (!(n instanceof Node) || seen.has(n)) return;
     seen.add(n);
-    if (n instanceof InstantiationNode && n.referencedContract) count += 1;
+    if (n instanceof InstantiationNode && n.isStatefulDeploy && n.referencedContract) count += 1;
     for (const [key, value] of Object.entries(n)) {
       if (key === 'referencedContract' || key === 'definition' || key === 'symbolTable') continue;
       walk(value);
@@ -605,7 +605,7 @@ function surveyFunctionDeploys(
     if (Array.isArray(n)) { for (const it of n) walk(it, inCond, inLoop); return; }
     if (!(n instanceof Node) || seen.has(n)) return;
     seen.add(n);
-    if (n instanceof InstantiationNode && n.referencedContract) {
+    if (n instanceof InstantiationNode && n.isStatefulDeploy && n.referencedContract) {
       count += 1;
       if (inCond) hasConditional = true;
       if (inLoop && hasEffectiveCallValue(n.callOptions?.value)) hasLoopValue = true;
@@ -652,7 +652,7 @@ function prepareDeployEntryGeometry(
     if (Array.isArray(value)) { for (const child of value) walk(child); return; }
     if (!(value instanceof Node) || seen.has(value)) return;
     seen.add(value);
-    if (value instanceof InstantiationNode && value.referencedContract) {
+    if (value instanceof InstantiationNode && value.isStatefulDeploy && value.referencedContract) {
       const analysis = analyses.get(value);
       const entries = value.constructorStateFoldComplete === true
         ? childDeploymentGenesisEntries(

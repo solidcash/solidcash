@@ -39,7 +39,7 @@ describe('Release 1 scalar journal lowering', () => {
     expect(journalized.debug.bytecode.length / 2).toBeLessThan(600);
   });
 
-  it('marks direct and mutual recursive entry closures for concrete SDK preflight', () => {
+  it('marks only recursion which survives tail-cycle lowering for concrete SDK preflight', () => {
     const direct = compileString(`${PREFIX}
       function run(int n) { this.x = this.x + 1; if (n > 0) run(n - 1); require(n >= 0); }
     }`, { forceStateful: true });
@@ -51,7 +51,10 @@ describe('Release 1 scalar journal lowering', () => {
       function run(int n) { a(n); require(n >= 0); }
       function flat() { this.x = this.x + 1; require(this.x > 0); }
     }`, { forceStateful: true });
-    expect(mutual.abi.find((entry) => entry.name === 'run')?.recursiveStateHandler).toBe(true);
+    // The homogeneous a/b tail cycle is compiled into one bounded program-counter loop before journal closure
+    // analysis. It no longer consumes recursive VM frames, so advertising the conservative SDK recursion fence
+    // would describe source syntax rather than the executable handler.
+    expect(mutual.abi.find((entry) => entry.name === 'run')?.recursiveStateHandler).toBeUndefined();
     expect(mutual.abi.find((entry) => entry.name === 'flat')?.recursiveStateHandler).toBeUndefined();
   });
 
@@ -101,11 +104,7 @@ describe('Release 1 scalar journal lowering', () => {
     expect(artifact.abi.find((entry) => entry.name === 'run')?.modifiers).toContain('deploy');
   });
 
-  // X118 RENAMED THIS REFUSAL. The SUBJECT is unchanged - this shape must still fail closed - and the assertion
-  // is strengthened rather than relaxed: the class name and the presence of a position are asserted too, because
-  // the whole point of the rename was that a bare internal `Error` reached users with no name, position or
-  // remedy. Pinned in full by DiagnosticResidueX118X119X120.test.ts.
-  it('rejects an event-bearing returning state helper that cannot be inlined', () => {
+  it('inlines an event-bearing returning state helper into its physical event frame', () => {
     const source = `pragma solidcash >=0.8.0;
       contract EventReturn() {
         int x;
@@ -122,19 +121,16 @@ describe('Release 1 scalar journal lowering', () => {
         }
       }
     `;
-    expect(() => compileString(source, { forceStateful: true })).toThrow(
-      /Helper 'update' emits an event and is invoked internally as a value-returning subroutine/,
-    );
-    let raised: Error | undefined;
-    try { compileString(source, { forceStateful: true }); } catch (error) { raised = error as Error; }
-    expect(raised?.name).toBe('EmittingStateHelperEventError');
-    expect(raised?.message).toMatch(/at Line \d+, Column \d+/);
+    const artifact = compileString(source, { forceStateful: true });
+    expect(artifact.abi.find((entry) => entry.name === 'run')?.emits).toEqual([
+      expect.objectContaining({ eventName: 'Changed' }),
+    ]);
+    expect(artifact.invocationAnalysis?.functions.find((fn) => fn.name === 'update')).toBeUndefined();
   });
 
-  it('rejects a returning emit helper (no direct state write) invoked from a journal handler', () => {
-    // Regression for J5: a returning helper that emits but does not itself write state survives as an
-    // OP_INVOKE subroutine (void emit helpers are force-inlined; returning ones are not) and its event
-    // was silently dropped at the subroutine epilogue. It must now fail closed instead.
+  it('inlines a transitive returning emit helper reached from a journal handler', () => {
+    // Regression for J5: the event must stay in the caller's physical frame even though the leaf helper does not
+    // itself touch state and the intermediate helper owns the scalar journal.
     const source = `pragma solidcash >=0.8.0;
       contract EmitReturn() {
         int x;
@@ -155,17 +151,11 @@ describe('Release 1 scalar journal lowering', () => {
         }
       }
     `;
-    // X118 rename, same reasoning as above.
-    expect(() => compileString(source, { forceStateful: true })).toThrow(
-      /Helper 'log' emits an event and is invoked internally as a value-returning subroutine/,
-    );
-    let raised: Error | undefined;
-    try { compileString(source, { forceStateful: true }); } catch (error) { raised = error as Error; }
-    expect(raised?.name).toBe('EmittingStateHelperEventError');
-    // DISCRIMINATING: `log` is DECLARED returning and writes no state, so the collection-journal clause must be
-    // ABSENT here while the `update` case above (void as written, made returning by the journal) carries it.
-    // Without this the message could claim a cause that is not the cause.
-    expect(raised?.message).not.toContain('it is void as written');
+    const artifact = compileString(source, { forceStateful: true });
+    expect(artifact.abi.find((entry) => entry.name === 'run')?.emits).toEqual([
+      expect.objectContaining({ eventName: 'Changed' }),
+    ]);
+    expect(artifact.invocationAnalysis?.functions.find((fn) => fn.name === 'log')).toBeUndefined();
   });
 
   it('admits a returning event writer only through an authenticated graph effect frame', () => {

@@ -4508,6 +4508,61 @@ describe('kernel composite counter-key settlement', () => {
     ]).build()).rejects.toThrow(/read-your-writes transition/);
   }, 180_000);
 
+  it('settles events owned by a returning internal helper in loop source order', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(`contract HelperLoopEvents() {
+      mapping(int => int) values;
+      event Pulse(int value);
+      function record(int value) internal returns (int) {
+        emit Pulse(value);
+        return value + 1;
+      }
+      function apply(int count) public {
+        for (int cursor = 0; cursor < count; cursor = cursor + 1) {
+          this.values[cursor] = record(cursor);
+        }
+        require(true);
+      }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'apply')).toMatchObject({
+      eligible: true,
+      runtimeLoopEvents: [{ eventSignatures: ['Pulse(int256)'] }],
+    });
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+    );
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    const builder = await contract.batch([{ function: 'apply', args: [3n] }]).build();
+    const transaction = builder.buildLibauthTransaction();
+    expect(transaction.outputs
+      .filter((output) => output.token?.nft?.capability === 'none')
+      .map((output) => binToHex(output.token!.nft!.commitment)))
+      .toEqual(['00', '51', '52']);
+
+    const vm = createVirtualMachineBch2026ForProvider(provider);
+    const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+    for (let inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex += 1) {
+      expect(vm.stateSuccess(vm.evaluate({ inputIndex, sourceOutputs, transaction })), `input ${inputIndex}`)
+        .toBe(true);
+    }
+    const eventIndex = transaction.outputs.findIndex(
+      (output) => output.token?.nft?.capability === 'none',
+    );
+    const eventOutput = transaction.outputs[eventIndex];
+    const hostile = {
+      ...transaction,
+      outputs: transaction.outputs.map((output, index) => index === eventIndex ? {
+        ...output,
+        token: {
+          ...eventOutput.token!,
+          nft: { ...eventOutput.token!.nft!, commitment: Uint8Array.of(9) },
+        },
+      } : output),
+    };
+    expect(vm.stateSuccess(vm.evaluate({ inputIndex: 0, sourceOutputs, transaction: hostile }))).not.toBe(true);
+  }, 180_000);
+
   it('settles bounded event-only pre-test and post-test counter loops', async () => {
     const exercise = async (
       source: string, functionName: string, cases: readonly { bound: bigint; commitments: string[] }[],

@@ -227,13 +227,87 @@ describe('affine recursive mapping streams', () => {
     expect(artifact.messageBus?.route.blockLayout?.trailingCapacity).toBe(2 * 64 + 2);
   });
 
+  it('authenticates post-recursion mapping reads as independent unwind streams', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) source;
+      mapping(int => int) destination;
+      function apply(int cursor, int fallbackValue) public returns (int) {
+        if (cursor == 0) return fallbackValue;
+        int result = apply(cursor - 1, fallbackValue);
+        this.destination[cursor] = this.source[cursor] + result;
+        return result;
+      }
+    }`, KERNEL);
+    const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'apply');
+    const operationInfo = artifact.abi.find((candidate) => candidate.name === 'apply')?.sortedUpsertLoopInfo;
+
+    expect(handler).toMatchObject({ eligible: true });
+    expect(operationInfo?.map((info) => [info.collection, info.op])).toEqual([
+      ['source', 'read'], ['destination', 'set'],
+    ]);
+    expect(artifact.messageBus?.route.blockLayout?.trailingCapacity).toBe(2 * 64 + 2);
+  });
+
+  it('admits same-collection recursive streams only when their full affine domains are disjoint', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) values;
+      function apply(int cursor) public returns (int) {
+        if (cursor == 0) return 0;
+        int result = apply(cursor - 1);
+        this.values[cursor] = result;
+        delete this.values[cursor + 64];
+        return result;
+      }
+    }`, KERNEL);
+    const operationInfo = artifact.abi.find((candidate) => candidate.name === 'apply')?.sortedUpsertLoopInfo;
+
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'apply'))
+      .toMatchObject({ eligible: true });
+    expect(operationInfo?.map((info) => [info.collection, info.op])).toEqual([
+      ['values', 'set'], ['values', 'delete'],
+    ]);
+  });
+
+  it('keeps same-entry RMW reads in their owning recursive transition', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) values;
+      function apply(int cursor, int increment) public returns (int) {
+        if (cursor == 0) return increment;
+        int result = apply(cursor - 1, increment);
+        this.values[cursor] = this.values[cursor] + result;
+        return result;
+      }
+    }`, KERNEL);
+
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'apply'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.abi.find((candidate) => candidate.name === 'apply')?.sortedUpsertLoopInfo)
+      .toEqual([expect.objectContaining({ collection: 'values', op: '+' })]);
+  });
+
+  it('proves disjoint same-collection domains using the exact constant recursive stride', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) values;
+      function apply(int cursor) public returns (int) {
+        if (cursor == 0) return 0;
+        int result = apply(cursor - 2);
+        this.values[cursor] = result;
+        delete this.values[cursor + 1];
+        return result;
+      }
+    }`, KERNEL);
+
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'apply'))
+      .toMatchObject({ eligible: true });
+  });
+
   it.each([
     ['a zero recursive step', 'apply(cursor - 0, threshold)', 'this.selected[cursor] = result;'],
     ['a mutated invariant step', 'apply(cursor - threshold, threshold + 1)',
       'this.selected[cursor] = result;'],
-    ['a post-recursion mapping read', 'apply(cursor - 1, threshold)',
-      'this.selected[cursor] = this.removed[cursor];'],
-    ['two post-recursion streams for one collection', 'apply(cursor - 1, threshold)',
+    ['same-collection domains under a runtime stride', 'apply(cursor - threshold, threshold)',
+      'this.selected[cursor] = result; delete this.selected[cursor + 64];'],
+    ['overlapping post-recursion streams for one collection', 'apply(cursor - 1, threshold)',
       'this.selected[cursor] = result; delete this.selected[cursor + 1];'],
   ])('keeps %s outside the unwind stream', (_label, recursiveCall, operations) => {
     const artifact = compileString(`contract C() {

@@ -2257,7 +2257,7 @@ function childDeploymentSites(
     if (!(value instanceof Node) || seen.has(value)) return;
     seen.add(value);
 
-    if (value instanceof InstantiationNode && value.referencedContract) {
+    if (value instanceof InstantiationNode && value.isStatefulDeploy && value.referencedContract) {
       const analyzed = recipeAnalysis.get(value);
       const child = value.referencedContract;
       const dataNftOutputCount = packedStateDataNftCount(child, commitmentLimit);
@@ -4200,8 +4200,9 @@ function synthesizeMessageBusRoute(
       const deploymentSiteConditional: boolean[] = [];
       const deployedLocalNames = new Set<string>();
       const lockingBytecode = new Set<string>(Object.values(Class));
-      const statefulChildren = new Map(ast.importedContracts.filter((child) =>
-        child.stateVariables.length > 0 || child.collections.length > 0).map((child) => [child.name, child]));
+      const referencedChildren = new Map(ast.importedContracts.map((child) => [child.name, child]));
+      const statefulChildren = new Map([...referencedChildren].filter(([, child]) =>
+        child.stateVariables.length > 0 || child.collections.length > 0));
       const foldedInitializationProofs = proveStraightLineChildInitializations(fn, statefulChildren, compilerOptions);
       const foldedProofByDeployment = new Map(foldedInitializationProofs
         .map((proof) => [proof.deployment, proof.proof] as const));
@@ -4222,12 +4223,19 @@ function synthesizeMessageBusRoute(
           // `new LockingBytecodeP2PKH(pkh)` is an InstantiationNode but not a child deploy; it is a
           // compile-time locking-bytecode constructor and does not need a handler-owned block layout.
           if (node instanceof InstantiationNode && !lockingBytecode.has(node.identifier.name)) {
+            const referencedChild = referencedChildren.get(node.identifier.name);
+            const statefulChild = statefulChildren.get(node.identifier.name);
+            // A zero-state child with no value option is an address/redeem-script expression, not a physical
+            // deployment: it mints no category or participant block. Let it execute inside the ordinary row just
+            // like `type(Child).creationCode` plus P2SH construction. Value-bearing stateless creation remains a
+            // transfer effect and stays fenced until its recipient recipe is published with fixed BCH effects.
+            if (referencedChild && !statefulChild && !hasEffectiveCallValue(node.callOptions?.value)) return;
             deploys = true;
-            const analyzed = statefulChildren.has(node.identifier.name)
+            const analyzed = statefulChild
               ? deploymentRecipeAnalysis.get(node) : undefined;
-            if (statefulChildren.has(node.identifier.name)) {
+            if (statefulChild) {
               deploySites += 1;
-              const child = statefulChildren.get(node.identifier.name)!;
+              const child = statefulChild;
               const foldedProof = foldedProofByDeployment.get(node);
               if (!analyzed?.supported) deploymentRecipeUnsupported = true;
               const visibleInputs = new Map(fn.parameters

@@ -20,7 +20,8 @@ describe('exact bounded additive recurrence security', () => {
           require(checkSig(s, pk));
         }
         function exact(int limit, int increment) public {
-          int delta = this.seed;
+          int delta = 0;
+          delta = this.seed;
           for (int cursor = 0; cursor < limit; cursor = cursor + 1) {
             this.total = this.total + delta;
             this.total = this.total + cursor / 2;

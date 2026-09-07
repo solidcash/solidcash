@@ -7350,7 +7350,7 @@ describe('required kernel admission', () => {
       });
   });
 
-  it('fences event recurrences whose source history is not a straight-line closed form', () => {
+  it('replays a dominating reassignment and fences path-dependent event recurrences', () => {
     const artifact = compileString(`event Tick(int value);
       contract C() {
         int total;
@@ -7380,7 +7380,9 @@ describe('required kernel admission', () => {
           require(true);
         }
       }`, KERNEL);
-    for (const name of ['reassignedInitializer', 'localContinue', 'stateContinue']) {
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'reassignedInitializer'))
+      .toMatchObject({ eligible: true });
+    for (const name of ['localContinue', 'stateContinue']) {
       expect(artifact.messageBus?.handlers.find((handler) => handler.name === name))
         .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
     }

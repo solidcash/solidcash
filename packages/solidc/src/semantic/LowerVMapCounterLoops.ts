@@ -2176,11 +2176,108 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       const predicateOuterIndex = canonical.parent.statements?.indexOf(loop) ?? -1;
       const predicateOuterInitializers = new Map<string, ExpressionNode>();
       const predicateOuterTypes = new Map<string, Type>();
+      const unsafePredicateOuterReassignments = new Set<string>();
       if (predicateOuterIndex >= 0) {
-        for (const statement of canonical.parent.statements!.slice(0, predicateOuterIndex)) {
+        const prefix = canonical.parent.statements!.slice(0, predicateOuterIndex);
+        for (const statement of prefix) {
           if (statement instanceof VariableDefinitionNode && statement.expression) {
             predicateOuterInitializers.set(statement.name, statement.expression);
             predicateOuterTypes.set(statement.name, statement.type);
+          }
+        }
+        const directAssignments = new Map<string, AssignNode[]>();
+        const assignmentCounts = new Map<string, number>();
+        const collectAssignments = (candidate: Node): void => {
+          if (candidate instanceof AssignNode) {
+            assignmentCounts.set(
+              candidate.identifier.name, (assignmentCounts.get(candidate.identifier.name) ?? 0) + 1,
+            );
+          }
+          for (const [key, value] of Object.entries(candidate)) {
+            if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type'
+              || key === 'resolvedFunction' || key === 'collection' || key === 'stateVariable') continue;
+            if (value instanceof Node) collectAssignments(value);
+            else if (Array.isArray(value)) for (const item of value) if (item instanceof Node) {
+              collectAssignments(item);
+            }
+          }
+        };
+        for (const statement of prefix) {
+          collectAssignments(statement);
+          if (statement instanceof AssignNode) {
+            const assignments = directAssignments.get(statement.identifier.name) ?? [];
+            assignments.push(statement);
+            directAssignments.set(statement.identifier.name, assignments);
+          }
+        }
+        const assignedNames = new Set(assignmentCounts.keys());
+        for (const name of assignedNames) unsafePredicateOuterReassignments.add(name);
+        const hasPrefixMutation = (candidate: Node): boolean => {
+          if (isWrite(candidate) || candidate instanceof StateAssignNode
+            || candidate instanceof StateArrayAssignNode || candidate instanceof StateArrayDeleteNode
+            || candidate instanceof StateArrayPopNode || candidate instanceof StateArrayPushNode
+            || candidate instanceof DeleteStateNode || candidate instanceof ArrayAssignNode
+            || candidate instanceof ArrayDeleteNode || candidate instanceof ArrayPopNode
+            || candidate instanceof ArrayPushNode || candidate instanceof DeleteLocalNode
+            || candidate instanceof TupleAssignmentNode) return true;
+          for (const [key, value] of Object.entries(candidate)) {
+            if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type'
+              || key === 'resolvedFunction' || key === 'collection' || key === 'stateVariable') continue;
+            if (value instanceof Node && hasPrefixMutation(value)) return true;
+            if (Array.isArray(value)
+              && value.some((item) => item instanceof Node && hasPrefixMutation(item))) return true;
+          }
+          return false;
+        };
+        const prefixHasObservableEffect = prefix.some((statement) =>
+          hasObservableEffect(statement) || hasPrefixMutation(statement));
+        const prefixReadsCollection = (candidate: Node): boolean => {
+          if (candidate instanceof MappingAccessNode) return true;
+          for (const [key, value] of Object.entries(candidate)) {
+            if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type'
+              || key === 'resolvedFunction' || key === 'collection' || key === 'stateVariable') continue;
+            if (value instanceof Node && prefixReadsCollection(value)) return true;
+            if (Array.isArray(value)
+              && value.some((item) => item instanceof Node && prefixReadsCollection(item))) return true;
+          }
+          return false;
+        };
+        const readsAssignedAlias = (candidate: Node, target: string): boolean => {
+          if (candidate instanceof IdentifierNode
+            && (candidate.name === target || assignedNames.has(candidate.name))) return true;
+          for (const [key, value] of Object.entries(candidate)) {
+            if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type'
+              || key === 'resolvedFunction' || key === 'collection' || key === 'stateVariable') continue;
+            if (value instanceof Node && readsAssignedAlias(value, target)) return true;
+            if (Array.isArray(value)
+              && value.some((item) => item instanceof Node && readsAssignedAlias(item, target))) return true;
+          }
+          return false;
+        };
+        for (const [name, assignments] of directAssignments) {
+          if (!predicateOuterTypes.has(name)
+            || assignmentCounts.get(name) !== assignments.length) {
+            unsafePredicateOuterReassignments.add(name);
+            continue;
+          }
+          const selected = assignments.at(-1)!;
+          if (prefixHasObservableEffect
+            || assignments.some((assignment) => hasObservableEffect(assignment.expression)
+              || prefixReadsCollection(assignment.expression))
+            || readsAssignedAlias(selected.expression, name)
+            || !runtimePathExpressionSupported(
+              selected.expression, undefined, new Set(), stateValues, predicateOuterInitializers,
+            )) {
+            unsafePredicateOuterReassignments.add(name);
+            continue;
+          }
+          const expanded = expandRuntimePathExpression(
+            selected.expression, undefined, new Set(), stateValues, predicateOuterInitializers,
+          );
+          if (!expanded) unsafePredicateOuterReassignments.add(name);
+          else {
+            predicateOuterInitializers.set(name, expanded);
+            unsafePredicateOuterReassignments.delete(name);
           }
         }
       }
@@ -2239,9 +2336,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         const initializer = predicateOuterInitializers.get(name)
           ?? (visibleParameters.some((parameter) => parameter.name === name)
             ? new IdentifierNode(name) : undefined);
-        const reassignedBeforeLoop = predicateOuterIndex >= 0
-          && canonical.parent.statements!.slice(0, predicateOuterIndex)
-            .some((statement) => containsLocalAssignment(statement, name));
+        const reassignedBeforeLoop = unsafePredicateOuterReassignments.has(name);
         const collapsedExtras = (conditionalAssignmentJoins.get(name) ?? [])
           .reduce((sum, join) => sum + join.actualAssignments - 1, 0);
         if (allAssignments !== updates.length + collapsedExtras

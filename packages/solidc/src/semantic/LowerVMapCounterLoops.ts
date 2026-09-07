@@ -91,6 +91,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
 
   private collections = new Set<string>();
   private collectionsByName = new Map<string, CollectionNode>();
+  private stateTypes = new Map<string, Type>();
   private functionsByName = new Map<string, FunctionDefinitionNode[]>();
   private eventfulFunctionNames = new Set<string>();
   private externalTypeNames = new Set<string>();
@@ -121,6 +122,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
   visitContract(node: ContractNode): Node {
     this.collections = new Set(node.collections.filter((c) => c.sorted).map((c) => c.name));
     this.collectionsByName = new Map(node.collections.map((collection) => [collection.name, collection]));
+    this.stateTypes = new Map(node.stateVariables.map((state) => [state.name, state.type]));
     this.structTypeNames = new Set(node.structDefinitions.map((definition) => definition.name));
     for (const collection of node.collections) {
       if (collection.innermostValueType instanceof StructType) {
@@ -2106,10 +2108,12 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       const loopCarriedLocalValuesByStatement = new Map<number, Map<string, ExpressionNode>>();
       const predicateOuterIndex = canonical.parent.statements?.indexOf(loop) ?? -1;
       const predicateOuterInitializers = new Map<string, ExpressionNode>();
+      const predicateOuterTypes = new Map<string, Type>();
       if (predicateOuterIndex >= 0) {
         for (const statement of canonical.parent.statements!.slice(0, predicateOuterIndex)) {
           if (statement instanceof VariableDefinitionNode && statement.expression) {
             predicateOuterInitializers.set(statement.name, statement.expression);
+            predicateOuterTypes.set(statement.name, statement.type);
           }
         }
       }
@@ -2541,6 +2545,38 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         }
       };
       countDefinitions(block);
+      // Prefixing an affine recurrence regroups its additions into rank products. Restrict newly replayed
+      // loop-carried locals and their target state to arbitrary-precision integers: a bounded checked source can
+      // execute safely while an equivalent regrouping overflows (or vice versa), which would reject a valid call.
+      const independentAffineLocal = (name: string): boolean => {
+        const updates = topLevelAssignments.get(name) ?? [];
+        const initializer = predicateOuterInitializers.get(name)
+          ?? (visibleParameters.some((parameter) => parameter.name === name)
+            ? new IdentifierNode(name) : undefined);
+        if (!initializer || updates.length === 0
+          || countAssignmentsTo(block, name) !== updates.length
+          || updates.some((update) => !(block.statements ?? []).includes(update.statement))
+          || hasObservableEffect(initializer)
+          || readsState(initializer)
+          || readsCollection(initializer)
+          || containsTruncatingArithmetic(initializer)
+          || readsLoopAssignedLocal(initializer)) return false;
+        return updates.every(({ statement }) => {
+          const expression = statement.expression;
+          const localType = predicateOuterTypes.get(name)
+            ?? visibleParameters.find((parameter) => parameter.name === name)?.type;
+          return localType === PrimitiveType.BIGINT
+            && expression instanceof BinaryOpNode
+            && (expression.operator === BinaryOperator.PLUS || expression.operator === BinaryOperator.MINUS)
+            && expression.left instanceof IdentifierNode && expression.left.name === name
+            && !containsIdentifier(expression.right, logical)
+            && !hasObservableEffect(expression.right)
+            && !readsState(expression.right)
+            && !readsCollection(expression.right)
+            && !containsTruncatingArithmetic(expression.right)
+            && !readsLoopAssignedLocal(expression.right);
+        });
+      };
       // A direct per-iteration definition is an SSA alias when it has one source site, is never reassigned, and
       // depends only on the counter, public/invariant locals, and earlier aliases from this same iteration. Keep a
       // source-position environment so an update cannot see a later or conditionally defined value.
@@ -2597,6 +2633,15 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         }
         return false;
       };
+      const isScalarRecurrenceRank = (candidate: ExpressionNode): boolean => {
+        if (unitDomain) return candidate instanceof IdentifierNode && candidate.name === logical;
+        return !stepExpression
+          && candidate instanceof BinaryOpNode && candidate.operator === BinaryOperator.DIV
+          && candidate.left instanceof BinaryOpNode && candidate.left.operator === BinaryOperator.MINUS
+          && candidate.left.left instanceof IdentifierNode && candidate.left.left.name === logical
+          && candidate.left.right instanceof IntLiteralNode && candidate.left.right.value === start
+          && candidate.right instanceof IntLiteralNode && candidate.right.value === step;
+      };
       type CounterPolynomial = {
         quadratic?: ExpressionNode;
         slope?: ExpressionNode;
@@ -2632,14 +2677,20 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         slope: multiplyAffineTerm(polynomial.slope, factor),
         intercept: multiplyAffineTerm(polynomial.intercept, factor),
       });
-      // Decompose only expressions which are provably quadratic in the logical source counter. Integer
+      // Decompose only expressions which are provably quadratic in the canonical iteration rank. A direct
+      // logical-counter read is `start + step * rank`; recognizing the exact generated rank expression also lets
+      // a source-position local recurrence feed this same algebra on non-unit domains. Integer
       // division/modulo, casts, calls, and products above degree two remain fenced: their per-iteration
       // truncation, width, or other semantics need not equal a polynomial prefix. Counter-free subexpressions
       // remain opaque replayable coefficients/constants.
       const counterPolynomial = (candidate: ExpressionNode): CounterPolynomial | undefined => {
         if (!containsIdentifier(candidate, logical)) return { intercept: cloneNode(candidate) };
+        if (isScalarRecurrenceRank(candidate)) return { slope: new IntLiteralNode(1n) };
         if (candidate instanceof IdentifierNode && candidate.name === logical) {
-          return { slope: new IntLiteralNode(1n) };
+          return {
+            slope: stepValue(),
+            ...(start !== 0n && { intercept: new IntLiteralNode(start) }),
+          };
         }
         if (candidate instanceof UnaryOpNode && candidate.operator === UnaryOperator.NEGATE) {
           const inner = counterPolynomial(candidate.expression);
@@ -2747,16 +2798,42 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         let base: ExpressionNode | undefined;
         let supported = true;
         let usesDeterministicAlias = false;
+        let usesIndependentRecurrence = false;
         for (const { statement, index } of updates) {
           const recurrence = statement.expression;
           const aliases = deterministicAliasesAt.get(index) ?? new Map<string, ExpressionNode>();
-          const localValues = new Map([...loopCarriedLocalValues, ...aliases]);
+          const statementLocals = loopCarriedValuesAt(statement);
+          const localValues = new Map([...statementLocals, ...aliases]);
+          const referencedCarriedLocals = new Set<string>();
+          const collectCarriedLocals = (candidate: Node): void => {
+            if (candidate instanceof IdentifierNode && candidate.name !== logical
+              && (countAssignmentsTo(block, candidate.name) > 0
+                || (definitionCounts.get(candidate.name) ?? 0) > 0)
+              && !aliases.has(candidate.name)) referencedCarriedLocals.add(candidate.name);
+            for (const [key, value] of Object.entries(candidate)) {
+              if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type'
+                || key === 'resolvedFunction' || key === 'collection' || key === 'stateVariable') continue;
+              if (value instanceof Node) collectCarriedLocals(value);
+              else if (Array.isArray(value)) for (const item of value) if (item instanceof Node) {
+                collectCarriedLocals(item);
+              }
+            }
+          };
+          if (recurrence instanceof BinaryOpNode) collectCarriedLocals(recurrence.right);
+          const independentRecurrence = referencedCarriedLocals.size <= 1
+            && [...referencedCarriedLocals].every((local) => {
+              return statementLocals.has(local)
+                && independentAffineLocal(local);
+            });
           if (!(recurrence instanceof BinaryOpNode)
             || !(recurrence.operator === BinaryOperator.PLUS || recurrence.operator === BinaryOperator.MINUS)
             || !(recurrence.left instanceof StateAccessNode) || recurrence.left.name !== name
+            || !independentRecurrence
+            || (referencedCarriedLocals.size > 0
+              && this.stateTypes.get(name) !== PrimitiveType.BIGINT)
             || !runtimePathExpressionSupported(recurrence.right, logical, new Set(), stateValues,
               localValues)
-            || unsupportedLoopAlias(recurrence.right, aliases)
+            || unsupportedLoopAlias(recurrence.right, new Map([...aliases, ...statementLocals]))
             || readsLoopAssignedState(recurrence.right)
             || readsCollection(recurrence.right)) {
             supported = false;
@@ -2770,13 +2847,14 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           );
           usesDeterministicAlias ||= [...aliases.keys()].some((alias) =>
             containsIdentifier(recurrence.right, alias));
+          usesIndependentRecurrence ||= referencedCarriedLocals.size > 0;
           const delta = expandedDelta && counterPolynomial(expandedDelta);
           if (!delta) { supported = false; break; }
           deltas.push(recurrence.operator === BinaryOperator.PLUS
             ? delta : scalePolynomial(delta, new IntLiteralNode(-1n)));
         }
         if (!supported || !base || deltas.length === 0 || recurrenceCrossesContinue
-          || (usesDeterministicAlias && recurrenceCrossesBreak)) continue;
+          || ((usesDeterministicAlias || usesIndependentRecurrence) && recurrenceCrossesBreak)) continue;
         const netDelta = deltas.reduce(
           (sum, delta) => combinePolynomial(sum, delta, BinaryOperator.PLUS),
           {} as CounterPolynomial,
@@ -2795,10 +2873,6 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           BinaryOperator.DIV,
           new IntLiteralNode(2n),
         );
-        const counterPrefix = addAffineTerm(
-          multiplyAffineTerm(cloneNode(rank), new IntLiteralNode(start)),
-          multiplyAffineTerm(stepValue(), triangularRank),
-        )!;
         const squareRankPrefix = new BinaryOpNode(
           new BinaryOpNode(
             cloneNode(rank), BinaryOperator.MUL,
@@ -2814,42 +2888,20 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         const normalizedSquareRankPrefix = new BinaryOpNode(
           squareRankPrefix, BinaryOperator.DIV, new IntLiteralNode(6n),
         );
-        const counterSquarePrefix = addAffineTerm(
-          multiplyAffineTerm(
-            new BinaryOpNode(new IntLiteralNode(start), BinaryOperator.MUL, new IntLiteralNode(start)),
-            rank,
-          ),
-          addAffineTerm(
-            multiplyAffineTerm(
-              new BinaryOpNode(
-                new BinaryOpNode(new IntLiteralNode(2n), BinaryOperator.MUL, new IntLiteralNode(start)),
-                BinaryOperator.MUL,
-                stepValue(),
-              ),
-              triangularRank,
-            ),
-            multiplyAffineTerm(
-              new BinaryOpNode(stepValue(), BinaryOperator.MUL, stepValue()),
-              normalizedSquareRankPrefix,
-            ),
-          ),
-        )!;
         const prefixValue = (delta: CounterPolynomial): ExpressionNode | undefined => addAffineTerm(
-          multiplyAffineTerm(delta.quadratic, counterSquarePrefix),
+          multiplyAffineTerm(delta.quadratic, normalizedSquareRankPrefix),
           addAffineTerm(
-            multiplyAffineTerm(delta.slope, counterPrefix),
+            multiplyAffineTerm(delta.slope, triangularRank),
             multiplyAffineTerm(delta.intercept, rank),
           ),
         );
         const currentValue = (delta: CounterPolynomial): ExpressionNode | undefined => addAffineTerm(
           multiplyAffineTerm(
             delta.quadratic,
-            new BinaryOpNode(
-              new IdentifierNode(logical), BinaryOperator.MUL, new IdentifierNode(logical),
-            ),
+            new BinaryOpNode(cloneNode(rank), BinaryOperator.MUL, cloneNode(rank)),
           ),
           addAffineTerm(
-            multiplyAffineTerm(delta.slope, new IdentifierNode(logical)),
+            multiplyAffineTerm(delta.slope, rank),
             delta.intercept,
           ),
         );

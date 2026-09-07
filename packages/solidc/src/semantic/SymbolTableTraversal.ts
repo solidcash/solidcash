@@ -129,6 +129,7 @@ import { generatedOriginOf, sourceFileOf } from '../ast/Location.js';
 import {
   computeBranchOps, countBranchOps, countTransfersMinMax, hasEffectiveCallValue, isDirectOwnerTransferNode,
 } from './branchOps.js';
+import { describeFunctionLowLevelCallsites } from './LowLevelCallShapes.js';
 import {
   FunctionRedefinitionError,
   VariableRedefinitionError,
@@ -3809,6 +3810,20 @@ export default class SymbolTableTraversal extends AstTraversal {
 
         // Assign sequential callIndex to each low-level call node (updates callMode in array)
         this.assignLowLevelCallIndices(node.body, { counter: 0 });
+        const callsiteShapes = describeFunctionLowLevelCallsites(node);
+        if (callsiteShapes.length !== node.lowLevelCalls.length) {
+          throw new Error(
+            `Low-level callsite analysis drift in '${node.name}': allocated ${node.lowLevelCalls.length}, `
+            + `described ${callsiteShapes.length}`,
+          );
+        }
+        node.lowLevelCalls = node.lowLevelCalls.map((call, index) => ({
+          ...call,
+          occurrence: callsiteShapes[index].occurrence,
+          ...(callsiteShapes[index].maximumOccurrences !== undefined && {
+            maximumOccurrences: callsiteShapes[index].maximumOccurrences,
+          }),
+        }));
 
         // Inject _callInputIndex for every non-delegatecall low-level call.
         // Stateful contracts previously pinned the callee to a fixed block-layout slot, but a multi-UTXO

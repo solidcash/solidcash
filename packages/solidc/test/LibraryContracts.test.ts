@@ -132,7 +132,10 @@ describe('delegate libraries lower to a delegate contract (3b step 2)', () => {
     // The synthesized library address is a constructor argument, so the desugared edge publishes a target the
     // contract's own p2sh32 commits to - a caller cannot substitute a library.
     expect(bump.lowLevelCalls).toEqual([
-      { callMode: 'delegatecall', target: { kind: 'constructorArg', name: '__libAddr_Counter' } },
+      {
+        callMode: 'delegatecall', occurrence: 'once',
+        target: { kind: 'constructorArg', name: '__libAddr_Counter' },
+      },
     ]);
     // The target library+function is recorded so the SDK auto-wires the delegatecall co-spend (no manual
     // withDelegatecall). The delegate's selector/args are supplied by the SDK at spend time, not baked in.

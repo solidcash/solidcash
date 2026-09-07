@@ -535,15 +535,14 @@ describe('message bus delegate participant classes (E3, SEMANTIC)', () => {
   });
 
   // =========================================================================
-  // Occurrence: the classes this gate cannot see
+  // Occurrence: compiler-authored frame cardinality
   // =========================================================================
-  describe('occurrence classes the published metadata cannot distinguish', () => {
+  describe('occurrence classes are explicit in published metadata', () => {
     /**
-     * A conditional and a singular delegate edge STILL compile to byte-identical published metadata, so no SDK
-     * gate can separate them - which is exactly why both cases below are settled in the COMPILER instead. The
-     * iterated edge no longer reaches an artifact at all.
+     * A conditional and a singular edge differ in the compiler-authored occurrence field. The compiler remains
+     * the covenant authority; the SDK gate can now fail closed before attempting to allocate a singular frame.
      */
-    it('publishes identical metadata for singular and conditional delegate edges', () => {
+    it('publishes and rejects a conditional delegate frame distinctly from a singular frame', () => {
       const published = (artifact: Artifact): string => {
         const fn = artifact.abi.find((entry) => entry.name === 'up')!;
         return JSON.stringify({
@@ -552,12 +551,19 @@ describe('message bus delegate participant classes (E3, SEMANTIC)', () => {
           slots: (fn.blockLayout?.slots ?? []).map((slot) => slot.kind),
         });
       };
-      expect(published(conditionalProxyArtifact)).toBe(published(pinnedProxyArtifact));
-      // ROUND 16 (X43): the two `bytes`-typed entries are GONE from this list, because the gate now detects
-      // them. Occurrence, plus the decoy residual measured below, is what is left.
-      expect(messageBus.UNDETECTED_BY_THIS_GATE).toEqual([
-        'conditional-delegate-edge', 'iterated-delegate-edge', 'decoy-committed-target',
-      ]);
+      expect(published(conditionalProxyArtifact)).not.toBe(published(pinnedProxyArtifact));
+      const implementationLbc = binToHex(addressToLockScript(
+        new Contract(implArtifact, [], { provider: createMessageBusSemanticTestProvider() }).address,
+      ));
+      const proxy = new Contract(
+        conditionalProxyArtifact, [hexToBin(implementationLbc)] as never[],
+        { provider: createMessageBusSemanticTestProvider() },
+      );
+      expect(() => messageBus.classifyDelegateParticipant({
+        proxy: { artifact: conditionalProxyArtifact, functionName: 'up', bytecode: proxy.bytecode },
+        implementation: { artifact: implArtifact, functionName: 'increment', lockingBytecode: implementationLbc },
+      })).toThrow(/class 'conditional-delegate-edge' is not admitted/);
+      expect(messageBus.UNDETECTED_BY_THIS_GATE).toEqual(['decoy-committed-target']);
     });
 
     async function spendProxy(
@@ -1027,8 +1033,12 @@ contract E3ComputedProxy(address impl, address alt) {
      */
     it('refuses an artifact that publishes no target provenance, rather than falling through to admitted', () => {
       const stripped = JSON.parse(JSON.stringify(pinnedProxyArtifact)) as Artifact;
-      const fn = stripped.abi.find((entry) => entry.name === 'up')! as { lowLevelCalls: { callMode: string }[] };
-      fn.lowLevelCalls = fn.lowLevelCalls.map((call) => ({ callMode: call.callMode }));
+      const fn = stripped.abi.find((entry) => entry.name === 'up')! as {
+        lowLevelCalls: { callMode: string; dataParamIndex?: number; occurrence?: string }[];
+      };
+      fn.lowLevelCalls = fn.lowLevelCalls.map(({ callMode, dataParamIndex, occurrence }) => ({
+        callMode, dataParamIndex, occurrence,
+      }));
       expect(classify(stripped, [hexToBin(implementationLbc)]))
         .toThrow(/class 'unpublished-target-provenance' is not admitted.*recompile the proxy/s);
       // The unstripped original is the same artifact and IS admitted, so the refusal is the missing field.
@@ -1135,7 +1145,10 @@ contract E3Hash160Proxy(bytes20 pkh) {
       // is regenerated: the shipped row and a fresh compile of its own source now agree, which is what stops
       // those 13 refusing for an absent field. Kept as an assertion so the fix cannot silently regress.
       const shipped = defaultProxyArtifact.abi.find((entry) => entry.name === '__forward')!;
-      const published = [{ callMode: 'delegatecall', target: { kind: 'constructorArg', name: 'implementation' } }];
+      const published = [{
+        callMode: 'delegatecall', dataParamIndex: 0, occurrence: 'once',
+        target: { kind: 'constructorArg', name: 'implementation' },
+      }];
       expect(shipped.lowLevelCalls).toEqual(published);
       expect(compileString(DEFAULT_PROXY_SOURCE, { forceStateful: true })
         .abi.find((entry) => entry.name === '__forward')!.lowLevelCalls)
@@ -1171,6 +1184,7 @@ contract E3Hash160Proxy(bytes20 pkh) {
         'multi-edge-proxy',
         'conditional-delegate-edge',
         'iterated-delegate-edge',
+        'unpublished-delegate-frame',
         'computed-delegate-target',
         'unpublished-target-provenance',
         'decoy-committed-target',

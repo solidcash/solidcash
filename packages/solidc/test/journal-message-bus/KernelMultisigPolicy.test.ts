@@ -90,7 +90,7 @@ describe('kernel all-output policy for direct multisignature arrays', () => {
     });
   });
 
-  it('keeps an internal multisignature helper fenced because OP_INVOKE changes covered bytecode', () => {
+  it('publishes an internal multisignature helper covered bytecode', () => {
     const { selected } = handler(`contract C() {
       function verify(sig[] selected, pubkey[] keys) internal {
         require(checkMultiSig(selected, keys));
@@ -100,7 +100,35 @@ describe('kernel all-output policy for direct multisignature arrays', () => {
       }
       function control() public { require(true); }
     }`, 'replace');
-    expect(selected).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_TX_SIGNATURE' });
-    expect(selected).not.toHaveProperty('transactionSignaturePolicy');
+    expect(selected).toMatchObject({
+      eligible: true,
+      transactionSignaturePolicy: { hashType: 'all', parameterIndices: [0] },
+    });
+    expect(selected.transactionSignaturePolicy?.coveredBytecodes).toHaveLength(1);
+    expect(selected.transactionSignaturePolicy?.coveredBytecodes?.[0].bytecode)
+      .not.toBe(selected.signatureBytecode);
+  });
+
+  it('publishes independent covered bodies for distinct root parameters', () => {
+    const { selected } = handler(`contract C(pubkey first, pubkey second) {
+      function verifyFirst(sig proof, pubkey key) internal { require(checkSig(proof, key)); }
+      function verifySecond(sig proof, pubkey key) private {
+        require(proof.length > 0);
+        require(checkSig(proof, key));
+      }
+      function replace(sig left, sig right) public upgrade {
+        verifyFirst(left, first);
+        verifySecond(right, second);
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, 'replace');
+    expect(selected).toMatchObject({
+      eligible: true,
+      transactionSignaturePolicy: { hashType: 'all', parameterIndices: [0, 1] },
+    });
+    const covered = selected.transactionSignaturePolicy?.coveredBytecodes;
+    expect(covered?.map((entry) => entry.parameterIndex)).toEqual([0, 1]);
+    expect(new Set(covered?.map((entry) => entry.bytecode)).size).toBe(2);
   });
 });

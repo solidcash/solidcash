@@ -3221,16 +3221,24 @@ function synthesizeMessageBusRoute(
     }
     return found;
   };
+  interface AllOutputSignatureProof {
+    parameterIndices: number[];
+    coveredFunctionKeys: Record<number, string>;
+  }
+  const signatureFunctionKey = (fn: FunctionDefinitionNode): string => `${fn.name}(${
+    fn.parameters.filter((parameter) => !parameter.name.startsWith('__internal__'))
+      .map((parameter) => parameter.type.toString()).join(',')})`;
   // A detached signature can authorize a kernel row without circularly entering the committed envelope when
   // every reachable transaction-signature check consumes one exact immutable root parameter. A simple immutable
-  // local alias preserves that identity. Internal/private helpers do not: OP_INVOKE makes the helper body the
-  // CHECKSIG covered bytecode, while the handler metadata publishes one detached handler body. Keep that boundary
-  // fenced until the metadata can describe a covered body per signature parameter. The generated route
-  // additionally requires SIGHASH_ALL on every proven parameter.
-  const directAllOutputSignatureParameters = (root: FunctionDefinitionNode): number[] | undefined => {
+  // local alias preserves that identity. An acyclic internal/private helper does too, provided every use of one
+  // root parameter reaches exactly one physical CHECKSIG body. OP_INVOKE changes coveredBytecode at each helper
+  // boundary, so the proof records that body per root parameter for the SDK signer. Ambiguous overloads,
+  // recursion, and one parameter checked in multiple bodies remain fenced.
+  const directAllOutputSignatureParameters = (root: FunctionDefinitionNode): AllOutputSignatureProof | undefined => {
     if (analyseFunctionFootprint(root, byName, footprintCache).effects.includes('external-call')) return undefined;
     const indices = new Set<number>();
     const interfaceReceivers = interfaceTypedReceivers(root);
+    const coveredFunctionByParameter = new Map<number, FunctionDefinitionNode>();
     let found = false;
     let unsupported = false;
     const parameterIndex = (fn: FunctionDefinitionNode, identifier: IdentifierNode): number => {
@@ -3283,7 +3291,38 @@ function synthesizeMessageBusRoute(
         || !bindingImmutable(fn, expression.name) || resolving.has(expression.name)) return undefined;
       return exactOrigin(declarations[0].expression, fn, environment, new Set(resolving).add(expression.name));
     };
+    const exactInternalHelper = (call: FunctionCallNode): FunctionDefinitionNode | undefined => {
+      const candidates = (signatureClosureByName.get(call.identifier.name) ?? []).filter((candidate) =>
+        !candidate.isFreeFunction
+        && [StateVariableVisibility.INTERNAL, StateVariableVisibility.PRIVATE]
+          .includes(candidate.visibility as StateVariableVisibility)
+        && candidate.parameters.length === call.parameters.length
+        && candidate.parameters.every((parameter, index) => call.parameters[index].type === undefined
+          || parameter.type.toString() === call.parameters[index].type?.toString()));
+      if (call.resolvedFunction && candidates.includes(call.resolvedFunction)) return call.resolvedFunction;
+      return candidates.length === 1 ? candidates[0] : undefined;
+    };
+    const capturesContractParameter = (fn: FunctionDefinitionNode): boolean => {
+      const localNames = new Set(fn.parameters.map((parameter) => parameter.name));
+      walkInvocationAst(fn.body, (node) => {
+        if (node instanceof VariableDefinitionNode) localNames.add(node.name);
+      });
+      const contractNames = new Set(contract.parameters.map((parameter) => parameter.name));
+      let captured = false;
+      walkInvocationAst(fn.body, (node) => {
+        if (node instanceof IdentifierNode && contractNames.has(node.name) && !localNames.has(node.name)) {
+          captured = true;
+        }
+      });
+      return captured;
+    };
+    const active = new Set<FunctionDefinitionNode>();
     const analyse = (fn: FunctionDefinitionNode, environment: OriginEnvironment): void => {
+      if (active.has(fn)) {
+        unsupported = true;
+        return;
+      }
+      active.add(fn);
       walkInvocationAst(fn.body, (node) => {
         if (!(node instanceof FunctionCallNode)) return;
         if ([GlobalFunction.CHECKSIG, GlobalFunction.CHECKMULTISIG]
@@ -3297,13 +3336,28 @@ function synthesizeMessageBusRoute(
           if (index === undefined || !exactType) unsupported = true;
           else {
             indices.add(index);
+            const prior = coveredFunctionByParameter.get(index);
+            if (prior && prior !== fn) unsupported = true;
+            else coveredFunctionByParameter.set(index, fn);
           }
           return;
         }
         const namedCandidates = signatureClosureByName.get(node.identifier.name) ?? [];
         if (namedCandidates.length === 0) return;
-        if (namedCandidates.some((candidate) => reachesTransactionSignatureCheck(candidate))) unsupported = true;
+        if (!namedCandidates.some((candidate) => reachesTransactionSignatureCheck(candidate))) return;
+        const helper = exactInternalHelper(node);
+        if (!helper || !reachesTransactionSignatureCheck(helper) || capturesContractParameter(helper)) {
+          unsupported = true;
+          return;
+        }
+        const helperEnvironment = new Map<string, number>();
+        helper.parameters.forEach((parameter, index) => {
+          const origin = node.parameters[index] ? exactOrigin(node.parameters[index], fn, environment) : undefined;
+          if (origin !== undefined) helperEnvironment.set(parameter.name, origin);
+        });
+        analyse(helper, helperEnvironment);
       });
+      active.delete(fn);
     };
     const rootEnvironment = new Map<string, number>();
     root.parameters.forEach((parameter, index) => {
@@ -3337,17 +3391,24 @@ function synthesizeMessageBusRoute(
         unsupported = true;
       }
     });
-    return unsupported ? undefined : [...indices].sort((left, right) => left - right);
+    if (unsupported) return undefined;
+    return {
+      parameterIndices: [...indices].sort((left, right) => left - right),
+      coveredFunctionKeys: Object.fromEntries([...coveredFunctionByParameter]
+        .map(([index, fn]) => [index, signatureFunctionKey(fn)])),
+    };
   };
   const kernelAllOutputSignatureParameters = new Map<FunctionDefinitionNode, number[]>();
   for (const fn of functions) {
     fn.messageBusUsesTransactionSignature = reachesTransactionSignatureCheck(fn);
-    const allOutputParameters = compilerOptions.messageBusKernel === true
+    const allOutputProof = compilerOptions.messageBusKernel === true
       && fn.messageBusUsesTransactionSignature === true
       ? directAllOutputSignatureParameters(fn) : undefined;
+    const allOutputParameters = allOutputProof?.parameterIndices;
     if (allOutputParameters) {
       kernelAllOutputSignatureParameters.set(fn, allOutputParameters);
       fn.messageBusAllOutputSignatureParameters = allOutputParameters;
+      fn.messageBusSignatureCoveredFunctionKeys = allOutputProof.coveredFunctionKeys;
     }
     if (fn.modifiers.some((modifier) => disallowedModifiers.has(modifier))) {
       fn.messageBusEligible = false;
@@ -10485,12 +10546,30 @@ function compileResolvedAst(
           lifecycle: { kind: 'upgrade' as const, layout: 'in-place-append-v1' as const },
         }),
         ...(fn.messageBusUsesTransactionSignature === true && { usesTransactionSignature: true }),
-        ...(fn.messageBusAllOutputSignatureParameters !== undefined && {
-          transactionSignaturePolicy: {
-            hashType: 'all' as const,
-            parameterIndices: fn.messageBusAllOutputSignatureParameters,
-          },
-        }),
+        ...(() => {
+          if (fn.messageBusAllOutputSignatureParameters === undefined
+            || fn.messageBusSignatureCoveredFunctionKeys === undefined) return {};
+          const coveredBodies = fn.messageBusAllOutputSignatureParameters.map((parameterIndex) => {
+            const key = fn.messageBusSignatureCoveredFunctionKeys?.[parameterIndex];
+            const covered = key === undefined ? undefined : ast.contract.functions.find((candidate) =>
+              deploymentTopologyKey(candidate) === key);
+            const body = covered?.functionId === undefined
+              ? undefined : traversal.invokedFunctionBytecodes.get(covered.functionId);
+            return body === undefined ? undefined : { parameterIndex, covered, bytecode: binToHex(body) };
+          });
+          // Never publish a policy whose detached signer program is incomplete. In particular, helper CHECKSIG
+          // executes with the helper OP_INVOKE body rather than the public handler body.
+          if (coveredBodies.some((entry) => entry === undefined)) return {};
+          const coveredBytecodes = coveredBodies.flatMap((entry) =>
+            entry!.covered === fn ? [] : [{ parameterIndex: entry!.parameterIndex, bytecode: entry!.bytecode }]);
+          return {
+            transactionSignaturePolicy: {
+              hashType: 'all' as const,
+              parameterIndices: fn.messageBusAllOutputSignatureParameters,
+              ...(coveredBytecodes.length > 0 && { coveredBytecodes }),
+            },
+          };
+        })(),
         ...(() => {
           const deployments = childDeploymentsBySignature.get(deploymentTopologyKey(fn)) ?? [];
           return deployments.length > 0 ? { childDeployments: deployments } : {};

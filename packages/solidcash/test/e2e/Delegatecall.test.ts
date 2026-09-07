@@ -223,7 +223,7 @@ describe('Delegatecall', () => {
       expect(fallbackAbi).toBeDefined();
       expect(fallbackAbi.isFallback).toBe(true);
       expect(fallbackAbi.lowLevelCalls).toEqual([{
-        callMode: 'delegatecall', dataParamIndex: 0, target: { kind: 'literal' },
+        callMode: 'delegatecall', dataParamIndex: 0, occurrence: 'once', target: { kind: 'literal' },
       }]);
     });
 

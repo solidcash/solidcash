@@ -1936,6 +1936,8 @@ function buildFunctionAbiMetadata(
         // Preserve the compiler-resolved payload source. Delegate-frame planning must bind the exact calldata
         // value consumed by this occurrence; dropping this field forces SDK code to guess from argument order.
         ...(lc.dataParamIndex !== undefined && { dataParamIndex: lc.dataParamIndex }),
+        ...(lc.occurrence !== undefined && { occurrence: lc.occurrence }),
+        ...(lc.maximumOccurrences !== undefined && { maximumOccurrences: lc.maximumOccurrences }),
         // Always published, `computed` included, so a row that carries NO `target` identifies an artifact
         // compiled before the field existed. Absent is read as unknown, never as an unconstrained target.
         target: callTargets[index] ?? COMPUTED_PROVENANCE,

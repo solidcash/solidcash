@@ -38,6 +38,8 @@ export const defaultProxyArtifact: Artifact = {
       "lowLevelCalls": [
         {
           "callMode": "delegatecall",
+          "dataParamIndex": 0,
+          "occurrence": "once",
           "target": {
             "kind": "constructorArg",
             "name": "implementation"

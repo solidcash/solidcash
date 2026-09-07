@@ -57,6 +57,16 @@ interface Callsite {
   conditionalWithinLoop: boolean;
 }
 
+/** Compiler-authored occurrence facts required to allocate one authenticated low-level execution frame. */
+export interface LowLevelCallsiteShape {
+  callMode: string;
+  occurrence: 'once' | 'conditional' | 'loop';
+  /** Exact literal loop cardinality when the source proves one; absent is never an unboundedness proof. */
+  maximumOccurrences?: number;
+  returnsResult: boolean;
+  conditionalWithinLoop: boolean;
+}
+
 const LOW_LEVEL_METHOD_NAMES = new Set(['call', 'staticcall', 'delegatecall']);
 const LOOP_NODES = [WhileNode, DoWhileNode, CollectionIterationNode];
 const CONDITIONAL_NODES = [BranchNode, SwitchNode, TryCatchNode, TernaryOpNode];
@@ -170,6 +180,27 @@ function collectLowLevelCalls(
       }
     }
   }
+}
+
+/**
+ * Describe every low-level callsite in the same deterministic source order used by semantic slot allocation.
+ *
+ * This is metadata, not admission: consumers must still reject conditional and unbounded delegate frames until
+ * the manifest has an explicit activation/cardinality encoding. Publishing the distinction prevents those
+ * shapes from being mistaken for a singular frame merely because all three previously serialized identically.
+ */
+export function describeFunctionLowLevelCallsites(fn: FunctionDefinitionNode): readonly LowLevelCallsiteShape[] {
+  const found: Callsite[] = [];
+  collectLowLevelCalls(fn.body, 'unconditional', found);
+  return found.map((call) => ({
+    callMode: call.callMode,
+    occurrence: call.context === 'unconditional' ? 'once' : call.context,
+    ...(call.context === 'conditional' ? { maximumOccurrences: 1 }
+      : call.fixedLoopOccurrences === undefined ? {}
+        : { maximumOccurrences: call.fixedLoopOccurrences }),
+    returnsResult: call.returnsResult,
+    conditionalWithinLoop: call.conditionalWithinLoop,
+  }));
 }
 
 /**

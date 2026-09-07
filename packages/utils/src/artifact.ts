@@ -531,6 +531,10 @@ export interface AbiFunction {
   lowLevelCalls?: readonly {
     callMode: 'call' | 'staticcall' | 'delegatecall';
     dataParamIndex?: number;
+    /** Source reachability of this physical callsite. Absent identifies an older artifact, never `once`. */
+    occurrence?: 'once' | 'conditional' | 'loop';
+    /** Exact compiler-proven ceiling (one for a branch, literal trip count for a fixed loop). */
+    maximumOccurrences?: number;
     /**
      * Where the call's TARGET address came from. Published by every compiler that knows how to answer, with
      * `computed` as the always-available fallback, so an absent `target` identifies an artifact compiled
@@ -1210,6 +1214,8 @@ export interface Artifact {
       transactionSignaturePolicy?: {
         hashType: 'all';
         parameterIndices: readonly number[];
+        /** Exact OP_INVOKE body covered by signatures whose check executes in an internal/private helper. */
+        coveredBytecodes?: readonly { parameterIndex: number; bytecode: string }[];
       };
       eligible: boolean;
       rejectionReason?: string;

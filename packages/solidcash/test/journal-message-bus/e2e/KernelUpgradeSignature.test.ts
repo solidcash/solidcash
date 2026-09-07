@@ -28,9 +28,10 @@ describe('kernel transaction-bound upgrade signature', () => {
     const provider = createMessageBusCapstoneTestProvider();
     const currentArtifact = compileString(`contract Current(pubkey authority) {
       int marker;
+      function verify(sig selected, pubkey key) internal { require(checkSig(selected, key)); }
       function replace(sig proof) public upgrade {
-        sig selected = proof;
-        require(checkSig(selected, authority));
+        verify(proof, authority);
+        require(true);
       }
     }`, KERNEL);
     const replacementArtifact = compileString(`contract Replacement(pubkey authority) {
@@ -38,7 +39,13 @@ describe('kernel transaction-bound upgrade signature', () => {
       function read() public view returns (int) { return this.marker; }
     }`, KERNEL);
     expect(currentArtifact.messageBus?.handlers.find((handler) => handler.name === 'replace'))
-      .toMatchObject({ eligible: true, usesTransactionSignature: true });
+      .toMatchObject({
+        eligible: true, usesTransactionSignature: true,
+        transactionSignaturePolicy: {
+          hashType: 'all', parameterIndices: [0],
+          coveredBytecodes: [expect.objectContaining({ parameterIndex: 0 })],
+        },
+      });
 
     const base = new Contract(currentArtifact, [alicePub], { provider });
     const setup = await setupStatefulUtxos(
@@ -114,10 +121,11 @@ describe('kernel transaction-bound upgrade signature', () => {
     );
     const authorizerArtifact = compileString(`contract Authorizer(pubkey authority) {
       int approvals;
+      function verify(sig selected, pubkey key) private { require(checkSig(selected, key)); }
       function authorize(sig proof) public {
         this.approvals = this.approvals + 1;
-        sig selected = proof;
-        require(checkSig(selected, authority));
+        verify(proof, authority);
+        require(true);
       }
     }`, KERNEL);
     expect(authorizerArtifact.messageBus?.handlers.find((handler) => handler.name === 'authorize'))

@@ -321,21 +321,25 @@ describe('required kernel admission', () => {
       .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_TX_SIGNATURE' });
   });
 
-  it('keeps an inherited signature helper and a recursive signature helper fenced', () => {
-    expect(denied(`contract Base(pubkey admin) {
-      function authorize(sig proof) internal { require(checkSig(proof, admin)); }
+  it('proves an inherited signature helper while keeping a recursive helper fenced', () => {
+    const inherited = compileString(`contract Base(pubkey admin) {
+      function authorize(sig proof, pubkey key) internal { require(checkSig(proof, key)); }
     }
     contract C(pubkey admin) is Base(admin) {
-      function migrate(sig proof) public upgrade { authorize(proof); require(true); }
+      function migrate(sig proof) public upgrade { authorize(proof, admin); require(true); }
       function control() public { require(true); }
-    }`, 'migrate')).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_TX_SIGNATURE' });
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(inherited.messageBus?.handlers.find((handler) => handler.name === 'migrate')).toMatchObject({
+      eligible: true,
+      transactionSignaturePolicy: { hashType: 'all', parameterIndices: [0] },
+    });
 
     expect(denied(`contract C(pubkey admin) {
-      function authorize(sig proof, int depth) internal {
-        if (depth > 0) { authorize(proof, depth - 1); }
-        require(checkSig(proof, admin));
+      function authorize(sig proof, pubkey key, int depth) internal {
+        if (depth > 0) { authorize(proof, key, depth - 1); }
+        require(checkSig(proof, key));
       }
-      function migrate(sig proof) public upgrade { authorize(proof, 1); require(true); }
+      function migrate(sig proof) public upgrade { authorize(proof, admin, 1); require(true); }
       function control() public { require(true); }
     }`, 'migrate')).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_TX_SIGNATURE' });
   });
@@ -358,18 +362,42 @@ describe('required kernel admission', () => {
   });
 
   it.each([
-    ['an internal helper', `function authorize(sig selected) internal {
-        require(checkSig(selected, admin));
-      }`, 'authorize(proof); require(true);'],
-    ['a private helper', `function authorize(sig selected) private {
-        require(checkSig(selected, admin));
-      }`, 'authorize(proof); require(true);'],
-    ['a mutated alias', '', `sig selected = proof;
-      selected = proof; require(checkSig(selected, admin));`],
-  ])('keeps %s outside the exact detached-body proof', (_label, helper, body) => {
+    ['an internal helper', 'internal'],
+    ['a private helper', 'private'],
+  ])('publishes the exact covered body for %s', (_label, visibility) => {
+    const artifact = compileString(`contract C(pubkey admin) {
+      function authorize(sig selected, pubkey key) ${visibility} { require(checkSig(selected, key)); }
+      function migrate(sig proof) public upgrade { authorize(proof, admin); require(true); }
+      function control() public { require(true); }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    const selected = artifact.messageBus?.handlers.find((handler) => handler.name === 'migrate');
+    expect(selected).toMatchObject({
+      eligible: true,
+      transactionSignaturePolicy: { hashType: 'all', parameterIndices: [0] },
+    });
+    const covered = selected?.transactionSignaturePolicy?.coveredBytecodes;
+    expect(covered).toHaveLength(1);
+    expect(covered?.[0]).toMatchObject({ parameterIndex: 0 });
+    expect(covered?.[0].bytecode).not.toBe(selected?.signatureBytecode);
+  });
+
+  it('keeps a helper-captured constructor value fenced from the detached call frame', () => {
+    const artifact = compileString(`contract C(pubkey admin) {
+      function authorize(sig selected) internal { require(checkSig(selected, admin)); }
+      function migrate(sig proof) public upgrade { authorize(proof); require(true); }
+      function control() public { require(true); }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'migrate'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_TX_SIGNATURE' });
+  });
+
+  it('keeps a mutated alias outside the exact detached-body proof', () => {
     expect(denied(`contract C(pubkey admin) {
-      ${helper}
-      function migrate(sig proof) public upgrade { ${body} }
+      function migrate(sig proof) public upgrade {
+        sig selected = proof;
+        selected = proof;
+        require(checkSig(selected, admin));
+      }
       function control() public { require(true); }
     }`, 'migrate')).toMatchObject({
       eligible: false, rejectionReason: 'KERNEL_TX_SIGNATURE',

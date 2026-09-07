@@ -174,7 +174,7 @@ describe('Stateful fallback/receive ABI metadata (M-NEW-3)', () => {
       expect(fallback!.isFallback).toBe(true);
       // The alias `address impl = address(0x76a9..)` resolves through the cast to the hex literal it wraps.
       expect(fallback!.lowLevelCalls).toEqual([{
-        callMode: 'delegatecall', dataParamIndex: 0, target: { kind: 'literal' },
+        callMode: 'delegatecall', dataParamIndex: 0, occurrence: 'once', target: { kind: 'literal' },
       }]);
     });
 

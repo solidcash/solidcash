@@ -151,7 +151,10 @@ describe('X50: the shipped default proxy is a compile of its own source', () => 
   it('publishes the delegatecall target provenance X37 added', () => {
     const forward = defaultProxyArtifact.abi.find((entry) => entry.name === '__forward')!;
     expect(forward.lowLevelCalls).toEqual([
-      { callMode: 'delegatecall', target: { kind: 'constructorArg', name: 'implementation' } },
+      {
+        callMode: 'delegatecall', dataParamIndex: 0, occurrence: 'once',
+        target: { kind: 'constructorArg', name: 'implementation' },
+      },
     ]);
   });
 

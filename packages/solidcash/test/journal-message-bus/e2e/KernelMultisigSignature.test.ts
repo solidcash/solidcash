@@ -33,9 +33,11 @@ describe('kernel transaction-bound multisignature arrays', () => {
     const provider = createMessageBusCapstoneTestProvider();
     const artifact = compileString(`contract MultisigLedger() {
       int total;
-      function add(sig[] proofs, pubkey[] authorities, int amount) public {
-        sig[] selected = proofs;
+      function verify(sig[] selected, pubkey[] authorities) internal {
         require(checkMultiSig(selected, authorities));
+      }
+      function add(sig[] proofs, pubkey[] authorities, int amount) public {
+        verify(proofs, authorities);
         this.total = this.total + amount;
         require(true);
       }

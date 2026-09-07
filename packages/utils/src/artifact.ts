@@ -541,6 +541,12 @@ export interface AbiFunction {
   dynamicReads?: readonly string[];
   // Dynamic-storage vars written on-chain; the SDK consumes their old chunks and creates the new ones.
   dynamicWrites?: readonly string[];
+  /**
+   * Exact constructor-time values for dynamic writes which the SDK can replay before genesis. Expressions are
+   * published only when every control-flow arm assigns the same variable and the complete expression is
+   * serializable; absence is unknown and must retain VM-probe fallback behavior.
+   */
+  dynamicWriteSources?: Readonly<Record<string, ExternalCallExpression>>;
   // Collections written by a runtime loop (`for(i<n) m[k[i]]=v[i]`); the SDK derives the N (key,value) pairs from
   // the VM trace and creates N trailing entry NFT outputs (a runtime-variable count, like dynamicWrites chunks).
   entryLoopWrites?: readonly string[];

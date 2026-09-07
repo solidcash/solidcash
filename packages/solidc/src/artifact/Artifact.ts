@@ -291,6 +291,76 @@ const expressionSource = (
   return { kind: 'expression' };
 };
 
+/** Publish a finite replay program for a complete two-arm dynamic constructor assignment. */
+const dynamicWriteSourcesOf = (
+  func: FunctionDefinitionNode, contract: ContractNode | undefined,
+): Readonly<Record<string, ExternalCallExpression>> => {
+  const bodyStatements = func.body?.statements ?? [];
+  if (func.name !== '__construct' || bodyStatements.length !== 1) return {};
+  const branch = bodyStatements[0];
+  const ifStatements = branch instanceof BranchNode ? (branch.ifBlock.statements ?? []) : [];
+  const elseStatements = branch instanceof BranchNode ? (branch.elseBlock?.statements ?? []) : [];
+  if (!(branch instanceof BranchNode) || !branch.elseBlock
+    || ifStatements.length !== 1 || elseStatements.length !== 1) return {};
+  const ifWrite = ifStatements[0];
+  const elseWrite = elseStatements[0];
+  if (!(ifWrite instanceof StateAssignNode) || !(elseWrite instanceof StateAssignNode)
+    || ifWrite.name !== elseWrite.name || !func.dynamicWrites?.includes(ifWrite.name)) return {};
+
+  const visible = func.parameters.filter((parameter) => !parameter.name.startsWith('__internal__'));
+  const serialize = (expression: ExpressionNode): ExternalCallExpression | undefined => {
+    if (expression instanceof IdentifierNode) {
+      const parameterIndex = visible.findIndex((parameter) => parameter.name === expression.name);
+      if (parameterIndex >= 0) {
+        return { kind: 'source', source: { kind: 'forward', paramIndex: parameterIndex } };
+      }
+      if (contract?.parameters.some((parameter) => parameter.name === expression.name)) {
+        return { kind: 'source', source: { kind: 'constructorArg', paramName: expression.name } };
+      }
+      return undefined;
+    }
+    const shaped = expression as unknown as { value?: unknown; type?: Type };
+    if (expression.constructor.name === 'BoolLiteralNode') {
+      return { kind: 'literal', value: shaped.value as boolean, type: 'bool' };
+    }
+    if (expression.constructor.name === 'IntLiteralNode') {
+      return { kind: 'literal', value: String(shaped.value), type: 'bigint' };
+    }
+    if (expression.constructor.name === 'StringLiteralNode') {
+      return { kind: 'literal', value: String(shaped.value), type: 'string' };
+    }
+    if (expression.constructor.name === 'HexLiteralNode' && shaped.value instanceof Uint8Array) {
+      return { kind: 'literal', value: binToHex(shaped.value), type: shaped.type?.toString() ?? 'bytes' };
+    }
+    if (expression instanceof CastNode) {
+      const inner = serialize(expression.expression);
+      return inner && { kind: 'cast', type: expression.type.toString(), expression: inner };
+    }
+    if (expression instanceof UnaryOpNode) {
+      const inner = serialize(expression.expression);
+      return inner && { kind: 'unary', operator: expression.operator, expression: inner };
+    }
+    if (expression instanceof BinaryOpNode) {
+      const left = serialize(expression.left);
+      const right = serialize(expression.right);
+      return left && right && { kind: 'binary', operator: expression.operator, left, right };
+    }
+    if (expression instanceof TernaryOpNode) {
+      const condition = serialize(expression.condition);
+      const ifTrue = serialize(expression.ifTrue);
+      const ifFalse = serialize(expression.ifFalse);
+      return condition && ifTrue && ifFalse && { kind: 'ternary', condition, ifTrue, ifFalse };
+    }
+    return undefined;
+  };
+  const condition = serialize(branch.condition);
+  const ifTrue = serialize(ifWrite.expression);
+  const ifFalse = serialize(elseWrite.expression);
+  return condition && ifTrue && ifFalse
+    ? { [ifWrite.name]: { kind: 'ternary', condition, ifTrue, ifFalse } }
+    : {};
+};
+
 const transferEffects = (
   fn: FunctionDefinitionNode, contract: ContractNode,
 ): readonly FixedBchTransferAbi[] => {
@@ -811,6 +881,7 @@ function buildFunctionAbiMetadata(
   func: FunctionDefinitionNode, isStateful = false, contract?: ContractNode,
   interfaces: readonly InterfaceNode[] = [],
 ): Partial<AbiFunction> {
+  const dynamicWriteSources = dynamicWriteSourcesOf(func, contract);
   const possibleSelectorTargets = (
     interfaceName: string, parameters: readonly ExpressionNode[],
   ): readonly { functionName: string; selector: string }[] => {
@@ -1710,6 +1781,7 @@ function buildFunctionAbiMetadata(
     }),
     ...(func.dynamicReads && func.dynamicReads.length > 0 && { dynamicReads: [...func.dynamicReads] }),
     ...(func.dynamicWrites && func.dynamicWrites.length > 0 && { dynamicWrites: [...func.dynamicWrites] }),
+    ...(Object.keys(dynamicWriteSources).length > 0 && { dynamicWriteSources }),
     ...(routeEntryLoopWrites && routeEntryLoopWrites.some(
       (collection) => !func.sortedBatchInfo?.some((batch) => batch.collection === collection),
     ) && {

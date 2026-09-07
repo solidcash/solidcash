@@ -72,6 +72,33 @@ describe('explicit-constructor stateful deploy (genesis derivation)', () => {
     expect(state).toMatchObject({ counter: 1n, fee: 100n, untouched: 0n });
   });
 
+  it('derives a finite if/else dynamic constructor assignment from its runtime arguments', async () => {
+    const artifact = compileString(`
+      contract C() {
+          string selected;
+          constructor(bool takeLeft, string left, string right) {
+              if (takeLeft) {
+                  this.selected = left;
+              } else {
+                  this.selected = right;
+              }
+          }
+          function read() view returns (string) { return this.selected; }
+      }
+    `);
+
+    expect(artifact.abi.find((entry) => entry.name === '__construct')?.dynamicWriteSources)
+      .toMatchObject({ selected: { kind: 'ternary' } });
+
+    const left = 'left branch '.repeat(14);
+    const right = 'chosen right branch '.repeat(20);
+    const { result: rightResult } = await deploy(artifact, [], 'b3c4', {}, [false, left, right]);
+    expect(await rightResult.contract.getState()).toMatchObject({ selected: right });
+
+    const { result: leftResult } = await deploy(artifact, [], 'b4c5', {}, [true, left, right]);
+    expect(await leftResult.contract.getState()).toMatchObject({ selected: left });
+  });
+
   it('uses the full constructor NFT layout inside a sparse internal helper', async () => {
     const artifact = compileString(`
       contract C() {

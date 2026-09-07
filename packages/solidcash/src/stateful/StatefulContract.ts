@@ -5535,13 +5535,23 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const visibleConstructorInputs = constructorAbi?.inputs.filter(
       (input) => !input.name.startsWith('__internal__'),
     ) ?? [];
+    const constructorReplay = new StatefulContract(contract, categoryId);
+    const replayedDynamicValues = new Map<string, FunctionArgument>();
+    for (const [name, expression] of Object.entries(constructorAbi?.dynamicWriteSources ?? {})) {
+      const value = constructorReplay._evaluateExternalExpression(
+        expression, [...(options.initArgs ?? [])], artifact, options.initialState,
+        visibleConstructorInputs,
+      );
+      if (value !== undefined) replayedDynamicValues.set(name, value);
+    }
     const dynamicInitialChunks = (stateLayout.variables ?? []).flatMap((variable) => {
       if (!variable.dynamic || !constructorAbi?.dynamicWrites?.includes(variable.name)) return [];
       const normalized = variable.name.replace(/^_+/, '');
       const inputIndex = visibleConstructorInputs.findIndex(
         (input) => input.name.replace(/^_+/, '').replace(/_+$/, '') === normalized,
       );
-      const raw = inputIndex >= 0 ? options.initArgs?.[inputIndex] : undefined;
+      const raw = replayedDynamicValues.get(variable.name)
+        ?? (inputIndex >= 0 ? options.initArgs?.[inputIndex] : undefined);
       const value = typeof raw === 'string' ? utf8ToBin(raw) : raw instanceof Uint8Array ? raw : undefined;
       if (value === undefined) return [];
       return splitValueIntoChunks(value).map((chunkData, chunkIndex) => ({
@@ -8021,6 +8031,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const initArgs = [...(options.initArgs ?? [])];
     const senderLockingBytecode = options.funder.generateLockingBytecode();
     const visibleInputs = constructorAbi?.inputs.filter((input) => !input.name.startsWith('__internal__')) ?? [];
+    const constructorReplay = new StatefulContract(contract, categoryId);
+    const replayedDynamicValues = new Map<string, FunctionArgument>();
+    for (const [name, expression] of Object.entries(constructorAbi?.dynamicWriteSources ?? {})) {
+      const value = constructorReplay._evaluateExternalExpression(
+        expression, initArgs, artifact, options.initialState, visibleInputs,
+      );
+      if (value !== undefined) replayedDynamicValues.set(name, value);
+    }
     const resolveConstructorKey = (label: string | undefined): Uint8Array | undefined => {
       if (label === 'nullop:msg.sender' || label === 'sender:msg.sender') return senderLockingBytecode;
       // A constructor body may reference either an explicit `__construct` argument or a contract parameter.
@@ -8419,7 +8437,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         const inputIndex = visibleInputs.findIndex(
           (input) => input.name.replace(/^_+/, '').replace(/_+$/, '') === normalized,
         );
-        const raw = inputIndex >= 0 ? options.initArgs?.[inputIndex] : undefined;
+        const raw = replayedDynamicValues.get(variable.name)
+          ?? (inputIndex >= 0 ? options.initArgs?.[inputIndex] : undefined);
         const value = typeof raw === 'string' ? utf8ToBin(raw) : raw instanceof Uint8Array ? raw : undefined;
         if (value === undefined) {
           reservedChunkNames.push(variable.name);

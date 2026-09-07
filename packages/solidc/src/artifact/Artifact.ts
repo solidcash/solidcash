@@ -1,6 +1,6 @@
 import {
   AbiFunction, Artifact, CompilerOptions, DebugInformation, Script, scriptToAsm, StateLayout, ArrayType,
-  computeCollectionSignature, computeFunctionSelectorHex, ExternalInterfaceInfo, MappingType, Type, ValueType,
+  computeCollectionSignature, computeFunctionSelectorHex, ExternalInterfaceInfo, MappingType, Type,
   EnumType, StructType, ExternalLibraryAbi, BUILTIN_LIBRARIES, resolveLibraries, sidecarCodeRange, isChunkableValueType,
   ValueProvenance, ValueProvenanceKind,
   abiTypeString, ChildDeploymentValueRecipe,
@@ -24,7 +24,7 @@ import { BinaryOperator, UnaryOperator } from '../ast/Operator.js';
 import { containsStatefulOperation } from '../semantic/EnsureFinalRequireTraversal.js';
 import { fixedForMaximum } from '../semantic/FixedForLoop.js';
 import { parameterCommitmentSource } from '../semantic/SymbolTableTraversal.js';
-import { childDeploymentValueRecipe } from '../deploymentRecipes.js';
+import { analyzeFixedBchEffectRecipes, childDeploymentValueRecipe } from '../deploymentRecipes.js';
 
 /** The mapping key type as the SDK must ENCODE it. An enum key is int-backed (the compiler stores/derives it as
  * its integer member value), so it encodes as 'bigint' - its VM representation - not the enum name. The enum
@@ -290,7 +290,6 @@ const expressionSource = (
 
 const transferEffects = (
   fn: FunctionDefinitionNode, contract: ContractNode,
-  serializeCondition: (expression: ExpressionNode) => ExternalCallExpression | undefined,
 ): readonly { transferIndex: number; recipient: ReturnType<typeof expressionSource>;
   amount: ReturnType<typeof expressionSource>; callOption?: 'value';
   recipientRecipe?: ChildDeploymentValueRecipe; amountRecipe?: ChildDeploymentValueRecipe;
@@ -298,6 +297,7 @@ const transferEffects = (
   const transfers: {
     transferIndex: number; recipient: ExpressionNode; amount: ExpressionNode; callOption?: 'value';
     condition?: ExpressionNode; conditionUnsupported?: true;
+    node?: TransferStatementNode | AddressTransferStatementNode | AddressSendExpressionNode;
   }[] = [];
   const visibleInputs = fn.parameters.filter((parameter) => !parameter.name.startsWith('__internal__'));
   const inputIndex = new Map(visibleInputs.map((parameter, index) => [parameter.name, index]));
@@ -338,6 +338,35 @@ const transferEffects = (
     nested.add(definition);
     return operandRecipe(definition.expression, nested);
   };
+  const fixedEffectRecipes = analyzeFixedBchEffectRecipes(fn);
+  const activationExpression = (
+    recipe: ChildDeploymentValueRecipe,
+  ): ExternalCallExpression => {
+    if (recipe.kind === 'handlerInput') {
+      return { kind: 'source', source: { kind: 'forward', paramIndex: recipe.inputIndex } };
+    }
+    if (recipe.kind === 'intLiteral') {
+      // External-call expressions use the VM's canonical integer literal spelling; casts around bounded values
+      // retain their source width independently.
+      return { kind: 'literal', type: 'bigint', value: recipe.value };
+    }
+    if (recipe.kind === 'boolLiteral') {
+      return { kind: 'literal', type: 'bool', value: recipe.value };
+    }
+    if (recipe.kind === 'bytesLiteral') {
+      return { kind: 'literal', type: recipe.resultType, value: recipe.value };
+    }
+    if (recipe.kind === 'cast') {
+      return { kind: 'cast', type: recipe.resultType, expression: activationExpression(recipe.operand) };
+    }
+    if (recipe.kind === 'unary') {
+      return { kind: 'unary', operator: recipe.operator, expression: activationExpression(recipe.operand) };
+    }
+    return {
+      kind: 'binary', operator: recipe.operator,
+      left: activationExpression(recipe.left), right: activationExpression(recipe.right),
+    };
+  };
   const seen = new Set<object>();
   const combine = (
     outer: ExpressionNode | undefined, inner: ExpressionNode, negate: boolean,
@@ -351,14 +380,14 @@ const transferEffects = (
     if (value instanceof TransferStatementNode && !value.runtimeLoopTransfer) {
       transfers.push({
         transferIndex: value.transferIndex, recipient: value.lockingBytecode, amount: value.amount,
-        condition, ...(conditionUnsupported && { conditionUnsupported: true }),
+        condition, node: value, ...(conditionUnsupported && { conditionUnsupported: true }),
       });
       return;
     }
     if (value instanceof AddressTransferStatementNode || value instanceof AddressSendExpressionNode) {
       transfers.push({
         transferIndex: value.transferIndex, recipient: value.addressExpression, amount: value.amount,
-        condition, ...(conditionUnsupported && { conditionUnsupported: true }),
+        condition, node: value, ...(conditionUnsupported && { conditionUnsupported: true }),
       });
       return;
     }
@@ -409,8 +438,18 @@ const transferEffects = (
   };
   visit(fn.body);
   return transfers.sort((a, b) => a.transferIndex - b.transferIndex).map((transfer) => {
-    const recipientRecipe = operandRecipe(transfer.recipient);
-    const amountRecipe = operandRecipe(transfer.amount);
+    const effect = transfer.node && fixedEffectRecipes.get(transfer.node);
+    const preserveFixedOperandShape = (
+      recipe: ChildDeploymentValueRecipe | undefined,
+    ): ChildDeploymentValueRecipe | undefined => recipe?.kind === 'handlerInput'
+      ? { kind: 'handlerInput', inputIndex: recipe.inputIndex } : recipe;
+    const recipientRecipe = preserveFixedOperandShape(
+      effect?.recipient ?? (!transfer.node ? operandRecipe(transfer.recipient) : undefined),
+    );
+    const amountRecipe = preserveFixedOperandShape(
+      effect?.amount ?? (!transfer.node ? operandRecipe(transfer.amount) : undefined),
+    );
+    const condition = effect?.activation && activationExpression(effect.activation);
     return {
       transferIndex: transfer.transferIndex,
       recipient: expressionSource(transfer.recipient, fn, contract),
@@ -420,7 +459,7 @@ const transferEffects = (
       ...(transfer.callOption && { callOption: transfer.callOption }),
       ...(transfer.conditionUnsupported
         ? { condition: null }
-        : transfer.condition ? { condition: serializeCondition(transfer.condition) ?? null } : {}),
+        : transfer.condition ? { condition: effect?.activationSupported && condition ? condition : null } : {}),
     };
   });
 };
@@ -1194,42 +1233,6 @@ function buildFunctionAbiMetadata(
     }
     return undefined;
   };
-  // Fixed-effect planning happens before the handler executes. Publish only predicates whose value is immutable
-  // for the whole invocation (arguments and literals composed by pure operators). A state read or unresolved
-  // local could observe a value written earlier in the same handler, which the SDK's authenticated pre-state
-  // snapshot must never guess.
-  const serializeFixedEffectCondition = (
-    expression: ExpressionNode,
-  ): ExternalCallExpression | undefined => {
-    let observesMutableLocal = false;
-    const inspect = (candidate: Node, seen = new Set<Node>()): void => {
-      if (seen.has(candidate)) return;
-      seen.add(candidate);
-      if (candidate instanceof IdentifierNode && reassignedLocals.has(candidate.name)) {
-        observesMutableLocal = true;
-        return;
-      }
-      for (const [key, value] of Object.entries(candidate)) {
-        if (['location', 'resolvedFunction', 'functionReference', 'definition', 'symbolTable',
-          'referencedContract', 'stateVariable', 'collection', 'type'].includes(key)) continue;
-        if (value instanceof Node) inspect(value, seen);
-        else if (Array.isArray(value)) for (const item of value) if (item instanceof Node) inspect(item, seen);
-      }
-    };
-    inspect(expression);
-    if (observesMutableLocal) return undefined;
-    const serialized = serializeCondition(expression);
-    const immutable = (candidate: ExternalCallExpression | undefined): boolean => {
-      if (!candidate) return false;
-      if (candidate.kind === 'state' || candidate.kind === 'stateAccess'
-        || candidate.kind === 'identifier' || candidate.kind === 'externalCall') return false;
-      if (candidate.source && !['forward', 'literal'].includes(candidate.source.kind)) return false;
-      return [candidate.target, candidate.expression, candidate.left, candidate.right,
-        candidate.condition, candidate.ifTrue, candidate.ifFalse, ...(candidate.args ?? [])]
-        .every((child) => child === undefined || immutable(child));
-    };
-    return immutable(serialized) ? serialized : undefined;
-  };
   const runtimeLoopEvents = (() => {
     if (!func.runtimeLoopEvents?.length || !func.body) return [];
     const sites = new Map<number, EmitStatementNode[]>();
@@ -1483,7 +1486,7 @@ function buildFunctionAbiMetadata(
     ...(tokenContainerTransferSites.length > 0 && { tokenContainerTransferSites }),
     ...(func.transferInfos && func.transferInfos.length > 0 && {
       transferCount: func.transferInfos.length,
-      ...(contract && { transfers: transferEffects(func, contract, serializeFixedEffectCondition) }),
+      ...(contract && { transfers: transferEffects(func, contract) }),
     }),
     ...(func.deployTargets && func.deployTargets.length > 0 && {
       deployTargets: func.deployTargets.map((dt) => ({

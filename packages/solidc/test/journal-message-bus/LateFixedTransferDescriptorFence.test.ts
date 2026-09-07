@@ -10,7 +10,7 @@ const KERNEL = {
 } as const;
 
 describe('late fixed BCH transfer descriptor fence', () => {
-  it('fences a reassigned local transfer amount after typed descriptor formation', () => {
+  it('snapshots a dominating reassigned local transfer amount', () => {
     const artifact = compileString(`pragma solidity ^0.8.0;
       contract Vault {
         function pay(address payable beneficiary, uint amount) public {
@@ -27,16 +27,21 @@ describe('late fixed BCH transfer descriptor fence', () => {
     expect(transfer).toMatchObject({
       recipientRecipe: { kind: 'handlerInput', inputIndex: 0 },
     });
-    expect(transfer).not.toHaveProperty('amountRecipe');
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'pay')).toMatchObject({
-      eligible: false,
-      rejectionReason: 'KERNEL_LAYOUT',
+    expect(transfer?.amountRecipe).toMatchObject({
+      kind: 'cast',
+      operand: {
+        kind: 'binary', operator: '+',
+        left: { kind: 'handlerInput', inputIndex: 1 },
+        right: { kind: 'intLiteral', value: '1' },
+      },
     });
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
-    expect(artifact.messageBus?.route.blockLayout?.slots.some((slot) => slot.kind === 'transfer')).toBe(false);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'pay')).toMatchObject({
+      eligible: true,
+    });
+    expect(artifact.messageBus?.route.blockLayout?.slots.some((slot) => slot.kind === 'transfer')).toBe(true);
   });
 
-  it('fences a reassigned local transfer recipient after typed descriptor formation', () => {
+  it('snapshots a dominating reassigned local transfer recipient', () => {
     const artifact = compileString(`pragma solidity ^0.8.0;
       contract Vault {
         function pay(address payable first, address payable second, uint amount) public {
@@ -53,13 +58,30 @@ describe('late fixed BCH transfer descriptor fence', () => {
     expect(transfer).toMatchObject({
       amountRecipe: { kind: 'handlerInput', inputIndex: 2 },
     });
-    expect(transfer).not.toHaveProperty('recipientRecipe');
+    expect(transfer?.recipientRecipe).toMatchObject({ kind: 'handlerInput', inputIndex: 1 });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'pay')).toMatchObject({
-      eligible: false,
-      rejectionReason: 'KERNEL_LAYOUT',
+      eligible: true,
     });
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
-    expect(artifact.messageBus?.route.blockLayout?.slots.some((slot) => slot.kind === 'transfer')).toBe(false);
+    expect(artifact.messageBus?.route.blockLayout?.slots.some((slot) => slot.kind === 'transfer')).toBe(true);
+  });
+
+  it('fences a transfer operand after a partial control-flow join', () => {
+    const artifact = compileString(`pragma solidity ^0.8.0;
+      contract Vault {
+        function pay(address payable first, address payable second, uint amount, bool choose) public {
+          address payable selected = first;
+          if (choose) selected = second;
+          selected.transfer(amount);
+          require(true);
+        }
+      }
+    `, KERNEL);
+
+    expect(artifact.abi.find((entry) => entry.name === 'pay')?.transfers?.[0])
+      .not.toHaveProperty('recipientRecipe');
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'pay')).toMatchObject({
+      eligible: false, rejectionReason: 'KERNEL_LAYOUT',
+    });
   });
 
   it('admits a pure binary amount with a complete typed recipe', () => {

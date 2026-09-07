@@ -161,7 +161,8 @@ import {
 } from './analysis/InvocationAnalysis.js';
 import { BinaryOperator, NullaryOperator, UnaryOperator } from './ast/Operator.js';
 import {
-  analyzeChildDeploymentRecipes, childDeploymentGenesisState, childDeploymentValueRecipe,
+  analyzeChildDeploymentRecipes, analyzeFixedBchEffectRecipes, childDeploymentGenesisState,
+  childDeploymentValueRecipe,
 } from './deploymentRecipes.js';
 import { cloneNode } from './ast/clone.js';
 import { hasEffectiveCallValue } from './semantic/branchOps.js';
@@ -3932,62 +3933,33 @@ function synthesizeMessageBusRoute(
       (total, type) => total + (staticAbiByteSize(type) ?? 32), 0,
     );
     if (compilerOptions.messageBusKernel === true) {
-      const activationInputs = fn.parameters.filter((parameter) => !parameter.name.startsWith('__internal__'));
-      const activationInputIndex = new Map(activationInputs.map((parameter, index) => [parameter.name, index]));
-      const activationInputTypes = new Map(activationInputs.map((parameter) =>
-        [parameter.name, abiTypeString(parameter.type)]));
+      const fixedEffectRecipes = analyzeFixedBchEffectRecipes(fn);
       const auditActivation = (
-        value: unknown, supported = true, conditional = false, seen = new WeakSet<object>(),
+        value: unknown, seen = new WeakSet<object>(),
       ): void => {
         if (Array.isArray(value)) {
-          value.forEach((item) => auditActivation(item, supported, conditional, seen));
+          value.forEach((item) => auditActivation(item, seen));
           return;
         }
         if (!(value instanceof Node) || seen.has(value)) return;
         seen.add(value);
         if ((value instanceof TransferStatementNode && value.runtimeLoopTransfer === undefined)
           || value instanceof AddressTransferStatementNode || value instanceof AddressSendExpressionNode) {
-          const recipient = value instanceof TransferStatementNode
-            ? value.lockingBytecode : value.addressExpression;
-          if (!childDeploymentValueRecipe(recipient, activationInputIndex, false, activationInputTypes)
-            || !childDeploymentValueRecipe(value.amount, activationInputIndex, false, activationInputTypes)) {
+          const analysis = fixedEffectRecipes.get(value);
+          if (!analysis?.recipient || !analysis.amount) {
             hasUnsupportedFixedTransferRecipe = true;
           }
-          if (conditional && !supported) hasUnsupportedFixedTransferActivation = true;
-          return;
-        }
-        if (value instanceof BranchNode) {
-          const branchSupported = childDeploymentValueRecipe(
-            value.condition, activationInputIndex, true, activationInputTypes,
-          ) !== undefined;
-          auditActivation(value.ifBlock, supported && branchSupported, true, new WeakSet<object>());
-          if (value.elseBlock) {
-            auditActivation(value.elseBlock, supported && branchSupported, true, new WeakSet<object>());
-          }
-          return;
-        }
-        if (value instanceof SwitchNode) {
-          const switchSupported = childDeploymentValueRecipe(
-            value.expression, activationInputIndex, true, activationInputTypes,
-          ) !== undefined && value.cases.every((arm) => childDeploymentValueRecipe(
-            arm.value, activationInputIndex, true, activationInputTypes,
-          ) !== undefined);
-          for (const arm of value.cases) {
-            auditActivation(arm.body, supported && switchSupported, true, new WeakSet<object>());
-          }
-          if (value.defaultCase) {
-            auditActivation(value.defaultCase, supported && switchSupported, true, new WeakSet<object>());
-          }
+          if (analysis?.activationSupported === false) hasUnsupportedFixedTransferActivation = true;
           return;
         }
         if (value instanceof TryCatchNode) {
-          auditActivation(value.expression, supported, conditional, new WeakSet<object>());
-          auditActivation(value.tryBlock, supported, conditional, new WeakSet<object>());
+          auditActivation(value.expression, new WeakSet<object>());
+          auditActivation(value.tryBlock, new WeakSet<object>());
           return;
         }
         for (const [key, child] of Object.entries(value)) {
           if (['referencedContract', 'resolvedFunction', 'definition', 'symbolTable'].includes(key)) continue;
-          auditActivation(child, supported, conditional, seen);
+          auditActivation(child, seen);
         }
       };
       auditActivation(fn.body);

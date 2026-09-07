@@ -114,6 +114,7 @@ describe('fixed conditional BCH transfer transcript security', () => {
     const provider = createMessageBusCapstoneTestProvider();
     const artifacts = compileStringMulti(`interface IVault {
         function conditional(bool enabled, address recipient, uint amount);
+        function aliased(bool enabled, address first, address second, uint amount);
         function choose(bool first, address recipientA, address recipientB, uint amountA, uint amountB);
         function dynamicSentinel(address recipient);
         function literalSentinel();
@@ -123,6 +124,16 @@ describe('fixed conditional BCH transfer transcript security', () => {
           if (enabled && amount > 1000) { this.transfer(recipient, amount); }
           if (enabled && amount > 1000) { require(msg.value == -int(amount)); }
           else { require(msg.value == 0); }
+        }
+        function aliased(bool enabled, address first, address second, uint amount) public {
+          bool selected = enabled;
+          selected = !selected;
+          address recipient = first;
+          recipient = second;
+          uint adjusted = amount;
+          adjusted = adjusted + 1;
+          if (selected) { this.transfer(recipient, adjusted); }
+          require(true);
         }
         function choose(bool first, address recipientA, address recipientB, uint amountA, uint amountB) public {
           if (first) { this.transfer(recipientA, amountA); }
@@ -141,6 +152,10 @@ describe('fixed conditional BCH transfer transcript security', () => {
       contract Driver(address vault) {
         function runConditional(bool enabled, address recipient, uint amount) public {
           IVault(vault).conditional(enabled, recipient, amount);
+          require(true);
+        }
+        function runAliased(bool enabled, address first, address second, uint amount) public {
+          IVault(vault).aliased(enabled, first, second, amount);
           require(true);
         }
         function runChoose(bool first, address recipientA, address recipientB, uint amountA, uint amountB) public {
@@ -174,6 +189,14 @@ describe('fixed conditional BCH transfer transcript security', () => {
         { transferIndex: 0, recipient: { kind: 'forward', paramIndex: 2 }, amount: { kind: 'forward', paramIndex: 4 } },
       ],
     });
+    expect(artifacts.Vault.messageBus?.handlers.find((handler) => handler.name === 'aliased')).toMatchObject({
+      eligible: true,
+      transfers: [{
+        recipientRecipe: { kind: 'handlerInput', inputIndex: 2 },
+        amountRecipe: { kind: 'cast', operand: { kind: 'binary', operator: '+' } },
+        condition: { kind: 'unary', operator: '!' },
+      }],
+    });
 
     const containerAmount = 20_000n;
     await provider.addUtxo(getSatoshiContainerAddress(vault.inner, vault.categoryId), {
@@ -198,16 +221,29 @@ describe('fixed conditional BCH transfer transcript security', () => {
       funder: fee,
       changeAddress: recipientA,
     }).build();
+    const aliased = (enabled: boolean): Promise<TransactionBuilder> => messageBus.compose({
+      preparedCalls: [
+        { contract: driver, functionName: 'runAliased', args: [enabled, recipientA, recipientB, 2_000n] },
+        { contract: vault, functionName: 'aliased', args: [enabled, recipientA, recipientB, 2_000n] },
+      ],
+      funder: fee,
+      changeAddress: recipientA,
+    }).build();
 
     const active = await conditional(true);
     const inactive = await conditional(false);
     const first = await choose(true);
     const second = await choose(false);
-    expect([active, inactive, first, second].map(vmRejects)).toEqual([false, false, false, false]);
+    const aliasedActive = await aliased(false);
+    const aliasedInactive = await aliased(true);
+    expect([active, inactive, first, second, aliasedActive, aliasedInactive].map(vmRejects))
+      .toEqual([false, false, false, false, false, false]);
     expect(valueRows(active)).toHaveLength(1);
     expect(valueRows(inactive)).toHaveLength(0);
     expect(valueRows(first)).toHaveLength(1);
     expect(valueRows(second)).toHaveLength(1);
+    expect(valueRows(aliasedActive)).toHaveLength(1);
+    expect(valueRows(aliasedInactive)).toHaveLength(0);
 
     const activeRow = valueRows(active)[0];
     const activeBase = participantBase(envelopeOf(active), activeRow.owner);
@@ -231,6 +267,9 @@ describe('fixed conditional BCH transfer transcript security', () => {
     const secondOutput = participantBase(envelopeOf(second), secondRow.owner) + secondRow.targetOffset;
     expect(first.outputs[firstOutput]).toMatchObject({ to: recipientA, amount: 3_000n });
     expect(second.outputs[secondOutput]).toMatchObject({ to: recipientB, amount: 5_000n });
+    const aliasedRow = valueRows(aliasedActive)[0];
+    const aliasedOutput = participantBase(envelopeOf(aliasedActive), aliasedRow.owner) + aliasedRow.targetOffset;
+    expect(aliasedActive.outputs[aliasedOutput]).toMatchObject({ to: recipientB, amount: 2_001n });
 
     const hiddenInactiveInput = await conditional(false);
     hiddenInactiveInput.inputs[inactiveInput] = { ...fee.utxo, unlocker: fee.unlocker };

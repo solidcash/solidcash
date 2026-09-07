@@ -6,7 +6,8 @@ import {
   AssignNode, BinaryOpNode, BlockNode, BoolLiteralNode, BranchNode, CastNode, CollectionIterationNode,
   DeleteLocalNode, DoWhileNode, ExpressionNode, FunctionDefinitionNode, HexLiteralNode, IdentifierNode,
   InstantiationNode, IntLiteralNode, Node, ReturnNode, SwitchNode, TryCatchNode, TupleAssignmentNode, UnaryOpNode,
-  UncheckedNode, VariableDefinitionNode, WhileNode,
+  UncheckedNode, VariableDefinitionNode, WhileNode, TransferStatementNode, AddressTransferStatementNode,
+  AddressSendExpressionNode,
 } from './ast/AST.js';
 import { BinaryOperator, UnaryOperator } from './ast/Operator.js';
 
@@ -161,6 +162,213 @@ const bindRecipe = (
   }
   return recipe;
 };
+
+type FixedBchEffectNode = TransferStatementNode | AddressTransferStatementNode | AddressSendExpressionNode;
+
+export interface FixedBchEffectRecipeAnalysis {
+  recipient?: ChildDeploymentValueRecipe;
+  amount?: ChildDeploymentValueRecipe;
+  /** Undefined for an unconditional effect; activationSupported distinguishes that from an opaque predicate. */
+  activation?: ChildDeploymentValueRecipe;
+  activationSupported: boolean;
+}
+
+/**
+ * Snapshot pure fixed-BCH-effect operands and reachability at their exact source position. This is deliberately
+ * SSA-like rather than a function-wide "was this name ever assigned" test: a dominating straight-line update is
+ * reproducible from the authenticated row, while a loop-carried value or a value escaping a branch join is not.
+ * Bindings are keyed by declarations so shadowed locals cannot borrow one another's recipes.
+ */
+export function analyzeFixedBchEffectRecipes(
+  fn: FunctionDefinitionNode,
+): WeakMap<FixedBchEffectNode, FixedBchEffectRecipeAnalysis> {
+  const visibleInputs = fn.parameters.filter((parameter) => !parameter.name.startsWith('__internal__'));
+  const handlerInputs = new Map(visibleInputs.map((parameter, index) => [parameter.name, index]));
+  const handlerInputTypes = new Map(visibleInputs.map((parameter) => [parameter.name, abiTypeString(parameter.type)]));
+  const initialAliases = new Map<object, ChildDeploymentValueRecipe>(visibleInputs.map((parameter, inputIndex) => [
+    parameter,
+    { kind: 'handlerInput', inputIndex, resultType: abiTypeString(parameter.type) } as ChildDeploymentValueRecipe,
+  ]));
+  const initialDefinitions = new Map<string, object>(visibleInputs.map((parameter) => [parameter.name, parameter]));
+  const result = new WeakMap<FixedBchEffectNode, FixedBchEffectRecipeAnalysis>();
+  type Environment = {
+    aliases: Map<object, ChildDeploymentValueRecipe>;
+    definitions: Map<string, object>;
+  };
+  const cloneEnvironment = (environment: Environment): Environment => ({
+    aliases: new Map(environment.aliases), definitions: new Map(environment.definitions),
+  });
+  const recipe = (expression: ExpressionNode, environment: Environment): ChildDeploymentValueRecipe | undefined =>
+    childDeploymentValueRecipe(
+      expression, handlerInputs, true, handlerInputTypes, environment.aliases, environment.definitions,
+    );
+  const negate = (operand: ChildDeploymentValueRecipe): ChildDeploymentValueRecipe => ({
+    kind: 'unary', operator: '!', resultType: 'bool', operand,
+  });
+  const conjunction = (
+    outer: ChildDeploymentValueRecipe | undefined, inner: ChildDeploymentValueRecipe,
+  ): ChildDeploymentValueRecipe => outer === undefined ? inner : ({
+    kind: 'binary', operator: '&&', resultType: 'bool', left: outer, right: inner,
+  });
+  const resolvedDefinition = (identifier: IdentifierNode, environment: Environment): object | undefined =>
+    identifier.definition?.definition ?? environment.definitions.get(identifier.name);
+  const invalidateAssignments = (
+    value: unknown, environment: Environment, seen = new WeakSet<object>(),
+  ): void => {
+    if (Array.isArray(value)) {
+      value.forEach((item) => invalidateAssignments(item, environment, seen));
+      return;
+    }
+    if (!(value instanceof Node) || seen.has(value)) return;
+    seen.add(value);
+    if (value instanceof AssignNode) {
+      const definition = resolvedDefinition(value.identifier, environment);
+      if (definition) environment.aliases.delete(definition);
+    } else if (value instanceof DeleteLocalNode) {
+      const definition = resolvedDefinition(value.identifier, environment);
+      if (definition) environment.aliases.delete(definition);
+    } else if (value instanceof TupleAssignmentNode) {
+      for (const element of value.elements) {
+        if (element.skip || !element.name) continue;
+        const definition = environment.definitions.get(element.name);
+        if (definition) environment.aliases.delete(definition);
+      }
+    }
+    for (const [key, child] of Object.entries(value)) {
+      if (['definition', 'referencedContract', 'resolvedFunction', 'symbolTable'].includes(key)) continue;
+      invalidateAssignments(child, environment, seen);
+    }
+  };
+  const snapshotEffects = (
+    value: unknown, environment: Environment, activation: ChildDeploymentValueRecipe | undefined,
+    activationSupported: boolean, unsafe: boolean, seen = new WeakSet<object>(),
+  ): void => {
+    if (Array.isArray(value)) {
+      value.forEach((item) => snapshotEffects(
+        item, environment, activation, activationSupported, unsafe, seen,
+      ));
+      return;
+    }
+    if (!(value instanceof Node) || seen.has(value)) return;
+    seen.add(value);
+    if ((value instanceof TransferStatementNode && value.runtimeLoopTransfer === undefined)
+      || value instanceof AddressTransferStatementNode || value instanceof AddressSendExpressionNode) {
+      const recipientExpression = value instanceof TransferStatementNode
+        ? value.lockingBytecode : value.addressExpression;
+      const recipient = !unsafe ? recipe(recipientExpression, environment) : undefined;
+      const amount = !unsafe ? recipe(value.amount, environment) : undefined;
+      result.set(value, {
+        ...(recipient && { recipient }),
+        ...(amount && { amount }),
+        ...(!unsafe && activationSupported && activation && { activation }),
+        activationSupported: !unsafe && activationSupported,
+      });
+      return;
+    }
+    for (const [key, child] of Object.entries(value)) {
+      if (['definition', 'referencedContract', 'resolvedFunction', 'symbolTable'].includes(key)) continue;
+      snapshotEffects(child, environment, activation, activationSupported, unsafe, seen);
+    }
+  };
+  const processBlock = (
+    block: BlockNode, environment: Environment,
+    activation?: ChildDeploymentValueRecipe, activationSupported = true, unsafe = false,
+  ): void => {
+    for (const statement of block.statements ?? []) {
+      if (statement instanceof VariableDefinitionNode) {
+        if (statement.expression) snapshotEffects(
+          statement.expression, environment, activation, activationSupported, unsafe,
+        );
+        const key = statement as object;
+        const bound = !unsafe && statement.expression
+          ? bindRecipe(
+            statement.expression, abiTypeString(statement.type), handlerInputs, handlerInputTypes,
+            environment.aliases, environment.definitions,
+          ) : undefined;
+        if (bound) environment.aliases.set(key, bound); else environment.aliases.delete(key);
+        environment.definitions.set(statement.name, key);
+        continue;
+      }
+      if (statement instanceof AssignNode) {
+        snapshotEffects(statement.expression, environment, activation, activationSupported, unsafe);
+        const key = resolvedDefinition(statement.identifier, environment);
+        const targetType = key && (key as { type?: { toString(): string } }).type;
+        const bound = !unsafe && key && targetType
+          ? bindRecipe(
+            statement.expression, abiTypeString(targetType as never), handlerInputs, handlerInputTypes,
+            environment.aliases, environment.definitions,
+          ) : undefined;
+        if (key && bound) environment.aliases.set(key, bound);
+        else if (key) environment.aliases.delete(key);
+        continue;
+      }
+      if (statement instanceof BranchNode) {
+        snapshotEffects(statement.condition, environment, activation, activationSupported, unsafe);
+        const condition = !unsafe ? recipe(statement.condition, environment) : undefined;
+        const branchSupported = activationSupported && condition !== undefined;
+        processBlock(
+          statement.ifBlock, cloneEnvironment(environment),
+          condition ? conjunction(activation, condition) : undefined, branchSupported, unsafe,
+        );
+        if (statement.elseBlock) processBlock(
+          statement.elseBlock, cloneEnvironment(environment),
+          condition ? conjunction(activation, negate(condition)) : undefined, branchSupported, unsafe,
+        );
+        // No value is allowed to escape a join unless a future explicit phi/ternary analysis proves both arms.
+        invalidateAssignments(statement, environment);
+        continue;
+      }
+      if (statement instanceof SwitchNode) {
+        snapshotEffects(statement.expression, environment, activation, activationSupported, unsafe);
+        const discriminant = !unsafe ? recipe(statement.expression, environment) : undefined;
+        let defaultActivation = activation;
+        let switchSupported = activationSupported && discriminant !== undefined;
+        for (const arm of statement.cases) {
+          const armValue = !unsafe ? recipe(arm.value, environment) : undefined;
+          switchSupported &&= armValue !== undefined;
+          const matches = discriminant && armValue ? {
+            kind: 'binary', operator: '==', resultType: 'bool', left: discriminant, right: armValue,
+          } as ChildDeploymentValueRecipe : undefined;
+          processBlock(
+            arm.body, cloneEnvironment(environment),
+            matches ? conjunction(activation, matches) : undefined, switchSupported, unsafe,
+          );
+          if (matches) defaultActivation = conjunction(defaultActivation, negate(matches));
+        }
+        if (statement.defaultCase) processBlock(
+          statement.defaultCase, cloneEnvironment(environment), defaultActivation, switchSupported, unsafe,
+        );
+        invalidateAssignments(statement, environment);
+        continue;
+      }
+      if (statement instanceof TryCatchNode) {
+        snapshotEffects(statement.expression, environment, activation, activationSupported, unsafe);
+        processBlock(statement.tryBlock, environment, activation, activationSupported, unsafe);
+        invalidateAssignments(statement.expression, environment);
+        invalidateAssignments(statement.tryBlock, environment);
+        continue;
+      }
+      if (statement instanceof UncheckedNode) {
+        processBlock(
+          statement.block, cloneEnvironment(environment), activation, activationSupported, true,
+        );
+        invalidateAssignments(statement, environment);
+        continue;
+      }
+      if (statement instanceof BlockNode) {
+        const scoped = { aliases: environment.aliases, definitions: new Map(environment.definitions) };
+        processBlock(statement, scoped, activation, activationSupported, unsafe);
+        continue;
+      }
+      const repeated = statement instanceof WhileNode || statement instanceof DoWhileNode
+        || statement instanceof CollectionIterationNode;
+      snapshotEffects(statement, environment, activation, activationSupported, unsafe || repeated);
+      invalidateAssignments(statement, environment);
+    }
+  };
+  processBlock(fn.body, { aliases: initialAliases, definitions: initialDefinitions });
+  return result;
+}
 
 /**
  * Compute source-ordered, site-specific SSA recipes for deployment expressions. Bindings are keyed by their

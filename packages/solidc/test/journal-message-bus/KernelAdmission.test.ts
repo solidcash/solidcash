@@ -5210,11 +5210,36 @@ describe('required kernel admission', () => {
     ]);
   });
 
-  it('rejects a fixed transfer predicate through a mutable local alias', () => {
+  it('replays a fixed transfer predicate through dominating mutable local aliases', () => {
     const artifact = compileString(`contract C() {
       function pay(bool take, bytes recipient, int amount) public {
         bool selected = take;
         selected = !selected;
+        if (selected) this.transfer(recipient, amount);
+        require(true);
+      }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'pay')).toMatchObject({
+      eligible: true,
+      transfers: [{ condition: {
+        kind: 'unary', operator: '!', expression: {
+          kind: 'source', source: { kind: 'forward', paramIndex: 0 },
+        },
+      } }],
+    });
+    expect(artifact.abi.find((candidate) => candidate.name === 'pay')?.transfers).toEqual([
+      expect.objectContaining({ transferIndex: 0, condition: expect.anything() }),
+    ]);
+  });
+
+  it.each([
+    ['a partial branch join', 'if (change) { selected = !selected; }'],
+    ['a loop-carried assignment', 'while (change) { selected = !selected; change = false; }'],
+  ])('keeps a fixed transfer predicate after %s fenced', (_label, mutation) => {
+    const artifact = compileString(`contract C() {
+      function pay(bool take, bool change, bytes recipient, int amount) public {
+        bool selected = take;
+        ${mutation}
         if (selected) this.transfer(recipient, amount);
         require(true);
       }

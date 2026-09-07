@@ -1063,7 +1063,7 @@ function concatenateEncodedArrays(left: Uint8Array, right: Uint8Array): Uint8Arr
 
 function encodeStructArgument(
   value: FunctionArgument, typeName: string, structs: Artifact['structs'],
-  timestamp?: bigint,
+  timestamp?: bigint, legacyJobEventCompatibility = false,
 ): Uint8Array {
   let decodedValue: FunctionArgument = value;
   if (value instanceof Uint8Array) {
@@ -1081,10 +1081,12 @@ function encodeStructArgument(
     : decodedValue;
   if (canonicalValue && typeof canonicalValue === 'object' && !Array.isArray(canonicalValue)) {
     const record = { ...(canonicalValue as Record<string, unknown>) };
-    if (record.timestamp_ === 0 || record.timestamp_ === 0n || record.timestamp_ === undefined) {
-      record.timestamp_ = timestamp ?? BigInt(Math.floor(Date.now() / 1000));
+    if (legacyJobEventCompatibility) {
+      if (record.timestamp_ === 0 || record.timestamp_ === 0n || record.timestamp_ === undefined) {
+        record.timestamp_ = timestamp ?? BigInt(Math.floor(Date.now() / 1000));
+      }
+      normalizeJobEventAddresses(record, typeName, structs);
     }
-    normalizeJobEventAddresses(record, typeName, structs);
     return encodePushdataValue(record as never, typeName, structs);
   }
   return encodePushdataValue(canonicalValue as never, typeName, structs);
@@ -1181,6 +1183,21 @@ function normalizeJobEventAddresses(
     record.address_ = bytes;
   }
   return decoded;
+}
+
+/** Quarantine the historical Marketplace adapter to its exact legacy wire schema and legacy-unroll artifact. */
+function usesLegacyJobEventCompatibility(
+  artifact: Artifact, type: string, structs: Artifact['structs'],
+): boolean {
+  if (artifact.messageBus?.convention !== 'legacy-unroll') return false;
+  const name = type.endsWith('[]') ? type.slice(0, -2) : type;
+  if (name !== 'JobEventData') return false;
+  const definition = structs?.find((candidate) => candidate.name === name);
+  return definition?.fields.length === 4
+    && definition.fields[0].name === 'type_' && definition.fields[0].type === 'uint8'
+    && definition.fields[1].name === 'address_' && definition.fields[1].type === 'bytes'
+    && definition.fields[2].name === 'data_' && definition.fields[2].type === 'bytes'
+    && definition.fields[3].name === 'timestamp_' && definition.fields[3].type === 'uint32';
 }
 
 /**
@@ -3855,6 +3872,8 @@ export function encodeLeadingRouteArrayPushes(params: {
   valueType: string;
   structs: Artifact['structs'];
   timestamp?: bigint;
+  /** Historical legacy-unroll JobEventData adapter; never inferred from arbitrary field names. */
+  legacyJobEventCompatibility?: boolean;
 }): Uint8Array | undefined {
   const array = parseArrayTypeString(params.valueType);
   if (!array || array.bound !== undefined) return undefined;
@@ -3879,6 +3898,7 @@ export function encodeLeadingRouteArrayPushes(params: {
   for (const candidate of earlier) {
     const element = encodeStructArgument(
       candidate.row.args[candidate.elementIndex], array.elementType, params.structs, params.timestamp,
+      params.legacyJobEventCompatibility === true,
     );
     encoded = appendEncodedArrayElement(encoded, element);
   }
@@ -15578,6 +15598,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   valueType: collection.valueType,
                   structs: stateLayout.structs,
                   timestamp,
+                  legacyJobEventCompatibility: usesLegacyJobEventCompatibility(
+                    entryArtifact, collection.valueType, stateLayout.structs,
+                  ),
                 });
                 const leadingIndex = entryAbiFunction!.inputs.findIndex((input) =>
                   input.name === `__internal__leadingPushValue_${slotIndex}`);
@@ -21550,6 +21573,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                             valueType: collection.valueType,
                             structs,
                             timestamp: oracleTimestamp,
+                            legacyJobEventCompatibility: usesLegacyJobEventCompatibility(
+                              sharedLogicalArtifact, collection.valueType, structs,
+                            ),
                           }) : undefined;
                         const leadingPush = inheritedLeading instanceof Uint8Array
                           && inheritedLeading.length > 0 && routeLeading
@@ -21567,6 +21593,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                         if (elementIndex >= 0) {
                           const element = encodeStructArgument(
                             finalVisibleArgs[elementIndex], elementType, structs, oracleTimestamp,
+                            usesLegacyJobEventCompatibility(sharedLogicalArtifact, elementType, structs),
                           );
                           nextValue = appendEncodedArrayElement(nextValue, element);
                           payloadBytes = nextValue.length;
@@ -28335,11 +28362,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         ? decodeEvmScalarReturn(blob, outputs[0].type) : undefined;
       let decoded: StateValue;
       try {
-        decoded = normalizeJobEventAddresses(
-          scalar ?? decodePushdataValue(blob, 0, outputs[0].type, structs).value,
-          outputs[0].type,
-          structs,
-        ) as StateValue;
+        const rawDecoded = scalar ?? decodePushdataValue(blob, 0, outputs[0].type, structs).value;
+        decoded = (usesLegacyJobEventCompatibility(returnArtifact, outputs[0].type, structs)
+          ? normalizeJobEventAddresses(rawDecoded, outputs[0].type, structs)
+          : rawDecoded) as StateValue;
       } catch (decodeError) {
         // A failed require can leave an inert/partial return placeholder in the probe. Return decoding is
         // downstream of execution, so it must not replace the contract failure with a codec error. Re-evaluate

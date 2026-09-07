@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { compileString } from '../direct-compile.js';
+import { compileString as compileKernelString } from 'solidc';
 import { binToHex } from '@bitauth/libauth';
 import { Contract, StatefulContract } from '../../src/index.js';
 import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
@@ -32,6 +33,37 @@ describe('StatefulFunctionCall.staticCall() - value-returning reads', () => {
     const sc = await deploy() as unknown as { set: Function; sum: Function };
     await (sc.set(3n, 4n) as { send: () => Promise<unknown> }).send();
     expect(await (sc.sum() as { staticCall: () => Promise<bigint> }).staticCall()).toBe(7n);
+  });
+
+  it('keeps kernel struct decoding independent of timestamp_ and address_ field names', async () => {
+    const payloadHex = '31'.repeat(20);
+    const art = compileKernelString(`pragma solidcash >=0.8.0;
+      contract Names() {
+        struct Named { bytes address_; bigint timestamp_; }
+        struct Renamed { bytes payload; bigint observedAt; }
+        function named() view returns (Named) { return Named(hex"${payloadHex}", 0); }
+        function renamed() view returns (Renamed) { return Renamed(hex"${payloadHex}", 0); }
+      }`, { forceStateful: true, messageBus: true, messageBusKernel: true });
+    expect(art.messageBus?.convention).toBe('kernel-row-loop');
+    const namedHandlers = art.messageBus?.handlers
+      .filter((handler) => ['named', 'renamed'].includes(handler.name)) ?? [];
+    expect(namedHandlers).toHaveLength(2);
+    expect(namedHandlers.every((handler) => handler.eligible)).toBe(true);
+    const provider = createTestProvider();
+    const contract = new Contract(art, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, contract, art.stateLayout!, {}, { saltContract: true },
+    );
+    const sc = new StatefulContract(categoryId, art, provider) as unknown as {
+      named: () => { staticCall: () => Promise<{ toObject: () => Record<string, unknown> }> };
+      renamed: () => { staticCall: () => Promise<{ toObject: () => Record<string, unknown> }> };
+    };
+    const named = (await sc.named().staticCall()).toObject();
+    const renamed = (await sc.renamed().staticCall()).toObject();
+    expect(binToHex(named.address_ as Uint8Array)).toBe(payloadHex);
+    expect(named.timestamp_).toBe(0n);
+    expect(binToHex(renamed.payload as Uint8Array)).toBe(payloadHex);
+    expect(renamed.observedAt).toBe(0n);
   });
 
   it('reads a struct view return with .toObject()', async () => {

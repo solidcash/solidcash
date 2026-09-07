@@ -158,6 +158,7 @@ describe('selectMaterializedTailReturnEvents', () => {
 });
 
 describe('encodeLeadingRouteArrayPushes', () => {
+  type RouteRow = Parameters<typeof encodeLeadingRouteArrayPushes>[0]['rowArguments'][number];
   const row = (key: bigint, count: bigint) => ({
     args: [key, [count, true]],
     handler: {
@@ -196,13 +197,15 @@ describe('encodeLeadingRouteArrayPushes', () => {
     })).toBeUndefined();
   });
 
-  it('normalizes an already encoded struct before applying route-known fields', () => {
+  it('preserves arbitrary timestamp_-named fields in generic route struct encoding', () => {
     const stampedStructs: StructDefinitionInfo[] = [{
       name: 'Stamped',
       fields: [{ name: 'value', type: 'uint256' }, { name: 'timestamp_', type: 'uint32' }],
     }];
     const encodedRecord = encodePushdataValue({ value: 2n, timestamp_: 0n }, 'Stamped', stampedStructs);
-    const stampedRow = (record: Uint8Array | bigint[] | { value: bigint; timestamp_: bigint }) => ({
+    const stampedRow = (
+      record: Uint8Array | bigint[] | { value: bigint; timestamp_: bigint },
+    ): RouteRow => ({
       args: [7n, record],
       handler: {
         inputs: [
@@ -228,9 +231,75 @@ describe('encodeLeadingRouteArrayPushes', () => {
       timestamp: 42n,
     });
     expect(decodePushdataValue(encoded!, 0, 'Stamped[]', stampedStructs).value).toEqual([
-      { value: 2n, timestamp_: 42n },
-      { value: 3n, timestamp_: 42n },
+      { value: 2n, timestamp_: 0n },
+      { value: 3n, timestamp_: 0n },
     ]);
+  });
+
+  it('makes generic struct encoding independent of timestamp_ and address_ field names', () => {
+    const named: StructDefinitionInfo[] = [{
+      name: 'Named',
+      fields: [{ name: 'timestamp_', type: 'uint32' }, { name: 'address_', type: 'bytes' }],
+    }];
+    const renamed: StructDefinitionInfo[] = [{
+      name: 'Renamed',
+      fields: [{ name: 'observedAt', type: 'uint32' }, { name: 'payload', type: 'bytes' }],
+    }];
+    const payload = new Uint8Array(20).fill(0x31);
+    const encodedRows = (type: string, definitions: StructDefinitionInfo[]): Uint8Array | undefined =>
+      encodeLeadingRouteArrayPushes({
+        rowArguments: [
+          {
+            args: [7n, [0n, payload]],
+            handler: {
+              inputs: [{ name: 'id', type: 'uint256' }, { name: 'record', type }],
+              entryAccesses: [{ collection: 'history', keyParams: ['id'], operations: ['read', 'write'] }],
+            },
+          },
+          {
+            args: [7n, [1n, new Uint8Array()]],
+            handler: {
+              inputs: [{ name: 'id', type: 'uint256' }, { name: 'record', type }],
+              entryAccesses: [{ collection: 'history', keyParams: ['id'], operations: ['read', 'write'] }],
+            },
+          },
+        ],
+        collection: 'history', valueType: `${type}[]`, structs: definitions, timestamp: 42n,
+      });
+    const namedValue = decodePushdataValue(encodedRows('Named', named)!, 0, 'Named[]', named).value;
+    const renamedValue = decodePushdataValue(encodedRows('Renamed', renamed)!, 0, 'Renamed[]', renamed).value;
+    expect(namedValue).toEqual([{ timestamp_: 0n, address_: payload }]);
+    expect(renamedValue).toEqual([{ observedAt: 0n, payload }]);
+  });
+
+  it('retains timestamp and packed-address adaptation behind the explicit legacy adapter', () => {
+    const legacyStructs: StructDefinitionInfo[] = [{
+      name: 'JobEventData',
+      fields: [
+        { name: 'type_', type: 'uint8' }, { name: 'address_', type: 'bytes' },
+        { name: 'data_', type: 'bytes' }, { name: 'timestamp_', type: 'uint32' },
+      ],
+    }];
+    const rawAddress = new Uint8Array(20).fill(0x31);
+    const makeRow = (type: bigint): RouteRow => ({
+      args: [7n, [type, rawAddress, new Uint8Array(), 0n]],
+      handler: {
+        inputs: [
+          { name: 'id', type: 'uint256' }, { name: 'record', type: 'JobEventData' },
+        ],
+        entryAccesses: [{ collection: 'history', keyParams: ['id'], operations: ['read', 'write'] }],
+      },
+    });
+    const encoded = encodeLeadingRouteArrayPushes({
+      rowArguments: [makeRow(1n), makeRow(2n)],
+      collection: 'history', valueType: 'JobEventData[]', structs: legacyStructs,
+      timestamp: 42n, legacyJobEventCompatibility: true,
+    });
+    const decoded = decodePushdataValue(encoded!, 0, 'JobEventData[]', legacyStructs).value as Array<{
+      address_: Uint8Array; timestamp_: bigint;
+    }>;
+    expect(decoded[0].timestamp_).toBe(42n);
+    expect(decoded[0].address_).toHaveLength(25);
   });
 
 });

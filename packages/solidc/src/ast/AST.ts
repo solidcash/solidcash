@@ -464,6 +464,9 @@ export class FunctionDefinitionNode extends Node implements Named {
     counter: { name: string; initialValue: bigint; stepValue: bigint; stepExpression?: ExpressionNode };
   }>;
 
+  /** Inverse permutation for compact selected streams, keyed by their physical permutation parameter. */
+  runtimeCounterLoopSourceOrderIndices?: Map<string, string>;
+
   /** Expanded public-argument expression which computes a non-affine counter-loop bound. */
   runtimeCounterLoopBounds?: Map<string, ExpressionNode>;
   /** Original key tuples keyed by `<permutation>\0<collection>`, before physical-loop rewriting. */

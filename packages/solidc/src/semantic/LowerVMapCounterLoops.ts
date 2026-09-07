@@ -32,6 +32,7 @@ export const VMAP_COUNTER_PERM_PREFIX = '__internal__vmapCounterPerm_';
 export const VMAP_COUNTER_OLD_PREFIX = '__internal__vmapCounterOld_';
 export const VMAP_COUNTER_VALUE_PREFIX = '__internal__vmapCounterValue_';
 export const VMAP_COUNTER_PREFIX_COUNT_PREFIX = '__internal__vmapCounterPrefixCount_';
+export const VMAP_COUNTER_SOURCE_INDEX_PREFIX = '__internal__vmapCounterSourceIndex_';
 export const VMAP_COUNTER_INPUT_COUNT_PREFIX = '__internal__vmapCounterInputCount_';
 export const VMAP_COUNTER_OUTPUT_COUNT_PREFIX = '__internal__vmapCounterOutputCount_';
 export const VMAP_RUNTIME_INPUT_COUNT_PREFIX = '__internal__vmapRuntimeInputCount_';
@@ -3159,6 +3160,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         condition?: ExpressionNode;
         synthetic: MappingAssignNode;
         witnessParam: string;
+        sourceIndexParam?: string;
         authenticatedReads: ArrayAccessNode[];
         consumerReads: ArrayAccessNode[];
       };
@@ -3328,6 +3330,9 @@ export default class LowerVMapCounterLoops extends AstTraversal {
                   condition,
                   synthetic,
                   witnessParam,
+                  ...(condition && {
+                    sourceIndexParam: `${VMAP_COUNTER_SOURCE_INDEX_PREFIX}${serial}_${runtimeReadPlans.length}`,
+                  }),
                   authenticatedReads: [witnessRead, authenticatedRead],
                   consumerReads: [],
                 };
@@ -4136,6 +4141,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           mask: `__internal__vmapCounterMask_${groupSerial}`,
           inputCount: undefined as string | undefined,
           outputCount: undefined as string | undefined,
+          sourceIndexParam: undefined as string | undefined,
           domainOnly: plan.domainOnly,
         };
       });
@@ -4152,6 +4158,16 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       }
       const groupByWrite = new Map(groups.flatMap((group) =>
         [...group.writes].map((write) => [write, group] as const)));
+      for (const group of groups) {
+        const selectedReadPlans = runtimeReadPlans.filter((plan) =>
+          group.writes.has(plan.synthetic) && plan.sourceIndexParam !== undefined);
+        if (selectedReadPlans.length === 0) continue;
+        group.sourceIndexParam = selectedReadPlans[0].sourceIndexParam;
+        for (const plan of selectedReadPlans) plan.sourceIndexParam = group.sourceIndexParam;
+        (node.runtimeCounterLoopSourceOrderIndices ??= new Map()).set(
+          group.hidden, group.sourceIndexParam!,
+        );
+      }
       const primaryGroup = groups[0];
       for (const group of groups) {
         (node.runtimeCounterLoopCounters ??= new Map()).set(group.hidden, {
@@ -4271,9 +4287,22 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         read.type = new IntType(true, 256);
         return read;
       };
-      const permRead = (group: typeof groups[number]): ArrayAccessNode => {
+      const permReadAt = (
+        group: typeof groups[number], index: ExpressionNode,
+      ): ArrayAccessNode => {
         const a = new IdentifierNode(group.hidden); a.location = location;
-        const r = new ArrayAccessNode(a, physical(group)); r.location = location; return r;
+        a.type = new ArrayType(counterType);
+        const r = new ArrayAccessNode(a, index); r.location = location; r.type = counterType; return r;
+      };
+      const permRead = (group: typeof groups[number]): ArrayAccessNode =>
+        permReadAt(group, physical(group));
+      const sourceIndexRead = (group: typeof groups[number]): ArrayAccessNode => {
+        const inverse = id(group.sourceIndexParam!);
+        inverse.type = new ArrayType(proofInt);
+        const read = new ArrayAccessNode(inverse, id(group.settlementCursor));
+        read.location = location;
+        read.type = proofInt;
+        return read;
       };
       const replace = (x: Node, group: typeof groups[number]): Node => {
         // Old-entry witnesses are settlement-position vectors. Their subscript is the physical loop rank (or
@@ -4362,16 +4391,18 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         // A full-domain witness is indexed by source occurrence, not either stream's physical rank. The source
         // permutation authenticates witness[logical(source)] while an independent destination consumes
         // witness[logical(destination)]. A selected source-order consumer instead uses its compact path cursor.
-        // A selected stream's witness is compact: it has one element for each taken source path, not one slot
-        // for every logical iteration. Authenticate the current selected occurrence with the same monotonically
-        // advancing cursor used by its source-order consumer. Using logicalRank here both indexed beyond the
-        // compact witness and leaked the condition-local rank binding into the nested source branch.
+        // A selected stream's physical keys and old-value witness are slot ordered. Its authenticated inverse
+        // permutation maps each selected source occurrence to that physical rank for the source-order consumer.
         for (const read of plan.authenticatedReads) {
           read.index = plan.sourceOrderConsumer && sourceGroup.expandedSelectionCondition
             ? id(sourceGroup.settlementCursor) : logicalRank(sourceGroup);
         }
         for (const read of plan.consumerReads) {
-          read.index = plan.sourceOrderConsumer && sourceGroup.expandedSelectionCondition
+          if (plan.sourceIndexParam) {
+            const inverse = id(plan.sourceIndexParam);
+            inverse.type = new ArrayType(new IntType(true, 256));
+            read.index = at(new ArrayAccessNode(inverse, id(sourceGroup.settlementCursor)));
+          } else read.index = plan.sourceOrderConsumer && sourceGroup.expandedSelectionCondition
             ? id(sourceGroup.settlementCursor)
             : plan.sourceOrderConsumer ? sourceRank() : logicalRank(destinationGroup!);
         }
@@ -4626,6 +4657,13 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           group.expandedSelectionCondition ? BinaryOperator.LE : BinaryOperator.EQ,
           iterationCount(),
         ), 'vmap counter permutation length mismatch')));
+        if (group.sourceIndexParam) {
+          prelude.push(at(new RequireNode(binary(
+            at(new UnaryOpNode(UnaryOperator.SIZE, id(group.sourceIndexParam))),
+            BinaryOperator.EQ,
+            at(new UnaryOpNode(UnaryOperator.SIZE, id(group.hidden))),
+          ), 'vmap counter source index length mismatch')));
+        }
         if (group.domainOnly) continue;
         prelude.push(at(new VariableDefinitionNode(
           new IntType(true, 256), [], group.mask, lit(0n),
@@ -4688,6 +4726,19 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           ),
         );
         const proofStatements: StatementNode[] = [
+          ...(group.sourceIndexParam ? [
+            at(new RequireNode(binary(
+              binary(sourceIndexRead(group), BinaryOperator.GE, lit(0n)),
+              BinaryOperator.AND,
+              binary(
+                sourceIndexRead(group), BinaryOperator.LT,
+                at(new UnaryOpNode(UnaryOperator.SIZE, id(group.hidden))),
+              ),
+            ), 'vmap counter source index out of range')),
+            at(new RequireNode(binary(
+              permReadAt(group, sourceIndexRead(group)), BinaryOperator.EQ, id(logical),
+            ), 'vmap counter source index mismatch')),
+          ] : []),
           ...(rankDefinition ? [rankDefinition] : []),
           at(new RequireNode(
             logicalInRangeExpression, 'vmap counter permutation value out of range',
@@ -4815,6 +4866,11 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         added.push(parameter);
       }
       for (const plan of runtimeReadPlans) {
+        if (plan.sourceIndexParam && !added.some((parameter) => parameter.name === plan.sourceIndexParam)) {
+          const sourceIndex = new ParameterNode(new ArrayType(proofInt), plan.sourceIndexParam);
+          sourceIndex.location = node.location;
+          added.push(sourceIndex);
+        }
         const valueType = this.collectionsByName.get(plan.synthetic.name)!.innermostValueType;
         const parameter = new ParameterNode(new ArrayType(valueType), plan.witnessParam);
         parameter.location = node.location;

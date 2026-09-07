@@ -419,6 +419,9 @@ describe('affine recursive mapping streams', () => {
     ]);
     expect(streams?.every((stream) => stream.iterationCondition !== undefined)).toBe(true);
     expect(streams?.every((stream) => stream.oldValuesWitnessDomain === 'selected-source')).toBe(true);
+    expect(streams?.every((stream) => stream.sourceOrderIndexParam?.startsWith(
+      '__internal__vmapCounterSourceIndex_',
+    ))).toBe(true);
   });
 
   it('authenticates recursive switch requirements with first-match selected domains', () => {
@@ -450,7 +453,7 @@ describe('affine recursive mapping streams', () => {
     expect(streams?.[1].iterationCondition).not.toEqual(streams?.[0].iterationCondition);
   });
 
-  it('keeps runtime-equal switch cases outside recursive selected read streams', () => {
+  it('authenticates dynamic switch cases even when a later case is runtime-shadowed', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) first;
       mapping(int => int) second;
@@ -467,9 +470,15 @@ describe('affine recursive mapping streams', () => {
       function control() public { require(true); }
     }`, KERNEL);
     expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'apply'))
-      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
-    expect(artifact.abi.find((candidate) => candidate.name === 'apply')?.sortedUpsertLoopInfo)
-      .toBeUndefined();
+      .toMatchObject({ eligible: true });
+    const streams = artifact.abi.find((candidate) => candidate.name === 'apply')?.sortedUpsertLoopInfo;
+    expect(streams?.map((stream) => [stream.collection, stream.op])).toEqual([
+      ['first', 'read'], ['second', 'read'],
+    ]);
+    expect(streams?.every((stream) => stream.oldValuesWitnessDomain === 'selected-source')).toBe(true);
+    expect(streams?.every((stream) => stream.sourceOrderIndexParam?.startsWith(
+      '__internal__vmapCounterSourceIndex_',
+    ))).toBe(true);
   });
 
   it.each([

@@ -744,6 +744,8 @@ export interface SortedUpsertLoopAbi {
   oldValuesWitnessParam?: string;
   /** Ordering/cardinality of the old-value witness; omitted means the complete logical source domain. */
   oldValuesWitnessDomain?: 'selected-source';
+  /** Authenticated inverse permutation mapping compact source occurrence to physical witness rank. */
+  sourceOrderIndexParam?: string;
   /** Exact physical widths of this independently sorted runtime stream. */
   inputCountParam?: string;
   outputCountParam?: string;

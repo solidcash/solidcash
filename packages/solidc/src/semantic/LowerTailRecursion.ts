@@ -1210,10 +1210,6 @@ export default class LowerTailRecursion extends AstTraversal {
         if (!this.affineEventExpression(
           statement.expression, node, zeroSide.name, true, replayAliases,
         )) return false;
-        const caseLabels = statement.cases.map((arm) => arm.value instanceof LiteralNode
-          ? `${arm.value.constructor.name}:${arm.value.toString()}` : undefined);
-        if (caseLabels.some((label) => label === undefined)
-          || new Set(caseLabels).size !== caseLabels.length) return false;
         let unmatched = path;
         for (const arm of statement.cases) {
           if (!this.affineEventExpression(
@@ -1332,10 +1328,6 @@ export default class LowerTailRecursion extends AstTraversal {
       }
       if (statement instanceof SwitchNode) {
         if (!this.affineEventExpression(statement.expression, node, zeroSide.name, true)) return false;
-        const caseLabels = statement.cases.map((arm) => arm.value instanceof LiteralNode
-          ? `${arm.value.constructor.name}:${arm.value.toString()}` : undefined);
-        if (caseLabels.some((label) => label === undefined)
-          || new Set(caseLabels).size !== caseLabels.length) return false;
         let unmatched = path;
         for (const arm of statement.cases) {
           if (!this.affineEventExpression(arm.value, node, zeroSide.name, true)) return false;

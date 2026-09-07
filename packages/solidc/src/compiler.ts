@@ -119,6 +119,7 @@ import LowerVMapCounterLoops, {
   VMAP_COUNTER_PERM_PREFIX,
   VMAP_COUNTER_VALUE_PREFIX,
   VMAP_COUNTER_PREFIX_COUNT_PREFIX,
+  VMAP_COUNTER_SOURCE_INDEX_PREFIX,
   VMAP_RUNTIME_INPUT_COUNT_PREFIX,
   VMAP_RUNTIME_OUTPUT_COUNT_PREFIX,
 } from './semantic/LowerVMapCounterLoops.js';
@@ -6082,6 +6083,7 @@ function synthesizeMessageBusRoute(
                   || parameter.name.startsWith(VMAP_COUNTER_OLD_PREFIX)
                   || parameter.name.startsWith(VMAP_COUNTER_VALUE_PREFIX)
                   || parameter.name.startsWith(VMAP_COUNTER_PREFIX_COUNT_PREFIX)
+                  || parameter.name.startsWith(VMAP_COUNTER_SOURCE_INDEX_PREFIX)
                   || parameter.name.startsWith(VMAP_COUNTER_INPUT_COUNT_PREFIX)
                   || parameter.name.startsWith(VMAP_COUNTER_OUTPUT_COUNT_PREFIX)) {
                   return kernelLoopDispatch ? `${parameter.name}[${rowExpression}]` : parameter.name;
@@ -6255,6 +6257,7 @@ function synthesizeMessageBusRoute(
         && !parameter.name.startsWith(VMAP_COUNTER_OLD_PREFIX)
         && !parameter.name.startsWith(VMAP_COUNTER_VALUE_PREFIX)
         && !parameter.name.startsWith(VMAP_COUNTER_PREFIX_COUNT_PREFIX)
+        && !parameter.name.startsWith(VMAP_COUNTER_SOURCE_INDEX_PREFIX)
         && !parameter.name.startsWith(VMAP_COUNTER_INPUT_COUNT_PREFIX)
         && !parameter.name.startsWith(VMAP_COUNTER_OUTPUT_COUNT_PREFIX)
         && !parameter.name.startsWith(VMAP_RUNTIME_INPUT_COUNT_PREFIX)
@@ -6274,6 +6277,7 @@ function synthesizeMessageBusRoute(
         || parameter.name.startsWith(VMAP_COUNTER_OLD_PREFIX)
         || parameter.name.startsWith(VMAP_COUNTER_VALUE_PREFIX)
         || parameter.name.startsWith(VMAP_COUNTER_PREFIX_COUNT_PREFIX)
+        || parameter.name.startsWith(VMAP_COUNTER_SOURCE_INDEX_PREFIX)
         || parameter.name.startsWith(VMAP_COUNTER_INPUT_COUNT_PREFIX)
         || parameter.name.startsWith(VMAP_COUNTER_OUTPUT_COUNT_PREFIX)
         || parameter.name === KERNEL_JOURNAL_ACCESS_STREAMS) && kernelLoopDispatch

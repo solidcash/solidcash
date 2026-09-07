@@ -1587,6 +1587,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       || node.name.startsWith('__internal__vmapCounterOld_')
       || node.name.startsWith('__internal__vmapCounterValue_')
       || node.name.startsWith('__internal__vmapCounterPrefixCount_')
+      || node.name.startsWith('__internal__vmapCounterSourceIndex_')
       || node.name.startsWith('__internal__vmapCounterInputCount_')
       || node.name.startsWith('__internal__vmapCounterOutputCount_')
       || node.name.startsWith('__internal__vmapRuntimeInputCount_')

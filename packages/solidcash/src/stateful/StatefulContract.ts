@@ -219,6 +219,7 @@ const VMAP_COUNTER_PERM_PREFIX = '__internal__vmapCounterPerm_';
 const VMAP_COUNTER_OLD_PREFIX = '__internal__vmapCounterOld_';
 const VMAP_COUNTER_VALUE_PREFIX = '__internal__vmapCounterValue_';
 const VMAP_COUNTER_PREFIX_COUNT_PREFIX = '__internal__vmapCounterPrefixCount_';
+const VMAP_COUNTER_SOURCE_INDEX_PREFIX = '__internal__vmapCounterSourceIndex_';
 const VMAP_COUNTER_INPUT_COUNT_PREFIX = '__internal__vmapCounterInputCount_';
 const VMAP_COUNTER_OUTPUT_COUNT_PREFIX = '__internal__vmapCounterOutputCount_';
 const KERNEL_JOURNAL_ACCESS_STREAMS = '__internal__kernelJournalAccessStreams';
@@ -4956,7 +4957,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     }
     for (const input of capability.route.inputs) {
       if ((!input.name.startsWith(VMAP_COUNTER_VALUE_PREFIX)
-        && !input.name.startsWith(VMAP_COUNTER_PREFIX_COUNT_PREFIX))
+        && !input.name.startsWith(VMAP_COUNTER_PREFIX_COUNT_PREFIX)
+        && !input.name.startsWith(VMAP_COUNTER_SOURCE_INDEX_PREFIX))
         || resolvedCallerInternalWitnesses[input.name] !== undefined) continue;
       const rowValues = Array.from({ length: effectiveRowArguments?.length ?? 0 }, () => []);
       for (const row of effectiveRowArguments ?? []) {
@@ -16674,6 +16676,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         }) as FunctionArgument[];
       let valueTraceDomain: bigint[] | undefined;
       let sourceOccurrences: number[] | undefined;
+      let selectedSourceValues: bigint[] | undefined;
       if (info.condition || info.iterationCondition || info.iterationBreakCondition) {
         if (info.condition) {
           loopPredicateState = await this._hydrateExternalPredicateState(
@@ -16785,6 +16788,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         // selected source frame: selectedOccurrences[i] therefore consumes permutation[i], even when permutation[i]
         // originated at another logical rank. Later topology reordering has the same cursor semantics.
         sourceOccurrences = selectedOccurrences;
+        selectedSourceValues = selectedOccurrences.map((occurrence) => domain[occurrence]);
         replaceLoopArgument(varyingIndex, permutation);
       }
       const keyTypes = collection.keyTypes ?? [collection.keyType];
@@ -17083,6 +17087,30 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         const varyingIndex = loopAbiFunction.inputs.findIndex((input) => input.name === info.varyingArrayParam);
         if (varyingIndex >= 0) replaceLoopArgument(varyingIndex, keysArr as FunctionArgument);
       }
+      if (info.sourceOrderIndexParam) {
+        if (!selectedSourceValues) {
+          throw new Error(`vmap upsert loop ${info.collection}: source-order index has no selected domain`);
+        }
+        const sourceIndex = loopAbiFunction.inputs.findIndex(
+          (input) => input.name === info.sourceOrderIndexParam,
+        );
+        if (sourceIndex < 0) {
+          throw new Error(`vmap upsert loop ${info.collection}: missing source-order index ABI input`);
+        }
+        const physicalRanks = new Map<string, number>();
+        keysArr.forEach((value, index) => {
+          const numeric = typeof value === 'bigint' ? value : BigInt(value as number | string);
+          physicalRanks.set(numeric.toString(), index);
+        });
+        const inverse = selectedSourceValues.map((value) => {
+          const index = physicalRanks.get(value.toString());
+          if (index === undefined) {
+            throw new Error(`vmap upsert loop ${info.collection}: selected source value is absent from permutation`);
+          }
+          return BigInt(index);
+        });
+        replaceLoopArgument(sourceIndex, inverse);
+      }
       const isDelete = info.op === 'delete';
       // A loop-INVARIANT value (fixed-amount airdrop `+= amount` / batch-set-const `= 100`): the same amount for every
       // key, from a scalar param arg or an int literal. Otherwise the value is the per-key array valsArr[i].
@@ -17201,13 +17229,18 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             ? vmNumberToBigInt(entry.value, { requireMinimalEncoding: false }) as bigint
             : 0n;
         }));
-        if (info.op === 'read' && counterSpec && info.oldValuesWitnessDomain === 'selected-source') {
+        if (info.op === 'read' && counterSpec && info.oldValuesWitnessDomain === 'selected-source'
+          && !info.sourceOrderIndexParam) {
           // A path-conditioned source-order consumer has no occurrence on untaken frames. Keep this witness
           // compact and restore source order after the entry planner's physical slot sort.
           const selectedValues = keysArr.map((key, index) => ({
             occurrence: occurrenceOf(key), value: oldValues[index],
           })).sort((left, right) => left.occurrence - right.occurrence).map(({ value }) => value);
           replaceLoopArgument(witnessIndex, selectedValues as FunctionArgument);
+        } else if (info.op === 'read' && counterSpec && info.oldValuesWitnessDomain === 'selected-source') {
+          // The inverse permutation authenticates source-order selection independently, so retain the old-value
+          // witness in the same physical slot order used by the synthetic read stream.
+          replaceLoopArgument(witnessIndex, oldValues as FunctionArgument);
         } else if (info.op === 'read' && counterSpec) {
           // Cross-mapping reads may use a different physical permutation than their destination. Publish the
           // authenticated values by logical source occurrence so each stream can select the same value through its

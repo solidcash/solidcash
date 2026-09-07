@@ -23022,6 +23022,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const iterationBound = this.currentFunction.runtimeCounterLoopBounds?.get(varyingArrayParam);
       const counter = this.currentFunction.runtimeCounterLoopCounters?.get(varyingArrayParam);
       const cardinality = this.currentFunction.runtimeCounterLoopCardinalityParams?.get(varyingArrayParam);
+      const sourceOrderIndexParam = this.currentFunction.runtimeCounterLoopSourceOrderIndices
+        ?.get(varyingArrayParam);
       const varyingKeyExpressions = this.currentFunction.runtimeCounterLoopKeyExpressions
         ?.get(`${varyingArrayParam}\0${collection.name}`);
       infos.push({ collection: collection.name, collectionHash: binToHex(collectionHash),
@@ -23072,6 +23074,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           && { oldValuesWitnessParam: writeNode.messageBusRuntimeOldValueWitness.array.name }),
         ...(writeNode instanceof MappingAssignNode && writeNode.messageBusRuntimeOldValueWitnessDomain
           && { oldValuesWitnessDomain: writeNode.messageBusRuntimeOldValueWitnessDomain }),
+        ...(sourceOrderIndexParam && { sourceOrderIndexParam }),
         ...(cardinality && { inputCountParam: cardinality.input, outputCountParam: cardinality.output }),
         ...(counter && { iterationCounter: counter }),
         ...(counter?.exactBound && { iterationExactBound: true }), op });

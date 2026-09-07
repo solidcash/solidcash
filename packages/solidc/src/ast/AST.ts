@@ -339,7 +339,7 @@ export class FunctionDefinitionNode extends Node implements Named {
   messageBusUpgradeRoute?: boolean;
   /** The exact named-call closure can execute CHECKSIG/CHECKMULTISIG (excluding data signatures). */
   messageBusUsesTransactionSignature?: boolean;
-  /** Direct scalar signature parameters whose route witness is constrained to SIGHASH_ALL. */
+  /** Direct scalar or one-dimensional signature-array parameters constrained to SIGHASH_ALL by the route. */
   messageBusAllOutputSignatureParameters?: number[];
   /** Physical route entry slots whose transition covenant is emitted by a message-bus handler subroutine. */
   messageBusHandlerManagedEntrySlots?: number[];

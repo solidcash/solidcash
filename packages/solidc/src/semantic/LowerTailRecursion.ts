@@ -498,27 +498,44 @@ export default class LowerTailRecursion extends AstTraversal {
     return node;
   }
 
-  private finiteLiteral(expression: ExpressionNode): bigint | boolean | undefined {
-    if (expression instanceof IntLiteralNode) return expression.value;
+  private finiteLiteral(
+    expression: ExpressionNode,
+    expectedIntegerType?: IntType,
+  ): bigint | boolean | undefined {
+    const checked = (value: bigint | boolean | undefined): bigint | boolean | undefined => {
+      const integerType = expression.type instanceof IntType ? expression.type : expectedIntegerType;
+      if (typeof value === 'bigint' && integerType
+        && (value < integerType.minValue || value > integerType.maxValue)) return undefined;
+      return value;
+    };
+    if (expression instanceof IntLiteralNode) return checked(expression.value);
     if (expression instanceof BoolLiteralNode) return expression.value;
-    if (expression instanceof CastNode) return this.finiteLiteral(expression.expression);
+    if (expression instanceof CastNode) return checked(this.finiteLiteral(expression.expression));
     if (expression instanceof UnaryOpNode) {
       const value = this.finiteLiteral(expression.expression);
       if (expression.operator === UnaryOperator.NOT && typeof value === 'boolean') return !value;
-      if (expression.operator === UnaryOperator.NEGATE && typeof value === 'bigint') return -value;
-      if (expression.operator === UnaryOperator.INVERT && typeof value === 'bigint') return ~value;
+      if (expression.operator === UnaryOperator.NEGATE && typeof value === 'bigint') return checked(-value);
+      if (expression.operator === UnaryOperator.INVERT && typeof value === 'bigint') return checked(~value);
       return undefined;
     }
     if (!(expression instanceof BinaryOpNode)) return undefined;
-    const left = this.finiteLiteral(expression.left);
-    const right = this.finiteLiteral(expression.right);
+    const arithmetic = expression.operator === BinaryOperator.PLUS
+      || expression.operator === BinaryOperator.MINUS
+      || expression.operator === BinaryOperator.MUL
+      || expression.operator === BinaryOperator.DIV
+      || expression.operator === BinaryOperator.MOD;
+    // Cloned pre-semantic helper expressions do not always retain their inferred result type. For a scalar
+    // recursive argument, carry its declared integer type through the arithmetic tree so an overflowing
+    // intermediate cannot be hidden by a later inverse operation.
+    const left = this.finiteLiteral(expression.left, arithmetic ? expectedIntegerType : undefined);
+    const right = this.finiteLiteral(expression.right, arithmetic ? expectedIntegerType : undefined);
     if (left === undefined || right === undefined) return undefined;
     if (typeof left === 'bigint' && typeof right === 'bigint') {
-      if (expression.operator === BinaryOperator.PLUS) return left + right;
-      if (expression.operator === BinaryOperator.MINUS) return left - right;
-      if (expression.operator === BinaryOperator.MUL) return left * right;
-      if (expression.operator === BinaryOperator.DIV && right !== 0n) return left / right;
-      if (expression.operator === BinaryOperator.MOD && right !== 0n) return left % right;
+      if (expression.operator === BinaryOperator.PLUS) return checked(left + right);
+      if (expression.operator === BinaryOperator.MINUS) return checked(left - right);
+      if (expression.operator === BinaryOperator.MUL) return checked(left * right);
+      if (expression.operator === BinaryOperator.DIV && right !== 0n) return checked(left / right);
+      if (expression.operator === BinaryOperator.MOD && right !== 0n) return checked(left % right);
       if (expression.operator === BinaryOperator.LT) return left < right;
       if (expression.operator === BinaryOperator.LE) return left <= right;
       if (expression.operator === BinaryOperator.GT) return left > right;
@@ -588,11 +605,13 @@ export default class LowerTailRecursion extends AstTraversal {
         if (!(argument instanceof IdentifierNode) || !parameter.modifier.includes('memory')) return undefined;
         rootArrays.set(parameter.name, argument.name);
       } else {
-        // Specialization erases parameter binding and branch/recursive-argument evaluation. Only BCH-native
-        // bigint arithmetic is unbounded, so folding a checked int/uint/fixed expression here could otherwise
-        // erase a source overflow even when the final recursive path reaches a literal base case.
-        if (parameter.type !== PrimitiveType.BIGINT || !(argument instanceof IntLiteralNode)) return undefined;
-        if (this.finiteLiteral(argument) === undefined) return undefined;
+        // Literal-selected recursion may use a checked bounded integer when every selected recursive argument
+        // stays in range. Direct identifiers are also safe invariant bindings: specialization substitutes the
+        // caller value into a helper which admits no scalar mutation or effectful statement. More involved
+        // expressions remain unspecialized because parameter evaluation-once could otherwise be duplicated.
+        if (!(argument instanceof IntLiteralNode || argument instanceof BoolLiteralNode
+          || argument instanceof IdentifierNode || argument instanceof CastNode)) return undefined;
+        if (!(argument instanceof IdentifierNode) && this.finiteLiteral(argument) === undefined) return undefined;
         rootScalars.set(parameter.name, argument);
       }
     }
@@ -643,10 +662,24 @@ export default class LowerTailRecursion extends AstTraversal {
               continue;
             }
             const current = scalars.get(parameter.name);
-            const currentLiteral = current && this.finiteLiteral(current);
-            const nextLiteral = this.finiteLiteral(argument);
-            if (currentLiteral === undefined || nextLiteral === undefined
-              || typeof currentLiteral !== typeof nextLiteral) return undefined;
+            const integerType = parameter.type instanceof IntType ? parameter.type : undefined;
+            const currentLiteral = current && this.finiteLiteral(current, integerType);
+            const nextLiteral = this.finiteLiteral(argument, integerType);
+            const parameterAccepts = (value: bigint | boolean | undefined): boolean =>
+              typeof value !== 'bigint' || !(parameter.type instanceof IntType)
+                || (value >= parameter.type.minValue && value <= parameter.type.maxValue);
+            if (!parameterAccepts(currentLiteral) || !parameterAccepts(nextLiteral)) return undefined;
+            if (currentLiteral === undefined || nextLiteral === undefined) {
+              // A non-literal scalar may only be forwarded unchanged through every recursive edge. Compare the
+              // specialized AST after caller binding, so `helper(..., stable, n - 1)` retains value-copy
+              // semantics without pretending a runtime value is a termination measure.
+              if (currentLiteral !== undefined || nextLiteral !== undefined
+                || !(current instanceof IdentifierNode) || !(argument instanceof IdentifierNode)
+                || current.name !== argument.name) return undefined;
+              nextScalars.set(parameter.name, argument);
+              continue;
+            }
+            if (typeof currentLiteral !== typeof nextLiteral) return undefined;
             if (typeof currentLiteral === 'bigint' && typeof nextLiteral === 'bigint') {
               numericMeasure = true;
               if (nextLiteral > currentLiteral) return undefined;

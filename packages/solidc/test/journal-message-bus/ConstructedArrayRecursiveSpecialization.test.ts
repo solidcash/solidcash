@@ -50,6 +50,29 @@ describe('finite recursive constructed-array AST specialization', () => {
     `, 'fill(keys, 50, 2);')).toMatchObject({ eligible: true });
   });
 
+  it('specializes an in-range bounded countdown while forwarding an invariant runtime scalar', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) slots;
+      function fill(int[] memory keys, int base, uint8 remaining) internal pure {
+        if (remaining == 0) { return; }
+        fill(keys, base, remaining - 1);
+        keys[remaining - 1] = base + remaining;
+      }
+      function write(int count, int base) public {
+        int[] memory keys = new int[](count);
+        fill(keys, base, uint8(2));
+        for (int cursor = 0; cursor < count; cursor = cursor + 1) {
+          this.slots[keys[cursor]] = cursor + 1;
+        }
+        require(count == 2);
+      }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'write'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.abi.find((candidate) => candidate.name === 'write')?.sortedUpsertLoopInfo?.[0]
+      .varyingKeyExpressions).toEqual([expect.objectContaining({ kind: 'ternary' })]);
+  });
+
   it('does not mistake nested-block fallthrough for termination before a later recursive edge', () => {
     expect(handler(`
       function fill(bigint[] memory keys, bigint remaining) internal pure {
@@ -153,6 +176,19 @@ describe('finite recursive constructed-array AST specialization', () => {
         keys[remaining - 1] = other;
       }
     `, 'fill(keys, int8(1), int8(-128));')).toMatchObject({
+      eligible: false,
+      rejectionReason: 'KERNEL_UNBOUNDED_KEY',
+    });
+  });
+
+  it('does not erase checked overflow hidden by a later arithmetic operation', () => {
+    expect(handler(`
+      function fill(bigint[] memory keys, uint8 remaining, uint8 other) internal pure {
+        if (remaining == 0) { return; }
+        fill(keys, remaining - 1, (other + 1) - 1);
+        keys[remaining - 1] = other;
+      }
+    `, 'fill(keys, uint8(1), uint8(255));')).toMatchObject({
       eligible: false,
       rejectionReason: 'KERNEL_UNBOUNDED_KEY',
     });

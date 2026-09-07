@@ -81,14 +81,14 @@ describe('constructed-array exhausted finite helper replay', () => {
       .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_UNBOUNDED_KEY' });
   });
 
-  it('keeps a recursive finite-helper recipe fenced', () => {
+  it('exhausts a bounded-integer recursive helper with an invariant runtime scalar', () => {
     const handler = compile(`
       function fill(int[] memory keys, int base, int limit) internal pure {
         if (limit > 0) { fill(keys, base, limit - 1); }
         keys[limit] = base + limit;
       }
     `, 'fill(keys, base, 2);');
-    expect(handler).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_UNBOUNDED_KEY' });
+    expect(handler).toMatchObject({ eligible: true });
   });
 
   it('keeps a mutually cyclic finite-helper recipe fenced', () => {

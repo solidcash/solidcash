@@ -10,32 +10,31 @@ import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { createTestProvider } from '../../test-util.js';
 
 const SOURCE = `contract NaturalRecursiveKeys() {
-  mapping(bigint => int) slots;
+  mapping(int => int) slots;
 
-  function fill(bigint[] memory keys, bigint base, bigint remaining) internal pure {
-    if (remaining > 0) {
-      keys[remaining - 1] = base + remaining;
-      fill(keys, base, remaining - 1);
-    }
+  function fill(int[] memory keys, int base, uint8 remaining) internal pure {
+    if (remaining == 0) { return; }
+    fill(keys, base, remaining - 1);
+    keys[remaining - 1] = base + remaining;
   }
 
-  function write(int count, pubkey pk, sig s) public {
-    bigint[] memory keys = new bigint[](count);
-    fill(keys, 40, 3);
+  function write(int count, int base, pubkey pk, sig s) public {
+    int[] memory keys = new int[](count);
+    fill(keys, base, uint8(3));
     for (int cursor = 0; cursor < count; cursor = cursor + 1) {
       this.slots[keys[cursor]] = cursor + 1;
     }
     require(checkSig(s, pk) && count == 3);
   }
 
-  function check(bigint key, int value, pubkey pk, sig s) public {
+  function check(int key, int value, pubkey pk, sig s) public {
     require(checkSig(s, pk));
     require(this.slots[key] == value);
   }
 }`;
 
-describe('finite conditional self-recursion with natural base fallthrough BCH VM', () => {
-  it('executes exact literal-selected keys and rejects a forged settlement commitment', async () => {
+describe('finite bounded-integer self-recursion BCH VM', () => {
+  it('forwards an invariant runtime scalar, executes exact keys, and rejects a forged settlement', async () => {
     const provider = createTestProvider();
     const signature = new SignatureTemplate(alicePriv);
     const artifact = compileString(SOURCE, {
@@ -65,7 +64,7 @@ describe('finite conditional self-recursion with natural base fallthrough BCH VM
 
     // MockNetworkProvider validates every submitted input with the BCH-2026 VM.
     await fund();
-    await expect(contract.write(3n, alicePub, signature).send()).resolves.toBeDefined();
+    await expect(contract.write(3n, 40n, alicePub, signature).send()).resolves.toBeDefined();
     for (const [key, value] of [[41n, 1n], [42n, 2n], [43n, 3n]] as const) {
       await fund();
       await expect(contract.check(key, value, alicePub, signature).send()).resolves.toBeDefined();
@@ -79,7 +78,7 @@ describe('finite conditional self-recursion with natural base fallthrough BCH VM
       throw new Error('capture-only');
     };
     try {
-      await expect(contract.write(3n, alicePub, signature).send()).rejects.toThrow('capture-only');
+      await expect(contract.write(3n, 40n, alicePub, signature).send()).rejects.toThrow('capture-only');
     } finally {
       (provider as any).sendRawTransaction = send;
     }

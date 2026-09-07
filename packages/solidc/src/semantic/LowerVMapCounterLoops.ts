@@ -7406,26 +7406,79 @@ export default class LowerVMapCounterLoops extends AstTraversal {
             if (expression.operator === BinaryOperator.MOD && right !== 0n) return left % right;
             return undefined;
           };
-          const finishAfterConditionalBreak = (
+          type CompletedAbruptPath = {
+            summary: HelperSummary;
+            breaksAlways: boolean;
+            continuesAlways: boolean;
+            breakCondition?: ExpressionNode;
+            continueCondition?: ExpressionNode;
+          };
+          const finishAfterConditionalAbrupt = (
             candidate: HelperSummary,
             tail: BlockNode,
             location: Node['location'],
-          ): {
-            summary: HelperSummary;
-            breaksAlways: boolean;
-            breakCondition?: ExpressionNode;
-          } | undefined => {
-            if (!candidate.breakCondition) return undefined;
-            const breakCondition = cloneNode(candidate.breakCondition) as ExpressionNode;
-            const fallthrough = new UnaryOpNode(UnaryOperator.NOT, cloneNode(breakCondition));
+          ): CompletedAbruptPath | undefined => {
+            if (candidate.returnValues) return undefined;
+            if (candidate.loopControl) return {
+              summary: {
+                ...candidate,
+                loopControl: undefined,
+                breakCondition: undefined,
+                continueCondition: undefined,
+              },
+              breaksAlways: candidate.loopControl === 'break',
+              continuesAlways: candidate.loopControl === 'continue',
+            };
+            const earlyBreak = candidate.breakCondition
+              && cloneNode(candidate.breakCondition) as ExpressionNode;
+            const earlyContinue = candidate.continueCondition
+              && cloneNode(candidate.continueCondition) as ExpressionNode;
+            let abrupt = earlyBreak ?? earlyContinue;
+            if (earlyBreak && earlyContinue) {
+              const combined = new BinaryOpNode(
+                cloneNode(earlyBreak), BinaryOperator.OR, cloneNode(earlyContinue),
+              );
+              combined.location = location;
+              abrupt = combined;
+            }
+            if (!abrupt) {
+              const completed = summarize(tail, candidate, scope, visiting);
+              if (!completed || completed.returnValues) return undefined;
+              return {
+                summary: {
+                  ...completed,
+                  loopControl: undefined,
+                  breakCondition: undefined,
+                  continueCondition: undefined,
+                },
+                breaksAlways: completed.loopControl === 'break',
+                continuesAlways: completed.loopControl === 'continue',
+                ...(completed.breakCondition && {
+                  breakCondition: cloneNode(completed.breakCondition) as ExpressionNode,
+                }),
+                ...(completed.continueCondition && {
+                  continueCondition: cloneNode(completed.continueCondition) as ExpressionNode,
+                }),
+              };
+            }
+            const fallthrough = new UnaryOpNode(UnaryOperator.NOT, cloneNode(abrupt));
             fallthrough.location = location;
             const completed = summarize(
-              tail, { ...candidate, breakCondition: undefined }, scope, visiting,
+              tail, {
+                ...candidate,
+                breakCondition: undefined,
+                continueCondition: undefined,
+              }, scope, visiting,
             );
             if (!completed || completed.returnValues) return undefined;
             const pathArms = [
               { ...completed, condition: fallthrough as ExpressionNode },
-              { ...candidate, breakCondition: undefined, condition: breakCondition },
+              {
+                ...candidate,
+                breakCondition: undefined,
+                continueCondition: undefined,
+                condition: abrupt,
+              },
             ];
             const mergedPlans = new Map([...candidate.plans].map(([name, plan]) => [
               name,
@@ -7437,71 +7490,50 @@ export default class LowerVMapCounterLoops extends AstTraversal {
               plans: mergedPlans,
               values: mergeValues(candidate.values, pathArms),
             };
-            if (completed.loopControl === 'break') return { summary, breaksAlways: true };
-            let combinedBreak = breakCondition;
-            if (completed.breakCondition) {
-              const laterBreak = new BinaryOpNode(
-                cloneNode(fallthrough), BinaryOperator.AND,
-                cloneNode(completed.breakCondition),
+            const after = (
+              early: ExpressionNode | undefined,
+              laterAlways: boolean,
+              later: ExpressionNode | undefined,
+            ): ExpressionNode | undefined => {
+              let selectedLater: ExpressionNode | undefined;
+              if (laterAlways) selectedLater = cloneNode(fallthrough) as ExpressionNode;
+              else if (later) {
+                const gatedLater = new BinaryOpNode(
+                  cloneNode(fallthrough), BinaryOperator.AND, cloneNode(later),
+                );
+                gatedLater.location = location;
+                selectedLater = gatedLater;
+              }
+              if (!early) return selectedLater;
+              if (!selectedLater) return cloneNode(early) as ExpressionNode;
+              const combined = new BinaryOpNode(
+                cloneNode(early), BinaryOperator.OR, selectedLater,
               );
-              laterBreak.location = location;
-              const combined = new BinaryOpNode(combinedBreak, BinaryOperator.OR, laterBreak);
               combined.location = location;
-              combinedBreak = combined;
-            }
-            return { summary, breaksAlways: false, breakCondition: combinedBreak };
+              return combined;
+            };
+            const breakCondition = after(
+              earlyBreak, completed.loopControl === 'break', completed.breakCondition,
+            );
+            const continueCondition = after(
+              earlyContinue, completed.loopControl === 'continue', completed.continueCondition,
+            );
+            return {
+              summary,
+              breaksAlways: false,
+              continuesAlways: false,
+              ...(breakCondition && { breakCondition }),
+              ...(continueCondition && { continueCondition }),
+            };
           };
           const finishAfterConditionalContinue = (
             candidate: HelperSummary,
             tail: BlockNode,
             location: Node['location'],
-          ): {
-            summary: HelperSummary;
-            continuesAlways: boolean;
-            continueCondition?: ExpressionNode;
-          } | undefined => {
-            if (!candidate.continueCondition) return undefined;
-            const continueCondition = cloneNode(candidate.continueCondition) as ExpressionNode;
-            const fallthrough = new UnaryOpNode(UnaryOperator.NOT, cloneNode(continueCondition));
-            fallthrough.location = location;
-            const completed = summarize(
-              tail, { ...candidate, continueCondition: undefined }, scope, visiting,
-            );
-            if (!completed || completed.returnValues || completed.loopControl === 'break'
-              || completed.breakCondition) return undefined;
-            const pathArms = [
-              { ...completed, condition: fallthrough as ExpressionNode },
-              { ...candidate, continueCondition: undefined, condition: continueCondition },
-            ];
-            const mergedPlans = new Map([...candidate.plans].map(([name, plan]) => [
-              name,
-              mergePlan(name, plan, pathArms.map((arm) => ({
-                plan: arm.plans.get(name)!, condition: arm.condition,
-              }))),
-            ]));
-            const summary: HelperSummary = {
-              plans: mergedPlans,
-              values: mergeValues(candidate.values, pathArms),
-            };
-            if (completed.loopControl === 'continue') return { summary, continuesAlways: true };
-            let combinedContinue = continueCondition;
-            if (completed.continueCondition) {
-              const laterContinue = new BinaryOpNode(
-                cloneNode(fallthrough), BinaryOperator.AND,
-                cloneNode(completed.continueCondition),
-              );
-              laterContinue.location = location;
-              const combined = new BinaryOpNode(
-                combinedContinue, BinaryOperator.OR, laterContinue,
-              );
-              combined.location = location;
-              combinedContinue = combined;
-            }
-            return {
-              summary,
-              continuesAlways: false,
-              continueCondition: combinedContinue,
-            };
+          ): Pick<CompletedAbruptPath, 'summary' | 'continuesAlways' | 'continueCondition'> | undefined => {
+            const completed = finishAfterConditionalAbrupt(candidate, tail, location);
+            if (!completed || completed.breaksAlways || completed.breakCondition) return undefined;
+            return completed;
           };
           const replayNestedCall = (nestedCall: FunctionCallNode): HelperSummary | undefined => {
             const nestedTargets = (this.functionsByName.get(nestedCall.identifier.name) ?? [])
@@ -7968,27 +8000,20 @@ export default class LowerVMapCounterLoops extends AstTraversal {
                     ? summarize(helperStatement.elseBlock, base, scope, visiting) : base;
                 if (!selectedSummary) return undefined;
                 if (selectedSummary.loopControl || selectedSummary.returnValues) return selectedSummary;
-                if (selectedSummary.breakCondition) {
+                if (selectedSummary.breakCondition || selectedSummary.continueCondition) {
                   const tail = new BlockNode(body.slice(index + 1));
                   tail.location = helperBlock.location;
-                  const completed = finishAfterConditionalBreak(
+                  const completed = finishAfterConditionalAbrupt(
                     selectedSummary, tail, helperStatement.location,
                   );
                   if (!completed) return undefined;
-                  return completed.breaksAlways
-                    ? { ...completed.summary, loopControl: 'break' }
-                    : { ...completed.summary, breakCondition: completed.breakCondition };
-                }
-                if (selectedSummary.continueCondition) {
-                  const tail = new BlockNode(body.slice(index + 1));
-                  tail.location = helperBlock.location;
-                  const completed = finishAfterConditionalContinue(
-                    selectedSummary, tail, helperStatement.location,
-                  );
-                  if (!completed) return undefined;
-                  return completed.continuesAlways
-                    ? { ...completed.summary, loopControl: 'continue' }
-                    : { ...completed.summary, continueCondition: completed.continueCondition };
+                  if (completed.breaksAlways) return { ...completed.summary, loopControl: 'break' };
+                  if (completed.continuesAlways) return { ...completed.summary, loopControl: 'continue' };
+                  return {
+                    ...completed.summary,
+                    ...(completed.breakCondition && { breakCondition: completed.breakCondition }),
+                    ...(completed.continueCondition && { continueCondition: completed.continueCondition }),
+                  };
                 }
                 helperPlans = selectedSummary.plans;
                 values = selectedSummary.values;
@@ -8042,173 +8067,73 @@ export default class LowerVMapCounterLoops extends AstTraversal {
                   returnValues,
                 };
               }
-              if (ifSummary.loopControl === 'break' || elseSummary.loopControl === 'break'
-                || ifSummary.breakCondition || elseSummary.breakCondition) {
-                if (ifSummary.loopControl === 'continue' || elseSummary.loopControl === 'continue') {
-                  return undefined;
-                }
-                if (ifSummary.continueCondition || elseSummary.continueCondition) return undefined;
-                const tail = new BlockNode(body.slice(index + 1));
-                tail.location = helperBlock.location;
-                const finishPath = (candidate: HelperSummary): {
-                  summary: HelperSummary;
-                  breaksAlways: boolean;
-                  breakCondition?: ExpressionNode;
-                } | undefined => {
-                  if (candidate.loopControl === 'break') {
-                    return { summary: { ...candidate, loopControl: undefined }, breaksAlways: true };
-                  }
-                  if (candidate.breakCondition) {
-                    return finishAfterConditionalBreak(candidate, tail, helperStatement.location);
-                  }
-                  const completed = summarize(tail, candidate, scope, visiting);
-                  if (!completed || completed.returnValues) return undefined;
-                  return {
-                    summary: {
-                      ...completed, loopControl: undefined, breakCondition: undefined,
-                    },
-                    breaksAlways: completed.loopControl === 'break',
-                    ...(completed.breakCondition && {
-                      breakCondition: cloneNode(completed.breakCondition) as ExpressionNode,
-                    }),
-                  };
-                };
-                const completedIf = finishPath(ifSummary);
-                const completedElse = finishPath(elseSummary);
-                if (!completedIf || !completedElse) return undefined;
-                const completedArms = [
-                  { ...completedIf.summary, condition },
-                  { ...completedElse.summary, condition: otherwise as ExpressionNode },
-                ];
-                const mergedPlans = new Map([...base.plans].map(([name, plan]) => [name, mergePlan(
-                  name,
-                  plan,
-                  completedArms.map((arm) => ({
-                    plan: arm.plans.get(name)!, condition: arm.condition,
-                  })),
-                )]));
-                if (completedIf.breaksAlways && completedElse.breaksAlways) {
-                  return {
-                    plans: mergedPlans,
-                    values: mergeValues(base.values, completedArms),
-                    loopControl: 'break',
-                  };
-                }
-                const conditionalBreak = (
-                  path: typeof completedIf,
-                  pathCondition: ExpressionNode,
-                ): ExpressionNode | undefined => {
-                  if (path.breaksAlways) return cloneNode(pathCondition) as ExpressionNode;
-                  if (!path.breakCondition) return undefined;
-                  const selectedBreak = new BinaryOpNode(
-                    cloneNode(pathCondition), BinaryOperator.AND,
-                    cloneNode(path.breakCondition),
-                  );
-                  selectedBreak.location = helperStatement.location;
-                  return selectedBreak;
-                };
-                const ifBreak = conditionalBreak(completedIf, condition);
-                const elseBreak = conditionalBreak(completedElse, otherwise);
-                if (!ifBreak && !elseBreak) return undefined;
-                let breakCondition = ifBreak ?? elseBreak!;
-                if (ifBreak && elseBreak) {
-                  const combined = new BinaryOpNode(ifBreak, BinaryOperator.OR, elseBreak);
-                  combined.location = helperStatement.location;
-                  breakCondition = combined;
-                }
-                return {
-                  plans: mergedPlans,
-                  values: mergeValues(base.values, completedArms),
-                  breakCondition,
-                };
-              }
-              if (ifSummary.loopControl === 'continue' || elseSummary.loopControl === 'continue'
-                || ifSummary.continueCondition || elseSummary.continueCondition) {
-                // A runtime-selected continue has a finite join at the next fixed iteration. Replay the
-                // remainder only for arms which fall through, then merge both completed iteration histories.
-                // A selected break/return changes the future iteration domain and remains fenced separately.
-                const tail = new BlockNode(body.slice(index + 1));
-                tail.location = helperBlock.location;
-                const finishIteration = (candidate: HelperSummary): {
-                  summary: HelperSummary;
-                  continuesAlways: boolean;
-                  continueCondition?: ExpressionNode;
-                } | undefined => {
-                  if (candidate.loopControl === 'continue') {
-                    return {
-                      summary: { ...candidate, loopControl: undefined }, continuesAlways: true,
-                    };
-                  }
-                  if (candidate.continueCondition) {
-                    return finishAfterConditionalContinue(candidate, tail, helperStatement.location);
-                  }
-                  const completed = summarize(tail, candidate, scope, visiting);
-                  if (!completed || completed.returnValues || completed.loopControl === 'break'
-                    || completed.breakCondition) return undefined;
-                  return {
-                    summary: {
-                      ...completed, loopControl: undefined, continueCondition: undefined,
-                    },
-                    continuesAlways: completed.loopControl === 'continue',
-                    ...(completed.continueCondition && {
-                      continueCondition: cloneNode(completed.continueCondition) as ExpressionNode,
-                    }),
-                  };
-                };
-                const completedIf = finishIteration(ifSummary);
-                const completedElse = finishIteration(elseSummary);
-                if (!completedIf || !completedElse) return undefined;
-                const completedArms = [
-                  { ...completedIf.summary, condition },
-                  { ...completedElse.summary, condition: otherwise as ExpressionNode },
-                ];
-                const mergedPlans = new Map([...base.plans].map(([name, plan]) => [name, mergePlan(
-                  name,
-                  plan,
-                  completedArms.map((arm) => ({
-                    plan: arm.plans.get(name)!, condition: arm.condition,
-                  })),
-                )]));
-                const conditionalContinue = (
-                  path: typeof completedIf,
-                  pathCondition: ExpressionNode,
-                ): ExpressionNode | undefined => {
-                  if (path.continuesAlways) return cloneNode(pathCondition) as ExpressionNode;
-                  if (!path.continueCondition) return undefined;
-                  const selectedContinue = new BinaryOpNode(
-                    cloneNode(pathCondition), BinaryOperator.AND,
-                    cloneNode(path.continueCondition),
-                  );
-                  selectedContinue.location = helperStatement.location;
-                  return selectedContinue;
-                };
-                if (completedIf.continuesAlways && completedElse.continuesAlways) {
-                  return {
-                    plans: mergedPlans,
-                    values: mergeValues(base.values, completedArms),
-                    loopControl: 'continue',
-                  };
-                }
-                const ifContinue = conditionalContinue(completedIf, condition);
-                const elseContinue = conditionalContinue(completedElse, otherwise);
-                if (!ifContinue && !elseContinue) return undefined;
-                let continueCondition = ifContinue ?? elseContinue!;
-                if (ifContinue && elseContinue) {
-                  const combined = new BinaryOpNode(
-                    ifContinue, BinaryOperator.OR, elseContinue,
-                  );
-                  combined.location = helperStatement.location;
-                  continueCondition = combined;
-                }
-                return {
-                  plans: mergedPlans,
-                  values: mergeValues(base.values, completedArms),
-                  continueCondition,
-                };
-              }
               if (ifSummary.loopControl || elseSummary.loopControl
                 || ifSummary.breakCondition || elseSummary.breakCondition
-                || ifSummary.continueCondition || elseSummary.continueCondition) return undefined;
+                || ifSummary.continueCondition || elseSummary.continueCondition) {
+                const tail = new BlockNode(body.slice(index + 1));
+                tail.location = helperBlock.location;
+                const completedIf = finishAfterConditionalAbrupt(
+                  ifSummary, tail, helperStatement.location,
+                );
+                const completedElse = finishAfterConditionalAbrupt(
+                  elseSummary, tail, helperStatement.location,
+                );
+                if (!completedIf || !completedElse) return undefined;
+                const completedArms = [
+                  { ...completedIf.summary, condition },
+                  { ...completedElse.summary, condition: otherwise as ExpressionNode },
+                ];
+                const mergedPlans = new Map([...base.plans].map(([name, plan]) => [name, mergePlan(
+                  name,
+                  plan,
+                  completedArms.map((arm) => ({
+                    plan: arm.plans.get(name)!, condition: arm.condition,
+                  })),
+                )]));
+                const result: HelperSummary = {
+                  plans: mergedPlans,
+                  values: mergeValues(base.values, completedArms),
+                };
+                if (completedIf.breaksAlways && completedElse.breaksAlways) {
+                  return { ...result, loopControl: 'break' };
+                }
+                if (completedIf.continuesAlways && completedElse.continuesAlways) {
+                  return { ...result, loopControl: 'continue' };
+                }
+                const selectedAbrupt = (
+                  completed: CompletedAbruptPath,
+                  armCondition: ExpressionNode,
+                  kind: 'break' | 'continue',
+                ): ExpressionNode | undefined => {
+                  const always = kind === 'break'
+                    ? completed.breaksAlways : completed.continuesAlways;
+                  const abruptCondition = kind === 'break'
+                    ? completed.breakCondition : completed.continueCondition;
+                  if (always) return cloneNode(armCondition) as ExpressionNode;
+                  if (!abruptCondition) return undefined;
+                  const selectedPath = new BinaryOpNode(
+                    cloneNode(armCondition), BinaryOperator.AND, cloneNode(abruptCondition),
+                  );
+                  selectedPath.location = helperStatement.location;
+                  return selectedPath;
+                };
+                const combine = (kind: 'break' | 'continue'): ExpressionNode | undefined => {
+                  const left = selectedAbrupt(completedIf, condition, kind);
+                  const right = selectedAbrupt(completedElse, otherwise, kind);
+                  if (!left) return right;
+                  if (!right) return left;
+                  const combined = new BinaryOpNode(left, BinaryOperator.OR, right);
+                  combined.location = helperStatement.location;
+                  return combined;
+                };
+                const breakCondition = combine('break');
+                const continueCondition = combine('continue');
+                return {
+                  ...result,
+                  ...(breakCondition && { breakCondition }),
+                  ...(continueCondition && { continueCondition }),
+                };
+              }
               const arms = [
                 { ...ifSummary, condition },
                 { ...elseSummary, condition: otherwise as ExpressionNode },

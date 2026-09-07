@@ -186,17 +186,10 @@ describe('pure child deployment recipes', () => {
     });
   });
 
-  it.each([
-    ['recursive', `function helper(bytes2 value) internal pure returns (bytes32) {
+  it('keeps recursive parent deployment helpers fenced', () => {
+    const helpers = `function helper(bytes2 value) internal pure returns (bytes32) {
       return helper(value);
-    }`],
-    ['ambiguous same-arity overloads', `function helper(bytes2 value) internal pure returns (bytes32) {
-      return sha256(value);
-    }
-    function helper(bytes3 value) internal pure returns (bytes32) {
-      return sha256(value);
-    }`],
-  ])('keeps %s parent deployment helpers fenced', (_label, helpers) => {
+    }`;
     const artifact = compileString(`
       contract Payload(bytes32 digest) { int marker; function keep() public { require(true); } }
       contract Factory() {

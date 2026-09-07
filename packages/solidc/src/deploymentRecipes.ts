@@ -81,6 +81,47 @@ const cloneEquivalentDefinition = (left: object, right: object): boolean => {
     && leftLocation.sourceFileId === rightLocation.sourceFileId;
 };
 
+const exactHelperSignature = (
+  call: FunctionCallNode, candidate: FunctionDefinitionNode,
+  handlerInputTypes?: ReadonlyMap<string, string>,
+  aliases?: ReadonlyMap<object, ChildDeploymentValueRecipe>,
+  aliasDefinitions?: ReadonlyMap<string, object>,
+): boolean => candidate.name === call.identifier.name
+  && candidate.parameters.length === call.parameters.length
+  && call.parameters.every((argument, index) => {
+    const linkedDefinition = argument instanceof IdentifierNode ? argument.definition?.definition : undefined;
+    const namedDefinition = argument instanceof IdentifierNode ? aliasDefinitions?.get(argument.name) : undefined;
+    const aliasedType = (linkedDefinition && aliases?.get(linkedDefinition)?.resultType)
+      || (namedDefinition && (!linkedDefinition || cloneEquivalentDefinition(linkedDefinition, namedDefinition))
+        && aliases?.get(namedDefinition)?.resultType);
+    const argumentType = argument.type?.toString()
+      ?? (linkedDefinition as { type?: Type } | undefined)?.type?.toString()
+      ?? aliasedType
+      ?? (argument instanceof IdentifierNode ? handlerInputTypes?.get(argument.name) : undefined);
+    return argumentType !== undefined && argumentType === candidate.parameters[index].type.toString();
+  });
+
+/** Resolve only semantic identity or a unique exact argument-type signature; never guess by name and arity. */
+const resolvedRecipeHelper = (
+  call: FunctionCallNode, helperFunctions: readonly FunctionDefinitionNode[],
+  handlerInputTypes?: ReadonlyMap<string, string>,
+  aliases?: ReadonlyMap<object, ChildDeploymentValueRecipe>,
+  aliasDefinitions?: ReadonlyMap<string, object>,
+): FunctionDefinitionNode | undefined => {
+  const namedCandidates = helperFunctions.filter((candidate) =>
+    candidate.name === call.identifier.name && candidate.parameters.length === call.parameters.length);
+  if (call.resolvedFunction
+    && call.resolvedFunction.name === call.identifier.name
+    && call.resolvedFunction.parameters.length === call.parameters.length) {
+    return namedCandidates.find((candidate) =>
+      cloneEquivalentDefinition(candidate, call.resolvedFunction!)) ?? call.resolvedFunction;
+  }
+  const exactCandidates = namedCandidates.filter((candidate) => exactHelperSignature(
+    call, candidate, handlerInputTypes, aliases, aliasDefinitions,
+  ));
+  return exactCandidates.length === 1 ? exactCandidates[0] : undefined;
+};
+
 const materializableGenesisType = (type: Type, stack: ReadonlySet<StructType> = new Set()): boolean => {
   if (type instanceof ArrayType) {
     return type.bound !== undefined && Number.isSafeInteger(type.bound) && type.bound >= 0
@@ -300,14 +341,10 @@ export function childDeploymentValueRecipe(
       : undefined;
   }
   if (expression instanceof FunctionCallNode) {
-    const namedCandidates = helperFunctions.filter((candidate) =>
-      candidate.name === expression.identifier.name && candidate.parameters.length === expression.parameters.length);
-    const candidates = namedCandidates.length > 0
-      ? namedCandidates : expression.resolvedFunction ? [expression.resolvedFunction] : [];
-    // Keep phase behavior identical: a same-arity overload is ambiguous during early admission even if a later
-    // type pass could select one. Recipe publication must not depend on which compiler phase asks first.
-    if (candidates.length !== 1) return undefined;
-    const helper = candidates[0];
+    const helper = resolvedRecipeHelper(
+      expression, helperFunctions, handlerInputTypes, aliases, aliasDefinitions,
+    );
+    if (!helper) return undefined;
     if (!helper.modifiers.includes(FunctionModifier.PURE)
       || !(helper.modifiers.includes(FunctionModifier.INTERNAL)
         || helper.modifiers.includes(FunctionModifier.PRIVATE))

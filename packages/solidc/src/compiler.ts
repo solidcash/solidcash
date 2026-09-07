@@ -1919,6 +1919,26 @@ function transactionSignatureLeaves(
   return [];
 }
 
+/**
+ * Return-type safety needs only a containment query, rather than the assignable paths required for parameter
+ * witness extraction above. Keep it separate so tuple members and cyclic aggregate graphs still classify a
+ * reachable `sig` as transaction-bound instead of accidentally falling through to the generic layout fence.
+ */
+function containsTransactionSignature(type: Type, seen = new Set<object>()): boolean {
+  if (type === PrimitiveType.SIG) return true;
+  if (typeof type !== 'object' || type === null) return false;
+  if (seen.has(type)) return false;
+  seen.add(type);
+  if (type instanceof ArrayType) return containsTransactionSignature(type.elementType, seen);
+  if (type instanceof StructType) {
+    return type.fields.some((field) => containsTransactionSignature(field.type, seen));
+  }
+  if (type instanceof TupleType) {
+    return type.elements.some((element) => containsTransactionSignature(element, seen));
+  }
+  return false;
+}
+
 const isEntireTransactionSignatureType = (type: Type): boolean => type === PrimitiveType.SIG
   || (type instanceof ArrayType && isEntireTransactionSignatureType(type.elementType));
 
@@ -4532,7 +4552,7 @@ function synthesizeMessageBusRoute(
     .map((definition) => definition.name));
   const routeEnumNames = new Set([...ast.enumDefinitions, ...contract.enumDefinitions]
     .map((definition) => definition.name));
-  const kernelResultEncodable = (type: Type): boolean => {
+  const kernelResultEncodable = (type: Type, active = new Set<object>()): boolean => {
     if (type === PrimitiveType.BOOL || type === PrimitiveType.BIGINT || type === PrimitiveType.STRING
       || type === PrimitiveType.INT) return true;
     // Native SolidCash ABI framing can carry these byte-string primitives. A returned `sig` is safe only when the
@@ -4549,11 +4569,23 @@ function synthesizeMessageBusRoute(
       return true;
     }
     if (type instanceof EnumType) return true;
-    if (type instanceof ValueType) return kernelResultEncodable(type.underlyingType);
-    if (type instanceof StructType) return type.fields.every((field) => kernelResultEncodable(field.type));
-    if (type instanceof ArrayType) {
-      return kernelResultEncodable(type.elementType);
+    if (type instanceof ValueType) return kernelResultEncodable(type.underlyingType, active);
+    if (type instanceof StructType || type instanceof ArrayType) {
+      // Solidity permits recursive storage aggregates (for example a struct containing an array of itself), but
+      // a returned value must have a finite materialized ABI representation. Detect the type-graph back edge here
+      // rather than overflowing this admission walk or letting later code generation partially expand it.
+      if (active.has(type)) return false;
+      active.add(type);
+      const encodable = type instanceof StructType
+        ? type.fields.every((field) => kernelResultEncodable(field.type, active))
+        : kernelResultEncodable(type.elementType, active);
+      active.delete(type);
+      return encodable;
     }
+    // A source multi-return is represented by `fn.returnTypes` and encoded component-by-component. A TupleType
+    // here would instead be one stack value; neither compact nor EVM `abi.encode` has such a route-local value
+    // representation, so do not confuse the two shapes.
+    if (type instanceof TupleType) return false;
     return false;
   };
   for (const fn of eligible) {
@@ -4576,7 +4608,7 @@ function synthesizeMessageBusRoute(
       && (fn.messageBusUsesTransactionSignature === true
         || fn.parameters.some((parameter) =>
           (transactionSignatureLeaves(parameter.type)?.length ?? 0) > 0))
-      && fn.returnTypes.some((type) => (transactionSignatureLeaves(type)?.length ?? 0) > 0)) {
+      && fn.returnTypes.some((type) => containsTransactionSignature(type))) {
       // A signature-bearing parameter is detached as a transaction-bound witness even when the source does not
       // check it directly. Publishing that witness could make it commit to an output containing itself. With no
       // such parameter and no reachable CHECKSIG/CHECKMULTISIG, a returned `sig` is compact opaque data instead.

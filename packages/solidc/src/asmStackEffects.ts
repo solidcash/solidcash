@@ -2,7 +2,8 @@ import { Op } from '@solidcash/utils';
 
 /**
  * Net stack effect of an opcode, used to keep the assembly-block stack tracker in sync.
- * Opcodes with data-dependent heights (OP_IFDUP, OP_CHECKMULTISIG) are absent and rejected. OP_ROLL's
+ * Opcodes with data-dependent heights are absent from the table. Literal OP_IFDUP is resolved separately;
+ * runtime OP_IFDUP and OP_CHECKMULTISIG remain rejected. OP_ROLL's
  * selected value is data-dependent, but its height change is always one consumed depth operand.
  * The OP_IF and OP_BEGIN families are analyzed structurally by analyzeAssemblyStack rather than listed here.
  * Reordering opcodes pop their touched slots and push the same count of anonymous slots (depth exact, names dropped).
@@ -174,6 +175,22 @@ export function getStackEffect(opcode: number): StackEffect | undefined {
   return EFFECTS[opcode];
 }
 
+/** Resolve OP_IFDUP when its input is the literal immediately preceding it. */
+export function getLiteralIfDupEffect(previous: number | Uint8Array | undefined): StackEffect | undefined {
+  let truthy: boolean;
+  if (previous instanceof Uint8Array) {
+    // BCH casts zero and negative zero (0x80 with only zero prefix bytes) to false.
+    truthy = previous.some((byte, index) => byte !== 0 && !(index === previous.length - 1 && byte === 0x80));
+  } else if (previous === Op.OP_0) {
+    truthy = false;
+  } else if (previous === Op.OP_1NEGATE || (previous !== undefined && previous >= Op.OP_1 && previous <= Op.OP_16)) {
+    truthy = true;
+  } else {
+    return undefined;
+  }
+  return { pops: 0, pushes: truthy ? 1 : 0 };
+}
+
 interface ConditionalFrame {
   kind: 'conditional';
   entryState: AssemblyStackAnalysis;
@@ -214,7 +231,8 @@ export function analyzeAssemblyStack(
     state.altDelta += pushes - pops;
   };
 
-  for (const element of script) {
+  for (let index = 0; index < script.length; index += 1) {
+    const element = script[index];
     if (element instanceof Uint8Array) {
       state.delta += 1;
       continue;
@@ -277,7 +295,9 @@ export function analyzeAssemblyStack(
       };
       continue;
     }
-    const effect = getStackEffect(element);
+    const effect = element === Op.OP_IFDUP
+      ? getLiteralIfDupEffect(script[index - 1])
+      : getStackEffect(element);
     if (!effect) return { error: `opcode ${element} has no statically trackable stack effect` };
     if (element === Op.OP_TOALTSTACK) {
       apply(effect);

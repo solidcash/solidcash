@@ -1687,6 +1687,9 @@ describe('required kernel admission', () => {
 
   it.each([
     ['local duplication', 'OP_1 OP_DUP OP_DROP OP_DROP'],
+    ['truthy literal conditional duplication', 'OP_7 OP_IFDUP OP_7 OP_NUMEQUALVERIFY OP_7 OP_NUMEQUALVERIFY'],
+    ['false literal conditional duplication', 'OP_0 OP_IFDUP OP_0 OP_NUMEQUALVERIFY'],
+    ['false pushed negative-zero conditional duplication', '80 OP_IFDUP OP_DROP'],
     ['literal-depth local pick', 'OP_7 OP_0 OP_PICK OP_NUMEQUALVERIFY'],
     ['pushed-depth local pick', '07 00 OP_PICK OP_NUMEQUALVERIFY'],
     ['literal-depth local roll', 'OP_7 OP_8 OP_1 OP_ROLL OP_7 OP_NUMEQUALVERIFY OP_8 OP_NUMEQUALVERIFY'],
@@ -1752,6 +1755,7 @@ describe('required kernel admission', () => {
     ['runtime-selected stack reach', 'OP_7 OP_TXVERSION OP_PICK OP_2DROP'],
     ['local roll reaching the compiler stack', 'OP_1 OP_ROLL'],
     ['runtime-selected local roll', 'OP_7 OP_TXVERSION OP_ROLL OP_DROP'],
+    ['ambient compiler stack depth', 'OP_DEPTH OP_DROP'],
     ['byte inversion borrowed from compiler stack', 'OP_INVERT OP_DROP'],
     ['numeric left-shift value borrowed from compiler stack', 'OP_1 OP_LSHIFTNUM OP_DROP'],
     ['numeric right-shift value borrowed from compiler stack', 'OP_1 OP_RSHIFTNUM OP_DROP'],
@@ -1779,6 +1783,15 @@ describe('required kernel admission', () => {
       eligible: false,
       rejectionReason: 'KERNEL_OPAQUE_EFFECT',
     });
+  });
+
+  it.each([
+    ['compiler-stack value', 'OP_IFDUP'],
+    ['runtime transaction value', 'OP_TXVERSION OP_IFDUP OP_2DROP'],
+  ])('rejects OP_IFDUP with runtime-dependent truthiness from a %s', (_description, asm) => {
+    expect(() => compileString(`contract C() {
+      function denied() public { assembly { ${asm} } require(true); }
+    }`, KERNEL)).toThrow(/OP_IFDUP|statically trackable/);
   });
 
   it.each([

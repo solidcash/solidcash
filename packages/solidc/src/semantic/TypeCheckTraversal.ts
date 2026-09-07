@@ -1451,6 +1451,7 @@ export default class TypeCheckTraversal extends AstTraversal {
     const structuredOpcodes = new Set([
       'OP_IF', 'OP_NOTIF', 'OP_ELSE', 'OP_ENDIF', 'OP_BEGIN', 'OP_UNTIL',
     ]);
+    const deterministicallyTrackableOpcodes = new Set(['OP_IFDUP']);
     for (const token of tokens) {
       if (token.startsWith('OP_')) {
         const opcode = Op[token as keyof typeof Op];
@@ -1463,7 +1464,8 @@ export default class TypeCheckTraversal extends AstTraversal {
             `opcode '${token}' is not allowed in assembly blocks as it can corrupt script execution`,
           );
         }
-        if (!structuredOpcodes.has(token) && getStackEffect(opcode as number) === undefined) {
+        if (!structuredOpcodes.has(token) && !deterministicallyTrackableOpcodes.has(token)
+          && getStackEffect(opcode as number) === undefined) {
           throw new InvalidAssemblyError(
             node,
             `opcode '${token}' cannot be used in an assembly block: its stack effect is not `

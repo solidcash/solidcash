@@ -214,7 +214,7 @@ import {
   getFixedWidth,
 } from './utils.js';
 import { isNumericType } from '../utils.js';
-import { getStackEffect } from '../asmStackEffects.js';
+import { getLiteralIfDupEffect, getStackEffect } from '../asmStackEffects.js';
 import {
   InvalidModifierCombinationError, MsgDataInSubroutineError, MsgSigInInternalFunctionError, EntryWriteInLoopError,
   SortedMappingCodegenPendingError,
@@ -8680,7 +8680,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     type ControlFrame = { kind: 'conditional'; entry: string[]; thenStack?: string[] }
     | { kind: 'loop'; entry: string[] };
     const controls: ControlFrame[] = [];
-    for (const element of script) {
+    for (let scriptIndex = 0; scriptIndex < script.length; scriptIndex += 1) {
+      const element = script[scriptIndex];
       this.emit(element, locationData);
       if (typeof element !== 'number') {
         this.pushToStack('(asm)');
@@ -8727,7 +8728,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.stack = loop.entry.map((name, index) => name === this.stack[index] ? name : '(asm)');
         continue;
       }
-      const effect = getStackEffect(element);
+      const effect = element === Op.OP_IFDUP
+        ? getLiteralIfDupEffect(script[scriptIndex - 1])
+        : getStackEffect(element);
       if (effect === undefined) {
         throw new Error(`Untrackable opcode in assembly block: ${element}`);
       }

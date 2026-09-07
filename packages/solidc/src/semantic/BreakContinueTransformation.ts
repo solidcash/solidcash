@@ -201,6 +201,7 @@ function transformDoWhileLoop(loop: DoWhileNode): StatementNode[] {
   const newLoop = new DoWhileNode(newCondition, newBlock);
   newLoop.forLoopUpdateCount = loop.forLoopUpdateCount;
   newLoop.fixedUnrollForbidden = loop.fixedUnrollForbidden;
+  newLoop.mappingEscapeReplayForbidden = loop.mappingEscapeReplayForbidden;
   newLoop.location = loop.location;
 
   // If break is used, prepend the flag variable declaration
@@ -267,6 +268,7 @@ function transformWhileLoop(loop: WhileNode): StatementNode[] {
   const newLoop = new WhileNode(newCondition, newBlock);
   newLoop.forLoopUpdateCount = loop.forLoopUpdateCount;
   newLoop.fixedUnrollForbidden = loop.fixedUnrollForbidden;
+  newLoop.mappingEscapeReplayForbidden = loop.mappingEscapeReplayForbidden;
   newLoop.location = loop.location;
 
   const result: StatementNode[] = [];

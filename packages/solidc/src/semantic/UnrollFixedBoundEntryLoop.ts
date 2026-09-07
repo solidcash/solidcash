@@ -263,6 +263,17 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
     return node;
   }
 
+  visitWhile(node: WhileNode): Node {
+    if (this.hasMappingWrite(node.block.statements ?? [])
+      && this.hasControlFlowEscape(node.block.statements ?? [])) {
+      // Keep provenance even when literal-bound recognition below returns early. Mapping settlement allocates one
+      // reached row per syntactic collection site, so neither runtime-selected nor statically selected escape sets
+      // may be represented by expanding repeated writes to that same site.
+      node.mappingEscapeReplayForbidden = true;
+    }
+    return super.visitWhile(node);
+  }
+
   private tryUnroll(init: VariableDefinitionNode, w: WhileNode): StatementNode[] | undefined {
     const varName = init.name;
     if (!(init.expression instanceof IntLiteralNode)) return undefined;
@@ -320,10 +331,19 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
     // WHOLE table from one index-independent receiver, and unrolling it into N single-element callsites changes
     // the direct ABI (per-element selector and master-index witnesses) that shipped broadcast callers use.
     const hasIndirectCall = this.hasIndirectCall(bodyStmts);
+    const hasMappingWrite = this.hasMappingWrite(bodyStmts);
     if (this.indirectCallsOnly ? !hasIndirectCall
-      : (!this.hasMappingWrite(bodyStmts) && !this.hasKeccakCall(bodyStmts)
+      : (!hasMappingWrite && !this.hasKeccakCall(bodyStmts)
         && !this.hasChildDeployment(bodyStmts))) return undefined;
     const hasSourceEscape = this.hasControlFlowEscape(bodyStmts);
+    if (hasSourceEscape && hasMappingWrite) {
+      // A mapping journal can allocate only one reached row per syntactic collection site. Even when the loop
+      // control decision is statically known, expanding repeated writes to that same site does not preserve the
+      // source write set, so every mapping escape loop remains a runtime-key resource.
+      w.fixedUnrollForbidden = true;
+      w.mappingEscapeReplayForbidden = true;
+      return undefined;
+    }
     if (hasSourceEscape && !this.hasChildDeployment(bodyStmts)) {
       w.fixedUnrollForbidden = true;
       return undefined;

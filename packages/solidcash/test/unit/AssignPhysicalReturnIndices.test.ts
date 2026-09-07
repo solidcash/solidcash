@@ -147,6 +147,7 @@ import {
   groupWritesSingleChunkableArrayCollection,
   selectChunkableValueWriteExecution,
   permitsLegacyNamedValueChunkFallback,
+  permitsLegacyValueChunkEventReconstruction,
   placeSameIndexTwin,
   placeInsertNewAt,
   shouldOverwriteForSameIndexTwin,
@@ -219,6 +220,18 @@ describe('generic persisted value-chunk write identity', () => {
     expect(permitsLegacyNamedValueChunkFallback([
       { ...renamedLegacy, logicalArtifact: kernelArtifact },
     ])).toBe(false);
+  });
+
+  it('reconstructs descriptor-free events only for legacy plans, ignoring a named kernel decoy', () => {
+    const legacyRenamed = { functionName: 'appendNotice' };
+    const kernelArtifact = {
+      messageBus: { convention: 'kernel-row-loop' },
+    } as unknown as Artifact;
+    const kernelNamedDecoy = { functionName: 'publishJobEvent', logicalArtifact: kernelArtifact };
+
+    expect(permitsLegacyValueChunkEventReconstruction([legacyRenamed], false)).toBe(true);
+    expect(permitsLegacyValueChunkEventReconstruction([legacyRenamed], true)).toBe(false);
+    expect(permitsLegacyValueChunkEventReconstruction([legacyRenamed, kernelNamedDecoy], false)).toBe(false);
   });
 
   it('selects a renamed physical value writer from metadata and rejects a named decoy', () => {

@@ -2630,6 +2630,14 @@ export function permitsLegacyNamedValueChunkFallback(
   });
 }
 
+/** Permit inferred event reconstruction only for descriptor-free pre-kernel plans. */
+export function permitsLegacyValueChunkEventReconstruction(
+  groups: ReadonlyArray<ChunkableArrayWriteGroup>,
+  hasChunkableValueWriteMetadata: boolean,
+): boolean {
+  return !hasChunkableValueWriteMetadata && permitsLegacyNamedValueChunkFallback(groups);
+}
+
 function groupChunkableArrayWriteCollections(group: ChunkableArrayWriteGroup): string[] {
   const route = group.compilerRoute;
   const artifact = group.logicalArtifact ?? group.externalContract?.inner?.artifact;
@@ -7584,7 +7592,10 @@ export class StatefulTransactionBuilder {
     );
     if (eventSelection.status === 'ambiguous') return;
     const legacyEventFallback = eventSelection.status === 'absent'
-      && !this._hasChunkableValueWriteMetadata();
+      && permitsLegacyValueChunkEventReconstruction(
+        [...this.externalCallUtxoGroups, ...this.lowLevelCallUtxoGroups],
+        this._hasChunkableValueWriteMetadata(),
+      );
     if (eventSelection.status === 'absent' && !legacyEventFallback) return;
     const publishFn = this._chunkableValueWriteAbi();
     const eventOffset = eventSelection.status === 'exact'

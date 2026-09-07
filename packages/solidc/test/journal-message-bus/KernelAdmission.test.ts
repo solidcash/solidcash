@@ -126,7 +126,7 @@ describe('required kernel admission', () => {
     expect(artifact.messageBus?.route.entryAccesses?.find((entry) => entry.collection === 'source'))
       .toMatchObject({ slotIndex: 0, operations: expect.arrayContaining(['read', 'write']) });
   });
-  it('admits field-shaped struct getters and dynamic struct-array results', () => {
+  it('admits a field-shaped struct getter while fencing an unbounded struct array', () => {
     const artifact = compileString(`pragma solidity ^0.8.0;
       contract C() {
       struct Rec { int value; }
@@ -137,7 +137,7 @@ describe('required kernel admission', () => {
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'current'))
       .toMatchObject({ eligible: true });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'all'))
-      .toMatchObject({ eligible: true });
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
   });
 
   it('admits one helper which directly combines dynamic state and a collection entry', () => {
@@ -5858,7 +5858,7 @@ describe('required kernel admission', () => {
       .toMatchObject({ eligible: true, outputs: [{ type: 'sig' }] });
   });
 
-  it('captures a Rec[] result through the recursive ABI encoder', () => {
+  it('keeps an unbounded Rec[] result behind KERNEL_LAYOUT without demoting control', () => {
     const artifact = compileString(`pragma solidity ^0.8.0;
       struct Rec { uint x; }
       contract C {
@@ -5866,7 +5866,10 @@ describe('required kernel admission', () => {
         function denied() public view returns (Rec[] memory) { return records; }
         function control() public { require(true); }
       }`, { ...KERNEL, solidityImportCompat: true });
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')?.eligible).toBe(true);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')).toMatchObject({
+      eligible: false,
+      rejectionReason: 'KERNEL_LAYOUT',
+    });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
   });
 
@@ -7318,7 +7321,7 @@ describe('required kernel admission', () => {
         eligible: true,
         runtimeLoopEvents: [{
           eventSignatures: ['Tick(int256)'],
-          arguments: [[{ kind: 'binary', operator: '+' }]],
+          arguments: [[{ kind: 'ternary' }]],
         }],
       });
   });
@@ -7341,13 +7344,11 @@ describe('required kernel admission', () => {
         eligible: true,
         runtimeLoopEvents: [{
           eventSignatures: ['Tick(int256)'],
-          arguments: [[{
-            kind: 'binary',
-            operator: '+',
-            left: { kind: 'source', source: { kind: 'forward', paramIndex: 1 } },
-          }]],
+          arguments: [[{ kind: 'ternary' }]],
         }],
       });
+    expect(JSON.stringify(artifact.messageBus?.handlers.find((handler) => handler.name === 'observe')
+      ?.runtimeLoopEvents)).toContain('"paramIndex":1');
   });
 
   it('replays a dominating reassignment and fences path-dependent event recurrences', () => {
@@ -7409,7 +7410,7 @@ describe('required kernel admission', () => {
     }
   });
 
-  it('keeps resource and loop-carried scalar-state event recurrence sources fenced', () => {
+  it('keeps resource recurrence sources fenced and exactly replays truncating and local deltas', () => {
     const artifact = compileString(`event Tick(int value);
       contract C() {
         int total;
@@ -7457,12 +7458,12 @@ describe('required kernel admission', () => {
       .toMatchObject({ eligible: true });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'counterLocalAlias'))
       .toMatchObject({ eligible: true });
-    for (const name of [
-      'resourceDependent', 'truncatedCounter', 'localDelta',
-    ]) {
+    for (const name of ['truncatedCounter', 'localDelta']) {
       expect(artifact.messageBus?.handlers.find((handler) => handler.name === name))
-        .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+        .toMatchObject({ eligible: true });
     }
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'resourceDependent'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
   });
 
   it('publishes quadratic-counter event prefixes across affine loop domains and source phases', () => {

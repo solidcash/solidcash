@@ -98,7 +98,12 @@ const exactHelperSignature = (
     const argumentType = argument.type?.toString()
       ?? (linkedDefinition as { type?: Type } | undefined)?.type?.toString()
       ?? aliasedType
-      ?? (argument instanceof IdentifierNode ? handlerInputTypes?.get(argument.name) : undefined);
+      ?? (argument instanceof IdentifierNode ? handlerInputTypes?.get(argument.name) : undefined)
+      // Early kernel admission precedes the final type pass. Hash intrinsics nevertheless have one fixed result
+      // type, so they can select an overload exactly without guessing from its name/arity or argument contents.
+      ?? (argument instanceof FunctionCallNode && !argument.resolvedFunction
+        && pureHashFunctions.has(argument.identifier.name) && argument.parameters.length === 1
+        ? pureHashResultType(argument.identifier.name) : undefined);
     return argumentType !== undefined && argumentType === candidate.parameters[index].type.toString();
   });
 

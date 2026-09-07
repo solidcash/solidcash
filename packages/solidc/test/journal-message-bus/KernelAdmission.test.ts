@@ -6130,6 +6130,53 @@ describe('required kernel admission', () => {
     });
   });
 
+  it('publishes cast, hash, and exactly selected pure-overload fixed transfer recipes', () => {
+    const artifact = compileString(`contract C() {
+      int marker;
+      function quote(bytes20 digest) internal pure returns (int) { return 2000; }
+      function quote(bytes32 digest) internal pure returns (int) { return 4000; }
+      function pay(bytes seed) public {
+        this.transfer(bytes(sha256(seed)), uint(quote(hash160(seed))));
+        require(true);
+      }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'pay')).toMatchObject({
+      eligible: true,
+      transfers: [{
+        recipientRecipe: {
+          kind: 'cast', resultType: 'bytes', operand: { kind: 'hash', algorithm: 'sha256' },
+        },
+        amountRecipe: {
+          kind: 'cast', resultType: 'uint256', operand: {
+            kind: 'cast', resultType: 'int256', operand: { kind: 'intLiteral', value: '2000' },
+          },
+        },
+      }],
+    });
+  });
+
+  it.each([
+    ['transaction-signature hash',
+      'function quote(bytes20 digest) internal pure returns (int) { return int(digest) % 1000 + 2000; }',
+      'this.transfer(recipient, quote(hash160(bytes(secret))));', 'sig secret'],
+    ['transaction-derived resolved overload',
+      'function quote(bytes20 digest) internal returns (int) { return tx.locktime + int(digest); } '
+        + 'function quote(bytes32 digest) internal pure returns (int) { return 3000; }',
+      'this.transfer(recipient, quote(hash160(secret)));', 'bytes secret'],
+  ])('keeps %s outside fixed transfer recipes', (_label, helpers, effect, parameter) => {
+    const artifact = compileString(`contract C() {
+      int marker;
+      ${helpers}
+      function pay(bytes recipient, ${parameter}) public {
+        ${effect}
+        require(true);
+      }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'pay')).toMatchObject({
+      eligible: false, rejectionReason: 'KERNEL_LAYOUT',
+    });
+  });
+
   it('does not reuse authenticated pre-state after an unreplayable source-ordered write', () => {
     const artifact = compileString(`contract C() {
       int quantity;

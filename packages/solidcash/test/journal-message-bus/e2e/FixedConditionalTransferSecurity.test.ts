@@ -757,6 +757,57 @@ describe('fixed conditional BCH transfer transcript security', () => {
     expect(valueRows(inactive)).toHaveLength(0);
   }, 240_000);
 
+  it('executes cast and hash recipes selected through an exact pure overload', async () => {
+    const provider = createMessageBusCapstoneTestProvider();
+    const artifacts = compileStringMulti(`interface IPayer { function pay(bytes seed); }
+      contract Payer() {
+        int marker;
+        function quote(bytes20 digest) internal pure returns (int) { return 2000; }
+        function quote(bytes32 digest) internal pure returns (int) { return 3000; }
+        function pay(bytes seed) public {
+          this.transfer(sha256(seed), uint(quote(hash160(seed))));
+          require(true);
+        }
+      }
+      contract Driver(address payer) {
+        function run(bytes seed) public { IPayer(payer).pay(seed); require(true); }
+      }`, { forceStateful: true, messageBus: true, messageBusKernel: true, maximumInputBytes: 1_000_000 });
+    expect(artifacts.Payer.messageBus?.handlers.find((handler) => handler.name === 'pay')).toMatchObject({
+      eligible: true,
+      transfers: [{
+        recipientRecipe: { kind: 'hash', algorithm: 'sha256' },
+        amountRecipe: { kind: 'cast', resultType: 'uint256' },
+      }],
+    });
+    const connect = async (artifact: Artifact, args: readonly unknown[] = []): Promise<StatefulContract> => {
+      const base = new Contract(artifact, args as never[], { provider });
+      const setup = await setupStatefulUtxos(provider, base, artifact.stateLayout!, {}, { saltContract: true });
+      return StatefulContract.withCategory(base.withCategory(hexToBin(setup.categoryId)), setup.categoryId);
+    };
+    const payer = await connect(artifacts.Payer);
+    const driver = await connect(artifacts.Driver, [hexToBin(payer.inner.lockingBytecode)]);
+    await provider.addUtxo(getSatoshiContainerAddress(payer.inner, payer.categoryId), {
+      txid: 'e5'.repeat(32), vout: 1, satoshis: 20_000n,
+    });
+    const fee = await createBareP2pkhFeeFunder(provider, 1_000_000n);
+    const seed = Uint8Array.of(1, 2, 3);
+    const expectedRecipient = sha256(seed);
+    const builder = await messageBus.compose({
+      preparedCalls: [
+        { contract: driver, functionName: 'run', args: [seed] },
+        { contract: payer, functionName: 'pay', args: [seed] },
+      ],
+      funder: fee,
+      changeAddress: fee.unlocker.generateLockingBytecode(),
+    }).build();
+    expect(vmRejects(builder)).toBe(false);
+    const transfer = builder.outputs.find((output) => !output.token && output.amount === 2_000n
+      && binToHex(output.to as Uint8Array) === binToHex(expectedRecipient));
+    expect(transfer).toBeDefined();
+    transfer!.to = Uint8Array.from(expectedRecipient, (byte, index) => index === 0 ? byte ^ 1 : byte);
+    expect(vmRejects(builder)).toBe(true);
+  }, 240_000);
+
   it('authenticates a fixed transfer after a successful early-return path', async () => {
     const provider = createMessageBusCapstoneTestProvider();
     const artifacts = compileStringMulti(`interface IPayer {

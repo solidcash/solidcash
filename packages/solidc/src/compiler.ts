@@ -3958,6 +3958,7 @@ function synthesizeMessageBusRoute(
     );
     if (compilerOptions.messageBusKernel === true) {
       const fixedEffectRecipes = analyzeFixedBchEffectRecipes(fn);
+      const contractRecipientRecipes = analyzeChildDeploymentRecipes(fn);
       const auditActivation = (
         value: unknown, seen = new WeakSet<object>(),
       ): void => {
@@ -3974,6 +3975,19 @@ function synthesizeMessageBusRoute(
             hasUnsupportedFixedTransferRecipe = true;
           }
           if (analysis?.activationSupported === false) hasUnsupportedFixedTransferActivation = true;
+          return;
+        }
+        if (value instanceof InstantiationNode && value.referencedContract
+          && !value.isStatefulDeploy && hasEffectiveCallValue(value.callOptions?.value)) {
+          const effect = fixedEffectRecipes.get(value);
+          const derived = contractRecipientRecipes.get(value);
+          const bakedArguments = value.referencedContract.parameters.length;
+          if (!effect?.amount || !derived?.supported
+            || derived.constructorArgs.slice(0, bakedArguments).some((recipe) => recipe === undefined)
+            || (value.callOptions?.salt !== undefined && derived.salt === undefined)) {
+            hasUnsupportedFixedTransferRecipe = true;
+          }
+          if (effect?.activationSupported === false) hasUnsupportedFixedTransferActivation = true;
           return;
         }
         if (value instanceof TryCatchNode) {
@@ -4237,7 +4251,7 @@ function synthesizeMessageBusRoute(
             // deployment: it mints no category or participant block. Let it execute inside the ordinary row just
             // like `type(Child).creationCode` plus P2SH construction. Value-bearing stateless creation remains a
             // transfer effect and stays fenced until its recipient recipe is published with fixed BCH effects.
-            if (referencedChild && !statefulChild && !hasEffectiveCallValue(node.callOptions?.value)) return;
+            if (referencedChild && !statefulChild) return;
             deploys = true;
             const analyzed = statefulChild
               ? deploymentRecipeAnalysis.get(node) : undefined;
@@ -4568,11 +4582,11 @@ function synthesizeMessageBusRoute(
     return found;
   };
   const carriesAdmittedChildDeploymentValue = (fn: FunctionDefinitionNode): boolean => {
-    if (!kernelDeploymentHandlers.has(fn)) return false;
     let found = false;
     walkInvocationAst(fn.body, (node) => {
       if (node instanceof InstantiationNode
-        && hasEffectiveCallValue(node.callOptions?.value)) found = true;
+        && hasEffectiveCallValue(node.callOptions?.value)
+        && (!node.isStatefulDeploy || kernelDeploymentHandlers.has(fn))) found = true;
     });
     return found;
   };
@@ -5543,6 +5557,7 @@ function synthesizeMessageBusRoute(
   // per-dispatch effect frame shared by the route and the SDK callManifest.
   for (const sourceHandler of eligible) {
     const footprint = eligibleFootprint(sourceHandler);
+    const hasChildValueEffect = carriesAdmittedChildDeploymentValue(sourceHandler);
     let hasTokenEffect = [...footprint.writes].some((resource) => resource.startsWith('collection:tokens:'));
     walkInvocationAst(sourceHandler.body, (node) => {
       if (node instanceof TokenContainerMethodStatementNode
@@ -5555,7 +5570,7 @@ function synthesizeMessageBusRoute(
     if (sourceHandler === resourceShapedHandler
       || (graphTailHandlers.has(sourceHandler) && !kernelLoopDispatch)
       || (!(graphTailHandlers.has(sourceHandler) && kernelLoopDispatch)
-        && footprint.effects.length === 0 && !hasTokenEffect && !hasEcrecoverCall)
+        && footprint.effects.length === 0 && !hasChildValueEffect && !hasTokenEffect && !hasEcrecoverCall)
     ) continue;
     const already = existingClone(sourceHandler);
     if (already) {
@@ -9556,7 +9571,8 @@ function compileResolvedAst(
           : fn === ast.contract.receiveDef ? candidate.isReceive === true
             : false);
       const incomplete = abi?.transfers?.some((transfer) =>
-        transfer.recipientRecipe === undefined || transfer.amountRecipe === undefined
+        (transfer.recipientRecipe === undefined && transfer.derivedRecipient === undefined)
+        || transfer.amountRecipe === undefined
         || transfer.condition === null) === true;
       if (!incomplete) continue;
       fn.messageBusEligible = false;

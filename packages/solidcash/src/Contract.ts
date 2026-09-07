@@ -256,7 +256,7 @@ export class Contract<
       this.encodedConstructorArgs.map(binToHex).join(','),
       this.usesExternalLibraries ? 'library-pad' : '',
       this.isStateful && this.category ? binToHex(this.category) : '',
-      this.salt ? binToHex(this.salt) : '',
+      this.salt === undefined ? 'no-salt' : `salt:${binToHex(this.salt)}`,
     ].join('|');
     let compositions = composedBytecodeScripts.get(artifact.bytecode);
     if (!compositions) {
@@ -292,7 +292,7 @@ export class Contract<
 
       // User CREATE2 salt (optional, any contract): a dead push baked into the script for deterministic /
       // counterfactual address control. Separate, outermost segment (distinct from the category self-pin).
-      if (this.salt && this.salt.length > 0) {
+      if (this.salt !== undefined) {
         contractBytecodeScript = [this.salt, Op.OP_DROP, ...contractBytecodeScript];
       }
       compositions.set(compositionKey, contractBytecodeScript);

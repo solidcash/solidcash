@@ -13585,7 +13585,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     let childDeploymentValueCalls = 0;
     walkInvocationAst(fn.body, (node) => {
       if ((node instanceof ExternalFunctionCallNode || node instanceof MethodCallNode
-        || (node instanceof InstantiationNode && node.isStatefulDeploy))
+        || node instanceof InstantiationNode)
         && hasEffectiveCallValue(node.callOptions?.value)) {
         valueCalls += 1;
         if (node instanceof InstantiationNode && node.isStatefulDeploy) childDeploymentValueCalls += 1;

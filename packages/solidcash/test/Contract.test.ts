@@ -181,6 +181,16 @@ describe('Contract', () => {
       expect(instance1.address).toBe(instance2.address);
     });
 
+    it('treats an explicitly empty salt as an encoded salt segment', () => {
+      const unsalted = new Contract(p2pkhArtifact, [placeholder(20)], { provider });
+      const emptySalted = new Contract(
+        p2pkhArtifact, [placeholder(20)], { provider, salt: new Uint8Array() },
+      );
+
+      expect(emptySalted.address).not.toBe(unsalted.address);
+      expect(emptySalted.bytesize).toBe(unsalted.bytesize + 2);
+    });
+
     it('should throw when salt exceeds 520 bytes', () => {
       const salt = new Uint8Array(521);
       expect(() => new Contract(p2pkhArtifact, [placeholder(20)], { provider, salt }))

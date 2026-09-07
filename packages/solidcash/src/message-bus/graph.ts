@@ -385,7 +385,19 @@ export function atomicParticipantPolicyHash(artifact: Artifact): string {
     eligible: handler.eligible,
     rejectionCode: handler.rejectionCode ?? '',
     emits: (handler.emits ?? []).map((event) => [event.eventName, event.eventSignature, event.emitIndex]),
-    transfers: (handler.transfers ?? []).map((transfer) => [transfer.transferIndex, transfer.callOption ?? '']),
+    transfers: (handler.transfers ?? []).map((transfer) => ({
+      transferIndex: transfer.transferIndex,
+      recipient: transfer.recipient,
+      amount: transfer.amount,
+      recipientRecipe: transfer.recipientRecipe ?? null,
+      amountRecipe: transfer.amountRecipe ?? null,
+      derivedRecipient: transfer.derivedRecipient ? {
+        ...transfer.derivedRecipient,
+        creationBytecode: transfer.derivedRecipient.creationBytecode.toLowerCase(),
+      } : null,
+      callOption: transfer.callOption ?? '',
+      condition: transfer.condition ?? null,
+    })),
     tokenOperations: (handler.tokenContainerAccesses ?? []).map((access) =>
       [access.keyParam, ...access.operations, access.transferCount ?? 0, access.transferNftCount ?? 0]),
     childDeployments: (handler.childDeployments ?? []).map((site) => ({

@@ -80,6 +80,7 @@ import {
   scriptToAsm,
   childStateLayoutDigest,
   validateChildDeploymentGenesisState,
+  FixedBchTransferAbi,
 } from '@solidcash/utils';
 import {
   RUNTIME_LOOP_EVENT_ITERATION_LIMIT,
@@ -5230,6 +5231,28 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         .graphEcrecoverCalls = graphEcrecoverCalls;
     }
     const routeSelector = hexToBin(capability.selector);
+    const attachCompilerTransfers = (call: StatefulFunctionCall): StatefulFunctionCall => {
+      const transferSlots = capability.route.blockLayout?.slots
+        .filter((slot) => slot.kind === 'transfer' && slot.slotIndex !== undefined) ?? [];
+      const frameWidth = capability.route.graphEffectFrame?.transferWidth
+        ?? (capability.maximumRows > 0 && transferSlots.length % capability.maximumRows === 0
+          ? transferSlots.length / capability.maximumRows : 0);
+      reachedHandlers.forEach((handler, rowIndex) => {
+        const row = effectiveRowArguments?.[rowIndex];
+        if (!row) return;
+        for (const transfer of handler.transfers ?? []) {
+          const outputSlot = rowIndex * frameWidth + transfer.transferIndex;
+          if (frameWidth < 1 || transfer.transferIndex < 0 || transfer.transferIndex >= frameWidth
+            || !transferSlots.some((slot) => slot.slotIndex === outputSlot)) {
+            throw new Error(`messageBus: BCH transfer in '${handler.name}' has no canonical slot`);
+          }
+          call._withCompilerTransferRecipe(
+            outputSlot, transfer, row.args, handler, executionArtifact,
+          );
+        }
+      });
+      return call;
+    };
     if (delegateExecution) {
       const proxyForward = this.inner.artifact.abi.find((fn) => fn.name === '__forward');
       if (!proxyForward || proxyForward.inputs[0]?.type !== 'bytes') {
@@ -5257,7 +5280,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         // omitting them makes the final ABI encoder receive `undefined`.
         internalArgs: resolvedInternalRouteWitnesses,
       };
-      return new StatefulFunctionCall(
+      return attachCompilerTransfers(new StatefulFunctionCall(
         this._createBuilder('__forward', [routeSelector], {
           blockBase, emitReturn, returnBlob, omitLocalFeeTail, logicalIdentity,
         }),
@@ -5265,9 +5288,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         // `routeSelector` is calldata for the co-spent implementation, not a selector for the single-entry
         // proxy. Keep the physical proxy unlocker selector-free when `_applyOverrides` rebuilds this call.
         { abiFunction: proxyForward, blockBase, emitReturn, returnBlob, omitLocalFeeTail, logicalIdentity },
-      )._withCompilerRouteDelegatecall(delegateExecution.executor, route);
+      )._withCompilerRouteDelegatecall(delegateExecution.executor, route));
     }
-    return new StatefulFunctionCall(
+    return attachCompilerTransfers(new StatefulFunctionCall(
       this._createBuilder('__message_bus1', routeArgs, {
         abiFunction: effectiveRoute,
         compilerRouteSelector: routeSelector,
@@ -5282,7 +5305,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         abiFunction: effectiveRoute, selector: routeSelector, blockBase, emitReturn, returnBlob,
         omitLocalFeeTail, logicalIdentity,
       },
-    );
+    ));
   }
 
   private static _uintLe(value: bigint, width: number): Uint8Array {
@@ -30142,6 +30165,13 @@ export class StatefulFunctionCall {
   private externalEntryKeyOverrides: Map<number, bigint | boolean | Uint8Array> = new Map();
   private entryDeleteSlots: number[] = [];
   private transfers: Array<{ lockingBytecode: Uint8Array; amount: bigint; outputSlot?: number }> = [];
+  private compilerTransferRecipes: Array<{
+    outputSlot: number;
+    transfer: FixedBchTransferAbi;
+    args: readonly FunctionArgument[];
+    handler: NonNullable<NonNullable<Artifact['messageBus']>['handlers']>[number];
+    executionArtifact: Artifact;
+  }> = [];
   private tokenContainerTransfers: Array<{
     tokenContainerCategoryId: string; lockingBytecode: Uint8Array; amount: bigint;
   }> = [];
@@ -30244,6 +30274,18 @@ export class StatefulFunctionCall {
   /** @internal Fill an exact compiler-reserved BCH transfer slot for atomic composition. */
   _withCompilerTransfer(outputSlot: number, lockingBytecode: Uint8Array, amount: bigint): this {
     this.transfers.push({ outputSlot, lockingBytecode, amount });
+    return this;
+  }
+
+  /** @internal Defer a compiler-authenticated BCH effect until async build-time state/predicate resolution. */
+  _withCompilerTransferRecipe(
+    outputSlot: number,
+    transfer: FixedBchTransferAbi,
+    args: readonly FunctionArgument[],
+    handler: NonNullable<NonNullable<Artifact['messageBus']>['handlers']>[number],
+    executionArtifact: Artifact,
+  ): this {
+    this.compilerTransferRecipes.push({ outputSlot, transfer, args: [...args], handler, executionArtifact });
     return this;
   }
 
@@ -32450,10 +32492,38 @@ export class StatefulFunctionCall {
       builder.addTokenContainerDeposit(tokenContainerCategoryId, amount);
     }
 
+    let effectiveTransfers = this.transfers;
+    if (effectiveTransfers.length === 0 && this.compilerTransferRecipes.length > 0) {
+      const { materializeFixedBchTransfer } = await import('../message-bus/compose.js');
+      const materialized: typeof this.transfers = [];
+      for (const plan of this.compilerTransferRecipes) {
+        if (plan.transfer.condition === null) {
+          throw new Error(`messageBus: BCH transfer predicate in '${plan.handler.name}' is not canonical`);
+        }
+        const handlerAbi = plan.executionArtifact.abi.find((candidate) =>
+          candidate.selector === plan.handler.selector || candidate.name === plan.handler.name);
+        if (!handlerAbi) throw new Error(`Message-bus handler ABI '${plan.handler.name}' is missing`);
+        if (plan.transfer.condition !== undefined && !(await this.parentContract!._resolveCompilerEffectPredicate(
+          plan.transfer.condition, plan.args, handlerAbi, plan.executionArtifact,
+        ))) continue;
+        materialized.push({
+          outputSlot: plan.outputSlot,
+          ...materializeFixedBchTransfer(
+            plan.transfer,
+            plan.args,
+            plan.handler.inputs.map((input) => input.type),
+            plan.executionArtifact,
+            this.parentContract!.inner.provider,
+          ),
+        });
+      }
+      effectiveTransfers = materialized;
+    }
+
     // Apply transfers: user overrides replace auto-derived transfers
-    if (this.transfers.length > 0) {
+    if (effectiveTransfers.length > 0) {
       builder.clearTransfers();
-      for (const { lockingBytecode, amount, outputSlot } of this.transfers) {
+      for (const { lockingBytecode, amount, outputSlot } of effectiveTransfers) {
         if (outputSlot === undefined) builder.addTransfer(lockingBytecode, amount);
         else builder.setTransfer(outputSlot, lockingBytecode, amount);
       }
@@ -32653,7 +32723,7 @@ export class StatefulFunctionCall {
     // silently building a transaction with dummy amounts the covenant would reject.
     const expectedSatoshiTransfers = (builder as any).__expectedTransferCount ?? 0;
     const expectedFtTransfers = (builder as any).__expectedFtTransferCount ?? 0;
-    if (expectedSatoshiTransfers > 0 && this.transfers.length === 0
+    if (expectedSatoshiTransfers > 0 && effectiveTransfers.length === 0
         && !(builder as any).__derivedTransfers) {
       const derivationError = (builder as any).__derivationError as Error | undefined;
       // A covenant OP_VERIFY is a revert, not a missing transfer slot. Surface it so

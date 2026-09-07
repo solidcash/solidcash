@@ -302,6 +302,14 @@ export interface FixedBchTransferAbi {
   /** Canonical typed recipes used by kernel composition. Absence means the operand is not materializable. */
   recipientRecipe?: ChildDeploymentValueRecipe;
   amountRecipe?: ChildDeploymentValueRecipe;
+  /** A stateless child address derived from compiler-pinned body bytes and pure row recipes. */
+  derivedRecipient?: {
+    contractName: string;
+    creationBytecode: string;
+    constructorInputs: readonly AbiInput[];
+    constructorArgs: readonly ChildDeploymentValueRecipe[];
+    salt?: ChildDeploymentValueRecipe;
+  };
   callOption?: 'value';
   /** Exact source-path predicate. Null explicitly means that source reachability is not reproducible. */
   condition?: ExternalCallExpression | null;

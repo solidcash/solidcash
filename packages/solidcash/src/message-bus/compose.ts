@@ -10,7 +10,9 @@ import {
   validateChildDeploymentGenesisState,
   getDefaultStateValue,
 } from '@solidcash/utils';
-import type { Artifact, ChildDeploymentValueRecipe, StateValue, StructDefinitionInfo } from '@solidcash/utils';
+import type {
+  Artifact, ChildDeploymentValueRecipe, FixedBchTransferAbi, StateValue, StructDefinitionInfo,
+} from '@solidcash/utils';
 import type { ConstructorArgument, FunctionArgument } from '../Argument.js';
 import type {
   ContractUnlocker, Output, TokenDetails, TransactionDetails, UnlockableUtxo, Unlocker, Utxo,
@@ -24,6 +26,7 @@ import {
 } from '../stateful/StatefulContract.js';
 import { valueChunkIndexFromCommitment } from '../stateful/StatefulTransactionBuilder.js';
 import { artifactUsesSolidityAbi } from '../stateful/solidityAbi.js';
+import type NetworkProvider from '../network/NetworkProvider.js';
 import {
   resolveLogicalIdentity, type ResolvedLogicalIdentity,
 } from '../stateful/logical-identity.js';
@@ -346,6 +349,67 @@ export const evaluateChildDeploymentRecipe = (
     resultType,
     solidityAbi,
   );
+};
+
+/** Materialize one compiler-authenticated fixed BCH effect without probing placeholder outputs. */
+export const materializeFixedBchTransfer = (
+  transfer: FixedBchTransferAbi,
+  args: readonly FunctionArgument[],
+  inputTypes: readonly string[],
+  executionArtifact: Artifact,
+  provider: NetworkProvider,
+): { lockingBytecode: Uint8Array; amount: bigint } => {
+  const solidityAbi = artifactUsesSolidityAbi(executionArtifact);
+  const recipientValue = transfer.derivedRecipient
+    ? (() => {
+      const derived = transfer.derivedRecipient!;
+      const constructorArgs = derived.constructorArgs.map((recipe) =>
+        evaluateChildDeploymentRecipe(recipe, args, inputTypes, solidityAbi));
+      const saltValue = derived.salt
+        ? evaluateChildDeploymentRecipe(derived.salt, args, inputTypes, solidityAbi)
+        : undefined;
+      const salt = saltValue instanceof Uint8Array ? saltValue
+        : typeof saltValue === 'string' && /^(?:0x)?[0-9a-f]+$/i.test(saltValue)
+          ? hexToBin(saltValue.replace(/^0x/i, '')) : undefined;
+      if (derived.salt && !salt) {
+        throw new Error('messageBus: stateless child recipient has an invalid salt');
+      }
+      const childArtifact = {
+        contractName: derived.contractName,
+        constructorInputs: derived.constructorInputs,
+        abi: [],
+        bytecode: scriptToAsm(bytecodeToScript(hexToBin(derived.creationBytecode))),
+        source: '',
+        compiler: executionArtifact.compiler,
+        updatedAt: executionArtifact.updatedAt,
+      } as Artifact;
+      const child = new Contract(childArtifact, constructorArgs as never[], {
+        provider,
+        // Language-level `new T(...)` always derives a P2SH32 expression, regardless of the parent's wrapper.
+        addressType: 'p2sh32',
+        ...(salt && { salt }),
+      });
+      return hexToBin(child.lockingBytecode);
+    })()
+    : transfer.recipientRecipe
+      ? evaluateChildDeploymentRecipe(transfer.recipientRecipe, args, inputTypes, solidityAbi)
+      : transfer.recipient.kind === 'forward' && transfer.recipient.paramIndex !== undefined
+        ? args[transfer.recipient.paramIndex] : undefined;
+  let lockingBytecode = recipientValue;
+  if (typeof lockingBytecode === 'string') {
+    lockingBytecode = lockingBytecode.includes(':') ? addressToLockScript(lockingBytecode)
+      : hexToBin(lockingBytecode.startsWith('0x') ? lockingBytecode.slice(2) : lockingBytecode);
+  }
+  const amountValue = transfer.amountRecipe
+    ? evaluateChildDeploymentRecipe(transfer.amountRecipe, args, inputTypes, solidityAbi)
+    : transfer.amount.kind === 'forward' && transfer.amount.paramIndex !== undefined
+      ? args[transfer.amount.paramIndex]
+      : transfer.amount.kind === 'literal' && transfer.amount.value !== undefined
+        ? BigInt(transfer.amount.value) : undefined;
+  if (!(lockingBytecode instanceof Uint8Array) || typeof amountValue !== 'bigint') {
+    throw new Error('messageBus: BCH transfer is not a canonical typed effect');
+  }
+  return { lockingBytecode, amount: amountValue };
 };
 
 /** Normalize a replayed scalar into the physical state-codec domain used by entry commitments. */
@@ -2033,31 +2097,9 @@ export class AtomicMessageBusComposition {
             ))) continue;
             const executionArtifact = supplied.executionArtifact ?? participant.artifact;
             const inputTypes = handler!.inputs.map((input) => input.type);
-            const solidityAbi = artifactUsesSolidityAbi(executionArtifact);
-            const recipientValue = transfer.recipientRecipe
-              ? evaluateChildDeploymentRecipe(
-                transfer.recipientRecipe, supplied.args, inputTypes, solidityAbi,
-              )
-              : transfer.recipient.kind === 'forward' && transfer.recipient.paramIndex !== undefined
-                ? supplied.args[transfer.recipient.paramIndex] : undefined;
-            let recipient = recipientValue;
-            if (typeof recipient === 'string') {
-              recipient = recipient.includes(':') ? addressToLockScript(recipient)
-                : hexToBin(recipient.startsWith('0x') ? recipient.slice(2) : recipient);
-            }
-            const amountValue = transfer.amountRecipe
-              ? evaluateChildDeploymentRecipe(
-                transfer.amountRecipe, supplied.args, inputTypes, solidityAbi,
-              )
-              : transfer.amount.kind === 'forward' && transfer.amount.paramIndex !== undefined
-                ? supplied.args[transfer.amount.paramIndex]
-                : transfer.amount.kind === 'literal' && transfer.amount.value !== undefined
-                  ? BigInt(transfer.amount.value) : undefined;
-            if (!(recipient instanceof Uint8Array) || typeof amountValue !== 'bigint') {
-              throw new Error(
-                `messageBus: BCH transfer in '${invocation.function}' is not a canonical typed effect`,
-              );
-            }
+            const materialized = materializeFixedBchTransfer(
+              transfer, supplied.args, inputTypes, executionArtifact, provider,
+            );
             const transferSlots = participant.blockLayout!.slots
               .filter((slot) => slot.kind === 'transfer' && slot.slotIndex !== undefined);
             const maximumRows = participant.artifact.messageBus?.maximumRows ?? 0;
@@ -2074,7 +2116,9 @@ export class AtomicMessageBusComposition {
               );
             }
             occupiedCompilerTransferSlots.add(outputSlot);
-            localCall._withCompilerTransfer(outputSlot, recipient, amountValue);
+            localCall._withCompilerTransfer(
+              outputSlot, materialized.lockingBytecode, materialized.amount,
+            );
           }
         }
         let local: TransactionBuilder;

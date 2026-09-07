@@ -1519,6 +1519,8 @@ export class InstantiationNode extends ExpressionNode {
   ctorFoldFailed?: boolean;
   /** True only when every constructor statement is a pure straight-line local/state assignment/require and folded. */
   constructorStateFoldComplete?: boolean;
+  /** Compiler-pinned child body used to independently reproduce a stateless value recipient. */
+  creationBytecode?: string;
 
   constructor(
     public identifier: IdentifierNode,

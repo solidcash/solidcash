@@ -19,6 +19,7 @@ import {
 } from './ast/AST.js';
 import { BinaryOperator, UnaryOperator } from './ast/Operator.js';
 import { containsStatefulOperation } from './semantic/EnsureFinalRequireTraversal.js';
+import { hasEffectiveCallValue } from './semantic/branchOps.js';
 
 const binaryOperators = new Set<BinaryOperator>([
   BinaryOperator.MUL, BinaryOperator.DIV, BinaryOperator.MOD,
@@ -358,7 +359,8 @@ const bindRecipe = (
   return recipe;
 };
 
-type FixedBchEffectNode = TransferStatementNode | AddressTransferStatementNode | AddressSendExpressionNode;
+type FixedBchEffectNode = TransferStatementNode | AddressTransferStatementNode | AddressSendExpressionNode
+  | InstantiationNode;
 
 export interface FixedBchEffectRecipeAnalysis {
   recipient?: ChildDeploymentValueRecipe;
@@ -584,7 +586,18 @@ export function analyzeFixedBchEffectRecipes(
     if (!(value instanceof Node) || seen.has(value)) return;
     seen.add(value);
     if ((value instanceof TransferStatementNode && value.runtimeLoopTransfer === undefined)
-      || value instanceof AddressTransferStatementNode || value instanceof AddressSendExpressionNode) {
+      || value instanceof AddressTransferStatementNode || value instanceof AddressSendExpressionNode
+      || (value instanceof InstantiationNode && value.referencedContract
+        && !value.isStatefulDeploy && hasEffectiveCallValue(value.callOptions?.value))) {
+      if (value instanceof InstantiationNode) {
+        const amount = !unsafe ? recipe(value.callOptions!.value!, environment) : undefined;
+        result.set(value, {
+          ...(amount && { amount }),
+          ...(!unsafe && activationSupported && activation && { activation }),
+          activationSupported: !unsafe && activationSupported,
+        });
+        return;
+      }
       const recipientExpression = value instanceof TransferStatementNode
         ? value.lockingBytecode : value.addressExpression;
       const recipient = !unsafe ? recipe(recipientExpression, environment) : undefined;

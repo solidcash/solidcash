@@ -3,7 +3,7 @@ import {
   computeCollectionSignature, computeFunctionSelectorHex, ExternalInterfaceInfo, MappingType, Type,
   EnumType, StructType, ExternalLibraryAbi, BUILTIN_LIBRARIES, resolveLibraries, sidecarCodeRange, isChunkableValueType,
   ValueProvenance, ValueProvenanceKind,
-  abiTypeString, ChildDeploymentValueRecipe,
+  abiTypeString, ChildDeploymentValueRecipe, FixedBchTransferAbi,
 } from '@solidcash/utils';
 import { binToHex } from '@bitauth/libauth';
 import { version } from '../index.js';
@@ -18,13 +18,16 @@ import {
   StateAssignNode, MappingAssignNode, MappingFieldAssignNode, StateArrayAssignNode,
   MappingAccessNode, ArrayAccessNode, FieldAccessNode, ExternalCallExpression, ExternalCallArgSource,
   EmitStatementNode, TernaryOpNode, TokenContainerMethodStatementNode, UnaryOpNode, BranchNode,
-  SwitchNode, TryCatchNode,
+  SwitchNode, TryCatchNode, InstantiationNode,
 } from '../ast/AST.js';
 import { BinaryOperator, UnaryOperator } from '../ast/Operator.js';
 import { containsStatefulOperation } from '../semantic/EnsureFinalRequireTraversal.js';
 import { fixedForMaximum } from '../semantic/FixedForLoop.js';
 import { parameterCommitmentSource } from '../semantic/SymbolTableTraversal.js';
-import { analyzeFixedBchEffectRecipes, childDeploymentValueRecipe } from '../deploymentRecipes.js';
+import { hasEffectiveCallValue } from '../semantic/branchOps.js';
+import {
+  analyzeChildDeploymentRecipes, analyzeFixedBchEffectRecipes, childDeploymentValueRecipe,
+} from '../deploymentRecipes.js';
 
 /** The mapping key type as the SDK must ENCODE it. An enum key is int-backed (the compiler stores/derives it as
  * its integer member value), so it encodes as 'bigint' - its VM representation - not the enum name. The enum
@@ -290,14 +293,11 @@ const expressionSource = (
 
 const transferEffects = (
   fn: FunctionDefinitionNode, contract: ContractNode,
-): readonly { transferIndex: number; recipient: ReturnType<typeof expressionSource>;
-  amount: ReturnType<typeof expressionSource>; callOption?: 'value';
-  recipientRecipe?: ChildDeploymentValueRecipe; amountRecipe?: ChildDeploymentValueRecipe;
-  condition?: ExternalCallExpression | null }[] => {
+): readonly FixedBchTransferAbi[] => {
   const transfers: {
     transferIndex: number; recipient: ExpressionNode; amount: ExpressionNode; callOption?: 'value';
     condition?: ExpressionNode; conditionUnsupported?: true;
-    node?: TransferStatementNode | AddressTransferStatementNode | AddressSendExpressionNode;
+    node?: TransferStatementNode | AddressTransferStatementNode | AddressSendExpressionNode | InstantiationNode;
   }[] = [];
   const visibleInputs = fn.parameters.filter((parameter) => !parameter.name.startsWith('__internal__'));
   const inputIndex = new Map(visibleInputs.map((parameter, index) => [parameter.name, index]));
@@ -339,6 +339,7 @@ const transferEffects = (
     return operandRecipe(definition.expression, nested);
   };
   const fixedEffectRecipes = analyzeFixedBchEffectRecipes(fn);
+  const contractRecipientRecipes = analyzeChildDeploymentRecipes(fn);
   const activationExpression = (
     recipe: ChildDeploymentValueRecipe,
   ): ExternalCallExpression => {
@@ -412,6 +413,18 @@ const transferEffects = (
         callOption: 'value',
       });
     }
+    if (value instanceof InstantiationNode && value.referencedContract
+      && !value.isStatefulDeploy && hasEffectiveCallValue(value.callOptions?.value)) {
+      transfers.push({
+        transferIndex: value.transferIndex,
+        recipient: value,
+        amount: value.callOptions.value,
+        condition,
+        node: value,
+        ...(conditionUnsupported && { conditionUnsupported: true }),
+      });
+      return;
+    }
     if (value instanceof BranchNode) {
       visit(value.condition, condition, conditionUnsupported);
       visit(value.ifBlock, combine(condition, value.condition, false), conditionUnsupported);
@@ -460,12 +473,31 @@ const transferEffects = (
     const amountRecipe = preserveFixedOperandShape(
       effect?.amount ?? (!transfer.node ? operandRecipe(transfer.amount) : undefined),
     );
+    const derivedRecipient = transfer.node instanceof InstantiationNode
+      && transfer.node.referencedContract && transfer.node.creationBytecode
+      ? (() => {
+        const analysis = contractRecipientRecipes.get(transfer.node);
+        const constructorInputs = transfer.node.referencedContract.parameters.map((parameter) => ({
+          name: parameter.name, type: abiTypeString(parameter.type),
+        }));
+        const constructorArgs = analysis?.constructorArgs.slice(0, constructorInputs.length);
+        if (!constructorArgs || constructorArgs.some((recipe) => recipe === undefined)
+          || (transfer.node!.callOptions?.salt !== undefined && analysis?.salt === undefined)) return undefined;
+        return {
+          contractName: transfer.node!.referencedContract!.name,
+          creationBytecode: transfer.node!.creationBytecode!,
+          constructorInputs,
+          constructorArgs: constructorArgs as ChildDeploymentValueRecipe[],
+          ...(analysis?.salt && { salt: analysis.salt }),
+        };
+      })() : undefined;
     const condition = effect?.activation && activationExpression(effect.activation);
     return {
       transferIndex: transfer.transferIndex,
       recipient: expressionSource(transfer.recipient, fn, contract),
       amount: expressionSource(transfer.amount, fn, contract),
       ...(recipientRecipe && { recipientRecipe }),
+      ...(derivedRecipient && { derivedRecipient }),
       ...(amountRecipe && { amountRecipe }),
       ...(transfer.callOption && { callOption: transfer.callOption }),
       ...(transfer.conditionUnsupported || (effect && !effect.activationSupported)

@@ -935,6 +935,73 @@ describe('atomic compiled invocation graph', () => {
     expect(() => finalize([effect], malformedSpan)).toThrow(/non-canonical deployment window/);
   });
 
+  it('binds every compiler-derived stateless child transfer operand into the participant policy hash', () => {
+    const base = plan();
+    const derivedArtifact = {
+      ...base.participants[0].artifact,
+      messageBus: {
+        ...base.participants[0].artifact.messageBus!,
+        handlers: [{
+          ...base.participants[0].artifact.messageBus!.handlers[0],
+          transfers: [{
+            transferIndex: 0,
+            recipient: { kind: 'expression' as const },
+            amount: { kind: 'forward' as const, paramIndex: 0 },
+            amountRecipe: { kind: 'handlerInput' as const, inputIndex: 0, resultType: 'int256' },
+            derivedRecipient: {
+              contractName: 'Capsule',
+              creationBytecode: '51',
+              constructorInputs: [{ name: 'seed', type: 'int256' }],
+              constructorArgs: [{ kind: 'handlerInput' as const, inputIndex: 0, resultType: 'int256' }],
+              salt: { kind: 'bytesLiteral' as const, value: 'aa'.repeat(32), resultType: 'bytes32' },
+            },
+          }],
+        }],
+      },
+    } as Artifact;
+    const baseHash = messageBus.atomicParticipantPolicyHash(derivedArtifact);
+    const mutateTransfer = (
+      mutate: (transfer: NonNullable<NonNullable<Artifact['messageBus']>['handlers'][number]['transfers']>[number])
+      => NonNullable<NonNullable<Artifact['messageBus']>['handlers'][number]['transfers']>[number],
+    ): Artifact => ({
+      ...derivedArtifact,
+      messageBus: {
+        ...derivedArtifact.messageBus!,
+        handlers: derivedArtifact.messageBus!.handlers.map((handler) => ({
+          ...handler, transfers: handler.transfers?.map(mutate),
+        })),
+      },
+    });
+    const original = derivedArtifact.messageBus!.handlers[0].transfers![0];
+    const derived = original.derivedRecipient!;
+    const mutations = [
+      mutateTransfer((transfer) => ({
+        ...transfer, derivedRecipient: { ...derived, creationBytecode: '52' },
+      })),
+      mutateTransfer((transfer) => ({
+        ...transfer,
+        derivedRecipient: {
+          ...derived,
+          constructorArgs: [{ kind: 'intLiteral', value: '7', resultType: 'int256' }],
+        },
+      })),
+      mutateTransfer((transfer) => ({
+        ...transfer,
+        derivedRecipient: {
+          ...derived,
+          salt: { kind: 'bytesLiteral', value: 'bb'.repeat(32), resultType: 'bytes32' },
+        },
+      })),
+      mutateTransfer((transfer) => ({
+        ...transfer,
+        amountRecipe: { kind: 'intLiteral', value: '1200', resultType: 'int256' },
+      })),
+    ];
+    for (const mutation of mutations) {
+      expect(messageBus.atomicParticipantPolicyHash(mutation)).not.toBe(baseHash);
+    }
+  });
+
   it('orders and exactly covers multiple heterogeneous deployment sites in one row window', () => {
     const base = plan();
     const site = (siteIndex: number, contractName: string, dataNftOutputCount: number) => ({

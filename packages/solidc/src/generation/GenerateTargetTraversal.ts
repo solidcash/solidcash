@@ -13977,13 +13977,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.visit(arg);
     }
 
-    // Encode first arg (top of stack) as pushdata
-    this.emitPushdataEncode(node.referencedContract.parameters[0].type, locationData);
+    // Arguments are visited in source order, so the last argument is on top. Encode each stack value with the
+    // corresponding parameter type while folding the pushes back into source order.
+    this.emitPushdataEncode(
+      node.referencedContract.parameters[node.constructorArgs.length - 1].type, locationData,
+    );
 
     // For each subsequent arg: swap to top, encode, CAT
     for (let i = 1; i < node.constructorArgs.length; i++) {
       this.emit(Op.OP_SWAP, locationData);
-      this.emitPushdataEncode(node.referencedContract.parameters[i].type, locationData);
+      this.emitPushdataEncode(
+        node.referencedContract.parameters[node.constructorArgs.length - 1 - i].type, locationData,
+      );
       this.emit(Op.OP_CAT, locationData);
     }
 
@@ -14005,6 +14010,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (!bodyBytecode) {
       throw new Error(`Compiled bytecode for contract '${contract.name}' not available`);
     }
+    node.creationBytecode = binToHex(bodyBytecode);
     if (node.isStatefulDeploy) this.emitGraphStaticDirty(node);
 
     // Replay constructor preconditions before creating any redeem-script/category temporaries. Folded
@@ -14031,12 +14037,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       for (const arg of node.parameters) {
         this.visit(arg);
       }
-      // Encode first arg as pushdata
-      this.emitPushdataEncode(contract.parameters[0].type, locationData);
+      // The last evaluated argument is on top. Pair stack values with parameter types in reverse while CAT
+      // restores the original source-order push sequence.
+      this.emitPushdataEncode(contract.parameters[node.parameters.length - 1].type, locationData);
       // Encode and CAT subsequent args
       for (let i = 1; i < node.parameters.length; i++) {
         this.emit(Op.OP_SWAP, locationData);
-        this.emitPushdataEncode(contract.parameters[i].type, locationData);
+        this.emitPushdataEncode(contract.parameters[node.parameters.length - 1 - i].type, locationData);
         this.emit(Op.OP_CAT, locationData);
       }
       // CAT with body bytecode

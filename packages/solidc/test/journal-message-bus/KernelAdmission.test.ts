@@ -1868,6 +1868,16 @@ describe('required kernel admission', () => {
           this.latest = address(child);
           require(true);
         }
+        function fundedSalted(int seed, int amount, bytes32 salt) public {
+          Blueprint child = new Blueprint{value: amount, salt: salt}(seed);
+          this.latest = address(child);
+          require(true);
+        }
+        function zeroValue(int seed) public {
+          Blueprint child = new Blueprint{value: 0}(seed);
+          this.latest = address(child);
+          require(true);
+        }
       }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
     for (const name of ['make', 'salted']) {
       const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === name);
@@ -1875,12 +1885,41 @@ describe('required kernel admission', () => {
       expect(handler).not.toHaveProperty('childDeployments');
       expect(artifact.abi.find((candidate) => candidate.name === name)).not.toHaveProperty('deployTargets');
     }
-    // A value option creates a real BCH effect. Keep it fenced until the stateless recipient and amount are
-    // represented by the same authenticated fixed-effect recipes as ordinary transfers.
+    // A value option remains a BCH effect, but a zero-state child needs no genesis/category frame: its recipient
+    // is independently reconstructed from compiler-pinned body bytes, constructor arguments, and optional salt.
     expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'funded')).toMatchObject({
-      eligible: false,
-      rejectionReason: 'KERNEL_LAYOUT',
+      eligible: true,
+      transfers: [{
+        transferIndex: 0,
+        amountRecipe: { kind: 'handlerInput', inputIndex: 1 },
+        derivedRecipient: {
+          contractName: 'Blueprint',
+          constructorInputs: [{ name: 'seed', type: 'int256' }],
+          constructorArgs: [{ kind: 'handlerInput', inputIndex: 0 }],
+        },
+      }],
     });
+    // `callOption` is the external-call manifest mode consumed by graph dispatch, not provenance for every BCH
+    // transfer. A local `new C{value: ...}` publishes its value as a fixed transfer without changing the mode of
+    // a following typed call in the same handler.
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'funded')?.transfers?.[0])
+      .not.toHaveProperty('callOption');
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'fundedSalted')).toMatchObject({
+      eligible: true,
+      transfers: [{
+        transferIndex: 0,
+        amountRecipe: { kind: 'handlerInput', inputIndex: 1 },
+        derivedRecipient: {
+          contractName: 'Blueprint',
+          constructorInputs: [{ name: 'seed', type: 'int256' }],
+          constructorArgs: [{ kind: 'handlerInput', inputIndex: 0 }],
+          salt: { kind: 'handlerInput', inputIndex: 2 },
+        },
+      }],
+    });
+    const zeroValue = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'zeroValue');
+    expect(zeroValue).toMatchObject({ eligible: true });
+    expect(zeroValue).not.toHaveProperty('transfers');
   });
 
   it('admits one straight-line value-bearing child with a typed amount recipe', () => {
@@ -8344,7 +8383,7 @@ describe('required kernel admission', () => {
       .toBe('KERNEL_OPAQUE_EFFECT');
   });
 
-  it('keeps value-bearing stateless child construction fenced until its eight-row route is VM-sound', () => {
+  it('publishes a value-bearing stateless child as a derived fixed BCH effect', () => {
     const artifact = compileString(`contract Capsule(int seed) {
       function open(int candidate) public pure { require(candidate == seed); }
     }
@@ -8356,7 +8395,16 @@ describe('required kernel admission', () => {
       function control() public { require(true); }
     }`, KERNEL);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'place'))
-      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+      .toMatchObject({
+        eligible: true,
+        transfers: [{
+          derivedRecipient: {
+            contractName: 'Capsule',
+            constructorInputs: [{ name: 'seed', type: 'int256' }],
+          },
+          amountRecipe: { kind: 'handlerInput', inputIndex: 1 },
+        }],
+      });
   });
 
   it.each([

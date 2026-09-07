@@ -7431,8 +7431,10 @@ describe('required kernel admission', () => {
       }`, KERNEL);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'geometric'))
       .toMatchObject({ eligible: true });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'counterLocalAlias'))
+      .toMatchObject({ eligible: true });
     for (const name of [
-      'resourceDependent', 'truncatedCounter', 'counterLocalAlias', 'localDelta',
+      'resourceDependent', 'truncatedCounter', 'localDelta',
     ]) {
       expect(artifact.messageBus?.handlers.find((handler) => handler.name === name))
         .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });

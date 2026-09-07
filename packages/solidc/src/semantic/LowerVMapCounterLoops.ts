@@ -2510,6 +2510,93 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         }
         return false;
       };
+      const hasOuterBreak = (candidate: Node): boolean => {
+        if (candidate instanceof BreakNode) return true;
+        if (candidate !== block && (candidate instanceof WhileNode || candidate instanceof DoWhileNode)) {
+          return false;
+        }
+        for (const [key, value] of Object.entries(candidate)) {
+          if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type'
+            || key === 'resolvedFunction' || key === 'collection' || key === 'stateVariable') continue;
+          if (value instanceof Node && hasOuterBreak(value)) return true;
+          if (Array.isArray(value)
+            && value.some((item) => item instanceof Node && hasOuterBreak(item))) return true;
+        }
+        return false;
+      };
+      const recurrenceCrossesBreak = hasOuterBreak(block);
+      const definitionCounts = new Map<string, number>();
+      const countDefinitions = (candidate: Node): void => {
+        if (candidate !== block && (candidate instanceof WhileNode || candidate instanceof DoWhileNode)) return;
+        if (candidate instanceof VariableDefinitionNode) {
+          definitionCounts.set(candidate.name, (definitionCounts.get(candidate.name) ?? 0) + 1);
+        }
+        for (const [key, value] of Object.entries(candidate)) {
+          if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type'
+            || key === 'resolvedFunction' || key === 'collection' || key === 'stateVariable') continue;
+          if (value instanceof Node) countDefinitions(value);
+          else if (Array.isArray(value)) for (const item of value) if (item instanceof Node) {
+            countDefinitions(item);
+          }
+        }
+      };
+      countDefinitions(block);
+      // A direct per-iteration definition is an SSA alias when it has one source site, is never reassigned, and
+      // depends only on the counter, public/invariant locals, and earlier aliases from this same iteration. Keep a
+      // source-position environment so an update cannot see a later or conditionally defined value.
+      const deterministicAliasesAt = new Map<number, Map<string, ExpressionNode>>();
+      const activeAliases = new Map<string, ExpressionNode>();
+      for (const [index, statement] of (block.statements ?? []).entries()) {
+        deterministicAliasesAt.set(index, new Map(activeAliases));
+        if (!(statement instanceof VariableDefinitionNode) || !statement.expression
+          || definitionCounts.get(statement.name) !== 1
+          || countAssignmentsTo(block, statement.name) !== 0
+          || statement.inlinedReturningHelperPure === false
+          || hasObservableEffect(statement.expression)
+          || readsCollection(statement.expression)
+          || readsState(statement.expression)
+          || containsTruncatingArithmetic(statement.expression)) continue;
+        let readsUnavailableLoopLocal = false;
+        const inspectDependencies = (candidate: Node): void => {
+          if (candidate instanceof IdentifierNode && candidate.name !== logical
+            && (definitionCounts.get(candidate.name) ?? 0) > 0
+            && !activeAliases.has(candidate.name)) readsUnavailableLoopLocal = true;
+          for (const [key, value] of Object.entries(candidate)) {
+            if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type'
+              || key === 'resolvedFunction' || key === 'collection' || key === 'stateVariable') continue;
+            if (value instanceof Node) inspectDependencies(value);
+            else if (Array.isArray(value)) for (const item of value) if (item instanceof Node) {
+              inspectDependencies(item);
+            }
+          }
+        };
+        inspectDependencies(statement.expression);
+        if (readsUnavailableLoopLocal || !runtimePathExpressionSupported(
+          statement.expression, logical, new Set(), stateValues,
+          new Map([...loopCarriedLocalValues, ...activeAliases]),
+        )) continue;
+        const expanded = expandRuntimePathExpression(
+          statement.expression, logical, new Set(), stateValues,
+          new Map([...loopCarriedLocalValues, ...activeAliases]),
+        );
+        if (expanded) activeAliases.set(statement.name, expanded);
+      }
+      const unsupportedLoopAlias = (
+        candidate: Node, aliases: ReadonlyMap<string, ExpressionNode>,
+      ): boolean => {
+        if (candidate instanceof IdentifierNode && candidate.name !== logical
+          && (countAssignmentsTo(block, candidate.name) > 0
+            || (definitionCounts.get(candidate.name) ?? 0) > 0)
+          && !aliases.has(candidate.name)) return true;
+        for (const [key, value] of Object.entries(candidate)) {
+          if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type'
+            || key === 'resolvedFunction' || key === 'collection' || key === 'stateVariable') continue;
+          if (value instanceof Node && unsupportedLoopAlias(value, aliases)) return true;
+          if (Array.isArray(value)
+            && value.some((item) => item instanceof Node && unsupportedLoopAlias(item, aliases))) return true;
+        }
+        return false;
+      };
       type CounterPolynomial = {
         quadratic?: ExpressionNode;
         slope?: ExpressionNode;
@@ -2659,14 +2746,17 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         const deltas: CounterPolynomial[] = [];
         let base: ExpressionNode | undefined;
         let supported = true;
-        for (const { statement } of updates) {
+        let usesDeterministicAlias = false;
+        for (const { statement, index } of updates) {
           const recurrence = statement.expression;
+          const aliases = deterministicAliasesAt.get(index) ?? new Map<string, ExpressionNode>();
+          const localValues = new Map([...loopCarriedLocalValues, ...aliases]);
           if (!(recurrence instanceof BinaryOpNode)
             || !(recurrence.operator === BinaryOperator.PLUS || recurrence.operator === BinaryOperator.MINUS)
             || !(recurrence.left instanceof StateAccessNode) || recurrence.left.name !== name
             || !runtimePathExpressionSupported(recurrence.right, logical, new Set(), stateValues,
-              loopCarriedLocalValues)
-            || readsLoopAssignedLocal(recurrence.right)
+              localValues)
+            || unsupportedLoopAlias(recurrence.right, aliases)
             || readsLoopAssignedState(recurrence.right)
             || readsCollection(recurrence.right)) {
             supported = false;
@@ -2675,12 +2765,18 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           // The recurrence begins from the value which actually dominates the loop. A preceding scalar assignment
           // (including one expressed in terms of pre-state) must not silently collapse back to contract pre-state.
           base ??= cloneNode(stateValues.get(name) ?? recurrence.left);
-          const delta = counterPolynomial(recurrence.right);
+          const expandedDelta = expandRuntimePathExpression(
+            recurrence.right, logical, new Set(), stateValues, localValues,
+          );
+          usesDeterministicAlias ||= [...aliases.keys()].some((alias) =>
+            containsIdentifier(recurrence.right, alias));
+          const delta = expandedDelta && counterPolynomial(expandedDelta);
           if (!delta) { supported = false; break; }
           deltas.push(recurrence.operator === BinaryOperator.PLUS
             ? delta : scalePolynomial(delta, new IntLiteralNode(-1n)));
         }
-        if (!supported || !base || deltas.length === 0 || recurrenceCrossesContinue) continue;
+        if (!supported || !base || deltas.length === 0 || recurrenceCrossesContinue
+          || (usesDeterministicAlias && recurrenceCrossesBreak)) continue;
         const netDelta = deltas.reduce(
           (sum, delta) => combinePolynomial(sum, delta, BinaryOperator.PLUS),
           {} as CounterPolynomial,

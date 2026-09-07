@@ -76,6 +76,8 @@ interface AffineEventRecursion {
   stepValue: ExternalCallExpression;
   continueCondition: ExternalCallExpression;
   emits: Array<{ node: EmitStatementNode; condition?: ExpressionNode }>;
+  stepExpression?: ExpressionNode;
+  parameterProgressions?: AffineParameterProgression[];
 }
 
 type AffineRecursiveMappingWrite = MappingAssignNode | MappingDeleteNode;
@@ -1640,17 +1642,38 @@ export default class LowerTailRecursion extends AstTraversal {
       || !(base instanceof BranchNode) || base.elseBlock !== undefined
       || (base.ifBlock.statements ?? []).length !== 1
       || !(base.ifBlock.statements![0] instanceof ReturnNode)) return undefined;
+    const exactZeroSide = base.condition instanceof BinaryOpNode
+      && base.condition.operator === BinaryOperator.EQ
+      ? base.condition.left instanceof IntLiteralNode && base.condition.left.value === 0n
+        ? base.condition.right : base.condition.right instanceof IntLiteralNode && base.condition.right.value === 0n
+          ? base.condition.left : undefined
+      : undefined;
+    const exactInductionIndex = exactZeroSide instanceof IdentifierNode
+      ? node.parameters.findIndex((parameter) => parameter.name === exactZeroSide.name
+        && (parameter.type instanceof IntType || parameter.type === PrimitiveType.INT
+          || parameter.type === PrimitiveType.BIGINT))
+      : -1;
+    const exactProgressionCandidate = exactInductionIndex >= 0
+      ? this.affineParameterProgressions(recursiveCall, node, exactInductionIndex) : undefined;
+    // Keep the established single-counter domain unchanged. Rank reconstruction is needed only when an
+    // additional parameter varies and would otherwise be serialized as its public-frame value.
+    const exactProgressions = exactProgressionCandidate && exactProgressionCandidate.length > 1
+      ? exactProgressionCandidate : undefined;
     const varying = recursiveCall.parameters.flatMap((argument, index) =>
       argument instanceof IdentifierNode && argument.name === node.parameters[index]?.name ? [] : [index]);
-    if (varying.length !== 1) return undefined;
-    const inductionIndex = varying[0];
+    if (!exactProgressions && varying.length !== 1) return undefined;
+    const inductionIndex = exactProgressions ? exactInductionIndex : varying[0];
     const induction = node.parameters[inductionIndex];
     if (!induction || (!(induction.type instanceof IntType)
       && induction.type !== PrimitiveType.INT && induction.type !== PrimitiveType.BIGINT)) return undefined;
     const next = recursiveCall.parameters[inductionIndex];
     let stepExpression: ExpressionNode | undefined;
     let negateStep = false;
-    if (next instanceof BinaryOpNode && next.operator === BinaryOperator.PLUS) {
+    if (exactProgressions) {
+      stepExpression = exactProgressions.find(({ parameterIndex }) => parameterIndex === inductionIndex)
+        ?.stepExpression;
+      negateStep = true;
+    } else if (next instanceof BinaryOpNode && next.operator === BinaryOperator.PLUS) {
       if (next.left instanceof IdentifierNode && next.left.name === induction.name) stepExpression = next.right;
       else if (next.right instanceof IdentifierNode && next.right.name === induction.name) stepExpression = next.left;
     } else if (next instanceof BinaryOpNode && next.operator === BinaryOperator.MINUS
@@ -1694,37 +1717,65 @@ export default class LowerTailRecursion extends AstTraversal {
         : serializedStep,
       continueCondition: { kind: 'unary', operator: UnaryOperator.NOT, expression: serializedBase },
       emits,
+      ...(exactProgressions ? { stepExpression, parameterProgressions: exactProgressions } : {}),
     };
   }
 
   private publishAffineEventRecursion(
     node: FunctionDefinitionNode, plan: AffineEventRecursion, iterationName: string,
-  ): RequireNode {
+  ): RequireNode[] {
     const loopIndex = node.runtimeLoopEvents?.length ?? 0;
     const induction = node.parameters[plan.inductionIndex];
     const visibleIndex = node.parameters.slice(0, plan.inductionIndex)
       .filter((parameter) => !parameter.name.startsWith('__internal__')).length;
+    const exact = plan.stepExpression !== undefined && plan.parameterProgressions !== undefined;
+    const quotient: ExternalCallExpression | undefined = exact ? {
+      kind: 'binary', operator: BinaryOperator.DIV,
+      left: { kind: 'source', source: { kind: 'forward', paramIndex: visibleIndex } },
+      right: this.affineEventExpression(plan.stepExpression!, node, induction.name, false)!,
+    } : undefined;
     node.runtimeLoopEvents = [...(node.runtimeLoopEvents ?? []), {
       loopIndex,
       iterationDomain: {
-        counterName: induction.name,
-        initialValue: { kind: 'source', source: { kind: 'forward', paramIndex: visibleIndex } },
-        stepValue: plan.stepValue,
-        continueCondition: plan.continueCondition,
+        counterName: exact ? iterationName : induction.name,
+        initialValue: exact
+          ? { kind: 'literal', type: 'bigint', value: '0' }
+          : { kind: 'source', source: { kind: 'forward', paramIndex: visibleIndex } },
+        stepValue: exact ? { kind: 'literal', type: 'bigint', value: '1' } : plan.stepValue,
+        continueCondition: exact ? {
+          kind: 'binary', operator: BinaryOperator.LT,
+          left: { kind: 'identifier', name: iterationName }, right: quotient!,
+        } : plan.continueCondition,
         maximumIterations: 64,
       },
     }];
     node.runtimeCounterLoopOutputCapacity = (node.runtimeCounterLoopOutputCapacity ?? 0)
       + plan.emits.length * 64;
     plan.emits.forEach(({ node: emit, condition }, siteIndex) => {
+      if (exact) {
+        // The ordinary lowered loop already mutates parameters to their current-frame values. Preserve those
+        // executable arguments, and publish separate source-frame/rank recipes for SDK replay.
+        emit.runtimeLoopEventArguments = emit.args.map((argument) => this.replaceAffineProgressions(
+          cloneNode(argument) as ExpressionNode, node, plan.parameterProgressions!,
+          iterationName, plan.inductionIndex, plan.stepExpression!, false,
+        ) as ExpressionNode);
+        condition = condition ? this.replaceAffineProgressions(
+          cloneNode(condition) as ExpressionNode, node, plan.parameterProgressions!,
+          iterationName, plan.inductionIndex, plan.stepExpression!, false,
+        ) as ExpressionNode : undefined;
+      }
       emit.runtimeLoopEvent = { loopIndex, siteIndex };
       emit.runtimeLoopEventCondition = condition;
+      if (exact) emit.runtimeLoopEventCounter = { name: iterationName, initialValue: 0n, stepValue: 1n };
       emit.runtimeLoopEffectOrder = siteIndex;
     });
-    return this.stamp(new RequireNode(this.stamp(new BinaryOpNode(
+    if (exact) return this.affineFrameGuards(
+      node, this.stamp(new IdentifierNode(induction.name), node.location), plan.stepExpression!, 63n,
+    );
+    return [this.stamp(new RequireNode(this.stamp(new BinaryOpNode(
       this.stamp(new IdentifierNode(iterationName), node.location), BinaryOperator.LT,
       this.stamp(new IntLiteralNode(64n), node.location),
-    ), node.location), 'recursive event limit'), node.location);
+    ), node.location), 'recursive event limit'), node.location)];
   }
 
   private hasVaryingRecursiveMappingWrite(node: FunctionDefinitionNode): boolean {
@@ -2304,7 +2355,7 @@ export default class LowerTailRecursion extends AstTraversal {
       this.stamp(new IdentifierNode(repeatName), node.location),
       this.stamp(new BoolLiteralNode(false), node.location),
     ), node.location);
-    const eventFrameBound = affineEvent
+    const eventFrameGuards = affineEvent
       ? this.publishAffineEventRecursion(node, affineEvent, iterationName) : undefined;
     transformed.statements = [clearRepeat, ...(transformed.statements ?? [])];
     const loop = this.stamp(new WhileNode(
@@ -2339,8 +2390,9 @@ export default class LowerTailRecursion extends AstTraversal {
         this.stamp(new IdentifierNode(name), node.location))), node.location)
       : undefined;
     node.body = this.stamp(new BlockNode([
-      ...results, ...(continuation ? [continuation, continuationTags!] : []), iteration, repeat, loop,
-      ...(eventFrameBound ? [eventFrameBound] : []), ...(unwind ? [unwind] : []),
+      ...results, ...(continuation ? [continuation, continuationTags!] : []),
+      ...(affineEvent?.parameterProgressions ? eventFrameGuards ?? [] : []), iteration, repeat, loop,
+      ...(!affineEvent?.parameterProgressions ? eventFrameGuards ?? [] : []), ...(unwind ? [unwind] : []),
       ...(finalReturn ? [finalReturn] : []),
     ]), node.location);
     return node;

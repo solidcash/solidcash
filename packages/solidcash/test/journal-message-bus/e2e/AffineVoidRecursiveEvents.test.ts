@@ -9,6 +9,56 @@ import { createTestProvider, setupStatefulUtxos } from '../../test-util.js';
 const KERNEL = { forceStateful: true, messageBus: true, messageBusKernel: true } as const;
 
 describe('affine void recursive event settlement', () => {
+  it('reconstructs multiple affine parameters for a pre-only stream and enforces exact termination', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(`contract RecursiveStream() {
+      event Seen(bigint cursor, bigint value, bigint reverse);
+      event Marker(bigint reverse);
+      function descend(bigint cursor, bigint value, bigint reverse, bigint stride, bigint delta) public {
+        emit Seen(cursor, value, reverse);
+        if (cursor % 4 == 0) emit Marker(reverse);
+        if (cursor == 0) return;
+        descend(cursor - stride, value + delta, reverse - 3, stride, delta);
+      }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'descend')).toMatchObject({
+      eligible: true,
+      runtimeLoopEvents: [{
+        iterationDomain: { initialValue: { value: '0' }, maximumIterations: 64 },
+        eventSignatures: ['Seen(bigint,bigint,bigint)', 'Marker(bigint)'],
+      }],
+    });
+
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+    );
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    const builder = await contract.call.descend(6n, 10n, 20n, 2n, 3n).build();
+    const transaction = builder.buildLibauthTransaction();
+    expect(transaction.outputs
+      .filter((output) => output.token?.nft?.capability === 'none')
+      .map((output) => binToHex(output.token!.nft!.commitment)))
+      .toEqual(['565a0114', '545d0111', '0111', '52605e', '0001135b', '5b']);
+
+    const vm = createVirtualMachineBch2026ForProvider(provider);
+    const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+    for (let inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex += 1) {
+      expect(vm.stateSuccess(vm.evaluate({ inputIndex, sourceOutputs, transaction })), `input ${inputIndex}`)
+        .toBe(true);
+    }
+
+    await expect(contract.call.descend(126n, 0n, 0n, 2n, 1n).build()).resolves.toBeDefined();
+    await expect(contract.call.descend(128n, 0n, 0n, 2n, 1n).build())
+      .rejects.toThrow(/exceeds its compiler-published maximum/);
+    const inexact = await contract.call.descend(5n, 10n, 20n, 2n, 3n).build();
+    expect(vm.stateSuccess(vm.evaluate({
+      inputIndex: 0,
+      sourceOutputs: generateLibauthSourceOutputs(inexact.inputs),
+      transaction: inexact.buildLibauthTransaction(),
+    }))).not.toBe(true);
+  }, 180_000);
+
   it('settles every pre-recursion frame, rejects a forged event, and enforces the frame bound', async () => {
     const provider = createTestProvider();
     const artifact = compileString(`contract RecursiveStream() {

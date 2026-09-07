@@ -384,7 +384,6 @@ describe('kernel switch and try fixed effects', () => {
   });
 
   it.each([
-    ['a source break', 'for (int i = 0; i < 3; i = i + 1) { if (i == 1) { break; } Unit child = new Unit(i); }'],
     ['more than 64 iterations', 'for (int i = 0; i < 65; i = i + 1) { Unit child = new Unit(i); }'],
     ['a runtime count', 'for (int i = 0; i < count; i = i + 1) { Unit child = new Unit(i); }'],
   ])('keeps a child-deployment loop with %s fenced', (_label, loop) => {

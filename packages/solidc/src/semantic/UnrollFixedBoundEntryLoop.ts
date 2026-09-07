@@ -1,5 +1,6 @@
 import {
   Node,
+  ExpressionNode,
   SourceFileNode,
   ContractNode,
   FunctionDefinitionNode,
@@ -32,6 +33,8 @@ import {
   ArrayAccessNode,
   CastNode,
   StateAccessNode,
+  BranchNode,
+  BoolLiteralNode,
 } from '../ast/AST.js';
 import { GlobalFunction } from '../ast/Globals.js';
 import { BinaryOperator, UnaryOperator } from '../ast/Operator.js';
@@ -51,9 +54,9 @@ const MAX_UNROLL = 64;
  * keys get distinct entry slots, so the unrolled form is equivalent to hand-written static writes.
  *
  * Restricted to be sound: only fires when the body contains a mapping write, a keccak256 call, a contract
- * instantiation, or an indirect external function-pointer call (else unrolling is needless), never when the body
- * has break/continue/return
- * (unrolling changes their control flow), and
+ * instantiation, or an indirect external function-pointer call (else unrolling is needless). For child-deployment
+ * loops, a break/continue is admitted only when substituting each fixed induction value makes every reached escape
+ * decision static; returns and runtime-selected escapes remain rolled. Also requires
  * N <= MAX_UNROLL (avoid code blow-up). Runs before break/continue expansion + SymbolTableTraversal so the static
  * writes / keccak calls get their slots. A fixed-bound keccak256 loop unrolls to N syntactic calls (N compute
  * side-cars, each resolved by the complex-arg probe); a runtime-bound keccak loop stays flagged keccakInLoop.
@@ -310,7 +313,8 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
     // site before message-bus admission assigns site and transfer ordinals. A keccak256 in
     // a runtime loop needs one compute side-car per RUNTIME call, but the block layout allocates one per SYNTACTIC
     // call; unrolling a fixed-bound loop turns the N runtime calls into N syntactic calls (each an independent
-    // slot, resolved by the complex-arg probe). Never unroll with break/continue/return (changes control flow).
+    // slot, resolved by the complex-arg probe). Static break/continue replay below preserves their source target;
+    // returns and runtime-selected escapes remain rolled.
     // A function-pointer loop is ONLY an unroll trigger in indirectCallsOnly (message-bus route) mode.
     // Outside it, `fns[i](v)` in a loop is the ordinary broadcast idiom: its covenant reads and verifies the
     // WHOLE table from one index-independent receiver, and unrolling it into N single-element callsites changes
@@ -319,7 +323,8 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
     if (this.indirectCallsOnly ? !hasIndirectCall
       : (!this.hasMappingWrite(bodyStmts) && !this.hasKeccakCall(bodyStmts)
         && !this.hasChildDeployment(bodyStmts))) return undefined;
-    if (this.hasControlFlowEscape(bodyStmts)) {
+    const hasSourceEscape = this.hasControlFlowEscape(bodyStmts);
+    if (hasSourceEscape && !this.hasChildDeployment(bodyStmts)) {
       w.fixedUnrollForbidden = true;
       return undefined;
     }
@@ -345,15 +350,97 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
         this.substituteVar(clone, varName, v);
         iterStmts.push(clone);
       }
+      const replay = hasSourceEscape ? this.replayStaticEscapes(iterStmts) : {
+        statements: iterStmts, escape: undefined,
+      };
+      if (!replay) {
+        w.fixedUnrollForbidden = true;
+        return undefined;
+      }
       if (values.length === 1) {
-        for (const st of iterStmts) result.push(this.visit(st) as StatementNode);
+        for (const st of replay.statements) result.push(this.visit(st) as StatementNode);
       } else {
-        const block = new BlockNode(iterStmts);
+        const block = new BlockNode(replay.statements);
         block.location = w.block.location;
         result.push(this.visit(block) as StatementNode);
       }
+      if (replay.escape === 'break') break;
     }
     return result;
+  }
+
+  /**
+   * Execute only loop-control decisions which became compile-time booleans after substituting the fixed
+   * induction value. Statements before an escape remain in source order; continue drops the rest of this
+   * iteration and break also drops every later iteration. Any runtime-selected escape fails closed.
+   */
+  private replayStaticEscapes(
+    statements: readonly StatementNode[],
+  ): { statements: StatementNode[]; escape?: 'break' | 'continue' } | undefined {
+    const output: StatementNode[] = [];
+    for (const statement of statements) {
+      if (statement instanceof ReturnNode) return undefined;
+      if (statement instanceof BreakNode) return { statements: output, escape: 'break' };
+      if (statement instanceof ContinueNode) return { statements: output, escape: 'continue' };
+      if (statement instanceof BlockNode) {
+        const nested = this.replayStaticEscapes(statement.statements ?? []);
+        if (!nested) return undefined;
+        const block = new BlockNode(nested.statements);
+        block.location = statement.location;
+        output.push(block);
+        if (nested.escape) return { statements: output, escape: nested.escape };
+        continue;
+      }
+      if (statement instanceof BranchNode && this.hasControlFlowEscape([statement])) {
+        const condition = this.staticValue(statement.condition);
+        if (typeof condition !== 'boolean') return undefined;
+        const selected = condition ? statement.ifBlock : statement.elseBlock;
+        if (!selected) continue;
+        const nested = this.replayStaticEscapes(selected.statements ?? []);
+        if (!nested) return undefined;
+        const block = new BlockNode(nested.statements);
+        block.location = selected.location;
+        output.push(block);
+        if (nested.escape) return { statements: output, escape: nested.escape };
+        continue;
+      }
+      // A switch break, nested-loop escape, or any other unmodelled abrupt construct is not an outer-loop
+      // decision. Retaining it during unrolling would change its target, so leave the whole loop rolled.
+      if (this.hasControlFlowEscape([statement])) return undefined;
+      output.push(statement);
+    }
+    return { statements: output };
+  }
+
+  private staticValue(node: ExpressionNode): bigint | boolean | undefined {
+    if (node instanceof IntLiteralNode || node instanceof BoolLiteralNode) return node.value;
+    if (node instanceof UnaryOpNode) {
+      const value = this.staticValue(node.expression);
+      if (node.operator === UnaryOperator.NOT && typeof value === 'boolean') return !value;
+      return undefined;
+    }
+    if (!(node instanceof BinaryOpNode)) return undefined;
+    const left = this.staticValue(node.left);
+    const right = this.staticValue(node.right);
+    if (left === undefined || right === undefined) return undefined;
+    if (typeof left === 'boolean' && typeof right === 'boolean') {
+      if (node.operator === BinaryOperator.AND) return left && right;
+      if (node.operator === BinaryOperator.OR) return left || right;
+      if (node.operator === BinaryOperator.EQ) return left === right;
+      if (node.operator === BinaryOperator.NE) return left !== right;
+      return undefined;
+    }
+    if (typeof left !== 'bigint' || typeof right !== 'bigint') return undefined;
+    // Modulo by a non-zero literal cannot overflow. Other arithmetic and casts are deliberately not folded:
+    // this pre-semantic pass has no checked-width authority, so bigint evaluation could disagree with source.
+    if (node.operator === BinaryOperator.MOD) return right === 0n ? undefined : left % right;
+    if (node.operator === BinaryOperator.EQ) return left === right;
+    if (node.operator === BinaryOperator.NE) return left !== right;
+    if (node.operator === BinaryOperator.LT) return left < right;
+    if (node.operator === BinaryOperator.LE) return left <= right;
+    if (node.operator === BinaryOperator.GT) return left > right;
+    if (node.operator === BinaryOperator.GE) return left >= right;
+    return undefined;
   }
 
   // A compile-time-constant loop bound: an int literal, `fixedArray.length` (a declared ArrayType with a bound),

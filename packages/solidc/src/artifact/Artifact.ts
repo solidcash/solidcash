@@ -575,7 +575,7 @@ const transferEffects = (
     nested.add(definition);
     return operandRecipe(definition.expression, nested);
   };
-  const fixedEffectRecipes = analyzeFixedBchEffectRecipes(fn);
+  const fixedEffectRecipes = analyzeFixedBchEffectRecipes(fn, contract.functions);
   const contractRecipientRecipes = analyzeChildDeploymentRecipes(fn);
   const activationExpression = (
     recipe: ChildDeploymentValueRecipe,

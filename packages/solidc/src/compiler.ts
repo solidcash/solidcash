@@ -4003,7 +4003,7 @@ function synthesizeMessageBusRoute(
       (total, type) => total + (staticAbiByteSize(type) ?? 32), 0,
     );
     if (compilerOptions.messageBusKernel === true) {
-      const fixedEffectRecipes = analyzeFixedBchEffectRecipes(fn);
+      const fixedEffectRecipes = analyzeFixedBchEffectRecipes(fn, contract.functions);
       const contractRecipientRecipes = analyzeChildDeploymentRecipes(fn, contract.functions);
       const auditActivation = (
         value: unknown, seen = new WeakSet<object>(),

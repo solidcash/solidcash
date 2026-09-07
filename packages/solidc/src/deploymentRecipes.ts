@@ -66,6 +66,21 @@ const materializableGenesisLeafType = /^(?:bool|bigint|u?int(?:8|16|24|32|40|48|
 const physicalRecipeType = (type: { toString(): string }): string =>
   type instanceof EnumType ? 'bigint' : abiTypeString(type as never);
 
+const cloneEquivalentDefinition = (left: object, right: object): boolean => {
+  if (left === right) return true;
+  const leftNode = left as Node & { name?: string };
+  const rightNode = right as Node & { name?: string };
+  const leftLocation = leftNode.location;
+  const rightLocation = rightNode.location;
+  return left.constructor === right.constructor && leftNode.name === rightNode.name
+    && leftLocation !== undefined && rightLocation !== undefined
+    && leftLocation.start.line === rightLocation.start.line
+    && leftLocation.start.column === rightLocation.start.column
+    && leftLocation.end.line === rightLocation.end.line
+    && leftLocation.end.column === rightLocation.end.column
+    && leftLocation.sourceFileId === rightLocation.sourceFileId;
+};
+
 const materializableGenesisType = (type: Type, stack: ReadonlySet<StructType> = new Set()): boolean => {
   if (type instanceof ArrayType) {
     return type.bound !== undefined && Number.isSafeInteger(type.bound) && type.bound >= 0
@@ -153,8 +168,17 @@ export function childDeploymentValueRecipe(
   helperStack: ReadonlySet<FunctionDefinitionNode> = new Set(),
 ): ChildDeploymentValueRecipe | undefined {
   if (expression instanceof IdentifierNode) {
-    const definition = expression.definition?.definition ?? aliasDefinitions?.get(expression.name);
-    if (definition && aliases) return aliases.get(definition);
+    const linkedDefinition = expression.definition?.definition;
+    const namedDefinition = aliasDefinitions?.get(expression.name);
+    if (aliases) {
+      const linked = linkedDefinition && aliases.get(linkedDefinition);
+      if (linked) return linked;
+      // Early route preparation can clone a pure subexpression without cloning the lexical environment which
+      // owns it. Use the currently scoped name binding only when the linked declaration is not tracked in this
+      // environment; this preserves shadowing while repairing clone-stale declaration identities.
+      if (namedDefinition && (!linkedDefinition
+        || cloneEquivalentDefinition(linkedDefinition, namedDefinition))) return aliases.get(namedDefinition);
+    }
     const inputIndex = handlerInputs.get(expression.name);
     const resultType = recipeType(expression) ?? handlerInputTypes?.get(expression.name);
     return inputIndex === undefined ? undefined : {
@@ -166,15 +190,17 @@ export function childDeploymentValueRecipe(
   }
   const declaredType = recipeType(expression);
   if (expression instanceof IntLiteralNode) {
-    return declaredType
-      ? { kind: 'intLiteral', value: expression.value.toString(), resultType: declaredType } : undefined;
+    const resultType = declaredType ?? (expectedType ? physicalRecipeType(expectedType) : 'int');
+    return { kind: 'intLiteral', value: expression.value.toString(), resultType };
   }
   if (expression instanceof BoolLiteralNode) {
-    return declaredType ? { kind: 'boolLiteral', value: expression.value, resultType: declaredType } : undefined;
+    const resultType = declaredType ?? (expectedType ? physicalRecipeType(expectedType) : 'bool');
+    return { kind: 'boolLiteral', value: expression.value, resultType };
   }
   if (expression instanceof HexLiteralNode) {
-    return declaredType
-      ? { kind: 'bytesLiteral', value: binToHex(expression.value), resultType: declaredType } : undefined;
+    const resultType = declaredType ?? (expectedType ? physicalRecipeType(expectedType) : undefined);
+    return resultType
+      ? { kind: 'bytesLiteral', value: binToHex(expression.value), resultType } : undefined;
   }
   if (expression instanceof BytesConcatNode || expression instanceof StringConcatNode) {
     // The surface builtins deliberately accept bytes/string mixtures, but the recipe evaluator exposes a typed
@@ -392,7 +418,7 @@ export function childDeploymentValueRecipe(
       BinaryOperator.EQ, BinaryOperator.NE].includes(expression.operator);
     const resultType = declaredType ?? (expectedType ? physicalRecipeType(expectedType) : undefined)
       ?? (booleanResult ? 'bool' : expression.operator === BinaryOperator.PLUS
-        ? concatenationResultType(left?.resultType, right?.resultType) : left?.resultType);
+        ? concatenationResultType(left?.resultType, right?.resultType) ?? left?.resultType : left?.resultType);
     if (expression.operator === BinaryOperator.PLUS && left && right && resultType
       && concatenableRecipeType.test(left.resultType ?? '')
       && concatenableRecipeType.test(right.resultType ?? '')
@@ -488,10 +514,11 @@ const bindRecipe = (
   aliases: ReadonlyMap<object, ChildDeploymentValueRecipe>,
   aliasDefinitions: ReadonlyMap<string, object>,
   helperFunctions: readonly FunctionDefinitionNode[] = [],
+  expectedType?: Type,
 ): ChildDeploymentValueRecipe | undefined => {
   let recipe = childDeploymentValueRecipe(
     expression, handlerInputs, true, handlerInputTypes, aliases, aliasDefinitions,
-    undefined, new Set(), helperFunctions,
+    expectedType, new Set(), helperFunctions,
   );
   if (!recipe) return undefined;
   const sourceType = recipe.resultType ?? recipeType(expression);
@@ -524,6 +551,7 @@ export interface FixedBchEffectRecipeAnalysis {
  */
 export function analyzeFixedBchEffectRecipes(
   fn: FunctionDefinitionNode,
+  helperFunctions: readonly FunctionDefinitionNode[] = [],
 ): WeakMap<FixedBchEffectNode, FixedBchEffectRecipeAnalysis> {
   const visibleInputs = fn.parameters.filter((parameter) => !parameter.name.startsWith('__internal__'));
   const handlerInputs = new Map(visibleInputs.map((parameter, index) => [parameter.name, index]));
@@ -533,6 +561,8 @@ export function analyzeFixedBchEffectRecipes(
     { kind: 'handlerInput', inputIndex, resultType: physicalRecipeType(parameter.type) } as ChildDeploymentValueRecipe,
   ]));
   const initialDefinitions = new Map<string, object>(visibleInputs.map((parameter) => [parameter.name, parameter]));
+  const transactionSignatureInputs = new Set(visibleInputs.flatMap((parameter, inputIndex) =>
+    /^sig(?:\[.*\])?$/.test(abiTypeString(parameter.type)) ? [inputIndex] : []));
   const stateDefinitions = new Map<string, object>();
   const stateKeys = new Set<object>();
   const stateDefinition = (name: string): object => {
@@ -552,10 +582,28 @@ export function analyzeFixedBchEffectRecipes(
   const cloneEnvironment = (environment: Environment): Environment => ({
     aliases: new Map(environment.aliases), definitions: new Map(environment.definitions),
   });
-  const recipe = (expression: ExpressionNode, environment: Environment): ChildDeploymentValueRecipe | undefined =>
-    childDeploymentValueRecipe(
+  const recipeUsesTransactionSignature = (
+    value: ChildDeploymentValueRecipe, seen = new WeakSet<object>(),
+  ): boolean => {
+    if (value.kind === 'handlerInput') return transactionSignatureInputs.has(value.inputIndex);
+    if (seen.has(value)) return false;
+    seen.add(value);
+    return Object.values(value).some((child) => child instanceof Object
+      && (Array.isArray(child)
+        ? child.some((item) => item instanceof Object
+          && recipeUsesTransactionSignature(item as ChildDeploymentValueRecipe, seen))
+        : 'kind' in child && recipeUsesTransactionSignature(child as ChildDeploymentValueRecipe, seen)));
+  };
+  const recipe = (expression: ExpressionNode, environment: Environment): ChildDeploymentValueRecipe | undefined => {
+    const resolved = childDeploymentValueRecipe(
       expression, handlerInputs, true, handlerInputTypes, environment.aliases, environment.definitions,
+      undefined, new Set(), helperFunctions,
     );
+    // A transaction signature commits the transaction containing the transfer output. Reusing it to derive that
+    // output would create a circular fixed-effect recipe even when the kernel carries the signature separately as
+    // a row witness. Data signatures are intentionally unaffected: they do not commit the spending transaction.
+    return resolved && !recipeUsesTransactionSignature(resolved) ? resolved : undefined;
+  };
   const negate = (operand: ChildDeploymentValueRecipe): ChildDeploymentValueRecipe => ({
     kind: 'unary', operator: '!', resultType: 'bool', operand,
   });
@@ -636,7 +684,13 @@ export function analyzeFixedBchEffectRecipes(
     return !containsAbruptExit(block);
   };
   const resolvedDefinition = (identifier: IdentifierNode, environment: Environment): object | undefined =>
-    identifier.definition?.definition ?? environment.definitions.get(identifier.name);
+    (identifier.definition?.definition && environment.aliases.has(identifier.definition.definition)
+      ? identifier.definition.definition
+      : (() => {
+        const named = environment.definitions.get(identifier.name);
+        const linked = identifier.definition?.definition;
+        return named && (!linked || cloneEquivalentDefinition(linked, named)) ? named : undefined;
+      })());
   const singlePassWhileCondition = (
     statement: WhileNode, environment: Environment,
   ): ChildDeploymentValueRecipe | undefined => {
@@ -782,7 +836,7 @@ export function analyzeFixedBchEffectRecipes(
         const bound = !unsafe && statement.expression
           ? bindRecipe(
             statement.expression, abiTypeString(statement.type), handlerInputs, handlerInputTypes,
-            environment.aliases, environment.definitions,
+            environment.aliases, environment.definitions, helperFunctions, statement.type,
           ) : undefined;
         if (bound) environment.aliases.set(key, bound); else environment.aliases.delete(key);
         environment.definitions.set(statement.name, key);
@@ -796,7 +850,7 @@ export function analyzeFixedBchEffectRecipes(
         const bound = !unsafe && key && targetType
           ? bindRecipe(
             statement.expression, abiTypeString(targetType as never), handlerInputs, handlerInputTypes,
-            environment.aliases, environment.definitions,
+            environment.aliases, environment.definitions, helperFunctions, targetType as Type,
           ) : undefined;
         if (key && bound) environment.aliases.set(key, bound);
         else if (key) environment.aliases.delete(key);
@@ -810,7 +864,7 @@ export function analyzeFixedBchEffectRecipes(
         const targetType = statement.stateVariable?.type;
         const bound = !unsafe && targetType ? bindRecipe(
           statement.expression, physicalRecipeType(targetType), handlerInputs, handlerInputTypes,
-          environment.aliases, environment.definitions,
+          environment.aliases, environment.definitions, helperFunctions, targetType,
         ) : !unsafe ? recipe(statement.expression, environment) : undefined;
         if (bound) environment.aliases.set(key, bound);
         else environment.aliases.delete(key);
@@ -1147,10 +1201,16 @@ export function analyzeChildDeploymentRecipes(
     if (!(value instanceof Node) || seen.has(value)) return;
     seen.add(value);
     if (value instanceof AssignNode) {
-      const definition = definitionOf(value.identifier) ?? aliasDefinitions.get(value.identifier.name);
+      const linked = definitionOf(value.identifier);
+      const named = aliasDefinitions.get(value.identifier.name);
+      const definition = linked && aliases.has(linked) ? linked
+        : named && (!linked || cloneEquivalentDefinition(linked, named)) ? named : undefined;
       if (definition) aliases.delete(definition);
     } else if (value instanceof DeleteLocalNode) {
-      const definition = definitionOf(value.identifier) ?? aliasDefinitions.get(value.identifier.name);
+      const linked = definitionOf(value.identifier);
+      const named = aliasDefinitions.get(value.identifier.name);
+      const definition = linked && aliases.has(linked) ? linked
+        : named && (!linked || cloneEquivalentDefinition(linked, named)) ? named : undefined;
       if (definition) aliases.delete(definition);
     } else if (value instanceof TupleAssignmentNode) {
       for (const element of value.elements) {
@@ -1179,7 +1239,7 @@ export function analyzeChildDeploymentRecipes(
         if (!statementUnsafe && statement.expression) {
           const recipe = bindRecipe(
             statement.expression, abiTypeString(statement.type), handlerInputs, handlerInputTypes, aliases,
-            aliasDefinitions, helperFunctions,
+            aliasDefinitions, helperFunctions, statement.type,
           );
           if (recipe) aliases.set(key, recipe); else aliases.delete(key);
         } else aliases.delete(key);
@@ -1189,12 +1249,15 @@ export function analyzeChildDeploymentRecipes(
       if (statement instanceof AssignNode) {
         snapshotExpression(statement.expression, statementUnsafe);
         invalidateAssignments(statement.expression);
-        const key = definitionOf(statement.identifier) ?? aliasDefinitions.get(statement.identifier.name);
+        const linked = definitionOf(statement.identifier);
+        const named = aliasDefinitions.get(statement.identifier.name);
+        const key = linked && aliases.has(linked) ? linked
+          : named && (!linked || cloneEquivalentDefinition(linked, named)) ? named : undefined;
         if (key && !statementUnsafe) {
           const targetType = abiTypeString((key as { type?: unknown }).type as never);
           const recipe = bindRecipe(
             statement.expression, targetType, handlerInputs, handlerInputTypes, aliases, aliasDefinitions,
-            helperFunctions,
+            helperFunctions, (key as { type?: Type }).type,
           );
           if (recipe) aliases.set(key, recipe); else aliases.delete(key);
         } else if (key) aliases.delete(key);

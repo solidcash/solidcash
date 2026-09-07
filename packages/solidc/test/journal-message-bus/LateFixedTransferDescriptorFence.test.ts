@@ -65,7 +65,7 @@ describe('late fixed BCH transfer descriptor fence', () => {
     expect(artifact.messageBus?.route.blockLayout?.slots.some((slot) => slot.kind === 'transfer')).toBe(true);
   });
 
-  it('fences a transfer operand after a partial control-flow join', () => {
+  it('snapshots a transfer operand after a replayable partial control-flow join', () => {
     const artifact = compileString(`pragma solidity ^0.8.0;
       contract Vault {
         function pay(address payable first, address payable second, uint amount, bool choose) public {
@@ -77,10 +77,16 @@ describe('late fixed BCH transfer descriptor fence', () => {
       }
     `, KERNEL);
 
-    expect(artifact.abi.find((entry) => entry.name === 'pay')?.transfers?.[0])
-      .not.toHaveProperty('recipientRecipe');
+    expect(artifact.abi.find((entry) => entry.name === 'pay')?.transfers?.[0]).toMatchObject({
+      recipientRecipe: {
+        kind: 'conditional', resultType: 'address',
+        condition: { kind: 'handlerInput', inputIndex: 3 },
+        ifTrue: { kind: 'handlerInput', inputIndex: 1 },
+        ifFalse: { kind: 'handlerInput', inputIndex: 0 },
+      },
+    });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'pay')).toMatchObject({
-      eligible: false, rejectionReason: 'KERNEL_LAYOUT',
+      eligible: true,
     });
   });
 

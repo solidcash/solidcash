@@ -419,6 +419,7 @@ export default class SymbolTableTraversal extends AstTraversal {
   private genesisHelperStack: Set<FunctionDefinitionNode> = new Set();
   private insideGenesisPureHelper: boolean = false;
   private allowGenesisHelperInputs: boolean = false;
+  private deploymentHelperWasInlined: boolean = false;
   private insideGenesisPredicate: boolean = false;
   private insideConstructor: boolean = false;
   private insideFunctionPointerStateAssignment: boolean = false;
@@ -2097,7 +2098,9 @@ export default class SymbolTableTraversal extends AstTraversal {
       ? 'bigint' : helper.returnTypes[0].toString();
     // This path models one recipe value. Aggregates and signatures have multi-item/resource-backed stack
     // representations, so they remain outside the helper subset even if their source modifier says pure.
-    if (!/^(?:bool|bigint|u?int(?:\d+)?|(?:u?fixed)(?:\d+x\d+)?|bytes(?:[1-9]|[12]\d|3[0-2])?|string|address|pubkey|datasig)$/.test(helperResultType)) return null;
+    // eslint-disable-next-line max-len
+    const scalarHelperType = /^(?:bool|bigint|u?int(?:\d+)?|(?:u?fixed)(?:\d+x\d+)?|bytes(?:[1-9]|[12]\d|3[0-2])?|string|address|pubkey|datasig)$/;
+    if (!scalarHelperType.test(helperResultType)) return null;
     const body = helper.body as BlockNode | undefined;
     const statements = body?.statements;
     if (!statements || statements.length === 0) return null;
@@ -2130,6 +2133,7 @@ export default class SymbolTableTraversal extends AstTraversal {
             expectedType ?? helper.returnTypes[0],
           );
           if (folded && expectedType) folded.type = expectedType;
+          if (folded && this.allowGenesisHelperInputs) this.deploymentHelperWasInlined = true;
           return folded;
         }
         return null;
@@ -2152,19 +2156,25 @@ export default class SymbolTableTraversal extends AstTraversal {
     const priorStack = this.genesisHelperStack;
     const priorInside = this.insideGenesisPureHelper;
     const priorAllowInputs = this.allowGenesisHelperInputs;
+    const priorWasInlined = this.deploymentHelperWasInlined;
     this.genesisHelperContract = undefined;
     this.genesisAdditionalHelperFunctions = helpers;
     this.genesisHelperStack = new Set();
     this.insideGenesisPureHelper = true;
     this.allowGenesisHelperInputs = true;
+    this.deploymentHelperWasInlined = false;
     try {
-      return this.foldGenesisExpr(cloneNode(expression), new Map(), new Map(), () => undefined, expression.type);
+      const folded = this.foldGenesisExpr(
+        cloneNode(expression), new Map(), new Map(), () => undefined, expression.type,
+      );
+      return folded && this.deploymentHelperWasInlined ? folded : null;
     } finally {
       this.genesisHelperContract = priorContract;
       this.genesisAdditionalHelperFunctions = priorAdditional;
       this.genesisHelperStack = priorStack;
       this.insideGenesisPureHelper = priorInside;
       this.allowGenesisHelperInputs = priorAllowInputs;
+      this.deploymentHelperWasInlined = priorWasInlined;
     }
   }
 

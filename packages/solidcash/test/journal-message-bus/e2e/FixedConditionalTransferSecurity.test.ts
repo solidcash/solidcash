@@ -374,6 +374,10 @@ describe('fixed conditional BCH transfer transcript security', () => {
       + selectedSecondRow.targetOffset;
     expect(selectedFirst.outputs[selectedFirstOutput]).toMatchObject({ to: recipientA, amount: 2_000n });
     expect(selectedSecond.outputs[selectedSecondOutput]).toMatchObject({ to: recipientB, amount: 3_000n });
+    selectedFirst.outputs[selectedFirstOutput].amount += 1n;
+    expect(vmRejects(selectedFirst)).toBe(true);
+    selectedSecond.outputs[selectedSecondOutput].to = recipientA;
+    expect(vmRejects(selectedSecond)).toBe(true);
     const switchedDefaultRow = valueRows(switchedDefault)[0];
     const switchedSecondRow = valueRows(switchedSecond)[0];
     const switchedDefaultOutput = participantBase(envelopeOf(switchedDefault), switchedDefaultRow.owner)

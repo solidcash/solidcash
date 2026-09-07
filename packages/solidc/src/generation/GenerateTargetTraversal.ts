@@ -74,7 +74,8 @@ import {
   BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX,
 } from '@solidcash/utils';
 import {
-  childDeploymentCollectionDefinitions, childDeploymentGenesisState, childDeploymentStructDefinitions,
+  analyzeChildDeploymentRecipes, childDeploymentCollectionDefinitions, childDeploymentGenesisEntries,
+  childDeploymentGenesisState, childDeploymentStructDefinitions, type ChildDeploymentRecipeAnalysis,
 } from '../deploymentRecipes.js';
 import {
   canonicalizeUpsertKeyExpression,
@@ -608,7 +609,7 @@ function surveyFunctionDeploys(
       count += 1;
       if (inCond) hasConditional = true;
       if (inLoop && hasEffectiveCallValue(n.callOptions?.value)) hasLoopValue = true;
-      const spanWidth = 1 + n.deployedDataNftCount;
+      const spanWidth = 1 + n.deployedDataNftCount + n.deployedEntryNftCount;
       sites.push({ node: n, conditional: inCond, spanOffset, spanWidth });
       spanOffset += spanWidth;
     }
@@ -630,6 +631,42 @@ function surveyFunctionDeploys(
   return {
     count, hasConditional, hasLoopValue, sites,
   };
+}
+
+/**
+ * Resolve the constructor-entry subset that both the covenant and an SDK can reproduce before deploy geometry is
+ * surveyed. A partial constructor fold, or a folded expression outside the published recipe language, must not
+ * reserve or verify an entry output.
+ */
+function prepareDeployEntryGeometry(
+  body: Node | undefined,
+  parameters: readonly ParameterNode[],
+  analyses: WeakMap<InstantiationNode, ChildDeploymentRecipeAnalysis>,
+): void {
+  if (!body) return;
+  const visible = parameters.filter((parameter) => !parameter.name.startsWith('__internal__'));
+  const inputIndices = new Map(visible.map((parameter, index) => [parameter.name, index]));
+  const inputTypes = new Map(visible.map((parameter) => [parameter.name, abiTypeString(parameter.type)]));
+  const seen = new WeakSet<object>();
+  const walk = (value: unknown): void => {
+    if (Array.isArray(value)) { for (const child of value) walk(child); return; }
+    if (!(value instanceof Node) || seen.has(value)) return;
+    seen.add(value);
+    if (value instanceof InstantiationNode && value.referencedContract) {
+      const analysis = analyses.get(value);
+      const entries = value.constructorStateFoldComplete === true
+        ? childDeploymentGenesisEntries(
+          value.foldedCollectionEntries, inputIndices, inputTypes, analysis?.aliases, analysis?.aliasDefinitions,
+        )
+        : undefined;
+      value.deployedEntryNftCount = entries?.length ?? 0;
+    }
+    for (const [key, child] of Object.entries(value)) {
+      if (key === 'referencedContract' || key === 'definition' || key === 'symbolTable') continue;
+      walk(child);
+    }
+  };
+  walk(body);
 }
 
 class MsgDataUsageCollector extends AstTraversal {
@@ -1351,6 +1388,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }[] = [];
 
   private deployCounter: number = 0;
+  private deploymentRecipeAnalysis = new WeakMap<InstantiationNode, ChildDeploymentRecipeAnalysis>();
 
   // Inline (conditional) deploy verification. A `new C()` inside a branch cannot use the fixed block-layout
   // deploy slot the way the epilogue does: when the branch is NOT taken there is no genesis output, and the
@@ -1817,7 +1855,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const siteOffset = this.graphConditionalDeployReachActive
       ? (this.functionDeploySites[deployIndex]?.spanOffset ?? 0)
       : this.pendingDeploys.slice(0, deployIndex).reduce(
-        (offset, deploy) => offset + 1 + deploy.node.deployedDataNftCount, 0,
+        (offset, deploy) => offset + 1 + deploy.node.deployedDataNftCount
+          + deploy.node.deployedEntryNftCount, 0,
       );
     const inputOffset = this.getBlockSlotOffset('deploy', frame.deployBase ?? 0) + siteOffset;
     if (inputOffset > 0) {
@@ -2087,7 +2126,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (s.kind === 'deployDataNft') continue; // re-emitted with the deploy master
       if (s.kind === 'deploy') {
         slots.push({ ...s, offset: offset++ });
-        const need = node.deployTargets[deployIdx]?.dataNftCount ?? 0;
+        const target = node.deployTargets[deployIdx];
+        const need = (target?.dataNftCount ?? 0) + (target?.entryNftCount ?? 0);
         for (let n = 0; n < need; n++) {
           slots.push({
             kind: 'deployDataNft', offset: offset++, slotIndex: deployIdx, nftIndex: n,
@@ -5176,6 +5216,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emitInfos = node.emitInfos ?? [];
     this.pendingDeploys = [];
     this.deployCounter = 0;
+    this.deploymentRecipeAnalysis = analyzeChildDeploymentRecipes(node);
+    prepareDeployEntryGeometry(node.body, node.parameters, this.deploymentRecipeAnalysis);
     const deploySurvey = node.hasContractInstantiation === false
       ? {
         count: 0, hasConditional: false, hasLoopValue: false, sites: [],
@@ -5947,7 +5989,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         if (this.pendingDeploys.length > 0) {
           this.emitDeployCovenantVerification(node);
           const ownedDeployWidth = this.pendingDeploys.reduce(
-            (total, deploy) => total + 1 + deploy.node.deployedDataNftCount, 0,
+            (total, deploy) => total + 1 + deploy.node.deployedDataNftCount
+              + deploy.node.deployedEntryNftCount, 0,
           );
           for (let member = ownedDeployWidth; member < (node.graphEffectFrame.deployWidth ?? 0); member += 1) {
             this.emitInactiveGraphDeployOutput(member, {
@@ -14129,9 +14172,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const genesisState = node.constructorStateFoldComplete === true
         ? childDeploymentGenesisState(node.foldedStateInit, liveVars, deployFnParamIndices, deployFnParamTypes)
         : undefined;
+      const genesisEntries = node.constructorStateFoldComplete === true
+        ? childDeploymentGenesisEntries(
+          node.foldedCollectionEntries, deployFnParamIndices, deployFnParamTypes,
+          this.deploymentRecipeAnalysis.get(node)?.aliases,
+          this.deploymentRecipeAnalysis.get(node)?.aliasDefinitions,
+        ) : undefined;
+      node.deployedEntryNftCount = genesisEntries?.length ?? 0;
       this.currentFunction.deployTargets.push({
         contractName: node.referencedContract!.name,
         dataNftCount: node.deployedDataNftCount,
+        ...(node.deployedEntryNftCount > 0 && { entryNftCount: node.deployedEntryNftCount }),
         constructorArgs,
         ...(salt && { salt }),
         // Body Instantiation just embedded for address computation — pin it for the SDK so
@@ -14153,6 +14204,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           collections: childDeploymentCollectionDefinitions(node.referencedContract!.collections),
         }),
         ...(genesisState && { genesisState }),
+        ...(genesisEntries && genesisEntries.length > 0 && { genesisEntries }),
       });
 
       // Multi-site deploy (2+ same-contract sites with a conditional): a FUNCTION-LEVEL runtime deploy counter
@@ -26200,10 +26252,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const slotBase = this.getBlockSlotOffset('deploy', 0);
     const inputBase = slotBase - this.countOutputOnlySlotsBefore(slotBase);
     const dataNftCount = node.deployedDataNftCount;
+    const genesisEntries = node.deployedEntryNftCount === node.foldedCollectionEntries?.length
+      ? node.foldedCollectionEntries : [];
+    const entryNftCount = genesisEntries.length;
     // A LOOP `new C{value:}()` interleaves its value transfer as the LAST output of each child's group (there is
     // no fixed transfer slot for a runtime-variable count), so the per-child stride grows by 1.
     const loopValueTransfer = useCounter && hasEffectiveCallValue(node.callOptions?.value);
-    const stride = 1 + dataNftCount + (loopValueTransfer ? 1 : 0);
+    const stride = 1 + dataNftCount + entryNftCount + (loopValueTransfer ? 1 : 0);
     const counterName = this.inlineDeployCounterName;
     const outputOffsetName = this.inlineDeployOutputOffsetName;
     const variableStride = useCounter && this.functionMultiSiteDeploy
@@ -26371,11 +26426,63 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.popFromStack(2);
     }
 
+    // --- finite constructor-created entry NFTs follow the data-NFT run in source order ---
+    for (const [entryIndex, entry] of genesisEntries.entries()) {
+      const extra = 1 + dataNftCount + entryIndex;
+      this.emit(encodeInt(BigInt(this.getStackIndex(categoryName))), locationData);
+      this.emit(Op.OP_PICK, locationData);
+      this.pushToStack('(value)');
+      this.emitEntryP2sh32(
+        computeCollectionHash(computeCollectionSignature(entry.collection.name, entry.collection.type.toString())),
+        locationData,
+      );
+      emitOutIndex(extra);
+      this.emit(Op.OP_OUTPUTBYTECODE, locationData);
+      this.pushToStack('(value)');
+      this.emit(Op.OP_EQUALVERIFY, locationData);
+      this.popFromStack(2);
+      emitOutIndex(extra);
+      this.emit(Op.OP_OUTPUTVALUE, locationData);
+      this.emit(encodeInt(1200n), locationData);
+      this.emit(Op.OP_EQUALVERIFY, locationData);
+      this.emit(encodeInt(BigInt(this.getStackIndex(categoryName))), locationData);
+      this.emit(Op.OP_PICK, locationData);
+      this.pushToStack('(value)');
+      this.emit(new Uint8Array([0x01]), locationData);
+      this.pushToStack('(value)');
+      this.emit(Op.OP_CAT, locationData);
+      this.popFromStack(2);
+      this.pushToStack('(value)');
+      emitOutIndex(extra);
+      this.emit(Op.OP_OUTPUTTOKENCATEGORY, locationData);
+      this.pushToStack('(value)');
+      this.emit(Op.OP_EQUALVERIFY, locationData);
+      this.popFromStack(2);
+
+      const savedStack = [...this.stack];
+      this.scopeDepth += 1;
+      this.visit(entry.key);
+      this.emitPushdataEncode(PrimitiveType.BIGINT, locationData);
+      this.visit(entry.value);
+      this.emitPushdataEncode(entry.collection.innermostValueType, locationData);
+      this.scopeDepth -= 1;
+      this.emit(Op.OP_CAT, locationData);
+      this.popFromStack(2);
+      this.pushToStack('(value)');
+      this.stack = savedStack;
+      this.pushToStack('(value)');
+      emitOutIndex(extra);
+      this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, locationData);
+      this.pushToStack('(value)');
+      this.emit(Op.OP_EQUALVERIFY, locationData);
+      this.popFromStack(2);
+    }
+
     // Loop {value:}: verify the interleaved value transfer - the LAST output of this child's group (slot
     // 1 + dataNftCount): its locking bytecode == the child address, its value == the {value:} amount. The
     // satoshi container that sources it is verified conserved (input <= output + counter*value) after OP_UNTIL.
     if (loopValueTransfer) {
-      const extra = 1 + dataNftCount;
+      const extra = 1 + dataNftCount + entryNftCount;
       this.emit(encodeInt(BigInt(this.getStackIndex(masterLbcName))), locationData);
       this.emit(Op.OP_PICK, locationData);
       this.pushToStack('(value)');
@@ -26398,7 +26505,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // genesis minting input to append another child master or mutable state NFT of the same category. Count both
     // capabilities across the whole transaction so this child's genesis set is exact.
     this.emitDeployCapabilityOutputCount(categoryName, 0x02, 1, locationData);
-    this.emitDeployCapabilityOutputCount(categoryName, 0x01, dataNftCount, locationData);
+    this.emitDeployCapabilityOutputCount(categoryName, 0x01, dataNftCount + entryNftCount, locationData);
 
     // Loop deploy: increment the runtime deploy counter (deploys-fired-so-far) in place, so the next iteration's
     // genesis lands at the next slot. Mirrors the in-place stack-var update in visitDeleteLocal.
@@ -26482,12 +26589,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const { deployIndex, masterLbcStackName, categoryStackName } = deploy;
       const deployNode = deploy.node;
       const dataNftCount = deployNode.deployedDataNftCount;
+      const genesisEntries = deployNode.deployedEntryNftCount === deployNode.foldedCollectionEntries?.length
+        ? deployNode.foldedCollectionEntries : [];
 
       // --- a. Master NFT output at block layout deploy offset ---
       // Cumulative offset accounts for heterogeneous deploys with different dataNftCount values
       let deployOffset = 0;
       for (let i = 0; i < deployIndex; i++) {
-        deployOffset += 1 + this.pendingDeploys[i].node.deployedDataNftCount;
+        deployOffset += 1 + this.pendingDeploys[i].node.deployedDataNftCount
+          + this.pendingDeploys[i].node.deployedEntryNftCount;
       }
 
       // Verify master output locking bytecode
@@ -26654,12 +26764,73 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.popFromStack(2);
       }
 
+      for (const [entryIndex, entry] of genesisEntries.entries()) {
+        const entryOutputOffset = deployOffset + 1 + dataNftCount + entryIndex;
+        const emitEntryOutputIndex = (): void => {
+          if (!this.emitGraphDeployOutputIndex(entryOutputOffset, locationData)) {
+            this.emitMasterInputIndex(locationData);
+            this.emit(encodeInt(BigInt(this.getBlockSlotOffset('deploy', 0) + entryOutputOffset)), locationData);
+            this.emit(Op.OP_ADD, locationData);
+          }
+        };
+        const entryCategoryIndex = this.getStackIndex(categoryStackName);
+        this.emit(encodeInt(BigInt(entryCategoryIndex)), locationData);
+        this.emit(Op.OP_PICK, locationData);
+        this.pushToStack('(value)');
+        this.emitEntryP2sh32(
+          computeCollectionHash(computeCollectionSignature(entry.collection.name, entry.collection.type.toString())),
+          locationData,
+        );
+        emitEntryOutputIndex();
+        this.emit(Op.OP_OUTPUTBYTECODE, locationData);
+        this.pushToStack('(value)');
+        this.emit(Op.OP_EQUALVERIFY, locationData);
+        this.popFromStack(2);
+        emitEntryOutputIndex();
+        this.emit(Op.OP_OUTPUTVALUE, locationData);
+        this.emit(encodeInt(1200n), locationData);
+        this.emit(Op.OP_EQUALVERIFY, locationData);
+        this.emit(encodeInt(BigInt(this.getStackIndex(categoryStackName))), locationData);
+        this.emit(Op.OP_PICK, locationData);
+        this.pushToStack('(value)');
+        this.emit(new Uint8Array([0x01]), locationData);
+        this.pushToStack('(value)');
+        this.emit(Op.OP_CAT, locationData);
+        this.popFromStack(2);
+        this.pushToStack('(value)');
+        emitEntryOutputIndex();
+        this.emit(Op.OP_OUTPUTTOKENCATEGORY, locationData);
+        this.pushToStack('(value)');
+        this.emit(Op.OP_EQUALVERIFY, locationData);
+        this.popFromStack(2);
+
+        const savedStack = [...this.stack];
+        this.scopeDepth += 1;
+        this.visit(entry.key);
+        this.emitPushdataEncode(PrimitiveType.BIGINT, locationData);
+        this.visit(entry.value);
+        this.emitPushdataEncode(entry.collection.innermostValueType, locationData);
+        this.scopeDepth -= 1;
+        this.emit(Op.OP_CAT, locationData);
+        this.popFromStack(2);
+        this.pushToStack('(value)');
+        this.stack = savedStack;
+        this.pushToStack('(value)');
+        emitEntryOutputIndex();
+        this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, locationData);
+        this.pushToStack('(value)');
+        this.emit(Op.OP_EQUALVERIFY, locationData);
+        this.popFromStack(2);
+      }
+
       // The fixed-slot checks above authenticate every required output but do not reject extra genesis NFTs.
       // Enforce exact capability counts for this child category across all transaction outputs.
       const graphCategory = this.currentFunction.graphEmissionHandler ? categoryStackName : undefined;
       const fixedIndex = this.currentFunction.graphEmissionHandler ? undefined : deployIndex;
       this.emitDeployCapabilityOutputCount(graphCategory, 0x02, 1, locationData, fixedIndex);
-      this.emitDeployCapabilityOutputCount(graphCategory, 0x01, dataNftCount, locationData, fixedIndex);
+      this.emitDeployCapabilityOutputCount(
+        graphCategory, 0x01, dataNftCount + genesisEntries.length, locationData, fixedIndex,
+      );
     }
 
     // Clean up deploy stack values

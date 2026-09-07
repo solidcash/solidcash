@@ -2660,6 +2660,59 @@ describe('required kernel admission', () => {
       });
   });
 
+  it('admits one fixed-array genesis entry, collapses duplicate writes, and fences wider entry genesis', () => {
+    const artifact = compileString(`contract OneEntry(int32 seed) {
+        int32[1] values;
+        constructor() { this.values[0] = seed; this.values[0] = seed + 1; }
+      }
+      contract TwoEntries(int32 seed) {
+        int32[2] values;
+        constructor() { this.values[0] = seed; this.values[1] = seed + 1; }
+      }
+      contract Coordinator() {
+        function one(int32 seed) public { OneEntry child = new OneEntry(seed); require(true); }
+        function two(int32 seed) public { TwoEntries child = new TwoEntries(seed); require(true); }
+      }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'one')).toMatchObject({
+      eligible: true,
+      childDeployments: [{
+        entryNftOutputCount: 1,
+        totalOutputCount: 2,
+        genesisEntries: [{
+          collection: 'values',
+          key: { kind: 'intLiteral', value: '0' },
+          value: { kind: 'binary', operator: '+', right: { kind: 'intLiteral', value: '1' } },
+        }],
+      }],
+    });
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'two'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+    expect(artifact.abi.find((candidate) => candidate.name === 'one')?.deployTargets?.[0]).toMatchObject({
+      entryNftCount: 1,
+      genesisEntries: [{
+        collection: 'values',
+        key: { kind: 'intLiteral', value: '0' },
+        value: { kind: 'binary', operator: '+', right: { kind: 'intLiteral', value: '1' } },
+      }],
+    });
+  });
+
+  it('does not publish or reserve an entry whose folded value has no materializable recipe', () => {
+    const artifact = compileString(`contract StringEntry() {
+        string[1] values;
+        constructor() { this.values[0] = "seed"; }
+      }
+      contract Coordinator() {
+        function make() public { StringEntry child = new StringEntry(); require(true); }
+      }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'make'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+    const make = artifact.abi.find((candidate) => candidate.name === 'make')!;
+    expect(make.deployTargets?.[0]).not.toHaveProperty('entryNftCount');
+    expect(make.deployTargets?.[0]).not.toHaveProperty('genesisEntries');
+    expect(make.blockLayout?.slots.filter((slot) => slot.kind === 'deployDataNft')).toHaveLength(0);
+  });
+
   it('keeps effectful and unmodeled child recipes fenced per resolved overload', () => {
     const artifact = compileString(`contract Unit(bytes32 seed) { int marker; }
       contract Coordinator() {
@@ -5622,7 +5675,7 @@ describe('required kernel admission', () => {
     ]);
   });
 
-  it('rejects a fixed transfer predicate which can observe an earlier state write', () => {
+  it('replays a fixed transfer predicate from an exact dominating scalar state write', () => {
     const artifact = compileString(`contract C() {
       bool enabled;
       function pay(bytes recipient, int amount) public {
@@ -5632,11 +5685,110 @@ describe('required kernel admission', () => {
       }
     }`, KERNEL);
     expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'pay')).toMatchObject({
-      eligible: false, rejectionReason: 'KERNEL_LAYOUT',
+      eligible: true,
+      transfers: [{ condition: { kind: 'literal', value: true } }],
     });
     expect(artifact.abi.find((candidate) => candidate.name === 'pay')?.transfers).toEqual([
-      expect.objectContaining({ transferIndex: 0, condition: null }),
+      expect.objectContaining({ transferIndex: 0, condition: expect.anything() }),
     ]);
+  });
+
+  it('invalidates a fixed transfer state recipe across an outlined scalar-state helper', () => {
+    const artifact = compileString(`contract C() {
+      bool enabled;
+      function disable() internal { this.enabled = false; }
+      function pay(bool take, bytes recipient, int amount) public {
+        this.enabled = take;
+        disable();
+        if (this.enabled) this.transfer(recipient, amount);
+        require(true);
+      }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'pay')).toMatchObject({
+      eligible: false, rejectionReason: 'KERNEL_LAYOUT',
+    });
+    expect(artifact.abi.find((candidate) => candidate.name === 'pay')?.transfers?.[0])
+      .toMatchObject({ condition: null });
+  });
+
+  it('normalizes enum handler inputs in scalar-state fixed transfer recipes', () => {
+    const artifact = compileString(`contract C() {
+      enum Choice { A, B }
+      int quantity;
+      function pay(Choice choice, bytes recipient) public {
+        this.quantity = int(choice);
+        this.transfer(recipient, this.quantity);
+        require(true);
+      }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'pay')).toMatchObject({
+      eligible: true,
+      transfers: [{
+        amountRecipe: {
+          kind: 'cast', resultType: 'int256',
+          operand: { kind: 'handlerInput', inputIndex: 0, resultType: 'bigint' },
+        },
+      }],
+    });
+  });
+
+  it('replays fixed transfer operands assigned to scalar state in every finite branch arm', () => {
+    const artifact = compileString(`contract C() {
+      address destination;
+      int quantity;
+      function pay(bool alternate, address first, address second, int base) public {
+        if (alternate) { this.destination = second; this.quantity = base + 1; }
+        else { this.destination = first; this.quantity = base; }
+        this.transfer(this.destination, this.quantity);
+        require(true);
+      }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'pay')).toMatchObject({
+      eligible: true,
+      transfers: [{
+        recipientRecipe: { kind: 'conditional', resultType: 'address' },
+        amountRecipe: { kind: 'conditional', resultType: 'int256' },
+      }],
+    });
+  });
+
+  it('replays scalar-state transfer operands assigned by an exhaustive finite switch', () => {
+    const artifact = compileString(`contract C() {
+      address destination;
+      int quantity;
+      function pay(int choice, address first, address second, int base) public {
+        switch (choice) {
+          case 1: this.destination = second; this.quantity = base + 1; break;
+          default: this.destination = first; this.quantity = base; break;
+        }
+        this.transfer(this.destination, this.quantity);
+        require(true);
+      }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'pay')).toMatchObject({
+      eligible: true,
+      transfers: [{
+        recipientRecipe: { kind: 'conditional', resultType: 'address' },
+        amountRecipe: { kind: 'conditional', resultType: 'int256' },
+      }],
+    });
+  });
+
+  it.each([
+    ['an unassigned state read', '', 'this.quantity'],
+    ['a loop-carried state write', 'while (repeat) { this.quantity = amount; }', 'this.quantity'],
+  ])('keeps fixed transfer operands with %s fenced', (_label, setup, amountExpression) => {
+    const artifact = compileString(`contract C() {
+      int quantity;
+      function pay(bool repeat, bytes recipient, int amount) public {
+        ${setup}
+        this.transfer(recipient, ${amountExpression});
+        require(true);
+      }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'pay')).toMatchObject({
+      eligible: false, rejectionReason: 'KERNEL_LAYOUT',
+    });
   });
 
   it('replays a fixed transfer predicate through dominating mutable local aliases', () => {
@@ -6601,7 +6753,7 @@ describe('required kernel admission', () => {
     }
   });
 
-  it('fences event-only arguments with unmodeled loop-carried local or state values', () => {
+  it('replays event-only arguments from closed loop-carried local and scalar-state assignments', () => {
     const artifact = compileString(`event Tick(int value);
       contract C() {
         int total;
@@ -6616,9 +6768,214 @@ describe('required kernel admission', () => {
         }
       }`, KERNEL);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'fromLocal'))
-      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+      .toMatchObject({
+        eligible: true,
+        runtimeLoopEvents: [{
+          eventSignatures: ['Tick(int256)'],
+          arguments: [[{ kind: 'binary', operator: '+' }]],
+        }],
+      });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'fromState'))
+      .toMatchObject({
+        eligible: true,
+        runtimeLoopEvents: [{
+          eventSignatures: ['Tick(int256)'],
+          arguments: [[{ kind: 'binary', operator: '+' }]],
+        }],
+      });
+  });
+
+  it('anchors a scalar-state event recurrence to its exact dominating assignment', () => {
+    const artifact = compileString(`event Tick(int value);
+      contract C() {
+        int total;
+        function observe(int n, int seed) public {
+          this.total = seed;
+          for (int i = 0; i < n; i = i + 1) {
+            emit Tick(this.total);
+            this.total = this.total + 1;
+          }
+          require(true);
+        }
+      }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'observe'))
+      .toMatchObject({
+        eligible: true,
+        runtimeLoopEvents: [{
+          eventSignatures: ['Tick(int256)'],
+          arguments: [[{
+            kind: 'binary',
+            operator: '+',
+            left: { kind: 'source', source: { kind: 'forward', paramIndex: 1 } },
+          }]],
+        }],
+      });
+  });
+
+  it('fences event recurrences whose source history is not a straight-line closed form', () => {
+    const artifact = compileString(`event Tick(int value);
+      contract C() {
+        int total;
+        function reassignedInitializer(int n, int seed) public {
+          int next = 0;
+          next = seed;
+          for (int i = 0; i < n; i = i + 1) { emit Tick(next); next = i + 10; }
+          require(true);
+        }
+        function localContinue(int n, bool skip) public {
+          int next = 0;
+          for (int i = 0; i < n; i = i + 1) {
+            emit Tick(next);
+            next = i;
+            if (skip) { continue; }
+            next = i + 100;
+          }
+          require(true);
+        }
+        function stateContinue(int n, bool skip) public {
+          for (int i = 0; i < n; i = i + 1) {
+            emit Tick(this.total);
+            this.total = this.total + 1;
+            if (skip) { continue; }
+            this.total = this.total + 10;
+          }
+          require(true);
+        }
+      }`, KERNEL);
+    for (const name of ['reassignedInitializer', 'localContinue', 'stateContinue']) {
+      expect(artifact.messageBus?.handlers.find((handler) => handler.name === name))
+        .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+    }
+  });
+
+  it('keeps self-dependent and resource-dependent event recurrences fenced', () => {
+    const artifact = compileString(`event Tick(int value);
+      contract C() {
+        mapping(int => int) source;
+        function selfDependent(int n) public {
+          int next = 0;
+          for (int i = 0; i < n; i = i + 1) { next = next + i; emit Tick(next); }
+          require(true);
+        }
+        function resourceDependent(int n) public {
+          int next = 0;
+          for (int i = 0; i < n; i = i + 1) { next = this.source[i]; emit Tick(next); }
+          require(true);
+        }
+      }`, KERNEL);
+    for (const name of ['selfDependent', 'resourceDependent']) {
+      expect(artifact.messageBus?.handlers.find((handler) => handler.name === name))
+        .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+    }
+  });
+
+  it('keeps non-affine and resource-dependent scalar-state event recurrences fenced', () => {
+    const artifact = compileString(`event Tick(int value);
+      contract C() {
+        int total;
+        mapping(int => int) source;
+        function nonAffine(int n) public {
+          for (int i = 0; i < n; i = i + 1) {
+            this.total = this.total * 2;
+            emit Tick(this.total);
+          }
+          require(true);
+        }
+        function resourceDependent(int n) public {
+          for (int i = 0; i < n; i = i + 1) {
+            this.total = this.total + this.source[i];
+            emit Tick(this.total);
+          }
+          require(true);
+        }
+        function counterDependent(int n) public {
+          for (int i = 0; i < n; i = i + 1) {
+            this.total = this.total + i;
+            emit Tick(this.total);
+          }
+          require(true);
+        }
+        function localDelta(int n) public {
+          int delta = 1;
+          for (int i = 0; i < n; i = i + 1) {
+            this.total = this.total + delta;
+            delta = delta + 1;
+            emit Tick(this.total);
+          }
+          require(true);
+        }
+      }`, KERNEL);
+    for (const name of ['nonAffine', 'resourceDependent', 'counterDependent', 'localDelta']) {
+      expect(artifact.messageBus?.handlers.find((handler) => handler.name === name))
+        .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+    }
+  });
+
+  it('keeps coupled scalar-state event recurrences fenced', () => {
+    const artifact = compileString(`event Tick(int value);
+      contract C() {
+        int left;
+        int right;
+        function coupled(int n) public {
+          for (int i = 0; i < n; i = i + 1) {
+            this.left = this.left + this.right;
+            this.right = this.right + 1;
+            emit Tick(this.left);
+          }
+          require(true);
+        }
+      }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'coupled'))
       .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+  });
+
+  it('publishes scalar-state event recipes at their exact source phase', () => {
+    const artifact = compileString(`event Phase(int value);
+      contract C() {
+        int total;
+        function observe(int n, int delta) public {
+          for (int i = 0; i < n; i = i + 1) {
+            emit Phase(this.total);
+            this.total = this.total + delta;
+            emit Phase(this.total);
+          }
+          require(true);
+        }
+      }`, KERNEL);
+    const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'observe');
+    expect(handler).toMatchObject({ eligible: true });
+    expect(handler?.runtimeLoopEvents?.[0].arguments).toHaveLength(2);
+    expect(handler?.runtimeLoopEvents?.[0].arguments?.[0])
+      .not.toEqual(handler?.runtimeLoopEvents?.[0].arguments?.[1]);
+  });
+
+  it('keeps loop-carried local and scalar-state event values in source order beside permuted writes', () => {
+    const artifact = compileString(`event Tick(int localValue, int stateValue);
+      contract C() {
+        int total;
+        mapping(int => int) values;
+        function write(int n, int offset, int delta) public {
+          int next = 0;
+          for (int i = 0; i < n; i = i + 1) {
+            next = offset + i;
+            this.total = this.total + delta;
+            this.values[i] = i;
+            emit Tick(next, this.total);
+          }
+          require(true);
+        }
+      }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'write');
+    expect(handler).toMatchObject({
+      eligible: true,
+      runtimeLoopEvents: [{
+        permutationParam: expect.stringMatching(/^__internal__vmapCounterPerm_n_/),
+        eventSignatures: ['Tick(int256,int256)'],
+      }],
+    });
+    // Mapping keys consume the authenticated permutation, while event arguments remain executable source values
+    // and are materialized from the faithful VM trace rather than evaluated at physical key rank by the SDK.
+    expect(handler?.runtimeLoopEvents?.[0].arguments).toBeUndefined();
   });
 
   it('keeps an inlined effectful helper result adjacent to a repeated event', () => {

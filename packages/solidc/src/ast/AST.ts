@@ -355,7 +355,7 @@ export class FunctionDefinitionNode extends Node implements Named {
   runtimeCounterLoopOutputCapacity?: number;
   transferInfos?: TransferInfo[];
   deployTargets?: {
-    contractName: string; dataNftCount: number;
+    contractName: string; dataNftCount: number; entryNftCount?: number;
     // Per child constructor argument: the deploy-function parameter name it forwards (a direct `new C(param)`
     // reference), or null if it is a non-trivial expression. Lets the SDK derive childConstructorArgs from the
     // deploy-function args instead of requiring them again.
@@ -370,6 +370,7 @@ export class FunctionDefinitionNode extends Node implements Named {
     hasFoldedChildCall?: boolean;
     childLayoutDigest?: string;
     genesisState?: import('@solidcash/utils').ChildDeploymentGenesisStateAbi;
+    genesisEntries?: readonly import('@solidcash/utils').ChildDeploymentGenesisEntryAbi[];
   }[];
 
   lowLevelCalls?: { callMode: 'call' | 'staticcall' | 'delegatecall'; dataParamIndex?: number }[];
@@ -1480,6 +1481,7 @@ export class InstantiationNode extends ExpressionNode {
   transferIndex: number = 0;
   isStatefulDeploy: boolean = false;
   deployedDataNftCount: number = 0;
+  deployedEntryNftCount: number = 0;
   deployedStateVars: StateVariableNode[] = [];
   // Deploy-then-call fold: a same-tx `a.foo(x)` on this deploy result is folded into the genesis - the
   // child is deployed in its post-foo state. Maps a child state-var name to the (parent-context) expression
@@ -1488,6 +1490,15 @@ export class InstantiationNode extends ExpressionNode {
 
   // Replayable constructor preconditions, rewritten into the deploying function's expression context.
   foldedConstructorPredicates?: ExpressionNode[];
+
+  // Finite collection entries created by a child constructor. The first admitted form is a top-level,
+  // fixed-size scalar array addressed by a literal index; both key and value are rewritten into the parent
+  // handler's expression context so the deploy covenant and SDK can independently reproduce the entry NFT.
+  foldedCollectionEntries?: Array<{
+    collection: CollectionNode;
+    key: ExpressionNode;
+    value: ExpressionNode;
+  }>;
 
   // Unlike constructor folding, this requires the SDK to derive the child's post-call genesis from the VM.
   hasFoldedChildCall?: boolean;
@@ -2705,6 +2716,8 @@ export class EmitStatementNode extends StatementNode {
   runtimeLoopEvent?: { loopIndex: number; siteIndex: number };
   /** Source predicate controlling this runtime event, evaluated by the SDK to plan the exact output stream. */
   runtimeLoopEventCondition?: ExpressionNode;
+  /** SDK-visible replay recipe when the executable argument itself must retain source state semantics. */
+  runtimeLoopEventArguments?: ExpressionNode[];
   /** Counter progression available to runtimeLoopEventCondition as a per-occurrence value. */
   runtimeLoopEventCounter?: {
     name: string; initialValue: bigint; stepValue: bigint; stepExpression?: ExpressionNode;

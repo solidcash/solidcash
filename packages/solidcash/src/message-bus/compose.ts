@@ -3,7 +3,8 @@ import {
   BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX, decodePushdataValue, encodePushdataValue, scriptToBytecode,
   MESSAGE_BUS_VERIFIER_COMMITMENT_DOMAIN, sha256, buildEventNftCovenantScript,
   buildAnonymousEventNftCovenantScript, computeEventNameHash, parseArrayTypeString,
-  buildInitialStateCommitments, bytecodeToScript, scriptToAsm, AddressType, BytesType, FixedType, IntType,
+  buildEntryCommitment, buildInitialStateCommitments, bytecodeToScript, scriptToAsm,
+  AddressType, BytesType, FixedType, IntType,
   parseTypeStrict, PrimitiveType,
   childStateLayoutDigest,
   validateChildDeploymentGenesisState,
@@ -28,7 +29,7 @@ import {
 } from '../stateful/logical-identity.js';
 import { canApplyRepairedNftCommitment } from '../stateful/computed-output-repair.js';
 import { tryParseEventCommitment } from '../stateful/StateReader.js';
-import { getDataNftAddress } from '../stateful/covenant-helpers.js';
+import { getDataNftAddress, getEntryNftLockingBytecode } from '../stateful/covenant-helpers.js';
 import {
   createMessageBusVerifierUnlocker, getMessageBusVerifierLockingBytecodeForArtifact,
 } from '../stateful/covenant-helpers.js';
@@ -1602,6 +1603,11 @@ export class AtomicMessageBusComposition {
               `messageBus: registered child artifact '${site.contractName}' has deployment state geometry ${childArtifact.stateLayout.dataNftCount}, expected ${site.dataNftOutputCount}`,
             );
           }
+          if ((site.entryNftOutputCount ?? 0) !== (site.genesisEntries?.length ?? 0)) {
+            throw new Error(
+              `messageBus: child deployment site ${site.siteIndex} has inconsistent entry-genesis geometry`,
+            );
+          }
           if (site.childLayoutDigest
             && childStateLayoutDigest(childArtifact.stateLayout) !== site.childLayoutDigest.toLowerCase()) {
             throw new Error(
@@ -1702,6 +1708,37 @@ export class AtomicMessageBusComposition {
               token: {
                 category: genesis.txid, amount: 0n,
                 nft: { capability: 'mutable', commitment: commitments[nftIndex] },
+              },
+            });
+          }
+          for (const entry of site.genesisEntries ?? []) {
+            const collection = childArtifact.stateLayout.collections?.find((candidate) =>
+              candidate.name === entry.collection && candidate.signature === entry.collectionSignature);
+            if (!collection || collection.kind !== 'array' || collection.bound === undefined
+              || collection.keyType !== entry.keyType || collection.valueType !== entry.valueType) {
+              throw new Error(
+                `messageBus: child deployment entry '${entry.collection}' does not match the authenticated layout`,
+              );
+            }
+            const key = evaluateChildDeploymentRecipe(entry.key, descriptor.args, inputTypes, solidityAbi);
+            const value = evaluateChildDeploymentRecipe(entry.value, descriptor.args, inputTypes, solidityAbi);
+            if (typeof key !== 'bigint' || key < 0n || key >= BigInt(collection.bound)) {
+              throw new Error(`messageBus: child deployment entry '${entry.collection}' has an invalid fixed-array key`);
+            }
+            outputs.push({
+              to: getEntryNftLockingBytecode(child, genesis.txid, entry.collectionSignature),
+              amount: 1200n,
+              token: {
+                category: genesis.txid,
+                amount: 0n,
+                nft: {
+                  capability: 'mutable',
+                  commitment: buildEntryCommitment(
+                    key, entry.keyType, value as StateValue, entry.valueType,
+                    childArtifact.stateLayout.structs,
+                    provider.consensusLimits?.maximumNftCommitmentBytes,
+                  ),
+                },
               },
             });
           }

@@ -398,6 +398,7 @@ export function atomicParticipantPolicyHash(artifact: Artifact): string {
       genesisInputCount: site.genesisInputCount,
       masterOutputCount: site.masterOutputCount,
       dataNftOutputCount: site.dataNftOutputCount,
+      entryNftOutputCount: site.entryNftOutputCount ?? 0,
       totalOutputCount: site.totalOutputCount,
       categorySource: site.categorySource,
       constructorArgs: site.constructorArgs,
@@ -406,6 +407,7 @@ export function atomicParticipantPolicyHash(artifact: Artifact): string {
       creationBytecode: site.creationBytecode.toLowerCase(),
       childLayoutDigest: site.childLayoutDigest ?? '',
       genesisState: site.genesisState ?? null,
+      genesisEntries: site.genesisEntries ?? [],
     })),
   }));
   return binToHex(sha256.hash(utf8ToBin(JSON.stringify(policy))));
@@ -800,7 +802,8 @@ export function finalizeAtomicInvocationGraph(
         && (site.occurrence === 'once' || (site.occurrence === 'conditional' && site.activation !== undefined))
         && site.genesisInputCount === 1 && site.masterOutputCount === 1
         && Number.isSafeInteger(site.dataNftOutputCount) && site.dataNftOutputCount >= 0
-        && site.totalOutputCount === 1 + site.dataNftOutputCount
+        && Number.isSafeInteger(site.entryNftOutputCount ?? 0) && (site.entryNftOutputCount ?? 0) >= 0
+        && site.totalOutputCount === 1 + site.dataNftOutputCount + (site.entryNftOutputCount ?? 0)
         && spanWidth === site.totalOutputCount && spanOffset === expectedSpanOffset;
       expectedSpanOffset += site.totalOutputCount;
       return !valid;
@@ -867,9 +870,9 @@ export function finalizeAtomicInvocationGraph(
         );
       }
       const active = effect.active !== false;
-      if (active && effect.outputs.length !== 1 + site.dataNftOutputCount) {
+      if (active && effect.outputs.length !== site.totalOutputCount) {
         throw new Error(
-          `messageBus: deployment site ${effect.siteIndex} requires ${1 + site.dataNftOutputCount} exact outputs`,
+          `messageBus: deployment site ${effect.siteIndex} requires ${site.totalOutputCount} exact outputs`,
         );
       }
       if (!active && (site.occurrence !== 'conditional' || effect.outputs.length !== 0)) {

@@ -313,7 +313,8 @@ enumerable mapping iteration, `try`/`catch` around a typed call, public dynamic-
 call, and fallback that both writes a mapping of `msg.sig` and makes a typed call), Solidity
 `address.transfer` / `.send` (the same satoshi-transfer effect as `this.transfer`),
 if/else and finite-switch satoshi transfers (including typed joins of replayable predicates, recipients, and
-amounts), fixed transfers after a structurally proven zero-or-one-pass local `while` whose condition is cleared on
+amounts), fixed transfers whose activation/recipient/amount follows an exact dominating scalar-state assignment or
+an exhaustive finite state join, fixed transfers after a structurally proven zero-or-one-pass local `while` whose condition is cleared on
 every successful path, `address.transfer` inside an internal helper, UDVT `wrap`/`unwrap`
 then a mapping write, typed calls with a struct-array argument (`I.r(Rec[])`),
 library-wrapped IERC20 transfer (`using SafeTransfer for IERC20`),
@@ -347,8 +348,13 @@ state/transaction/message reads, transaction signatures, effectful helpers, and 
 fenced. The child layout digest authenticates variable and collection topology, including reachable nested struct field
 names, types, and order. Each active deployment envelope carries that digest and the pinned verifier checks it against
 the compiler-owned deployment-site registry, so the SDK cannot reinterpret the same output transcript with different
-child geometry. This descriptor binding is only a provenance prerequisite: collection-entry initializer recipes and
-their entry-NFT materialization are still required before collection genesis can leave `KERNEL_LAYOUT`.
+child geometry. A constructor may currently create one top-level fixed-size scalar-array entry at a literal index.
+The compiler publishes typed key/value recipes, duplicate writes to that same index collapse to the final value, the
+SDK materializes the exact entry NFT, and both the participant and pinned verifier authenticate its output. Two or
+more distinct constructor-created entries, mappings, dynamic arrays, nested/struct-valued entries, runtime keys, and
+recursive collection shapes remain `KERNEL_LAYOUT`. The one-entry limit is the current verifier-size capacity: even a
+minimal two-entry factory generated a 10,083-byte route, beyond the 10,000-byte consensus input-script limit. It is
+not tied to any contract or function name.
 Compiler-owned public entry points are finalized before kernel admission. In particular, a contract using an
 oracle-backed `block.*` register publishes `__updateBlockOracle` as an ordinary eligible row with its detached
 transaction-signature witness; it is not appended later as an unexamined ABI-only function. Public state getters
@@ -445,8 +451,13 @@ or `switch` assignment to the same local is collapsed to its exact ternary expre
 mapping values when every arm is independently replayable. Exhaustive nested branches and switches are reduced
 recursively. Straight-line loop-carried values used before and after an assignment receive separate per-site
 recipes for mapping guards, mapping values, runtime-effect predicates, and early-exit fallthrough: each atomic path
-term is expanded at its own source statement before the terms are composed. Incomplete joins, self-dependent arms,
-and recurrences other than the supported boolean toggle remain fenced.
+term is expanded at its own source statement before the terms are composed. Event-only loops also serialize closed
+per-iteration local assignments as event-argument recipes. A top-level scalar-state recurrence of the form
+`state = state +/- invariantDelta` derives each event value from authenticated pre-state and logical rank; the executable
+event still reads the real source state, independently binding the SDK-planned commitment. Counter-dependent deltas,
+loop-mutated delta locals, coupled or conditional state recurrences, incomplete joins, self-dependent local arms, and
+recurrences other than these closed forms remain fenced. When a loop also writes counter-keyed mappings, the original
+event expressions stay in its faithful source-order effect trace; only mapping keys use the physical permutation.
 Counter-derived reads whose key or value cannot be represented by an independent runtime stream, and write values
 derived through unreplayable mutable/loop-carried locals or scalar state mutated by the loop, remain
 `KERNEL_UNBOUNDED_KEY`. Integer, fixed-point, boolean, fixed-byte, address, public-key,

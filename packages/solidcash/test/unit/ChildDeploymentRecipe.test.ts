@@ -66,6 +66,13 @@ describe('child deployment recipe evaluation', () => {
     }, [-199n], ['fixed128x2'], true)).toBe(-1n);
   });
 
+  it('evaluates enum inputs through the compiler-normalized bigint representation', () => {
+    expect(evaluateChildDeploymentRecipe({
+      kind: 'cast', resultType: 'int256',
+      operand: { kind: 'handlerInput', inputIndex: 0, resultType: 'bigint' },
+    }, [1n], ['Choice'], false)).toBe(1n);
+  });
+
   it('selects one typed pure branch lazily and rejects mismatched branch types', () => {
     const conditional: ChildDeploymentValueRecipe = {
       kind: 'conditional', resultType: 'uint256',

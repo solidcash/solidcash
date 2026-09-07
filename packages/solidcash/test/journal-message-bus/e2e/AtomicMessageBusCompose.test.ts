@@ -10,6 +10,7 @@ import {
   hash160,
   buildValueChunkCommitment, encodeChunkableValueTail, encodePushdataValue, splitValueIntoValueChunks,
   parsePushdataCommitment,
+  buildEntryCommitment,
 } from '@solidcash/utils';
 import type { Artifact } from '@solidcash/utils';
 import { keccak_256 } from '@noble/hashes/sha3.js';
@@ -625,6 +626,74 @@ describe('messageBus.compose atomic transaction', () => {
     expect(deployments[3][0].index).toBe(deployments[2][0].index + compactSite.totalOutputCount);
     expect(deployments[0][0].index).toBeLessThan(deployments[2][0].index);
     expect(new Set(deployments.map((outputs) => binToHex(outputs[0].output.to)))).toHaveLength(4);
+  }, 120_000);
+
+  it('materializes and authenticates one fixed-array constructor entry NFT', async () => {
+    const provider = createMessageBusCapstoneTestProvider();
+    const artifacts = compileStringMulti(`contract EntryChild(int32 seed) {
+        int32[1] values;
+        constructor() { this.values[0] = seed; }
+        function keep() public { require(true); }
+      }
+      contract EntryFactory() {
+        function create(int32 seed) public { EntryChild child = new EntryChild(seed); require(true); }
+      }
+      interface IEntryFactory { function create(int32 seed); }
+      contract EntryDriver(address factory) {
+        function run(int32 seed) public { IEntryFactory(factory).create(seed); require(true); }
+      }`, { forceStateful: true, messageBus: true, messageBusKernel: true });
+    const factoryBase = new Contract(artifacts.EntryFactory, [], { provider });
+    const setup = await setupStatefulUtxos(
+      provider, factoryBase, artifacts.EntryFactory.stateLayout!, {}, { saltContract: true },
+    );
+    const factory = StatefulContract.withCategory(
+      factoryBase.withCategory(hexToBin(setup.categoryId)), setup.categoryId,
+    ).registerChild(artifacts.EntryChild);
+    const driverBase = new Contract(artifacts.EntryDriver, [hexToBin(factory.inner.lockingBytecode)], { provider });
+    const driverSetup = await setupStatefulUtxos(
+      provider, driverBase, artifacts.EntryDriver.stateLayout!, {}, { saltContract: true },
+    );
+    const driver = StatefulContract.withCategory(
+      driverBase.withCategory(hexToBin(driverSetup.categoryId)), driverSetup.categoryId,
+    );
+    const handler = artifacts.EntryFactory.messageBus?.handlers.find((candidate) => candidate.name === 'create');
+    expect(handler).toMatchObject({
+      eligible: true,
+      childDeployments: [{
+        entryNftOutputCount: 1,
+        totalOutputCount: 2,
+        genesisEntries: [{
+          collection: 'values', collectionSignature: 'values:int32[1]',
+          keyType: 'bigint', valueType: 'int32',
+          key: { kind: 'intLiteral', value: '0' },
+          value: { kind: 'handlerInput', inputIndex: 0, resultType: 'int32' },
+        }],
+      }],
+    });
+    const fee = await createBareP2pkhFeeFunder(provider, 100_000n);
+    const genesis = await createBareP2pkhFeeFunder(provider, 20_000n);
+    const build = (): Promise<TransactionBuilder> => messageBus.compose({
+      preparedCalls: [
+        { contract: driver, functionName: 'run', args: [37n] },
+        { contract: factory, functionName: 'create', args: [37n] },
+      ],
+      funder: fee,
+      changeAddress: fee.unlocker.generateLockingBytecode(),
+      childDeployments: [{ invocationIndex: 1, siteIndex: 0, funder: genesis }],
+    }).build();
+    const valid = await build();
+    expect(vmRejects(valid)).toBe(false);
+    const childOutputs = valid.outputs.map((output, index) => ({ output, index }))
+      .filter(({ output }) => output.token?.category === genesis.utxo.txid);
+    expect(childOutputs).toHaveLength(2);
+    expect(childOutputs[1].output.token?.nft).toMatchObject({
+      capability: 'mutable', commitment: buildEntryCommitment(0n, 'bigint', 37n, 'int32'),
+    });
+    const forged = await build();
+    const entryOutput = forged.outputs.find((output) => output.token?.category === genesis.utxo.txid
+      && output.token.nft?.capability === 'mutable')!;
+    entryOutput.token!.nft!.commitment = buildEntryCommitment(0n, 'bigint', 38n, 'int32');
+    expect(vmRejects(forged)).toBe(true);
   }, 120_000);
 
   it('replays pure-helper constructor preconditions and rejects false or tampered genesis', async () => {

@@ -1,8 +1,8 @@
-import { compileString } from '../direct-compile.js';
+import { compileString, compileStringMulti } from '../direct-compile.js';
 import {
   Contract, SignatureTemplate, StatefulContract,
 } from '../../src/index.js';
-import { parsePushdataCommitment } from '@solidcash/utils';
+import { buildEntryCommitment, parsePushdataCommitment } from '@solidcash/utils';
 import { alicePub, alicePriv, alicePkh } from '../fixture/vars.js';
 import { createTestProvider, getTxOutputs } from '../test-util.js';
 import { Utxo } from '../../src/interfaces.js';
@@ -97,5 +97,48 @@ describe('constructor-genesis fold (Solidity-style deploy-then-call, e2e)', () =
     );
     expect(childState.total).toBe(s * 2n + 3n);
     expect(childState.rate).toBe(5n);
+  });
+
+  it('deployFrom materializes an authenticated fixed-array constructor entry', async () => {
+    const artifacts = compileStringMulti(`contract EntryChild(int32 seed) {
+        int32[1] values;
+        constructor() { this.values[0] = seed; }
+        function check(int32 expected) public { require(this.values[0] == expected); }
+      }
+      contract EntryFactory() {
+        function make(int32 seed) public { EntryChild child = new EntryChild(seed); require(true); }
+      }`);
+    const make = artifacts.EntryFactory.abi.find((candidate) => candidate.name === 'make')!;
+    expect(make.deployTargets?.[0]).toMatchObject({
+      entryNftCount: 1,
+      genesisEntries: [{ collection: 'values' }],
+    });
+
+    const factoryFunding: Utxo = { txid: 'fc3d'.repeat(16), vout: 0, satoshis: 200_000n };
+    await provider.addUtxo(p2pkh.address, factoryFunding);
+    const deployedFactory = await StatefulContract.deploy(artifacts.EntryFactory, [], {
+      provider,
+      fundingUtxo: factoryFunding,
+      funder: p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv)),
+      initialState: {},
+      changeAddress: p2pkh.address,
+    });
+    const childFunding: Utxo = { txid: 'fc4d'.repeat(16), vout: 0, satoshis: 100_000n };
+    await provider.addUtxo(p2pkh.address, childFunding);
+    const result = await StatefulContract.deployFrom({
+      provider,
+      factory: deployedFactory.contract,
+      deployFunctionName: 'make',
+      deployFunctionArgs: [37n],
+      childArtifact: artifacts.EntryChild,
+      childConstructorArgs: [37n],
+      fundingUtxo: childFunding,
+      funder: p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv)),
+      changeAddress: p2pkh.address,
+    });
+    const entries = getTxOutputs(result.tx).filter((output) => output.token?.category === result.childCategoryId
+      && output.token.nft?.capability === 'mutable');
+    expect(entries).toHaveLength(1);
+    expect(entries[0].token?.nft?.commitment).toBe(buildEntryCommitment(0n, 'bigint', 37n, 'int32'));
   });
 });

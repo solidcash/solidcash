@@ -2187,6 +2187,8 @@ export default class SymbolTableTraversal extends AstTraversal {
     const ctor = contract?.constructorDef;
     const statements = (ctor?.body as BlockNode | undefined)?.statements ?? [];
     if (!contract) return;
+    deployNode.foldedCollectionEntries = undefined;
+    deployNode.deployedEntryNftCount = 0;
     // An implicit or implemented empty constructor is a complete zero-write transition. Mark it explicitly:
     // kernel proof mode must distinguish this sound default genesis from a constructor that was never surveyed.
     if (!ctor || statements.length === 0) {
@@ -2218,6 +2220,41 @@ export default class SymbolTableTraversal extends AstTraversal {
     this.genesisHelperStack = new Set();
     try {
       for (const statement of statements) {
+        if (statement instanceof MappingAssignNode) {
+          const collection = statement.collection ?? contract.collections.find((candidate) =>
+            candidate.name === statement.name);
+          const fixedArrayType = collection?.type instanceof ArrayType ? collection.type : undefined;
+          const fixedScalarArray = fixedArrayType !== undefined
+            && fixedArrayType.bound !== undefined
+            && !(collection?.innermostValueType instanceof ArrayType)
+            && !(collection?.innermostValueType instanceof MappingType)
+            && !(collection?.innermostValueType instanceof StructType);
+          const key = statement.keys.length === 1 && statement.keys[0] instanceof IntLiteralNode
+            ? this.foldGenesisExpr(
+              cloneNode(statement.keys[0]), subs, fieldExprs, fieldType, PrimitiveType.BIGINT,
+            ) : undefined;
+          const value = fixedScalarArray && !statement.arrayIndex && !statement.arrayPush && !statement.arrayPop
+            ? this.foldGenesisExpr(
+              cloneNode(statement.expression), subs, fieldExprs, fieldType, collection!.innermostValueType,
+            ) : undefined;
+          const literalIndex = statement.keys[0] instanceof IntLiteralNode ? statement.keys[0].value : -1n;
+          if (!collection || !fixedScalarArray || !key || !value || literalIndex < 0n
+            || literalIndex >= BigInt(fixedArrayType!.bound!)) {
+            failed = true;
+            continue;
+          }
+          const entries: NonNullable<InstantiationNode['foldedCollectionEntries']> =
+            deployNode.foldedCollectionEntries ?? [];
+          const prior = entries.findIndex((entry) => entry.collection === collection
+            && entry.key instanceof IntLiteralNode && entry.key.value === literalIndex);
+          const folded = { collection, key, value };
+          if (prior >= 0) entries[prior] = folded;
+          else entries.push(folded);
+          deployNode.foldedCollectionEntries = entries;
+          deployNode.deployedEntryNftCount = entries.length;
+          this.protectFoldedExprVars([key, value]);
+          continue;
+        }
         if (!this.foldStatementList(
           [statement], subs, fieldExprs, fieldType, fieldType, constructorPredicates,
         )) failed = true;
@@ -2231,6 +2268,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       statement instanceof VariableDefinitionNode
       || statement instanceof StateAssignNode
       || statement instanceof AssignNode
+      || statement instanceof MappingAssignNode
       || statement instanceof RequireNode);
     if (!failed && constructorPredicates.length > 0) {
       deployNode.foldedConstructorPredicates = constructorPredicates;
@@ -14140,7 +14178,9 @@ export default class SymbolTableTraversal extends AstTraversal {
           n.deployedDataNftCount = dataNfts;
           if (vars.length > 0) n.deployedStateVars = [...vars];
         }
-        counts.push(dataNfts);
+        counts.push(dataNfts + Math.max(
+          n.deployedEntryNftCount ?? 0, n.foldedCollectionEntries?.length ?? 0,
+        ));
       }
       for (const [key, value] of Object.entries(n)) {
         if (key === 'referencedContract' || key === 'definition' || key === 'symbolTable') continue;

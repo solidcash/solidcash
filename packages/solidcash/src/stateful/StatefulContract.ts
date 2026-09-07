@@ -11,6 +11,7 @@ import {
   TokenContainerTransferSiteAbi,
   SortedUpsertLoopAbi,
   buildInitialStateCommitments,
+  buildEntryCommitment,
   buildTokenContainerCovenantScript,
   buildSatoshiContainerCovenantScript,
   buildDataNftCovenantScript,
@@ -6302,7 +6303,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // conservatively from the authenticated layout; callers can still provide an exact fee explicitly.
     const fee = options.fee ?? (() => {
       const slots = deployAbi.blockLayout?.blockSize ?? 4;
-      const childNfts = deployTarget.dataNftCount ?? 1;
+      const childNfts = (deployTarget.dataNftCount ?? 1) + (deployTarget.entryNftCount ?? 0);
       const entryCount = deployAbi.entryAccesses?.length ?? 0;
       return BigInt(Math.max(
         5_000,
@@ -6361,6 +6362,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         `Child artifact '${childArtifact.contractName}' does not match the compiler-authenticated deployment state layout.`,
       );
     }
+    if ((deployTarget.entryNftCount ?? 0) !== (deployTarget.genesisEntries?.length ?? 0)) {
+      throw new Error(
+        `Deploy target '${deployTarget.contractName}' has inconsistent constructor-entry geometry.`,
+      );
+    }
     if (deployTarget?.genesisState) {
       try {
         validateChildDeploymentGenesisState(childLayout, deployTarget.genesisState);
@@ -6381,17 +6387,45 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
     // Compute child's initial state commitments
     const childSeedState: Record<string, StateValueType> = { ...(options.childInitialState ?? {}) };
+    const needsGenesisRecipeEvaluator = !!deployTarget.genesisState || (deployTarget.genesisEntries?.length ?? 0) > 0;
+    const evaluateGenesisRecipe = needsGenesisRecipeEvaluator
+      ? (await import('../message-bus/compose.js')).evaluateChildDeploymentRecipe : undefined;
+    const genesisInputTypes = deployAbi.inputs
+      .filter((input) => !input.name.startsWith('__internal__'))
+      .map((input) => input.type);
     if (deployTarget?.genesisState) {
-      const { evaluateChildDeploymentRecipe } = await import('../message-bus/compose.js');
-      const inputTypes = deployAbi.inputs
-        .filter((input) => !input.name.startsWith('__internal__'))
-        .map((input) => input.type);
       for (const field of deployTarget.genesisState.fields) {
-        childSeedState[field.name] = evaluateChildDeploymentRecipe(
-          field.value, deployFunctionArgs, inputTypes, artifactUsesSolidityAbi(factory.inner.artifact),
+        childSeedState[field.name] = evaluateGenesisRecipe!(
+          field.value, deployFunctionArgs, genesisInputTypes, artifactUsesSolidityAbi(factory.inner.artifact),
         ) as StateValueType;
       }
     }
+    const childGenesisEntries = (deployTarget.genesisEntries ?? []).map((entry) => {
+      const collection = childLayout.collections?.find((candidate) => candidate.name === entry.collection
+        && candidate.signature === entry.collectionSignature);
+      if (!collection || collection.kind !== 'array' || collection.bound === undefined
+        || collection.keyType !== entry.keyType || collection.valueType !== entry.valueType) {
+        throw new Error(
+          `Constructor entry '${entry.collection}' does not match child '${childArtifact.contractName}' layout.`,
+        );
+      }
+      const key = evaluateGenesisRecipe!(
+        entry.key, deployFunctionArgs, genesisInputTypes, artifactUsesSolidityAbi(factory.inner.artifact),
+      );
+      const value = evaluateGenesisRecipe!(
+        entry.value, deployFunctionArgs, genesisInputTypes, artifactUsesSolidityAbi(factory.inner.artifact),
+      );
+      if (typeof key !== 'bigint' || key < 0n || key >= BigInt(collection.bound)) {
+        throw new Error(`Constructor entry '${entry.collection}' has an invalid fixed-array key.`);
+      }
+      return {
+        collectionSignature: entry.collectionSignature,
+        commitment: buildEntryCommitment(
+          key, entry.keyType, value as StateValue, entry.valueType, childLayout.structs,
+          provider.consensusLimits?.maximumNftCommitmentBytes,
+        ),
+      };
+    });
     const legacyChildGenesisHeuristics = !deployTarget?.childLayoutDigest && !deployTarget?.genesisState;
     if (legacyChildGenesisHeuristics && childLayout.variables?.some((variable) => (
       variable.name === 'factory' && variable.type.startsWith('address')
@@ -6883,6 +6917,16 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           token: { category: cat, amount: 0n, nft: { capability: 'mutable', commitment: childCommitments[i] } },
         });
       }
+      for (const entry of childGenesisEntries) {
+        childExtraOutputs.push({
+          to: getEntryNftLockingBytecode(cc, cat, entry.collectionSignature),
+          amount: dataNftAmount,
+          token: {
+            category: cat, amount: 0n,
+            nft: { capability: 'mutable', commitment: entry.commitment },
+          },
+        });
+      }
       if (isLoopValueDeploy) {
         childExtraOutputs.push({ to: cc.address, amount: options.childValue ?? 0n });
       }
@@ -7372,6 +7416,16 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           token: { category: cat, amount: 0n, nft: { capability: 'mutable', commitment: effectiveChildCommitments[i] } },
         });
       }
+      for (const entry of childGenesisEntries) {
+        builder.addOutput({
+          to: getEntryNftLockingBytecode(cc, cat, entry.collectionSignature),
+          amount: dataNftAmount,
+          token: {
+            category: cat, amount: 0n,
+            nft: { capability: 'mutable', commitment: entry.commitment },
+          },
+        });
+      }
       if (k === 0 && hasDeployDataNftSlots) addTrailingEntries();
       // Loop {value:}: the value transfer to this child, interleaved as the last output of its group.
       if (isLoopValueDeploy) {
@@ -7385,7 +7439,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // satoshi-neutral (input funds output). N children cost N * (master + data NFTs); the N funding inputs' total
     // satoshis cover them (any value >= that cost).
     const newEntryCount = BigInt(trailingEntrySpecs.length);
-    const totalChildCost = BigInt(childCount) * (masterAmount + (dataNftAmount * BigInt(childLayout!.dataNftCount)));
+    const totalChildCost = BigInt(childCount) * (masterAmount
+      + (dataNftAmount * BigInt(childLayout!.dataNftCount + childGenesisEntries.length)));
     const totalEntryCost = dataNftAmount * newEntryCount;
     const totalDynamicChunkCost = dataNftAmount * BigInt(dynamicWriteChunkOutputs.length);
     const eventCost = dataNftAmount * BigInt(eventPlaceholderOutputs.length);

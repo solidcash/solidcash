@@ -1,6 +1,7 @@
 import { binToHex } from '@bitauth/libauth';
 import {
-  abiTypeString, ArrayType, ChildDeploymentGenesisStateAbi, ChildDeploymentValueRecipe, CollectionInfo,
+  abiTypeString, ArrayType, ChildDeploymentGenesisEntryAbi, ChildDeploymentGenesisStateAbi,
+  ChildDeploymentValueRecipe, CollectionInfo,
   computeCollectionSignature, EnumType, MappingType, PrimitiveType, StructDefinitionInfo, StructType, Type,
 } from '@solidcash/utils';
 import {
@@ -12,8 +13,12 @@ import {
   TransferStatementNode,
   AddressTransferStatementNode,
   AddressSendExpressionNode,
+  StateAccessNode,
+  StateAssignNode,
+  DeleteStateNode,
 } from './ast/AST.js';
 import { BinaryOperator, UnaryOperator } from './ast/Operator.js';
+import { containsStatefulOperation } from './semantic/EnsureFinalRequireTraversal.js';
 
 const binaryOperators = new Set<BinaryOperator>([
   BinaryOperator.MUL, BinaryOperator.DIV, BinaryOperator.MOD,
@@ -124,6 +129,9 @@ export function childDeploymentValueRecipe(
     return inputIndex === undefined ? undefined : {
       kind: 'handlerInput', inputIndex, ...(nested && resultType && { resultType }),
     };
+  }
+  if (expression instanceof StateAccessNode && aliases && aliasDefinitions) {
+    return aliases.get(aliasDefinitions.get(`this.${expression.name}`) ?? expression.stateVariable as object);
   }
   const declaredType = recipeType(expression);
   if (expression instanceof IntLiteralNode) {
@@ -278,6 +286,42 @@ export interface ChildDeploymentRecipeAnalysis {
   supported: boolean;
 }
 
+/** Publish the finite collection subset whose constructor effects have an exact parent-row replay. */
+export function childDeploymentGenesisEntries(
+  entries: InstantiationNode['foldedCollectionEntries'],
+  handlerInputs: ReadonlyMap<string, number>,
+  handlerInputTypes: ReadonlyMap<string, string>,
+  aliases?: ReadonlyMap<object, ChildDeploymentValueRecipe>,
+  aliasDefinitions?: ReadonlyMap<string, object>,
+): ChildDeploymentGenesisEntryAbi[] | undefined {
+  if (!entries) return [];
+  const result: ChildDeploymentGenesisEntryAbi[] = [];
+  for (const entry of entries) {
+    const collection = entry.collection;
+    if (!(collection.type instanceof ArrayType) || collection.type.bound === undefined
+      || collection.type.elementType instanceof ArrayType
+      || collection.type.elementType instanceof MappingType
+      || collection.type.elementType instanceof StructType) return undefined;
+    const key = childDeploymentValueRecipe(
+      entry.key, handlerInputs, true, handlerInputTypes, aliases, aliasDefinitions, PrimitiveType.BIGINT,
+    );
+    const value = childDeploymentValueRecipe(
+      entry.value, handlerInputs, true, handlerInputTypes, aliases, aliasDefinitions,
+      collection.type.elementType,
+    );
+    if (!key || !numericRecipeType.test(key.resultType ?? '') || !value) return undefined;
+    result.push({
+      collection: collection.name,
+      collectionSignature: computeCollectionSignature(collection.name, collection.type.toString()),
+      keyType: 'bigint',
+      valueType: physicalRecipeType(collection.type.elementType),
+      key,
+      value,
+    });
+  }
+  return result;
+}
+
 const definitionOf = (identifier: IdentifierNode): object | undefined => identifier.definition?.definition;
 
 const bindRecipe = (
@@ -327,9 +371,20 @@ export function analyzeFixedBchEffectRecipes(
   const handlerInputTypes = new Map(visibleInputs.map((parameter) => [parameter.name, abiTypeString(parameter.type)]));
   const initialAliases = new Map<object, ChildDeploymentValueRecipe>(visibleInputs.map((parameter, inputIndex) => [
     parameter,
-    { kind: 'handlerInput', inputIndex, resultType: abiTypeString(parameter.type) } as ChildDeploymentValueRecipe,
+    { kind: 'handlerInput', inputIndex, resultType: physicalRecipeType(parameter.type) } as ChildDeploymentValueRecipe,
   ]));
   const initialDefinitions = new Map<string, object>(visibleInputs.map((parameter) => [parameter.name, parameter]));
+  const stateDefinitions = new Map<string, object>();
+  const stateKeys = new Set<object>();
+  const stateDefinition = (name: string): object => {
+    let definition = stateDefinitions.get(name);
+    if (!definition) {
+      definition = {};
+      stateDefinitions.set(name, definition);
+      stateKeys.add(definition);
+    }
+    return definition;
+  };
   const result = new WeakMap<FixedBchEffectNode, FixedBchEffectRecipeAnalysis>();
   type Environment = {
     aliases: Map<object, ChildDeploymentValueRecipe>;
@@ -379,13 +434,21 @@ export function analyzeFixedBchEffectRecipes(
   ): void => {
     // Only declarations visible before the branch can escape its lexical join. A missing recipe in either arm
     // remains unknown; differing pure values use the typed conditional recipe shared with the SDK.
-    for (const definition of environment.definitions.values()) {
+    const definitions = new Set<object>(environment.definitions.values());
+    // State declarations are contract-scoped, so a value assigned independently in every reachable arm may
+    // join even when no replayable pre-branch value existed. Locals declared inside an arm remain excluded.
+    for (const definition of whenTrue.aliases.keys()) if (stateKeys.has(definition)) definitions.add(definition);
+    for (const definition of whenFalse.aliases.keys()) if (stateKeys.has(definition)) definitions.add(definition);
+    for (const definition of definitions) {
       const trueRecipe = whenTrue.aliases.get(definition);
       const falseRecipe = whenFalse.aliases.get(definition);
       const merged = trueRecipe && falseRecipe && (sameRecipe(trueRecipe, falseRecipe)
         ? trueRecipe : condition && mergeConditionalRecipe(condition, trueRecipe, falseRecipe));
       if (merged) environment.aliases.set(definition, merged);
       else environment.aliases.delete(definition);
+    }
+    for (const [name, definition] of stateDefinitions) {
+      environment.definitions.set(`this.${name}`, definition);
     }
   };
   const switchArmJoinSafe = (block: BlockNode): boolean => {
@@ -448,9 +511,13 @@ export function analyzeFixedBchEffectRecipes(
     if (value instanceof AssignNode) {
       const definition = resolvedDefinition(value.identifier, environment);
       if (definition) environment.aliases.delete(definition);
+    } else if (value instanceof StateAssignNode) {
+      environment.aliases.delete(stateDefinition(value.name));
     } else if (value instanceof DeleteLocalNode) {
       const definition = resolvedDefinition(value.identifier, environment);
       if (definition) environment.aliases.delete(definition);
+    } else if (value instanceof DeleteStateNode) {
+      environment.aliases.delete(stateDefinition(value.name));
     } else if (value instanceof TupleAssignmentNode) {
       for (const element of value.elements) {
         if (element.skip || !element.name) continue;
@@ -461,6 +528,27 @@ export function analyzeFixedBchEffectRecipes(
     for (const [key, child] of Object.entries(value)) {
       if (['definition', 'referencedContract', 'resolvedFunction', 'symbolTable'].includes(key)) continue;
       invalidateAssignments(child, environment, seen);
+    }
+  };
+  const invalidateStatefulCalls = (
+    value: unknown, environment: Environment, seen = new WeakSet<object>(),
+  ): void => {
+    if (Array.isArray(value)) {
+      value.forEach((item) => invalidateStatefulCalls(item, environment, seen));
+      return;
+    }
+    if (!(value instanceof Node) || seen.has(value)) return;
+    seen.add(value);
+    if (value instanceof FunctionCallNode && value.resolvedFunction
+      && containsStatefulOperation(value.resolvedFunction.body?.statements)) {
+      // Scalar-journal helpers deliberately remain behind OP_INVOKE. Their post-call state is authenticated by
+      // the VM, but it is not a pure function of this handler row which the SDK can independently replay. Drop
+      // every tracked scalar alias rather than publishing a stale pre-call transfer recipe.
+      for (const definition of stateKeys) environment.aliases.delete(definition);
+    }
+    for (const [key, child] of Object.entries(value)) {
+      if (['definition', 'referencedContract', 'resolvedFunction', 'symbolTable'].includes(key)) continue;
+      invalidateStatefulCalls(child, environment, seen);
     }
   };
   const snapshotEffects = (
@@ -500,6 +588,7 @@ export function analyzeFixedBchEffectRecipes(
   ): void => {
     for (const statement of block.statements ?? []) {
       if (statement instanceof VariableDefinitionNode) {
+        if (statement.expression) invalidateStatefulCalls(statement.expression, environment);
         if (statement.expression) snapshotEffects(
           statement.expression, environment, activation, activationSupported, unsafe,
         );
@@ -514,6 +603,7 @@ export function analyzeFixedBchEffectRecipes(
         continue;
       }
       if (statement instanceof AssignNode) {
+        invalidateStatefulCalls(statement.expression, environment);
         snapshotEffects(statement.expression, environment, activation, activationSupported, unsafe);
         const key = resolvedDefinition(statement.identifier, environment);
         const targetType = key && (key as { type?: { toString(): string } }).type;
@@ -526,7 +616,22 @@ export function analyzeFixedBchEffectRecipes(
         else if (key) environment.aliases.delete(key);
         continue;
       }
+      if (statement instanceof StateAssignNode) {
+        invalidateStatefulCalls(statement.expression, environment);
+        snapshotEffects(statement.expression, environment, activation, activationSupported, unsafe);
+        const key = stateDefinition(statement.name);
+        environment.definitions.set(`this.${statement.name}`, key);
+        const targetType = statement.stateVariable?.type;
+        const bound = !unsafe && targetType ? bindRecipe(
+          statement.expression, physicalRecipeType(targetType), handlerInputs, handlerInputTypes,
+          environment.aliases, environment.definitions,
+        ) : !unsafe ? recipe(statement.expression, environment) : undefined;
+        if (bound) environment.aliases.set(key, bound);
+        else environment.aliases.delete(key);
+        continue;
+      }
       if (statement instanceof BranchNode) {
+        invalidateStatefulCalls(statement.condition, environment);
         snapshotEffects(statement.condition, environment, activation, activationSupported, unsafe);
         const condition = !unsafe ? recipe(statement.condition, environment) : undefined;
         const branchSupported = activationSupported && condition !== undefined;
@@ -546,6 +651,7 @@ export function analyzeFixedBchEffectRecipes(
         continue;
       }
       if (statement instanceof SwitchNode) {
+        invalidateStatefulCalls(statement.expression, environment);
         snapshotEffects(statement.expression, environment, activation, activationSupported, unsafe);
         const discriminant = !unsafe ? recipe(statement.expression, environment) : undefined;
         let unmatched: ChildDeploymentValueRecipe | undefined;
@@ -589,9 +695,13 @@ export function analyzeFixedBchEffectRecipes(
           joined = next;
         }
         environment.aliases = joined.aliases;
+        for (const [name, definition] of stateDefinitions) {
+          environment.definitions.set(`this.${name}`, definition);
+        }
         continue;
       }
       if (statement instanceof TryCatchNode) {
+        invalidateStatefulCalls(statement.expression, environment);
         snapshotEffects(statement.expression, environment, activation, activationSupported, unsafe);
         processBlock(statement.tryBlock, environment, activation, activationSupported, unsafe);
         invalidateAssignments(statement.expression, environment);
@@ -624,6 +734,7 @@ export function analyzeFixedBchEffectRecipes(
       }
       const repeated = statement instanceof WhileNode || statement instanceof DoWhileNode
         || statement instanceof CollectionIterationNode;
+      invalidateStatefulCalls(statement, environment);
       snapshotEffects(statement, environment, activation, activationSupported, unsafe || repeated);
       invalidateAssignments(statement, environment);
     }

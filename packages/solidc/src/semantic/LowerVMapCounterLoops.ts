@@ -1800,6 +1800,30 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         updates.sort((left, right) => left.index - right.index);
         topLevelAssignments.set(name, updates);
       }
+      const hasOuterContinue = (candidate: Node): boolean => {
+        if (candidate instanceof ContinueNode) return true;
+        if (candidate !== block && (candidate instanceof WhileNode || candidate instanceof DoWhileNode)) return false;
+        for (const [key, value] of Object.entries(candidate)) {
+          if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type'
+            || key === 'resolvedFunction' || key === 'collection' || key === 'stateVariable') continue;
+          if (value instanceof Node && hasOuterContinue(value)) return true;
+          if (Array.isArray(value)
+            && value.some((item) => item instanceof Node && hasOuterContinue(item))) return true;
+        }
+        return false;
+      };
+      const recurrenceCrossesContinue = hasOuterContinue(block);
+      const containsLocalAssignment = (candidate: Node, name: string): boolean => {
+        if (candidate instanceof AssignNode && candidate.identifier.name === name) return true;
+        for (const [key, value] of Object.entries(candidate)) {
+          if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type'
+            || key === 'resolvedFunction' || key === 'collection' || key === 'stateVariable') continue;
+          if (value instanceof Node && containsLocalAssignment(value, name)) return true;
+          if (Array.isArray(value)
+            && value.some((item) => item instanceof Node && containsLocalAssignment(item, name))) return true;
+        }
+        return false;
+      };
       for (const [name, updates] of topLevelAssignments) {
         let allAssignments = 0;
         const countAssignments = (candidate: Node): void => {
@@ -1818,18 +1842,27 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         const initializer = predicateOuterInitializers.get(name)
           ?? (visibleParameters.some((parameter) => parameter.name === name)
             ? new IdentifierNode(name) : undefined);
+        const reassignedBeforeLoop = predicateOuterIndex >= 0
+          && canonical.parent.statements!.slice(0, predicateOuterIndex)
+            .some((statement) => containsLocalAssignment(statement, name));
         const collapsedExtras = (conditionalAssignmentJoins.get(name) ?? [])
           .reduce((sum, join) => sum + join.actualAssignments - 1, 0);
-        if (allAssignments !== updates.length + collapsedExtras) continue;
+        if (allAssignments !== updates.length + collapsedExtras
+          || reassignedBeforeLoop || recurrenceCrossesContinue) continue;
         const toggles = updates.every(({ statement }) => {
           const expression = statement.expression;
           return expression instanceof UnaryOpNode && expression.operator === UnaryOperator.NOT
             && expression.expression instanceof IdentifierNode && expression.expression.name === name;
         });
-        if (!initializer || keyed.length === 0) continue;
-        const writePositions = keyed.map((write) => (block.statements ?? [])
-          .findIndex((statement) => containsNode(statement, write)));
-        if (writePositions.some((index) => index < 0)) continue;
+        if (!initializer) continue;
+        // Recurrence consumers are not limited to collection writes. Event-only counter loops need the same
+        // source-position recipe so their commitments can be planned before the VM trace exists. Keep this
+        // statement-based (rather than naming effect kinds): any replayable consumer contributes an observation,
+        // while the effect collector below decides whether that expression is actually publishable.
+        const observationPositions = (block.statements ?? []).flatMap((statement, index) => (
+          !updates.some((update) => update.index === index) && containsIdentifier(statement, name) ? [index] : []
+        ));
+        if (observationPositions.length === 0) continue;
         const rank = unitDomain
           ? new IdentifierNode(logical)
           : new BinaryOpNode(
@@ -1850,24 +1883,34 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           }
         };
         if (toggles) {
-          const togglesBefore = new Set(writePositions.map((writeIndex) =>
-            updates.filter(({ index }) => index < writeIndex).length));
-          if (togglesBefore.size !== 1) continue;
-          const totalToggles = new BinaryOpNode(
-            new BinaryOpNode(rank, BinaryOperator.MUL, new IntLiteralNode(BigInt(updates.length))),
-            BinaryOperator.PLUS,
-            new IntLiteralNode(BigInt([...togglesBefore][0])),
-          );
-          const even = new BinaryOpNode(
-            new BinaryOpNode(totalToggles, BinaryOperator.MOD, new IntLiteralNode(2n)),
-            BinaryOperator.EQ,
-            new IntLiteralNode(0n),
-          );
-          const toggled = new UnaryOpNode(UnaryOperator.NOT, cloneNode(initializer));
-          const value = new TernaryOpNode(even, cloneNode(initializer), toggled);
-          value.location = updates[0].statement.location;
-          locateGenerated(value);
-          loopCarriedLocalValues.set(name, value);
+          const valuesByPhase = new Map<number, ExpressionNode>();
+          for (const position of observationPositions) {
+            const phase = updates.filter(({ index }) => index < position).length;
+            let value = valuesByPhase.get(phase);
+            if (!value) {
+              const totalToggles = new BinaryOpNode(
+                new BinaryOpNode(rank, BinaryOperator.MUL, new IntLiteralNode(BigInt(updates.length))),
+                BinaryOperator.PLUS,
+                new IntLiteralNode(BigInt(phase)),
+              );
+              const even = new BinaryOpNode(
+                new BinaryOpNode(totalToggles, BinaryOperator.MOD, new IntLiteralNode(2n)),
+                BinaryOperator.EQ,
+                new IntLiteralNode(0n),
+              );
+              const toggled = new UnaryOpNode(UnaryOperator.NOT, cloneNode(initializer));
+              value = new TernaryOpNode(even, cloneNode(initializer), toggled);
+              value.location = updates[0].statement.location;
+              locateGenerated(value);
+              valuesByPhase.set(phase, value);
+            }
+            const siteValues = loopCarriedLocalValuesByStatement.get(position) ?? new Map();
+            siteValues.set(name, cloneNode(value));
+            loopCarriedLocalValuesByStatement.set(position, siteValues);
+          }
+          if (valuesByPhase.size === 1) {
+            loopCarriedLocalValues.set(name, cloneNode(valuesByPhase.values().next().value!));
+          }
           continue;
         }
 
@@ -1876,10 +1919,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         // the initializer at rank zero and the final assignment evaluated at i-step thereafter. Preserve one value
         // per statement site: distinct keyed writes may legitimately observe opposite sides of the same update.
         if (updates.some(({ statement }) => containsIdentifier(statement.expression, name))) continue;
-        const statements = block.statements ?? [];
-        const usePositions = statements.flatMap((statement, index) => (
-          !updates.some((update) => update.index === index) && containsIdentifier(statement, name) ? [index] : []
-        ));
+        const usePositions = observationPositions;
         if (usePositions.length === 0) continue;
         const phases = new Set(usePositions.map((index) =>
           updates.filter((update) => update.index < index).length));
@@ -1975,9 +2015,136 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         const siteValues = loopCarriedLocalValuesByStatement.get(position);
         return siteValues ? new Map([...loopCarriedLocalValues, ...siteValues]) : loopCarriedLocalValues;
       };
+      const loopCarriedStateValuesByStatement = new Map<number, Map<string, ExpressionNode>>();
+      const containsStateAccess = (candidate: Node, name: string): boolean => {
+        if (candidate instanceof StateAccessNode && candidate.name === name) return true;
+        for (const [key, value] of Object.entries(candidate)) {
+          if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type'
+            || key === 'resolvedFunction' || key === 'collection' || key === 'stateVariable') continue;
+          if (value instanceof Node && containsStateAccess(value, name)) return true;
+          if (Array.isArray(value)
+            && value.some((item) => item instanceof Node && containsStateAccess(item, name))) return true;
+        }
+        return false;
+      };
+      const countStateAssignmentsTo = (candidate: Node, name: string): number => {
+        if (candidate !== block && (candidate instanceof WhileNode || candidate instanceof DoWhileNode)) return 0;
+        let assignmentCount = candidate instanceof StateAssignNode && candidate.name === name ? 1 : 0;
+        for (const [key, value] of Object.entries(candidate)) {
+          if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type'
+            || key === 'resolvedFunction' || key === 'collection' || key === 'stateVariable') continue;
+          if (value instanceof Node) assignmentCount += countStateAssignmentsTo(value, name);
+          else if (Array.isArray(value)) for (const item of value) if (item instanceof Node) {
+            assignmentCount += countStateAssignmentsTo(item, name);
+          }
+        }
+        return assignmentCount;
+      };
+      const topLevelStateAssignments = new Map<string, Array<{ statement: StateAssignNode; index: number }>>();
+      for (const [index, statement] of (block.statements ?? []).entries()) {
+        if (!(statement instanceof StateAssignNode)) continue;
+        const updates = topLevelStateAssignments.get(statement.name) ?? [];
+        updates.push({ statement, index });
+        topLevelStateAssignments.set(statement.name, updates);
+      }
+      const readsLoopAssignedState = (candidate: Node): boolean => {
+        if (candidate instanceof StateAccessNode
+          && countStateAssignmentsTo(block, candidate.name) > 0) return true;
+        for (const [key, value] of Object.entries(candidate)) {
+          if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type'
+            || key === 'resolvedFunction' || key === 'collection' || key === 'stateVariable') continue;
+          if (value instanceof Node && readsLoopAssignedState(value)) return true;
+          if (Array.isArray(value)
+            && value.some((item) => item instanceof Node && readsLoopAssignedState(item))) return true;
+        }
+        return false;
+      };
+      const readsLoopAssignedLocal = (candidate: Node): boolean => {
+        if (candidate instanceof IdentifierNode
+          && countAssignmentsTo(block, candidate.name) > 0) return true;
+        for (const [key, value] of Object.entries(candidate)) {
+          if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type'
+            || key === 'resolvedFunction' || key === 'collection' || key === 'stateVariable') continue;
+          if (value instanceof Node && readsLoopAssignedLocal(value)) return true;
+          if (Array.isArray(value)
+            && value.some((item) => item instanceof Node && readsLoopAssignedLocal(item))) return true;
+        }
+        return false;
+      };
+      const readsCollection = (candidate: Node): boolean => {
+        if (candidate instanceof MappingAccessNode) return true;
+        for (const [key, value] of Object.entries(candidate)) {
+          if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type'
+            || key === 'resolvedFunction' || key === 'collection' || key === 'stateVariable') continue;
+          if (value instanceof Node && readsCollection(value)) return true;
+          if (Array.isArray(value)
+            && value.some((item) => item instanceof Node && readsCollection(item))) return true;
+        }
+        return false;
+      };
+      for (const [name, updates] of topLevelStateAssignments) {
+        if (countStateAssignmentsTo(block, name) !== updates.length) continue;
+        const deltas: ExpressionNode[] = [];
+        let base: ExpressionNode | undefined;
+        let supported = true;
+        for (const { statement } of updates) {
+          const recurrence = statement.expression;
+          if (!(recurrence instanceof BinaryOpNode)
+            || !(recurrence.operator === BinaryOperator.PLUS || recurrence.operator === BinaryOperator.MINUS)
+            || !(recurrence.left instanceof StateAccessNode) || recurrence.left.name !== name
+            || !runtimePathExpressionSupported(recurrence.right, logical, new Set(), stateValues,
+              loopCarriedLocalValues)
+            // `base + rank * delta` is exact only for a source-order invariant delta. Counter-dependent deltas
+            // require a separately proven prefix sum, and another loop-mutated scalar requires a coupled system.
+            || containsIdentifier(recurrence.right, logical)
+            || readsLoopAssignedLocal(recurrence.right)
+            || readsLoopAssignedState(recurrence.right)
+            || readsCollection(recurrence.right)) {
+            supported = false;
+            break;
+          }
+          // The recurrence begins from the value which actually dominates the loop. A preceding scalar assignment
+          // (including one expressed in terms of pre-state) must not silently collapse back to contract pre-state.
+          base ??= cloneNode(stateValues.get(name) ?? recurrence.left);
+          const delta = cloneNode(recurrence.right);
+          deltas.push(recurrence.operator === BinaryOperator.PLUS
+            ? delta : new BinaryOpNode(new IntLiteralNode(0n), BinaryOperator.MINUS, delta));
+        }
+        if (!supported || !base || deltas.length === 0 || recurrenceCrossesContinue) continue;
+        const observationPositions = (block.statements ?? []).flatMap((statement, index) => (
+          !updates.some((update) => update.index === index) && containsStateAccess(statement, name) ? [index] : []
+        ));
+        const netDelta = deltas.reduce((sum, delta) => sum === undefined
+          ? cloneNode(delta) : new BinaryOpNode(sum, BinaryOperator.PLUS, cloneNode(delta)),
+        undefined as ExpressionNode | undefined)!;
+        const rank = unitDomain
+          ? new IdentifierNode(logical)
+          : new BinaryOpNode(
+            new BinaryOpNode(new IdentifierNode(logical), BinaryOperator.MINUS, new IntLiteralNode(start)),
+            BinaryOperator.DIV, stepValue(),
+          );
+        for (const position of observationPositions) {
+          const phase = updates.filter((update) => update.index < position).length;
+          const priorIterations = new BinaryOpNode(cloneNode(rank), BinaryOperator.MUL, cloneNode(netDelta));
+          const phaseDelta = deltas.slice(0, phase).reduce((sum, delta) => sum === undefined
+            ? cloneNode(delta) : new BinaryOpNode(sum, BinaryOperator.PLUS, cloneNode(delta)),
+          undefined as ExpressionNode | undefined);
+          let value: ExpressionNode = new BinaryOpNode(cloneNode(base), BinaryOperator.PLUS, priorIterations);
+          if (phaseDelta) value = new BinaryOpNode(value, BinaryOperator.PLUS, phaseDelta);
+          value.location = updates[0].statement.location;
+          const siteValues = loopCarriedStateValuesByStatement.get(position) ?? new Map();
+          siteValues.set(name, value);
+          loopCarriedStateValuesByStatement.set(position, siteValues);
+        }
+      }
+      const stateValuesAt = (candidate: Node): Map<string, ExpressionNode> => {
+        const position = (block.statements ?? []).findIndex((statement) => containsNode(statement, candidate));
+        const siteValues = loopCarriedStateValuesByStatement.get(position);
+        return siteValues ? new Map([...stateValues, ...siteValues]) : stateValues;
+      };
       const conditionAt = (expression: ExpressionNode, site: Node): ExpressionNode =>
         expandRuntimePathExpression(
-          expression, logical, new Set(), stateValues, loopCarriedValuesAt(site),
+          expression, logical, new Set(), stateValuesAt(site), loopCarriedValuesAt(site),
         ) ?? expression;
       const phasedFallthrough = (x: Node): ExpressionNode | undefined => {
         if (x instanceof ContinueNode || x instanceof BreakNode || x instanceof ReturnNode) {
@@ -2070,6 +2237,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       // event definition and argument expression uses the same record format.
       const runtimeEmits: Array<{
         emit: EmitStatementNode; condition?: ExpressionNode; staticArguments?: ExpressionNode[];
+        metadataArguments?: ExpressionNode[];
       }> = [];
       let conditionalRuntimeEmit = false;
       const collectRuntimeEmits = (
@@ -2078,22 +2246,29 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       ): void => {
         if (x instanceof EmitStatementNode) {
           const values = loopCarriedValuesAt(x);
+          const effectStateValues = stateValuesAt(x);
+          const position = (block.statements ?? []).findIndex((statement) => containsNode(statement, x));
+          const replayedStateNames = loopCarriedStateValuesByStatement.get(position);
           const staticArguments = keyed.length === 0 ? x.args.map((argument) =>
-            runtimePathExpressionSupported(argument, logical, new Set(), stateValues, values)
-              ? expandRuntimePathExpression(argument, logical, new Set(), stateValues, values)
+            runtimePathExpressionSupported(argument, logical, new Set(), effectStateValues, values)
+              ? expandRuntimePathExpression(argument, logical, new Set(), effectStateValues, values)
               : undefined) : undefined;
           if (condition && !runtimePathExpressionSupported(
-            condition, logical, new Set(), stateValues, values,
+            condition, logical, new Set(), effectStateValues, values,
           ) || staticArguments?.some((argument) => argument === undefined)) conditionalRuntimeEmit = true;
           else {
             const expanded = condition && expandRuntimePathExpression(
-              condition, logical, new Set(), stateValues, values,
+              condition, logical, new Set(), effectStateValues, values,
             );
             if (condition && !expanded) conditionalRuntimeEmit = true;
             else runtimeEmits.push({
               emit: x,
               ...(expanded && { condition: expanded }),
               ...(staticArguments && { staticArguments: staticArguments as ExpressionNode[] }),
+              ...(staticArguments && replayedStateNames && x.args.some((argument) =>
+                [...replayedStateNames.keys()].some((name) => containsStateAccess(argument, name))) && {
+                metadataArguments: staticArguments as ExpressionNode[],
+              }),
             });
           }
           return;
@@ -3736,8 +3911,9 @@ export default class LowerVMapCounterLoops extends AstTraversal {
             }),
           },
         ];
-        runtimeEmits.forEach(({ emit, condition, staticArguments }, siteIndex) => {
-          if (staticArguments) emit.args = staticArguments;
+        runtimeEmits.forEach(({ emit, condition, staticArguments, metadataArguments }, siteIndex) => {
+          if (staticArguments && !metadataArguments) emit.args = staticArguments;
+          if (metadataArguments) emit.runtimeLoopEventArguments = metadataArguments;
           emit.runtimeLoopEvent = { loopIndex: eventLoopIndex, siteIndex };
           emit.runtimeLoopEventCondition = condition;
           emit.runtimeLoopEventCounter = {

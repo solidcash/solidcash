@@ -2016,6 +2016,13 @@ export default class TypeCheckTraversal extends AstTraversal {
         node.foldedConstructorPredicates = node.foldedConstructorPredicates
           .map((predicate) => this.visit(predicate) as ExpressionNode);
       }
+      if (node.foldedCollectionEntries) {
+        node.foldedCollectionEntries = node.foldedCollectionEntries.map((entry) => ({
+          ...entry,
+          key: this.visit(entry.key) as ExpressionNode,
+          value: this.visit(entry.value) as ExpressionNode,
+        }));
+      }
 
       if (node.callOptions?.value) {
         node.callOptions.value = this.visit(node.callOptions.value);

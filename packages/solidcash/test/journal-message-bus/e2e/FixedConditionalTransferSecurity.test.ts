@@ -519,4 +519,65 @@ describe('fixed conditional BCH transfer transcript security', () => {
     expect(builder.outputs.filter((output) => !output.token
       && output.amount === 2_000n && binToHex(output.to as Uint8Array) === binToHex(recipient))).toHaveLength(1);
   }, 240_000);
+
+  it('replays dominating scalar-state assignments for transfer activation, recipient, and amount', async () => {
+    const provider = createMessageBusCapstoneTestProvider();
+    const artifacts = compileStringMulti(`interface IPayer {
+        function pay(bool enabled, bool alternate, address first, address second, uint base);
+      }
+      contract Payer() {
+        bool enabled;
+        address destination;
+        uint quantity;
+        function pay(bool take, bool alternate, address first, address second, uint base) public {
+          this.enabled = take;
+          if (alternate) { this.destination = second; this.quantity = base + 7; }
+          else { this.destination = first; this.quantity = base; }
+          if (this.enabled) this.transfer(this.destination, this.quantity);
+          require(true);
+        }
+      }
+      contract Driver(address payer) {
+        function run(bool enabled, bool alternate, address first, address second, uint base) public {
+          IPayer(payer).pay(enabled, alternate, first, second, base);
+          require(true);
+        }
+      }`, { forceStateful: true, messageBus: true, messageBusKernel: true, maximumInputBytes: 1_000_000 });
+    const connect = async (artifact: Artifact, args: readonly unknown[] = []): Promise<StatefulContract> => {
+      const base = new Contract(artifact, args as never[], { provider });
+      const setup = await setupStatefulUtxos(provider, base, artifact.stateLayout!, {}, { saltContract: true });
+      return StatefulContract.withCategory(base.withCategory(hexToBin(setup.categoryId)), setup.categoryId);
+    };
+    const payer = await connect(artifacts.Payer);
+    const driver = await connect(artifacts.Driver, [hexToBin(payer.inner.lockingBytecode)]);
+    const fee = await createBareP2pkhFeeFunder(provider, 1_000_000n);
+    const first = fee.unlocker.generateLockingBytecode();
+    const second = Uint8Array.from([...first.slice(0, -1), first.at(-1)! ^ 1]);
+    const build = async (enabled: boolean, alternate: boolean): Promise<TransactionBuilder> => {
+      await provider.addUtxo(getSatoshiContainerAddress(payer.inner, payer.categoryId), {
+        txid: `${enabled ? 'd1' : 'd2'}`.repeat(32), vout: 1, satoshis: 20_000n,
+      });
+      return messageBus.compose({
+        preparedCalls: [
+          { contract: driver, functionName: 'run', args: [enabled, alternate, first, second, 2_000n] },
+          { contract: payer, functionName: 'pay', args: [enabled, alternate, first, second, 2_000n] },
+        ],
+        funder: fee,
+        changeAddress: first,
+      }).build();
+    };
+    const active = await build(true, true);
+    const inactive = await build(false, false);
+    expect(vmRejects(active)).toBe(false);
+    expect(vmRejects(inactive)).toBe(false);
+    expect(active.outputs.filter((output) => !output.token && output.amount === 2_007n
+      && binToHex(output.to as Uint8Array) === binToHex(second))).toHaveLength(1);
+    expect(inactive.outputs.some((output) => !output.token && output.amount === 2_000n
+      && binToHex(output.to as Uint8Array) === binToHex(first))).toBe(false);
+    const transferOutput = active.outputs.find((output) => !output.token && output.amount === 2_007n
+      && binToHex(output.to as Uint8Array) === binToHex(second));
+    expect(transferOutput).toBeDefined();
+    transferOutput!.to = first;
+    expect(vmRejects(active)).toBe(true);
+  }, 240_000);
 });

@@ -317,6 +317,16 @@ export interface ChildDeploymentGenesisStateAbi {
   }[];
 }
 
+/** One finite entry NFT created by a fully replayable child constructor. */
+export interface ChildDeploymentGenesisEntryAbi {
+  collection: string;
+  collectionSignature: string;
+  keyType: string;
+  valueType: string;
+  key: ChildDeploymentValueRecipe;
+  value: ChildDeploymentValueRecipe;
+}
+
 export interface ChildDeploymentSiteAbi {
   siteIndex: number;
   contractName: string;
@@ -329,6 +339,7 @@ export interface ChildDeploymentSiteAbi {
   genesisInputCount: 1;
   masterOutputCount: 1;
   dataNftOutputCount: number;
+  entryNftOutputCount?: number;
   totalOutputCount: number;
   categorySource: 'genesis-input-outpoint-txhash';
   constructorArgs: readonly (ChildDeploymentValueRecipe | { kind: 'expression' })[];
@@ -346,6 +357,8 @@ export interface ChildDeploymentSiteAbi {
   childLayoutDigest?: string;
   /** Present only when the complete constructor transition was folded into pure row recipes. */
   genesisState?: ChildDeploymentGenesisStateAbi;
+  /** Finite constructor-created collection entries, in canonical child-output order. */
+  genesisEntries?: readonly ChildDeploymentGenesisEntryAbi[];
   /** This site's genesis includes one compiler-folded call on the freshly created child. */
   hasFoldedChildCall?: true;
 }
@@ -453,7 +466,7 @@ export interface AbiFunction {
   transferCount?: number;
   transfers?: readonly FixedBchTransferAbi[];
   deployTargets?: readonly {
-    contractName: string; dataNftCount: number;
+    contractName: string; dataNftCount: number; entryNftCount?: number;
     // Per child constructor argument: the deploy-function parameter name it forwards (direct `new C(param)`),
     // or null for a non-trivial expression. Lets the SDK derive childConstructorArgs from the deploy args.
     constructorArgs?: readonly (string | null)[];
@@ -466,6 +479,7 @@ export interface AbiFunction {
     hasFoldedChildCall?: boolean;
     childLayoutDigest?: string;
     genesisState?: ChildDeploymentGenesisStateAbi;
+    genesisEntries?: readonly ChildDeploymentGenesisEntryAbi[];
   }[];
   tokenContainerAccesses?: readonly TokenContainerAccessAbi[];
   tokenContainerTransferSites?: readonly TokenContainerTransferSiteAbi[];

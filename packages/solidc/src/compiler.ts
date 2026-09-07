@@ -163,7 +163,8 @@ import {
 import { BinaryOperator, NullaryOperator, UnaryOperator } from './ast/Operator.js';
 import {
   analyzeChildDeploymentRecipes, analyzeFixedBchEffectRecipes, childDeploymentCollectionDefinitions,
-  childDeploymentGenesisState, childDeploymentStructDefinitions, childDeploymentValueRecipe,
+  childDeploymentGenesisEntries, childDeploymentGenesisState, childDeploymentStructDefinitions,
+  childDeploymentValueRecipe,
 } from './deploymentRecipes.js';
 import { cloneNode } from './ast/clone.js';
 import { hasEffectiveCallValue } from './semantic/branchOps.js';
@@ -2201,6 +2202,7 @@ function proveStraightLineChildInitializations(
         parameters: deployment.parameters.map((parameter) => cloneNode(parameter)),
         foldedStateInit: undefined,
         foldedConstructorPredicates: undefined,
+        foldedCollectionEntries: undefined,
         hasFoldedChildCall: undefined,
         constructorStateFoldComplete: undefined,
         ctorFoldFailed: undefined,
@@ -2267,6 +2269,10 @@ function childDeploymentSites(
           analyzed?.aliasDefinitions,
         )
         : undefined;
+      const genesisEntries = value.constructorStateFoldComplete === true
+        ? childDeploymentGenesisEntries(
+          value.foldedCollectionEntries, inputIndex, inputTypes, analyzed?.aliases, analyzed?.aliasDefinitions,
+        ) : undefined;
       if (root.messageBusEligible === true && value.hasFoldedChildCall && !genesisState) {
         throw new Error(`Kernel folded child initialization at site ${sites.length} has no complete genesis proof`);
       }
@@ -2284,7 +2290,8 @@ function childDeploymentSites(
         structs: childDeploymentStructDefinitions(child.stateVariables),
         collections: childDeploymentCollectionDefinitions(child.collections),
       });
-      const spanWidth = 1 + dataNftOutputCount;
+      const entryNftOutputCount = genesisEntries?.length ?? 0;
+      const spanWidth = 1 + dataNftOutputCount + entryNftOutputCount;
       sites.push({
         siteIndex: sites.length,
         contractName: child.name,
@@ -2295,7 +2302,8 @@ function childDeploymentSites(
         genesisInputCount: 1,
         masterOutputCount: 1,
         dataNftOutputCount,
-        totalOutputCount: 1 + dataNftOutputCount,
+        ...(entryNftOutputCount > 0 && { entryNftOutputCount }),
+        totalOutputCount: spanWidth,
         categorySource: 'genesis-input-outpoint-txhash',
         constructorArgs: value.parameters.map((parameter, index) => (analyzed
           ? analyzed.constructorArgs[index] ?? { kind: 'expression' }
@@ -2313,6 +2321,7 @@ function childDeploymentSites(
         childLayoutDigest,
         ...(value.hasFoldedChildCall && { hasFoldedChildCall: true as const }),
         ...(genesisState && { genesisState }),
+        ...(genesisEntries && genesisEntries.length > 0 && { genesisEntries }),
       });
       spanOffset += spanWidth;
     }
@@ -4185,6 +4194,7 @@ function synthesizeMessageBusRoute(
       let deploymentValueRecipeUnsupported = false;
       let deploymentStateInitializationUnsupported = false;
       let deploymentRecipeUnsupported = false;
+      const deploymentEntryCountsByChild = new Map<string, number>();
       const deploymentSiteDescriptorDigests: string[] = [];
       const deploymentSiteWidths: number[] = [];
       const deploymentSiteConditional: boolean[] = [];
@@ -4236,6 +4246,7 @@ function synthesizeMessageBusRoute(
                   { referencedContract: child,
                     parameters: node.parameters.map((parameter) => cloneNode(parameter)), foldedStateInit: undefined,
                     foldedConstructorPredicates: undefined,
+                    foldedCollectionEntries: undefined,
                     constructorStateFoldComplete: undefined, ctorFoldFailed: undefined },
                 );
                 if (!foldedProof) {
@@ -4245,8 +4256,15 @@ function synthesizeMessageBusRoute(
                   admissionNode.foldedStateInit, child.stateVariables, visibleInputs, visibleInputTypes, true,
                   analyzed.aliases, analyzed.aliasDefinitions,
                 );
-                if (admissionNode.constructorStateFoldComplete !== true || !genesisState) {
+                const genesisEntries = analyzed && childDeploymentGenesisEntries(
+                  admissionNode.foldedCollectionEntries, visibleInputs, visibleInputTypes,
+                  analyzed.aliases, analyzed.aliasDefinitions,
+                );
+                if (admissionNode.constructorStateFoldComplete !== true || !genesisState || !genesisEntries
+                  || genesisEntries.length > 1) {
                   deploymentStateInitializationUnsupported = true;
+                } else {
+                  deploymentEntryCountsByChild.set(child.name, genesisEntries.length);
                 }
               }
               const declaredConstructorParameters = child.parameters.length > 0
@@ -4298,9 +4316,10 @@ function synthesizeMessageBusRoute(
             && statefulChildren.has(value.identifier.name)) {
             const conditional = control !== 'straight';
             const child = statefulChildren.get(value.identifier.name)!;
+            const finiteEntryCount = deploymentEntryCountsByChild.get(child.name) ?? 0;
             deploymentSiteWidths.push(1 + packedStateDataNftCount(
               child, compilerOptions.commitmentLimit ?? 128,
-            ));
+            ) + finiteEntryCount);
             deploymentSiteDescriptorDigests.push(childStateLayoutDigest({
               variables: child.stateVariables.map((state) => ({
                 name: state.name,

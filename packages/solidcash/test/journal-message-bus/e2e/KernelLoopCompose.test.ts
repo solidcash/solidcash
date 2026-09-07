@@ -1,7 +1,7 @@
 import {
   bigIntToVmNumber, binToHex, decodeAuthenticationInstructions, hexToBin, sha256,
 } from '@bitauth/libauth';
-import { bytecodeToAsm } from '@solidcash/utils';
+import { bytecodeToAsm, encodeEventCommitment } from '@solidcash/utils';
 import { compileString } from 'solidc';
 import { describe, expect, it } from 'vitest';
 import {
@@ -4558,6 +4558,173 @@ describe('kernel composite counter-key settlement', () => {
     }`, 'run', [
       { bound: 0n, commitments: ['00'] },
     ]);
+  }, 180_000);
+
+  it('settles a closed loop-carried event value and rejects a forged commitment', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(`contract ReplayedEventValue() {
+      event Tick(int value);
+      function run(int n, int offset) public {
+        int next = 0;
+        for (int i = 0; i < n; i = i + 1) {
+          next = offset + i;
+          emit Tick(next);
+        }
+        require(true);
+      }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'run'))
+      .toMatchObject({ eligible: true });
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+    );
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    const builder = await contract.batch([{ function: 'run', args: [3n, 2n] }]).build();
+    const transaction = builder.buildLibauthTransaction();
+    expect(transaction.outputs
+      .filter((output) => output.token?.nft?.capability === 'none')
+      .map((output) => binToHex(output.token!.nft!.commitment)))
+      .toEqual(['52', '53', '54']);
+
+    const vm = createVirtualMachineBch2026ForProvider(provider);
+    const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+    for (let inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex += 1) {
+      expect(vm.stateSuccess(vm.evaluate({ inputIndex, sourceOutputs, transaction })), `input ${inputIndex}`)
+        .toBe(true);
+    }
+
+    const eventIndex = transaction.outputs.findIndex(
+      (output) => output.token?.nft?.capability === 'none',
+    );
+    expect(eventIndex).toBeGreaterThanOrEqual(0);
+    const eventOutput = transaction.outputs[eventIndex];
+    const hostileTransaction = {
+      ...transaction,
+      outputs: transaction.outputs.map((output, index) => index === eventIndex ? {
+        ...output,
+        token: {
+          ...eventOutput.token!,
+          nft: { ...eventOutput.token!.nft!, commitment: Uint8Array.of(9) },
+        },
+      } : output),
+    };
+    expect(vm.stateSuccess(vm.evaluate({
+      inputIndex: 0, sourceOutputs, transaction: hostileTransaction,
+    }))).not.toBe(true);
+  }, 180_000);
+
+  it('settles an affine scalar-state event value and rejects a forged commitment', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(`contract ReplayedStateEventValue() {
+      int total;
+      event Tick(int value);
+      function run(int n, int delta) public {
+        for (int i = 0; i < n; i = i + 1) {
+          this.total = this.total + delta;
+          emit Tick(this.total);
+        }
+        require(true);
+      }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'run'))
+      .toMatchObject({ eligible: true });
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, { total: 5n }, { saltContract: true },
+    );
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    const builder = await contract.batch([{ function: 'run', args: [3n, 2n] }]).build();
+    const transaction = builder.buildLibauthTransaction();
+    expect(transaction.outputs
+      .filter((output) => output.token?.nft?.capability === 'none')
+      .map((output) => binToHex(output.token!.nft!.commitment)))
+      .toEqual(['57', '59', '5b']);
+
+    const vm = createVirtualMachineBch2026ForProvider(provider);
+    const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+    for (let inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex += 1) {
+      expect(vm.stateSuccess(vm.evaluate({ inputIndex, sourceOutputs, transaction })), `input ${inputIndex}`)
+        .toBe(true);
+    }
+
+    const eventIndex = transaction.outputs.findIndex(
+      (output) => output.token?.nft?.capability === 'none',
+    );
+    expect(eventIndex).toBeGreaterThanOrEqual(0);
+    const eventOutput = transaction.outputs[eventIndex];
+    const hostileTransaction = {
+      ...transaction,
+      outputs: transaction.outputs.map((output, index) => index === eventIndex ? {
+        ...output,
+        token: {
+          ...eventOutput.token!,
+          nft: { ...eventOutput.token!.nft!, commitment: Uint8Array.of(12) },
+        },
+      } : output),
+    };
+    expect(vm.stateSuccess(vm.evaluate({
+      inputIndex: 0, sourceOutputs, transaction: hostileTransaction,
+    }))).not.toBe(true);
+  }, 180_000);
+
+  it('keeps recurrent event values in source order beside permuted mapping writes', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(`contract MixedReplayedEventValues() {
+      int total;
+      mapping(int => int) values;
+      event Tick(int localValue, int stateValue);
+      function write(int n, int offset, int delta) public {
+        int next = 0;
+        for (int i = 0; i < n; i = i + 1) {
+          next = offset + i;
+          this.total = this.total + delta;
+          this.values[i] = i;
+          emit Tick(next, this.total);
+        }
+        require(true);
+      }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
+      .toMatchObject({ eligible: true });
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, { total: 5n }, { saltContract: true },
+    );
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    const builder = await contract.batch([{ function: 'write', args: [3n, 10n, 2n] }]).build();
+    const transaction = builder.buildLibauthTransaction();
+    const event = artifact.events!.find((candidate) => candidate.name === 'Tick')!;
+    expect(transaction.outputs
+      .filter((output) => output.token?.nft?.capability === 'none')
+      .map((output) => binToHex(output.token!.nft!.commitment)))
+      .toEqual([[10n, 7n], [11n, 9n], [12n, 11n]].map((values) =>
+        binToHex(encodeEventCommitment(event.parameters, values, artifact.structs))));
+
+    const vm = createVirtualMachineBch2026ForProvider(provider);
+    const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+    for (let inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex += 1) {
+      expect(vm.stateSuccess(vm.evaluate({ inputIndex, sourceOutputs, transaction })), `input ${inputIndex}`)
+        .toBe(true);
+    }
+
+    const eventIndex = transaction.outputs.findIndex(
+      (output) => output.token?.nft?.capability === 'none',
+    );
+    const eventOutput = transaction.outputs[eventIndex];
+    const hostileTransaction = {
+      ...transaction,
+      outputs: transaction.outputs.map((output, index) => index === eventIndex ? {
+        ...output,
+        token: {
+          ...eventOutput.token!,
+          nft: { ...eventOutput.token!.nft!, commitment: Uint8Array.of(13) },
+        },
+      } : output),
+    };
+    expect(vm.stateSuccess(vm.evaluate({
+      inputIndex: 0, sourceOutputs, transaction: hostileTransaction,
+    }))).not.toBe(true);
   }, 180_000);
 
   it('settles event-only loop breaks in source order', async () => {

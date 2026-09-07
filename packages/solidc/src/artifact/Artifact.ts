@@ -1273,9 +1273,10 @@ function buildFunctionAbiMetadata(
         ) ?? null
         : null);
       const serializedArguments = loop.iterationDomain === undefined && loop.staticArguments !== true
-        ? undefined : eventSites.map((emit) => emit.args.map((argument) => serializeCondition(
-          argument, emit.runtimeLoopEventCounter, new Set(), preservedLocals,
-        )));
+        ? undefined : eventSites.map((emit) => (emit.runtimeLoopEventArguments ?? emit.args)
+          .map((argument) => serializeCondition(
+            argument, emit.runtimeLoopEventCounter, new Set(), preservedLocals,
+          )));
       const iterationBreakCondition = loop.iterationBreakCondition && serializeCondition(
         loop.iterationBreakCondition, eventSites[0]?.runtimeLoopEventCounter, new Set(), preservedLocals,
       );
@@ -1509,12 +1510,14 @@ function buildFunctionAbiMetadata(
       deployTargets: func.deployTargets.map((dt) => ({
         contractName: dt.contractName,
         dataNftCount: dt.dataNftCount,
+        ...(dt.entryNftCount !== undefined && { entryNftCount: dt.entryNftCount }),
         ...(dt.constructorArgs && { constructorArgs: dt.constructorArgs }),
         ...(dt.salt && { salt: dt.salt }),
         ...(dt.creationBytecode && { creationBytecode: dt.creationBytecode }),
         ...(dt.hasFoldedChildCall && { hasFoldedChildCall: true }),
         ...(dt.childLayoutDigest && { childLayoutDigest: dt.childLayoutDigest }),
         ...(dt.genesisState && { genesisState: dt.genesisState }),
+        ...(dt.genesisEntries && { genesisEntries: dt.genesisEntries }),
       })),
     }),
     ...(func.externalReads && func.externalReads.length > 0 && {

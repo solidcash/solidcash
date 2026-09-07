@@ -2081,16 +2081,17 @@ export default class AstBuilder
     if (returnTypeCtx) {
       this.applyReturnType(functionDefinition, returnTypeCtx);
     }
-    if (functionDefinition.returnTypes.length === 1
-      && functionDefinition.returnTypes[0] instanceof FunctionType
-      && functionDefinition.returnTypes[0].isExternal
+    const externalFunctionReturnIndices = functionDefinition.returnTypes
+      .map((type, index) => type instanceof FunctionType && type.isExternal ? index : -1)
+      .filter((index) => index >= 0);
+    if (externalFunctionReturnIndices.length > 0
       && (functionDefinition.body.statements?.length ?? 0) > 0) {
       const functionBodyStatements = functionDefinition.body.statements!;
       const tail = functionBodyStatements[functionBodyStatements.length - 1];
       const selfTarget = (expression: ExpressionNode | undefined): string | undefined =>
         expression instanceof StateAccessNode && this.currentContractFunctionNames.has(expression.name)
           ? expression.name : undefined;
-      const returnedTargets: Array<string | undefined> = [];
+      const returnedTargets: Array<Array<string | undefined>> = [];
       const collectReturns = (value: unknown, seen = new WeakSet<object>()): void => {
         if (Array.isArray(value)) {
           value.forEach((item) => collectReturns(item, seen));
@@ -2099,8 +2100,9 @@ export default class AstBuilder
         if (!(value instanceof Node) || seen.has(value)) return;
         seen.add(value);
         if (value instanceof ReturnNode) {
-          returnedTargets.push(value.expressions.length === 1
-            ? selfTarget(value.expressions[0]) : undefined);
+          returnedTargets.push(functionDefinition.returnTypes.map((_type, index) =>
+            value.expressions.length === functionDefinition.returnTypes.length
+              ? selfTarget(value.expressions[index]) : undefined));
           return;
         }
         for (const [key, child] of Object.entries(value)) {
@@ -2109,7 +2111,8 @@ export default class AstBuilder
         }
       };
       collectReturns(functionDefinition.body);
-      const namedReturn = functionDefinition.returnNames?.length === 1
+      const namedReturn = functionDefinition.returnTypes.length === 1
+        && functionDefinition.returnNames?.length === 1
         ? functionDefinition.returnNames[0] : undefined;
       // The physical self pointer is one integer functionId, but a foreign or runtime-selected external pointer
       // has a different representation. Prove the complete return surface rather than inferring identity from the
@@ -2121,12 +2124,25 @@ export default class AstBuilder
       const tailNamedTarget = namedReturn && tail instanceof AssignNode
         && tail.identifier.name === namedReturn ? selfTarget(tail.expression) : undefined;
       const fixedTarget = tailDirectTarget
-        && returnedTargets.length > 0 && returnedTargets.every((target) => target === tailDirectTarget)
+        && returnedTargets.length > 0 && returnedTargets.every((targets) => targets[0] === tailDirectTarget)
         ? tailDirectTarget
         : tailNamedTarget && returnedTargets.length === 0 ? tailNamedTarget : undefined;
       if (fixedTarget) {
         this.selfExternalFunctionReturnAliases.set(name, fixedTarget);
         functionDefinition.returnedSelfFunctionName = fixedTarget;
+        functionDefinition.returnedSelfFunctionNames = [fixedTarget];
+      } else if (tail instanceof ReturnNode
+        && tail.expressions.length === functionDefinition.returnTypes.length
+        && returnedTargets.length > 0) {
+        const fixedTargets = functionDefinition.returnTypes.map((_type, index) => {
+          if (!externalFunctionReturnIndices.includes(index)) return undefined;
+          const target = selfTarget(tail.expressions[index]);
+          return target && returnedTargets.every((returned) => returned[index] === target)
+            ? target : undefined;
+        });
+        if (externalFunctionReturnIndices.every((index) => fixedTargets[index] !== undefined)) {
+          functionDefinition.returnedSelfFunctionNames = fixedTargets;
+        }
       }
     }
     // Record a struct-returning function (for inline storage-pointer writes `Lib.f(slot).value = v`).

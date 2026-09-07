@@ -513,6 +513,9 @@ export class FunctionDefinitionNode extends Node implements Named {
   // A helper proven at parse time to return a specific `this.method` external pointer. Consumers may preserve
   // the helper call's side effects while replacing pointer metadata reads with that method's declaration data.
   returnedSelfFunctionName?: string;
+  // Per-result form of returnedSelfFunctionName. An entry exists only when every reachable explicit return fixes
+  // that external-function result slot to the same `this.method`; absent slots retain their ordinary ABI type.
+  returnedSelfFunctionNames?: Array<string | undefined>;
   // Distinct identifier-arg blockhash(n) reads in the function (counted by SynthesizeBlockOracle before
   // codegen). Each rides its OWN consecutive blockhashOracle block-layout slot; the k-th read reads
   // input[base + k]. SymbolTable allocates this many slots (min 1 when usesBlockhash).

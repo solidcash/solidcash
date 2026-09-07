@@ -48,6 +48,26 @@ describe('kernel fixed function-pointer return layout', () => {
     `)).toMatchObject({ eligible: true, outputs: [{ type: 'int256' }] });
   });
 
+  it('admits a proven self pointer as one component of a multi-return', () => {
+    expect(handler(`
+      function pointer() public view returns (function(uint) external returns (uint), uint) {
+        return (this.first, 7);
+      }
+    `)).toMatchObject({
+      eligible: true,
+      outputs: [{ type: 'int256' }, { type: 'uint256' }],
+    });
+  });
+
+  it('proves the pointer slot across every terminating multi-return', () => {
+    expect(handler(`
+      function pointer(bool choose) public view returns (function(uint) external returns (uint), uint) {
+        if (choose) return (this.first, 7);
+        return (this.first, 9);
+      }
+    `)).toMatchObject({ eligible: true, outputs: [{ type: 'int256' }, { type: 'uint256' }] });
+  });
+
   it.each([
     ['runtime target', `
       function pointer(bool choose) public view returns (function(uint) external returns (uint)) {
@@ -66,12 +86,44 @@ describe('kernel fixed function-pointer return layout', () => {
         return selected;
       }
     `],
-    ['fixed pointer mixed into a multi-return', `
-      function pointer() public view returns (function(uint) external returns (uint), uint) {
-        return (this.first, 7);
+  ])('keeps %s as callable/control metadata rather than scalar result data', (_name, members) => {
+    expect(handler(members)).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+  });
+
+  it.each([
+    ['foreign', 'Foreign(remote).target'],
+    ['different self', 'this.second'],
+  ])('does not let a final fixed tuple hide an earlier %s pointer', (_kind, early) => {
+    const artifact = compileString(`pragma solidity ^0.8.0;
+      interface Foreign { function target(uint value) external returns (uint); }
+      contract C {
+        function first(uint value) external pure returns (uint) { return value + 1; }
+        function second(uint value) external pure returns (uint) { return value + 2; }
+        function pointer(bool choose, address remote) public view
+          returns (function(uint) external returns (uint), uint) {
+          if (choose) return (${early}, 3);
+          return (this.first, 7);
+        }
+      }
+    `, KERNEL);
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'pointer'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+  });
+
+  it.each([
+    ['caller-supplied', `
+      function pointer(function(uint) external returns (uint) selected) public pure
+        returns (function(uint) external returns (uint), uint) {
+        return (selected, 7);
       }
     `],
-  ])('keeps %s as callable/control metadata rather than scalar result data', (_name, members) => {
+    ['runtime-ambiguous', `
+      function pointer(bool choose) public view
+        returns (function(uint) external returns (uint), uint) {
+        return (choose ? this.first : this.second, 7);
+      }
+    `],
+  ])('refuses a %s pointer component in a multi-return', (_kind, members) => {
     expect(handler(members)).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
   });
 

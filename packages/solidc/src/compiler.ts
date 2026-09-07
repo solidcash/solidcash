@@ -4766,10 +4766,10 @@ function synthesizeMessageBusRoute(
     // executable and compact result codecs. Admit only the singleton shape whose source return analysis proved
     // one concrete `this.method`; runtime/foreign pointers and pointer-bearing aggregate results remain callable
     // control metadata without a route-local ABI representation.
-    const fixedSelfFunctionPointerResult = fn.returnTypes.length === 1
-      && fn.returnTypes[0] instanceof FunctionType
-      && fn.returnTypes[0].isExternal
-      && fn.returnedSelfFunctionName !== undefined;
+    const fixedSelfFunctionPointerResult = (index: number): boolean =>
+      fn.returnTypes[index] instanceof FunctionType
+      && (fn.returnTypes[index] as FunctionType).isExternal
+      && fn.returnedSelfFunctionNames?.[index] !== undefined;
     const state = contract.stateVariables.find((candidate) => candidate.name === fn.name);
     const collection = collectionByName.get(fn.name);
     const keyedMappingGetter = collection?.type instanceof MappingType && fn.parameters.length > 0;
@@ -4804,8 +4804,8 @@ function synthesizeMessageBusRoute(
       fn.messageBusEligible = false;
       fn.messageBusRejectionReason = 'KERNEL_TX_SIGNATURE';
     } else if (compilerOptions.messageBusKernel === true
-      && !fixedSelfFunctionPointerResult
-      && fn.returnTypes.some((type) => !kernelResultEncodable(type))) {
+      && fn.returnTypes.some((type, index) =>
+        !fixedSelfFunctionPointerResult(index) && !kernelResultEncodable(type))) {
       // Result concatenation uses `abi.encode` in the generated wrapper. Keep only types for which that encoder
       // has a complete runtime representation; scalar enums encode through the `int` locals below.
       fn.messageBusEligible = false;
@@ -6172,10 +6172,10 @@ function synthesizeMessageBusRoute(
     markDispatch = false,
   ): string =>
     eligible.map((fn, handlerIndex) => {
-      const fixedSelfFunctionPointerResult = fn.returnTypes.length === 1
-        && fn.returnTypes[0] instanceof FunctionType
-        && fn.returnTypes[0].isExternal
-        && fn.returnedSelfFunctionName !== undefined;
+      const fixedSelfFunctionPointerResult = (index: number): boolean =>
+        fn.returnTypes[index] instanceof FunctionType
+        && (fn.returnTypes[index] as FunctionType).isExternal
+        && fn.returnedSelfFunctionNames?.[index] !== undefined;
       const condition = `${handlerIndex === 0 ? 'if' : 'else if'} (rowSelector == hex"${selector(fn)}")`;
       const upgradeAuthorization = kernelUpgradeMode && fn.modifiers.includes(FunctionModifier.UPGRADE)
         ? `__message_bus_upgrade_count = __message_bus_upgrade_count + 1;
@@ -6232,15 +6232,25 @@ function synthesizeMessageBusRoute(
         const localType = (type: Type): string =>
           type instanceof EnumType || type instanceof FunctionType
             ? 'int' : type.toString().replace(/address payable/g, 'address');
+        const externalFunctionLocalType = (type: FunctionType): string => {
+          const mutability = type.stateMutability === 'nonpayable' ? '' : ` ${type.stateMutability}`;
+          const returns = type.returnTypes.length === 0 ? ''
+            : ` returns (${type.returnTypes.map((result) => result.toString()).join(', ')})`;
+          return `function(${type.parameterTypes.map((parameter) => parameter.toString()).join(', ')})`
+            + ` external${mutability}${returns}`;
+        };
         const declarations = fn.returnTypes.map((type, index) =>
-          `${localType(type)} ${names[index]};`).join(' ');
+          `${fixedSelfFunctionPointerResult(index) && fn.returnTypes.length > 1
+            ? externalFunctionLocalType(type as FunctionType) : localType(type)} ${names[index]};`).join(' ');
         const invokeExpr = `${selectedInvokeName}(${args})`;
         const assignment = fn.returnTypes.length === 1
           ? `${names[0]} = ${fn.returnTypes[0] instanceof EnumType ? `int(${invokeExpr})`
-            : fixedSelfFunctionPointerResult ? `unsafe_int(${invokeExpr})` : invokeExpr};`
+            : fixedSelfFunctionPointerResult(0) ? `unsafe_int(${invokeExpr})` : invokeExpr};`
           : `(${names.join(', ')}) = ${invokeExpr};`;
+        const encodedNames = names.map((resultName, index) =>
+          fixedSelfFunctionPointerResult(index) ? `unsafe_int(${resultName})` : resultName);
         return `${declarations} ${assignment} __message_bus_results = bytes.concat(
-        __message_bus_results, abi.encode(${names.join(', ')})
+        __message_bus_results, abi.encode(${encodedNames.join(', ')})
       );`;
       };
       const blockhashRowOffset = graphBlockhashReads.has(fn)
@@ -10065,11 +10075,11 @@ function compileResolvedAst(
           signatureBytecode: binToHex(traversal.invokedFunctionBytecodes.get(fn.functionId)!),
         }),
         ...(fn.returnTypes.length > 0 && {
-          outputs: fn.returnTypes.map((type) => ({
+          outputs: fn.returnTypes.map((type, index) => ({
             // The fixed self-pointer result is deliberately published as its physical data layout. A functionId
             // is an immutable integer in this bytecode, not a portable external callable `(address, selector)`.
-            type: fn.returnTypes.length === 1 && type instanceof FunctionType && type.isExternal
-              && fn.returnedSelfFunctionName !== undefined
+            type: type instanceof FunctionType && type.isExternal
+              && fn.returnedSelfFunctionNames?.[index] !== undefined
               ? 'int256' : type.toString().replace(/address payable/g, 'address'),
           })),
         }),

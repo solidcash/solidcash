@@ -609,6 +609,18 @@ describe('generic persisted value-chunk write identity', () => {
     expect(selectProtectedLoopEntryCollections([{
       functionName: 'publishJobEvent', logicalArtifact: kernelArtifact,
     }])).toEqual({ status: 'absent', collections: [] });
+    // A partially populated compiler-route group may not carry a nested artifact from which to infer the
+    // convention. The active owner is still authoritative and must keep historical application-name recovery
+    // disabled for a kernel row loop.
+    const compilerRouteOnly = {
+      functionName: 'publishJobEvent', compilerRoute: {},
+    };
+    expect(selectProtectedLoopEntryCollections(
+      [compilerRouteOnly], 'kernel-row-loop',
+    )).toEqual({ status: 'absent', collections: [] });
+    expect(selectProtectedLoopEntryCollections(
+      [compilerRouteOnly], 'legacy-unroll',
+    )).toEqual({ status: 'absent', collections: ['jobEvents'] });
 
     const [malformed] = renamed.valueChunkWrites;
     expect(selectProtectedLoopEntryCollections([{

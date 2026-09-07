@@ -4541,6 +4541,7 @@ export function selectProtectedLoopEntryCollections(
   groups: ReadonlyArray<Pick<ExternalCallUtxoGroup,
     'functionName' | 'logicalFunctionName' | 'compilerRoute' | 'logicalArtifact' | 'externalContract'
     | 'blockLayout' | 'plannedEntryInserts' | 'valueChunkWrites'>>,
+  ownerConvention?: 'legacy-unroll' | 'kernel-row-loop',
 ): ProtectedLoopEntryCollectionSelection {
   let described = false;
   let ambiguous = false;
@@ -4587,7 +4588,7 @@ export function selectProtectedLoopEntryCollections(
   }
   if (!described) return {
     status: 'absent',
-    collections: permitsLegacyNamedValueChunkFallback(groups) ? ['jobEvents'] : [],
+    collections: permitsLegacyNamedValueChunkFallback(groups, ownerConvention) ? ['jobEvents'] : [],
   };
   return {
     status: ambiguous ? 'ambiguous' : 'exact',
@@ -7412,7 +7413,7 @@ export class StatefulTransactionBuilder {
     const protectedCollections = selectProtectedLoopEntryCollections([
       ...this.externalCallUtxoGroups,
       ...this.lowLevelCallUtxoGroups,
-    ]);
+    ], this.messageBusConvention);
     const protectedNames = new Set(protectedCollections.collections);
     for (let index = 0; index < this.allInputs.length; index++) {
       const plannedInsert = plannedInsertByPredecessor.get(index);

@@ -8698,10 +8698,20 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.preAllocateStateWrite(key, locationData);
       }
 
-      const transferStartIndex = this.pendingTransfers.length;
-      for (let i = 0; i < ops.transferCount; i++) {
-        const globalIdx = transferStartIndex + i;
-        if (!this.preAllocatedTransfers.has(globalIdx)) {
+      const transferArms = node.cases.map((arm) => {
+        const indices = new Set<number>();
+        this.collectTransferIndices(arm.body, indices);
+        return indices;
+      });
+      if (node.defaultCase) {
+        const indices = new Set<number>();
+        this.collectTransferIndices(node.defaultCase, indices);
+        transferArms.push(indices);
+      }
+      const transferIndices = [...new Set(transferArms.flatMap((arm) => [...arm]))]
+        .sort((left, right) => left - right);
+      for (const globalIdx of transferIndices) {
+        if (!this.transfersPreallocatedAtFunctionStart && !this.preAllocatedTransfers.has(globalIdx)) {
           const lbName = `__internal__transfer_lb_${globalIdx}`;
           const amtName = `__internal__transfer_amt_${globalIdx}`;
           this.emit(encodeInt(0n), locationData);
@@ -8715,25 +8725,43 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           });
           this.preAllocatedTransfers.add(globalIdx);
         }
-        if (i >= ops.minTransferCount) {
-          this.conditionalTransferIndices.add(transferStartIndex + i);
-        }
+        const guaranteed = node.defaultCase !== undefined
+          && transferArms.every((arm) => arm.has(globalIdx));
+        if (!guaranteed) this.conditionalTransferIndices.add(globalIdx);
       }
 
-      const emitStartIndex = this.pendingEmits.length;
-      for (let i = 0; i < ops.emitCount; i++) {
-        const globalIdx = emitStartIndex + i;
+      const emitArms = node.cases.map((arm) => {
+        const indices = new Set<number>();
+        this.collectEmitIndices(arm.body, indices);
+        return indices;
+      });
+      if (node.defaultCase) {
+        const indices = new Set<number>();
+        this.collectEmitIndices(node.defaultCase, indices);
+        emitArms.push(indices);
+      }
+      const emitIndices = [...new Set(emitArms.flatMap((arm) => [...arm]))].sort((left, right) => left - right);
+      for (const globalIdx of emitIndices) {
         if (!this.preAllocatedEmits.has(globalIdx)) {
           this.preAllocateEmit(globalIdx, locationData);
         }
-        if (i >= ops.minEmitCount) {
-          this.conditionalEmitIndices.add(emitStartIndex + i);
-        }
+        const guaranteed = node.defaultCase !== undefined && emitArms.every((arm) => arm.has(globalIdx));
+        if (!guaranteed) this.conditionalEmitIndices.add(globalIdx);
       }
 
-      const tcTransferStartIndex = this.pendingTokenContainerTransfers.length;
-      for (let i = 0; i < ops.tokenContainerTransferCount; i++) {
-        const globalIdx = tcTransferStartIndex + i;
+      const tokenArms = node.cases.map((arm) => {
+        const indices = new Set<number>();
+        this.collectTokenContainerTransferIndices(arm.body, indices);
+        return indices;
+      });
+      if (node.defaultCase) {
+        const indices = new Set<number>();
+        this.collectTokenContainerTransferIndices(node.defaultCase, indices);
+        tokenArms.push(indices);
+      }
+      const tokenIndices = [...new Set(tokenArms.flatMap((arm) => [...arm]))]
+        .sort((left, right) => left - right);
+      for (const globalIdx of tokenIndices) {
         if (!this.preAllocatedTokenContainerTransfers.has(globalIdx)) {
           const catName = `__tc_cat_${globalIdx}`;
           this.emit(encodeInt(0n), locationData);
@@ -8755,9 +8783,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
             argStackNames: [catName, arg0Name, arg1Name, arg2Name],
           });
         }
-        if (i >= ops.minTokenContainerTransferCount) {
-          this.conditionalTokenContainerTransferIndices.add(tcTransferStartIndex + i);
-        }
+        const guaranteed = node.defaultCase !== undefined && tokenArms.every((arm) => arm.has(globalIdx));
+        if (!guaranteed) this.conditionalTokenContainerTransferIndices.add(globalIdx);
       }
     }
 

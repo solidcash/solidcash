@@ -87,8 +87,8 @@ export function childDeploymentValueRecipe(
       || expression.operator === UnaryOperator.NEGATE
         && operandFixedDecimals !== undefined && operandFixedDecimals === resultFixedDecimals;
     return operand && resultType && fixedSupported ? {
-        kind: 'unary', operator: expression.operator as '!' | '-', resultType: resultType!, operand,
-      } : undefined;
+      kind: 'unary', operator: expression.operator as '!' | '-', resultType: resultType!, operand,
+    } : undefined;
   }
   if (expression instanceof BinaryOpNode && binaryOperators.has(expression.operator)) {
     const left = childDeploymentValueRecipe(
@@ -118,12 +118,12 @@ export function childDeploymentValueRecipe(
         : !logical && resultFixedDecimals === leftFixedDecimals);
     }
     return left && right && resultType && supportedOperands ? {
-        kind: 'binary',
-        operator: expression.operator as Extract<ChildDeploymentValueRecipe, { kind: 'binary' }>['operator'],
-        resultType,
-        left,
-        right,
-      } : undefined;
+      kind: 'binary',
+      operator: expression.operator as Extract<ChildDeploymentValueRecipe, { kind: 'binary' }>['operator'],
+      resultType,
+      left,
+      right,
+    } : undefined;
   }
   return undefined;
 }
@@ -304,6 +304,26 @@ export function analyzeChildDeploymentRecipes(
         if (statement.elseBlock) snapshotExpression(statement.elseBlock, statementUnsafe);
         invalidateAssignments(statement);
         priorReturn ||= containsReturn(statement);
+        continue;
+      }
+      if (statement instanceof SwitchNode) {
+        // Arm activation is authenticated separately. Sites may use row inputs and aliases which dominate the
+        // switch, but assignments made by any arm cannot escape the join as a single value recipe.
+        snapshotExpression(statement.expression, statementUnsafe);
+        for (const arm of statement.cases) snapshotExpression(arm.body, statementUnsafe);
+        if (statement.defaultCase) snapshotExpression(statement.defaultCase, statementUnsafe);
+        invalidateAssignments(statement);
+        priorReturn ||= containsReturn(statement);
+        continue;
+      }
+      if (statement instanceof TryCatchNode) {
+        // Script failure is fatal on BCH. A successful transaction executes the operation and try body; catch
+        // clauses are dead and must neither publish sites nor invalidate aliases.
+        snapshotExpression(statement.expression, statementUnsafe);
+        snapshotExpression(statement.tryBlock, statementUnsafe);
+        invalidateAssignments(statement.expression);
+        invalidateAssignments(statement.tryBlock);
+        priorReturn ||= containsReturn(statement.tryBlock);
         continue;
       }
       const controlFlow = statement instanceof BranchNode || statement instanceof WhileNode

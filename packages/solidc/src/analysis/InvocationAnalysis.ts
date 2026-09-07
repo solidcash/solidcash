@@ -1,8 +1,9 @@
 import { binToHex } from '@bitauth/libauth';
 import { SplitStateFootprint } from '@solidcash/utils';
 import {
-  ContractNode, FunctionCallNode, FunctionCallStatementNode, FunctionDefinitionNode, IndirectCallNode, Node, TupleAssignmentNode,
-  VariableDefinitionNode,
+  ContractNode, FunctionCallNode, FunctionCallStatementNode, FunctionDefinitionNode, IndirectCallNode, Node,
+  TupleAssignmentNode,
+  TryCatchNode, VariableDefinitionNode,
 } from '../ast/AST.js';
 
 export interface InvocationFunctionSummary {
@@ -51,6 +52,13 @@ export function walkInvocationAst(
   if (!(value instanceof Node) || seen.has(value)) return;
   seen.add(value);
   visit(value);
+  if (value instanceof TryCatchNode) {
+    // BCH script failure aborts evaluation, so catches are not executable paths. Keep every footprint and
+    // admission survey aligned with code generation by walking only the operation and successful try body.
+    walkInvocationAst(value.expression, visit, seen);
+    walkInvocationAst(value.tryBlock, visit, seen);
+    return;
+  }
   // Node data fields are enumerable; class prototype methods are not. Iterate them directly to avoid allocating
   // an Object.entries pair array for every node in every call-graph and footprint walk.
   for (const key in value) {
@@ -203,8 +211,7 @@ export function analyseFunctionFootprint(
           // SymbolTableTraversal rewrites them. Without this, the kernel route never clones the handler as a
           // satoshi-transfer effect and later inlines the rewrite into `__message_bus1` with no transfer slots.
           directEffects.add('value');
-        }
-        else if (kind.includes('ExternalFunctionCall') || kind === 'LowLevelCallNode') {
+        } else if (kind.includes('ExternalFunctionCall') || kind === 'LowLevelCallNode') {
           directEffects.add('external-call');
         } else if (node instanceof IndirectCallNode) directUnknown = true;
       };

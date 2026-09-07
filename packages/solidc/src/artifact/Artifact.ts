@@ -218,6 +218,12 @@ export const occurrenceInfoOf = (
       });
       return;
     }
+    if (value instanceof TryCatchNode) {
+      // Only the successful operation/body path exists on BCH; a script failure aborts before any catch body.
+      visit(value.expression, context, reachedMaximum, reachedExact);
+      visit(value.tryBlock, context, reachedMaximum, reachedExact);
+      return;
+    }
     const kind = value.constructor.name;
     const isLoop = /^(WhileNode|DoWhileNode)$/.test(kind);
     const nested = isLoop
@@ -296,6 +302,42 @@ const transferEffects = (
   const visibleInputs = fn.parameters.filter((parameter) => !parameter.name.startsWith('__internal__'));
   const inputIndex = new Map(visibleInputs.map((parameter, index) => [parameter.name, index]));
   const inputTypes = new Map(visibleInputs.map((parameter) => [parameter.name, abiTypeString(parameter.type)]));
+  const reassignedDefinitions = new Set<object>();
+  const reassignedNames = new Set<string>();
+  const scanAssignments = (value: unknown, scanned = new WeakSet<object>()): void => {
+    if (Array.isArray(value)) { value.forEach((item) => scanAssignments(item, scanned)); return; }
+    if (!(value instanceof Node) || scanned.has(value)) return;
+    scanned.add(value);
+    if (value instanceof AssignNode) {
+      reassignedNames.add(value.identifier.name);
+      const definition = value.identifier.definition?.definition;
+      if (definition) reassignedDefinitions.add(definition);
+    }
+    if (value instanceof TryCatchNode) {
+      scanAssignments(value.expression, scanned);
+      scanAssignments(value.tryBlock, scanned);
+      return;
+    }
+    for (const [key, child] of Object.entries(value)) {
+      if (['resolvedFunction', 'functionReference', 'definition', 'symbolTable',
+        'referencedContract', 'stateVariable', 'collection'].includes(key)) continue;
+      scanAssignments(child, scanned);
+    }
+  };
+  scanAssignments(fn.body);
+  const operandRecipe = (
+    expression: ExpressionNode, resolving = new Set<object>(),
+  ): ChildDeploymentValueRecipe | undefined => {
+    const direct = childDeploymentValueRecipe(expression, inputIndex, false, inputTypes);
+    if (direct) return direct;
+    if (!(expression instanceof IdentifierNode) || reassignedNames.has(expression.name)) return undefined;
+    const definition = expression.definition?.definition;
+    if (!(definition instanceof VariableDefinitionNode) || !definition.expression
+      || reassignedDefinitions.has(definition) || resolving.has(definition)) return undefined;
+    const nested = new Set(resolving);
+    nested.add(definition);
+    return operandRecipe(definition.expression, nested);
+  };
   const seen = new Set<object>();
   const combine = (
     outer: ExpressionNode | undefined, inner: ExpressionNode, negate: boolean,
@@ -351,9 +393,9 @@ const transferEffects = (
       return;
     }
     if (value instanceof TryCatchNode) {
-      // A transfer in the try arm is active only when the foreign operation succeeds. That result is not part
-      // of the fixed predicate language, so never publish it as unconditional metadata.
-      visit(value.tryBlock, condition, true);
+      // Failed foreign execution aborts the BCH transaction; among successful spends the try body is therefore
+      // the straight-line continuation and requires no additional activation witness.
+      visit(value.tryBlock, condition, conditionUnsupported);
       return;
     }
     for (const [key, child] of Object.entries(value)) {
@@ -367,8 +409,8 @@ const transferEffects = (
   };
   visit(fn.body);
   return transfers.sort((a, b) => a.transferIndex - b.transferIndex).map((transfer) => {
-    const recipientRecipe = childDeploymentValueRecipe(transfer.recipient, inputIndex, false, inputTypes);
-    const amountRecipe = childDeploymentValueRecipe(transfer.amount, inputIndex, false, inputTypes);
+    const recipientRecipe = operandRecipe(transfer.recipient);
+    const amountRecipe = operandRecipe(transfer.amount);
     return {
       transferIndex: transfer.transferIndex,
       recipient: expressionSource(transfer.recipient, fn, contract),
@@ -1056,6 +1098,11 @@ function buildFunctionAbiMetadata(
       localInitializers.set(candidate.name, definitions);
     }
     if (candidate instanceof AssignNode) reassignedLocals.add(candidate.identifier.name);
+    if (candidate instanceof TryCatchNode) {
+      collectLocalInitializers(candidate.expression);
+      collectLocalInitializers(candidate.tryBlock);
+      return;
+    }
     for (const [key, value] of Object.entries(candidate)) {
       if (['location', 'resolvedFunction', 'functionReference', 'definition', 'symbolTable',
         'referencedContract', 'stateVariable', 'collection', 'type', 'runtimeLoopEventCondition'].includes(key)) {

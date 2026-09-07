@@ -2190,6 +2190,12 @@ function childDeploymentSites(
     if (expression instanceof HexLiteralNode) return { kind: 'literal', value: binToHex(expression.value) };
     return childDeploymentValueRecipe(expression, inputIndex, false, inputTypes) ?? { kind: 'expression' };
   };
+  const combineActivation = (
+    outer: ChildDeploymentSiteAbi['activation'], inner: ChildDeploymentSiteAbi['activation'],
+  ): ChildDeploymentSiteAbi['activation'] => outer === undefined ? inner
+    : inner === undefined ? outer : {
+      kind: 'binary', operator: '&&', resultType: 'bool', left: outer, right: inner,
+    };
 
   const walk = (
     value: unknown,
@@ -2267,21 +2273,42 @@ function childDeploymentSites(
     if (value instanceof BranchNode) {
       const condition = childDeploymentValueRecipe(value.condition, inputIndex, true, inputTypes);
       const nestedOccurrence = occurrence === 'loop' || occurrence === 'recursive' ? occurrence : 'conditional';
-      const combine = (
-        outer: ChildDeploymentSiteAbi['activation'],
-        inner: ChildDeploymentSiteAbi['activation'],
-      ): ChildDeploymentSiteAbi['activation'] => outer === undefined ? inner
-        : inner === undefined ? outer : {
-          kind: 'binary', operator: '&&', resultType: 'bool', left: outer, right: inner,
-        };
-      const positive = condition ? combine(activation, condition) : undefined;
+      const positive = condition ? combineActivation(activation, condition) : undefined;
       walk(value.ifBlock, nestedOccurrence, new WeakSet<object>(), positive);
       if (value.elseBlock) {
-        const negative = condition ? combine(activation, {
+        const negative = condition ? combineActivation(activation, {
           kind: 'unary', operator: '!', resultType: 'bool', operand: condition,
         }) : undefined;
         walk(value.elseBlock, nestedOccurrence, new WeakSet<object>(), negative);
       }
+      return;
+    }
+    if (value instanceof SwitchNode) {
+      const nestedOccurrence = occurrence === 'loop' || occurrence === 'recursive' ? occurrence : 'conditional';
+      const discriminant = childDeploymentValueRecipe(value.expression, inputIndex, true, inputTypes);
+      let defaultActivation = activation;
+      for (const arm of value.cases) {
+        const armValue = childDeploymentValueRecipe(arm.value, inputIndex, true, inputTypes);
+        const matches: ChildDeploymentSiteAbi['activation'] = discriminant && armValue ? {
+          kind: 'binary', operator: '==', resultType: 'bool', left: discriminant, right: armValue,
+        } : undefined;
+        walk(arm.body, nestedOccurrence, new WeakSet<object>(),
+          matches ? combineActivation(activation, matches) : undefined);
+        const misses: ChildDeploymentSiteAbi['activation'] = discriminant && armValue ? {
+          kind: 'binary', operator: '!=', resultType: 'bool', left: discriminant, right: armValue,
+        } : undefined;
+        defaultActivation = misses ? combineActivation(defaultActivation, misses) : undefined;
+      }
+      if (value.defaultCase) {
+        walk(value.defaultCase, nestedOccurrence, new WeakSet<object>(), defaultActivation);
+      }
+      return;
+    }
+    if (value instanceof TryCatchNode) {
+      // Catch clauses are unreachable on BCH: a failed foreign operation aborts script evaluation. Both the
+      // operation and its success body therefore retain their enclosing successful-path occurrence.
+      walk(value.expression, occurrence, new WeakSet<object>(), activation);
+      walk(value.tryBlock, occurrence, new WeakSet<object>(), activation);
       return;
     }
 
@@ -3910,13 +3937,22 @@ function synthesizeMessageBusRoute(
           return;
         }
         if (value instanceof SwitchNode) {
-          // Switch activation has no published fixed-effect recipe yet.
-          for (const arm of value.cases) auditActivation(arm.body, false, true, new WeakSet<object>());
-          if (value.defaultCase) auditActivation(value.defaultCase, false, true, new WeakSet<object>());
+          const switchSupported = childDeploymentValueRecipe(
+            value.expression, activationInputIndex, true, activationInputTypes,
+          ) !== undefined && value.cases.every((arm) => childDeploymentValueRecipe(
+            arm.value, activationInputIndex, true, activationInputTypes,
+          ) !== undefined);
+          for (const arm of value.cases) {
+            auditActivation(arm.body, supported && switchSupported, true, new WeakSet<object>());
+          }
+          if (value.defaultCase) {
+            auditActivation(value.defaultCase, supported && switchSupported, true, new WeakSet<object>());
+          }
           return;
         }
         if (value instanceof TryCatchNode) {
-          auditActivation(value.tryBlock, false, true, new WeakSet<object>());
+          auditActivation(value.expression, supported, conditional, new WeakSet<object>());
+          auditActivation(value.tryBlock, supported, conditional, new WeakSet<object>());
           return;
         }
         for (const [key, child] of Object.entries(value)) {
@@ -4298,12 +4334,31 @@ function synthesizeMessageBusRoute(
             }
             return;
           }
+          if (value instanceof SwitchNode) {
+            const switchSupported = childDeploymentValueRecipe(
+              value.expression, deploymentInputIndex, true, deploymentInputTypes,
+            ) !== undefined && value.cases.every((arm) => childDeploymentValueRecipe(
+              arm.value, deploymentInputIndex, true, deploymentInputTypes,
+            ) !== undefined);
+            const childControl = control === 'loop' ? 'loop' : 'conditional';
+            for (const arm of value.cases) {
+              nestedDeploy(arm.body, childControl, activationSupported && switchSupported, new WeakSet<object>());
+            }
+            if (value.defaultCase) {
+              nestedDeploy(value.defaultCase, childControl,
+                activationSupported && switchSupported, new WeakSet<object>());
+            }
+            return;
+          }
+          if (value instanceof TryCatchNode) {
+            nestedDeploy(value.expression, control, activationSupported, new WeakSet<object>());
+            nestedDeploy(value.tryBlock, control, activationSupported, new WeakSet<object>());
+            return;
+          }
           const childControl = value instanceof WhileNode || value instanceof DoWhileNode
             ? 'loop'
-            : value instanceof SwitchNode || value instanceof TryCatchNode
-              ? (control === 'loop' ? 'loop' : 'conditional') : control;
-          const childActivationSupported = activationSupported
-            && !(value instanceof SwitchNode || value instanceof TryCatchNode);
+            : control;
+          const childActivationSupported = activationSupported;
           for (const [key, child] of Object.entries(value)) {
             if (['referencedContract', 'resolvedFunction', 'definition', 'symbolTable'].includes(key)) continue;
             nestedDeploy(child, childControl, childActivationSupported, seen);

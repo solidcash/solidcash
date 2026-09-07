@@ -5330,7 +5330,13 @@ describe('required kernel admission', () => {
         function denied(address payable to) public { to.sendValue(uint(1)); require(true); }
         function control() public { require(true); }
       }`, { ...KERNEL, solidityImportCompat: true });
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')?.eligible).toBe(true);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')).toMatchObject({
+      eligible: true,
+      transfers: [{
+        recipientRecipe: { kind: 'handlerInput', inputIndex: 0 },
+        amountRecipe: { kind: 'cast', resultType: 'uint256', operand: { kind: 'intLiteral', value: '1' } },
+      }],
+    });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
   });
 

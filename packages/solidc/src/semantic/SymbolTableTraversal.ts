@@ -3619,6 +3619,26 @@ export default class SymbolTableTraversal extends AstTraversal {
       }
       return;
     }
+    if (node instanceof SwitchNode) {
+      this.collectTransferStatements(node.expression, transferInfos, seen);
+      const startIndex = transferInfos.length;
+      let maximumEnd = startIndex;
+      const arms = [...node.cases.map((arm) => arm.body), ...(node.defaultCase ? [node.defaultCase] : [])];
+      for (const arm of arms) {
+        const armInfos = transferInfos.slice();
+        this.collectTransferStatements(arm, armInfos);
+        maximumEnd = Math.max(maximumEnd, armInfos.length);
+      }
+      for (let index = startIndex; index < maximumEnd; index++) transferInfos.push({ transferIndex: index });
+      return;
+    }
+    if (node instanceof TryCatchNode) {
+      // BCH script failure aborts the transaction, so catch clauses are unreachable. The successful try body
+      // uses the same fixed-effect frame as straight-line source.
+      this.collectTransferStatements(node.expression, transferInfos, seen);
+      this.collectTransferStatements(node.tryBlock, transferInfos, seen);
+      return;
+    }
     if ('statements' in node && Array.isArray((node as any).statements)) {
       for (const stmt of (node as any).statements) {
         this.collectTransferStatements(stmt, transferInfos, seen);
@@ -3755,6 +3775,21 @@ export default class SymbolTableTraversal extends AstTraversal {
       }
       return startIndex;
     }
+    if (node instanceof SwitchNode) {
+      startIndex = this.assignTransferIndices(node.expression, startIndex);
+      let maximumEnd = startIndex;
+      for (const arm of node.cases) {
+        maximumEnd = Math.max(maximumEnd, this.assignTransferIndices(arm.body, startIndex));
+      }
+      if (node.defaultCase) {
+        maximumEnd = Math.max(maximumEnd, this.assignTransferIndices(node.defaultCase, startIndex));
+      }
+      return maximumEnd;
+    }
+    if (node instanceof TryCatchNode) {
+      startIndex = this.assignTransferIndices(node.expression, startIndex);
+      return this.assignTransferIndices(node.tryBlock, startIndex);
+    }
     if ('statements' in node && Array.isArray((node as any).statements)) {
       for (const stmt of (node as any).statements) {
         startIndex = this.assignTransferIndices(stmt, startIndex);
@@ -3809,6 +3844,18 @@ export default class SymbolTableTraversal extends AstTraversal {
       }
       return emitIndex;
     }
+    if (node instanceof SwitchNode) {
+      const startIndex = emitIndex;
+      let longest: EmitInfo[] = emitInfos;
+      for (const arm of [...node.cases.map((entry) => entry.body),
+        ...(node.defaultCase ? [node.defaultCase] : [])]) {
+        const armInfos = emitInfos.slice();
+        this.collectEmitStatements(arm, armInfos, startIndex);
+        if (armInfos.length > longest.length) longest = armInfos;
+      }
+      emitInfos.push(...longest.slice(startIndex));
+      return longest.length;
+    }
     // try/catch: only the try block is compiled (a failed co-spent call/deploy aborts the whole tx, so the catch
     // is unreachable and codegen ignores it - see branchOps / collectEmitIndices). Allocate slots for its emits.
     if (node instanceof TryCatchNode) {
@@ -3845,6 +3892,15 @@ export default class SymbolTableTraversal extends AstTraversal {
       }
       return startIndex;
     }
+    if (node instanceof SwitchNode) {
+      let maximumEnd = startIndex;
+      for (const arm of node.cases) {
+        maximumEnd = Math.max(maximumEnd, this.assignEmitIndices(arm.body, startIndex));
+      }
+      if (node.defaultCase) maximumEnd = Math.max(maximumEnd, this.assignEmitIndices(node.defaultCase, startIndex));
+      return maximumEnd;
+    }
+    if (node instanceof TryCatchNode) return this.assignEmitIndices(node.tryBlock, startIndex);
     if ('statements' in node && Array.isArray((node as any).statements)) {
       for (const stmt of (node as any).statements) {
         startIndex = this.assignEmitIndices(stmt, startIndex);
@@ -3872,10 +3928,15 @@ export default class SymbolTableTraversal extends AstTraversal {
       return;
     }
     if (node instanceof SwitchNode) {
-      for (const arm of node.cases) {
-        this.collectTokenContainerTransferStatements(arm.body, state);
+      const startIndex = state.counter;
+      let maximumEnd = startIndex;
+      for (const arm of [...node.cases.map((entry) => entry.body),
+        ...(node.defaultCase ? [node.defaultCase] : [])]) {
+        const armState = { counter: startIndex };
+        this.collectTokenContainerTransferStatements(arm, armState);
+        maximumEnd = Math.max(maximumEnd, armState.counter);
       }
-      if (node.defaultCase) this.collectTokenContainerTransferStatements(node.defaultCase, state);
+      state.counter = maximumEnd;
       return;
     }
     if (node instanceof TryCatchNode) {
@@ -10442,11 +10503,12 @@ export default class SymbolTableTraversal extends AstTraversal {
         mappingWriteSlots,
         mappingDeleteSlots,
         transferCount: Math.max(...allCounts.map((c) => c.transfers)),
-        minTransferCount: Math.min(...allCounts.map((c) => c.transfers)),
+        minTransferCount: node.defaultCase ? Math.min(...allCounts.map((c) => c.transfers)) : 0,
         emitCount: Math.max(...allCounts.map((c) => c.emits)),
-        minEmitCount: Math.min(...allCounts.map((c) => c.emits)),
+        minEmitCount: node.defaultCase ? Math.min(...allCounts.map((c) => c.emits)) : 0,
         tokenContainerTransferCount: Math.max(...allCounts.map((c) => c.tokenContainerTransfers)),
-        minTokenContainerTransferCount: Math.min(...allCounts.map((c) => c.tokenContainerTransfers)),
+        minTokenContainerTransferCount: node.defaultCase
+          ? Math.min(...allCounts.map((c) => c.tokenContainerTransfers)) : 0,
       };
     }
 

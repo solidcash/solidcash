@@ -7491,7 +7491,9 @@ function synthesizeMessageBusRoute(
             }
             activeTokenRows = activeTokenRows + 1;
           }` : ''}
-          if (kind == 5 && __message_bus_row_owner == activeParticipant) {
+          ${kernelDeploymentHandlers.size === 0
+    ? 'require(kind != 5 || __message_bus_row_owner != activeParticipant);'
+    : `if (kind == 5 && __message_bus_row_owner == activeParticipant) {
             bigint deploymentMode = int(bytes.concat(
               callManifest.slice(rowStart + 5, rowStart + 6), hex"00"
             ));
@@ -7623,7 +7625,7 @@ function synthesizeMessageBusRoute(
             }
             require(deploymentCategoryOutputs == deploymentOutputCount);
             }
-          }
+          }`}
           ${sidecarVerificationMode ? `if (kind == 6 && __message_bus_row_owner == activeParticipant) {
             require(rowSubject.length > 0 && rowArguments.length >= 32 && rowResult.length == 0
               && rowEffect.length >= 8);

@@ -66,5 +66,9 @@ describe('atomic verifier bytecode specialization', () => {
       'suppliedCompletionPositions',
       'suppliedSettlementTable',
     ]);
+    // A participant with no typed child-deployment site rejects active kind-5 rows directly. It must not carry
+    // the general deployment descriptor/materialization verifier, which is over a kilobyte after codegen.
+    expect(messageBusVerifierCovenantBytecode(artifact.messageBus!.verifierProgram!, 1_000_000).length)
+      .toBeLessThanOrEqual(7_500);
   });
 });

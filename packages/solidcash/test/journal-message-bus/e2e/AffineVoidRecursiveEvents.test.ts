@@ -148,4 +148,56 @@ describe('affine void recursive event settlement', () => {
       transaction: inexactTransaction,
     }))).not.toBe(true);
   }, 180_000);
+
+  it('reconstructs multiple affine parameters across descent and unwind', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(`contract RecursiveStream() {
+      event Seen(bigint value);
+      function descend(bigint cursor, bigint value) public {
+        emit Seen(value);
+        if (cursor == 0) return;
+        descend(cursor - 2, value + 3);
+        emit Seen(value);
+      }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'descend')).toMatchObject({
+      eligible: true,
+      runtimeLoopEvents: [
+        { iterationDomain: { initialValue: { value: '0' }, maximumIterations: 64 } },
+        { iterationDomain: { initialValue: { value: '1' }, maximumIterations: 64 } },
+      ],
+    });
+
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+    );
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    const builder = await contract.call.descend(6n, 10n).build();
+    const transaction = builder.buildLibauthTransaction();
+    const events = transaction.outputs.filter((output) => output.token?.nft?.capability === 'none');
+    expect(events.map((output) => binToHex(output.token!.nft!.commitment)))
+      .toEqual(['5a', '5d', '60', '0113', '60', '5d', '5a']);
+
+    const vm = createVirtualMachineBch2026ForProvider(provider);
+    const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+    for (let inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex += 1) {
+      expect(vm.stateSuccess(vm.evaluate({ inputIndex, sourceOutputs, transaction })), `input ${inputIndex}`)
+        .toBe(true);
+    }
+    const suffixIndex = transaction.outputs.findLastIndex(
+      (output) => output.token?.nft?.capability === 'none',
+    );
+    const suffix = transaction.outputs[suffixIndex];
+    const hostile = {
+      ...transaction,
+      outputs: transaction.outputs.map((output, index) => index === suffixIndex ? {
+        ...output,
+        token: {
+          ...suffix.token!, nft: { ...suffix.token!.nft!, commitment: Uint8Array.of(9) },
+        },
+      } : output),
+    };
+    expect(vm.stateSuccess(vm.evaluate({ inputIndex: 0, sourceOutputs, transaction: hostile }))).not.toBe(true);
+  }, 180_000);
 });

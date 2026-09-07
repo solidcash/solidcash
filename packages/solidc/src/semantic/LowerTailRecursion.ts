@@ -50,6 +50,7 @@ interface AffinePostEffectRecursion {
 interface AffineVoidPostEffectRecursion {
   inductionIndex: number;
   stepExpression: ExpressionNode;
+  parameterProgressions: AffineParameterProgression[];
   effects: StatementNode[];
   emits: Array<{ node: EmitStatementNode; condition?: ExpressionNode }>;
 }
@@ -57,10 +58,17 @@ interface AffineVoidPostEffectRecursion {
 interface AffineVoidMixedEventRecursion {
   inductionIndex: number;
   stepExpression: ExpressionNode;
+  parameterProgressions: AffineParameterProgression[];
   prefix: StatementNode[];
   suffix: StatementNode[];
   prefixEmits: Array<{ node: EmitStatementNode; condition?: ExpressionNode }>;
   suffixEmits: Array<{ node: EmitStatementNode; condition?: ExpressionNode }>;
+}
+
+interface AffineParameterProgression {
+  parameterIndex: number;
+  subtract: boolean;
+  stepExpression: ExpressionNode;
 }
 
 interface AffineEventRecursion {
@@ -247,6 +255,52 @@ export default class LowerTailRecursion extends AstTraversal {
     if (!this.affineEventExpression(next.right, node, inductionName, false)) return undefined;
     if (next.right instanceof IntLiteralNode && next.right.value <= 0n) return undefined;
     return next.right;
+  }
+
+  /** Recognize frame values which remain reconstructible from the public arguments and the terminating rank.
+   * The termination parameter must descend by a positive invariant. Any other changing integral parameter may
+   * add or subtract an invariant integral expression. A step cannot depend on a changing parameter: accepting
+   * that would turn an apparently affine replay recipe into a recurrence requiring a per-frame trace. */
+  private affineParameterProgressions(
+    call: FunctionCallNode, node: FunctionDefinitionNode, inductionIndex: number,
+  ): AffineParameterProgression[] | undefined {
+    if (call.parameters.length !== node.parameters.length) return undefined;
+    const progressions: AffineParameterProgression[] = [];
+    for (let index = 0; index < call.parameters.length; index += 1) {
+      const argument = call.parameters[index];
+      const parameter = node.parameters[index];
+      if (argument instanceof IdentifierNode && argument.name === parameter.name) continue;
+      const integral = parameter.type instanceof IntType || parameter.type === PrimitiveType.INT
+        || parameter.type === PrimitiveType.BIGINT;
+      if (!integral || !(argument instanceof BinaryOpNode)) return undefined;
+      let subtract = false;
+      let stepExpression: ExpressionNode | undefined;
+      if (argument.left instanceof IdentifierNode && argument.left.name === parameter.name
+        && (argument.operator === BinaryOperator.PLUS || argument.operator === BinaryOperator.MINUS)) {
+        subtract = argument.operator === BinaryOperator.MINUS;
+        stepExpression = argument.right;
+      } else if (argument.operator === BinaryOperator.PLUS
+        && argument.right instanceof IdentifierNode && argument.right.name === parameter.name) {
+        stepExpression = argument.left;
+      }
+      if (!stepExpression) return undefined;
+      progressions.push({ parameterIndex: index, subtract, stepExpression });
+    }
+    const changingNames = new Set(progressions.map(({ parameterIndex }) => node.parameters[parameterIndex].name));
+    for (const progression of progressions) {
+      let changingDependency = false;
+      this.walkNodes(progression.stepExpression, (candidate) => {
+        if (candidate instanceof IdentifierNode && changingNames.has(candidate.name)) changingDependency = true;
+      });
+      if (changingDependency
+        || !this.affineEventExpression(progression.stepExpression, node, '', false)) return undefined;
+    }
+    const induction = progressions.find(({ parameterIndex }) => parameterIndex === inductionIndex);
+    if (!induction?.subtract
+      || (induction.stepExpression instanceof IntLiteralNode && induction.stepExpression.value <= 0n)) {
+      return undefined;
+    }
+    return progressions;
   }
 
   visitSourceFile(node: SourceFileNode): Node {
@@ -1283,8 +1337,10 @@ export default class LowerTailRecursion extends AstTraversal {
         || parameter.type === PrimitiveType.INT || parameter.type === PrimitiveType.BIGINT));
     if (inductionIndex < 0) return undefined;
     const call = recursiveStatement.call;
-    const stepExpression = this.descendingAffineStep(call, node, inductionIndex, zeroSide.name);
-    if (!stepExpression) return undefined;
+    const parameterProgressions = this.affineParameterProgressions(call, node, inductionIndex);
+    const stepExpression = parameterProgressions
+      ?.find(({ parameterIndex }) => parameterIndex === inductionIndex)?.stepExpression;
+    if (!parameterProgressions || !stepExpression) return undefined;
 
     const writes: Array<MappingAssignNode | MappingDeleteNode> = [];
     const emits: AffineVoidPostEffectRecursion['emits'] = [];
@@ -1366,7 +1422,9 @@ export default class LowerTailRecursion extends AstTraversal {
         || candidate instanceof DeleteStateNode || candidate instanceof WhileNode
         || candidate instanceof DoWhileNode || candidate instanceof FunctionCallNode) unsupported = true;
     });
-    return unsupported ? undefined : { inductionIndex, stepExpression, effects, emits };
+    return unsupported ? undefined : {
+      inductionIndex, stepExpression, parameterProgressions, effects, emits,
+    };
   }
 
   /** Exact mixed-order void recursion: prefix effects run from the public frame through the base frame, then
@@ -1401,11 +1459,10 @@ export default class LowerTailRecursion extends AstTraversal {
         || parameter.type === PrimitiveType.INT || parameter.type === PrimitiveType.BIGINT));
     if (inductionIndex < 0) return undefined;
     const call = recursiveStatement.call;
-    const varying = call.parameters.flatMap((argument, index) =>
-      argument instanceof IdentifierNode && argument.name === node.parameters[index]?.name ? [] : [index]);
-    if (varying.length !== 1 || varying[0] !== inductionIndex) return undefined;
-    const stepExpression = this.descendingAffineStep(call, node, inductionIndex, zeroSide.name);
-    if (!stepExpression) return undefined;
+    const parameterProgressions = this.affineParameterProgressions(call, node, inductionIndex);
+    const stepExpression = parameterProgressions
+      ?.find(({ parameterIndex }) => parameterIndex === inductionIndex)?.stepExpression;
+    if (!parameterProgressions || !stepExpression) return undefined;
 
     const collect = (
       effects: readonly StatementNode[], emits: Array<{ node: EmitStatementNode; condition?: ExpressionNode }>,
@@ -1437,7 +1494,9 @@ export default class LowerTailRecursion extends AstTraversal {
     const suffixEmits: AffineVoidMixedEventRecursion['suffixEmits'] = [];
     if (!collect(prefix, prefixEmits) || !collect(suffix, suffixEmits)
       || prefixEmits.length === 0 || suffixEmits.length === 0) return undefined;
-    return { inductionIndex, stepExpression, prefix, suffix, prefixEmits, suffixEmits };
+    return {
+      inductionIndex, stepExpression, parameterProgressions, prefix, suffix, prefixEmits, suffixEmits,
+    };
   }
 
   /** Serialize only expressions whose value can be reconstructed from the public call frame and current
@@ -1771,6 +1830,57 @@ export default class LowerTailRecursion extends AstTraversal {
     ), induction.location);
   }
 
+  private affineProgressionAtRank(
+    node: FunctionDefinitionNode, progression: AffineParameterProgression, rankName: string,
+    inductionIndex: number, inductionStep: ExpressionNode, unwind: boolean, location: Node['location'],
+  ): ExpressionNode {
+    const parameter = node.parameters[progression.parameterIndex];
+    const rank = this.stamp(new IdentifierNode(rankName), location);
+    const depth = unwind ? this.stamp(new BinaryOpNode(
+      this.stamp(new BinaryOpNode(
+        this.stamp(new IdentifierNode(node.parameters[inductionIndex].name), location), BinaryOperator.DIV,
+        cloneNode(inductionStep),
+      ), location), BinaryOperator.MINUS, rank,
+    ), location) : rank;
+    const offset = progression.stepExpression instanceof IntLiteralNode
+      && progression.stepExpression.value === 1n
+      ? depth
+      : this.stamp(new BinaryOpNode(depth, BinaryOperator.MUL, cloneNode(progression.stepExpression)), location);
+    return this.stamp(new BinaryOpNode(
+      this.stamp(new IdentifierNode(parameter.name), location),
+      progression.subtract ? BinaryOperator.MINUS : BinaryOperator.PLUS,
+      offset,
+    ), location);
+  }
+
+  private replaceAffineProgressions(
+    source: Node, node: FunctionDefinitionNode, progressions: readonly AffineParameterProgression[],
+    rankName: string, inductionIndex: number, inductionStep: ExpressionNode, unwind: boolean,
+  ): Node {
+    const byName = new Map(progressions.map((progression) => [
+      node.parameters[progression.parameterIndex].name, progression,
+    ]));
+    const replace = (candidate: Node): Node => {
+      if (candidate instanceof IdentifierNode) {
+        const progression = byName.get(candidate.name);
+        if (progression) return this.affineProgressionAtRank(
+          node, progression, rankName, inductionIndex, inductionStep, unwind, candidate.location,
+        );
+      }
+      for (const [key, child] of Object.entries(candidate)) {
+        if (['resolvedFunction', 'definition', 'symbolTable', 'location', 'type'].includes(key)
+          || (candidate instanceof FunctionCallNode && key === 'identifier')) continue;
+        if (child instanceof Node) (candidate as unknown as Record<string, unknown>)[key] = replace(child);
+        else if (Array.isArray(child)) {
+          (candidate as unknown as Record<string, unknown>)[key] = child.map((item) =>
+            item instanceof Node ? replace(item) : item);
+        }
+      }
+      return candidate;
+    };
+    return replace(source);
+  }
+
   /** The accepted recursion reaches zero exactly. These guards make the iterative replacement fail closed for a
    * zero/negative runtime step, an endpoint between steps, or a call whose exact recursive frame count exceeds
    * the journal ceiling. `maximumQuotient` is 63 for a pre-order stream (which also visits zero) and 64 for an
@@ -1844,10 +1954,14 @@ export default class LowerTailRecursion extends AstTraversal {
         plan.stepExpression, true,
       );
       const sourceCondition = plan.emits[siteIndex].condition;
-      const condition = sourceCondition ? this.replaceIdentifier(
-        cloneNode(sourceCondition) as ExpressionNode, induction.name,
-        frame,
-      ) as ExpressionNode : undefined;
+      const condition = sourceCondition ? ('parameterProgressions' in plan
+        ? this.replaceAffineProgressions(
+          cloneNode(sourceCondition) as ExpressionNode, node, plan.parameterProgressions,
+          rankName, plan.inductionIndex, plan.stepExpression, true,
+        )
+        : this.replaceIdentifier(
+          cloneNode(sourceCondition) as ExpressionNode, induction.name, frame,
+        )) as ExpressionNode : undefined;
       const reachedFrame = this.stamp(new BinaryOpNode(
         this.stamp(new IdentifierNode(rankName), emit.location), BinaryOperator.LE,
         this.stamp(new BinaryOpNode(
@@ -1900,14 +2014,11 @@ export default class LowerTailRecursion extends AstTraversal {
     });
     if (clonedEmits.length !== plan.prefixEmits.length) return;
     clonedEmits.forEach((emit, siteIndex) => {
-      const frame = (): ExpressionNode => this.affineFrameAtRank(
-        this.stamp(new IdentifierNode(induction.name), emit.location), rankName,
-        plan.stepExpression, false,
-      );
       const sourceCondition = plan.prefixEmits[siteIndex].condition;
       emit.runtimeLoopEvent = { loopIndex, siteIndex };
-      emit.runtimeLoopEventCondition = sourceCondition ? this.replaceIdentifier(
-        cloneNode(sourceCondition) as ExpressionNode, induction.name, frame,
+      emit.runtimeLoopEventCondition = sourceCondition ? this.replaceAffineProgressions(
+        cloneNode(sourceCondition) as ExpressionNode, node, plan.parameterProgressions,
+        rankName, plan.inductionIndex, plan.stepExpression, false,
       ) as ExpressionNode : undefined;
       emit.runtimeLoopEventCounter = { name: rankName, initialValue: 0n, stepValue: 1n };
       emit.runtimeLoopEffectOrder = siteIndex;
@@ -1921,12 +2032,9 @@ export default class LowerTailRecursion extends AstTraversal {
     const preRankName = `__tail_pre_rank_${frame}`;
     const postRankName = `__tail_unwind_rank_${frame}`;
     const replaceEffects = (effects: readonly StatementNode[], rankName: string, unwind: boolean): StatementNode[] =>
-      effects.map((effect) => this.replaceIdentifier(
-        cloneNode(effect) as StatementNode, induction.name,
-        () => this.affineFrameAtRank(
-          this.stamp(new IdentifierNode(induction.name), effect.location), rankName,
-          plan.stepExpression, unwind,
-        ),
+      effects.map((effect) => this.replaceAffineProgressions(
+        cloneNode(effect) as StatementNode, node, plan.parameterProgressions,
+        rankName, plan.inductionIndex, plan.stepExpression, unwind,
       ) as StatementNode);
     const preEffects = replaceEffects(plan.prefix, preRankName, false);
     const postEffects = replaceEffects(plan.suffix, postRankName, true);
@@ -1934,6 +2042,7 @@ export default class LowerTailRecursion extends AstTraversal {
     this.publishAffinePostEvents(node, {
       inductionIndex: plan.inductionIndex,
       stepExpression: plan.stepExpression,
+      parameterProgressions: plan.parameterProgressions,
       effects: plan.suffix,
       emits: plan.suffixEmits,
     }, postRankName, postEffects);
@@ -2036,12 +2145,9 @@ export default class LowerTailRecursion extends AstTraversal {
   ): void {
     const induction = node.parameters[plan.inductionIndex];
     const rankName = `__tail_unwind_rank_${frame}`;
-    const effects = plan.effects.map((effect) => this.replaceIdentifier(
-      cloneNode(effect) as StatementNode, induction.name,
-      () => this.affineFrameAtRank(
-        this.stamp(new IdentifierNode(induction.name), effect.location), rankName,
-        plan.stepExpression, true,
-      ),
+    const effects = plan.effects.map((effect) => this.replaceAffineProgressions(
+      cloneNode(effect) as StatementNode, node, plan.parameterProgressions,
+      rankName, plan.inductionIndex, plan.stepExpression, true,
     ) as StatementNode);
     this.publishAffinePostEvents(node, plan, rankName, effects);
     const increment = this.stamp(new AssignNode(

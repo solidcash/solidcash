@@ -2487,6 +2487,29 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         }
         return false;
       };
+      const readsState = (candidate: Node): boolean => {
+        if (candidate instanceof StateAccessNode) return true;
+        for (const [key, value] of Object.entries(candidate)) {
+          if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type'
+            || key === 'resolvedFunction' || key === 'collection' || key === 'stateVariable') continue;
+          if (value instanceof Node && readsState(value)) return true;
+          if (Array.isArray(value)
+            && value.some((item) => item instanceof Node && readsState(item))) return true;
+        }
+        return false;
+      };
+      const containsTruncatingArithmetic = (candidate: Node): boolean => {
+        if (candidate instanceof BinaryOpNode
+          && [BinaryOperator.DIV, BinaryOperator.MOD, BinaryOperator.POW].includes(candidate.operator)) return true;
+        for (const [key, value] of Object.entries(candidate)) {
+          if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type'
+            || key === 'resolvedFunction' || key === 'collection' || key === 'stateVariable') continue;
+          if (value instanceof Node && containsTruncatingArithmetic(value)) return true;
+          if (Array.isArray(value)
+            && value.some((item) => item instanceof Node && containsTruncatingArithmetic(item))) return true;
+        }
+        return false;
+      };
       type CounterPolynomial = {
         quadratic?: ExpressionNode;
         slope?: ExpressionNode;
@@ -2564,6 +2587,75 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       };
       for (const [name, updates] of topLevelStateAssignments) {
         if (countStateAssignmentsTo(block, name) !== updates.length) continue;
+        const observationPositions = (block.statements ?? []).flatMap((statement, index) => (
+          !updates.some((update) => update.index === index) && containsStateAccess(statement, name) ? [index] : []
+        ));
+        // A multiplicative recurrence is expanded as a bounded, rank-selected chain of the original source
+        // multiplications. This deliberately does not rewrite it as `base * factor ** rank`: preserving each
+        // multiplication and selecting lazily preserves checked-overflow behavior even for zero bases and runtime
+        // factors. Every factor must be invariant and resource-free; mixed additive/geometric updates, division,
+        // modulo, powers, loop-carried factors, and state-derived factors remain fenced.
+        const geometricFactors: ExpressionNode[] = [];
+        let geometricBase: ExpressionNode | undefined;
+        let geometric = updates.length > 0 && !recurrenceCrossesContinue;
+        for (const { statement } of updates) {
+          const recurrence = statement.expression;
+          if (!(recurrence instanceof BinaryOpNode)
+            || recurrence.operator !== BinaryOperator.MUL
+            || !(recurrence.left instanceof StateAccessNode) || recurrence.left.name !== name
+            || containsIdentifier(recurrence.right, logical)
+            || !runtimePathExpressionSupported(recurrence.right, logical, new Set(), stateValues,
+              loopCarriedLocalValues)
+            || readsLoopAssignedLocal(recurrence.right)
+            || readsLoopAssignedState(recurrence.right)
+            || readsState(recurrence.right)
+            || readsCollection(recurrence.right)
+            || containsTruncatingArithmetic(recurrence.right)) {
+            geometric = false;
+            break;
+          }
+          geometricBase ??= cloneNode(stateValues.get(name) ?? recurrence.left);
+          const factor = expandRuntimePathExpression(
+            recurrence.right, logical, new Set(), stateValues, loopCarriedLocalValues,
+          );
+          if (!factor) { geometric = false; break; }
+          geometricFactors.push(factor);
+        }
+        if (geometric && geometricBase && geometricFactors.length > 0
+          && observationPositions.length > 0) {
+          const rank = unitDomain
+            ? new IdentifierNode(logical)
+            : new BinaryOpNode(
+              new BinaryOpNode(new IdentifierNode(logical), BinaryOperator.MINUS, new IntLiteralNode(start)),
+              BinaryOperator.DIV, stepValue(),
+            );
+          let selected = cloneNode(geometricBase) as ExpressionNode;
+          // Build F(k) = rank == k ? base : F(k + 1) * factors, from the maximum authenticated rank
+          // backwards. Unlike materializing every power as a separate branch, this stays linear in the 64-rank
+          // proof bound while retaining one lazy, source-ordered multiplication chain on the selected path.
+          for (let occurrence = MAX_COUNTER_ITERATIONS - 1; occurrence >= 0; occurrence -= 1) {
+            let next = selected;
+            for (const factor of geometricFactors) {
+              next = new BinaryOpNode(next, BinaryOperator.MUL, cloneNode(factor));
+            }
+            const atOccurrence = new BinaryOpNode(
+              cloneNode(rank), BinaryOperator.EQ, new IntLiteralNode(BigInt(occurrence)),
+            );
+            selected = new TernaryOpNode(atOccurrence, cloneNode(geometricBase), next);
+          }
+          for (const position of observationPositions) {
+            const phase = updates.filter((update) => update.index < position).length;
+            let value = cloneNode(selected) as ExpressionNode;
+            for (const factor of geometricFactors.slice(0, phase)) {
+              value = new BinaryOpNode(value, BinaryOperator.MUL, cloneNode(factor));
+            }
+            value.location = updates[0].statement.location;
+            const siteValues = loopCarriedStateValuesByStatement.get(position) ?? new Map();
+            siteValues.set(name, value);
+            loopCarriedStateValuesByStatement.set(position, siteValues);
+          }
+          continue;
+        }
         const deltas: CounterPolynomial[] = [];
         let base: ExpressionNode | undefined;
         let supported = true;
@@ -2589,9 +2681,6 @@ export default class LowerVMapCounterLoops extends AstTraversal {
             ? delta : scalePolynomial(delta, new IntLiteralNode(-1n)));
         }
         if (!supported || !base || deltas.length === 0 || recurrenceCrossesContinue) continue;
-        const observationPositions = (block.statements ?? []).flatMap((statement, index) => (
-          !updates.some((update) => update.index === index) && containsStateAccess(statement, name) ? [index] : []
-        ));
         const netDelta = deltas.reduce(
           (sum, delta) => combinePolynomial(sum, delta, BinaryOperator.PLUS),
           {} as CounterPolynomial,

@@ -7385,12 +7385,12 @@ describe('required kernel admission', () => {
     }
   });
 
-  it('keeps unsupported scalar-state event recurrence sources fenced', () => {
+  it('keeps resource and loop-carried scalar-state event recurrence sources fenced', () => {
     const artifact = compileString(`event Tick(int value);
       contract C() {
         int total;
         mapping(int => int) source;
-        function nonAffine(int n) public {
+        function geometric(int n) public {
           for (int i = 0; i < n; i = i + 1) {
             this.total = this.total * 2;
             emit Tick(this.total);
@@ -7429,8 +7429,10 @@ describe('required kernel admission', () => {
           require(true);
         }
       }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'geometric'))
+      .toMatchObject({ eligible: true });
     for (const name of [
-      'nonAffine', 'resourceDependent', 'truncatedCounter', 'counterLocalAlias', 'localDelta',
+      'resourceDependent', 'truncatedCounter', 'counterLocalAlias', 'localDelta',
     ]) {
       expect(artifact.messageBus?.handlers.find((handler) => handler.name === name))
         .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });

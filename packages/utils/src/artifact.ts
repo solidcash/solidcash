@@ -1206,6 +1206,11 @@ export interface Artifact {
       lifecycle?: { kind: 'upgrade'; layout: 'same' | 'in-place-append-v1' };
       /** The selected handler's compiler-resolved call closure can execute CHECKSIG/CHECKMULTISIG. */
       usesTransactionSignature?: boolean;
+      /** Transaction-signature witnesses whose hash type is covenanted by the generated route. */
+      transactionSignaturePolicy?: {
+        hashType: 'all';
+        parameterIndices: readonly number[];
+      };
       eligible: boolean;
       rejectionReason?: string;
       rejectionCode?:

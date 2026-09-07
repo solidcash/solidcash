@@ -1483,7 +1483,8 @@ export class AtomicMessageBusComposition {
         const artifact = plan.participants[invocation.callee].artifact;
         const handler = artifact.messageBus?.handlers.find((candidate) =>
           candidate.selector?.toLowerCase() === invocation.selectorHex.toLowerCase());
-        return handler?.usesTransactionSignature === true;
+        return handler?.usesTransactionSignature === true
+          && handler.transactionSignaturePolicy?.hashType !== 'all';
       });
       if (signedInvocation) {
         throw new Error(

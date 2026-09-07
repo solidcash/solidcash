@@ -246,6 +246,35 @@ describe('required kernel admission', () => {
     });
   });
 
+  it('admits a direct scalar SIGHASH_ALL-constrained upgrade authorization', () => {
+    const artifact = compileString(`contract C(pubkey admin) {
+      function migrate(sig proof) public upgrade { require(checkSig(proof, admin)); }
+      function control() public { require(true); }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'migrate')).toMatchObject({
+      eligible: true, usesTransactionSignature: true,
+      lifecycle: { kind: 'upgrade', layout: 'in-place-append-v1' },
+      transactionSignaturePolicy: { hashType: 'all', parameterIndices: [0] },
+    });
+    expect(artifact.messageBus?.route.inputs).toContainEqual(expect.objectContaining({
+      name: '__message_bus_sig_0_0_rows', type: 'sig[]',
+    }));
+  });
+
+  it.each([
+    ['an alias', 'sig selected = proof; require(checkSig(selected, admin));'],
+    ['a reassigned parameter', 'proof = sig(hex"00"); require(checkSig(proof, admin));'],
+    ['a multisig array', 'require(checkMultiSig(proofs, keys));', 'sig[] proofs, pubkey[] keys'],
+  ])('keeps an upgrade signature reached through %s fenced', (_label, body, parameters = 'sig proof') => {
+    expect(denied(`contract C(pubkey admin) {
+      function migrate(${parameters}) public upgrade { ${body} }
+      function control() public { require(true); }
+    }`, 'migrate')).toMatchObject({
+      eligible: false, rejectionReason: 'KERNEL_TX_SIGNATURE',
+      lifecycle: { kind: 'upgrade', layout: 'in-place-append-v1' },
+    });
+  });
+
   it('publishes reachable transaction-signature checks for ordinary graph ancestors', () => {
     const artifact = compileString(`contract C() {
       function execute(bytes proof, pubkey key) public { require(checkSig(sig(proof), key)); }

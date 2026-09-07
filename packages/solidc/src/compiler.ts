@@ -3221,6 +3221,67 @@ function synthesizeMessageBusRoute(
     }
     return found;
   };
+  // A detached scalar signature can authorize an upgrade without circularly entering the committed row when
+  // every reachable transaction-signature check consumes that exact, immutable parameter. The generated route
+  // additionally requires SIGHASH_ALL below. Aliases, casts, multisig arrays, helper edges, and reassigned
+  // parameters remain fenced until their provenance has an equally exact proof.
+  const directAllOutputSignatureParameters = (root: FunctionDefinitionNode): number[] | undefined => {
+    const indices = new Set<number>();
+    let found = false;
+    let unsupported = false;
+    const parameterIndex = (identifier: IdentifierNode): number => {
+      const definition = identifier.definition?.definition;
+      if (definition instanceof ParameterNode) {
+        const exact = root.parameters.findIndex((parameter) =>
+          parameter === definition || (parameter.location.start.line === definition.location.start.line
+            && parameter.location.start.column === definition.location.start.column
+            && parameter.location.end.line === definition.location.end.line
+            && parameter.location.end.column === definition.location.end.column));
+        if (exact >= 0) return exact;
+      }
+      // Generated/cloned source can lose the symbol object on an otherwise resolved identifier. Reconstruct only
+      // the unambiguous lexical binding: exactly one parameter and no local declaration with the same spelling.
+      const matching = root.parameters
+        .map((parameter, index) => ({ parameter, index }))
+        .filter(({ parameter }) => parameter.name === identifier.name);
+      let shadowed = false;
+      walkInvocationAst(root.body, (node) => {
+        if (node instanceof VariableDefinitionNode && node.name === identifier.name) shadowed = true;
+      });
+      return matching.length === 1 && !shadowed ? matching[0].index : -1;
+    };
+    for (const name of collectNamedFunctionClosure(root, signatureClosureByName)) {
+      for (const candidate of signatureClosureByName.get(name) ?? []) {
+        walkInvocationAst(candidate.body, (node) => {
+          if (!(node instanceof FunctionCallNode) || ![
+            GlobalFunction.CHECKSIG, GlobalFunction.CHECKMULTISIG,
+          ].includes(node.identifier.name as GlobalFunction)) return;
+          found = true;
+          if (candidate !== root || node.identifier.name !== GlobalFunction.CHECKSIG) {
+            unsupported = true;
+            return;
+          }
+          const signature = node.parameters[0];
+          const index = signature instanceof IdentifierNode ? parameterIndex(signature) : -1;
+          if (index < 0 || root.parameters[index].type !== PrimitiveType.SIG) {
+            unsupported = true;
+            return;
+          }
+          indices.add(index);
+        });
+      }
+    }
+    if (!found || unsupported) return undefined;
+    walkInvocationAst(root.body, (node) => {
+      if (!(node instanceof AssignNode)) return;
+      const index = parameterIndex(node.identifier);
+      if (index >= 0 && indices.has(index)) {
+        unsupported = true;
+      }
+    });
+    return unsupported ? undefined : [...indices].sort((left, right) => left - right);
+  };
+  const kernelAllOutputSignatureParameters = new Map<FunctionDefinitionNode, number[]>();
   for (const fn of functions) {
     fn.messageBusUsesTransactionSignature = reachesTransactionSignatureCheck(fn);
     if (fn.modifiers.some((modifier) => disallowedModifiers.has(modifier))) {
@@ -3246,15 +3307,20 @@ function synthesizeMessageBusRoute(
       fn.messageBusRejectionReason = 'KERNEL_FOREIGN_DELEGATE';
       continue;
     }
-    // Until the route covenants the transaction-signature hash type, SIGHASH_NONE/ANYONECANPAY could replay
-    // an otherwise valid upgrade authorization against a different manifest and replacement output. The hidden
-    // bytecode witness prevents output-only tampering, but cannot make a detached signature commit to that witness.
+    // An upgrade authorization must cover every output. Admit only the smallest proven topology here: each
+    // reachable checkSig directly consumes an immutable scalar sig parameter. Its detached row witness is
+    // constrained to SIGHASH_ALL by the generated wrapper. Every alias/helper/multisig topology stays fenced.
     if (compilerOptions.messageBusKernel === true
       && fn.modifiers.includes(FunctionModifier.UPGRADE)
       && fn.messageBusUsesTransactionSignature === true) {
-      fn.messageBusEligible = false;
-      fn.messageBusRejectionReason = 'KERNEL_TX_SIGNATURE';
-      continue;
+      const allOutputParameters = directAllOutputSignatureParameters(fn);
+      if (!allOutputParameters) {
+        fn.messageBusEligible = false;
+        fn.messageBusRejectionReason = 'KERNEL_TX_SIGNATURE';
+        continue;
+      }
+      kernelAllOutputSignatureParameters.set(fn, allOutputParameters);
+      fn.messageBusAllOutputSignatureParameters = allOutputParameters;
     }
     const footprint = analyseFunctionFootprint(fn, byName, footprintCache);
     let routeSensitive = false;
@@ -6436,9 +6502,16 @@ function synthesizeMessageBusRoute(
         ? `__message_bus_upgrade_count = __message_bus_upgrade_count + 1;
           __message_bus_upgrade_position = ${rowExpression};` : '';
       const parameterSignatureLeaves = signatureLeavesByHandler.get(fn)!;
-      const signatureAuthorization = kernelV2SignatureFence
-        && fn.messageBusUsesTransactionSignature === true
-        ? '__message_bus_signature_count = __message_bus_signature_count + 1;' : '';
+      const allOutputSignatureParameters = kernelAllOutputSignatureParameters.get(fn) ?? [];
+      const signatureAuthorization = allOutputSignatureParameters.length > 0
+        ? allOutputSignatureParameters.map((parameterIndex) => {
+          const witness = `${kernelSignatureWitnessName(handlerIndex, parameterIndex)}[${rowExpression}]`;
+          return `require(${witness}.length > 0
+            && (${witness}.slice(${witness}.length - 1, ${witness}.length) == hex"41"
+              || ${witness}.slice(${witness}.length - 1, ${witness}.length) == hex"61"));`;
+        }).join(' ')
+        : kernelV2SignatureFence && fn.messageBusUsesTransactionSignature === true
+          ? '__message_bus_signature_count = __message_bus_signature_count + 1;' : '';
       const invokeName = fn === resourceShapedHandler
         ? resourceHandlerInvokeName!
         : (graphHandlerInvokeNames.get(fn) ?? siblingHandlerInvokeNames.get(fn)
@@ -10350,6 +10423,12 @@ function compileResolvedAst(
           lifecycle: { kind: 'upgrade' as const, layout: 'in-place-append-v1' as const },
         }),
         ...(fn.messageBusUsesTransactionSignature === true && { usesTransactionSignature: true }),
+        ...(fn.messageBusAllOutputSignatureParameters !== undefined && {
+          transactionSignaturePolicy: {
+            hashType: 'all' as const,
+            parameterIndices: fn.messageBusAllOutputSignatureParameters,
+          },
+        }),
         ...(() => {
           const deployments = childDeploymentsBySignature.get(deploymentTopologyKey(fn)) ?? [];
           return deployments.length > 0 ? { childDeployments: deployments } : {};

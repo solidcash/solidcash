@@ -2910,6 +2910,7 @@ describe('assignPhysicalReturnIndices', () => {
     expect(isCompilerDescribedMintingBandWriter(described('setPermit', 1), true)).toBe(false);
     expect(isCompilerDescribedMintingBandWriter(described('transfer', 2), true)).toBe(true);
     expect(isCompilerDescribedMintingBandWriter(described('transferFrom', 3), true)).toBe(true);
+    expect(isCompilerDescribedMintingBandWriter(described('approve', 2), true)).toBe(true);
     expect(isCompilerDescribedMintingBandWriter(described('approve', 1), true)).toBe(false);
 
     // A familiar ERC name with an explicit effect-free descriptor cannot claim writer geometry.
@@ -2918,6 +2919,20 @@ describe('assignPhysicalReturnIndices', () => {
 
     // Old artifacts without effect metadata retain their compatibility classification.
     expect(isCompilerDescribedMintingBandWriter({ functionName: 'transferFrom' }, true)).toBe(true);
+  });
+
+  it('does not classify descriptor-free kernel participants by transfer-like source names', () => {
+    const kernelArtifact = {
+      abi: [], messageBus: { convention: 'kernel-row-loop' },
+    } as unknown as Artifact;
+    const kernelGroup = (name: string): { functionName: string; logicalArtifact: Artifact } => ({
+      functionName: name, logicalArtifact: kernelArtifact,
+    });
+
+    for (const name of ['moveUnits', 'transfer', 'transferFrom', 'approve']) {
+      expect(isCompilerDescribedMintingBandWriter(kernelGroup(name))).toBe(false);
+      expect(isCompilerDescribedMintingBandWriter(kernelGroup(name), true)).toBe(false);
+    }
   });
 
   it('restores persisted continuations from transaction structure, independent of caller names', () => {

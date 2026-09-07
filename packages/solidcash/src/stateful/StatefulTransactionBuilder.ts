@@ -1787,6 +1787,41 @@ export function selectExpectedP2sh32OutputLock(
   return undefined;
 }
 
+export type ValueChunkTraceObservation =
+  | { kind: 'lockingBytecode'; outputIndex: number; lockingBytecode: Uint8Array }
+  | { kind: 'commitment'; outputIndex: number; commitment: string };
+
+/**
+ * Select commitment checks owned by one compiler-described value-chunk run.
+ * Lock and commitment checks are paired by occurrence for each output, so a
+ * different covenant inspecting the same coordinate cannot donate its payload.
+ */
+export function selectValueChunkCommitmentObservations(
+  observations: readonly ValueChunkTraceObservation[],
+  authority: { outputBase: number; outputCount: number; lockingBytecode: Uint8Array } | null,
+): Map<number, string> {
+  const selected = new Map<number, string>();
+  if (!authority || authority.outputBase < 0 || authority.outputCount <= 0
+    || !isP2sh32LockScript(authority.lockingBytecode)) return selected;
+  const expectedLock = binToHex(authority.lockingBytecode);
+  const pendingLocks = new Map<number, Uint8Array[]>();
+  for (const observation of observations) {
+    if (observation.outputIndex < authority.outputBase
+      || observation.outputIndex >= authority.outputBase + authority.outputCount) continue;
+    if (observation.kind === 'lockingBytecode') {
+      const pending = pendingLocks.get(observation.outputIndex) ?? [];
+      pending.push(observation.lockingBytecode);
+      pendingLocks.set(observation.outputIndex, pending);
+      continue;
+    }
+    const pending = pendingLocks.get(observation.outputIndex);
+    const pairedLock = pending?.shift();
+    if (!pairedLock || binToHex(pairedLock) !== expectedLock) continue;
+    selected.set(observation.outputIndex, observation.commitment);
+  }
+  return selected;
+}
+
 /**
  * Occupancy: every slot in `[band.start, band.start+nNew)` must be a jobEvents
  * continuation NFT. A shorter Created/Updated extract must not leave a P2PKH

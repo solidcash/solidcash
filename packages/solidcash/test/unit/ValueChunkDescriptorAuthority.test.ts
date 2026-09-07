@@ -7,6 +7,7 @@ import {
   persistedValueChunkWriteState,
   rememberJobEventsLock,
   rememberJobEventsValue,
+  selectValueChunkCommitmentObservations,
   type ValueChunkWriteDescriptor,
 } from '../../src/stateful/StatefulTransactionBuilder.js';
 
@@ -65,5 +66,19 @@ describe('value-chunk descriptor authority', () => {
     });
   });
 
-  it.todo('classifies failing chunk pins by described slot ownership, not payload bytes');
+  it('classifies failing chunk pins by described slot ownership, not payload bytes', () => {
+    const exactLock = Uint8Array.from([0xaa, 0x20, ...new Uint8Array(32).fill(0x41), 0x87]);
+    const unrelatedLock = Uint8Array.from([0xaa, 0x20, ...new Uint8Array(32).fill(0x62), 0x87]);
+    const payload = '005e1976a91447d9fe52d462741f418e9dd5efaa6ae7e7adb60088ac0000';
+    const selected = selectValueChunkCommitmentObservations([
+      { kind: 'lockingBytecode', outputIndex: 12, lockingBytecode: unrelatedLock },
+      { kind: 'commitment', outputIndex: 12, commitment: '010203' },
+      { kind: 'lockingBytecode', outputIndex: 12, lockingBytecode: exactLock },
+      { kind: 'commitment', outputIndex: 12, commitment: payload },
+      { kind: 'lockingBytecode', outputIndex: 20, lockingBytecode: exactLock },
+      { kind: 'commitment', outputIndex: 20, commitment: '040506' },
+    ], { outputBase: 12, outputCount: 2, lockingBytecode: exactLock });
+
+    expect(selected).toEqual(new Map([[12, payload]]));
+  });
 });

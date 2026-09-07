@@ -169,6 +169,7 @@ import {
   jobEventTypeOf,
   stampEmptyJobEventTimestamp,
   expectedFromOtcEqualVerify,
+  selectExpectedP2sh32OutputLock,
   preferChunkCommitment,
   valueChunkIndexFromCommitment,
   selectValueChunkOutputBase,
@@ -177,6 +178,8 @@ import {
   selectPersistedValueChunkWrite,
   selectValueChunkWriteCategory,
   rememberValueChunkUnlockRecipe,
+  selectValueChunkCommitmentObservations,
+  type ValueChunkTraceObservation,
   type ValueChunkWriteDescriptor,
 } from './StatefulTransactionBuilder.js';
 import {
@@ -1952,7 +1955,64 @@ function extractExpectedOutputCommitmentFromTrace(
  */
 function extractFailingValueChunkCommitments(
   trace: AuthenticationProgramStateCommon[],
+  authority?: { outputBase: number; outputCount: number; lockingBytecode: Uint8Array } | null,
 ): Map<number, string> {
+  if (authority !== undefined) {
+    if (authority === null) return new Map();
+    type PendingOutputCheck = {
+      kind: ValueChunkTraceObservation['kind']; outputIndex: number; actual?: Uint8Array;
+    };
+    const pendingByFrame = new WeakMap<object, PendingOutputCheck[]>();
+    const observations: ValueChunkTraceObservation[] = [];
+    for (const step of trace) {
+      if (step.controlStack.some((flag) => flag === false)) continue;
+      const instructions = step.instructions as unknown as object;
+      const pending = pendingByFrame.get(instructions) ?? [];
+      const current = pending[pending.length - 1];
+      if (current && current.actual === undefined && step.stack.length > 0) {
+        current.actual = step.stack[step.stack.length - 1];
+      }
+      const opcode = step.instructions[step.ip]?.opcode;
+      if ((opcode === Op.OP_OUTPUTBYTECODE || opcode === Op.OP_OUTPUTTOKENCOMMITMENT)
+        && step.stack.length > 0) {
+        const outputIndex = Number(decodeScriptNumber(step.stack[step.stack.length - 1]));
+        if (Number.isSafeInteger(outputIndex) && outputIndex >= 0) {
+          pending.push({
+            kind: opcode === Op.OP_OUTPUTBYTECODE ? 'lockingBytecode' : 'commitment',
+            outputIndex,
+          });
+          pendingByFrame.set(instructions, pending);
+        }
+        continue;
+      }
+      if (opcode !== Op.OP_EQUALVERIFY || step.stack.length < 2 || pending.length === 0) continue;
+      const check = pending.pop()!;
+      const below = step.stack[step.stack.length - 2];
+      const top = step.stack[step.stack.length - 1];
+      if (check.kind === 'lockingBytecode') {
+        const expected = check.actual
+          ? selectExpectedP2sh32OutputLock(check.actual, below, top)
+          : [below, top].find((candidate) => isP2sh32LockingBytecode(candidate));
+        if (expected) observations.push({
+          kind: 'lockingBytecode', outputIndex: check.outputIndex, lockingBytecode: expected,
+        });
+      } else {
+        const expected = expectedFromOtcEqualVerify(
+          below, top, check.actual === undefined ? undefined : binToHex(check.actual),
+        );
+        const actualHex = check.actual === undefined ? undefined : binToHex(check.actual);
+        const commitment = binToHex(expected);
+        if (commitment !== actualHex && !isEmptyValueChunkCommitment(commitment)
+          && expected.length >= 3 && expected.length <= 128) {
+          observations.push({ kind: 'commitment', outputIndex: check.outputIndex, commitment });
+        }
+      }
+    }
+    return selectValueChunkCommitmentObservations(observations, authority);
+  }
+
+  // Compatibility for descriptor-free artifacts: historical plans have no
+  // resource lock/range authority, so retain their payload-shape exclusion.
   const result = new Map<number, string>();
   let sawOtc = false;
   let outIdx = -1;
@@ -12437,15 +12497,16 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             const nestedPinExtractedAt = debugTargetsThisDerivation ? Date.now() : 0;
             const chunkCategory = proxyGroup?.categoryId ?? llc.categoryId;
             const band = stb.getPublishJobEventsBand();
+            const valueChunkWrites = [
+              ...(llc.valueChunkWrites ?? describeValueChunkWrites(llc)),
+              ...(proxyGroup?.valueChunkWrites ?? (proxyGroup ? describeValueChunkWrites(proxyGroup) : [])),
+            ];
             const allChunks = extractAllRouteValueChunks(
               nestedTrace, pin,
               band?.start ?? -1,
               band?.nNew ?? 0,
               chunkCategory,
-              [
-                ...(llc.valueChunkWrites ?? describeValueChunkWrites(llc)),
-                ...(proxyGroup?.valueChunkWrites ?? (proxyGroup ? describeValueChunkWrites(proxyGroup) : [])),
-              ],
+              valueChunkWrites,
             );
             if (debugTargetsThisDerivation) console.error('derive-phase2-nested-chunks-extracted', {
               iter, llcIndex, functionName: llc.functionName,
@@ -12460,10 +12521,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               })));
               if (stb.bumpPublishJobEventsWidth(allChunks.length)) stb._refreshInputs();
               if (lastExtractedComputedValue) {
-                const selection = selectValueChunkWriteCategory([
-                  ...(llc.valueChunkWrites ?? describeValueChunkWrites(llc)),
-                  ...(proxyGroup?.valueChunkWrites ?? (proxyGroup ? describeValueChunkWrites(proxyGroup) : [])),
-                ].filter((write) => write.categoryId.toLowerCase() === chunkCategory.toLowerCase()));
+                const selection = selectValueChunkWriteCategory(valueChunkWrites.filter(
+                  (write) => write.categoryId.toLowerCase() === chunkCategory.toLowerCase(),
+                ));
                 if (selection.status === 'absent') {
                   // Compatibility only for descriptor-free artifacts.
                   rememberJobEventsValue(chunkCategory, lastExtractedComputedValue);
@@ -12474,10 +12534,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               ? pin.lockingBytecode
               : (chunkCategory ? persistedJobEventsLock(chunkCategory) : undefined);
             if (chunkCategory && redeemLock) {
-              const selection = selectValueChunkWriteCategory([
-                ...(llc.valueChunkWrites ?? describeValueChunkWrites(llc)),
-                ...(proxyGroup?.valueChunkWrites ?? (proxyGroup ? describeValueChunkWrites(proxyGroup) : [])),
-              ].filter((write) => write.categoryId.toLowerCase() === chunkCategory.toLowerCase()));
+              const selection = selectValueChunkWriteCategory(valueChunkWrites.filter(
+                (write) => write.categoryId.toLowerCase() === chunkCategory.toLowerCase(),
+              ));
               if (selection.status === 'absent') {
                 // Compatibility only for descriptor-free artifacts.
                 rememberJobEventsLock(chunkCategory, redeemLock);
@@ -12509,7 +12568,21 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             );
             const allowFailing = allChunks.length > 0 && !!band
               && (band.nNew > allChunks.length || lastExtractedEmpty || band.nNew === allChunks.length);
-            const failingCommits = extractFailingValueChunkCommitments(nestedTrace);
+            const siblingLock = allChunks[0]?.lockingBytecode
+              ?? pin?.lockingBytecode
+              ?? [...stb.getDerivedChunkOutputs().values()].find((chunk) => chunk.lockingBytecode.length === 35)
+                ?.lockingBytecode;
+            const describedLock = allChunks[0]?.lockingBytecode ?? pin?.lockingBytecode;
+            const writeSelection = selectValueChunkWriteCategory(valueChunkWrites.filter((write) => (
+              !chunkCategory || write.categoryId.toLowerCase() === chunkCategory.toLowerCase()
+            )));
+            const exactAuthority = writeSelection.status === 'exact' && band && describedLock
+              && (writeSelection.write.outputBase < 0 || writeSelection.write.outputBase === band.start)
+              ? { outputBase: band.start, outputCount: band.nNew, lockingBytecode: describedLock }
+              : writeSelection.status === 'absent'
+                ? undefined
+                : null;
+            const failingCommits = extractFailingValueChunkCommitments(nestedTrace, exactAuthority);
             if ((globalThis as { process?: { env?: Record<string, string> } }).process
               ?.env?.SOLIDC_DEBUG_CHUNK_SCAN === '1') {
               console.error('failing-otc-commits', {
@@ -12520,10 +12593,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 })),
               });
             }
-            const siblingLock = allChunks[0]?.lockingBytecode
-              ?? pin?.lockingBytecode
-              ?? [...stb.getDerivedChunkOutputs().values()].find((chunk) => chunk.lockingBytecode.length === 35)
-                ?.lockingBytecode;
             for (const [outputIndex, commitment] of commits) {
               if (commitment.length < 6 || commitment === '00'
                 || isEmptyValueChunkCommitment(commitment)) continue;
@@ -12545,7 +12614,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             }
             for (const [rawIndex, commitment] of failingCommits) {
               if (commitment.length < 6 || isEmptyValueChunkCommitment(commitment)) continue;
-              if (isJobEventEmitCommitment(commitment)) continue;
               const chunkIndex = valueChunkIndexFromCommitment(commitment);
               const inBand = !!band && rawIndex >= band.start && rawIndex <= band.end;
               const trailingWrite = !!band && rawIndex === band.start - 1 && chunkIndex === undefined;

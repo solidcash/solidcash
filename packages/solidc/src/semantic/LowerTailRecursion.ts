@@ -146,6 +146,18 @@ export default class LowerTailRecursion extends AstTraversal {
     return this.affineRecursiveKeyOffset(keys[keys.length - 1], inductionName);
   }
 
+  /** Canonical identity of the invariant tuple prefix preceding the affine final key. */
+  private affineRecursiveReadKeyPrefix(keys: readonly ExpressionNode[]): string | undefined {
+    if (keys.length === 0 || keys.slice(0, -1).some((key) => !(key instanceof LiteralNode))) return undefined;
+    return JSON.stringify(keys.slice(0, -1).map((key) => {
+      const literal = key as LiteralNode;
+      const value = literal.value instanceof Uint8Array
+        ? [...literal.value].map((byte) => byte.toString(16).padStart(2, '0')).join('')
+        : String(literal.value);
+      return [literal.constructor.name, value];
+    }));
+  }
+
   /** Collect collection reads which the counter-loop pass can turn into authenticated old-value vectors. A
    * mapping assignment consumes its vector in physical key order. Requirements consume their vectors in
    * recursive source order, carrying finite replayable if/else reachability into the selected domain. Predicates,
@@ -202,10 +214,6 @@ export default class LowerTailRecursion extends AstTraversal {
       }
     };
     for (const effect of effects) collectRequirements(effect);
-    // This first composite slice owns one exact physical stream. Multiple composite read streams need a complete
-    // tuple-domain disjointness proof (including crossed varying positions), not the scalar offset comparison
-    // below; retain that larger case behind KERNEL_LAYOUT.
-    if (reads.filter((read) => read.node.keys.length > 1).length > 1) return undefined;
     return valid ? reads : undefined;
   }
 
@@ -232,6 +240,19 @@ export default class LowerTailRecursion extends AstTraversal {
       const difference = left >= right ? left - right : right - left;
       return difference % step !== 0n || difference / step > 63n;
     };
+    const readDomainsDisjoint = (
+      left: AffineRecursiveMappingRead, right: AffineRecursiveMappingRead,
+    ): boolean => {
+      if (left.node.keys.length !== right.node.keys.length) return false;
+      const leftPrefix = this.affineRecursiveReadKeyPrefix(left.node.keys);
+      const rightPrefix = this.affineRecursiveReadKeyPrefix(right.node.keys);
+      if (leftPrefix === undefined || rightPrefix === undefined) return false;
+      if (leftPrefix !== rightPrefix) return true;
+      return disjoint(
+        this.affineRecursiveReadKeyOffset(left.node.keys, inductionName)!,
+        this.affineRecursiveReadKeyOffset(right.node.keys, inductionName)!,
+      );
+    };
     for (let left = 0; left < writes.length; left += 1) {
       for (let right = left + 1; right < writes.length; right += 1) {
         if (writes[left].name === writes[right].name
@@ -256,8 +277,12 @@ export default class LowerTailRecursion extends AstTraversal {
         const rightRead = reads[right];
         if (leftRead.node.name !== rightRead.node.name) continue;
         const rightOffset = this.affineRecursiveReadKeyOffset(rightRead.node.keys, inductionName)!;
-        if (leftRead.consumer === rightRead.consumer && leftOffset === rightOffset) continue;
-        if (!disjoint(leftOffset, rightOffset)) return false;
+        const samePlan = leftRead.node.keys.length === rightRead.node.keys.length
+          && this.affineRecursiveReadKeyPrefix(leftRead.node.keys)
+            === this.affineRecursiveReadKeyPrefix(rightRead.node.keys)
+          && leftOffset === rightOffset;
+        if (leftRead.consumer === rightRead.consumer && samePlan) continue;
+        if (!readDomainsDisjoint(leftRead, rightRead)) return false;
       }
     }
     return true;

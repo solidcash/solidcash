@@ -169,7 +169,7 @@ describe('affine recursive mapping streams', () => {
     expect([1n, 2n, 3n].map(valueAt)).toEqual([15n, 25n, 35n]);
   }, 60_000);
 
-  it('authenticates an affine nested read under its literal outer-key witness', async () => {
+  it('authenticates disjoint affine nested reads under literal outer-key witnesses', async () => {
     const provider = createTestProvider();
     const artifact = compileString(`contract NestedUnwindRead(bytes densityPadding) {
       mapping(int => mapping(int => int)) source;
@@ -177,7 +177,7 @@ describe('affine recursive mapping streams', () => {
       function apply(int cursor, int fallbackValue) public returns (int) {
         if (cursor == 0) return fallbackValue;
         int result = apply(cursor - 1, fallbackValue);
-        this.destination[cursor] = this.source[7][cursor + 1] + result;
+        this.destination[cursor] = this.source[7][cursor + 1] + this.source[8][cursor + 1] + result;
         return result;
       }
     }`, KERNEL);
@@ -185,9 +185,9 @@ describe('affine recursive mapping streams', () => {
       .toMatchObject({ eligible: true });
     const inner = new Contract(artifact, [new Uint8Array(256)], { provider });
     const zero = slotValueToBytes(0n);
-    const sourceEntries = [[2n, 10n], [3n, 20n]] as const;
-    const sourceNodes = sourceEntries.map(([innerKey, value]) => ({
-      slot: keyToSlotMulti([bigIntToVmNumber(7n), bigIntToVmNumber(innerKey)]), value,
+    const sourceEntries = [[7n, 2n, 10n], [8n, 2n, 1n]] as const;
+    const sourceNodes = sourceEntries.map(([outerKey, innerKey, value]) => ({
+      slot: keyToSlotMulti([bigIntToVmNumber(outerKey), bigIntToVmNumber(innerKey)]), value,
     })).sort((left, right) => bytesToSlotValue(left.slot) < bytesToSlotValue(right.slot) ? -1 : 1);
     const { categoryId } = await provider.addTokenUtxosDynamic((category) => {
       const pinned = inner.withCategory(hexToBin(category));
@@ -213,7 +213,7 @@ describe('affine recursive mapping streams', () => {
       ];
     });
     const contract = StatefulContract.withCategory(inner, categoryId);
-    const call = contract.batch([{ function: 'apply', args: [2n, 5n] }]);
+    const call = contract.batch([{ function: 'apply', args: [1n, 5n] }]);
     const fee = await createBareP2pkhFeeFunder(provider, 500_000n);
     call.addInput(fee.utxo, fee.unlocker);
     call.addOutput({ to: fee.unlocker.generateLockingBytecode(), amount: 1_200n });
@@ -251,7 +251,7 @@ describe('affine recursive mapping streams', () => {
     const destination = await contract.getEntries('destination');
     const valueAt = (key: bigint): unknown => destination.find((entry) =>
       binToHex(entry.slot) === binToHex(keyToSlotMulti([bigIntToVmNumber(key)])))?.value;
-    expect([1n, 2n].map(valueAt)).toEqual([15n, 25n]);
+    expect(valueAt(1n)).toBe(16n);
   }, 60_000);
 
   it('authenticates source-ordered mapping values before direct unwind requirements', async () => {

@@ -341,6 +341,40 @@ describe('affine recursive mapping streams', () => {
     });
   });
 
+  it('authenticates disjoint nested read streams by their complete literal tuple prefix', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => mapping(int => int)) source;
+      mapping(int => int) destination;
+      function apply(int cursor, int fallbackValue) public returns (int) {
+        if (cursor == 0) return fallbackValue;
+        int result = apply(cursor - 1, fallbackValue);
+        this.destination[cursor] = this.source[7][cursor] + this.source[8][cursor] + result;
+        return result;
+      }
+    }`, KERNEL);
+    const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'apply');
+    const operations = artifact.abi.find((candidate) => candidate.name === 'apply')?.sortedUpsertLoopInfo;
+    expect(handler).toMatchObject({ eligible: true });
+    expect(operations?.map((operation) => [operation.collection, operation.op])).toEqual([
+      ['source', 'read'], ['source', 'read'], ['destination', 'set'],
+    ]);
+  });
+
+  it('refuses overlapping nested streams which share a literal tuple prefix', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => mapping(int => int)) source;
+      mapping(int => int) destination;
+      function apply(int cursor, int fallbackValue) public returns (int) {
+        if (cursor == 0) return fallbackValue;
+        int result = apply(cursor - 1, fallbackValue);
+        this.destination[cursor] = this.source[7][cursor] + this.source[7][cursor + 1] + result;
+        return result;
+      }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'apply'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+  });
+
   it.each([
     ['a runtime outer key', 'this.source[partition][cursor]'],
     ['a varying non-final component', 'this.source[cursor][7]'],

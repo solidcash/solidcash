@@ -1838,6 +1838,7 @@ describe('required kernel admission', () => {
     ['indexed token inspection', 'OP_0 OP_UTXOTOKENCATEGORY OP_DROP'],
     ['absolute locktime constraint', 'OP_1 OP_CHECKLOCKTIMEVERIFY OP_DROP'],
     ['relative locktime constraint', 'OP_1 OP_CHECKSEQUENCEVERIFY OP_DROP'],
+    ['immediately discarded ambient depth', 'OP_DEPTH OP_DROP'],
   ])('admits isolated native assembly with read-only %s', (_description, asm) => {
     const artifact = compileString(`pragma solidcash >=0.8.0;
       contract C() {
@@ -1858,7 +1859,8 @@ describe('required kernel admission', () => {
     ['runtime-selected stack reach', 'OP_7 OP_TXVERSION OP_PICK OP_2DROP'],
     ['local roll reaching the compiler stack', 'OP_1 OP_ROLL'],
     ['runtime-selected local roll', 'OP_7 OP_TXVERSION OP_ROLL OP_DROP'],
-    ['ambient compiler stack depth', 'OP_DEPTH OP_DROP'],
+    ['ambient compiler stack depth used by arithmetic', 'OP_DEPTH OP_1ADD OP_DROP'],
+    ['ambient compiler stack depth used by verification', 'OP_DEPTH OP_VERIFY'],
     ['byte inversion borrowed from compiler stack', 'OP_INVERT OP_DROP'],
     ['numeric left-shift value borrowed from compiler stack', 'OP_1 OP_LSHIFTNUM OP_DROP'],
     ['numeric right-shift value borrowed from compiler stack', 'OP_1 OP_RSHIFTNUM OP_DROP'],

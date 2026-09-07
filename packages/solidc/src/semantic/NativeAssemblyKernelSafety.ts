@@ -110,6 +110,14 @@ export function isKernelSafeNativeAssembly(node: AssemblyStatementNode): boolean
       main.push(pushedScriptNumber(element));
       continue;
     }
+    // OP_DEPTH observes the compiler-managed frame as well as values created by this block, so its result cannot
+    // participate in a kernel computation. The adjacent discard is nevertheless an exact semantic no-op on every
+    // enclosing stack: neither opcode can fail and no observed value escapes. Keep the spelling deliberately
+    // atomic; even one intervening opcode could branch, verify, or select data using a route-dependent depth.
+    if (element === Op.OP_DEPTH && script[index + 1] === Op.OP_DROP) {
+      index += 1;
+      continue;
+    }
     if (!LOCAL_OPCODES.has(element)) return false;
     if (element === Op.OP_IF || element === Op.OP_NOTIF) {
       // The condition itself must be produced by this block; both arms begin after BCH consumes it.

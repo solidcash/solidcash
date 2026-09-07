@@ -17201,7 +17201,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             ? vmNumberToBigInt(entry.value, { requireMinimalEncoding: false }) as bigint
             : 0n;
         }));
-        if (info.op === 'read' && counterSpec) {
+        if (info.op === 'read' && counterSpec && info.oldValuesWitnessDomain === 'selected-source') {
+          // A path-conditioned source-order consumer has no occurrence on untaken frames. Keep this witness
+          // compact and restore source order after the entry planner's physical slot sort.
+          const selectedValues = keysArr.map((key, index) => ({
+            occurrence: occurrenceOf(key), value: oldValues[index],
+          })).sort((left, right) => left.occurrence - right.occurrence).map(({ value }) => value);
+          replaceLoopArgument(witnessIndex, selectedValues as FunctionArgument);
+        } else if (info.op === 'read' && counterSpec) {
           // Cross-mapping reads may use a different physical permutation than their destination. Publish the
           // authenticated values by logical source occurrence so each stream can select the same value through its
           // own permutation. Unselected positions are never consumed, but must retain an ABI-encodable typed value.

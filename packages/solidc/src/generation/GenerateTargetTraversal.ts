@@ -6713,35 +6713,27 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(encodeInt(count), locationData);
       this.emit(Op.OP_DUP, locationData);
       this.emit(Op.OP_ROT, locationData);
+      // `index >= 14` makes both counters strictly positive. Emit body-first loops and stop on the decremented
+      // canonical counter instead of paying an IF/ELSE scaffold (including inactive-branch cost) per rotation.
       this.emit(Op.OP_BEGIN, locationData);
-      this.emit(Op.OP_OVER, locationData);
-      this.emit(Op.OP_0NOTEQUAL, locationData);
-      this.emit(Op.OP_IF, locationData);
       this.emit(encodeInt(3n), locationData);
       this.emit(Op.OP_ROLL, locationData);
       this.emit(Op.OP_TOALTSTACK, locationData);
       this.emit(Op.OP_SWAP, locationData);
       this.emit(Op.OP_1SUB, locationData);
       this.emit(Op.OP_SWAP, locationData);
-      this.emit(Op.OP_0, locationData);
-      this.emit(Op.OP_ELSE, locationData);
-      this.emit(Op.OP_1, locationData);
-      this.emit(Op.OP_ENDIF, locationData);
+      this.emit(Op.OP_OVER, locationData);
+      this.emit(Op.OP_NOT, locationData);
       this.emit(Op.OP_UNTIL, locationData);
       this.emit(Op.OP_SWAP, locationData);
       this.emit(Op.OP_DROP, locationData);
       this.emit(Op.OP_SWAP, locationData);
       this.emit(Op.OP_BEGIN, locationData);
-      this.emit(Op.OP_DUP, locationData);
-      this.emit(Op.OP_0NOTEQUAL, locationData);
-      this.emit(Op.OP_IF, locationData);
       this.emit(Op.OP_FROMALTSTACK, locationData);
       this.emit(Op.OP_SWAP, locationData);
       this.emit(Op.OP_1SUB, locationData);
-      this.emit(Op.OP_0, locationData);
-      this.emit(Op.OP_ELSE, locationData);
-      this.emit(Op.OP_1, locationData);
-      this.emit(Op.OP_ENDIF, locationData);
+      this.emit(Op.OP_DUP, locationData);
+      this.emit(Op.OP_NOT, locationData);
       this.emit(Op.OP_UNTIL, locationData);
       this.emit(Op.OP_DROP, locationData);
       return;
@@ -23061,6 +23053,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         ...(writeNode instanceof MappingAssignNode && writeNode.messageBusRuntimeOldValueWitness
           && writeNode.messageBusRuntimeOldValueWitness.array instanceof IdentifierNode
           && { oldValuesWitnessParam: writeNode.messageBusRuntimeOldValueWitness.array.name }),
+        ...(writeNode instanceof MappingAssignNode && writeNode.messageBusRuntimeOldValueWitnessDomain
+          && { oldValuesWitnessDomain: writeNode.messageBusRuntimeOldValueWitnessDomain }),
         ...(cardinality && { inputCountParam: cardinality.input, outputCountParam: cardinality.output }),
         ...(counter && { iterationCounter: counter }),
         ...(counter?.exactBound && { iterationExactBound: true }), op });

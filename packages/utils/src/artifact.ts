@@ -742,6 +742,8 @@ export interface SortedUpsertLoopAbi {
   /** Replayable source expression for a setAt index not reducible to one direct parameter/literal source. */
   mutationIndexExpression?: ExternalCallExpression;
   oldValuesWitnessParam?: string;
+  /** Ordering/cardinality of the old-value witness; omitted means the complete logical source domain. */
+  oldValuesWitnessDomain?: 'selected-source';
   /** Exact physical widths of this independently sorted runtime stream. */
   inputCountParam?: string;
   outputCountParam?: string;

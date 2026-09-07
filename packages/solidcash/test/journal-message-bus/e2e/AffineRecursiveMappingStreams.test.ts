@@ -357,6 +357,88 @@ describe('affine recursive mapping streams', () => {
     await expect(call.send()).resolves.toBeDefined();
   }, 60_000);
 
+  it('authenticates only the taken path of a nested unwind requirement', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(`contract SelectedUnwindReads(bytes densityPadding) {
+      mapping(int => int) observed;
+      function apply(int cursor, int floor) public returns (int) {
+        if (cursor == 0) return floor;
+        int result = apply(cursor - 1, floor);
+        if (cursor % 2 == 0) {
+          require(this.observed[cursor + 1] == result + cursor + 1);
+        }
+        return result;
+      }
+    }`, KERNEL);
+    const applyAbi = artifact.abi.find((candidate) => candidate.name === 'apply')!;
+    const readInfo = applyAbi.sortedUpsertLoopInfo?.find((info) => info.collection === 'observed');
+    expect(readInfo).toMatchObject({
+      op: 'read', oldValuesWitnessParam: expect.any(String), iterationCondition: expect.anything(),
+    });
+    const inner = new Contract(artifact, [new Uint8Array(2048)], { provider });
+    const zero = slotValueToBytes(0n);
+    // Frames one and three do not take the branch, so their possible keys (two and four) are deliberately absent.
+    const observedNodes = [[3n, 13n], [5n, 15n]].map(([key, value]) => ({
+      slot: keyToSlotMulti([bigIntToVmNumber(key)]), value,
+    })).sort((left, right) => bytesToSlotValue(left.slot) < bytesToSlotValue(right.slot) ? -1 : 1);
+    const { categoryId } = await provider.addTokenUtxosDynamic((category) => {
+      const pinned = inner.withCategory(hexToBin(category));
+      return [
+        { address: pinned.tokenAddress, satoshis: 10_000n,
+          token: { amount: 0n, nft: { capability: 'minting' as const, commitment: '' } } },
+        { address: getEntryNftAddress(pinned, category, 'observed'), satoshis: 1_200n,
+          token: { amount: 0n, nft: { capability: 'mutable' as const,
+            commitment: binToHex(encodeEntryCommitment(zero, observedNodes[0].slot)) } } },
+        ...observedNodes.map(({ slot, value }, index) => ({
+          address: getEntryNftAddress(pinned, category, 'observed'), satoshis: 1_200n,
+          token: { amount: 0n, nft: { capability: 'mutable' as const,
+            commitment: binToHex(encodeEntryCommitment(
+              slot, observedNodes[index + 1]?.slot ?? zero, bigIntToVmNumber(value),
+            )) } },
+        })),
+        { address: getMessageBusVerifierAddress(pinned, category), satoshis: 1_200n,
+          token: { amount: 0n, nft: { capability: 'mutable' as const,
+            commitment: binToHex(messageBusVerifierCommitment(0)) } } },
+      ];
+    });
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    const call = contract.batch([{ function: 'apply', args: [4n, 10n] }]);
+    const fee = await createBareP2pkhFeeFunder(provider, 500_000n);
+    call.addInput(fee.utxo, fee.unlocker);
+    call.addOutput({ to: fee.unlocker.generateLockingBytecode(), amount: 1_200n });
+    const builder = await call.build();
+    const routeInputIndex = builder.inputs.findIndex((input) =>
+      'abiFunction' in input.unlocker && input.unlocker.abiFunction.name === artifact.messageBus!.route.name);
+    expect(routeInputIndex).toBeGreaterThanOrEqual(0);
+    const routeUnlocker = builder.inputs[routeInputIndex].unlocker;
+    if (!('params' in routeUnlocker)) throw new Error('message-bus route input has no parameters');
+    const witnessRouteIndex = artifact.messageBus!.route.inputs.findIndex((input) =>
+      input.name === readInfo!.oldValuesWitnessParam);
+    expect(routeUnlocker.params[witnessRouteIndex]).toEqual([[13n, 15n]]);
+
+    const vm = createVirtualMachineBch2026ForProvider(provider);
+    const transaction = builder.buildLibauthTransaction();
+    const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+    for (let inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex += 1) {
+      expect(vm.stateSuccess(vm.evaluate({ inputIndex, sourceOutputs, transaction })),
+        `honest input ${inputIndex}`).toBe(true);
+    }
+
+    const recreateRouteUnlocker = routeUnlocker.contract.createCompilerRouteUnlocker(
+      routeUnlocker.abiFunction, hexToBin(artifact.messageBus!.route.selector!),
+    );
+    const hostileParams = [...routeUnlocker.params];
+    hostileParams[witnessRouteIndex] = [[15n, 13n]];
+    builder.inputs[routeInputIndex].unlocker = recreateRouteUnlocker(...hostileParams);
+    expect(vm.stateSuccess(vm.evaluate({
+      inputIndex: routeInputIndex,
+      sourceOutputs: generateLibauthSourceOutputs(builder.inputs),
+      transaction: builder.buildLibauthTransaction(),
+    })), 'reordered selected witness').not.toBe(true);
+    builder.inputs[routeInputIndex].unlocker = routeUnlocker;
+    await expect(call.send()).resolves.toBeDefined();
+  }, 60_000);
+
   it('emits selected post-recursion events in unwind order and authenticates the zero-frame case', async () => {
     const provider = createMessageBusCapstoneTestProvider();
     const artifact = compileString(`contract UnwindEvents() {

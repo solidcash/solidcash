@@ -393,10 +393,35 @@ describe('affine recursive mapping streams', () => {
       .toEqual([expect.objectContaining({ collection: 'observed', op: 'read' })]);
   });
 
+  it('authenticates only taken nested requirements with selected read domains', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) observed;
+      mapping(int => int) alternate;
+      function apply(int cursor, int floor, int pivot) public returns (int) {
+        if (cursor == 0) return floor;
+        int result = apply(cursor - 1, floor, pivot);
+        if (cursor % 2 == 0) {
+          if (cursor > pivot) {
+            require(this.observed[cursor + 1] == result + cursor + 1);
+          }
+        } else {
+          require(this.alternate[cursor + 65] == result + cursor + 65);
+        }
+        return result;
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+    const streams = artifact.abi.find((candidate) => candidate.name === 'apply')?.sortedUpsertLoopInfo;
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'apply'))
+      .toMatchObject({ eligible: true });
+    expect(streams?.map((stream) => [stream.collection, stream.op])).toEqual([
+      ['observed', 'read'], ['alternate', 'read'],
+    ]);
+    expect(streams?.every((stream) => stream.iterationCondition !== undefined)).toBe(true);
+    expect(streams?.every((stream) => stream.oldValuesWitnessDomain === 'selected-source')).toBe(true);
+  });
+
   it.each([
-    ['a replayable nested requirement', `if (cursor % 2 == 0) {
-      require(this.observed[cursor] >= floor);
-    }`],
     ['a state-derived nested requirement', `if (this.gate > floor) {
       require(this.observed[cursor] >= floor);
     }`],

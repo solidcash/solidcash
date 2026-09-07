@@ -67,11 +67,9 @@ export function buildMessageBusVerifierCovenantScript(
     encodeInt(BigInt(verify.id)),
     Op.OP_INVOKE,
 
-    // The specialized verifier returns bindingDigest || expectedMessageEnvelopeHash. Authenticate the
-    // message envelope without parsing it, then retain only bindingDigest for the recreated NFT commitment.
-    Op.OP_SIZE,
-    encodeInt(64n),
-    Op.OP_NUMEQUALVERIFY,
+    // The specialized verifier returns bindingDigest || expectedMessageEnvelopeHash. Splitting at 32 and
+    // comparing the entire suffix with a 32-byte SHA-256 digest also proves the result is exactly 64 bytes,
+    // so a separate length check would only repeat work on every verifier spend.
     encodeInt(32n),
     Op.OP_SPLIT,
     Op.OP_ROT,

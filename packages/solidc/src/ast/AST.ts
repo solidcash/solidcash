@@ -1308,6 +1308,8 @@ export class MappingAssignNode extends StatementNode implements Named {
   // SDK-supplied value. The sorted-entry loop authenticates it against the co-spent entry (or the absent default)
   // before accepting the computed output commitment.
   messageBusRuntimeOldValueWitness?: ArrayAccessNode;
+  /** The old-value witness contains only taken source-path occurrences, in source order. */
+  messageBusRuntimeOldValueWitnessDomain?: 'selected-source';
   /** Source-order replay recipe for a counter-loop mapping-array mutation operand. */
   messageBusRuntimeMutationValueExpression?: ExpressionNode;
   /** Source-order replay recipe for a counter-loop mapping-array element index. */

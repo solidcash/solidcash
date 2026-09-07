@@ -118,9 +118,9 @@ export default class LowerTailRecursion extends AstTraversal {
   }
 
   /** Collect collection reads which the counter-loop pass can turn into authenticated old-value vectors. A
-   * mapping assignment consumes its vector in physical key order, while a direct requirement consumes it in
-   * recursive source order. Conditional consumers, predicates, event arguments, destination keys, and other
-   * effects remain outside this slice. */
+   * mapping assignment consumes its vector in physical key order. Requirements consume their vectors in
+   * recursive source order, carrying finite replayable if/else reachability into the selected domain. Predicates,
+   * event arguments, destination keys, and other effects remain outside this slice. */
   private affineRecursiveMappingReads(
     effects: readonly StatementNode[], writes: readonly AffineRecursiveMappingWrite[], inductionName: string,
   ): AffineRecursiveMappingRead[] | undefined {
@@ -160,7 +160,16 @@ export default class LowerTailRecursion extends AstTraversal {
       if (write.keys.some(containsMappingRead)) return undefined;
       collect(write.expression, write);
     }
-    for (const effect of effects) if (effect instanceof RequireNode) collect(effect.expression, effect);
+    const collectRequirements = (effect: StatementNode): void => {
+      if (effect instanceof RequireNode) collect(effect.expression, effect);
+      else if (effect instanceof BlockNode) {
+        for (const nested of effect.statements ?? []) collectRequirements(nested);
+      } else if (effect instanceof BranchNode) {
+        collectRequirements(effect.ifBlock);
+        if (effect.elseBlock) collectRequirements(effect.elseBlock);
+      }
+    };
+    for (const effect of effects) collectRequirements(effect);
     return valid ? reads : undefined;
   }
 

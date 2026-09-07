@@ -1090,6 +1090,17 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       const containsCounterMappingRead = (candidate: Node): boolean => {
         if (candidate instanceof MappingAccessNode && candidate.keys.some((key) =>
           containsIdentifier(key, logical))) return true;
+        if (candidate instanceof ArrayAccessNode) {
+          const keys: ExpressionNode[] = [];
+          let root: ExpressionNode = candidate;
+          while (root instanceof ArrayAccessNode) {
+            keys.unshift(root.index);
+            root = root.array;
+          }
+          if ((root instanceof IdentifierNode || root instanceof StateAccessNode)
+            && this.collections.has(root.name)
+            && keys.some((key) => containsIdentifier(key, logical))) return true;
+        }
         return Object.entries(candidate).some(([key, value]) => {
           if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type'
             || key === 'resolvedFunction' || key === 'collection' || key === 'stateVariable') return false;
@@ -1098,8 +1109,13 @@ export default class LowerVMapCounterLoops extends AstTraversal {
             && value.some((item) => item instanceof Node && containsCounterMappingRead(item));
         });
       };
-      const readRequirement = (loop.block.statements ?? []).some((statement) =>
-        statement instanceof RequireNode && containsCounterMappingRead(statement.expression));
+      const containsReadRequirement = (statement: StatementNode): boolean => {
+        if (statement instanceof RequireNode) return containsCounterMappingRead(statement.expression);
+        if (statement instanceof BlockNode) return (statement.statements ?? []).some(containsReadRequirement);
+        return statement instanceof BranchNode && (containsReadRequirement(statement.ifBlock)
+          || (!!statement.elseBlock && containsReadRequirement(statement.elseBlock)));
+      };
+      const readRequirement = (loop.block.statements ?? []).some(containsReadRequirement);
       const walk = (x: Node): void => {
         if (x !== loop.block && (x instanceof WhileNode || x instanceof DoWhileNode)) return;
         if (isWrite(x) && this.collections.has(x.name) && counterKeyIndex(x, logical) >= 0) {
@@ -1844,8 +1860,47 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       // A direct source-order requirement can consume an authenticated counter-derived mapping value without
       // owning a destination write. Detect it before the ordinary "no keyed work" exit; the read-only stream is
       // materialized transactionally below after its type and key recipe have been proven.
-      const directRuntimeReadRequirements = (block.statements ?? []).filter((statement): statement is RequireNode =>
-        statement instanceof RequireNode);
+      type RuntimeReadRequirement = { requirement: RequireNode; condition?: ExpressionNode };
+      const directRuntimeReadRequirements: RuntimeReadRequirement[] = [];
+      const collectRuntimeReadRequirements = (statement: StatementNode, condition?: ExpressionNode): void => {
+        if (statement instanceof RequireNode) {
+          directRuntimeReadRequirements.push({ requirement: statement, condition });
+          return;
+        }
+        if (statement instanceof BlockNode) {
+          for (const nested of statement.statements ?? []) collectRuntimeReadRequirements(nested, condition);
+          return;
+        }
+        if (statement instanceof BranchNode) {
+          collectRuntimeReadRequirements(statement.ifBlock, pathAnd(condition, statement.condition));
+          if (statement.elseBlock) collectRuntimeReadRequirements(
+            statement.elseBlock, pathAnd(condition, pathNot(statement.condition)),
+          );
+        }
+      };
+      const containsRuntimeCollectionRead = (candidate: Node): boolean => {
+        if (candidate instanceof MappingAccessNode && this.collections.has(candidate.name)
+          && candidate.keys.some((key) => containsIdentifier(key, logical))) return true;
+        if (candidate instanceof ArrayAccessNode) {
+          const keys: ExpressionNode[] = [];
+          let root: ExpressionNode = candidate;
+          while (root instanceof ArrayAccessNode) {
+            keys.unshift(root.index);
+            root = root.array;
+          }
+          if ((root instanceof IdentifierNode || root instanceof StateAccessNode)
+            && this.collections.has(root.name)
+            && keys.some((key) => containsIdentifier(key, logical))) return true;
+        }
+        return Object.entries(candidate).some(([key, value]) => {
+          if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type'
+            || key === 'resolvedFunction' || key === 'collection' || key === 'stateVariable') return false;
+          if (value instanceof Node) return containsRuntimeCollectionRead(value);
+          return Array.isArray(value)
+            && value.some((item) => item instanceof Node && containsRuntimeCollectionRead(item));
+        });
+      };
+      for (const statement of block.statements ?? []) collectRuntimeReadRequirements(statement);
       if (loop.sourceAuthoredLoop && keyed.length > 0 && directRuntimeReadRequirements.length > 0) {
         const writtenCollections = new Set(keyed.map((write) => write.name));
         const conflictingReadCollection = (candidate: Node): string | undefined => {
@@ -1877,7 +1932,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           }
           return undefined;
         };
-        const conflict = directRuntimeReadRequirements.map((requirement) =>
+        const conflict = directRuntimeReadRequirements.map(({ requirement }) =>
           conflictingReadCollection(requirement.expression)).find((collection) => collection !== undefined);
         if (conflict) {
           throw new CounterLoopReadWriteConflictError(conflict);
@@ -2870,6 +2925,11 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           || runtimePathExpressionSupported(
             condition, logical, new Set(), stateValues, loopCarriedLocalValues,
           ))
+        && directRuntimeReadRequirements.every(({ requirement, condition }) => !condition
+          || !containsRuntimeCollectionRead(requirement.expression)
+          || runtimePathExpressionSupported(
+            condition, logical, new Set(), stateValues, loopCarriedLocalValues,
+          ))
         && breakPaths.every((condition) => !condition
           || runtimePathExpressionSupported(
             condition, logical, new Set(), stateValues, loopCarriedLocalValues,
@@ -3080,6 +3140,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         destination?: ArrayAssignNode | MappingAssignNode;
         consumer: StatementNode;
         sourceOrderConsumer: boolean;
+        condition?: ExpressionNode;
         synthetic: MappingAssignNode;
         witnessParam: string;
         authenticatedReads: ArrayAccessNode[];
@@ -3202,10 +3263,9 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         }
       }
       // Unlike a write value, a requirement remains in logical source order. Its counter-derived reads still
-      // travel as ordinary authenticated read-only streams, but consume witness[source-rank] rather than the
-      // destination permutation rank. Keeping this to direct loop-body requirements makes reachability exact:
-      // every admitted frame executes the requirement and therefore consumes precisely one witness value.
-      for (const requirement of directRuntimeReadRequirements) {
+      // travel as ordinary authenticated read-only streams. An unconditional requirement consumes one value at
+      // each source rank; a nested requirement consumes the compact selected-domain witness at its path cursor.
+      for (const { requirement, condition } of directRuntimeReadRequirements) {
         const plansByShape = new Map<string, RuntimeReadPlan>();
         const rewrite = (candidate: Node): Node => {
           const candidateAccess = candidate instanceof MappingAccessNode
@@ -3243,11 +3303,13 @@ export default class LowerVMapCounterLoops extends AstTraversal {
                 synthetic.location = candidate.location ?? requirement.location;
                 synthetic.collection = sourceCollection;
                 synthetic.messageBusRuntimeReadOnly = true;
+                if (condition) synthetic.messageBusRuntimeOldValueWitnessDomain = 'selected-source';
                 const authenticatedRead = cloneNode(witnessRead) as ArrayAccessNode;
                 synthetic.messageBusRuntimeOldValueWitness = authenticatedRead;
                 plan = {
                   consumer: requirement,
                   sourceOrderConsumer: true,
+                  condition,
                   synthetic,
                   witnessParam,
                   authenticatedReads: [witnessRead, authenticatedRead],
@@ -3291,7 +3353,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         if (destinationIndex >= 0) keyed.splice(destinationIndex, 0, plan.synthetic);
         else keyed.push(plan.synthetic);
         keyedSet.add(plan.synthetic);
-        writePaths.set(plan.synthetic, plan.destination ? writePaths.get(plan.destination) : undefined);
+        writePaths.set(plan.synthetic, plan.destination ? writePaths.get(plan.destination) : plan.condition);
       }
       type StructRuntimeRmw = {
         local: string;
@@ -4281,12 +4343,21 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         if (!sourceGroup || (!plan.sourceOrderConsumer && !destinationGroup)) return false;
         const logicalRank = (group: typeof groups[number]): IdentifierNode =>
           id(unitDomain ? group.logicalValue : group.logicalRank);
-        // The witness is indexed by source occurrence, not either stream's physical rank. The source permutation
-        // authenticates witness[logical(source)] while the destination permutation consumes witness[logical(dest)],
-        // allowing independent key recipes such as source[i + 1] -> destination[i].
-        for (const read of plan.authenticatedReads) read.index = logicalRank(sourceGroup);
+        // A full-domain witness is indexed by source occurrence, not either stream's physical rank. The source
+        // permutation authenticates witness[logical(source)] while an independent destination consumes
+        // witness[logical(destination)]. A selected source-order consumer instead uses its compact path cursor.
+        // A selected stream's witness is compact: it has one element for each taken source path, not one slot
+        // for every logical iteration. Authenticate the current selected occurrence with the same monotonically
+        // advancing cursor used by its source-order consumer. Using logicalRank here both indexed beyond the
+        // compact witness and leaked the condition-local rank binding into the nested source branch.
+        for (const read of plan.authenticatedReads) {
+          read.index = plan.sourceOrderConsumer && sourceGroup.expandedSelectionCondition
+            ? id(sourceGroup.settlementCursor) : logicalRank(sourceGroup);
+        }
         for (const read of plan.consumerReads) {
-          read.index = plan.sourceOrderConsumer ? sourceRank() : logicalRank(destinationGroup!);
+          read.index = plan.sourceOrderConsumer && sourceGroup.expandedSelectionCondition
+            ? id(sourceGroup.settlementCursor)
+            : plan.sourceOrderConsumer ? sourceRank() : logicalRank(destinationGroup!);
         }
         if (!insertBefore(block, plan.consumer, plan.synthetic)) return false;
       }

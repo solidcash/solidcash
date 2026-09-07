@@ -7577,7 +7577,20 @@ export default class LowerVMapCounterLoops extends AstTraversal {
               const boundExpression = counterOnLeft ? condition.right : condition.left;
               const bound = replay(boundExpression);
               const boundValue = bound ? literalValue(bound) : undefined;
-              if (typeof boundValue !== 'bigint') return undefined;
+              // A runtime remainder has a closed finite range even when its dividend is unconstrained. Exhaust
+              // that range symbolically and guard each candidate iteration with the original condition. This
+              // keeps the executable helper (and its bounds/overflow behavior) authoritative while avoiding an
+              // unbounded key recipe. Other runtime bounds remain fenced until they have an equally exact range
+              // proof; in particular, a bare parameter is not assumed to match a later consumer loop.
+              const runtimeBoundRange = bound instanceof BinaryOpNode
+                && bound.operator === BinaryOperator.MOD
+                && bound.right instanceof IntLiteralNode && bound.right.value > 0n
+                ? {
+                  minimum: -(bound.right.value - 1n),
+                  maximum: bound.right.value - 1n,
+                }
+                : undefined;
+              if (typeof boundValue !== 'bigint' && !runtimeBoundRange) return undefined;
               const comparison = counterOnLeft ? condition.operator : ({
                 [BinaryOperator.LT]: BinaryOperator.GT,
                 [BinaryOperator.LE]: BinaryOperator.GE,
@@ -7631,28 +7644,58 @@ export default class LowerVMapCounterLoops extends AstTraversal {
                 || progressionMutated
                 || (ascending && step < 0n) || (descending && step > 0n)
                 || (!ascending && !descending && comparison !== BinaryOperator.NE)) return undefined;
+              if (runtimeBoundRange && comparison === BinaryOperator.NE) return undefined;
+              const exhaustedBound = typeof boundValue === 'bigint'
+                ? boundValue
+                : ascending ? runtimeBoundRange!.maximum : runtimeBoundRange!.minimum;
+              if (runtimeBoundRange) {
+                let probe = initial.value;
+                let first = helperStatement instanceof DoWhileNode;
+                let maximumIterations = 0;
+                const probeContinues = (): boolean => {
+                  if (comparison === BinaryOperator.LT) return probe < exhaustedBound;
+                  if (comparison === BinaryOperator.LE) return probe <= exhaustedBound;
+                  if (comparison === BinaryOperator.GT) return probe > exhaustedBound;
+                  if (comparison === BinaryOperator.GE) return probe >= exhaustedBound;
+                  return false;
+                };
+                while (first || probeContinues()) {
+                  first = false;
+                  maximumIterations += 1;
+                  if (maximumIterations > fixedHelperIterationBudget) return undefined;
+                  probe += step;
+                }
+              }
               const loopBody = new BlockNode(statements.slice(0, -1));
               loopBody.location = helperStatement.block.location;
               let loopPlans = copyPlans(helperPlans);
               let loopValues = new Map(values);
               let counter = initial.value;
+              let runtimeFinalCounter: ExpressionNode = cloneNode(initial) as ExpressionNode;
               let stoppedCondition: ExpressionNode | undefined;
               const conditionalExits: { condition: ExpressionNode; counter: IntLiteralNode }[] = [];
               const continues = (): boolean => {
-                if (comparison === BinaryOperator.LT) return counter < boundValue;
-                if (comparison === BinaryOperator.LE) return counter <= boundValue;
-                if (comparison === BinaryOperator.GT) return counter > boundValue;
-                if (comparison === BinaryOperator.GE) return counter >= boundValue;
-                return counter !== boundValue;
+                if (comparison === BinaryOperator.LT) return counter < exhaustedBound;
+                if (comparison === BinaryOperator.LE) return counter <= exhaustedBound;
+                if (comparison === BinaryOperator.GT) return counter > exhaustedBound;
+                if (comparison === BinaryOperator.GE) return counter >= exhaustedBound;
+                return counter !== exhaustedBound;
               };
               let firstPostTestIteration = helperStatement instanceof DoWhileNode;
               while (firstPostTestIteration || continues()) {
+                const unconditionalPostTest = firstPostTestIteration;
                 firstPostTestIteration = false;
                 fixedHelperIterationBudget -= 1;
                 if (fixedHelperIterationBudget < 0) return undefined;
                 const counterValue = new IntLiteralNode(counter);
                 counterValue.location = counterNode.location;
                 counterValue.type = counterNode.type ?? new IntType(true, 256);
+                const beforeIteration: HelperSummary = {
+                  plans: copyPlans(loopPlans), values: new Map(loopValues),
+                };
+                if (runtimeBoundRange) {
+                  beforeIteration.values.set(counterName, cloneNode(runtimeFinalCounter) as ExpressionNode);
+                }
                 loopValues.set(counterName, counterValue);
                 const iteration = summarize(
                   loopBody,
@@ -7661,6 +7704,41 @@ export default class LowerVMapCounterLoops extends AstTraversal {
                   visiting,
                 );
                 if (!iteration) return undefined;
+                if (runtimeBoundRange) {
+                  if (iteration.returnValues || iteration.loopControl
+                    || iteration.breakCondition || iteration.continueCondition) return undefined;
+                  const active = unconditionalPostTest
+                    ? (() => {
+                      const selected = new BoolLiteralNode(true);
+                      selected.location = helperStatement.location;
+                      return selected as ExpressionNode;
+                    })()
+                    : replayExpression(condition, loopValues, loopPlans, scope);
+                  if (!active) return undefined;
+                  const inactive = new UnaryOpNode(UnaryOperator.NOT, cloneNode(active));
+                  inactive.location = helperStatement.location;
+                  const arms = [
+                    { ...iteration, condition: active },
+                    { ...beforeIteration, condition: inactive as ExpressionNode },
+                  ];
+                  loopPlans = new Map([...beforeIteration.plans].map(([name, plan]) => [name, mergePlan(
+                    name, plan, arms.map((arm) => ({
+                      plan: arm.plans.get(name)!, condition: arm.condition,
+                    })),
+                  )]));
+                  loopValues = mergeValues(beforeIteration.values, arms);
+                  const nextCounter = new IntLiteralNode(counter + step);
+                  nextCounter.location = counterNode.location;
+                  nextCounter.type = counterNode.type ?? new IntType(true, 256);
+                  const selectedCounter = new TernaryOpNode(
+                    cloneNode(active), nextCounter, runtimeFinalCounter,
+                  );
+                  selectedCounter.location = helperStatement.location;
+                  selectedCounter.type = nextCounter.type;
+                  runtimeFinalCounter = selectedCounter;
+                  counter += step;
+                  continue;
+                }
                 if (iteration.returnValues) return iteration;
                 if (stoppedCondition) {
                   const activeCondition = new UnaryOpNode(
@@ -7717,6 +7795,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
               let finalCounter: ExpressionNode = new IntLiteralNode(counter);
               finalCounter.location = counterNode.location;
               finalCounter.type = counterNode.type ?? new IntType(true, 256);
+              if (runtimeBoundRange) finalCounter = runtimeFinalCounter;
               for (let exitIndex = conditionalExits.length - 1; exitIndex >= 0; exitIndex -= 1) {
                 const exit = conditionalExits[exitIndex];
                 const selected = new TernaryOpNode(

@@ -47,6 +47,52 @@ describe('constructed-array exhausted finite helper replay', () => {
     expect(handler).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_UNBOUNDED_KEY' });
   });
 
+  it.each([
+    ['for', `for (int cursor = 0; cursor < limit; cursor = cursor + 1) {
+      keys[cursor] = base + cursor;
+    }`],
+    ['while', `int cursor = 0;
+    while (cursor < limit) {
+      keys[cursor] = base + cursor;
+      cursor = cursor + 1;
+    }`],
+    ['do-while', `int cursor = 0;
+    do {
+      keys[cursor] = base + cursor;
+      cursor = cursor + 1;
+    } while (cursor < limit);`],
+  ])('exhausts a small runtime remainder bound in a %s helper', (_kind, loop) => {
+    const handler = compile(`
+      function fill(int[] memory keys, int base, int limit) internal pure {
+        ${loop}
+      }
+    `, 'fill(keys, base, runtimeLimit % 4);');
+    expect(handler).toMatchObject({ eligible: true });
+  });
+
+  it('keeps a runtime remainder range beyond the shared expansion budget fenced', () => {
+    const handler = compile(`
+      function fill(int[] memory keys, int base, int limit) internal pure {
+        for (int cursor = 0; cursor < limit; cursor = cursor + 1) {
+          keys[cursor] = base + cursor;
+        }
+      }
+    `, 'fill(keys, base, runtimeLimit % 258);');
+    expect(handler).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_UNBOUNDED_KEY' });
+  });
+
+  it('keeps a runtime-bounded helper with an abrupt exit fenced', () => {
+    const handler = compile(`
+      function fill(int[] memory keys, int base, int limit) internal pure {
+        for (int cursor = 0; cursor < limit; cursor = cursor + 1) {
+          if (cursor == 1) { break; }
+          keys[cursor] = base + cursor;
+        }
+      }
+    `, 'fill(keys, base, runtimeLimit % 4);');
+    expect(handler).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_UNBOUNDED_KEY' });
+  });
+
   it('keeps a helper which mutates its resolved bound fenced', () => {
     const handler = compile(`
       function fill(int[] memory keys, int base, int limit) internal pure {

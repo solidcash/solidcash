@@ -63,6 +63,16 @@ describe('kernel dynamic arrays of struct results', () => {
           Record[] memory records;
           return records;
         }
-      }`, 'read')).toThrow(/mapping|return|memory/i);
+    }`, 'read')).toThrow(/mapping|return|memory/i);
+  });
+
+  it('keeps a directly loaded state-backed struct array outside the result surface', () => {
+    const selected = handler(`pragma solidity ^0.8.0;
+      struct Record { uint256 id; bool active; }
+      contract Source {
+        Record[] records;
+        function read() public view returns (Record[] memory) { return this.records; }
+      }`, 'read');
+    expect(selected).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
   });
 });

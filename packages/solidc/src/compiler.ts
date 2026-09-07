@@ -3221,22 +3221,22 @@ function synthesizeMessageBusRoute(
     }
     return found;
   };
-  // A detached signature can authorize an upgrade without circularly entering the committed row when every
-  // reachable transaction-signature check consumes the exact immutable root parameter. This includes a scalar
-  // checkSig witness and the one-dimensional sig[] / sig[N] vector consumed directly by checkMultiSig. The
-  // generated route additionally requires SIGHASH_ALL on every reached signature below. Aliases, casts, computed
-  // arrays, helper edges, and reassigned/mutated parameters remain fenced until their provenance has an equally
-  // exact proof.
+  // A detached signature can authorize a kernel row without circularly entering the committed envelope when
+  // every reachable transaction-signature check consumes one exact immutable root parameter. A simple immutable
+  // local alias preserves that identity. Internal/private helpers do not: OP_INVOKE makes the helper body the
+  // CHECKSIG covered bytecode, while the handler metadata publishes one detached handler body. Keep that boundary
+  // fenced until the metadata can describe a covered body per signature parameter. The generated route
+  // additionally requires SIGHASH_ALL on every proven parameter.
   const directAllOutputSignatureParameters = (root: FunctionDefinitionNode): number[] | undefined => {
     if (analyseFunctionFootprint(root, byName, footprintCache).effects.includes('external-call')) return undefined;
     const indices = new Set<number>();
     const interfaceReceivers = interfaceTypedReceivers(root);
     let found = false;
     let unsupported = false;
-    const parameterIndex = (identifier: IdentifierNode): number => {
+    const parameterIndex = (fn: FunctionDefinitionNode, identifier: IdentifierNode): number => {
       const definition = identifier.definition?.definition;
       if (definition instanceof ParameterNode) {
-        const exact = root.parameters.findIndex((parameter) =>
+        const exact = fn.parameters.findIndex((parameter) =>
           parameter === definition || (parameter.location.start.line === definition.location.start.line
             && parameter.location.start.column === definition.location.start.column
             && parameter.location.end.line === definition.location.end.line
@@ -3245,40 +3245,71 @@ function synthesizeMessageBusRoute(
       }
       // Generated/cloned source can lose the symbol object on an otherwise resolved identifier. Reconstruct only
       // the unambiguous lexical binding: exactly one parameter and no local declaration with the same spelling.
-      const matching = root.parameters
+      const matching = fn.parameters
         .map((parameter, index) => ({ parameter, index }))
         .filter(({ parameter }) => parameter.name === identifier.name);
       let shadowed = false;
-      walkInvocationAst(root.body, (node) => {
+      walkInvocationAst(fn.body, (node) => {
         if (node instanceof VariableDefinitionNode && node.name === identifier.name) shadowed = true;
       });
       return matching.length === 1 && !shadowed ? matching[0].index : -1;
     };
-    for (const name of collectNamedFunctionClosure(root, signatureClosureByName)) {
-      for (const candidate of signatureClosureByName.get(name) ?? []) {
-        walkInvocationAst(candidate.body, (node) => {
-          if (!(node instanceof FunctionCallNode) || ![
-            GlobalFunction.CHECKSIG, GlobalFunction.CHECKMULTISIG,
-          ].includes(node.identifier.name as GlobalFunction)) return;
+    type OriginEnvironment = ReadonlyMap<string, number>;
+    const bindingImmutable = (fn: FunctionDefinitionNode, name: string): boolean => {
+      let immutable = true;
+      walkInvocationAst(fn.body, (node) => {
+        if ((node instanceof AssignNode || node instanceof DeleteLocalNode)
+          && node.identifier.name === name) immutable = false;
+        if ((node instanceof ArrayAssignNode || node instanceof ArrayDeleteNode
+          || node instanceof ArrayPushNode || node instanceof ArrayPopNode) && node.name === name) immutable = false;
+      });
+      return immutable;
+    };
+    const exactOrigin = (
+      expression: ExpressionNode, fn: FunctionDefinitionNode, environment: OriginEnvironment,
+      resolving = new Set<string>(),
+    ): number | undefined => {
+      if (!(expression instanceof IdentifierNode)) return undefined;
+      const parameter = parameterIndex(fn, expression);
+      if (parameter >= 0) {
+        if (!bindingImmutable(fn, fn.parameters[parameter].name)) return undefined;
+        return environment.get(fn.parameters[parameter].name);
+      }
+      const declarations: VariableDefinitionNode[] = [];
+      walkInvocationAst(fn.body, (node) => {
+        if (node instanceof VariableDefinitionNode && node.name === expression.name) declarations.push(node);
+      });
+      if (declarations.length !== 1 || !declarations[0].expression
+        || !bindingImmutable(fn, expression.name) || resolving.has(expression.name)) return undefined;
+      return exactOrigin(declarations[0].expression, fn, environment, new Set(resolving).add(expression.name));
+    };
+    const analyse = (fn: FunctionDefinitionNode, environment: OriginEnvironment): void => {
+      walkInvocationAst(fn.body, (node) => {
+        if (!(node instanceof FunctionCallNode)) return;
+        if ([GlobalFunction.CHECKSIG, GlobalFunction.CHECKMULTISIG]
+          .includes(node.identifier.name as GlobalFunction)) {
           found = true;
-          if (candidate !== root) {
-            unsupported = true;
-            return;
-          }
-          const signature = node.parameters[0];
-          const index = signature instanceof IdentifierNode ? parameterIndex(signature) : -1;
-          const parameterType = index < 0 ? undefined : root.parameters[index].type;
+          const index = node.parameters[0] ? exactOrigin(node.parameters[0], fn, environment) : undefined;
+          const parameterType = index === undefined ? undefined : root.parameters[index]?.type;
           const exactType = node.identifier.name === GlobalFunction.CHECKSIG
             ? parameterType === PrimitiveType.SIG
             : parameterType instanceof ArrayType && parameterType.elementType === PrimitiveType.SIG;
-          if (index < 0 || !exactType) {
-            unsupported = true;
-            return;
+          if (index === undefined || !exactType) unsupported = true;
+          else {
+            indices.add(index);
           }
-          indices.add(index);
-        });
-      }
-    }
+          return;
+        }
+        const namedCandidates = signatureClosureByName.get(node.identifier.name) ?? [];
+        if (namedCandidates.length === 0) return;
+        if (namedCandidates.some((candidate) => reachesTransactionSignatureCheck(candidate))) unsupported = true;
+      });
+    };
+    const rootEnvironment = new Map<string, number>();
+    root.parameters.forEach((parameter, index) => {
+      if (containsTransactionSignature(parameter.type)) rootEnvironment.set(parameter.name, index);
+    });
+    analyse(root, rootEnvironment);
     if (!found || unsupported) return undefined;
     walkInvocationAst(root.body, (node) => {
       if (node instanceof ExternalFunctionCallNode || contractTypedReceiverCall(node, interfaceReceivers)
@@ -3291,12 +3322,12 @@ function synthesizeMessageBusRoute(
         unsupported = true;
       }
       if (node instanceof AssignNode) {
-        const index = parameterIndex(node.identifier);
+        const index = parameterIndex(root, node.identifier);
         if (index >= 0 && indices.has(index)) unsupported = true;
         return;
       }
       if (node instanceof DeleteLocalNode) {
-        const index = parameterIndex(node.identifier);
+        const index = parameterIndex(root, node.identifier);
         if (index >= 0 && indices.has(index)) unsupported = true;
         return;
       }
@@ -4886,7 +4917,11 @@ function synthesizeMessageBusRoute(
       || returns.length !== 1 || returns[0].expressions.length !== 1) return undefined;
     const expression = returns[0].expressions[0];
     const stateVariable = expression instanceof StateAccessNode
+      // Some Solidity-compatible state-array reads reach this admission pass after lowering has detached the
+      // semantic symbol pointer. An explicit `this.name` is still an unambiguous contract-state reference, so
+      // recover it by name instead of mistaking the value for a runtime-constructed aggregate.
       ? expression.stateVariable
+        ?? contract.stateVariables.find((candidate) => candidate.name === expression.name)
       : expression instanceof IdentifierNode && expression.definition instanceof StateVariableNode
         ? expression.definition
         : expression instanceof IdentifierNode
@@ -10978,6 +11013,15 @@ type PlannedFunction = {
   footprint: SplitStateFootprint;
 };
 
+type SplitHelperCutProfile = {
+  name: string;
+  returns: boolean;
+  readsLocalState: boolean;
+  writesState: boolean;
+  externalCalls: boolean;
+  unknown: boolean;
+};
+
 const LIFECYCLE_MODIFIERS = new Set([
   FunctionModifier.DEPLOY, FunctionModifier.UPGRADE, FunctionModifier.SELFDESTRUCT,
   FunctionModifier.SPLIT, FunctionModifier.MERGE, FunctionModifier.UNSAFE,
@@ -11089,11 +11133,15 @@ function compileStringSplitUnchecked(
     const callChain = group.flatMap((plan) => [
       plan.name, ...[...plan.closure].filter((fn) => fn !== plan.name),
     ]);
+    const helperCuts = splitHelperCutProfiles(group[0], byName, splitFootprintCache);
     throw new SolidcDiagnosticError(
       'SPLIT_CLOSURE_CAPACITY',
       `Cannot split '${logicalName}': indivisible closure '${handlers.join(', ')}' is ${measured} bytes `
         + `(limit ${maxShardBytes}).`,
-      { contractName: logicalName, facet: 'singleton', handlers, callChain, measured, limit: maxShardBytes },
+      {
+        contractName: logicalName, facet: 'singleton', handlers, callChain, helperCuts,
+        measured, limit: maxShardBytes,
+      },
     );
   }
   // Pairwise best-fit is quadratic in physical compilations. Above this frontier, keep the already-valid hard
@@ -11165,11 +11213,15 @@ function compileStringSplitUnchecked(
     if (facetBytes > maxShardBytes) {
       const handlers = group.map((plan) => plan.name);
       const callChain = group.flatMap((plan) => [plan.name, ...[...plan.closure].filter((fn) => fn !== plan.name)]);
+      const helperCuts = group.flatMap((plan) => splitHelperCutProfiles(plan, byName, splitFootprintCache));
       throw new SolidcDiagnosticError(
         'SPLIT_CLOSURE_CAPACITY',
         `Cannot split '${logicalName}': facet '${name}' is ${facetBytes} bytes `
           + `(limit ${maxShardBytes}); closure: ${handlers.join(', ')}.`,
-        { contractName: logicalName, facet: name, handlers, callChain, measured: facetBytes, limit: maxShardBytes },
+        {
+          contractName: logicalName, facet: name, handlers, callChain, helperCuts,
+          measured: facetBytes, limit: maxShardBytes,
+        },
       );
     }
     facets[name] = artifact;
@@ -11241,6 +11293,40 @@ function compileStringSplitUnchecked(
       })),
     },
   };
+}
+
+/**
+ * Describe the internal call boundaries an oversized physical closure could eventually cut across.
+ *
+ * This is deliberately analysis only: split-v1 is a one-hop delegate topology, so moving even a pure helper to
+ * another script needs authenticated argument/result transport, and moving a stateful helper additionally needs
+ * a root-owned continuation journal. Publishing the transitive footprint in the capacity diagnostic lets a
+ * future protocol select sound candidates without inferring safety from source names or a particular corpus.
+ */
+function splitHelperCutProfiles(
+  plan: PlannedFunction,
+  byName: Map<string, FunctionDefinitionNode[]>,
+  footprintCache: ReturnType<typeof createFootprintAnalysisCache>,
+): SplitHelperCutProfile[] {
+  const profiles = new Map<string, SplitHelperCutProfile>();
+  for (const name of plan.closure) {
+    if (name === plan.name) continue;
+    for (const helper of byName.get(name) ?? []) {
+      if (helper.isEntryPoint) continue;
+      const footprint = analyseFunctionFootprint(helper, byName, footprintCache);
+      const key = `${helper.name}(${helper.parameters.map((parameter) => parameter.type.toString()).join(',')})`;
+      profiles.set(key, {
+        name: key,
+        returns: helper.returnTypes.length > 0,
+        readsLocalState: footprint.reads.some((resource) =>
+          resource.startsWith('state:') || resource.startsWith('collection:')),
+        writesState: footprint.writes.length > 0,
+        externalCalls: footprint.effects.includes('external-call'),
+        unknown: footprint.unknown,
+      });
+    }
+  }
+  return [...profiles.values()].sort((left, right) => left.name.localeCompare(right.name));
 }
 
 /**

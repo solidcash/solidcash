@@ -195,6 +195,45 @@ describe('large-contract state-local splitting', () => {
     }
   });
 
+  it('reports generic internal cut profiles when a handler closure cannot fit', () => {
+    const source = `contract CutProfile() {
+      int x;
+      function guard(int value) internal { require(value >= 0); }
+      function current() internal view returns (int) { return this.x; }
+      function store(int value) internal { this.x = value; require(value >= 0); }
+      function set(int value) public {
+        guard(value);
+        store(current() + value);
+        require(value >= 0);
+      }
+    }`;
+    try {
+      compileStringSplit(source, { forceSplit: true, maxShardBytes: 100 });
+      throw new Error('expected split capacity diagnostic');
+    } catch (error) {
+      expect(error).toMatchObject({
+        code: 'SPLIT_CLOSURE_CAPACITY',
+        context: expect.objectContaining({
+          handlers: ['set'],
+          helperCuts: [
+            {
+              name: 'current()', returns: true, readsLocalState: true,
+              writesState: false, externalCalls: false, unknown: false,
+            },
+            {
+              name: 'guard(int256)', returns: false, readsLocalState: false,
+              writesState: false, externalCalls: false, unknown: false,
+            },
+            {
+              name: 'store(int256)', returns: false, readsLocalState: false,
+              writesState: true, externalCalls: false, unknown: false,
+            },
+          ],
+        }),
+      });
+    }
+  });
+
   /**
    * A call edge between two planned entries was ATOMIC: `hardClosureGroups` unioned them and nothing could
    * divide the result, so a union over the limit was a refusal with no remaining move. It is not atomic. The

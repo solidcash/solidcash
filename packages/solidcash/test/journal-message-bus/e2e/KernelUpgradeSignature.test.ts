@@ -28,7 +28,10 @@ describe('kernel transaction-bound upgrade signature', () => {
     const provider = createMessageBusCapstoneTestProvider();
     const currentArtifact = compileString(`contract Current(pubkey authority) {
       int marker;
-      function replace(sig proof) public upgrade { require(checkSig(proof, authority)); }
+      function replace(sig proof) public upgrade {
+        sig selected = proof;
+        require(checkSig(selected, authority));
+      }
     }`, KERNEL);
     const replacementArtifact = compileString(`contract Replacement(pubkey authority) {
       int marker;
@@ -113,7 +116,8 @@ describe('kernel transaction-bound upgrade signature', () => {
       int approvals;
       function authorize(sig proof) public {
         this.approvals = this.approvals + 1;
-        require(checkSig(proof, authority));
+        sig selected = proof;
+        require(checkSig(selected, authority));
       }
     }`, KERNEL);
     expect(authorizerArtifact.messageBus?.handlers.find((handler) => handler.name === 'authorize'))

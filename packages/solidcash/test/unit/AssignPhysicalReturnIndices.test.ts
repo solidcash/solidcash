@@ -1,6 +1,6 @@
 import { binToHex, hexToBin, utf8ToBin } from '@bitauth/libauth';
 import {
-  sha256 as sha256Sync, VALUE_HEAD_SIZE, VALUE_CHUNK_SIZE, type EntryAccessAbi,
+  sha256 as sha256Sync, VALUE_HEAD_SIZE, VALUE_CHUNK_SIZE, type Artifact, type EntryAccessAbi,
 } from '@solidcash/utils';
 import { describe, expect, it } from 'vitest';
 import { encodeEntryCommitment } from '../../src/stateful/SortedList.js';
@@ -146,6 +146,7 @@ import {
   groupChunkableArrayWriteCollection,
   groupWritesSingleChunkableArrayCollection,
   selectChunkableValueWriteExecution,
+  permitsLegacyNamedValueChunkFallback,
   placeSameIndexTwin,
   placeInsertNewAt,
   shouldOverwriteForSameIndexTwin,
@@ -203,6 +204,22 @@ describe('generic persisted value-chunk write identity', () => {
       }] }),
     } as unknown as import('../../src/stateful/StatefulTransactionBuilder.js').ExternalCallUtxoGroup;
   };
+
+  it('confines application-name recovery to pre-kernel artifacts', () => {
+    const legacyNamed = { functionName: 'publishJobEvent' };
+    const renamedLegacy = { functionName: 'appendNotice' };
+    expect(permitsLegacyNamedValueChunkFallback([legacyNamed, renamedLegacy])).toBe(true);
+
+    const kernelArtifact = {
+      messageBus: { convention: 'kernel-row-loop' },
+    } as unknown as Artifact;
+    expect(permitsLegacyNamedValueChunkFallback([
+      { ...legacyNamed, logicalArtifact: kernelArtifact },
+    ])).toBe(false);
+    expect(permitsLegacyNamedValueChunkFallback([
+      { ...renamedLegacy, logicalArtifact: kernelArtifact },
+    ])).toBe(false);
+  });
 
   it('selects a renamed physical value writer from metadata and rejects a named decoy', () => {
     const renamed = makeGroup('appendNotice');

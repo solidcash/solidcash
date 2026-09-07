@@ -2616,6 +2616,20 @@ type ChunkableArrayWriteGroup = {
   valueChunkWrites?: readonly ValueChunkWriteDescriptor[];
 };
 
+/**
+ * Old message-bus plans identified the chunkable writer by application ABI names because their artifacts did
+ * not publish resource descriptors. Keep that migration path out of the kernel convention: once an artifact
+ * declares `kernel-row-loop`, missing descriptors mean "not described", never permission to guess from names.
+ */
+export function permitsLegacyNamedValueChunkFallback(
+  groups: ReadonlyArray<ChunkableArrayWriteGroup>,
+): boolean {
+  return !groups.some((group) => {
+    const artifacts = [group.logicalArtifact, group.externalContract?.inner?.artifact];
+    return artifacts.some((artifact) => artifact?.messageBus?.convention === 'kernel-row-loop');
+  });
+}
+
 function groupChunkableArrayWriteCollections(group: ChunkableArrayWriteGroup): string[] {
   const route = group.compilerRoute;
   const artifact = group.logicalArtifact ?? group.externalContract?.inner?.artifact;
@@ -5740,6 +5754,7 @@ export class StatefulTransactionBuilder {
     if (this._hasChunkableValueWriteMetadata()) {
       throw new Error('Chunkable value write metadata did not produce one exact resource descriptor');
     }
+    if (!this._permitsLegacyNamedValueChunkFallback()) return false;
     // Compatibility only for plans predating compiler/planner value-chunk descriptors.
     const legacyNamedInitial = this.lowLevelCallUtxoGroups.some(
       (group) => group.functionName === 'publishJobPost',
@@ -5770,6 +5785,7 @@ export class StatefulTransactionBuilder {
     if (this._hasChunkableValueWriteMetadata()) {
       throw new Error('Chunkable value write metadata did not produce one exact resource descriptor');
     }
+    if (!this._permitsLegacyNamedValueChunkFallback()) return false;
     // Compatibility only for plans predating compiler/planner value-chunk descriptors.
     for (const group of [...this.lowLevelCallUtxoGroups, ...this.externalCallUtxoGroups]) {
       const names = [group.logicalFunctionName, group.functionName, group.compilerRoute?.abiFunction?.name];
@@ -5791,6 +5807,7 @@ export class StatefulTransactionBuilder {
     if (this._hasChunkableValueWriteMetadata()) {
       throw new Error('Chunkable value write metadata did not produce one exact resource descriptor');
     }
+    if (!this._permitsLegacyNamedValueChunkFallback()) return false;
     // Compatibility only for plans predating compiler/planner value-chunk descriptors.
     if (this._isInitialChunkableValueWrite()) return true;
     const plannedInserts = Math.max(
@@ -5922,6 +5939,13 @@ export class StatefulTransactionBuilder {
       || groupChunkableArrayWriteCollections(group).length > 0);
   }
 
+  private _permitsLegacyNamedValueChunkFallback(): boolean {
+    return permitsLegacyNamedValueChunkFallback([
+      ...this.externalCallUtxoGroups,
+      ...this.lowLevelCallUtxoGroups,
+    ]);
+  }
+
   /** Physical/logical group views of the one compiler-described chunkable-value writer. */
   private _chunkableValueWriteGroups(): {
     external?: ExternalCallUtxoGroup; externalIndex: number;
@@ -5949,6 +5973,9 @@ export class StatefulTransactionBuilder {
       return { externalIndex: -1, lowLevelIndex: -1 };
     }
     // Compatibility only for plans predating compiler-authored valueChunkWrites.
+    if (!this._permitsLegacyNamedValueChunkFallback()) {
+      return { externalIndex: -1, lowLevelIndex: -1 };
+    }
     const externalIndex = this.externalCallUtxoGroups.findIndex((group) =>
       (group.functionName ?? group.logicalFunctionName) === 'publishJobEvent');
     const lowLevelIndex = this.lowLevelCallUtxoGroups.findIndex((group) =>
@@ -5966,6 +5993,7 @@ export class StatefulTransactionBuilder {
     if (structural) return structural.abiFunction;
     if (this._hasChunkableValueWriteMetadata()) return undefined;
     // Compatibility only for artifacts predating chunkable collection/write metadata.
+    if (!this._permitsLegacyNamedValueChunkFallback()) return undefined;
     for (const group of [...this.lowLevelCallUtxoGroups, ...this.externalCallUtxoGroups]) {
       const abi = (group.externalContract?.inner?.artifact?.abi ?? []) as AbiFunction[];
       const fromAbi = abi.find((fn) => fn.name === 'publishJobEvent');
@@ -6034,6 +6062,7 @@ export class StatefulTransactionBuilder {
     const structural = this._chunkableValueWriteExecution();
     if (structural) return structural.inputIndex;
     if (this._hasChunkableValueWriteMetadata()) return -1;
+    if (!this._permitsLegacyNamedValueChunkFallback()) return -1;
     // Dest is INPUTINDEX+4 of the earliest executing publishJobEvent. Occupied
     // dests are displaced; do not relocate dest because persist sits at +4. Compatibility only: old artifacts
     // without chunkable-write metadata still identify this executor by their historical ABI function name.
@@ -6317,11 +6346,13 @@ export class StatefulTransactionBuilder {
       ? structuralGroups
       : this._hasChunkableValueWriteMetadata()
         ? []
-        : [
-          ...this.externalCallUtxoGroups.filter((group) =>
-            (group.functionName ?? group.logicalFunctionName) === 'publishJobEvent'),
-          ...this.lowLevelCallUtxoGroups.filter((group) => group.functionName === 'publishJobEvent'),
-        ];
+        : !this._permitsLegacyNamedValueChunkFallback()
+          ? []
+          : [
+            ...this.externalCallUtxoGroups.filter((group) =>
+              (group.functionName ?? group.logicalFunctionName) === 'publishJobEvent'),
+            ...this.lowLevelCallUtxoGroups.filter((group) => group.functionName === 'publishJobEvent'),
+          ];
     for (const group of groups) {
       const next = Math.max(group.valueChunkOutputCount ?? 0, nNew);
       if (next !== group.valueChunkOutputCount) {
@@ -6530,6 +6561,7 @@ export class StatefulTransactionBuilder {
     if (this._hasChunkableValueWriteMetadata()) {
       return selectedCategories.size === 1 ? [...selectedCategories][0] : undefined;
     }
+    if (!this._permitsLegacyNamedValueChunkFallback()) return undefined;
     // Compatibility only for artifacts/plans predating compiler-authored valueChunkWrites.
     const impl = this.lowLevelCallUtxoGroups.find((group) => group.functionName === 'publishJobEvent')?.categoryId;
     for (const categoryId of persistedJobEventsLocks.keys()) {

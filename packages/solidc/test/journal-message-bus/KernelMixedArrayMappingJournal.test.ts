@@ -42,4 +42,51 @@ describe('kernel mixed dynamic-array and mapping journals', () => {
       dynamicReads: ['left', 'right'], dynamicWrites: ['left', 'right'],
     });
   });
+
+  it.each(['bytes', 'string'] as const)(
+    'admits a chunk-backed %s state write beside an independent mapping journal', (type) => {
+      const concat = type === 'bytes' ? 'bytes.concat' : 'string.concat';
+      const artifact = compileString(`contract ParallelScalarState() {
+        ${type} payload;
+        mapping(int => int) lengths;
+        function append(int key, ${type} suffix) public {
+          this.payload = ${concat}(this.payload, suffix);
+          this.lengths[key] = this.payload.length;
+          require(true);
+        }
+      }`, KERNEL);
+      expect(artifact.messageBus?.convention).toBe('kernel-row-loop');
+      expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'append'))
+        .toMatchObject({ eligible: true, physicalEntrySlots: [0] });
+      expect(artifact.abi.find((entry) => entry.name === 'append')).toMatchObject({
+        dynamicReads: ['payload'], dynamicWrites: ['payload'],
+      });
+      expect(artifact.messageBus?.route.blockLayout?.slots).toEqual(expect.arrayContaining([
+        expect.objectContaining({ kind: 'entry', slotIndex: 0 }),
+        expect.objectContaining({ kind: 'trailing', slotIndex: 0 }),
+      ]));
+    },
+  );
+
+  it('admits a chunk-backed scalar write beside a token-container read', () => {
+    const artifact = compileString(`contract ParallelTokenState() {
+      bytes payload;
+      function append(bytes32 category, bytes suffix) public {
+        this.payload = bytes.concat(this.payload, suffix);
+        bytes commitment = this.tokens[category].nftCommitment;
+        require(this.tokens[category].tokenAmount >= 0);
+        require(commitment == commitment);
+      }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'append'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.abi.find((entry) => entry.name === 'append')).toMatchObject({
+      dynamicReads: ['payload'], dynamicWrites: ['payload'],
+      tokenContainerAccesses: [expect.objectContaining({ operations: ['read'] })],
+    });
+    expect(artifact.messageBus?.route.blockLayout?.slots).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: 'tokenContainer', slotIndex: 0 }),
+      expect.objectContaining({ kind: 'trailing', slotIndex: 0 }),
+    ]));
+  });
 });

@@ -1,0 +1,60 @@
+import { describe, expect, it } from 'vitest';
+import { compileString } from 'solidc';
+import { Contract, SignatureTemplate, StatefulContract } from '../../src/index.js';
+import { alicePkh, alicePriv, alicePub } from '../fixture/vars.js';
+import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
+import { createTestProvider } from '../test-util.js';
+
+describe('constructed-array tail replacement', () => {
+  it('materializes mapping writes selected from the surviving prefix and current replacement tail', async () => {
+    const provider = createTestProvider();
+    const signature = new SignatureTemplate(alicePriv);
+    const artifact = compileString(`contract C() {
+      mapping(int => int) slots;
+      function write(int count, int seed, pubkey pk, sig s) public {
+        int[] keys = new int[](count);
+        keys[0] = 11; keys[1] = 12; keys[2] = 13;
+        for (int cursor = 0; cursor < count; cursor = cursor + 1) {
+          keys.pop();
+          keys.push(seed + cursor);
+          this.slots[keys[cursor] + cursor * 20] = cursor + 1;
+        }
+        require(checkSig(s, pk) && count == 3);
+      }
+      function check(int key, int value, pubkey pk, sig s) public {
+        require(checkSig(s, pk));
+        require(this.slots[key] == value);
+      }
+    }`, {
+      forceStateful: true,
+      messageBus: true,
+      messageBusKernel: true,
+      maximumInputBytes: 1_000_000,
+    });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
+      .toMatchObject({ eligible: true });
+
+    const funding = new Contract(p2pkhArtifact, [alicePkh], { provider });
+    let nonce = 0x8a00;
+    const uid = (): string => (++nonce).toString(16).padStart(64, '0');
+    const deploymentUtxo = { txid: uid(), vout: 0, satoshis: 500_000n };
+    await provider.addUtxo(funding.address, deploymentUtxo);
+    const { contract } = await StatefulContract.deploy(artifact, [], {
+      provider,
+      fundingUtxo: deploymentUtxo,
+      funder: funding.unlock.spend(alicePub, signature),
+      initialState: {},
+      changeAddress: funding.address,
+    });
+    const fund = async (): Promise<void> => {
+      await provider.addUtxo(contract.address, { txid: uid(), vout: 0, satoshis: 100_000n });
+    };
+
+    await fund();
+    await expect(contract.write(3n, 100n, alicePub, signature).send()).resolves.toBeDefined();
+    for (const [key, value] of [[11n, 1n], [32n, 2n], [142n, 3n]] as const) {
+      await fund();
+      await expect(contract.check(key, value, alicePub, signature).send()).resolves.toBeDefined();
+    }
+  });
+});

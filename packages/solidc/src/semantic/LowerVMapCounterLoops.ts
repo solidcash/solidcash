@@ -6309,6 +6309,39 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         }
         return { delta, minimum, sites };
       };
+      /**
+       * Recognize a fixed-width tail replacement performed independently on every canonical iteration:
+       *
+       *     xs.pop(); ...; xs.push(value);
+       *
+       * All pops must be the leading statements and all later array mutations must be pushes. Requiring the
+       * widths to match means the source length is restored at the iteration boundary. More importantly, the
+       * complete old suffix is discarded before any intervening statement can observe it, so values pushed by a
+       * previous iteration cannot feed this iteration. The ordinary source-order block transform can therefore
+       * replay reads from the surviving allocation prefix and the current iteration's replacement values without
+       * introducing a cross-iteration array recurrence.
+       */
+      const replacedTailResizeSchedule = (
+        candidate: BlockNode,
+        arrayName: string,
+      ): boolean => {
+        const statements = candidate.statements ?? [];
+        let leadingPops = 0;
+        while (leadingPops < statements.length
+          && statements[leadingPops] instanceof ArrayPopNode
+          && (statements[leadingPops] as ArrayPopNode).name === arrayName) leadingPops += 1;
+        if (leadingPops === 0) return false;
+        let pushes = 0;
+        for (let index = leadingPops; index < statements.length; index += 1) {
+          const statement = statements[index];
+          if (statement instanceof ArrayPushNode && statement.name === arrayName) {
+            pushes += 1;
+            continue;
+          }
+          if (mutatedArrays(statement).has(arrayName)) return false;
+        }
+        return pushes === leadingPops;
+      };
       const replayFiniteArrayHelper = (
         statement: StatementNode,
       ): Set<string> => {
@@ -7448,6 +7481,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
             const pushSchedule = fixedPushSchedule(statement.block, name);
             const popSchedule = fixedPopSchedule(statement.block, name);
             const balancedSchedule = balancedResizeSchedule(statement.block, name);
+            const replacedTailSchedule = replacedTailResizeSchedule(statement.block, name);
             let mutationCount = 0;
             let resizeCount = 0;
             const loopAssignedNames = new Set<string>();
@@ -7585,7 +7619,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
               && !conditionalPopPrefixTrace) fixedPops = false;
             const balancedResizes = !!balancedSchedule && balancedSchedule.sites > 0
               && balancedSchedule.delta === 0 && balancedSchedule.minimum >= 0;
-            if (balancedResizes) continue;
+            if (balancedResizes || replacedTailSchedule) continue;
             // Appends never alter the array's pre-existing prefix. Even when their per-iteration width depends on
             // the counter and therefore has no invertible suffix recurrence, a canonical ascending pre-test loop
             // may still read its counter from that prefix when the allocation size is the loop's exclusive bound.

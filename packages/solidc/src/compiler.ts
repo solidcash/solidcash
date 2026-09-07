@@ -4790,6 +4790,33 @@ function synthesizeMessageBusRoute(
     active.delete(type);
     return encodable;
   };
+  const returnsOnlyAuthenticatedDataSignature = (fn: FunctionDefinitionNode): boolean => {
+    if (fn.returnTypes.length !== 1 || fn.returnTypes[0] !== PrimitiveType.SIG
+      || fn.messageBusUsesTransactionSignature === true) return false;
+    const returns: ReturnNode[] = [];
+    walkInvocationAst(fn.body, (node) => { if (node instanceof ReturnNode) returns.push(node); });
+    if (returns.length !== 1 || fn.body?.statements?.length !== 1
+      || fn.body.statements[0] !== returns[0]) return false;
+    return returns.every((returned) => {
+      if (returned.expressions.length !== 1) return false;
+      const expression = returned.expressions[0];
+      if (!(expression instanceof CastNode) || !expression.sourceCast
+        || expression.type !== PrimitiveType.SIG
+        || !(expression.expression instanceof IdentifierNode)) return false;
+      const source = expression.expression;
+      const definition = source.definition?.definition;
+      // Whole-AST cloning deliberately retains identifier Symbol objects, so their definition can be the
+      // pristine parameter rather than this function clone; some lowering clones intentionally drop it. The
+      // name fallback is safe only for this exact one-statement body: there is no local declaration, helper body,
+      // or branch scope which could shadow the handler parameter.
+      const parameter = fn.parameters.find((candidate) => definition === candidate
+        || (definition instanceof ParameterNode && definition.location === candidate.location
+          && definition.name === candidate.name)
+        || (definition === undefined && candidate.name === source.name));
+      return parameter !== undefined
+        && (transactionSignatureLeaves(parameter.type)?.length ?? 0) === 0;
+    });
+  };
   for (const fn of eligible) {
     // A fixed self external-function reference is represented by its immutable local functionId throughout the
     // executable and compact result codecs. Admit only the singleton shape whose source return analysis proved
@@ -4826,10 +4853,12 @@ function synthesizeMessageBusRoute(
       && (fn.messageBusUsesTransactionSignature === true
         || fn.parameters.some((parameter) =>
           (transactionSignatureLeaves(parameter.type)?.length ?? 0) > 0))
-      && fn.returnTypes.some((type) => containsTransactionSignature(type))) {
+      && fn.returnTypes.some((type) => containsTransactionSignature(type))
+      && !returnsOnlyAuthenticatedDataSignature(fn)) {
       // A signature-bearing parameter is detached as a transaction-bound witness even when the source does not
-      // check it directly. Publishing that witness could make it commit to an output containing itself. With no
-      // such parameter and no reachable CHECKSIG/CHECKMULTISIG, a returned `sig` is compact opaque data instead.
+      // check it directly. Publishing that witness could make it commit to an output containing itself. A direct
+      // source cast from a separately authenticated non-signature ABI parameter is independent opaque data; all
+      // aliases, helpers and aggregate signature results remain fenced until their provenance can be proved.
       fn.messageBusEligible = false;
       fn.messageBusRejectionReason = 'KERNEL_TX_SIGNATURE';
     } else if (compilerOptions.messageBusKernel === true

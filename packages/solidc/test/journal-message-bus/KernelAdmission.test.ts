@@ -5858,6 +5858,33 @@ describe('required kernel admission', () => {
       .toMatchObject({ eligible: true, outputs: [{ type: 'sig' }] });
   });
 
+  it('separates an authenticated data-only sig result from an unrelated transaction-signature witness', () => {
+    const artifact = compileString(`contract C() {
+      function data(sig witness, bytes value) public pure returns (sig) { return sig(value); }
+      function dataSig(sig witness, bytes value) public pure returns (datasig) { return datasig(value); }
+      function circular(sig witness) public pure returns (sig) { return witness; }
+      function aliased(sig witness, bytes value) public pure returns (sig) {
+        sig result = sig(value);
+        return result;
+      }
+      function checked(sig witness, bytes value, pubkey key) public pure returns (sig) {
+        require(checkSig(witness, key));
+        return sig(value);
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'data'))
+      .toMatchObject({ eligible: true, outputs: [{ type: 'sig' }] });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'dataSig'))
+      .toMatchObject({ eligible: true, outputs: [{ type: 'datasig' }] });
+    for (const name of ['circular', 'aliased', 'checked']) {
+      expect(artifact.messageBus?.handlers.find((handler) => handler.name === name)).toMatchObject({
+        eligible: false, rejectionReason: 'KERNEL_TX_SIGNATURE',
+      });
+    }
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
+  });
+
   it('keeps an unbounded Rec[] result behind KERNEL_LAYOUT without demoting control', () => {
     const artifact = compileString(`pragma solidity ^0.8.0;
       struct Rec { uint x; }

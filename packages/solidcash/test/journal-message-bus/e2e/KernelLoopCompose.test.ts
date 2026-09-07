@@ -4633,8 +4633,7 @@ describe('kernel composite counter-key settlement', () => {
       function record(int value) internal returns (int) { emit Pulse(value); return value; }
       function apply(int count, bool enabled) public {
         for (int cursor = 0; cursor < count; cursor = cursor + 1) {
-          int branch = enabled ? record(cursor + 30) : record(cursor + 40);
-          this.values[cursor] = branch;
+          this.values[cursor] = enabled ? record(cursor + 30) : record(cursor + 40);
         }
         require(true);
       }
@@ -4664,6 +4663,27 @@ describe('kernel composite counter-key settlement', () => {
           `${enabled} input ${inputIndex}`).toBe(true);
       }
     }
+    const forgedBuilder = await contract.batch([{ function: 'apply', args: [1n, true] }]).build();
+    const forgedTransaction = forgedBuilder.buildLibauthTransaction();
+    const eventIndex = forgedTransaction.outputs.findIndex(
+      (output) => output.token?.nft?.capability === 'none',
+    );
+    const eventOutput = forgedTransaction.outputs[eventIndex];
+    const forged = {
+      ...forgedTransaction,
+      outputs: forgedTransaction.outputs.map((output, index) => index === eventIndex ? {
+        ...output,
+        token: {
+          ...eventOutput.token!,
+          nft: { ...eventOutput.token!.nft!, commitment: Uint8Array.of(99) },
+        },
+      } : output),
+    };
+    expect(vm.stateSuccess(vm.evaluate({
+      inputIndex: 0,
+      sourceOutputs: generateLibauthSourceOutputs(forgedBuilder.inputs),
+      transaction: forged,
+    }))).not.toBe(true);
   }, 180_000);
 
   it('settles a lazy returning-helper event in a scalar-state continuation', async () => {

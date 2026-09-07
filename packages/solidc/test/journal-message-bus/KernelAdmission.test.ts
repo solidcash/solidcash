@@ -7836,8 +7836,8 @@ describe('required kernel admission', () => {
       .toMatchObject({ eligible: true });
   });
 
-  it('keeps lazy event helpers inside unsupported mapping-value continuations fail closed', () => {
-    expect(() => compileString(`event Observed(int value);
+  it('preserves lazy event helpers in stable-key mapping-value continuations', () => {
+    const artifact = compileString(`event Observed(int value);
       contract C() {
         mapping(int => int) values;
         function record(int value) internal returns (int) {
@@ -7847,6 +7847,35 @@ describe('required kernel admission', () => {
         function apply(int count, bool enabled) public {
           for (int cursor = 0; cursor < count; cursor = cursor + 1) {
             this.values[cursor] = enabled ? record(cursor) : 0;
+          }
+          require(true);
+        }
+      }`, KERNEL);
+    const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'apply');
+    expect(handler).toMatchObject({
+      eligible: true,
+      runtimeLoopEvents: [{
+        eventSignatures: ['Observed(int256)'],
+        conditions: [{ kind: 'source', source: { kind: 'forward', paramIndex: 1 } }],
+      }],
+    });
+  });
+
+  it.each([
+    ['an effectful key', '', 'enabled ? record(cursor) : cursor', 'cursor'],
+    ['a state-derived key', 'int next;', 'this.next', 'enabled ? record(cursor) : 0'],
+  ])('keeps lazy event helpers with %s fail closed', (_label, state, key, value) => {
+    expect(() => compileString(`event Observed(int value);
+      contract C() {
+        mapping(int => int) values;
+        ${state}
+        function record(int value) internal returns (int) {
+          emit Observed(value);
+          return value;
+        }
+        function apply(int count, bool enabled) public {
+          for (int cursor = 0; cursor < count; cursor = cursor + 1) {
+            this.values[${key}] = ${value};
           }
           require(true);
         }

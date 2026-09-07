@@ -15,6 +15,7 @@ import {
   ReturnNode,
   MappingAccessNode,
   ArrayAccessNode,
+  ArrayAssignNode,
   AssignNode,
   StateAccessNode,
   StateAssignNode,
@@ -38,6 +39,7 @@ import {
   CastNode,
   AbiEncodeCallNode,
   BoolLiteralNode,
+  LiteralNode,
   EmitStatementNode,
   NullaryOpNode,
   RequireNode,
@@ -105,6 +107,7 @@ export default class InlineReturningStateHelpers extends AstTraversal {
   private stack: string[] = [];
   private suppress = false;
   private stateValueTypes: Map<string, Type> = new Map();
+  private collectionValueTypes: Map<string, Type> = new Map();
   private currentValueTypes: Map<string, Type> = new Map();
   /** Lexically scoped types used only by lazy event-helper continuation lowering. */
   private lazyValueTypes: Map<string, Type> = new Map();
@@ -303,6 +306,9 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     this.mappingNames = new Set(node.collections.filter((c) => c.type instanceof MappingType).map((c) => c.name));
     this.stateVarNames = new Set(node.stateVariables.map((sv) => sv.name));
     this.stateValueTypes = new Map(node.stateVariables.map((sv) => [sv.name, sv.type]));
+    this.collectionValueTypes = new Map(node.collections.map((collection) => [
+      collection.name, collection.innermostValueType,
+    ]));
 
     this.inlinedFns = new Set();
     this.rawSlotFreeFns = new Set();
@@ -1041,10 +1047,13 @@ export default class InlineReturningStateHelpers extends AstTraversal {
 
   /**
    * Lower expression positions with a single, explicit continuation: local declarations/assignments, direct
-   * scalar-state assignments, require predicates, and branch predicates. The complete lazy value is evaluated
-   * into a temporary before that continuation executes, preserving old-value reads and require/branch timing.
-   * Mapping/array lvalues, returns, call arguments, and loop conditions retain their established fence until a
-   * general expression-continuation IR owns key/argument order and repeated condition evaluation.
+   * scalar-state assignments, stable-key mapping assignments, require predicates, and branch predicates. The
+   * complete lazy value is evaluated into a temporary before that continuation executes, preserving old-value
+   * reads and require/branch timing. A stable mapping key contains no state read, call, array access, or other
+   * observable evaluation, so moving only the RHS ahead of its write cannot reorder a key effect; the counter-loop
+   * pass can then keep that value in source order while independently permuting the key. Other mapping/array
+   * lvalues, returns, call arguments, and loop conditions retain their established fence until a general
+   * expression-continuation IR owns key/argument order and repeated condition evaluation.
    */
   private expandLazyEventContinuation(statement: StatementNode): StatementNode[] | undefined {
     const target = (() => {
@@ -1062,6 +1071,21 @@ export default class InlineReturningStateHelpers extends AstTraversal {
         return type && { expression: statement.expression, type,
           replace: (value: ExpressionNode): void => { statement.expression = value; } };
       }
+      if (statement instanceof MappingAssignNode && !statement.arrayIndex
+        && !statement.arrayPush && !statement.arrayPop
+        && statement.keys.every((key) => this.stableLazyMappingKey(key))) {
+        const type = this.collectionValueTypes.get(statement.name);
+        return type && !(type instanceof ArrayType) && { expression: statement.expression, type,
+          replace: (value: ExpressionNode): void => { statement.expression = value; } };
+      }
+      // Before semantic resolution, a single-key mapping assignment uses the same surface node as an ordinary
+      // array element write. The declared mapping-name gate keeps local and state arrays on their existing fence.
+      if (statement instanceof ArrayAssignNode && this.mappingNames.has(statement.name)
+        && this.stableLazyMappingKey(statement.index)) {
+        const type = this.collectionValueTypes.get(statement.name);
+        return type && !(type instanceof ArrayType) && { expression: statement.value, type,
+          replace: (value: ExpressionNode): void => { statement.value = value; } };
+      }
       if (statement instanceof RequireNode) {
         return { expression: statement.expression, type: PrimitiveType.BOOL,
           replace: (value: ExpressionNode): void => { statement.expression = value; } };
@@ -1077,6 +1101,24 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     const lowered = this.lowerLazyEventValue(target.expression, target.type);
     target.replace(lowered.value);
     return [...lowered.statements, statement];
+  }
+
+  /** An expression whose evaluation cannot observe or be changed by effects in a subsequently expanded RHS. */
+  private stableLazyMappingKey(expression: ExpressionNode): boolean {
+    if (expression instanceof LiteralNode) return true;
+    if (expression instanceof IdentifierNode) {
+      // Loop counters can be introduced by the for-loop desugaring outside the lexical block visited here, so
+      // their pre-semantic type is not always present in lazyValueTypes. A plain non-state identifier read is
+      // nevertheless effect-free; ordinary semantic analysis still rejects an invalid aggregate mapping key.
+      return !this.stateVarNames.has(expression.name);
+    }
+    if (expression instanceof CastNode) return this.stableLazyMappingKey(expression.expression);
+    if (expression instanceof UnaryOpNode) {
+      return [UnaryOperator.NOT, UnaryOperator.NEGATE, UnaryOperator.INVERT]
+        .includes(expression.operator) && this.stableLazyMappingKey(expression.expression);
+    }
+    return expression instanceof BinaryOpNode
+      && this.stableLazyMappingKey(expression.left) && this.stableLazyMappingKey(expression.right);
   }
 
   // A call STATEMENT whose call gets expression-inlined must not keep the bare temp inside the

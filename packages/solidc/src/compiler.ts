@@ -2102,30 +2102,51 @@ const MESSAGE_BUS_REJECTION_REMEDIES: Record<string, string> = {
  * Publish typed child-genesis geometry independently of kernel admission. The resolved deployment node and
  * compiled child body are the authority; no contract, function, or application name participates.
  */
-function packedStateDataNftCount(contract: ContractNode, commitmentLimit: number): number {
+function packedStateLayoutVariables(contract: ContractNode, commitmentLimit: number): Array<{
+  state: ContractNode['stateVariables'][number]; nftIndex: number; fieldIndex: number;
+}> {
+  const result: Array<{
+    state: ContractNode['stateVariables'][number]; nftIndex: number; fieldIndex: number;
+  }> = [];
   let nftIndex = 0;
+  let fieldIndex = 0;
   let currentNftUsed = 0;
   for (const state of contract.stateVariables) {
     let maxSize = getMaxPushdataEncodedSizeForType(state.type);
     if (state.isDynamic || isDynamicStorageType(state.type)) {
       maxSize = getMaxPushdataEncodedSizeForType(new IntType(false, 32));
     }
-    const isolated = state.isolatedNft || state.visibility === StateVariableVisibility.EXTERNAL;
+    const unboundedPackedArray = state.isPacked
+      && state.type instanceof ArrayType
+      && !state.type.bound;
+    const isolated = state.isolatedNft
+      || state.visibility === StateVariableVisibility.EXTERNAL
+      || unboundedPackedArray;
     const terminal = state.type instanceof StructType
-      || (state.isPacked && state.type instanceof ArrayType);
+      || (state.isPacked && state.type instanceof ArrayType && Boolean(state.type.bound));
     if (isolated) {
-      if (currentNftUsed > 0) { nftIndex += 1; currentNftUsed = 0; }
+      if (currentNftUsed > 0) { nftIndex += 1; fieldIndex = 0; currentNftUsed = 0; }
+      result.push({ state, nftIndex, fieldIndex: 0 });
       nftIndex += 1;
+      fieldIndex = 0;
     } else {
       if (currentNftUsed + maxSize > commitmentLimit && currentNftUsed > 0) {
         nftIndex += 1;
+        fieldIndex = 0;
         currentNftUsed = 0;
       }
+      result.push({ state, nftIndex, fieldIndex });
+      fieldIndex += 1;
       currentNftUsed += maxSize;
-      if (terminal) { nftIndex += 1; currentNftUsed = 0; }
+      if (terminal) { nftIndex += 1; fieldIndex = 0; currentNftUsed = 0; }
     }
   }
-  return nftIndex + (currentNftUsed > 0 ? 1 : 0);
+  return result;
+}
+
+function packedStateDataNftCount(contract: ContractNode, commitmentLimit: number): number {
+  const variables = packedStateLayoutVariables(contract, commitmentLimit);
+  return variables.length === 0 ? 0 : Math.max(...variables.map((variable) => variable.nftIndex)) + 1;
 }
 
 interface FoldedChildInitializationProof {
@@ -4345,20 +4366,23 @@ function synthesizeMessageBusRoute(
             && statefulChildren.has(value.identifier.name)) {
             const conditional = control !== 'straight';
             const child = statefulChildren.get(value.identifier.name)!;
-            const finiteEntryCount = deploymentEntryCountsByChild.get(child.name) ?? 0;
-            deploymentSiteWidths.push(1 + packedStateDataNftCount(
+            const packedChildVariables = packedStateLayoutVariables(
               child, compilerOptions.commitmentLimit ?? 128,
-            ) + finiteEntryCount);
+            );
+            const packedChildDataNftCount = packedChildVariables.length === 0 ? 0
+              : Math.max(...packedChildVariables.map((variable) => variable.nftIndex)) + 1;
+            const finiteEntryCount = deploymentEntryCountsByChild.get(child.name) ?? 0;
+            deploymentSiteWidths.push(1 + packedChildDataNftCount + finiteEntryCount);
             deploymentSiteDescriptorDigests.push(childStateLayoutDigest({
-              variables: child.stateVariables.map((state) => ({
+              variables: packedChildVariables.map(({ state, nftIndex, fieldIndex }) => ({
                 name: state.name,
                 type: state.type instanceof EnumType ? 'bigint' : abiTypeString(state.type),
-                nftIndex: state.nftIndex ?? 0,
-                fieldIndex: state.fieldIndex ?? 0,
+                nftIndex,
+                fieldIndex,
                 ...(state.isDynamic && { dynamic: true }),
                 ...(state.isPacked && { packed: true }),
               })),
-              dataNftCount: packedStateDataNftCount(child, compilerOptions.commitmentLimit ?? 128),
+              dataNftCount: packedChildDataNftCount,
               commitmentLimit: compilerOptions.commitmentLimit ?? 128,
               structs: childDeploymentStructDefinitions(child.stateVariables),
               collections: childDeploymentCollectionDefinitions(child.collections),

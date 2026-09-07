@@ -2487,7 +2487,11 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         }
         return false;
       };
-      type CounterAffine = { slope?: ExpressionNode; intercept?: ExpressionNode };
+      type CounterPolynomial = {
+        quadratic?: ExpressionNode;
+        slope?: ExpressionNode;
+        intercept?: ExpressionNode;
+      };
       const addAffineTerm = (
         left: ExpressionNode | undefined, right: ExpressionNode | undefined, operator = BinaryOperator.PLUS,
       ): ExpressionNode | undefined => {
@@ -2497,54 +2501,70 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         if (!right) return cloneNode(left);
         return new BinaryOpNode(cloneNode(left), operator, cloneNode(right));
       };
-      const combineAffine = (
-        left: CounterAffine, right: CounterAffine, operator: BinaryOperator.PLUS | BinaryOperator.MINUS,
-      ): CounterAffine => ({
+      const combinePolynomial = (
+        left: CounterPolynomial, right: CounterPolynomial, operator: BinaryOperator.PLUS | BinaryOperator.MINUS,
+      ): CounterPolynomial => ({
+        quadratic: addAffineTerm(left.quadratic, right.quadratic, operator),
         slope: addAffineTerm(left.slope, right.slope, operator),
         intercept: addAffineTerm(left.intercept, right.intercept, operator),
       });
       const multiplyAffineTerm = (
-        left: ExpressionNode | undefined, right: ExpressionNode,
+        left: ExpressionNode | undefined, right: ExpressionNode | undefined,
       ): ExpressionNode | undefined => {
-        if (!left || (left instanceof IntLiteralNode && left.value === 0n)
+        if (!left || !right || (left instanceof IntLiteralNode && left.value === 0n)
           || (right instanceof IntLiteralNode && right.value === 0n)) return undefined;
         if (left instanceof IntLiteralNode && left.value === 1n) return cloneNode(right);
         if (right instanceof IntLiteralNode && right.value === 1n) return cloneNode(left);
         return new BinaryOpNode(cloneNode(left), BinaryOperator.MUL, cloneNode(right));
       };
-      const scaleAffine = (affine: CounterAffine, factor: ExpressionNode): CounterAffine => ({
-        slope: multiplyAffineTerm(affine.slope, factor),
-        intercept: multiplyAffineTerm(affine.intercept, factor),
+      const scalePolynomial = (polynomial: CounterPolynomial, factor: ExpressionNode): CounterPolynomial => ({
+        quadratic: multiplyAffineTerm(polynomial.quadratic, factor),
+        slope: multiplyAffineTerm(polynomial.slope, factor),
+        intercept: multiplyAffineTerm(polynomial.intercept, factor),
       });
-      // Decompose only expressions which are provably affine in the logical source counter. In particular,
-      // integer division/modulo, products of two counter-dependent terms, casts, and calls are deliberately not
-      // treated as algebraic identities: their per-iteration truncation, width, or other semantics need not equal
-      // a polynomial prefix. Counter-free subexpressions remain opaque replayable coefficients/constants.
-      const counterAffine = (candidate: ExpressionNode): CounterAffine | undefined => {
+      // Decompose only expressions which are provably quadratic in the logical source counter. Integer
+      // division/modulo, casts, calls, and products above degree two remain fenced: their per-iteration
+      // truncation, width, or other semantics need not equal a polynomial prefix. Counter-free subexpressions
+      // remain opaque replayable coefficients/constants.
+      const counterPolynomial = (candidate: ExpressionNode): CounterPolynomial | undefined => {
         if (!containsIdentifier(candidate, logical)) return { intercept: cloneNode(candidate) };
         if (candidate instanceof IdentifierNode && candidate.name === logical) {
           return { slope: new IntLiteralNode(1n) };
         }
         if (candidate instanceof UnaryOpNode && candidate.operator === UnaryOperator.NEGATE) {
-          const inner = counterAffine(candidate.expression);
-          return inner && scaleAffine(inner, new IntLiteralNode(-1n));
+          const inner = counterPolynomial(candidate.expression);
+          return inner && scalePolynomial(inner, new IntLiteralNode(-1n));
         }
         if (!(candidate instanceof BinaryOpNode)) return undefined;
         if (candidate.operator === BinaryOperator.PLUS || candidate.operator === BinaryOperator.MINUS) {
-          const left = counterAffine(candidate.left);
-          const right = counterAffine(candidate.right);
-          return left && right && combineAffine(left, right, candidate.operator);
+          const left = counterPolynomial(candidate.left);
+          const right = counterPolynomial(candidate.right);
+          return left && right && combinePolynomial(left, right, candidate.operator);
         }
         if (candidate.operator !== BinaryOperator.MUL) return undefined;
         const leftDepends = containsIdentifier(candidate.left, logical);
         const rightDepends = containsIdentifier(candidate.right, logical);
-        if (leftDepends === rightDepends) return undefined;
-        const dependent = counterAffine(leftDepends ? candidate.left : candidate.right);
-        return dependent && scaleAffine(dependent, leftDepends ? candidate.right : candidate.left);
+        if (!leftDepends || !rightDepends) {
+          const dependent = counterPolynomial(leftDepends ? candidate.left : candidate.right);
+          return dependent && scalePolynomial(dependent, leftDepends ? candidate.right : candidate.left);
+        }
+        const left = counterPolynomial(candidate.left);
+        const right = counterPolynomial(candidate.right);
+        // Two counter-dependent factors are safe only when both are affine; otherwise their product exceeds the
+        // closed-form degree admitted here. (a*i+b)*(c*i+d) is reconstructed coefficient-wise.
+        if (!left || !right || left.quadratic || right.quadratic) return undefined;
+        return {
+          quadratic: multiplyAffineTerm(left.slope, right.slope),
+          slope: addAffineTerm(
+            multiplyAffineTerm(left.slope, right.intercept),
+            multiplyAffineTerm(left.intercept, right.slope),
+          ),
+          intercept: multiplyAffineTerm(left.intercept, right.intercept),
+        };
       };
       for (const [name, updates] of topLevelStateAssignments) {
         if (countStateAssignmentsTo(block, name) !== updates.length) continue;
-        const deltas: CounterAffine[] = [];
+        const deltas: CounterPolynomial[] = [];
         let base: ExpressionNode | undefined;
         let supported = true;
         for (const { statement } of updates) {
@@ -2563,16 +2583,19 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           // The recurrence begins from the value which actually dominates the loop. A preceding scalar assignment
           // (including one expressed in terms of pre-state) must not silently collapse back to contract pre-state.
           base ??= cloneNode(stateValues.get(name) ?? recurrence.left);
-          const delta = counterAffine(recurrence.right);
+          const delta = counterPolynomial(recurrence.right);
           if (!delta) { supported = false; break; }
           deltas.push(recurrence.operator === BinaryOperator.PLUS
-            ? delta : scaleAffine(delta, new IntLiteralNode(-1n)));
+            ? delta : scalePolynomial(delta, new IntLiteralNode(-1n)));
         }
         if (!supported || !base || deltas.length === 0 || recurrenceCrossesContinue) continue;
         const observationPositions = (block.statements ?? []).flatMap((statement, index) => (
           !updates.some((update) => update.index === index) && containsStateAccess(statement, name) ? [index] : []
         ));
-        const netDelta = deltas.reduce((sum, delta) => combineAffine(sum, delta, BinaryOperator.PLUS), {});
+        const netDelta = deltas.reduce(
+          (sum, delta) => combinePolynomial(sum, delta, BinaryOperator.PLUS),
+          {} as CounterPolynomial,
+        );
         const rank = unitDomain
           ? new IdentifierNode(logical)
           : new BinaryOpNode(
@@ -2591,13 +2614,59 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           multiplyAffineTerm(cloneNode(rank), new IntLiteralNode(start)),
           multiplyAffineTerm(stepValue(), triangularRank),
         )!;
-        const prefixValue = (delta: CounterAffine): ExpressionNode | undefined => addAffineTerm(
-          multiplyAffineTerm(delta.slope, counterPrefix),
-          multiplyAffineTerm(delta.intercept, rank),
+        const squareRankPrefix = new BinaryOpNode(
+          new BinaryOpNode(
+            cloneNode(rank), BinaryOperator.MUL,
+            new BinaryOpNode(cloneNode(rank), BinaryOperator.MINUS, new IntLiteralNode(1n)),
+          ),
+          BinaryOperator.MUL,
+          new BinaryOpNode(
+            new BinaryOpNode(new IntLiteralNode(2n), BinaryOperator.MUL, cloneNode(rank)),
+            BinaryOperator.MINUS,
+            new IntLiteralNode(1n),
+          ),
         );
-        const currentValue = (delta: CounterAffine): ExpressionNode | undefined => addAffineTerm(
-          multiplyAffineTerm(delta.slope, new IdentifierNode(logical)),
-          delta.intercept,
+        const normalizedSquareRankPrefix = new BinaryOpNode(
+          squareRankPrefix, BinaryOperator.DIV, new IntLiteralNode(6n),
+        );
+        const counterSquarePrefix = addAffineTerm(
+          multiplyAffineTerm(
+            new BinaryOpNode(new IntLiteralNode(start), BinaryOperator.MUL, new IntLiteralNode(start)),
+            rank,
+          ),
+          addAffineTerm(
+            multiplyAffineTerm(
+              new BinaryOpNode(
+                new BinaryOpNode(new IntLiteralNode(2n), BinaryOperator.MUL, new IntLiteralNode(start)),
+                BinaryOperator.MUL,
+                stepValue(),
+              ),
+              triangularRank,
+            ),
+            multiplyAffineTerm(
+              new BinaryOpNode(stepValue(), BinaryOperator.MUL, stepValue()),
+              normalizedSquareRankPrefix,
+            ),
+          ),
+        )!;
+        const prefixValue = (delta: CounterPolynomial): ExpressionNode | undefined => addAffineTerm(
+          multiplyAffineTerm(delta.quadratic, counterSquarePrefix),
+          addAffineTerm(
+            multiplyAffineTerm(delta.slope, counterPrefix),
+            multiplyAffineTerm(delta.intercept, rank),
+          ),
+        );
+        const currentValue = (delta: CounterPolynomial): ExpressionNode | undefined => addAffineTerm(
+          multiplyAffineTerm(
+            delta.quadratic,
+            new BinaryOpNode(
+              new IdentifierNode(logical), BinaryOperator.MUL, new IdentifierNode(logical),
+            ),
+          ),
+          addAffineTerm(
+            multiplyAffineTerm(delta.slope, new IdentifierNode(logical)),
+            delta.intercept,
+          ),
         );
         for (const position of observationPositions) {
           const phase = updates.filter((update) => update.index < position).length;

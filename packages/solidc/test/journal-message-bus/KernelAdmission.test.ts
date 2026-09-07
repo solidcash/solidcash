@@ -2116,6 +2116,24 @@ describe('required kernel admission', () => {
       });
   });
 
+  it('binds the finalized multi-data-NFT child layout in the kernel verifier', () => {
+    const artifact = compileString(`contract WideChild() {
+        bytes32 a; bytes32 b; bytes32 c; bytes32 d; bytes32 e;
+        function keep() public { require(true); }
+      }
+      contract Factory() {
+        function create() public { WideChild child = new WideChild(); require(true); }
+      }`, KERNEL);
+    const site = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'create')
+      ?.childDeployments?.[0];
+    expect(site).toMatchObject({ dataNftOutputCount: 2, totalOutputCount: 3 });
+    expect(site?.childLayoutDigest).toMatch(/^[0-9a-f]{64}$/);
+    const verifier = artifact.messageBus?.verifierProgram?.functions.find(
+      (candidate) => candidate.name === '__message_bus_verify_atomic',
+    );
+    expect(verifier?.bytecode).toContain(site!.childLayoutDigest);
+  });
+
   it('publishes a Solidity-style constructor-parameter genesis recipe', () => {
     const artifact = compileString(`contract Unit() {
         int marker;
@@ -7367,7 +7385,7 @@ describe('required kernel admission', () => {
     }
   });
 
-  it('keeps non-affine and resource-dependent scalar-state event recurrences fenced', () => {
+  it('keeps unsupported scalar-state event recurrence sources fenced', () => {
     const artifact = compileString(`event Tick(int value);
       contract C() {
         int total;
@@ -7382,13 +7400,6 @@ describe('required kernel admission', () => {
         function resourceDependent(int n) public {
           for (int i = 0; i < n; i = i + 1) {
             this.total = this.total + this.source[i];
-            emit Tick(this.total);
-          }
-          require(true);
-        }
-        function quadraticCounter(int n) public {
-          for (int i = 0; i < n; i = i + 1) {
-            this.total = this.total + i * i;
             emit Tick(this.total);
           }
           require(true);
@@ -7419,11 +7430,34 @@ describe('required kernel admission', () => {
         }
       }`, KERNEL);
     for (const name of [
-      'nonAffine', 'resourceDependent', 'quadraticCounter', 'truncatedCounter', 'counterLocalAlias', 'localDelta',
+      'nonAffine', 'resourceDependent', 'truncatedCounter', 'counterLocalAlias', 'localDelta',
     ]) {
       expect(artifact.messageBus?.handlers.find((handler) => handler.name === name))
         .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
     }
+  });
+
+  it('publishes quadratic-counter event prefixes across affine loop domains and source phases', () => {
+    const artifact = compileString(`event Phase(int value);
+      contract C() {
+        int total;
+        function accumulate(int n) public {
+          for (int i = 1; i < n; i = i + 2) {
+            emit Phase(this.total);
+            this.total = this.total + (i + 1) * (i - 1);
+            emit Phase(this.total);
+          }
+          require(true);
+        }
+      }`, KERNEL);
+    const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'accumulate');
+    expect(handler).toMatchObject({
+      eligible: true,
+      runtimeLoopEvents: [{ eventSignatures: ['Phase(int256)', 'Phase(int256)'] }],
+    });
+    expect(handler?.runtimeLoopEvents?.[0].arguments).toHaveLength(2);
+    expect(handler?.runtimeLoopEvents?.[0].arguments?.[0])
+      .not.toEqual(handler?.runtimeLoopEvents?.[0].arguments?.[1]);
   });
 
   it('keeps coupled scalar-state event recurrences fenced', () => {

@@ -5064,6 +5064,45 @@ describe('kernel composite counter-key settlement', () => {
     }
   }, 180_000);
 
+  it('settles quadratic-counter state prefixes across a non-unit event domain', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(`contract QuadraticStateEvents() {
+      int total;
+      event Phase(int value);
+      function run(int n) public {
+        for (int i = 1; i < n; i = i + 2) {
+          emit Phase(this.total);
+          this.total = this.total + (i + 1) * (i - 1);
+          emit Phase(this.total);
+        }
+        require(true);
+      }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'run'))
+      .toMatchObject({ eligible: true });
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, { total: 5n }, { saltContract: true },
+    );
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    const builder = await contract.batch([{ function: 'run', args: [7n] }]).build();
+    const transaction = builder.buildLibauthTransaction();
+    const event = artifact.events!.find((candidate) => candidate.name === 'Phase')!;
+    const expectedValues = [5n, 5n, 5n, 13n, 13n, 37n];
+    expect(transaction.outputs
+      .filter((output) => output.token?.nft?.capability === 'none')
+      .map((output) => binToHex(output.token!.nft!.commitment)))
+      .toEqual(expectedValues.map((value) =>
+        binToHex(encodeEventCommitment(event.parameters, [value], artifact.structs))));
+
+    const vm = createVirtualMachineBch2026ForProvider(provider);
+    const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+    for (let inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex += 1) {
+      expect(vm.stateSuccess(vm.evaluate({ inputIndex, sourceOutputs, transaction })), `input ${inputIndex}`)
+        .toBe(true);
+    }
+  }, 180_000);
+
   it('keeps recurrent event values in source order beside permuted mapping writes', async () => {
     const provider = createTestProvider();
     const artifact = compileString(`contract MixedReplayedEventValues() {

@@ -2185,7 +2185,7 @@ describe('required kernel admission', () => {
       .toMatchObject({ eligible: true, childDeployments: [{ genesisState: { kind: 'constructor' } }] });
   });
 
-  it('keeps constructor casts outside the materializable recipe domain fenced', () => {
+  it('admits a bytes-to-address constructor genesis cast', () => {
     const artifact = compileString(`contract Unit() {
         address owner;
         constructor(bytes raw) { this.owner = address(raw); }
@@ -2194,7 +2194,18 @@ describe('required kernel admission', () => {
         function materialize(bytes raw) public { Unit child = new Unit(raw); require(true); }
       }`, KERNEL);
     expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'materialize'))
-      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+      .toMatchObject({
+        eligible: true,
+        childDeployments: [{
+          genesisState: { fields: [{
+            name: 'owner', type: 'address',
+            value: {
+              kind: 'cast', resultType: 'address',
+              operand: { kind: 'handlerInput', inputIndex: 0, resultType: 'bytes' },
+            },
+          }] },
+        }],
+      });
   });
 
   it('publishes enum-valued constructor state using its physical integer representation', () => {

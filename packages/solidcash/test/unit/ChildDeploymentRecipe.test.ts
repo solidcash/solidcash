@@ -66,6 +66,14 @@ describe('child deployment recipe evaluation', () => {
     }, [-199n], ['fixed128x2'], true)).toBe(-1n);
   });
 
+  it('preserves locking bytecode when casting bytes to an address', () => {
+    const lockingBytecode = hexToBin('76a914000000000000000000000000000000000000000088ac');
+    expect(evaluateChildDeploymentRecipe({
+      kind: 'cast', resultType: 'address',
+      operand: { kind: 'handlerInput', inputIndex: 0, resultType: 'bytes' },
+    }, [lockingBytecode], ['bytes'], false)).toEqual(lockingBytecode);
+  });
+
   it('evaluates enum inputs through the compiler-normalized bigint representation', () => {
     expect(evaluateChildDeploymentRecipe({
       kind: 'cast', resultType: 'int256',

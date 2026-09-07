@@ -175,6 +175,19 @@ const coerceRecipeValue = (
     }
     return numeric;
   }
+  if (resultType instanceof AddressType) {
+    // The compiler's bytes/int -> address cast is a VM-level no-op: an address is the locking-bytecode stack
+    // item itself. Reproduce that representation here so constructor genesis replay authenticates the same
+    // value. CashAddress spelling is only possible for an address-typed source; bytes strings remain hex.
+    if (value instanceof Uint8Array) return value;
+    if (typeof value === 'string' && sourceType instanceof AddressType && value.includes(':')) {
+      return addressToLockScript(value);
+    }
+    if (typeof value === 'string' && sourceType instanceof BytesType) {
+      return hexToBin(value.startsWith('0x') ? value.slice(2) : value);
+    }
+    return bigIntToVmNumber(numericRecipeValue(value, sourceTypeName, solidityAbi));
+  }
   if (resultType instanceof BytesType) {
     if (value instanceof Uint8Array) {
       if (resultType.bound === undefined) return value;

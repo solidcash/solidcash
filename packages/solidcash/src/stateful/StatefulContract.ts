@@ -439,6 +439,8 @@ type GraphEcrecoverCall = readonly [
 ];
 
 type MessageBusRuntimeAbiFunction = AbiFunction & {
+  /** Published convention of the route from which this runtime ABI was narrowed. */
+  messageBusConvention?: 'legacy-unroll' | 'kernel-row-loop';
   graphBlockhashSelections?: GraphBlockhashSelection[];
   graphEcrecoverCalls?: GraphEcrecoverCall[];
   /** Operations selected for each fixed route entry slot in this concrete envelope. Runtime-only route narrowing. */
@@ -1635,6 +1637,7 @@ function hasPublishedEntryEffects(group: ExternalCallUtxoGroup): boolean {
  * list is authoritative and ambiguity fails closed. Source names remain only for artifacts with no effect list. */
 export function computedStateWriterGroupIndex(
   groups: readonly ExternalCallUtxoGroup[], candidateIndices: readonly number[],
+  ownerConvention?: 'legacy-unroll' | 'kernel-row-loop',
 ): number | undefined {
   const described = candidateIndices.filter((index) => hasPublishedEntryEffects(groups[index]));
   const writers = described.filter((index) => {
@@ -1644,7 +1647,9 @@ export function computedStateWriterGroupIndex(
   });
   if (writers.length === 1) return writers[0];
   if (described.length > 0) return undefined;
-  if (!permitsLegacyNamedValueChunkFallback(candidateIndices.map((index) => groups[index]))) {
+  if (!permitsLegacyNamedValueChunkFallback(
+    candidateIndices.map((index) => groups[index]), ownerConvention,
+  )) {
     return undefined;
   }
   // Compatibility only for artifacts predating compiler-published entry effects.
@@ -1655,14 +1660,17 @@ export function computedStateWriterGroupIndex(
 }
 
 /** Select one physical chunkable-array writer by its published collection effects. */
-export function chunkableWriterGroupIndex(groups: readonly ExternalCallUtxoGroup[]): number {
+export function chunkableWriterGroupIndex(
+  groups: readonly ExternalCallUtxoGroup[],
+  ownerConvention?: 'legacy-unroll' | 'kernel-row-loop',
+): number {
   const candidates = groups.flatMap((group, index) => {
     const abi = physicalExternalCallFunction(group);
     return abi && writesChunkableArrayValue(group, abi) ? [index] : [];
   });
   if (candidates.length === 1) return candidates[0];
   if (groups.some(hasPublishedEntryEffects)) return -1;
-  if (!permitsLegacyNamedValueChunkFallback(groups)) return -1;
+  if (!permitsLegacyNamedValueChunkFallback(groups, ownerConvention)) return -1;
   // Compatibility only for artifacts predating compiler-published entry effects.
   return groups.findIndex((group) => group.functionName === 'publishJobEvent');
 }
@@ -5195,6 +5203,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const graphOwnedRoute = Object.keys(internalRouteWitnesses).length > 0;
     const effectiveRoute: AbiFunction = {
       ...capability.route,
+      ...({ messageBusConvention: capability.convention } as Partial<MessageBusRuntimeAbiFunction>),
       // Runtime-only metadata: unreachable bounded rows keep their physical entry positions, but consume a
       // balanced funder placeholder rather than resolving an arbitrary absent key to the same collection proof.
       // The bytecode already gates these slots by row/selector; this only tells the SDK which fixed slots are
@@ -23456,7 +23465,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         // band is swapped 4-wide to start+width. Its in-block return then occupies
         // postSwapMaster+blockSize-1 (33). Tail witnesses baked against the
         // pre-swap master (29) would still start at 33 and collide with that return.
-        const publishLlcIndex = chunkableWriterGroupIndex(lowLevelCallUtxoGroups);
+        const publishLlcIndex = chunkableWriterGroupIndex(
+          lowLevelCallUtxoGroups,
+          (entryAbiFunction as MessageBusRuntimeAbiFunction | undefined)?.messageBusConvention,
+        );
         if (publishLlcIndex >= 0) {
           const publishLlc = lowLevelCallUtxoGroups[publishLlcIndex];
           const publishFn = physicalExternalCallFunction(publishLlc);
@@ -23778,7 +23790,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               .findIndex((call) => call.addressParam === targetName
                 || call.addressParam?.endsWith(`_${targetName}`));
             const computedTarget = lowLevelCall?.target?.kind === 'computed'
-              ? computedStateWriterGroupIndex(externalCallUtxoGroups, nestedGroups)
+              ? computedStateWriterGroupIndex(
+                externalCallUtxoGroups, nestedGroups,
+                (entryAbiFunction as MessageBusRuntimeAbiFunction | undefined)?.messageBusConvention,
+              )
               : undefined;
             const nestedGroupIndex = computedTarget
               ?? (targetSlot >= 0 ? childNestedGroupIndexForSlot(targetSlot) : nestedGroups[callIndex]);
@@ -24508,7 +24523,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 .findIndex((call) => call.addressParam === targetName);
               const targetSlot = rawSlot >= 0 ? rawSlot : typedSlot;
               const tokenNested = lowLevelCall?.target?.kind === 'computed'
-                ? computedStateWriterGroupIndex(externalCallUtxoGroups, nestedGroups) : undefined;
+                ? computedStateWriterGroupIndex(
+                  externalCallUtxoGroups, nestedGroups,
+                  (entryAbiFunction as MessageBusRuntimeAbiFunction | undefined)?.messageBusConvention,
+                ) : undefined;
               const nestedGroup = tokenNested !== undefined ? tokenNested
                 : targetSlot >= 0 ? nestedGroups[targetSlot] : nestedGroups[callIndex];
               const callInputIndex = BigInt(nestedGroup === undefined
@@ -26104,6 +26122,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       ...(iterationEntryInputs.length > 0 && { iterationEntryInputs }),
       ...(insertLoopPredecessors.length > 0 && { insertLoopPredecessorInputs: insertLoopPredecessors }),
       ...(effectiveBlockLayout && { blockLayout: effectiveBlockLayout }),
+      ...((entryAbiFunction as MessageBusRuntimeAbiFunction | undefined)?.messageBusConvention && {
+        messageBusConvention:
+          (entryAbiFunction as MessageBusRuntimeAbiFunction).messageBusConvention,
+      }),
     });
     builder.seedPrecomputedReturnEvents(allGroupEcSlots);
     timing('builder-created');

@@ -115,4 +115,24 @@ describe('compiler-owned participant identity', () => {
     expect(chunkableWriterGroupIndex([namedChunkable])).toBe(-1);
     expect(chunkableWriterGroupIndex([renamedChunkable])).toBe(-1);
   });
+
+  it('keeps descriptor-free legacy children name-independent under a kernel owner', () => {
+    const namedComputed = group('transferFrom', {
+      name: 'transferFrom', selector: '00000000', inputs: [], outputs: [], writesState: true,
+    } as AbiFunction);
+    const renamedComputed = group('applyLedgerDelta', {
+      name: 'applyLedgerDelta', selector: '00000000', inputs: [], outputs: [], writesState: true,
+    } as AbiFunction);
+    const namedChunkable = group('publishJobEvent', {
+      name: 'publishJobEvent', selector: '00000000', inputs: [], outputs: [], writesState: true,
+    } as AbiFunction);
+    const renamedChunkable = group('appendNotice', {
+      name: 'appendNotice', selector: '00000000', inputs: [], outputs: [], writesState: true,
+    } as AbiFunction);
+
+    expect(computedStateWriterGroupIndex([namedComputed], [0], 'kernel-row-loop')).toBeUndefined();
+    expect(computedStateWriterGroupIndex([renamedComputed], [0], 'kernel-row-loop')).toBeUndefined();
+    expect(chunkableWriterGroupIndex([namedChunkable], 'kernel-row-loop')).toBe(-1);
+    expect(chunkableWriterGroupIndex([renamedChunkable], 'kernel-row-loop')).toBe(-1);
+  });
 });

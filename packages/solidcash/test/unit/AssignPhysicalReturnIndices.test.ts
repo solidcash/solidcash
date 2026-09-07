@@ -222,6 +222,12 @@ describe('generic persisted value-chunk write identity', () => {
     expect(permitsLegacyNamedValueChunkFallback([
       { ...renamedLegacy, logicalArtifact: kernelArtifact },
     ])).toBe(false);
+
+    // The active route owns the compatibility decision. A kernel owner must not recover historical names merely
+    // because all of its nested participants are old or publish no convention themselves.
+    expect(permitsLegacyNamedValueChunkFallback([legacyNamed], 'kernel-row-loop')).toBe(false);
+    expect(permitsLegacyNamedValueChunkFallback([renamedLegacy], 'kernel-row-loop')).toBe(false);
+    expect(permitsLegacyNamedValueChunkFallback([legacyNamed], 'legacy-unroll')).toBe(true);
   });
 
   it('reconstructs descriptor-free events only for legacy plans, ignoring a named kernel decoy', () => {

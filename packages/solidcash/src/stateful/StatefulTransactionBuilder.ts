@@ -2647,7 +2647,9 @@ type ChunkableArrayWriteGroup = {
  */
 export function permitsLegacyNamedValueChunkFallback(
   groups: ReadonlyArray<ChunkableArrayWriteGroup>,
+  ownerConvention?: 'legacy-unroll' | 'kernel-row-loop',
 ): boolean {
+  if (ownerConvention === 'kernel-row-loop') return false;
   return !groups.some((group) => {
     const artifacts = [group.logicalArtifact, group.externalContract?.inner?.artifact];
     return artifacts.some((artifact) => artifact?.messageBus?.convention === 'kernel-row-loop');
@@ -4749,6 +4751,9 @@ export interface StatefulTransactionOptions extends TransactionBuilderOptions {
   checkMinRelayFee?: boolean; // enforce fee >= feePerByte * txSize
   minRelayFeePerKb?: bigint;  // satoshis per 1000 bytes; default 1000n (1 sat/byte)
   blockLayout?: FunctionBlockLayout;
+  /** Convention of the ABI body currently driving this builder. Historical application-name fallbacks must
+   * never run for a kernel-owned route, even if every nested group is legacy or descriptor-free. */
+  messageBusConvention?: 'legacy-unroll' | 'kernel-row-loop';
   funderUtxos?: UnlockableUtxo[];     // funder UTXOs for output-only slots
   /** Immutable SCID anchor co-spent outside every fixed participant block to authenticate a stable logical
    * call target. Runtime caller identity is always taken from the active covenant input instead. */
@@ -4915,6 +4920,7 @@ export class StatefulTransactionBuilder {
   private keccakLoopSideCars: UnlockableUtxo[];
   private keccakLoopRecreates: Output[];
   private blockLayout?: FunctionBlockLayout;
+  private messageBusConvention?: 'legacy-unroll' | 'kernel-row-loop';
   private logicalIdentityUtxo?: UnlockableUtxo;
   private externalIdentityAnchorUtxos: UnlockableUtxo[] = [];
   private childDeploymentInputs = new Map<number, UnlockableUtxo>();
@@ -5090,6 +5096,7 @@ export class StatefulTransactionBuilder {
     this.keccakLoopRecreates = options.keccakLoopRecreates ?? [];
     this._maximumFeeSatoshis = options.maximumFeeSatoshis;
     this.blockLayout = options.blockLayout;
+    this.messageBusConvention = options.messageBusConvention;
     this.funderUtxos = options.funderUtxos ?? [];
     this.logicalIdentityUtxo = options.logicalIdentityUtxo;
     this.externalIdentityAnchorUtxos = options.externalIdentityAnchorUtxos ?? [];
@@ -5992,7 +5999,7 @@ export class StatefulTransactionBuilder {
     return permitsLegacyNamedValueChunkFallback([
       ...this.externalCallUtxoGroups,
       ...this.lowLevelCallUtxoGroups,
-    ]);
+    ], this.messageBusConvention);
   }
 
   /** Physical/logical group views of the one compiler-described chunkable-value writer. */

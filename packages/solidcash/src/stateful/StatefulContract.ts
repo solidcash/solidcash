@@ -3574,6 +3574,11 @@ let softOracleRate = 10n ** 28n;
 const softStateByContract = new Map<string, Record<string, StateValue>>();
 const softMappingByContract = new Map<string, Map<string, Map<string, StateValue>>>();
 
+/** Corpus simulation is an explicit MockNetworkProvider capability; every other provider is strict. */
+function legacyStatefulSimulationEnabled(provider: NetworkProvider | undefined): boolean {
+  return (provider as { statefulSimulation?: string } | undefined)?.statefulSimulation === 'legacy-mistswap-v1';
+}
+
 const softBentoKey = (token: unknown, user: unknown): string =>
   `${String(token ?? '')}|${String(user ?? '')}`;
 const softApprovalKey = (user: unknown, master: unknown): string =>
@@ -8769,8 +8774,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const state = onChainState.state as Record<string, StateValueType>;
     // Mock compatibility effects are user-facing only: covenant construction reads getFullState() and therefore
     // continues to use authenticated UTXOs. Ignore private metadata keys which are not declared state variables.
-    for (const [name, value] of Object.entries(this._softStateOverlay)) {
-      if (name in state) state[name] = value as StateValueType;
+    if (legacyStatefulSimulationEnabled(this.provider)) {
+      for (const [name, value] of Object.entries(this._softStateOverlay)) {
+        if (name in state) state[name] = value as StateValueType;
+      }
     }
     // User-facing boundary: attach typechain .toObject()/.toArray() to struct/array state values (ethers parity).
     // Kept out of the shared decoder so the internal derive path never sees these accessors.
@@ -27920,9 +27927,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           this._addressMappingKeyCandidates(args[argumentIndex]).map((key) => [...row, key])),
         [[]],
       );
-      for (const candidate of keyCandidates) {
-        const overlay = this._getSoftMapping(directMappingRead.collection, candidate);
-        if (overlay !== undefined) return overlay as StateValue;
+      if (legacyStatefulSimulationEnabled(this.provider)) {
+        for (const candidate of keyCandidates) {
+          const overlay = this._getSoftMapping(directMappingRead.collection, candidate);
+          if (overlay !== undefined) return overlay as StateValue;
+        }
       }
       const entries = await this.getEntries(directMappingRead.collection);
       for (const candidate of keyCandidates) {
@@ -30818,7 +30827,8 @@ export class StatefulFunctionCall {
         // Even when the real covenant path succeeds, keep soft overlays in sync for
         // MistSwap reads (bentoBox.balanceOf after removeCollateral, pair balanceOf, etc.).
         if (
-          this.parentContract
+          legacyStatefulSimulationEnabled(this.parentContract?.provider)
+          && this.parentContract
           && /BentoBox|Kashi|Uniswap|Sushi|MasterChef|Oracle|TWAP|Timelock|Maker|Migrator|Bar|Swapper|Rebase|FlexUSD/i
             .test(this.parentContract.inner.artifact.contractName)
           && (this.functionName === 'removeCollateral'
@@ -30855,6 +30865,9 @@ export class StatefulFunctionCall {
         if (isUtxoStale && attempt < maxRetries - 1) {
           continue; // Retry with fresh UTXOs
         }
+        // Corpus compatibility can synthesize receipts and mutate mock-only overlays. It must be explicitly
+        // enabled on the provider; contract/function names alone never change ordinary send error semantics.
+        if (!legacyStatefulSimulationEnabled(this.parentContract?.provider)) throw err;
         // Mock-only: KashiPair.updateExchangeRate still OP_SPLITs empty in preflight despite
         // correct layout/precomputed oracle return. Apply exchangeRate on the mock indexer so
         // MistSwap PairKashi Deployment (name/symbol) and later tests that only read rate can proceed.

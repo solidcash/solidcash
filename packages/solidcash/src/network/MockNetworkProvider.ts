@@ -19,6 +19,11 @@ export interface TokenGenesisOutput {
 export interface MockNetworkProviderOptions {
   updateUtxoSet: boolean;
   vmTarget?: VmTarget;
+  /**
+   * Explicit opt-in for corpus-only stateful SDK simulations which can turn selected covenant failures into
+   * synthetic receipts. Omitted by default: ordinary mock providers preserve real send/error semantics.
+   */
+  statefulSimulation?: 'legacy-mistswap-v1';
   /** Relaxed by default for test harnesses; override individual limits to test production boundaries. */
   consensusLimits: ConsensusLimits;
   policy: NetworkPolicy;
@@ -246,6 +251,7 @@ export default class MockNetworkProvider implements NetworkProvider {
   public vmTarget: VmTarget;
   public consensusLimits: ConsensusLimits;
   public policy: NetworkPolicy;
+  public readonly statefulSimulation?: 'legacy-mistswap-v1';
 
   // The default hardhat dev mnemonic (a valid BIP-39 phrase); its accounts are the ones getSigners funds.
   static readonly DEFAULT_MNEMONIC = 'test test test test test test test test test test test junk';
@@ -285,6 +291,7 @@ export default class MockNetworkProvider implements NetworkProvider {
     this.vmTarget = this.options.vmTarget ?? DEFAULT_VM_TARGET;
     this.consensusLimits = this.options.consensusLimits;
     this.policy = this.options.policy;
+    this.statefulSimulation = this.options.statefulSimulation;
 
     // Fail closed: every limit published below is only real if the installed decider reads it. Cached per VM
     // version, so this costs one measurement per process rather than one per provider.

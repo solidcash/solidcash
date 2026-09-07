@@ -2263,23 +2263,28 @@ function childDeploymentSites(
   root: FunctionDefinitionNode,
   compiledBytecodes: ReadonlyMap<string, Uint8Array>,
   commitmentLimit: number,
+  helperFunctions: readonly FunctionDefinitionNode[] = [],
 ): ChildDeploymentSiteAbi[] {
   const sites: ChildDeploymentSiteAbi[] = [];
   const visibleInputs = root.parameters.filter((parameter) => !parameter.name.startsWith('__internal__'));
   const inputIndex = new Map(visibleInputs.map((parameter, index) => [parameter.name, index]));
   const inputTypes = new Map(visibleInputs.map((parameter) => [parameter.name, abiTypeString(parameter.type)]));
-  const recipeAnalysis = analyzeChildDeploymentRecipes(root);
+  const recipeAnalysis = analyzeChildDeploymentRecipes(root, helperFunctions);
   const active: Array<{ fn: FunctionDefinitionNode; siteStart: number }> = [{ fn: root, siteStart: 0 }];
   let spanOffset = 0;
 
   const source = (expression: ExpressionNode): ChildDeploymentSiteAbi['constructorArgs'][number] =>
-    childDeploymentValueRecipe(expression, inputIndex, false, inputTypes) ?? { kind: 'expression' };
+    childDeploymentValueRecipe(
+      expression, inputIndex, false, inputTypes, undefined, undefined, undefined, new Set(), helperFunctions,
+    ) ?? { kind: 'expression' };
   const saltSource = (expression: ExpressionNode): NonNullable<ChildDeploymentSiteAbi['salt']> => {
     if (expression instanceof IdentifierNode && inputIndex.has(expression.name)) {
       return { kind: 'handlerInput', inputIndex: inputIndex.get(expression.name)! };
     }
     if (expression instanceof HexLiteralNode) return { kind: 'literal', value: binToHex(expression.value) };
-    return childDeploymentValueRecipe(expression, inputIndex, false, inputTypes) ?? { kind: 'expression' };
+    return childDeploymentValueRecipe(
+      expression, inputIndex, false, inputTypes, undefined, undefined, undefined, new Set(), helperFunctions,
+    ) ?? { kind: 'expression' };
   };
   const combineActivation = (
     outer: ChildDeploymentSiteAbi['activation'], inner: ChildDeploymentSiteAbi['activation'],
@@ -3999,7 +4004,7 @@ function synthesizeMessageBusRoute(
     );
     if (compilerOptions.messageBusKernel === true) {
       const fixedEffectRecipes = analyzeFixedBchEffectRecipes(fn);
-      const contractRecipientRecipes = analyzeChildDeploymentRecipes(fn);
+      const contractRecipientRecipes = analyzeChildDeploymentRecipes(fn, contract.functions);
       const auditActivation = (
         value: unknown, seen = new WeakSet<object>(),
       ): void => {
@@ -4271,7 +4276,7 @@ function synthesizeMessageBusRoute(
         .map((proof) => [proof.deployment, proof.proof] as const));
       const foldedProofCalls = new Set(foldedInitializationProofs.map((proof) => proof.call));
       const closureNames = collectNamedFunctionClosure(fn, byName);
-      const deploymentRecipeAnalysis = analyzeChildDeploymentRecipes(fn);
+      const deploymentRecipeAnalysis = analyzeChildDeploymentRecipes(fn, contract.functions);
       const deploymentInputs = fn.parameters.filter((parameter) => !parameter.name.startsWith('__internal__'));
       const deploymentInputIndex = new Map(deploymentInputs.map((parameter, index) => [parameter.name, index]));
       const deploymentInputTypes = new Map(deploymentInputs.map((parameter) =>
@@ -4321,6 +4326,8 @@ function synthesizeMessageBusRoute(
                     constructorStateFoldComplete: undefined, ctorFoldFailed: undefined },
                 );
                 if (!foldedProof) {
+                  // Deployment-site helpers were expanded before route synthesis; constructor-local helper
+                  // lookup must remain in the child's lexical contract (same-name parent helpers are unrelated).
                   new SymbolTableTraversal(compilerOptions).tryFoldChildConstructor(admissionNode);
                 }
                 const genesisState = analyzed && childDeploymentGenesisState(
@@ -4486,9 +4493,23 @@ function synthesizeMessageBusRoute(
       const supportedConditionalDeploy = !deployUnderControlFlow
         || (conditionalDeploySites >= 1 && !deploymentInLoop
           && !conditionalActivationUnsupported);
+      const replayableDeploymentHelperClosure = namedClosureShape.acyclic && [...closureNames].every((name) => {
+        if (name === fn.name) return true;
+        const helpers = byName.get(name) ?? [];
+        return helpers.length > 0 && helpers.every((helper) => {
+          const statements = helper.body?.statements ?? [];
+          return helper.modifiers.includes(FunctionModifier.PURE)
+            && (helper.modifiers.includes(FunctionModifier.INTERNAL)
+              || helper.modifiers.includes(FunctionModifier.PRIVATE))
+            && helper.returnTypes.length === 1 && statements.length > 0
+            && statements.every((statement, index) => index === statements.length - 1
+              ? statement instanceof ReturnNode && statement.expressions.length === 1
+              : statement instanceof VariableDefinitionNode && statement.expression !== undefined);
+        });
+      });
       const kernelDeploySupported = deploys && deploySites >= 1 && !unsupportedInstantiation
         && supportedConditionalDeploy && supportedValueDeploy && !deploymentStateInitializationUnsupported
-        && !deploymentRecipeUnsupported && closureNames.size === 1;
+        && !deploymentRecipeUnsupported && (closureNames.size === 1 || replayableDeploymentHelperClosure);
       if (kernelDeploySupported) {
         kernelDeploymentHandlers.add(fn);
         kernelDeploymentSiteCounts.set(fn, deploySites);
@@ -8781,6 +8802,19 @@ function compileResolvedAst(
     injectCollectionIterationWitnesses(ast);
     injectChunkableEntryWitnesses(ast);
   }
+  // Route synthesis snapshots source handler bodies before the ordinary symbol pass. Reduce the conservative
+  // acyclic straight-line pure-helper subset used only as child-deployment values now, so generated route clones
+  // carry the explicit concat/hash/cast expression rather than an unavailable private/internal subroutine call.
+  if (mergedCompilerOptions.messageBusKernel === true) {
+    const deploymentHelperFolder = new SymbolTableTraversal(mergedCompilerOptions);
+    for (const fn of ast.contract.functions) {
+      walkInvocationAst(fn.body, (node) => {
+        if (node instanceof InstantiationNode) {
+          deploymentHelperFolder.inlineChildDeploymentHelpers(node, ast.contract.functions);
+        }
+      });
+    }
+  }
   const synthesizeBatchBeforeLowering = !!mergedCompilerOptions.messageBus
     && supportsAtomicMessageBus(ast, mergedCompilerOptions)
     && ast.contract.functions.some((fn) => {
@@ -9502,7 +9536,9 @@ function compileResolvedAst(
     .map((parameter) => parameter.type.toString()).join(',')})`;
   const childDeploymentsBySignature = new Map<string, ChildDeploymentSiteAbi[]>();
   for (const fn of ast.contract.functions) {
-    const deployments = childDeploymentSites(fn, compiledBytecodes, mergedCompilerOptions.commitmentLimit!);
+    const deployments = childDeploymentSites(
+      fn, compiledBytecodes, mergedCompilerOptions.commitmentLimit!, ast.contract.functions,
+    );
     if (deployments.length > 0) childDeploymentsBySignature.set(deploymentTopologyKey(fn), deployments);
   }
   profileLog('resolved:referenced', referencedStarted, {

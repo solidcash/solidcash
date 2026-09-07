@@ -415,8 +415,10 @@ export default class SymbolTableTraversal extends AstTraversal {
 
   private conditionalRefNames: Set<string> = new Set();
   private genesisHelperContract?: ContractNode;
+  private genesisAdditionalHelperFunctions: readonly FunctionDefinitionNode[] = [];
   private genesisHelperStack: Set<FunctionDefinitionNode> = new Set();
   private insideGenesisPureHelper: boolean = false;
+  private allowGenesisHelperInputs: boolean = false;
   private insideGenesisPredicate: boolean = false;
   private insideConstructor: boolean = false;
   private insideFunctionPointerStateAssignment: boolean = false;
@@ -1929,6 +1931,9 @@ export default class SymbolTableTraversal extends AstTraversal {
           && (sub.type === PrimitiveType.SIG || sub.type === PrimitiveType.DATASIG)) return null;
         return cloneNode(sub); // forwarded arg or earlier local
       }
+      // While expanding a deployment-site helper, unresolved identifiers are the deploying handler's
+      // already-typed inputs. Keep those leaves verbatim; recipe analysis proves each materializable input.
+      if (this.insideGenesisPureHelper && this.allowGenesisHelperInputs) return cloneNode(expr);
       if (this.insideGenesisPredicate) return null;
       // A not-yet-analyzed child body reads state as a BARE identifier (the StateAccess rewrite happens
       // in the child's own pass): resolve it like a state read when it names a child field.
@@ -1984,7 +1989,27 @@ export default class SymbolTableTraversal extends AstTraversal {
       expr.type ??= expr instanceof BytesConcatNode ? new BytesType() : PrimitiveType.STRING;
       return expr;
     }
+    if (expr instanceof AbiEncodePackedNode) {
+      const parameters = expr.parameters.map((parameter) =>
+        this.foldGenesisExpr(parameter, subs, fieldExprs, fieldType));
+      if (parameters.some((parameter) => parameter === null)) return null;
+      expr.parameters = parameters as ExpressionNode[];
+      expr.type ??= new BytesType();
+      return expr;
+    }
     if (expr instanceof FunctionCallNode) {
+      if ([
+        GlobalFunction.RIPEMD160, GlobalFunction.SHA1, GlobalFunction.SHA256,
+        GlobalFunction.HASH160, GlobalFunction.HASH256,
+      ].includes(expr.identifier.name as GlobalFunction) && !expr.resolvedFunction && expr.parameters.length === 1) {
+        const operand = this.foldGenesisExpr(expr.parameters[0], subs, fieldExprs, fieldType);
+        if (!operand) return null;
+        expr.parameters = [operand];
+        expr.type ??= [GlobalFunction.SHA256, GlobalFunction.HASH256].includes(
+          expr.identifier.name as GlobalFunction,
+        ) ? new BytesType(32) : new BytesType(20);
+        return expr;
+      }
       // A fixed-layout struct constructor is a pure aggregate value. Preserve its field order while folding
       // every field into the deploying handler's context; deployment recipe analysis decides whether each
       // resulting leaf has a materializable scalar representation.
@@ -2056,16 +2081,23 @@ export default class SymbolTableTraversal extends AstTraversal {
     callerFieldType: (name: string) => Type | undefined,
     expectedType?: Type,
   ): ExpressionNode | null {
-    const candidates = call.resolvedFunction ? [call.resolvedFunction]
-      : (this.genesisHelperContract?.functions ?? []).filter((candidate) =>
-        candidate.name === call.identifier.name && candidate.parameters.length === call.parameters.length);
+    const availableHelpers = [
+      ...(this.genesisHelperContract?.functions ?? []), ...this.genesisAdditionalHelperFunctions,
+    ];
+    const candidates = availableHelpers.filter((candidate) =>
+      candidate.name === call.identifier.name && candidate.parameters.length === call.parameters.length);
     if (candidates.length !== 1) return null;
     const helper = candidates[0];
-    if (!this.genesisHelperContract?.functions.includes(helper)
+    if ((call.resolvedFunction && call.resolvedFunction !== helper)
       || !helper.modifiers.includes(FunctionModifier.PURE)
       || !(helper.modifiers.includes(FunctionModifier.INTERNAL)
         || helper.modifiers.includes(FunctionModifier.PRIVATE))
       || helper.returnTypes.length !== 1 || this.genesisHelperStack.has(helper)) return null;
+    const helperResultType = helper.returnTypes[0] instanceof EnumType
+      ? 'bigint' : helper.returnTypes[0].toString();
+    // This path models one recipe value. Aggregates and signatures have multi-item/resource-backed stack
+    // representations, so they remain outside the helper subset even if their source modifier says pure.
+    if (!/^(?:bool|bigint|u?int(?:\d+)?|(?:u?fixed)(?:\d+x\d+)?|bytes(?:[1-9]|[12]\d|3[0-2])?|string|address|pubkey|datasig)$/.test(helperResultType)) return null;
     const body = helper.body as BlockNode | undefined;
     const statements = body?.statements;
     if (!statements || statements.length === 0) return null;
@@ -2107,6 +2139,40 @@ export default class SymbolTableTraversal extends AstTraversal {
       this.genesisHelperStack.delete(helper);
       this.insideGenesisPureHelper = priorInsideHelper;
     }
+  }
+
+  // Expand a finite pure-helper closure at the original deployment site. Compiler-owned routes then consume
+  // an explicit expression recipe and need not reproduce the user's private/internal helper definitions.
+  private inlineDeploymentHelperExpression(
+    expression: ExpressionNode, helpers: readonly FunctionDefinitionNode[],
+  ): ExpressionNode | null {
+    if (helpers.length === 0) return null;
+    const priorContract = this.genesisHelperContract;
+    const priorAdditional = this.genesisAdditionalHelperFunctions;
+    const priorStack = this.genesisHelperStack;
+    const priorInside = this.insideGenesisPureHelper;
+    const priorAllowInputs = this.allowGenesisHelperInputs;
+    this.genesisHelperContract = undefined;
+    this.genesisAdditionalHelperFunctions = helpers;
+    this.genesisHelperStack = new Set();
+    this.insideGenesisPureHelper = true;
+    this.allowGenesisHelperInputs = true;
+    try {
+      return this.foldGenesisExpr(cloneNode(expression), new Map(), new Map(), () => undefined, expression.type);
+    } finally {
+      this.genesisHelperContract = priorContract;
+      this.genesisAdditionalHelperFunctions = priorAdditional;
+      this.genesisHelperStack = priorStack;
+      this.insideGenesisPureHelper = priorInside;
+      this.allowGenesisHelperInputs = priorAllowInputs;
+    }
+  }
+
+  public inlineChildDeploymentHelpers(
+    deployNode: InstantiationNode, helpers: readonly FunctionDefinitionNode[],
+  ): void {
+    deployNode.parameters = deployNode.parameters.map((parameter) =>
+      this.inlineDeploymentHelperExpression(parameter as ExpressionNode, helpers) ?? parameter);
   }
 
   // Fold a straight-line statement list (`T local = expr;` / `this.field = expr;` / optional trailing
@@ -2193,7 +2259,10 @@ export default class SymbolTableTraversal extends AstTraversal {
   // Fold the child constructor's writes into the deploy genesis, so the covenant verifies the TRUE initial
   // state instead of type defaults. All-or-nothing: an unfoldable ctor (control flow, msg.sender, external
   // reads, ...) leaves the default-genesis behavior unchanged. Runs once per `new C(...)` site.
-  public tryFoldChildConstructor(deployNode: InstantiationNode): void {
+  public tryFoldChildConstructor(
+    deployNode: InstantiationNode,
+    additionalHelperFunctions: readonly FunctionDefinitionNode[] = [],
+  ): void {
     const contract = deployNode.referencedContract;
     const ctor = contract?.constructorDef;
     const statements = (ctor?.body as BlockNode | undefined)?.statements ?? [];
@@ -2226,8 +2295,10 @@ export default class SymbolTableTraversal extends AstTraversal {
     // shared, so straight-line locals still feed later foldable writes.
     let failed = false;
     const priorHelperContract = this.genesisHelperContract;
+    const priorAdditionalHelpers = this.genesisAdditionalHelperFunctions;
     const priorHelperStack = this.genesisHelperStack;
     this.genesisHelperContract = contract;
+    this.genesisAdditionalHelperFunctions = additionalHelperFunctions;
     this.genesisHelperStack = new Set();
     try {
       const fixedGenesisValueType = (type: Type, stack: ReadonlySet<StructType> = new Set()): boolean => {
@@ -2333,6 +2404,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       }
     } finally {
       this.genesisHelperContract = priorHelperContract;
+      this.genesisAdditionalHelperFunctions = priorAdditionalHelpers;
       this.genesisHelperStack = priorHelperStack;
     }
     deployNode.ctorFoldFailed = failed;
@@ -10399,6 +10471,10 @@ export default class SymbolTableTraversal extends AstTraversal {
       }
 
       node.parameters = this.visitList(node.parameters);
+
+      // Generated message-bus route source cannot call arbitrary user-private helpers. Inline the same
+      // conservative straight-line pure subset that deployment-recipe analysis accepts.
+      this.inlineChildDeploymentHelpers(node, this.currentContract?.functions ?? []);
 
       // Fold the child ctor's writes into the genesis: the deploy covenant otherwise verifies TYPE
       // DEFAULTS, diverging from a ctor that initializes fields from its args. Also seeds later

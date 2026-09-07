@@ -129,6 +129,109 @@ describe('pure child deployment recipes', () => {
     });
   });
 
+  it('inlines acyclic pure helpers into constructor and genesis byte recipes', () => {
+    const artifact = compileString(`
+      contract Payload(bytes5 joined, bytes32 digest) {
+        int marker;
+        function keep() public { require(true); }
+      }
+      contract Factory() {
+        function joined(bytes2 first, bytes3 second) internal pure returns (bytes5) {
+          return bytes5(bytes.concat(first, second));
+        }
+        function digest(bytes2 first, bytes3 second) private pure returns (bytes32) {
+          bytes packed = abi.encodePacked(first, second);
+          return sha256(packed);
+        }
+        function create(bytes2 first, bytes3 second) public {
+          Payload child = new Payload(joined(first, second), digest(first, second));
+          require(true);
+        }
+      }
+    `, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'create')).toMatchObject({
+      eligible: true,
+      childDeployments: [{
+        constructorArgs: [
+          { kind: 'cast', resultType: 'bytes5', operand: { kind: 'concat', resultType: 'bytes' } },
+          { kind: 'hash', algorithm: 'sha256', operand: { kind: 'concat', resultType: 'bytes' } },
+        ],
+      }],
+    });
+  });
+
+  it('folds pure concat/hash/packed helpers into constructor genesis', () => {
+    const artifact = compileString(`
+      contract Payload(bytes2 first, bytes3 second) {
+        bytes32 stored;
+        constructor() { this.stored = digest(first, second); }
+        function digest(bytes2 left, bytes3 right) private pure returns (bytes32) {
+          bytes packed = abi.encodePacked(left, right);
+          return sha256(packed);
+        }
+      }
+      contract Factory() {
+        function create(bytes2 first, bytes3 second) public {
+          Payload child = new Payload(first, second); require(true);
+        }
+      }
+    `, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'create')).toMatchObject({
+      eligible: true,
+      childDeployments: [{ genesisState: { fields: [{
+        name: 'stored', value: {
+          kind: 'hash', algorithm: 'sha256', operand: { kind: 'concat', resultType: 'bytes' },
+        },
+      }] } }],
+    });
+  });
+
+  it.each([
+    ['recursive', `function helper(bytes2 value) internal pure returns (bytes32) {
+      return helper(value);
+    }`],
+    ['ambiguous same-arity overloads', `function helper(bytes2 value) internal pure returns (bytes32) {
+      return sha256(value);
+    }
+    function helper(bytes3 value) internal pure returns (bytes32) {
+      return sha256(value);
+    }`],
+  ])('keeps %s parent deployment helpers fenced', (_label, helpers) => {
+    const artifact = compileString(`
+      contract Payload(bytes32 digest) { int marker; function keep() public { require(true); } }
+      contract Factory() {
+        ${helpers}
+        function create(bytes2 value) public {
+          Payload child = new Payload(helper(value)); require(true);
+        }
+      }
+    `, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'create')).toMatchObject({
+      eligible: false,
+      rejectionReason: 'KERNEL_LAYOUT',
+      childDeployments: [{ constructorArgs: [{ kind: 'expression' }] }],
+    });
+  });
+
+  it('does not let a replayable deployment helper mask an unrelated unsupported effect', () => {
+    const artifact = compileString(`
+      contract Payload(bytes32 digest) { int marker; function keep() public { require(true); } }
+      contract Factory(address target) {
+        function helper(bytes2 value) internal pure returns (bytes32) { return sha256(value); }
+        function create(bytes2 value, bytes payload) public {
+          target.delegatecall(payload);
+          Payload child = new Payload(helper(value));
+          require(true);
+        }
+      }
+    `, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'create')).toMatchObject({
+      eligible: false,
+      rejectionReason: 'KERNEL_FOREIGN_DELEGATE',
+      childDeployments: [{ constructorArgs: [{ kind: 'hash', algorithm: 'sha256' }] }],
+    });
+  });
+
   it.each([
     ['mixed byte/string operands', 'bytes', 'bytes part, string suffix', 'bytes.concat(part, suffix)'],
     ['mixed string/byte operands', 'string', 'string part, bytes suffix', 'string.concat(part, suffix)'],

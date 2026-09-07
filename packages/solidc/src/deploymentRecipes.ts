@@ -5,11 +5,13 @@ import {
   computeCollectionSignature, EnumType, MappingType, PrimitiveType, StructDefinitionInfo, StructType, Type,
 } from '@solidcash/utils';
 import {
-  ArrayNode, AssemblyStatementNode, AssignNode, BinaryOpNode, BlockNode, BoolLiteralNode, BranchNode, BreakNode,
+  AbiEncodePackedNode, ArrayNode, AssemblyStatementNode, AssignNode, BinaryOpNode, BlockNode, BoolLiteralNode,
+  BranchNode, BreakNode,
   BytesConcatNode, CastNode,
   CollectionIterationNode,
   ContinueNode, DeleteLocalNode, DoWhileNode, ExpressionNode, FunctionDefinitionNode, HexLiteralNode, IdentifierNode,
-  FunctionCallNode, InstantiationNode, IntLiteralNode, Node, ReturnNode, RevertNode, SwitchNode, TryCatchNode,
+  FunctionCallNode, FunctionModifier, InstantiationNode, IntLiteralNode, Node, ReturnNode, RevertNode, SwitchNode,
+  TryCatchNode,
   RequireNode, TernaryOpNode, TupleAssignmentNode, UnaryOpNode, UncheckedNode, VariableDefinitionNode, WhileNode,
   TransferStatementNode,
   AddressTransferStatementNode,
@@ -147,6 +149,8 @@ export function childDeploymentValueRecipe(
   aliasDefinitions?: ReadonlyMap<string, object>,
   expectedType?: Type,
   structStack: ReadonlySet<StructType> = new Set(),
+  helperFunctions: readonly FunctionDefinitionNode[] = [],
+  helperStack: ReadonlySet<FunctionDefinitionNode> = new Set(),
 ): ChildDeploymentValueRecipe | undefined {
   if (expression instanceof IdentifierNode) {
     const definition = expression.definition?.definition ?? aliasDefinitions?.get(expression.name);
@@ -184,7 +188,7 @@ export function childDeploymentValueRecipe(
     if (expression.parameters.length === 0) return undefined;
     const operands = expression.parameters.map((parameter) => childDeploymentValueRecipe(
       parameter, handlerInputs, true, handlerInputTypes, aliases, aliasDefinitions,
-      undefined, structStack,
+      undefined, structStack, helperFunctions, helperStack,
     ));
     const operandTypeSupported = expression instanceof BytesConcatNode
       ? (type: string | undefined): boolean => /^bytes(?:[1-9]|[12]\d|3[0-2])?$/.test(type ?? '')
@@ -193,11 +197,23 @@ export function childDeploymentValueRecipe(
       ? { kind: 'concat', resultType, operands: operands as ChildDeploymentValueRecipe[] }
       : undefined;
   }
+  if (expression instanceof AbiEncodePackedNode) {
+    const operands = expression.parameters.map((parameter) => childDeploymentValueRecipe(
+      parameter, handlerInputs, true, handlerInputTypes, aliases, aliasDefinitions,
+      undefined, structStack, helperFunctions, helperStack,
+    ));
+    // For byte/string operands, packed ABI encoding is exactly their unframed concatenation. Numeric and
+    // aggregate packed widths need a distinct encoder recipe and remain fenced.
+    return operands.length > 0 && operands.every((operand) => operand
+      && concatenableRecipeType.test(operand.resultType ?? ''))
+      ? { kind: 'concat', resultType: 'bytes', operands: operands as ChildDeploymentValueRecipe[] }
+      : undefined;
+  }
   if (expression instanceof FunctionCallNode && pureHashFunctions.has(expression.identifier.name)
     && !expression.resolvedFunction && expression.parameters.length === 1) {
     const operand = childDeploymentValueRecipe(
       expression.parameters[0], handlerInputs, true, handlerInputTypes, aliases, aliasDefinitions,
-      undefined, structStack,
+      undefined, structStack, helperFunctions, helperStack,
     );
     const resultType = declaredType ?? (expectedType ? physicalRecipeType(expectedType) : undefined)
       ?? pureHashResultType(expression.identifier.name);
@@ -216,7 +232,7 @@ export function childDeploymentValueRecipe(
     const elements = expression.elements.map((elementExpression) => {
       let element = childDeploymentValueRecipe(
         elementExpression, handlerInputs, true, handlerInputTypes, aliases, aliasDefinitions,
-        arrayType.elementType, structStack,
+        arrayType.elementType, structStack, helperFunctions, helperStack,
       );
       const targetType = physicalRecipeType(arrayType.elementType);
       const sourceType = element?.resultType ?? recipeType(elementExpression);
@@ -242,7 +258,7 @@ export function childDeploymentValueRecipe(
       if (!materializableGenesisType(fieldType, nestedStructStack)) return undefined;
       let element = childDeploymentValueRecipe(
         parameter, handlerInputs, true, handlerInputTypes, aliases, aliasDefinitions,
-        fieldType, nestedStructStack,
+        fieldType, nestedStructStack, helperFunctions, helperStack,
       );
       const targetType = physicalRecipeType(fieldType);
       const sourceType = element?.resultType ?? recipeType(parameter);
@@ -257,20 +273,81 @@ export function childDeploymentValueRecipe(
       ? { kind: 'aggregate', resultType: structType.name, elements: elements as ChildDeploymentValueRecipe[] }
       : undefined;
   }
+  if (expression instanceof FunctionCallNode) {
+    const namedCandidates = helperFunctions.filter((candidate) =>
+      candidate.name === expression.identifier.name && candidate.parameters.length === expression.parameters.length);
+    const candidates = namedCandidates.length > 0
+      ? namedCandidates : expression.resolvedFunction ? [expression.resolvedFunction] : [];
+    // Keep phase behavior identical: a same-arity overload is ambiguous during early admission even if a later
+    // type pass could select one. Recipe publication must not depend on which compiler phase asks first.
+    if (candidates.length !== 1) return undefined;
+    const helper = candidates[0];
+    if (!helper.modifiers.includes(FunctionModifier.PURE)
+      || !(helper.modifiers.includes(FunctionModifier.INTERNAL)
+        || helper.modifiers.includes(FunctionModifier.PRIVATE))
+      || helper.returnTypes.length !== 1 || helperStack.has(helper)) return undefined;
+    const statements = helper.body?.statements ?? [];
+    if (statements.length === 0) return undefined;
+    const helperAliases = new Map(aliases);
+    const helperDefinitions = new Map(aliasDefinitions);
+    const nestedHelperStack = new Set(helperStack);
+    nestedHelperStack.add(helper);
+    for (const [index, parameter] of helper.parameters.entries()) {
+      const argument = childDeploymentValueRecipe(
+        expression.parameters[index], handlerInputs, true, handlerInputTypes, aliases, aliasDefinitions,
+        parameter.type, structStack, helperFunctions, nestedHelperStack,
+      );
+      if (!argument) return undefined;
+      helperAliases.set(parameter, argument);
+      helperDefinitions.set(parameter.name, parameter);
+    }
+    for (const [index, statement] of statements.entries()) {
+      const last = index === statements.length - 1;
+      if (statement instanceof VariableDefinitionNode && statement.expression && !last) {
+        let value = childDeploymentValueRecipe(
+          statement.expression, handlerInputs, true, handlerInputTypes, helperAliases, helperDefinitions,
+          statement.type, structStack, helperFunctions, nestedHelperStack,
+        );
+        const targetType = physicalRecipeType(statement.type);
+        if (!value) return undefined;
+        if (value.resultType !== targetType) {
+          if (!materializableCastType.test(targetType)) return undefined;
+          value = { kind: 'cast', resultType: targetType, operand: value };
+        }
+        helperAliases.set(statement, value);
+        helperDefinitions.set(statement.name, statement);
+        continue;
+      }
+      if (last && statement instanceof ReturnNode && statement.expressions.length === 1) {
+        let value = childDeploymentValueRecipe(
+          statement.expressions[0], handlerInputs, true, handlerInputTypes, helperAliases, helperDefinitions,
+          helper.returnTypes[0], structStack, helperFunctions, nestedHelperStack,
+        );
+        const targetType = physicalRecipeType(helper.returnTypes[0]);
+        if (!value) return undefined;
+        if (value.resultType !== targetType) {
+          if (!materializableCastType.test(targetType)) return undefined;
+          value = { kind: 'cast', resultType: targetType, operand: value };
+        }
+        return value;
+      }
+      return undefined;
+    }
+  }
   if (expression instanceof TernaryOpNode) {
     const condition = childDeploymentValueRecipe(
       expression.condition, handlerInputs, true, handlerInputTypes, aliases, aliasDefinitions,
-      PrimitiveType.BOOL, structStack,
+      PrimitiveType.BOOL, structStack, helperFunctions, helperStack,
     );
     const resultValueType = expectedType ?? expression.type;
     if (!resultValueType || !materializableGenesisType(resultValueType, structStack)) return undefined;
     const ifTrue = childDeploymentValueRecipe(
       expression.ifTrue, handlerInputs, true, handlerInputTypes, aliases, aliasDefinitions,
-      resultValueType, structStack,
+      resultValueType, structStack, helperFunctions, helperStack,
     );
     const ifFalse = childDeploymentValueRecipe(
       expression.ifFalse, handlerInputs, true, handlerInputTypes, aliases, aliasDefinitions,
-      resultValueType, structStack,
+      resultValueType, structStack, helperFunctions, helperStack,
     );
     const resultType = physicalRecipeType(resultValueType);
     if (!condition || condition.resultType !== 'bool' || !ifTrue || !ifFalse
@@ -280,7 +357,7 @@ export function childDeploymentValueRecipe(
   if (expression instanceof CastNode) {
     const operand = childDeploymentValueRecipe(
       expression.expression, handlerInputs, true, handlerInputTypes, aliases, aliasDefinitions,
-      undefined, structStack,
+      undefined, structStack, helperFunctions, helperStack,
     );
     return operand && declaredType && materializableCastType.test(declaredType)
       ? { kind: 'cast', resultType: declaredType, operand } : undefined;
@@ -288,7 +365,7 @@ export function childDeploymentValueRecipe(
   if (expression instanceof UnaryOpNode && unaryOperators.has(expression.operator)) {
     const operand = childDeploymentValueRecipe(
       expression.expression, handlerInputs, true, handlerInputTypes, aliases, aliasDefinitions,
-      undefined, structStack,
+      undefined, structStack, helperFunctions, helperStack,
     );
     const resultType = declaredType ?? (expression.operator === UnaryOperator.NOT ? 'bool' : operand?.resultType);
     const operandFixedDecimals = fixedRecipeDecimals(operand?.resultType);
@@ -303,11 +380,11 @@ export function childDeploymentValueRecipe(
   if (expression instanceof BinaryOpNode && binaryOperators.has(expression.operator)) {
     const left = childDeploymentValueRecipe(
       expression.left, handlerInputs, true, handlerInputTypes, aliases, aliasDefinitions,
-      undefined, structStack,
+      undefined, structStack, helperFunctions, helperStack,
     );
     const right = childDeploymentValueRecipe(
       expression.right, handlerInputs, true, handlerInputTypes, aliases, aliasDefinitions,
-      undefined, structStack,
+      undefined, structStack, helperFunctions, helperStack,
     );
     const booleanResult = [BinaryOperator.LT, BinaryOperator.LE, BinaryOperator.GT, BinaryOperator.GE,
       BinaryOperator.EQ, BinaryOperator.NE, BinaryOperator.AND, BinaryOperator.OR].includes(expression.operator);
@@ -410,9 +487,11 @@ const bindRecipe = (
   handlerInputTypes: ReadonlyMap<string, string>,
   aliases: ReadonlyMap<object, ChildDeploymentValueRecipe>,
   aliasDefinitions: ReadonlyMap<string, object>,
+  helperFunctions: readonly FunctionDefinitionNode[] = [],
 ): ChildDeploymentValueRecipe | undefined => {
   let recipe = childDeploymentValueRecipe(
     expression, handlerInputs, true, handlerInputTypes, aliases, aliasDefinitions,
+    undefined, new Set(), helperFunctions,
   );
   if (!recipe) return undefined;
   const sourceType = recipe.resultType ?? recipeType(expression);
@@ -967,6 +1046,7 @@ export function analyzeFixedBchEffectRecipes(
  */
 export function analyzeChildDeploymentRecipes(
   fn: FunctionDefinitionNode,
+  helperFunctions: readonly FunctionDefinitionNode[] = [],
 ): WeakMap<InstantiationNode, ChildDeploymentRecipeAnalysis> {
   const visibleInputs = fn.parameters.filter((parameter) => !parameter.name.startsWith('__internal__'));
   const handlerInputs = new Map(visibleInputs.map((parameter, index) => [parameter.name, index]));
@@ -1031,16 +1111,18 @@ export function analyzeChildDeploymentRecipes(
       const constructorArgs = value.parameters.map((parameter, index) => (unsafe ? undefined
         : childDeploymentValueRecipe(
           parameter, handlerInputs, false, handlerInputTypes, siteAliases, siteAliasDefinitions,
-          constructorParameters[index]?.type,
+          constructorParameters[index]?.type, new Set(), helperFunctions,
         )));
       const salt = value.callOptions?.salt && !unsafe
         ? childDeploymentValueRecipe(
           value.callOptions.salt, handlerInputs, false, handlerInputTypes, siteAliases, siteAliasDefinitions,
+          undefined, new Set(), helperFunctions,
         )
         : undefined;
       const callValue = value.callOptions?.value && !unsafe
         ? childDeploymentValueRecipe(
           value.callOptions.value, handlerInputs, false, handlerInputTypes, siteAliases, siteAliasDefinitions,
+          undefined, new Set(), helperFunctions,
         )
         : undefined;
       result.set(value, {
@@ -1097,7 +1179,7 @@ export function analyzeChildDeploymentRecipes(
         if (!statementUnsafe && statement.expression) {
           const recipe = bindRecipe(
             statement.expression, abiTypeString(statement.type), handlerInputs, handlerInputTypes, aliases,
-            aliasDefinitions,
+            aliasDefinitions, helperFunctions,
           );
           if (recipe) aliases.set(key, recipe); else aliases.delete(key);
         } else aliases.delete(key);
@@ -1112,6 +1194,7 @@ export function analyzeChildDeploymentRecipes(
           const targetType = abiTypeString((key as { type?: unknown }).type as never);
           const recipe = bindRecipe(
             statement.expression, targetType, handlerInputs, handlerInputTypes, aliases, aliasDefinitions,
+            helperFunctions,
           );
           if (recipe) aliases.set(key, recipe); else aliases.delete(key);
         } else if (key) aliases.delete(key);
@@ -1131,6 +1214,7 @@ export function analyzeChildDeploymentRecipes(
         const incomingDefinitions = new Map(aliasDefinitions);
         const condition = !statementUnsafe ? childDeploymentValueRecipe(
           statement.condition, handlerInputs, true, handlerInputTypes, incomingAliases, incomingDefinitions,
+          undefined, new Set(), helperFunctions,
         ) : undefined;
         const branchSupported = condition?.resultType === 'bool'
           && childControlArmJoinSafe(statement.ifBlock)
@@ -1167,10 +1251,12 @@ export function analyzeChildDeploymentRecipes(
         const incomingDefinitions = new Map(aliasDefinitions);
         const discriminant = !statementUnsafe ? childDeploymentValueRecipe(
           statement.expression, handlerInputs, true, handlerInputTypes, incomingAliases, incomingDefinitions,
+          undefined, new Set(), helperFunctions,
         ) : undefined;
         const matches = statement.cases.map((arm) => {
           const armValue = !statementUnsafe ? childDeploymentValueRecipe(
             arm.value, handlerInputs, true, handlerInputTypes, incomingAliases, incomingDefinitions,
+            undefined, new Set(), helperFunctions,
           ) : undefined;
           return discriminant && armValue ? {
             kind: 'binary', operator: '==', resultType: 'bool', left: discriminant, right: armValue,

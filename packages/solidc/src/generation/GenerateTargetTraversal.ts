@@ -23508,6 +23508,33 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   private emitKernelJournalRecordIdentitySelect(loc: SingleLocationData): void {
     this.emitKernelJournalRecordExtract(loc);
+    // The executable journal protocol is currently topology-only: a carrier is either an exact clean,
+    // authenticated pre-state record (0x01), or an exact clean synthetic absence tombstone (0x0c). Dirty records
+    // describe final-flush state and must not be accepted until that flush is itself covenant-verified. Check the
+    // complete low nibble rather than testing individual bits, otherwise an authenticated record relabelled DIRTY
+    // remains physically indistinguishable here and a synthetic target can claim an unverified pending value.
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_1, loc); this.emit(Op.OP_SPLIT, loc);
+    this.emit(Op.OP_SWAP, loc);
+    this.emit(new Uint8Array([0x05]), loc); this.emit(Op.OP_EQUALVERIFY, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_1, loc); this.emit(Op.OP_SPLIT, loc); // carrier, flags || body, flags, body
+    this.emit(Op.OP_SWAP, loc); // carrier, flags || body, body, flags
+    this.emit(Op.OP_DUP, loc); this.emit(Op.OP_1, loc); this.emit(Op.OP_EQUAL, loc);
+    this.emit(Op.OP_IF, loc);
+    this.emit(Op.OP_DROP, loc); // authenticated flags
+    this.emit(Op.OP_DROP, loc); // body
+    this.emit(Op.OP_DROP, loc); // flags || body
+    this.emit(Op.OP_ELSE, loc);
+    this.emit(encodeInt(12n), loc); this.emit(Op.OP_NUMEQUALVERIFY, loc);
+    // A clean synthetic record is only an absence claim: collection20 || slot32 || zero-successor32, no value.
+    this.emit(Op.OP_DUP, loc); this.emit(Op.OP_SIZE, loc); this.emit(Op.OP_NIP, loc);
+    this.emit(encodeInt(84n), loc); this.emit(Op.OP_NUMEQUALVERIFY, loc);
+    this.emit(Op.OP_DUP, loc); this.emit(encodeInt(52n), loc); this.emit(Op.OP_SPLIT, loc);
+    this.emit(Op.OP_NIP, loc); this.emit(new Uint8Array(32), loc); this.emit(Op.OP_EQUALVERIFY, loc);
+    this.emit(Op.OP_DROP, loc); // body
+    this.emit(Op.OP_DROP, loc); // flags || body
+    this.emit(Op.OP_ENDIF, loc);
     // Preserve the complete carrier below its authenticated collection-hash/slot identity. The caller reuses it
     // for physical-body authentication rather than scanning the variable record array a second time.
     this.emit(Op.OP_DUP, loc);

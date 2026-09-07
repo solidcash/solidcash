@@ -74,7 +74,11 @@ export type KernelEntryJournalTopologyOperation = 'read' | 'write' | 'remove';
 export interface KernelEntryJournalAccessTopologyPlan {
   /** Number of first-touch records addressed by every stream in this plan. */
   recordCount: number;
-  /** Truthful pre-state carriers in the same first-touch ordinal space as the access programs. */
+  /**
+   * Truthful topology-phase carriers in the same first-touch ordinal space as the access programs. Existing
+   * records are exactly clean+authenticated; absent records are exactly clean+synthetic+tombstone with no value
+   * or successor. Dirty carrier forms are reserved for a future covenant-verified final-flush phase.
+   */
   encodedRecords: Uint8Array[];
   /** One compact access program for each source stream. */
   encodedAccessStreams: Uint8Array[];

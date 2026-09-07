@@ -3960,6 +3960,23 @@ describe('kernel counter-key mapping loop compose', () => {
     const nonzeroAbsentSuccessor = hostileRecord((record) => {
       record[1] = 0x0c; record[54] = 1; return record;
     });
+    const authenticatedDirty = hostileRecord((record) => { record[1] = 0x03; return record; });
+    const dirtySynthetic = journalRecords.map((record, index) => {
+      const copy = new Uint8Array(record as Uint8Array);
+      if (index === 1) copy[1] = 0x0e;
+      return copy;
+    });
+    const valueBearingSyntheticAbsence = journalRecords.map((record, index) => {
+      if (index !== 1) return new Uint8Array(record as Uint8Array);
+      const copy = new Uint8Array((record as Uint8Array).length + 1);
+      copy.set(record as Uint8Array); copy[copy.length - 1] = 1;
+      return copy;
+    });
+    const linkedSyntheticAbsence = journalRecords.map((record, index) => {
+      const copy = new Uint8Array(record as Uint8Array);
+      if (index === 1) copy[54] = 1;
+      return copy;
+    });
     const wrongPhysicalSuccessor = hostileRecord((record) => { record[54] ^= 0x01; return record; });
     const wrongPhysicalValue = hostileRecord((record) => {
       const copy = new Uint8Array(record.length + 1); copy.set(record); copy[copy.length - 1] = 1; return copy;
@@ -3974,6 +3991,7 @@ describe('kernel counter-key mapping loop compose', () => {
       ['truncated header', hostileRecord((record) => record.slice(0, 85))],
       ['oversized value', hostileRecord(() => oversizedRecord)],
       ['unknown flags', hostileRecord((record) => { record[1] |= 0x80; return record; })],
+      ['authenticated dirty pre-state', authenticatedDirty],
       ['authenticated synthetic', hostileRecord((record) => { record[1] = 0x09; return record; })],
       ['unauthenticated non-synthetic', hostileRecord((record) => { record[1] = 0; return record; })],
       ['physical record relabeled synthetic', hostileRecord((record) => { record[1] = 0x0a; return record; })],
@@ -3981,6 +3999,9 @@ describe('kernel counter-key mapping loop compose', () => {
       ['clean tombstone', hostileRecord((record) => { record[1] = 0x04; return record; })],
       ['value-bearing tombstone', hostileRecord(() => valueTombstone)],
       ['nonzero absent successor', nonzeroAbsentSuccessor],
+      ['dirty synthetic absence', dirtySynthetic],
+      ['value-bearing synthetic absence', valueBearingSyntheticAbsence],
+      ['linked synthetic absence', linkedSyntheticAbsence],
       ['wrong physical successor', wrongPhysicalSuccessor],
       ['wrong physical value', wrongPhysicalValue],
     ] as const) {

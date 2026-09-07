@@ -23479,7 +23479,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           const chunkBase = publishImpl + (publishFn?.blockLayout?.blockSize ?? 5);
           for (const [groupIdx, group] of externalCallUtxoGroups.entries()) {
             if (group.sharedGroupIndex !== undefined) continue;
-            if (!isCompilerDescribedMintingBandWriter(group, true)) continue;
+            if (!isCompilerDescribedMintingBandWriter(
+              group, true,
+              (entryAbiFunction as MessageBusRuntimeAbiFunction | undefined)?.messageBusConvention,
+            )) continue;
             const tokenName = group.functionName ?? group.compilerRoute?.abiFunction.name;
             const start = nestedMasterIndices[groupIdx];
             if (start === undefined || start < 0) continue;
@@ -26410,9 +26413,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       });
       timing('sender-delegate-scan');
       if (usesMsgSenderKey || usesTxOriginSender || delegateUsesMsgSender) neededFunders = Math.max(neededFunders, 1);
+      const activeMessageBusConvention =
+        (entryAbiFunction as MessageBusRuntimeAbiFunction | undefined)?.messageBusConvention;
       const predictedBandWidth = Math.max(
         0,
-        ...liveChunkSlotsByOwner(externalCallUtxoGroups).values(),
+        ...liveChunkSlotsByOwner(externalCallUtxoGroups, activeMessageBusConvention).values(),
         ...externalCallUtxoGroups.map((group) => group.valueChunkOutputCount ?? 0),
         ...lowLevelCallUtxoGroups.map((group) => group.valueChunkOutputCount ?? 0),
       );
@@ -26429,6 +26434,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           externalCallUtxoGroups,
           (categoryId) => builder.findMintingInputIndex(categoryId),
           predictedDynamicBand,
+          activeMessageBusConvention,
         )
         : -1;
       const collidingParticipant = externalCallUtxoGroups[collidingParticipantIndex];
@@ -26735,7 +26741,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       }
       for (const [groupIdx, group] of externalCallUtxoGroups.entries()) {
         if (group.sharedGroupIndex !== undefined) continue;
-        if (!isCompilerDescribedMintingBandWriter(group, true)) continue;
+        if (!isCompilerDescribedMintingBandWriter(
+          group, true,
+          (entryAbiFunction as MessageBusRuntimeAbiFunction | undefined)?.messageBusConvention,
+        )) continue;
         const master = builder.findMintingInputIndex(group.categoryId);
         if (master < 0) continue;
         const band = builder.getPublishJobEventsBand();

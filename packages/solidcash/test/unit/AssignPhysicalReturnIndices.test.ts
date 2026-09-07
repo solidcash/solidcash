@@ -240,6 +240,11 @@ describe('generic persisted value-chunk write identity', () => {
     expect(permitsLegacyValueChunkEventReconstruction([legacyRenamed], false)).toBe(true);
     expect(permitsLegacyValueChunkEventReconstruction([legacyRenamed], true)).toBe(false);
     expect(permitsLegacyValueChunkEventReconstruction([legacyRenamed, kernelNamedDecoy], false)).toBe(false);
+    // A kernel route can legitimately compose an older descriptor-free child. The active owner convention is
+    // authoritative: neither the historical name nor the child's missing convention may re-enable reconstruction.
+    expect(permitsLegacyValueChunkEventReconstruction(
+      [{ functionName: 'publishJobEvent' }], false, 'kernel-row-loop',
+    )).toBe(false);
   });
 
   it('keeps nested delegate event repair legacy-only across misleading names', () => {
@@ -253,6 +258,9 @@ describe('generic persisted value-chunk write identity', () => {
     expect(permitsLegacyDelegateEventRepair([legacyNamed, legacyRenamed], false)).toBe(true);
     expect(permitsLegacyDelegateEventRepair([legacyNamed], true)).toBe(false);
     expect(permitsLegacyDelegateEventRepair([legacyRenamed, kernelNamedDecoy], false)).toBe(false);
+    expect(permitsLegacyDelegateEventRepair(
+      [{ functionName: 'publishJobEvent' }], false, 'kernel-row-loop',
+    )).toBe(false);
   });
 
   it('selects a renamed physical value writer from metadata and rejects a named decoy', () => {
@@ -2673,6 +2681,18 @@ describe('assignPhysicalReturnIndices', () => {
     expect(liveChunkWidthForGroup(groups, -1)).toBe(0);
   });
 
+  it('does not let legacy child names alter kernel value-chunk ownership', () => {
+    const groups = [
+      { functionName: 'transferFrom', valueChunkOutputCount: 3 },
+      { functionName: 'moveUnits', valueChunkOutputCount: 5 },
+    ];
+    // Descriptor-free legacy plans retain their historical token-writer exclusion.
+    expect(liveChunkSlotsByOwner(groups).has(0)).toBe(false);
+    // A kernel owner requires compiler descriptors, so both otherwise identical children are treated uniformly.
+    expect([...liveChunkSlotsByOwner(groups, 'kernel-row-loop').entries()]).toEqual([[0, 3], [1, 5]]);
+    expect(liveChunkWidthForGroup(groups, 0, 'kernel-row-loop')).toBe(3);
+  });
+
   it('reserves proxy pads so FakeToken starts after the live jobEvents band', () => {
     expect(proxyValueChunkPadCount({ insertBase: 5, chunkSlots: 6, prefixLength: 4 })).toBe(7);
     expect(proxyValueChunkPadCount({ insertBase: 5, chunkSlots: 2, prefixLength: 4 })).toBe(3);
@@ -2939,6 +2959,11 @@ describe('assignPhysicalReturnIndices', () => {
       expect(isCompilerDescribedMintingBandWriter(kernelGroup(name))).toBe(false);
       expect(isCompilerDescribedMintingBandWriter(kernelGroup(name), true)).toBe(false);
     }
+    // The kernel owner also dominates descriptor-free legacy children, whose own artifacts cannot advertise the
+    // active route convention. Familiar source names must not manufacture token-writer geometry in that case.
+    expect(isCompilerDescribedMintingBandWriter(
+      { functionName: 'transferFrom' }, true, 'kernel-row-loop',
+    )).toBe(false);
   });
 
   it('restores persisted continuations from transaction structure, independent of caller names', () => {

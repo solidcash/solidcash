@@ -349,6 +349,7 @@ type CompilerTokenWriterGroup = {
 export function isCompilerDescribedMintingBandWriter(
   group: CompilerTokenWriterGroup,
   requireWideWriter = false,
+  ownerConvention?: 'legacy-unroll' | 'kernel-row-loop',
 ): boolean {
   const artifact = group.logicalArtifact ?? group.externalContract?.inner?.artifact;
   const logicalName = group.logicalFunctionName ?? group.functionName;
@@ -361,7 +362,7 @@ export function isCompilerDescribedMintingBandWriter(
   }
   // Kernel artifacts publish the resource authority used by layout planning. Missing entry effects in that
   // convention mean "not described", never permission to recover legacy geometry from an ABI name.
-  if (!permitsLegacyNamedValueChunkFallback([group])) return false;
+  if (!permitsLegacyNamedValueChunkFallback([group], ownerConvention)) return false;
   const legacyName = group.functionName ?? group.logicalFunctionName ?? abiFunction?.name;
   return requireWideWriter
     ? isMintingBandSwapFunction(legacyName)
@@ -536,10 +537,11 @@ export function liveChunkSlotsByOwner(
     functionName?: string;
     logicalFunctionName?: string;
   }>,
+  ownerConvention?: 'legacy-unroll' | 'kernel-row-loop',
 ): Map<number, number> {
   const byOwner = new Map<number, number>();
   for (const [index, group] of groups.entries()) {
-    if (isCompilerDescribedMintingBandWriter(group, true)) continue;
+    if (isCompilerDescribedMintingBandWriter(group, true, ownerConvention)) continue;
     const owner = group.sharedGroupIndex ?? index;
     const nNew = group.valueChunkOutputCount ?? 0;
     byOwner.set(owner, Math.max(byOwner.get(owner) ?? 0, nNew));
@@ -556,10 +558,11 @@ export function liveChunkWidthForGroup(
     logicalFunctionName?: string;
   }>,
   groupIndex: number,
+  ownerConvention?: 'legacy-unroll' | 'kernel-row-loop',
 ): number {
   if (groupIndex < 0 || groupIndex >= groups.length) return 0;
   const owner = groups[groupIndex].sharedGroupIndex ?? groupIndex;
-  return liveChunkSlotsByOwner(groups).get(owner) ?? 0;
+  return liveChunkSlotsByOwner(groups, ownerConvention).get(owner) ?? 0;
 }
 
 /** Complete coordinate span reserved by a participant, including output-only slots. */
@@ -600,10 +603,11 @@ export function collidingParticipantGroupIndex(
   groups: ReadonlyArray<PhysicalReturnGroup>,
   findMintingInputIndex: (categoryId: string) => number,
   band: { start: number; end: number },
+  ownerConvention?: 'legacy-unroll' | 'kernel-row-loop',
 ): number {
   for (const [groupIdx, group] of groups.entries()) {
     if (group.sharedGroupIndex !== undefined) continue;
-    if (liveChunkWidthForGroup(groups, groupIdx) > 0) continue;
+    if (liveChunkWidthForGroup(groups, groupIdx, ownerConvention) > 0) continue;
     const master = findMintingInputIndex(group.categoryId);
     if (master < 0) continue;
     const width = physicalParticipantWidth(group);
@@ -622,11 +626,13 @@ export function selectTokenBandRepairOwner(
   groups: ReadonlyArray<PhysicalReturnGroup>,
   findMintingInputIndex: (categoryId: string) => number,
   band: { start: number; end: number } | undefined,
+  ownerConvention?: 'legacy-unroll' | 'kernel-row-loop',
 ): TokenBandRepairOwnerSelection {
   if (!band) return { status: 'absent' };
   const owners = new Map<string, Extract<TokenBandRepairOwnerSelection, { status: 'exact' }>>();
   for (const [groupIndex, group] of groups.entries()) {
-    if (group.sharedGroupIndex !== undefined || liveChunkWidthForGroup(groups, groupIndex) > 0) continue;
+    if (group.sharedGroupIndex !== undefined
+      || liveChunkWidthForGroup(groups, groupIndex, ownerConvention) > 0) continue;
     const masterIndex = findMintingInputIndex(group.categoryId);
     if (masterIndex < 0) continue;
     const width = physicalParticipantWidth(group);
@@ -2660,15 +2666,19 @@ export function permitsLegacyNamedValueChunkFallback(
 export function permitsLegacyValueChunkEventReconstruction(
   groups: ReadonlyArray<ChunkableArrayWriteGroup>,
   hasChunkableValueWriteMetadata: boolean,
+  ownerConvention?: 'legacy-unroll' | 'kernel-row-loop',
 ): boolean {
-  return !hasChunkableValueWriteMetadata && permitsLegacyNamedValueChunkFallback(groups);
+  return !hasChunkableValueWriteMetadata
+    && permitsLegacyNamedValueChunkFallback(groups, ownerConvention);
 }
 
 /** Legacy delegate event placement is unavailable once either the artifact or the active layout owns the frame. */
 export function permitsLegacyDelegateEventRepair(
   groups: ReadonlyArray<ChunkableArrayWriteGroup>, compilerOwnedDelegateBlock: boolean,
+  ownerConvention?: 'legacy-unroll' | 'kernel-row-loop',
 ): boolean {
-  return !compilerOwnedDelegateBlock && permitsLegacyNamedValueChunkFallback(groups);
+  return !compilerOwnedDelegateBlock
+    && permitsLegacyNamedValueChunkFallback(groups, ownerConvention);
 }
 
 function groupChunkableArrayWriteCollections(group: ChunkableArrayWriteGroup): string[] {
@@ -5943,7 +5953,7 @@ export class StatefulTransactionBuilder {
     const persistBand = this.getPublishJobEventsBand();
     const returnWitnesses = returnWitnessOutputIndices(this.externalCallUtxoGroups);
     for (const group of this.externalCallUtxoGroups) {
-      if (!isCompilerDescribedMintingBandWriter(group, true)) continue;
+      if (!isCompilerDescribedMintingBandWriter(group, true, this.messageBusConvention)) continue;
       const master = this.findMintingInputIndex(group.categoryId);
       if (master >= 0) {
         returnWitnesses.add(tokenWriterReturnIndex(master, group.blockLayout, persistBand));
@@ -6094,7 +6104,7 @@ export class StatefulTransactionBuilder {
 
   hasMintingBandTokenWriter(): boolean {
     return this.externalCallUtxoGroups.some((group) =>
-      isCompilerDescribedMintingBandWriter(group, true))
+      isCompilerDescribedMintingBandWriter(group, true, this.messageBusConvention))
       || this.mintingOutputSwap !== undefined;
   }
 
@@ -6233,7 +6243,7 @@ export class StatefulTransactionBuilder {
       for (let index = range.start; index < range.endExclusive; index++) reserved.add(index);
     }
     for (const group of this.externalCallUtxoGroups) {
-      if (!isCompilerDescribedMintingBandWriter(group, true)) continue;
+      if (!isCompilerDescribedMintingBandWriter(group, true, this.messageBusConvention)) continue;
       const master = this.findMintingInputIndex(group.categoryId);
       if (master >= 0) reserved.add(tokenWriterReturnIndex(master, group.blockLayout, band));
     }
@@ -6253,7 +6263,7 @@ export class StatefulTransactionBuilder {
       // boundary when the caller derived it from an actual output layout.
       suffixStart,
       tokenWriterPresent: this.externalCallUtxoGroups.some((group) =>
-        isCompilerDescribedMintingBandWriter(group, true)),
+        isCompilerDescribedMintingBandWriter(group, true, this.messageBusConvention)),
     };
   }
 
@@ -6303,7 +6313,9 @@ export class StatefulTransactionBuilder {
     }
     const plannedWidth = Math.max(
       0,
-      liveChunkWidthForGroup(this.externalCallUtxoGroups, publishExternalIndex),
+      liveChunkWidthForGroup(
+        this.externalCallUtxoGroups, publishExternalIndex, this.messageBusConvention,
+      ),
       ...(publishLlcIndex >= 0
         ? [this.lowLevelCallUtxoGroups[publishLlcIndex].valueChunkOutputCount ?? 0]
         : []),
@@ -6344,7 +6356,7 @@ export class StatefulTransactionBuilder {
     const forcedStart = this.forcedJobEventsBandStart;
     const publishImpl = this._chunkableValueWriteInputIndex();
     const tokenWriter = this.externalCallUtxoGroups.find((group) =>
-      isCompilerDescribedMintingBandWriter(group, true));
+      isCompilerDescribedMintingBandWriter(group, true, this.messageBusConvention));
     const tokenMaster = tokenWriter?.categoryId
       ? this.findMintingInputIndex(tokenWriter.categoryId) : -1;
     const keepAtLayout = shouldKeepPersistAtLayoutBase({
@@ -6438,6 +6450,7 @@ export class StatefulTransactionBuilder {
       this.externalCallUtxoGroups,
       (categoryId) => this.findMintingInputIndex(categoryId),
       band,
+      this.messageBusConvention,
     );
     const tokenGroup = collisionIndex >= 0
       ? this.externalCallUtxoGroups[collisionIndex]
@@ -6770,7 +6783,7 @@ export class StatefulTransactionBuilder {
    */
   async ensurePersistedJobEventsInputs(): Promise<void> {
     const tokenWriterPresent = this.externalCallUtxoGroups.some((group) =>
-      isCompilerDescribedMintingBandWriter(group, true));
+      isCompilerDescribedMintingBandWriter(group, true, this.messageBusConvention));
     const band = this.getPublishJobEventsBand();
     const categoryId = this._persistJobEventsTokenCategory() ?? this._jobEventsPublishCategory();
     if (!shouldRestorePersistedContinuationInputs({
@@ -7638,6 +7651,7 @@ export class StatefulTransactionBuilder {
       && permitsLegacyValueChunkEventReconstruction(
         [...this.externalCallUtxoGroups, ...this.lowLevelCallUtxoGroups],
         this._hasChunkableValueWriteMetadata(),
+        this.messageBusConvention,
       );
     if (eventSelection.status === 'absent' && !legacyEventFallback) return;
     const publishFn = this._chunkableValueWriteAbi();
@@ -8150,7 +8164,7 @@ export class StatefulTransactionBuilder {
         ? builder.outputs.length - jobsCountForPack - 1
         : Math.max(0, this.allInputs.length - 1),
       tokenWriterPresent: this.externalCallUtxoGroups.some((group) =>
-        isCompilerDescribedMintingBandWriter(group, true)),
+        isCompilerDescribedMintingBandWriter(group, true, this.messageBusConvention)),
     };
     const planned = packTailReturnPlacements(
       this.externalCallUtxoGroups,
@@ -8582,7 +8596,7 @@ export class StatefulTransactionBuilder {
     const swapCategoryId = this.mintingOutputSwap?.categoryId
       ?? this.externalCallUtxoGroups.find((group) =>
         group.sharedGroupIndex === undefined
-        && isCompilerDescribedMintingBandWriter(group, true))?.categoryId;
+        && isCompilerDescribedMintingBandWriter(group, true, this.messageBusConvention))?.categoryId;
     if (!swapCategoryId) {
       this._writeViewTailsAfterWriterOccupancy(builder, returnOutputRefs);
       this._reassertInBlockWriterReturns(builder);
@@ -9812,6 +9826,7 @@ export class StatefulTransactionBuilder {
       this.externalCallUtxoGroups,
       (categoryId) => this.findMintingInputIndex(categoryId),
       band,
+      this.messageBusConvention,
     );
     const tokenWriterPresent = repairOwner.status !== 'absent'
       || this.mintingOutputSwap !== undefined;
@@ -10034,6 +10049,7 @@ export class StatefulTransactionBuilder {
       this.externalCallUtxoGroups,
       (categoryId) => this.findMintingInputIndex(categoryId),
       band,
+      this.messageBusConvention,
     );
     const tokenWriterPresent = repairOwner.status !== 'absent'
       || this.mintingOutputSwap !== undefined;
@@ -12834,7 +12850,7 @@ export class StatefulTransactionBuilder {
                 },
               });
             } else if (group.compilerRoute
-              && !isCompilerDescribedMintingBandWriter(group, true)) {
+              && !isCompilerDescribedMintingBandWriter(group, true, this.messageBusConvention)) {
               // A message-bus route reserves the union of every handler's event slots. Slots not reached by
               // this dispatch are ordinary balanced funding slots and the route covenant binds them by
               // preservation. Mirroring the input also works as the active-slot probe: its empty commitment
@@ -13877,7 +13893,7 @@ export class StatefulTransactionBuilder {
     }> = [];
     const permitsLegacyNestedDelegateEventRepair = permitsLegacyDelegateEventRepair([
       ...this.externalCallUtxoGroups, ...this.lowLevelCallUtxoGroups,
-    ], this.compilerRouteDelegateBlock);
+    ], this.compilerRouteDelegateBlock, this.messageBusConvention);
     for (const [llcIndex, llc] of this.lowLevelCallUtxoGroups.entries()) {
       // Compiler-owned delegate routes materialize every declared event and entry inside their balanced frame.
       // The legacy nested-delegate repair below is only for layouts without that physical ownership boundary.
@@ -14418,7 +14434,7 @@ export class StatefulTransactionBuilder {
       ))
       .filter((index) => index >= 0);
     const tokenWriterPresent = this.externalCallUtxoGroups.some((group) => {
-      if (!isCompilerDescribedMintingBandWriter(group)) return false;
+      if (!isCompilerDescribedMintingBandWriter(group, false, this.messageBusConvention)) return false;
       return this.findMintingInputIndex(group.categoryId) >= 0;
     });
     // FakeToken already parks view tails after its swapped block. Do not steal

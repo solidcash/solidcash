@@ -150,6 +150,8 @@ export interface RuntimeLoopEventAbi {
   arguments?: readonly (readonly ExternalCallExpression[])[];
   /** Per-site runtime predicates, aligned with eventSignatures. Missing entries are unconditional. */
   conditions?: readonly (ExternalCallExpression | null)[];
+  /** Source-order predicate which ends the loop after the current logical iteration. */
+  iterationBreakCondition?: ExternalCallExpression;
   /** Function-local execution segment, shared with transfers produced by the same loop. */
   effectSequence?: number;
   /** Per-site order among all event and transfer effects in this segment. */

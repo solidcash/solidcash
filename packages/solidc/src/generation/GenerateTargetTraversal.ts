@@ -14128,7 +14128,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         childLayoutDigest: childStateLayoutDigest({
           variables: liveVars.map((state) => ({
             name: state.name,
-            type: abiTypeString(state.type),
+            type: state.type instanceof EnumType ? 'bigint' : abiTypeString(state.type),
             nftIndex: state.nftIndex ?? 0,
             fieldIndex: state.fieldIndex ?? 0,
             ...(state.isDynamic && { dynamic: true }),
@@ -15859,7 +15859,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     // First, handle the special cases for int-like types
     const isIntLike = type === PrimitiveType.BIGINT || type instanceof IntType
-      || type instanceof FixedType || (type instanceof BytesType && type.bound === 1);
+      || type instanceof FixedType || type instanceof EnumType || (type instanceof BytesType && type.bound === 1);
 
     // The int-like branch is shared via a subroutine when used >=2 times.
     if (isIntLike) {

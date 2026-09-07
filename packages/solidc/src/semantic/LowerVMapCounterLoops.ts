@@ -2326,7 +2326,6 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       };
       if (sourceWhile || postTest) inspectSourceContinues(block);
       if ((keyed.length === 0 && runtimeEmits.length === 0)
-        || (keyed.length === 0 && breakPaths.length > 0)
         || !selectionConditionSupported
         || keyed.some((write) => hasObservableEffect(write))
         || conditionalRuntimeEmit
@@ -3662,6 +3661,9 @@ export default class LowerVMapCounterLoops extends AstTraversal {
             loopIndex: eventLoopIndex,
             permutationParam: primaryGroup.hidden,
             ...(primaryGroup.domainOnly && { staticArguments: true as const }),
+            ...(primaryGroup.domainOnly && expandedBreakCondition && {
+              iterationBreakCondition: cloneNode(expandedBreakCondition),
+            }),
           },
         ];
         runtimeEmits.forEach(({ emit, condition, staticArguments }, siteIndex) => {
@@ -4113,6 +4115,9 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           emits.forEach((emit, siteIndex) => { emit.runtimeLoopEvent = { loopIndex, siteIndex }; });
           orderedSegments.push({ loopIndex, permutationParam: prior.permutationParam,
             ...(prior.staticArguments && { staticArguments: true as const }),
+            ...(prior.iterationBreakCondition && {
+              iterationBreakCondition: prior.iterationBreakCondition,
+            }),
             ...(publishEffectOrder && { effectSequence: sequence }) });
         }
         const transfers = effects.filter((effect): effect is TransferStatementNode | TokenContainerMethodStatementNode =>

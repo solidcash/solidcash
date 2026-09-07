@@ -627,11 +627,13 @@ describe('messageBus.compose atomic transaction', () => {
     expect(new Set(deployments.map((outputs) => binToHex(outputs[0].output.to)))).toHaveLength(4);
   }, 120_000);
 
-  it('materializes row-varying constructor genesis recipes for one deployment site', async () => {
+  it('materializes row-varying scalar and enum constructor genesis recipes for one deployment site', async () => {
     const provider = createMessageBusCapstoneTestProvider();
     const artifacts = compileStringMulti(`contract Child(int seed) {
+        enum Phase { Initial, Active, Complete }
         int marker;
-        constructor() { this.marker = seed; }
+        Phase phase;
+        constructor() { this.marker = seed; this.phase = Phase(seed); }
         function keep() public { require(true); }
       }
       interface IFactory { function create(int seed); }
@@ -661,7 +663,10 @@ describe('messageBus.compose atomic transaction', () => {
       eligible: true,
       childDeployments: [{
         constructorArgs: [{ kind: 'cast', operand: { kind: 'binary', operator: '+' } }],
-        genesisState: { fields: [{ name: 'marker', value: { kind: 'cast', operand: { kind: 'binary' } } }] },
+        genesisState: { fields: [
+          { name: 'marker', value: { kind: 'cast', operand: { kind: 'binary' } } },
+          { name: 'phase', type: 'bigint', value: { kind: 'cast', resultType: 'bigint' } },
+        ] },
       }],
     });
     const fee = await createBareP2pkhFeeFunder(provider, 100_000n);
@@ -687,9 +692,11 @@ describe('messageBus.compose atomic transaction', () => {
     expect(binToHex(childLocks[0]!)).not.toBe(binToHex(childLocks[1]!));
     const childDataIndices = [firstGenesis, secondGenesis].map((genesis) => transaction.outputs.findIndex((output) =>
       output.token?.category === genesis.utxo.txid && output.token.nft?.capability === 'mutable'));
-    expect(childDataIndices.map((index) => parsePushdataCommitment(
+    const childStates = childDataIndices.map((index) => parsePushdataCommitment(
       transaction.outputs[index].token!.nft!.commitment, artifacts.Child.stateLayout!, 0,
-    ).marker)).toEqual([1n, 2n]);
+    ));
+    expect(childStates.map((state) => state.marker)).toEqual([1n, 2n]);
+    expect(childStates.map((state) => state.phase)).toEqual([1n, 2n]);
     const tampered = await messageBus.compose({
       preparedCalls: [
         { contract: driver, functionName: 'run', args: [] },

@@ -2646,6 +2646,8 @@ export interface RuntimeLoopEventInfo {
   };
   /** Compiler-only marker: serialize per-site arguments for this permutation-backed logical domain. */
   staticArguments?: true;
+  /** Source-order predicate which ends this runtime event segment after the current logical iteration. */
+  iterationBreakCondition?: ExpressionNode;
   /** Function-local execution segment shared by every runtime effect produced at this source position. */
   effectSequence?: number;
 }

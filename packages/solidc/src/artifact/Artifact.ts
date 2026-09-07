@@ -1265,11 +1265,17 @@ function buildFunctionAbiMetadata(
         ? undefined : eventSites.map((emit) => emit.args.map((argument) => serializeCondition(
           argument, emit.runtimeLoopEventCounter, new Set(), preservedLocals,
         )));
+      const iterationBreakCondition = loop.iterationBreakCondition && serializeCondition(
+        loop.iterationBreakCondition, eventSites[0]?.runtimeLoopEventCounter, new Set(), preservedLocals,
+      );
       if (eventSites.some((emit, index) => emit.runtimeLoopEventCondition && conditions[index] === null)) {
         throw new Error(`Runtime event condition in '${func.name}' cannot be represented in artifact metadata`);
       }
       if (serializedArguments?.some((site) => site.some((argument) => argument === undefined))) {
         throw new Error(`Runtime event arguments in '${func.name}' cannot be represented in artifact metadata`);
+      }
+      if (loop.iterationBreakCondition && !iterationBreakCondition) {
+        throw new Error(`Runtime event break condition in '${func.name}' cannot be represented in artifact metadata`);
       }
       return {
         ...(loop.permutationParam !== undefined && { permutationParam: loop.permutationParam }),
@@ -1280,6 +1286,7 @@ function buildFunctionAbiMetadata(
           arguments: serializedArguments as ExternalCallExpression[][],
         }),
         ...(conditions.some((condition) => condition !== null) && { conditions }),
+        ...(iterationBreakCondition && { iterationBreakCondition }),
         ...(loop.effectSequence !== undefined && { effectSequence: loop.effectSequence }),
         ...(eventSites.some((emit) => emit.runtimeLoopEffectOrder !== undefined) && {
           effectOrder: eventSites.map((emit, index) => emit.runtimeLoopEffectOrder ?? index),
@@ -1997,7 +2004,10 @@ export function generateArtifact(
     stateLayout = {
       variables: contract.stateVariables.map((sv) => ({
         name: sv.name,
-        type: abiTypeString(sv.type),
+        // Enums are nominal at callable ABI boundaries, but state commitments contain their integer ordinal.
+        // Publishing the physical type lets the shared state codec encode/decode enum state without a separate
+        // artifact-level nominal-type registry on every StateLayout consumer.
+        type: sv.type instanceof EnumType ? 'bigint' : abiTypeString(sv.type),
         nftIndex: sv.nftIndex,
         fieldIndex: sv.fieldIndex,
         ...(sv.visibility !== StateVariableVisibility.PUBLIC && { visibility: sv.visibility }),

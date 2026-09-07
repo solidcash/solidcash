@@ -25190,6 +25190,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           ...(source.runtimeLoopEvents ?? []).flatMap((loop) => loop.conditions ?? [])
             .filter((condition): condition is ExternalCallExpression => condition !== null),
           ...(source.runtimeLoopEvents ?? []).flatMap((loop) => loop.arguments ?? []).flat(),
+          ...(source.runtimeLoopEvents ?? []).flatMap((loop) => loop.iterationBreakCondition ?? []),
           ...(source.runtimeLoopEvents ?? []).flatMap((loop) => loop.iterationDomain
             ? [
               loop.iterationDomain.initialValue,
@@ -25302,6 +25303,25 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           throw new Error(
             `Runtime-loop event metadata for '${source.name}' has no valid repeat source`,
           );
+        }
+        if (loop.iterationBreakCondition) {
+          for (let iteration = 0; iteration < repeatCount; iteration += 1) {
+            const breaking = this._evaluateExternalExpression(
+              loop.iterationBreakCondition,
+              functionArgs,
+              sourceArtifact,
+              runtimePredicateState,
+              visibleHandlerInputs(source.inputs),
+              undefined,
+              iteration,
+              false,
+              executionSelfAddress,
+            );
+            if (typeof breaking !== 'boolean') throw new Error(
+              `Could not resolve runtime loop break predicate while planning events for '${source.name}'.`,
+            );
+            if (breaking) { repeatCount = iteration + 1; break; }
+          }
         }
         for (let iteration = 0; iteration < repeatCount; iteration += 1) {
           for (let siteIndex = 0; siteIndex < loop.eventSignatures.length; siteIndex += 1) {

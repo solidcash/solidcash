@@ -4560,6 +4560,67 @@ describe('kernel composite counter-key settlement', () => {
     ]);
   }, 180_000);
 
+  it('settles event-only loop breaks in source order', async () => {
+    const exercise = async (
+      body: string,
+      cases: readonly { bound: bigint; stop: bigint; commitments: string[] }[],
+    ): Promise<void> => {
+      const provider = createTestProvider();
+      const artifact = compileString(`contract EventBreak() {
+        event Tick(int value);
+        function run(int n, int stop) public {
+          ${body}
+          require(true);
+        }
+      }`, KERNEL);
+      const inner = new Contract(artifact, [], { provider });
+      const { categoryId } = await setupStatefulUtxos(
+        provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+      );
+      const contract = StatefulContract.withCategory(inner, categoryId);
+      for (const testCase of cases) {
+        const builder = await contract.batch([{
+          function: 'run', args: [testCase.bound, testCase.stop],
+        }]).build();
+        const transaction = builder.buildLibauthTransaction();
+        expect(transaction.outputs
+          .filter((output) => output.token?.nft?.capability === 'none')
+          .map((output) => binToHex(output.token!.nft!.commitment)))
+          .toEqual(testCase.commitments);
+        const vm = createVirtualMachineBch2026ForProvider(provider);
+        const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+        for (let inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex += 1) {
+          expect(vm.stateSuccess(vm.evaluate({ inputIndex, sourceOutputs, transaction })),
+            `run(${testCase.bound}, ${testCase.stop}), input ${inputIndex}`).toBe(true);
+        }
+      }
+    };
+
+    await exercise(`for (int i = 0; i < n; i = i + 1) {
+      emit Tick(i);
+      if (i == stop) break;
+    }`, [
+      { bound: 4n, stop: 2n, commitments: ['00', '51', '52'] },
+      { bound: 3n, stop: 9n, commitments: ['00', '51', '52'] },
+    ]);
+    await exercise(`for (int i = 0; i < n; i = i + 1) {
+      if (i == stop) break;
+      emit Tick(i);
+    }`, [
+      { bound: 4n, stop: 2n, commitments: ['00', '51'] },
+      { bound: 3n, stop: 9n, commitments: ['00', '51', '52'] },
+    ]);
+    await exercise(`int i = 0;
+      do {
+        if (i == stop) break;
+        emit Tick(i);
+        i = i + 1;
+      } while (i < n);`, [
+      { bound: 0n, stop: 0n, commitments: [] },
+      { bound: 0n, stop: 9n, commitments: ['00'] },
+    ]);
+  }, 180_000);
+
   it('replays affine recursive events at each current-frame value across source renaming', async () => {
     const variants = [
       { contractName: 'DescendingStream', functionName: 'descend', counterName: 'cursor', eventName: 'Seen' },

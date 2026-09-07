@@ -2029,14 +2029,32 @@ describe('required kernel admission', () => {
       .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
   });
 
-  it.each([
-    'enum Status { Idle, Ready } contract Unit() { Status status; constructor(int seed) { this.status = Status(seed + 1); } }',
-    'struct Pair { int left; int right; } contract Unit() { Pair pair; constructor() { this.pair.left = 1; } }',
-  ])('keeps aggregate or nominal constructor state fenced: %s', (child) => {
-    const args = child.includes('constructor()') ? '' : '1';
-    const artifact = compileString(`${child}
+  it('publishes enum-valued constructor state using its physical integer representation', () => {
+    const child = compileString(`enum Status { Idle, Ready, Complete }
+      contract Unit() { Status public status; constructor(int seed) { this.status = Status(seed + 1); }
+        function touch() public { this.status = Status.Ready; }
+      }`, KERNEL);
+    expect(child.stateLayout?.variables.find((variable) => variable.name === 'status')?.type).toBe('bigint');
+    const artifact = compileString(`enum Status { Idle, Ready, Complete }
+      contract Unit() { Status status; constructor(int seed) { this.status = Status(seed + 1); } }
       contract Coordinator() {
-        function materialize() public { Unit unit = new Unit(${args}); require(true); }
+        function materialize(int seed) public { Unit unit = new Unit(seed); require(true); }
+      }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'materialize'))
+      .toMatchObject({
+        eligible: true,
+        childDeployments: [{ genesisState: { fields: [{
+          name: 'status', type: 'bigint',
+          value: { kind: 'cast', resultType: 'bigint', operand: { kind: 'binary', operator: '+' } },
+        }] } }],
+      });
+  });
+
+  it('keeps aggregate constructor state fenced', () => {
+    const artifact = compileString(`struct Pair { int left; int right; }
+      contract Unit() { Pair pair; constructor() { this.pair.left = 1; } }
+      contract Coordinator() {
+        function materialize() public { Unit unit = new Unit(); require(true); }
       }`, KERNEL);
     expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'materialize'))
       .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
@@ -5232,14 +5250,33 @@ describe('required kernel admission', () => {
     ]);
   });
 
-  it.each([
-    ['a partial branch join', 'if (change) { selected = !selected; }'],
-    ['a loop-carried assignment', 'while (change) { selected = !selected; change = false; }'],
-  ])('keeps a fixed transfer predicate after %s fenced', (_label, mutation) => {
+  it('replays a fixed transfer predicate through a state-independent partial branch join', () => {
     const artifact = compileString(`contract C() {
       function pay(bool take, bool change, bytes recipient, int amount) public {
         bool selected = take;
-        ${mutation}
+        if (change) { selected = !selected; }
+        if (selected) this.transfer(recipient, amount);
+        require(true);
+      }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'pay')).toMatchObject({
+      eligible: true,
+      transfers: [{ condition: {
+        kind: 'binary', operator: '||',
+        left: { kind: 'binary', operator: '&&' },
+        right: { kind: 'binary', operator: '&&' },
+      } }],
+    });
+    expect(artifact.abi.find((candidate) => candidate.name === 'pay')?.transfers).toEqual([
+      expect.objectContaining({ transferIndex: 0, condition: expect.anything() }),
+    ]);
+  });
+
+  it('keeps a fixed transfer predicate after a loop-carried assignment fenced', () => {
+    const artifact = compileString(`contract C() {
+      function pay(bool take, bool change, bytes recipient, int amount) public {
+        bool selected = take;
+        while (change) { selected = !selected; change = false; }
         if (selected) this.transfer(recipient, amount);
         require(true);
       }
@@ -5939,6 +5976,46 @@ describe('required kernel admission', () => {
         }]],
       }]);
     }
+  });
+
+  it('publishes exact break and site-reachability predicates for event-only counter loops', () => {
+    const artifact = compileString(`event Tick(int value);
+      contract C() {
+        function beforeBreak(int n, int stop) public {
+          for (int i = 0; i < n; i = i + 1) {
+            emit Tick(i);
+            if (i == stop) break;
+          }
+          require(true);
+        }
+        function afterBreak(int n, int stop) public {
+          for (int i = 0; i < n; i = i + 1) {
+            if (i == stop) break;
+            emit Tick(i);
+          }
+          require(true);
+        }
+      }`, KERNEL);
+    const before = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'beforeBreak');
+    const after = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'afterBreak');
+    for (const handler of [before, after]) {
+      expect(handler).toMatchObject({ eligible: true });
+      expect(handler?.runtimeLoopEvents?.[0]).toMatchObject({
+        permutationParam: expect.stringMatching(/^__internal__vmapCounterPerm_n_\d+$/),
+        iterationBreakCondition: {
+          kind: 'binary', operator: '==',
+          left: {
+            kind: 'source',
+            source: { kind: 'loopIndex', initialValue: '0', stepValue: '1' },
+          },
+          right: { kind: 'source', source: { kind: 'forward', paramIndex: 1 } },
+        },
+      });
+    }
+    expect(before?.runtimeLoopEvents?.[0].conditions).toBeUndefined();
+    expect(after?.runtimeLoopEvents?.[0].conditions).toMatchObject([{
+      kind: 'unary', operator: '!', expression: { kind: 'binary', operator: '==' },
+    }]);
   });
 
   it('fences event-only arguments with unmodeled loop-carried local or state values', () => {

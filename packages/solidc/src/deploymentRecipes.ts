@@ -33,7 +33,9 @@ const fixedRecipeDecimals = (type: string | undefined): number | undefined => {
 };
 
 const recipeType = (expression: ExpressionNode): string | undefined => {
-  if (expression.type instanceof EnumType) return undefined;
+  // Enum values have the same runtime/commitment representation as `bigint`. Keep the nominal name in the
+  // public function ABI, but publish the executable recipe in the primitive type understood by the SDK.
+  if (expression.type instanceof EnumType) return 'bigint';
   const type = expression.type ? abiTypeString(expression.type) : undefined;
   // Collection, tuple, function, and contract-valued expressions require an ABI-aware evaluator. Keep this
   // initial recipe language scalar so every published node has one unambiguous runtime value.
@@ -210,6 +212,47 @@ export function analyzeFixedBchEffectRecipes(
   ): ChildDeploymentValueRecipe => outer === undefined ? inner : ({
     kind: 'binary', operator: '&&', resultType: 'bool', left: outer, right: inner,
   });
+  const sameRecipe = (
+    left: ChildDeploymentValueRecipe, right: ChildDeploymentValueRecipe,
+  ): boolean => JSON.stringify(left) === JSON.stringify(right);
+  const mergeBooleanRecipe = (
+    condition: ChildDeploymentValueRecipe,
+    whenTrue: ChildDeploymentValueRecipe,
+    whenFalse: ChildDeploymentValueRecipe,
+  ): ChildDeploymentValueRecipe | undefined => {
+    if (sameRecipe(whenTrue, whenFalse)) return whenTrue;
+    if (condition.resultType !== 'bool' || whenTrue.resultType !== 'bool' || whenFalse.resultType !== 'bool') {
+      return undefined;
+    }
+    // Pure boolean phi: (condition && true-arm) || (!condition && false-arm). Recipe operands are restricted to
+    // authenticated handler inputs, literals, casts, and pure scalar operators, so replaying this in the SDK
+    // neither observes state written by an arm nor repeats an effectful source expression.
+    return {
+      kind: 'binary', operator: '||', resultType: 'bool',
+      left: { kind: 'binary', operator: '&&', resultType: 'bool', left: condition, right: whenTrue },
+      right: {
+        kind: 'binary', operator: '&&', resultType: 'bool',
+        left: negate(condition), right: whenFalse,
+      },
+    };
+  };
+  const mergeBranchAliases = (
+    environment: Environment,
+    whenTrue: Environment,
+    whenFalse: Environment,
+    condition: ChildDeploymentValueRecipe | undefined,
+  ): void => {
+    // Only declarations visible before the branch can escape its lexical join. A missing recipe in either arm
+    // remains unknown; non-boolean differing values wait for a typed select recipe rather than being guessed.
+    for (const definition of environment.definitions.values()) {
+      const trueRecipe = whenTrue.aliases.get(definition);
+      const falseRecipe = whenFalse.aliases.get(definition);
+      const merged = trueRecipe && falseRecipe && (sameRecipe(trueRecipe, falseRecipe)
+        ? trueRecipe : condition && mergeBooleanRecipe(condition, trueRecipe, falseRecipe));
+      if (merged) environment.aliases.set(definition, merged);
+      else environment.aliases.delete(definition);
+    }
+  };
   const resolvedDefinition = (identifier: IdentifierNode, environment: Environment): object | undefined =>
     identifier.definition?.definition ?? environment.definitions.get(identifier.name);
   const invalidateAssignments = (
@@ -306,16 +349,19 @@ export function analyzeFixedBchEffectRecipes(
         snapshotEffects(statement.condition, environment, activation, activationSupported, unsafe);
         const condition = !unsafe ? recipe(statement.condition, environment) : undefined;
         const branchSupported = activationSupported && condition !== undefined;
+        const ifEnvironment = cloneEnvironment(environment);
         processBlock(
-          statement.ifBlock, cloneEnvironment(environment),
+          statement.ifBlock, ifEnvironment,
           condition ? conjunction(activation, condition) : undefined, branchSupported, unsafe,
         );
-        if (statement.elseBlock) processBlock(
-          statement.elseBlock, cloneEnvironment(environment),
-          condition ? conjunction(activation, negate(condition)) : undefined, branchSupported, unsafe,
-        );
-        // No value is allowed to escape a join unless a future explicit phi/ternary analysis proves both arms.
-        invalidateAssignments(statement, environment);
+        const elseEnvironment = cloneEnvironment(environment);
+        if (statement.elseBlock) {
+          processBlock(
+            statement.elseBlock, elseEnvironment,
+            condition ? conjunction(activation, negate(condition)) : undefined, branchSupported, unsafe,
+          );
+        }
+        mergeBranchAliases(environment, ifEnvironment, elseEnvironment, condition);
         continue;
       }
       if (statement instanceof SwitchNode) {
@@ -563,7 +609,7 @@ export function childDeploymentGenesisState(
     const variable = variables.find((candidate) => candidate.name === name);
     if (!variable || (!allowUnpackedLayout
       && (variable.nftIndex === undefined || variable.fieldIndex === undefined))) return undefined;
-    const type = abiTypeString(variable.type as never);
+    const type = variable.type instanceof EnumType ? 'bigint' : abiTypeString(variable.type as never);
     // Dynamic/aggregate state needs chunk/struct-aware recipe encoding. Keep this first slice fixed and scalar.
     // eslint-disable-next-line max-len
     if (!/^(?:bool|bigint|u?int(?:8|16|24|32|40|48|56|64|72|80|88|96|104|112|120|128|136|144|152|160|168|176|184|192|200|208|216|224|232|240|248|256)?|(?:u?fixed)(?:\d+x\d+)?|bytes(?:[1-9]|[12]\d|3[0-2])|address|pubkey|datasig)$/.test(type)) return undefined;

@@ -2271,7 +2271,7 @@ function childDeploymentSites(
       const childLayoutDigest = childStateLayoutDigest({
         variables: child.stateVariables.map((state) => ({
           name: state.name,
-          type: abiTypeString(state.type),
+          type: state.type instanceof EnumType ? 'bigint' : abiTypeString(state.type),
           nftIndex: state.nftIndex ?? 0,
           fieldIndex: state.fieldIndex ?? 0,
           ...(state.isDynamic && { dynamic: true }),
@@ -4220,8 +4220,7 @@ function synthesizeMessageBusRoute(
                 .map((parameter) => [parameter.name, abiTypeString(parameter.type)] as const));
               const constructorStatements = child.constructorDef?.body.statements ?? [];
               if (constructorStatements.length > 0 || foldedProof) {
-                if (child.stateVariables.some((state) => state.type instanceof StructType
-                  || state.type instanceof EnumType)) {
+                if (child.stateVariables.some((state) => state.type instanceof StructType)) {
                   deploymentStateInitializationUnsupported = true;
                 }
                 // Admission precedes the full symbol pass. Run the canonical folder on a clone so proof

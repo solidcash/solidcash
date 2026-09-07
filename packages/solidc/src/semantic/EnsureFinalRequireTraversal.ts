@@ -153,6 +153,10 @@ export default class EnsureFinalRequireTraversal extends AstTraversal {
     // Entry-point functions with return types: the function body can end with return
     // (the code generator adds covenant verification automatically after return value encoding)
     if ((visibility === 'public' || visibility === 'external') && hasReturnTypes) {
+      // A split mutating entry publishes its result from the facet input. Its root input only authenticates and
+      // executes that delegate; it deliberately retains the logical return ABI/layout without fabricating a
+      // second stack value or return-event output. Only the compiler can set this marker.
+      if (node.splitDelegateReturnForwarder) return node;
       if (!allPathsReturn(node.body.statements, this.neverReturn)) {
         throw new MissingReturnError(node);
       }

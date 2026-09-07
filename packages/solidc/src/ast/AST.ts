@@ -607,6 +607,8 @@ export class FunctionDefinitionNode extends Node implements Named {
   // while the state-covenant skip (!functionHasDelegatecall) is per-function. Codegen compensates with a
   // runtime "delegate reached" flag; see emitConditionalDelegateStatePreservation.
   delegatecallIsConditional: boolean = false;
+  /** Compiler-owned split-root forwarder whose mutating facet owns the published return-event output. */
+  splitDelegateReturnForwarder: boolean = false;
   /** Block-local delegate covenants reserved by an message-bus batch graph clone/route. */
   graphDelegateSlotCount?: number;
   isFallback: boolean = false;

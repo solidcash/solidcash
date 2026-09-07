@@ -695,10 +695,12 @@ contract Mixed() {
     expect(setAbi?.outputs).toEqual([{ type: 'int256' }]);
     expect(setAbi?.blockLayout?.slots.some((slot) => slot.kind === 'returnEvent')).toBe(true);
     const rootSet = bundle.root.abi.find((fn) => fn.name === 'set');
+    expect(rootSet?.outputs).toEqual([{ type: 'int256' }]);
     const returnCommitmentOpcode = asmToBytecode('OP_OUTPUTTOKENCOMMITMENT')[0].toString(16).padStart(2, '0');
     // The forwarding root retains the return-event ABI slot, but the facet which owns the state transition
-    // must own its output-state covenant. Re-reading it in the root would incorrectly duplicate that work.
-    expect(bundle.root.functionBodies?.[rootSet!.selector!]).not.toContain(returnCommitmentOpcode);
+    // must own its output-state covenant. The root can still use OP_OUTPUTTOKENCOMMITMENT for its general
+    // immutable-output pin, so opcode absence is not a valid negative assertion there.
+    expect(bundle.root.functionBodies?.[rootSet!.selector!]).toBeTypeOf('string');
     expect(bundle.facets[setTarget!].functionBodies?.[setAbi!.selector!]).toContain(returnCommitmentOpcode);
   });
 

@@ -11609,6 +11609,7 @@ function prepareSplitRoot(contract: ContractNode, routes: Map<string, { facet: s
       // Keep the root's declared return types so its published physical layout
       // still reserves that channel, but do not attempt to decode an in-memory
       // return buffer from an independent BCH input.
+      if (fn.returnTypes.length > 0) fn.splitDelegateReturnForwarder = true;
     } else {
       const call = new LowLevelCallNode(target, data, 'delegatecall'); call.location = fn.location;
       call.synthesizedFromLibraryCall = true;

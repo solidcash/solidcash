@@ -43,6 +43,44 @@ describe('affine recursive event replay', () => {
     expect(handler).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
   });
 
+  it('admits non-void unwind events over independent affine parameters', () => {
+    const handler = selected(`contract C() {
+      event Seen(bigint value, bigint reverse);
+      function descend(bigint cursor, bigint value, bigint reverse, bigint stride, bigint delta)
+        public returns (bigint) {
+        if (cursor == 0) return 7;
+        bigint result = descend(cursor - stride, value + delta, reverse - 3, stride, delta);
+        if (value % 2 == 0) emit Seen(value, reverse);
+        return result;
+      }
+    }`);
+    expect(handler).toMatchObject({
+      eligible: true,
+      runtimeLoopEvents: [{
+        iterationDomain: { initialValue: { value: '1' }, maximumIterations: 64 },
+      }],
+    });
+  });
+
+  it.each([
+    ['a changing step', 'descend(cursor - 1, value + cursor, reverse - 3)'],
+    ['a nonlinear progression', 'descend(cursor - 1, value * 2, reverse - 3)'],
+    ['a return dependent on changing state', 'descend(cursor - 1, value + 2, reverse - 3)', 'value'],
+  ])('keeps non-void unwind replay outside the affine subset for %s', (
+    _label, recursiveCall, baseReturn = '7',
+  ) => {
+    expect(() => selected(`contract C() {
+        event Seen(bigint value);
+        function descend(bigint cursor, bigint value, bigint reverse) public returns (bigint) {
+          if (cursor == 0) return ${baseReturn};
+          bigint result = ${recursiveCall};
+          emit Seen(value + reverse);
+          return result;
+        }
+        function control() public { require(true); }
+      }`)).toThrow(/emits an event and is invoked internally|KERNEL_LAYOUT/);
+  });
+
   it('admits a finite mixed-order stream with multiple affine parameters', () => {
     const handler = selected(`contract C() {
       event Seen(bigint value);

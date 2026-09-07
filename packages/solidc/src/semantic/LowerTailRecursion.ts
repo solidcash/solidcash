@@ -41,6 +41,7 @@ interface AffineMappingRecursion {
 interface AffinePostEffectRecursion {
   inductionIndex: number;
   stepExpression: ExpressionNode;
+  parameterProgressions: AffineParameterProgression[];
   resultDefinition: VariableDefinitionNode;
   baseReturn: ReturnNode;
   effects: StatementNode[];
@@ -1140,7 +1141,8 @@ export default class LowerTailRecursion extends AstTraversal {
         ? condition.left : undefined;
     if (!(zeroSide instanceof IdentifierNode)) return undefined;
     const inductionIndex = node.parameters.findIndex((parameter) =>
-      parameter.name === zeroSide.name && parameter.type instanceof IntType);
+      parameter.name === zeroSide.name && (parameter.type instanceof IntType
+        || parameter.type === PrimitiveType.INT || parameter.type === PrimitiveType.BIGINT));
     const affineKey = (key: ExpressionNode): boolean => {
       if (key instanceof IdentifierNode) return key.name === zeroSide.name;
       if (!(key instanceof BinaryOpNode) || !(key.right instanceof IntLiteralNode)) return false;
@@ -1198,11 +1200,28 @@ export default class LowerTailRecursion extends AstTraversal {
         ? condition.left : undefined;
     if (!(zeroSide instanceof IdentifierNode)) return undefined;
     const inductionIndex = node.parameters.findIndex((parameter) =>
-      parameter.name === zeroSide.name && parameter.type instanceof IntType);
+      parameter.name === zeroSide.name && (parameter.type instanceof IntType
+        || parameter.type === PrimitiveType.INT || parameter.type === PrimitiveType.BIGINT));
     if (inductionIndex < 0) return undefined;
     const call = resultDefinition.expression;
-    const stepExpression = this.descendingAffineStep(call, node, inductionIndex, zeroSide.name);
-    if (!stepExpression) return undefined;
+    const parameterProgressions = this.affineParameterProgressions(call, node, inductionIndex);
+    const stepExpression = parameterProgressions
+      ?.find(({ parameterIndex }) => parameterIndex === inductionIndex)?.stepExpression;
+    if (!parameterProgressions || !stepExpression) return undefined;
+
+    // The unchanged recursive result can be reconstructed only if its terminating value does not depend on an
+    // auxiliary changing parameter. Event predicates and arguments are replayed independently from source-frame
+    // values plus rank, but admitting such a dependency here would silently change the function's return value.
+    const changingReturnDependencies = new Set(parameterProgressions
+      .filter(({ parameterIndex }) => parameterIndex !== inductionIndex)
+      .map(({ parameterIndex }) => node.parameters[parameterIndex].name));
+    let returnDependsOnChangingParameter = false;
+    this.walkNodes(base.ifBlock.statements![0], (candidate) => {
+      if (candidate instanceof IdentifierNode && changingReturnDependencies.has(candidate.name)) {
+        returnDependsOnChangingParameter = true;
+      }
+    });
+    if (returnDependsOnChangingParameter) return undefined;
 
     // The post-call result is invariant across retained frames because the only accepted final return is the
     // unchanged recursive result. Make that exact base-case value available while proving event predicates and
@@ -1311,7 +1330,7 @@ export default class LowerTailRecursion extends AstTraversal {
         || candidate instanceof DoWhileNode || candidate instanceof FunctionCallNode) unsupported = true;
     });
     return unsupported ? undefined : {
-      inductionIndex, stepExpression, resultDefinition,
+      inductionIndex, stepExpression, parameterProgressions, resultDefinition,
       baseReturn: base.ifBlock.statements![0] as ReturnNode, effects, emits,
     };
   }
@@ -2148,12 +2167,9 @@ export default class LowerTailRecursion extends AstTraversal {
     const result = this.stamp(new VariableDefinitionNode(
       plan.resultDefinition.type, [...plan.resultDefinition.modifier], plan.resultDefinition.name, baseExpression,
     ), plan.resultDefinition.location);
-    const effects = plan.effects.map((effect) => this.replaceIdentifier(
-      cloneNode(effect) as StatementNode, induction.name,
-      () => this.affineFrameAtRank(
-        this.stamp(new IdentifierNode(induction.name), effect.location), rankName,
-        plan.stepExpression, true,
-      ),
+    const effects = plan.effects.map((effect) => this.replaceAffineProgressions(
+      cloneNode(effect) as StatementNode, node, plan.parameterProgressions,
+      rankName, plan.inductionIndex, plan.stepExpression, true,
     ) as StatementNode);
     this.publishAffinePostEvents(node, plan, rankName, effects);
     const increment = this.stamp(new AssignNode(

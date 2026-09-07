@@ -171,6 +171,7 @@ import {
 } from './deploymentRecipes.js';
 import { cloneNode } from './ast/clone.js';
 import { hasEffectiveCallValue } from './semantic/branchOps.js';
+import { retryMonotoneAttribution } from './admissionRetry.js';
 
 // A participant's row results are concatenated into one VM byte string before that complete return vector is
 // hash-committed. This is therefore a cumulative participant-route bound, not a per-row allowance. Source the
@@ -913,9 +914,6 @@ function admittedHandlerCount(artifact: Artifact): number {
   return (artifact.messageBus?.handlers ?? []).filter((handler) => handler.eligible).length;
 }
 
-/** Rounds of one-handler-at-a-time attribution before the whole-route refusal is reached. */
-const MAX_ATTRIBUTED_EXTERNAL_REFUSALS = 4;
-
 /** A source-owned refusal whose outcome cannot depend on which optional message-bus handlers are admitted. */
 function isAdmissionIndependentSourceError(error: unknown): boolean {
   return error instanceof CounterLoopReadWriteConflictError
@@ -1079,25 +1077,25 @@ function compileWithExternalAdmissionFallback(
       // entry point does not make its siblings unusable: the thrown clone name/source span identifies the
       // offending handler, and refusing only that handler can produce the requested route immediately. Falling
       // straight to the public-only ladder both discarded valid external graph roots and paid for every narrow
-      // rung before eventually emitting a direct-only artifact. This bounded retry therefore improves the
-      // common explicit-route failure case as well as preserving the normal compiler's admission semantics.
-      for (let round = 0; round < MAX_ATTRIBUTED_EXTERNAL_REFUSALS; round += 1) {
-        const named = attributeExternalHandlerRefusal(latestError, attribution);
-        if (named.length === 0) {
-          if (process.env.SOLIDC_DEBUG_MESSAGE_BUS_FALLBACK === '1') {
-            console.error('message-bus route failure was not attributable', primaryContractName, latestError);
-          }
-          break;
-        }
-        for (const key of named) attribution.refused.add(key);
-        try {
-          return compileOnce(true, true, true, true, true);
-        } catch (error) {
+      // rung before eventually emitting a direct-only artifact. Each retry removes at least one new source
+      // handler, so this reaches a finite fixed point without an arbitrary refusal cap.
+      const recovered = retryMonotoneAttribution(
+        latestError,
+        attribution.refused,
+        (error) => attributeExternalHandlerRefusal(error, attribution),
+        () => compileOnce(true, true, true, true, true),
+        (named, error) => {
           if (process.env.SOLIDC_DEBUG_MESSAGE_BUS_FALLBACK === '1') {
             console.error('message-bus attributed route failed', primaryContractName, named, error);
           }
-          latestError = error;
-        }
+        },
+      );
+      if (recovered.succeeded) return recovered.value;
+      latestError = recovered.error;
+      if (process.env.SOLIDC_DEBUG_MESSAGE_BUS_FALLBACK === '1') {
+        console.error(
+          'message-bus route failure reached attribution fixed point', primaryContractName, latestError,
+        );
       }
     }
     // Preserve the normal ladder's public-handler semantics while skipping its expensive speculative
@@ -1216,17 +1214,14 @@ function compileWithExternalAdmissionFallback(
   // The throw, however, is attributable: it either names one of the internal clones synthesis pushed or carries a
   // position inside the handler that was cloned. Refuse THAT handler and try again, one handler per round, so the
   // outcome is a named refusal on the gapped handler with its siblings still routed.
-  let attributed: Artifact | undefined;
-  for (let round = 0; round < MAX_ATTRIBUTED_EXTERNAL_REFUSALS && attributed === undefined; round += 1) {
-    const named = attributeExternalHandlerRefusal(latestError, attribution);
-    if (named.length === 0) break;
-    for (const key of named) attribution.refused.add(key);
-    try {
-      attributed = compileOnce(...ladder[0]);
-    } catch (error) {
-      latestError = error;
-    }
-  }
+  const recovered = retryMonotoneAttribution(
+    latestError,
+    attribution.refused,
+    (error) => attributeExternalHandlerRefusal(error, attribution),
+    () => compileOnce(...ladder[0]),
+  );
+  let attributed: Artifact | undefined = recovered.succeeded ? recovered.value : undefined;
+  if (!recovered.succeeded) latestError = recovered.error;
   // A handler can be gapped AND the widest rung independently unavailable, so try the accumulated refusal set
   // against the narrower admitting rungs too. All of them are wider than the whole-route refusal below.
   if (attributed === undefined && attribution.refused.size > 0) {

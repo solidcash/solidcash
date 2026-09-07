@@ -14,7 +14,28 @@ import { hash256, sha256 } from './hash.js';
 import { keccak_256 } from '@noble/hashes/sha3.js';
 
 /** Stable digest of the physical state geometry used by child-genesis recipes. */
-export function childStateLayoutDigest(layout: Pick<StateLayout, 'variables' | 'dataNftCount' | 'commitmentLimit'>): string {
+export function childStateLayoutDigest(
+  layout: Pick<StateLayout, 'variables' | 'dataNftCount' | 'commitmentLimit' | 'structs'>,
+): string {
+  const definitions = new Map((layout.structs ?? []).map((definition) => [definition.name, definition]));
+  const reachable = new Map<string, StructDefinitionInfo>();
+  const visitType = (type: string): void => {
+    const name = [...definitions.keys()].find((candidate) =>
+      type === candidate || type.startsWith(`${candidate}[`));
+    if (!name || reachable.has(name)) return;
+    const definition = definitions.get(name)!;
+    reachable.set(name, definition);
+    for (const field of definition.fields) visitType(field.type);
+  };
+  for (const variable of layout.variables) visitType(variable.type);
+  const structs = [...reachable.values()]
+    .sort((left, right) => left.name.localeCompare(right.name))
+    .map((definition) => ({
+      name: definition.name,
+      fields: definition.fields.map((field) => ({
+        name: field.name, type: field.type.replace(/address payable/g, 'address'),
+      })),
+    }));
   const canonical = {
     version: 1,
     dataNftCount: layout.dataNftCount,
@@ -29,6 +50,7 @@ export function childStateLayoutDigest(layout: Pick<StateLayout, 'variables' | '
         dynamic: variable.dynamic === true,
         packed: variable.packed === true,
       })),
+    ...(structs.length > 0 && { structs }),
   };
   return binToHex(sha256(utf8ToBin(JSON.stringify(canonical))));
 }

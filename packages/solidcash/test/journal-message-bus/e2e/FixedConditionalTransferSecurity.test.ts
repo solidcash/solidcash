@@ -117,6 +117,7 @@ describe('fixed conditional BCH transfer transcript security', () => {
         function aliased(bool enabled, address first, address second, uint amount);
         function joined(bool take, bool change, address recipient, uint amount);
         function selectTransfer(bool alternate, address first, address second, uint amount);
+        function switchTransfer(int choice, address first, address second, uint amount);
         function choose(bool first, address recipientA, address recipientB, uint amountA, uint amountB);
         function dynamicSentinel(address recipient);
         function literalSentinel();
@@ -150,6 +151,17 @@ describe('fixed conditional BCH transfer transcript security', () => {
           this.transfer(recipient, value);
           require(true);
         }
+        function switchTransfer(int choice, address first, address second, uint amount) public {
+          address recipient = first;
+          uint value = amount;
+          switch (choice) {
+            case 1: recipient = second; value = amount + 1000; break;
+            case 2: value = amount + 2000; break;
+            default: break;
+          }
+          this.transfer(recipient, value);
+          require(true);
+        }
         function choose(bool first, address recipientA, address recipientB, uint amountA, uint amountB) public {
           if (first) { this.transfer(recipientA, amountA); }
           else { this.transfer(recipientB, amountB); }
@@ -179,6 +191,10 @@ describe('fixed conditional BCH transfer transcript security', () => {
         }
         function runSelected(bool alternate, address first, address second, uint amount) public {
           IVault(vault).selectTransfer(alternate, first, second, amount);
+          require(true);
+        }
+        function runSwitchTransfer(int choice, address first, address second, uint amount) public {
+          IVault(vault).switchTransfer(choice, first, second, amount);
           require(true);
         }
         function runChoose(bool first, address recipientA, address recipientB, uint amountA, uint amountB) public {
@@ -231,6 +247,13 @@ describe('fixed conditional BCH transfer transcript security', () => {
         amountRecipe: { kind: 'conditional', resultType: 'uint256' },
       }],
     });
+    expect(artifacts.Vault.messageBus?.handlers.find((handler) => handler.name === 'switchTransfer')).toMatchObject({
+      eligible: true,
+      transfers: [{
+        recipientRecipe: { kind: 'conditional' },
+        amountRecipe: { kind: 'conditional', ifFalse: { kind: 'conditional' } },
+      }],
+    });
 
     const containerAmount = 20_000n;
     await provider.addUtxo(getSatoshiContainerAddress(vault.inner, vault.categoryId), {
@@ -279,6 +302,14 @@ describe('fixed conditional BCH transfer transcript security', () => {
       funder: fee,
       changeAddress: recipientA,
     }).build();
+    const switched = (choice: bigint): Promise<TransactionBuilder> => messageBus.compose({
+      preparedCalls: [
+        { contract: driver, functionName: 'runSwitchTransfer', args: [choice, recipientA, recipientB, 2_000n] },
+        { contract: vault, functionName: 'switchTransfer', args: [choice, recipientA, recipientB, 2_000n] },
+      ],
+      funder: fee,
+      changeAddress: recipientA,
+    }).build();
 
     const active = await conditional(true);
     const inactive = await conditional(false);
@@ -290,9 +321,12 @@ describe('fixed conditional BCH transfer transcript security', () => {
     const joinedInactive = await joined(true, true);
     const selectedFirst = await selected(false);
     const selectedSecond = await selected(true);
+    const switchedDefault = await switched(0n);
+    const switchedSecond = await switched(1n);
+    const switchedThird = await switched(2n);
     expect([active, inactive, first, second, aliasedActive, aliasedInactive, joinedActive, joinedInactive]
-      .concat([selectedFirst, selectedSecond]).map(vmRejects))
-      .toEqual([false, false, false, false, false, false, false, false, false, false]);
+      .concat([selectedFirst, selectedSecond, switchedDefault, switchedSecond, switchedThird]).map(vmRejects))
+      .toEqual([false, false, false, false, false, false, false, false, false, false, false, false, false]);
     expect(valueRows(active)).toHaveLength(1);
     expect(valueRows(inactive)).toHaveLength(0);
     expect(valueRows(first)).toHaveLength(1);
@@ -303,6 +337,9 @@ describe('fixed conditional BCH transfer transcript security', () => {
     expect(valueRows(joinedInactive)).toHaveLength(0);
     expect(valueRows(selectedFirst)).toHaveLength(1);
     expect(valueRows(selectedSecond)).toHaveLength(1);
+    expect(valueRows(switchedDefault)).toHaveLength(1);
+    expect(valueRows(switchedSecond)).toHaveLength(1);
+    expect(valueRows(switchedThird)).toHaveLength(1);
 
     const activeRow = valueRows(active)[0];
     const activeBase = participantBase(envelopeOf(active), activeRow.owner);
@@ -337,6 +374,18 @@ describe('fixed conditional BCH transfer transcript security', () => {
       + selectedSecondRow.targetOffset;
     expect(selectedFirst.outputs[selectedFirstOutput]).toMatchObject({ to: recipientA, amount: 2_000n });
     expect(selectedSecond.outputs[selectedSecondOutput]).toMatchObject({ to: recipientB, amount: 3_000n });
+    const switchedDefaultRow = valueRows(switchedDefault)[0];
+    const switchedSecondRow = valueRows(switchedSecond)[0];
+    const switchedDefaultOutput = participantBase(envelopeOf(switchedDefault), switchedDefaultRow.owner)
+      + switchedDefaultRow.targetOffset;
+    const switchedSecondOutput = participantBase(envelopeOf(switchedSecond), switchedSecondRow.owner)
+      + switchedSecondRow.targetOffset;
+    const switchedThirdRow = valueRows(switchedThird)[0];
+    const switchedThirdOutput = participantBase(envelopeOf(switchedThird), switchedThirdRow.owner)
+      + switchedThirdRow.targetOffset;
+    expect(switchedDefault.outputs[switchedDefaultOutput]).toMatchObject({ to: recipientA, amount: 2_000n });
+    expect(switchedSecond.outputs[switchedSecondOutput]).toMatchObject({ to: recipientB, amount: 3_000n });
+    expect(switchedThird.outputs[switchedThirdOutput]).toMatchObject({ to: recipientA, amount: 4_000n });
 
     const hiddenInactiveInput = await conditional(false);
     hiddenInactiveInput.inputs[inactiveInput] = { ...fee.utxo, unlocker: fee.unlocker };

@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { bytecodeToAsm } from '@solidcash/utils';
+import { bytecodeToAsm, StructType } from '@solidcash/utils';
 import { compileString } from '../../src/compiler.js';
+import { FunctionCallNode, IdentifierNode } from '../../src/ast/AST.js';
+import { childDeploymentValueRecipe } from '../../src/deploymentRecipes.js';
 
 const KERNEL = { forceStateful: true, messageBus: true, messageBusKernel: true } as const;
 
@@ -2109,12 +2111,52 @@ describe('required kernel admission', () => {
       .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
   });
 
+  it('publishes recursively nested fixed-layout struct recipes with enum and fixed-point leaves', () => {
+    const artifact = compileString(`enum Phase { Initial, Active, Complete }
+      struct Metrics { Phase phase; fixed128x2 weight; }
+      struct Snapshot { Metrics metrics; uint8 tag; }
+      contract Unit() {
+        Snapshot snapshot;
+        constructor(int seed) {
+          this.snapshot = Snapshot(Metrics(Phase(seed), fixed128x2(seed + 10)), uint8(seed + 1));
+        }
+      }
+      contract Coordinator() {
+        function materialize(int seed) public { Unit unit = new Unit(seed); require(true); }
+      }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'materialize'))
+      .toMatchObject({
+        eligible: true,
+        childDeployments: [{ genesisState: { fields: [{
+          name: 'snapshot', type: 'Snapshot', value: {
+            kind: 'aggregate', resultType: 'Snapshot', elements: [{
+              kind: 'aggregate', resultType: 'Metrics', elements: [
+                { kind: 'cast', resultType: 'bigint' },
+                { kind: 'cast', resultType: 'fixed128x2' },
+              ],
+            }, { kind: 'cast', resultType: 'uint8' }],
+          },
+        }] } }],
+      });
+  });
+
+  it('rejects a cyclic aggregate recipe graph without recursing indefinitely', () => {
+    const recursive = new StructType('Node', []);
+    recursive.fields.push({ name: 'next', type: recursive });
+    const inner = new FunctionCallNode(new IdentifierNode('Node'), []);
+    inner.type = recursive;
+    const outer = new FunctionCallNode(new IdentifierNode('Node'), [inner]);
+    outer.type = recursive;
+    expect(childDeploymentValueRecipe(outer, new Map())).toBeUndefined();
+  });
+
   it.each([
     'struct Payload { bytes data; int count; } contract Unit() { Payload payload; '
       + 'constructor(bytes raw) { this.payload = Payload(raw, 1); } }',
-    'struct Inner { int value; } struct Outer { Inner inner; int tag; } '
-      + 'contract Unit() { Outer outer; constructor() { this.outer = Outer(Inner(1), 2); } }',
-  ])('keeps dynamic or nested struct constructor state fenced: %s', (child) => {
+    'struct Payload { int count; bytes data; } struct Envelope { Payload payload; int tag; } '
+      + 'contract Unit() { Envelope envelope; constructor(bytes raw) { '
+      + 'this.envelope = Envelope(Payload(1, raw), 2); } }',
+  ])('keeps dynamic struct constructor state fenced: %s', (child) => {
     const args = child.includes('constructor(bytes') ? '0x01' : '';
     const artifact = compileString(`${child}
       contract Coordinator() {
@@ -5382,6 +5424,48 @@ describe('required kernel admission', () => {
     });
     expect(artifact.abi.find((candidate) => candidate.name === 'pay')?.transfers?.[0])
       .not.toHaveProperty('recipientRecipe');
+  });
+
+  it('publishes typed conditional recipes for finite switch joins', () => {
+    const artifact = compileString(`contract C() {
+      function pay(int choice, bool take, bytes first, bytes second, bytes third, int base) public {
+        bool enabled = take;
+        bytes recipient = first;
+        int amount = base;
+        switch (choice) {
+          case 1: recipient = second; amount = base + 1; enabled = !take; break;
+          case 2: recipient = third; amount = base + 2; enabled = true; break;
+          default: break;
+        }
+        if (enabled) this.transfer(recipient, amount);
+        require(true);
+      }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'pay')).toMatchObject({
+      eligible: true,
+      transfers: [{
+        recipientRecipe: { kind: 'conditional', ifFalse: { kind: 'conditional' } },
+        amountRecipe: { kind: 'conditional', ifFalse: { kind: 'conditional' } },
+        condition: { kind: 'ternary', ifFalse: { kind: 'ternary' } },
+      }],
+    });
+  });
+
+  it.each([
+    ['an opaque arm', 'case 1: recipient = bytes.concat(first, second); break;'],
+    ['an ambiguous nested break', 'case 1: if (take) break; recipient = second; break;'],
+  ])('keeps a fixed transfer switch join with %s fenced', (_label, arm) => {
+    const artifact = compileString(`contract C() {
+      function pay(int choice, bool take, bytes first, bytes second, int amount) public {
+        bytes recipient = first;
+        switch (choice) { ${arm} default: break; }
+        this.transfer(recipient, amount);
+        require(true);
+      }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'pay')).toMatchObject({
+      eligible: false, rejectionReason: 'KERNEL_LAYOUT',
+    });
   });
 
   it('keeps a fixed transfer predicate after a loop-carried assignment fenced', () => {

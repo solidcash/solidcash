@@ -627,15 +627,20 @@ describe('messageBus.compose atomic transaction', () => {
     expect(new Set(deployments.map((outputs) => binToHex(outputs[0].output.to)))).toHaveLength(4);
   }, 120_000);
 
-  it('materializes row-varying scalar, enum, and fixed-struct constructor genesis recipes', async () => {
+  it('materializes row-varying scalar, enum, and nested fixed-struct constructor genesis recipes', async () => {
     const provider = createMessageBusCapstoneTestProvider();
     const artifacts = compileStringMulti(`contract Child(int seed) {
         enum Phase { Initial, Active, Complete }
-        struct Pair { int first; int second; }
+        struct Metrics { Phase phase; fixed128x2 weight; }
+        struct Pair { int first; Metrics metrics; }
         int marker;
         Phase phase;
         Pair pair;
-        constructor() { this.marker = seed; this.phase = Phase(seed); this.pair = Pair(seed, seed + 10); }
+        constructor() {
+          this.marker = seed;
+          this.phase = Phase(seed);
+          this.pair = Pair(seed, Metrics(Phase(seed), fixed128x2(seed + 10)));
+        }
         function keep() public { require(true); }
       }
       interface IFactory { function create(int seed); }
@@ -672,7 +677,10 @@ describe('messageBus.compose atomic transaction', () => {
             kind: 'aggregate', resultType: 'Pair',
             elements: [
               { kind: 'cast', resultType: 'int256' },
-              { kind: 'cast', resultType: 'int256', operand: { kind: 'binary', operator: '+' } },
+              { kind: 'aggregate', resultType: 'Metrics', elements: [
+                { kind: 'cast', resultType: 'bigint' },
+                { kind: 'cast', resultType: 'fixed128x2', operand: { kind: 'binary', operator: '+' } },
+              ] },
             ],
           } },
         ] },
@@ -707,8 +715,8 @@ describe('messageBus.compose atomic transaction', () => {
     expect(childStates.map((state) => state.marker)).toEqual([1n, 2n]);
     expect(childStates.map((state) => state.phase)).toEqual([1n, 2n]);
     expect(childStates.map((state) => state.pair)).toEqual([
-      { first: 1n, second: 11n },
-      { first: 2n, second: 12n },
+      { first: 1n, metrics: { phase: 1n, weight: 1_100n } },
+      { first: 2n, metrics: { phase: 2n, weight: 1_200n } },
     ]);
     const tampered = await messageBus.compose({
       preparedCalls: [

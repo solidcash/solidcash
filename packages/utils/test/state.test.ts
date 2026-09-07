@@ -38,7 +38,7 @@ import {
   scriptToBytecode,
   StructDefinitionInfo,
 } from '../src/index.js';
-import { validateChildDeploymentGenesisState } from '../src/state.ts';
+import { childStateLayoutDigest, validateChildDeploymentGenesisState } from '../src/state.ts';
 import { binToHex, hexToBin, lockingBytecodeToCashAddress, utf8ToBin } from '@bitauth/libauth';
 
 describe('getDefaultStateValue', () => {
@@ -769,6 +769,21 @@ describe('nested struct state commitment roundtrip', () => {
     commitmentLimit: 128,
     structs,
   };
+
+  it('binds reachable nested field geometry into the child layout digest', () => {
+    const digest = childStateLayoutDigest(layout);
+    expect(childStateLayoutDigest({
+      ...layout,
+      structs: [...structs, { name: 'Unused', fields: [{ name: 'value', type: 'bool' }] }],
+    })).toBe(digest);
+    expect(childStateLayoutDigest({
+      ...layout,
+      structs: structs.map((definition) => definition.name === 'Inner' ? {
+        ...definition,
+        fields: [{ name: 'x', type: 'uint8' }, ...definition.fields.slice(1)],
+      } : definition),
+    })).not.toBe(digest);
+  });
 
   it('should build and parse commitment with nested struct state', () => {
     const values = { data: { inner: { x: 7n, y: 8n }, z: 9n } };

@@ -1,11 +1,12 @@
 import { binToHex } from '@bitauth/libauth';
 import {
-  abiTypeString, ChildDeploymentGenesisStateAbi, ChildDeploymentValueRecipe, EnumType, StructType,
+  abiTypeString, ChildDeploymentGenesisStateAbi, ChildDeploymentValueRecipe, EnumType, StructDefinitionInfo,
+  StructType, Type,
 } from '@solidcash/utils';
 import {
-  AssignNode, BinaryOpNode, BlockNode, BoolLiteralNode, BranchNode, CastNode, CollectionIterationNode,
-  DeleteLocalNode, DoWhileNode, ExpressionNode, FunctionDefinitionNode, HexLiteralNode, IdentifierNode,
-  FunctionCallNode, InstantiationNode, IntLiteralNode, Node, ReturnNode, SwitchNode, TryCatchNode,
+  AssignNode, BinaryOpNode, BlockNode, BoolLiteralNode, BranchNode, BreakNode, CastNode, CollectionIterationNode,
+  ContinueNode, DeleteLocalNode, DoWhileNode, ExpressionNode, FunctionDefinitionNode, HexLiteralNode, IdentifierNode,
+  FunctionCallNode, InstantiationNode, IntLiteralNode, Node, ReturnNode, RevertNode, SwitchNode, TryCatchNode,
   TupleAssignmentNode, UnaryOpNode, UncheckedNode, VariableDefinitionNode, WhileNode, TransferStatementNode,
   AddressTransferStatementNode,
   AddressSendExpressionNode,
@@ -32,6 +33,25 @@ const materializableGenesisLeafType = /^(?:bool|bigint|u?int(?:8|16|24|32|40|48|
 const physicalRecipeType = (type: { toString(): string }): string =>
   type instanceof EnumType ? 'bigint' : abiTypeString(type as never);
 
+/** Physical definitions reachable from child state, used by both its codec and authenticated layout digest. */
+export const childDeploymentStructDefinitions = (
+  variables: readonly { type: Type }[],
+): StructDefinitionInfo[] => {
+  const definitions: StructDefinitionInfo[] = [];
+  const seen = new Set<StructType>();
+  const visit = (type: Type): void => {
+    if (!(type instanceof StructType) || seen.has(type)) return;
+    seen.add(type);
+    definitions.push({
+      name: type.name,
+      fields: type.fields.map((field) => ({ name: field.name, type: physicalRecipeType(field.type) })),
+    });
+    for (const field of type.fields) visit(field.type);
+  };
+  for (const variable of variables) visit(variable.type);
+  return definitions;
+};
+
 const fixedRecipeDecimals = (type: string | undefined): number | undefined => {
   if (!type) return undefined;
   const match = /^(?:u?fixed)(?:\d+x(\d+))?$/.exec(type);
@@ -56,6 +76,7 @@ export function childDeploymentValueRecipe(
   handlerInputTypes?: ReadonlyMap<string, string>,
   aliases?: ReadonlyMap<object, ChildDeploymentValueRecipe>,
   aliasDefinitions?: ReadonlyMap<string, object>,
+  structStack: ReadonlySet<StructType> = new Set(),
 ): ChildDeploymentValueRecipe | undefined {
   if (expression instanceof IdentifierNode) {
     const definition = expression.definition?.definition ?? aliasDefinitions?.get(expression.name);
@@ -81,16 +102,20 @@ export function childDeploymentValueRecipe(
   if (expression instanceof FunctionCallNode && expression.type instanceof StructType
     && expression.identifier.name === expression.type.name && !expression.resolvedFunction) {
     const structType = expression.type;
-    if (expression.parameters.length !== structType.fields.length
-      || structType.fields.some((field) => field.type instanceof StructType
-        || !materializableGenesisLeafType.test(physicalRecipeType(field.type)))) return undefined;
+    if (structStack.has(structType) || expression.parameters.length !== structType.fields.length) return undefined;
+    const nestedStructStack = new Set(structStack);
+    nestedStructStack.add(structType);
     const elements = expression.parameters.map((parameter, index) => {
+      const fieldType = structType.fields[index].type;
+      if (!(fieldType instanceof StructType)
+        && !materializableGenesisLeafType.test(physicalRecipeType(fieldType))) return undefined;
       let element = childDeploymentValueRecipe(
-        parameter, handlerInputs, true, handlerInputTypes, aliases, aliasDefinitions,
+        parameter, handlerInputs, true, handlerInputTypes, aliases, aliasDefinitions, nestedStructStack,
       );
-      const targetType = physicalRecipeType(structType.fields[index].type);
+      const targetType = physicalRecipeType(fieldType);
       const sourceType = element?.resultType ?? recipeType(parameter);
       if (element && sourceType && sourceType !== targetType) {
+        if (fieldType instanceof StructType) return undefined;
         if (!materializableCastType.test(targetType)) return undefined;
         element = { kind: 'cast', resultType: targetType, operand: element };
       }
@@ -102,14 +127,14 @@ export function childDeploymentValueRecipe(
   }
   if (expression instanceof CastNode) {
     const operand = childDeploymentValueRecipe(
-      expression.expression, handlerInputs, true, handlerInputTypes, aliases, aliasDefinitions,
+      expression.expression, handlerInputs, true, handlerInputTypes, aliases, aliasDefinitions, structStack,
     );
     return operand && declaredType && materializableCastType.test(declaredType)
       ? { kind: 'cast', resultType: declaredType, operand } : undefined;
   }
   if (expression instanceof UnaryOpNode && unaryOperators.has(expression.operator)) {
     const operand = childDeploymentValueRecipe(
-      expression.expression, handlerInputs, true, handlerInputTypes, aliases, aliasDefinitions,
+      expression.expression, handlerInputs, true, handlerInputTypes, aliases, aliasDefinitions, structStack,
     );
     const resultType = declaredType ?? (expression.operator === UnaryOperator.NOT ? 'bool' : operand?.resultType);
     const operandFixedDecimals = fixedRecipeDecimals(operand?.resultType);
@@ -123,10 +148,10 @@ export function childDeploymentValueRecipe(
   }
   if (expression instanceof BinaryOpNode && binaryOperators.has(expression.operator)) {
     const left = childDeploymentValueRecipe(
-      expression.left, handlerInputs, true, handlerInputTypes, aliases, aliasDefinitions,
+      expression.left, handlerInputs, true, handlerInputTypes, aliases, aliasDefinitions, structStack,
     );
     const right = childDeploymentValueRecipe(
-      expression.right, handlerInputs, true, handlerInputTypes, aliases, aliasDefinitions,
+      expression.right, handlerInputs, true, handlerInputTypes, aliases, aliasDefinitions, structStack,
     );
     const booleanResult = [BinaryOperator.LT, BinaryOperator.LE, BinaryOperator.GT, BinaryOperator.GE,
       BinaryOperator.EQ, BinaryOperator.NE, BinaryOperator.AND, BinaryOperator.OR].includes(expression.operator);
@@ -268,7 +293,7 @@ export function analyzeFixedBchEffectRecipes(
     condition: ChildDeploymentValueRecipe | undefined,
   ): void => {
     // Only declarations visible before the branch can escape its lexical join. A missing recipe in either arm
-    // remains unknown; non-boolean differing values wait for a typed select recipe rather than being guessed.
+    // remains unknown; differing pure values use the typed conditional recipe shared with the SDK.
     for (const definition of environment.definitions.values()) {
       const trueRecipe = whenTrue.aliases.get(definition);
       const falseRecipe = whenFalse.aliases.get(definition);
@@ -277,6 +302,22 @@ export function analyzeFixedBchEffectRecipes(
       if (merged) environment.aliases.set(definition, merged);
       else environment.aliases.delete(definition);
     }
+  };
+  const switchArmJoinSafe = (block: BlockNode): boolean => {
+    const statements = block.statements ?? [];
+    const permittedBreak = statements.at(-1) instanceof BreakNode ? statements.at(-1) : undefined;
+    const containsAbruptExit = (value: unknown, seen = new WeakSet<object>()): boolean => {
+      if (Array.isArray(value)) return value.some((item) => containsAbruptExit(item, seen));
+      if (!(value instanceof Node) || seen.has(value)) return false;
+      seen.add(value);
+      if (value === permittedBreak) return false;
+      if (value instanceof BreakNode || value instanceof ContinueNode
+        || value instanceof ReturnNode || value instanceof RevertNode) return true;
+      return Object.entries(value).some(([key, child]) => ![
+        'definition', 'referencedContract', 'resolvedFunction', 'symbolTable',
+      ].includes(key) && containsAbruptExit(child, seen));
+    };
+    return !containsAbruptExit(block);
   };
   const resolvedDefinition = (identifier: IdentifierNode, environment: Environment): object | undefined =>
     identifier.definition?.definition ?? environment.definitions.get(identifier.name);
@@ -392,24 +433,47 @@ export function analyzeFixedBchEffectRecipes(
       if (statement instanceof SwitchNode) {
         snapshotEffects(statement.expression, environment, activation, activationSupported, unsafe);
         const discriminant = !unsafe ? recipe(statement.expression, environment) : undefined;
-        let defaultActivation = activation;
+        let unmatched: ChildDeploymentValueRecipe | undefined;
         let switchSupported = activationSupported && discriminant !== undefined;
+        const armEnvironments: Environment[] = [];
+        const matchesByArm: ChildDeploymentValueRecipe[] = [];
         for (const arm of statement.cases) {
           const armValue = !unsafe ? recipe(arm.value, environment) : undefined;
-          switchSupported &&= armValue !== undefined;
+          switchSupported &&= armValue !== undefined && switchArmJoinSafe(arm.body);
           const matches = discriminant && armValue ? {
             kind: 'binary', operator: '==', resultType: 'bool', left: discriminant, right: armValue,
           } as ChildDeploymentValueRecipe : undefined;
+          const firstMatch = matches && unmatched ? conjunction(unmatched, matches) : matches;
+          const armEnvironment = cloneEnvironment(environment);
           processBlock(
-            arm.body, cloneEnvironment(environment),
-            matches ? conjunction(activation, matches) : undefined, switchSupported, unsafe,
+            arm.body, armEnvironment,
+            firstMatch ? conjunction(activation, firstMatch) : undefined, switchSupported, unsafe,
           );
-          if (matches) defaultActivation = conjunction(defaultActivation, negate(matches));
+          armEnvironments.push(armEnvironment);
+          if (matches) {
+            matchesByArm.push(matches);
+            unmatched = conjunction(unmatched, negate(matches));
+          }
         }
-        if (statement.defaultCase) processBlock(
-          statement.defaultCase, cloneEnvironment(environment), defaultActivation, switchSupported, unsafe,
-        );
-        invalidateAssignments(statement, environment);
+        const defaultEnvironment = cloneEnvironment(environment);
+        if (statement.defaultCase) {
+          switchSupported &&= switchArmJoinSafe(statement.defaultCase);
+          processBlock(
+            statement.defaultCase, defaultEnvironment,
+            unmatched ? conjunction(activation, unmatched) : activation, switchSupported, unsafe,
+          );
+        }
+        if (!switchSupported || matchesByArm.length !== statement.cases.length) {
+          invalidateAssignments(statement, environment);
+          continue;
+        }
+        let joined = defaultEnvironment;
+        for (let index = armEnvironments.length - 1; index >= 0; index -= 1) {
+          const next = cloneEnvironment(environment);
+          mergeBranchAliases(next, armEnvironments[index], joined, matchesByArm[index]);
+          joined = next;
+        }
+        environment.aliases = joined.aliases;
         continue;
       }
       if (statement instanceof TryCatchNode) {

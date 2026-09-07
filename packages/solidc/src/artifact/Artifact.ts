@@ -2001,7 +2001,10 @@ export function generateArtifact(
   // stateful state machinery passes the self-contained layout around, not the whole artifact).
   const structDefs = [...(ast.structDefinitions || []), ...contract.structDefinitions].map((sd) => ({
     name: sd.name,
-    fields: sd.fields.map((f) => ({ name: f.name, type: f.type.toString() })),
+    fields: sd.fields.map((f) => ({
+      name: f.name,
+      type: f.type instanceof EnumType ? 'bigint' : f.type.toString(),
+    })),
   }));
 
   // Build state layout if the contract has state variables or collections, or forceStateful is set (a

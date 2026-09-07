@@ -110,6 +110,7 @@ import {
   containsIndirectCall, PointerTableExpansion, PointerTableExpansionMap, ProvenLoopCeilingMap,
 } from './semantic/PointerTableBound.js';
 import LowerVMapCounterLoops, {
+  CounterLoopReadWriteConflictError,
   KERNEL_JOURNAL_ACCESS_STREAMS,
   KERNEL_JOURNAL_RECORDS,
   VMAP_COUNTER_OLD_PREFIX,
@@ -910,7 +911,8 @@ const MAX_ATTRIBUTED_EXTERNAL_REFUSALS = 4;
 
 /** A source-owned refusal whose outcome cannot depend on which optional message-bus handlers are admitted. */
 function isAdmissionIndependentSourceError(error: unknown): boolean {
-  return error instanceof UnsupportedInlineAssemblyError && !generatedOriginOf(error.node.location);
+  return error instanceof CounterLoopReadWriteConflictError
+    || (error instanceof UnsupportedInlineAssemblyError && !generatedOriginOf(error.node.location));
 }
 
 /** EVM ABI bytes occupied by a static type, or undefined when the type has a dynamic tail. */
@@ -3073,6 +3075,11 @@ function synthesizeMessageBusRoute(
       fn.messageBusEligible = false;
       fn.messageBusRejectionReason = compilerOptions.messageBusKernel === true
         ? 'KERNEL_LIFECYCLE' : 'lifecycle-or-unsafe-handler';
+      continue;
+    }
+    if (compilerOptions.messageBusKernel === true && fn.unloweredVaryingRecursiveMappingRead === true) {
+      fn.messageBusEligible = false;
+      fn.messageBusRejectionReason = 'KERNEL_LAYOUT';
       continue;
     }
     // A delegate route covenants the proxy master while its implementation executes from an interior slot.
@@ -8561,6 +8568,15 @@ function compileResolvedAst(
   // can still point into the complete prepared contract, so even a nominally no-op visitor must not walk a
   // block-free facet before its route-only parameter lowering has been isolated on the facet clone.
   const earlyEntryFeatures = mergedCompilerOptions.messageBus ? surveyOptionalLowerings(ast) : undefined;
+  if (mergedCompilerOptions.messageBusKernel === true) {
+    for (const fn of ast.contract.functions) {
+      walkInvocationAst(fn.body, (candidate) => {
+        if (candidate instanceof WhileNode || candidate instanceof DoWhileNode) {
+          candidate.sourceAuthoredLoop = true;
+        }
+      });
+    }
+  }
   if (earlyEntryFeatures?.needsReturnInLoop
     && (earlyEntryFeatures.needsTailRecursion || mergedCompilerOptions.messageBusKernel === true)) {
     // A base-case return owned by an existing source loop must first become the ordinary stash + outward-break

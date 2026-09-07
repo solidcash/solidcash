@@ -54,6 +54,15 @@ interface AffineVoidPostEffectRecursion {
   emits: Array<{ node: EmitStatementNode; condition?: ExpressionNode }>;
 }
 
+interface AffineVoidMixedEventRecursion {
+  inductionIndex: number;
+  stepExpression: ExpressionNode;
+  prefix: StatementNode[];
+  suffix: StatementNode[];
+  prefixEmits: Array<{ node: EmitStatementNode; condition?: ExpressionNode }>;
+  suffixEmits: Array<{ node: EmitStatementNode; condition?: ExpressionNode }>;
+}
+
 interface AffineEventRecursion {
   inductionIndex: number;
   stepValue: ExternalCallExpression;
@@ -65,7 +74,7 @@ type AffineRecursiveMappingWrite = MappingAssignNode | MappingDeleteNode;
 
 interface AffineRecursiveMappingRead {
   node: MappingAccessNode;
-  consumer: MappingAssignNode;
+  consumer: StatementNode;
 }
 
 /**
@@ -108,11 +117,12 @@ export default class LowerTailRecursion extends AstTraversal {
     return undefined;
   }
 
-  /** Collect collection reads which the counter-loop pass can turn into authenticated old-value vectors. Reads
-   * are admitted only inside a mapping assignment value: predicates, event arguments, keys, and requirements do
-   * not have a row-local consumer and therefore still need a general effect trace. */
+  /** Collect collection reads which the counter-loop pass can turn into authenticated old-value vectors. A
+   * mapping assignment consumes its vector in physical key order, while a direct requirement consumes it in
+   * recursive source order. Conditional consumers, predicates, event arguments, destination keys, and other
+   * effects remain outside this slice. */
   private affineRecursiveMappingReads(
-    writes: readonly AffineRecursiveMappingWrite[], inductionName: string,
+    effects: readonly StatementNode[], writes: readonly AffineRecursiveMappingWrite[], inductionName: string,
   ): AffineRecursiveMappingRead[] | undefined {
     const reads: AffineRecursiveMappingRead[] = [];
     let valid = true;
@@ -126,7 +136,7 @@ export default class LowerTailRecursion extends AstTraversal {
         return Array.isArray(child) && child.some((item) => item instanceof Node && containsMappingRead(item));
       });
     };
-    const collect = (node: Node, consumer: MappingAssignNode): void => {
+    const collect = (node: Node, consumer: StatementNode): void => {
       if (node instanceof MappingAccessNode) {
         // A collection-dependent key would require authenticating the inner read before deriving the outer row.
         if (node.keys.length !== 1 || node.keys.some(containsMappingRead)
@@ -150,6 +160,7 @@ export default class LowerTailRecursion extends AstTraversal {
       if (write.keys.some(containsMappingRead)) return undefined;
       collect(write.expression, write);
     }
+    for (const effect of effects) if (effect instanceof RequireNode) collect(effect.expression, effect);
     return valid ? reads : undefined;
   }
 
@@ -190,6 +201,20 @@ export default class LowerTailRecursion extends AstTraversal {
         if (!sameEntryRmw && !disjoint(readOffset, writeOffsets.get(write)!)) return false;
       }
     }
+    // One consumer can share repeated occurrences of the exact same read plan. Distinct consumers become
+    // distinct physical streams, so their domains must be disjoint; otherwise the SDK would have to consume the
+    // same entry NFT twice. Different offsets inside one consumer likewise need independent disjoint streams.
+    for (let left = 0; left < reads.length; left += 1) {
+      const leftRead = reads[left];
+      const leftOffset = this.affineRecursiveKeyOffset(leftRead.node.keys[0], inductionName)!;
+      for (let right = left + 1; right < reads.length; right += 1) {
+        const rightRead = reads[right];
+        if (leftRead.node.name !== rightRead.node.name) continue;
+        const rightOffset = this.affineRecursiveKeyOffset(rightRead.node.keys[0], inductionName)!;
+        if (leftRead.consumer === rightRead.consumer && leftOffset === rightOffset) continue;
+        if (!disjoint(leftOffset, rightOffset)) return false;
+      }
+    }
     return true;
   }
 
@@ -199,6 +224,9 @@ export default class LowerTailRecursion extends AstTraversal {
   private descendingAffineStep(
     call: FunctionCallNode, node: FunctionDefinitionNode, inductionIndex: number, inductionName: string,
   ): ExpressionNode | undefined {
+    // This pass runs before semantic arity diagnostics. A malformed recursive call must remain unlowered for the
+    // ordinary checker rather than indexing beyond the source parameters during speculative affine recognition.
+    if (call.parameters.length !== node.parameters.length) return undefined;
     const next = call.parameters[inductionIndex];
     if (!(next instanceof BinaryOpNode) || next.operator !== BinaryOperator.MINUS
       || !(next.left instanceof IdentifierNode) || next.left.name !== inductionName) return undefined;
@@ -1143,9 +1171,14 @@ export default class LowerTailRecursion extends AstTraversal {
         return true;
       }
       if (statement instanceof RequireNode) {
-        return this.affineEventExpression(
+        if (this.affineEventExpression(
           statement.expression, node, zeroSide.name, true, replayAliases,
-        ) !== undefined;
+        ) !== undefined) return true;
+        let mappingRead = false;
+        this.walkNodes(statement.expression, (candidate) => {
+          if (candidate instanceof MappingAccessNode) mappingRead = true;
+        });
+        return mappingRead;
       }
       if (statement instanceof BlockNode) {
         return (statement.statements ?? []).every((nested) => collectEffectTree(nested, path));
@@ -1164,13 +1197,13 @@ export default class LowerTailRecursion extends AstTraversal {
       return false;
     };
     if (effects.length === 0 || !effects.every((effect) => collectEffectTree(effect))
-      || mappingWrites.length + emits.length === 0
       || mappingWrites.some((write) => !this.sortedMappingNames.has(write.name)
         || write.keys.length !== 1 || !affineKey(write.keys[0]))) return undefined;
-    const mappingReads = this.affineRecursiveMappingReads(mappingWrites, zeroSide.name);
-    if (!mappingReads || !this.affineRecursiveResourcesSound(
-      mappingWrites, mappingReads, zeroSide.name, stepExpression,
-    )) return undefined;
+    const mappingReads = this.affineRecursiveMappingReads(effects, mappingWrites, zeroSide.name);
+    if (!mappingReads || mappingWrites.length + mappingReads.length + emits.length === 0
+      || !this.affineRecursiveResourcesSound(
+        mappingWrites, mappingReads, zeroSide.name, stepExpression,
+      )) return undefined;
 
     // Calls, collection reads, or additional persistent effects inside base/value expressions need a genuine
     // authenticated frame environment. The accepted mapping statements themselves are the only effects here.
@@ -1183,7 +1216,8 @@ export default class LowerTailRecursion extends AstTraversal {
       if (allowedEffects.has(candidate) || candidate === call) return;
       if (candidate instanceof MappingAssignNode || candidate instanceof MappingDeleteNode
         || candidate instanceof MappingFieldAssignNode || candidate instanceof MappingAccessNode
-        || candidate instanceof ArrayAccessNode || candidate instanceof StateAssignNode
+        || candidate instanceof ArrayAccessNode || candidate instanceof StateAccessNode
+        || candidate instanceof StateAssignNode
         || candidate instanceof DeleteStateNode || candidate instanceof WhileNode
         || candidate instanceof DoWhileNode || candidate instanceof FunctionCallNode) unsupported = true;
     });
@@ -1212,7 +1246,8 @@ export default class LowerTailRecursion extends AstTraversal {
         ? condition.left : undefined;
     if (!(zeroSide instanceof IdentifierNode)) return undefined;
     const inductionIndex = node.parameters.findIndex((parameter) =>
-      parameter.name === zeroSide.name && parameter.type instanceof IntType);
+      parameter.name === zeroSide.name && (parameter.type instanceof IntType
+        || parameter.type === PrimitiveType.INT || parameter.type === PrimitiveType.BIGINT));
     if (inductionIndex < 0) return undefined;
     const call = recursiveStatement.call;
     const stepExpression = this.descendingAffineStep(call, node, inductionIndex, zeroSide.name);
@@ -1239,7 +1274,12 @@ export default class LowerTailRecursion extends AstTraversal {
         return true;
       }
       if (statement instanceof RequireNode) {
-        return this.affineEventExpression(statement.expression, node, zeroSide.name, true) !== undefined;
+        if (this.affineEventExpression(statement.expression, node, zeroSide.name, true) !== undefined) return true;
+        let mappingRead = false;
+        this.walkNodes(statement.expression, (candidate) => {
+          if (candidate instanceof MappingAccessNode) mappingRead = true;
+        });
+        return mappingRead;
       }
       if (statement instanceof BlockNode) {
         return (statement.statements ?? []).every((nested) => collect(nested, path));
@@ -1255,13 +1295,14 @@ export default class LowerTailRecursion extends AstTraversal {
       }
       return false;
     };
-    if (!effects.every((effect) => collect(effect)) || writes.length + emits.length === 0
+    if (!effects.every((effect) => collect(effect))
       || writes.some((write) => !this.sortedMappingNames.has(write.name)
         || write.keys.length !== 1 || !affineKey(write.keys[0]))) return undefined;
-    const mappingReads = this.affineRecursiveMappingReads(writes, zeroSide.name);
-    if (!mappingReads || !this.affineRecursiveResourcesSound(
-      writes, mappingReads, zeroSide.name, stepExpression,
-    )) return undefined;
+    const mappingReads = this.affineRecursiveMappingReads(effects, writes, zeroSide.name);
+    if (!mappingReads || writes.length + mappingReads.length + emits.length === 0
+      || !this.affineRecursiveResourcesSound(
+        writes, mappingReads, zeroSide.name, stepExpression,
+      )) return undefined;
     let unsupported = false;
     const allowed = new Set<Node>([
       ...writes, ...mappingReads.map(({ node: read }) => read), ...emits.map(({ node: emit }) => emit),
@@ -1270,11 +1311,83 @@ export default class LowerTailRecursion extends AstTraversal {
       if (allowed.has(candidate) || candidate === call) return;
       if (candidate instanceof MappingAssignNode || candidate instanceof MappingDeleteNode
         || candidate instanceof MappingFieldAssignNode || candidate instanceof MappingAccessNode
-        || candidate instanceof ArrayAccessNode || candidate instanceof StateAssignNode
+        || candidate instanceof ArrayAccessNode || candidate instanceof StateAccessNode
+        || candidate instanceof StateAssignNode
         || candidate instanceof DeleteStateNode || candidate instanceof WhileNode
         || candidate instanceof DoWhileNode || candidate instanceof FunctionCallNode) unsupported = true;
     });
     return unsupported ? undefined : { inductionIndex, stepExpression, effects, emits };
+  }
+
+  /** Exact mixed-order void recursion: prefix effects run from the public frame through the base frame, then
+   * suffix effects run while unwinding from the innermost retained frame back to the public frame. Keeping both
+   * halves to independently replayable event trees lets them use two ordinary runtime occurrence domains. */
+  private affineVoidMixedEventRecursion(node: FunctionDefinitionNode): AffineVoidMixedEventRecursion | undefined {
+    if (!node.body || node.returnTypes.length !== 0 || node.customModifiers.length > 0) return undefined;
+    const statements = node.body.statements ?? [];
+    const baseShape = (statement: StatementNode): statement is BranchNode => statement instanceof BranchNode
+      && statement.elseBlock === undefined && (statement.ifBlock.statements ?? []).length === 1
+      && statement.ifBlock.statements![0] instanceof ReturnNode
+      && statement.ifBlock.statements![0].expressions.length === 0;
+    const bases = statements.map((statement, index) => ({ statement, index }))
+      .filter(({ statement }) => baseShape(statement));
+    if (bases.length !== 1) return undefined;
+    const { statement: base, index: baseIndex } = bases[0] as { statement: BranchNode; index: number };
+    const recursiveStatement = statements[baseIndex + 1];
+    if (!(recursiveStatement instanceof FunctionCallStatementNode)
+      || !this.isSelfCall(recursiveStatement.call, node.name)
+      || recursiveStatement.call.parameters.length !== node.parameters.length) return undefined;
+    const prefix = statements.slice(0, baseIndex);
+    const suffix = statements.slice(baseIndex + 2);
+    if (prefix.length === 0 || suffix.length === 0) return undefined;
+    const condition = base.condition;
+    if (!(condition instanceof BinaryOpNode) || condition.operator !== BinaryOperator.EQ) return undefined;
+    const zeroSide = condition.left instanceof IntLiteralNode && condition.left.value === 0n
+      ? condition.right : condition.right instanceof IntLiteralNode && condition.right.value === 0n
+        ? condition.left : undefined;
+    if (!(zeroSide instanceof IdentifierNode)) return undefined;
+    const inductionIndex = node.parameters.findIndex((parameter) =>
+      parameter.name === zeroSide.name && (parameter.type instanceof IntType
+        || parameter.type === PrimitiveType.INT || parameter.type === PrimitiveType.BIGINT));
+    if (inductionIndex < 0) return undefined;
+    const call = recursiveStatement.call;
+    const varying = call.parameters.flatMap((argument, index) =>
+      argument instanceof IdentifierNode && argument.name === node.parameters[index]?.name ? [] : [index]);
+    if (varying.length !== 1 || varying[0] !== inductionIndex) return undefined;
+    const stepExpression = this.descendingAffineStep(call, node, inductionIndex, zeroSide.name);
+    if (!stepExpression) return undefined;
+
+    const collect = (
+      effects: readonly StatementNode[], emits: Array<{ node: EmitStatementNode; condition?: ExpressionNode }>,
+    ): boolean => {
+      const conjunction = (left: ExpressionNode | undefined, right: ExpressionNode): ExpressionNode => left
+        ? this.stamp(new BinaryOpNode(left, BinaryOperator.AND, right), right.location) : right;
+      const visit = (statement: StatementNode, path?: ExpressionNode): boolean => {
+        if (statement instanceof EmitStatementNode) {
+          if (statement.args.some((argument) =>
+            !this.affineEventExpression(argument, node, zeroSide.name, true))) return false;
+          emits.push({ node: statement, condition: path });
+          return true;
+        }
+        if (statement instanceof BlockNode) return (statement.statements ?? []).every((child) => visit(child, path));
+        if (statement instanceof BranchNode) {
+          if (!this.affineEventExpression(statement.condition, node, zeroSide.name, true)
+            || !visit(statement.ifBlock, conjunction(path, statement.condition))) return false;
+          if (!statement.elseBlock) return true;
+          const inverse = this.stamp(new UnaryOpNode(
+            UnaryOperator.NOT, statement.condition,
+          ), statement.condition.location);
+          return visit(statement.elseBlock, conjunction(path, inverse));
+        }
+        return false;
+      };
+      return effects.every((effect) => visit(effect));
+    };
+    const prefixEmits: AffineVoidMixedEventRecursion['prefixEmits'] = [];
+    const suffixEmits: AffineVoidMixedEventRecursion['suffixEmits'] = [];
+    if (!collect(prefix, prefixEmits) || !collect(suffix, suffixEmits)
+      || prefixEmits.length === 0 || suffixEmits.length === 0) return undefined;
+    return { inductionIndex, stepExpression, prefix, suffix, prefixEmits, suffixEmits };
   }
 
   /** Serialize only expressions whose value can be reconstructed from the public call frame and current
@@ -1402,25 +1515,30 @@ export default class LowerTailRecursion extends AstTraversal {
    * makes every accepted event argument and predicate independently replayable, and rules out hidden effects or
    * state mutations between frames. */
   private affineEventRecursion(node: FunctionDefinitionNode): AffineEventRecursion | undefined {
-    if (!node.body || node.returnTypes.length === 0 || node.customModifiers.length > 0) return undefined;
+    if (!node.body || node.customModifiers.length > 0) return undefined;
     const statements = node.body.statements ?? [];
     if (statements.length < 2) return undefined;
-    const recursiveReturn = statements.at(-1)!;
+    const recursiveStatement = statements.at(-1)!;
     const base = statements.at(-2)!;
-    if (!(recursiveReturn instanceof ReturnNode) || recursiveReturn.expressions.length !== 1
-      || !this.isSelfCall(recursiveReturn.expressions[0], node.name)
+    const recursiveCall = recursiveStatement instanceof ReturnNode
+      && recursiveStatement.expressions.length === 1
+      && this.isSelfCall(recursiveStatement.expressions[0], node.name)
+      ? recursiveStatement.expressions[0]
+      : recursiveStatement instanceof FunctionCallStatementNode
+        && this.isSelfCall(recursiveStatement.call, node.name)
+        ? recursiveStatement.call : undefined;
+    if (!recursiveCall
       || !(base instanceof BranchNode) || base.elseBlock !== undefined
       || (base.ifBlock.statements ?? []).length !== 1
       || !(base.ifBlock.statements![0] instanceof ReturnNode)) return undefined;
-    const call = recursiveReturn.expressions[0];
-    const varying = call.parameters.flatMap((argument, index) =>
+    const varying = recursiveCall.parameters.flatMap((argument, index) =>
       argument instanceof IdentifierNode && argument.name === node.parameters[index]?.name ? [] : [index]);
     if (varying.length !== 1) return undefined;
     const inductionIndex = varying[0];
     const induction = node.parameters[inductionIndex];
     if (!induction || (!(induction.type instanceof IntType)
       && induction.type !== PrimitiveType.INT && induction.type !== PrimitiveType.BIGINT)) return undefined;
-    const next = call.parameters[inductionIndex];
+    const next = recursiveCall.parameters[inductionIndex];
     let stepExpression: ExpressionNode | undefined;
     let negateStep = false;
     if (next instanceof BinaryOpNode && next.operator === BinaryOperator.PLUS) {
@@ -1522,6 +1640,29 @@ export default class LowerTailRecursion extends AstTraversal {
       if (!(candidate instanceof MappingAssignNode || candidate instanceof MappingDeleteNode
         || candidate instanceof MappingFieldAssignNode)) return;
       if (candidate.keys.some(usesVaryingParameter)) found = true;
+    });
+    return found;
+  }
+
+  /** A varying recursive mapping read needs an authenticated occurrence stream just like a write. If none of the
+   * exact affine plans above claimed it, retaining the recursive body is the fail-closed representation: the
+   * generic tail loop has no per-frame mapping-key witness and must not make one varying entry look invariant. */
+  private hasVaryingRecursiveMappingRead(node: FunctionDefinitionNode): boolean {
+    if (!node.body) return false;
+    const varying = new Set<string>();
+    this.walkNodes(node.body, (candidate) => {
+      if (!this.isSelfCall(candidate, node.name)) return;
+      node.parameters.forEach((parameter, index) => {
+        const argument = candidate.parameters[index];
+        if (!(argument instanceof IdentifierNode) || argument.name !== parameter.name) varying.add(parameter.name);
+      });
+    });
+    let found = false;
+    this.walkNodes(node.body, (candidate) => {
+      if (!(candidate instanceof MappingAccessNode)) return;
+      this.walkNodes(candidate, (part) => {
+        if (part instanceof IdentifierNode && varying.has(part.name)) found = true;
+      });
     });
     return found;
   }
@@ -1671,6 +1812,118 @@ export default class LowerTailRecursion extends AstTraversal {
       emit.runtimeLoopEventCounter = { name: rankName, initialValue: 1n, stepValue: 1n };
       emit.runtimeLoopEffectOrder = siteIndex;
     });
+  }
+
+  private publishAffineMixedPreEvents(
+    node: FunctionDefinitionNode, plan: AffineVoidMixedEventRecursion,
+    rankName: string, effects: readonly StatementNode[],
+  ): void {
+    const induction = node.parameters[plan.inductionIndex];
+    const visibleIndex = node.parameters.slice(0, plan.inductionIndex)
+      .filter((parameter) => !parameter.name.startsWith('__internal__')).length;
+    const serializedStep = this.affineEventExpression(plan.stepExpression, node, induction.name, false);
+    if (!serializedStep) return;
+    const quotient: ExternalCallExpression = {
+      kind: 'binary', operator: BinaryOperator.DIV,
+      left: { kind: 'source', source: { kind: 'forward', paramIndex: visibleIndex } },
+      right: serializedStep,
+    };
+    const loopIndex = node.runtimeLoopEvents?.length ?? 0;
+    node.runtimeLoopEvents = [...(node.runtimeLoopEvents ?? []), {
+      loopIndex,
+      iterationDomain: {
+        counterName: rankName,
+        initialValue: { kind: 'literal', type: 'bigint', value: '0' },
+        stepValue: { kind: 'literal', type: 'bigint', value: '1' },
+        continueCondition: {
+          kind: 'binary', operator: BinaryOperator.LT,
+          left: { kind: 'identifier', name: rankName }, right: quotient,
+        },
+        maximumIterations: 64,
+      },
+    }];
+    node.runtimeCounterLoopOutputCapacity = (node.runtimeCounterLoopOutputCapacity ?? 0)
+      + plan.prefixEmits.length * 64;
+    const clonedEmits: EmitStatementNode[] = [];
+    for (const effect of effects) this.walkNodes(effect, (candidate) => {
+      if (candidate instanceof EmitStatementNode) clonedEmits.push(candidate);
+    });
+    if (clonedEmits.length !== plan.prefixEmits.length) return;
+    clonedEmits.forEach((emit, siteIndex) => {
+      const frame = (): ExpressionNode => this.affineFrameAtRank(
+        this.stamp(new IdentifierNode(induction.name), emit.location), rankName,
+        plan.stepExpression, false,
+      );
+      const sourceCondition = plan.prefixEmits[siteIndex].condition;
+      emit.runtimeLoopEvent = { loopIndex, siteIndex };
+      emit.runtimeLoopEventCondition = sourceCondition ? this.replaceIdentifier(
+        cloneNode(sourceCondition) as ExpressionNode, induction.name, frame,
+      ) as ExpressionNode : undefined;
+      emit.runtimeLoopEventCounter = { name: rankName, initialValue: 0n, stepValue: 1n };
+      emit.runtimeLoopEffectOrder = siteIndex;
+    });
+  }
+
+  private lowerAffineVoidMixedEventRecursion(
+    node: FunctionDefinitionNode, plan: AffineVoidMixedEventRecursion, frame: number,
+  ): void {
+    const induction = node.parameters[plan.inductionIndex];
+    const preRankName = `__tail_pre_rank_${frame}`;
+    const postRankName = `__tail_unwind_rank_${frame}`;
+    const replaceEffects = (effects: readonly StatementNode[], rankName: string, unwind: boolean): StatementNode[] =>
+      effects.map((effect) => this.replaceIdentifier(
+        cloneNode(effect) as StatementNode, induction.name,
+        () => this.affineFrameAtRank(
+          this.stamp(new IdentifierNode(induction.name), effect.location), rankName,
+          plan.stepExpression, unwind,
+        ),
+      ) as StatementNode);
+    const preEffects = replaceEffects(plan.prefix, preRankName, false);
+    const postEffects = replaceEffects(plan.suffix, postRankName, true);
+    this.publishAffineMixedPreEvents(node, plan, preRankName, preEffects);
+    this.publishAffinePostEvents(node, {
+      inductionIndex: plan.inductionIndex,
+      stepExpression: plan.stepExpression,
+      effects: plan.suffix,
+      emits: plan.suffixEmits,
+    }, postRankName, postEffects);
+    const quotient = (): ExpressionNode => this.stamp(new BinaryOpNode(
+      this.stamp(new IdentifierNode(induction.name), node.location), BinaryOperator.DIV,
+      cloneNode(plan.stepExpression),
+    ), node.location);
+    const phase = (
+      rankName: string, initialValue: bigint, effects: readonly StatementNode[],
+    ): [VariableDefinitionNode, WhileNode] => {
+      const rank = this.stamp(new VariableDefinitionNode(
+        induction.type, [], rankName, this.stamp(new IntLiteralNode(initialValue), node.location),
+      ), node.location);
+      rank.isLoopVariable = true;
+      rank.loopInitialValue = initialValue;
+      rank.loopStepValue = 1n;
+      const increment = this.stamp(new AssignNode(
+        this.stamp(new IdentifierNode(rankName), node.location),
+        this.stamp(new BinaryOpNode(
+          this.stamp(new IdentifierNode(rankName), node.location), BinaryOperator.PLUS,
+          this.stamp(new IntLiteralNode(1n), node.location),
+        ), node.location),
+      ), node.location);
+      const loop = this.stamp(new WhileNode(
+        this.stamp(new BinaryOpNode(
+          this.stamp(new IdentifierNode(rankName), node.location), BinaryOperator.LE, quotient(),
+        ), node.location),
+        this.stamp(new BlockNode([...effects, increment]), node.location),
+      ), node.location);
+      loop.forLoopUpdateCount = 1;
+      return [rank, loop];
+    };
+    const [preRank, preLoop] = phase(preRankName, 0n, preEffects);
+    const [postRank, postLoop] = phase(postRankName, 1n, postEffects);
+    const guards = this.affineFrameGuards(
+      node, this.stamp(new IdentifierNode(induction.name), node.location), plan.stepExpression, 63n,
+    );
+    node.body = this.stamp(new BlockNode([
+      ...guards, preRank, preLoop, postRank, postLoop,
+    ]), node.location);
   }
 
   private lowerAffinePostEffectRecursion(
@@ -1846,6 +2099,12 @@ export default class LowerTailRecursion extends AstTraversal {
     const sourceSelfCalls = this.countSelfCalls(node.body, node.name);
     if (sourceSelfCalls > 0) this.normalizeRightShortCircuitReturns(node.body, selfNames);
     const selfCalls = this.countSelfCalls(node.body, node.name);
+    const affineVoidMixedEvent = selfCalls === 1 ? this.affineVoidMixedEventRecursion(node) : undefined;
+    if (affineVoidMixedEvent) {
+      this.counter += 1;
+      this.lowerAffineVoidMixedEventRecursion(node, affineVoidMixedEvent, frame);
+      return node;
+    }
     const affineVoidPostEffect = selfCalls === 1 ? this.affineVoidPostEffectRecursion(node) : undefined;
     if (affineVoidPostEffect) {
       this.counter += 1;
@@ -1867,7 +2126,10 @@ export default class LowerTailRecursion extends AstTraversal {
     const affineEvent = selfCalls === 1 ? this.affineEventRecursion(node) : undefined;
     // A varying entry cannot use the invariant-entry cache, and the ordinary repeat loop publishes no key stream.
     // Leave every shape outside the exact rank proof above recursive so kernel admission fails closed.
-    if (this.hasVaryingRecursiveMappingWrite(node)) return node;
+    if (this.hasVaryingRecursiveMappingWrite(node) || this.hasVaryingRecursiveMappingRead(node)) {
+      node.unloweredVaryingRecursiveMappingRead = this.hasVaryingRecursiveMappingRead(node);
+      return node;
+    }
     const fold = selfCalls > 0 ? this.recursiveFoldShape([node], selfNames) : undefined;
     if (selfCalls === 0 || !this.selfCallsHaveArity(node.body, node.name, node.parameters.length)
       || !this.baseReturnsHaveArity(node.body, node.name, node.returnTypes.length, namedResults)

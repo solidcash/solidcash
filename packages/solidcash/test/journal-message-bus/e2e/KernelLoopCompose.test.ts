@@ -4508,7 +4508,7 @@ describe('kernel composite counter-key settlement', () => {
     ]).build()).rejects.toThrow(/read-your-writes transition/);
   }, 180_000);
 
-  it('settles events owned by a returning internal helper in loop source order', async () => {
+  it('settles lazily reached events owned by a returning helper in loop source order', async () => {
     const provider = createTestProvider();
     const artifact = compileString(`contract HelperLoopEvents() {
       mapping(int => int) values;
@@ -4517,23 +4517,27 @@ describe('kernel composite counter-key settlement', () => {
         emit Pulse(value);
         return value + 1;
       }
-      function apply(int count) public {
+      function apply(int count, bool enabled) public {
         for (int cursor = 0; cursor < count; cursor = cursor + 1) {
-          this.values[cursor] = record(cursor);
+          bool selected = enabled && record(cursor) >= 0;
+          this.values[cursor] = selected ? cursor + 1 : 0;
         }
         require(true);
       }
     }`, KERNEL);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'apply')).toMatchObject({
       eligible: true,
-      runtimeLoopEvents: [{ eventSignatures: ['Pulse(int256)'] }],
+      runtimeLoopEvents: [{
+        eventSignatures: ['Pulse(int256)'],
+        conditions: [{ kind: 'source', source: { kind: 'forward', paramIndex: 1 } }],
+      }],
     });
     const inner = new Contract(artifact, [], { provider });
     const { categoryId } = await setupStatefulUtxos(
       provider, inner, artifact.stateLayout!, {}, { saltContract: true },
     );
     const contract = StatefulContract.withCategory(inner, categoryId);
-    const builder = await contract.batch([{ function: 'apply', args: [3n] }]).build();
+    const builder = await contract.batch([{ function: 'apply', args: [3n, true] }]).build();
     const transaction = builder.buildLibauthTransaction();
     expect(transaction.outputs
       .filter((output) => output.token?.nft?.capability === 'none')
@@ -4561,6 +4565,148 @@ describe('kernel composite counter-key settlement', () => {
       } : output),
     };
     expect(vm.stateSuccess(vm.evaluate({ inputIndex: 0, sourceOutputs, transaction: hostile }))).not.toBe(true);
+    const missing = {
+      ...transaction,
+      outputs: transaction.outputs.filter((_output, index) => index !== eventIndex),
+    };
+    expect(vm.stateSuccess(vm.evaluate({ inputIndex: 0, sourceOutputs, transaction: missing }))).not.toBe(true);
+
+    const skipped = await contract.batch([{ function: 'apply', args: [3n, false] }]).build();
+    const skippedTransaction = skipped.buildLibauthTransaction();
+    expect(skippedTransaction.outputs
+      .filter((output) => output.token?.nft?.capability === 'none')).toHaveLength(0);
+    const skippedSources = generateLibauthSourceOutputs(skipped.inputs);
+    for (let inputIndex = 0; inputIndex < skippedTransaction.inputs.length; inputIndex += 1) {
+      expect(vm.stateSuccess(vm.evaluate({
+        inputIndex, sourceOutputs: skippedSources, transaction: skippedTransaction,
+      })), `skipped input ${inputIndex}`).toBe(true);
+    }
+  }, 180_000);
+
+  it('settles branch and require-owned returning-helper events lazily', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(`contract LazyBranchEvents() {
+      mapping(int => int) values;
+      event Pulse(int value);
+      function record(int value) internal returns (int) { emit Pulse(value); return value; }
+      function apply(int count, bool enabled) public {
+        for (int cursor = 0; cursor < count; cursor = cursor + 1) {
+          if (enabled || record(cursor + 10) < 0) { require(true); }
+          require(enabled || record(cursor + 20) >= 0);
+          this.values[cursor] = cursor;
+        }
+        require(true);
+      }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'apply'))
+      .toMatchObject({ eligible: true, runtimeLoopEvents: [{ eventSignatures: [
+        'Pulse(int256)', 'Pulse(int256)',
+      ] }] });
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+    );
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    const vm = createVirtualMachineBch2026ForProvider(provider);
+    const cases = [
+      { enabled: true, commitments: [] },
+      { enabled: false, commitments: ['5a', '0114', '5b', '0115'] },
+    ] as const;
+    for (const { enabled, commitments } of cases) {
+      const builder = await contract.batch([{ function: 'apply', args: [2n, enabled] }]).build();
+      const transaction = builder.buildLibauthTransaction();
+      expect(transaction.outputs.filter((output) => output.token?.nft?.capability === 'none')
+        .map((output) => binToHex(output.token!.nft!.commitment))).toEqual(commitments);
+      const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+      for (let inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex += 1) {
+        expect(vm.stateSuccess(vm.evaluate({ inputIndex, sourceOutputs, transaction })),
+          `${enabled} input ${inputIndex}`).toBe(true);
+      }
+    }
+  }, 180_000);
+
+  it('settles ternary-arm returning-helper events lazily', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(`contract LazyTernaryEvents() {
+      mapping(int => int) values;
+      event Pulse(int value);
+      function record(int value) internal returns (int) { emit Pulse(value); return value; }
+      function apply(int count, bool enabled) public {
+        for (int cursor = 0; cursor < count; cursor = cursor + 1) {
+          int branch = enabled ? record(cursor + 30) : record(cursor + 40);
+          this.values[cursor] = branch;
+        }
+        require(true);
+      }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'apply'))
+      .toMatchObject({ eligible: true, runtimeLoopEvents: [{ eventSignatures: [
+        'Pulse(int256)', 'Pulse(int256)',
+      ] }] });
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+    );
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    const vm = createVirtualMachineBch2026ForProvider(provider);
+    const cases = [
+      { enabled: true, commitments: ['011e', '011f'] },
+      { enabled: false, commitments: ['0128', '0129'] },
+    ] as const;
+    for (const { enabled, commitments } of cases) {
+      const builder = await contract.batch([{ function: 'apply', args: [2n, enabled] }]).build();
+      const transaction = builder.buildLibauthTransaction();
+      expect(transaction.outputs.filter((output) => output.token?.nft?.capability === 'none')
+        .map((output) => binToHex(output.token!.nft!.commitment))).toEqual(commitments);
+      const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+      for (let inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex += 1) {
+        expect(vm.stateSuccess(vm.evaluate({ inputIndex, sourceOutputs, transaction })),
+          `${enabled} input ${inputIndex}`).toBe(true);
+      }
+    }
+  }, 180_000);
+
+  it('settles a lazy returning-helper event in a scalar-state continuation', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(`contract ScalarLazyEvent() {
+      bool reached;
+      event Pulse(int value);
+      function record(int value) internal returns (bool) { emit Pulse(value); return true; }
+      function mark(bool enabled) public {
+        this.reached = enabled && record(50);
+        require(true);
+      }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'mark'))
+      .toMatchObject({ eligible: true });
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+    );
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    const vm = createVirtualMachineBch2026ForProvider(provider);
+    const marked = await contract.batch([{ function: 'mark', args: [true] }]).build();
+    const markedTransaction = marked.buildLibauthTransaction();
+    expect(markedTransaction.outputs
+      .filter((output) => output.token?.nft?.capability === 'none')
+      .map((output) => binToHex(output.token!.nft!.commitment))).toEqual(['0132']);
+    const markedSources = generateLibauthSourceOutputs(marked.inputs);
+    for (let inputIndex = 0; inputIndex < markedTransaction.inputs.length; inputIndex += 1) {
+      expect(vm.stateSuccess(vm.evaluate({
+        inputIndex, sourceOutputs: markedSources, transaction: markedTransaction,
+      })), `marked input ${inputIndex}`).toBe(true);
+    }
+    const unmarked = await contract.batch([{ function: 'mark', args: [false] }]).build();
+    const unmarkedTransaction = unmarked.buildLibauthTransaction();
+    expect(unmarkedTransaction.outputs
+      .filter((output) => output.token?.nft?.capability === 'none')
+      .map((output) => binToHex(output.token!.nft!.commitment))).not.toContain('0132');
+    const unmarkedSources = generateLibauthSourceOutputs(unmarked.inputs);
+    for (let inputIndex = 0; inputIndex < unmarkedTransaction.inputs.length; inputIndex += 1) {
+      expect(vm.stateSuccess(vm.evaluate({
+        inputIndex, sourceOutputs: unmarkedSources, transaction: unmarkedTransaction,
+      })), `unmarked input ${inputIndex}`).toBe(true);
+    }
   }, 180_000);
 
   it('settles bounded event-only pre-test and post-test counter loops', async () => {

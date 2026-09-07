@@ -988,6 +988,51 @@ describe('required kernel admission', () => {
     }]);
   });
 
+  it('publishes the same affine pre-recursion event domain for a canonical void self-call', () => {
+    const artifact = compileString(`contract C() {
+      event Seen(int value);
+      function descend(int cursor, int stride) public {
+        emit Seen(cursor);
+        if (cursor == 0) return;
+        descend(cursor - stride, stride);
+      }
+    }`, KERNEL);
+    const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'descend');
+    expect(handler).toMatchObject({
+      eligible: true,
+      runtimeLoopEvents: [{
+        iterationDomain: {
+          counterName: 'cursor',
+          initialValue: { kind: 'source', source: { kind: 'forward', paramIndex: 0 } },
+          stepValue: { kind: 'unary', operator: '-', expression: {
+            kind: 'source', source: { kind: 'forward', paramIndex: 1 },
+          } },
+          maximumIterations: 64,
+        },
+        eventSignatures: ['Seen(int256)'],
+        arguments: [[{ kind: 'identifier', name: 'cursor' }]],
+      }],
+    });
+    expect(artifact.messageBus?.route.blockLayout?.trailingCapacity).toBe(64);
+  });
+
+  it.each([
+    ['multiple varying parameters', 'descend(cursor - 1, other - 1);'],
+    ['a non-affine step', 'descend(cursor / 2, other);'],
+  ])('refuses void recursive event metadata for %s', (_label, recursiveCall) => {
+    const artifact = compileString(`contract C() {
+      event Seen(int value);
+      function descend(int cursor, int other) public {
+        emit Seen(cursor);
+        if (cursor == 0) return;
+        ${recursiveCall}
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'descend'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+  });
+
   it('keeps recursive event-domain admission invariant under source renaming', () => {
     const compile = (
       contractName: string, functionName: string, counterName: string, eventName: string,
@@ -7746,7 +7791,52 @@ describe('required kernel admission', () => {
     ]);
   });
 
-  it('does not hoist an eventful returning helper out of a short-circuit position', () => {
+  it('preserves lazy event-helper evaluation through local assignment, branch, and value continuations', () => {
+    const artifact = compileString(`event Observed(int value);
+      contract C() {
+        mapping(int => int) values;
+        bool reached;
+        function record(int value) internal returns (int) {
+          emit Observed(value);
+          return value;
+        }
+        function apply(int count, bool enabled) public {
+          for (int cursor = 0; cursor < count; cursor = cursor + 1) {
+            bool selected = false;
+            selected = enabled && record(cursor) >= 0;
+            if (enabled || record(cursor + 10) < 0) { selected = true; }
+            require(enabled || record(cursor + 15) >= 0);
+            int branch = enabled ? record(cursor + 20) : record(cursor + 30);
+            this.values[cursor] = branch;
+          }
+          require(true);
+        }
+        function mark(bool enabled) public {
+          this.reached = enabled && record(40) >= 0;
+          require(true);
+        }
+      }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'apply');
+    expect(handler).toMatchObject({
+      eligible: true,
+      runtimeLoopEvents: [{
+        eventSignatures: [
+          'Observed(int256)', 'Observed(int256)', 'Observed(int256)', 'Observed(int256)', 'Observed(int256)',
+        ],
+      }],
+    });
+    expect(handler?.runtimeLoopEvents?.[0].conditions).toMatchObject([
+      { kind: 'source', source: { kind: 'forward', paramIndex: 1 } },
+      { kind: 'unary', operator: '!', expression: { kind: 'source' } },
+      { kind: 'unary', operator: '!', expression: { kind: 'source' } },
+      { kind: 'source', source: { kind: 'forward', paramIndex: 1 } },
+      { kind: 'unary', operator: '!', expression: { kind: 'source' } },
+    ]);
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'mark'))
+      .toMatchObject({ eligible: true });
+  });
+
+  it('keeps lazy event helpers inside unsupported mapping-value continuations fail closed', () => {
     expect(() => compileString(`event Observed(int value);
       contract C() {
         mapping(int => int) values;
@@ -7756,8 +7846,7 @@ describe('required kernel admission', () => {
         }
         function apply(int count, bool enabled) public {
           for (int cursor = 0; cursor < count; cursor = cursor + 1) {
-            bool selected = enabled && record(cursor) > 0;
-            this.values[cursor] = selected ? 1 : 0;
+            this.values[cursor] = enabled ? record(cursor) : 0;
           }
           require(true);
         }
@@ -8224,5 +8313,80 @@ describe('required kernel admission', () => {
     expect(artifact.messageBus?.handlers.every((handler) => handler.eligible === false)).toBe(true);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')?.rejectionReason)
       .toBe('KERNEL_OPAQUE_EFFECT');
+  });
+
+  it('keeps value-bearing stateless child construction fenced until its eight-row route is VM-sound', () => {
+    const artifact = compileString(`contract Capsule(int seed) {
+      function open(int candidate) public pure { require(candidate == seed); }
+    }
+    contract Router() {
+      function place(int seed, int amount) public {
+        Capsule child = new Capsule{value: amount}(seed);
+        require(address(child) != address(0));
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'place'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+  });
+
+  it.each([
+    ['write before read', 'this.shared[i] = 1; require(this.shared[i] == 1);'],
+    ['read before write', 'require(this.shared[i] >= 0); this.shared[i] = 1;'],
+    ['an offset read overlapping the next iteration', 'this.shared[i] = 1; require(this.shared[i + 1] >= 0);'],
+  ])('rejects a source counter-loop requirement sharing its write collection: %s', (_label, body) => {
+    const source = `contract Ledger() {
+      mapping(int => int) shared;
+      function affected(int count) public {
+        for (int i = 0; i < count; i = i + 1) { ${body} }
+        require(true);
+      }
+    }`;
+    expect(() => compileString(source, KERNEL))
+      .toThrow(/Counter-loop requirement cannot read collection 'shared'.*unsupported/);
+  });
+
+  it('rejects the same unsequenced source-loop shape for a mapping-backed array value', () => {
+    expect(() => compileString(`contract Ledger() {
+      mapping(int => int[]) shared;
+      function affected(int count) public {
+        for (int i = 0; i < count; i = i + 1) {
+          this.shared[i][0] = 1;
+          require(this.shared[i][0] == 1);
+        }
+        require(true);
+      }
+    }`, KERNEL)).toThrow(/Counter-loop requirement cannot read collection 'shared'.*unsupported/);
+  });
+
+  it('retains source counter-loop requirements reading an independent collection', () => {
+    const artifact = compileString(`contract Ledger() {
+      mapping(int => int) written;
+      mapping(int => int) observed;
+      function apply(int count) public {
+        for (int i = 0; i < count; i = i + 1) {
+          this.written[i] = 1;
+          require(this.observed[i] >= 0);
+        }
+        require(true);
+      }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'apply'))
+      .toMatchObject({ eligible: true });
+  });
+
+  it('fails closed when a stateless child recipient cannot be replayed from the row', () => {
+    const artifact = compileString(`contract Capsule(int seed) {
+      function open(int candidate) public pure { require(candidate == seed); }
+    }
+    contract Router() {
+      int cursor;
+      function place(int amount) public {
+        Capsule child = new Capsule{value: amount}(this.cursor);
+        require(address(child) != address(0));
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'place')?.eligible).not.toBe(true);
   });
 });

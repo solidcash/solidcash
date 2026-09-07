@@ -23,7 +23,6 @@ describe('kernel stateless child construction', () => {
       forceStateful: true,
       messageBus: true,
       messageBusKernel: true,
-      maximumInputBytes: 1_000_000,
     });
     const handler = artifacts.Factory.messageBus?.handlers.find((candidate) => candidate.name === 'make');
     expect(handler).toMatchObject({ eligible: true });

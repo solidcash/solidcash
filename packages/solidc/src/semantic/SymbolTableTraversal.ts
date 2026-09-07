@@ -14194,7 +14194,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       if (Array.isArray(n)) { for (const it of n) walk(it); return; }
       if (!(n instanceof Node) || seen.has(n)) return;
       seen.add(n);
-      if (n instanceof InstantiationNode && n.referencedContract) {
+      if (n instanceof InstantiationNode && n.referencedContract && n.isStatefulDeploy) {
         const vars = n.referencedContract.stateVariables ?? [];
         const commitmentLimit = this.compilerOptions.commitmentLimit ?? 128;
         let nftIndex = 0;

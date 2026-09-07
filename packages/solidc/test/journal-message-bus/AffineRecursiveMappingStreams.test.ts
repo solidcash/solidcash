@@ -170,6 +170,53 @@ describe('affine recursive mapping streams', () => {
       }`, KERNEL)).toThrow(/event would be dropped|recursive/i);
   });
 
+  it('publishes separate pre-order and unwind domains for mixed void events', () => {
+    const artifact = compileString(`contract C() {
+      event Before(int value);
+      event After(int value);
+      function walk(int cursor, int step) public {
+        if (cursor % 2 == 0) emit Before(cursor);
+        if (cursor == 0) return;
+        walk(cursor - step, step);
+        if (cursor % 2 == 1) emit After(cursor);
+      }
+    }`, KERNEL);
+    const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'walk');
+    expect(handler).toMatchObject({
+      eligible: true,
+      runtimeLoopEvents: [
+        { iterationDomain: { initialValue: { value: '0' }, maximumIterations: 64 },
+          eventSignatures: ['Before(int256)'], conditions: [expect.anything()] },
+        { iterationDomain: { initialValue: { value: '1' }, maximumIterations: 64 },
+          eventSignatures: ['After(int256)'], conditions: [expect.anything()] },
+      ],
+    });
+    expect(artifact.messageBus?.route.blockLayout?.trailingCapacity).toBe(128);
+  });
+
+  it.each([
+    ['multiple varying arguments', '', 'walk(cursor - step, step - 1);'],
+    ['a non-affine step', '', 'walk(cursor / 2, step);'],
+    ['a zero constant step', '', 'walk(cursor - 0, step);'],
+    ['a wrong-direction step', '', 'walk(cursor + step, step);'],
+    ['an interleaved continuation', '', 'require(true); walk(cursor - step, step);'],
+    ['a state-dependent prefix', 'if (this.enabled) emit Before(cursor);', 'walk(cursor - step, step);'],
+  ])('keeps void %s outside the post-recursion event plan', (_label, prefix, recursiveCall) => {
+    const artifact = compileString(`contract C() {
+      bool enabled;
+      event Before(int value);
+      event After(int value);
+      function walk(int cursor, int step) public {
+        ${prefix}
+        if (cursor == 0) return;
+        ${recursiveCall}
+        emit After(cursor);
+      }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'walk'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+  });
+
   it('keeps a state-derived recursive step outside the exact stream', () => {
     expect(() => compileString(`contract C() {
       int stride;
@@ -181,6 +228,17 @@ describe('affine recursive mapping streams', () => {
         return result;
       }
     }`, KERNEL)).toThrow(/event would be dropped|recursive/i);
+  });
+
+  it('leaves a malformed recursive arity to the ordinary semantic diagnostic', () => {
+    expect(() => compileString(`contract C() {
+      mapping(int => int) observed;
+      function walk(int cursor, int stride) public {
+        if (cursor == 0) return;
+        walk(cursor - stride);
+        require(this.observed[cursor] >= 0);
+      }
+    }`, KERNEL)).toThrow(/argument|parameter|matching function/i);
   });
 
   it('lowers void post-recursion effects with replayable requirements', () => {
@@ -218,7 +276,6 @@ describe('affine recursive mapping streams', () => {
     }`, KERNEL);
     const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'apply');
     const operationInfo = artifact.abi.find((candidate) => candidate.name === 'apply')?.sortedUpsertLoopInfo;
-
     expect(handler).toMatchObject({ eligible: true });
     expect(operationInfo?.map((info) => [info.collection, info.op])).toEqual([
       ['selected', 'set'], ['removed', 'delete'],
@@ -246,6 +303,184 @@ describe('affine recursive mapping streams', () => {
       ['source', 'read'], ['destination', 'set'],
     ]);
     expect(artifact.messageBus?.route.blockLayout?.trailingCapacity).toBe(2 * 64 + 2);
+  });
+
+  it.each([
+    ['value', `function apply(int cursor, int floor) public returns (int) {
+      if (cursor == 0) return floor;
+      int result = apply(cursor - 1, floor);
+      require(this.observed[cursor] >= result);
+      this.recorded[cursor + 64] = result;
+      return result;
+    }`],
+    ['void', `function apply(int cursor, int floor) public {
+      if (cursor == 0) return;
+      apply(cursor - 1, floor);
+      require(this.observed[cursor] >= floor);
+      this.recorded[cursor + 64] = floor;
+    }`],
+  ])('authenticates mapping reads consumed by direct %s unwind requirements', (_kind, fn) => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) observed;
+      mapping(int => int) recorded;
+      ${fn}
+    }`, KERNEL);
+    const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'apply');
+    const operationInfo = artifact.abi.find((candidate) => candidate.name === 'apply')?.sortedUpsertLoopInfo;
+
+    expect(handler).toMatchObject({ eligible: true });
+    expect(operationInfo?.map((info) => [info.collection, info.op])).toEqual([
+      ['observed', 'read'], ['recorded', 'set'],
+    ]);
+    expect(operationInfo?.[0].oldValuesWitnessParam).toMatch(/^__internal__vmapCounterOld_read_/);
+    expect(artifact.messageBus?.route.blockLayout?.trailingCapacity).toBe(2 * 64 + 2);
+  });
+
+  it('keeps the read requirement in source order beside an independently permuted write', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) observed;
+      mapping(int => int) recorded;
+      function apply(int cursor, int floor) public returns (int) {
+        if (cursor == 0) return floor;
+        int result = apply(cursor - 1, floor);
+        require(this.observed[cursor + 1] >= result);
+        this.recorded[cursor] = result + cursor;
+        return result;
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+    const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'apply');
+    const operationInfo = artifact.abi.find((candidate) => candidate.name === 'apply')?.sortedUpsertLoopInfo;
+
+    expect(handler).toMatchObject({ eligible: true });
+    expect(operationInfo?.map((info) => [info.collection, info.op])).toEqual([
+      ['observed', 'read'], ['recorded', 'set'],
+    ]);
+    expect(artifact.messageBus?.route.blockLayout?.trailingCapacity).toBe(2 * 64 + 2);
+  });
+
+  it('authenticates a requirement-only affine unwind as a bounded read stream', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) observed;
+      function apply(int cursor, int floor) public returns (int) {
+        if (cursor == 0) return floor;
+        int result = apply(cursor - 1, floor);
+        require(this.observed[cursor + 2] == result + cursor + 2);
+        return result;
+      }
+    }`, KERNEL);
+    const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'apply');
+    const operationInfo = artifact.abi.find((candidate) => candidate.name === 'apply')?.sortedUpsertLoopInfo;
+
+    expect(handler).toMatchObject({ eligible: true });
+    expect(operationInfo).toEqual([expect.objectContaining({ collection: 'observed', op: 'read' })]);
+    expect(artifact.messageBus?.route.blockLayout?.trailingCapacity).toBe(64 + 1);
+  });
+
+  it('authenticates a requirement-only unwind with an exact positive recursive step', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) observed;
+      function apply(int cursor, int step, int floor) public returns (int) {
+        if (cursor == 0) return floor;
+        int result = apply(cursor - step, step, floor);
+        require(this.observed[cursor - 1] == result + cursor - 1);
+        return result;
+      }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'apply'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.abi.find((candidate) => candidate.name === 'apply')?.sortedUpsertLoopInfo)
+      .toEqual([expect.objectContaining({ collection: 'observed', op: 'read' })]);
+  });
+
+  it.each([
+    ['a replayable nested requirement', `if (cursor % 2 == 0) {
+      require(this.observed[cursor] >= floor);
+    }`],
+    ['a state-derived nested requirement', `if (this.gate > floor) {
+      require(this.observed[cursor] >= floor);
+    }`],
+    ['a mapping-dependent condition', `if (this.observed[cursor] >= floor) {
+      require(cursor > 0);
+    }`],
+    ['overlapping distinct consumers', `require(this.observed[cursor] >= floor);
+      require(this.observed[cursor] >= result);`],
+  ])('leaves requirement-only recursion with %s outside the kernel row loop', (_label, effects) => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) observed;
+      int gate;
+      event Seen(int value);
+      function apply(int cursor, int floor) public returns (int) {
+        if (cursor == 0) return floor;
+        int result = apply(cursor - 1, floor);
+        ${effects}
+        return result;
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'apply'))
+      .toMatchObject({ eligible: false });
+    expect(artifact.abi.find((candidate) => candidate.name === 'apply')?.sortedUpsertLoopInfo)
+      .toBeUndefined();
+  });
+
+  it('refuses a mapping-valued event argument in a requirement-only recursive unwind', () => {
+    expect(() => compileString(`contract C() {
+      mapping(int => int) observed;
+      event Seen(int value);
+      function apply(int cursor, int floor) public returns (int) {
+        if (cursor == 0) return floor;
+        int result = apply(cursor - 1, floor);
+        emit Seen(this.observed[cursor]);
+        return result;
+      }
+    }`, KERNEL)).toThrow(/event would be dropped|recursive/i);
+  });
+
+  it.each([
+    ['a zero step', 'apply(cursor - 0, floor)'],
+    ['a wrong-direction step', 'apply(cursor + 1, floor)'],
+    ['a non-affine step', 'apply(cursor / 2, floor)'],
+  ])('leaves requirement-only recursion with %s outside the kernel row loop', (_label, recursiveCall) => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) observed;
+      function apply(int cursor, int floor) public returns (int) {
+        if (cursor == 0) return floor;
+        int result = ${recursiveCall};
+        require(this.observed[cursor] >= result);
+        return result;
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'apply'))
+      .toMatchObject({ eligible: false });
+  });
+
+  it.each([
+    ['the same read shape in an unsupported branch predicate', `require(this.observed[cursor] >= floor);
+      if (this.observed[cursor] >= floor) this.recorded[cursor] = result;`],
+    ['a read-after-write alias', `this.observed[cursor] = result;
+      require(this.observed[cursor] >= floor);`],
+    ['overlapping reads owned by distinct requirements', `require(this.observed[cursor] >= floor);
+      require(this.observed[cursor] >= result);`],
+    ['a requirement mixed with an unauthenticated state read',
+      'require(this.observed[cursor] >= this.minimum);'],
+  ])('keeps %s outside authenticated unwind reads', (_label, effects) => {
+    const artifact = compileString(`contract C() {
+      int minimum;
+      mapping(int => int) observed;
+      mapping(int => int) recorded;
+      function apply(int cursor, int floor) public returns (int) {
+        if (cursor == 0) return floor;
+        int result = apply(cursor - 1, floor);
+        ${effects}
+        this.recorded[cursor + 64] = result;
+        return result;
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'apply'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
   });
 
   it('admits same-collection recursive streams only when their full affine domains are disjoint', () => {

@@ -218,9 +218,11 @@ unsupported/mutated provenance remain `KERNEL_LAYOUT`; counter journals whose do
 `if`/`else`. Event arguments may use ordinary expressions, resource-free builtins, and
 returning helpers. An internally invoked returning helper which itself emits, including a transitive helper chain,
 is beta-reduced at an unconditional call site (while a public definition remains dispatchable) so its events join
-the caller's stream at their exact source
-positions. Helpers reached only through short-circuit or otherwise conditional expression evaluation remain
-fenced rather than being hoisted. After helper inlining, an effectful helper body and its result definition remain
+the caller's stream at their exact source positions. Lazy helper calls in `&&`, `||`, and ternary values are also
+reduced when their enclosing continuation is a local declaration/assignment, scalar-state assignment, `require`,
+or branch predicate: compiler-owned branch-local results keep the event inside the arm which evaluates it. Mapping
+and array lvalues, returns, call arguments, and repeated loop conditions remain fenced until their key, argument,
+or continuation order has an equivalent explicit representation. After helper inlining, an effectful helper body and its result definition remain
 adjacent to the event in the source-order physical loop, so consuming that already-computed local neither duplicates
 nor permutes the helper effect. BCH and fungible-token transfer operands use the same rule and the same authenticated,
 source-ordered runtime effect span. A mapping value may also consume an effectful helper result when inlining leaves
@@ -384,6 +386,14 @@ streams use the authenticated unwind domain described below. Other recursive con
 to one finite source-ordered resource stream, heterogeneous/overloaded recursion cycles, and result types the wrapper
 cannot encode stay `KERNEL_LAYOUT`. Enum scalar results
 and public enum getters use `int` locals; enum arrays encode each element as an unsigned ABI word.
+Canonical value-returning and void self-recursion may publish pre-recursion events over one affine parameter. The
+event domain includes the base frame, preserves source order, and is capped at 64 frames; multiple varying parameters,
+and non-affine steps remain fenced.
+For canonical post-descent effects, value-returning and void recursion instead publish an unwind rank from the
+innermost retained frame outward. A void recursion with replayable event trees on both sides of its direct self-call
+publishes two consecutive domains—descending frames including the base, then ascending retained frames—rather than
+merging their opposite orders. Effects interleaved between the base and recursive call and state-dependent event
+arguments or predicates remain fenced.
 Counter-keyed mapping loops with zero or direction-mismatched steps, mutated bounds, or extra counter mutations
 stay `KERNEL_UNBOUNDED_KEY`. A runtime step may be any replayable expression over public arguments, immutable
 local aliases, and straight-line or finite conditional dominating assignments; the route proves that its signed
@@ -500,6 +510,11 @@ For absent keys the first read reproduces its real predecessor unchanged, and la
 predecessor's successor gap reuse the same proof without duplicate co-spends.
 If that absence predecessor is also consumed by another read/write stream, construction refuses the physical
 overlap even when the requested logical keys are distinct; supporting it requires a pending-output journal transition.
+For source-authored counter loops, a direct requirement that reads a counter-derived key from the same collection
+as a keyed write is rejected before route admission. Permuting the write and replaying the requirement in source
+order cannot preserve read-before-write or read-after-write semantics without a sequenced row IR; independently
+authenticated read collections remain supported. Compiler-owned affine-recursion loops retain their separately
+proven read/write domains.
 An immutable, direct loop-local value definition is expanded into the mapping value before permutation, so
 `int value = i + 10; m[i] = value` has the same representation as the direct expression.
 
@@ -542,8 +557,12 @@ Rows whose physical inputs overlap remain fenced until the planner can build a c
 transitions. Multiple collections in one admitted loop share a permutation only when their complete key expression
 and selected domain are identical.
 Affine post-recursion mapping assignments may consume authenticated mapping values during unwind. The read must
-appear in an assignment value and use the same `counter +/- literal` key grammar as the destination stream; reads
-in predicates, event arguments, requirements, and destination keys remain fenced. A read of the destination's
+use the same `counter +/- literal` key grammar as the destination stream. A direct top-level post-recursion
+`require` may also own an authenticated read-only stream, including in a requirement-only recursion with no mapping
+write or event anchor; each exact AST occurrence is bound to its source-order read so an equivalent expression in
+another predicate cannot consume it accidentally. Conditional or nested requirement reads still need an explicit
+selected-domain descriptor and remain fenced, as do reads in event arguments, destination keys, and state-derived
+predicates. A read of the destination's
 exact entry is an ordinary authenticated read-modify-write. Other streams sharing a collection are admitted only
 when a constant positive recursion stride proves their complete 64-frame affine domains disjoint. Runtime strides
 and intersecting domains fail closed rather than relying on transaction construction to discover an alias.

@@ -40,6 +40,15 @@ export const VMAP_RUNTIME_OUTPUT_COUNT_PREFIX = '__internal__vmapRuntimeOutputCo
 export const KERNEL_JOURNAL_ACCESS_STREAMS = '__internal__kernelJournalAccessStreams';
 /** Transaction-wide truthful initial `0x05` records selected by the compact access programs. */
 export const KERNEL_JOURNAL_RECORDS = '__internal__kernelJournalRecords';
+export class CounterLoopReadWriteConflictError extends Error {
+  constructor(collection: string) {
+    super(
+      `Counter-loop requirement cannot read collection '${collection}' while the same loop writes it; `
+      + 'pending cross-iteration mapping reads are unsupported',
+    );
+    this.name = this.constructor.name;
+  }
+}
 export const vmapRuntimeInputCountName = (collection: string): string =>
   `${VMAP_RUNTIME_INPUT_COUNT_PREFIX}${collection}`;
 export const vmapRuntimeOutputCountName = (collection: string): string =>
@@ -1074,10 +1083,23 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       write: ArrayAssignNode | ArrayDeleteNode | MappingAssignNode | MappingDeleteNode | MappingFieldAssignNode,
     ): string => keyExpressions(write).map(expressionShape).join('|');
     const counterLoopWork = (loop: WhileNode | DoWhileNode, logical: string): {
-      counterWrite: boolean; event: boolean;
+      counterWrite: boolean; event: boolean; readRequirement: boolean;
     } => {
       let counterWrite = false;
       let event = false;
+      const containsCounterMappingRead = (candidate: Node): boolean => {
+        if (candidate instanceof MappingAccessNode && candidate.keys.some((key) =>
+          containsIdentifier(key, logical))) return true;
+        return Object.entries(candidate).some(([key, value]) => {
+          if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type'
+            || key === 'resolvedFunction' || key === 'collection' || key === 'stateVariable') return false;
+          if (value instanceof Node) return containsCounterMappingRead(value);
+          return Array.isArray(value)
+            && value.some((item) => item instanceof Node && containsCounterMappingRead(item));
+        });
+      };
+      const readRequirement = (loop.block.statements ?? []).some((statement) =>
+        statement instanceof RequireNode && containsCounterMappingRead(statement.expression));
       const walk = (x: Node): void => {
         if (x !== loop.block && (x instanceof WhileNode || x instanceof DoWhileNode)) return;
         if (isWrite(x) && this.collections.has(x.name) && counterKeyIndex(x, logical) >= 0) {
@@ -1096,7 +1118,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         }
       };
       walk(loop.block);
-      return { counterWrite, event };
+      return { counterWrite, event, readRequirement };
     };
     // Analyze every candidate before mutating the AST. This keeps the lowering transactional: one unsupported
     // loop cannot leak an unused compiler-owned permutation into an otherwise ordinary ABI.
@@ -1106,7 +1128,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
     // effect-only loops remain outside this pass until their own typed recipe lowering enrolls them explicitly.
     const counterWorkLoops = [...canonicalLoops].filter(([loop, canonical]) => {
       const work = counterLoopWork(loop, canonical.logical);
-      return work.counterWrite || work.event;
+      return work.counterWrite || work.event || work.readRequirement;
     });
     const visibleParameters = node.parameters.filter((parameter) =>
       !parameter.name.startsWith('__internal__'));
@@ -1819,6 +1841,48 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       }
       const keyed = writes.filter((write) =>
         this.collections.has(write.name) && counterKeyIndex(write, logical) >= 0);
+      // A direct source-order requirement can consume an authenticated counter-derived mapping value without
+      // owning a destination write. Detect it before the ordinary "no keyed work" exit; the read-only stream is
+      // materialized transactionally below after its type and key recipe have been proven.
+      const directRuntimeReadRequirements = (block.statements ?? []).filter((statement): statement is RequireNode =>
+        statement instanceof RequireNode);
+      if (loop.sourceAuthoredLoop && keyed.length > 0 && directRuntimeReadRequirements.length > 0) {
+        const writtenCollections = new Set(keyed.map((write) => write.name));
+        const conflictingReadCollection = (candidate: Node): string | undefined => {
+          if (candidate instanceof MappingAccessNode
+            && writtenCollections.has(candidate.name)
+            && candidate.keys.some((key) => containsIdentifier(key, logical))) return candidate.name;
+          if (candidate instanceof ArrayAccessNode) {
+            const keys: ExpressionNode[] = [];
+            let root: ExpressionNode = candidate;
+            while (root instanceof ArrayAccessNode) {
+              keys.unshift(root.index);
+              root = root.array;
+            }
+            if ((root instanceof IdentifierNode || root instanceof StateAccessNode)
+              && writtenCollections.has(root.name)
+              && keys.some((key) => containsIdentifier(key, logical))) return root.name;
+          }
+          for (const [key, value] of Object.entries(candidate)) {
+            if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type'
+              || key === 'resolvedFunction' || key === 'collection' || key === 'stateVariable') continue;
+            if (value instanceof Node) {
+              const conflict = conflictingReadCollection(value);
+              if (conflict) return conflict;
+            }
+            if (Array.isArray(value)) for (const item of value) if (item instanceof Node) {
+              const conflict = conflictingReadCollection(item);
+              if (conflict) return conflict;
+            }
+          }
+          return undefined;
+        };
+        const conflict = directRuntimeReadRequirements.map((requirement) =>
+          conflictingReadCollection(requirement.expression)).find((collection) => collection !== undefined);
+        if (conflict) {
+          throw new CounterLoopReadWriteConflictError(conflict);
+        }
+      }
       const prefixCountTraces = [...new Map(keyed.flatMap((write) =>
         (this.constructedArrayPrefixCountUses.get(write) ?? []).map((trace) => [trace.witnessParam, trace]))).values()];
       if (keyed.some((write) => (this.constructedArrayPrefixCountUses.get(write)?.length ?? 0) > 1)) return false;
@@ -2895,7 +2959,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         }
       };
       if (sourceWhile || postTest) inspectSourceContinues(block);
-      if ((keyed.length === 0 && runtimeEmits.length === 0)
+      if ((keyed.length === 0 && runtimeEmits.length === 0 && directRuntimeReadRequirements.length === 0)
         || !selectionConditionSupported
         || keyed.some((write) => hasObservableEffect(write))
         || conditionalRuntimeEmit
@@ -3013,14 +3077,35 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           ? { name: cursor.name, keys } : undefined;
       };
       type RuntimeReadPlan = {
-        destination: ArrayAssignNode | MappingAssignNode;
+        destination?: ArrayAssignNode | MappingAssignNode;
+        consumer: StatementNode;
+        sourceOrderConsumer: boolean;
         synthetic: MappingAssignNode;
         witnessParam: string;
         authenticatedReads: ArrayAccessNode[];
         consumerReads: ArrayAccessNode[];
       };
       const runtimeReadPlans: RuntimeReadPlan[] = [];
-      const runtimeReadSignatures = new Set<string>();
+      // Authorization is deliberately occurrence-specific. A shape such as `m[i]` can appear both in an
+      // admitted consumer and in an unsupported predicate/event; authorizing the textual shape would let the
+      // latter evade the fail-closed scan without ever being rewritten to an authenticated witness.
+      const authorizedRuntimeReads = new Set<Node>();
+      const authorizePlannedReads = (root: Node, plans: ReadonlyMap<string, RuntimeReadPlan>): void => {
+        const visit = (candidate: Node): void => {
+          const access = collectionAccessOf(candidate);
+          const shape = access ? `${access.name}\0${access.keys.map(expressionShape).join('|')}` : undefined;
+          if (shape !== undefined && plans.has(shape) && containsLogical(candidate)) {
+            authorizedRuntimeReads.add(candidate);
+          }
+          for (const [key, value] of Object.entries(candidate)) {
+            if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type'
+              || key === 'resolvedFunction' || key === 'collection' || key === 'stateVariable') continue;
+            if (value instanceof Node) visit(value);
+            else if (Array.isArray(value)) for (const item of value) if (item instanceof Node) visit(item);
+          }
+        };
+        visit(root);
+      };
       // A counter-derived read of another entry can travel as an independent, read-only physical stream. Its key
       // shape may differ from the destination even when both entries share one collection: grouping below assigns
       // each complete recipe its own authenticated permutation and cursor. Represent it as a compiler-owned no-op
@@ -3051,7 +3136,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
               || structuredValue;
             if (sourceCollection?.sorted && supportedValue
               && valueType.toString() === destinationCollection.innermostValueType.toString()) {
-              runtimeReadSignatures.add(candidateShape);
+              authorizedRuntimeReads.add(candidate);
               const shape = `${candidateAccess.name}\0${candidateAccess.keys.map(expressionShape).join('|')}`;
               let plan = plansByShape.get(shape);
               if (!plan) {
@@ -3074,6 +3159,8 @@ export default class LowerVMapCounterLoops extends AstTraversal {
                 synthetic.messageBusRuntimeOldValueWitness = authenticatedRead;
                 plan = {
                   destination,
+                  consumer: destination,
+                  sourceOrderConsumer: false,
                   synthetic,
                   witnessParam,
                   authenticatedReads: [witnessRead, authenticatedRead],
@@ -3108,16 +3195,103 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         };
         const expression = destination instanceof MappingAssignNode ? destination.expression : destination.value;
         const rewritten = rewrite(apply ? expression : cloneNode(expression)) as ExpressionNode;
+        if (!apply) authorizePlannedReads(expression, plansByShape);
         if (apply) {
           if (destination instanceof MappingAssignNode) destination.expression = rewritten;
           else destination.value = rewritten;
         }
       }
+      // Unlike a write value, a requirement remains in logical source order. Its counter-derived reads still
+      // travel as ordinary authenticated read-only streams, but consume witness[source-rank] rather than the
+      // destination permutation rank. Keeping this to direct loop-body requirements makes reachability exact:
+      // every admitted frame executes the requirement and therefore consumes precisely one witness value.
+      for (const requirement of directRuntimeReadRequirements) {
+        const plansByShape = new Map<string, RuntimeReadPlan>();
+        const rewrite = (candidate: Node): Node => {
+          const candidateAccess = candidate instanceof MappingAccessNode
+            ? collectionAccessOf(candidate) : undefined;
+          const candidateShape = candidateAccess
+            ? `${candidateAccess.name}:${candidateAccess.keys.map(expressionShape).join('|')}` : undefined;
+          if (candidateAccess && candidateShape !== undefined && containsLogical(candidate)) {
+            const sourceCollection = this.collectionsByName.get(candidateAccess.name);
+            const valueType = sourceCollection?.innermostValueType;
+            const fixedBytes = valueType instanceof BytesType && valueType.bound !== undefined;
+            const structuredValue = valueType instanceof StructType || valueType instanceof ArrayType
+              || valueType === PrimitiveType.STRING
+              || (valueType instanceof BytesType && valueType.bound === undefined);
+            const supportedValue = valueType instanceof IntType || valueType instanceof FixedType
+              || valueType === PrimitiveType.BOOL || fixedBytes || valueType instanceof AddressType
+              || valueType === PrimitiveType.PUBKEY || valueType === PrimitiveType.DATASIG
+              || structuredValue;
+            if (sourceCollection?.sorted && supportedValue) {
+              authorizedRuntimeReads.add(candidate);
+              const shape = `${candidateAccess.name}\0${candidateAccess.keys.map(expressionShape).join('|')}`;
+              let plan = plansByShape.get(shape);
+              if (!plan) {
+                const witnessParam = `${VMAP_COUNTER_OLD_PREFIX}read_${candidateAccess.name}_${serial}_${runtimeReadPlans.length}`;
+                const witness = new IdentifierNode(witnessParam);
+                witness.location = candidate.location ?? requirement.location;
+                witness.type = new ArrayType(valueType);
+                const witnessIndex = new IdentifierNode(logical);
+                witnessIndex.location = candidate.location ?? requirement.location;
+                const witnessRead = new ArrayAccessNode(witness, witnessIndex);
+                witnessRead.location = candidate.location ?? requirement.location;
+                witnessRead.type = valueType;
+                const synthetic = new MappingAssignNode(
+                  candidateAccess.name, candidateAccess.keys.map((key) => cloneNode(key)), witnessRead,
+                );
+                synthetic.location = candidate.location ?? requirement.location;
+                synthetic.collection = sourceCollection;
+                synthetic.messageBusRuntimeReadOnly = true;
+                const authenticatedRead = cloneNode(witnessRead) as ArrayAccessNode;
+                synthetic.messageBusRuntimeOldValueWitness = authenticatedRead;
+                plan = {
+                  consumer: requirement,
+                  sourceOrderConsumer: true,
+                  synthetic,
+                  witnessParam,
+                  authenticatedReads: [witnessRead, authenticatedRead],
+                  consumerReads: [],
+                };
+                plansByShape.set(shape, plan);
+                runtimeReadPlans.push(plan);
+              }
+              const witness = new IdentifierNode(plan.witnessParam);
+              witness.location = candidate.location ?? requirement.location;
+              witness.type = new ArrayType(valueType);
+              const replacementIndex = new IdentifierNode(logical);
+              replacementIndex.location = candidate.location ?? requirement.location;
+              const replacement = new ArrayAccessNode(witness, replacementIndex);
+              replacement.location = candidate.location ?? requirement.location;
+              replacement.type = valueType;
+              plan.consumerReads.push(replacement);
+              return replacement;
+            }
+          }
+          for (const [key, value] of Object.entries(candidate)) {
+            if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type'
+              || key === 'resolvedFunction' || key === 'collection' || key === 'stateVariable') continue;
+            if (value instanceof Node) {
+              (candidate as unknown as Record<string, unknown>)[key] = rewrite(value);
+            } else if (Array.isArray(value)) {
+              (candidate as unknown as Record<string, unknown>)[key] = value.map((item) =>
+                item instanceof Node ? rewrite(item) : item);
+            }
+          }
+          return candidate;
+        };
+        const rewritten = rewrite(
+          apply ? requirement.expression : cloneNode(requirement.expression),
+        ) as ExpressionNode;
+        if (!apply) authorizePlannedReads(requirement.expression, plansByShape);
+        if (apply) requirement.expression = rewritten;
+      }
       for (const plan of [...runtimeReadPlans].reverse()) {
-        const destinationIndex = keyed.indexOf(plan.destination);
-        keyed.splice(Math.max(destinationIndex, 0), 0, plan.synthetic);
+        const destinationIndex = plan.destination ? keyed.indexOf(plan.destination) : -1;
+        if (destinationIndex >= 0) keyed.splice(destinationIndex, 0, plan.synthetic);
+        else keyed.push(plan.synthetic);
         keyedSet.add(plan.synthetic);
-        writePaths.set(plan.synthetic, writePaths.get(plan.destination));
+        writePaths.set(plan.synthetic, plan.destination ? writePaths.get(plan.destination) : undefined);
       }
       type StructRuntimeRmw = {
         local: string;
@@ -3182,8 +3356,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         if (keyedSet.has(x)) return false;
         if (structRuntimeReads.has(x as MappingAccessNode)) return false;
         if (x instanceof MappingAccessNode && keyedCollections.has(x.name)) {
-          const signature = `${x.name}:${x.keys.map(expressionShape).join('|')}`;
-          if (runtimeReadSignatures.has(signature)) return false;
+          if (authorizedRuntimeReads.has(x)) return false;
           // A stable fixed entry can share the collection's ordinary authenticated journal with the runtime
           // stream. Concrete overlap is a topology property: the SDK rejects a runtime slot which aliases this
           // fixed co-spend. Counter-derived reads admitted above use their own authenticated runtime stream;
@@ -3206,7 +3379,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       const hasUnsafeCounterRead = (x: Node, allowed?: string): boolean => {
         if (x instanceof MappingAccessNode && containsLogical(x)) {
           const signature = `${x.name}:${x.keys.map(expressionShape).join('|')}`;
-          if (signature !== allowed && !runtimeReadSignatures.has(signature)) return true;
+          if (signature !== allowed && !authorizedRuntimeReads.has(x)) return true;
         }
         for (const key of Object.keys(x)) {
           if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type') continue;
@@ -3224,7 +3397,9 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           | MappingFieldAssignNode;
           return hasUnsafeCounterRead(x, `${write.name}:${writeKeyShape(write)}`);
         }
-        if (x instanceof MappingAccessNode && containsLogical(x)) return true;
+        if (x instanceof MappingAccessNode && containsLogical(x)) {
+          return !authorizedRuntimeReads.has(x);
+        }
         for (const key of Object.keys(x)) {
           if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type') continue;
           const value = (x as unknown as Record<string, unknown>)[key];
@@ -4102,16 +4277,18 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       };
       for (const plan of runtimeReadPlans) {
         const sourceGroup = groupByWrite.get(plan.synthetic);
-        const destinationGroup = groupByWrite.get(plan.destination);
-        if (!sourceGroup || !destinationGroup) return false;
+        const destinationGroup = plan.destination ? groupByWrite.get(plan.destination) : undefined;
+        if (!sourceGroup || (!plan.sourceOrderConsumer && !destinationGroup)) return false;
         const logicalRank = (group: typeof groups[number]): IdentifierNode =>
           id(unitDomain ? group.logicalValue : group.logicalRank);
         // The witness is indexed by source occurrence, not either stream's physical rank. The source permutation
         // authenticates witness[logical(source)] while the destination permutation consumes witness[logical(dest)],
         // allowing independent key recipes such as source[i + 1] -> destination[i].
         for (const read of plan.authenticatedReads) read.index = logicalRank(sourceGroup);
-        for (const read of plan.consumerReads) read.index = logicalRank(destinationGroup);
-        if (!insertBefore(block, plan.destination, plan.synthetic)) return false;
+        for (const read of plan.consumerReads) {
+          read.index = plan.sourceOrderConsumer ? sourceRank() : logicalRank(destinationGroup!);
+        }
+        if (!insertBefore(block, plan.consumer, plan.synthetic)) return false;
       }
       for (const write of keyed) {
         const group = groupByWrite.get(write)!;

@@ -37,8 +37,10 @@ import {
   MethodCallNode,
   CastNode,
   AbiEncodeCallNode,
+  BoolLiteralNode,
   EmitStatementNode,
   NullaryOpNode,
+  RequireNode,
   FunctionModifier,
 } from '../ast/AST.js';
 import { collectAmbiguousInlineKeys, inlineKey } from './inlineOverloadGuard.js';
@@ -74,8 +76,9 @@ import { tagModifierStateAccess } from './ModifierExpansionTransformation.js';
  * ```
  *
  * Runs pre-semantic (before InlineStoragePointerCalls). Restricted to single-tail-return helpers; hoisting is
- * suppressed at conditionally-evaluated positions (loop conditions, ternary branches, short-circuit right
- * operands) to preserve revert/effect semantics. An un-hoistable call keeps its helper.
+ * suppressed at conditionally-evaluated positions unless the enclosing statement has an explicit continuation
+ * which can be split into branch-owned statements without changing evaluation order. An un-hoistable call keeps
+ * its helper.
  */
 const PREFIX = '__rh';
 
@@ -103,6 +106,8 @@ export default class InlineReturningStateHelpers extends AstTraversal {
   private suppress = false;
   private stateValueTypes: Map<string, Type> = new Map();
   private currentValueTypes: Map<string, Type> = new Map();
+  /** Lexically scoped types used only by lazy event-helper continuation lowering. */
+  private lazyValueTypes: Map<string, Type> = new Map();
   private localBufferNames: Set<string> = new Set(); // memory locals a lowering may relocate out of the stack
   private readonly analysisNodes = new Map<FunctionDefinitionNode, Node[]>();
 
@@ -440,6 +445,7 @@ export default class InlineReturningStateHelpers extends AstTraversal {
       if (fn?.body) {
         this.currentValueTypes = new Map(this.stateValueTypes);
         for (const p of fn.parameters) this.currentValueTypes.set(p.name, p.type);
+        this.lazyValueTypes = new Map(this.currentValueTypes);
         // Names DEFINED as locals in this body. A forwarded parameter (OZ Address's `errorMessage`) is not one
         // and stays aliasable; a `bytes memory x = ...` buffer (SafeERC20's `approvalCall`) is, and must keep
         // its own binding because the memory lowering can relocate it.
@@ -887,17 +893,190 @@ export default class InlineReturningStateHelpers extends AstTraversal {
   // Per statement: visit it (replacing inlined calls with temps + filling this.hoists), then emit
   // [hoists, statement]. Nested blocks recurse through the standard traversal and flush their own hoists.
   visitBlock(node: BlockNode): Node {
+    const savedLazyTypes = this.lazyValueTypes;
+    this.lazyValueTypes = new Map(savedLazyTypes);
     const out: StatementNode[] = [];
     for (const stmt of node.statements ?? []) {
+      const expanded = this.expandLazyEventContinuation(stmt);
+      if (expanded) {
+        for (const replacement of expanded) {
+          const saved = this.hoists;
+          this.hoists = [];
+          const visited = this.visit(replacement) as StatementNode;
+          const mine = this.hoists;
+          this.hoists = saved;
+          out.push(...mine, visited);
+          if (visited instanceof VariableDefinitionNode) this.lazyValueTypes.set(visited.name, visited.type);
+        }
+        continue;
+      }
       const saved = this.hoists;
       this.hoists = [];
       const visited = this.visit(stmt) as StatementNode;
       const mine = this.hoists;
       this.hoists = saved;
       out.push(...mine, visited);
+      if (visited instanceof VariableDefinitionNode) this.lazyValueTypes.set(visited.name, visited.type);
     }
     node.statements = out;
+    this.lazyValueTypes = savedLazyTypes;
     return node;
+  }
+
+  /** Resolve a direct, uniquely named event helper which the ordinary returning-helper pass can inline. */
+  private lazyEventHelper(call: FunctionCallNode): FunctionDefinitionNode | undefined {
+    const key = inlineKey(call.identifier.name, call.parameters.length);
+    // Overload choice is a semantic/type decision. This pre-semantic rewrite must never guess between same-arity
+    // declarations, even when only one candidate happens to contain an event.
+    if (this.ambiguousInlineKeys.has(key)) return undefined;
+    const callee = this.lookupOverload(call.identifier.name, call.parameters.length)
+      ?? this.funcByName.get(call.identifier.name);
+    if (!callee || !this.inlinedFns.has(call.identifier.name)
+      || !this.transitivelyContainsEvent(callee)) return undefined;
+    // A recursive body is deliberately left to the established diagnostic. Expanding one frame would neither
+    // make the call graph finite nor provide an exact event occurrence domain.
+    const reachesSelf = (fn: FunctionDefinitionNode, target: string, seen = new Set<string>()): boolean => {
+      const fnKey = inlineKey(fn.name, fn.parameters.length);
+      if (seen.has(fnKey)) return false;
+      const next = new Set(seen).add(fnKey);
+      for (const candidate of this.nodesOf(fn)) {
+        if (!(candidate instanceof FunctionCallNode)) continue;
+        const candidateKey = inlineKey(candidate.identifier.name, candidate.parameters.length);
+        if (candidateKey === target) return true;
+        const nested = this.lookupOverload(candidate.identifier.name, candidate.parameters.length);
+        if (nested && reachesSelf(nested, target, next)) return true;
+      }
+      return false;
+    };
+    return reachesSelf(callee, key) ? undefined : callee;
+  }
+
+  private containsLazyEventHelper(node: Node): boolean {
+    if (node instanceof FunctionCallNode && this.lazyEventHelper(node)) return true;
+    for (const [key, value] of Object.entries(node)) {
+      if (['location', 'resolvedFunction', 'functionReference', 'definition', 'symbolTable',
+        'collection', 'stateVariable', 'type'].includes(key)) continue;
+      if (value instanceof Node && this.containsLazyEventHelper(value)) return true;
+      if (Array.isArray(value)
+        && value.some((item) => item instanceof Node && this.containsLazyEventHelper(item))) return true;
+    }
+    return false;
+  }
+
+  /** True only when an event helper occurs in an expression position whose evaluation is conditional. */
+  private needsLazyEventExpansion(expression: ExpressionNode): boolean {
+    if (expression instanceof TernaryOpNode) {
+      return this.containsLazyEventHelper(expression.ifTrue)
+        || this.containsLazyEventHelper(expression.ifFalse)
+        || this.needsLazyEventExpansion(expression.condition);
+    }
+    if (expression instanceof BinaryOpNode
+      && (expression.operator === BinaryOperator.AND || expression.operator === BinaryOperator.OR)) {
+      return this.containsLazyEventHelper(expression.right)
+        || this.needsLazyEventExpansion(expression.left);
+    }
+    return false;
+  }
+
+  /**
+   * Convert one lazy value expression into an explicit branch-owned SSA result. The branch blocks are revisited
+   * normally, so an event helper is beta-reduced *inside* the exact arm which evaluates it. Nested `&&`/`||` and
+   * ternaries close recursively through `visitBlock`; no event is moved ahead of its controlling predicate.
+   */
+  private lowerLazyEventValue(expression: TernaryOpNode | BinaryOpNode, type: Type): {
+    statements: StatementNode[]; value: IdentifierNode;
+  } {
+    const location = expression.location;
+    const resultName = `${PREFIX}${this.counter++}_lazyResult`;
+    const result = new VariableDefinitionNode(type, [], resultName);
+    result.location = location;
+    const assign = (value: ExpressionNode): AssignNode => {
+      const identifier = new IdentifierNode(resultName);
+      identifier.location = value.location ?? location;
+      const statement = new AssignNode(identifier, value);
+      statement.location = value.location ?? location;
+      return statement;
+    };
+    const conditionName = `${PREFIX}${this.counter++}_lazyCondition`;
+    const condition = expression instanceof TernaryOpNode ? expression.condition : expression.left;
+    const conditionBinding = new VariableDefinitionNode(PrimitiveType.BOOL, [], conditionName, condition);
+    conditionBinding.location = condition.location ?? location;
+    const conditionValue = (): IdentifierNode => {
+      const identifier = new IdentifierNode(conditionName);
+      identifier.location = condition.location ?? location;
+      return identifier;
+    };
+    const arm = (armExpression: ExpressionNode): BlockNode => {
+      const armName = `${PREFIX}${this.counter++}_lazyArm`;
+      const armValue = new VariableDefinitionNode(type, [], armName, armExpression);
+      armValue.location = armExpression.location ?? location;
+      const identifier = new IdentifierNode(armName);
+      identifier.location = armExpression.location ?? location;
+      const block = new BlockNode([armValue, assign(identifier)]);
+      block.location = armExpression.location ?? location;
+      return block;
+    };
+    let branch: BranchNode;
+    if (expression instanceof TernaryOpNode) {
+      branch = new BranchNode(
+        conditionValue(),
+        arm(expression.ifTrue),
+        arm(expression.ifFalse),
+      );
+    } else if (expression.operator === BinaryOperator.AND) {
+      branch = new BranchNode(conditionValue(), arm(expression.right));
+      // The absent short-circuit arm yields false without evaluating the right operand.
+      branch.elseBlock = arm(new BoolLiteralNode(false));
+    } else {
+      branch = new BranchNode(conditionValue(), arm(new BoolLiteralNode(true)), arm(expression.right));
+    }
+    branch.location = location;
+    branch.ifBlock.location = location;
+    if (branch.elseBlock) branch.elseBlock.location = location;
+    const value = new IdentifierNode(resultName);
+    value.location = location;
+    const conditionStatements = this.expandLazyEventContinuation(conditionBinding) ?? [conditionBinding];
+    return { statements: [result, ...conditionStatements, branch], value };
+  }
+
+  /**
+   * Lower expression positions with a single, explicit continuation: local declarations/assignments, direct
+   * scalar-state assignments, require predicates, and branch predicates. The complete lazy value is evaluated
+   * into a temporary before that continuation executes, preserving old-value reads and require/branch timing.
+   * Mapping/array lvalues, returns, call arguments, and loop conditions retain their established fence until a
+   * general expression-continuation IR owns key/argument order and repeated condition evaluation.
+   */
+  private expandLazyEventContinuation(statement: StatementNode): StatementNode[] | undefined {
+    const target = (() => {
+      if (statement instanceof VariableDefinitionNode && statement.expression) {
+        return { expression: statement.expression, type: statement.type,
+          replace: (value: ExpressionNode): void => { statement.expression = value; } };
+      }
+      if (statement instanceof AssignNode) {
+        const type = this.lazyValueTypes.get(statement.identifier.name);
+        return type && { expression: statement.expression, type,
+          replace: (value: ExpressionNode): void => { statement.expression = value; } };
+      }
+      if (statement instanceof StateAssignNode) {
+        const type = this.stateValueTypes.get(statement.name);
+        return type && { expression: statement.expression, type,
+          replace: (value: ExpressionNode): void => { statement.expression = value; } };
+      }
+      if (statement instanceof RequireNode) {
+        return { expression: statement.expression, type: PrimitiveType.BOOL,
+          replace: (value: ExpressionNode): void => { statement.expression = value; } };
+      }
+      if (statement instanceof BranchNode) {
+        return { expression: statement.condition, type: PrimitiveType.BOOL,
+          replace: (value: ExpressionNode): void => { statement.condition = value; } };
+      }
+      return undefined;
+    })();
+    if (!target || !this.needsLazyEventExpansion(target.expression)
+      || !(target.expression instanceof TernaryOpNode || target.expression instanceof BinaryOpNode)) return undefined;
+    const lowered = this.lowerLazyEventValue(target.expression, target.type);
+    target.replace(lowered.value);
+    return [...lowered.statements, statement];
   }
 
   // A call STATEMENT whose call gets expression-inlined must not keep the bare temp inside the

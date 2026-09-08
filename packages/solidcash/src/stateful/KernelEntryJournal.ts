@@ -1,3 +1,4 @@
+import { encodePushdataValue, MAX_MESSAGE_BUS_BLOB_BYTES } from '@solidcash/utils';
 import {
   SortedList,
   type JournaledMutationAccess,
@@ -15,6 +16,16 @@ export const KERNEL_ENTRY_JOURNAL_ACCESS_TAG = 0x06;
 
 /** Entry NFT commitments are capped at 128 bytes: slot + next slot + at most 64 bytes of value tail. */
 export const KERNEL_ENTRY_JOURNAL_MAX_VALUE_BYTES = 64;
+
+/**
+ * Maximum number of records in one independently-pushed journal segment.
+ *
+ * A maximum-size record is 150 bytes and its `bytes[]` element frame is 152 bytes. The array count occupies
+ * one byte for this cardinality, so three records encode to 457 bytes while four encode to 609 bytes. Keeping
+ * this bound value-independent is important: a clean record may acquire a longer dirty value tail in the route,
+ * but its global ordinal must continue to address the same segment and local position.
+ */
+export const KERNEL_ENTRY_JOURNAL_RECORDS_PER_SEGMENT = 3;
 
 const COLLECTION_HASH_BYTES = 20;
 const SLOT_BYTES = 32;
@@ -89,6 +100,20 @@ export interface KernelEntryJournalAccessTopologyPlan {
   encodedRecords: Uint8Array[];
   /** One compact access program for each source stream. */
   encodedAccessStreams: Uint8Array[];
+}
+
+export interface KernelEntryJournalRecordPosition {
+  /** Zero-based independently-pushed carrier segment. */
+  segmentIndex: number;
+  /** Zero-based record position inside `segmentIndex`. */
+  segmentRecordIndex: number;
+}
+
+export interface KernelEntryJournalSegmentValidationOptions {
+  /** Bind an authenticated external cardinality to the complete segmented vector. */
+  expectedRecordCount?: number;
+  /** Route-entry witnesses must be clean; dirty records exist only after kernel execution. */
+  transportOnly?: boolean;
 }
 
 function requireIdentity(name: string, value: Uint8Array, length: number): void {
@@ -197,6 +222,110 @@ export function validateKernelEntryJournalTransportRecords(
     }
     return record;
   });
+}
+
+function encodedKernelEntryJournalSegmentLength(segment: readonly Uint8Array[]): number {
+  return encodePushdataValue([...segment], 'bytes[]').length;
+}
+
+function requireSegmentRecordCount(recordCount: number): void {
+  if (!Number.isSafeInteger(recordCount) || recordCount < 0 || recordCount >= NO_PREDECESSOR) {
+    throw new Error('kernel entry journal segmented record count must be below 65535');
+  }
+}
+
+/**
+ * Map one stable global first-touch ordinal to its value-independent segmented carrier position.
+ */
+export function kernelEntryJournalRecordPosition(
+  ordinal: number,
+  recordCount: number,
+): KernelEntryJournalRecordPosition {
+  requireSegmentRecordCount(recordCount);
+  if (!Number.isSafeInteger(ordinal) || ordinal < 0 || ordinal >= recordCount) {
+    throw new Error('kernel entry journal global record ordinal is out of range');
+  }
+  return {
+    segmentIndex: Math.floor(ordinal / KERNEL_ENTRY_JOURNAL_RECORDS_PER_SEGMENT),
+    segmentRecordIndex: ordinal % KERNEL_ENTRY_JOURNAL_RECORDS_PER_SEGMENT,
+  };
+}
+
+/**
+ * Split a record vector without changing its global first-touch ordinal space. Every non-final segment has the
+ * fixed capacity, and the final segment is non-empty. This unique partition is safe under later record mutation:
+ * segment membership never depends on a record's current encoded length.
+ */
+export function segmentKernelEntryJournalRecords(
+  encodedRecords: readonly Uint8Array[],
+): Uint8Array[][] {
+  requireSegmentRecordCount(encodedRecords.length);
+  encodedRecords.forEach(decodeKernelEntryJournalRecord);
+  const segments: Uint8Array[][] = [];
+  for (let offset = 0; offset < encodedRecords.length; offset += KERNEL_ENTRY_JOURNAL_RECORDS_PER_SEGMENT) {
+    const segment = encodedRecords.slice(offset, offset + KERNEL_ENTRY_JOURNAL_RECORDS_PER_SEGMENT)
+      .map((record) => new Uint8Array(record));
+    if (encodedKernelEntryJournalSegmentLength(segment) > MAX_MESSAGE_BUS_BLOB_BYTES) {
+      throw new Error('kernel entry journal segment exceeds the 520-byte BCH stack-item limit');
+    }
+    segments.push(segment);
+  }
+  return segments;
+}
+
+/**
+ * Validate the canonical non-empty segmented prefix and return its global-ordinal record vector. Swapped,
+ * duplicated, or omitted records remain visible in that vector for the route's authenticated access-program
+ * identity checks; this layer binds exact cardinality, framing, and the one permissible segment partition.
+ */
+export function validateKernelEntryJournalRecordSegments(
+  segments: readonly (readonly Uint8Array[])[],
+  options: KernelEntryJournalSegmentValidationOptions = {},
+): KernelEntryJournalRecord[] {
+  if (segments.some((segment) => segment.length === 0)) {
+    throw new Error('kernel entry journal segments must form a non-empty prefix');
+  }
+  for (let index = 0; index < segments.length; index += 1) {
+    const segment = segments[index];
+    if (segment.length > KERNEL_ENTRY_JOURNAL_RECORDS_PER_SEGMENT
+      || (index + 1 < segments.length && segment.length !== KERNEL_ENTRY_JOURNAL_RECORDS_PER_SEGMENT)) {
+      throw new Error('kernel entry journal segments use a non-canonical record partition');
+    }
+    if (encodedKernelEntryJournalSegmentLength(segment) > MAX_MESSAGE_BUS_BLOB_BYTES) {
+      throw new Error('kernel entry journal segment exceeds the 520-byte BCH stack-item limit');
+    }
+  }
+  const encodedRecords = segments.flatMap((segment) => [...segment]);
+  requireSegmentRecordCount(encodedRecords.length);
+  if (options.expectedRecordCount !== undefined) {
+    requireSegmentRecordCount(options.expectedRecordCount);
+    if (encodedRecords.length !== options.expectedRecordCount) {
+      throw new Error('kernel entry journal segment cardinality does not match the authenticated record count');
+    }
+  }
+  return options.transportOnly
+    ? validateKernelEntryJournalTransportRecords(encodedRecords)
+    : encodedRecords.map(decodeKernelEntryJournalRecord);
+}
+
+/**
+ * Validate a compiler-provisioned segment slot vector. `segmentCount` is the authenticated active prefix:
+ * exactly those slots are non-empty and every remaining capacity slot is the canonical empty array.
+ */
+export function validateKernelEntryJournalRecordSegmentSlots(
+  slots: readonly (readonly Uint8Array[])[],
+  segmentCount: number,
+  options: KernelEntryJournalSegmentValidationOptions = {},
+): KernelEntryJournalRecord[] {
+  if (!Number.isSafeInteger(segmentCount) || segmentCount < 0 || segmentCount > slots.length) {
+    throw new Error('kernel entry journal segment count is out of range');
+  }
+  for (let index = 0; index < slots.length; index += 1) {
+    if ((index < segmentCount) !== (slots[index].length > 0)) {
+      throw new Error('kernel entry journal segment slots must use the authenticated non-empty prefix');
+    }
+  }
+  return validateKernelEntryJournalRecordSegments(slots.slice(0, segmentCount), options);
 }
 
 /** Encode a planner's first-touch-ordered records for one collection into the exact covenant carrier format. */

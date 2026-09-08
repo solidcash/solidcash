@@ -125,11 +125,15 @@ export {
 export {
   KERNEL_ENTRY_JOURNAL_TAG, KERNEL_ENTRY_JOURNAL_ACCESS_TAG,
   KERNEL_ENTRY_JOURNAL_MAX_VALUE_BYTES, KERNEL_ENTRY_JOURNAL_MAX_ACCESSES,
+  KERNEL_ENTRY_JOURNAL_RECORDS_PER_SEGMENT,
   encodeKernelEntryJournalRecord, encodeKernelEntryJournalRecords, decodeKernelEntryJournalRecord,
   validateKernelEntryJournalTransportRecords,
+  segmentKernelEntryJournalRecords, kernelEntryJournalRecordPosition,
+  validateKernelEntryJournalRecordSegments, validateKernelEntryJournalRecordSegmentSlots,
   encodeKernelEntryJournalAccesses, decodeKernelEntryJournalAccesses,
   planKernelEntryJournalStreams, planKernelEntryJournalAccessTopology,
   type KernelEntryJournalRecord, type KernelEntryJournalStreamPlan,
+  type KernelEntryJournalRecordPosition, type KernelEntryJournalSegmentValidationOptions,
   type KernelEntryJournalTopologyOperation, type KernelEntryJournalAccessTopologyPlan,
 } from './KernelEntryJournal.js';
 export {

@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex } from '@bitauth/libauth';
+import { encodePushdataValue, MAX_MESSAGE_BUS_BLOB_BYTES } from '@solidcash/utils';
 import {
   KERNEL_ENTRY_JOURNAL_MAX_VALUE_BYTES,
   KERNEL_ENTRY_JOURNAL_MAX_ACCESSES,
   KERNEL_ENTRY_JOURNAL_ACCESS_TAG,
   KERNEL_ENTRY_JOURNAL_TAG,
+  KERNEL_ENTRY_JOURNAL_RECORDS_PER_SEGMENT,
   decodeKernelEntryJournalAccesses,
   decodeKernelEntryJournalRecord,
   encodeKernelEntryJournalAccesses,
@@ -12,6 +14,10 @@ import {
   encodeKernelEntryJournalRecords,
   planKernelEntryJournalAccessTopology,
   planKernelEntryJournalStreams,
+  segmentKernelEntryJournalRecords,
+  kernelEntryJournalRecordPosition,
+  validateKernelEntryJournalRecordSegments,
+  validateKernelEntryJournalRecordSegmentSlots,
   validateKernelEntryJournalTransportRecords,
 } from '../../src/stateful/KernelEntryJournal.js';
 import { SortedList, encodeEntryCommitment, slotValueToBytes } from '../../src/stateful/SortedList.js';
@@ -22,6 +28,67 @@ const bytes = (length: number, fill: number): Uint8Array => new Uint8Array(lengt
 const ACCESS_COLLECTION_HASH = bytes(20, 0xcc);
 
 describe('kernel pending-entry journal codec', () => {
+  const journalRecord = (ordinal: number, valueBytes = KERNEL_ENTRY_JOURNAL_MAX_VALUE_BYTES): Uint8Array =>
+    encodeKernelEntryJournalRecord({
+      collectionHash: bytes(20, 0x11),
+      slot: bytes(32, ordinal),
+      nextKey: bytes(32, ordinal + 1),
+      value: bytes(valueBytes, ordinal),
+      authenticated: true,
+      dirty: false,
+      tombstone: false,
+      synthetic: false,
+    });
+
+  it('segments a carrier larger than 520 bytes without changing global record ordinals', () => {
+    const records = Array.from({ length: 8 }, (_unused, ordinal) => journalRecord(ordinal + 1));
+    const segments = segmentKernelEntryJournalRecords(records);
+    expect(encodePushdataValue(records, 'bytes[]').length).toBeGreaterThan(MAX_MESSAGE_BUS_BLOB_BYTES);
+    expect(KERNEL_ENTRY_JOURNAL_RECORDS_PER_SEGMENT).toBe(3);
+    expect(segments.map((segment) => segment.length)).toEqual([3, 3, 2]);
+    expect(segments.every((segment) =>
+      encodePushdataValue(segment, 'bytes[]').length <= MAX_MESSAGE_BUS_BLOB_BYTES)).toBe(true);
+    expect(validateKernelEntryJournalRecordSegments(segments, { expectedRecordCount: 8 })
+      .map((record) => record.slot[0])).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+    expect(kernelEntryJournalRecordPosition(0, 8)).toEqual({ segmentIndex: 0, segmentRecordIndex: 0 });
+    expect(kernelEntryJournalRecordPosition(3, 8)).toEqual({ segmentIndex: 1, segmentRecordIndex: 0 });
+    expect(kernelEntryJournalRecordPosition(7, 8)).toEqual({ segmentIndex: 2, segmentRecordIndex: 1 });
+  });
+
+  it('keeps segment membership stable when clean records acquire different dirty value lengths', () => {
+    const clean = Array.from({ length: 7 }, (_unused, ordinal) => journalRecord(ordinal + 1, 0));
+    const dirty = clean.map((encoded, ordinal) => encodeKernelEntryJournalRecord({
+      ...decodeKernelEntryJournalRecord(encoded),
+      value: bytes(ordinal % 2 === 0 ? KERNEL_ENTRY_JOURNAL_MAX_VALUE_BYTES : 1, ordinal + 1),
+      dirty: true,
+    }));
+    expect(segmentKernelEntryJournalRecords(clean).map((segment) => segment.length)).toEqual([3, 3, 1]);
+    expect(segmentKernelEntryJournalRecords(dirty).map((segment) => segment.length)).toEqual([3, 3, 1]);
+  });
+
+  it('rejects malformed segment partitions, count claims, transport records, and sparse slots', () => {
+    const records = Array.from({ length: 5 }, (_unused, ordinal) => journalRecord(ordinal + 1));
+    const canonical = segmentKernelEntryJournalRecords(records);
+    expect(() => validateKernelEntryJournalRecordSegments([[], canonical[0]]))
+      .toThrow('non-empty prefix');
+    expect(() => validateKernelEntryJournalRecordSegments([
+      canonical[0].slice(0, 2), [...canonical[0].slice(2), ...canonical[1]],
+    ])).toThrow('non-canonical record partition');
+    expect(() => validateKernelEntryJournalRecordSegments(canonical, { expectedRecordCount: 4 }))
+      .toThrow('authenticated record count');
+    const dirty = encodeKernelEntryJournalRecord({
+      ...decodeKernelEntryJournalRecord(records[0]), dirty: true,
+    });
+    expect(() => validateKernelEntryJournalRecordSegments([[dirty]], { transportOnly: true }))
+      .toThrow('final-flush settlement');
+    expect(() => validateKernelEntryJournalRecordSegmentSlots(
+      [canonical[0], [], canonical[1]], 2,
+    )).toThrow('authenticated non-empty prefix');
+    expect(() => validateKernelEntryJournalRecordSegmentSlots([canonical[0], canonical[1], []], 1))
+      .toThrow('authenticated non-empty prefix');
+    expect(() => kernelEntryJournalRecordPosition(5, 5)).toThrow('out of range');
+  });
+
   it('builds a dense canonical placeholder vector from stream ordinals, independent of schema names', () => {
     const handler = (name: string, collections: string[]): {
       name: string;

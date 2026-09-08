@@ -17589,6 +17589,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         (input) => input.name === KERNEL_JOURNAL_ACCESS_STREAMS,
       );
       if (journalArgumentIndex >= 0) {
+        // An unconditional compiler-owned counter stream still executes at source occurrences 0..N-1. Publish
+        // those coordinates explicitly so two write sites in the same loop are planned A0,B0,A1,B1 after their
+        // key arrays have independently been permuted for physical topology.
+        const journalSourceOccurrences = sourceOccurrences
+          ?? (counterSpec ? keysArr.map((_key, occurrence) => occurrence) : undefined);
         const streamIndex = info.journalAccessStreamIndex;
         const streamCount = loopAbiFunction.sortedUpsertLoopInfo?.length ?? 0;
         if (!Number.isSafeInteger(streamIndex) || streamIndex < 0 || streamIndex >= streamCount) {
@@ -17606,7 +17611,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           executionGroup: `${upsertFrameIndex}:${Number.isSafeInteger(info.journalExecutionGroup)
             ? info.journalExecutionGroup : info.journalAccessStreamIndex}`,
           executionOrder: info.journalAccessStreamIndex,
-          ...(sourceOccurrences && { sourceOccurrences }),
+          ...(journalSourceOccurrences && { sourceOccurrences: journalSourceOccurrences }),
           list,
           writes: keysArr.map((key) => ({ slot: slotForKey(key), operation })),
           publish: (encoded) => {
@@ -18168,53 +18173,106 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const plannedKernelStreamAccesses = new Map<
     (typeof runtimeKernelJournalStreams)[number], ReturnType<typeof decodeKernelEntryJournalAccesses>
     >();
+    const scheduleKernelJournalOperations = <T>(
+      streams: typeof runtimeKernelJournalStreams,
+      values: (stream: (typeof runtimeKernelJournalStreams)[number]) => readonly T[],
+    ): Array<{ stream: (typeof runtimeKernelJournalStreams)[number]; value: T; compactIndex: number }> => {
+      const byExecutionGroup = new Map<string, typeof runtimeKernelJournalStreams>();
+      for (const stream of streams) {
+        const group = byExecutionGroup.get(stream.executionGroup) ?? [];
+        group.push(stream);
+        byExecutionGroup.set(stream.executionGroup, group);
+      }
+      return [...byExecutionGroup.values()].flatMap((groupUnsorted) => {
+        const group = [...groupUnsorted].sort((left, right) => left.executionOrder - right.executionOrder);
+        return group.flatMap((stream) => {
+          const streamValues = values(stream);
+          if (stream.sourceOccurrences && stream.sourceOccurrences.length !== streamValues.length) {
+            throw new Error(
+              `Kernel entry journal stream '${stream.collection}' has ${streamValues.length} accesses but `
+              + `${stream.sourceOccurrences.length} source occurrences.`,
+            );
+          }
+          return streamValues.map((value, compactIndex) => ({
+            stream,
+            value,
+            compactIndex,
+            sourceOccurrence: stream.sourceOccurrences?.[compactIndex] ?? compactIndex,
+          }));
+        }).sort((left, right) => left.sourceOccurrence - right.sourceOccurrence
+          || left.stream.executionOrder - right.stream.executionOrder
+          || left.compactIndex - right.compactIndex);
+      });
+    };
     let hasPendingScalarDependency = false;
+    let hasInterleavedStreamDependency = false;
     for (const [collectionIdentity, collectionStreams] of kernelStreamsByCollection) {
+      // The topology transition must see operations in language execution order. Multiple write sites in one
+      // counter loop publish separate compact streams, so flattening whole streams would incorrectly execute
+      // A0,A1,B0,B1 instead of A0,B0,A1,B1 and can assign an invalid predecessor topology.
+      const scheduledWrites = scheduleKernelJournalOperations(collectionStreams, (stream) => stream.writes);
       const plan = planKernelEntryJournalAccessTopology(
         collectionStreams[0].list,
         collectionStreams[0].collectionHash,
-        collectionStreams.map((stream) => stream.writes),
+        [scheduledWrites.map(({ value }) => value)],
       );
-      const accesses = plan.encodedAccessStreams.map(decodeKernelEntryJournalAccesses);
+      const scheduledAccesses = decodeKernelEntryJournalAccesses(plan.encodedAccessStreams[0]);
+      const accessesByStream = new Map<
+      (typeof runtimeKernelJournalStreams)[number], ReturnType<typeof decodeKernelEntryJournalAccesses>
+      >();
+      for (const stream of collectionStreams) accessesByStream.set(stream, Array(stream.writes.length));
+      scheduledWrites.forEach(({ stream, compactIndex }, index) => {
+        accessesByStream.get(stream)![compactIndex] = scheduledAccesses[index];
+      });
+      const accesses = collectionStreams.map((stream) => accessesByStream.get(stream)!);
       // Keep ordinary first-touch rows on their established direct-output path. Carrier settlement is selected
-      // only when a later access consumes topology/value state produced by an earlier access. Mark the producer
-      // too, since it must publish the dirty carrier which makes that dependency available.
-      const priorRowProducer = new Map<number, ReturnType<typeof decodeKernelEntryJournalAccesses>[number]>();
-      let currentFrame = -1;
-      let currentRowProducers = new Map<number, ReturnType<typeof decodeKernelEntryJournalAccesses>[number]>();
-      for (const [streamIndex, streamAccesses] of accesses.entries()) {
-        const frameIndex = collectionStreams[streamIndex].frameIndex;
-        if (frameIndex !== currentFrame) {
-          for (const [ordinal, producer] of currentRowProducers) priorRowProducer.set(ordinal, producer);
-          currentRowProducers = new Map();
-          currentFrame = frameIndex;
-        }
-        for (const access of streamAccesses) {
+      // only when an access consumes state produced by another runtime stream. Repeated operations within one
+      // stream use its established loop-local pending registers; crossing a row or an interleaved write site
+      // requires the transaction carrier. Mark the producer too so it publishes that state.
+      const priorProducer = new Map<number, {
+        stream: (typeof runtimeKernelJournalStreams)[number];
+        access: ReturnType<typeof decodeKernelEntryJournalAccesses>[number];
+      }>();
+      for (const { stream, value: access } of scheduleKernelJournalOperations(
+        collectionStreams, (candidate) => accessesByStream.get(candidate)!,
+      )) {
           const dependencies: number[] = [];
           if (access.presentBefore && !access.authenticatesTarget) dependencies.push(access.targetRecordOrdinal);
           if (access.predecessorRecordOrdinal !== undefined && !access.authenticatesPredecessor) {
             dependencies.push(access.predecessorRecordOrdinal);
           }
-          const crossRowProducers = dependencies.map((ordinal) => priorRowProducer.get(ordinal))
-            .filter((producer): producer is NonNullable<typeof producer> => producer !== undefined);
-          if (crossRowProducers.length > 0) {
+          const carrierProducers = dependencies.map((ordinal) => priorProducer.get(ordinal))
+            .filter((producer): producer is NonNullable<typeof producer> => (
+              producer !== undefined && producer.stream !== stream
+            ));
+          if (carrierProducers.length > 0) {
             access.pending = true;
             hasPendingScalarDependency = true;
-            for (const producer of crossRowProducers) producer.pending = true;
-          }
-          if (access.mutates) {
-            currentRowProducers.set(access.targetRecordOrdinal, access);
-            if (access.predecessorRecordOrdinal !== undefined) {
-              currentRowProducers.set(access.predecessorRecordOrdinal, access);
+            for (const producer of carrierProducers) {
+              producer.access.pending = true;
+              if (producer.stream.executionGroup === stream.executionGroup) {
+                hasInterleavedStreamDependency = true;
+              }
             }
           }
-        }
+          if (access.mutates) {
+            priorProducer.set(access.targetRecordOrdinal, { stream, access });
+            if (access.predecessorRecordOrdinal !== undefined) {
+              priorProducer.set(access.predecessorRecordOrdinal, { stream, access });
+            }
+          }
       }
       collectionStreams.forEach((stream, index) => plannedKernelStreamAccesses.set(stream, accesses[index]));
       plannedKernelCollections.set(collectionIdentity, {
         records: plan.encodedRecords,
         globalOrdinals: new Map(),
       });
+    }
+    if (hasInterleavedStreamDependency) {
+      throw new Error(
+        'Kernel runtime journal cannot yet materialize a topology dependency between interleaved mapping '
+        + 'write sites in one loop; split the write sites into separate actions.',
+      );
     }
     const pendingScalarSettlementActive = hasPendingScalarDependency || hasPendingExistingScalarSettlement;
     if (pendingScalarSettlementActive) {
@@ -18242,13 +18300,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // are operations from the same row loop, so iteration N of each stream executes before iteration N+1. The
     // group and stream ordinals are opaque structural metadata; no contract, collection, or function names
     // participate in this schedule.
-    const kernelStreamsByExecutionGroup = new Map<string, typeof runtimeKernelJournalStreams>();
-    for (const stream of runtimeKernelJournalStreams) {
-      const groupStreams = kernelStreamsByExecutionGroup.get(stream.executionGroup) ?? [];
-      groupStreams.push(stream);
-      kernelStreamsByExecutionGroup.set(stream.executionGroup, groupStreams);
-    }
     const kernelJournalRecords: Uint8Array[] = [];
+    const pendingScalarOutputSegments: Array<{
+      rowIndex: number; collection: string; offset: number; count: number;
+    }> = [];
     const remappedKernelStreamAccesses = new Map<
     (typeof runtimeKernelJournalStreams)[number], ReturnType<typeof decodeKernelEntryJournalAccesses>
     >();
@@ -18265,30 +18320,27 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       if (record === undefined) throw new Error('Kernel entry journal references an unknown local record ordinal.');
       collectionPlan.globalOrdinals.set(local, ordinal);
       kernelJournalRecords.push(record);
+      // Pending settlement verifies output ordinal N against carrier ordinal N. Bind the builder's physical
+      // trailing-output schedule to that same global order rather than relying on collection-grouped commitment
+      // maps or an independently reconstructed row schedule. Within one collection, topology records and final
+      // scalar commitments share the planner's first-touch ordinal space.
+      const commitments = sortedLoopCommitments.get(stream.collection) ?? [];
+      if (commitments[local] === undefined) {
+        throw new Error(
+          `Kernel pending scalar output for '${stream.collection}' has no commitment at local ordinal ${local}.`,
+        );
+      }
+      const previous = pendingScalarOutputSegments[pendingScalarOutputSegments.length - 1];
+      if (previous?.collection === stream.collection && previous.offset + previous.count === local) {
+        previous.count += 1;
+      } else {
+        pendingScalarOutputSegments.push({ rowIndex: ordinal, collection: stream.collection, offset: local, count: 1 });
+      }
       return ordinal;
     };
-    for (const groupStreamsUnsorted of kernelStreamsByExecutionGroup.values()) {
-      const groupStreams = [...groupStreamsUnsorted].sort(
-        (left, right) => left.executionOrder - right.executionOrder,
-      );
-      const scheduled = groupStreams.flatMap((stream) => {
-        const accesses = plannedKernelStreamAccesses.get(stream) ?? [];
-        if (stream.sourceOccurrences && stream.sourceOccurrences.length !== accesses.length) {
-          throw new Error(
-            `Kernel entry journal stream '${stream.collection}' has ${accesses.length} accesses but `
-            + `${stream.sourceOccurrences.length} source occurrences.`,
-          );
-        }
-        return accesses.map((access, compactIndex) => ({
-          stream,
-          access,
-          compactIndex,
-          sourceOccurrence: stream.sourceOccurrences?.[compactIndex] ?? compactIndex,
-        }));
-      }).sort((left, right) => left.sourceOccurrence - right.sourceOccurrence
-        || left.stream.executionOrder - right.stream.executionOrder
-        || left.compactIndex - right.compactIndex);
-      for (const { stream, access } of scheduled) {
+    for (const { stream, value: access } of scheduleKernelJournalOperations(
+      runtimeKernelJournalStreams, (candidate) => plannedKernelStreamAccesses.get(candidate) ?? [],
+    )) {
         const remapped = {
           ...access,
           ...(access.predecessorRecordOrdinal !== undefined && {
@@ -18299,7 +18351,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         const streamAccesses = remappedKernelStreamAccesses.get(stream) ?? [];
         streamAccesses.push(remapped);
         remappedKernelStreamAccesses.set(stream, streamAccesses);
-      }
     }
     for (const [collectionIdentity, plan] of plannedKernelCollections) {
       if (plan.globalOrdinals.size !== plan.records.length) {
@@ -26136,13 +26187,16 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     if (runtimeLoopEntrySegments.length > 0 || runtimeLoopEventSegments.length > 0
       || runtimeLoopTransferSegments.length > 0) {
       const rowIndices = new Set([
-        ...runtimeLoopEntrySegments.map((segment) => segment.rowIndex),
+        ...(pendingScalarSettlementActive ? pendingScalarOutputSegments : runtimeLoopEntrySegments)
+          .map((segment) => segment.rowIndex),
         ...runtimeLoopEventSegments.map((segment) => segment.rowIndex),
         ...runtimeLoopTransferSegments.map((segment) => segment.rowIndex),
         ...runtimeLoopEffectOccurrences.map((occurrence) => occurrence.rowIndex),
       ]);
       for (const rowIndex of [...rowIndices].sort((left, right) => left - right)) {
-        for (const segment of runtimeLoopEntrySegments.filter((candidate) => candidate.rowIndex === rowIndex)) {
+        const entrySegments = pendingScalarSettlementActive
+          ? pendingScalarOutputSegments : runtimeLoopEntrySegments;
+        for (const segment of entrySegments.filter((candidate) => candidate.rowIndex === rowIndex)) {
           runtimeLoopTrailingSegments.push({
             kind: 'entries', collection: segment.collection,
             offset: segment.offset, count: segment.count,

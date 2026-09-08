@@ -37,6 +37,32 @@ contract PendingScalarEffectFence() {
   }
 }`;
 
+const MULTI_COLLECTION_SOURCE = `pragma solidcash ^0.13.0;
+contract PendingScalarCollections() {
+  mapping(int => int) left;
+  mapping(int => int) right;
+  function addLeft(int[] keys, int delta) public {
+    for (int i = 0; i < keys.length; i = i + 1) { this.left[keys[i]] = this.left[keys[i]] + delta; }
+    require(true);
+  }
+  function addRight(int[] keys, int delta) public {
+    for (int i = 0; i < keys.length; i = i + 1) { this.right[keys[i]] = this.right[keys[i]] + delta; }
+    require(true);
+  }
+}`;
+
+const INTERLEAVED_SITE_SOURCE = `pragma solidcash ^0.13.0;
+contract InterleavedMappingWrites() {
+  mapping(int => int) values;
+  function writeBoth(int[] first, int[] second) public {
+    for (int i = 0; i < first.length; i = i + 1) {
+      this.values[first[i]] = 1;
+      this.values[second[i]] = 2;
+    }
+    require(true);
+  }
+}`;
+
 describe('kernel pending fixed-width scalar rows', () => {
   it('chains insertions and updates across rows without crossing an authenticated successor', async () => {
     const provider = createMessageBusSemanticTestProvider();
@@ -297,6 +323,67 @@ describe('kernel pending fixed-width scalar rows', () => {
       requireMinimalEncoding: false,
     }))).toEqual([24n, 15n]);
     await expect(threeRows.send()).resolves.toBeDefined();
+  }, 180_000);
+
+  it('settles interleaved collections in global journal ordinal order', async () => {
+    const provider = createMessageBusSemanticTestProvider();
+    const artifact = compileString(MULTI_COLLECTION_SOURCE, KERNEL);
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+    );
+    const ranked = Array.from({ length: 48 }, (_unused, index) => BigInt(index + 1)).sort((left, right) => {
+      const leftSlot = bytesToSlotValue(keyToSlot(bigIntToVmNumber(left)));
+      const rightSlot = bytesToSlotValue(keyToSlot(bigIntToVmNumber(right)));
+      return leftSlot < rightSlot ? -1 : 1;
+    });
+    const leftLow = ranked[8];
+    const leftNext = ranked[12];
+    const leftBoundary = ranked[24];
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    await contract.call.addLeft([leftBoundary], 1n).send();
+
+    const call = StatefulContract.withCategory(inner, categoryId).batch([
+      { function: 'addLeft', args: [[leftLow], 2n] },
+      { function: 'addRight', args: [[1n], 3n] },
+      { function: 'addLeft', args: [[leftNext], 4n] },
+    ]);
+    const builder = await call.build();
+    const vm = createVirtualMachineBch2026ForProvider(provider);
+    const transaction = builder.buildLibauthTransaction();
+    const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+    for (let inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex += 1) {
+      expect(vm.stateSuccess(vm.evaluate({ inputIndex, sourceOutputs, transaction })), `input ${inputIndex}`)
+        .toBe(true);
+    }
+    await expect(call.send()).resolves.toBeDefined();
+
+    for (const [collectionName, expected] of [
+      ['left', [[leftLow, 2n], [leftNext, 4n], [leftBoundary, 1n]]],
+      ['right', [[1n, 3n]]],
+    ] as const) {
+      const collection = artifact.stateLayout!.collections.find((candidate) => candidate.name === collectionName)!;
+      const settledEntries = await provider.getUtxos(getEntryNftAddress(inner, categoryId, collection.signature));
+      for (const [key, value] of expected) {
+        const entry = settledEntries.find((utxo) =>
+          binToHex(hexToBin(utxo.token!.nft!.commitment).slice(0, 32)) === binToHex(keyToSlot(bigIntToVmNumber(key))));
+        expect(vmNumberToBigInt(hexToBin(entry!.token!.nft!.commitment).slice(64), {
+          requireMinimalEncoding: false,
+        })).toBe(value);
+      }
+    }
+  }, 180_000);
+
+  it('refuses interleaved write sites whose topology materialization crosses streams', async () => {
+    const provider = createMessageBusSemanticTestProvider();
+    const artifact = compileString(INTERLEAVED_SITE_SOURCE, KERNEL);
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+    );
+    await expect(StatefulContract.withCategory(inner, categoryId)
+      .batch([{ function: 'writeBoth', args: [[1n, 3n], [2n, 4n]] }]).build())
+      .rejects.toThrow(/topology dependency between interleaved mapping write sites/);
   }, 180_000);
 
   it('settles mixed scalar insertion topology and rejects carriers above one BCH stack item', async () => {

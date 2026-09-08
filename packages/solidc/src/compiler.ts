@@ -322,6 +322,8 @@ type InternalCompilerOptions = CompilerOptions & {
   __synthesizeBoundRoutePlaceholder?: boolean;
   /** Inlined verifier source for `__synthesizeBoundRoutePlaceholder`; compiled as a detached mini-contract. */
   __singlePassVerifierSource?: string;
+  /** Unspecialized verifier template retained across the participant-lock binding pass. */
+  __messageBusSignatureVerifierSource?: string;
   /**
    * Shared with the shallow-copied admission options. Records the rung that produced the returned artifact so
    * a missing verifierProgram does not replay the whole search as full compiles.
@@ -692,6 +694,7 @@ function cacheableCompilerOptions(options: CompilerOptions): Record<string, unkn
   delete keyOptions.__pristineAstBox;
   delete keyOptions.__synthesizeBoundRoutePlaceholder;
   delete keyOptions.__singlePassVerifierSource;
+  delete keyOptions.__messageBusSignatureVerifierSource;
   delete keyOptions.__admissionWinnerBox;
   return keyOptions;
 }
@@ -1348,7 +1351,8 @@ function compileStringUnchecked(code: string, compilerOptions: CompileOptions = 
   if (mergedCompilerOptions.__messageBusMode === 'required' && !artifact.messageBus) {
     throw new Error('messageBus: required route generation did not produce a composable artifact');
   }
-  if (mergedCompilerOptions.__cheapAdmissionCodegen && !artifact.messageBus?.verifierProgram) {
+  if (mergedCompilerOptions.__cheapAdmissionCodegen && (!artifact.messageBus?.verifierProgram
+    || artifact.messageBus.handlers.some((handler) => handler.usesTransactionSignature))) {
     // Cheap (or search) admission produced a shippable artifact without a verifier continuation. Recompile
     // THAT winning shape once. Replaying the whole admission ladder as full compiles otherwise
     // spent ~8s retrying rungs the first pass already refused.
@@ -1385,7 +1389,8 @@ function compileStringUnchecked(code: string, compilerOptions: CompileOptions = 
   if (process.env.SOLIDC_SKIP_MESSAGE_BUS_BINDER !== '1'
     && !alreadyVerifierBound
     && !artifactCompilerOptions.__messageBusVerifierProgram && artifact.messageBus?.verifierProgram) {
-    const verifierProgram = artifact.messageBus.verifierProgram;
+    let verifierProgram = artifact.messageBus.verifierProgram;
+    const signatureVerifierSource = messageBusSignatureVerifierSource.get(verifierProgram);
     // The speculative pass may have attributed a generated-route gap to one external handler and retained its
     // valid siblings. Bind exactly that admitted route. Recompiling the caller's original handler selection can
     // resurrect a refused clone, and even when it compiles it no longer describes the verifier program being
@@ -1403,6 +1408,7 @@ function compileStringUnchecked(code: string, compilerOptions: CompileOptions = 
       ...artifactCompilerOptions,
       messageBusHandlers: admittedMessageBusHandlers,
       __messageBusVerifierProgram: verifierProgram,
+      ...(signatureVerifierSource && { __messageBusSignatureVerifierSource: signatureVerifierSource }),
     });
     const binderStarted = Date.now();
     const binderAst = pristineAstBox.ast ?? parseAndResolve(
@@ -1413,6 +1419,33 @@ function compileStringUnchecked(code: string, compilerOptions: CompileOptions = 
       binderAst,
       code, bindingOptions,
     );
+    const reboundVerifierProgram = artifact.messageBus?.verifierProgram;
+    if (signatureVerifierSource && !reboundVerifierProgram) {
+      throw new Error('message-bus transaction-signature verifier disappeared during body binding');
+    }
+    if (signatureVerifierSource && reboundVerifierProgram
+      && JSON.stringify(reboundVerifierProgram) !== JSON.stringify(verifierProgram)) {
+      // Binding the detached verifier changes the participant route's helper-id allocation. Re-specialize KTS1
+      // against those final OP_INVOKE bodies, then bind that stable program once more. A third distinct program
+      // would mean the policy is self-referential and must never be published beside the wrong verifier lock.
+      verifierProgram = reboundVerifierProgram;
+      const stableOptions = normalizeCompilerOptions({
+        ...artifactCompilerOptions,
+        messageBusHandlers: admittedMessageBusHandlers,
+        __messageBusVerifierProgram: verifierProgram,
+        __messageBusSignatureVerifierSource: signatureVerifierSource,
+      } as InternalCompilerOptions);
+      artifact = compileResolvedAst(
+        parseAndResolve(code, stableOptions, errorListener, primaryContractName), code, stableOptions,
+      );
+      const stableProgram = artifact.messageBus?.verifierProgram;
+      if (!stableProgram) {
+        throw new Error('message-bus transaction-signature verifier disappeared during stable body binding');
+      }
+      if (JSON.stringify(stableProgram) !== JSON.stringify(verifierProgram)) {
+        throw new Error('message-bus transaction-signature verifier did not reach a stable body binding');
+      }
+    }
     profileLog('binder', binderStarted, {
       primary: primaryContractName,
       handlers: admittedMessageBusHandlers.length,
@@ -1675,6 +1708,9 @@ function setPrimaryContract(ast: Ast, name: string): void {
 
 const MESSAGE_BUS_SELECTOR_HEX = '53434231';
 const MESSAGE_BUS_VERIFY_ATOMIC_PROGRAM = '__message_bus_verify_atomic_program';
+/** Replaced after handler OP_INVOKE bodies exist; the preliminary detached verifier is never published. */
+const MESSAGE_BUS_SIGNATURE_POLICY_SENTINEL = 'require(rowSignatureFrame != hex"4b545350");';
+const messageBusSignatureVerifierSource = new WeakMap<object, string>();
 /** Artifact-fixed P2SH32 shape (`OP_HASH256 <32> OP_EQUAL`); content is patched after cheap verifier emit. */
 const MESSAGE_BUS_PLACEHOLDER_LOCK = Uint8Array.from([
   0xaa, 0x20, ...Array.from({ length: 32 }, () => 0xb1), 0x87,
@@ -1834,6 +1870,11 @@ function compileDetachedMessageBusVerifier(
   if (!program) {
     throw new Error('single-pass bind: detached verifier emit did not produce verifierProgram');
   }
+  // The detached host gives the executable body a distinct source name so the participant-side wrapper can
+  // call it while it is being extracted. Keep the published verifier ABI stable: consumers identify the entry
+  // by verifyFunctionId, while diagnostics and existing tooling expect the canonical verifier name.
+  const verify = program.functions.find((fn) => fn.id === program.verifyFunctionId);
+  if (verify?.name === MESSAGE_BUS_VERIFY_ATOMIC_PROGRAM) verify.name = '__message_bus_verify_atomic';
   profileLog('singlePass:verifier', started, { functions: program.functions.length });
   return program;
 }
@@ -1863,7 +1904,7 @@ NonNullable<Artifact['messageBus']>['handlers'][number]['rejectionCode']
 >;
 
 type TransactionSignaturePathSegment =
-  | { kind: 'field'; name: string }
+  | { kind: 'field'; name: string; index: number }
   | { kind: 'array'; elementType: string; bound?: number };
 
 interface TransactionSignatureLeaf {
@@ -1901,9 +1942,9 @@ function transactionSignatureLeaves(
     if (activeStructs.has(type)) return undefined;
     activeStructs.add(type);
     const leaves: TransactionSignatureLeaf[] = [];
-    for (const field of type.fields) {
+    for (const [index, field] of type.fields.entries()) {
       const nested = transactionSignatureLeaves(
-        field.type, [...path, { kind: 'field', name: field.name }], activeStructs,
+        field.type, [...path, { kind: 'field', name: field.name, index }], activeStructs,
       );
       if (nested === undefined) {
         activeStructs.delete(type);
@@ -7291,10 +7332,15 @@ function synthesizeMessageBusRoute(
           sha256(suppliedCompletionPositions), sha256(suppliedSettlementTable)`;
   const atomicManifestV2Expression = compilerOptions.messageBusKernel === true
     ? 'callManifest.slice(0, 8) == hex"4c33425553320000"' : 'false';
+  const atomicManifestV4Expression = compilerOptions.messageBusKernel === true
+    ? 'callManifest.slice(0, 8) == hex"4c33425553340000"' : 'false';
+  const atomicManifestOutputIdentityExpression = compilerOptions.messageBusKernel === true
+    ? `(${atomicManifestV2Expression} || ${atomicManifestV4Expression})` : 'false';
   const inlinedAtomicVerifierBody = `
         ${compilerOptions.messageBusKernel === true
     ? `require(callManifest.length >= 15 && (callManifest.slice(0, 8) == hex"4c33425553310000"
-          || callManifest.slice(0, 8) == hex"4c33425553320000"));`
+          || callManifest.slice(0, 8) == hex"4c33425553320000"
+          || callManifest.slice(0, 8) == hex"4c33425553340000"));`
     : 'require(callManifest.length >= 15 && callManifest.slice(0, 8) == hex"4c33425553310000");'}
         require(int(bytes.concat(callManifest.slice(8, 12), hex"00000000")) == callManifest.length);
         bigint participantCount = int(bytes.concat(callManifest.slice(12, 13), hex"00"));
@@ -7330,7 +7376,7 @@ function synthesizeMessageBusRoute(
           cursor = cursor + lbcLength;
           participantLbcs = bytes.concat(participantLbcs, toPaddedBytes(lbcLength, 2), participantLbc);
           bytes participantOutputLbc = participantLbc;
-          if (${atomicManifestV2Expression}) {
+          if (${atomicManifestOutputIdentityExpression}) {
             require(cursor + 2 <= callManifest.length);
             bigint outputLbcLength = int(bytes.concat(callManifest.slice(cursor, cursor + 2), hex"00"));
             cursor = cursor + 2;
@@ -7346,13 +7392,22 @@ function synthesizeMessageBusRoute(
           bigint trailingUsed = int(bytes.concat(callManifest.slice(cursor + 34, cursor + 36), hex"00"));
           bigint returnOffset = int(bytes.concat(callManifest.slice(cursor + 36, cursor + 38), hex"00"));
           cursor = cursor + 38;
+          if (${atomicManifestV4Expression}) {
+            require(cursor + 3 <= callManifest.length);
+            bigint lifecycleMode = int(bytes.concat(callManifest.slice(cursor, cursor + 1), hex"00"));
+            bigint lifecycleCount = int(bytes.concat(callManifest.slice(cursor + 1, cursor + 3), hex"00"));
+            // Protocol 4 inherits the V3 participant wire shape. This verifier does not yet implement split/merge
+            // execution, so consume the exact suffix but advertise V4 only for its neutral lifecycle form.
+            require(lifecycleMode == 0 && lifecycleCount == 0);
+            cursor = cursor + 3;
+          }
           require(base < tx.inputs.length && base < tx.outputs.length);
           require(tx.inputs[base].lockingBytecode == participantLbc);
           require(tx.inputs[base].tokenCategory.length >= 33
             && tx.inputs[base].tokenCategory.slice(0, 32) == category
             && tx.inputs[base].tokenCategory.slice(32, 33) == hex"02");
           bigint participantOutputBase = -1;
-          if (${atomicManifestV2Expression}) {
+          if (${atomicManifestOutputIdentityExpression}) {
             participantOutputBase = base;
             require(tx.outputs[participantOutputBase].lockingBytecode == participantOutputLbc
               && tx.outputs[participantOutputBase].tokenCategory == tx.inputs[base].tokenCategory
@@ -7449,6 +7504,7 @@ function synthesizeMessageBusRoute(
         bigint activeDeploymentRows = 0;
         bigint activeSidecarRows = 0;
         bigint activeStaticInvocationRows = 0;
+        bigint transactionSignatureRows = 0;
         bigint previousResourceTarget = -1;
         bigint previousEventTarget = -1;
         bigint previousValueTarget = -1;
@@ -7580,6 +7636,60 @@ function synthesizeMessageBusRoute(
             if (field == 2) { rowResult = callManifest.slice(cursor, cursor + fieldLength); }
             if (field == 3) { rowEffect = callManifest.slice(cursor, cursor + fieldLength); }
             cursor = cursor + fieldLength;
+          }
+          bytes rowSignatureFrame;
+          if (${atomicManifestV4Expression}) {
+            require(cursor + 2 <= callManifest.length);
+            bigint signatureFrameLength = int(bytes.concat(callManifest.slice(cursor, cursor + 2), hex"00"));
+            cursor = cursor + 2;
+            require(cursor + signatureFrameLength <= callManifest.length);
+            rowSignatureFrame = callManifest.slice(cursor, cursor + signatureFrameLength);
+            cursor = cursor + signatureFrameLength;
+          }
+          if (rowSignatureFrame.length > 0) {
+            transactionSignatureRows = transactionSignatureRows + 1;
+            require(kind == 0 && rowSignatureFrame.length >= 6
+              && rowSignatureFrame.slice(0, 4) == hex"4b545331"
+              && rowSignatureFrame.slice(4, 5) == hex"01");
+            bigint signatureParameterCount = int(bytes.concat(rowSignatureFrame.slice(5, 6), hex"00"));
+            require(signatureParameterCount > 0);
+            bigint signatureCursor = 6;
+            bigint previousSignatureParameter = -1;
+            for (bigint signatureParameter = 0; signatureParameter < signatureParameterCount;
+              signatureParameter = signatureParameter + 1) {
+              require(signatureCursor + 3 <= rowSignatureFrame.length);
+              bigint signatureParameterIndex = int(bytes.concat(
+                rowSignatureFrame.slice(signatureCursor, signatureCursor + 2), hex"00"
+              ));
+              bigint signatureLeafCount = int(bytes.concat(
+                rowSignatureFrame.slice(signatureCursor + 2, signatureCursor + 3), hex"00"
+              ));
+              require(signatureParameterIndex > previousSignatureParameter && signatureLeafCount > 0);
+              previousSignatureParameter = signatureParameterIndex;
+              signatureCursor = signatureCursor + 3;
+              for (bigint signatureLeaf = 0; signatureLeaf < signatureLeafCount;
+                signatureLeaf = signatureLeaf + 1) {
+                require(signatureCursor + 1 <= rowSignatureFrame.length);
+                bigint signaturePathDepth = int(bytes.concat(
+                  rowSignatureFrame.slice(signatureCursor, signatureCursor + 1), hex"00"
+                ));
+                signatureCursor = signatureCursor + 1;
+                for (bigint signatureSegment = 0; signatureSegment < signaturePathDepth;
+                  signatureSegment = signatureSegment + 1) {
+                  require(signatureCursor + 3 <= rowSignatureFrame.length
+                    && int(bytes.concat(
+                      rowSignatureFrame.slice(signatureCursor, signatureCursor + 1), hex"00"
+                    )) <= 1);
+                  signatureCursor = signatureCursor + 3;
+                }
+                require(signatureCursor + 32 <= rowSignatureFrame.length);
+                signatureCursor = signatureCursor + 32;
+              }
+            }
+            require(signatureCursor == rowSignatureFrame.length);
+          }
+          if (kind == 0 && consumer == activeParticipant) {
+            ${MESSAGE_BUS_SIGNATURE_POLICY_SENTINEL}
           }
           ${resourceVerificationMode ? `if (kind == 1 && __message_bus_row_owner == activeParticipant) {
             bigint resourceMode = int(bytes.concat(callManifest.slice(rowStart + 5, rowStart + 6), hex"00"));
@@ -8038,6 +8148,7 @@ function synthesizeMessageBusRoute(
         require(activeDeploymentRows == activeDeploymentInvocations
           && settledDeploymentParents.length * 41 == activeDeploymentParents.length * 4);
         require(activeSidecarRows * 2 == activeSidecarTargets.length);
+        require(!(${atomicManifestV4Expression}) || transactionSignatureRows > 0);
         require(cursor == callManifest.length && consumedLocalRows == expectedLocalRows
           && batchCursor == localBatch.length);
         ${!graphExecutionContext ? '' : `
@@ -8520,7 +8631,7 @@ function synthesizeMessageBusRoute(
   route.location = contract.location;
   for (const helper of helpers) helper.location = contract.location;
   contract.functions.push(...helpers, route);
-  if (useBoundRoute && !offloadedVerifier) {
+  if ((useBoundRoute || compilerOptions.messageBusKernel === true) && !offloadedVerifier) {
     const verifierHost = `${preamble}    contract __MessageBusVerifierHost() {
       function ${MESSAGE_BUS_VERIFY_ATOMIC_PROGRAM}(
         bigint activeInputIndex, bigint expectedLocalRows, bytes localBatch
@@ -10356,7 +10467,8 @@ function compileResolvedAst(
 
   mark('semantic');
   let singlePassVerifierProgram: MessageBusVerifierProgram | undefined;
-  const singlePassVerifierSource = (mergedCompilerOptions as InternalCompilerOptions).__singlePassVerifierSource;
+  const singlePassVerifierSource = (mergedCompilerOptions as InternalCompilerOptions).__singlePassVerifierSource
+    ?? (mergedCompilerOptions as InternalCompilerOptions).__messageBusSignatureVerifierSource;
   if ((mergedCompilerOptions as InternalCompilerOptions).__synthesizeBoundRoutePlaceholder === true
     && !mergedCompilerOptions.__messageBusVerifierProgram
     && singlePassVerifierSource) {
@@ -10491,10 +10603,73 @@ function compileResolvedAst(
   if (mergedCompilerOptions.autoDelegate || hasCompilerDelegate) {
     artifact.delegateProxyStateOutputCountPinned = true;
   }
-  const detachedVerifierProgram = mergedCompilerOptions.messageBus
+  const signatureFrameHex = (fn: FunctionDefinitionNode): string | undefined => {
+    const parameterIndices = fn.messageBusAllOutputSignatureParameters;
+    const coveredKeys = fn.messageBusSignatureCoveredFunctionKeys;
+    if (!parameterIndices || !coveredKeys || parameterIndices.length === 0 || parameterIndices.length > 0xff) {
+      return undefined;
+    }
+    const byte16 = (value: number): string => `${(value & 0xff).toString(16).padStart(2, '0')}`
+      + `${((value >>> 8) & 0xff).toString(16).padStart(2, '0')}`;
+    const parts = ['4b545331', '01', parameterIndices.length.toString(16).padStart(2, '0')];
+    let prior = -1;
+    for (const parameterIndex of parameterIndices) {
+      const parameter = fn.parameters[parameterIndex];
+      const leaves = parameter ? transactionSignatureLeaves(parameter.type) : undefined;
+      const coveredKey = coveredKeys[parameterIndex];
+      const covered = coveredKey === undefined ? undefined : ast.contract.functions.find((candidate) =>
+        deploymentTopologyKey(candidate) === coveredKey);
+      const body = covered?.functionId === undefined
+        ? undefined : traversal.invokedFunctionBytecodes.get(covered.functionId);
+      if (!Number.isSafeInteger(parameterIndex) || parameterIndex <= prior || parameterIndex > 0xffff
+        || !leaves || leaves.length === 0 || leaves.length > 0xff || !body) return undefined;
+      prior = parameterIndex;
+      parts.push(byte16(parameterIndex), leaves.length.toString(16).padStart(2, '0'));
+      for (const leaf of leaves) {
+        if (leaf.path.length > 0xff) return undefined;
+        parts.push(leaf.path.length.toString(16).padStart(2, '0'));
+        for (const segment of leaf.path) {
+          parts.push(segment.kind === 'field'
+            ? `00${byte16(segment.index)}`
+            : `01${byte16(segment.bound ?? 0xffff)}`);
+        }
+        parts.push(createHash('sha256').update(body).digest('hex'));
+      }
+    }
+    return parts.join('');
+  };
+  const signaturePolicyVerification = (): string => {
+    const policies = [
+      ...ast.contract.functions,
+      ast.contract.fallbackDef,
+      ast.contract.receiveDef,
+    ].filter((fn): fn is FunctionDefinitionNode => !!fn && fn.isEntryPoint && !fn.messageBusRoute
+      && fn.messageBusEligible === true)
+      .flatMap((fn) => {
+        const frame = signatureFrameHex(fn);
+        return frame && fn.functionSelector
+          ? [{ selector: binToHex(fn.functionSelector), frame }] : [];
+      });
+    return policies.map(({ selector, frame }, index) =>
+      `${index === 0 ? 'if' : 'else if'} (callManifest.slice(rowStart + 10, rowStart + 14) == hex"${selector}") { `
+      + `require(rowSignatureFrame == hex"${frame}"); }`).join(' ')
+      + `${policies.length > 0 ? ' else' : ''} { require(rowSignatureFrame.length == 0); }`;
+  };
+  let detachedVerifierProgram = mergedCompilerOptions.messageBus
     && ast.contract.functions.some((fn) => fn.messageBusRoute)
     ? singlePassVerifierProgram ?? extractMessageBusVerifierProgram(ast, traversal, optimisationResult.script)
     : undefined;
+  if (detachedVerifierProgram && mergedCompilerOptions.messageBusKernel === true
+    && singlePassVerifierSource) {
+    const specializedSource = singlePassVerifierSource.replace(
+      MESSAGE_BUS_SIGNATURE_POLICY_SENTINEL, signaturePolicyVerification(),
+    );
+    if (specializedSource === singlePassVerifierSource) {
+      throw new Error('message-bus signature verifier has no specialization sentinel');
+    }
+    detachedVerifierProgram = compileDetachedMessageBusVerifier(specializedSource, mergedCompilerOptions);
+    messageBusSignatureVerifierSource.set(detachedVerifierProgram, singlePassVerifierSource);
+  }
   // X149. `artifact.bytecode` IS NOT BYTES. `generateArtifact` publishes it as `scriptToAsm(script)` - the
   // human-readable listing, in which one 1-byte opcode occupies `OP_CHECKSIGVERIFY ` - so `.length / 2` is
   // half a character count and OVERSTATES the script on every contract: 1,332 against a real 283 on a small
@@ -10666,7 +10841,8 @@ function compileResolvedAst(
       maximumBlobBytes: MAX_MESSAGE_BUS_BLOB_BYTES,
       atomicMessageBus: {
         domain: ATOMIC_MESSAGE_BUS_DOMAIN_HEX,
-        protocolVersions: mergedCompilerOptions.messageBusKernel === true ? [1, 2] : [1],
+        protocolVersions: mergedCompilerOptions.messageBusKernel === true && detachedVerifierProgram
+          ? [1, 2, 4] : mergedCompilerOptions.messageBusKernel === true ? [1, 2] : [1],
         messageEnvelope: {
           region: 'participant-verifiers',
           canonicalInput: 'final-participant-verifier',

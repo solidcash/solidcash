@@ -239,7 +239,7 @@ describe('required kernel admission', () => {
     expect(artifact.messageBus?.route.inputs).toContainEqual({
       name: '__internal__upgradeStateSuffix', type: 'bytes',
     });
-    expect(artifact.messageBus?.atomicMessageBus?.protocolVersions).toEqual([1, 2]);
+    expect(artifact.messageBus?.atomicMessageBus?.protocolVersions).toEqual([1, 2, 4]);
   });
 
   it('admits an overloaded upgrade by exact selector without granting lifecycle authority to its sibling', () => {

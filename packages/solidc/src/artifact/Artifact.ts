@@ -1414,10 +1414,50 @@ function buildFunctionAbiMetadata(
     if (metadata?.occurrence !== 'once' || metadata.dataParamIndex === undefined) return undefined;
     const target = callTargets[call.callIndex] ?? COMPUTED_PROVENANCE;
     if (target.kind !== 'constructorArg' && target.kind !== 'literal') return undefined;
+    const literalTarget = (
+      expression: ExpressionNode,
+      resolving = new Set<string>(),
+    ): Uint8Array | undefined => {
+      if (expression instanceof CastNode) return literalTarget(expression.expression, resolving);
+      if (expression instanceof LiteralNode) {
+        return expression.constructor.name === 'HexLiteralNode'
+          && expression.value instanceof Uint8Array ? expression.value : undefined;
+      }
+      if (!(expression instanceof IdentifierNode) || resolving.has(expression.name)) return undefined;
+      resolving.add(expression.name);
+      const localBindings = provenance.bindings.get(expression.name);
+      const constant = contract?.constantDefinitions.find((candidate) => candidate.name === expression.name);
+      const candidates = localBindings ?? (constant?.expression ? [constant.expression] : []);
+      const values = candidates.map((candidate) => literalTarget(candidate, resolving));
+      resolving.delete(expression.name);
+      if (values.length === 0 || values.some((value) => value === undefined)) return undefined;
+      const first = binToHex(values[0]!);
+      return values.every((value) => binToHex(value!) === first) ? values[0] : undefined;
+    };
+    const targetBinding = target.kind === 'constructorArg'
+      ? (() => {
+        const input = contract?.parameters.findIndex((parameter) => parameter.name === target.name) ?? -1;
+        return input >= 0 && target.name !== undefined
+          ? { kind: 'constructorArg' as const, input, name: target.name } : undefined;
+      })()
+      : (() => {
+        const lockingBytecode = literalTarget(call.targetExpression);
+        return lockingBytecode === undefined ? undefined
+          : { kind: 'literal' as const, lockingBytecode: binToHex(lockingBytecode) };
+      })();
+    if (!targetBinding) return undefined;
     return {
+      version: 1 as const,
       callIndex: call.callIndex,
       payloadInput: metadata.dataParamIndex,
       target,
+      targetBinding,
+      frame: {
+        stateOwner: 'participant' as const,
+        executor: 'target-input' as const,
+        calldata: 'payload-input' as const,
+        outputOwner: 'participant' as const,
+      },
       terminalRequire: true as const,
     };
   })();

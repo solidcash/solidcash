@@ -1854,11 +1854,38 @@ describe('required kernel admission', () => {
     }`, KERNEL);
     expect(artifact.abi.find((fn) => fn.name === 'denied')).toMatchObject({
       delegateForwarding: {
+        version: 1,
         callIndex: 0,
         payloadInput: 0,
         target: { kind: 'constructorArg', name: 'impl' },
+        targetBinding: { kind: 'constructorArg', input: 0, name: 'impl' },
+        frame: {
+          stateOwner: 'participant', executor: 'target-input', calldata: 'payload-input',
+          outputOwner: 'participant',
+        },
         terminalRequire: true,
       },
+    });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')).toMatchObject({
+      delegateForwarding: artifact.abi.find((fn) => fn.name === 'denied')?.delegateForwarding,
+    });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')).toMatchObject({
+      eligible: false,
+      rejectionReason: 'KERNEL_FOREIGN_DELEGATE',
+    });
+  });
+
+  it('publishes an exact literal delegate target binding without admitting the frame', () => {
+    const artifact = compileString(`contract C() {
+      function denied(bytes input) public {
+        address(hex"51").delegatecall(input);
+        require(true);
+      }
+    }`, KERNEL);
+    expect(artifact.abi.find((fn) => fn.name === 'denied')?.delegateForwarding).toMatchObject({
+      version: 1,
+      target: { kind: 'literal' },
+      targetBinding: { kind: 'literal', lockingBytecode: '51' },
     });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')).toMatchObject({
       eligible: false,

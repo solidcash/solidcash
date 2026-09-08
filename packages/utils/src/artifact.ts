@@ -407,6 +407,29 @@ export interface ValueProvenance {
   name?: string;
 }
 
+/**
+ * Exact, fail-closed recipe for collapsing a source forwarding function into an authenticated delegate
+ * execution frame. Publication alone grants no message-bus admission: the kernel verifier must still bind the
+ * resolved implementation and payload to the executor input while keeping state and outputs owned by the
+ * participant block.
+ */
+export interface DelegateForwardingAbi {
+  version: 1;
+  callIndex: number;
+  payloadInput: number;
+  target: ValueProvenance;
+  targetBinding:
+  | { kind: 'constructorArg'; input: number; name: string }
+  | { kind: 'literal'; lockingBytecode: string };
+  frame: {
+    stateOwner: 'participant';
+    executor: 'target-input';
+    calldata: 'payload-input';
+    outputOwner: 'participant';
+  };
+  terminalRequire: true;
+}
+
 export interface AbiFunction {
   name: string;
   selector?: string;  // 4-byte hex selector (e.g. "a9059cbb")
@@ -550,12 +573,7 @@ export interface AbiFunction {
    * delegatecall statement followed by `require(true)`. Consumers may replace that forwarding frame with an
    * authenticated implementation route only when they also bind the published target and payload input.
    */
-  delegateForwarding?: {
-    callIndex: number;
-    payloadInput: number;
-    target: ValueProvenance;
-    terminalRequire: true;
-  };
+  delegateForwarding?: DelegateForwardingAbi;
   // Delegate-library calls (`L.f()`); the SDK auto-wires each one's delegatecall co-spend from a registered
   // library instance (registerLibrary). `args` are positional: a forwarded enclosing-function parameter (the SDK
   // reads its value from the consumer call) or a compile-time literal. See docs/library-contracts.md (3b).
@@ -1216,6 +1234,8 @@ export interface Artifact {
       /** One entry per transitive recovery call, including `false` for native/P2PKH projections. */
       ecrecoverEvmFlags?: readonly boolean[];
       transfers?: readonly FixedBchTransferAbi[];
+      /** Exact singular delegate-forwarding frame. Topology only; an ineligible handler remains refused. */
+      delegateForwarding?: DelegateForwardingAbi;
       /** Typed child-creation sites in source execution order. Presence is topology only, not admission. */
       childDeployments?: readonly ChildDeploymentSiteAbi[];
       /** Compiler-authored lifecycle authority. Append-v1 preserves the existing state geometry and permits

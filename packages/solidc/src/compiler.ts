@@ -10667,6 +10667,8 @@ function compileResolvedAst(
             ...(sourceAbi?.runtimeLoopTransfers?.length
               ? { runtimeLoopTransfers: sourceAbi.runtimeLoopTransfers } : {}),
             ...(sourceAbi?.transfers?.length ? { transfers: sourceAbi.transfers } : {}),
+            ...(sourceAbi?.delegateForwarding
+              ? { delegateForwarding: sourceAbi.delegateForwarding } : {}),
             ...(sourceAbi?.tokenContainerAccesses?.length
               ? { tokenContainerAccesses: sourceAbi.tokenContainerAccesses } : {}),
             ...(sourceAbi?.tokenContainerTransferSites?.length

@@ -4,6 +4,47 @@ import { compileString } from '../../src/index.js';
 const KERNEL = { forceStateful: true, messageBus: true, messageBusKernel: true } as const;
 
 describe('kernel transaction-signature boundaries', () => {
+  it('binds every checked signature leaf in a finite nested aggregate', () => {
+    const artifact = compileString(`contract AggregateAuthorization() {
+      struct Proof { sig authorization; pubkey owner; }
+      struct Pair { Proof first; Proof second; }
+      function apply(Pair pair, Proof[] extras) public {
+        require(checkSig(pair.first.authorization, pair.first.owner));
+        require(checkSig(pair.second.authorization, pair.second.owner));
+        require(extras.length == 1);
+        require(checkSig(extras[0].authorization, extras[0].owner));
+        require(true);
+      }
+    }`, KERNEL);
+
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'apply')).toMatchObject({
+      eligible: true,
+      transactionSignaturePolicy: { hashType: 'all', parameterIndices: [0, 1] },
+    });
+    expect(artifact.messageBus?.route.inputs).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: '__message_bus_sig_0_0_0_rows', type: 'sig[]' }),
+      expect.objectContaining({ name: '__message_bus_sig_0_0_1_rows', type: 'sig[]' }),
+      expect.objectContaining({ name: '__message_bus_sig_0_1_rows', type: 'sig[][]' }),
+    ]));
+  });
+
+  it('binds a constant projection through nested signature arrays', () => {
+    const artifact = compileString(`contract NestedAuthorization(pubkey owner) {
+      function apply(sig[][] proofs) public {
+        require(checkSig(proofs[0][0], owner));
+        require(true);
+      }
+    }`, KERNEL);
+
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'apply')).toMatchObject({
+      eligible: true,
+      transactionSignaturePolicy: { hashType: 'all', parameterIndices: [0] },
+    });
+    expect(artifact.messageBus?.route.inputs).toContainEqual(expect.objectContaining({
+      name: '__message_bus_sig_0_0_rows', type: 'sig[][][]',
+    }));
+  });
+
   it('derives detached witnesses through mixed fixed and dynamic ABI tuple fields', () => {
     const artifact = compileString(`contract NeutralAuthorization() {
       struct Proof { sig authorization; pubkey owner; }

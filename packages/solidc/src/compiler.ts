@@ -39,7 +39,7 @@ import {
   LowLevelCallNode, LowLevelCallStatementNode, MappingAccessNode, MappingAssignNode, MappingDeleteNode,
   MappingFieldAssignNode,
   MethodCallNode, MethodCallStatementNode, Node, ParameterNode, RequireNode, RevertNode,
-  NullaryOpNode, TupleAssignmentNode, VariableDefinitionNode, DeleteLocalNode, DeleteStateNode,
+  NullaryOpNode, TupleAssignmentNode, TupleIndexOpNode, VariableDefinitionNode, DeleteLocalNode, DeleteStateNode,
   SourceFileNode, StatementNode, TransferStatementNode, AddressTransferStatementNode, AddressSendExpressionNode,
   TypeIntrospectionNode, AbiDecodeNode, ReturnNode,
   TokenContainerMethodStatementNode, SelfdestructStatementNode,
@@ -3486,6 +3486,10 @@ function synthesizeMessageBusRoute(
     parameterIndices: number[];
     coveredFunctionKeys: Record<number, string>;
   }
+  interface CheckedSignatureOrigin {
+    parameterIndex: number;
+    leafIndex: number;
+  }
   const signatureFunctionKey = (fn: FunctionDefinitionNode): string => `${fn.name}(${
     fn.parameters.filter((parameter) => !parameter.name.startsWith('__internal__'))
       .map((parameter) => parameter.type.toString()).join(',')})`;
@@ -3500,6 +3504,7 @@ function synthesizeMessageBusRoute(
     const interfaceReceivers = interfaceTypedReceivers(root);
     const interfaceDefinitionNames = new Set(ast.interfaceDefinitions.map((iface) => iface.name));
     const coveredFunctionByParameter = new Map<number, FunctionDefinitionNode>();
+    const checkedLeavesByParameter = new Map<number, Set<number>>();
     let found = false;
     let unsupported = false;
     const parameterIndex = (fn: FunctionDefinitionNode, identifier: IdentifierNode): number => {
@@ -3555,36 +3560,49 @@ function synthesizeMessageBusRoute(
     const exactCheckedSignatureOrigin = (
       expression: ExpressionNode, fn: FunctionDefinitionNode, environment: OriginEnvironment,
       check: GlobalFunction,
-    ): number | undefined => {
+    ): CheckedSignatureOrigin | undefined => {
       // Scalar signatures and whole signature arrays retain the established identifier/immutable-alias proof.
       const direct = exactOrigin(expression, fn, environment);
       if (direct !== undefined) {
         const parameterType = root.parameters[direct]?.type;
-        if (check === GlobalFunction.CHECKSIG && parameterType === PrimitiveType.SIG) return direct;
+        if (check === GlobalFunction.CHECKSIG && parameterType === PrimitiveType.SIG) {
+          return { parameterIndex: direct, leafIndex: 0 };
+        }
         if (check === GlobalFunction.CHECKMULTISIG && parameterType instanceof ArrayType
-          && parameterType.elementType === PrimitiveType.SIG) return direct;
+          && parameterType.elementType === PrimitiveType.SIG) {
+          return { parameterIndex: direct, leafIndex: 0 };
+        }
         return undefined;
       }
-      // A finite struct is already copied into the committed row with each transaction-signature leaf erased and
-      // rebuilt from a detached witness. Follow only an exact typed field chain to that one scalar leaf: multiple
-      // leaves need independent SIGHASH policy witnesses, and array projection remains runtime-selected.
+      // A finite aggregate is copied into the committed row with every transaction-signature leaf erased and
+      // rebuilt from its detached witness. Follow an exact field/constant-index projection to one published leaf.
+      // The witness retains every source array dimension, so an element check is still bound to the complete
+      // reconstructed aggregate. Runtime-selected projections remain fenced: proving which detached leaf reaches
+      // CHECKSIG would otherwise depend on row data rather than stable type/provenance metadata.
       if (check !== GlobalFunction.CHECKSIG) return undefined;
-      const fieldPath: string[] = [];
+      const accessPath: Array<{ kind: 'field'; name: string } | { kind: 'array' }> = [];
       let base = expression;
-      while (base instanceof FieldAccessNode) {
-        fieldPath.unshift(base.name);
-        base = base.expression;
+      while (base instanceof FieldAccessNode || base instanceof TupleIndexOpNode) {
+        if (base instanceof FieldAccessNode) {
+          accessPath.unshift({ kind: 'field', name: base.name });
+          base = base.expression;
+        } else {
+          accessPath.unshift({ kind: 'array' });
+          base = base.tuple;
+        }
       }
       const origin = exactOrigin(base, fn, environment);
       if (origin === undefined) return undefined;
       const rootType = root.parameters[origin]?.type;
       if (!rootType) return undefined;
       const leaves = transactionSignatureLeaves(rootType);
-      if (leaves?.length !== 1 || leaves[0].type !== 'sig' || leaves[0].path.length !== fieldPath.length) {
-        return undefined;
-      }
-      return leaves[0].path.every((segment, index) =>
-        segment.kind === 'field' && segment.name === fieldPath[index]) ? origin : undefined;
+      const leafIndex = leaves?.findIndex((leaf) => leaf.path.length === accessPath.length
+        && leaf.path.every((segment, index) => {
+          const access = accessPath[index];
+          return segment.kind === access.kind
+            && (segment.kind !== 'field' || (access.kind === 'field' && segment.name === access.name));
+        })) ?? -1;
+      return leafIndex >= 0 ? { parameterIndex: origin, leafIndex } : undefined;
     };
     const exactInternalHelper = (
       call: FunctionCallNode, owner: FunctionDefinitionNode,
@@ -3620,12 +3638,16 @@ function synthesizeMessageBusRoute(
         if ([GlobalFunction.CHECKSIG, GlobalFunction.CHECKMULTISIG]
           .includes(node.identifier.name as GlobalFunction)) {
           found = true;
-          const index = node.parameters[0] ? exactCheckedSignatureOrigin(
+          const checked = node.parameters[0] ? exactCheckedSignatureOrigin(
             node.parameters[0], fn, environment, node.identifier.name as GlobalFunction,
           ) : undefined;
-          if (index === undefined) unsupported = true;
+          if (checked === undefined) unsupported = true;
           else {
+            const { parameterIndex: index, leafIndex } = checked;
             indices.add(index);
+            const checkedLeaves = checkedLeavesByParameter.get(index) ?? new Set<number>();
+            checkedLeaves.add(leafIndex);
+            checkedLeavesByParameter.set(index, checkedLeaves);
             const prior = coveredFunctionByParameter.get(index);
             if (prior && prior !== fn) unsupported = true;
             else coveredFunctionByParameter.set(index, fn);
@@ -3891,6 +3913,10 @@ function synthesizeMessageBusRoute(
         unsupported = true;
       }
     });
+    for (const index of indices) {
+      const leaves = transactionSignatureLeaves(root.parameters[index].type);
+      if (!leaves || checkedLeavesByParameter.get(index)?.size !== leaves.length) unsupported = true;
+    }
     if (unsupported) return undefined;
     return {
       parameterIndices: [...indices].sort((left, right) => left - right),
@@ -7245,21 +7271,26 @@ function synthesizeMessageBusRoute(
       const allOutputSignatureParameters = kernelAllOutputSignatureParameters.get(fn) ?? [];
       const signatureAuthorization = allOutputSignatureParameters.length > 0
         ? allOutputSignatureParameters.map((parameterIndex) => {
-          const witness = `${kernelSignatureWitnessName(handlerIndex, parameterIndex)}[${rowExpression}]`;
-          const signatureType = fn.parameters[parameterIndex].type;
           const requireSignatureAll = (signature: string): string => `require(${signature}.length > 0
             && (${signature}.slice(${signature}.length - 1, ${signature}.length) == hex"41"
               || ${signature}.slice(${signature}.length - 1, ${signature}.length) == hex"61"));`;
-          const requireAll = signatureType instanceof ArrayType
-            ? (() => {
-              const index = `__message_bus_policy_index_${handlerIndex}_${parameterIndex}`;
-              const signature = `__message_bus_policy_signature_${handlerIndex}_${parameterIndex}`;
-              return `require(${witness}.length > 0);
-                for (int ${index} = 0; ${index} < ${witness}.length; ${index} = ${index} + 1) {
-                  sig ${signature} = ${witness}[${index}]; ${requireSignatureAll(signature)}
+          const leaves = parameterSignatureLeaves[parameterIndex];
+          const requireLeafAll = (leaf: TransactionSignatureLeaf, leafIndex: number): string => {
+            const witness = `${kernelSignatureWitnessName(
+              handlerIndex, parameterIndex, leafIndex, leaves.length,
+            )}[${rowExpression}]`;
+            const arrayDepth = leaf.path.filter((segment) => segment.kind === 'array').length;
+            const descend = (expression: string, depth: number): string => {
+              if (depth === arrayDepth) return requireSignatureAll(expression);
+              const index = `__message_bus_policy_index_${handlerIndex}_${parameterIndex}_${leafIndex}_${depth}`;
+              return `require(${expression}.length > 0);
+                for (int ${index} = 0; ${index} < ${expression}.length; ${index} = ${index} + 1) {
+                  ${descend(`${expression}[${index}]`, depth + 1)}
                 }`;
-            })()
-            : requireSignatureAll(witness);
+            };
+            return descend(witness, 0);
+          };
+          const requireAll = leaves.map(requireLeafAll).join(' ');
           return fn.modifiers.includes(FunctionModifier.UPGRADE) || graphTailHandlers.has(fn)
             ? requireAll : `if (__message_bus_version == 2) { ${requireAll} }`;
         }).join(' ')

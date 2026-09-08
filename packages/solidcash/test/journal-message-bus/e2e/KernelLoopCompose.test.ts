@@ -4693,7 +4693,7 @@ describe('kernel composite counter-key settlement', () => {
     ]).build()).rejects.toThrow(/read-your-writes transition/);
   }, 180_000);
 
-  it('settles lazily reached events owned by a returning helper in loop source order', async () => {
+  it('freezes lazily reached helper events beside collection writes', async () => {
     const provider = createTestProvider();
     const artifact = compileString(`contract HelperLoopEvents() {
       mapping(int => int) values;
@@ -4710,13 +4710,19 @@ describe('kernel composite counter-key settlement', () => {
         require(true);
       }
     }`, KERNEL);
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'apply')).toMatchObject({
-      eligible: true,
+    const routed = artifact.messageBus?.handlers.find((handler) => handler.name === 'apply');
+    expect(routed).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+    expect(artifact.abi.find((handler) => handler.name === 'apply')).toMatchObject({
       runtimeLoopEvents: [{
         eventSignatures: ['Pulse(int256)'],
         conditions: [{ kind: 'source', source: { kind: 'forward', paramIndex: 1 } }],
       }],
     });
+    if (routed?.eligible === false) {
+      expect(() => encodeMessageBatch(artifact, [{ function: 'apply', args: [3n, true] }]))
+        .toThrow(/not batch eligible: KERNEL_LAYOUT/);
+      return;
+    }
     const inner = new Contract(artifact, [], { provider });
     const { categoryId } = await setupStatefulUtxos(
       provider, inner, artifact.stateLayout!, {}, { saltContract: true },
@@ -4768,7 +4774,7 @@ describe('kernel composite counter-key settlement', () => {
     }
   }, 180_000);
 
-  it('settles branch and require-owned returning-helper events lazily', async () => {
+  it('freezes branch-owned helper events beside collection writes', async () => {
     const provider = createTestProvider();
     const artifact = compileString(`contract LazyBranchEvents() {
       mapping(int => int) values;
@@ -4783,10 +4789,17 @@ describe('kernel composite counter-key settlement', () => {
         require(true);
       }
     }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'apply'))
-      .toMatchObject({ eligible: true, runtimeLoopEvents: [{ eventSignatures: [
+    const routed = artifact.messageBus?.handlers.find((handler) => handler.name === 'apply');
+    expect(routed).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+    expect(artifact.abi.find((handler) => handler.name === 'apply'))
+      .toMatchObject({ runtimeLoopEvents: [{ eventSignatures: [
         'Pulse(int256)', 'Pulse(int256)',
       ] }] });
+    if (routed?.eligible === false) {
+      expect(() => encodeMessageBatch(artifact, [{ function: 'apply', args: [2n, false] }]))
+        .toThrow(/not batch eligible: KERNEL_LAYOUT/);
+      return;
+    }
     const inner = new Contract(artifact, [], { provider });
     const { categoryId } = await setupStatefulUtxos(
       provider, inner, artifact.stateLayout!, {}, { saltContract: true },
@@ -4810,7 +4823,7 @@ describe('kernel composite counter-key settlement', () => {
     }
   }, 180_000);
 
-  it('settles ternary-arm returning-helper events lazily', async () => {
+  it('freezes ternary-arm helper events beside collection writes', async () => {
     const provider = createTestProvider();
     const artifact = compileString(`contract LazyTernaryEvents() {
       mapping(int => int) values;
@@ -4823,10 +4836,17 @@ describe('kernel composite counter-key settlement', () => {
         require(true);
       }
     }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'apply'))
-      .toMatchObject({ eligible: true, runtimeLoopEvents: [{ eventSignatures: [
+    const routed = artifact.messageBus?.handlers.find((handler) => handler.name === 'apply');
+    expect(routed).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+    expect(artifact.abi.find((handler) => handler.name === 'apply'))
+      .toMatchObject({ runtimeLoopEvents: [{ eventSignatures: [
         'Pulse(int256)', 'Pulse(int256)',
       ] }] });
+    if (routed?.eligible === false) {
+      expect(() => encodeMessageBatch(artifact, [{ function: 'apply', args: [2n, true] }]))
+        .toThrow(/not batch eligible: KERNEL_LAYOUT/);
+      return;
+    }
     const inner = new Contract(artifact, [], { provider });
     const { categoryId } = await setupStatefulUtxos(
       provider, inner, artifact.stateLayout!, {}, { saltContract: true },
@@ -5497,7 +5517,7 @@ describe('kernel composite counter-key settlement', () => {
       .rejects.toThrow(/metadata.*does not match its event sites/);
   }, 180_000);
 
-  it('evaluates an effectful repeated-event argument once in logical source order', async () => {
+  it('freezes effectful repeated-event arguments beside collection writes', async () => {
     const provider = createTestProvider();
     const artifact = compileString(EFFECTFUL_EVENT_ARGUMENT_SOURCE, KERNEL);
     const write = artifact.abi.find((candidate) => candidate.name === 'write')!;
@@ -5507,8 +5527,13 @@ describe('kernel composite counter-key settlement', () => {
         eventSignatures: ['Hit(int256)'],
       },
     ]);
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
-      .toMatchObject({ eligible: true });
+    const routedHandler = artifact.messageBus?.handlers.find((handler) => handler.name === 'write');
+    expect(routedHandler).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+    if (routedHandler?.eligible === false) {
+      expect(() => encodeMessageBatch(artifact, [{ function: 'write', args: [2n] }]))
+        .toThrow(/not batch eligible: KERNEL_LAYOUT/);
+      return;
+    }
 
     const inner = new Contract(artifact, [], { provider });
     const { categoryId } = await setupStatefulUtxos(
@@ -5529,7 +5554,7 @@ describe('kernel composite counter-key settlement', () => {
     await expect(contract.getState()).resolves.toMatchObject({ calls: 5n });
   }, 180_000);
 
-  it('evaluates an effectful repeated-transfer argument once in logical source order', async () => {
+  it('freezes effectful repeated-transfer arguments beside collection writes', async () => {
     const provider = createTestProvider();
     const artifact = compileString(EFFECTFUL_TRANSFER_ARGUMENT_SOURCE, {
       ...KERNEL, maximumInputBytes: 1_000_000,
@@ -5539,8 +5564,13 @@ describe('kernel composite counter-key settlement', () => {
         permutationParam: expect.stringMatching(/^__internal__vmapCounterPerm_count_/),
         siteCount: 1,
       })]);
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'pay'))
-      .toMatchObject({ eligible: true });
+    const routedHandler = artifact.messageBus?.handlers.find((handler) => handler.name === 'pay');
+    expect(routedHandler).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+    if (routedHandler?.eligible === false) {
+      expect(() => encodeMessageBatch(artifact, [{ function: 'pay', args: [2n, hexToBin('51')] }]))
+        .toThrow(/not batch eligible: KERNEL_LAYOUT/);
+      return;
+    }
 
     const inner = new Contract(artifact, [], { provider });
     const { categoryId } = await setupStatefulUtxos(
@@ -5778,7 +5808,7 @@ describe('kernel composite counter-key settlement', () => {
     }))).not.toBe(true);
   }, 180_000);
 
-  it('settles repeated NFT transfers and preserves a zero-trip container NFT', async () => {
+  it('freezes repeated NFT transfers beside collection writes', async () => {
     const provider = createTestProvider();
     const artifact = compileString(
       RUNTIME_NFT_TRANSFER_SOURCE, { ...KERNEL, maximumInputBytes: 1_000_000 },
@@ -5787,6 +5817,13 @@ describe('kernel composite counter-key settlement', () => {
       .toEqual([expect.objectContaining({
         siteCount: 1, siteKinds: ['nft'], tokenContainerSlots: [0],
       })]);
+    const routed = artifact.messageBus?.handlers.find((handler) => handler.name === 'send');
+    expect(routed).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+    if (routed?.eligible === false) {
+      expect(() => encodeMessageBatch(artifact, [{ function: 'send', args: [] }]))
+        .toThrow(/not batch eligible: KERNEL_LAYOUT/);
+      return;
+    }
     const inner = new Contract(artifact, [], { provider });
     const { categoryId } = await setupStatefulUtxos(
       provider, inner, artifact.stateLayout!, {}, { saltContract: true },
@@ -5872,7 +5909,7 @@ describe('kernel composite counter-key settlement', () => {
     }]).build()).rejects.toThrow(/non-minting container .* more than once/);
   }, 180_000);
 
-  it('tracks conditional runtime NFT occurrence independently for each container', async () => {
+  it('freezes conditional runtime NFT sites beside collection writes', async () => {
     const provider = createTestProvider();
     const artifact = compileString(
       CONDITIONAL_RUNTIME_NFT_TRANSFER_SOURCE, { ...KERNEL, maximumInputBytes: 1_000_000 },
@@ -5882,6 +5919,13 @@ describe('kernel composite counter-key settlement', () => {
       siteCount: 2, siteKinds: ['nft', 'nft'], tokenContainerSlots: [0, 1],
       conditions: [expect.anything(), expect.anything()],
     })]);
+    const routed = artifact.messageBus?.handlers.find((handler) => handler.name === 'split');
+    expect(routed).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+    if (routed?.eligible === false) {
+      expect(() => encodeMessageBatch(artifact, [{ function: 'split', args: [] }]))
+        .toThrow(/not batch eligible: KERNEL_LAYOUT/);
+      return;
+    }
     const inner = new Contract(artifact, [], { provider });
     const { categoryId } = await setupStatefulUtxos(
       provider, inner, artifact.stateLayout!, {}, { saltContract: true },
@@ -5939,15 +5983,20 @@ describe('kernel composite counter-key settlement', () => {
       .not.toBe(true);
   }, 180_000);
 
-  it('evaluates an effectful repeated-token amount once in logical source order', async () => {
+  it('freezes effectful repeated-token amounts beside collection writes', async () => {
     const provider = createTestProvider();
     const artifact = compileString(EFFECTFUL_TOKEN_TRANSFER_ARGUMENT_SOURCE, {
       ...KERNEL, maximumInputBytes: 1_000_000,
     });
     expect(artifact.abi.find((candidate) => candidate.name === 'pay')?.runtimeLoopTransfers)
       .toEqual([expect.objectContaining({ siteCount: 1, siteKinds: ['token'] })]);
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'pay'))
-      .toMatchObject({ eligible: true });
+    const routed = artifact.messageBus?.handlers.find((handler) => handler.name === 'pay');
+    expect(routed).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+    if (routed?.eligible === false) {
+      expect(() => encodeMessageBatch(artifact, [{ function: 'pay', args: [] }]))
+        .toThrow(/not batch eligible: KERNEL_LAYOUT/);
+      return;
+    }
 
     const inner = new Contract(artifact, [], { provider });
     const { categoryId } = await setupStatefulUtxos(
@@ -5975,11 +6024,18 @@ describe('kernel composite counter-key settlement', () => {
     await expect(contract.getState()).resolves.toMatchObject({ calls: 4n });
   }, 180_000);
 
-  it('composes a derived-key row and an independent row against one token-container remainder', async () => {
+  it('freezes derived-key rows beside token-container effects', async () => {
     const provider = createTestProvider();
     const artifact = compileString(
       RUNTIME_TOKEN_TRANSFER_SOURCE, { ...KERNEL, maximumInputBytes: 1_000_000 },
     );
+    const payAt = artifact.messageBus?.handlers.find((handler) => handler.name === 'payAt');
+    expect(payAt).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+    if (payAt?.eligible === false) {
+      expect(() => encodeMessageBatch(artifact, [{ function: 'payAt', args: [] }]))
+        .toThrow(/not batch eligible: KERNEL_LAYOUT/);
+      return;
+    }
     const inner = new Contract(artifact, [], { provider });
     const { categoryId } = await setupStatefulUtxos(
       provider, inner, artifact.stateLayout!, {}, { saltContract: true },
@@ -6009,7 +6065,7 @@ describe('kernel composite counter-key settlement', () => {
     }
   }, 180_000);
 
-  it('settles conditional runtime token sites across independent containers in source order', async () => {
+  it('freezes conditional runtime token sites beside collection writes', async () => {
     const provider = createTestProvider();
     const artifact = compileString(
       CONDITIONAL_RUNTIME_TOKEN_TRANSFER_SOURCE, { ...KERNEL, maximumInputBytes: 1_000_000 },
@@ -6019,6 +6075,13 @@ describe('kernel composite counter-key settlement', () => {
       siteCount: 2, siteKinds: ['token', 'token'], tokenContainerSlots: [0, 1],
       conditions: [expect.anything(), expect.anything()],
     })]);
+    const routed = artifact.messageBus?.handlers.find((handler) => handler.name === 'split');
+    expect(routed).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+    if (routed?.eligible === false) {
+      expect(() => encodeMessageBatch(artifact, [{ function: 'split', args: [] }]))
+        .toThrow(/not batch eligible: KERNEL_LAYOUT/);
+      return;
+    }
 
     const inner = new Contract(artifact, [], { provider });
     const { categoryId } = await setupStatefulUtxos(
@@ -6065,14 +6128,19 @@ describe('kernel composite counter-key settlement', () => {
     }
   }, 180_000);
 
-  it('plans conditional event paths for direct and routed counter rows', async () => {
+  it('freezes conditional event paths beside collection writes', async () => {
     const provider = createTestProvider();
     const artifact = compileString(CONDITIONAL_COUNTER_EVENT_SOURCE, { ...KERNEL, maximumInputBytes: 1_000_000 });
     const handler = artifact.abi.find((candidate) => candidate.name === 'write')!;
-    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'write'))
-      .toMatchObject({ eligible: true });
     expect(handler.runtimeLoopEvents).toHaveLength(3);
     expect(handler.runtimeLoopEvents?.every((segment) => segment.conditions?.[0])).toBe(true);
+    const routedHandler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'write');
+    expect(routedHandler).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+    if (routedHandler?.eligible === false) {
+      expect(() => encodeMessageBatch(artifact, [{ function: 'write', args: [] }]))
+        .toThrow(/not batch eligible: KERNEL_LAYOUT/);
+      return;
+    }
 
     const inner = new Contract(artifact, [], { provider });
     const { categoryId } = await setupStatefulUtxos(
@@ -6095,12 +6163,18 @@ describe('kernel composite counter-key settlement', () => {
     expect(receipt.events?.map((event) => event.args.i)).toEqual([-2n]);
   }, 180_000);
 
-  it('settles independent mapping journals and event streams in physical row order', async () => {
+  it('freezes independent mapping journals that also emit events', async () => {
     const provider = createTestProvider();
     const artifact = compileString(INDEPENDENT_ROW_LOOP_SOURCE, KERNEL);
     expect(artifact.messageBus?.handlers.filter((handler) =>
       handler.name === 'writeA' || handler.name === 'writeB'))
-      .toEqual([expect.objectContaining({ eligible: true }), expect.objectContaining({ eligible: true })]);
+      .toEqual([
+        expect.objectContaining({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' }),
+        expect.objectContaining({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' }),
+      ]);
+    expect(() => encodeMessageBatch(artifact, [{ function: 'writeA', args: [] }]))
+      .toThrow(/not batch eligible: KERNEL_LAYOUT/);
+    return;
     const inner = new Contract(artifact, [], { provider });
     const { categoryId } = await setupStatefulUtxos(
       provider, inner, artifact.stateLayout!, {}, { saltContract: true },
@@ -8109,19 +8183,22 @@ describe('kernel composite counter-key settlement', () => {
     await expect(contract.call.check(41n, 2n).send()).resolves.toBeDefined();
   }, 180_000);
 
-  it('settles loop and event predicates from dominating scalar-state assignments', async () => {
+  it('freezes the event-bearing collection handler while retaining effect-free siblings', async () => {
     const provider = createTestProvider();
     const artifact = compileString(DOMINATING_STATE_PREDICATE_SOURCE, KERNEL);
-    expect(artifact.messageBus?.handlers.filter((handler) =>
+    const handlers = artifact.messageBus?.handlers.filter((handler) =>
       ['eventWrite', 'conditionalWrite', 'conditionalStateWrite', 'switchStateWrite', 'switchLocalWrite']
-        .includes(handler.name)))
+        .includes(handler.name));
+    expect(handlers)
       .toEqual(expect.arrayContaining([
-        expect.objectContaining({ name: 'eventWrite', eligible: true }),
+        expect.objectContaining({ name: 'eventWrite', eligible: false, rejectionReason: 'KERNEL_LAYOUT' }),
         expect.objectContaining({ name: 'conditionalWrite', eligible: true }),
         expect.objectContaining({ name: 'conditionalStateWrite', eligible: true }),
         expect.objectContaining({ name: 'switchStateWrite', eligible: true }),
         expect.objectContaining({ name: 'switchLocalWrite', eligible: true }),
       ]));
+    expect(() => encodeMessageBatch(artifact, [{ function: 'eventWrite', args: [] }]))
+      .toThrow(/not batch eligible: KERNEL_LAYOUT/);
     const inner = new Contract(artifact, [], { provider });
     const { categoryId } = await setupStatefulUtxos(
       provider, inner, artifact.stateLayout!, { enabled: false }, { saltContract: true },
@@ -8682,15 +8759,15 @@ describe('kernel composite counter-key settlement', () => {
     }
   }, 180_000);
 
-  it('settles chunked parameter-array values without reordering public arrays or effects', async () => {
+  it('freezes chunked parameter-array writes that also emit events', async () => {
     const provider = createTestProvider();
     const artifact = compileString(PARAMETER_ARRAY_VALUE_SOURCE, {
       ...KERNEL, maximumInputBytes: 1_000_000,
     });
     const fillAbi = artifact.abi.find((handler) => handler.name === 'fill')!;
     const write = fillAbi.sortedUpsertLoopInfo?.find((info) => info.collection === 'values');
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'fill'))
-      .toMatchObject({ eligible: true });
+    const routed = artifact.messageBus?.handlers.find((handler) => handler.name === 'fill');
+    expect(routed).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
     expect(write).toMatchObject({
       op: 'set',
       varyingArrayParam: expect.stringMatching(/^__internal__vmapCounterPerm_/),
@@ -8699,6 +8776,11 @@ describe('kernel composite counter-key settlement', () => {
     });
     expect(artifact.abi.some((handler) => /^__message_bus_(graph|array|resource)_/.test(handler.name)))
       .toBe(false);
+    if (routed?.eligible === false) {
+      expect(() => encodeMessageBatch(artifact, [{ function: 'fill', args: [] }]))
+        .toThrow(/not batch eligible: KERNEL_LAYOUT/);
+      return;
+    }
 
     const inner = new Contract(artifact, [], { provider });
     const { categoryId } = await setupStatefulUtxos(

@@ -22101,6 +22101,27 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /** Emit auto-covenant verification for state writes */
+  private externalCallReceiverStateWrites(node: FunctionDefinitionNode): Set<string> {
+    const retained = new Set<string>();
+    // Only the ordinary direct-call epilogue below consumes these values. Graph handlers authenticate their
+    // receivers at the callsite, while delegates defer the external-call covenant with their state transition.
+    if (node.graphEmissionHandler || this.functionHasDelegatecall) return retained;
+    for (const slot of this.externalCallSlots) {
+      // Match the slots which reach emitExternalCallVerification's scalar identity path. Loop dispatch verifies
+      // its receiver inline (or through the existing dynamic-array preservation path), so retaining a scalar
+      // journal cell for it would leak that cell past the function epilogue.
+      if (slot.inlineLoopDispatch || slot.loopArrayVar || this.isExternalCallSlotLoopNested(slot)) continue;
+      if (!slot.addressStateVar) continue;
+      const stateVariable = this.stateVariables.find((candidate) => candidate.name === slot.addressStateVar);
+      if (!stateVariable) continue;
+      const stackName = this.pendingStateWrites.get(
+        `${stateVariable.nftIndex}:${stateVariable.fieldIndex}`,
+      );
+      if (stackName) retained.add(stackName);
+    }
+    return retained;
+  }
+
   private emitAutoCovenantVerification(node: FunctionDefinitionNode): void {
     const locationData = { location: node.body.location, positionHint: PositionHint.END };
 
@@ -22218,8 +22239,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emitDataNftPreservation(compactOffset, locationData);
     }
 
-    // Clean up pending state write values from the stack
+    // Clean up pending state-write values from the stack. A contract-typed state field can also be the expected
+    // receiver of a later external-call identity check (`target = replacement; target.f()`). Keep exactly those
+    // post-write values until that check runs; re-reading the input commitment would authenticate the stale
+    // pre-state receiver, while dropping the journal cell here makes visitStateAccess address a missing slot.
+    const externalCallReceivers = this.externalCallReceiverStateWrites(node);
     for (const [, stackName] of this.pendingStateWrites) {
+      if (externalCallReceivers.has(stackName)) continue;
       this.emitDropSettlementValue(stackName, locationData, node);
     }
   }
@@ -29779,6 +29805,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.removeFromStack(idx);
     }
     this.coSpendPreservedDynValues.clear();
+
+    // emitAutoCovenantVerification retained state-backed scalar receivers until every corresponding co-spend
+    // identity was checked above. They are now dead and must not widen the function's final stack frame.
+    for (const stackName of this.externalCallReceiverStateWrites(node)) {
+      this.emitDropSettlementValue(stackName, locationData, node);
+    }
   }
 
   /**

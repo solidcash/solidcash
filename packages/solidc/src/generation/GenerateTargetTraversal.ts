@@ -18976,7 +18976,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(encodeInt(BigInt(VALUE_HEAD_SIZE)), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_DROP, loc);
     this.emit(Op.OP_CAT, loc); // root32 || headData28
     this.emit(Op.OP_ELSE, loc);
-    this.emit(encodeInt(3n), loc); this.emit(Op.OP_PICK, loc);
+    // OP_IF consumes `long`, leaving [v, len, len4]. The inline value is therefore depth 2. Picking depth 3
+    // copies the caller's next-lower stack item (for a kernel row, its journal carrier) into the entry tail.
+    this.emit(encodeInt(2n), loc); this.emit(Op.OP_PICK, loc);
     this.emit(Op.OP_ENDIF, loc);
     this.emit(Op.OP_CAT, loc); this.emit(Op.OP_NIP, loc); this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_DROP, loc); // [tail]
   }
@@ -24209,7 +24211,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_TOALTSTACK, loc);
     this.emitKernelJournalRecordExtractGlobal(loc); // target record
     this.emit(Op.OP_DUP, loc); this.emit(Op.OP_TOALTSTACK, loc);
-    this.emit(Op.OP_SIZE, loc); this.emit(Op.OP_1, loc); this.emit(Op.OP_NUM2BIN, loc);
+    this.emit(Op.OP_SIZE, loc);
+    // A journal record may be 128..150 bytes. Script numbers in that range require a sign byte, so widen to two
+    // bytes and retain the low byte for the PUSHDATA1 length rather than asking NUM2BIN for an impossible width.
+    this.emit(Op.OP_2, loc); this.emit(Op.OP_NUM2BIN, loc);
+    this.emit(Op.OP_1, loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_DROP, loc);
     this.emit(new Uint8Array([0x4c]), loc); this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_CAT, loc);
     this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_CAT, loc); // framed target
     this.emit(Op.OP_FROMALTSTACK, loc); // raw target
@@ -24225,7 +24231,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_FROMALTSTACK, loc); this.emit(Op.OP_DROP, loc); // predecessor record
     this.emit(Op.OP_FROMALTSTACK, loc); this.emit(Op.OP_SWAP, loc); // framed target, predecessor record
     this.emit(Op.OP_ENDIF, loc); // framed target, raw predecessor (or target)
-    this.emit(Op.OP_SIZE, loc); this.emit(Op.OP_1, loc); this.emit(Op.OP_NUM2BIN, loc);
+    this.emit(Op.OP_SIZE, loc);
+    this.emit(Op.OP_2, loc); this.emit(Op.OP_NUM2BIN, loc);
+    this.emit(Op.OP_1, loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_DROP, loc);
     this.emit(new Uint8Array([0x4c]), loc); this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_CAT, loc);
     this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_CAT, loc);
     this.emit(Op.OP_CAT, loc); // framed target || framed predecessor
@@ -24253,7 +24261,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_1, loc); this.emit(Op.OP_ROLL, loc); this.emit(Op.OP_TOALTSTACK, loc); // prefix, suffix, replacement
     // Journal records are 86..150 bytes, therefore their canonical array element frame is PUSHDATA1.
     this.emit(Op.OP_SIZE, loc);
-    this.emit(Op.OP_1, loc); this.emit(Op.OP_NUM2BIN, loc);
+    this.emit(Op.OP_2, loc); this.emit(Op.OP_NUM2BIN, loc);
+    this.emit(Op.OP_1, loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_DROP, loc);
     this.emit(new Uint8Array([0x4c]), loc); this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_CAT, loc);
     this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_CAT, loc); // prefix, suffix, framed replacement
     this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_CAT, loc); // prefix, framed replacement || suffix

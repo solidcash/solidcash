@@ -94,6 +94,29 @@ const journalContextNames = (fn: FunctionDefinitionNode): string[] => fn.paramet
     || name === KERNEL_JOURNAL_ACCESS_STREAMS || name === KERNEL_JOURNAL_RECORDS);
 
 describe('message-bus kernel loop route', () => {
+  it('copies the typed value rather than the enclosing carrier into an inline chunkable entry tail', () => {
+    const artifact = compileString(`
+      pragma solidcash ^0.13.0;
+      contract Store() {
+        struct Pair { int left; int right; }
+        mapping(int => Pair) values;
+        function set(int key, int left, int right) public {
+          this.values[key] = Pair(left, right);
+          require(true);
+        }
+        function control() public { require(true); }
+      }
+    `, { ...OPTIONS, maximumInputBytes: 100_000 });
+    const helperBodies = Object.values(artifact.debug?.invokeDebug ?? {})
+      .map(({ bytecode }) => bytecodeToAsm(hexToBin(bytecode)));
+    // At OP_ELSE the condition has been consumed, leaving [value, length, length4]. The value is depth two;
+    // depth three would copy the handler's next-lower item (the kernel journal carrier) into the stored tail.
+    expect(helperBodies).toContain(
+      'OP_SIZE OP_DUP OP_4 OP_NUM2BIN OP_OVER 3c OP_GREATERTHAN OP_IF OP_2 OP_PICK OP_SHA256 '
+      + 'OP_3 OP_PICK 1c OP_SPLIT OP_DROP OP_CAT OP_ELSE OP_2 OP_PICK OP_ENDIF OP_CAT OP_NIP OP_SWAP OP_DROP',
+    );
+  });
+
   it('dispatches a void handler from one row loop rather than unrolled rowCount bands', () => {
     const artifact = compileString(VOID_SOURCE, OPTIONS);
     expect(artifact.messageBus).toBeDefined();

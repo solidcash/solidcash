@@ -17,7 +17,7 @@ import {
   LowLevelCallStatementNode, StateAccessNode, RequireNode, ExternalFunctionCallNode,
   StateAssignNode, MappingAssignNode, MappingFieldAssignNode, StateArrayAssignNode,
   MappingAccessNode, ArrayAccessNode, FieldAccessNode, ExternalCallExpression, ExternalCallArgSource,
-  EmitStatementNode, TernaryOpNode, TokenContainerMethodStatementNode, UnaryOpNode, BranchNode,
+  EmitStatementNode, TernaryOpNode, TokenContainerMethodStatementNode, UnaryOpNode, BranchNode, BoolLiteralNode,
   SwitchNode, TryCatchNode, InstantiationNode,
 } from '../ast/AST.js';
 import { BinaryOperator, UnaryOperator } from '../ast/Operator.js';
@@ -1403,6 +1403,24 @@ function buildFunctionAbiMetadata(
   // low-level call and no signature check resolves nothing and publishes nothing.
   const provenance = indexBody(func);
   const callTargets = lowLevelCallTargets(func, contract, provenance);
+  const delegateForwarding = (() => {
+    const statements = func.body.statements ?? [];
+    if (statements.length !== 2) return undefined;
+    const [call, terminal] = statements;
+    if (!(call instanceof LowLevelCallStatementNode) || call.callMode !== ExternalCallMode.DELEGATECALL
+      || !(terminal instanceof RequireNode) || !(terminal.expression instanceof BoolLiteralNode)
+      || terminal.expression.value !== true) return undefined;
+    const metadata = func.lowLevelCalls?.[call.callIndex];
+    if (metadata?.occurrence !== 'once' || metadata.dataParamIndex === undefined) return undefined;
+    const target = callTargets[call.callIndex] ?? COMPUTED_PROVENANCE;
+    if (target.kind !== 'constructorArg' && target.kind !== 'literal') return undefined;
+    return {
+      callIndex: call.callIndex,
+      payloadInput: metadata.dataParamIndex,
+      target,
+      terminalRequire: true as const,
+    };
+  })();
   const signatureGuard = signatureGuardOf(func, contract, provenance);
   // Graph handlers execute behind the synthetic route, while their loop-write metadata is discovered during
   // code generation on the cloned handler itself. The SDK plans the physical trailing outputs from the route
@@ -1953,6 +1971,7 @@ function buildFunctionAbiMetadata(
         target: callTargets[index] ?? COMPUTED_PROVENANCE,
       })),
     }),
+    ...(delegateForwarding && { delegateForwarding }),
     ...(func.libraryDelegateCalls && func.libraryDelegateCalls.length > 0 && {
       libraryDelegateCalls: func.libraryDelegateCalls.map((ld) => ({
         library: ld.library,

@@ -545,6 +545,17 @@ export interface AbiFunction {
      */
     target?: ValueProvenance;
   }[];
+  /**
+   * Compiler proof that this function is only a singular delegate frame: one unconditional low-level
+   * delegatecall statement followed by `require(true)`. Consumers may replace that forwarding frame with an
+   * authenticated implementation route only when they also bind the published target and payload input.
+   */
+  delegateForwarding?: {
+    callIndex: number;
+    payloadInput: number;
+    target: ValueProvenance;
+    terminalRequire: true;
+  };
   // Delegate-library calls (`L.f()`); the SDK auto-wires each one's delegatecall co-spend from a registered
   // library instance (registerLibrary). `args` are positional: a forwarded enclosing-function parameter (the SDK
   // reads its value from the consumer call) or a compile-time literal. See docs/library-contracts.md (3b).

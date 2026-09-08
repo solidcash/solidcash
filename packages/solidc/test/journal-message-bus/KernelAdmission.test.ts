@@ -1843,13 +1843,39 @@ describe('required kernel admission', () => {
   });
 
   it('refuses foreign delegatecall as KERNEL_FOREIGN_DELEGATE', () => {
-    expect(denied(`contract C(address impl) {
+    const artifact = compileString(`contract C(address impl) {
       function denied(bytes input) public {
         impl.delegatecall(input);
         require(true);
       }
       function control() public { require(true); }
-    }`, 'denied')).toMatchObject({
+    }`, KERNEL);
+    expect(artifact.abi.find((fn) => fn.name === 'denied')).toMatchObject({
+      delegateForwarding: {
+        callIndex: 0,
+        payloadInput: 0,
+        target: { kind: 'constructorArg', name: 'impl' },
+        terminalRequire: true,
+      },
+    });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')).toMatchObject({
+      eligible: false,
+      rejectionReason: 'KERNEL_FOREIGN_DELEGATE',
+    });
+  });
+
+  it.each([
+    ['state-resolved target', 'address stored; function denied(bytes input) public { address(this.stored).delegatecall(input); require(true); }'],
+    ['computed payload', 'function denied(bytes input) public { impl.delegatecall(bytes.concat(input, hex"00")); require(true); }'],
+    ['proxy-side statement', 'function denied(bytes input) public { require(input.length > 0); impl.delegatecall(input); require(true); }'],
+    ['conditional frame', 'function denied(bytes input, bool active) public { if (active) { impl.delegatecall(input); } require(true); }'],
+  ])('does not publish a collapsible delegate frame for %s', (_label, body) => {
+    const artifact = compileString(`contract C(address impl) {
+      ${body}
+      function control() public { require(true); }
+    }`, KERNEL);
+    expect(artifact.abi.find((fn) => fn.name === 'denied')).not.toHaveProperty('delegateForwarding');
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')).toMatchObject({
       eligible: false,
       rejectionReason: 'KERNEL_FOREIGN_DELEGATE',
     });

@@ -7925,16 +7925,46 @@ export default class LowerVMapCounterLoops extends AstTraversal {
                 || (ascending && step < 0n) || (descending && step > 0n)
                 || (!ascending && !descending && comparison !== BinaryOperator.NE)) return undefined;
               if (runtimeBoundRange && comparison === BinaryOperator.NE) return undefined;
-              // A canonical full initialization and its exact one-trailing-hole variant have closed symbolic
-              // forms even when the allocation length is runtime-sized. The one-hole recipe selects precisely
-              // `0 <= index < xs.length - 1` and leaves the final element at its prior value. This is the widest
-              // partial domain currently representable without inevitably producing repeated default keys.
-              // Keep this exact: unit ascending pre-test traversal from zero, writes only to the counter position,
-              // and a bound canonically equal to the array length or `array.length - 1`. Arbitrary runtime bounds,
-              // strides, offset indices, descending loops, and post-test loops remain fenced.
+              // A canonical indexed initialization has a closed symbolic form even when its public bound is
+              // independent of the runtime-sized allocation: each later read is `index < bound ? written : prior`.
+              // The executable helper remains authoritative for bounds checks, so bound > array.length still
+              // reverts at the original write rather than being silently clamped by this recipe. Keep the first
+              // slice exact: unit ascending pre-test traversal from zero, writes only to the counter position.
+              // Strides, offset indices, descending loops, and post-test loops remain fenced.
               if (typeof boundValue !== 'bigint' && !runtimeBoundRange) {
+                // This is deliberately the same closed expression vocabulary the artifact recipe serializer
+                // and SDK evaluator share. In particular, do not infer purity from a resolved call: even a
+                // source `pure` helper has no call representation in the published recipe. State/tx reads and
+                // all unknown future nodes fail closed rather than being treated as public by omission.
+                const publicBoundExpression = (candidate: ExpressionNode): boolean => {
+                  if (candidate instanceof LiteralNode) return true;
+                  if (candidate instanceof IdentifierNode) {
+                    return node.parameters.some((parameter) => parameter.name === candidate.name
+                      && !parameter.name.startsWith('__internal__'));
+                  }
+                  if (candidate instanceof CastNode || candidate instanceof UnaryOpNode
+                    || candidate instanceof FieldAccessNode) {
+                    return publicBoundExpression(candidate.expression);
+                  }
+                  if (candidate instanceof BinaryOpNode) {
+                    return publicBoundExpression(candidate.left)
+                      && publicBoundExpression(candidate.right);
+                  }
+                  if (candidate instanceof TernaryOpNode) {
+                    return publicBoundExpression(candidate.condition)
+                      && publicBoundExpression(candidate.ifTrue)
+                      && publicBoundExpression(candidate.ifFalse);
+                  }
+                  if (candidate instanceof ArrayAccessNode) {
+                    return publicBoundExpression(candidate.array)
+                      && publicBoundExpression(candidate.index);
+                  }
+                  return false;
+                };
+                const publicBound = bound !== undefined && publicBoundExpression(bound);
                 const symbolicIndexedArrayWrite = helperStatement instanceof WhileNode
                   && comparison === BinaryOperator.LT && initial.value === 0n && step === 1n
+                  && publicBound
                   && statements.slice(0, -1).length > 0
                   && statements.slice(0, -1).every((candidate) =>
                     candidate instanceof ArrayAssignNode || candidate instanceof RequireNode);
@@ -7946,7 +7976,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
                   plan: ArrayPlan;
                   value: ExpressionNode;
                   location: Node['location'];
-                  leavesOneTrailingElement: boolean;
+                  indexedDomain: boolean;
                 }[] = [];
                 for (const candidate of statements.slice(0, -1)) {
                   if (candidate instanceof RequireNode) continue;
@@ -7962,21 +7992,12 @@ export default class LowerVMapCounterLoops extends AstTraversal {
                   );
                   const boundIdentity = canonicalizeUpsertKeyExpression(bound, new Set());
                   const lengthIdentity = canonicalizeUpsertKeyExpression(plan.length, new Set());
-                  const oneBeforeLength = new BinaryOpNode(
-                    cloneNode(plan.length), BinaryOperator.MINUS, new IntLiteralNode(1n),
-                  );
-                  const oneBeforeLengthIdentity = canonicalizeUpsertKeyExpression(
-                    oneBeforeLength, new Set(),
-                  );
                   const fillsWholeArray = Boolean(boundIdentity && lengthIdentity
                     && boundIdentity === lengthIdentity);
-                  const leavesOneTrailingElement = Boolean(boundIdentity && oneBeforeLengthIdentity
-                    && boundIdentity === oneBeforeLengthIdentity);
                   if (!(index instanceof IdentifierNode)
-                    || index.name !== counterName || !value
-                    || (!fillsWholeArray && !leavesOneTrailingElement)) return undefined;
+                    || index.name !== counterName || !value) return undefined;
                   plannedWrites.push({
-                    plan, value, location: candidate.location, leavesOneTrailingElement,
+                    plan, value, location: candidate.location, indexedDomain: !fillsWholeArray,
                   });
                 }
                 if (plannedWrites.length === 0) return undefined;
@@ -7993,16 +8014,16 @@ export default class LowerVMapCounterLoops extends AstTraversal {
                       baseLength,
                       pushesPerIteration: 1,
                       ordinal: 0,
-                      ...(planned.leavesOneTrailingElement && { indexedDomain: {
+                      ...(planned.indexedDomain && { indexedDomain: {
                         bound: cloneNode(bound) as ExpressionNode,
                       } }),
                     },
                   });
                 }
-                // The exact final counter for an empty array would be -1 rather than the loop's initial zero.
-                // It is scoped to the helper loop and normally dead; dropping the symbolic binding ensures any
-                // later source use fails closed rather than observing an invalid approximation.
-                if (plannedWrites.some((write) => write.leavesOneTrailingElement)) {
+                // A runtime partial bound can be non-positive, in which case the loop leaves the counter at zero
+                // rather than at `bound`. It is scoped to the helper loop and normally dead; dropping the symbolic
+                // binding ensures any later source use fails closed rather than observing an invalid approximation.
+                if (plannedWrites.some((write) => write.indexedDomain)) {
                   values.delete(counterName);
                 } else {
                   values.set(counterName, cloneNode(bound) as ExpressionNode);

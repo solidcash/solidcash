@@ -36,7 +36,7 @@ describe('constructed-array exhausted finite helper replay', () => {
     expect(handler).toMatchObject({ eligible: true });
   });
 
-  it('keeps a runtime helper bound fenced', () => {
+  it('replays a canonical partial fill over a public runtime helper bound', () => {
     const handler = compile(`
       function fill(int[] memory keys, int base, int limit) internal pure {
         for (int cursor = 0; cursor < limit; cursor = cursor + 1) {
@@ -44,7 +44,7 @@ describe('constructed-array exhausted finite helper replay', () => {
         }
       }
     `, 'fill(keys, base, runtimeLimit);');
-    expect(handler).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_UNBOUNDED_KEY' });
+    expect(handler).toMatchObject({ eligible: true });
   });
 
   it.each([

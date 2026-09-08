@@ -81,12 +81,135 @@ describe('kernel runtime-sized constructed-key initialization', () => {
     expect(operators).not.toContain('%');
   });
 
+  it('derives a conditional key recipe for a canonical public partial bound', () => {
+    const artifact = compileString(`contract Registry() {
+      mapping(int => int) records;
+      function fill(int[] memory keys, int base, int limit) internal pure {
+        for (int cursor = 0; cursor < limit; cursor = cursor + 1) {
+          keys[cursor] = base + cursor;
+        }
+      }
+      function apply(int count, int base, int limit) public {
+        int[] memory keys = new int[](count);
+        fill(keys, base, limit);
+        for (int cursor = 0; cursor < count; cursor = cursor + 1) {
+          this.records[keys[cursor]] = cursor;
+        }
+        require(true);
+      }
+    }`, KERNEL);
+
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'apply'))
+      .toMatchObject({ eligible: true });
+    const expression = artifact.abi.find((entry) => entry.name === 'apply')
+      ?.sortedUpsertLoopInfo?.[0]?.varyingKeyExpressions?.[0];
+    expect(expression).toMatchObject({
+      kind: 'ternary',
+      ifFalse: { kind: 'literal', value: '0' },
+    });
+    const operators: string[] = [];
+    const collectOperators = (candidate: unknown): void => {
+      if (!candidate || typeof candidate !== 'object') return;
+      const record = candidate as Record<string, unknown>;
+      if (typeof record.operator === 'string') operators.push(record.operator);
+      for (const value of Object.values(record)) collectOperators(value);
+    };
+    collectOperators(expression);
+    expect(operators).toContain('<');
+  });
+
+  it('preserves source-order last-write semantics in a partial fill', () => {
+    const artifact = compileString(`contract Registry() {
+      mapping(int => int) records;
+      function fill(int[] memory keys, int base, int limit) internal pure {
+        for (int cursor = 0; cursor < limit; cursor = cursor + 1) {
+          keys[cursor] = base + cursor;
+          keys[cursor] = base + cursor + 100;
+        }
+      }
+      function apply(int count, int base, int limit) public {
+        int[] memory keys = new int[](count);
+        fill(keys, base, limit);
+        for (int cursor = 0; cursor < count; cursor = cursor + 1) {
+          this.records[keys[cursor]] = cursor;
+        }
+        require(true);
+      }
+    }`, KERNEL);
+
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'apply'))
+      .toMatchObject({ eligible: true });
+    const expression = artifact.abi.find((entry) => entry.name === 'apply')
+      ?.sortedUpsertLoopInfo?.[0]?.varyingKeyExpressions?.[0];
+    expect(expression).toMatchObject({
+      kind: 'ternary',
+      ifTrue: {
+        kind: 'binary', operator: '+', right: { kind: 'literal', value: '100' },
+      },
+    });
+    const literalValues: string[] = [];
+    const collectLiterals = (candidate: unknown): void => {
+      if (!candidate || typeof candidate !== 'object') return;
+      const record = candidate as Record<string, unknown>;
+      if (record.kind === 'literal' && typeof record.value === 'string') literalValues.push(record.value);
+      for (const value of Object.values(record)) collectLiterals(value);
+    };
+    collectLiterals(expression);
+    expect(literalValues).toContain('100');
+  });
+
+  it('does not infer a replayable public bound from a pure helper call', () => {
+    const artifact = compileString(`contract Registry() {
+      mapping(int => int) records;
+      function identity(int value) internal pure returns (int) { return value; }
+      function fill(int[] memory keys, int base, int limit) internal pure {
+        for (int cursor = 0; cursor < identity(limit); cursor = cursor + 1) {
+          keys[cursor] = base + cursor;
+        }
+      }
+      function apply(int count, int base, int limit) public {
+        int[] memory keys = new int[](count);
+        fill(keys, base, limit);
+        for (int cursor = 0; cursor < count; cursor = cursor + 1) {
+          this.records[keys[cursor]] = cursor;
+        }
+        require(true);
+      }
+    }`, KERNEL);
+
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'apply'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_UNBOUNDED_KEY' });
+  });
+
+  it('does not approximate the final counter after a possibly empty partial fill', () => {
+    const artifact = compileString(`contract Registry() {
+      mapping(int => int) records;
+      function fill(int[] memory keys, int base, int limit) internal pure {
+        int cursor = 0;
+        while (cursor < limit) {
+          keys[cursor] = base + cursor;
+          cursor = cursor + 1;
+        }
+        keys[0] = cursor;
+      }
+      function apply(int count, int base, int limit) public {
+        int[] memory keys = new int[](count);
+        fill(keys, base, limit);
+        for (int cursor = 0; cursor < count; cursor = cursor + 1) {
+          this.records[keys[cursor]] = cursor;
+        }
+        require(true);
+      }
+    }`, KERNEL);
+
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'apply'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_UNBOUNDED_KEY' });
+  });
+
   it.each([
     ['an offset write index', 'int step', 'cursor < keys.length', 'cursor = cursor + 1',
       'keys[cursor + 1] = cursor + 20;'],
     ['a runtime stride', 'int step', 'cursor < keys.length', 'cursor = cursor + step',
-      'keys[cursor] = cursor + 20;'],
-    ['an arbitrary partial bound', 'int limit', 'cursor < limit', 'cursor = cursor + 1',
       'keys[cursor] = cursor + 20;'],
     ['a literal stride', 'int step', 'cursor < keys.length', 'cursor = cursor + 2',
       'keys[cursor] = cursor + 20;'],

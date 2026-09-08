@@ -24,10 +24,11 @@ const lifecycleArtifact = (
   const fixedOne = { source: 'fixed' as const, value: 1 };
   const count = { source: 'parameter' as const, parameterIndex: 0, addend: 0 };
   const countPlusOne = { source: 'parameter' as const, parameterIndex: 0, addend: 1 };
+  const preservedTokenAmount = kind === 'split' ? 'preserve' : 'nondecrease';
   const preserved = {
     lockingBytecode: 'participant' as const, tokenCategory: 'participant' as const,
     nftCapability: 'minting' as const, nftCommitment: 'preserve' as const,
-    tokenAmount: 'nondecrease' as const, satoshis: 'preserve' as const,
+    tokenAmount: preservedTokenAmount, satoshis: 'preserve' as const,
   };
   const consumed = {
     lockingBytecode: 'participant' as const, tokenCategory: 'participant' as const,

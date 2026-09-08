@@ -1241,8 +1241,8 @@ export interface Artifact {
       /** Compiler-authored lifecycle authority. Append-v1 preserves the existing state geometry and permits
        * only a canonical fixed-field suffix in the final existing data NFT. */
       lifecycle?: { kind: 'upgrade'; layout: 'same' | 'in-place-append-v1' };
-      /** Participant-local lifecycle planning metadata. This describes the identities a future authenticated
-       * call-manifest protocol must enforce; publishing it does not admit or covenant lifecycle handlers. */
+      /** Participant-local lifecycle planning metadata. Authenticated split handlers may consume this topology;
+       * unsupported lifecycle kinds (including merge) remain fenced from kernel admission. */
       lifecycleTopology?: {
         version: 2;
         kind: 'split' | 'merge';
@@ -1266,7 +1266,7 @@ export interface Artifact {
             tokenCategory: 'participant';
             nftCapability: 'minting';
             nftCommitment: 'preserve' | 'unconstrained';
-            tokenAmount: 'nondecrease' | 'unconstrained';
+            tokenAmount: 'preserve' | 'nondecrease' | 'unconstrained';
             satoshis: 'preserve' | 'reclaim';
           };
         }[];
@@ -1280,7 +1280,7 @@ export interface Artifact {
             tokenCategory: 'participant';
             nftCapability: 'minting';
             nftCommitment: 'preserve' | 'empty';
-            tokenAmount: 'nondecrease' | 'zero';
+            tokenAmount: 'preserve' | 'nondecrease' | 'zero';
             satoshis: 'preserve' | 'funded';
           };
         }[];

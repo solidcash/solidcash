@@ -96,6 +96,7 @@ const preservedIdentity = {
   lockingBytecode: 'participant', tokenCategory: 'participant', nftCapability: 'minting',
   nftCommitment: 'preserve', tokenAmount: 'nondecrease', satoshis: 'preserve',
 } as const;
+const splitPreservedIdentity = { ...preservedIdentity, tokenAmount: 'preserve' } as const;
 const consumedIdentity = {
   lockingBytecode: 'participant', tokenCategory: 'participant', nftCapability: 'minting',
   nftCommitment: 'unconstrained', tokenAmount: 'unconstrained', satoshis: 'reclaim',
@@ -210,10 +211,10 @@ export function planKernelLifecycleTopology(
       kind: 'split',
       categoryCensus,
       inputSpans: [resolveSpan(topology.inputSpans[0], parameters, 'preserve', 0,
-        preservedIdentity, 'fixed', parameterIndex, 'inputSpans[0]')],
+        splitPreservedIdentity, 'fixed', parameterIndex, 'inputSpans[0]')],
       outputSpans: [
         resolveSpan(topology.outputSpans[0], parameters, 'preserve', 0,
-          preservedIdentity, 'fixed', parameterIndex, 'outputSpans[0]'),
+          splitPreservedIdentity, 'fixed', parameterIndex, 'outputSpans[0]'),
         resolveSpan(topology.outputSpans[1], parameters, 'create', 1,
           createdIdentity, 'parameter', parameterIndex, 'outputSpans[1]'),
       ],
@@ -248,6 +249,9 @@ export function bindKernelLifecycleTransaction(
   const category = canonicalHex(frame.participantTokenCategory, 32, 'participant token category');
   const inputBase = coordinate(frame.inputBase, 'lifecycle input base');
   const outputBase = coordinate(frame.outputBase, 'lifecycle output base');
+  if (plan.kind === 'split' && outputBase !== inputBase) {
+    throw new Error('split lifecycle input and output bases must match');
+  }
 
   const validatePoint = (
     point: KernelLifecycleTransactionPoint | undefined,
@@ -281,9 +285,11 @@ export function bindKernelLifecycleTransaction(
   const preservedInput = validatePoint(frame.inputs[inputBase], 'preserved lifecycle input');
   const preservedOutput = validatePoint(frame.outputs[outputBase], 'preserved lifecycle output');
   if (preservedOutput.nftCommitment.toLowerCase() !== preservedInput.nftCommitment.toLowerCase()
-    || preservedOutput.tokenAmount < preservedInput.tokenAmount
+    || (plan.kind === 'split'
+      ? preservedOutput.tokenAmount !== preservedInput.tokenAmount
+      : preservedOutput.tokenAmount < preservedInput.tokenAmount)
     || preservedOutput.satoshis !== preservedInput.satoshis) {
-    throw new Error('lifecycle preserved master changes commitment, decreases tokens, or changes satoshis');
+    throw new Error('lifecycle preserved master changes commitment, token amount, or satoshis');
   }
   if (plan.kind === 'split') {
     for (const span of plan.outputSpans.filter((candidate) => candidate.mode === 'create')) {

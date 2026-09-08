@@ -7,6 +7,7 @@ const preservedIdentity = {
   lockingBytecode: 'participant', tokenCategory: 'participant', nftCapability: 'minting',
   nftCommitment: 'preserve', tokenAmount: 'nondecrease', satoshis: 'preserve',
 };
+const splitPreservedIdentity = { ...preservedIdentity, tokenAmount: 'preserve' };
 const consumedIdentity = {
   lockingBytecode: 'participant', tokenCategory: 'participant', nftCapability: 'minting',
   nftCommitment: 'unconstrained', tokenAmount: 'unconstrained', satoshis: 'reclaim',
@@ -29,10 +30,10 @@ const splitTopology = () => ({
     inputCount: fixedOne, outputCount: { ...parameterCount, addend: 1 },
   },
   inputSpans: [
-    { mode: 'preserve', offset: 0, count: fixedOne, identity: preservedIdentity },
+    { mode: 'preserve', offset: 0, count: fixedOne, identity: splitPreservedIdentity },
   ],
   outputSpans: [
-    { mode: 'preserve', offset: 0, count: fixedOne, identity: preservedIdentity },
+    { mode: 'preserve', offset: 0, count: fixedOne, identity: splitPreservedIdentity },
     { mode: 'create', offset: 1, count: parameterCount, identity: createdIdentity },
   ],
 });
@@ -194,6 +195,13 @@ describe('kernel lifecycle topology planning prerequisite', () => {
   });
 
   it('rejects preserved-master and merge-input tampering', () => {
+    const inflatedSplit = splitFrame();
+    inflatedSplit.outputs[0]!.tokenAmount = 3n;
+    const shiftedSplit = splitFrame();
+    shiftedSplit.outputBase = 1;
+    for (const frame of [inflatedSplit, shiftedSplit]) {
+      expect(() => bindKernelLifecycleTransaction(splitTopology(), [2n], frame)).toThrow();
+    }
     const changedCommitment = mergeFrame();
     changedCommitment.outputs[0]!.nftCommitment = 'ffff';
     const reducedTokens = mergeFrame();

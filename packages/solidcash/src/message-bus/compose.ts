@@ -72,6 +72,13 @@ export interface ComposeAtomicMessageBusOptions {
     siteIndex: number;
     funder: AtomicMessageBusFunder | UnlockableUtxo;
   }[];
+  /** Explicit participant-tail funding for one compiler-authenticated split invocation. */
+  lifecycleSplits?: readonly {
+    invocationIndex: number;
+    funders: readonly (AtomicMessageBusFunder | UnlockableUtxo)[];
+    /** Positive satoshi value assigned to each created minting master, in participant-relative order. */
+    createdValues: readonly bigint[];
+  }[];
 }
 
 export interface PreparedAtomicMessageBusCall {
@@ -1444,6 +1451,43 @@ export class AtomicMessageBusComposition {
         + `${plan.invocations.length}`,
       );
     }
+    const suppliedSplits = this.options.lifecycleSplits ?? [];
+    const splitByParticipant = new Map<number, {
+      invocationIndex: number; funders: readonly UnlockableUtxo[]; createdValues: readonly bigint[];
+    }>();
+    for (const supplied of suppliedSplits) {
+      const invocation = plan.invocations[supplied.invocationIndex];
+      if (!invocation) throw new Error(`messageBus: split invocation ${supplied.invocationIndex} is absent`);
+      const participant = plan.participants[invocation.callee];
+      if (participant.lifecycle?.kind !== 'split'
+        || participant.invocations.length !== 1 || participant.invocations[0] !== supplied.invocationIndex) {
+        throw new Error(`messageBus: invocation ${supplied.invocationIndex} is not one exact split participant`);
+      }
+      if (splitByParticipant.has(invocation.callee)) {
+        throw new Error(`messageBus: participant ${invocation.callee} has duplicate split funding`);
+      }
+      if (supplied.funders.length !== participant.lifecycle.count
+        || supplied.createdValues.length !== participant.lifecycle.count
+        || supplied.createdValues.some((value) => typeof value !== 'bigint' || value <= 0n)) {
+        throw new Error(`messageBus: split participant ${invocation.callee} funding does not match its exact count`);
+      }
+      const funders = supplied.funders.map(funderUtxo);
+      if (funders.some((funder) => funder.token !== undefined)) {
+        throw new Error(`messageBus: split participant ${invocation.callee} funders must be token-free`);
+      }
+      const outpoints = new Set(funders.map((funder) => `${funder.txid.toLowerCase()}:${funder.vout}`));
+      if (outpoints.size !== funders.length) {
+        throw new Error(`messageBus: split participant ${invocation.callee} funder outpoints must be unique`);
+      }
+      splitByParticipant.set(invocation.callee, {
+        invocationIndex: supplied.invocationIndex, funders, createdValues: supplied.createdValues,
+      });
+    }
+    for (const participant of plan.participants) {
+      if (participant.lifecycle?.kind === 'split' && !splitByParticipant.has(participant.participant)) {
+        throw new Error(`messageBus: split participant ${participant.participant} lacks explicit funding`);
+      }
+    }
     for (const [index, descriptor] of descriptors.entries()) {
       if (!descriptor.upgradeTarget) continue;
       const invocation = plan.invocations[index];
@@ -2124,6 +2168,19 @@ export class AtomicMessageBusComposition {
         participant: number; variable: string; resolved: number; total: number;
       }> = [];
       const aggregateOutpoints = new Map<string, { participant: number; localIndex: number }>();
+      const registerAggregateInput = (
+        input: Pick<Utxo, 'txid' | 'vout'>, participant: number, localIndex: number, role: string,
+      ): void => {
+        const outpoint = `${input.txid.toLowerCase()}:${input.vout}`;
+        const prior = aggregateOutpoints.get(outpoint);
+        if (prior) {
+          throw new Error(
+            `messageBus: duplicate input outpoint ${outpoint} at ${role}; `
+            + `already used by participant ${prior.participant} input ${prior.localIndex}`,
+          );
+        }
+        aggregateOutpoints.set(outpoint, { participant, localIndex });
+      };
       const deferredBlocks: Array<{
         participant: number;
         inputBase: number;
@@ -2136,7 +2193,7 @@ export class AtomicMessageBusComposition {
       for (const participant of plan.participants) {
         const contract = byLockingBytecode.get(participant.lockingBytecode.toLowerCase())!;
         const descriptor = descriptorByLockingBytecode.get(participant.lockingBytecode.toLowerCase())!;
-        const blockSize = participant.blockLayout!.blockSize;
+        const blockSize = participant.lifecycle?.balancedSpan ?? participant.blockLayout!.blockSize;
         const returnBlob = participantReturnBlob(participant.participant, results);
         const returnCommitment = participantReturnCommitment(returnBlob);
         const localCall = contract._batchRaw(
@@ -2240,6 +2297,19 @@ export class AtomicMessageBusComposition {
             + `failed to build its balanced block: ${error instanceof Error ? error.message : String(error)}`,
             { cause: error },
           );
+        }
+        const split = splitByParticipant.get(participant.participant);
+        if (split) {
+          local.addInputs([...split.funders]);
+          for (const value of split.createdValues) {
+            local.addOutput({
+              to: hexToBin(participant.lockingBytecode), amount: value,
+              token: {
+                category: categories[participant.participant], amount: 0n,
+                nft: { capability: 'minting', commitment: '' },
+              },
+            });
+          }
         }
         const authenticatedOutputLockingBytecode = participant.outputLockingBytecode?.toLowerCase();
         if (authenticatedOutputLockingBytecode !== undefined) {
@@ -2512,12 +2582,16 @@ export class AtomicMessageBusComposition {
             .map((slot) => slot.kind === 'returnEvent' && returnBlob === undefined
               ? { ...slot, conditional: true }
               : slot);
+          const lifecycleTailSlots = split === undefined ? [] : Array.from(
+            { length: split.funders.length }, (_, index) => ({ kind: 'trailing' as const, offset: index + 1 }),
+          );
           stateInputUnlocker.abiFunction = {
             ...stateInputUnlocker.abiFunction,
             blockLayout: {
               ...effectiveLayout,
               blockSize: actualSize,
-              slots: effectiveSlots,
+              slots: [...effectiveSlots, ...lifecycleTailSlots],
+              ...(split === undefined ? {} : { trailingBase: 1 }),
               trailingCapacity: actualSize - fixedSize,
             },
           };
@@ -2525,17 +2599,7 @@ export class AtomicMessageBusComposition {
         actualSizes.push(actualSize);
         for (let localIndex = 0; localIndex < local.inputs.length; localIndex++) {
           const input = local.inputs[localIndex];
-          const outpoint = `${input.txid.toLowerCase()}:${input.vout}`;
-          const prior = aggregateOutpoints.get(outpoint);
-          if (prior && (globalThis as { process?: { env?: Record<string, string> } }).process?.env
-            ?.SOLIDC_DEBUG_ATOMIC_GRAPH === '1') {
-            console.error('atomic-participant-input-collision', {
-              outpoint, participant: participant.participant, localIndex, prior,
-              blockBase: graph.layout.participantInputs[participant.participant],
-              lockingBytecode: binToHex(input.unlocker.generateLockingBytecode()),
-            });
-          }
-          aggregateOutpoints.set(outpoint, { participant: participant.participant, localIndex });
+          registerAggregateInput(input, participant.participant, localIndex, 'participant block');
         }
         aggregate.addInputs(local.inputs);
         aggregate.addOutputs(local.outputs as Output[]);
@@ -2560,6 +2624,7 @@ export class AtomicMessageBusComposition {
             fixedSize: entry.fixedSize,
             actualSize: entry.actualSize,
             maximumSize: entry.maximumSize,
+            lifecycle: entry.lifecycle,
           })),
           rows: graph.callManifest.rows.map((row, index) => ({
             index,
@@ -2662,6 +2727,9 @@ export class AtomicMessageBusComposition {
         const verifierUnlocker = createMessageBusVerifierUnlocker(
           contract.inner, categories[participant.participant], messageEnvelope, verifierArgs, participant.artifact,
         );
+        registerAggregateInput(
+          verifier, participant.participant, aggregate.inputs.length, 'participant verifier',
+        );
         aggregate.addInput(verifier, verifierUnlocker);
         aggregate.addOutput({
           to: verifierLock,
@@ -2671,11 +2739,16 @@ export class AtomicMessageBusComposition {
             amount: verifier.token!.amount ?? 0n,
             nft: {
               ...verifier.token!.nft!,
-              commitment: `${verifier.token!.nft!.commitment.slice(0, 12)}${binToHex(bindingDigest)}`,
+              commitment: `${verifier.token!.nft!.commitment.slice(0, 12)}${binToHex(bindingDigest)}`
+                + (participant.lifecycle?.kind === 'split'
+                  ? `${((participant.lifecycle?.count ?? 0) & 0xff).toString(16).padStart(2, '0')}`
+                    + `${((participant.lifecycle?.count ?? 0) >>> 8).toString(16).padStart(2, '0')}`
+                  : ''),
             },
           },
         });
       }
+      registerAggregateInput(feeFunder, -1, aggregate.inputs.length, 'fee funder');
       aggregate.addInputs([feeFunder]);
       aggregate.addBchChangeOutputIfNeeded({
         to: this.options.changeAddress,
@@ -3539,5 +3612,12 @@ export function compose(options: ComposeAtomicMessageBusOptions): AtomicMessageB
     ...options,
     ...(options.calls && { calls: Object.freeze([...options.calls]) }),
     ...(options.preparedCalls && { preparedCalls: Object.freeze([...options.preparedCalls]) }),
+    ...(options.lifecycleSplits && {
+      lifecycleSplits: Object.freeze(options.lifecycleSplits.map((split) => Object.freeze({
+        ...split,
+        funders: Object.freeze([...split.funders]),
+        createdValues: Object.freeze([...split.createdValues]),
+      }))),
+    }),
   });
 }

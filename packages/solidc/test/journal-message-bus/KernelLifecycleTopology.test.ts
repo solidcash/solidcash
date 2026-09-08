@@ -8,7 +8,7 @@ const KERNEL = {
 
 const preservedMaster = {
   lockingBytecode: 'participant', tokenCategory: 'participant', nftCapability: 'minting',
-  nftCommitment: 'preserve', tokenAmount: 'nondecrease', satoshis: 'preserve',
+  nftCommitment: 'preserve', tokenAmount: 'preserve', satoshis: 'preserve',
 };
 const consumedMaster = {
   lockingBytecode: 'participant', tokenCategory: 'participant', nftCapability: 'minting',
@@ -30,14 +30,14 @@ const selected = (source: string, name: string): {
 };
 
 describe('kernel lifecycle topology metadata', () => {
-  it('publishes participant-local split input and output spans without admitting the handler', () => {
+  it('admits the exact split topology and publishes participant-local input and output spans', () => {
     const { artifact, handler } = selected(`contract Threads() {
       function divide(int count) public split(count) { require(count > 0); }
     }`, 'divide');
-    expect(artifact.messageBus?.available).toBe(false);
+    expect(artifact.messageBus?.available).toBe(true);
+    expect(artifact.messageBus?.atomicMessageBus.protocolVersions).toContain(3);
     expect(handler).toMatchObject({
-      eligible: false,
-      rejectionReason: 'KERNEL_LIFECYCLE',
+      eligible: true,
       lifecycleTopology: {
         version: 2,
         kind: 'split',
@@ -81,14 +81,20 @@ describe('kernel lifecycle topology metadata', () => {
           outputCount: { source: 'fixed', value: 1 },
         },
         inputSpans: [
-          { mode: 'preserve', offset: 0, count: { source: 'fixed', value: 1 }, identity: preservedMaster },
+          {
+            mode: 'preserve', offset: 0, count: { source: 'fixed', value: 1 },
+            identity: { ...preservedMaster, tokenAmount: 'nondecrease' },
+          },
           {
             mode: 'consume', offset: 1,
             count: { source: 'parameter', parameterIndex: 1, addend: 0 }, identity: consumedMaster,
           },
         ],
         outputSpans: [
-          { mode: 'preserve', offset: 0, count: { source: 'fixed', value: 1 }, identity: preservedMaster },
+          {
+            mode: 'preserve', offset: 0, count: { source: 'fixed', value: 1 },
+            identity: { ...preservedMaster, tokenAmount: 'nondecrease' },
+          },
         ],
       },
     });

@@ -30606,9 +30606,22 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private emitMintingNftUniqueness(node: FunctionDefinitionNode): void {
     const locationData = { location: node.body.location, positionHint: PositionHint.END };
 
+    // An atomic split route is authorized by the detached V3 verifier to increase this participant's exact
+    // minting population. The authenticated mode is carried back through the verifier commitment and checked
+    // against the selected split handler's decoded count by the route. Every ordinary row retains this guard.
+    const lifecycleModeIndex = this.currentFunctionIsMessageBusRoute
+      ? this.getStackIndex('__message_bus_active_lifecycle_mode', true) : -1;
+    if (lifecycleModeIndex >= 0) {
+      this.emit(encodeInt(BigInt(lifecycleModeIndex)), locationData);
+      this.emit(Op.OP_PICK, locationData);
+      this.emit(Op.OP_NOT, locationData);
+      this.emit(Op.OP_IF, locationData);
+    }
+
     // Shared as a subroutine for non-delegate functions; delegate (altstack proxy index) inlines.
     if (!this.currentFunctionIsDelegate && this.invokeSubroutineIfDefined(
       GenerateTargetTraversalWithLocation.MINT_UNIQUENESS_SUBROUTINE_ID, locationData)) {
+      if (lifecycleModeIndex >= 0) this.emit(Op.OP_ENDIF, locationData);
       return;
     }
 
@@ -30732,6 +30745,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Clean up this_cat_cap
     this.emit(Op.OP_DROP, locationData);
     this.popFromStack(); // remove (this_cat_cap)
+    if (lifecycleModeIndex >= 0) this.emit(Op.OP_ENDIF, locationData);
   }
 
   // C3: conserve the count of co-spent own-category MUTABLE (0x01) NFTs (data + entry NFTs) input->output. In
@@ -31458,15 +31472,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // 2b. Commitment preservation on master (prevents state corruption during split)
     this.emitMasterCommitmentPreservation(node);
 
-    // 2c. FT amount preservation on master (input <= output)
+    // 2c. Exact FT amount preservation on master. A split creates only zero-amount minting masters; permitting
+    // the preserved master to gain fungible tokens would inflate this participant's own category.
     this.emitMasterInputIndex(locationData);
     this.emit(Op.OP_UTXOTOKENAMOUNT, locationData);
     this.pushToStack('(master_ft_in)');
     this.emitMasterInputIndex(locationData);
     this.emit(Op.OP_OUTPUTTOKENAMOUNT, locationData);
     this.pushToStack('(master_ft_out)');
-    this.emit(Op.OP_LESSTHANOREQUAL, locationData);
-    this.emit(Op.OP_VERIFY, locationData);
+    this.emit(Op.OP_NUMEQUALVERIFY, locationData);
     this.popFromStack(2);
 
     // 3. Get split count N from function parameter
@@ -31502,8 +31516,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     this.emit(Op.OP_BEGIN, locationData);
 
-    // output[i] category+capability
+    // output[master input index + i] category+capability. In an atomic transaction this participant may start
+    // after earlier participant blocks, so the loop counter is a participant-local offset, not an absolute vout.
     this.emit(Op.OP_DUP, locationData);                // [.., lbc, i, i]
+    this.emitMasterInputIndex(locationData);            // [.., lbc, i, i, base]
+    this.emit(Op.OP_ADD, locationData);                 // [.., lbc, i, base+i]
     this.emit(Op.OP_OUTPUTTOKENCATEGORY, locationData); // [.., lbc, i, cat_cap_i]
     this.emit(encodeInt(32n), locationData);
     this.emit(Op.OP_SPLIT, locationData);               // [.., lbc, i, cat_32_i, cap_i]
@@ -31517,6 +31534,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     // output[i] locking bytecode
     this.emit(Op.OP_DUP, locationData);                  // [.., lbc, i, i]
+    this.emitMasterInputIndex(locationData);
+    this.emit(Op.OP_ADD, locationData);
     this.emit(Op.OP_OUTPUTBYTECODE, locationData);       // [.., lbc, i, lbc_i]
     // Pick master_lbc (pos: lbc_i=0, i=1, lbc=2)
     this.emit(encodeInt(2n), locationData);
@@ -31525,12 +31544,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     // output[i] commitment must be empty (new threads start with no state)
     this.emit(Op.OP_DUP, locationData);                  // [.., lbc, i, i]
+    this.emitMasterInputIndex(locationData);
+    this.emit(Op.OP_ADD, locationData);
     this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, locationData); // [.., lbc, i, commitment_i]
     this.emit(encodeInt(0n), locationData);               // [.., lbc, i, commitment_i, empty]
     this.emit(Op.OP_EQUALVERIFY, locationData);           // [.., lbc, i]
 
     // output[i] FT amount must be 0
     this.emit(Op.OP_DUP, locationData);                   // [.., lbc, i, i]
+    this.emitMasterInputIndex(locationData);
+    this.emit(Op.OP_ADD, locationData);
     this.emit(Op.OP_OUTPUTTOKENAMOUNT, locationData);     // [.., lbc, i, amount_i]
     this.emit(encodeInt(0n), locationData);                // [.., lbc, i, amount_i, 0]
     this.emit(Op.OP_NUMEQUALVERIFY, locationData);        // [.., lbc, i]

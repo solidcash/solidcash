@@ -23504,6 +23504,20 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       infos.push({ collection: collection.name, collectionHash: binToHex(collectionHash),
         journalAccessStreamIndex: infos.length, journalExecutionGroup: -1,
         fixedKeyParams, fixedKeySources, varyingArrayParam,
+        ...(this.currentFunction.runtimeCounterLoopConstructedKeyReplays
+          ?.has(`${varyingArrayParam}\0${collection.name}`)
+          && { constructedKeyReplay: true }),
+        ...(this.currentFunction.runtimeCounterLoopMultiArmConstructedKeyReplays
+          ?.has(`${varyingArrayParam}\0${collection.name}`)
+          && { multiArmConstructedKeyReplay: true }),
+        ...(this.currentFunction.runtimeCounterLoopCrossArrayKeyReplays
+          ?.has(`${varyingArrayParam}\0${collection.name}`)
+          && { crossArrayKeyReplay: true }),
+        ...(this.currentFunction.runtimeCounterLoopNestedHelperReturnReplays
+          ?.has(`${varyingArrayParam}\0${collection.name}`)
+          && { nestedHelperReturnReplay: true }),
+        ...(this.currentFunction.runtimeCounterLoopSameIterationSelectionReplays?.has(varyingArrayParam)
+          && { sameIterationMutableSelectionReplay: true }),
         ...(varyingKeyIndices.length !== 1
           || varyingKeyIndices[0] !== metadataKeySources.length - 1 ? { varyingKeyIndices } : {}),
         ...(varyingKeyExpressions && { varyingKeyExpressions }),

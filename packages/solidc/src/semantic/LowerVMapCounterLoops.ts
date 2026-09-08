@@ -105,6 +105,10 @@ export default class LowerVMapCounterLoops extends AstTraversal {
   }>>();
 
   private readonly constructedArrayPrefixCountOriginalKeys = new WeakMap<StatementNode, ExpressionNode[]>();
+  private readonly constructedArrayKeyRewrites = new WeakSet<StatementNode>();
+  private readonly multiArmConstructedArrayKeyRewrites = new WeakSet<StatementNode>();
+  private readonly crossArrayKeyRewrites = new WeakSet<StatementNode>();
+  private readonly nestedHelperReturnKeyRewrites = new WeakSet<StatementNode>();
   private readonly constructedArrayPrefixCountChecks = new WeakSet<RequireNode>();
   private readonly constructedArrayPrefixCountUses = new WeakMap<StatementNode, Array<{
     witnessParam: string;
@@ -2427,6 +2431,8 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       }
       const loopCarriedLocalValues = new Map<string, ExpressionNode>();
       const loopCarriedLocalValuesByStatement = new Map<number, Map<string, ExpressionNode>>();
+      const sameIterationMutableSelectionLocals = new Map<number, Set<string>>();
+      const sameIterationMutableSelectionWrites = new Set<Node>();
       const predicateOuterIndex = canonical.parent.statements?.indexOf(loop) ?? -1;
       const predicateOuterInitializers = new Map<string, ExpressionNode>();
       const predicateOuterTypes = new Map<string, Type>();
@@ -2536,6 +2542,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         }
       }
       const topLevelAssignments = new Map<string, Array<{ statement: AssignNode; index: number }>>();
+      const conditionalJoinAssignmentStatements = new WeakSet<AssignNode>();
       for (const [index, statement] of (block.statements ?? []).entries()) {
         if (!(statement instanceof AssignNode) || statement === counterUpdate) continue;
         const updates = topLevelAssignments.get(statement.identifier.name) ?? [];
@@ -2544,6 +2551,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       }
       for (const [name, joins] of conditionalAssignmentJoins) {
         const updates = topLevelAssignments.get(name) ?? [];
+        for (const join of joins) conditionalJoinAssignmentStatements.add(join.statement);
         updates.push(...joins.map(({ statement, index }) => ({ statement, index })));
         updates.sort((left, right) => left.index - right.index);
         topLevelAssignments.set(name, updates);
@@ -2785,6 +2793,13 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         if (!phasesSupported) continue;
         for (const position of usePositions) {
           const phase = updates.filter((update) => update.index < position).length;
+          if (predicateOuterTypes.get(name) === PrimitiveType.BOOL
+            && updates.slice(0, phase).some(({ statement }) =>
+              !conditionalJoinAssignmentStatements.has(statement))) {
+            const locals = sameIterationMutableSelectionLocals.get(position) ?? new Set<string>();
+            locals.add(name);
+            sameIterationMutableSelectionLocals.set(position, locals);
+          }
           const value = phaseValues.get(phase)!;
           const siteValues = loopCarriedLocalValuesByStatement.get(position) ?? new Map();
           siteValues.set(name, cloneNode(value));
@@ -2804,6 +2819,10 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         const values = new Map([...loopCarriedLocalValues, ...siteValues]);
         const condition = writePaths.get(write);
         if (condition) {
+          if ([...(sameIterationMutableSelectionLocals.get(position) ?? [])]
+            .some((name) => containsIdentifier(condition, name))) {
+            sameIterationMutableSelectionWrites.add(write);
+          }
           const expanded = expandRuntimePathExpression(
             condition, logical, new Set(), stateValues, values,
           );
@@ -5187,6 +5206,9 @@ export default class LowerVMapCounterLoops extends AstTraversal {
             },
           });
         }
+        if ([...group.writes].some((write) => sameIterationMutableSelectionWrites.has(write))) {
+          (node.runtimeCounterLoopSameIterationSelectionReplays ??= new Set()).add(group.hidden);
+        }
       }
       const oldValueHidden = (write: Node & { name: string }): string => {
         const group = groupByWrite.get(write)!;
@@ -5411,6 +5433,18 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           (node.runtimeCounterLoopKeyExpressions ??= new Map()).set(
             keyRecipe, originalKeys.map((key) => cloneNode(key)),
           );
+        }
+        if (this.constructedArrayKeyRewrites.has(write)) {
+          (node.runtimeCounterLoopConstructedKeyReplays ??= new Set()).add(keyRecipe);
+        }
+        if (this.multiArmConstructedArrayKeyRewrites.has(write)) {
+          (node.runtimeCounterLoopMultiArmConstructedKeyReplays ??= new Set()).add(keyRecipe);
+        }
+        if (this.crossArrayKeyRewrites.has(write)) {
+          (node.runtimeCounterLoopCrossArrayKeyReplays ??= new Set()).add(keyRecipe);
+        }
+        if (this.nestedHelperReturnKeyRewrites.has(write)) {
+          (node.runtimeCounterLoopNestedHelperReturnReplays ??= new Set()).add(keyRecipe);
         }
         const prefixCountTrace = this.constructedArrayPrefixCountUses.get(write)?.[0];
         if (prefixCountTrace) {
@@ -6186,6 +6220,12 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       writes: ArrayWrite[];
       /** A fixed number of unconditional pushes per canonical source iteration. */
       recurrence?: ArrayRecurrence;
+      /** A historical resize recurrence contributes to keys without a closed/authenticated prefix identity. */
+      loopCarriedResizeReplay?: boolean;
+      /** A helper-mutated history reads from a distinct mutable array identity. */
+      crossArrayReplay?: boolean;
+      /** A nested helper both mutates this forwarded array and returns a captured value. */
+      nestedHelperReturnReplay?: boolean;
       /** Exact N+1 prefix-boundary count witness for a conditional pop recurrence. */
       prefixCountTrace?: { witnessParam: string; condition: ExpressionNode };
     };
@@ -6669,19 +6709,45 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           || statement instanceof MappingDeleteNode
           ? statement.keys.map((key) => cloneNode(key) as ExpressionNode) : undefined;
       const prefixCountUses = new Map<string, { witnessParam: string; condition: ExpressionNode }>();
+      let usesLoopCarriedResizeReplay = false;
+      let usesMultiArmBranchReplay = false;
+      let usesCrossArrayHelperReplay = false;
+      let usesNestedHelperReturnReplay = false;
       for (const key of originalKeys ?? []) walk(key, (candidate) => {
         const arrayName = candidate instanceof ArrayAccessNode && candidate.array instanceof IdentifierNode
           ? candidate.array.name
           : candidate instanceof TupleIndexOpNode && candidate.tuple instanceof IdentifierNode
             ? candidate.tuple.name : undefined;
-        const trace = arrayName === undefined ? undefined : active.get(arrayName)?.prefixCountTrace;
+        const plan = arrayName === undefined ? undefined : active.get(arrayName);
+        const trace = plan?.prefixCountTrace;
         if (trace) prefixCountUses.set(trace.witnessParam, trace);
+        if (plan?.loopCarriedResizeReplay === true) {
+          usesLoopCarriedResizeReplay = true;
+        }
+        if (plan?.opaqueSuffixCounter === undefined
+          && (plan?.writes.filter((write) => write.condition !== undefined).length ?? 0) > 2) {
+          usesMultiArmBranchReplay = true;
+        }
+        if (plan?.crossArrayReplay === true) usesCrossArrayHelperReplay = true;
+        if (plan?.nestedHelperReturnReplay === true) usesNestedHelperReturnReplay = true;
       });
       if (statement instanceof ArrayAssignNode || statement instanceof ArrayDeleteNode) {
         statement.index = replaceArrayReads(statement.index, active, checks);
       } else if (statement instanceof MappingAssignNode || statement instanceof MappingFieldAssignNode
         || statement instanceof MappingDeleteNode) {
         statement.keys = statement.keys.map((key) => replaceArrayReads(key, active, checks));
+      }
+      if (checks.length > 0 && usesLoopCarriedResizeReplay) {
+        this.constructedArrayKeyRewrites.add(statement);
+      }
+      if (checks.length > 0 && usesMultiArmBranchReplay) {
+        this.multiArmConstructedArrayKeyRewrites.add(statement);
+      }
+      if (checks.length > 0 && usesCrossArrayHelperReplay) {
+        this.crossArrayKeyRewrites.add(statement);
+      }
+      if (checks.length > 0 && usesNestedHelperReturnReplay) {
+        this.nestedHelperReturnKeyRewrites.add(statement);
       }
       if (prefixCountUses.size > 0 && originalKeys) {
         this.constructedArrayPrefixCountOriginalKeys.set(statement, originalKeys);
@@ -6701,6 +6767,9 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         ...(plan.opaqueSuffixCounter !== undefined && {
           opaqueSuffixCounter: plan.opaqueSuffixCounter,
         }),
+        ...(plan.loopCarriedResizeReplay && { loopCarriedResizeReplay: true }),
+        ...(plan.crossArrayReplay && { crossArrayReplay: true }),
+        ...(plan.nestedHelperReturnReplay && { nestedHelperReturnReplay: true }),
         writes: plan.writes.map((write) => ({
           index: cloneNode(write.index) as ExpressionNode,
           value: cloneNode(write.value) as ExpressionNode,
@@ -7469,6 +7538,8 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         ): ArrayPlan => {
           const merged = clonePlan(name, base);
           for (const { plan, condition } of arms) {
+            if (plan.crossArrayReplay) merged.crossArrayReplay = true;
+            if (plan.nestedHelperReturnReplay) merged.nestedHelperReturnReplay = true;
             for (const write of plan.writes.slice(base.writes.length)) {
               merged.writes.push({
                 index: cloneNode(write.index) as ExpressionNode,
@@ -7532,6 +7603,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         };
         type HelperScope = {
           arrayNames: ReadonlySet<string>;
+          mutableArrayNames: ReadonlySet<string>;
           planNamesByParameter: ReadonlyMap<string, string>;
           /** Every name owned by this helper frame; a missing value binding must not leak as a public source. */
           localNames: ReadonlySet<string>;
@@ -7547,6 +7619,9 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         };
         const initialScope: HelperScope = {
           arrayNames,
+          mutableArrayNames: new Set(target.parameters.filter((parameter) =>
+            parameter.type instanceof ArrayType && parameter.modifier.includes('memory'))
+            .map((parameter) => parameter.name)),
           planNamesByParameter,
           localNames: helperLocalNames(target),
         };
@@ -7864,7 +7939,10 @@ export default class LowerVMapCounterLoops extends AstTraversal {
             if (!completed || completed.breaksAlways || completed.breakCondition) return undefined;
             return completed;
           };
-          const replayNestedCall = (nestedCall: FunctionCallNode): HelperSummary | undefined => {
+          const replayNestedCall = (
+            nestedCall: FunctionCallNode,
+            capturesReturn = false,
+          ): HelperSummary | undefined => {
             const nestedTargets = (this.functionsByName.get(nestedCall.identifier.name) ?? [])
               .filter((candidate) => candidate.parameters.length === nestedCall.parameters.length);
             if (nestedTargets.length !== 1) return undefined;
@@ -7910,12 +7988,24 @@ export default class LowerVMapCounterLoops extends AstTraversal {
               { plans: nestedSourcePlans, values: nestedValues },
               {
                 arrayNames: nestedArrayNames,
+                mutableArrayNames: new Set(nestedTarget.parameters.filter((parameter) =>
+                  parameter.type instanceof ArrayType && parameter.modifier.includes('memory'))
+                  .map((parameter) => parameter.name)),
                 planNamesByParameter: nestedPlanNames,
                 localNames: helperLocalNames(nestedTarget),
               },
               new Set(visiting).add(nestedTarget),
             );
             if (!nestedSummary) return undefined;
+            if (capturesReturn && nestedSummary.returnValues?.length) {
+              for (const planName of propagatedPlanNames) {
+                const before = helperPlans.get(planName);
+                const after = nestedSummary.plans.get(planName);
+                if (before && after && after.writes.length > before.writes.length) {
+                  after.nestedHelperReturnReplay = true;
+                }
+              }
+            }
             return {
               ...nestedSummary,
               plans: new Map([...propagatedPlanNames].map((planName) => [
@@ -7935,7 +8025,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
             }
             if (helperStatement instanceof VariableDefinitionNode && helperStatement.expression) {
               if (helperStatement.expression instanceof FunctionCallNode) {
-                const nestedSummary = replayNestedCall(helperStatement.expression);
+                const nestedSummary = replayNestedCall(helperStatement.expression, true);
                 if (!nestedSummary || nestedSummary.returnValues?.length !== 1) return undefined;
                 helperPlans = nestedSummary.plans;
                 values.set(helperStatement.name, nestedSummary.returnValues[0]);
@@ -7950,7 +8040,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
               && scope.arrayNames.has(helperStatement.identifier.name)) return undefined;
             if (helperStatement instanceof AssignNode) {
               if (helperStatement.expression instanceof FunctionCallNode) {
-                const nestedSummary = replayNestedCall(helperStatement.expression);
+                const nestedSummary = replayNestedCall(helperStatement.expression, true);
                 if (!nestedSummary || nestedSummary.returnValues?.length !== 1) return undefined;
                 helperPlans = nestedSummary.plans;
                 values.set(helperStatement.identifier.name, nestedSummary.returnValues[0]);
@@ -7965,9 +8055,28 @@ export default class LowerVMapCounterLoops extends AstTraversal {
               const planName = scope.planNamesByParameter.get(helperStatement.name);
               const plan = planName === undefined ? undefined : helperPlans.get(planName);
               if (!plan) return undefined;
+              const referencedPlanNames = new Set<string>();
+              walk(helperStatement.value, (candidate) => {
+                const referencedName = candidate instanceof ArrayAccessNode
+                  && candidate.array instanceof IdentifierNode ? candidate.array.name
+                  : candidate instanceof TupleIndexOpNode && candidate.tuple instanceof IdentifierNode
+                    ? candidate.tuple.name
+                    : candidate instanceof FieldAccessNode && candidate.name === 'length'
+                      && candidate.expression instanceof IdentifierNode ? candidate.expression.name
+                      : candidate instanceof UnaryOpNode && candidate.operator === UnaryOperator.SIZE
+                        && candidate.expression instanceof IdentifierNode ? candidate.expression.name
+                        : undefined;
+                const referencedPlanName = referencedName === undefined
+                  || !scope.mutableArrayNames.has(referencedName)
+                  ? undefined : scope.planNamesByParameter.get(referencedName);
+                if (referencedPlanName !== undefined) referencedPlanNames.add(referencedPlanName);
+              });
               const assignedIndex = replay(helperStatement.index);
               const assignedValue = replay(helperStatement.value);
               if (!assignedIndex || !assignedValue) return undefined;
+              if ([...referencedPlanNames].some((referenced) => referenced !== planName)) {
+                plan.crossArrayReplay = true;
+              }
               plan.writes.push({ index: assignedIndex, value: assignedValue });
               continue;
             }
@@ -9118,6 +9227,11 @@ export default class LowerVMapCounterLoops extends AstTraversal {
               });
             }
             plan.length = length;
+            // Monotone conditional-pop schedules already authenticate their historical prefix through either
+            // the closed first-occurrence formula or the explicit prefix-count witness. The unsupported geometry
+            // is the remaining resize recurrence whose historical key source has neither identity.
+            plan.loopCarriedResizeReplay = conditionalPopFirstOccurrence === undefined
+              && !conditionalPopPrefixTrace;
           }
           // A straight-line write followed by a key read in the same canonical iteration is replayable:
           // `xs[i] = f(i); m[xs[i]] = v` becomes the symbolic `f(i)` key plus the ordinary on-chain equality
@@ -9341,6 +9455,22 @@ export default class LowerVMapCounterLoops extends AstTraversal {
             || containsReassignedName(replayedArrayIndex) || containsReassignedName(replayedArrayValue)) {
             active.delete(statement.name);
           } else {
+            let readsDistinctArray = false;
+            walk(statement.value, (candidate) => {
+              const referencedName = candidate instanceof ArrayAccessNode
+                && candidate.array instanceof IdentifierNode ? candidate.array.name
+                : candidate instanceof TupleIndexOpNode && candidate.tuple instanceof IdentifierNode
+                  ? candidate.tuple.name
+                  : candidate instanceof FieldAccessNode && candidate.name === 'length'
+                    && candidate.expression instanceof IdentifierNode ? candidate.expression.name
+                    : candidate instanceof UnaryOpNode && candidate.operator === UnaryOperator.SIZE
+                      && candidate.expression instanceof IdentifierNode ? candidate.expression.name
+                      : undefined;
+              if (referencedName !== undefined && referencedName !== statement.name && active.has(referencedName)) {
+                readsDistinctArray = true;
+              }
+            });
+            if (readsDistinctArray) active.get(statement.name)!.crossArrayReplay = true;
             active.get(statement.name)!.writes.push({
               index: cloneNode(replayedArrayIndex) as ExpressionNode,
               value: keySnapshot?.identifier ?? cloneNode(replayedArrayValue) as ExpressionNode,

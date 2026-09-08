@@ -112,7 +112,7 @@ The conservative beta boundary currently keeps these shapes frozen:
 | Code | Frozen beta examples |
 | --- | --- |
 | `KERNEL_UNBOUNDED_KEY` | Counter loops with `continue` or `break` when a permutation of the full domain cannot represent the reached-key set; runtime-constructed key arrays without a bounded replay proof |
-| `KERNEL_LAYOUT` | Whole-struct getters, dynamic arrays of records as results, multi-result producer-to-consumer graph dependencies without a passing transaction-level proof, recursive mappings, runtime mapping mutations combined with repeated event/transfer effects, and child creation (`new Child` / `create2`) without authenticated row geometry |
+| `KERNEL_LAYOUT` | Whole-struct getters, dynamic arrays of records as results, multi-result producer-to-consumer graph dependencies without a passing transaction-level proof, recursive mappings, runtime read streams combined with mutation, journal values carried through runtime locals, multiple mutation streams in one execution group, unauthenticated constructed-array resize/multi-arm/cross-array/nested-helper-return key replay, same-iteration mutable selection, selected/break-terminated/scalar-state-composed runtime event domains or event rows spanning distinct mutation streams, runtime transfer effects combined with mutation, and child creation (`new Child` / `create2`) without authenticated row geometry |
 | `KERNEL_TX_SIGNATURE` | Transaction-signature values or `checkSig` / `checkMultiSig` execution in a row when the signature cannot be detached and finalized without circularity |
 | `KERNEL_OPAQUE_EFFECT` | Yul or native `assembly { OP_* }` whose stack and effects have no complete static summary |
 | `KERNEL_FOREIGN_DELEGATE` | A foreign `delegatecall` executing as the participant owner |
@@ -229,10 +229,10 @@ Do not add a new code without changing this document and every kernel toy.
 | --- | --- | --- |
 | `KERNEL_LIFECYCLE` | A lifecycle operation whose participant topology or conservation rule has no authenticated row representation, currently including `selfdestruct`, `split`, `merge`, unsafe tiers without the required preservation guarantees, a deploy route with no materializable typed child site, or an `upgrade` whose replacement identity/state suffix cannot use the authenticated in-place append layout | Replayable typed child deployments with compiler-owned child geometry; an in-place append `upgrade` with compiler-authored replacement bytecode/state-suffix channels; implementation functions that run in this participant's delegate/proxy frame |
 | `KERNEL_TX_SIGNATURE` | A transaction-signature check with no signature parameter that can be finalized and bound outside the committed message blob, or a returned signature leaf whose value participates in signing this transaction and would therefore circularly change its own signed output preimage | Any finite input `sig` shape (one aligned outer row dimension per detached leaf, preserving nested array dimensions and the non-signature fields of struct/ABI tuples); a data-only `sig` constructed from ordinary bytes, including inside an array, struct/ABI tuple, or multi-result tuple; `ecrecover` / ECDSA over **data** |
-| `KERNEL_UNBOUNDED_KEY` | A locally constructed key array whose length is not derivable within the bounded replay model; a counter-keyed mapping loop whose exact iteration domain is not one of the canonical forms; mutation of its counter or a bound mutation which cannot be reduced to a finite source expression; nested-loop control flow or a predicate with unsupported/mutated provenance | Parameter-keyed, `msg.sender`-keyed, expression-keyed (`m[records.length-1]`), parameter-array loop (`m[k][xs[i]]`), bounded locally constructed arrays with replayable dominating writes, canonical ascending `for (int i = S; i < n; i = i + D)` / `i = D + i` / `i <= n` and descending `for (int i = S; i > n; i = i - D)` / `i >= n` domains for positive constant or replayable runtime `D`, plus `i != n` when the signed step reaches the endpoint exactly (also through replayable straight-line or finite conditional bound assignments, and with either comparison operand orientation), or equivalent canonical source `while` and `do-while` forms over `m[i]` / nested `m[k][i]`, multiple sequential loops whose runtime keys are disjoint (including loops over one physical collection), same- or cross-collection counter-derived reads carried by independent authenticated streams, a stable depth-one scalar entry keyed by a public parameter/literal/`msg.sender`/`tx.origin` or a pure expression over public arguments beside those counter writes, or those rewrites beneath serializable outer and inner `if`/`else`/`switch`/`continue`/`break`/`return` paths and the reachable body of `try`/`catch`; loop predicates may consume scalar state updated by replayable straight-line, finite `if`/`else`, or finite `switch` assignments before the loop; typed calls and path-predicated event, BCH-transfer, fungible-token-transfer, and NFT-transfer sites remain in source order |
+| `KERNEL_UNBOUNDED_KEY` | A locally constructed key array whose length is not derivable within the bounded replay model; a counter-keyed mapping loop whose exact iteration domain is not one of the canonical forms; mutation of its counter or a bound mutation which cannot be reduced to a finite source expression; nested-loop control flow or a predicate with unsupported/mutated provenance | Parameter-keyed, `msg.sender`-keyed, expression-keyed (`m[records.length-1]`), parameter-array loop (`m[k][xs[i]]`), bounded locally constructed arrays with replayable dominating writes, canonical ascending `for (int i = S; i < n; i = i + D)` / `i = D + i` / `i <= n` and descending `for (int i = S; i > n; i = i - D)` / `i >= n` domains for positive constant or replayable runtime `D`, plus `i != n` when the signed step reaches the endpoint exactly (also through replayable straight-line or finite conditional bound assignments, and with either comparison operand orientation), or equivalent canonical source `while` and `do-while` forms over `m[i]` / nested `m[k][i]`, multiple sequential loops whose runtime keys are disjoint (including loops over one physical collection), fixed-key reads from independent collections, a stable depth-one scalar entry keyed by a public parameter/literal/`msg.sender`/`tx.origin` or a pure expression over public arguments beside those counter writes, or those rewrites beneath serializable outer and inner `if`/`else`/`switch`/`continue`/`break`/`return` paths and the reachable body of `try`/`catch`; loop predicates may consume scalar state updated by replayable straight-line, finite `if`/`else`, or finite `switch` assignments before the loop; typed calls and supported path-predicated effects remain in source order |
 | `KERNEL_FOREIGN_DELEGATE` | `delegatecall` to a foreign executor treated as this participant's owner | `delegate` on this contract's own implementation |
 | `KERNEL_OPAQUE_EFFECT` | Native assembly which is not statically isolated and stack-neutral (including active-bytecode/signature context), unsupported Yul which cannot be lowered, or a low-level call the journal cannot summarize as a call/effect row | Isolated pure/read-only BCH assembly, including transaction inspection whose operands are block-local, balanced `OP_IF`/`OP_NOTIF` arms whose main and alt stacks converge, and `OP_BEGIN`/`OP_UNTIL` loops which restore both loop-entry stack heights after consuming their block-local condition; Yul translated to ordinary typed operations before admission; after Solidity-compat lowering to `call` plus returndata |
-| `KERNEL_LAYOUT` | The handler needs physical topology the row wrapper cannot publish, such as a child deployment whose constructor/value/salt/genesis state cannot be replayed from the authenticated row, a mutable journal with no stable physical entry identity, a runtime mapping mutation combined with a repeated event/transfer effect before those output cursors have separate authenticated frames, a non-normalizable recursive effect domain, an indirectly state-backed or recursive dynamic aggregate, or a result with no canonical route encoding | Journaled state accessed through the wrapper; a stable fixed-entry or token-container journal combined with independently indexed chunk-backed state arrays, `bytes`, or `string`; public fixed-layout structs and direct nonrecursive state-backed or runtime-constructed dynamic struct-array results within the cumulative result envelope; ordinary nested mappings; affine pre- and post-recursion mapping streams; replayable straight-line and finite-conditional child deployments with fixed-layout scalar, enum, fixed-point, or nested-struct genesis state; `new LockingBytecodeP2PKH` / `P2SH20` / `P2SH32` / `NullData` constructors |
+| `KERNEL_LAYOUT` | The handler needs physical or flow topology the row wrapper cannot publish, such as a runtime read stream consumed beside mutation, a journal value carried through a runtime local, multiple mutation streams in one execution group, an unauthenticated constructed-array resize recurrence (including transient push/pop history) or multi-arm/cross-array/nested-helper-return key replay, a same-iteration mutable selection, selected/break-terminated/scalar-state-composed runtime event domains or event rows spanning distinct mutation streams, runtime BCH/token/NFT transfers beside mutation, a child deployment whose row geometry cannot be replayed, a non-normalizable recursive effect domain, an indirectly state-backed or recursive dynamic aggregate, or a result with no canonical route encoding | Single-stream journaled state accessed through the wrapper; fixed-key reads beside counter writes; sequentially grouped collection streams; constructed keys from dominating writes, binary joins, stable prefixes, or authenticated monotone-pop prefix counts; unconditional source-ordered runtime events beside one mapping mutation stream; public fixed-layout structs and direct nonrecursive state-backed or runtime-constructed dynamic struct-array results within the cumulative result envelope; ordinary nested mappings; affine pre- and post-recursion mapping streams; replayable straight-line and finite-conditional child deployments with fixed-layout scalar, enum, fixed-point, or nested-struct genesis state; `new LockingBytecodeP2PKH` / `P2SH20` / `P2SH32` / `NullData` constructors |
 
 Legacy `messageBusRejectionReason` strings (`dynamic-and-collection-route-not-enabled`,
 `atomic-delegate-context-unpreservable`, …) remain on the legacy path only so existing diagnostics
@@ -318,9 +318,11 @@ minting-capability container may produce several NFT outputs; a non-minting
 container may reach at most one selected NFT site because one input NFT cannot authorize duplication. The SDK
 rejects a concrete non-minting plan which reaches more than one site.
 
-Runtime mapping entries and runtime events are planned as row-scoped trailing segments. Independent selected rows
-therefore compose in physical message order, including rows which mix a mapping loop with fixed or repeated events.
-Each row retains its established within-row collection order; events follow that row's mapping-entry segments.
+Runtime mapping entries and runtime events are planned as row-scoped trailing segments. Rows sharing one
+event-bearing mutation-journal identity compose in physical message order. Until cross-stream settlement has its own
+authenticated identity, the compiler refuses a handler spanning distinct event-bearing mutation streams and the SDK
+rejects a batch which combines them across handlers. Each admitted row retains its established within-row collection
+order; events follow that row's mapping-entry segments.
 
 The handler ABI keeps each permutation as `int[]`. The kernel route adds one outer row dimension (`int[][]`) and
 selects `permutation[row]` inside the physical row loop. Empty elements represent rows dispatched to other
@@ -552,8 +554,9 @@ counter: the compiler derives the exact first satisfying occurrence and authenti
 For an immutable public runtime threshold and compiler-proven constant step, the compiler instead publishes an
 authenticated prefix-boundary trace of exactly `N + 1` counts: the first value is zero and every source-order iteration
 proves that the next value advances by exactly the original predicate. The permutation still affects mapping keys only.
-Runtime steps, mutable or loop-carried thresholds, selected write domains, unequal conditional pop widths outside this
-single-pop monotone form, and pop-then-push mutation of a pre-existing suffix remain fenced.
+Runtime steps, mutable or loop-carried thresholds, selected write domains, unauthenticated resize recurrences, unequal
+conditional pop widths outside this single-pop monotone form, and pop-then-push mutation of a pre-existing suffix
+remain fenced.
 A stable,
 serializable per-iteration write guard (including an immutable loop-local alias) publishes the exact selected
 logical subset: the SDK sorts only selected keys, while the covenant proves range, uniqueness, predicate
@@ -617,12 +620,12 @@ An immutable, direct loop-local value definition is expanded into the mapping va
 Mixed typed external calls and genuinely invariant `if`/`switch` in the same counter loop stay on the
 row loop: only direct uses of the counter in mapping keys and mapping values are rewritten to `perm[i]`;
 this includes values computed by explicitly `pure` internal helpers and resource-free builtins such as
-`max`. Calls keep source order. Unconditional and serializable `if`/`else`-predicated events keep source order and
-use the bounded runtime-event stream described above; only mapping keys and direct counter uses inside mapping
-values follow the permutation. BCH and fungible-token transfers inside the physical counter loop join that same
-effect stream; their recipients and amounts remain in logical source order while only mapping keys are permuted.
-Conditional fungible-token/NFT sites and independent token categories are planned exactly, and each container
-conservation equation subtracts only matching authenticated outputs. Graph-frame token slots use the same rule:
+`max`. Calls keep source order. Unconditional events beside one mutation stream keep source order and use the bounded
+runtime-event stream described above; only mapping keys and direct counter uses inside mapping values follow the
+permutation. Selected/break-terminated event domains and event rows spanning distinct mutation streams remain
+`KERNEL_LAYOUT`. Runtime BCH and token transfers beside collection mutation also remain fenced until their effect and
+journal outputs have independent authenticated settlement identities. Fixed token effects retain their existing
+planning: each container conservation equation subtracts only matching authenticated outputs. Graph-frame token slots use the same rule:
 inactive and unowned slots are tokenless, and NFT capability relaxation records the reached site per physical
 container rather than applying a route-wide flag. Events before or after the loop join the same ordered runtime
 stream, including supported conditional sites. Fixed BCH and token-container effects remain supported before or
@@ -649,6 +652,8 @@ fails closed: the later row needs a read-your-writes transition from the earlier
 byte-identical absolute `set`/`delete` rows; executing both row segments cannot be represented by reusing one
 physical settlement. Multiple rows with runtime-derived values may compose across disjoint journals, including
 disjoint key ranges in one physical collection; each row owns its authenticated predecessor and output segment.
+The beta exception is a batch spanning distinct event-bearing mutation-journal identities, which fails closed until
+the event and journal segments have one cross-row authenticated settlement identity.
 Rows whose physical inputs overlap remain fenced until the planner can build a complete journal from pending row
 transitions. Multiple collections in one admitted loop share a permutation only when their complete key expression
 and selected domain are identical.
@@ -745,32 +750,19 @@ derives the expected value and rejects empty pops and out-of-range element write
 Sidecars (indexed by live `row`) use the row loop (`__message_bus_handler_*` / `__message_bus_entry_*`
 DEFINE, not `__message_bus_graph_*`). A contract whose every handler is refused still publishes
 `messageBus.handlers` with `KERNEL_*` reasons. Runtime-constructed key arrays are admitted when their bounded
-length and every reached element write can be replayed from dominating public/local expressions. Finite nested
-`if`/`else` and `switch` element writes and conditional scalar dependencies become ternary recipes; unwritten elements retain their typed
-default. Straight-line `push` and `pop` mutations advance a symbolic array length and contribute replayable writes
-at that exact point-in-time index. A fixed positive number of unconditional top-level `push` operations per canonical
-runtime-loop iteration is also represented as a closed recurrence: reads after all pushes derive the selected push
-and its value from the logical source counter, including non-zero starts and non-unit constant or replayable runtime
-steps. Exhaustive nested `if`/`else` and `switch` paths may select different pushed values when every reachable arm
-has the same fixed push width. They may also select different nonnegative widths when the selection is invariant
-across logical iterations, including an optional zero-width arm; the recurrence carries the selected width and each
-push site's symbolic ordinal. Every value recipe retains the complete branch predicate for its logical iteration.
-Conditional pop paths may have different widths, including a missing zero-width arm, when the selection is invariant
-across logical iterations; the symbolic length uses the exact runtime-selected width. The monotone single-pop runtime-
-threshold form described above uses its authenticated prefix-boundary trace. Other counter-dependent unequal-width pop
-paths remain fenced because their prior length requires a more general prefix sum of earlier branch outcomes.
-Reads between push sites use the same recipes with the point-in-time symbolic length, so they see every prior
-iteration and only the pushes already executed in the current iteration; reads before the first push retain the
-original array prefix. A fixed positive number of unconditional top-level `pop` operations similarly shortens the
-known prefix on each iteration. Push values and branch selectors may use straight-line loop-local definitions and
-assignments; exhaustive `if`/`else` and `switch` assignments are merged into source-order ternary recipes for later
-pushes. Passing an element value to a helper does not escape the array, and passing the whole array through a
+length and every reached element write can be replayed from dominating public/local expressions. A binary
+`if`/`else` element join becomes a ternary recipe; stable-prefix reads and single-stream path-balanced transient
+resizes remain admitted. More-than-binary branch-merged element definitions, multi-stream transient schedules,
+and historical push/pop length recurrences remain
+`KERNEL_LAYOUT` until their selected key identity is independently authenticated. The monotone single-pop runtime-
+threshold form described above is the exception because it carries an explicit closed or witnessed prefix count.
+Passing an element value to a helper does not escape the array, and passing the whole array through a
 transitively read-only `pure` helper preserves its symbolic plan. A unique `pure` helper may also write elements
 through explicit `memory` parameters: scalar parameters and helper locals are substituted into each caller
-array's symbolic plan, and finite nested `if`/`else` and `switch` writes use the same path joins as direct source
-code, matching the compiler's pass-by-reference memory model. Several array parameters are replayable when the
-caller supplies distinct constructed arrays; element and length reads across those parameters resolve against a
-joint source-order history, including prior push/pop mutations. When several formals receive the same caller
+array's symbolic plan; straight-line and binary-join writes retain the compiler's pass-by-reference memory model,
+while a multi-arm constructed-key join remains fenced. Several array parameters can be analyzed together, but a key
+history which reads a distinct mutable array identity remains fenced until that cross-array dependency has an
+authenticated replay identity. When several formals receive the same caller
 array, they share one canonical history so writes and reads retain ordinary memory-reference alias semantics. A
 helper which does not rebind a replayed parameter may also push and pop through the shared alias; those operations
 advance the symbolic length at their exact source point. This replay composes through uniquely resolved `pure`
@@ -779,8 +771,9 @@ arguments are resolved at the call site, and recursive or ambiguous call graphs 
 parameters receive isolated plan histories, so their callee mutations can feed later reads and memory-parameter
 writes within the call without leaking into the caller. This also covers mixed value/reference formals which receive
 the same caller array. A direct pure-helper call used as a variable initializer or assignment replays these array
-effects too; capturing its ordinary return value does not invalidate the constructed-array plan. Nested helpers
-also carry a replayed scalar return tuple into subsequent scalar and array expressions in their caller. Pure memory
+effects too; capturing its ordinary return value does not invalidate the constructed-array plan. A nested void helper
+may forward the same array history, but a nested helper which both mutates that forwarded array and returns a captured
+value remains `KERNEL_LAYOUT`; the combined key provenance is not independently authenticated. Pure memory
 helpers with several branch returns are normalized to one flag-backed terminal return before kernel admission, so
 the planner and executable row share the same continuation form. The flag-backed rewrite descends through finite
 switches, unchecked blocks, and try/catch arms. Returns inside loops run through their ordinary loop-exit protocol

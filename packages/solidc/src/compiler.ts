@@ -3972,41 +3972,6 @@ function synthesizeMessageBusRoute(
       }
     }
     const footprint = analyseFunctionFootprint(fn, byName, footprintCache);
-    // Beta fence: a deferred runtime mapping journal and a repeated observable effect currently share one
-    // trailing-output cursor. If the mapping topology selects transaction-wide pending
-    // settlement, its entry carriers must form a dense ordinal band while events/transfers still advance the
-    // source-row cursor. Until those are separate authenticated frames, advertising this composition as a kernel
-    // row can make an otherwise successful compile construct an output geometry neither verifier agrees on.
-    // Classify only structural type/effect/flow properties; runtime key values and source names are irrelevant.
-    const closureFunctions = [...collectNamedFunctionClosure(fn, byName)]
-      .flatMap((name) => byName.get(name) ?? []);
-    const hasRuntimeCollectionMutation = closureFunctions.some((candidate) => {
-      if (candidate.sortedUpsertLoopInfo?.some((info) => info.op !== 'read') === true) return true;
-      let found = false;
-      walkInvocationAst(candidate.body, (node) => {
-        if (node instanceof MappingAssignNode || node instanceof MappingFieldAssignNode
-          || node instanceof MappingDeleteNode || node instanceof StateArrayAssignNode
-          || node instanceof StateArrayPushNode || node instanceof StateArrayPopNode
-          || node instanceof StateArrayDeleteNode
-          || ((node instanceof ArrayAssignNode || node instanceof ArrayPushNode
-            || node instanceof ArrayPopNode || node instanceof ArrayDeleteNode)
-            && collectionByName.has(node.name))) found = true;
-      });
-      return found;
-    });
-    const hasRuntimeEffect = closureFunctions.some((candidate) => {
-      if ((candidate.runtimeLoopEvents?.length ?? 0) > 0
-        || (candidate.runtimeLoopTransfers?.length ?? 0) > 0) return true;
-      let found = false;
-      walkInvocationAst(candidate.body, (node) => {
-        if (node instanceof EmitStatementNode || node instanceof TransferStatementNode
-          || node instanceof AddressTransferStatementNode || node instanceof AddressSendExpressionNode
-          || node instanceof TokenContainerMethodStatementNode) found = true;
-      });
-      return found;
-    });
-    const hasMixedPendingJournalEffectGeometry = compilerOptions.messageBusKernel === true
-      && hasRuntimeCollectionMutation && hasRuntimeEffect;
     const kernelLifecycleKind = compilerOptions.messageBusKernel !== true ? undefined
       : fn.modifiers.includes(FunctionModifier.SPLIT) ? 'split' as const
         : fn.modifiers.includes(FunctionModifier.MERGE) ? 'merge' as const : undefined;
@@ -5416,9 +5381,7 @@ function synthesizeMessageBusRoute(
       // symbolic element plan, including invariant variable-width branches and replayable straight-line or finite
       // exhaustive loop-local value assignments. Escaped or counter-variably resized constructed key arrays,
       // non-canonical iteration domains, and repeated fixed-slot effects still have no kernel representation.
-      if (hasMixedPendingJournalEffectGeometry) {
-        reason = 'KERNEL_LAYOUT';
-      } else if (hasUnsupportedSortedRuntimeLoopWrite(fn)) {
+      if (hasUnsupportedSortedRuntimeLoopWrite(fn)) {
         reason = 'KERNEL_UNBOUNDED_KEY';
       } else if (deploys && !kernelDeploySupported
         && (reason === undefined || kernelAdmissionReason(reason) === 'KERNEL_LAYOUT')) {
@@ -11372,6 +11335,12 @@ function compileResolvedAst(
       ast.contract.fallbackDef,
       ast.contract.receiveDef,
     ].filter((fn): fn is FunctionDefinitionNode => !!fn && fn.isEntryPoint && !fn.messageBusRoute);
+    const completedFunctionsByName = new Map<string, FunctionDefinitionNode[]>();
+    for (const candidate of ast.contract.functions) {
+      completedFunctionsByName.set(candidate.name, [
+        ...(completedFunctionsByName.get(candidate.name) ?? []), candidate,
+      ]);
+    }
     for (const fn of sourceHandlers) {
       if (fn.messageBusEligible !== true) continue;
       // Signature bytes remain outside the committed invocation row. An eligible handler must therefore publish
@@ -11389,6 +11358,100 @@ function compileResolvedAst(
         : fn === ast.contract.fallbackDef ? candidate.isFallback === true
           : fn === ast.contract.receiveDef ? candidate.isReceive === true
             : false);
+      // The initial admission pass can run before counter-loop lowering publishes its journal/effect summaries.
+      // Reapply the same beta fence to the completed ABI so a runtime collection mutation and its repeated
+      // observable effects cannot slip through merely because their structural metadata was not available during
+      // the speculative pass. This is exclusively a type/effect/flow decision; source and application names do
+      // not participate.
+      const hasRuntimeJournalMutation = abi?.sortedUpsertLoopInfo
+        ?.some((access) => access.op !== 'read') === true;
+      const runtimeJournalAccesses = abi?.sortedUpsertLoopInfo ?? [];
+      const hasRuntimeJournalRead = runtimeJournalAccesses.some((access) => access.op === 'read');
+      const chunkableCollections = new Set((artifact.stateLayout?.collections ?? [])
+        .filter((collection) => collection.chunkableValue === true).map((collection) => collection.name));
+      // A row-local value carrier currently lacks an independently authenticated pending output identity.
+      // Direct structural expressions and scalar/array recipes use other metadata and remain admitted.
+      const hasRuntimeLocalJournalValue = runtimeJournalAccesses
+        .some((access) => access.op !== 'read' && access.valueRuntimeLocal !== undefined);
+      const mutationsByExecutionGroup = new Map<number, Array<(typeof runtimeJournalAccesses)[number]>>();
+      for (const access of runtimeJournalAccesses) {
+        if (access.op === 'read' || access.journalExecutionGroup === undefined) continue;
+        const mutations = mutationsByExecutionGroup.get(access.journalExecutionGroup) ?? [];
+        mutations.push(access);
+        mutationsByExecutionGroup.set(access.journalExecutionGroup, mutations);
+      }
+      // More than one mutation stream in one execution group currently lacks a single authenticated physical
+      // settlement identity, whether the streams target one collection or several.
+      const hasMultiMutationExecutionGroup = [...mutationsByExecutionGroup.values()]
+        .some((mutations) => mutations.length > 1);
+      // Bounded symbolic replay can reconstruct keys read from a locally constructed array, but that provenance
+      // currently has no authenticated old/absence carrier identity in the kernel settlement protocol. Preserve
+      // the direct handler and fail closed only for the route until that proof identity is represented.
+      const hasConstructedKeyReplay = runtimeJournalAccesses
+        .some((access) => access.constructedKeyReplay === true);
+      const hasMultiArmConstructedKeyReplay = runtimeJournalAccesses
+        .some((access) => access.multiArmConstructedKeyReplay === true);
+      const hasCrossArrayKeyReplay = runtimeJournalAccesses
+        .some((access) => access.crossArrayKeyReplay === true);
+      const hasNestedHelperReturnReplay = runtimeJournalAccesses
+        .some((access) => access.nestedHelperReturnReplay === true);
+      const hasSameIterationMutableSelectionReplay = runtimeJournalAccesses
+        .some((access) => access.sameIterationMutableSelectionReplay === true);
+      // Runtime events have independent transaction coverage beside mapping rows. Runtime transfers of any kind
+      // still share the pending-settlement output geometry, so their journal composition remains fail-closed.
+      const hasRuntimeLoopTransfer = (abi?.runtimeLoopTransfers?.length ?? 0) > 0;
+      const hasSelectedRuntimeEvent = abi?.runtimeLoopEvents?.some((effect) =>
+        effect.conditions?.some((condition) => condition !== null) === true) === true;
+      const hasTerminatedRuntimeJournalDomain = runtimeJournalAccesses
+        .some((access) => access.op !== 'read' && access.iterationBreakCondition !== undefined);
+      const hasChunkedValueArrayEventSettlement = (abi?.runtimeLoopEvents?.length ?? 0) > 0
+        && runtimeJournalAccesses.some((access) => access.op !== 'read'
+          && access.valueArrayParam !== undefined && access.valueArrayIndexParam !== undefined
+          && chunkableCollections.has(access.collection));
+      // Event output ordinals currently bind to one mutation journal stream. A handler with sequential or
+      // otherwise distinct mutation streams cannot publish one authenticated event settlement geometry, even
+      // when each stream is independently replayable. One stream with any number of event sites remains valid.
+      const hasDistinctEventMutationStreams = (abi?.runtimeLoopEvents?.length ?? 0) > 0
+        && new Set(runtimeJournalAccesses.filter((access) => access.op !== 'read')
+          .map((access) => access.journalAccessStreamIndex)).size > 1;
+      let hasScalarStateMutation = false;
+      let hasCollectionMutation = false;
+      let hasEventEffect = false;
+      for (const name of collectNamedFunctionClosure(fn, completedFunctionsByName)) {
+        for (const candidate of completedFunctionsByName.get(name) ?? []) {
+          walkInvocationAst(candidate.body, (nested) => {
+            if (nested instanceof StateAssignNode) hasScalarStateMutation = true;
+            if (nested instanceof MappingAssignNode || nested instanceof MappingFieldAssignNode
+              || nested instanceof MappingDeleteNode || nested instanceof StateArrayAssignNode
+              || nested instanceof StateArrayPushNode || nested instanceof StateArrayPopNode
+              || nested instanceof StateArrayDeleteNode) hasCollectionMutation = true;
+            if (nested instanceof EmitStatementNode) hasEventEffect = true;
+          });
+        }
+      }
+      const hasScalarAndJournalEventSettlement = hasScalarStateMutation
+        && hasCollectionMutation && hasEventEffect;
+      // A runtime read stream consumed by a mutation is currently promoted into pending settlement, but reads
+      // intentionally have no mutation output. Fixed-key reads do not enter this stream and remain admitted.
+      if ((hasRuntimeJournalMutation && hasRuntimeLoopTransfer)
+        || (hasRuntimeJournalMutation && hasSelectedRuntimeEvent)
+        || (hasRuntimeJournalMutation && hasTerminatedRuntimeJournalDomain
+          && (abi?.runtimeLoopEvents?.length ?? 0) > 0)
+        || hasChunkedValueArrayEventSettlement
+        || hasDistinctEventMutationStreams
+        || hasScalarAndJournalEventSettlement
+        || (hasRuntimeJournalMutation && hasRuntimeJournalRead)
+        || hasRuntimeLocalJournalValue
+        || hasMultiMutationExecutionGroup
+        || hasConstructedKeyReplay
+        || hasMultiArmConstructedKeyReplay
+        || hasCrossArrayKeyReplay
+        || hasNestedHelperReturnReplay
+        || hasSameIterationMutableSelectionReplay) {
+        fn.messageBusEligible = false;
+        fn.messageBusRejectionReason = 'KERNEL_LAYOUT';
+        continue;
+      }
       // Multi-result identities and vector decoding are represented without cloning call nodes, but the complete
       // producer-to-consumer composition has not passed the transaction-level differential gate. Keep this
       // general type/flow family fail-closed until that proof exists; unrelated tuple returns and all

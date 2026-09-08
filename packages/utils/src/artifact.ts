@@ -760,6 +760,16 @@ export interface SortedUpsertLoopAbi {
   varyingKeyIndices?: readonly number[];
   /** Complete key-component recipes evaluated at the logical counter value before physical slot sorting. */
   varyingKeyExpressions?: readonly ExternalCallExpression[];
+  /** The key recipe replays a historical constructed-array resize without an authenticated prefix identity. */
+  constructedKeyReplay?: boolean;
+  /** The key recipe selects among more than two branch-merged constructed-array definitions. */
+  multiArmConstructedKeyReplay?: boolean;
+  /** The key recipe consumes a mutable helper array whose history reads a distinct mutable array identity. */
+  crossArrayKeyReplay?: boolean;
+  /** The key recipe replays a forwarded array mutated by a nested helper which also returns a value. */
+  nestedHelperReturnReplay?: boolean;
+  /** The write predicate consumes a mutable local assigned earlier in the same logical iteration. */
+  sameIterationMutableSelectionReplay?: boolean;
   /** The varying array contains ABI blobs; decode this tuple element to obtain each key. */
   keyDecodeTupleIndex?: number;
   keyDecodeTupleTypes?: readonly string[];

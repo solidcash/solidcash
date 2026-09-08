@@ -16,6 +16,7 @@ contract ObservableEffects() {
     emit Applied(key, observedTotal, increase);
     require(true);
   }
+
 }`;
 
 const MIXED_RUNTIME_SOURCE = `pragma solidcash ^0.13.0;
@@ -31,6 +32,7 @@ contract MixedRuntimeEffects() {
     emit Applied(key, observedTotal, increase);
     require(true);
   }
+
 }`;
 
 const STATE_SOURCE = `pragma solidcash ^0.13.0;
@@ -146,7 +148,8 @@ describe('kernel and legacy observable parity', () => {
       const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
       const vm = createVirtualMachineBch2026ForProvider(provider);
       for (let inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex += 1) {
-        expect(vm.stateSuccess(vm.evaluate({ inputIndex, sourceOutputs, transaction })), `input ${inputIndex}`)
+        expect(vm.stateSuccess(vm.evaluate({ inputIndex, sourceOutputs, transaction })),
+          `${artifact.messageBus?.convention} input ${inputIndex}`)
           .toBe(true);
       }
       await expect(call.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
@@ -158,6 +161,8 @@ describe('kernel and legacy observable parity', () => {
     expect(totals).toEqual([9n, 9n]);
   }, 180_000);
 
+  // A real transaction differential for this shape reaches the kernel VM and fails OP_VERIFY at input 0.
+  // Keep it fail-closed until scalar, collection, and event output ownership share a proven row settlement.
   it('freezes mixed scalar, runtime collection, and row-effect geometry in kernel mode', () => {
     const kernel = compileString(MIXED_RUNTIME_SOURCE, { ...BASE_OPTIONS, messageBusKernel: true });
     const legacy = compileString(MIXED_RUNTIME_SOURCE, { ...BASE_OPTIONS, messageBusKernel: false });

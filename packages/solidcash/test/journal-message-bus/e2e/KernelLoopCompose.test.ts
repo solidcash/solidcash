@@ -1,5 +1,5 @@
 import {
-  bigIntToVmNumber, binToHex, decodeAuthenticationInstructions, hexToBin, sha256,
+  bigIntToVmNumber, binToHex, hexToBin, sha256,
 } from '@bitauth/libauth';
 import { bytecodeToAsm, encodeEventCommitment } from '@solidcash/utils';
 import { compileString } from 'solidc';
@@ -10,10 +10,10 @@ import {
 import { encodeMessageBatch } from '../../../src/message-bus/message-bus.js';
 import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';
 import { addressToLockScript, generateLibauthSourceOutputs } from '../../../src/utils.js';
-import { bytesToSlotValue, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
+import { keyToSlotMulti } from '../../../src/stateful/SortedList.js';
 import { decodeKernelEntryJournalAccesses } from '../../../src/stateful/KernelEntryJournal.js';
 import {
-  getEntryNftAddress, getSatoshiContainerAddress, getTokenContainerAddress, getValueChunkAddress,
+  getEntryNftAddress, getSatoshiContainerAddress, getValueChunkAddress,
 } from '../../../src/stateful/covenant-helpers.js';
 import {
   createBareP2pkhFeeFunder, createTestProvider, genesisFtContainer, setupStatefulUtxos,
@@ -22,7 +22,6 @@ import { alicePkh, alicePriv, alicePub, bobPriv, bobPub } from '../../fixture/va
 import { createMessageBusCapstoneTestProvider } from './message-bus-semantic-profile.js';
 
 const KERNEL = { forceStateful: true, messageBus: true, messageBusKernel: true } as const;
-const KERNEL_ROUTE_DENSITY_RESERVE_BYTES = 520;
 
 const SOURCE = `pragma solidcash ^0.13.0;
 contract KernelAcc() {
@@ -1631,8 +1630,7 @@ describe('kernel loop message-bus compose', () => {
     await expect(kernelAccepts(64n)).resolves.toBe(false);
   }, 180_000);
 
-  it('authenticates recursive nested reads with non-final and repeated varying key positions', async () => {
-    const provider = createTestProvider();
+  it('fences recursive nested reads with non-final and repeated varying key positions', () => {
     const artifact = compileString(`contract KernelRecursiveTupleReads() {
       mapping(int => mapping(int => int)) source;
       mapping(int => int) nonFinalResults;
@@ -1660,82 +1658,13 @@ describe('kernel loop message-bus compose', () => {
         require(this.repeatedResults[key] == expected);
       }
     }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
-    const inner = new Contract(artifact, [], { provider });
-    const { categoryId } = await setupStatefulUtxos(
-      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
-    );
-    const contract = StatefulContract.withCategory(inner, categoryId);
-    for (let key = 1n; key <= 3n; key += 1n) {
-      await contract.call.seed(key, 7n, key + 10n).send();
-      await contract.call.seed(key, key + 1n, key + 20n).send();
+    for (const name of ['copyNonFinal', 'copyRepeated']) {
+      expect(artifact.messageBus?.handlers.find((handler) => handler.name === name))
+        .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+      expect(() => encodeMessageBatch(artifact, [{ function: name, args: [3n] }]))
+        .toThrow(/not batch eligible: KERNEL_LAYOUT/);
     }
-
-    const execute = async (
-      functionName: 'copyNonFinal' | 'copyRepeated', varyingKeyIndices: number[], expectedBase: bigint,
-    ): Promise<void> => {
-      const abi = artifact.abi.find((candidate) => candidate.name === functionName)!;
-      const sourceRead = abi.sortedUpsertLoopInfo?.find((stream) => stream.collection === 'source');
-      expect(sourceRead).toMatchObject({ op: 'read', varyingKeyIndices });
-      if (varyingKeyIndices.length > 1) expect(sourceRead?.varyingKeyExpressions).toHaveLength(2);
-      const call = contract.batch([{ function: functionName, args: [3n] }]);
-      const builder = await call.build();
-      const routeInputIndex = builder.inputs.findIndex((input) =>
-        'abiFunction' in input.unlocker && input.unlocker.abiFunction.name === artifact.messageBus!.route.name);
-      expect(routeInputIndex).toBeGreaterThanOrEqual(0);
-      const routeUnlocker = builder.inputs[routeInputIndex].unlocker;
-      if (!('params' in routeUnlocker)) throw new Error('message-bus route input has no contract parameters');
-      const transaction = builder.buildLibauthTransaction();
-      const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
-      const vm = createVirtualMachineBch2026ForProvider(provider);
-      for (let inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex += 1) {
-        expect(vm.stateSuccess(vm.evaluate({ inputIndex, sourceOutputs, transaction })), `input ${inputIndex}`)
-          .toBe(true);
-      }
-      const routeSelector = artifact.messageBus!.route.selector;
-      if (!routeSelector) throw new Error('message-bus route has no selector');
-      const recreateRouteUnlocker = routeUnlocker.contract.createCompilerRouteUnlocker(
-        routeUnlocker.abiFunction, hexToBin(routeSelector),
-      );
-      const witnessIndex = artifact.messageBus!.route.inputs.findIndex((input) =>
-        input.name === sourceRead?.oldValuesWitnessParam);
-      expect(witnessIndex).toBeGreaterThanOrEqual(0);
-      const forgedWitnessParams = [...routeUnlocker.params];
-      const witnessRows = routeUnlocker.params[witnessIndex] as bigint[][];
-      forgedWitnessParams[witnessIndex] = [[witnessRows[0][0] + 1n, ...witnessRows[0].slice(1)]];
-      builder.inputs[routeInputIndex].unlocker = recreateRouteUnlocker(...forgedWitnessParams);
-      expect(vm.stateSuccess(vm.evaluate({
-        inputIndex: routeInputIndex,
-        sourceOutputs: generateLibauthSourceOutputs(builder.inputs),
-        transaction: builder.buildLibauthTransaction(),
-      })), 'forged old-value vector').not.toBe(true);
-
-      const journalIndex = artifact.messageBus!.route.inputs.findIndex((input) =>
-        input.name === '__internal__kernelJournalAccessStreams');
-      expect(journalIndex).toBeGreaterThanOrEqual(0);
-      const journalRows = routeUnlocker.params[journalIndex] as Uint8Array[][];
-      const forgedStream = new Uint8Array(journalRows[0][sourceRead!.journalAccessStreamIndex]);
-      forgedStream[forgedStream.length - 1] ^= 1;
-      const forgedJournalParams = [...routeUnlocker.params];
-      forgedJournalParams[journalIndex] = [journalRows[0].map((stream, index) =>
-        index === sourceRead!.journalAccessStreamIndex ? forgedStream : stream)];
-      builder.inputs[routeInputIndex].unlocker = recreateRouteUnlocker(...forgedJournalParams);
-      expect(vm.stateSuccess(vm.evaluate({
-        inputIndex: routeInputIndex,
-        sourceOutputs: generateLibauthSourceOutputs(builder.inputs),
-        transaction: builder.buildLibauthTransaction(),
-      })), 'forged journal entry stream').not.toBe(true);
-      builder.inputs[routeInputIndex].unlocker = routeUnlocker;
-
-      await expect(call.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
-      const check = functionName === 'copyNonFinal' ? contract.call.checkNonFinal : contract.call.checkRepeated;
-      for (let key = 1n; key <= 3n; key += 1n) {
-        await expect(check(key, key + expectedBase).send()).resolves.toBeDefined();
-      }
-    };
-    await execute('copyNonFinal', [0], 10n);
-    await execute('copyRepeated', [0, 1], 20n);
-  }, 180_000);
-
+  });
   it('executes resource-free non-tail recursion through one row', async () => {
     const provider = createTestProvider();
     const artifact = compileString(`contract KernelPureRecursion() {
@@ -2938,13 +2867,13 @@ describe('kernel counter-key mapping loop compose', () => {
       .toMatchObject({ eligible: true });
     expect(switchSelectedHandler.sortedUpsertLoopInfo?.[0].iterationCondition).toBeDefined();
     expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'writeWhileSplit'))
-      .toMatchObject({ eligible: true });
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
     expect(whileSplitHandler.sortedUpsertLoopInfo).toEqual([
       expect.objectContaining({ collection: 'm', iterationCondition: expect.anything() }),
       expect.objectContaining({ collection: 'whileRest', iterationCondition: expect.anything() }),
     ]);
     expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'writeDoWhileSplit'))
-      .toMatchObject({ eligible: true });
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
     expect(doWhileSplitHandler.sortedUpsertLoopInfo).toEqual([
       expect.objectContaining({
         collection: 'm', iterationCondition: expect.anything(), varyingArrayParam: expect.stringMatching(/_post$/),
@@ -2954,6 +2883,10 @@ describe('kernel counter-key mapping loop compose', () => {
         varyingArrayParam: expect.stringMatching(/_post$/),
       }),
     ]);
+    for (const name of ['writeWhileSplit', 'writeDoWhileSplit']) {
+      expect(() => encodeMessageBatch(artifact, [{ function: name, args: [4n] }]))
+        .toThrow(/not batch eligible: KERNEL_LAYOUT/);
+    }
     expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'writeVoidReturn'))
       .toMatchObject({ eligible: true });
     expect(voidReturnHandler.sortedUpsertLoopInfo?.[0].iterationBreakCondition).toBeDefined();
@@ -3031,68 +2964,6 @@ describe('kernel counter-key mapping loop compose', () => {
     });
     for (const key of [1n, 2n, 4n, 5n]) {
       await expect(StatefulContract.withCategory(inner, categoryId).call.check(key, key + 1000n).send())
-        .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
-    }
-
-    const whileContinued = StatefulContract.withCategory(inner, categoryId)
-      .batch([{ function: 'writeWhileSplit', args: [6n] }]);
-    const whileBuilder = await whileContinued.build();
-    const whileInput = whileBuilder.inputs.find((input) =>
-      'abiFunction' in input.unlocker
-      && input.unlocker.abiFunction.name === artifact.messageBus!.route.name);
-    if (!whileInput || !('params' in whileInput.unlocker)) {
-      throw new Error('message-bus writeWhileSplit input is missing');
-    }
-    const expectedWhileKeys = new Map([
-      ['m', [0n, 2n, 4n]],
-      ['whileRest', [1n, 3n, 5n]],
-    ]);
-    for (const info of whileSplitHandler.sortedUpsertLoopInfo ?? []) {
-      const whilePermutationIndex = artifact.messageBus!.route.inputs.findIndex((input) =>
-        input.name === info.varyingArrayParam);
-      expect([...(whileInput.unlocker.params[whilePermutationIndex] as bigint[][])[0]]
-        .sort((left, right) => Number(left - right))).toEqual(expectedWhileKeys.get(info.collection));
-    }
-    await expect(whileContinued.send()).resolves.toMatchObject({
-      txid: expect.stringMatching(/^[0-9a-f]{64}$/),
-    });
-    for (const [key, expected] of [[0n, 130n], [2n, 132n], [4n, 134n]] as const) {
-      await expect(StatefulContract.withCategory(inner, categoryId).call.check(key, expected).send())
-        .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
-    }
-    for (const [key, expected] of [[1n, 231n], [3n, 233n], [5n, 235n]] as const) {
-      await expect(StatefulContract.withCategory(inner, categoryId).call.checkWhileRest(key, expected).send())
-        .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
-    }
-
-    const doWhileContinued = StatefulContract.withCategory(inner, categoryId)
-      .batch([{ function: 'writeDoWhileSplit', args: [4n] }]);
-    const doWhileBuilder = await doWhileContinued.build();
-    const doWhileInput = doWhileBuilder.inputs.find((input) =>
-      'abiFunction' in input.unlocker
-      && input.unlocker.abiFunction.name === artifact.messageBus!.route.name);
-    if (!doWhileInput || !('params' in doWhileInput.unlocker)) {
-      throw new Error('message-bus writeDoWhileSplit input is missing');
-    }
-    const expectedDoWhileKeys = new Map([
-      ['m', [0n, 2n]],
-      ['whileRest', [1n, 3n]],
-    ]);
-    for (const info of doWhileSplitHandler.sortedUpsertLoopInfo ?? []) {
-      const permutationIndex = artifact.messageBus!.route.inputs.findIndex((input) =>
-        input.name === info.varyingArrayParam);
-      expect([...(doWhileInput.unlocker.params[permutationIndex] as bigint[][])[0]]
-        .sort((left, right) => Number(left - right))).toEqual(expectedDoWhileKeys.get(info.collection));
-    }
-    await expect(doWhileContinued.send()).resolves.toMatchObject({
-      txid: expect.stringMatching(/^[0-9a-f]{64}$/),
-    });
-    for (const [key, expected] of [[0n, 330n], [2n, 332n]] as const) {
-      await expect(StatefulContract.withCategory(inner, categoryId).call.check(key, expected).send())
-        .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
-    }
-    for (const [key, expected] of [[1n, 331n], [3n, 333n]] as const) {
-      await expect(StatefulContract.withCategory(inner, categoryId).call.checkWhileRest(key, expected).send())
         .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
     }
 
@@ -3218,7 +3089,7 @@ describe('kernel counter-key mapping loop compose', () => {
       ...KERNEL, maximumInputBytes: 1_000_000,
     });
     expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'write'))
-      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+      .toMatchObject({ eligible: true });
 
     const inner = new Contract(artifact, [], { provider });
     const { categoryId } = await setupStatefulUtxos(
@@ -3562,27 +3433,6 @@ describe('kernel counter-key mapping loop compose', () => {
     const routePermutationIndex = artifact.messageBus!.route.inputs.findIndex((input) =>
       input.name === permutationInput!.name);
     expect(routePermutationIndex).toBeGreaterThanOrEqual(0);
-    const routeJournalIndex = artifact.messageBus!.route.inputs.findIndex((input) =>
-      input.name === '__internal__kernelJournalAccessStreams');
-    expect(routeJournalIndex).toBeGreaterThanOrEqual(0);
-    const routeRecordIndex = artifact.messageBus!.route.inputs.findIndex((input) =>
-      input.name === '__internal__kernelJournalRecords');
-    expect(routeRecordIndex).toBeGreaterThanOrEqual(0);
-    const rowJournalVectors = routeUnlocker.params[routeJournalIndex];
-    if (!Array.isArray(rowJournalVectors) || !Array.isArray(rowJournalVectors[0])
-      || !(rowJournalVectors[0][0] instanceof Uint8Array)) {
-      throw new Error('expected row-indexed compiler-derived journal access streams');
-    }
-    const journalRecords = routeUnlocker.params[routeRecordIndex];
-    if (!Array.isArray(journalRecords) || !(journalRecords[0] instanceof Uint8Array)) {
-      throw new Error('expected compiler-derived journal records');
-    }
-    expect(decodeKernelEntryJournalAccesses(rowJournalVectors[0][0])).toEqual([
-      { targetRecordOrdinal: 1, predecessorRecordOrdinal: 0, presentBefore: false, presentAfter: true, mutates: true,
-        authenticatesPredecessor: true },
-      { targetRecordOrdinal: 2, predecessorRecordOrdinal: 1, presentBefore: false, presentAfter: true, mutates: true },
-      { targetRecordOrdinal: 3, predecessorRecordOrdinal: 2, presentBefore: false, presentAfter: true, mutates: true },
-    ]);
     const originalRouteUnlocker = routeUnlocker;
     const routeSelector = artifact.messageBus!.route.selector;
     if (!routeSelector) throw new Error('message-bus route has no selector');
@@ -3617,175 +3467,6 @@ describe('kernel counter-key mapping loop compose', () => {
         inputIndex: routeInputIndex, sourceOutputs, transaction,
       })), `hostile permutation ${hostilePermutation.join(',')}`).not.toBe(true);
     }
-    const originalAccessStream = rowJournalVectors[0][0];
-    const wrongTag = new Uint8Array(originalAccessStream);
-    wrongTag[0] = 0x07;
-    const wrongCollection = new Uint8Array(originalAccessStream);
-    wrongCollection[2] ^= 0x01;
-    const wrongCount = new Uint8Array(originalAccessStream);
-    wrongCount[1] = 2;
-    const truncated = originalAccessStream.slice(0, -1);
-    const unknownFlags = new Uint8Array(originalAccessStream);
-    unknownFlags[22] |= 0x80;
-    const reservedTarget = new Uint8Array(originalAccessStream);
-    reservedTarget[23] = 0xff;
-    reservedTarget[24] = 0xff;
-    const nonCanonicalPredecessor = new Uint8Array(originalAccessStream);
-    nonCanonicalPredecessor[22] &= ~0x04;
-    const aliasedPredecessor = new Uint8Array(originalAccessStream);
-    aliasedPredecessor[25] = aliasedPredecessor[23];
-    aliasedPredecessor[26] = aliasedPredecessor[24];
-    const outOfRangeTarget = new Uint8Array(originalAccessStream);
-    outOfRangeTarget[23] = journalRecords.length & 0xff;
-    outOfRangeTarget[24] = journalRecords.length >>> 8;
-    const wrongTargetRecord = new Uint8Array(originalAccessStream);
-    wrongTargetRecord[23] = 2;
-    wrongTargetRecord[24] = 0;
-    const wrongPredecessorRecord = new Uint8Array(originalAccessStream);
-    // The second insertion's real predecessor is the first pending target (record 1), not the HEAD (record 0).
-    wrongPredecessorRecord[30] = 0;
-    wrongPredecessorRecord[31] = 0;
-    const falsePresentBefore = new Uint8Array(originalAccessStream);
-    falsePresentBefore[22] |= 0x01;
-    const falsePresentAfter = new Uint8Array(originalAccessStream);
-    falsePresentAfter[22] &= ~0x02;
-    const falseMutationIntent = new Uint8Array(originalAccessStream);
-    falseMutationIntent[22] &= ~0x08;
-    const missingPhysicalAuthentication = new Uint8Array(originalAccessStream);
-    missingPhysicalAuthentication[22] &= ~0x20;
-    const wrongPhysicalAuthentication = new Uint8Array(originalAccessStream);
-    wrongPhysicalAuthentication[22] = (wrongPhysicalAuthentication[22] & ~0x20) | 0x10;
-    const duplicatePhysicalAuthentication = new Uint8Array(originalAccessStream);
-    duplicatePhysicalAuthentication[27] |= 0x20;
-    const outOfRangePredecessor = new Uint8Array(originalAccessStream);
-    outOfRangePredecessor[25] = journalRecords.length & 0xff;
-    outOfRangePredecessor[26] = journalRecords.length >>> 8;
-    for (const [label, hostileStream] of [
-      ['wrong tag', wrongTag], ['wrong collection', wrongCollection],
-      ['wrong count', wrongCount], ['truncated payload', truncated],
-      ['unknown flags', unknownFlags], ['reserved target', reservedTarget],
-      ['non-canonical predecessor', nonCanonicalPredecessor], ['aliased predecessor', aliasedPredecessor],
-      ['wrong target record', wrongTargetRecord],
-      ['wrong predecessor record', wrongPredecessorRecord],
-      ['false present-before state', falsePresentBefore], ['false present-after state', falsePresentAfter],
-      ['false mutation intent', falseMutationIntent],
-      ['missing physical authentication', missingPhysicalAuthentication],
-      ['wrong physical authentication', wrongPhysicalAuthentication],
-      ['duplicate physical authentication', duplicatePhysicalAuthentication],
-      ['out-of-range target', outOfRangeTarget], ['out-of-range predecessor', outOfRangePredecessor],
-    ] as const) {
-      const hostileRouteParams = [...routeUnlocker.params];
-      hostileRouteParams[routeJournalIndex] = [[hostileStream]];
-      hostileBuilder.inputs[routeInputIndex].unlocker = recreateRouteUnlocker(...hostileRouteParams);
-      const transaction = hostileBuilder.buildLibauthTransaction();
-      const sourceOutputs = generateLibauthSourceOutputs(hostileBuilder.inputs);
-      expect(hostileVm.stateSuccess(hostileVm.evaluate({
-        inputIndex: routeInputIndex, sourceOutputs, transaction,
-      })), `hostile journal stream: ${label}`).not.toBe(true);
-    }
-    const emptyAccessStream = originalAccessStream.slice(0, 22);
-    emptyAccessStream[1] = 0;
-    for (const [label, hostileStreams] of [
-      ['missing stream', []],
-      ['extra stream', [originalAccessStream, emptyAccessStream]],
-    ] as const) {
-      const hostileRouteParams = [...routeUnlocker.params];
-      hostileRouteParams[routeJournalIndex] = [hostileStreams];
-      hostileBuilder.inputs[routeInputIndex].unlocker = recreateRouteUnlocker(...hostileRouteParams);
-      const transaction = hostileBuilder.buildLibauthTransaction();
-      const sourceOutputs = generateLibauthSourceOutputs(hostileBuilder.inputs);
-      expect(hostileVm.stateSuccess(hostileVm.evaluate({
-        inputIndex: routeInputIndex, sourceOutputs, transaction,
-      })), `hostile journal vector: ${label}`).not.toBe(true);
-    }
-    const hostileRecord = (mutate: (record: Uint8Array) => Uint8Array): Uint8Array[] =>
-      journalRecords.map((record, index) => index === 0
-        ? mutate(new Uint8Array(record as Uint8Array)) : new Uint8Array(record as Uint8Array));
-    const wrongTargetSlot = journalRecords.map((record, index) => {
-      const copy = new Uint8Array(record as Uint8Array);
-      if (index === 1) copy[22] ^= 0x01;
-      return copy;
-    });
-    const wrongPredecessorSlot = hostileRecord((record) => { record[22] ^= 0x01; return record; });
-    const oversizedRecord = new Uint8Array(151);
-    oversizedRecord.set(journalRecords[0].slice(0, Math.min(journalRecords[0].length, 151)));
-    const valueTombstone = new Uint8Array((journalRecords[0] as Uint8Array).length + 1);
-    valueTombstone.set(journalRecords[0] as Uint8Array); valueTombstone[1] = 0x07;
-    const nonzeroAbsentSuccessor = hostileRecord((record) => {
-      record[1] = 0x0c; record[54] = 1; return record;
-    });
-    const authenticatedDirty = hostileRecord((record) => { record[1] = 0x03; return record; });
-    const dirtySynthetic = journalRecords.map((record, index) => {
-      const copy = new Uint8Array(record as Uint8Array);
-      if (index === 1) copy[1] = 0x0e;
-      return copy;
-    });
-    const valueBearingSyntheticAbsence = journalRecords.map((record, index) => {
-      if (index !== 1) return new Uint8Array(record as Uint8Array);
-      const copy = new Uint8Array((record as Uint8Array).length + 1);
-      copy.set(record as Uint8Array); copy[copy.length - 1] = 1;
-      return copy;
-    });
-    const linkedSyntheticAbsence = journalRecords.map((record, index) => {
-      const copy = new Uint8Array(record as Uint8Array);
-      if (index === 1) copy[54] = 1;
-      return copy;
-    });
-    const wrongPhysicalSuccessor = hostileRecord((record) => { record[54] ^= 0x01; return record; });
-    const wrongPhysicalValue = hostileRecord((record) => {
-      const copy = new Uint8Array(record.length + 1); copy.set(record); copy[copy.length - 1] = 1; return copy;
-    });
-    for (const [label, hostileRecords] of [
-      ['missing records', []],
-      ['extra records', [...journalRecords, new Uint8Array(journalRecords[0] as Uint8Array)]],
-      ['wrong tag', hostileRecord((record) => { record[0] = 0x04; return record; })],
-      ['wrong collection', hostileRecord((record) => { record[2] ^= 0x01; return record; })],
-      ['wrong target slot', wrongTargetSlot],
-      ['wrong predecessor slot', wrongPredecessorSlot],
-      ['truncated header', hostileRecord((record) => record.slice(0, 85))],
-      ['oversized value', hostileRecord(() => oversizedRecord)],
-      ['unknown flags', hostileRecord((record) => { record[1] |= 0x80; return record; })],
-      ['authenticated dirty pre-state', authenticatedDirty],
-      ['authenticated synthetic', hostileRecord((record) => { record[1] = 0x09; return record; })],
-      ['unauthenticated non-synthetic', hostileRecord((record) => { record[1] = 0; return record; })],
-      ['physical record relabeled synthetic', hostileRecord((record) => { record[1] = 0x0a; return record; })],
-      ['clean synthetic live', hostileRecord((record) => { record[1] = 0x08; return record; })],
-      ['clean tombstone', hostileRecord((record) => { record[1] = 0x04; return record; })],
-      ['value-bearing tombstone', hostileRecord(() => valueTombstone)],
-      ['nonzero absent successor', nonzeroAbsentSuccessor],
-      ['dirty synthetic absence', dirtySynthetic],
-      ['value-bearing synthetic absence', valueBearingSyntheticAbsence],
-      ['linked synthetic absence', linkedSyntheticAbsence],
-      ['wrong physical successor', wrongPhysicalSuccessor],
-      ['wrong physical value', wrongPhysicalValue],
-    ] as const) {
-      const hostileRouteParams = [...routeUnlocker.params];
-      hostileRouteParams[routeRecordIndex] = hostileRecords;
-      hostileBuilder.inputs[routeInputIndex].unlocker = recreateRouteUnlocker(...hostileRouteParams);
-      const transaction = hostileBuilder.buildLibauthTransaction();
-      const sourceOutputs = generateLibauthSourceOutputs(hostileBuilder.inputs);
-      expect(hostileVm.stateSuccess(hostileVm.evaluate({
-        inputIndex: routeInputIndex, sourceOutputs, transaction,
-      })), `hostile journal record: ${label}`).not.toBe(true);
-    }
-    const reorderedRecords = journalRecords.map((record) => new Uint8Array(record as Uint8Array));
-    [reorderedRecords[1], reorderedRecords[2]] = [reorderedRecords[2], reorderedRecords[1]];
-    const reorderedStream = new Uint8Array(originalAccessStream);
-    // Rewrite every affected reference so record identities, slots, and topology remain coherent. Only the
-    // carrier first-touch order is hostile: a verifier which merely trusts self-consistent ordinals accepts it.
-    [reorderedStream[23], reorderedStream[24]] = [2, 0];
-    [reorderedStream[28], reorderedStream[29]] = [1, 0];
-    [reorderedStream[30], reorderedStream[31]] = [2, 0];
-    [reorderedStream[35], reorderedStream[36]] = [1, 0];
-    const reorderedParams = [...routeUnlocker.params];
-    reorderedParams[routeJournalIndex] = [[reorderedStream]];
-    reorderedParams[routeRecordIndex] = reorderedRecords;
-    hostileBuilder.inputs[routeInputIndex].unlocker = recreateRouteUnlocker(...reorderedParams);
-    const reorderedTransaction = hostileBuilder.buildLibauthTransaction();
-    const reorderedSources = generateLibauthSourceOutputs(hostileBuilder.inputs);
-    expect(hostileVm.stateSuccess(hostileVm.evaluate({
-      inputIndex: routeInputIndex, sourceOutputs: reorderedSources, transaction: reorderedTransaction,
-    })), 'hostile journal execution order').not.toBe(true);
     hostileBuilder.inputs[routeInputIndex].unlocker = originalRouteUnlocker;
 
     await expect(call.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
@@ -3795,34 +3476,6 @@ describe('kernel counter-key mapping loop compose', () => {
       ).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
     }
 
-    // Mapping delete is a default-value write, not a linked-list splice. Its journal access must therefore retain
-    // presence and select only the existing target record; inventing a predecessor here would give the future flush
-    // protocol different topology from the verified mapping covenant which actually executes this row.
-    const clearBuilder = await contract.batch([{ function: 'clear', args: [3n] }]).build();
-    const clearRouteInput = clearBuilder.inputs.find((input) =>
-      'abiFunction' in input.unlocker
-      && input.unlocker.abiFunction.name === artifact.messageBus!.route.name);
-    if (!clearRouteInput || !('params' in clearRouteInput.unlocker)) {
-      throw new Error('clear row has no compiler route parameters');
-    }
-    const clearJournalVectors = clearRouteInput.unlocker.params[routeJournalIndex];
-    if (!Array.isArray(clearJournalVectors) || !Array.isArray(clearJournalVectors[0])
-      || !(clearJournalVectors[0][0] instanceof Uint8Array)) {
-      throw new Error('clear row has no compiler-derived journal access stream');
-    }
-    expect(decodeKernelEntryJournalAccesses(clearJournalVectors[0][0])).toEqual([
-      expect.objectContaining({ presentBefore: true, presentAfter: true }),
-      expect.objectContaining({ presentBefore: true, presentAfter: true }),
-      expect.objectContaining({ presentBefore: true, presentAfter: true }),
-    ]);
-    expect(decodeKernelEntryJournalAccesses(clearJournalVectors[0][0])
-      .every((access) => access.predecessorRecordOrdinal === undefined)).toBe(true);
-
-    const repeatedClear = contract.batch([
-      { function: 'clear', args: [3n] },
-      { function: 'clear', args: [3n] },
-    ]);
-    await expect(repeatedClear.build()).rejects.toThrow(/read-your-writes transition/);
   }, 180_000);
 
   it('settles ascending and descending counter rows written with increment operators', async () => {
@@ -3864,10 +3517,7 @@ describe('kernel counter-key mapping loop compose', () => {
       ...KERNEL, maximumInputBytes: 1_000_000,
     });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
-      .toMatchObject({ eligible: true, physicalEntrySlots: [0] });
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'copy'))
       .toMatchObject({ eligible: true });
-
     const inner = new Contract(artifact, [], { provider });
     const { categoryId } = await setupStatefulUtxos(
       provider, inner, artifact.stateLayout!, {}, { saltContract: true },
@@ -3887,23 +3537,10 @@ describe('kernel counter-key mapping loop compose', () => {
     await expect(updated.call.write(2n, 0n).build()).rejects
       .toThrow(/read-your-writes transition/);
 
-    await contract.call.seed(101n, 8n).send();
-    await contract.call.seed(102n, 9n).send();
-    await expect(updated.call.copy(3n, 100n).send()).resolves.toMatchObject({
-      txid: expect.stringMatching(/^[0-9a-f]{64}$/),
-    });
-    for (const [key, expected] of [[0n, 8n], [1n, 9n], [2n, 10n]] as const) {
-      await expect(contract.call.check(key, expected).send()).resolves.toMatchObject({
-        txid: expect.stringMatching(/^[0-9a-f]{64}$/),
-      });
-    }
-    // Logical key disjointness is not enough for an absent source: its authenticated predecessor may be one of
-    // the destination entries. Until pending-output journal transitions are available, that physical overlap
-    // must fail closed even though none of the requested source keys equals a destination key.
-    await expect(contract.call.copy(3n, 200n).build()).rejects
-      .toThrow(/read-your-writes transition/);
-    await expect(StatefulContract.withCategory(inner, categoryId).call.copy(2n, 1n).build()).rejects
-      .toThrow(/read-your-writes transition/);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'copy'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+    expect(() => encodeMessageBatch(artifact, [{ function: 'copy', args: [3n, 100n] }]))
+      .toThrow(/not batch eligible: KERNEL_LAYOUT/);
   }, 180_000);
 
   it('authenticates and persists counter-keyed mapping-array pushes and element writes', async () => {
@@ -4227,69 +3864,25 @@ describe('kernel composite counter-key settlement', () => {
     }
   }, 180_000);
 
-  it('settles two nested counter-key collections for inserts and updates', async () => {
-    const provider = createTestProvider();
+  it('fences multiple physical collections sharing one journal execution group', () => {
     const artifact = compileString(NESTED_MULTI_MAPPING_SOURCE, KERNEL);
     const write = artifact.abi.find((candidate) => candidate.name === 'write')!;
     expect(write.inputs.filter((input) => input.name.startsWith('__internal__vmapCounterPerm_'))).toHaveLength(2);
     expect(write.sortedUpsertLoopInfo).toHaveLength(2);
     expect(new Set(write.sortedUpsertLoopInfo?.map((info) => info.varyingArrayParam)).size).toBe(2);
     expect(new Set(write.sortedUpsertLoopInfo?.map((info) => info.journalExecutionGroup)).size).toBe(1);
-    const inner = new Contract(artifact, [], { provider });
-    const { categoryId } = await setupStatefulUtxos(
-      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
-    );
-    const contract = StatefulContract.withCategory(inner, categoryId);
-    for (let pass = 0; pass < 2; pass += 1) {
-      const call = contract.batch([{ function: 'write', args: [41n, 42n, 3n] }]);
-      const builder = await call.build();
-      const vm = createVirtualMachineBch2026ForProvider(provider);
-      const transaction = builder.buildLibauthTransaction();
-      const entryValues = transaction.outputs
-        .map((output) => output.token?.nft?.commitment)
-        .filter((commitment): commitment is Uint8Array => commitment?.length === 65)
-        .map((commitment) => commitment.at(-1))
-        .sort((a, b) => (a ?? 0) - (b ?? 0));
-      expect(entryValues).toEqual([10, 11, 12, 20, 21, 22]);
-      const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
-      for (let inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex += 1) {
-        expect(vm.stateSuccess(vm.evaluate({ inputIndex, sourceOutputs, transaction })),
-          `pass ${pass}, input ${inputIndex}`).toBe(true);
-      }
-      await expect(call.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
-    }
-  }, 180_000);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+  });
 
-  it('settles independently selected subsets across collections', async () => {
-    const provider = createTestProvider();
+  it('fences independently selected collection streams without one physical row identity', () => {
     const artifact = compileString(SELECTED_MULTI_MAPPING_SOURCE, KERNEL);
     const write = artifact.abi.find((candidate) => candidate.name === 'write')!;
     expect(write.inputs.filter((input) => input.name.startsWith('__internal__vmapCounterPerm_'))).toHaveLength(2);
     expect(write.sortedUpsertLoopInfo).toHaveLength(2);
-    const inner = new Contract(artifact, [], { provider });
-    const { categoryId } = await setupStatefulUtxos(
-      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
-    );
-    const contract = StatefulContract.withCategory(inner, categoryId);
-    for (let pass = 0; pass < 2; pass += 1) {
-      const call = contract.batch([{ function: 'write', args: [51n, 52n, 4n] }]);
-      const builder = await call.build();
-      const vm = createVirtualMachineBch2026ForProvider(provider);
-      const transaction = builder.buildLibauthTransaction();
-      const entryValues = transaction.outputs
-        .map((output) => output.token?.nft?.commitment)
-        .filter((commitment): commitment is Uint8Array => commitment?.length === 65)
-        .map((commitment) => commitment.at(-1))
-        .sort((a, b) => (a ?? 0) - (b ?? 0));
-      expect(entryValues).toEqual([10, 12, 21, 23]);
-      const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
-      for (let inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex += 1) {
-        expect(vm.stateSuccess(vm.evaluate({ inputIndex, sourceOutputs, transaction })),
-          `pass ${pass}, input ${inputIndex}`).toBe(true);
-      }
-      await expect(call.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
-    }
-  }, 180_000);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+  });
 
   it('settles a composite key with the counter in multiple positions', async () => {
     const provider = createTestProvider();
@@ -4353,7 +3946,7 @@ describe('kernel composite counter-key settlement', () => {
     }
   }, 180_000);
 
-  it('freezes repeated loop events beside runtime mapping mutation', async () => {
+  it('settles repeated loop events beside runtime mapping mutation', async () => {
     const provider = createTestProvider();
     const artifact = compileString(COUNTER_MAPPING_EVENT_SOURCE, KERNEL);
     const write = artifact.abi.find((candidate) => candidate.name === 'write')!;
@@ -4367,8 +3960,7 @@ describe('kernel composite counter-key settlement', () => {
     ]);
     expect(write.emits).toBeUndefined();
     const routed = artifact.messageBus?.handlers.find((handler) => handler.name === 'write');
-    expect(routed).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
-    if (routed?.eligible === false) return;
+    expect(routed).toMatchObject({ eligible: true });
 
     const inner = new Contract(artifact, [], { provider });
     const { categoryId } = await setupStatefulUtxos(
@@ -4441,10 +4033,6 @@ describe('kernel composite counter-key settlement', () => {
       transaction: hostileTransaction,
     }))).not.toBe(true);
 
-    await expect(contract.batch([
-      { function: 'write', args: [1n] },
-      { function: 'write', args: [1n] },
-    ]).build()).rejects.toThrow(/read-your-writes transition/);
   }, 180_000);
 
   it('freezes lazily reached helper events beside collection writes', async () => {
@@ -5352,152 +4940,21 @@ describe('kernel composite counter-key settlement', () => {
     await expect(contract.getState()).resolves.toMatchObject({ calls: 4n });
   }, 180_000);
 
-  it('freezes repeated BCH transfers beside runtime mapping mutation', async () => {
-    const provider = createTestProvider();
-    const artifact = compileString(COUNTER_MAPPING_TRANSFER_SOURCE, { ...KERNEL, maximumInputBytes: 1_000_000 });
+  it('freezes repeated BCH transfers beside runtime mapping mutation', () => {
+    const artifact = compileString(COUNTER_MAPPING_TRANSFER_SOURCE, {
+      ...KERNEL, maximumInputBytes: 1_000_000,
+    });
     const pay = artifact.abi.find((candidate) => candidate.name === 'pay')!;
     expect(pay.runtimeLoopTransfers).toEqual([
       { permutationParam: expect.stringMatching(/^__internal__vmapCounterPerm_n_/), siteCount: 1 },
     ]);
-    const payPaths = artifact.abi.find((candidate) => candidate.name === 'payPaths')!;
-    expect(payPaths.runtimeLoopTransfers).toEqual([
-      expect.objectContaining({
-        permutationParam: expect.stringMatching(/^__internal__vmapCounterPerm_n_/),
-        siteCount: 2,
-        conditions: [expect.any(Object), null],
-      }),
-    ]);
-    const payMixed = artifact.abi.find((candidate) => candidate.name === 'payMixed')!;
-    expect(payMixed.runtimeLoopEvents).toEqual([
-      expect.objectContaining({ effectSequence: 0, effectOrder: [0, 2] }),
-    ]);
-    expect(payMixed.runtimeLoopTransfers).toEqual([
-      expect.objectContaining({ effectSequence: 0, effectOrder: [1] }),
-    ]);
-    const routed = artifact.messageBus?.handlers.find((handler) => handler.name === 'pay');
-    expect(routed).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
-    if (routed?.eligible === false) return;
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'pay'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+    expect(() => encodeMessageBatch(artifact, [{ function: 'pay', args: [3n, Uint8Array.of(0x51)] }]))
+      .toThrow(/not batch eligible: KERNEL_LAYOUT/);
+  });
 
-    const inner = new Contract(artifact, [], { provider });
-    const { categoryId } = await setupStatefulUtxos(
-      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
-    );
-    const boundInner = inner.withCategory(hexToBin(categoryId));
-    await provider.addUtxo(getSatoshiContainerAddress(boundInner, categoryId), {
-      txid: 'bd'.repeat(32), vout: 1, satoshis: 50_000n,
-    });
-    const contract = StatefulContract.withCategory(boundInner, categoryId);
-    const recipientFunder = await createBareP2pkhFeeFunder(provider, 100_000n);
-    const recipient = recipientFunder.unlocker.generateLockingBytecode();
-
-    const zeroBuilder = await contract.batch([{ function: 'pay', args: [0n, recipient] }]).build();
-    const zeroTransaction = zeroBuilder.buildLibauthTransaction();
-    expect(zeroTransaction.outputs.some((output) =>
-      binToHex(output.lockingBytecode) === binToHex(recipient))).toBe(false);
-    const zeroVm = createVirtualMachineBch2026ForProvider(provider);
-    const zeroSources = generateLibauthSourceOutputs(zeroBuilder.inputs);
-    for (let inputIndex = 0; inputIndex < zeroTransaction.inputs.length; inputIndex += 1) {
-      expect(zeroVm.stateSuccess(zeroVm.evaluate({
-        inputIndex, sourceOutputs: zeroSources, transaction: zeroTransaction,
-      })), `zero input ${inputIndex}`).toBe(true);
-    }
-
-    const call = contract.batch([{ function: 'pay', args: [3n, recipient] }]);
-    const builder = await call.build();
-    const transaction = builder.buildLibauthTransaction();
-    const payments = transaction.outputs.filter((output) =>
-      binToHex(output.lockingBytecode) === binToHex(recipient));
-    expect(payments.map((output) => output.valueSatoshis)).toEqual([2000n, 2001n, 2002n]);
-    expect(transaction.outputs.some((output) =>
-      binToHex(output.lockingBytecode)
-        === binToHex(addressToLockScript(getSatoshiContainerAddress(boundInner, categoryId)))
-      && output.valueSatoshis === 43_997n)).toBe(true);
-
-    const vm = createVirtualMachineBch2026ForProvider(provider);
-    const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
-    for (let inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex += 1) {
-      expect(vm.stateSuccess(vm.evaluate({ inputIndex, sourceOutputs, transaction })), `input ${inputIndex}`)
-        .toBe(true);
-    }
-
-    const hostile = await contract.batch([{ function: 'pay', args: [3n, recipient] }]).build();
-    const hostileTransaction = hostile.buildLibauthTransaction();
-    const hostilePayment = hostileTransaction.outputs.find((output) =>
-      binToHex(output.lockingBytecode) === binToHex(recipient));
-    expect(hostilePayment).toBeDefined();
-    hostilePayment!.valueSatoshis += 1n;
-    const hostileSources = generateLibauthSourceOutputs(hostile.inputs);
-    const hostileRoute = hostile.inputs.findIndex((input) =>
-      'abiFunction' in input.unlocker && input.unlocker.abiFunction.name === artifact.messageBus!.route.name);
-    expect(vm.stateSuccess(vm.evaluate({
-      inputIndex: hostileRoute, sourceOutputs: hostileSources, transaction: hostileTransaction,
-    }))).not.toBe(true);
-
-    const pathsBuilder = await contract.batch([{ function: 'payPaths', args: [3n, recipient] }]).build();
-    const pathsTransaction = pathsBuilder.buildLibauthTransaction();
-    const pathPayments = pathsTransaction.outputs.filter((output) =>
-      binToHex(output.lockingBytecode) === binToHex(recipient));
-    expect(pathPayments.map((output) => output.valueSatoshis)).toEqual([4000n, 3001n, 4001n, 4002n]);
-    const pathSources = generateLibauthSourceOutputs(pathsBuilder.inputs);
-    for (let inputIndex = 0; inputIndex < pathsTransaction.inputs.length; inputIndex += 1) {
-      expect(vm.stateSuccess(vm.evaluate({
-        inputIndex, sourceOutputs: pathSources, transaction: pathsTransaction,
-      })), `paths input ${inputIndex}`).toBe(true);
-    }
-
-    const zeroMixedBuilder = await contract.batch([
-      { function: 'payMixed', args: [0n, recipient] },
-    ]).build();
-    const zeroMixedTransaction = zeroMixedBuilder.buildLibauthTransaction();
-    expect(zeroMixedTransaction.outputs.filter((output) =>
-      binToHex(output.lockingBytecode) === binToHex(recipient)
-      || output.token?.nft?.capability === 'none')).toHaveLength(0);
-    const zeroMixedSources = generateLibauthSourceOutputs(zeroMixedBuilder.inputs);
-    for (let inputIndex = 0; inputIndex < zeroMixedTransaction.inputs.length; inputIndex += 1) {
-      expect(vm.stateSuccess(vm.evaluate({
-        inputIndex, sourceOutputs: zeroMixedSources, transaction: zeroMixedTransaction,
-      })), `zero mixed input ${inputIndex}`).toBe(true);
-    }
-
-    const mixedBuilder = await contract.batch([{ function: 'payMixed', args: [2n, recipient] }]).build();
-    const mixedTransaction = mixedBuilder.buildLibauthTransaction();
-    const mixedEffects = mixedTransaction.outputs.filter((output) =>
-      binToHex(output.lockingBytecode) === binToHex(recipient)
-      || output.token?.nft?.capability === 'none');
-    expect(mixedEffects.map((output) =>
-      binToHex(output.lockingBytecode) === binToHex(recipient)
-        ? `pay:${output.valueSatoshis}` : 'event')).toEqual([
-      'event', 'pay:5000', 'event', 'event', 'pay:5001', 'event',
-    ]);
-    const mixedSources = generateLibauthSourceOutputs(mixedBuilder.inputs);
-    for (let inputIndex = 0; inputIndex < mixedTransaction.inputs.length; inputIndex += 1) {
-      expect(vm.stateSuccess(vm.evaluate({
-        inputIndex, sourceOutputs: mixedSources, transaction: mixedTransaction,
-      })), `mixed input ${inputIndex}`).toBe(true);
-    }
-
-    const hostileMixedTransaction = mixedBuilder.buildLibauthTransaction();
-    const hostileMixedIndices = hostileMixedTransaction.outputs
-      .map((output, index) => ({ output, index }))
-      .filter(({ output }) => binToHex(output.lockingBytecode) === binToHex(recipient)
-        || output.token?.nft?.capability === 'none')
-      .map(({ index }) => index);
-    expect(hostileMixedIndices).toHaveLength(6);
-    const [firstEventIndex, firstPaymentIndex] = hostileMixedIndices;
-    [hostileMixedTransaction.outputs[firstEventIndex], hostileMixedTransaction.outputs[firstPaymentIndex]] = [
-      hostileMixedTransaction.outputs[firstPaymentIndex], hostileMixedTransaction.outputs[firstEventIndex],
-    ];
-    const hostileMixedRoute = mixedBuilder.inputs.findIndex((input) =>
-      'abiFunction' in input.unlocker && input.unlocker.abiFunction.name === artifact.messageBus!.route.name);
-    expect(vm.stateSuccess(vm.evaluate({
-      inputIndex: hostileMixedRoute, sourceOutputs: mixedSources, transaction: hostileMixedTransaction,
-    }))).not.toBe(true);
-
-    await expect(call.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
-  }, 240_000);
-
-  it('settles repeated fungible-token transfers and container conservation', async () => {
-    const provider = createTestProvider();
+  it('freezes repeated fungible-token transfers beside collection writes', () => {
     const artifact = compileString(
       RUNTIME_TOKEN_TRANSFER_SOURCE, { ...KERNEL, maximumInputBytes: 1_000_000 },
     );
@@ -5505,65 +4962,14 @@ describe('kernel composite counter-key settlement', () => {
     expect(pay.runtimeLoopTransfers).toEqual([expect.objectContaining({
       siteCount: 1, siteKinds: ['token'], tokenContainerSlots: [0],
     })]);
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'pay')?.eligible).toBe(true);
+    const routed = artifact.messageBus?.handlers.find((handler) => handler.name === 'pay');
+    expect(routed).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+    expect(() => encodeMessageBatch(artifact, [{
+      function: 'pay', args: [3n, new Uint8Array(32), Uint8Array.of(0x51)],
+    }])).toThrow(/not batch eligible: KERNEL_LAYOUT/);
+  });
 
-    const inner = new Contract(artifact, [], { provider });
-    const { categoryId } = await setupStatefulUtxos(
-      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
-    );
-    const token = await genesisFtContainer(provider, inner, categoryId, [100n]);
-    const contract = StatefulContract.withCategory(inner, categoryId);
-    const recipientFunder = await createBareP2pkhFeeFunder(provider, 100_000n);
-    const recipient = recipientFunder.unlocker.generateLockingBytecode();
-
-    const zeroBuilder = await contract.batch([{
-      function: 'pay', args: [0n, hexToBin(token.category), recipient],
-    }]).build();
-    const zeroTransaction = zeroBuilder.buildLibauthTransaction();
-    expect(zeroTransaction.outputs.filter((output) => output.token
-      && binToHex(output.token.category) === token.category
-      && typeof output.lockingBytecode !== 'string'
-      && binToHex(output.lockingBytecode) === binToHex(recipient))).toHaveLength(0);
-    const vm = createVirtualMachineBch2026ForProvider(provider);
-    const zeroSources = generateLibauthSourceOutputs(zeroBuilder.inputs);
-    for (let inputIndex = 0; inputIndex < zeroTransaction.inputs.length; inputIndex += 1) {
-      expect(vm.stateSuccess(vm.evaluate({
-        inputIndex, sourceOutputs: zeroSources, transaction: zeroTransaction,
-      })), `zero token input ${inputIndex}`).toBe(true);
-    }
-
-    const builder = await contract.batch([{
-      function: 'pay', args: [3n, hexToBin(token.category), recipient],
-    }]).build();
-    const transaction = builder.buildLibauthTransaction();
-    const transfers = transaction.outputs.filter((output) => output.token
-      && binToHex(output.token.category) === token.category
-      && binToHex(output.lockingBytecode) === binToHex(recipient));
-    expect(transfers.map((output) => output.token!.amount)).toEqual([2n, 3n, 4n]);
-    expect(transaction.outputs.some((output) => output.token
-      && binToHex(output.token.category) === token.category
-      && output.token.amount === 91n)).toBe(true);
-    const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
-    for (let inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex += 1) {
-      expect(vm.stateSuccess(vm.evaluate({ inputIndex, sourceOutputs, transaction })), `token input ${inputIndex}`)
-        .toBe(true);
-    }
-
-    const hostileTransaction = builder.buildLibauthTransaction();
-    const hostileTransfer = hostileTransaction.outputs.find((output) => output.token
-      && binToHex(output.token.category) === token.category
-      && binToHex(output.lockingBytecode) === binToHex(recipient));
-    expect(hostileTransfer).toBeDefined();
-    hostileTransfer!.token!.amount += 1n;
-    const routeInputIndex = builder.inputs.findIndex((input) =>
-      'abiFunction' in input.unlocker && input.unlocker.abiFunction.name === artifact.messageBus!.route.name);
-    expect(vm.stateSuccess(vm.evaluate({
-      inputIndex: routeInputIndex, sourceOutputs, transaction: hostileTransaction,
-    }))).not.toBe(true);
-  }, 180_000);
-
-  it('freezes repeated NFT transfers beside collection writes', async () => {
-    const provider = createTestProvider();
+  it('freezes repeated NFT transfers beside collection writes', () => {
     const artifact = compileString(
       RUNTIME_NFT_TRANSFER_SOURCE, { ...KERNEL, maximumInputBytes: 1_000_000 },
     );
@@ -5571,100 +4977,14 @@ describe('kernel composite counter-key settlement', () => {
       .toEqual([expect.objectContaining({
         siteCount: 1, siteKinds: ['nft'], tokenContainerSlots: [0],
       })]);
-    const routed = artifact.messageBus?.handlers.find((handler) => handler.name === 'send');
-    expect(routed).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
-    if (routed?.eligible === false) {
-      expect(() => encodeMessageBatch(artifact, [{ function: 'send', args: [] }]))
-        .toThrow(/not batch eligible: KERNEL_LAYOUT/);
-      return;
-    }
-    const inner = new Contract(artifact, [], { provider });
-    const { categoryId } = await setupStatefulUtxos(
-      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
-    );
-    const connectedInner = inner.withCategory(hexToBin(categoryId));
-    const seeded = await provider.addTokenUtxosDynamic((category) => [{
-      address: getTokenContainerAddress(connectedInner, categoryId, category),
-      satoshis: 1200n,
-      token: { amount: 0n, nft: { capability: 'minting', commitment: 'a1' } },
-    }]);
-    const contract = StatefulContract.withCategory(connectedInner, categoryId);
-    const recipientFunder = await createBareP2pkhFeeFunder(provider, 100_000n);
-    const recipient = recipientFunder.unlocker.generateLockingBytecode();
-    const category = hexToBin(seeded.categoryId);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'send'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+    expect(() => encodeMessageBatch(artifact, [{
+      function: 'send', args: [0n, new Uint8Array(32), Uint8Array.of(0x51), new Uint8Array(), 0n],
+    }])).toThrow(/not batch eligible: KERNEL_LAYOUT/);
+  });
 
-    const zeroBuilder = await contract.batch([{
-      function: 'send', args: [0n, category, recipient, hexToBin('c0ffee'), 0n],
-    }]).build();
-    const zeroTransaction = zeroBuilder.buildLibauthTransaction();
-    expect(zeroTransaction.outputs.some((output) => output.token
-      && binToHex(output.token.category) === seeded.categoryId
-      && output.token.nft?.capability === 'minting'
-      && binToHex(output.token.nft.commitment) === 'a1')).toBe(true);
-    const vm = createVirtualMachineBch2026ForProvider(provider);
-    const zeroSources = generateLibauthSourceOutputs(zeroBuilder.inputs);
-    for (let inputIndex = 0; inputIndex < zeroTransaction.inputs.length; inputIndex += 1) {
-      expect(vm.stateSuccess(vm.evaluate({
-        inputIndex, sourceOutputs: zeroSources, transaction: zeroTransaction,
-      })), `zero NFT input ${inputIndex}`).toBe(true);
-    }
-    const hostileZero = zeroBuilder.buildLibauthTransaction();
-    const hostileZeroContainer = hostileZero.outputs.find((output) => output.token
-      && binToHex(output.token.category) === seeded.categoryId
-      && output.token.nft?.capability === 'minting');
-    expect(hostileZeroContainer).toBeDefined();
-    delete hostileZeroContainer!.token!.nft;
-    const zeroRouteInputIndex = zeroBuilder.inputs.findIndex((input) =>
-      'abiFunction' in input.unlocker && input.unlocker.abiFunction.name === artifact.messageBus!.route.name);
-    expect(vm.stateSuccess(vm.evaluate({
-      inputIndex: zeroRouteInputIndex, sourceOutputs: zeroSources, transaction: hostileZero,
-    }))).not.toBe(true);
-
-    const builder = await contract.batch([{
-      function: 'send', args: [2n, category, recipient, hexToBin('c0ffee'), 0n],
-    }]).build();
-    const transaction = builder.buildLibauthTransaction();
-    const transfers = transaction.outputs.filter((output) => output.token
-      && binToHex(output.token.category) === seeded.categoryId
-      && output.token.nft && binToHex(output.token.nft.commitment) === 'c0ffee'
-      && binToHex(output.lockingBytecode) === binToHex(recipient));
-    expect(transfers).toHaveLength(2);
-    expect(transfers.every((output) => output.token?.nft?.capability === 'none')).toBe(true);
-    expect(transaction.outputs.some((output) => output.token
-      && binToHex(output.token.category) === seeded.categoryId
-      && output.token.nft?.capability === 'minting')).toBe(true);
-    const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
-    for (let inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex += 1) {
-      expect(vm.stateSuccess(vm.evaluate({
-        inputIndex, sourceOutputs, transaction,
-      })), `NFT input ${inputIndex}`).toBe(true);
-    }
-
-    const hostile = builder.buildLibauthTransaction();
-    const hostileOutput = hostile.outputs.find((output) => output.token
-      && binToHex(output.token.category) === seeded.categoryId
-      && output.token.nft && binToHex(output.token.nft.commitment) === 'c0ffee');
-    expect(hostileOutput).toBeDefined();
-    hostileOutput!.token!.nft!.commitment = hexToBin('bad0');
-    const routeInputIndex = builder.inputs.findIndex((input) =>
-      'abiFunction' in input.unlocker && input.unlocker.abiFunction.name === artifact.messageBus!.route.name);
-    expect(vm.stateSuccess(vm.evaluate({
-      inputIndex: routeInputIndex, sourceOutputs, transaction: hostile,
-    }))).not.toBe(true);
-
-    const immutable = await provider.addTokenUtxosDynamic((immutableCategory) => [{
-      address: getTokenContainerAddress(connectedInner, categoryId, immutableCategory),
-      satoshis: 1200n,
-      token: { amount: 0n, nft: { capability: 'none', commitment: 'f1' } },
-    }]);
-    await expect(contract.batch([{
-      function: 'send',
-      args: [2n, hexToBin(immutable.categoryId), recipient, hexToBin('f2'), 0n],
-    }]).build()).rejects.toThrow(/non-minting container .* more than once/);
-  }, 180_000);
-
-  it('freezes conditional runtime NFT sites beside collection writes', async () => {
-    const provider = createTestProvider();
+  it('freezes conditional runtime NFT sites beside collection writes', () => {
     const artifact = compileString(
       CONDITIONAL_RUNTIME_NFT_TRANSFER_SOURCE, { ...KERNEL, maximumInputBytes: 1_000_000 },
     );
@@ -5675,67 +4995,9 @@ describe('kernel composite counter-key settlement', () => {
     })]);
     const routed = artifact.messageBus?.handlers.find((handler) => handler.name === 'split');
     expect(routed).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
-    if (routed?.eligible === false) {
-      expect(() => encodeMessageBatch(artifact, [{ function: 'split', args: [] }]))
-        .toThrow(/not batch eligible: KERNEL_LAYOUT/);
-      return;
-    }
-    const inner = new Contract(artifact, [], { provider });
-    const { categoryId } = await setupStatefulUtxos(
-      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
-    );
-    const connectedInner = inner.withCategory(hexToBin(categoryId));
-    const even = await provider.addTokenUtxosDynamic((category) => [{
-      address: getTokenContainerAddress(connectedInner, categoryId, category),
-      satoshis: 1200n,
-      token: { amount: 0n, nft: { capability: 'minting', commitment: 'e0' } },
-    }]);
-    const odd = await provider.addTokenUtxosDynamic((category) => [{
-      address: getTokenContainerAddress(connectedInner, categoryId, category),
-      satoshis: 1200n,
-      token: { amount: 0n, nft: { capability: 'minting', commitment: '0d' } },
-    }]);
-    const contract = StatefulContract.withCategory(connectedInner, categoryId);
-    const evenFunder = await createBareP2pkhFeeFunder(provider, 100_000n);
-    const oddFunder = await createBareP2pkhFeeFunder(provider, 100_000n);
-    const evenRecipient = evenFunder.unlocker.generateLockingBytecode();
-    const oddRecipient = oddFunder.unlocker.generateLockingBytecode();
-    const builder = await contract.batch([{
-      function: 'split',
-      args: [
-        1n, hexToBin(even.categoryId), hexToBin(odd.categoryId),
-        evenRecipient, oddRecipient, hexToBin('cafe'),
-      ],
-    }]).build();
-    const transaction = builder.buildLibauthTransaction();
-    expect(transaction.outputs.filter((output) => output.token
-      && binToHex(output.token.category) === even.categoryId
-      && output.token.nft && binToHex(output.token.nft.commitment) === 'cafe'
-      && binToHex(output.lockingBytecode) === binToHex(evenRecipient))).toHaveLength(1);
-    expect(transaction.outputs.filter((output) => output.token
-      && binToHex(output.token.category) === odd.categoryId
-      && output.token.nft && binToHex(output.token.nft.commitment) === 'cafe'
-      && binToHex(output.lockingBytecode) === binToHex(oddRecipient))).toHaveLength(0);
-    const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
-    const vm = createVirtualMachineBch2026ForProvider(provider);
-    for (let inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex += 1) {
-      expect(vm.stateSuccess(vm.evaluate({ inputIndex, sourceOutputs, transaction })), `NFT input ${inputIndex}`)
-        .toBe(true);
-    }
-
-    // The odd branch was not reached. Removing that unrelated container's NFT must therefore remain invalid;
-    // a route-wide "some NFT site exists" flag would incorrectly authorize this burn.
-    const hostile = builder.buildLibauthTransaction();
-    const oddContainer = hostile.outputs.find((output) => output.token
-      && binToHex(output.token.category) === odd.categoryId
-      && output.token.nft?.capability === 'minting');
-    expect(oddContainer).toBeDefined();
-    delete oddContainer!.token!.nft;
-    const routeInputIndex = builder.inputs.findIndex((input) =>
-      'abiFunction' in input.unlocker && input.unlocker.abiFunction.name === artifact.messageBus!.route.name);
-    expect(vm.stateSuccess(vm.evaluate({ inputIndex: routeInputIndex, sourceOutputs, transaction: hostile })))
-      .not.toBe(true);
-  }, 180_000);
+    expect(() => encodeMessageBatch(artifact, [{ function: 'split', args: [] }]))
+      .toThrow(/not batch eligible: KERNEL_LAYOUT/);
+  });
 
   it('freezes effectful repeated-token amounts beside collection writes', async () => {
     const provider = createTestProvider();
@@ -5917,27 +5179,25 @@ describe('kernel composite counter-key settlement', () => {
     expect(receipt.events?.map((event) => event.args.i)).toEqual([-2n]);
   }, 180_000);
 
-  it('freezes independent mapping journals that also emit events', async () => {
+  it('rejects distinct event-bearing mutation streams while preserving one-stream rows', async () => {
     const provider = createTestProvider();
-    const artifact = compileString(INDEPENDENT_ROW_LOOP_SOURCE, KERNEL);
+    const artifact = compileString(INDEPENDENT_ROW_LOOP_SOURCE, { ...KERNEL, maximumInputBytes: 1_000_000 });
     expect(artifact.messageBus?.handlers.filter((handler) =>
       handler.name === 'writeA' || handler.name === 'writeB'))
       .toEqual([
-        expect.objectContaining({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' }),
-        expect.objectContaining({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' }),
+        expect.objectContaining({ eligible: true }),
+        expect.objectContaining({ eligible: true }),
       ]);
-    expect(() => encodeMessageBatch(artifact, [{ function: 'writeA', args: [] }]))
-      .toThrow(/not batch eligible: KERNEL_LAYOUT/);
-    return;
     const inner = new Contract(artifact, [], { provider });
     const { categoryId } = await setupStatefulUtxos(
       provider, inner, artifact.stateLayout!, {}, { saltContract: true },
     );
     const contract = StatefulContract.withCategory(inner, categoryId);
-    const call = contract.batch([
+    expect(() => contract.batch([
       { function: 'writeB', args: [2n] },
       { function: 'writeA', args: [3n] },
-    ]);
+    ])).toThrow(/runtime event rows from distinct mutation journal streams cannot share one batch/);
+    const call = contract.batch([{ function: 'writeA', args: [3n] }]);
     const builder = await call.build();
     const vm = createVirtualMachineBch2026ForProvider(provider);
     const transaction = builder.buildLibauthTransaction();
@@ -5948,11 +5208,8 @@ describe('kernel composite counter-key settlement', () => {
     }
     const receipt = await call.send();
     expect(receipt.events?.map((event) => [event.event, event.args.n ?? event.args.i])).toEqual([
-      ['BBefore', 2n], ['BHit', 0n], ['BHit', 1n], ['BAfter', 2n],
       ['ABefore', 3n], ['AHit', 0n], ['AHit', 1n], ['AHit', 2n], ['AAfter', 3n],
     ]);
-    await expect(StatefulContract.withCategory(inner, categoryId).call.checkB(1n, 21n).send())
-      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
     await expect(StatefulContract.withCategory(inner, categoryId).call.checkA(2n, 12n).send())
       .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
   }, 180_000);
@@ -6007,7 +5264,6 @@ describe('kernel composite counter-key settlement', () => {
       .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
     await expect(updated.call.check(3n, 11n, 31n).send())
       .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
-    await expect(updated.call.writeOverlap(2n).build()).rejects.toThrow(/read-your-writes transition/);
     await expect(updated.call.writeDescending(-1n).send())
       .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
     await expect(updated.call.check(5n, 0n, 50n).send())
@@ -6031,6 +5287,8 @@ describe('kernel composite counter-key settlement', () => {
     expect(shapes.sortedUpsertLoopInfo).toHaveLength(2);
     expect(new Set(shapes.sortedUpsertLoopInfo?.map((info) => info.varyingArrayParam)).size).toBe(2);
     expect(new Set(shapes.sortedUpsertLoopInfo?.map((info) => info.journalExecutionGroup)).size).toBe(1);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'writeShapes'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
     const shapeCall = updated.call.writeShapes(3n, 80n);
     const shapeBuilder = await shapeCall.build();
     const shapeInput = shapeBuilder.inputs.find((input) =>
@@ -6044,37 +5302,26 @@ describe('kernel composite counter-key settlement', () => {
     }
     await expect(shapeCall.send())
       .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
-    const routedShapes = updated.batch([{ function: 'writeShapes', args: [3n, 100n] }]);
-    const routedShapeBuilder = await routedShapes.build();
-    const routedShapeInputIndex = routedShapeBuilder.inputs.findIndex((input) =>
-      'abiFunction' in input.unlocker && input.unlocker.abiFunction.name === artifact.messageBus!.route.name);
-    const routedShapeUnlocker = routedShapeBuilder.inputs[routedShapeInputIndex]?.unlocker;
-    if (!routedShapeUnlocker || !('params' in routedShapeUnlocker)) throw new Error('shape route input missing');
-    const firstCountName = shapes.sortedUpsertLoopInfo![0].inputCountParam!;
-    const firstCountRouteIndex = artifact.messageBus!.route.inputs.findIndex((input) => input.name === firstCountName);
-    expect(routedShapeUnlocker.params[firstCountRouteIndex]).toEqual([3n]);
-    const restoreRoutedShapeUnlocker = routedShapeUnlocker.contract.createCompilerRouteUnlocker(
-      routedShapeUnlocker.abiFunction, hexToBin(artifact.messageBus!.route.selector!),
-    );
-    const hostileShapeParams = [...routedShapeUnlocker.params];
-    hostileShapeParams[firstCountRouteIndex] = [2n];
-    routedShapeBuilder.inputs[routedShapeInputIndex].unlocker = restoreRoutedShapeUnlocker(...hostileShapeParams);
-    const hostileShapeVm = createVirtualMachineBch2026ForProvider(provider);
-    const hostileShapeTransaction = routedShapeBuilder.buildLibauthTransaction();
-    expect(hostileShapeVm.stateSuccess(hostileShapeVm.evaluate({
-      inputIndex: routedShapeInputIndex,
-      sourceOutputs: generateLibauthSourceOutputs(routedShapeBuilder.inputs),
-      transaction: hostileShapeTransaction,
-    }))).not.toBe(true);
-    routedShapeBuilder.inputs[routedShapeInputIndex].unlocker = routedShapeUnlocker;
-    await expect(routedShapes.send())
-      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    expect(() => encodeMessageBatch(artifact, [{ function: 'writeShapes', args: [3n, 100n] }]))
+      .toThrow(/not batch eligible: KERNEL_LAYOUT/);
     for (let i = 0n; i < 3n; i += 1n) {
-      await expect(updated.call.check(9n, i * 2n, 100n + i).send())
+      await expect(updated.call.check(9n, i * 2n, 80n + i).send())
         .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
-      await expect(updated.call.check(9n, i * 2n + 1n, 110n + i).send())
+      await expect(updated.call.check(9n, i * 2n + 1n, 90n + i).send())
         .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
     }
+    const overlapBuilder = await updated.call.writeOverlap(2n).build();
+    const overlapTransaction = overlapBuilder.buildLibauthTransaction();
+    const overlapInputIndex = overlapBuilder.inputs.findIndex((input) =>
+      'abiFunction' in input.unlocker && input.unlocker.abiFunction.name === 'writeOverlap');
+    const overlapVm = createVirtualMachineBch2026ForProvider(provider);
+    expect(overlapVm.stateSuccess(
+      overlapVm.evaluate({
+        inputIndex: overlapInputIndex,
+        sourceOutputs: generateLibauthSourceOutputs(overlapBuilder.inputs),
+        transaction: overlapTransaction,
+      }),
+    )).not.toBe(true);
 
     const conditionalLocal = artifact.abi.find((candidate) => candidate.name === 'writeConditionalLocal')!;
     expect(conditionalLocal.sortedUpsertLoopInfo?.[0]).toMatchObject({
@@ -6204,10 +5451,10 @@ describe('kernel composite counter-key settlement', () => {
       .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
 
     await expect(updated.batch([{ function: 'transform', args: [8n, 2n] }]).send())
+      .rejects.toThrow(/selected absent old-value witness cannot be materialized as an insertion/);
+    await expect(updated.call.check(8n, 0n, 0n).send())
       .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
-    await expect(updated.call.check(8n, 0n, 5n).send())
-      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
-    await expect(updated.call.check(8n, 1n, 6n).send())
+    await expect(updated.call.check(8n, 1n, 0n).send())
       .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
   }, 180_000);
 
@@ -6392,34 +5639,14 @@ describe('kernel composite counter-key settlement', () => {
     }
   }, 180_000);
 
-  it('authenticates old structs and persists counter-keyed row updates', async () => {
-    const provider = createTestProvider();
+  it('fences nested old-aggregate locals without hiding their typed journal metadata', () => {
     const artifact = compileString(COUNTER_STRUCT_RMW_SOURCE, KERNEL);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'update'))
-      .toMatchObject({ eligible: true });
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+    expect(artifact.abi.find((handler) => handler.name === 'update')?.sortedUpsertLoopInfo)
+      .toEqual([expect.objectContaining({ collection: 'pairs', valueRuntimeLocal: 'pair' })]);
     expect(artifact.debug!.bytecode.length / 2).toBeLessThanOrEqual(10_000);
-    const inner = new Contract(artifact, [], { provider });
-    const { categoryId } = await setupStatefulUtxos(
-      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
-    );
-    const contract = StatefulContract.withCategory(inner, categoryId);
-    await contract.call.seed(0n, 10n, 20n).send();
-    await contract.call.seed(1n, 30n, 40n).send();
-
-    const call = contract.batch([{ function: 'update', args: [3n] }]);
-    const builder = await call.build();
-    const vm = createVirtualMachineBch2026ForProvider(provider);
-    const transaction = builder.buildLibauthTransaction();
-    const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
-    for (let inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex += 1) {
-      const state = vm.evaluate({ inputIndex, sourceOutputs, transaction });
-      expect(vm.stateSuccess(state), `input ${inputIndex}`).toBe(true);
-    }
-    await expect(call.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
-    await expect(contract.call.check(0n, 11n, 22n).send()).resolves.toBeDefined();
-    await expect(contract.call.check(1n, 31n, 42n).send()).resolves.toBeDefined();
-    await expect(contract.call.check(2n, 1n, 2n).send()).resolves.toBeDefined();
-  }, 180_000);
+  });
 
   it('authenticates direct structural expressions for present and absent counter keys', async () => {
     const provider = createTestProvider();
@@ -6553,8 +5780,7 @@ describe('kernel composite counter-key settlement', () => {
     await expect(contract.call.check(0n, 7n).send()).resolves.toBeDefined();
   }, 180_000);
 
-  it('settles fixed constructed-array push recurrences inside a ranged kernel loop', async () => {
-    const provider = createTestProvider();
+  it('fences constructed-array push recurrences while retaining their key provenance', () => {
     const artifact = compileString(`contract KernelLoopArrayPush() {
       mapping(int => int) slots;
       function write(int n) public {
@@ -6607,58 +5833,13 @@ describe('kernel composite counter-key settlement', () => {
       function seed(int key) public { this.slots[key] = 0; require(true); }
       function check(int key, int expected) public { require(this.slots[key] == expected); }
     }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
-      .toMatchObject({ eligible: true });
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'prefix'))
-      .toMatchObject({ eligible: true });
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'defaultPrefix'))
-      .toMatchObject({ eligible: true });
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'conditional'))
-      .toMatchObject({ eligible: true });
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'conditionalSwitch'))
-      .toMatchObject({ eligible: true });
-    const inner = new Contract(artifact, [], { provider });
-    const { categoryId } = await setupStatefulUtxos(
-      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
-    );
-    const contract = StatefulContract.withCategory(inner, categoryId);
-    for (const key of [11n, 21n, 13n, 23n, 15n, 25n]) {
-      await contract.call.seed(key).send();
+    for (const name of ['write', 'prefix', 'defaultPrefix', 'conditional', 'conditionalSwitch']) {
+      expect(artifact.messageBus?.handlers.find((handler) => handler.name === name))
+        .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+      expect(artifact.abi.find((handler) => handler.name === name)?.sortedUpsertLoopInfo)
+        .toEqual(expect.arrayContaining([expect.objectContaining({ constructedKeyReplay: true })]));
     }
-    const call = contract.batch([{ function: 'write', args: [6n] }]);
-    const builder = await call.build();
-    const vm = createVirtualMachineBch2026ForProvider(provider);
-    const transaction = builder.buildLibauthTransaction();
-    const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
-    for (let inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex += 1) {
-      expect(vm.stateSuccess(vm.evaluate({ inputIndex, sourceOutputs, transaction })), `input ${inputIndex}`)
-        .toBe(true);
-    }
-    await expect(call.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
-    for (const [key, expected] of [
-      [11n, 1n], [21n, 101n], [13n, 3n], [23n, 103n], [15n, 5n], [25n, 105n],
-    ] as const) {
-      await expect(contract.call.check(key, expected).send()).resolves.toBeDefined();
-    }
-    for (const key of [31n, 32n, 33n]) await contract.call.seed(key).send();
-    await expect(contract.batch([{ function: 'prefix', args: [3n] }]).send()).resolves.toBeDefined();
-    for (const [key, expected] of [[31n, 1n], [32n, 2n], [33n, 3n]] as const) {
-      await expect(contract.call.check(key, expected).send()).resolves.toBeDefined();
-    }
-    await contract.call.seed(0n).send();
-    await expect(contract.batch([{ function: 'defaultPrefix', args: [3n] }]).send()).resolves.toBeDefined();
-    await expect(contract.call.check(0n, 3n).send()).resolves.toBeDefined();
-    for (const key of [50n, 61n, 52n, 63n]) await contract.call.seed(key).send();
-    await expect(contract.batch([{ function: 'conditional', args: [4n] }]).send()).resolves.toBeDefined();
-    for (const [key, expected] of [[50n, 1n], [61n, 2n], [52n, 3n], [63n, 4n]] as const) {
-      await expect(contract.call.check(key, expected).send()).resolves.toBeDefined();
-    }
-    for (const key of [70n, 81n, 72n, 83n]) await contract.call.seed(key).send();
-    await expect(contract.batch([{ function: 'conditionalSwitch', args: [4n] }]).send()).resolves.toBeDefined();
-    for (const [key, expected] of [[70n, 1n], [81n, 2n], [72n, 3n], [83n, 4n]] as const) {
-      await expect(contract.call.check(key, expected).send()).resolves.toBeDefined();
-    }
-  }, 180_000);
+  });
 
   it('preserves every occurrence when counter-derived keys repeat', async () => {
     const provider = createTestProvider();
@@ -6715,8 +5896,7 @@ describe('kernel composite counter-key settlement', () => {
     await expect(contract.call.check(1n, 0n).send()).resolves.toBeDefined();
   }, 180_000);
 
-  it('settles a constructed-array pop recurrence inside a kernel loop', async () => {
-    const provider = createTestProvider();
+  it('fences constructed-array pop recurrences while retaining their key provenance', () => {
     const artifact = compileString(`contract KernelLoopArrayPop() {
       mapping(int => int) slots;
       function write(int n) public {
@@ -6771,67 +5951,13 @@ describe('kernel composite counter-key settlement', () => {
       function seed(int key) public { this.slots[key] = 0; require(true); }
       function check(int key, int expected) public { require(this.slots[key] == expected); }
     }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
-      .toMatchObject({ eligible: true });
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'conditionalPop'))
-      .toMatchObject({ eligible: true });
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'variablePop'))
-      .toMatchObject({ eligible: true });
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'optionalPop'))
-      .toMatchObject({ eligible: true });
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'variablePush'))
-      .toMatchObject({ eligible: true });
-    const inner = new Contract(artifact, [], { provider });
-    const { categoryId } = await setupStatefulUtxos(
-      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
-    );
-    const contract = StatefulContract.withCategory(inner, categoryId);
-    for (const key of [11n, 12n, 13n]) await contract.call.seed(key).send();
-    const call = contract.batch([{ function: 'write', args: [3n] }]);
-    const builder = await call.build();
-    const vm = createVirtualMachineBch2026ForProvider(provider);
-    const transaction = builder.buildLibauthTransaction();
-    const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
-    for (let inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex += 1) {
-      expect(vm.stateSuccess(vm.evaluate({ inputIndex, sourceOutputs, transaction })), `input ${inputIndex}`)
-        .toBe(true);
+    for (const name of ['write', 'conditionalPop', 'variablePop', 'optionalPop', 'variablePush']) {
+      expect(artifact.messageBus?.handlers.find((handler) => handler.name === name))
+        .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+      expect(artifact.abi.find((handler) => handler.name === name)?.sortedUpsertLoopInfo)
+        .toEqual(expect.arrayContaining([expect.objectContaining({ constructedKeyReplay: true })]));
     }
-    await expect(call.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
-    for (const [key, expected] of [[13n, 100n], [12n, 101n], [11n, 102n]] as const) {
-      await expect(contract.call.check(key, expected).send()).resolves.toBeDefined();
-    }
-    for (const key of [13n, 14n, 15n]) await contract.call.seed(key).send();
-    await expect(contract.batch([{ function: 'conditionalPop', args: [3n] }]).send()).resolves.toBeDefined();
-    for (const [key, expected] of [[15n, 200n], [14n, 201n], [13n, 202n]] as const) {
-      await expect(contract.call.check(key, expected).send()).resolves.toBeDefined();
-    }
-    for (const key of [14n, 16n, 17n]) await contract.call.seed(key).send();
-    await expect(contract.batch([{ function: 'variablePop', args: [2n, true] }]).send())
-      .resolves.toBeDefined();
-    for (const [key, expected] of [[16n, 300n], [14n, 301n]] as const) {
-      await expect(contract.call.check(key, expected).send()).resolves.toBeDefined();
-    }
-    await expect(contract.batch([{ function: 'variablePop', args: [2n, false] }]).send())
-      .resolves.toBeDefined();
-    for (const [key, expected] of [[17n, 300n], [16n, 301n]] as const) {
-      await expect(contract.call.check(key, expected).send()).resolves.toBeDefined();
-    }
-    for (const key of [21n, 22n, 26n, 27n]) await contract.call.seed(key).send();
-    await expect(contract.batch([{ function: 'optionalPop', args: [2n, true] }]).send())
-      .resolves.toBeDefined();
-    await expect(contract.batch([{ function: 'optionalPop', args: [2n, false] }]).send())
-      .resolves.toBeDefined();
-    for (const [key, expected] of [[27n, 400n], [26n, 401n], [21n, 400n], [22n, 401n]] as const) {
-      await expect(contract.call.check(key, expected).send()).resolves.toBeDefined();
-    }
-    await expect(contract.batch([{ function: 'variablePush', args: [2n, true] }]).send())
-      .resolves.toBeDefined();
-    await expect(contract.batch([{ function: 'variablePush', args: [2n, false] }]).send())
-      .resolves.toBeDefined();
-    for (const [key, expected] of [[50n, 500n], [51n, 501n], [60n, 500n], [61n, 501n]] as const) {
-      await expect(contract.call.check(key, expected).send()).resolves.toBeDefined();
-    }
-  }, 180_000);
+  });
 
   it('authenticates pop-then-push keys from a runtime-sized constructed-array prefix', async () => {
     const provider = createTestProvider();
@@ -7072,8 +6198,7 @@ describe('kernel composite counter-key settlement', () => {
     }
   }, 180_000);
 
-  it('settles symbolic push widths, ordinals, and historical branch predicates', async () => {
-    const provider = createTestProvider();
+  it('fences symbolic constructed-key push widths, ordinals, and predicates', () => {
     const artifact = compileString(`contract KernelVariablePushSwitch() {
       mapping(int => int) slots;
       function write(int n, int mode) public {
@@ -7130,44 +6255,13 @@ describe('kernel composite counter-key settlement', () => {
       }
       function check(int key, int expected) public { require(this.slots[key] == expected); }
     }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
-      .toMatchObject({ eligible: true });
-    const inner = new Contract(artifact, [], { provider });
-    const { categoryId } = await setupStatefulUtxos(
-      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
-    );
-    const contract = StatefulContract.withCategory(inner, categoryId);
-    for (const mode of [0n, 1n, 2n]) {
-      await expect(contract.batch([{ function: 'write', args: [2n, mode] }]).send())
-        .resolves.toBeDefined();
+    for (const name of ['write', 'historical', 'locals', 'joined', 'optional']) {
+      expect(artifact.messageBus?.handlers.find((handler) => handler.name === name))
+        .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+      expect(artifact.abi.find((handler) => handler.name === name)?.sortedUpsertLoopInfo)
+        .toEqual(expect.arrayContaining([expect.objectContaining({ constructedKeyReplay: true })]));
     }
-    for (const key of [70n, 90n, 120n]) {
-      await expect(contract.call.check(key, 600n).send()).resolves.toBeDefined();
-      await expect(contract.call.check(key + 1n, 601n).send()).resolves.toBeDefined();
-    }
-    await expect(contract.batch([{ function: 'historical', args: [4n] }]).send())
-      .resolves.toBeDefined();
-    for (const [key, expected] of [[130n, 701n], [141n, 702n], [132n, 703n]] as const) {
-      await expect(contract.call.check(key, expected).send()).resolves.toBeDefined();
-    }
-    await expect(contract.batch([{ function: 'locals', args: [3n] }]).send())
-      .resolves.toBeDefined();
-    for (const [key, expected] of [[210n, 800n], [221n, 801n], [212n, 802n]] as const) {
-      await expect(contract.call.check(key, expected).send()).resolves.toBeDefined();
-    }
-    await expect(contract.batch([{ function: 'joined', args: [3n] }]).send())
-      .resolves.toBeDefined();
-    for (const [key, expected] of [[300n, 900n], [401n, 901n], [302n, 902n]] as const) {
-      await expect(contract.call.check(key, expected).send()).resolves.toBeDefined();
-    }
-    await expect(contract.batch([{ function: 'optional', args: [3n, false] }]).send())
-      .resolves.toBeDefined();
-    await expect(contract.batch([{ function: 'optional', args: [3n, true] }]).send())
-      .resolves.toBeDefined();
-    for (const [key, expected] of [[800n, 1000n], [801n, 1001n], [802n, 1002n]] as const) {
-      await expect(contract.call.check(key, expected).send()).resolves.toBeDefined();
-    }
-  }, 180_000);
+  });
 
   it('settles straight-line resized local key arrays on a kernel row', async () => {
     const provider = createTestProvider();
@@ -7193,8 +6287,7 @@ describe('kernel composite counter-key settlement', () => {
     await expect(contract.call.check(29n, 2n).send()).resolves.toBeDefined();
   }, 180_000);
 
-  it('settles constructed-key mutations replayed through a pure helper alias', async () => {
-    const provider = createTestProvider();
+  it('fences multi-arm constructed-key mutations replayed through a pure helper alias', () => {
     const artifact = compileString(`contract KernelHelperLocalKeys() {
       mapping(int => int) slots;
       function mutate(int[] memory xs, int next, bool high, int mode) internal pure {
@@ -7216,27 +6309,14 @@ describe('kernel composite counter-key settlement', () => {
       function check(int key, int expected) public { require(this.slots[key] == expected); }
     }`, KERNEL);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
-      .toMatchObject({ eligible: true });
-    const inner = new Contract(artifact, [], { provider });
-    const { categoryId } = await setupStatefulUtxos(
-      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
-    );
-    const contract = StatefulContract.withCategory(inner, categoryId);
-    await expect(contract.batch([{ function: 'write', args: [2n, 700n, true, 0n] }]).send())
-      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
-    await expect(contract.call.check(700n, 10n).send()).resolves.toBeDefined();
-    await expect(contract.call.check(701n, 11n).send()).resolves.toBeDefined();
-    await expect(contract.batch([{ function: 'write', args: [2n, 800n, false, 1n] }]).send())
-      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
-    await expect(contract.call.check(810n, 10n).send()).resolves.toBeDefined();
-    await expect(contract.call.check(802n, 11n).send()).resolves.toBeDefined();
-    await expect(contract.batch([{ function: 'write', args: [2n, 900n, true, 9n] }]).send())
-      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
-    await expect(contract.call.check(920n, 10n).send()).resolves.toBeDefined();
-    await expect(contract.call.check(902n, 11n).send()).resolves.toBeDefined();
-  }, 180_000);
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+    expect(artifact.abi.find((handler) => handler.name === 'write')?.sortedUpsertLoopInfo)
+      .toEqual([expect.objectContaining({ multiArmConstructedKeyReplay: true })]);
+    expect(() => encodeMessageBatch(artifact, [{ function: 'write', args: [2n, 800n, false, 1n] }]))
+      .toThrow(/not batch eligible: KERNEL_LAYOUT/);
+  });
 
-  it('settles source-ordered cross-array reads through distinct memory aliases', async () => {
+  it('fences cross-array helper key replay while preserving direct and single-array controls', async () => {
     const provider = createTestProvider();
     const artifact = compileString(`contract KernelDistinctHelperAliases() {
       mapping(int => int) leftSlots;
@@ -7369,50 +6449,46 @@ describe('kernel composite counter-key settlement', () => {
       function checkRight(int key, int expected) public { require(this.rightSlots[key] == expected); }
     }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
-      .toMatchObject({ eligible: true });
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+    expect(artifact.abi.find((handler) => handler.name === 'write')?.sortedUpsertLoopInfo)
+      .toEqual(expect.arrayContaining([expect.objectContaining({ crossArrayKeyReplay: true })]));
+    for (const name of ['writeLength', 'writeTransitive']) {
+      expect(artifact.messageBus?.handlers.find((handler) => handler.name === name))
+        .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+    }
+    for (const name of [
+      'writeAliased', 'writeTransitiveCopy', 'writeCapturedReturn',
+    ]) {
+      expect(artifact.messageBus?.handlers.find((handler) => handler.name === name))
+        .toMatchObject({ eligible: true });
+    }
+    for (const name of [
+      'writeNestedCapturedReturn', 'writeConditionalReturn', 'writeSwitchReturn',
+    ]) {
+      expect(artifact.messageBus?.handlers.find((handler) => handler.name === name))
+        .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+      expect(artifact.abi.find((handler) => handler.name === name)?.sortedUpsertLoopInfo)
+        .toContainEqual(expect.objectContaining({ nestedHelperReturnReplay: true }));
+    }
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'writeDirect'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+    expect(() => encodeMessageBatch(artifact, [{ function: 'write', args: [2n, 700n, 800n] }]))
+      .toThrow(/not batch eligible: KERNEL_LAYOUT/);
     const inner = new Contract(artifact, [], { provider });
     const { categoryId } = await setupStatefulUtxos(
       provider, inner, artifact.stateLayout!, {}, { saltContract: true },
     );
     const contract = StatefulContract.withCategory(inner, categoryId);
-    await expect(contract.batch([{ function: 'write', args: [2n, 700n, 800n] }]).send())
-      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
-    await expect(contract.batch([{ function: 'writeDirect', args: [2n, 900n, 1000n] }]).send())
-      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
-    await expect(contract.batch([{ function: 'writeLength', args: [2n] }]).send())
-      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
     await expect(contract.batch([{ function: 'writeAliased', args: [2n, 1100n, 1200n] }]).send())
-      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
-    await expect(contract.batch([{ function: 'writeTransitive', args: [2n, 1300n] }]).send())
       .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
     await expect(contract.batch([{ function: 'writeTransitiveCopy', args: [2n, 1400n] }]).send())
       .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
     await expect(contract.batch([{ function: 'writeCapturedReturn', args: [2n, 1500n] }]).send())
       .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
-    await expect(contract.batch([{ function: 'writeNestedCapturedReturn', args: [2n, 1600n] }]).send())
-      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
-    await expect(contract.batch([{
-      function: 'writeConditionalReturn', args: [2n, 1700n, false],
-    }]).send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
-    await expect(contract.batch([{ function: 'writeSwitchReturn', args: [2n, 1n] }]).send())
-      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
-    await expect(contract.call.checkLeft(1900n, 30n).send()).resolves.toBeDefined();
     await expect(contract.call.checkLeft(2300n, 60n).send()).resolves.toBeDefined();
-    await expect(contract.call.checkLeft(1301n, 70n).send()).resolves.toBeDefined();
-    await expect(contract.call.checkLeft(3n, 71n).send()).resolves.toBeDefined();
     await expect(contract.call.checkLeft(1401n, 90n).send()).resolves.toBeDefined();
     await expect(contract.call.checkLeft(1500n, 100n).send()).resolves.toBeDefined();
     await expect(contract.call.checkLeft(0n, 101n).send()).resolves.toBeDefined();
-    await expect(contract.call.checkLeft(1600n, 110n).send()).resolves.toBeDefined();
-    await expect(contract.call.checkLeft(1601n, 111n).send()).resolves.toBeDefined();
-    await expect(contract.call.checkLeft(1710n, 120n).send()).resolves.toBeDefined();
-    await expect(contract.call.checkLeft(1711n, 121n).send()).resolves.toBeDefined();
-    await expect(contract.call.checkLeft(20n, 130n).send()).resolves.toBeDefined();
-    await expect(contract.call.checkLeft(21n, 131n).send()).resolves.toBeDefined();
-    await expect(contract.call.checkRight(800n, 20n).send()).resolves.toBeDefined();
-    await expect(contract.call.checkRight(1000n, 40n).send()).resolves.toBeDefined();
-    await expect(contract.call.checkRight(1300n, 80n).send()).resolves.toBeDefined();
-    await expect(contract.call.checkRight(0n, 81n).send()).resolves.toBeDefined();
   }, 180_000);
 
   it('settles keys constructed by a literal-bounded pure helper loop with switch continue', async () => {
@@ -7801,8 +6877,7 @@ describe('kernel composite counter-key settlement', () => {
     await expect(contract.call.check(700n, 10n).send()).resolves.toBeDefined();
   }, 180_000);
 
-  it('settles path-balanced transient constructed-array resizes in each logical iteration', async () => {
-    const provider = createTestProvider();
+  it('fences path-balanced transient constructed-array resizes in each logical iteration', () => {
     const artifact = compileString(`contract KernelBalancedResizeKeys() {
       mapping(int => int) slots;
       function write(int n, bool high) public {
@@ -7819,17 +6894,15 @@ describe('kernel composite counter-key settlement', () => {
       function check(int key, int expected) public { require(this.slots[key] == expected); }
     }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
-      .toMatchObject({ eligible: true });
-    const inner = new Contract(artifact, [], { provider });
-    const { categoryId } = await setupStatefulUtxos(
-      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
-    );
-    const contract = StatefulContract.withCategory(inner, categoryId);
-    await expect(contract.batch([{ function: 'write', args: [2n, true] }]).send())
-      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
-    await expect(contract.call.check(100n, 10n).send()).resolves.toBeDefined();
-    await expect(contract.call.check(101n, 11n).send()).resolves.toBeDefined();
-  }, 180_000);
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+    expect(artifact.abi.find((handler) => handler.name === 'write')?.sortedUpsertLoopInfo)
+      .toEqual([
+        expect.objectContaining({ journalExecutionGroup: 0 }),
+        expect.objectContaining({ journalExecutionGroup: 0 }),
+      ]);
+    expect(() => encodeMessageBatch(artifact, [{ function: 'write', args: [2n, true] }]))
+      .toThrow(/not batch eligible: KERNEL_LAYOUT/);
+  });
 
   it('settles stable-prefix keys across a counter-dependent append schedule', async () => {
     const provider = createTestProvider();
@@ -7894,8 +6967,7 @@ describe('kernel composite counter-key settlement', () => {
     await expect(contract.call.check(80n, 60n).send()).resolves.toBeDefined();
   }, 180_000);
 
-  it('settles local array keys initialized by nested switch control', async () => {
-    const provider = createTestProvider();
+  it('fences local array keys selected across nested multi-arm switch control', () => {
     const artifact = compileString(`contract KernelSwitchLocalKeys() {
       mapping(int => int) slots;
       function write(int n, int mode, bool take) public {
@@ -7913,29 +6985,12 @@ describe('kernel composite counter-key settlement', () => {
       function check(int key, int expected) public { require(this.slots[key] == expected); }
     }`, KERNEL);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
-      .toMatchObject({ eligible: true });
-    const inner = new Contract(artifact, [], { provider });
-    const { categoryId } = await setupStatefulUtxos(
-      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
-    );
-    const contract = StatefulContract.withCategory(inner, categoryId);
-    await expect(contract.batch([{ function: 'write', args: [2n, 0n, true] }]).send())
-      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
-    await expect(contract.call.check(10n, 1n).send()).resolves.toBeDefined();
-    await expect(contract.call.check(11n, 2n).send()).resolves.toBeDefined();
-    await expect(contract.batch([{ function: 'write', args: [2n, 0n, false] }]).send())
-      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
-    await expect(contract.call.check(20n, 1n).send()).resolves.toBeDefined();
-    await expect(contract.call.check(21n, 2n).send()).resolves.toBeDefined();
-    await expect(contract.batch([{ function: 'write', args: [2n, 1n, false] }]).send())
-      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
-    await expect(contract.call.check(30n, 1n).send()).resolves.toBeDefined();
-    await expect(contract.call.check(31n, 2n).send()).resolves.toBeDefined();
-    await expect(contract.batch([{ function: 'write', args: [2n, 9n, false] }]).send())
-      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
-    await expect(contract.call.check(40n, 1n).send()).resolves.toBeDefined();
-    await expect(contract.call.check(41n, 2n).send()).resolves.toBeDefined();
-  }, 180_000);
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+    expect(artifact.abi.find((handler) => handler.name === 'write')?.sortedUpsertLoopInfo)
+      .toEqual([expect.objectContaining({ multiArmConstructedKeyReplay: true })]);
+    expect(() => encodeMessageBatch(artifact, [{ function: 'write', args: [2n, 0n, false] }]))
+      .toThrow(/not batch eligible: KERNEL_LAYOUT/);
+  });
 
   it('freezes the event-bearing collection handler while retaining effect-free siblings', async () => {
     const provider = createTestProvider();
@@ -7994,13 +7049,19 @@ describe('kernel composite counter-key settlement', () => {
     await expect(contract.call.check(2n, 72n).send()).resolves.toBeDefined();
   }, 180_000);
 
-  it('settles a toggled loop-carried write predicate in logical source order', async () => {
+  it('fences same-iteration mutable write predicates while preserving later updates', async () => {
     const provider = createTestProvider();
     const artifact = compileString(LOOP_CARRIED_GUARD_SOURCE, {
       ...KERNEL, maximumInputBytes: 1_000_000,
     });
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
-      .toMatchObject({ eligible: true });
+    for (const name of ['write', 'writeCounterDerived']) {
+      expect(artifact.messageBus?.handlers.find((handler) => handler.name === name))
+        .toMatchObject({ eligible: true });
+    }
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'writeCounterCurrent'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+    expect(artifact.abi.find((handler) => handler.name === 'writeCounterCurrent')?.sortedUpsertLoopInfo)
+      .toEqual([expect.objectContaining({ sameIterationMutableSelectionReplay: true })]);
     const inner = new Contract(artifact, [], { provider });
     const { categoryId } = await setupStatefulUtxos(
       provider, inner, artifact.stateLayout!, {}, { saltContract: true },
@@ -8020,38 +7081,9 @@ describe('kernel composite counter-key settlement', () => {
       await expect(contract.call.check(key, expected).send()).resolves.toBeDefined();
     }
 
-    await expect(contract.batch([{ function: 'writeCounterCurrent', args: [5n] }]).send())
-      .resolves.toBeDefined();
-    for (const [key, expected] of [
-      [200n, 30n], [201n, 0n], [202n, 0n], [203n, 33n], [204n, 0n],
-    ] as const) {
-      await expect(contract.call.check(key, expected).send()).resolves.toBeDefined();
-    }
-
-    await expect(contract.batch([{ function: 'writePhases', args: [5n] }]).send())
-      .resolves.toBeDefined();
-    for (const [key, before, after] of [
-      [0n, 40n, 50n], [1n, 41n, 0n], [2n, 0n, 0n], [3n, 0n, 53n], [4n, 44n, 0n],
-    ] as const) {
-      await expect(contract.call.checkBefore(key, before).send()).resolves.toBeDefined();
-      await expect(contract.call.checkAfter(key, after).send()).resolves.toBeDefined();
-    }
-
-    await expect(contract.batch([{ function: 'writePhaseValues', args: [3n] }]).send())
-      .resolves.toBeDefined();
-    for (const [key, before, after] of [
-      [0n, 5n, 60n], [1n, 60n, 61n], [2n, 61n, 62n],
-    ] as const) {
-      await expect(contract.call.checkBeforeAssigned(key, before).send()).resolves.toBeDefined();
-      await expect(contract.call.checkAfterAssigned(key, after).send()).resolves.toBeDefined();
-    }
-
-    await expect(contract.batch([{ function: 'writeBreakPhases', args: [6n] }]).send())
-      .resolves.toBeDefined();
-    for (const [key, expected] of [[0n, 70n], [1n, 71n], [2n, 0n]] as const) {
-      await expect(contract.call.checkBreak(key, expected).send()).resolves.toBeDefined();
-    }
-  }, 180_000);
+    expect(() => contract.batch([{ function: 'writeCounterCurrent', args: [5n] }]))
+      .toThrow(/not batch eligible: KERNEL_LAYOUT/);
+  });
 
   it('settles affine loop-carried local mapping values in source order', async () => {
     const provider = createTestProvider();
@@ -8089,51 +7121,20 @@ describe('kernel composite counter-key settlement', () => {
     }
   }, 180_000);
 
-  it('composes runtime-derived value rows over disjoint collection journals', async () => {
-    const provider = createTestProvider();
+  it('fences row-local struct carriers without a physical output identity', () => {
     const artifact = compileString(DISJOINT_RUNTIME_VALUE_ROWS_SOURCE, {
       ...KERNEL, maximumInputBytes: 1_000_000,
     });
     for (const name of ['updateLeft', 'updateRight', 'updateSharedLow', 'updateSharedHigh']) {
-      expect(artifact.messageBus?.handlers.find((handler) => handler.name === name))
-        .toMatchObject({ eligible: true });
+      const handler = artifact.abi.find((candidate) => candidate.name === name)!;
+      expect(handler.sortedUpsertLoopInfo)
+        .toEqual([expect.objectContaining({ valueRuntimeLocal: expect.any(String) })]);
+      expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === name))
+        .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
     }
-    const inner = new Contract(artifact, [], { provider });
-    const { categoryId } = await setupStatefulUtxos(
-      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
-    );
-    const contract = StatefulContract.withCategory(inner, categoryId);
-    for (let key = 0n; key < 2n; key += 1n) {
-      await contract.call.seedLeft(key, key + 1n, key + 2n).send();
-      await contract.call.seedRight(key, key + 3n, key + 4n).send();
-    }
-    for (let key = 0n; key < 4n; key += 1n) {
-      await contract.call.seedShared(key, key + 5n, key + 6n).send();
-    }
-    await expect(contract.batch([
-      { function: 'updateLeft', args: [2n] },
-      { function: 'updateRight', args: [2n] },
-    ]).send()).resolves.toBeDefined();
-    for (let key = 0n; key < 2n; key += 1n) {
-      await expect(contract.call.checkLeft(key, key + 11n, key + 22n).send()).resolves.toBeDefined();
-      await expect(contract.call.checkRight(key, key + 33n, key + 44n).send()).resolves.toBeDefined();
-    }
-    await expect(contract.batch([
-      { function: 'updateSharedLow', args: [2n] },
-      { function: 'updateSharedLow', args: [0n] },
-      { function: 'updateSharedHigh', args: [2n] },
-    ]).send()).resolves.toBeDefined();
-    for (let key = 0n; key < 4n; key += 1n) {
-      const low = key < 2n;
-      await expect(contract.call.checkShared(
-        key, key + (low ? 55n : 75n), key + (low ? 66n : 86n),
-      ).send()).resolves.toBeDefined();
-    }
-    await expect(contract.batch([
-      { function: 'updateSharedLow', args: [2n] },
-      { function: 'updateSharedLow', args: [2n] },
-    ]).build()).rejects.toThrow(/read-your-writes transition/);
-  }, 180_000);
+    expect(() => encodeMessageBatch(artifact, [{ function: 'updateLeft', args: [2n] }]))
+      .toThrow(/not batch eligible: KERNEL_LAYOUT/);
+  });
 
   it('settles general loop-carried local values through an authenticated source-order trace', async () => {
     const provider = createTestProvider();
@@ -8183,267 +7184,22 @@ describe('kernel composite counter-key settlement', () => {
     }
   }, 180_000);
 
-  it('authenticates counter-keyed reads from another mapping without mutating their source entries', async () => {
-    const provider = createTestProvider();
+  it('fences counter-keyed reads from another mapping beside a mutation stream', () => {
     const artifact = compileString(COUNTER_MAPPING_READ_SOURCE, {
       ...KERNEL, maximumInputBytes: 1_000_000,
     });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'copy'))
-      .toMatchObject({ eligible: true });
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
     expect(artifact.abi.find((handler) => handler.name === 'copy')?.sortedUpsertLoopInfo)
       .toEqual(expect.arrayContaining([
         expect.objectContaining({ collection: 'source', op: 'read' }),
         expect.objectContaining({ collection: 'destination', op: 'set' }),
       ]));
-    const inner = new Contract(artifact, [], { provider });
-    const { categoryId } = await setupStatefulUtxos(
-      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
-    );
-    const contract = StatefulContract.withCategory(inner, categoryId);
-    const sourceCollection = artifact.stateLayout!.collections.find((collection) => collection.name === 'source')!;
-    const sourceAddress = getEntryNftAddress(inner, categoryId, sourceCollection.signature);
-    const emptySourceEntryCount = (await provider.getUtxos(sourceAddress)).filter((utxo) =>
-      utxo.token?.category === categoryId && utxo.token.nft?.capability === 'mutable').length;
-    // Every key is absent from the empty source mapping and therefore shares the sentinel predecessor. The
-    // authenticated read stream must reproduce that predecessor once and reuse its gap proof for the other keys.
-    await expect(contract.call.copy(4n).send()).resolves.toBeDefined();
-    const absentCopyCall = contract.batch([{ function: 'copy', args: [4n] }]);
-    const absentCopyBuilder = await absentCopyCall.build();
-    const absentRouteInputIndex = absentCopyBuilder.inputs.findIndex((input) =>
-      'abiFunction' in input.unlocker && input.unlocker.abiFunction.name === artifact.messageBus!.route.name);
-    expect(absentRouteInputIndex).toBeGreaterThanOrEqual(0);
-    const absentRouteUnlocker = absentCopyBuilder.inputs[absentRouteInputIndex].unlocker;
-    if (!('params' in absentRouteUnlocker)) throw new Error('message-bus route input has no contract parameters');
-    const absentRead = artifact.abi.find((handler) => handler.name === 'copy')?.sortedUpsertLoopInfo
-      ?.find((info) => info.collection === 'source');
-    const absentWitnessIndex = artifact.messageBus!.route.inputs.findIndex((input) =>
-      input.name === absentRead?.oldValuesWitnessParam);
-    const absentJournalIndex = artifact.messageBus!.route.inputs.findIndex((input) =>
-      input.name === '__internal__kernelJournalAccessStreams');
-    const absentSelector = artifact.messageBus!.route.selector;
-    if (absentWitnessIndex < 0 || absentJournalIndex < 0 || !absentSelector
-      || absentRead?.journalAccessStreamIndex === undefined) {
-      throw new Error('missing absent-read route witness');
-    }
-    const absentJournalRows = absentRouteUnlocker.params[absentJournalIndex];
-    const absentRowStreams = Array.isArray(absentJournalRows) ? absentJournalRows[0] : undefined;
-    const absentReadStream = Array.isArray(absentRowStreams)
-      ? absentRowStreams[absentRead.journalAccessStreamIndex] : undefined;
-    if (!(absentReadStream instanceof Uint8Array)) throw new Error('missing absent-read journal stream');
-    const absentReadAccesses = decodeKernelEntryJournalAccesses(absentReadStream);
-    expect(absentReadAccesses.every((access) => access.mutates === false)).toBe(true);
-    expect(absentReadAccesses.map((access) => ({
-      authenticatesTarget: access.authenticatesTarget,
-      authenticatesPredecessor: access.authenticatesPredecessor,
-    }))).toEqual([
-      { authenticatesTarget: undefined, authenticatesPredecessor: true },
-      { authenticatesTarget: undefined, authenticatesPredecessor: undefined },
-      { authenticatesTarget: undefined, authenticatesPredecessor: undefined },
-      { authenticatesTarget: undefined, authenticatesPredecessor: undefined },
-    ]);
-    const falseReadIntent = new Uint8Array(absentReadStream);
-    falseReadIntent[22] |= 0x08;
-    const hostileJournalParams = [...absentRouteUnlocker.params];
-    const hostileJournalRows = absentJournalRows.map((row: Uint8Array[], rowIndex: number) =>
-      rowIndex === 0 ? row.map((stream, streamIndex) =>
-        streamIndex === absentRead.journalAccessStreamIndex ? falseReadIntent : stream) : row);
-    hostileJournalParams[absentJournalIndex] = hostileJournalRows;
-    absentCopyBuilder.inputs[absentRouteInputIndex].unlocker = absentRouteUnlocker.contract
-      .createCompilerRouteUnlocker(absentRouteUnlocker.abiFunction, hexToBin(absentSelector))(...hostileJournalParams);
-    const absentHostileVm = createVirtualMachineBch2026ForProvider(provider);
-    expect(absentHostileVm.stateSuccess(absentHostileVm.evaluate({
-      inputIndex: absentRouteInputIndex,
-      sourceOutputs: generateLibauthSourceOutputs(absentCopyBuilder.inputs),
-      transaction: absentCopyBuilder.buildLibauthTransaction(),
-    })), 'hostile read mutation intent').not.toBe(true);
-    absentCopyBuilder.inputs[absentRouteInputIndex].unlocker = absentRouteUnlocker;
-    const hostileAbsentParams = [...absentRouteUnlocker.params];
-    const absentWitnessRows = absentRouteUnlocker.params[absentWitnessIndex] as bigint[][];
-    hostileAbsentParams[absentWitnessIndex] = [[...absentWitnessRows[0].slice(0, 1), 1n,
-      ...absentWitnessRows[0].slice(2)]];
-    absentCopyBuilder.inputs[absentRouteInputIndex].unlocker = absentRouteUnlocker.contract
-      .createCompilerRouteUnlocker(absentRouteUnlocker.abiFunction, hexToBin(absentSelector))(...hostileAbsentParams);
-    expect(absentHostileVm.stateSuccess(absentHostileVm.evaluate({
-      inputIndex: absentRouteInputIndex,
-      sourceOutputs: generateLibauthSourceOutputs(absentCopyBuilder.inputs),
-      transaction: absentCopyBuilder.buildLibauthTransaction(),
-    }))).not.toBe(true);
-    absentCopyBuilder.inputs[absentRouteInputIndex].unlocker = absentRouteUnlocker;
-    await expect(absentCopyCall.send()).resolves.toBeDefined();
-    for (let key = 0n; key < 4n; key += 1n) {
-      await expect(contract.call.checkDestination(key, 0n).send()).resolves.toBeDefined();
-      await expect(contract.call.checkSource(key, 0n).send()).resolves.toBeDefined();
-    }
-    expect((await provider.getUtxos(sourceAddress)).filter((utxo) =>
-      utxo.token?.category === categoryId && utxo.token.nft?.capability === 'mutable'))
-      .toHaveLength(emptySourceEntryCount);
+    expect(() => encodeMessageBatch(artifact, [{ function: 'copy', args: [4n] }]))
+      .toThrow(/not batch eligible: KERNEL_LAYOUT/);
+  });
 
-    // Exercise the other reusable interval shape with one deliberate hole. Making the highest hashed slot absent
-    // guarantees that its immediate predecessor is a present node processed immediately before it.
-    const proofValues = [17n, 29n, 43n, 61n, 71n, 73n, 79n, 83n];
-    const proofSlots = proofValues.map((_value, key) => ({
-      key: BigInt(key), value: bytesToSlotValue(keyToSlotMulti([bigIntToVmNumber(BigInt(key))])),
-    }));
-    const missingKey = proofSlots.sort((a, b) => a.value > b.value ? -1 : 1)[0].key;
-    for (let key = 0; key < proofValues.length; key += 1) {
-      if (BigInt(key) !== missingKey) await contract.call.seed(BigInt(key), proofValues[key]).send();
-    }
-    const sourceCountBeforeGapReuse = (await provider.getUtxos(sourceAddress)).filter((utxo) =>
-      utxo.token?.category === categoryId && utxo.token.nft?.capability === 'mutable').length;
-    await expect(contract.batch([{ function: 'copy', args: [BigInt(proofValues.length)] }]).send())
-      .resolves.toBeDefined();
-    await expect(contract.call.checkDestination(missingKey, 0n).send()).resolves.toBeDefined();
-    expect((await provider.getUtxos(sourceAddress)).filter((utxo) =>
-      utxo.token?.category === categoryId && utxo.token.nft?.capability === 'mutable'))
-      .toHaveLength(sourceCountBeforeGapReuse);
-    await contract.call.seed(missingKey, proofValues[Number(missingKey)]).send();
-
-    const expected = proofValues.slice(0, 4);
-
-    const copyCall = contract.batch([{ function: 'copy', args: [BigInt(expected.length)] }]);
-    const copyBuilder = await copyCall.build();
-    const routeInputIndex = copyBuilder.inputs.findIndex((input) =>
-      'abiFunction' in input.unlocker && input.unlocker.abiFunction.name === artifact.messageBus!.route.name);
-    expect(routeInputIndex).toBeGreaterThanOrEqual(0);
-    const routeUnlocker = copyBuilder.inputs[routeInputIndex].unlocker;
-    if (!('params' in routeUnlocker)) throw new Error('message-bus route input has no contract parameters');
-    const copyAbi = artifact.abi.find((handler) => handler.name === 'copy')!;
-    const sourceRead = copyAbi.sortedUpsertLoopInfo?.find((info) => info.collection === 'source');
-    expect(sourceRead).toMatchObject({ op: 'read' });
-    const witnessRouteIndex = artifact.messageBus!.route.inputs.findIndex((input) =>
-      input.name === sourceRead!.oldValuesWitnessParam);
-    const permutationRouteIndex = artifact.messageBus!.route.inputs.findIndex((input) =>
-      input.name === sourceRead!.varyingArrayParam);
-    expect(witnessRouteIndex).toBeGreaterThanOrEqual(0);
-    expect(permutationRouteIndex).toBeGreaterThanOrEqual(0);
-    const rowPermutation = (routeUnlocker.params[permutationRouteIndex] as bigint[][])[0];
-    expect(rowPermutation).toHaveLength(expected.length);
-    expect(routeUnlocker.params[witnessRouteIndex]).toEqual([expected]);
-
-    const routeSelector = artifact.messageBus!.route.selector;
-    if (!routeSelector) throw new Error('message-bus route has no selector');
-    const recreateRouteUnlocker = routeUnlocker.contract.createCompilerRouteUnlocker(
-      routeUnlocker.abiFunction, hexToBin(routeSelector),
-    );
-    const hostileParams = [...routeUnlocker.params];
-    hostileParams[witnessRouteIndex] = [[999n, ...(routeUnlocker.params[witnessRouteIndex] as bigint[][])[0]
-      .slice(1)]];
-    copyBuilder.inputs[routeInputIndex].unlocker = recreateRouteUnlocker(...hostileParams);
-    const hostileVm = createVirtualMachineBch2026ForProvider(provider);
-    expect(hostileVm.stateSuccess(hostileVm.evaluate({
-      inputIndex: routeInputIndex,
-      sourceOutputs: generateLibauthSourceOutputs(copyBuilder.inputs),
-      transaction: copyBuilder.buildLibauthTransaction(),
-    }))).not.toBe(true);
-    copyBuilder.inputs[routeInputIndex].unlocker = routeUnlocker;
-
-    await expect(copyCall.send())
-      .resolves.toBeDefined();
-    for (let key = 0; key < expected.length; key += 1) {
-      await expect(contract.call.checkDestination(BigInt(key), expected[key]).send()).resolves.toBeDefined();
-      await expect(contract.call.checkSource(BigInt(key), expected[key]).send()).resolves.toBeDefined();
-    }
-
-    const second = [3n, 5n, 7n, 11n];
-    for (let key = 0; key < second.length; key += 1) {
-      await contract.call.seedSecond(BigInt(key), second[key]).send();
-    }
-    await expect(contract.batch([{ function: 'combine', args: [BigInt(expected.length)] }]).send())
-      .resolves.toBeDefined();
-    for (let key = 0; key < expected.length; key += 1) {
-      await expect(contract.call.checkDestination(BigInt(key), expected[key] + second[key]).send())
-        .resolves.toBeDefined();
-      await expect(contract.call.checkSource(BigInt(key), expected[key]).send()).resolves.toBeDefined();
-      await expect(contract.call.checkSecond(BigInt(key), second[key]).send()).resolves.toBeDefined();
-    }
-
-    await contract.call.seed(4n, 13n).send();
-    const shiftedAbi = artifact.abi.find((handler) => handler.name === 'shifted')!;
-    const shiftedSource = shiftedAbi.sortedUpsertLoopInfo?.find((info) => info.collection === 'source');
-    const shiftedDestination = shiftedAbi.sortedUpsertLoopInfo?.find((info) => info.collection === 'destination');
-    expect(shiftedSource).toMatchObject({ op: 'read', varyingKeyExpressions: expect.any(Array) });
-    expect(shiftedSource?.varyingArrayParam).not.toBe(shiftedDestination?.varyingArrayParam);
-    const shiftedExpected = [proofValues[1], proofValues[2], proofValues[3], 13n];
-    const shiftedCall = contract.batch([{ function: 'shifted', args: [4n] }]);
-    const shiftedBuilder = await shiftedCall.build();
-    const shiftedRouteInputIndex = shiftedBuilder.inputs.findIndex((input) =>
-      'abiFunction' in input.unlocker && input.unlocker.abiFunction.name === artifact.messageBus!.route.name);
-    expect(shiftedRouteInputIndex).toBeGreaterThanOrEqual(0);
-    const shiftedRouteUnlocker = shiftedBuilder.inputs[shiftedRouteInputIndex].unlocker;
-    if (!('params' in shiftedRouteUnlocker)) throw new Error('shifted route input has no contract parameters');
-    const shiftedWitnessIndex = artifact.messageBus!.route.inputs.findIndex((input) =>
-      input.name === shiftedSource?.oldValuesWitnessParam);
-    const shiftedSourcePermutationIndex = artifact.messageBus!.route.inputs.findIndex((input) =>
-      input.name === shiftedSource?.varyingArrayParam);
-    const shiftedDestinationPermutationIndex = artifact.messageBus!.route.inputs.findIndex((input) =>
-      input.name === shiftedDestination?.varyingArrayParam);
-    expect(shiftedWitnessIndex).toBeGreaterThanOrEqual(0);
-    expect(shiftedSourcePermutationIndex).toBeGreaterThanOrEqual(0);
-    expect(shiftedDestinationPermutationIndex).toBeGreaterThanOrEqual(0);
-    expect(shiftedRouteUnlocker.params[shiftedWitnessIndex]).toEqual([shiftedExpected]);
-    expect(shiftedRouteUnlocker.params[shiftedSourcePermutationIndex])
-      .not.toEqual(shiftedRouteUnlocker.params[shiftedDestinationPermutationIndex]);
-    const shiftedSelector = artifact.messageBus!.route.selector;
-    if (!shiftedSelector) throw new Error('message-bus route has no selector');
-    const hostileShiftedParams = [...shiftedRouteUnlocker.params];
-    hostileShiftedParams[shiftedWitnessIndex] = [[999n, ...shiftedExpected.slice(1)]];
-    const recreateShiftedRouteUnlocker = shiftedRouteUnlocker.contract.createCompilerRouteUnlocker(
-      shiftedRouteUnlocker.abiFunction, hexToBin(shiftedSelector),
-    );
-    shiftedBuilder.inputs[shiftedRouteInputIndex].unlocker = recreateShiftedRouteUnlocker(...hostileShiftedParams);
-    const hostileShiftedVm = createVirtualMachineBch2026ForProvider(provider);
-    expect(hostileShiftedVm.stateSuccess(hostileShiftedVm.evaluate({
-      inputIndex: shiftedRouteInputIndex,
-      sourceOutputs: generateLibauthSourceOutputs(shiftedBuilder.inputs),
-      transaction: shiftedBuilder.buildLibauthTransaction(),
-    }))).not.toBe(true);
-    shiftedBuilder.inputs[shiftedRouteInputIndex].unlocker = shiftedRouteUnlocker;
-    await expect(shiftedCall.send()).resolves.toBeDefined();
-    for (const [key, value] of shiftedExpected.entries()) {
-      await expect(contract.call.checkDestination(BigInt(key), value).send()).resolves.toBeDefined();
-    }
-
-    const raw = [
-      hexToBin('00112233445566778899aabbccddeeff00112233'),
-      hexToBin('ffeeddccbbaa99887766554433221100ffeeddcc'),
-    ];
-    for (let key = 0; key < raw.length; key += 1) {
-      await contract.call.seedRaw(BigInt(key), raw[key]).send();
-    }
-    await expect(contract.batch([{ function: 'copyRaw', args: [BigInt(raw.length)] }]).send())
-      .resolves.toBeDefined();
-    for (let key = 0; key < raw.length; key += 1) {
-      await expect(contract.call.checkRaw(BigInt(key), raw[key]).send()).resolves.toBeDefined();
-    }
-
-    const blobs = [new Uint8Array([1, 2, 3]), new Uint8Array(96).fill(0x5a)];
-    for (let key = 0; key < blobs.length; key += 1) {
-      await contract.call.seedBlob(BigInt(key + 1), blobs[key]).send();
-    }
-    const blobAbi = artifact.abi.find((handler) => handler.name === 'copyBlob')!;
-    const blobSource = blobAbi.sortedUpsertLoopInfo?.find((info) => info.collection === 'blobSource');
-    const blobDestination = blobAbi.sortedUpsertLoopInfo?.find((info) => info.collection === 'blobDestination');
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'copyBlob'))
-      .toMatchObject({ eligible: true });
-    expect(blobSource).toMatchObject({ op: 'read' });
-    expect(blobSource?.varyingArrayParam).not.toBe(blobDestination?.varyingArrayParam);
-    await expect(contract.batch([{ function: 'copyBlob', args: [BigInt(blobs.length)] }]).send())
-      .resolves.toBeDefined();
-    for (let key = 0; key < blobs.length; key += 1) {
-      await expect(contract.call.checkBlob(BigInt(key), blobs[key]).send()).resolves.toBeDefined();
-    }
-
-    const recPayload = new Uint8Array(88).fill(0x3c);
-    await contract.call.seedRec(1n, 41n, recPayload).send();
-    const recAbi = artifact.abi.find((handler) => handler.name === 'copyRec')!;
-    expect(recAbi.sortedUpsertLoopInfo?.find((info) => info.collection === 'recSource'))
-      .toMatchObject({ op: 'read' });
-    await expect(contract.batch([{ function: 'copyRec', args: [1n] }]).send()).resolves.toBeDefined();
-    await expect(contract.call.checkRec(0n, 41n, recPayload).send()).resolves.toBeDefined();
-  }, 180_000);
-
-  it('orders parameter-array journals without reordering public arguments or effects', async () => {
-    const provider = createTestProvider();
+  it('freezes parameter-array read/write journals combined with repeated effects', () => {
     const artifact = compileString(PARAMETER_ARRAY_MAPPING_READ_SOURCE, {
       ...KERNEL, maximumInputBytes: 1_000_000,
     });
@@ -8462,101 +7218,32 @@ describe('kernel composite counter-key settlement', () => {
       permutationParam: sourceRead!.varyingArrayParam,
       eventSignatures: ['Copied(int256)'],
     })]);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'copy'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+    expect(artifact.abi.some((handler) => /^__message_bus_(graph|array|resource)_/.test(handler.name)))
+      .toBe(false);
 
-    const inner = new Contract(artifact, [], { provider });
-    const { categoryId } = await setupStatefulUtxos(
-      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
-    );
-    const contract = StatefulContract.withCategory(inner, categoryId);
-    const bySlot = (left: bigint, right: bigint): number => {
-      const leftSlot = bytesToSlotValue(keyToSlotMulti([bigIntToVmNumber(left)]));
-      const rightSlot = bytesToSlotValue(keyToSlotMulti([bigIntToVmNumber(right)]));
-      return leftSlot < rightSlot ? -1 : leftSlot > rightSlot ? 1 : 0;
-    };
-    const physical = [91n, 4n].sort(bySlot);
-    const keys = [...physical].reverse();
-    expect(physical).not.toEqual(keys);
-    for (const [index, key] of keys.entries()) await contract.call.seed(key, BigInt(index + 10)).send();
+    expect(() => encodeMessageBatch(artifact, [{ function: 'copy', args: [[]] }]))
+      .toThrow(/not batch eligible: KERNEL_LAYOUT/);
+  });
 
-    const directReceipt = await contract.call.copy(keys).send();
-    expect(directReceipt.events?.map((event) => [event.event, event.args.key])).toEqual(
-      keys.map((key) => ['Copied', key]),
-    );
-    for (const [index, key] of keys.entries()) {
-      await expect(contract.call.check(key, BigInt(index + 10)).send()).resolves.toBeDefined();
-    }
-
-    const call = contract.batch([{ function: 'copy', args: [keys] }]);
-    const builder = await call.build();
-    const routeInput = builder.inputs.find((input) =>
-      'abiFunction' in input.unlocker && input.unlocker.abiFunction.name === artifact.messageBus!.route.name);
-    if (!routeInput || !('params' in routeInput.unlocker)) throw new Error('message-bus route input is missing');
-    const permutationIndex = artifact.messageBus!.route.inputs.findIndex((input) =>
-      input.name === sourceRead!.varyingArrayParam);
-    expect(permutationIndex).toBeGreaterThanOrEqual(0);
-    const logicalPermutation = (routeInput.unlocker.params[permutationIndex] as bigint[][])[0];
-    expect(logicalPermutation.map((logical) => keys[Number(logical)])).toEqual(physical);
-    const routeInputIndex = builder.inputs.indexOf(routeInput);
-    const routeInstructions = decodeAuthenticationInstructions(
-      builder.buildLibauthTransaction().inputs[routeInputIndex].unlockingBytecode,
-    );
-    expect(routeInstructions[2]).toMatchObject({ data: expect.any(Uint8Array) });
-    if (!('data' in routeInstructions[2])) throw new Error('kernel route density reserve is missing');
-    expect(routeInstructions[2].data).toHaveLength(KERNEL_ROUTE_DENSITY_RESERVE_BYTES);
-
-    const receipt = await call.send();
-    expect(receipt.events?.map((event) => [event.event, event.args.key])).toEqual(
-      keys.map((key) => ['Copied', key]),
-    );
-    for (const [index, key] of keys.entries()) {
-      await expect(contract.call.check(key, BigInt(index + 10)).send()).resolves.toBeDefined();
-    }
-  }, 180_000);
-
-  it('freezes chunked parameter-array writes that also emit events', async () => {
-    const provider = createTestProvider();
+  it('freezes chunked parameter-array writes combined with runtime events', () => {
     const artifact = compileString(PARAMETER_ARRAY_VALUE_SOURCE, {
       ...KERNEL, maximumInputBytes: 1_000_000,
     });
     const fillAbi = artifact.abi.find((handler) => handler.name === 'fill')!;
     const write = fillAbi.sortedUpsertLoopInfo?.find((info) => info.collection === 'values');
-    const routed = artifact.messageBus?.handlers.find((handler) => handler.name === 'fill');
-    expect(routed).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
     expect(write).toMatchObject({
       op: 'set',
       varyingArrayParam: expect.stringMatching(/^__internal__vmapCounterPerm_/),
       valueArrayParam: 'payloads',
       valueArrayIndexParam: expect.stringMatching(/^__internal__vmapCounterPerm_/),
     });
-    expect(artifact.abi.some((handler) => /^__message_bus_(graph|array|resource)_/.test(handler.name)))
-      .toBe(false);
-    if (routed?.eligible === false) {
-      expect(() => encodeMessageBatch(artifact, [{ function: 'fill', args: [] }]))
-        .toThrow(/not batch eligible: KERNEL_LAYOUT/);
-      return;
-    }
-
-    const inner = new Contract(artifact, [], { provider });
-    const { categoryId } = await setupStatefulUtxos(
-      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
-    );
-    const contract = StatefulContract.withCategory(inner, categoryId);
-    const short = hexToBin('010203');
-    const long = Uint8Array.from({ length: 170 }, (_unused, index) => (index * 29 + 7) & 0xff);
-    const keys = [91n, 4n];
-    const receipt = await contract.batch([{ function: 'fill', args: [keys, [short, long]] }]).send();
-    expect(receipt.events?.map((event) => [event.event, event.args.key, binToHex(event.args.digest)])).toEqual(
-      keys.map((key, index) => ['Applied', key, binToHex(sha256.hash([short, long][index]))]),
-    );
-    await expect(contract.call.check(keys[0], short).send()).resolves.toBeDefined();
-    await expect(contract.call.check(keys[1], long).send()).resolves.toBeDefined();
-
-    const first = new Uint8Array(70).fill(0x11);
-    const last = Uint8Array.from({ length: 170 }, (_unused, index) => (index * 11 + 9) & 0xff);
-    await expect(contract.batch([{ function: 'fill', args: [[7n, 7n], [first, last]] }]).send())
-      .resolves.toBeDefined();
-    await expect(contract.call.check(7n, last).send()).resolves.toBeDefined();
-  }, 180_000);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'fill'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+    expect(() => encodeMessageBatch(artifact, [{ function: 'fill', args: [[], []] }]))
+      .toThrow(/not batch eligible: KERNEL_LAYOUT/);
+  });
 
   it('settles boolean same-entry expressions with typed old-value witnesses', async () => {
     const provider = createTestProvider();

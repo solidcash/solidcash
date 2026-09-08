@@ -425,6 +425,16 @@ export class FunctionDefinitionNode extends Node implements Named {
     varyingKeyIndices?: number[];
     /** Original complete key tuple, serialized for SDK reconstruction when components derive from the counter. */
     varyingKeyExpressions?: ExpressionNode[];
+    /** The key recipe replays a historical constructed-array resize without an authenticated prefix identity. */
+    constructedKeyReplay?: boolean;
+    /** The key recipe selects among more than two branch-merged constructed-array definitions. */
+    multiArmConstructedKeyReplay?: boolean;
+    /** The key recipe consumes a mutable helper array whose history reads a distinct mutable array identity. */
+    crossArrayKeyReplay?: boolean;
+    /** The key recipe replays a forwarded array mutated by a nested helper which also returns a value. */
+    nestedHelperReturnReplay?: boolean;
+    /** The write predicate consumes a mutable local assigned earlier in the same logical iteration. */
+    sameIterationMutableSelectionReplay?: boolean;
     keyDecodeTupleIndex?: number; keyDecodeTupleTypes?: string[];
     predicateArrayParam?: string; predicateEquals?: string;
     valueArrayParam?: string; valueScalarParam?: string; valueConst?: string;
@@ -486,6 +496,16 @@ export class FunctionDefinitionNode extends Node implements Named {
   runtimeCounterLoopBounds?: Map<string, ExpressionNode>;
   /** Original key tuples keyed by `<permutation>\0<collection>`, before physical-loop rewriting. */
   runtimeCounterLoopKeyExpressions?: Map<string, ExpressionNode[]>;
+  /** Key recipes which replay historical constructed-array resizes without authenticated prefix identities. */
+  runtimeCounterLoopConstructedKeyReplays?: Set<string>;
+  /** Key recipes selecting among more than two branch-merged constructed-array definitions. */
+  runtimeCounterLoopMultiArmConstructedKeyReplays?: Set<string>;
+  /** Key recipes fed by a mutable helper array history which reads a distinct mutable array identity. */
+  runtimeCounterLoopCrossArrayKeyReplays?: Set<string>;
+  /** Key recipes fed by a forwarded array mutation from a nested helper which also returns a value. */
+  runtimeCounterLoopNestedHelperReturnReplays?: Set<string>;
+  /** Permutation parameters whose selection predicate replays a same-iteration mutable local. */
+  runtimeCounterLoopSameIterationSelectionReplays?: Set<string>;
   /** Constructed-array prefix-count trace keyed by `<permutation>\0<collection>`. */
   runtimeCounterLoopPrefixCountTraces?: Map<string, {
     witnessParam: string;

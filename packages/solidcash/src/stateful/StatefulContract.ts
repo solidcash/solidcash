@@ -5115,6 +5115,21 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       args: [...row.args],
       internalArgs: { ...(row.internalArgs ?? {}) },
     }));
+    const runtimeEventMutationStreams = new Set((effectiveRowArguments ?? []).flatMap((row, rowIndex) =>
+      (row.handler.runtimeLoopEvents?.length ?? 0) === 0 ? []
+        : (row.handler.sortedUpsertLoopInfo ?? [])
+          .filter((stream) => stream.op !== 'read')
+          .map((stream) => [
+            row.handler.selector ?? `unresolved-row-${rowIndex}`,
+            stream.collection,
+            stream.journalAccessStreamIndex,
+          ].join(':'))));
+    if (runtimeEventMutationStreams.size > 1) {
+      throw new Error(
+        'Message-bus runtime event rows from distinct mutation journal streams cannot share one batch; '
+        + 'split the calls into separate transactions.',
+      );
+    }
     const resolvedCallerInternalWitnesses: Record<string, FunctionArgument> = { ...internalRouteWitnesses };
     for (const input of capability.route.inputs) {
       if (input.name !== KERNEL_JOURNAL_ACCESS_STREAMS
@@ -17483,6 +17498,15 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         if (witnessIndex < 0) {
           throw new Error(`vmap runtime expression loop ${info.collection}: missing old-value witness ABI input`);
         }
+        // A routed nested-key RMW authenticates an existing entry value, but its current fixed-prefix settlement
+        // cannot materialize a missing selected entry as an insertion. Fail before transaction construction rather
+        // than publishing a route which verifies yet omits the requested post-state. Direct execution and the
+        // proven single-key/default-value route retain their existing insertion semantics.
+        if (upsertFrame.routed && info.op !== 'read' && info.fixedKeyParams.length > 0
+          && keysArr.some((key) => !list.find(slotForKey(key)))) {
+          throw new Error(`vmap runtime expression loop ${info.collection}: `
+            + 'selected absent old-value witness cannot be materialized as an insertion');
+        }
         const oldValues = await Promise.all(keysArr.map(async (key) => {
           const slot = slotForKey(key);
           const entry = list.find(slot);
@@ -26310,12 +26334,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     | { kind: 'events'; offset: number; count: number }
     | { kind: 'transfers'; offset: number; count: number }
     > = [];
-    if (pendingScalarSettlementActive
-      && (runtimeLoopEventSegments.length > 0 || runtimeLoopTransferSegments.length > 0)) {
-      throw new Error(
-        'Kernel pending scalar settlement cannot share a transaction with runtime event or transfer output segments.',
-      );
-    }
     if (runtimeLoopEntrySegments.length > 0 || runtimeLoopEventSegments.length > 0
       || runtimeLoopTransferSegments.length > 0) {
       const rowIndices = new Set([

@@ -185,7 +185,7 @@ describe('required kernel admission', () => {
     expect(route.blockLayout?.slots.filter((slot) => slot.kind === 'keccakSideCar')).toHaveLength(1);
   });
 
-  it('authenticates a straight-line struct read-modify-write on a counter-keyed entry', () => {
+  it('fences a row-local struct read-modify-write without a physical output identity', () => {
     const artifact = compileString(`contract C() {
       struct Pair { int left; int right; }
       mapping(int => Pair) pairs;
@@ -195,7 +195,7 @@ describe('required kernel admission', () => {
       }
     }`, KERNEL);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'update'))
-      .toMatchObject({ eligible: true });
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
     expect(artifact.abi.find((handler) => handler.name === 'update')?.sortedUpsertLoopInfo).toEqual([
       expect.objectContaining({
         collection: 'pairs', valueRuntimeLocal: 'pair',
@@ -205,9 +205,84 @@ describe('required kernel admission', () => {
     expect(artifact.abi.find((handler) => handler.name === 'update')?.inputs).toContainEqual(
       expect.objectContaining({ name: expect.stringMatching(/^__internal__vmapCounterOld_/), type: 'Pair[]' }),
     );
-    expect(artifact.messageBus?.route.inputs).toContainEqual(expect.objectContaining({
-      name: expect.stringMatching(/^__internal__vmapCounterOld_/), type: 'Pair[][]',
-    }));
+  });
+
+  it('fences a local old-value RMW whose value contains a nested aggregate', () => {
+    const artifact = compileString(`contract C() {
+      struct Inner { int value; }
+      struct Outer { Inner inner; int sibling; }
+      mapping(int => Outer) records;
+      function update(int count) public {
+        for (int i = 0; i < count; i = i + 1) {
+          Outer prior = this.records[i];
+          prior.inner.value = prior.inner.value + 1;
+          this.records[i] = prior;
+        }
+        require(true);
+      }
+    }`, KERNEL);
+    expect(artifact.abi.find((handler) => handler.name === 'update')?.sortedUpsertLoopInfo)
+      .toEqual([expect.objectContaining({ collection: 'records', valueRuntimeLocal: 'prior' })]);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'update'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+  });
+
+  it('fences nested fixed-prefix cross-collection mutations while retaining flat and sequential groups', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => mapping(int => int)) left;
+      mapping(int => mapping(int => int)) right;
+      mapping(int => int) flatLeft;
+      mapping(int => int) flatRight;
+      function sameRow(int group, int count) public {
+        for (int i = 0; i < count; i = i + 1) {
+          this.left[group][i] = i;
+          this.right[group][i] = i + 1;
+        }
+        require(true);
+      }
+      function flat(int count) public {
+        for (int i = 0; i < count; i = i + 1) {
+          this.flatLeft[i] = i;
+          this.flatRight[i] = i + 1;
+        }
+        require(true);
+      }
+      function sequential(int group, int count) public {
+        for (int i = 0; i < count; i = i + 1) { this.left[group][i] = i; }
+        for (int j = 0; j < count; j = j + 1) { this.right[group][j] = j; }
+        require(true);
+      }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'sameRow'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'flat'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'sequential'))
+      .toMatchObject({ eligible: true });
+  });
+
+  it('fences runtime read producers beside mutations while retaining fixed-key reads', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) source;
+      mapping(int => int) destination;
+      function runtimeCopy(int count) public {
+        for (int i = 0; i < count; i = i + 1) this.destination[i] = this.source[i];
+        require(true);
+      }
+      function fixedCopy(int count) public {
+        for (int i = 0; i < count; i = i + 1) this.destination[i] = this.source[0];
+        require(true);
+      }
+    }`, KERNEL);
+    const runtimeCopy = artifact.abi.find((handler) => handler.name === 'runtimeCopy')!;
+    expect(runtimeCopy.sortedUpsertLoopInfo).toEqual(expect.arrayContaining([
+      expect.objectContaining({ collection: 'source', op: 'read' }),
+      expect.objectContaining({ collection: 'destination', op: 'set' }),
+    ]));
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'runtimeCopy'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'fixedCopy'))
+      .toMatchObject({ eligible: true });
   });
   it('shares a literal fixed-key entry between a row writer and a counter-loop reader', () => {
     const artifact = compileString(`contract C() {
@@ -1210,7 +1285,7 @@ describe('required kernel admission', () => {
       entry.bytecode === covered)).toBe(true);
   });
 
-  it('keeps a signed delegate mapping write plus event behind the mixed-geometry fence', () => {
+  it('keeps a signed delegate fixed mapping write plus event on one row', () => {
     const artifact = compileString(`contract C(pubkey authority) {
       mapping(int => int) values;
       event Changed(int key, int value);
@@ -1223,8 +1298,7 @@ describe('required kernel admission', () => {
       function control() public delegate { require(true); }
     }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write')).toMatchObject({
-      eligible: false,
-      rejectionReason: 'KERNEL_LAYOUT',
+      eligible: true,
     });
   });
 
@@ -2290,19 +2364,19 @@ describe('required kernel admission', () => {
       function fill(int count) public {
         for (int i = 0; i < count; i = i + 1) { left[i] = i; right[i] = i; }
         require(true);
-      }`],
+      }`, false],
     ['two loops over one collection', `
       mapping(int => int) values;
       function fill(int first, int second) public {
         for (int i = 0; i < first; i = i + 1) { values[i] = i; }
         for (int j = 0; j < second; j = j + 1) { values[j + 100] = j; }
         require(true);
-      }`],
-  ])('reserves two independent mapping-only streams for %s', (_label, body) => {
+      }`, true],
+  ])('classifies two independent mapping-only streams for %s', (_label, body, eligible) => {
     const artifact = compileString(`contract C() { ${body} }`, KERNEL);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'fill'))
-      .toMatchObject({ eligible: true });
-    expect(artifact.messageBus?.route.blockLayout?.trailingCapacity).toBe(2 * 65);
+      .toMatchObject(eligible ? { eligible: true } : { eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+    if (eligible) expect(artifact.messageBus?.route.blockLayout?.trailingCapacity).toBe(2 * 65);
   });
 
   it('permutes counter uses inside pure helper and builtin mapping values', () => {
@@ -4433,7 +4507,9 @@ describe('required kernel admission', () => {
       function control() public { require(true); }
     }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
-      .toMatchObject({ eligible: true });
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+    expect(artifact.abi.find((handler) => handler.name === 'write')?.sortedUpsertLoopInfo)
+      .toContainEqual(expect.objectContaining({ multiArmConstructedKeyReplay: true }));
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'writeValueCopy'))
       .toMatchObject({ eligible: true });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'deniedMemoryAlias'))
@@ -4442,7 +4518,7 @@ describe('required kernel admission', () => {
       .toMatchObject({ eligible: true });
   });
 
-  it('replays distinct memory aliases with source-ordered cross-array reads', () => {
+  it('fences mutable helper histories across distinct arrays while retaining one physical alias', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) leftSlots;
       mapping(int => int) rightSlots;
@@ -4567,35 +4643,39 @@ describe('required kernel admission', () => {
       }
     }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
-      .toMatchObject({ eligible: true });
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
     expect(artifact.abi.find((handler) => handler.name === 'write')?.sortedUpsertLoopInfo)
       .toEqual(expect.arrayContaining([
-        expect.objectContaining({ collection: 'leftSlots' }),
+        expect.objectContaining({ collection: 'leftSlots', crossArrayKeyReplay: true }),
         expect.objectContaining({ collection: 'rightSlots' }),
       ]));
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'aliased'))
       .toMatchObject({ eligible: true });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'crossRead'))
-      .toMatchObject({ eligible: true });
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'direct'))
-      .toMatchObject({ eligible: true });
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+    expect(artifact.abi.find((handler) => handler.name === 'direct')?.sortedUpsertLoopInfo)
+      .toContainEqual(expect.objectContaining({ crossArrayKeyReplay: true }));
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'lengthRead'))
-      .toMatchObject({ eligible: true });
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'transitive'))
-      .toMatchObject({ eligible: true });
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
     expect(artifact.abi.find((handler) => handler.name === 'transitive')?.sortedUpsertLoopInfo)
       .toEqual(expect.arrayContaining([
-        expect.objectContaining({ collection: 'leftSlots' }),
+        expect.objectContaining({ collection: 'leftSlots', crossArrayKeyReplay: true }),
         expect.objectContaining({ collection: 'rightSlots' }),
       ]));
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'transitiveCopy'))
       .toMatchObject({ eligible: true });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'capturedReturn'))
       .toMatchObject({ eligible: true });
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'nestedCapturedReturn'))
-      .toMatchObject({ eligible: true });
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'conditionalReturn'))
-      .toMatchObject({ eligible: true });
+    for (const name of ['nestedCapturedReturn', 'conditionalReturn']) {
+      expect(artifact.messageBus?.handlers.find((handler) => handler.name === name))
+        .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+      expect(artifact.abi.find((handler) => handler.name === name)?.sortedUpsertLoopInfo)
+        .toContainEqual(expect.objectContaining({ nestedHelperReturnReplay: true }));
+    }
   });
 
   it('replays a literal-bounded pure helper loop without changing runtime loop semantics', () => {
@@ -4790,7 +4870,7 @@ describe('required kernel admission', () => {
       .toMatchObject({ eligible: true });
   });
 
-  it('replays a runtime-selected break in a literal-bounded pure helper loop', () => {
+  it('fences a runtime-selected helper break with a multi-arm constructed-key replay', () => {
     const artifact = compileString(`contract Registry() {
       mapping(int => int) records;
       function fillFixed(int[] memory values, int base, bool stop) internal pure {
@@ -4810,7 +4890,9 @@ describe('required kernel admission', () => {
       function control() public { require(true); }
     }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'apply'))
-      .toMatchObject({ eligible: true });
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+    expect(artifact.abi.find((handler) => handler.name === 'apply')?.sortedUpsertLoopInfo)
+      .toContainEqual(expect.objectContaining({ multiArmConstructedKeyReplay: true }));
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control'))
       .toMatchObject({ eligible: true });
   });
@@ -4969,7 +5051,7 @@ describe('required kernel admission', () => {
       .toMatchObject({ eligible: true });
   });
 
-  it('replays one straight-line constructed-array push per canonical loop iteration', () => {
+  it('fences one unauthenticated constructed-array push recurrence', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) slots;
       function write(int n) public {
@@ -4983,15 +5065,15 @@ describe('required kernel admission', () => {
       function control() public { require(true); }
     }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
-      .toMatchObject({ eligible: true });
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
     expect(artifact.abi.find((handler) => handler.name === 'write')?.sortedUpsertLoopInfo)
       .toEqual([expect.objectContaining({
-        collection: 'slots',
+        collection: 'slots', constructedKeyReplay: true,
         varyingKeyExpressions: [expect.objectContaining({ kind: 'ternary' })],
       })]);
   });
 
-  it('replays a fixed number of straight-line constructed-array pushes per canonical iteration', () => {
+  it('fences multiple unauthenticated constructed-array push recurrences', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) slots;
       function write(int n) public {
@@ -5007,12 +5089,15 @@ describe('required kernel admission', () => {
       function control() public { require(true); }
     }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
-      .toMatchObject({ eligible: true });
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
     expect(artifact.abi.find((handler) => handler.name === 'write')?.sortedUpsertLoopInfo)
-      .toHaveLength(2);
+      .toEqual([
+        expect.objectContaining({ constructedKeyReplay: true }),
+        expect.objectContaining({ constructedKeyReplay: true }),
+      ]);
   });
 
-  it('replays fixed and invariant variable-width conditional resizes per canonical iteration', () => {
+  it('fences unauthenticated fixed and invariant variable-width resize recurrences', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) slots;
       function write(int n) public {
@@ -5146,33 +5231,21 @@ describe('required kernel admission', () => {
         require(true);
       }
     }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
-      .toMatchObject({ eligible: true });
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'choose'))
-      .toMatchObject({ eligible: true });
+    for (const name of [
+      'write', 'choose', 'trimVariableWidth', 'pushVariableWidth', 'pushVariableSwitch',
+      'pushLoopLocals', 'pushJoinedLocals', 'pushSwitchLocals', 'pushOptional', 'trimOptional',
+      'trimVariableSwitch',
+    ]) {
+      expect(artifact.messageBus?.handlers.find((handler) => handler.name === name))
+        .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+      expect(artifact.abi.find((handler) => handler.name === name)?.sortedUpsertLoopInfo)
+        .toEqual(expect.arrayContaining([expect.objectContaining({ constructedKeyReplay: true })]));
+    }
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'trim'))
-      .toMatchObject({ eligible: true });
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'trimVariableWidth'))
-      .toMatchObject({ eligible: true });
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'pushVariableWidth'))
-      .toMatchObject({ eligible: true });
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'pushVariableSwitch'))
-      .toMatchObject({ eligible: true });
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'pushLoopLocals'))
-      .toMatchObject({ eligible: true });
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'pushJoinedLocals'))
-      .toMatchObject({ eligible: true });
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'pushSwitchLocals'))
-      .toMatchObject({ eligible: true });
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'pushOptional'))
-      .toMatchObject({ eligible: true });
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'trimOptional'))
-      .toMatchObject({ eligible: true });
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'trimVariableSwitch'))
       .toMatchObject({ eligible: true });
   });
 
-  it('replays an initial constructed-array prefix before the current iteration pushes', () => {
+  it('fences an unauthenticated resize recurrence after an initial constructed-array prefix', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) slots;
       function write(int n) public {
@@ -5187,10 +5260,12 @@ describe('required kernel admission', () => {
       function control() public { require(true); }
     }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
-      .toMatchObject({ eligible: true });
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+    expect(artifact.abi.find((handler) => handler.name === 'write')?.sortedUpsertLoopInfo)
+      .toEqual([expect.objectContaining({ constructedKeyReplay: true })]);
   });
 
-  it('replays a fixed number of straight-line constructed-array pops per canonical iteration', () => {
+  it('fences a fixed unauthenticated constructed-array pop recurrence', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) slots;
       function write(int n) public {
@@ -5205,7 +5280,9 @@ describe('required kernel admission', () => {
       function control() public { require(true); }
     }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
-      .toMatchObject({ eligible: true });
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+    expect(artifact.abi.find((handler) => handler.name === 'write')?.sortedUpsertLoopInfo)
+      .toEqual([expect.objectContaining({ constructedKeyReplay: true })]);
   });
 
   it.each([
@@ -5383,7 +5460,7 @@ describe('required kernel admission', () => {
     }
   });
 
-  it('replays a path-balanced transient push/pop schedule independently per iteration', () => {
+  it('fences a path-balanced transient schedule with multiple mutation streams', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) slots;
       function write(int n, bool high) public {
@@ -5400,7 +5477,7 @@ describe('required kernel admission', () => {
       function control() public { require(true); }
     }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
-      .toMatchObject({ eligible: true });
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
   });
 
   it.each([
@@ -5493,7 +5570,7 @@ describe('required kernel admission', () => {
       .toMatchObject({ eligible: true });
   });
 
-  it('derives a switch-initialized same-iteration local array key', () => {
+  it('fences a multi-arm switch-initialized local array key', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) slots;
       function write(int n, int mode, bool take) public {
@@ -5511,7 +5588,9 @@ describe('required kernel admission', () => {
       function control() public { require(true); }
     }`, KERNEL);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
-      .toMatchObject({ eligible: true });
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+    expect(artifact.abi.find((handler) => handler.name === 'write')?.sortedUpsertLoopInfo)
+      .toContainEqual(expect.objectContaining({ multiArmConstructedKeyReplay: true }));
     expect(artifact.abi.find((handler) => handler.name === 'write')?.sortedUpsertLoopInfo?.[0]
       .varyingKeyExpressions).toEqual([expect.objectContaining({ kind: 'ternary' })]);
   });
@@ -5670,7 +5749,7 @@ describe('required kernel admission', () => {
       function control() public { require(true); }
     }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'copy'))
-      .toMatchObject({ eligible: true });
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
     const streams = artifact.abi.find((handler) => handler.name === 'copy')?.sortedUpsertLoopInfo ?? [];
     expect(streams.filter((stream) => stream.collection === 'm')).toEqual(expect.arrayContaining([
       expect.objectContaining({ op: 'read', varyingKeyExpressions: expect.any(Array) }),
@@ -5896,7 +5975,7 @@ describe('required kernel admission', () => {
   it.each([
     ['ascending', '1', '<', '+', 'stride', 'source'],
     ['descending', '9', '>', '-', 'stride + 1', 'binary'],
-  ])('publishes a replayable runtime %s step while freezing mixed collection/effect geometry', (
+  ])('publishes a replayable runtime %s step with one unconditional event stream', (
     _label, start, comparison, operator, stride, kind,
   ) => {
     const artifact = compileString(`contract C() {
@@ -5911,7 +5990,7 @@ describe('required kernel admission', () => {
       }
     }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
-      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+      .toMatchObject({ eligible: true });
     const info = artifact.abi.find((candidate) => candidate.name === 'write')?.sortedUpsertLoopInfo?.[0];
     expect(info?.varyingArrayParam).toMatch(/_step_runtime_[pn]$/);
     expect(info?.iterationStep).toMatchObject({ kind });
@@ -6148,7 +6227,7 @@ describe('required kernel admission', () => {
       function control() public { require(true); }
     }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied'))
-      .toMatchObject({ eligible: true });
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
     expect(artifact.abi.find((handler) => handler.name === 'denied')?.sortedUpsertLoopInfo)
       .toEqual(expect.arrayContaining([
         expect.objectContaining({ collection: 'b', op: 'read' }),
@@ -6168,7 +6247,7 @@ describe('required kernel admission', () => {
         }
       }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
       expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'copy'))
-        .toMatchObject({ eligible: true });
+        .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
       const read = artifact.abi.find((handler) => handler.name === 'copy')?.sortedUpsertLoopInfo
         ?.find((info) => info.collection === 'source');
       expect(read).toMatchObject({ op: 'read' });
@@ -6190,7 +6269,7 @@ describe('required kernel admission', () => {
       }
     }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'combine'))
-      .toMatchObject({ eligible: true });
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
     expect(artifact.abi.find((handler) => handler.name === 'combine')?.sortedUpsertLoopInfo)
       .toEqual(expect.arrayContaining([
         expect.objectContaining({ collection: 'left', op: 'read', fixedKeyParams: ['account'] }),
@@ -6210,7 +6289,7 @@ describe('required kernel admission', () => {
       function control() public { require(true); }
     }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'shifted'))
-      .toMatchObject({ eligible: true });
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
     const streams = artifact.abi.find((handler) => handler.name === 'shifted')?.sortedUpsertLoopInfo ?? [];
     const source = streams.find((stream) => stream.collection === 'source');
     const destination = streams.find((stream) => stream.collection === 'destination');
@@ -6240,7 +6319,7 @@ describe('required kernel admission', () => {
       function control() public { require(true); }
     }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'shifted'))
-      .toMatchObject({ eligible: true });
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
     const streams = artifact.abi.find((handler) => handler.name === 'shifted')?.sortedUpsertLoopInfo ?? [];
     expect(streams.find((stream) => stream.collection === 'source')).toMatchObject({ op: 'read' });
     expect(streams.find((stream) => stream.collection === 'destination')).toMatchObject({ op: 'set' });
@@ -6484,7 +6563,7 @@ describe('required kernel admission', () => {
       }));
   });
 
-  it('publishes independent permutations across collections with different invariant key prefixes', () => {
+  it('freezes independent permutations across collections with different invariant key prefixes', () => {
     const artifact = compileString(`contract C() {
       mapping(int => mapping(int => int)) a;
       mapping(int => mapping(int => int)) b;
@@ -6494,7 +6573,7 @@ describe('required kernel admission', () => {
       }
     }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
-      .toMatchObject({ eligible: true });
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
     expect(artifact.abi.find((handler) => handler.name === 'write')?.inputs.filter((input) =>
       input.name.startsWith('__internal__vmapCounterPerm_'))).toHaveLength(2);
     expect(new Set(artifact.abi.find((handler) => handler.name === 'write')?.sortedUpsertLoopInfo
@@ -6532,13 +6611,17 @@ describe('required kernel admission', () => {
     const ledger = compileRenamed('Ledger', 'credits', 'debits', 'reconcile');
     const registry = compileRenamed('Registry', 'primary', 'secondary', 'apply');
 
+    expect(ledger.messageBus?.handlers.find((handler) => handler.name === 'reconcile'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+    expect(registry.messageBus?.handlers.find((handler) => handler.name === 'apply'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
     expect(streamShape(ledger, 'reconcile')).toEqual({
-      handlerWitness: 'bytes[]', routeWitness: 'bytes[][]', ordinals: [0, 1],
+      handlerWitness: 'bytes[]', routeWitness: undefined, ordinals: [0, 1],
     });
     expect(streamShape(registry, 'apply')).toEqual(streamShape(ledger, 'reconcile'));
   });
 
-  it('publishes independent permutations for different selected subsets across collections', () => {
+  it('freezes independent nested-prefix permutations for selected subsets across collections', () => {
     const artifact = compileString(`contract C() {
       mapping(int => mapping(int => int)) a;
       mapping(int => mapping(int => int)) b;
@@ -6552,7 +6635,7 @@ describe('required kernel admission', () => {
       function control() public { require(true); }
     }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied'))
-      .toMatchObject({ eligible: true });
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
     const write = artifact.abi.find((handler) => handler.name === 'denied');
     expect(write?.inputs.filter((input) => input.name.startsWith('__internal__vmapCounterPerm_'))).toHaveLength(2);
     expect(new Set(write?.sortedUpsertLoopInfo?.map((info) => info.varyingArrayParam)).size).toBe(2);
@@ -6652,7 +6735,7 @@ describe('required kernel admission', () => {
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
   });
 
-  it('publishes a counter-derived local assigned before its guarded write', () => {
+  it('fences a counter-derived selection local assigned before its guarded write', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) m;
       function write(int n) public {
@@ -6666,9 +6749,12 @@ describe('required kernel admission', () => {
       }
     }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
-      .toMatchObject({ eligible: true });
-    expect(artifact.abi.find((handler) => handler.name === 'write')?.sortedUpsertLoopInfo?.[0]
-      .iterationCondition).toMatchObject({ kind: 'binary', operator: '==' });
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+    expect(artifact.abi.find((handler) => handler.name === 'write')?.sortedUpsertLoopInfo?.[0])
+      .toMatchObject({
+        iterationCondition: { kind: 'binary', operator: '==' },
+        sameIterationMutableSelectionReplay: true,
+      });
   });
 
   it('replays an exhaustive conditional local assignment as a mapping value and guard', () => {
@@ -6796,7 +6882,7 @@ describe('required kernel admission', () => {
       });
   });
 
-  it('publishes site-specific loop-carried values observed on both sides of an assignment', () => {
+  it('freezes a mutable selection observed on both sides of its same-iteration assignment', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) left;
       mapping(int => int) right;
@@ -6812,16 +6898,18 @@ describe('required kernel admission', () => {
       function control() public { require(true); }
     }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied'))
-      .toMatchObject({ eligible: true });
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
     const conditions = artifact.abi.find((handler) => handler.name === 'denied')?.sortedUpsertLoopInfo
       ?.map((info) => info.iterationCondition);
     expect(conditions).toHaveLength(2);
     expect(conditions?.[0]).not.toEqual(conditions?.[1]);
+    expect(artifact.abi.find((handler) => handler.name === 'denied')?.sortedUpsertLoopInfo)
+      .toContainEqual(expect.objectContaining({ sameIterationMutableSelectionReplay: true }));
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')
       ?.eligible).toBe(true);
   });
 
-  it('replays site-specific mapping values observed on both sides of an assignment', () => {
+  it('freezes site-specific mapping values split across two mutation streams', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) beforeValues;
       mapping(int => int) afterValues;
@@ -6836,7 +6924,7 @@ describe('required kernel admission', () => {
       }
     }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
-      .toMatchObject({ eligible: true });
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
     expect(artifact.abi.find((handler) => handler.name === 'write')?.sortedUpsertLoopInfo)
       .toHaveLength(2);
   });
@@ -6858,6 +6946,34 @@ describe('required kernel admission', () => {
     }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
       .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+  });
+
+  it('fences chunked parameter-value event settlement while retaining scalar values', () => {
+    const artifact = compileString(`event Applied(int key);
+      contract C() {
+        mapping(int => bytes) chunked;
+        mapping(int => int) scalar;
+        function writeChunked(int[] keys, bytes[] values) public {
+          for (int i = 0; i < keys.length; i = i + 1) {
+            this.chunked[keys[i]] = values[i]; emit Applied(keys[i]);
+          }
+          require(true);
+        }
+        function writeScalar(int[] keys, int[] values) public {
+          for (int i = 0; i < keys.length; i = i + 1) {
+            this.scalar[keys[i]] = values[i]; emit Applied(keys[i]);
+          }
+          require(true);
+        }
+      }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.abi.find((handler) => handler.name === 'writeChunked')?.sortedUpsertLoopInfo)
+      .toContainEqual(expect.objectContaining({
+        collection: 'chunked', valueArrayParam: 'values', valueArrayIndexParam: expect.any(String),
+      }));
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'writeChunked'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'writeScalar'))
+      .toMatchObject({ eligible: true });
   });
 
   it('freezes site-specific transfer predicates beside runtime collection mutations', () => {
@@ -7813,7 +7929,7 @@ describe('required kernel admission', () => {
       input.name.startsWith('__internal__vmapCounterPerm_'))).toBe(true);
   });
 
-  it('admits a counter-keyed loop that writes two mappings', () => {
+  it('freezes a counter-keyed loop that writes two mutation streams', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) a;
       mapping(int => int) b;
@@ -7823,9 +7939,10 @@ describe('required kernel admission', () => {
       }
       function control() public { require(true); }
     }`, KERNEL);
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')?.eligible).toBe(true);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
     expect(artifact.messageBus?.route.inputs.some((input) =>
-      input.name.startsWith('__internal__vmapCounterPerm_'))).toBe(true);
+      input.name.startsWith('__internal__vmapCounterPerm_'))).toBe(false);
     const streams = artifact.abi.find((handler) => handler.name === 'denied')?.sortedUpsertLoopInfo ?? [];
     expect(streams).toHaveLength(2);
     expect(new Set(streams.map((stream) => stream.journalExecutionGroup)).size).toBe(1);
@@ -7843,7 +7960,7 @@ describe('required kernel admission', () => {
       }
     }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
-      .toMatchObject({ eligible: true });
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
     const handler = artifact.abi.find((candidate) => candidate.name === 'write')!;
     expect(handler.sortedUpsertLoopInfo).toHaveLength(2);
     expect(handler.sortedUpsertLoopInfo?.map((info) => info.collection)).toEqual(['m', 'm']);
@@ -8156,7 +8273,7 @@ describe('required kernel admission', () => {
       }
     }`, KERNEL);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
-      .toMatchObject({ eligible: true });
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
     expect(artifact.abi.find((handler) => handler.name === 'write')?.sortedUpsertLoopInfo)
       .toEqual([
         expect.objectContaining({ collection: 'm', iterationCondition: expect.anything() }),
@@ -8179,7 +8296,7 @@ describe('required kernel admission', () => {
       }
     }`, KERNEL);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
-      .toMatchObject({ eligible: true });
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
     expect(artifact.abi.find((handler) => handler.name === 'write')?.sortedUpsertLoopInfo)
       .toEqual([
         expect.objectContaining({ collection: 'm', iterationCondition: expect.anything() }),
@@ -8284,7 +8401,7 @@ describe('required kernel admission', () => {
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')?.eligible).toBe(true);
   });
 
-  it('freezes one source-ordered event stream around a counter-keyed mapping loop', () => {
+  it('admits one source-ordered event stream around a counter-keyed mapping loop', () => {
     const artifact = compileString(`event Before(int i); event Hit(int i); event After(int i);
       contract C() {
         mapping(int => int) m;
@@ -8297,7 +8414,7 @@ describe('required kernel admission', () => {
         function control() public { require(true); }
     }`, KERNEL);
     const deniedHandler = artifact.messageBus?.handlers.find((handler) => handler.name === 'denied');
-    expect(deniedHandler).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+    expect(deniedHandler).toMatchObject({ eligible: true });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
   });
 
@@ -8888,7 +9005,7 @@ describe('required kernel admission', () => {
     expect(handler).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
   });
 
-  it('keeps loop events on direct calls while both bus conventions refuse unsupported geometry', () => {
+  it('keeps loop events on direct calls and admits the kernel one-stream geometry', () => {
     const source = `event Hit(int i);
       contract C() {
         mapping(int => int) m;
@@ -8913,8 +9030,7 @@ describe('required kernel admission', () => {
     const kernel = compileString(source, { ...KERNEL, maximumInputBytes: 1_000_000 });
     expect(kernel.messageBus?.convention).toBe('kernel-row-loop');
     expect(kernel.messageBus?.handlers.find((candidate) => candidate.name === 'write')).toMatchObject({
-      eligible: false,
-      rejectionReason: 'KERNEL_LAYOUT',
+      eligible: true,
     });
   });
 
@@ -9014,7 +9130,7 @@ describe('required kernel admission', () => {
     expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'control')?.eligible).toBe(true);
   });
 
-  it('orders helper event metadata while freezing mixed collection/effect geometry', () => {
+  it('orders helper event metadata beside one mutation stream', () => {
     const artifact = compileString(`event Hit(int i);
       contract C() {
         mapping(int => int) m;
@@ -9027,7 +9143,7 @@ describe('required kernel admission', () => {
         function control() public { require(true); }
     }`, KERNEL);
     const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'denied');
-    expect(handler).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+    expect(handler).toMatchObject({ eligible: true });
     expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'control')?.eligible).toBe(true);
   });
 
@@ -9679,6 +9795,115 @@ describe('required kernel admission', () => {
       }
     }`, KERNEL);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'apply'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+    expect(artifact.abi.find((handler) => handler.name === 'apply')?.sortedUpsertLoopInfo)
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({ collection: 'observed', op: 'read' }),
+        expect.objectContaining({ collection: 'written', op: 'set' }),
+      ]));
+  });
+
+  it('fences bounded constructed-key replay without rejecting direct derived keys', () => {
+    const artifact = compileString(`contract Ledger() {
+      mapping(int => int) values;
+      function constructed(int count) public {
+        int[] keys = new int[](0);
+        for (int i = 0; i < count; i = i + 1) {
+          keys.push(i + 10);
+          this.values[keys[i]] = i;
+        }
+        require(true);
+      }
+      function derived(int count) public {
+        for (int i = 0; i < count; i = i + 1) { this.values[i * 2 + 1] = i; }
+        require(true);
+      }
+    }`, KERNEL);
+    expect(artifact.abi.find((handler) => handler.name === 'constructed')?.sortedUpsertLoopInfo)
+      .toEqual([expect.objectContaining({ constructedKeyReplay: true })]);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'constructed'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+    expect(artifact.abi.find((handler) => handler.name === 'derived')?.sortedUpsertLoopInfo)
+      .toEqual([expect.not.objectContaining({ constructedKeyReplay: true })]);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'derived'))
+      .toMatchObject({ eligible: true });
+  });
+
+  it('fences multi-arm constructed-key joins while retaining a binary join', () => {
+    const artifact = compileString(`contract Ledger() {
+      mapping(int => int) values;
+      function multi(int count, int mode, bool take) public {
+        int[] keys = new int[](count);
+        for (int i = 0; i < count; i = i + 1) {
+          switch (mode) {
+            case 0: if (take) keys[i] = i + 10; else keys[i] = i + 20; break;
+            case 1: keys[i] = i + 30; break;
+            default: keys[i] = i + 40;
+          }
+          this.values[keys[i]] = i;
+        }
+        require(true);
+      }
+      function binary(int count, bool take) public {
+        int[] keys = new int[](count);
+        for (int i = 0; i < count; i = i + 1) {
+          if (take) keys[i] = i + 50; else keys[i] = i + 60;
+          this.values[keys[i]] = i;
+        }
+        require(true);
+      }
+    }`, KERNEL);
+    expect(artifact.abi.find((handler) => handler.name === 'multi')?.sortedUpsertLoopInfo)
+      .toEqual([expect.objectContaining({ multiArmConstructedKeyReplay: true })]);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'multi'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+    expect(artifact.abi.find((handler) => handler.name === 'binary')?.sortedUpsertLoopInfo)
+      .toEqual([expect.not.objectContaining({ multiArmConstructedKeyReplay: true })]);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'binary'))
+      .toMatchObject({ eligible: true });
+  });
+
+  it('fences a selection local assigned earlier in the same iteration but preserves a later update', () => {
+    const artifact = compileString(`contract Ledger() {
+      mapping(int => int) values;
+      function current(int count) public {
+        bool take = false;
+        for (int i = 0; i < count; i = i + 1) {
+          take = i % 3 == 0;
+          if (take) this.values[i] = i;
+          take = false;
+        }
+        require(true);
+      }
+      function later(int count) public {
+        bool take = true;
+        for (int i = 0; i < count; i = i + 1) {
+          if (take) this.values[100 + i] = i;
+          take = i % 3 == 0;
+        }
+        require(true);
+      }
+      function joined(int count) public {
+        bool take = false;
+        for (int i = 0; i < count; i = i + 1) {
+          if (i % 2 == 0) take = true;
+          else take = false;
+          if (take) this.values[200 + i] = i;
+        }
+        require(true);
+      }
+    }`, KERNEL);
+    expect(artifact.abi.find((handler) => handler.name === 'current')?.sortedUpsertLoopInfo)
+      .toEqual([expect.objectContaining({ sameIterationMutableSelectionReplay: true })]);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'current'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+    expect(artifact.abi.find((handler) => handler.name === 'later')?.sortedUpsertLoopInfo)
+      .toEqual([expect.not.objectContaining({ sameIterationMutableSelectionReplay: true })]);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'later'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.abi.find((handler) => handler.name === 'joined')?.sortedUpsertLoopInfo)
+      .toEqual([expect.not.objectContaining({ sameIterationMutableSelectionReplay: true })]);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'joined'))
       .toMatchObject({ eligible: true });
   });
 

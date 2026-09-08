@@ -352,6 +352,54 @@ describe('required kernel admission', () => {
       .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_TX_SIGNATURE' });
   });
 
+  it('does not select an overload from partial argument type evidence', () => {
+    const artifact = compileString(`contract C(pubkey admin) {
+      function inspect(sig proof, int marker) internal { require(true); }
+      function inspect(bytes proof, bool marker) internal {
+        require(checkSig(sig(proof), admin));
+      }
+      function migrate(sig proof, bool choose) public upgrade {
+        inspect(proof, choose ? true : false);
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'migrate'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_TX_SIGNATURE' });
+  });
+
+  it('resolves named overload arguments in each declaration order', () => {
+    const artifact = compileString(`contract C(pubkey admin) {
+      function inspect(sig proof, bool flag) internal { require(true); }
+      function inspect(bytes flag, bool proof) internal {
+        require(checkSig(sig(flag), admin));
+      }
+      function migrate(sig witness, bool choose) public upgrade {
+        inspect({ flag: witness, proof: choose });
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, { ...KERNEL, solidityImportCompat: true, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'migrate'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_TX_SIGNATURE' });
+  });
+
+  it('honors a contract helper shadowing the same free-function signature', () => {
+    const artifact = compileString(`
+      function inspect(sig proof, pubkey key) { require(checkSig(proof, key)); }
+      contract C(pubkey admin) {
+        function inspect(sig proof, pubkey key) internal { require(true); }
+        function migrate(sig proof) public upgrade {
+          inspect(proof, admin);
+          require(true);
+        }
+        function control() public { require(true); }
+      }
+    `, { ...KERNEL, solidityImportCompat: true, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'migrate'))
+      .toMatchObject({ eligible: true });
+  });
+
   it('proves an inherited signature helper while keeping a recursive helper fenced', () => {
     const inherited = compileString(`contract Base(pubkey admin) {
       function authorize(sig proof, pubkey key) internal { require(checkSig(proof, key)); }

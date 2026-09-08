@@ -3214,8 +3214,20 @@ function synthesizeMessageBusRoute(
   ): FunctionDefinitionNode | undefined => {
     const sourceParameters = (candidate: FunctionDefinitionNode): ParameterNode[] =>
       candidate.parameters.filter((parameter) => !parameter.name.startsWith('__internal__'));
-    const candidates = (signatureClosureByName.get(call.identifier.name) ?? [])
-      .filter((candidate) => sourceParameters(candidate).length === call.parameters.length);
+    const arityCandidates = (signatureClosureByName.get(call.identifier.name) ?? []).filter((candidate) => {
+      const parameters = sourceParameters(candidate);
+      return parameters.length === call.parameters.length && (!call.fieldNames
+        || parameters.every((parameter) => call.fieldNames!.includes(parameter.name)));
+    });
+    // Match TypeCheckTraversal's lexical rule: a contract member shadows an otherwise identical free-function
+    // signature. Keeping both would manufacture ambiguity here even though semantic resolution cannot select the
+    // free declaration.
+    const contractSignatures = new Set(arityCandidates.filter((candidate) => !candidate.isFreeFunction)
+      .map((candidate) => sourceParameters(candidate).map((parameter) => parameter.type.toString()).join(',')));
+    const candidates = arityCandidates.filter((candidate) => {
+      const signature = sourceParameters(candidate).map((parameter) => parameter.type.toString()).join(',');
+      return !(candidate.isFreeFunction && contractSignatures.has(signature));
+    });
     if (call.resolvedFunction && candidates.includes(call.resolvedFunction)) return call.resolvedFunction;
     const definition = call.identifier.definition?.definition;
     if (definition instanceof FunctionDefinitionNode && candidates.includes(definition)) return definition;
@@ -3229,17 +3241,24 @@ function synthesizeMessageBusRoute(
       walkInvocationAst(owner.body, (node) => {
         if (node instanceof VariableDefinitionNode && node.name === expression.name) bindings.push(node);
       });
-      return bindings.length === 1 ? bindings[0].type : undefined;
+      if (bindings.length === 1) return bindings[0].type;
+      if (bindings.length > 1) return undefined;
+      const contractBindings = contract.parameters.filter((parameter) => parameter.name === expression.name);
+      return contractBindings.length === 1 ? contractBindings[0].type : undefined;
     };
     const actualTypes = call.parameters.map(lexicalType);
-    const exact = candidates.filter((candidate) => sourceParameters(candidate).every((parameter, index) =>
-      actualTypes[index] === undefined || parameter.type.toString() === actualTypes[index]?.toString()));
-    // At least one known argument must distinguish this target. With no type evidence, preserve the established
-    // unique-source-signature fallback but never guess among overloads.
-    if (actualTypes.some((type) => type !== undefined) && exact.length === 1) return exact[0];
     if (actualTypes.every((type): type is Type => type !== undefined)) {
+      const actualTypesFor = (candidate: FunctionDefinitionNode): Type[] => !call.fieldNames
+        ? actualTypes
+        : sourceParameters(candidate).map((parameter) => actualTypes[call.fieldNames!.indexOf(parameter.name)]);
+      // A match on only the already-typed subset is not authoritative: a later argument can make that candidate
+      // incompatible and select an implicitly-convertible sibling. Resolve overloads only with the complete
+      // source signature, exactly as TypeCheckTraversal does.
+      const exact = candidates.filter((candidate) => sourceParameters(candidate).every((parameter, index) =>
+        parameter.type.toString() === actualTypesFor(candidate)[index].toString()));
+      if (exact.length === 1) return exact[0];
       const compatible = candidates.filter((candidate) => implicitlyCastableSignature(
-        actualTypes, sourceParameters(candidate).map((parameter) => parameter.type),
+        actualTypesFor(candidate), sourceParameters(candidate).map((parameter) => parameter.type),
       ));
       if (compatible.length === 1) return compatible[0];
     }

@@ -124,6 +124,7 @@ import {
   selectExpectedP2sh32OutputLock,
   persistUpdateRedeemLock,
   persistUpdateDigestLock,
+  legacyJobEventsPersistUpdateDigestLock,
   persistUpdateDestLock,
   persistValueChunkLock,
   isWithdrawShapedJobEvent,
@@ -624,7 +625,8 @@ describe('generic persisted value-chunk write identity', () => {
     );
     const digestLock = persistUpdateDigestLock(categoryId, [], renamed);
     expect(digestLock?.length).toBe(35);
-    expect(binToHex(digestLock!)).not.toBe(binToHex(persistUpdateDigestLock(categoryId)!));
+    expect(binToHex(digestLock!)).not.toBe(binToHex(legacyJobEventsPersistUpdateDigestLock(categoryId)!));
+    expect(persistUpdateDigestLock(categoryId)).toBeUndefined();
     const otherLock = getValueChunkLockingBytecode(
       categoryId, 'other:mapping(int => Notice[])', slot, sha256Sync(value),
     );
@@ -2516,7 +2518,10 @@ describe('assignPhysicalReturnIndices', () => {
       persistReady: true, persistWidth: 0, firstPublishInsert: false,
     })).toBe(false);
     expect(persistUpdateDigestLock('missing-category')).toBeUndefined();
-    expect(binToHex(persistUpdateDigestLock(
+    expect(persistUpdateDigestLock(
+      'ee643a1671fbbe5333480fe40ff0fa72b65b6df0818805a2209586e991ca0af0',
+    )).toBeUndefined();
+    expect(binToHex(legacyJobEventsPersistUpdateDigestLock(
       'ee643a1671fbbe5333480fe40ff0fa72b65b6df0818805a2209586e991ca0af0',
     ) ?? new Uint8Array())).toBe(
       'aa2047362c5b4a0c597c12b75c90f68f6933b2e86c63eb6ce7ed46e083407361b7b587',

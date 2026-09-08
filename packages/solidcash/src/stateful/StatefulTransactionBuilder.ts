@@ -3857,27 +3857,34 @@ function paramToStateValue(param: unknown, abiType: string): StateValue | undefi
   return undefined;
 }
 
-/**
- * Dest-18 UPDATE EQUALVERIFYs the jobEvents entry-NFT p2sh32: persist proxy
- * category + collection `jobEvents:mapping(uint256 => JobEventData[])`.
- * That is emitSortedEntryAddress, not a value-chunk domain lock.
- */
+/** Build the entry-NFT digest lock for one exact compiler-described collection write. */
 export function persistUpdateDigestLock(
   categoryId?: string,
   _extraCategories: readonly string[] = [],
   write?: ValueChunkWriteDescriptor | null,
 ): Uint8Array | undefined {
   if (!categoryId || !/^[0-9a-f]{64}$/i.test(categoryId)) return undefined;
-  if (write === null) return undefined;
+  if (!write) return undefined;
   try {
-    if (write && write.categoryId.toLowerCase() !== categoryId.toLowerCase()) return undefined;
-    const collectionHash = write
-      ? computeCollectionHash(write.collectionSignature)
-      // Compatibility only for artifacts predating exact collection-write descriptors.
-      : computeCollectionHash(
-        computeCollectionSignature('jobEvents', 'mapping(uint256 => JobEventData[])'),
-      );
-    if (write && binToHex(collectionHash) !== write.collectionHash.toLowerCase()) return undefined;
+    if (write.categoryId.toLowerCase() !== categoryId.toLowerCase()) return undefined;
+    const collectionHash = computeCollectionHash(write.collectionSignature);
+    if (binToHex(collectionHash) !== write.collectionHash.toLowerCase()) return undefined;
+    return scriptToLockingBytecode(
+      buildEntryNftCovenantScript(hexToBin(categoryId), collectionHash),
+      'p2sh32',
+    );
+  } catch {
+    return undefined;
+  }
+}
+
+/** Explicit adapter for descriptor-free plans using the historical JobEvent collection schema. */
+export function legacyJobEventsPersistUpdateDigestLock(categoryId?: string): Uint8Array | undefined {
+  if (!categoryId || !/^[0-9a-f]{64}$/i.test(categoryId)) return undefined;
+  try {
+    const collectionHash = computeCollectionHash(
+      computeCollectionSignature('jobEvents', 'mapping(uint256 => JobEventData[])'),
+    );
     return scriptToLockingBytecode(
       buildEntryNftCovenantScript(hexToBin(categoryId), collectionHash),
       'p2sh32',
@@ -7980,10 +7987,8 @@ export class StatefulTransactionBuilder {
       bandStart: this.getPublishJobEventsBand()?.start ?? -1,
       nNew: this.getPublishJobEventsBand()?.nNew ?? 0,
     }));
-    const persistRecipeLock = persistUpdateDigestLock(
+    const persistRecipeLock = this._persistUpdateDigestLock(
       this._persistJobEventsTokenCategory() ?? categoryId,
-      this._persistDigestCategories(),
-      this._persistedValueChunkWrite(this._persistJobEventsTokenCategory() ?? categoryId),
     );
     for (const [index, input] of this.allInputs.entries()) {
       const commit = String(input?.token?.nft?.commitment ?? '');
@@ -8116,12 +8121,8 @@ export class StatefulTransactionBuilder {
       // live band starts at dest 20.
       if (isPersistValueChunk && inWriteBand && !rematerialize && !stampDigest) continue;
       const recipeLock = stampDigest
-        ? persistUpdateDigestLock(
+        ? this._persistUpdateDigestLock(
           this._persistJobEventsTokenCategory() ?? input.token?.category ?? categoryId,
-          this._persistDigestCategories(),
-          this._persistedValueChunkWrite(
-            this._persistJobEventsTokenCategory() ?? input.token?.category ?? categoryId,
-          ),
         )
         : persistRecipeLock;
       const lock = ((persistDests.has(index) && persistRecipeLock)
@@ -10238,11 +10239,7 @@ export class StatefulTransactionBuilder {
     const stampDigest = this._shouldStampPersistUpdateDigestLock();
     const persistTokenCategory = stateOwnerCategory;
     const recipeLock = stampDigest
-      ? persistUpdateDigestLock(
-        persistTokenCategory,
-        this._persistDigestCategories(),
-        this._persistedValueChunkWrite(persistTokenCategory),
-      )
+      ? this._persistUpdateDigestLock(persistTokenCategory)
       : undefined;
     const redeemLock = chunks[0]?.lockingBytecode
       ?? recipeLock
@@ -10301,11 +10298,7 @@ export class StatefulTransactionBuilder {
       ?? this._persistJobEventsTokenCategory()
       ?? categoryId;
     const persistDigestLock = this._shouldStampPersistUpdateDigestLock()
-      ? persistUpdateDigestLock(
-        persistTokenCategory,
-        this._persistDigestCategories(),
-        this._persistedValueChunkWrite(persistTokenCategory),
-      )
+      ? this._persistUpdateDigestLock(persistTokenCategory)
       : (this._shouldRematerializePersistUpdate()
         ? persistUpdateRedeemLock(
           persistTokenCategory, this.jobEventsRedeemLock,
@@ -11601,6 +11594,15 @@ export class StatefulTransactionBuilder {
       .filter((write) => categoryId === undefined || write.categoryId === categoryId);
     if (writes.length === 0) return undefined;
     return selectPersistedValueChunkWrite(writes, categoryId) ?? null;
+  }
+
+  /** Exact descriptor path, with the historical schema available only to descriptor-free legacy plans. */
+  private _persistUpdateDigestLock(categoryId?: string): Uint8Array | undefined {
+    const write = this._persistedValueChunkWrite(categoryId);
+    if (write) return persistUpdateDigestLock(categoryId, this._persistDigestCategories(), write);
+    if (write === null || this._hasChunkableValueWriteMetadata()
+      || !this._permitsLegacyNamedValueChunkFallback()) return undefined;
+    return legacyJobEventsPersistUpdateDigestLock(categoryId);
   }
 
   getLowLevelCallMasterInputIndex(groupIdx: number): number {

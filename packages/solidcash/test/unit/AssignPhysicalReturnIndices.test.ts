@@ -41,7 +41,9 @@ import {
   packTailReturnPlacements,
   shouldDisplaceForNestedEvent,
   isOverwritableEmitOccupant,
+  chunkableWriterEventOutputIndex,
   publishJobEventOutputIndex,
+  placeChunkableWriterEventOutput,
   placePublishJobEventOutput,
   isJobEventEmitCommitment,
   isLearnedEventEmitCommitment,
@@ -1783,9 +1785,10 @@ describe('assignPhysicalReturnIndices', () => {
     expect(computePublishJobEventsBand({ implIndex: -1, plannedWidth: 6 })).toBeUndefined();
     expect(scaledInputPreserveExclusiveEnd(5, 5)).toBe(25);
     expect(scaledEventOutputIndex(5, 5)).toBe(24);
-    expect(publishJobEventOutputIndex(15, 4)).toBe(19);
-    expect(publishJobEventOutputIndex(17)).toBe(21);
-    expect(publishJobEventOutputIndex(18)).toBe(22);
+    expect(chunkableWriterEventOutputIndex(15, 4)).toBe(19);
+    expect(chunkableWriterEventOutputIndex(17)).toBe(21);
+    expect(chunkableWriterEventOutputIndex(18)).toBe(22);
+    expect(publishJobEventOutputIndex(18)).toBe(chunkableWriterEventOutputIndex(18));
     expect(isJobEventEmitCommitment(
       '005e1976a91447d9fe52d462741f418e9dd5efaa6ae7e7adb60088ac0000',
     )).toBe(true);
@@ -1806,7 +1809,7 @@ describe('assignPhysicalReturnIndices', () => {
       amount: 1200n,
       token: { amount: 0n, category: 'ee64', nft: { capability: 'none', commitment: '5343494401' } },
     };
-    expect(placePublishJobEventOutput(mintingDest, 14, {
+    expect(placeChunkableWriterEventOutput(mintingDest, 14, {
       to: Uint8Array.from([0xaa, 0x21]),
       amount: 1200n,
       token: { amount: 0n, category: 'ee64', nft: { capability: 'none', commitment: '0060000000' } },
@@ -2302,16 +2305,16 @@ describe('assignPhysicalReturnIndices', () => {
     expect(isWithdrawShapedJobEvent([0, '76a914', '', 0])).toBe(false);
     expect(isWithdrawShapedJobEvent({ type_: 15, address_: '76a914', data_: '', timestamp_: 0 })).toBe(false);
     expect(shouldRematerializePersistUpdate({
-      persistReady: true, publishJobPost: false, event: [16, '', '', 0],
+      persistReady: true, initialWrite: false, event: [16, '', '', 0],
     })).toBe(true);
     expect(shouldRematerializePersistUpdate({
-      persistReady: true, publishJobPost: true, event: [16, '', '', 0],
+      persistReady: true, initialWrite: true, event: [16, '', '', 0],
     })).toBe(false);
     expect(shouldRematerializePersistUpdate({
-      persistReady: true, publishJobPost: false, event: [0, '76a914', '', 0],
+      persistReady: true, initialWrite: false, event: [0, '76a914', '', 0],
     })).toBe(false);
     expect(shouldRematerializePersistUpdate({
-      persistReady: true, publishJobPost: false, event: [16, '', '', 0], plannedInserts: 1,
+      persistReady: true, initialWrite: false, event: [16, '', '', 0], plannedInserts: 1,
     })).toBe(false);
     expect(isPersistValueChunkCommitment(
       'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b85500000000',

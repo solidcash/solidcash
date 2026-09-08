@@ -3428,8 +3428,14 @@ export function emitDestCollidesPreservedInput(input?: {
   return capability === 'minting' || capability === 'mutable';
 }
 
-export function publishJobEventOutputIndex(implIndex: number, eventOffset = 4): number {
+/** Absolute output coordinate for an event emitted by a physical chunkable-value writer. */
+export function chunkableWriterEventOutputIndex(implIndex: number, eventOffset = 4): number {
   return implIndex < 0 ? -1 : implIndex + eventOffset;
+}
+
+/** @deprecated Use {@link chunkableWriterEventOutputIndex}. */
+export function publishJobEventOutputIndex(implIndex: number, eventOffset = 4): number {
+  return chunkableWriterEventOutputIndex(implIndex, eventOffset);
 }
 
 /** Created JobEvent CAT (`005e19…` / `5e19…`). */
@@ -3674,11 +3680,13 @@ export function isWithdrawShapedJobEvent(event: unknown): boolean {
 
 export function shouldRematerializePersistUpdate(parts: {
   persistReady: boolean;
-  publishJobPost: boolean;
+  initialWrite?: boolean;
+  /** @deprecated Use `initialWrite`. */
+  publishJobPost?: boolean;
   event?: unknown;
   plannedInserts?: number;
 }): boolean {
-  if (!parts.persistReady || parts.publishJobPost) return false;
+  if (!parts.persistReady || (parts.initialWrite ?? parts.publishJobPost ?? false)) return false;
   if ((parts.plannedInserts ?? 0) > 0) return false;
   return isWithdrawShapedJobEvent(parts.event);
 }
@@ -3995,8 +4003,8 @@ function isEmptySameCategoryNoneCap(
   return commit === '' || /^0+$/.test(commit);
 }
 
-/** Last writer for publishJobEvent: impl+event.offset, and drop a cloned stub on dest+1. */
-export function placePublishJobEventOutput(
+/** Place the chunkable writer's event at impl+event.offset and drop a cloned stub on dest+1. */
+export function placeChunkableWriterEventOutput(
   outputs: Array<{
     to?: Uint8Array | string;
     amount?: bigint;
@@ -4084,6 +4092,13 @@ export function placePublishJobEventOutput(
     }
   }
   return true;
+}
+
+/** @deprecated Use {@link placeChunkableWriterEventOutput}. */
+export function placePublishJobEventOutput(
+  ...args: Parameters<typeof placeChunkableWriterEventOutput>
+): ReturnType<typeof placeChunkableWriterEventOutput> {
+  return placeChunkableWriterEventOutput(...args);
 }
 
 /**
@@ -5858,7 +5873,7 @@ export class StatefulTransactionBuilder {
       const event = (group.logicalFunctionArgs ?? group.functionArgs)?.[1];
       if (shouldRematerializePersistUpdate({
         persistReady: isPersistedJobEventsReady(),
-        publishJobPost: this._isInitialChunkableValueWrite(),
+        initialWrite: this._isInitialChunkableValueWrite(),
         event,
         plannedInserts,
       })) return true;
@@ -6161,7 +6176,7 @@ export class StatefulTransactionBuilder {
     if (impl < 0) return undefined;
     const offset = this._chunkableValueWriteAbi()?.blockLayout?.slots
       .find((slot) => slot.kind === 'event')?.offset ?? 4;
-    const dest = publishJobEventOutputIndex(impl, offset);
+    const dest = chunkableWriterEventOutputIndex(impl, offset);
     if (dest >= 0 && (outputCount <= 0 || dest < outputCount)) return dest;
     return undefined;
   }
@@ -7663,11 +7678,11 @@ export class StatefulTransactionBuilder {
     const dest = eventSelection.status === 'exact'
       ? (impl < 0 ? -1 : impl + eventOffset)
       : this._scaledEmitOutputIndex(builder.outputs.length)
-        ?? publishJobEventOutputIndex(impl, eventOffset);
+        ?? chunkableWriterEventOutputIndex(impl, eventOffset);
     const persistEmitEarly = this._shouldRematerializePersistUpdate();
     if (dest < 0 || (impl >= 0 && dest <= impl)) {
       if (!legacyEventFallback) return;
-      const fallback = publishJobEventOutputIndex(impl, eventOffset);
+      const fallback = chunkableWriterEventOutputIndex(impl, eventOffset);
       if (fallback >= 0) {
         relocateJobEventEmitToDest(builder.outputs, fallback, {
           consumedMutableOk: persistEmitEarly,
@@ -7763,7 +7778,7 @@ export class StatefulTransactionBuilder {
     const eventCommitment = constructedCommit ?? derived?.commitment;
     if (!legacyEventFallback && !eventCommitment) return;
     const persistEmit = this._shouldRematerializePersistUpdate();
-    const placed = placePublishJobEventOutput(builder.outputs, dest, {
+    const placed = placeChunkableWriterEventOutput(builder.outputs, dest, {
       to: lockingBytecode,
       amount: 1200n,
       token: {
@@ -7787,7 +7802,7 @@ export class StatefulTransactionBuilder {
     const executingDest = legacyEventFallback && dest >= 0
       ? dest
       : legacyEventFallback
-        ? publishJobEventOutputIndex(this._chunkableValueWriteInputIndex(), eventOffset)
+        ? chunkableWriterEventOutputIndex(this._chunkableValueWriteInputIndex(), eventOffset)
         : -1;
     if (legacyEventFallback && executingDest >= 0) {
       relocateJobEventEmitToDest(builder.outputs, executingDest, {
@@ -13937,7 +13952,7 @@ export class StatefulTransactionBuilder {
       for (let eventIndex = 0; eventIndex < eventSlots.length; eventIndex++) {
         const namedImpl = this._chunkableValueWriteInputIndex();
         const outputIndex = namedImpl >= 0
-          ? publishJobEventOutputIndex(namedImpl, eventSlots[eventIndex].offset)
+          ? chunkableWriterEventOutputIndex(namedImpl, eventSlots[eventIndex].offset)
           : implIndex + eventSlots[eventIndex].offset;
         const occupant = builder.outputs[outputIndex];
         const occupantNeedsEvent = isOverwritableEmitOccupant(occupant)
@@ -13997,7 +14012,7 @@ export class StatefulTransactionBuilder {
         const derivedCommit = constructedCommit
           ?? (isLearnedEventEmitCommitment(learnedCommit) ? learnedCommit : typedCommit);
         if (!isJobEventEmitCommitment(derivedCommit)) {
-          placePublishJobEventOutput(builder.outputs, outputIndex, {
+          placeChunkableWriterEventOutput(builder.outputs, outputIndex, {
             to: lockingBytecode,
             amount: 1200n,
             token: {
@@ -14034,7 +14049,7 @@ export class StatefulTransactionBuilder {
           },
         };
         placed.amount = BigInt(Math.max(1200, calculateDust(placed)));
-        placePublishJobEventOutput(builder.outputs, outputIndex, placed, {
+        placeChunkableWriterEventOutput(builder.outputs, outputIndex, placed, {
           consumedMutableOk: persistEmit,
           destInput: this.allInputs[outputIndex],
         });

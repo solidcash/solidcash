@@ -637,8 +637,8 @@ export function concatPushdataParts(parts: readonly Uint8Array[]): Uint8Array {
 
 /**
  * Encode an event NFT commitment the way `visitEmitStatement` does: each parameter is
- * pushdata-encoded, then the parts are concatenated. `emit JobEvent(0, ev)` is therefore
- * `encode(0) || encode(ev)` (`00` + struct), not the struct alone.
+ * pushdata-encoded, then the parts are concatenated. `emit Update(0, record)` is therefore
+ * `encode(0) || encode(record)` (`00` + struct), not the struct alone.
  */
 export function encodeEventCommitment(
   parameters: readonly { type: string }[],

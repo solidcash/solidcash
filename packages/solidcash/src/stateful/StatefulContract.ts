@@ -176,7 +176,7 @@ import {
   chunksFromJobEventsValue,
   isEmptyValueChunkCommitment,
   isJobEventEmitCommitment,
-  isLearnedEventEmitCommitment,
+  isAuthenticatedEventRepairCommitment,
   jobEventTypeOf,
   stampEmptyJobEventTimestamp,
   expectedFromOtcEqualVerify,
@@ -372,6 +372,23 @@ import { keccak_256 } from '@noble/hashes/sha3.js';
 // Unlocking: <push 0x51> (the redeem script).
 const DUMMY_FUNDER_LOCKING_BYTECODE = hexToBin(BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX);
 const DUMMY_FUNDER_UNLOCKING_BYTECODE = new Uint8Array([0x01, 0x51]); // push 1-byte redeem script
+
+/**
+ * Classify a route-observed event commitment using compiler ownership when it exists. An exact event slot and
+ * signature make every non-empty typed encoding authoritative, including `00`. Only explicitly unowned legacy
+ * coordinates retain the historical conservative payload-shape classifier.
+ */
+export function isCompilerDescribedRouteEventCommitment(
+  commitment: string | undefined,
+  compilerMetadata: { compilerOwnedEventSlot: boolean; eventSignature?: string },
+): commitment is string {
+  if (commitment === undefined || commitment.length === 0 || commitment.length % 2 !== 0) return false;
+  const compilerDescribed = compilerMetadata.compilerOwnedEventSlot
+    && typeof compilerMetadata.eventSignature === 'string'
+    && compilerMetadata.eventSignature.length > 0;
+  if (compilerMetadata.compilerOwnedEventSlot && !compilerDescribed) return false;
+  return isAuthenticatedEventRepairCommitment(hexToBin(commitment), compilerDescribed);
+}
 
 function functionArgumentValuesEqual(left: unknown, right: unknown): boolean {
   if (left === right) return true;
@@ -12072,11 +12089,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 for (let ei = 0; ei < eventSlots.length; ei++) {
                   const emitInfo = bEmits[ei];
                   const commitment = eventCommitments.get(eventOutputBase + eventSlots[ei].offset);
-                  // All-zero probe commitments are return-slot placeholders, not
-                  // an active emit. Publishing them makes the not-taken event pin
-                  // fail SIZE==0 (Approval at FakeToken master+5).
-                  if (emitInfo && commitment !== undefined && !/^0+$/.test(commitment)
-                    && isLearnedEventEmitCommitment(commitment)) {
+                  if (emitInfo && isCompilerDescribedRouteEventCommitment(commitment, {
+                    compilerOwnedEventSlot: true,
+                    eventSignature: emitInfo.eventSignature,
+                  })) {
                     const eventNameHash = computeEventNameHash(emitInfo.eventSignature);
                     const covenantScript = buildEventNftCovenantScript(
                       hexToBin(group.categoryId), eventNameHash,
@@ -12124,8 +12140,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                     const commitment = progressiveCommitments.get(
                       eventOutputBase + eventSlots[ei].offset,
                     );
-                    if (commitment !== undefined && !/^0+$/.test(commitment)
-                      && isLearnedEventEmitCommitment(commitment)) {
+                    if (isCompilerDescribedRouteEventCommitment(commitment, {
+                      compilerOwnedEventSlot: true,
+                      eventSignature: emitInfo.eventSignature,
+                    })) {
                       eventOutputs[ei] = {
                         eventSignature: emitInfo.eventSignature,
                         commitment,

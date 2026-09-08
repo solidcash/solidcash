@@ -4074,10 +4074,13 @@ export function placeChunkableWriterEventOutput(
     refuseEmpty?: boolean;
     consumedMutableOk?: boolean;
     destInput?: { token?: { nft?: { capability?: string } } };
+    /** Explicit compatibility for the pre-descriptor JobEvent wire format. */
+    legacyCompatibility?: 'job-event-v1';
   },
 ): boolean {
   if (dest < 0) return false;
   const destinationInputCapability = options?.destInput?.token?.nft?.capability;
+  const legacyJobEvent = options?.legacyCompatibility === 'job-event-v1';
   if (emitDestCollidesPreservedInput(options?.destInput)
     && !(options?.consumedMutableOk === true && destinationInputCapability === 'mutable')) return false;
   const placedCommit = String(placed.token.nft.commitment ?? '');
@@ -4085,7 +4088,7 @@ export function placeChunkableWriterEventOutput(
   // short `0057000000` same-category none-cap there is minting-shaped
   // (input 14 / 0 GTE VERIFY). First publish still places an empty event NFT
   // so extract can read Created. Persist waits for a real JobEvent blob.
-  if (options?.refuseEmpty === true && !isJobEventEmitCommitment(placedCommit)) {
+  if (legacyJobEvent && options?.refuseEmpty === true && !isJobEventEmitCommitment(placedCommit)) {
     if (dest < outputs.length && (
       isEmptySameCategoryNoneCap(outputs[dest], placed.token.category)
       || (outputs[dest]?.token?.category === placed.token.category
@@ -4106,7 +4109,7 @@ export function placeChunkableWriterEventOutput(
     && !commit.startsWith('53434944')
     && (
       current.token.category === placed.token.category
-      || isJobEventEmitCommitment(commit)
+      || (legacyJobEvent && isJobEventEmitCommitment(commit))
     );
   if (alreadyEvent) {
     // A JobEvent token parked on a P2PKH (or other) lock still fails the event-covenant
@@ -4134,7 +4137,7 @@ export function placeChunkableWriterEventOutput(
   }
   // Only a JobEvent dest needs a unique sibling. Typed events
   // (OwnershipTransferred, Initialized) share the proxy category.
-  if (isJobEventEmitCommitment(placedCommit)) {
+  if (legacyJobEvent && isJobEventEmitCommitment(placedCommit)) {
     for (let index = 0; index < outputs.length; index++) {
       if (index === dest) continue;
       const other = outputs[index];
@@ -4151,7 +4154,11 @@ export function placeChunkableWriterEventOutput(
 export function placePublishJobEventOutput(
   ...args: Parameters<typeof placeChunkableWriterEventOutput>
 ): ReturnType<typeof placeChunkableWriterEventOutput> {
-  return placeChunkableWriterEventOutput(...args);
+  const [outputs, dest, placed, options] = args;
+  return placeChunkableWriterEventOutput(outputs, dest, placed, {
+    ...options,
+    legacyCompatibility: 'job-event-v1',
+  });
 }
 
 /**
@@ -7844,6 +7851,7 @@ export class StatefulTransactionBuilder {
       refuseEmpty: legacyEventFallback && persistEmit && !constructedCommit,
       consumedMutableOk: legacyEventFallback && persistEmit,
       destInput: this.allInputs[dest],
+      ...(legacyEventFallback && { legacyCompatibility: 'job-event-v1' as const }),
     });
     if (!placed && !legacyEventFallback) return;
     if (persistEmit && dest >= 0) {
@@ -14077,6 +14085,7 @@ export class StatefulTransactionBuilder {
             refuseEmpty: persistEmit && !constructedCommit,
             consumedMutableOk: persistEmit,
             destInput: this.allInputs[outputIndex],
+            legacyCompatibility: 'job-event-v1',
           });
           continue;
         }
@@ -14105,6 +14114,7 @@ export class StatefulTransactionBuilder {
         placeChunkableWriterEventOutput(builder.outputs, outputIndex, placed, {
           consumedMutableOk: persistEmit,
           destInput: this.allInputs[outputIndex],
+          legacyCompatibility: 'job-event-v1',
         });
       }
 

@@ -2858,6 +2858,61 @@ describe('assignPhysicalReturnIndices', () => {
     })).toBe(`${'00'.repeat(31)}01`);
   });
 
+  it('keeps legacy payload heuristics out of generic event placement', () => {
+    const eventLock = Uint8Array.of(0xaa, 0x21);
+    const legacyShapedCommitment = '005e1976a91447d9fe52d462741f418e9dd5efaa6ae7e7adb60088ac0000';
+    const foreignCategoryOutputs = [{
+      to: Uint8Array.of(0xaa, 0x20),
+      amount: 1200n,
+      token: {
+        amount: 0n,
+        category: 'foreign',
+        nft: { capability: 'none', commitment: legacyShapedCommitment },
+      },
+    }];
+
+    expect(placeChunkableWriterEventOutput(foreignCategoryOutputs, 0, {
+      to: eventLock,
+      amount: 1200n,
+      token: {
+        amount: 0n,
+        category: 'owner',
+        nft: { capability: 'none', commitment: legacyShapedCommitment },
+      },
+    })).toBe(false);
+    expect(foreignCategoryOutputs[0]?.token?.category).toBe('foreign');
+    expect(foreignCategoryOutputs[0]?.to).toEqual(Uint8Array.of(0xaa, 0x20));
+
+    const siblingOutputs = [{
+      to: Uint8Array.of(0xaa, 0x20),
+      amount: 1200n,
+      token: {
+        amount: 0n,
+        category: 'owner',
+        nft: { capability: 'mutable', commitment: '11'.repeat(32) },
+      },
+    }, {
+      to: Uint8Array.of(0xaa, 0x22),
+      amount: 1200n,
+      token: {
+        amount: 0n,
+        category: 'owner',
+        nft: { capability: 'none', commitment: legacyShapedCommitment },
+      },
+    }];
+
+    expect(placeChunkableWriterEventOutput(siblingOutputs, 0, {
+      to: eventLock,
+      amount: 1200n,
+      token: {
+        amount: 0n,
+        category: 'owner',
+        nft: { capability: 'none', commitment: legacyShapedCommitment },
+      },
+    }, { consumedMutableOk: true })).toBe(true);
+    expect(siblingOutputs[1]?.token?.nft?.commitment).toBe(legacyShapedCommitment);
+  });
+
   it('ranks return observations by authentication, not commitment byte length', () => {
     expect(shouldReplaceReturnEventCommitment(true, false)).toBe(true);
     expect(shouldReplaceReturnEventCommitment(false, true)).toBe(false);

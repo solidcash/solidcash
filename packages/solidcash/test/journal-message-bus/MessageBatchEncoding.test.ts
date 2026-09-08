@@ -255,6 +255,7 @@ describe('messageBus.encodeMessageBatch', () => {
     const routed = compileString(ROUTED_COLLECTION_SOURCE, {
       forceStateful: true,
       messageBus: true,
+      messageBusKernel: false,
       solidityImportCompat: true,
       optimizeForCompilationSpeed: true,
       suppressWarnings: true,

@@ -1,46 +1,95 @@
 #!/usr/bin/env node
+/* eslint-disable @typescript-eslint/explicit-function-return-type */
 /**
- * Cold-compile MarketplaceV1.sol with phase profiling.
+ * Perform one uncached MarketplaceV1 compile and print a machine-readable result.
  *
- *   SOLIDC_PROFILE=1 node --max-old-space-size=8192 scripts/profile-marketplace-compile.mjs
+ * Each invocation accepts exactly one dispatch convention. Run this script in a
+ * fresh process for every sample so module initialization and compiler caches
+ * cannot leak between the legacy and kernel measurements.
+ *
+ *   node --max-old-space-size=8192 scripts/profile-marketplace-compile.mjs --legacy
+ *   node --max-old-space-size=8192 scripts/profile-marketplace-compile.mjs --kernel
  */
+import { performance } from 'node:perf_hooks';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { compileFileMulti } from 'solidc';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const source = path.join(root, '.marketplace/contracts/MarketplaceV1.sol');
-const ownedOnly = process.argv.includes('--owned-only');
-const warm = process.argv.includes('--warm');
+const hasLegacy = process.argv.includes('--legacy');
+const hasKernel = process.argv.includes('--kernel');
+if (hasLegacy === hasKernel) {
+  console.error('Specify exactly one of --legacy or --kernel.');
+  process.exit(2);
+}
+
+const optionValue = (name) => {
+  const at = process.argv.indexOf(name);
+  if (at < 0) return undefined;
+  const value = process.argv[at + 1];
+  if (!value || value.startsWith('--')) throw new Error(`${name} requires a value`);
+  return value;
+};
+
+const mode = hasKernel ? 'kernel' : 'legacy';
+const source = path.resolve(optionValue('--source')
+  ?? path.join(root, '.marketplace/contracts/MarketplaceV1.sol'));
+const compileAllDeclarations = process.argv.includes('--all-declarations');
+
+// Both cache layers are opt-in environment features. Remove them as well as
+// passing the explicit compiler option so this command remains cold when it is
+// launched from a cache-enabled test or development shell.
+delete process.env.SOLIDC_COMPILE_CACHE;
+delete process.env.SOLIDC_COMPILE_CACHE_DIR;
+
 const options = {
   solidityImportCompat: true,
   messageBus: true,
+  messageBusKernel: mode === 'kernel',
   messageBusGraphContext: true,
   ecrecover: 'p2pkh',
   optimizeForCompilationSpeed: true,
   suppressWarnings: true,
   maximumInputBytes: 10_000_000,
   commitmentLimit: 10_000_000,
-  ...(ownedOnly ? { compileDeclarations: ['MarketplaceV1'] } : {}),
+  __artifactCache: false,
+  ...(!compileAllDeclarations ? { compileDeclarations: ['MarketplaceV1'] } : {}),
 };
 
-const compileOnce = (label) => {
-  const started = Date.now();
-  const map = compileFileMulti(source, options);
-  const names = Object.entries(map).map(([name, artifact]) => ({
-    name,
-    bytecodeBytes: artifact.debug?.bytecode ? artifact.debug.bytecode.length / 2 : 0,
-    functions: artifact.abi?.length ?? 0,
-  }));
-  console.error('[solidc-profile]', JSON.stringify({
-    label: 'marketplace-file',
-    pass: label,
-    ms: Date.now() - started,
-    ownedOnly,
-    artifacts: names,
-  }));
-  return map;
+const compilerStarted = performance.now();
+const artifacts = compileFileMulti(source, options);
+const compilerMs = performance.now() - compilerStarted;
+const artifact = artifacts.MarketplaceV1;
+if (!artifact) throw new Error(`MarketplaceV1 was not emitted while compiling ${source}`);
+
+const bodyBytes = (body) => typeof body === 'string' ? body.length / 2 : 0;
+const handlers = artifact.messageBus?.handlers ?? [];
+const refusals = handlers.filter((handler) => !handler.eligible).map((handler) => ({
+  name: handler.name,
+  selector: handler.selector,
+  code: handler.rejectionCode,
+  reason: handler.rejectionReason ?? 'unspecified',
+}));
+
+const result = {
+  mode,
+  source,
+  declarations: compileAllDeclarations ? 'all' : 'MarketplaceV1',
+  convention: artifact.messageBus?.convention,
+  sizes: {
+    routeBytes: bodyBytes(artifact.functionBodies?.[artifact.messageBus?.selector ?? '']),
+    fullBytes: bodyBytes(artifact.debug?.bytecode),
+    functionBodiesBytes: Object.values(artifact.functionBodies ?? {})
+      .reduce((total, body) => total + bodyBytes(body), 0),
+    artifactJsonBytes: Buffer.byteLength(JSON.stringify(artifact)),
+  },
+  timing: { compilerMs },
+  handlers: {
+    total: handlers.length,
+    eligible: handlers.length - refusals.length,
+    refused: refusals.length,
+    refusals,
+  },
 };
 
-compileOnce('cold');
-if (warm) compileOnce('warm');
+console.log(`[marketplace-compile] ${JSON.stringify(result)}`);

@@ -75,7 +75,10 @@ export function compileFile(codeFile: PathLike, compilerOptions: CompileOptions 
  *  docs/multi-contract-artifacts.md. */
 export function compileFileMulti(codeFile: PathLike, compilerOptions: CompileOptions = {}): ArtifactMap {
   const { code, options } = readSourceWithResolver(codeFile, compilerOptions);
-  return compileStringMulti(code, { ...options, __artifactCache: true });
+  return compileStringMulti(code, {
+    ...options,
+    __artifactCache: options.__artifactCache ?? true,
+  });
 }
 
 /** Compile a file to a statically-linked root/facet bundle. */

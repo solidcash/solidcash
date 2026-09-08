@@ -1,103 +1,89 @@
 #!/usr/bin/env node
+/* eslint-disable @typescript-eslint/explicit-function-return-type */
 /**
- * Marketplace compile scoreboard: phase ms + bytecode.
+ * Run authoritative cold legacy and kernel Marketplace compiles in separate
+ * processes, then report size, compiler-time, wall-time, and admission deltas.
  *
- *   SOLIDC_PROFILE=1 SOLIDC_DEBUG_OUTLINE_TIMING=1 \
- *     node --max-old-space-size=8192 scripts/marketplace-scoreboard.mjs [--owned-only] [--warm]
+ *   node scripts/marketplace-scoreboard.mjs
+ *   node scripts/marketplace-scoreboard.mjs --source /path/to/MarketplaceV1.sol
  */
 import { spawnSync } from 'node:child_process';
+import { performance } from 'node:perf_hooks';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const ownedOnly = process.argv.includes('--owned-only');
-const warm = process.argv.includes('--warm');
+const sourceAt = process.argv.indexOf('--source');
+const sourceArgs = sourceAt < 0 ? [] : ['--source', process.argv[sourceAt + 1]];
+if (sourceAt >= 0 && (!sourceArgs[1] || sourceArgs[1].startsWith('--'))) {
+  console.error('--source requires a value');
+  process.exit(2);
+}
+const declarationArgs = process.argv.includes('--all-declarations') ? ['--all-declarations'] : [];
 
-const sumByLabel = (rows) => {
-  const totals = {};
-  for (const row of rows) {
-    const key = row.label ?? 'unknown';
-    totals[key] = (totals[key] ?? 0) + (row.ms ?? 0);
-  }
-  return totals;
-};
-
-const runOnce = (label) => {
-  const started = Date.now();
-  const result = spawnSync(
-    process.execPath,
-    ['--max-old-space-size=8192', path.join(root, 'scripts/profile-marketplace-compile.mjs'),
-      ...(ownedOnly ? ['--owned-only'] : []),
-      ...(warm ? ['--warm'] : [])],
-    {
-      cwd: root,
-      encoding: 'utf8',
-      env: {
-        ...process.env,
-        SOLIDC_PROFILE: '1',
-        SOLIDC_DEBUG_OUTLINE_TIMING: '1',
-      },
-      maxBuffer: 64 * 1024 * 1024,
+const run = (mode) => {
+  const coldEnv = { ...process.env };
+  delete coldEnv.SOLIDC_COMPILE_CACHE;
+  delete coldEnv.SOLIDC_COMPILE_CACHE_DIR;
+  const started = performance.now();
+  const child = spawnSync(process.execPath, [
+    '--max-old-space-size=8192',
+    path.join(root, 'scripts/profile-marketplace-compile.mjs'),
+    `--${mode}`,
+    ...sourceArgs,
+    ...declarationArgs,
+  ], {
+    cwd: root,
+    encoding: 'utf8',
+    env: {
+      ...coldEnv,
+      SOLIDC_PROFILE: '1',
+      SOLIDC_DEBUG_OUTLINE_TIMING: '1',
     },
-  );
-  const wallMs = Date.now() - started;
-  const stderr = `${result.stderr ?? ''}${result.stdout ?? ''}`;
-  const profile = [];
-  const outlineAttempts = [];
-  for (const line of stderr.split('\n')) {
-    const profileMatch = line.match(/^\[solidc-profile\]\s+(\{.*\})$/);
-    if (profileMatch) {
-      try { profile.push(JSON.parse(profileMatch[1])); } catch { /* ignore truncated */ }
-      continue;
-    }
-    const outlineMatch = line.match(/^\[outline-timing\]\s+(\{.*\})$/);
-    if (outlineMatch) {
-      try {
-        const row = JSON.parse(outlineMatch[1]);
-        if (row.bodyOrder) outlineAttempts.push(row);
-      } catch { /* ignore truncated */ }
-    }
+    maxBuffer: 64 * 1024 * 1024,
+  });
+  const wallMs = performance.now() - started;
+  const combined = `${child.stdout ?? ''}\n${child.stderr ?? ''}`;
+  const resultLine = combined.split('\n').find((line) => line.startsWith('[marketplace-compile] '));
+  let result;
+  if (resultLine) {
+    try { result = JSON.parse(resultLine.slice('[marketplace-compile] '.length)); } catch { /* reported below */ }
   }
-  const filePasses = profile.filter((row) => row.label === 'marketplace-file');
-  const fileRow = [...filePasses].reverse().find((row) => row.pass === 'warm') ?? filePasses.at(-1);
-  const resolved = profile.filter((row) => row.label === 'resolved');
-  const parseRoutes = profile.filter((row) => row.label === 'messageBus:parseRoute');
-  const synthesize = profile.filter((row) => row.label === 'messageBus:synthesize');
-  const outlines = profile.filter((row) => row.label === 'outline');
-  const cacheHits = profile.filter((row) => row.label === 'artifact-cache');
-  const parseRouteMs = parseRoutes.reduce((sum, row) => sum + (row.ms ?? 0), 0);
-  return {
-    label,
-    exitCode: result.status,
-    wallMs,
-    artifacts: fileRow?.artifacts ?? [],
-    marketplaceBytes: (fileRow?.artifacts ?? []).find((a) => a.name === 'MarketplaceV1')?.bytecodeBytes,
-    coldFileMs: filePasses.find((row) => row.pass === 'cold')?.ms,
-    warmFileMs: filePasses.find((row) => row.pass === 'warm')?.ms,
-    totals: sumByLabel(profile),
-    parseRouteMs,
-    resolved,
-    parseRoutes,
-    synthesize,
-    outlines,
-    cacheHits,
-    outlineAttempts: outlineAttempts.map((row) => ({
-      window: row.minimumWindowElements,
-      bodyOrder: row.bodyOrder,
-      bodies: row.bodies,
-      savedBytes: row.savedBytes,
-      elapsedMs: row.elapsedMs,
-    })),
-    error: result.status === 0 ? undefined : (result.stderr ?? result.stdout ?? '').slice(-2000),
-  };
+  if (child.status !== 0 || !result) {
+    return {
+      mode,
+      exitCode: child.status,
+      wallMs,
+      error: combined.slice(-4000),
+    };
+  }
+  return { ...result, exitCode: child.status, timing: { ...result.timing, wallMs } };
 };
 
-const runs = [runOnce(warm ? 'cold+warm' : 'cold')];
+const legacy = run('legacy');
+const kernel = run('kernel');
 
-const scoreboard = {
-  ownedOnly,
-  warm,
-  runs,
-};
-console.log(JSON.stringify(scoreboard, null, 2));
-if (runs.some((run) => run.exitCode !== 0)) process.exit(1);
+const delta = (before, after) => ({
+  absolute: after - before,
+  percent: before === 0 ? null : ((after - before) / before) * 100,
+});
+
+const deltas = legacy.exitCode === 0 && kernel.exitCode === 0 ? {
+  routeBytes: delta(legacy.sizes.routeBytes, kernel.sizes.routeBytes),
+  fullBytes: delta(legacy.sizes.fullBytes, kernel.sizes.fullBytes),
+  functionBodiesBytes: delta(legacy.sizes.functionBodiesBytes, kernel.sizes.functionBodiesBytes),
+  artifactJsonBytes: delta(legacy.sizes.artifactJsonBytes, kernel.sizes.artifactJsonBytes),
+  compilerMs: delta(legacy.timing.compilerMs, kernel.timing.compilerMs),
+  wallMs: delta(legacy.timing.wallMs, kernel.timing.wallMs),
+  eligibleHandlers: delta(legacy.handlers.eligible, kernel.handlers.eligible),
+  refusedHandlers: delta(legacy.handlers.refused, kernel.handlers.refused),
+} : undefined;
+
+console.log(JSON.stringify({
+  cold: true,
+  processIsolation: 'one-process-per-mode',
+  runs: { legacy, kernel },
+  deltas,
+}, null, 2));
+
+if (legacy.exitCode !== 0 || kernel.exitCode !== 0) process.exit(1);

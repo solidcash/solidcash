@@ -44,6 +44,22 @@ describe('compileFile artifact cache', () => {
     expect(getArtifactCacheHitCount()).toBeGreaterThan(0);
   });
 
+  it('allows compileFileMulti callers to explicitly disable the artifact cache', () => {
+    dir = mkdtempSync(join(tmpdir(), 'solidc-file-multi-no-cache-'));
+    const file = join(dir, 'Uncached.scash');
+    writeFileSync(file, 'pragma solidcash ^0.13.0;\ncontract Uncached() { function f(int x) { require(x == 1); } }\n');
+    const options = {
+      suppressWarnings: true,
+      messageBus: false,
+      compileDeclarations: ['Uncached'],
+      __artifactCache: false,
+    } as const;
+    const first = compileFileMulti(file, options);
+    const second = compileFileMulti(file, options);
+    expect(second.Uncached.debug?.bytecode).toBe(first.Uncached.debug?.bytecode);
+    expect(getArtifactCacheHitCount()).toBe(0);
+  });
+
   it('keeps compileString uncached unless SOLIDC_COMPILE_CACHE is set', () => {
     const previous = process.env.SOLIDC_COMPILE_CACHE;
     delete process.env.SOLIDC_COMPILE_CACHE;

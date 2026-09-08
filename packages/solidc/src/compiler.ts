@@ -6698,6 +6698,49 @@ function synthesizeMessageBusRoute(
       contract.functions.push(handler);
     }
   }
+  // Delegate entry calls are normally inlined into the enclosing proxy frame. A transaction signature instead
+  // needs one non-self-referential OP_INVOKE body whose final specialized shape is the body named by KTS1. Run
+  // after collection, dynamic-state, effect, fixed-array, visibility, and caller-context clone selection: an
+  // earlier generic clone can be superseded by one of those physical dispatchers, leaving the signing policy
+  // bound to bytecode which the row never executes. Capture an explicit stable identity before later journal
+  // lowering adds physical value-threading parameters. A proof covering a named internal helper retains that
+  // helper's own covered body.
+  if (isDelegateRoute) {
+    for (const sourceHandler of eligible) {
+      if (sourceHandler.messageBusUsesTransactionSignature !== true) continue;
+      let selectedName = sourceHandler === resourceShapedHandler
+        ? resourceHandlerInvokeName
+        : (graphHandlerInvokeNames.get(sourceHandler) ?? siblingHandlerInvokeNames.get(sourceHandler)
+          ?? fixedArrayHandlerInvokeNames.get(sourceHandler));
+      if (!selectedName) {
+        const handler = cloneMessageBusHandler(sourceHandler, cheapAdmission);
+        nameMessageBusClone(handler, 'handler', sourceHandler);
+        handler.modifiers = [FunctionModifier.INTERNAL];
+        handler.functionId = undefined;
+        handler.functionSelector = undefined;
+        handler.messageBusEligible = undefined;
+        handler.messageBusRejectionReason = undefined;
+        handler.messageBusKeyWitnesses = undefined;
+        bindEntryKeyParameters(handler, sourceHandler);
+        siblingHandlerInvokeNames.set(sourceHandler, handler.name);
+        contract.functions.push(handler);
+        selectedName = handler.name;
+      }
+      const handler = contract.functions.find((candidate) => candidate.name === selectedName);
+      if (!handler) continue;
+      handler.messageBusDetachedSignatureHandler = true;
+      handler.messageBusSignatureIdentity = signatureFunctionKey(handler);
+      const sourceKey = signatureFunctionKey(sourceHandler);
+      for (const [parameterIndexText, coveredKey] of Object.entries(
+        sourceHandler.messageBusSignatureCoveredFunctionKeys ?? {},
+      )) {
+        if (coveredKey === sourceKey) {
+          sourceHandler.messageBusSignatureCoveredFunctionKeys![Number(parameterIndexText)]
+            = handler.messageBusSignatureIdentity;
+        }
+      }
+    }
+  }
   // A compiler-owned clone is internal, so the later msg.sender pre-scan deliberately does not append the
   // transaction-level category witness that public entry points receive. Make its logical caller explicit before
   // a value-threaded journal inlines the clone into the route: owner-local routes pass their resolved msg.sender,
@@ -9403,6 +9446,15 @@ function stubCheapAdmissionBodies(ast: Ast): void {
 
 // Compile a parsed+resolved AST (whose `contract` is the chosen primary) into a single Artifact. Shared by
 // compileString and compileStringMulti.
+/** True only when every public execution surface belongs to the delegate owner. */
+function hasWholeContractDelegateExecution(contract: ContractNode, autoDelegate = false): boolean {
+  if (autoDelegate) return true;
+  const externallyCallable = contract.functions.filter((fn) => fn.modifiers.some((modifier) =>
+    modifier === FunctionModifier.PUBLIC || modifier === FunctionModifier.EXTERNAL));
+  return externallyCallable.length > 0
+    && externallyCallable.every((fn) => fn.modifiers.includes(FunctionModifier.DELEGATE));
+}
+
 function compileResolvedAst(
   ast: Ast, code: string, mergedCompilerOptions: CompilerOptions, omitConstructor = false,
   admitExternalHandlers = true, normalizeBareEntries = true, relaxResultRouteEffects = true,
@@ -9628,6 +9680,12 @@ function compileResolvedAst(
   // delegate entry whether the variant came from `autoDelegate` or Solidity initializer inference.
   const inlineDelegateStateHelpers = (mergedCompilerOptions.autoDelegate ?? false)
     || ast.contract.functions.some((fn) => fn.modifiers.includes(FunctionModifier.DELEGATE));
+  // Oracle state has one physical owner. Only inherit delegate execution when the complete externally callable
+  // surface is known to execute against that owner; a single explicit delegate member in an otherwise direct
+  // contract is insufficient evidence and must not silently redirect the compiler-owned updater.
+  const oracleDelegateExecutionContext = hasWholeContractDelegateExecution(
+    ast.contract, mergedCompilerOptions.autoDelegate === true,
+  );
 
   // Modifier expansion (before semantic analysis)
   const hasCustomModifiers = ast.contract.modifierDefinitions.length > 0
@@ -9748,6 +9806,7 @@ function compileResolvedAst(
   if (earlyEntryFeatures?.needsBlockOracle) {
     ast = ast.accept(new SynthesizeBlockOracle(
       mergedCompilerOptions.solidityImportCompat ?? false,
+      oracleDelegateExecutionContext,
     )) as Ast;
   }
 
@@ -10205,7 +10264,10 @@ function compileResolvedAst(
   // synthesized library-address constructor arg). See docs/library-contracts.md (3b sugar).
   if (ast.freeFunctions.length > 0) ast = ast.accept(new SynthesizeLibraryDelegateCalls()) as Ast;
   // Oracle-backed block.* reads -> injected uint32 state-var registers + desugared state reads.
-  const blockOracle = new SynthesizeBlockOracle(mergedCompilerOptions.solidityImportCompat ?? false);
+  const blockOracle = new SynthesizeBlockOracle(
+    mergedCompilerOptions.solidityImportCompat ?? false,
+    oracleDelegateExecutionContext,
+  );
   if (needsBlockOracle) ast = ast.accept(blockOracle) as Ast;
 
   // Drop free/library functions the contract never reaches (OZ libraries ship many unused helpers). Runs last,
@@ -10589,9 +10651,10 @@ function compileResolvedAst(
     : compileReferencedContracts(ast, mergedCompilerOptions);
   // Code generation lowers selected handlers in place. Snapshot deployment provenance at the last semantic
   // boundary so publication does not depend on which representation the backend chose for a handler body.
-  const deploymentTopologyKey = (fn: FunctionDefinitionNode): string => `${fn.name}(${fn.parameters
-    .filter((parameter) => !parameter.name.startsWith('__internal__'))
-    .map((parameter) => parameter.type.toString()).join(',')})`;
+  const deploymentTopologyKey = (fn: FunctionDefinitionNode): string => fn.messageBusSignatureIdentity
+    ?? `${fn.name}(${fn.parameters
+      .filter((parameter) => !parameter.name.startsWith('__internal__'))
+      .map((parameter) => parameter.type.toString()).join(',')})`;
   const lifecycleTopologyOf = (fn: FunctionDefinitionNode): NonNullable<
   NonNullable<Artifact['messageBus']>['handlers'][number]['lifecycleTopology']
   > | undefined => {
@@ -12197,7 +12260,10 @@ function prepareSplitAst(
   // tx.locktime rather than allocated as an oracle register; using the native default here made split roots
   // append __block_timestamp ahead of __block_number while their unsplit baseline did not.
   if (!(rootSourceCoversProgram(ast) && !code.includes('block.') && !code.includes('now'))) {
-    ast = ast.accept(new SynthesizeBlockOracle(options.solidityImportCompat ?? false)) as Ast;
+    ast = ast.accept(new SynthesizeBlockOracle(
+      options.solidityImportCompat ?? false,
+      hasWholeContractDelegateExecution(ast.contract, options.autoDelegate === true),
+    )) as Ast;
   }
   return ast;
 }
@@ -12478,6 +12544,7 @@ function compileReferencedContracts(
     singleAst = singleAst.accept(new SynthesizeExternalAddressLocals()) as Ast;
     singleAst = singleAst.accept(new SynthesizeBlockOracle(
       compilerOptions.solidityImportCompat ?? false,
+      hasWholeContractDelegateExecution(singleAst.contract, compilerOptions.autoDelegate === true),
     )) as Ast;
     // Carry the file's library free functions in ONLY for symbol resolution + type checking, AFTER the desugar/
     // inline passes have run (so their already-desugared bodies are not re-desugared, which duplicated locals).

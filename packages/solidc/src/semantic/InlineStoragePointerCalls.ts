@@ -203,6 +203,9 @@ export default class InlineStoragePointerCalls extends AstTraversal {
     // not safely droppable-after-inline; exclude such names from the state-touching criteria.
     const valueReferenced = this.collectValueReferencedNames(node);
     for (const fn of node.functions) {
+      // Delegate signature rows must remain a standalone OP_INVOKE body: CHECKSIG signs that body, while the
+      // enclosing route embeds the verifier which authenticates its hash and therefore cannot sign itself.
+      if (fn.messageBusDetachedSignatureHandler) continue;
       // A graph emission handler executes behind OP_INVOKE precisely so its hidden callManifest/caller/result
       // frame authenticates every reached edge. Flattening one into __message_bus1 makes that the current
       // function at code generation, so its external calls take the ordinary-call path and no emission row is ever
@@ -286,6 +289,7 @@ export default class InlineStoragePointerCalls extends AstTraversal {
       addedWrapper = false;
       for (const fn of node.functions) {
         if (!fn.body || fn.returnTypes.length > 0 || this.inlinedFns.has(fn.name)
+          || fn.messageBusDetachedSignatureHandler
           || this.keepsGraphEmissionBinding(fn) || valueReferenced.has(fn.name)) continue;
         let callsSelected = false;
         for (const candidate of this.nodesOf(fn)) {

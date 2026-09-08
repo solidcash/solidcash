@@ -1,6 +1,7 @@
 import {
   ContractNode,
   FunctionDefinitionNode,
+  FunctionModifier,
   SourceFileNode,
   Node,
   StatementNode,
@@ -96,7 +97,10 @@ export default class SynthesizeBlockOracle extends AstTraversal {
   private warnedShims = new Set<string>();
   private userGasleft = false;
 
-  constructor(private strictSolidityValidation = false) {
+  constructor(
+    private strictSolidityValidation = false,
+    private delegateExecutionContext = false,
+  ) {
     super();
   }
 
@@ -313,6 +317,15 @@ export default class SynthesizeBlockOracle extends AstTraversal {
     const updateFn = this.at(
       new FunctionDefinitionNode(UPDATE_FN, params, this.at(new BlockNode(body)) as BlockNode),
     ) as FunctionDefinitionNode;
+    // A compiler-synthesized state entry belongs to the same physical owner as the contract surface which
+    // caused it to exist. In particular, Solidity initializer inference marks the existing public surface as
+    // delegate before this pass appends the oracle updater. Leaving the new entry direct makes an early
+    // message-bus snapshot omit it from the delegate route and makes its direct ABI target implementation state
+    // instead of proxy state. Carry the already-established execution context onto the synthetic entry before
+    // route admission and symbol/code generation assign its physical frame.
+    if (this.delegateExecutionContext) {
+      updateFn.modifiers.push(FunctionModifier.DELEGATE);
+    }
     node.functions.push(updateFn);
   }
 

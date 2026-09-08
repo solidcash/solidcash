@@ -9,6 +9,47 @@ import { createTestProvider, setupStatefulUtxos } from '../../test-util.js';
 const KERNEL = { forceStateful: true, messageBus: true, messageBusKernel: true } as const;
 
 describe('affine void recursive event settlement', () => {
+  it('settles a guarded tail-call stream with an inert unwind suffix in recursive source order', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(`contract GuardedStream() {
+      event Seen(int value);
+      function descend(int cursor) public {
+        emit Seen(cursor);
+        if (cursor > 0) descend(cursor - 1);
+        require(true);
+      }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'descend')).toMatchObject({
+      eligible: true,
+      runtimeLoopEvents: [{
+        iterationDomain: { counterName: 'cursor', maximumIterations: 64 },
+        eventSignatures: ['Seen(int256)'],
+      }],
+    });
+
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+    );
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    const builder = await contract.call.descend(3n).build();
+    const transaction = builder.buildLibauthTransaction();
+    expect(transaction.outputs
+      .filter((output) => output.token?.nft?.capability === 'none')
+      .map((output) => binToHex(output.token!.nft!.commitment)))
+      .toEqual(['53', '52', '51', '00']);
+
+    const vm = createVirtualMachineBch2026ForProvider(provider);
+    const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+    for (let inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex += 1) {
+      expect(vm.stateSuccess(vm.evaluate({ inputIndex, sourceOutputs, transaction })), `input ${inputIndex}`)
+        .toBe(true);
+    }
+    await expect(contract.call.descend(63n).build()).resolves.toBeDefined();
+    await expect(contract.call.descend(64n).build())
+      .rejects.toThrow(/exceeds its compiler-published maximum/);
+  }, 180_000);
+
   it('reconstructs multiple affine parameters for a pre-only stream and enforces exact termination', async () => {
     const provider = createTestProvider();
     const artifact = compileString(`contract RecursiveStream() {

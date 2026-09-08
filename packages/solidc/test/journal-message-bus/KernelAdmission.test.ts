@@ -647,6 +647,84 @@ describe('required kernel admission', () => {
       name: expect.stringMatching(/^__message_bus_sig_\d+_0_rows$/),
       type: 'sig[]',
     }));
+    expect(artifact.abi.find((entry) => entry.name === '__updateBlockOracle')?.modifiers ?? [])
+      .not.toContain('delegate');
+    expect(Object.values(artifact.debug.invokeDebug ?? {}))
+      .toContainEqual(expect.objectContaining({ name: '__updateBlockOracle' }));
+  });
+
+  it('inherits delegate execution for a synthesized block-oracle updater', () => {
+    const artifact = compileString(`pragma solidity ^0.8.0;
+      contract C {
+        bool initialized;
+        uint value;
+        modifier initializer() { require(!initialized); initialized = true; _; }
+        function initialize() public initializer { value = block.number; }
+        function current() public view returns (uint) { return block.number; }
+      }
+    `, {
+      ...KERNEL, solidityImportCompat: true, maximumInputBytes: 1_000_000,
+    });
+    const updater = artifact.messageBus?.handlers.find((handler) =>
+      handler.name === '__updateBlockOracle');
+    expect(updater).toMatchObject({
+      eligible: true,
+      usesTransactionSignature: true,
+      transactionSignaturePolicy: { hashType: 'all', parameterIndices: [0] },
+    });
+    expect(artifact.abi.find((entry) => entry.name === '__updateBlockOracle')?.modifiers)
+      .toContain('delegate');
+    const signingBody = Object.values(artifact.debug.invokeDebug ?? {})
+      .find((entry) => entry.name === '__message_bus_handler___updateBlockOracle');
+    expect(signingBody).toBeDefined();
+    expect(updater?.transactionSignaturePolicy?.coveredBytecodes).toEqual([{
+      parameterIndex: 0, bytecode: signingBody!.bytecode,
+    }]);
+    expect(updater?.signatureBytecode).toBeUndefined();
+    expect(artifact.invocationAnalysis?.functions.find((fn) => fn.name === '__message_bus1')?.writes)
+      .toContain('state:__block_number');
+  });
+
+  it('does not infer oracle ownership from one delegate member on a mixed execution surface', () => {
+    const artifact = compileString(`contract C() {
+      int stored;
+      function delegated(int next) public delegate { this.stored = next; require(true); }
+      function height() public view returns (uint) { return block.number; }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.abi.find((entry) => entry.name === '__updateBlockOracle')?.modifiers ?? [])
+      .not.toContain('delegate');
+  });
+
+  it.each([
+    ['a mapping write', 'mapping(int => int) values;',
+      'this.values[key] = next;', ''],
+    ['a mapping write and event', 'mapping(int => int) values; event Changed(int key, int value);',
+      'this.values[key] = next; emit Changed(key, next);', ''],
+    ['a mapping write authenticated by a helper',
+      `mapping(int => int) values;
+       function authenticate(sig proof, pubkey key) internal { require(checkSig(proof, key)); }`,
+      'this.values[key] = next;', 'authenticate(proof, authority);'],
+  ])('binds the final specialized delegate dispatcher for %s', (
+    _label, declarations, effect, authentication,
+  ) => {
+    const artifact = compileString(`contract C(pubkey authority) {
+      ${declarations}
+      function write(int key, int next, sig proof) public delegate {
+        ${authentication || 'require(checkSig(proof, authority));'}
+        ${effect}
+        require(true);
+      }
+      function control() public delegate { require(true); }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    const selected = artifact.messageBus?.handlers.find((handler) => handler.name === 'write');
+    expect(selected).toMatchObject({
+      eligible: true,
+      transactionSignaturePolicy: { hashType: 'all', parameterIndices: [2] },
+    });
+    const covered = selected?.transactionSignaturePolicy?.coveredBytecodes?.[0]?.bytecode;
+    expect(covered).toBeDefined();
+    expect(Object.values(artifact.debug.invokeDebug ?? {}).some((entry) =>
+      entry.bytecode === covered)).toBe(true);
   });
 
   it('normalizes a conservative tail-recursive entry before kernel closure admission', () => {
@@ -1285,7 +1363,7 @@ describe('required kernel admission', () => {
     expect(artifact.abi.find((entry) => entry.name === 'left')?.recursiveStateHandler).toBe(true);
   });
 
-  it('refuses a tail-recursive event without an exact runtime occurrence plan', () => {
+  it('publishes an exact event domain for a guarded void tail call followed by inert requirements', () => {
     const artifact = compileString(`contract C() {
       event Hit(int value);
       function repeat(int n) public {
@@ -1296,9 +1374,55 @@ describe('required kernel admission', () => {
       function control() public { require(true); }
     }`, KERNEL);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'repeat'))
-      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+      .toMatchObject({
+        eligible: true,
+        runtimeLoopEvents: [{
+          iterationDomain: {
+            counterName: 'n',
+            initialValue: { kind: 'source', source: { kind: 'forward', paramIndex: 0 } },
+            stepValue: { kind: 'unary', operator: '-', expression: {
+              kind: 'literal', type: 'bigint', value: '1',
+            } },
+            maximumIterations: 64,
+          },
+          eventSignatures: ['Hit(int256)'],
+          arguments: [[{ kind: 'identifier', name: 'n' }]],
+        }],
+      });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control'))
       .toMatchObject({ eligible: true });
+  });
+
+  it.each([
+    ['a nonliteral trailing requirement', 'require(n >= 0);'],
+    ['a trailing helper call', 'finish();'],
+  ])('keeps a guarded recursive event outside affine replay with %s', (_label, suffix) => {
+    const artifact = compileString(`contract C() {
+      event Hit(int value);
+      function finish() internal pure { require(true); }
+      function repeat(int n) public {
+        emit Hit(n);
+        if (n > 0) repeat(n - 1);
+        ${suffix}
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'repeat'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+  });
+
+  it('keeps a guarded recursive event with an else arm outside affine replay', () => {
+    const artifact = compileString(`contract C() {
+      event Hit(int value);
+      function repeat(int n) public {
+        emit Hit(n);
+        if (n > 0) repeat(n - 1); else emit Hit(0);
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'repeat'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
   });
 
   it('publishes an exact affine domain for replayable pre-recursion events', () => {

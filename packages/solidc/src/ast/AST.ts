@@ -343,6 +343,10 @@ export class FunctionDefinitionNode extends Node implements Named {
   messageBusAllOutputSignatureParameters?: number[];
   /** Exact active CHECKSIG body per all-output root parameter, keyed by source ABI parameter index. */
   messageBusSignatureCoveredFunctionKeys?: Record<number, string>;
+  /** Compiler-owned row clone kept as a stable OP_INVOKE signing body on delegate routes. */
+  messageBusDetachedSignatureHandler?: boolean;
+  /** Stable KTS1 identity captured before journal lowering appends physical value-threading parameters. */
+  messageBusSignatureIdentity?: string;
   /** Physical route entry slots whose transition covenant is emitted by a message-bus handler subroutine. */
   messageBusHandlerManagedEntrySlots?: number[];
   tokenContainerAccesses?: TokenContainerAccessInfo[];

@@ -2835,6 +2835,50 @@ export default class LowerTailRecursion extends AstTraversal {
     ]), node.location);
   }
 
+  /** Canonicalize the source-level void tail form
+   *
+   *   if (guard) self(next);
+   *   require(true);
+   *
+   * to the explicit base-return form consumed by the affine event-domain proof:
+   *
+   *   if (!guard) return;
+   *   self(next);
+   *
+   * A literal-true requirement has no state, journal, event, failure, or evaluation effect, so removing any such
+   * trailing requirements does not reorder an observable operation from the recursive unwind. Anything else --
+   * including a nonliteral requirement, an else arm, or another call -- remains untouched and therefore retains
+   * the conservative recursive-layout refusal. Restricting this to a direct void self-call also avoids inventing
+   * result or continuation semantics for a broader conditional recursion grammar.
+   */
+  private normalizeGuardedVoidTailCall(node: FunctionDefinitionNode): void {
+    if (!node.body || node.returnTypes.length !== 0) return;
+    const statements = node.body.statements ?? [];
+    const branchIndex = statements.findIndex((statement) => statement instanceof BranchNode
+      && this.countSelfCalls(statement, node.name) > 0);
+    if (branchIndex < 0) return;
+    const branch = statements[branchIndex];
+    const branchStatements = branch instanceof BranchNode ? branch.ifBlock.statements ?? [] : [];
+    const recursive = branchStatements.length === 1
+      && branchStatements[0] instanceof FunctionCallStatementNode
+      && this.isSelfCall(branchStatements[0].call, node.name)
+      ? branchStatements[0] : undefined;
+    const inertSuffix = statements.slice(branchIndex + 1);
+    if (!(branch instanceof BranchNode) || branch.elseBlock || !recursive
+      || this.countSelfCalls(branch.condition, node.name) > 0
+      || !inertSuffix.every((statement) => statement instanceof RequireNode
+        && statement.expression instanceof BoolLiteralNode && statement.expression.value === true
+        && statement.args.length === 0 && statement.errorName === undefined)) return;
+
+    const base = this.stamp(new BranchNode(
+      this.stamp(new UnaryOpNode(UnaryOperator.NOT, branch.condition), branch.condition.location),
+      this.stamp(new BlockNode([
+        this.stamp(new ReturnNode([]), branch.location),
+      ]), branch.ifBlock.location),
+    ), branch.location);
+    node.body.statements = [...statements.slice(0, branchIndex), base, recursive];
+  }
+
   visitFunctionDefinition(node: FunctionDefinitionNode): Node {
     const voidFunction = node.returnTypes.length === 0;
     const namedResults = node.returnTypes.length > 0 && node.returnNames.length === node.returnTypes.length;
@@ -2847,6 +2891,7 @@ export default class LowerTailRecursion extends AstTraversal {
     const returnNames = unnamedResults
       ? node.returnTypes.map((_type, index) => `__tail_result_${frame}_${index}`)
       : node.returnNames;
+    this.normalizeGuardedVoidTailCall(node);
     const selfNames = new Set([node.name]);
     const sourceSelfCalls = this.countSelfCalls(node.body, node.name);
     if (sourceSelfCalls > 0) this.normalizeRightShortCircuitReturns(node.body, selfNames);

@@ -8,9 +8,10 @@ import {
   type EncodedMessageBatch, type MessageBatchCall,
 } from './message-bus.js';
 import { MessageBusDiagnosticError } from './diagnostics.js';
+import { planKernelLifecycleTopology } from '../stateful/KernelLifecycleTopology.js';
 import {
   encodeAtomicMessageBusCallManifest, encodeAtomicMessageEnvelope, atomicMessageBusPhysicalLayout,
-  type AtomicMessageBusCallManifest, type AtomicPhysicalLayout,
+  type AtomicMessageBusCallManifest, type AtomicParticipantLifecycle, type AtomicPhysicalLayout,
 } from './atomic.js';
 
 export interface CompiledGraphParticipant {
@@ -136,6 +137,8 @@ export interface CompiledParticipantExecution {
   settlementBoundary: number;
   /** Exclusive completion position for each local row, in message-bus batch execution order. */
   completionPositions: readonly number[];
+  /** Derived only from the selected compiler-published handler and its typed invocation arguments. */
+  lifecycle?: AtomicParticipantLifecycle;
 }
 
 export interface CompiledGraphPlan {
@@ -400,6 +403,7 @@ export function atomicParticipantPolicyHash(artifact: Artifact): string {
     })),
     tokenOperations: (handler.tokenContainerAccesses ?? []).map((access) =>
       [access.keyParam, ...access.operations, access.transferCount ?? 0, access.transferNftCount ?? 0]),
+    lifecycleTopology: handler.lifecycleTopology ?? null,
     childDeployments: (handler.childDeployments ?? []).map((site) => ({
       siteIndex: site.siteIndex,
       contractName: site.contractName,
@@ -444,6 +448,7 @@ export function finalizeAtomicInvocationGraph(
     throw new Error('messageBus: actual participant sizes must align with participants');
   }
   const spans = plan.participants.map((participant, index) => {
+    if (participant.lifecycle !== undefined) return participant.lifecycle.balancedSpan;
     const block = participant.blockLayout!;
     const fixedSize = block.fixedSuffix ? block.blockSize : block.trailingBase ?? block.blockSize;
     const actualSize = actualSizes?.[index] ?? block.blockSize;
@@ -457,13 +462,23 @@ export function finalizeAtomicInvocationGraph(
   const layout = atomicMessageBusPhysicalLayout(spans);
   const outputIdentityV2 = plan.participants.some((participant) =>
     participant.outputLockingBytecode !== undefined
-    && participant.outputLockingBytecode.toLowerCase() !== participant.lockingBytecode.toLowerCase());
+      && participant.outputLockingBytecode.toLowerCase() !== participant.lockingBytecode.toLowerCase());
+  const lifecycleV3 = plan.participants.some((participant) => participant.lifecycle !== undefined);
   if (outputIdentityV2) {
     const legacy = plan.participants.findIndex((participant) =>
       !participant.artifact.messageBus?.atomicMessageBus?.protocolVersions?.includes(2));
     if (legacy >= 0) {
       throw new Error(
         `messageBus: participant ${legacy} verifier does not advertise atomic callManifest protocol 2`,
+      );
+    }
+  }
+  if (lifecycleV3) {
+    const legacy = plan.participants.findIndex((participant) =>
+      !participant.artifact.messageBus?.atomicMessageBus?.protocolVersions?.includes(3));
+    if (legacy >= 0) {
+      throw new Error(
+        `messageBus: participant ${legacy} verifier does not advertise atomic callManifest protocol 3`,
       );
     }
   }
@@ -487,9 +502,11 @@ export function finalizeAtomicInvocationGraph(
     if (!/^[0-9a-f]{64}$/.test(category)) {
       throw new Error(`messageBus: participant ${index} master category must be 32-byte hex`);
     }
-    const maximumSize = participant.blockLayout!.blockSize;
-    const fixedSize = participant.blockLayout!.fixedSuffix
-      ? maximumSize : participant.blockLayout!.trailingBase ?? maximumSize;
+    const maximumSize = participant.lifecycle?.balancedSpan ?? participant.blockLayout!.blockSize;
+    const fixedSize = participant.lifecycle === undefined
+      ? (participant.blockLayout!.fixedSuffix
+        ? maximumSize : participant.blockLayout!.trailingBase ?? maximumSize)
+      : 1;
     const actualSize = spans[index];
     const returnSlot = participant.blockLayout!.slots.find((slot) => slot.kind === 'returnEvent');
     const publishesResult = participant.invocations.some((invocation) =>
@@ -499,13 +516,14 @@ export function finalizeAtomicInvocationGraph(
     const internalCategory = (category.match(/../g) as string[]).reverse().join('');
     return {
       lockingBytecode, stateCategory: internalCategory,
-      ...(outputIdentityV2 && { outputLockingBytecode }),
+      ...((outputIdentityV2 || lifecycleV3) && { outputLockingBytecode }),
       fixedSize, actualSize, maximumSize,
       trailingUsed: actualSize - fixedSize,
       // Route layouts publish the union of every eligible handler, so a void selected batch can retain a physical
       // return coordinate without activating it. Advertising that inactive coordinate makes the verifier demand
       // the canonical encoded empty vector (`00`) from a deliberately token-free balanced output.
       returnOffset: !publishesResult || returnSlot === undefined ? 0xffff : returnSlot.offset,
+      ...(participant.lifecycle && { lifecycle: participant.lifecycle }),
     };
   });
   const invocationRows = plan.invocations.map((invocation) => {
@@ -979,7 +997,9 @@ export function finalizeAtomicInvocationGraph(
     ...invocationRows, ...resourceRows, ...eventRows, ...valueRows, ...tokenRows,
     ...deploymentRows, ...sidecarRows,
   ];
-  const callManifest = { ...(outputIdentityV2 && { version: 2 as const }), participants, rows };
+  const callManifest = {
+    ...(lifecycleV3 ? { version: 3 as const } : outputIdentityV2 ? { version: 2 as const } : {}), participants, rows,
+  };
   const bytes = encodeAtomicMessageBusCallManifest(callManifest);
   return Object.freeze({ plan, layout, callManifest, bytes, messageEnvelope: encodeAtomicMessageEnvelope(callManifest) });
 }
@@ -1867,6 +1887,53 @@ export function planCompiledGraph(
       : [];
     const logicalIdentityOffset = participant.logicalIdentityOffset ?? 0;
     const participantBlockSize = participant.artifact.messageBus?.route.blockLayout?.blockSize ?? 0;
+    const selectedLifecycle = globalByOwner[owner].flatMap((invocationIndex) => {
+      const invocation = invocations[invocationIndex];
+      const abi = resolveGraphAbiFunction(participant.artifact, invocation.function, invocation.selector);
+      const handler = resolveMessageBusHandler(
+        participant.artifact, invocation.function, abi?.selector,
+      );
+      return handler?.lifecycleTopology === undefined ? [] : [{ invocation, handler }];
+    });
+    let lifecycle: AtomicParticipantLifecycle | undefined;
+    if (selectedLifecycle.length > 0) {
+      if (selectedLifecycle.length !== 1 || globalByOwner[owner].length !== 1) {
+        throw new Error(
+          `messageBus: lifecycle participant ${owner} must execute exactly one lifecycle invocation`,
+        );
+      }
+      if (executionKind !== 0 || participant.outputLockingBytecode !== undefined
+        || participantBlockSize !== 1
+        || participant.artifact.messageBus?.route.blockLayout?.slots.length !== 1
+        || participant.artifact.messageBus.route.blockLayout.slots[0].kind !== 'master') {
+        throw new Error(
+          `messageBus: lifecycle participant ${owner} requires one direct master-only balanced block`,
+        );
+      }
+      if (!participant.artifact.messageBus?.atomicMessageBus?.protocolVersions?.includes(3)) {
+        throw new Error(
+          `messageBus: lifecycle participant ${owner} verifier does not advertise atomic callManifest protocol 3`,
+        );
+      }
+      const selected = selectedLifecycle[0];
+      const topology = planKernelLifecycleTopology(
+        selected.handler.lifecycleTopology, selected.invocation.args ?? [],
+      );
+      const count = topology.kind === 'split'
+        ? topology.categoryCensus.outputCount - 1 : topology.categoryCensus.inputCount - 1;
+      if (count < 1 || count >= 0xffff) {
+        throw new Error(`messageBus: lifecycle participant ${owner} count does not fit its balanced span`);
+      }
+      const split = topology.kind === 'split';
+      lifecycle = Object.freeze({
+        version: 1 as const, kind: topology.kind, count,
+        inputSpan: split ? 1 : count + 1,
+        outputSpan: split ? count + 1 : 1,
+        balancedSpan: count + 1,
+        inputTail: split ? 'funding' as const : 'consumed-masters' as const,
+        outputTail: split ? 'created-masters' as const : 'reclaim' as const,
+      });
+    }
     if (!Number.isInteger(logicalIdentityOffset)
       || logicalIdentityOffset < 0 || logicalIdentityOffset >= participantBlockSize) {
       throw new Error(`messageBus: participant ${owner} logical identity offset is outside its balanced block`);
@@ -1911,6 +1978,7 @@ export function planCompiledGraph(
       routeInputs: participant.artifact.messageBus!.route.inputs,
       settlementBoundary: Math.max(...globalByOwner[owner].map((index) => subtreeEnds[index] + 1)),
       completionPositions: Object.freeze(globalByOwner[owner].map((index) => subtreeEnds[index] + 1)),
+      ...(lifecycle && { lifecycle }),
     });
   });
 

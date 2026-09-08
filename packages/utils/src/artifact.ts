@@ -1196,7 +1196,7 @@ export interface Artifact {
     atomicMessageBus?: {
       domain: typeof ATOMIC_MESSAGE_BUS_DOMAIN_HEX;
       /** Atomic callManifest wire versions accepted by this artifact's verifier program. */
-      protocolVersions?: readonly (1 | 2)[];
+      protocolVersions?: readonly (1 | 2 | 3)[];
       /** The final verifier input carries the canonical frame authenticated by every participant binder. */
       messageEnvelope: {
         region: 'participant-verifiers';

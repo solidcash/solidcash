@@ -6,13 +6,70 @@ import { messageBus, SignatureTemplate } from '../../src/index.js';
 const artifact = (selector: string, inputType = 'int'): Artifact => ({
   messageBus: {
     maximumRows: 1,
-    atomicMessageBus: { protocolVersions: [1, 2] },
+    atomicMessageBus: { protocolVersions: [1, 2, 3] },
     handlers: [{
       name: 'run', selector, inputs: [{ name: 'n', type: inputType }], outputs: [], eligible: true,
     }],
   },
   // Only policy fields are consumed by this pure planner fixture.
 } as unknown as Artifact);
+
+const lifecycleArtifact = (kind: 'split' | 'merge', protocolVersions: readonly (1 | 2 | 3)[] = [1, 2, 3]): Artifact => {
+  const selector = kind === 'split' ? '31313131' : '32323232';
+  const fixedOne = { source: 'fixed' as const, value: 1 };
+  const count = { source: 'parameter' as const, parameterIndex: 0, addend: 0 };
+  const countPlusOne = { source: 'parameter' as const, parameterIndex: 0, addend: 1 };
+  const preserved = {
+    lockingBytecode: 'participant' as const, tokenCategory: 'participant' as const,
+    nftCapability: 'minting' as const, nftCommitment: 'preserve' as const,
+    tokenAmount: 'nondecrease' as const, satoshis: 'preserve' as const,
+  };
+  const consumed = {
+    lockingBytecode: 'participant' as const, tokenCategory: 'participant' as const,
+    nftCapability: 'minting' as const, nftCommitment: 'unconstrained' as const,
+    tokenAmount: 'unconstrained' as const, satoshis: 'reclaim' as const,
+  };
+  const created = {
+    lockingBytecode: 'participant' as const, tokenCategory: 'participant' as const,
+    nftCapability: 'minting' as const, nftCommitment: 'empty' as const,
+    tokenAmount: 'zero' as const, satoshis: 'funded' as const,
+  };
+  const lifecycleTopology = {
+    version: 2 as const, kind, coordinate: 'participant' as const,
+    categoryCensus: {
+      tokenCategory: 'participant' as const, nftCapability: 'minting' as const,
+      inputCount: kind === 'split' ? fixedOne : countPlusOne,
+      outputCount: kind === 'split' ? countPlusOne : fixedOne,
+    },
+    inputSpans: kind === 'split'
+      ? [{ mode: 'preserve' as const, offset: 0, count: fixedOne, identity: preserved }]
+      : [{ mode: 'preserve' as const, offset: 0, count: fixedOne, identity: preserved },
+        { mode: 'consume' as const, offset: 1, count, identity: consumed }],
+    outputSpans: kind === 'split'
+      ? [{ mode: 'preserve' as const, offset: 0, count: fixedOne, identity: preserved },
+        { mode: 'create' as const, offset: 1, count, identity: created }]
+      : [{ mode: 'preserve' as const, offset: 0, count: fixedOne, identity: preserved }],
+  };
+  const inputs = [{ name: 'count', type: 'int' }];
+  return {
+    contractName: 'LifecycleParticipant',
+    abi: [{ name: kind, selector, inputs, outputs: [], modifiers: [kind] }],
+    messageBus: {
+      version: 1, selector: '53434231', maximumRows: 1, maximumBlobBytes: 256,
+      atomicMessageBus: {
+        domain: '4c33425553310000', protocolVersions,
+        messageEnvelope: { region: 'participant-verifiers', canonicalInput: 'final-participant-verifier', unlockingPush: 0 },
+        maximumParticipants: 8, maximumRows: 192,
+      },
+      route: {
+        name: '__message_bus1', selector: '53434231', inputs: [], outputs: [],
+        blockLayout: { blockSize: 1, slots: [{ kind: 'master', offset: 0 }] },
+      },
+      handlers: [{ name: kind, selector, inputs, outputs: [], eligible: true, lifecycleTopology }],
+    },
+    invocationAnalysis: { version: 1, protocolVersions: [1], functions: [], components: [] },
+  } as unknown as Artifact;
+};
 
 const plan = (): messageBus.CompiledGraphPlan => ({
   participants: [
@@ -49,6 +106,55 @@ const plan = (): messageBus.CompiledGraphPlan => ({
 });
 
 describe('atomic compiled invocation graph', () => {
+  it('derives lifecycle wire geometry from metadata and invocation args, never a caller transcript', () => {
+    expect(messageBus.atomicParticipantPolicyHash(lifecycleArtifact('split')))
+      .not.toBe(messageBus.atomicParticipantPolicyHash(lifecycleArtifact('merge')));
+    for (const kind of ['split', 'merge'] as const) {
+      const participant = { artifact: lifecycleArtifact(kind), lockingBytecode: '51' };
+      const invocation = {
+        parent: null, callee: 0, function: kind, args: [2n],
+        lifecycle: { kind: kind === 'split' ? 'merge' : 'split', count: 19 },
+      } as messageBus.CompiledGraphInvocation & { lifecycle: unknown };
+      const planned = messageBus.planCompiledGraph([participant], [invocation]);
+      expect(planned.participants[0].lifecycle).toEqual(kind === 'split' ? {
+        version: 1, kind, count: 2, inputSpan: 1, outputSpan: 3, balancedSpan: 3,
+        inputTail: 'funding', outputTail: 'created-masters',
+      } : {
+        version: 1, kind, count: 2, inputSpan: 3, outputSpan: 1, balancedSpan: 3,
+        inputTail: 'consumed-masters', outputTail: 'reclaim',
+      });
+    }
+    expect(() => messageBus.planCompiledGraph([
+      { artifact: lifecycleArtifact('split', [1, 2]), lockingBytecode: '51' },
+    ], [{ parent: null, callee: 0, function: 'split', args: [2n] }]))
+      .toThrow(/protocol 3/);
+    expect(() => messageBus.planCompiledGraph([
+      { artifact: lifecycleArtifact('split'), lockingBytecode: '51' },
+    ], [{ parent: null, callee: 0, function: 'split', args: [0n] }]))
+      .toThrow(/positive safe integer/);
+
+    const derived = messageBus.planCompiledGraph([
+      { artifact: lifecycleArtifact('split'), lockingBytecode: '51'.repeat(64) },
+    ], [{ parent: null, callee: 0, function: 'split', args: [2n] }]);
+    const ordinary = plan();
+    const combined: messageBus.CompiledGraphPlan = {
+      ...ordinary,
+      participants: [
+        { ...derived.participants[0], invocations: [0], settlementBoundary: 2, completionPositions: [2] },
+        ordinary.participants[1],
+      ],
+    };
+    const finalized = messageBus.finalizeAtomicInvocationGraph(
+      combined, ['11'.repeat(32), '22'.repeat(32)], { 1: '2a' },
+    );
+    expect(finalized.callManifest.version).toBe(3);
+    expect(finalized.callManifest.participants[0]).toMatchObject({
+      fixedSize: 1, actualSize: 3, maximumSize: 3, trailingUsed: 2,
+      lifecycle: { kind: 'split', inputTail: 'funding', outputTail: 'created-masters' },
+    });
+    expect(finalized.layout.participantInputs).toEqual([0, 3]);
+  });
+
   it('projects forwarded and constructed signature arrays out of child invocation bytes', () => {
     const leafArtifact = compileString(`contract SignatureArrayLeaf() {
       function authorize(sig[] proofs, pubkey[] authorities, int amount) public {

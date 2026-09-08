@@ -67,6 +67,51 @@ describe('atomic single-transaction codec', () => {
     })).toThrow(/V2 requires at least one distinct participant output/);
   });
 
+  it('round-trips canonical lifecycle geometry only on V3 and rejects authority drift', () => {
+    const ordinary = sample();
+    const lifecycle = {
+      version: 1 as const, kind: 'split' as const, count: 2,
+      inputSpan: 1, outputSpan: 3, balancedSpan: 3,
+      inputTail: 'funding' as const, outputTail: 'created-masters' as const,
+    };
+    const participants = ordinary.participants.map((participant, index) => index === 0 ? {
+      ...participant, outputLockingBytecode: participant.lockingBytecode,
+      fixedSize: 1, actualSize: 3, maximumSize: 3, trailingUsed: 2, returnOffset: 0xffff,
+      lifecycle,
+    } : { ...participant, outputLockingBytecode: participant.lockingBytecode });
+    const value: messageBus.AtomicMessageBusCallManifest = {
+      ...ordinary, version: 3, participants,
+    };
+    const encoded = messageBus.encodeAtomicMessageBusCallManifest(value);
+    expect(binToHex(encoded.slice(0, 8))).toBe(messageBus.ATOMIC_MESSAGE_BUS_DOMAIN_V3);
+    expect(messageBus.decodeAtomicMessageBusCallManifest(encoded)).toEqual(value);
+    expect(() => messageBus.encodeAtomicMessageBusCallManifest({ ...value, version: 2 }))
+      .toThrow(/cannot authenticate participant lifecycle/);
+    expect(() => messageBus.encodeAtomicMessageBusCallManifest({
+      ...value, participants: [participants[0], { ...participants[1], outputLockingBytecode: undefined }],
+    })).toThrow(/must spell its output locking bytecode/);
+    expect(() => messageBus.encodeAtomicMessageBusCallManifest({
+      ...value, participants: [{ ...participants[0], lifecycle: { ...lifecycle, count: 3 } }, participants[1]],
+    })).toThrow(/non-canonical lifecycle geometry/);
+    expect(() => messageBus.encodeAtomicMessageBusCallManifest({
+      ...value, participants: [{ ...participants[0], lifecycle: {
+        ...lifecycle, outputTail: 'reclaim' as const,
+      } }, participants[1]],
+    })).toThrow(/non-canonical lifecycle geometry/);
+    expect(() => messageBus.encodeAtomicMessageBusCallManifest({
+      ...value, participants: [{ ...participants[0], actualSize: 2 }, participants[1]],
+    })).toThrow(/exact balanced span/);
+
+    const lifecycleModeOffset = 13 + 4 + 2 + 64 + 2 + 64 + 32 + 6;
+    const badMode = encoded.slice(); badMode[lifecycleModeOffset] = 3;
+    expect(() => messageBus.decodeAtomicMessageBusCallManifest(badMode))
+      .toThrow(/non-canonical lifecycle geometry/);
+    const zeroCount = encoded.slice();
+    zeroCount[lifecycleModeOffset + 1] = 0; zeroCount[lifecycleModeOffset + 2] = 0;
+    expect(() => messageBus.decodeAtomicMessageBusCallManifest(zeroCount))
+      .toThrow(/non-canonical lifecycle geometry/);
+  });
+
   it('rejects malformed or truncated V2 output identities', () => {
     const value: messageBus.AtomicMessageBusCallManifest = {
       ...sample(),

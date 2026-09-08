@@ -68,12 +68,18 @@ pass, the differential corpus agrees, and the route-scaling check passes. Any in
 difference, nondeterministic fresh compile, suppressed codegen failure, or route growth proportional to maximum
 rows blocks the checkpoint.
 
-Every checked-in, non-skipped end-to-end test which expects a kernel handler to be eligible or sends a kernel batch
-is part of the advertised beta surface. The beta gate runs those positive proofs from a clean checkout. A failing
-positive proof is a release blocker until either the represented type/effect/flow family works end to end, or that
-family is moved behind a general `KERNEL_*` fence and the test is replaced by a negative admission regression.
-Application-name exceptions, test-only quarantines, and stale generated JavaScript which shadows TypeScript do not
-define the release surface.
+The stabilization census is frozen when the current known-failure ledger has been classified. Every non-skipped
+end-to-end test at that census which expects a kernel handler to be eligible or sends a kernel batch is part of the
+advertised beta surface. The beta gate runs those positive proofs from a clean checkout. A failing positive proof is
+a release blocker until either the represented type/effect/flow family works end to end, or that family is moved
+behind a general `KERNEL_*` fence and the test is replaced by a negative admission regression. Record the census
+commit in the beta release notes; later tests do not silently move that boundary.
+
+A finding after the census blocks the beta only when it demonstrates a soundness, determinism, hidden-recovery,
+identity, `OP_INVOKE`, scaling, or observable-semantics defect in the frozen surface. A new source combination which
+needs a representation not promised by the frozen surface is ordinary post-beta feature work, even if nearby
+combinations are supported. Application-name exceptions, test-only quarantines, and stale generated JavaScript
+which shadows TypeScript do not define the release surface.
 
 At that point, pause general edge-case expansion and keep unsupported handlers fail-closed behind the published
 `KERNEL_*` reasons. Post-beta work on a frozen shape is not release-critical unless it fixes a soundness defect,
@@ -85,6 +91,21 @@ For the beta cut, feature scope freezes at this checkpoint. After the release ga
 admission family in the release branch. A candidate widening that has compiler or SDK unit coverage but fails its
 transaction-level proof returns to the frozen table; it does not extend the stabilization window. Release work may
 still fix blockers, improve diagnostics, and add negative or differential coverage without widening admission.
+
+The finite stop procedure is:
+
+1. Classify every failure in the frozen census as an implementation defect in an admitted family or as one of the
+   six general fences below. Do not leave crashes, raw stack errors, hidden recovery, or application-shaped rules.
+2. Require compiler metadata coverage and a successful VM transaction with exact post-state/effects for every
+   implementation fix. Security-sensitive identities and settlements also require a hostile-witness rejection.
+3. From a clean checkout, run the compiler and SDK journal/message-bus suites, kernel-versus-legacy differential
+   tests, maintained fresh-compile corpus, route-scaling check, and the one-shot build. Repeat only a failed or
+   nondeterministic gate; an open-ended soak is not part of the beta criterion.
+4. Record the census commit, commands, pass counts, cold compile times, and route/full artifact sizes in the beta
+   release notes. Performance numbers are evidence; only loss of row-loop scaling or an agreed hard platform limit
+   is a blocker.
+5. Cut the beta and move all remaining fenced shapes and newly proposed admission families to the post-beta
+   backlog. Resume the release branch only for a blocker defined above.
 
 The conservative beta boundary currently keeps these shapes frozen:
 

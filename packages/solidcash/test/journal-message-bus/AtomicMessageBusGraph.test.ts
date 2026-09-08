@@ -224,6 +224,17 @@ describe('atomic compiled invocation graph', () => {
     expect(() => messageBus.finalizeAtomicInvocationGraph(
       legacyPeer, ['aa'.repeat(32), 'bb'.repeat(32)], { 1: '2a' },
     )).toThrow(/protocol 4/);
+
+    const lifecycle = messageBus.planCompiledGraph([
+      { artifact: lifecycleArtifact('split', [1, 2, 3, 4]), lockingBytecode: '51'.repeat(64) },
+    ], [{ parent: null, callee: 0, function: 'split', args: [2n] }]).participants[0].lifecycle!;
+    for (const lifecycleParticipant of [0, 1]) {
+      const unsupportedCombination = structuredClone(signedPlan);
+      unsupportedCombination.participants[lifecycleParticipant].lifecycle = lifecycle;
+      expect(() => messageBus.finalizeAtomicInvocationGraph(
+        unsupportedCombination, ['aa'.repeat(32), 'bb'.repeat(32)], { 1: '2a' },
+      )).toThrow(/transaction-signature provenance cannot yet be combined with participant lifecycle geometry/);
+    }
   });
 
   it('projects forwarded and constructed signature arrays out of child invocation bytes', () => {

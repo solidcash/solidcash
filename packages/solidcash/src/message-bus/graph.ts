@@ -483,6 +483,16 @@ export function finalizeAtomicInvocationGraph(
     signatureFrame.length > 0
       && plan.participants[plan.invocations[invocationIndex].callee]
         .artifact.messageBus?.atomicMessageBus?.protocolVersions?.includes(4));
+  // V4 carries the V3 participant suffix so the wire remains extensible, but the generated V4 verifier currently
+  // accepts only its neutral lifecycle spelling. Fail before manifest/transaction construction rather than
+  // publishing a composition which every participant covenant must reject. This fence is intentionally about
+  // semantic capabilities, independent of participant ordering or whether the signed row belongs to the
+  // lifecycle participant itself.
+  if (signatureV4 && lifecycleV3) {
+    throw new Error(
+      'messageBus: atomic transaction-signature provenance cannot yet be combined with participant lifecycle geometry',
+    );
+  }
   if (outputIdentityV2) {
     const legacy = plan.participants.findIndex((participant) =>
       !participant.artifact.messageBus?.atomicMessageBus?.protocolVersions?.includes(2));

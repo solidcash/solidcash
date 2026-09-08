@@ -1253,6 +1253,24 @@ contract C() {
     expect(routeAsm(artifact)).toMatch(/OP_UNTIL|OP_BEGIN/);
   });
 
+  it('captures an enum in the middle of a mixed multi-return handler', () => {
+    const artifact = compileString(`
+pragma solidcash ^0.13.0;
+contract C() {
+  enum Phase { Pending, Ready }
+  function inspect(uint count, bool active) public returns (uint, Phase, bool) {
+    return (count, Phase.Ready, active);
+  }
+}
+`, OPTIONS);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'inspect')).toMatchObject({
+      eligible: true,
+      outputs: [{ type: 'uint256' }, { type: 'Phase' }, { type: 'bool' }],
+    });
+    expect(artifact.messageBus?.convention).toBe('kernel-row-loop');
+    expect(routeAsm(artifact)).toMatch(/OP_UNTIL|OP_BEGIN/);
+  });
+
   it('captures a public struct getter as its Solidity field tuple on the kernel route', () => {
     const artifact = compileString(`
 pragma solidity ^0.8.0;
@@ -1268,6 +1286,43 @@ contract C {
       outputs: [{ type: 'uint256' }, { type: 'address' }],
     });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')?.eligible).toBe(true);
+    expect(artifact.messageBus?.convention).toBe('kernel-row-loop');
+    expect(routeAsm(artifact)).toMatch(/OP_UNTIL|OP_BEGIN/);
+  });
+
+  it('captures an enum-bearing public struct getter without changing its ABI outputs', () => {
+    const artifact = compileString(`
+pragma solidity ^0.8.0;
+contract C {
+  enum Phase { Pending, Ready }
+  struct Record { Phase phase; uint count; }
+  Record public record;
+  function control() public { require(true); }
+}
+`, { ...OPTIONS, solidityImportCompat: true });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'record')).toMatchObject({
+      eligible: true,
+      outputs: [{ type: 'Phase' }, { type: 'uint256' }],
+    });
+    expect(artifact.messageBus?.convention).toBe('kernel-row-loop');
+    expect(routeAsm(artifact)).toMatch(/OP_UNTIL|OP_BEGIN/);
+  });
+
+  it('captures an enum-bearing public mapping-to-struct getter', () => {
+    const artifact = compileString(`
+pragma solidity ^0.8.0;
+contract C {
+  enum Phase { Pending, Ready }
+  struct Record { Phase phase; uint count; }
+  mapping(uint => Record) public records;
+  function control() public { require(true); }
+}
+`, { ...OPTIONS, solidityImportCompat: true });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'records')).toMatchObject({
+      eligible: true,
+      inputs: [{ name: '__getterKey1', type: 'uint256' }],
+      outputs: [{ type: 'Phase' }, { type: 'uint256' }],
+    });
     expect(artifact.messageBus?.convention).toBe('kernel-row-loop');
     expect(routeAsm(artifact)).toMatch(/OP_UNTIL|OP_BEGIN/);
   });

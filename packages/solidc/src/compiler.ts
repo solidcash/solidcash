@@ -6847,6 +6847,13 @@ function synthesizeMessageBusRoute(
         // distinct names because every `if (rowCount > i)` band shares the wrapper's function scope.
         const names = fn.returnTypes.map((_type, index) =>
           `__message_bus_value_${rowIndex === undefined ? 'i' : rowIndex}_${handlerIndex}_${index}`);
+        // Enum values are semantic source types, but the route result stream carries their integer
+        // representation. A scalar call can cast the expression directly; a multi-return call must first
+        // destructure into enum-typed locals because tuple assignment does not implicitly convert an enum to
+        // `int`. Keep separate capture and wire locals so projected public struct/mapping getters retain their
+        // enum ABI outputs while the generated wrapper passes only codec-supported integer values to abi.encode.
+        const captureNames = fn.returnTypes.map((type, index) =>
+          type instanceof EnumType && fn.returnTypes.length > 1 ? `${names[index]}_enum` : names[index]);
         const localType = (type: Type): string =>
           type instanceof EnumType || type instanceof FunctionType
             ? 'int' : type.toString().replace(/address payable/g, 'address');
@@ -6857,17 +6864,24 @@ function synthesizeMessageBusRoute(
           return `function(${type.parameterTypes.map((parameter) => parameter.toString()).join(', ')})`
             + ` external${mutability}${returns}`;
         };
-        const declarations = fn.returnTypes.map((type, index) =>
-          `${fixedSelfFunctionPointerResult(index) && fn.returnTypes.length > 1
-            ? externalFunctionLocalType(type as FunctionType) : localType(type)} ${names[index]};`).join(' ');
+        const declarations = fn.returnTypes.map((type, index) => {
+          if (type instanceof EnumType && fn.returnTypes.length > 1) {
+            return `${type.toString()} ${captureNames[index]}; int ${names[index]};`;
+          }
+          return `${fixedSelfFunctionPointerResult(index) && fn.returnTypes.length > 1
+            ? externalFunctionLocalType(type as FunctionType) : localType(type)} ${names[index]};`;
+        }).join(' ');
         const invokeExpr = `${selectedInvokeName}(${args})`;
         const assignment = fn.returnTypes.length === 1
           ? `${names[0]} = ${fn.returnTypes[0] instanceof EnumType ? `int(${invokeExpr})`
             : fixedSelfFunctionPointerResult(0) ? `unsafe_int(${invokeExpr})` : invokeExpr};`
-          : `(${names.join(', ')}) = ${invokeExpr};`;
+          : `(${captureNames.join(', ')}) = ${invokeExpr};`;
+        const enumWireCasts = fn.returnTypes.map((type, index) =>
+          type instanceof EnumType && fn.returnTypes.length > 1
+            ? `${names[index]} = int(${captureNames[index]});` : '').join(' ');
         const encodedNames = names.map((resultName, index) =>
           fixedSelfFunctionPointerResult(index) ? `unsafe_int(${resultName})` : resultName);
-        return `${declarations} ${assignment} __message_bus_results = bytes.concat(
+        return `${declarations} ${assignment} ${enumWireCasts} __message_bus_results = bytes.concat(
         __message_bus_results, abi.encode(${encodedNames.join(', ')})
       );`;
       };

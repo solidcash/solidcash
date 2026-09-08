@@ -4,10 +4,16 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { getValueChunkLockingBytecode } from '../../src/stateful/covenant-helpers.js';
 import {
   StatefulTransactionBuilder,
+  commitStagedValueChunkWrite,
+  isPersistedJobEventsReady,
+  isValueChunkWriteReady,
   persistedValueChunkWriteState,
   rememberJobEventsLock,
   rememberJobEventsValue,
   selectValueChunkCommitmentObservations,
+  stageJobEventsValue,
+  stagedValueChunkWrite,
+  stageValueChunkWrite,
   type ValueChunkWriteDescriptor,
 } from '../../src/stateful/StatefulTransactionBuilder.js';
 
@@ -64,6 +70,51 @@ describe('value-chunk descriptor authority', () => {
       value: secondValue,
       lockingBytecode: secondLock,
     });
+  });
+
+  it('stages and readies alpha-renamed resources by collection and key identity', () => {
+    const first = descriptor('ledgerRows', 1);
+    const second = descriptor('auditRows', 1);
+    const third = descriptor('ledgerRows', 2);
+    const firstValue = new Uint8Array(100).fill(0x31);
+    const secondValue = new Uint8Array(112).fill(0x52);
+    const thirdValue = new Uint8Array(116).fill(0x64);
+    const legacyCategoryValue = new Uint8Array(124).fill(0x73);
+    const firstLock = getValueChunkLockingBytecode(
+      categoryId, first.collectionSignature, new Uint8Array(32).fill(1), sha256Sync(firstValue),
+    );
+    const secondLock = getValueChunkLockingBytecode(
+      categoryId, second.collectionSignature, new Uint8Array(32).fill(1), sha256Sync(secondValue),
+    );
+    const thirdLock = getValueChunkLockingBytecode(
+      categoryId, third.collectionSignature, new Uint8Array(32).fill(2), sha256Sync(thirdValue),
+    );
+
+    expect(stageValueChunkWrite(first, firstValue)).toBe(true);
+    expect(stageValueChunkWrite(second, secondValue)).toBe(true);
+    expect(stageValueChunkWrite(third, thirdValue)).toBe(true);
+    stageJobEventsValue(categoryId, legacyCategoryValue);
+    expect(stagedValueChunkWrite(first)).toEqual(firstValue);
+    expect(stagedValueChunkWrite(second)).toEqual(secondValue);
+    expect(stagedValueChunkWrite(third)).toEqual(thirdValue);
+
+    expect(commitStagedValueChunkWrite(first, firstLock)).toBe(true);
+    expect(isValueChunkWriteReady(first)).toBe(true);
+    expect(isValueChunkWriteReady(second)).toBe(false);
+    expect(isValueChunkWriteReady(third)).toBe(false);
+    expect(isPersistedJobEventsReady()).toBe(false);
+    expect(stagedValueChunkWrite(second)).toEqual(secondValue);
+    expect(persistedValueChunkWriteState(first)?.value).toEqual(firstValue);
+    expect(persistedValueChunkWriteState(second)).toBeUndefined();
+
+    expect(commitStagedValueChunkWrite(second, secondLock)).toBe(true);
+    expect(isValueChunkWriteReady(second)).toBe(true);
+    expect(persistedValueChunkWriteState(second)?.value).toEqual(secondValue);
+    expect(stagedValueChunkWrite(third)).toEqual(thirdValue);
+    expect(commitStagedValueChunkWrite(third, thirdLock)).toBe(true);
+    expect(isValueChunkWriteReady(third)).toBe(true);
+    expect(persistedValueChunkWriteState(third)?.value).toEqual(thirdValue);
+    expect(persistedValueChunkWriteState(first)?.value).toEqual(firstValue);
   });
 
   it('classifies failing chunk pins by described slot ownership, not payload bytes', () => {

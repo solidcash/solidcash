@@ -121,6 +121,12 @@ const persistedValueChunkWrites = new Map<string, {
   value: Uint8Array; lockingBytecode: Uint8Array; width: number;
   recipe: { slot: Uint8Array; root: Uint8Array; collection: string; categoryId: string };
 }>();
+const stagedValueChunkWrites = new Map<string, Uint8Array>();
+const readyValueChunkWrites = new Set<string>();
+const persistedValueChunkSpends = new Map<string, Array<{
+  txid: string; vout: number; satoshis: bigint;
+  token: NonNullable<Utxo['token']>; lockingBytecode: Uint8Array;
+}>>();
 type ObservedValueChunkState = { value: Uint8Array; lockingBytecode: Uint8Array };
 const observedValueChunkStatesByCategory = new Map<string, Map<string, ObservedValueChunkState>>();
 const stagedJobEventsValues = new Map<string, Uint8Array>();
@@ -1116,6 +1122,32 @@ const valueChunkWriteIdentity = (write: ValueChunkWriteDescriptor): string => [
   write.categoryId.toLowerCase(), write.collectionHash.toLowerCase(), write.keySlot.toLowerCase(),
 ].join(':');
 
+function validValueChunkWriteIdentity(write: ValueChunkWriteDescriptor): boolean {
+  if (!/^[0-9a-f]{64}$/i.test(write.categoryId) || !/^[0-9a-f]{64}$/i.test(write.keySlot)) return false;
+  try {
+    return binToHex(computeCollectionHash(write.collectionSignature)) === write.collectionHash.toLowerCase();
+  } catch {
+    return false;
+  }
+}
+
+/** Stage one compiler-described chunkable value without sharing category-wide mutable state. */
+export function stageValueChunkWrite(write: ValueChunkWriteDescriptor, value: Uint8Array): boolean {
+  if (!validValueChunkWriteIdentity(write)
+    || value.length <= 60 || value.length > MAX_PERSISTED_JOB_EVENTS_BYTES) return false;
+  stagedValueChunkWrites.set(valueChunkWriteIdentity(write), value);
+  return true;
+}
+
+export function stagedValueChunkWrite(write: ValueChunkWriteDescriptor): Uint8Array | undefined {
+  if (!validValueChunkWriteIdentity(write)) return undefined;
+  return stagedValueChunkWrites.get(valueChunkWriteIdentity(write));
+}
+
+export function isValueChunkWriteReady(write: ValueChunkWriteDescriptor): boolean {
+  return validValueChunkWriteIdentity(write) && readyValueChunkWrites.has(valueChunkWriteIdentity(write));
+}
+
 export type ValueChunkWriteCategorySelection =
   | { status: 'absent' }
   | { status: 'exact'; categoryId: string; write: ValueChunkWriteDescriptor }
@@ -1221,7 +1253,7 @@ export function resolveValueChunkWriteCategory(
 /** Bind an observed value and redeem lock to one exact compiler-described collection write. */
 export function rememberValueChunkUnlockRecipe(
   write: ValueChunkWriteDescriptor,
-  value = persistedJobEventsValues.get(write.categoryId),
+  value = stagedValueChunkWrite(write) ?? persistedJobEventsValues.get(write.categoryId),
   lockingBytecode = persistedJobEventsLocks.get(write.categoryId),
 ): boolean {
   if (!value || !lockingBytecode || !/^[0-9a-f]{64}$/i.test(write.categoryId)
@@ -1249,6 +1281,19 @@ export function rememberValueChunkUnlockRecipe(
   } catch {
     return false;
   }
+}
+
+/** Commit one successfully sent compiler-described write and make only that identity ready. */
+export function commitStagedValueChunkWrite(
+  write: ValueChunkWriteDescriptor,
+  lockingBytecode: Uint8Array,
+): boolean {
+  const identity = valueChunkWriteIdentity(write);
+  const value = stagedValueChunkWrites.get(identity);
+  if (!value || !rememberValueChunkUnlockRecipe(write, value, lockingBytecode)) return false;
+  stagedValueChunkWrites.delete(identity);
+  readyValueChunkWrites.add(identity);
+  return true;
 }
 
 /** Authenticate retained observations against one exact compiler/planner write identity. */
@@ -5871,6 +5916,15 @@ export class StatefulTransactionBuilder {
       for (const key of persistedValueChunkWrites.keys()) {
         if (key.startsWith(`${categoryId.toLowerCase()}:`)) persistedValueChunkWrites.delete(key);
       }
+      for (const key of stagedValueChunkWrites.keys()) {
+        if (key.startsWith(`${categoryId.toLowerCase()}:`)) stagedValueChunkWrites.delete(key);
+      }
+      for (const key of readyValueChunkWrites) {
+        if (key.startsWith(`${categoryId.toLowerCase()}:`)) readyValueChunkWrites.delete(key);
+      }
+      for (const key of persistedValueChunkSpends.keys()) {
+        if (key.startsWith(`${categoryId.toLowerCase()}:`)) persistedValueChunkSpends.delete(key);
+      }
       observedValueChunkStatesByCategory.delete(categoryId);
       stagedJobEventsValues.delete(categoryId);
       createdDigestLocks.delete(categoryId);
@@ -5886,6 +5940,9 @@ export class StatefulTransactionBuilder {
       persistedJobEventsSpends.clear();
       persistedJobEventsRecipes.clear();
       persistedValueChunkWrites.clear();
+      stagedValueChunkWrites.clear();
+      readyValueChunkWrites.clear();
+      persistedValueChunkSpends.clear();
       observedValueChunkStatesByCategory.clear();
       stagedJobEventsValues.clear();
       createdDigestLocks.clear();
@@ -5977,7 +6034,7 @@ export class StatefulTransactionBuilder {
     const selection = this._valueChunkWriteCategorySelection();
     if (selection.status === 'ambiguous') isInitialValueChunkWrite(selection);
     if (selection.status === 'exact') {
-      return selection.write.operation === 'update'
+      return selection.write.operation === 'update' && isValueChunkWriteReady(selection.write)
         ? persistedValueChunkWriteState(selection.write) : undefined;
     }
     if (this._hasChunkableValueWriteMetadata()) {
@@ -6878,18 +6935,26 @@ export class StatefulTransactionBuilder {
     })) return;
     // Keep the concrete values narrowed for the resource-loading code below.
     if (!band || !categoryId) return;
-    const persistLock = persistedJobEventsLocks.get(categoryId)
-      ?? latestPersisted(persistedJobEventsLocks, categoryId);
-    const persistValue = persistedJobEventsValues.get(categoryId)
-      ?? latestPersisted(persistedJobEventsValues, categoryId);
-    const spends = persistedJobEventsSpends.get(categoryId)
-      ?? latestPersisted(persistedJobEventsSpends, categoryId)
-      ?? [];
+    const write = this._persistedValueChunkWrite(categoryId);
+    const exactState = write ? persistedValueChunkWriteState(write) : undefined;
+    const legacyFallback = write === undefined && !this._hasChunkableValueWriteMetadata()
+      && this._permitsLegacyNamedValueChunkFallback();
+    const persistLock = exactState?.lockingBytecode ?? (legacyFallback
+      ? (persistedJobEventsLocks.get(categoryId)
+        ?? latestPersisted(persistedJobEventsLocks, categoryId)) : undefined);
+    const persistValue = exactState?.value ?? (legacyFallback
+      ? (persistedJobEventsValues.get(categoryId)
+        ?? latestPersisted(persistedJobEventsValues, categoryId)) : undefined);
+    const spends = write
+      ? (persistedValueChunkSpends.get(valueChunkWriteIdentity(write)) ?? [])
+      : (legacyFallback
+        ? (persistedJobEventsSpends.get(categoryId)
+          ?? latestPersisted(persistedJobEventsSpends, categoryId)
+          ?? []) : []);
     const extras: UnlockableUtxo[] = [];
     const selectedWriter = this._chunkableValueWriteGroups();
     const publish = selectedWriter.external ?? selectedWriter.lowLevel;
     const contract = publish?.externalContract?.inner;
-    const write = this._persistedValueChunkWrite(categoryId);
     if (persistValue && persistLock) {
       if (write) rememberValueChunkUnlockRecipe(write, persistValue, persistLock);
       else if (write === undefined) rememberJobEventsUnlockRecipe(categoryId);
@@ -8036,9 +8101,8 @@ export class StatefulTransactionBuilder {
             || isPersistValueChunkCommitment(commit)))
           || forceChunk0) {
           const persistCat = this._persistJobEventsTokenCategory() ?? input.token?.category ?? categoryId;
-          const persistValue = latestPersisted(stagedJobEventsValues)
-            ?? latestPersisted(persistedJobEventsValues)
-            ?? (persistCat ? persistedJobEventsValue(persistCat) : undefined);
+          const persistValue = this._stagedValueChunkWrite(persistCat)
+            ?? this._persistedValueChunkValue(persistCat);
           const destOffset = [...persistDests].sort((left, right) => left - right).indexOf(index);
           const inputLock = input.unlocker?.generateLockingBytecode();
           const publishCategory = this._jobEventsPublishCategory();
@@ -8135,7 +8199,7 @@ export class StatefulTransactionBuilder {
           ?? persistLock);
       if (!lock || lock.length !== 35 || lock[0] !== 0xaa) continue;
       const persistValue = isPersistValueChunk && rematerialize
-        ? persistedJobEventsValue(input.token?.category ?? categoryId ?? '')
+        ? this._persistedValueChunkValue(input.token?.category ?? categoryId)
         : undefined;
       const persistChunk = persistValue && chunkIndex !== undefined
         ? chunksFromJobEventsValue(persistValue, lock, input.token?.category)[chunkIndex]
@@ -9860,7 +9924,7 @@ export class StatefulTransactionBuilder {
     const band = this.getPublishJobEventsBand();
     if (!band) return 0;
     const categoryId = this._jobEventsPublishCategory();
-    const value = categoryId ? persistedJobEventsValue(categoryId) : undefined;
+    const value = this._persistedValueChunkValue(categoryId);
     const lock = persistUpdateRedeemLock(
       categoryId, this.jobEventsRedeemLock, this._persistedValueChunkWrite(categoryId),
     )
@@ -10149,14 +10213,14 @@ export class StatefulTransactionBuilder {
       this.rememberJobEventsChunks(stateOwnerCategory, fromDerived);
     }
     const rematerialize = this._shouldRematerializePersistUpdate();
-    const stagedValue = (stateOwnerCategory ? stagedJobEventsValues.get(stateOwnerCategory) : undefined)
-      ?? (categoryId ? stagedJobEventsValues.get(categoryId) : undefined);
+    const stagedValue = this._stagedValueChunkWrite(stateOwnerCategory)
+      ?? this._stagedValueChunkWrite(categoryId);
     const fromStaged = stagedValue
       ? chunksFromJobEventsValue(stagedValue, undefined, stateOwnerCategory)
       : [];
     const persistedValue = rematerialize
-      ? ((stateOwnerCategory ? persistedJobEventsValue(stateOwnerCategory) : undefined)
-        ?? (categoryId ? persistedJobEventsValue(categoryId) : undefined))
+      ? (this._persistedValueChunkValue(stateOwnerCategory)
+        ?? this._persistedValueChunkValue(categoryId))
       : undefined;
     const fromValue = persistedValue
       ? chunksFromJobEventsValue(persistedValue, undefined, stateOwnerCategory)
@@ -10305,11 +10369,10 @@ export class StatefulTransactionBuilder {
           this._persistedValueChunkWrite(persistTokenCategory),
         )
         : undefined);
-    const stagedValue = (categoryId ? stagedJobEventsValues.get(categoryId) : undefined)
-      ?? (persistTokenCategory ? stagedJobEventsValues.get(persistTokenCategory) : undefined);
+    const stagedValue = this._stagedValueChunkWrite(categoryId)
+      ?? this._stagedValueChunkWrite(persistTokenCategory);
     const persistValue = stagedValue
-      ?? (persistTokenCategory ? persistedJobEventsValue(persistTokenCategory) : undefined)
-      ?? latestPersisted(persistedJobEventsValues);
+      ?? this._persistedValueChunkValue(persistTokenCategory);
     const publishCategory = this._jobEventsPublishCategory();
     const persistVLock = persistValueChunkLock(
       persistTokenCategory, persistValue, this._persistedValueChunkWrite(persistTokenCategory),
@@ -10323,8 +10386,8 @@ export class StatefulTransactionBuilder {
       ?? this.jobEventsRedeemLock
       ?? (categoryId ? persistedJobEventsLock(categoryId) : undefined);
     const persistedValue = this._shouldRematerializePersistUpdate()
-      ? ((persistTokenCategory ? persistedJobEventsValue(persistTokenCategory) : undefined)
-        ?? (categoryId ? persistedJobEventsValue(categoryId) : undefined))
+      ? (this._persistedValueChunkValue(persistTokenCategory)
+        ?? this._persistedValueChunkValue(categoryId))
       : undefined;
     const fromValue = persistedValue
       ? chunksFromJobEventsValue(persistedValue, redeemLock, persistTokenCategory)
@@ -10479,17 +10542,23 @@ export class StatefulTransactionBuilder {
     }
     if (chunks.length === 0) return;
     this.rememberJobEventsChunks(categoryId, chunks);
-    if (spends.length > 0) persistedJobEventsSpends.set(categoryId, spends);
-    const staged = stagedJobEventsValues.get(categoryId)
-      ?? latestPersisted(stagedJobEventsValues, categoryId);
     const selection = this._valueChunkWriteCategorySelection();
     if (selection.status === 'exact') {
+      if (spends.length > 0) {
+        persistedValueChunkSpends.set(valueChunkWriteIdentity(selection.write), spends);
+      }
+      const staged = stagedValueChunkWrite(selection.write);
       const authenticatedLock = redeemLock ?? chunks[0]?.lockingBytecode;
       if (staged && authenticatedLock) {
-        rememberValueChunkUnlockRecipe(selection.write, staged, authenticatedLock);
+        commitStagedValueChunkWrite(selection.write, authenticatedLock);
       }
-    } else if (selection.status === 'absent') {
+      stagedValueChunkWrites.delete(valueChunkWriteIdentity(selection.write));
+    } else if (selection.status === 'absent' && !this._hasChunkableValueWriteMetadata()
+      && this._permitsLegacyNamedValueChunkFallback()) {
       // Compatibility only for descriptor-free artifacts.
+      if (spends.length > 0) persistedJobEventsSpends.set(categoryId, spends);
+      const staged = stagedJobEventsValues.get(categoryId)
+        ?? latestPersisted(stagedJobEventsValues, categoryId);
       if (redeemLock) rememberJobEventsLock(categoryId, redeemLock);
       else if (chunks[0]) rememberJobEventsLock(categoryId, chunks[0].lockingBytecode);
       if (staged) {
@@ -10500,9 +10569,9 @@ export class StatefulTransactionBuilder {
       if (persistedJobEventsValues.size > 0) {
         for (const otherId of persistedJobEventsValues.keys()) rememberJobEventsUnlockRecipe(otherId);
       }
+      stagedJobEventsValues.delete(categoryId);
+      persistedJobEventsSendReady = true;
     }
-    stagedJobEventsValues.delete(categoryId);
-    persistedJobEventsSendReady = true;
   }
 
   /**
@@ -11594,6 +11663,33 @@ export class StatefulTransactionBuilder {
       .filter((write) => categoryId === undefined || write.categoryId === categoryId);
     if (writes.length === 0) return undefined;
     return selectPersistedValueChunkWrite(writes, categoryId) ?? null;
+  }
+
+  /** Exact staged value, with category-wide storage retained only for descriptor-free legacy plans. */
+  private _stagedValueChunkWrite(categoryId?: string): Uint8Array | undefined {
+    const selection = this._valueChunkWriteCategorySelection();
+    if (selection.status === 'exact') {
+      if (categoryId !== undefined
+        && selection.write.categoryId.toLowerCase() !== categoryId.toLowerCase()) return undefined;
+      return stagedValueChunkWrite(selection.write);
+    }
+    if (selection.status === 'ambiguous' || this._hasChunkableValueWriteMetadata()
+      || !this._permitsLegacyNamedValueChunkFallback()) return undefined;
+    return categoryId ? stagedJobEventsValues.get(categoryId) : latestPersisted(stagedJobEventsValues);
+  }
+
+  /** Exact committed value, with category-wide storage retained only for descriptor-free legacy plans. */
+  private _persistedValueChunkValue(categoryId?: string): Uint8Array | undefined {
+    const selection = this._valueChunkWriteCategorySelection();
+    if (selection.status === 'exact') {
+      if (categoryId !== undefined
+        && selection.write.categoryId.toLowerCase() !== categoryId.toLowerCase()) return undefined;
+      return isValueChunkWriteReady(selection.write)
+        ? persistedValueChunkWriteState(selection.write)?.value : undefined;
+    }
+    if (selection.status === 'ambiguous' || this._hasChunkableValueWriteMetadata()
+      || !this._permitsLegacyNamedValueChunkFallback()) return undefined;
+    return categoryId ? persistedJobEventsValue(categoryId) : latestPersisted(persistedJobEventsValues);
   }
 
   /** Exact descriptor path, with the historical schema available only to descriptor-free legacy plans. */

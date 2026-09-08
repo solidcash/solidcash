@@ -1279,7 +1279,7 @@ function normalizeJobEventAddresses(
 }
 
 /** Quarantine the historical Marketplace adapter to its exact legacy wire schema and legacy-unroll artifact. */
-function usesLegacyJobEventCompatibility(
+export function usesLegacyJobEventCompatibility(
   artifact: Artifact, type: string, structs: Artifact['structs'],
 ): boolean {
   if (artifact.messageBus?.convention !== 'legacy-unroll') return false;
@@ -1291,6 +1291,30 @@ function usesLegacyJobEventCompatibility(
     && definition.fields[1].name === 'address_' && definition.fields[1].type === 'bytes'
     && definition.fields[2].name === 'data_' && definition.fields[2].type === 'bytes'
     && definition.fields[3].name === 'timestamp_' && definition.fields[3].type === 'uint32';
+}
+
+/**
+ * Opt into the historical event-payload trace exclusion only when artifact metadata identifies the exact legacy
+ * wire schema. Modern/kernel artifacts and descriptor-free general contracts must classify trace commitments by
+ * compiler-owned slot/range authority, never by bytes which happen to resemble an application payload.
+ */
+export function usesLegacyJobEventTraceCompatibility(artifacts: readonly Artifact[]): boolean {
+  return artifacts.some((artifact) => {
+    const layout = artifact.stateLayout;
+    if (!layout) return false;
+    const collections = [...(layout.collections ?? []), ...(layout.mappings ?? [])];
+    return collections.some((collection) => collection.chunkableValue === true
+      && usesLegacyJobEventCompatibility(
+        artifact, collection.valueType, layout.structs ?? artifact.structs,
+      ));
+  });
+}
+
+/** Payload-shaped exclusion is an explicitly selected legacy adapter, not a general trace classifier. */
+export function isExcludedLegacyJobEventTraceCommitment(
+  commitment: string, legacyJobEventCompatibility: boolean,
+): boolean {
+  return legacyJobEventCompatibility && isJobEventEmitCommitment(commitment);
 }
 
 /**
@@ -2090,6 +2114,7 @@ function extractExpectedOutputCommitmentFromTrace(
 function extractFailingValueChunkCommitments(
   trace: AuthenticationProgramStateCommon[],
   authority?: { outputBase: number; outputCount: number; lockingBytecode: Uint8Array } | null,
+  legacyJobEventCompatibility = false,
 ): Map<number, string> {
   if (authority !== undefined) {
     if (authority === null) return new Map();
@@ -2181,7 +2206,7 @@ function extractFailingValueChunkCommitments(
     const actualHex = observedActual ?? binToHex(top);
     if (expectedHex === actualHex) continue;
     if (isEmptyValueChunkCommitment(expectedHex)) continue;
-    if (isJobEventEmitCommitment(expectedHex)) continue;
+    if (isExcludedLegacyJobEventTraceCommitment(expectedHex, legacyJobEventCompatibility)) continue;
     if (expected.length < 3 || expected.length > 128) continue;
     result.set(outIdx, expectedHex);
     const chunkIndex = valueChunkIndexFromCommitment(expectedHex);
@@ -12962,7 +12987,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               : writeSelection.status === 'absent'
                 ? undefined
                 : null;
-            const failingCommits = extractFailingValueChunkCommitments(nestedTrace, exactAuthority);
+            const traceArtifacts = [llc, ...(proxyGroup ? [proxyGroup] : [])].flatMap((group) => [
+              group.logicalArtifact,
+              group.logicalContract?.inner?.artifact,
+              group.externalContract?.inner?.artifact,
+            ]).filter((artifact): artifact is Artifact => artifact !== undefined);
+            const failingCommits = extractFailingValueChunkCommitments(
+              nestedTrace, exactAuthority, usesLegacyJobEventTraceCompatibility(traceArtifacts),
+            );
             if ((globalThis as { process?: { env?: Record<string, string> } }).process
               ?.env?.SOLIDC_DEBUG_CHUNK_SCAN === '1') {
               console.error('failing-otc-commits', {

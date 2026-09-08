@@ -128,6 +128,7 @@ import {
   planKernelEntryJournalAccessTopology,
   type KernelEntryJournalTopologyOperation,
 } from './KernelEntryJournal.js';
+import { resolveKernelDelegatePromotion } from './KernelDelegateForwarding.js';
 import { resolveBlockhashCoSpend } from '../oracle/blockhashCoSpend.js';
 import { attachWait } from '../wait.js';
 import Signer from '../Signer.js';
@@ -387,6 +388,35 @@ function functionArgumentValuesEqual(left: unknown, right: unknown): boolean {
 function functionArgumentListsEqual(left: readonly unknown[], right: readonly unknown[]): boolean {
   return left.length === right.length
     && left.every((value, index) => functionArgumentValuesEqual(value, right[index]));
+}
+
+/** @internal Resolve one compiler-authored terminal forwarding edge for atomic delegate promotion. */
+export function resolvePreparedKernelDelegateExecution(input: {
+  proxyFunction: Pick<AbiFunction, 'name' | 'delegateForwarding'>;
+  callIndex: number;
+  proxyParameters: readonly FunctionArgument[];
+  proxyConstructorArgs: readonly FunctionArgument[];
+  proxyLockingBytecode: string;
+  stateCategory: string;
+  implementationArtifact: Artifact;
+  implementationLockingBytecode: string;
+  requestedFunctionName: string;
+  requestedArgs: readonly FunctionArgument[];
+}): ReturnType<typeof resolveKernelDelegatePromotion> | undefined {
+  if (input.proxyFunction.delegateForwarding?.callIndex !== input.callIndex) return undefined;
+  return resolveKernelDelegatePromotion({
+    forwarding: input.proxyFunction.delegateForwarding,
+    proxyParameters: input.proxyParameters,
+    proxyConstructorArgs: input.proxyConstructorArgs,
+    proxyLockingBytecode: input.proxyLockingBytecode,
+    stateCategory: input.stateCategory,
+    implementation: {
+      artifact: input.implementationArtifact,
+      lockingBytecode: input.implementationLockingBytecode,
+    },
+    requestedFunctionName: input.requestedFunctionName,
+    requestedArgs: input.requestedArgs,
+  });
 }
 
 function defaultInternalFunctionArg(input: { name: string; type?: string }): FunctionArgument {
@@ -20343,16 +20373,40 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               ?? delegateAbi.find((f) => f.name === callInfo.functionName);
             const nestedIndices: number[] = [];
             const nestedByCallsite = new Map<number, number>();
-            if (!preparedAtomicNodes && functionName === '__forward') {
-              preparedAtomicNodes = [{
-                contract: this as unknown as StatefulContract,
-                functionName: callInfo.functionName,
-                args: callInfo.args,
-                executionArtifact: callInfo.contract.inner.artifact,
-                executor: callInfo.contract,
-                parent: null,
-                active: true,
-              }];
+            if (!preparedAtomicNodes && abiFunction) {
+              // A compiler-published forwarding frame is the complete semantic criterion: one unconditional,
+              // terminal delegatecall of an untouched bytes parameter to an address-committed target. Resolve
+              // that payload back to the exact eligible implementation row. Generated-proxy and user-authored
+              // forwarding functions therefore take the same path, independent of their source-level names.
+              try {
+                const promoted = resolvePreparedKernelDelegateExecution({
+                  proxyFunction: abiFunction,
+                  callIndex: i,
+                  proxyParameters: args,
+                  proxyConstructorArgs: this.inner.constructorArgs,
+                  proxyLockingBytecode: this.inner.lockingBytecode,
+                  stateCategory: this.categoryId,
+                  implementationArtifact: callInfo.contract.inner.artifact,
+                  implementationLockingBytecode: callInfo.contract.inner.lockingBytecode,
+                  requestedFunctionName: callInfo.functionName,
+                  requestedArgs: callInfo.args,
+                });
+                if (promoted) {
+                  preparedAtomicNodes = [{
+                    contract: this as unknown as StatefulContract,
+                    functionName: promoted.functionName,
+                    selector: promoted.selector,
+                    args: promoted.args,
+                    executionArtifact: callInfo.contract.inner.artifact,
+                    executor: callInfo.contract,
+                    parent: null,
+                    active: true,
+                  }];
+                }
+              } catch {
+                // Promotion is optional. A stale, widened, or mismatched frame retains the ordinary direct
+                // delegate transaction, whose proxy and implementation covenants remain authoritative.
+              }
             }
             const publishedNestedExternalCalls = [...(delegateFn?.externalCalls ?? [])];
             // Nested argSources.paramIndex is the logical Solidity function's visible parameter

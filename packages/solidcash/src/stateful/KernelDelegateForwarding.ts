@@ -46,6 +46,17 @@ export interface KernelDelegateExecutionTarget {
   lockingBytecode: string;
 }
 
+export interface KernelDelegatePromotionInput {
+  forwarding: unknown;
+  proxyParameters: readonly FunctionArgument[];
+  proxyConstructorArgs: readonly FunctionArgument[];
+  proxyLockingBytecode: string;
+  stateCategory: string;
+  implementation: KernelDelegateExecutionTarget;
+  requestedFunctionName: string;
+  requestedArgs: readonly FunctionArgument[];
+}
+
 export type KernelDelegateForwardingMetadata = DelegateForwardingAbi;
 
 type UnknownRecord = Record<string, unknown>;
@@ -267,4 +278,67 @@ export function resolveKernelDelegateExecution(
     transcript,
     commitment: sha256.hash(transcript),
   });
+}
+
+/**
+ * Resolve the narrow compiler-published forwarding form into an existing kernel delegate participant.
+ *
+ * The forwarding source admits arbitrary bytes, but fixes the executor in the proxy's address-committed
+ * constructor/literal data. This helper proves that the implementation call selected by `withDelegatecall` is
+ * exactly those bytes. The physical composer later replaces these normalized coordinates with its authenticated
+ * participant/executor layout; no application or generated proxy function name participates in the decision.
+ */
+export function resolveKernelDelegatePromotion(
+  input: KernelDelegatePromotionInput,
+): ResolvedKernelDelegateExecution {
+  if (!isRecord(input.forwarding)
+    || !Number.isSafeInteger(input.forwarding.payloadInput)
+    || (input.forwarding.payloadInput as number) < 0) {
+    throw new Error('delegate forwarding payload input is invalid');
+  }
+  const forwardedCalldata = input.proxyParameters[input.forwarding.payloadInput as number];
+  if (!(forwardedCalldata instanceof Uint8Array)) {
+    throw new Error('delegate forwarding payload must be bytes');
+  }
+  const resolved = resolveKernelDelegateExecution(
+    input.forwarding,
+    input.proxyParameters,
+    input.proxyConstructorArgs,
+    {
+      participantInputIndex: 0,
+      participantOutputIndex: 0,
+      executorInputIndex: 1,
+      participantInput: {
+        lockingBytecode: input.proxyLockingBytecode,
+        stateCategory: input.stateCategory,
+      },
+      participantOutput: {
+        lockingBytecode: input.proxyLockingBytecode,
+        stateCategory: input.stateCategory,
+      },
+      executorLockingBytecode: input.implementation.lockingBytecode,
+      forwardedCalldata,
+    },
+    input.implementation,
+  );
+  if (resolved.functionName !== input.requestedFunctionName) {
+    throw new Error('delegate forwarding payload selects a different implementation function');
+  }
+  const fn = input.implementation.artifact.abi.find((candidate) =>
+    candidate.selector?.toLowerCase() === resolved.selector);
+  const visibleInputs = fn?.inputs.filter((parameter) => !parameter.name.startsWith('__internal__')) ?? [];
+  if (visibleInputs.length !== input.requestedArgs.length) {
+    throw new Error('delegate forwarding request has a different implementation arity');
+  }
+  const structs = input.implementation.artifact.structs ?? input.implementation.artifact.stateLayout?.structs;
+  const encoded = input.requestedArgs.map((argument, index) =>
+    encodeFunctionArgument(argument, visibleInputs[index]!.type, structs));
+  if (encoded.some((argument) => !(argument instanceof Uint8Array))) {
+    throw new Error('delegate forwarding request cannot carry a detached transaction signature');
+  }
+  const requestedPayload = concat(hexToBin(resolved.selector), scriptToBytecode(encoded as Uint8Array[]));
+  if (!sameBytes(requestedPayload, forwardedCalldata)) {
+    throw new Error('delegate forwarding request does not match the proxy payload');
+  }
+  return resolved;
 }

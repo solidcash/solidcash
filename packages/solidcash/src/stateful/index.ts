@@ -138,8 +138,9 @@ export {
   type KernelLifecycleTransactionPoint, type ResolvedKernelLifecycleSpan, type ResolvedKernelLifecycleTopology,
 } from './KernelLifecycleTopology.js';
 export {
-  planKernelDelegateForwarding, resolveKernelDelegateExecution,
+  planKernelDelegateForwarding, resolveKernelDelegateExecution, resolveKernelDelegatePromotion,
   type KernelDelegateExecutionTarget, type KernelDelegateForwardingFrame, type KernelDelegateForwardingMetadata,
+  type KernelDelegatePromotionInput,
   type ResolvedKernelDelegateForwarding, type ResolvedKernelDelegateExecution,
 } from './KernelDelegateForwarding.js';
 export {

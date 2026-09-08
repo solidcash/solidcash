@@ -3,8 +3,9 @@ import { binToHex, hexToBin } from '@bitauth/libauth';
 import { scriptToBytecode, type Artifact } from '@solidcash/utils';
 import { encodeFunctionArgument } from '../../src/Argument.js';
 import {
-  planKernelDelegateForwarding, resolveKernelDelegateExecution,
+  planKernelDelegateForwarding, resolveKernelDelegateExecution, resolveKernelDelegatePromotion,
 } from '../../src/stateful/KernelDelegateForwarding.js';
+import { resolvePreparedKernelDelegateExecution } from '../../src/stateful/StatefulContract.js';
 
 const bytes = (hex: string): Uint8Array => Uint8Array.from(
   hex.match(/../g)?.map((part) => Number.parseInt(part, 16)) ?? [],
@@ -162,5 +163,73 @@ describe('kernel delegate forwarding binding prerequisite', () => {
       metadata(), [trailing], [bytes('bb20')], trailingFrame,
       { artifact: implementationArtifact(), lockingBytecode: 'bb20' },
     )).toThrow(/trailing or non-canonical/);
+  });
+
+  it('promotes an arbitrary-named exact forwarding function to its canonical implementation row', () => {
+    const payload = implementationPayload(7);
+    expect(resolveKernelDelegatePromotion({
+      forwarding: metadata(),
+      proxyParameters: [payload],
+      proxyConstructorArgs: [bytes('bb20')],
+      proxyLockingBytecode: 'aa20',
+      stateCategory: '11'.repeat(32),
+      implementation: { artifact: implementationArtifact(), lockingBytecode: 'bb20' },
+      requestedFunctionName: 'apply',
+      requestedArgs: [bytes('07')],
+    })).toMatchObject({ functionName: 'apply', selector: '01020304', args: [bytes('07')] });
+  });
+
+  it('does not promote a mismatched call, target, or widened forwarding frame', () => {
+    const payload = implementationPayload(7);
+    const base = {
+      forwarding: metadata(),
+      proxyParameters: [payload],
+      proxyConstructorArgs: [bytes('bb20')],
+      proxyLockingBytecode: 'aa20',
+      stateCategory: '11'.repeat(32),
+      implementation: { artifact: implementationArtifact(), lockingBytecode: 'bb20' },
+      requestedFunctionName: 'apply',
+      requestedArgs: [bytes('07')],
+    };
+    expect(() => resolveKernelDelegatePromotion({ ...base, requestedFunctionName: 'other' }))
+      .toThrow(/different implementation function/);
+    expect(() => resolveKernelDelegatePromotion({ ...base, requestedArgs: [bytes('08')] }))
+      .toThrow(/does not match the proxy payload/);
+    expect(() => resolveKernelDelegatePromotion({
+      ...base, proxyConstructorArgs: [bytes('cc20')],
+    })).toThrow(/committed forwarding target/);
+    expect(() => resolveKernelDelegatePromotion({
+      ...base, forwarding: { ...metadata(), terminalRequire: false },
+    })).toThrow(/not the singular version-1 frame/);
+  });
+
+  it('uses forwarding metadata rather than the proxy function name at the StatefulContract boundary', () => {
+    const payload = implementationPayload(7);
+    const base = {
+      callIndex: 0,
+      proxyParameters: [payload],
+      proxyConstructorArgs: [bytes('bb20')],
+      proxyLockingBytecode: 'aa20',
+      stateCategory: '11'.repeat(32),
+      implementationArtifact: implementationArtifact(),
+      implementationLockingBytecode: 'bb20',
+      requestedFunctionName: 'apply',
+      requestedArgs: [bytes('07')],
+    };
+    expect(resolvePreparedKernelDelegateExecution({
+      ...base,
+      proxyFunction: { name: 'relayArbitraryPayload', delegateForwarding: metadata() },
+    })).toMatchObject({ functionName: 'apply', selector: '01020304' });
+    expect(resolvePreparedKernelDelegateExecution({
+      ...base,
+      proxyFunction: { name: '__forward' },
+    })).toBeUndefined();
+    expect(() => resolvePreparedKernelDelegateExecution({
+      ...base,
+      proxyFunction: {
+        name: 'relayArbitraryPayload',
+        delegateForwarding: { ...metadata(), terminalRequire: false },
+      },
+    })).toThrow(/not the singular version-1 frame/);
   });
 });

@@ -1210,7 +1210,7 @@ describe('messageBus.compose atomic transaction', () => {
     await expect(composition.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
   }, 120_000);
 
-  it('preserves a pooled long mapping return across event-emitting writes', async () => {
+  it('refuses pooled long mapping writes combined with event effects at the beta boundary', async () => {
     const provider = createMessageBusCapstoneTestProvider();
     const calleeArtifact = compileString(`contract ComposePooledArrayCallee() {
       struct FeeRecord { bytes publicKey; string name; bigint fee; }
@@ -1229,6 +1229,16 @@ describe('messageBus.compose atomic transaction', () => {
     }`, {
       forceStateful: true, messageBus: true, messageBusGraphContext: true,
       suppressWarnings: true,
+    });
+    expect(calleeArtifact.messageBus?.handlers.find((handler) => handler.name === 'append')).toMatchObject({
+      eligible: false,
+      rejectionReason: 'KERNEL_LAYOUT',
+    });
+    expect(calleeArtifact.messageBus?.handlers.find((handler) => handler.name === 'itemsLength')).toMatchObject({
+      eligible: true,
+    });
+    expect(calleeArtifact.messageBus?.handlers.find((handler) => handler.name === 'readFee')).toMatchObject({
+      eligible: true,
     });
     const calleeBase = new Contract(calleeArtifact, [], { provider });
     const key = 7n;
@@ -1333,7 +1343,9 @@ describe('messageBus.compose atomic transaction', () => {
       changeAddress: fee.unlocker.generateLockingBytecode(),
     });
 
-    await expect(composition.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    await expect(composition.build()).rejects.toThrow(
+      "Handler 'append' is not batch eligible: KERNEL_LAYOUT",
+    );
   }, 120_000);
 
   it('settles fan-out to two independently authenticated physical participants', async () => {

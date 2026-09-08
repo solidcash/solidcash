@@ -68,6 +68,13 @@ pass, the differential corpus agrees, and the route-scaling check passes. Any in
 difference, nondeterministic fresh compile, suppressed codegen failure, or route growth proportional to maximum
 rows blocks the checkpoint.
 
+Every checked-in, non-skipped end-to-end test which expects a kernel handler to be eligible or sends a kernel batch
+is part of the advertised beta surface. The beta gate runs those positive proofs from a clean checkout. A failing
+positive proof is a release blocker until either the represented type/effect/flow family works end to end, or that
+family is moved behind a general `KERNEL_*` fence and the test is replaced by a negative admission regression.
+Application-name exceptions, test-only quarantines, and stale generated JavaScript which shadows TypeScript do not
+define the release surface.
+
 At that point, pause general edge-case expansion and keep unsupported handlers fail-closed behind the published
 `KERNEL_*` reasons. Post-beta work on a frozen shape is not release-critical unless it fixes a soundness defect,
 regression, nondeterminism, or one of the invariants above. Promoting an additional shape is separately scoped work

@@ -227,7 +227,7 @@ describe('X94 a scalar handler joins a collection route', () => {
    * Neither shape occurs in the four corpora - the corpus delta with the guard and without it is zero rows -
    * so these are the only place the mechanism is exercised at all.
    */
-  it('admits a returning scalar handler when authenticated effect frames preserve emitting entry writers', () => {
+  it('refuses event-emitting entry writers beside a returning scalar handler at the beta boundary', () => {
     const artifact = compileString(`pragma solidcash >=0.8.0;
 contract X94Result() {
   bigint total;
@@ -240,14 +240,22 @@ contract X94Result() {
   function credit2(bytes20 who, bigint a) public {
     this.balances[who] = this.balances[who] + a; emit Moved(a); require(a >= 0);
   }
-}`, BUS);
+    }`, BUS);
     const handlers = artifact.messageBus?.handlers ?? [];
-    // Returning results and event rows now occupy authenticated, independent frame fields, so the scalar getter
-    // no longer demotes either emitting writer and the wider route is the correct never-shrink answer.
+    // Returning scalar rows remain admitted, while collection mutation plus an observable effect stays behind
+    // the mixed pending-journal/effect fence until those outputs have independent authenticated cursors.
     expect(handlers.filter((handler) => handler.eligible).map((handler) => handler.name))
-      .toEqual(['totalSupply', 'credit', 'credit2']);
+      .toEqual(['totalSupply']);
     expect(handlers.find((handler) => handler.name === 'totalSupply')).toMatchObject({
       eligible: true,
+    });
+    expect(handlers.find((handler) => handler.name === 'credit')).toMatchObject({
+      eligible: false,
+      rejectionReason: 'KERNEL_LAYOUT',
+    });
+    expect(handlers.find((handler) => handler.name === 'credit2')).toMatchObject({
+      eligible: false,
+      rejectionReason: 'KERNEL_LAYOUT',
     });
   }, 180_000);
 

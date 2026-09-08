@@ -3958,22 +3958,27 @@ function synthesizeMessageBusRoute(
       if (candidate.sortedUpsertLoopInfo?.some((info) => info.op !== 'read') === true) return true;
       let found = false;
       walkInvocationAst(candidate.body, (node) => {
-        const mutation = node instanceof MappingAssignNode || node instanceof MappingFieldAssignNode
+        if (node instanceof MappingAssignNode || node instanceof MappingFieldAssignNode
           || node instanceof MappingDeleteNode || node instanceof StateArrayAssignNode
           || node instanceof StateArrayPushNode || node instanceof StateArrayPopNode
           || node instanceof StateArrayDeleteNode
           || ((node instanceof ArrayAssignNode || node instanceof ArrayPushNode
             || node instanceof ArrayPopNode || node instanceof ArrayDeleteNode)
-            && collectionByName.has(node.name));
-        if (!mutation) return;
-        const occurrence = occurrenceInfoOf(candidate, node);
-        if (occurrence.occurrence === 'loop' && occurrence.maximumOccurrences === undefined) found = true;
+            && collectionByName.has(node.name))) found = true;
       });
       return found;
     });
-    const hasRuntimeEffect = closureFunctions.some((candidate) =>
-      (candidate.runtimeLoopEvents?.length ?? 0) > 0
-      || (candidate.runtimeLoopTransfers?.length ?? 0) > 0);
+    const hasRuntimeEffect = closureFunctions.some((candidate) => {
+      if ((candidate.runtimeLoopEvents?.length ?? 0) > 0
+        || (candidate.runtimeLoopTransfers?.length ?? 0) > 0) return true;
+      let found = false;
+      walkInvocationAst(candidate.body, (node) => {
+        if (node instanceof EmitStatementNode || node instanceof TransferStatementNode
+          || node instanceof AddressTransferStatementNode || node instanceof AddressSendExpressionNode
+          || node instanceof TokenContainerMethodStatementNode) found = true;
+      });
+      return found;
+    });
     const hasMixedPendingJournalEffectGeometry = compilerOptions.messageBusKernel === true
       && hasRuntimeCollectionMutation && hasRuntimeEffect;
     const kernelLifecycleKind = compilerOptions.messageBusKernel !== true ? undefined

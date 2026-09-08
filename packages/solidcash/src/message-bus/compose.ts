@@ -2740,7 +2740,7 @@ export class AtomicMessageBusComposition {
             nft: {
               ...verifier.token!.nft!,
               commitment: `${verifier.token!.nft!.commitment.slice(0, 12)}${binToHex(bindingDigest)}`
-                + (participant.lifecycle?.kind === 'split'
+                + (verifierProgram.splitLifecycle === true
                   ? `${((participant.lifecycle?.count ?? 0) & 0xff).toString(16).padStart(2, '0')}`
                     + `${((participant.lifecycle?.count ?? 0) >>> 8).toString(16).padStart(2, '0')}`
                   : ''),

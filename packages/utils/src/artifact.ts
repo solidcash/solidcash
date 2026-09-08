@@ -44,6 +44,8 @@ export interface CompilerOptions {
     inputCount: number;
     inputs: readonly AbiInput[];
     functions: readonly { id: number; name: string; bytecode: string }[];
+    /** The verifier returns an authenticated uint16 split-count suffix. */
+    splitLifecycle?: true;
   };
   enforceFunctionParameterTypes?: boolean;
   enforceLocktimeGuard?: boolean;
@@ -1212,6 +1214,8 @@ export interface Artifact {
       inputCount: number;
       inputs: readonly AbiInput[];
       functions: readonly { id: number; name: string; bytecode: string }[];
+      /** The verifier returns an authenticated uint16 split-count suffix. */
+      splitLifecycle?: true;
     };
     route: AbiFunction;
     handlers: {

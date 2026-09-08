@@ -472,7 +472,7 @@ export function finalizeAtomicInvocationGraph(
   const outputIdentityV2 = plan.participants.some((participant) =>
     participant.outputLockingBytecode !== undefined
       && participant.outputLockingBytecode.toLowerCase() !== participant.lockingBytecode.toLowerCase());
-  const lifecycleV3 = plan.participants.some((participant) => participant.lifecycle !== undefined);
+  const hasLifecycle = plan.participants.some((participant) => participant.lifecycle !== undefined);
   const transactionSignatureFrames = plan.invocations.map((invocation) => {
     const participant = plan.participants[invocation.callee];
     return participant.artifact.messageBus?.atomicMessageBus?.protocolVersions?.includes(4)
@@ -488,7 +488,7 @@ export function finalizeAtomicInvocationGraph(
   // publishing a composition which every participant covenant must reject. This fence is intentionally about
   // semantic capabilities, independent of participant ordering or whether the signed row belongs to the
   // lifecycle participant itself.
-  if (signatureV4 && lifecycleV3) {
+  if (signatureV4 && hasLifecycle) {
     throw new Error(
       'messageBus: atomic transaction-signature provenance cannot yet be combined with participant lifecycle geometry',
     );
@@ -499,15 +499,6 @@ export function finalizeAtomicInvocationGraph(
     if (legacy >= 0) {
       throw new Error(
         `messageBus: participant ${legacy} verifier does not advertise atomic callManifest protocol 2`,
-      );
-    }
-  }
-  if (lifecycleV3) {
-    const legacy = plan.participants.findIndex((participant) =>
-      !participant.artifact.messageBus?.atomicMessageBus?.protocolVersions?.includes(3));
-    if (legacy >= 0) {
-      throw new Error(
-        `messageBus: participant ${legacy} verifier does not advertise atomic callManifest protocol 3`,
       );
     }
   }
@@ -554,14 +545,16 @@ export function finalizeAtomicInvocationGraph(
     const internalCategory = (category.match(/../g) as string[]).reverse().join('');
     return {
       lockingBytecode, stateCategory: internalCategory,
-      ...((outputIdentityV2 || lifecycleV3 || signatureV4) && { outputLockingBytecode }),
+      ...((outputIdentityV2 || signatureV4) && { outputLockingBytecode }),
       fixedSize, actualSize, maximumSize,
       trailingUsed: actualSize - fixedSize,
       // Route layouts publish the union of every eligible handler, so a void selected batch can retain a physical
       // return coordinate without activating it. Advertising that inactive coordinate makes the verifier demand
       // the canonical encoded empty vector (`00`) from a deliberately token-free balanced output.
       returnOffset: !publishesResult || returnSlot === undefined ? 0xffff : returnSlot.offset,
-      ...(participant.lifecycle && { lifecycle: participant.lifecycle }),
+      // Lifecycle remains a compiler-authored planning property. Split authority is derived by the specialized
+      // participant verifier from its authenticated one-row batch selector/count and this ordinary V1/V2 block
+      // geometry, so no caller-authored lifecycle transcript is serialized into the global manifest.
     };
   });
   const invocationRows = plan.invocations.map((invocation) => {
@@ -1053,7 +1046,7 @@ export function finalizeAtomicInvocationGraph(
   ];
   const callManifest = {
     ...(signatureV4 ? { version: 4 as const }
-      : lifecycleV3 ? { version: 3 as const } : outputIdentityV2 ? { version: 2 as const } : {}), participants, rows,
+      : outputIdentityV2 ? { version: 2 as const } : {}), participants, rows,
   };
   const bytes = encodeAtomicMessageBusCallManifest(callManifest);
   return Object.freeze({ plan, layout, callManifest, bytes, messageEnvelope: encodeAtomicMessageEnvelope(callManifest) });
@@ -1965,12 +1958,18 @@ export function planCompiledGraph(
           `messageBus: lifecycle participant ${owner} requires one direct master-only balanced block`,
         );
       }
-      if (!participant.artifact.messageBus?.atomicMessageBus?.protocolVersions?.includes(3)) {
+      const selected = selectedLifecycle[0];
+      if (selected.handler.lifecycleTopology?.kind !== 'split') {
         throw new Error(
-          `messageBus: lifecycle participant ${owner} verifier does not advertise atomic callManifest protocol 3`,
+          `messageBus: lifecycle participant ${owner} requires an implemented split verifier`,
         );
       }
-      const selected = selectedLifecycle[0];
+      if (selected.handler.lifecycleTopology?.kind === 'split'
+        && participant.artifact.messageBus?.verifierProgram?.splitLifecycle !== true) {
+        throw new Error(
+          `messageBus: split participant ${owner} verifier does not advertise selector-derived split authority`,
+        );
+      }
       const topology = planKernelLifecycleTopology(
         selected.handler.lifecycleTopology, selected.invocation.args ?? [],
       );

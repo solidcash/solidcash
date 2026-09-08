@@ -68,10 +68,9 @@ const mutateManifest = (
       else if (value instanceof Uint8Array) digestParts.push(sha256(value));
       else throw new Error('invalid verifier graph value');
     }
-    const participantManifest = decodeAtomicMessageEnvelope(changedEnvelope).participants[participant];
-    const suffix = participantManifest.lifecycle?.kind === 'split'
-      ? binToHex(uint16(participantManifest.lifecycle.count)) : '';
     const output = builder.outputs[verifierIndex];
+    const priorCommitment = output.token!.nft!.commitment;
+    const suffix = priorCommitment.length === 80 ? priorCommitment.slice(76) : '';
     output.token!.nft!.commitment = `${builder.inputs[verifierIndex].token!.nft!.commitment.slice(0, 12)}`
       + binToHex(sha256(concat(...digestParts))) + suffix;
   }
@@ -81,18 +80,18 @@ describe('kernel atomic split lifecycle', () => {
   it('executes a non-first split participant and rejects lifecycle geometry and identity forgery', async () => {
     const provider = createMessageBusCapstoneTestProvider();
     const artifacts = compileStringMulti(`
-      // lifecycle-v3-split-e2e-v2
-      interface IThreads { function forkThreads(int count); }
+      // selector-derived-split-e2e-v1
+      interface IThreads { function forkThreads(string label, int count); }
       interface IIdle { function idle(); }
       contract Coordinator(address threads) {
         function run(int count) public {
-          IThreads(threads).forkThreads(count);
+          IThreads(threads).forkThreads("run", count);
           require(count > 0);
         }
         function idle() public { require(true); }
       }
       contract Threads() {
-        function forkThreads(int count) public split(count) { require(count > 0); }
+        function forkThreads(string label, int count) public split(count) { require(label.length > 0 && count > 0); }
         function callerBound(address target) public {
           IIdle(target).idle();
           require(msg.sender == msg.sender);
@@ -119,7 +118,7 @@ describe('kernel atomic split lifecycle', () => {
       return messageBus.compose({
         preparedCalls: [
           { contract: coordinator.contract, functionName: 'run', args: [2n] },
-          { contract: threads.contract, functionName: 'forkThreads', args: [2n] },
+          { contract: threads.contract, functionName: 'forkThreads', args: ['run', 2n] },
         ],
         funder: fee,
         changeAddress: fee.unlocker.generateLockingBytecode(),
@@ -149,8 +148,9 @@ describe('kernel atomic split lifecycle', () => {
     )[0];
     if (!envelopeInstruction || !('data' in envelopeInstruction)) throw new Error('missing envelope');
     const manifest = decodeAtomicMessageEnvelope(envelopeInstruction.data);
-    const splitParticipant = manifest.participants.findIndex((participant) => participant.lifecycle?.kind === 'split');
-    expect(splitParticipant).toBe(1);
+    expect(manifest.version).toBeUndefined();
+    expect(manifest.participants.every((participant) => participant.lifecycle === undefined)).toBe(true);
+    const splitParticipant = 1;
     const splitBase = manifest.participants.slice(0, splitParticipant)
       .reduce((base, participant) => base + participant.actualSize, 0);
     const createdIndices = [splitBase + 1, splitBase + 2];
@@ -201,9 +201,9 @@ describe('kernel atomic split lifecycle', () => {
       ...current,
       rows: current.rows.map((row) => {
         if (row.consumer !== splitParticipant || row.kind !== 0) return row;
-        expect(row.argsHex).toBe('52');
+        expect(row.argsHex.endsWith('52')).toBe(true);
         changedSplitCount = true;
-        return { ...row, argsHex: '51' };
+        return { ...row, argsHex: `${row.argsHex.slice(0, -2)}51` };
       }),
     }));
     expect(changedSplitCount).toBe(true);
@@ -212,13 +212,15 @@ describe('kernel atomic split lifecycle', () => {
     const hostileSibling = await build();
     mutateManifest(hostileSibling, (current) => ({
       ...current,
-      participants: current.participants.map((participant, index) => index !== 0 ? participant : ({
-        ...participant, fixedSize: 1, actualSize: 2, maximumSize: 2, trailingUsed: 1, returnOffset: 0xffff,
-        lifecycle: {
-          version: 1, kind: 'split', count: 1, inputSpan: 1, outputSpan: 2, balancedSpan: 2,
-          inputTail: 'funding', outputTail: 'created-masters',
-        },
-      })),
+      participants: current.participants.map((participant, index) => index !== 0
+        ? { ...participant, outputLockingBytecode: participant.lockingBytecode } : ({
+          ...participant, outputLockingBytecode: participant.lockingBytecode,
+          fixedSize: 1, actualSize: 2, maximumSize: 2, trailingUsed: 1, returnOffset: 0xffff,
+          lifecycle: {
+            version: 1, kind: 'split', count: 1, inputSpan: 1, outputSpan: 2, balancedSpan: 2,
+            inputTail: 'funding', outputTail: 'created-masters',
+          },
+        })),
     }));
     expect(vmAccepts(hostileSibling)).toBe(false);
 

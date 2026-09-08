@@ -35,7 +35,8 @@ describe('kernel lifecycle topology metadata', () => {
       function divide(int count) public split(count) { require(count > 0); }
     }`, 'divide');
     expect(artifact.messageBus?.available).toBe(true);
-    expect(artifact.messageBus?.atomicMessageBus.protocolVersions).toContain(3);
+    expect(artifact.messageBus?.atomicMessageBus.protocolVersions).not.toContain(3);
+    expect(artifact.messageBus?.verifierProgram?.splitLifecycle).toBe(true);
     expect(handler).toMatchObject({
       eligible: true,
       lifecycleTopology: {

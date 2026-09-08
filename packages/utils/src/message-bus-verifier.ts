@@ -8,6 +8,7 @@ export interface MessageBusVerifierProgram {
   inputCount: number;
   inputs: readonly { name: string; type: string }[];
   functions: readonly { id: number; name: string; bytecode: string }[];
+  splitLifecycle?: true;
 }
 
 /** The specialized verifier cannot fit within BCH's consensus script-size limit. */
@@ -67,51 +68,26 @@ export function buildMessageBusVerifierCovenantScript(
     encodeInt(BigInt(verify.id)),
     Op.OP_INVOKE,
 
-    // The specialized verifier returns bindingDigest || expectedMessageEnvelopeHash || lifecycleSuffix. The
-    // suffix is empty (legacy) or uint16 zero for ordinary rows and a non-zero uint16 split count for authenticated
-    // split rows. Isolate
-    // the exact 32-byte envelope hash before carrying the suffix into the recreated verifier commitment.
-    encodeInt(32n),
-    Op.OP_SPLIT,
-    encodeInt(32n),
-    Op.OP_SPLIT,
-    // Return suffix: legacy neutral is empty; current neutral/split transport is one uint16 count.
-    Op.OP_SIZE,
-    Op.OP_DUP,
-    Op.OP_0NOTEQUAL,
-    Op.OP_IF,
-    encodeInt(2n),
-    Op.OP_NUMEQUALVERIFY,
-    Op.OP_ELSE,
-    Op.OP_DROP,
-    Op.OP_ENDIF,
-    Op.OP_TOALTSTACK,
-    Op.OP_ROT,
-    Op.OP_SHA256,
-    Op.OP_EQUALVERIFY,
-    Op.OP_INPUTINDEX,
-    Op.OP_UTXOTOKENCOMMITMENT,
-    encodeInt(6n),
-    Op.OP_SPLIT,
-    Op.OP_DROP,
-    Op.OP_DUP,
-    encodeInt(4n),
-    Op.OP_SPLIT,
-    Op.OP_DROP,
-    MESSAGE_BUS_VERIFIER_COMMITMENT_DOMAIN,
-    Op.OP_EQUALVERIFY,
-    Op.OP_SWAP,
-    Op.OP_CAT,
-    Op.OP_FROMALTSTACK,
-    Op.OP_DUP,
-    Op.OP_BIN2NUM,
-    Op.OP_0NOTEQUAL,
-    Op.OP_IF,
-    Op.OP_CAT,
-    Op.OP_ELSE,
-    Op.OP_DROP,
-    Op.OP_ENDIF,
-    Op.OP_TOALTSTACK,
+    ...(program.splitLifecycle === true ? [
+      // Split-capable verifiers return bindingDigest || envelopeHash || uint16 split count. The count may be
+      // zero for an ordinary sibling row, but the exact two-byte suffix is always committed by this covenant.
+      encodeInt(32n), Op.OP_SPLIT, encodeInt(32n), Op.OP_SPLIT,
+      Op.OP_SIZE, encodeInt(2n), Op.OP_NUMEQUALVERIFY,
+      Op.OP_TOALTSTACK, Op.OP_ROT, Op.OP_SHA256, Op.OP_EQUALVERIFY,
+      Op.OP_INPUTINDEX, Op.OP_UTXOTOKENCOMMITMENT, encodeInt(6n), Op.OP_SPLIT, Op.OP_DROP,
+      Op.OP_DUP, encodeInt(4n), Op.OP_SPLIT, Op.OP_DROP,
+      MESSAGE_BUS_VERIFIER_COMMITMENT_DOMAIN, Op.OP_EQUALVERIFY,
+      Op.OP_SWAP, Op.OP_CAT, Op.OP_FROMALTSTACK, Op.OP_CAT, Op.OP_TOALTSTACK,
+    ] : [
+      // Ordinary verifier programs retain the original exact 64-byte result and covenant bytecode. Keeping the
+      // split-count transport out of this path preserves both deployed compatibility and operation-cost density.
+      encodeInt(32n), Op.OP_SPLIT,
+      Op.OP_ROT, Op.OP_SHA256, Op.OP_EQUALVERIFY,
+      Op.OP_INPUTINDEX, Op.OP_UTXOTOKENCOMMITMENT, encodeInt(6n), Op.OP_SPLIT, Op.OP_DROP,
+      Op.OP_DUP, encodeInt(4n), Op.OP_SPLIT, Op.OP_DROP,
+      MESSAGE_BUS_VERIFIER_COMMITMENT_DOMAIN, Op.OP_EQUALVERIFY,
+      Op.OP_SWAP, Op.OP_CAT, Op.OP_TOALTSTACK,
+    ]),
 
     // Require a mutable NFT, then preserve its deployment category exactly.
     Op.OP_INPUTINDEX,

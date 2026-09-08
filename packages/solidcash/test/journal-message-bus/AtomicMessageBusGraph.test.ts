@@ -67,10 +67,10 @@ const lifecycleArtifact = (
         messageEnvelope: { region: 'participant-verifiers', canonicalInput: 'final-participant-verifier', unlockingPush: 0 },
         maximumParticipants: 8, maximumRows: 192,
       },
-      ...(kind === 'split' && { verifierProgram: {
+      verifierProgram: {
         verifyFunctionId: 1, inputCount: 1, inputs: [{ name: 'x', type: 'int' }], functions: [],
-        splitLifecycle: true as const,
-      } }),
+        lifecycle: true as const,
+      },
       route: {
         name: '__message_bus1', selector: '53434231', inputs: [], outputs: [],
         blockLayout: { blockSize: 1, slots: [{ kind: 'master', offset: 0 }] },
@@ -119,28 +119,29 @@ describe('atomic compiled invocation graph', () => {
   it('derives lifecycle wire geometry from metadata and invocation args, never a caller transcript', () => {
     expect(messageBus.atomicParticipantPolicyHash(lifecycleArtifact('split')))
       .not.toBe(messageBus.atomicParticipantPolicyHash(lifecycleArtifact('merge')));
-    for (const kind of ['split'] as const) {
+    for (const kind of ['split', 'merge'] as const) {
       const participant = { artifact: lifecycleArtifact(kind), lockingBytecode: '51' };
       const invocation = {
         parent: null, callee: 0, function: kind, args: [2n],
         lifecycle: { kind: kind === 'split' ? 'merge' : 'split', count: 19 },
       } as messageBus.CompiledGraphInvocation & { lifecycle: unknown };
       const planned = messageBus.planCompiledGraph([participant], [invocation]);
-      expect(planned.participants[0].lifecycle).toEqual({
-        version: 1, kind, count: 2, inputSpan: 1, outputSpan: 3, balancedSpan: 3,
-        inputTail: 'funding', outputTail: 'created-masters',
-      });
+      expect(planned.participants[0].lifecycle).toEqual(kind === 'split'
+        ? {
+          version: 1, kind, count: 2, inputSpan: 1, outputSpan: 3, balancedSpan: 3,
+          inputTail: 'funding', outputTail: 'created-masters',
+        }
+        : {
+          version: 1, kind, count: 2, inputSpan: 3, outputSpan: 1, balancedSpan: 3,
+          inputTail: 'consumed-masters', outputTail: 'reclaim',
+        });
     }
-    expect(() => messageBus.planCompiledGraph([
-      { artifact: lifecycleArtifact('merge'), lockingBytecode: '51' },
-    ], [{ parent: null, callee: 0, function: 'merge', args: [2n] }]))
-      .toThrow(/implemented split verifier/);
     const unsupported = lifecycleArtifact('split');
-    delete unsupported.messageBus!.verifierProgram!.splitLifecycle;
+    delete unsupported.messageBus!.verifierProgram!.lifecycle;
     expect(() => messageBus.planCompiledGraph([
       { artifact: unsupported, lockingBytecode: '51' },
     ], [{ parent: null, callee: 0, function: 'split', args: [2n] }]))
-      .toThrow(/selector-derived split authority/);
+      .toThrow(/selector-derived authority/);
     expect(() => messageBus.planCompiledGraph([
       { artifact: lifecycleArtifact('split'), lockingBytecode: '51' },
     ], [{ parent: null, callee: 0, function: 'split', args: [0n] }]))

@@ -517,6 +517,7 @@ export function finalizeAtomicInvocationGraph(
       'master', 'dataNft', 'readOnlyDataNft', 'entry', 'satoshiContainer', 'tokenContainer',
       'transfer', 'tcTransfer', 'event', 'returnEvent', 'blockhashOracle', 'keccakSideCar',
       'ecrecoverSideCar', 'deploy', 'deployDataNft', 'trailing', 'lowLevelCall', 'identityAnchor',
+      'lifecycleMaster',
     ].includes(slot.kind));
   });
   if (unsupported) {
@@ -552,7 +553,7 @@ export function finalizeAtomicInvocationGraph(
       // return coordinate without activating it. Advertising that inactive coordinate makes the verifier demand
       // the canonical encoded empty vector (`00`) from a deliberately token-free balanced output.
       returnOffset: !publishesResult || returnSlot === undefined ? 0xffff : returnSlot.offset,
-      // Lifecycle remains a compiler-authored planning property. Split authority is derived by the specialized
+      // Lifecycle remains a compiler-authored planning property. Its authority is derived by the specialized
       // participant verifier from its authenticated one-row batch selector/count and this ordinary V1/V2 block
       // geometry, so no caller-authored lifecycle transcript is serialized into the global manifest.
     };
@@ -1959,15 +1960,10 @@ export function planCompiledGraph(
         );
       }
       const selected = selectedLifecycle[0];
-      if (selected.handler.lifecycleTopology?.kind !== 'split') {
-        throw new Error(
-          `messageBus: lifecycle participant ${owner} requires an implemented split verifier`,
-        );
-      }
-      if (selected.handler.lifecycleTopology?.kind === 'split'
+      if (participant.artifact.messageBus?.verifierProgram?.lifecycle !== true
         && participant.artifact.messageBus?.verifierProgram?.splitLifecycle !== true) {
         throw new Error(
-          `messageBus: split participant ${owner} verifier does not advertise selector-derived split authority`,
+          `messageBus: lifecycle participant ${owner} verifier does not advertise selector-derived authority`,
         );
       }
       const topology = planKernelLifecycleTopology(
@@ -1975,7 +1971,7 @@ export function planCompiledGraph(
       );
       const count = topology.kind === 'split'
         ? topology.categoryCensus.outputCount - 1 : topology.categoryCensus.inputCount - 1;
-      if (count < 1 || count >= 0xffff) {
+      if (count < 1 || count >= 0x8000) {
         throw new Error(`messageBus: lifecycle participant ${owner} count does not fit its balanced span`);
       }
       const split = topology.kind === 'split';

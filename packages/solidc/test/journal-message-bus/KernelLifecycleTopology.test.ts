@@ -36,7 +36,7 @@ describe('kernel lifecycle topology metadata', () => {
     }`, 'divide');
     expect(artifact.messageBus?.available).toBe(true);
     expect(artifact.messageBus?.atomicMessageBus.protocolVersions).not.toContain(3);
-    expect(artifact.messageBus?.verifierProgram?.splitLifecycle).toBe(true);
+    expect(artifact.messageBus?.verifierProgram?.lifecycle).toBe(true);
     expect(handler).toMatchObject({
       eligible: true,
       lifecycleTopology: {
@@ -63,15 +63,15 @@ describe('kernel lifecycle topology metadata', () => {
   });
 
   it('publishes participant-local merge input and output spans', () => {
-    const { handler } = selected(`contract Threads() {
+    const { artifact, handler } = selected(`contract Threads() {
       function combine(bytes32 tag, uint count) external merge(count) {
         require(tag == tag && count > 0);
       }
       function inspect() public { require(true); }
     }`, 'combine');
+    expect(artifact.messageBus?.verifierProgram?.lifecycle).toBe(true);
     expect(handler).toMatchObject({
-      eligible: false,
-      rejectionReason: 'KERNEL_LIFECYCLE',
+      eligible: true,
       lifecycleTopology: {
         version: 2,
         kind: 'merge',

@@ -8,6 +8,9 @@ export interface MessageBusVerifierProgram {
   inputCount: number;
   inputs: readonly { name: string; type: string }[];
   functions: readonly { id: number; name: string; bytecode: string }[];
+  /** Selector-derived participant lifecycle authority encoded in the verifier's two-byte result suffix. */
+  lifecycle?: true;
+  /** @deprecated Read support for artifacts emitted before lifecycle authority was generalized to merge. */
   splitLifecycle?: true;
 }
 
@@ -68,9 +71,9 @@ export function buildMessageBusVerifierCovenantScript(
     encodeInt(BigInt(verify.id)),
     Op.OP_INVOKE,
 
-    ...(program.splitLifecycle === true ? [
-      // Split-capable verifiers return bindingDigest || envelopeHash || uint16 split count. The count may be
-      // zero for an ordinary sibling row, but the exact two-byte suffix is always committed by this covenant.
+    ...(program.lifecycle === true || program.splitLifecycle === true ? [
+      // Lifecycle-capable verifiers return bindingDigest || envelopeHash || uint16 lifecycle code. Zero selects
+      // an ordinary row, split uses its positive count, and merge uses its negative count.
       encodeInt(32n), Op.OP_SPLIT, encodeInt(32n), Op.OP_SPLIT,
       Op.OP_SIZE, encodeInt(2n), Op.OP_NUMEQUALVERIFY,
       Op.OP_TOALTSTACK, Op.OP_ROT, Op.OP_SHA256, Op.OP_EQUALVERIFY,

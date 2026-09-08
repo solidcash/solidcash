@@ -170,7 +170,8 @@ export function deriveBalancedAssemblyFromInputs(
       && index < block.base + block.blockLayout.blockSize);
     if (!owner) return false;
     return owner.blockLayout.slots.some((slot) => slot.offset === index - owner.base
-      && (slot.kind === 'lowLevelCall' || slot.kind === 'identityAnchor'));
+      && (slot.kind === 'lowLevelCall' || slot.kind === 'identityAnchor'
+        || slot.kind === 'lifecycleMaster'));
   };
   // Low-level-call executors and logical-identity anchors are authenticated nested identities, not additional
   // top-level participants. Their contract unlockers can legitimately publish standalone block layouts, but the

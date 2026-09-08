@@ -44,7 +44,9 @@ export interface CompilerOptions {
     inputCount: number;
     inputs: readonly AbiInput[];
     functions: readonly { id: number; name: string; bytecode: string }[];
-    /** The verifier returns an authenticated uint16 split-count suffix. */
+    /** The verifier returns an authenticated uint16 lifecycle-code suffix. */
+    lifecycle?: true;
+    /** @deprecated Compatibility with pre-merge split artifacts. */
     splitLifecycle?: true;
   };
   enforceFunctionParameterTypes?: boolean;
@@ -237,6 +239,8 @@ export type BlockSlotKind =
   | 'lowLevelCall'
   /** SDK-authenticated logical contract identity which is distinct from the physical participant master. */
   | 'identityAnchor'
+  /** A merge-only minting master consumed by the authenticated lifecycle tail route. */
+  | 'lifecycleMaster'
   | 'trailing';
 
 /** A single slot in the function's block layout. */
@@ -1214,7 +1218,9 @@ export interface Artifact {
       inputCount: number;
       inputs: readonly AbiInput[];
       functions: readonly { id: number; name: string; bytecode: string }[];
-      /** The verifier returns an authenticated uint16 split-count suffix. */
+      /** The verifier returns an authenticated uint16 lifecycle-code suffix. */
+      lifecycle?: true;
+      /** @deprecated Compatibility with pre-merge split artifacts. */
       splitLifecycle?: true;
     };
     route: AbiFunction;

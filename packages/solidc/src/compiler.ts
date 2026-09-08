@@ -1712,7 +1712,7 @@ const MESSAGE_BUS_VERIFY_ATOMIC_PROGRAM = '__message_bus_verify_atomic_program';
 const MESSAGE_BUS_SIGNATURE_POLICY_SENTINEL = 'require(rowSignatureFrame != hex"4b545350");';
 const messageBusSignatureVerifierSource = new WeakMap<object, string>();
 /** Exact capability attached to each compiler-generated detached verifier source. */
-const messageBusVerifierSplitSources = new Set<string>();
+const messageBusVerifierLifecycleSources = new Set<string>();
 /** Artifact-fixed P2SH32 shape (`OP_HASH256 <32> OP_EQUAL`); content is patched after cheap verifier emit. */
 const MESSAGE_BUS_PLACEHOLDER_LOCK = Uint8Array.from([
   0xaa, 0x20, ...Array.from({ length: 32 }, () => 0xb1), 0x87,
@@ -1842,7 +1842,7 @@ function extractMessageBusVerifierProgram(
 }
 
 function compileDetachedMessageBusVerifier(
-  source: string, compilerOptions: CompilerOptions, splitLifecycle = false,
+  source: string, compilerOptions: CompilerOptions, lifecycle = false,
 ): MessageBusVerifierProgram {
   const started = Date.now();
   const chunkedArrays = compilerOptions.chunkedArrays ?? true;
@@ -1872,7 +1872,7 @@ function compileDetachedMessageBusVerifier(
   if (!program) {
     throw new Error('single-pass bind: detached verifier emit did not produce verifierProgram');
   }
-  if (splitLifecycle) program.splitLifecycle = true;
+  if (lifecycle) program.lifecycle = true;
   // The detached host gives the executable body a distinct source name so the participant-side wrapper can
   // call it while it is being extracted. Keep the published verifier ABI stable: consumers identify the entry
   // by verifyFunctionId, while diagnostics and existing tooling expect the canonical verifier name.
@@ -2829,10 +2829,10 @@ function synthesizeMessageBusRoute(
   if (compilerOptions.messageBusKernel === true) {
     disallowedModifiers.delete(FunctionModifier.UPGRADE);
     disallowedModifiers.delete(FunctionModifier.DEPLOY);
-    // Split is the first participant-changing lifecycle shape with a complete atomic verifier. Merge needs
-    // additional consumed-master inputs whose route unlockers must not execute the selected handler again, so it
-    // deliberately remains fenced with selfdestruct and the narrower unsafe tiers.
+    // Split and merge use selector-derived lifecycle authority. Their exact participant geometry is independently
+    // authenticated by the detached verifier; merge tail inputs take a verifier-authorized non-dispatch route.
     disallowedModifiers.delete(FunctionModifier.SPLIT);
+    disallowedModifiers.delete(FunctionModifier.MERGE);
     // unsafe(2) is topology-preserving: semantic validation already forbids writes, entries, transfers, calls,
     // deployment, and events, while codegen preserves the master, minting uniqueness, and participant value.
     // The narrower unsafe tiers deliberately remain lifecycle fences below.
@@ -2844,7 +2844,7 @@ function synthesizeMessageBusRoute(
   const graphBareTailHandlers = new Set<FunctionDefinitionNode>();
   const graphMsgValueHandlers = new Set<FunctionDefinitionNode>();
   const kernelDeploymentHandlers = new Set<FunctionDefinitionNode>();
-  const kernelSplitHandlers = new Set<FunctionDefinitionNode>();
+  const kernelLifecycleHandlers = new Map<FunctionDefinitionNode, 'split' | 'merge'>();
   const kernelDeploymentSiteCounts = new Map<FunctionDefinitionNode, number>();
   const kernelDeploymentSiteWidths = new Map<FunctionDefinitionNode, number[]>();
   const kernelDeploymentSiteDescriptorDigests = new Map<FunctionDefinitionNode, string[]>();
@@ -3594,19 +3594,19 @@ function synthesizeMessageBusRoute(
       }
     }
     const footprint = analyseFunctionFootprint(fn, byName, footprintCache);
-    const isKernelSplit = compilerOptions.messageBusKernel === true
-      && fn.modifiers.includes(FunctionModifier.SPLIT);
-    // The split verifier changes only the participant's minting-master population. Keep this first vertical
-    // slice deliberately orthogonal to state/effect settlement; those families remain ordinary kernel rows and
-    // can be enabled once lifecycle block materialization shares their physical frames.
-    if (isKernelSplit && (footprint.unknown || footprint.reads.length > 0 || footprint.writes.length > 0
+    const kernelLifecycleKind = compilerOptions.messageBusKernel !== true ? undefined
+      : fn.modifiers.includes(FunctionModifier.SPLIT) ? 'split' as const
+        : fn.modifiers.includes(FunctionModifier.MERGE) ? 'merge' as const : undefined;
+    // Participant-changing lifecycle remains orthogonal to state/effect settlement until both share one physical
+    // frame. This fence is semantic and applies equally to split and merge.
+    if (kernelLifecycleKind && (footprint.unknown || footprint.reads.length > 0 || footprint.writes.length > 0
       || footprint.effects.length > 0 || fn.messageBusUsesTransactionSignature === true)) {
       fn.messageBusEligible = false;
       fn.messageBusRejectionReason = fn.messageBusUsesTransactionSignature === true
         ? 'KERNEL_TX_SIGNATURE' : 'KERNEL_LIFECYCLE';
       continue;
     }
-    if (isKernelSplit) kernelSplitHandlers.add(fn);
+    if (kernelLifecycleKind) kernelLifecycleHandlers.set(fn, kernelLifecycleKind);
     let routeSensitive = false;
     let routeUsesMsgSender = false;
     let routeUsesMsgData = false;
@@ -6902,7 +6902,7 @@ function synthesizeMessageBusRoute(
           .filter((binding) => binding.source === 'msgSender')
           .map((binding) => `require(${witnessName(binding)} == ${logicalCaller});`).join(' ');
         return `${condition} { ${upgradeAuthorization} ${signatureAuthorization} require(rowArgs.length == 0);
-          ${kernelSplitHandlers.size > 0 ? 'require(__message_bus_active_lifecycle_mode == 0);' : ''}
+          ${kernelLifecycleHandlers.size > 0 ? 'require(__message_bus_active_lifecycle_mode == 0);' : ''}
           ${senderChecks} ${invoke(entryOnly.join(', '))}
           require(rowArgs == rowArgs); }`;
       }
@@ -7026,12 +7026,14 @@ function synthesizeMessageBusRoute(
           !entry.perRow && `${entry.base}_row` === varyingEntry.base)
         : -1;
       const outStateBoundaryChecks = '';
-      const lifecycleAuthorization = kernelSplitHandlers.has(fn)
-        ? `require(__message_bus_active_lifecycle_mode == 1
+      const lifecycleKind = kernelLifecycleHandlers.get(fn);
+      const lifecycleCountName = lifecycleKind === 'split' ? fn.splitCountParam : fn.mergeCountParam;
+      const lifecycleAuthorization = lifecycleKind
+        ? `require(__message_bus_active_lifecycle_mode == ${lifecycleKind === 'split' ? 1 : 2}
           && __message_bus_active_lifecycle_count == ${decodedName(
-    fn.parameters.findIndex((parameter) => parameter.name === fn.splitCountParam),
+    fn.parameters.findIndex((parameter) => parameter.name === lifecycleCountName),
   )});`
-        : kernelSplitHandlers.size > 0 ? 'require(__message_bus_active_lifecycle_mode == 0);' : '';
+        : kernelLifecycleHandlers.size > 0 ? 'require(__message_bus_active_lifecycle_mode == 0);' : '';
       const decode = declarations.length === 0
         ? 'require(rowArgs.length == 0);'
         : `${declarations.join('; ')}; ${signatureReconstruction.join(' ')}`;
@@ -7124,9 +7126,16 @@ function synthesizeMessageBusRoute(
       // `abi.decodeAt(rowArgs, ...)` can occur repeatedly in the key checks and the handler arguments. Keep the
       // row blob live through the whole dispatch arm: otherwise last-use relocation may OP_ROLL the tracked local
       // during an earlier decode, and a later decode then reads the adjacent selector-prefixed row instead.
+      let effectiveDispatch = dispatch;
+      if (lifecycleKind === 'merge') {
+        effectiveDispatch = `if (this.activeInputIndex == ${atomicParticipantInput}) { ${dispatch} } else {
+          require(this.activeInputIndex > ${atomicParticipantInput}
+            && this.activeInputIndex <= ${atomicParticipantInput} + __message_bus_active_lifecycle_count);
+        }`;
+      }
       const wrappedDispatch = markDispatch
-        ? `require(${MB_DISPATCH_SENTINEL}); ${dispatch} require(${MB_DISPATCH_SENTINEL});`
-        : dispatch;
+        ? `require(${MB_DISPATCH_SENTINEL}); ${effectiveDispatch} require(${MB_DISPATCH_SENTINEL});`
+        : effectiveDispatch;
       return `${condition} { ${upgradeAuthorization} ${signatureAuthorization} ${decode} ${keyChecks} ${outStateBoundaryChecks} ${lifecycleAuthorization} ${wrappedDispatch}
         require(rowArgs == rowArgs); }`;
     }).join(' ');
@@ -7223,17 +7232,20 @@ function synthesizeMessageBusRoute(
     'bytes __internal__graphSettlementTable',
     ...(graphBlockhashReadWidth > 0 ? ['bigint __internal__blockhashInputIndex'] : []),
   ];
+  const lifecycleOwnerRouteParameters = [...kernelLifecycleHandlers.values()].includes('merge')
+    ? ['bigint __internal__lifecycleOwnerInput'] : [];
   const localCallerRouteParameters = !graphExecutionContext
     && eligible.some((fn) => logicalMsgSenderHandlers.has(fn))
     ? ['bytes32 __internal__msgSenderCategory'] : [];
   const offloadedVerifier = compilerOptions.__messageBusVerifierProgram;
   const useBoundRoute = !!offloadedVerifier
     || (compilerOptions as InternalCompilerOptions).__synthesizeBoundRoutePlaceholder === true;
-  const lifecycleReturnTransport = kernelSplitHandlers.size > 0;
+  const lifecycleReturnTransport = kernelLifecycleHandlers.size > 0;
   const verifierBinderRouteParameters = useBoundRoute
     ? ['bigint __internal__activeVerifierIndex'] : [];
   const routeParameters = [
     'bytes batchBlob', ...verifierBinderRouteParameters, ...graphRouteParameters,
+    ...lifecycleOwnerRouteParameters,
     ...(kernelUpgradeMode ? [
       'bytes __internal__upgradeBytecode', 'bytes __internal__upgradeStateSuffix',
     ] : []),
@@ -7247,7 +7259,8 @@ function synthesizeMessageBusRoute(
   // Atomic manifests identify a participant by its covenant master. Direct routes execute on that master;
   // delegate routes execute on a co-spent implementation input and authenticate the owning master separately.
   // Keep membership, category, and verifier-digest binding on the common participant identity.
-  const atomicParticipantInput = routeOwnerInputExpression;
+  const atomicParticipantInput = lifecycleOwnerRouteParameters.length > 0
+    ? '__internal__lifecycleOwnerInput' : routeOwnerInputExpression;
   const graphOutStateMode = graphExecutionContext
     && eligible.some((fn) => (fn.externalOutStateReads?.length ?? 0) > 0);
   const parseGraphCaller = !graphExecutionContext ? '' : `
@@ -7351,7 +7364,7 @@ function synthesizeMessageBusRoute(
             activeVerifierOutput = verifierOutput;
           }
         }
-        ${kernelSplitHandlers.size > 0 ? `require(activeVerifierOutput >= 0
+        ${kernelLifecycleHandlers.size > 0 ? `require(activeVerifierOutput >= 0
           && tx.outputs[activeVerifierOutput].nftCommitment.length == 40
           && tx.outputs[activeVerifierOutput].nftCommitment.slice(0, 38) == bytes.concat(
             tx.inputs[activeVerifier].nftCommitment.slice(0, 6), bindingDigest
@@ -7370,26 +7383,29 @@ function synthesizeMessageBusRoute(
     ? 'callManifest.slice(0, 8) == hex"4c33425553340000"' : 'false';
   const atomicManifestOutputIdentityExpression = compilerOptions.messageBusKernel === true
     ? `(${atomicManifestV2Expression} || ${atomicManifestV4Expression})` : 'false';
-  const splitLifecycleSelectorBranches = [...kernelSplitHandlers].map((fn, index) => {
+  const lifecycleSelectorBranches = [...kernelLifecycleHandlers].map(([fn, kind], index) => {
     const decodedParameters = fn.parameters
       .map((parameter, parameterIndex) => ({ parameter, parameterIndex }))
       .filter(({ parameter }) => !isEntireTransactionSignatureType(parameter.type)
         && !parameter.name.startsWith('__internal__'));
-    const countParameter = decodedParameters.findIndex(({ parameter }) => parameter.name === fn.splitCountParam);
-    if (countParameter < 0) throw new Error(`split handler '${fn.name}' has no transported count parameter`);
+    const countName = kind === 'split' ? fn.splitCountParam : fn.mergeCountParam;
+    const countParameter = decodedParameters.findIndex(({ parameter }) => parameter.name === countName);
+    if (countParameter < 0) throw new Error(`lifecycle handler '${fn.name}' has no transported count parameter`);
     const schema = decodedParameters.map(({ parameter }) => parameter.type.toString()).join(', ');
     const locals = decodedParameters.map(({ parameter }, parameterIndex) =>
-      `${parameter.type.toString()} __message_bus_split_${index}_${parameterIndex}`);
+      `${parameter.type.toString()} __message_bus_lifecycle_${index}_${parameterIndex}`);
     const decode = locals.length === 1
       ? `${locals[0]} = abi.decode(activeLifecycleArgs, (${schema}));`
       : `(${locals.join(', ')}) = abi.decode(activeLifecycleArgs, (${schema}));`;
     return `${index === 0 ? 'if' : 'else if'} (activeLifecycleSelector == hex"${sourceFunctionSelectorHex(fn)}") {
       ${decode}
-      activeLifecycleCount = __message_bus_split_${index}_${countParameter};
+      activeLifecycleMode = ${kind === 'split' ? 1 : 2};
+      activeLifecycleCount = __message_bus_lifecycle_${index}_${countParameter};
     }`;
   }).join(' ');
-  const splitLifecycleDerivation = kernelSplitHandlers.size === 0
+  const lifecycleDerivation = kernelLifecycleHandlers.size === 0
     ? '' : `
+        bigint activeLifecycleMode = 0;
         bigint activeLifecycleCount = 0;
         if (expectedLocalRows == 1) {
           require(localBatch.length >= 19 && localBatch.slice(0, 4) == hex"53434231");
@@ -7405,21 +7421,27 @@ function synthesizeMessageBusRoute(
           bytes activeLifecycleArgs = localBatch.slice(
             activeLifecycleArgsStart, activeLifecycleArgsStart + activeLifecycleArgsLength
           );
-          ${splitLifecycleSelectorBranches}
+          ${lifecycleSelectorBranches}
         }
   `;
-  const splitLifecycleVerification = kernelSplitHandlers.size === 0 ? '' : `
-        if (activeLifecycleCount > 0) {
+  const lifecycleVerification = kernelLifecycleHandlers.size === 0 ? '' : `
+        if (activeLifecycleMode > 0) {
           activeOutputBase = activeBase;
           require(expectedLocalRows == 1 && activeFixedSize == 1
             && activeBlockSize == activeLifecycleCount + 1
             && activeMaximumSize == activeBlockSize
-            && activeReturnOutput == 65535);
+            && activeReturnOutput == 65535
+            && activeLifecycleCount > 0 && activeLifecycleCount < 32768);
           require(tx.outputs[activeBase].lockingBytecode == tx.inputs[activeBase].lockingBytecode
             && tx.outputs[activeBase].tokenCategory == tx.inputs[activeBase].tokenCategory
             && tx.outputs[activeBase].nftCommitment == tx.inputs[activeBase].nftCommitment
-            && tx.outputs[activeBase].tokenAmount == tx.inputs[activeBase].tokenAmount
             && tx.outputs[activeBase].value == tx.inputs[activeBase].value);
+          if (activeLifecycleMode == 1) {
+            require(tx.outputs[activeBase].tokenAmount == tx.inputs[activeBase].tokenAmount);
+          } else {
+            require(activeLifecycleMode == 2
+              && tx.outputs[activeBase].tokenAmount >= tx.inputs[activeBase].tokenAmount);
+          }
           bigint lifecycleCategoryInputs = 0;
           bigint lifecycleCategoryOutputs = 0;
           for (bigint lifecycleInput = 0; lifecycleInput < tx.inputs.length;
@@ -7438,17 +7460,27 @@ function synthesizeMessageBusRoute(
               lifecycleCategoryOutputs = lifecycleCategoryOutputs + 1;
             }
           }
-          require(lifecycleCategoryInputs == 1
-            && lifecycleCategoryOutputs == activeLifecycleCount + 1);
+          require((activeLifecycleMode == 1
+              && lifecycleCategoryInputs == 1
+              && lifecycleCategoryOutputs == activeLifecycleCount + 1)
+            || (activeLifecycleMode == 2
+              && lifecycleCategoryInputs == activeLifecycleCount + 1
+              && lifecycleCategoryOutputs == 1));
           for (bigint lifecycleOffset = 1; lifecycleOffset <= activeLifecycleCount;
             lifecycleOffset = lifecycleOffset + 1) {
             bigint lifecycleSlot = activeBase + lifecycleOffset;
-            require(tx.inputs[lifecycleSlot].tokenCategory.length == 0
-              && tx.outputs[lifecycleSlot].lockingBytecode == activeParticipantLbc
-              && tx.outputs[lifecycleSlot].tokenCategory == bytes.concat(activeCategory, hex"02")
-              && tx.outputs[lifecycleSlot].nftCommitment.length == 0
-              && tx.outputs[lifecycleSlot].tokenAmount == 0
-              && tx.outputs[lifecycleSlot].value > 0);
+            if (activeLifecycleMode == 1) {
+              require(tx.inputs[lifecycleSlot].tokenCategory.length == 0
+                && tx.outputs[lifecycleSlot].lockingBytecode == activeParticipantLbc
+                && tx.outputs[lifecycleSlot].tokenCategory == bytes.concat(activeCategory, hex"02")
+                && tx.outputs[lifecycleSlot].nftCommitment.length == 0
+                && tx.outputs[lifecycleSlot].tokenAmount == 0
+                && tx.outputs[lifecycleSlot].value > 0);
+            } else {
+              require(tx.inputs[lifecycleSlot].lockingBytecode == activeParticipantLbc
+                && tx.inputs[lifecycleSlot].tokenCategory == bytes.concat(activeCategory, hex"02")
+                && tx.outputs[lifecycleSlot].tokenCategory.length == 0);
+            }
           }
         }
   `;
@@ -7476,7 +7508,7 @@ function synthesizeMessageBusRoute(
         bytes participantSizes = hex"";
         bytes participantLbcs = hex"";
         bigint replacementIdentityCount = 0;
-        ${kernelSplitHandlers.size > 0 ? 'bytes activeParticipantLbc;' : ''}
+        ${kernelLifecycleHandlers.size > 0 ? 'bytes activeParticipantLbc;' : ''}
         for (bigint participant = 0; participant < participantCount; participant = participant + 1) {
           require(cursor + 45 <= callManifest.length);
           bigint base = expectedBase;
@@ -7554,7 +7586,7 @@ function synthesizeMessageBusRoute(
             activeOutputBase = participantOutputBase;
             activeReturnOutput = returnOutput;
             activeCategory = category;
-            ${kernelSplitHandlers.size > 0 ? 'activeParticipantLbc = participantLbc;' : ''}
+            ${kernelLifecycleHandlers.size > 0 ? 'activeParticipantLbc = participantLbc;' : ''}
             ${kernelUpgradeMode
     ? 'require(__internal__upgradeBytecode == participantOutputLbc);' : ''}
           }
@@ -7562,7 +7594,7 @@ function synthesizeMessageBusRoute(
         // Participant prefix || one artifact-specialized verifier per participant || one fee input.
         require(activeMembership == 1 && expectedBase + participantCount + 1 == tx.inputs.length);
         require(!(${atomicManifestV2Expression}) || replacementIdentityCount > 0);
-        ${kernelSplitHandlers.size > 0 ? splitLifecycleDerivation : ''}
+        ${kernelLifecycleHandlers.size > 0 ? lifecycleDerivation : ''}
         bytes bindingDigest = sha256(bytes.concat(
           sha256(callManifest), toPaddedBytes(activeBase, 2),
           toPaddedBytes(expectedLocalRows, 2), sha256(localBatch)
@@ -7582,15 +7614,19 @@ function synthesizeMessageBusRoute(
         require(activeVerifierOutput >= 0
           && tx.outputs[activeVerifierOutput].tokenAmount == tx.inputs[activeVerifier].tokenAmount
           && tx.outputs[activeVerifierOutput].value == tx.inputs[activeVerifier].value);
-        ${kernelSplitHandlers.size > 0 ? splitLifecycleVerification : ''}
+        ${kernelLifecycleHandlers.size > 0 ? lifecycleVerification : ''}
         require(tx.inputs[activeVerifier].nftCommitment.length >= 6
           && tx.inputs[activeVerifier].nftCommitment.slice(0, 4) == hex"4c335631");
-        ${kernelSplitHandlers.size > 0 ? `bytes activeVerifierCommitment = bytes.concat(
+        ${kernelLifecycleHandlers.size > 0 ? `bytes activeVerifierCommitment = bytes.concat(
           tx.inputs[activeVerifier].nftCommitment.slice(0, 6), bindingDigest
         );
-        if (activeLifecycleCount > 0) {
+        if (activeLifecycleMode > 0) {
+          bigint activeLifecycleCode = activeLifecycleCount;
+          if (activeLifecycleMode == 2) {
+            activeLifecycleCode = -activeLifecycleCode;
+          }
           activeVerifierCommitment = bytes.concat(
-            activeVerifierCommitment, toPaddedBytes(activeLifecycleCount, 2)
+            activeVerifierCommitment, toPaddedBytes(activeLifecycleCode, 2)
           );
         } else {
           activeVerifierCommitment = bytes.concat(activeVerifierCommitment, hex"0000");
@@ -8196,7 +8232,7 @@ function synthesizeMessageBusRoute(
           // is static rejects those authenticated siblings and adds no row-local protection.
           // A return-event slot may publish the authenticated result vector; all other slots of an all-static
           // participant remain byte-for-byte and value-for-value preserved.
-          if (${kernelSplitHandlers.size > 0 ? 'activeLifecycleCount == 0 && ' : ''}
+          if (${kernelLifecycleHandlers.size > 0 ? 'activeLifecycleMode == 0 && ' : ''}
             activeStaticInvocationRows > 0 && activeStaticInvocationRows == consumedLocalRows) {
             require(tx.outputs[outputSlot].value == tx.inputs[slot].value);
             if (outputSlot != activeReturnOutput) {
@@ -8279,8 +8315,8 @@ function synthesizeMessageBusRoute(
           && settledDeploymentParents.length * 41 == activeDeploymentParents.length * 4);
         require(activeSidecarRows * 2 == activeSidecarTargets.length);
         require(!(${atomicManifestV4Expression}) || transactionSignatureRows > 0);
-        ${kernelSplitHandlers.size > 0
-    ? 'require(activeLifecycleCount == 0 || transactionSignatureRows == 0);' : ''}
+        ${kernelLifecycleHandlers.size > 0
+    ? 'require(activeLifecycleMode == 0 || transactionSignatureRows == 0);' : ''}
         require(cursor == callManifest.length && consumedLocalRows == expectedLocalRows
           && batchCursor == localBatch.length);
         ${!graphExecutionContext ? '' : `
@@ -8360,7 +8396,7 @@ function synthesizeMessageBusRoute(
   // signature. Graph routes and caller-agnostic routes retain the full atomic
   // admission verifier.
   const localAuthenticatedRoute = !graphExecutionContext && localCallerRouteParameters.length > 0;
-  const lifecycleRouteLocals = kernelSplitHandlers.size > 0
+  const lifecycleRouteLocals = kernelLifecycleHandlers.size > 0
     ? `bigint __message_bus_active_lifecycle_mode = 0;
        bigint __message_bus_active_lifecycle_count = 0;` : '';
   const atomicVerifierInvocation = `
@@ -8376,25 +8412,29 @@ function synthesizeMessageBusRoute(
             __internal__graphSettlementBoundary, __internal__graphCompletionPositions,
             __internal__graphSettlementTable`}
           );
-          ${kernelSplitHandlers.size > 0 ? `require(__internal__atomicBindingDigest.length == 66);
-            __message_bus_active_lifecycle_count = int(bytes.concat(
-              __internal__atomicBindingDigest.slice(64, 66), hex"00"
-            ));
-            if (__message_bus_active_lifecycle_count > 0) {
+          ${kernelLifecycleHandlers.size > 0 ? `require(__internal__atomicBindingDigest.length == 66);
+            bigint __message_bus_active_lifecycle_code = int(
+              __internal__atomicBindingDigest.slice(64, 66)
+            );
+            if (__message_bus_active_lifecycle_code < 0) {
+              __message_bus_active_lifecycle_mode = 2;
+              __message_bus_active_lifecycle_count = -__message_bus_active_lifecycle_code;
+            } else if (__message_bus_active_lifecycle_code > 0) {
               __message_bus_active_lifecycle_mode = 1;
+              __message_bus_active_lifecycle_count = __message_bus_active_lifecycle_code;
             }`
     : ''}
         }
   `;
-  // A route with any msg.sender handler supports local caller-authenticated batches, but an admitted split row
+  // A route with any msg.sender handler supports local caller-authenticated batches, but an admitted lifecycle row
   // still changes participant geometry and must consume V3 authorization. Select that exceptional path from the
   // compiler-known one-row selector; ordinary local batches retain their caller-master authentication.
-  const localSplitSelector = [...kernelSplitHandlers]
+  const localLifecycleSelector = [...kernelLifecycleHandlers.keys()]
     .map((fn) => `batchBlob.slice(7, 11) == hex"${sourceFunctionSelectorHex(fn)}"`).join(' || ');
   const atomicPrologue = `${lifecycleRouteLocals}
     ${localAuthenticatedRoute
-    ? localSplitSelector.length === 0 ? ''
-      : `if (rowCount == 1 && (${localSplitSelector})) { ${atomicVerifierInvocation} }`
+    ? localLifecycleSelector.length === 0 ? ''
+      : `if (rowCount == 1 && (${localLifecycleSelector})) { ${atomicVerifierInvocation} }`
     : atomicVerifierInvocation}`;
   const fixedIterationEntryPins = [...fixedIterationCollections].flatMap((name) => {
     const collection = collectionByName.get(name)!;
@@ -8804,7 +8844,7 @@ function synthesizeMessageBusRoute(
         return bytes.concat(
           bindingDigest,
           sha256(bytes.concat(hex"4c334331", toPaddedBytes(callManifest.length, 4), callManifest))
-          ${kernelSplitHandlers.size > 0
+          ${kernelLifecycleHandlers.size > 0
     ? ', bytes.concat(tx.outputs[activeVerifierOutput].nftCommitment, hex"0000").slice(38, 40)' : ''}
         );
       }
@@ -8818,7 +8858,7 @@ function synthesizeMessageBusRoute(
       }
     }`;
     (compilerOptions as InternalCompilerOptions).__singlePassVerifierSource = verifierHost;
-    if (kernelSplitHandlers.size > 0) messageBusVerifierSplitSources.add(verifierHost);
+    if (kernelLifecycleHandlers.size > 0) messageBusVerifierLifecycleSources.add(verifierHost);
   }
   profileLog('messageBus:synthesize', synthesizeStarted, {
     contract: contract.name,
@@ -10634,7 +10674,7 @@ function compileResolvedAst(
     try {
       singlePassVerifierProgram = compileDetachedMessageBusVerifier(
         singlePassVerifierSource, mergedCompilerOptions,
-        messageBusVerifierSplitSources.has(singlePassVerifierSource),
+        messageBusVerifierLifecycleSources.has(singlePassVerifierSource),
       );
     } catch (error) {
       throwProfile(error);
@@ -10829,13 +10869,13 @@ function compileResolvedAst(
     }
     detachedVerifierProgram = compileDetachedMessageBusVerifier(
       specializedSource, mergedCompilerOptions,
-      messageBusVerifierSplitSources.has(singlePassVerifierSource),
+      messageBusVerifierLifecycleSources.has(singlePassVerifierSource),
     );
     messageBusSignatureVerifierSource.set(detachedVerifierProgram, singlePassVerifierSource);
   }
   if (detachedVerifierProgram && singlePassVerifierSource !== undefined
-    && messageBusVerifierSplitSources.has(singlePassVerifierSource)) {
-    detachedVerifierProgram.splitLifecycle = true;
+    && messageBusVerifierLifecycleSources.has(singlePassVerifierSource)) {
+    detachedVerifierProgram.lifecycle = true;
   }
   // X149. `artifact.bytecode` IS NOT BYTES. `generateArtifact` publishes it as `scriptToAsm(script)` - the
   // human-readable listing, in which one 1-byte opcode occupies `OP_CHECKSIGVERIFY ` - so `.length / 2` is

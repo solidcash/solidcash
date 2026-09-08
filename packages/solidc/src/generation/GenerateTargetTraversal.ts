@@ -30137,10 +30137,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   private emitMasterSelfPreservation(node: FunctionDefinitionNode): void {
     const locationData = { location: node.body.location, positionHint: PositionHint.END };
+    const mergeTail = this.beginAtomicMergeTailExclusion(locationData);
 
     // Shared as a subroutine for non-delegate functions; delegate (altstack proxy index) inlines.
     if (!this.currentFunctionIsDelegate && this.invokeSubroutineIfDefined(
       GenerateTargetTraversalWithLocation.MASTER_SELF_PRES_SUBROUTINE_ID, locationData)) {
+      if (mergeTail) this.emit(Op.OP_ENDIF, locationData);
       return;
     }
 
@@ -30163,6 +30165,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.pushToStack('(value)');
     this.emit(Op.OP_EQUALVERIFY, locationData);
     this.popFromStack(2);
+    if (mergeTail) this.emit(Op.OP_ENDIF, locationData);
   }
 
   /**
@@ -30172,6 +30175,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    */
   private emitMasterCommitmentPreservation(node: FunctionDefinitionNode): void {
     const locationData = { location: node.body.location, positionHint: PositionHint.END };
+    const mergeTail = this.beginAtomicMergeTailExclusion(locationData);
     this.emitMasterInputIndex(locationData);
     this.emit(Op.OP_UTXOTOKENCOMMITMENT, locationData);
     this.pushToStack('(value)');
@@ -30180,6 +30184,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.pushToStack('(value)');
     this.emit(Op.OP_EQUALVERIFY, locationData);
     this.popFromStack(2);
+    if (mergeTail) this.emit(Op.OP_ENDIF, locationData);
   }
 
   /**
@@ -30187,8 +30192,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * stack-neutral; shared as a subroutine for non-delegate functions (delegate inlines).
    */
   private emitMasterValuePreservation(locationData: SingleLocationData): void {
+    const mergeTail = this.beginAtomicMergeTailExclusion(locationData);
     if (!this.currentFunctionIsDelegate && this.invokeSubroutineIfDefined(
       GenerateTargetTraversalWithLocation.MASTER_VALUE_PRES_SUBROUTINE_ID, locationData)) {
+      if (mergeTail) this.emit(Op.OP_ENDIF, locationData);
       return;
     }
 
@@ -30214,6 +30221,26 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.pushToStack('(value)');
     this.emit(Op.OP_VERIFY, locationData);
     this.popFromStack();
+    if (mergeTail) this.emit(Op.OP_ENDIF, locationData);
+  }
+
+  /** Skip ordinary master-output preservation only for verifier-authorized merge tail inputs. */
+  private beginAtomicMergeTailExclusion(locationData: SingleLocationData): boolean {
+    const lifecycleModeIndex = this.currentFunctionIsMessageBusRoute
+      ? this.getStackIndex('__message_bus_active_lifecycle_mode', true) : -1;
+    const lifecycleOwnerIndex = this.currentFunctionIsMessageBusRoute
+      ? this.getStackIndex('__internal__lifecycleOwnerInput', true) : -1;
+    if (lifecycleModeIndex < 0 || lifecycleOwnerIndex < 0) return false;
+    this.emitPickTrackedFromBottom('__message_bus_active_lifecycle_mode', locationData);
+    this.emit(encodeInt(2n), locationData);
+    this.emit(Op.OP_NUMEQUAL, locationData);
+    this.emit(Op.OP_INPUTINDEX, locationData);
+    this.emitPickTrackedFromBottom('__internal__lifecycleOwnerInput', locationData);
+    this.emit(Op.OP_NUMNOTEQUAL, locationData);
+    this.emit(Op.OP_BOOLAND, locationData);
+    this.emit(Op.OP_NOT, locationData);
+    this.emit(Op.OP_IF, locationData);
+    return true;
   }
 
   /**

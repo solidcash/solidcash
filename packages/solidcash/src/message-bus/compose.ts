@@ -79,6 +79,11 @@ export interface ComposeAtomicMessageBusOptions {
     /** Positive satoshi value assigned to each created minting master, in participant-relative order. */
     createdValues: readonly bigint[];
   }[];
+  /** Exact minting masters consumed by one compiler-authenticated merge invocation. */
+  lifecycleMerges?: readonly {
+    invocationIndex: number;
+    consumedMasters: readonly Utxo[];
+  }[];
 }
 
 export interface PreparedAtomicMessageBusCall {
@@ -1120,6 +1125,7 @@ const graphRouteContext = (
     __internal__graphSettlementBoundary: BigInt(execution.settlementBoundary),
     __internal__graphCompletionPositions: concat(...completions),
     __internal__graphSettlementTable: concat(...settlementTable),
+    __internal__lifecycleOwnerInput: BigInt(finalized.layout.participantInputs[participant]),
     ...(needsScalarCaller ? {
       __internal__msgSenderCategory: hexToBin(scalarCallerCategories[0] ?? '00'.repeat(32)),
     } : {}),
@@ -1486,6 +1492,39 @@ export class AtomicMessageBusComposition {
     for (const participant of plan.participants) {
       if (participant.lifecycle?.kind === 'split' && !splitByParticipant.has(participant.participant)) {
         throw new Error(`messageBus: split participant ${participant.participant} lacks explicit funding`);
+      }
+    }
+    const suppliedMerges = this.options.lifecycleMerges ?? [];
+    const mergeByParticipant = new Map<number, {
+      invocationIndex: number; consumedMasters: readonly Utxo[];
+    }>();
+    for (const supplied of suppliedMerges) {
+      const invocation = plan.invocations[supplied.invocationIndex];
+      if (!invocation) throw new Error(`messageBus: merge invocation ${supplied.invocationIndex} is absent`);
+      const participant = plan.participants[invocation.callee];
+      if (participant.lifecycle?.kind !== 'merge'
+        || participant.invocations.length !== 1 || participant.invocations[0] !== supplied.invocationIndex) {
+        throw new Error(`messageBus: invocation ${supplied.invocationIndex} is not one exact merge participant`);
+      }
+      if (mergeByParticipant.has(invocation.callee)) {
+        throw new Error(`messageBus: participant ${invocation.callee} has duplicate merge inputs`);
+      }
+      if (supplied.consumedMasters.length !== participant.lifecycle.count) {
+        throw new Error(`messageBus: merge participant ${invocation.callee} inputs do not match its exact count`);
+      }
+      const outpoints = new Set(supplied.consumedMasters.map((input) =>
+        `${input.txid.toLowerCase()}:${input.vout}`));
+      if (outpoints.size !== supplied.consumedMasters.length) {
+        throw new Error(`messageBus: merge participant ${invocation.callee} input outpoints must be unique`);
+      }
+      mergeByParticipant.set(invocation.callee, {
+        invocationIndex: supplied.invocationIndex,
+        consumedMasters: Object.freeze([...supplied.consumedMasters]),
+      });
+    }
+    for (const participant of plan.participants) {
+      if (participant.lifecycle?.kind === 'merge' && !mergeByParticipant.has(participant.participant)) {
+        throw new Error(`messageBus: merge participant ${participant.participant} lacks explicit consumed masters`);
       }
     }
     for (const [index, descriptor] of descriptors.entries()) {
@@ -2311,6 +2350,31 @@ export class AtomicMessageBusComposition {
             });
           }
         }
+        const merge = mergeByParticipant.get(participant.participant);
+        if (merge) {
+          const routeUnlocker = local.inputs[0]?.unlocker;
+          const masterOutput = local.outputs[0];
+          if (!routeUnlocker || !masterOutput?.token?.nft
+            || masterOutput.token.nft.capability !== 'minting') {
+            throw new Error(`messageBus: merge participant ${participant.participant} lacks its survivor`);
+          }
+          let mergedTokenAmount = masterOutput.token.amount;
+          for (const consumed of merge.consumedMasters) {
+            if (consumed.token?.category.toLowerCase() !== categories[participant.participant].toLowerCase()
+              || consumed.token.nft?.capability !== 'minting') {
+              throw new Error(
+                `messageBus: merge participant ${participant.participant} input is not one exact category master`,
+              );
+            }
+            mergedTokenAmount += consumed.token.amount ?? 0n;
+            local.addInput(consumed, routeUnlocker);
+            local.addOutput({ to: this.options.changeAddress, amount: consumed.satoshis });
+          }
+          local.outputs[0] = {
+            ...masterOutput,
+            token: { ...masterOutput.token, amount: mergedTokenAmount },
+          };
+        }
         const authenticatedOutputLockingBytecode = participant.outputLockingBytecode?.toLowerCase();
         if (authenticatedOutputLockingBytecode !== undefined) {
           const masterInput = local.inputs[0];
@@ -2582,8 +2646,12 @@ export class AtomicMessageBusComposition {
             .map((slot) => slot.kind === 'returnEvent' && returnBlob === undefined
               ? { ...slot, conditional: true }
               : slot);
-          const lifecycleTailSlots = split === undefined ? [] : Array.from(
-            { length: split.funders.length }, (_, index) => ({ kind: 'trailing' as const, offset: index + 1 }),
+          const lifecycleTailCount = split?.funders.length ?? merge?.consumedMasters.length ?? 0;
+          const lifecycleTailSlots = Array.from(
+            { length: lifecycleTailCount }, (_, index) => ({
+              kind: merge === undefined ? 'trailing' as const : 'lifecycleMaster' as const,
+              offset: index + 1,
+            }),
           );
           stateInputUnlocker.abiFunction = {
             ...stateInputUnlocker.abiFunction,
@@ -2591,7 +2659,7 @@ export class AtomicMessageBusComposition {
               ...effectiveLayout,
               blockSize: actualSize,
               slots: [...effectiveSlots, ...lifecycleTailSlots],
-              ...(split === undefined ? {} : { trailingBase: 1 }),
+              ...(lifecycleTailCount === 0 ? {} : { trailingBase: 1 }),
               trailingCapacity: actualSize - fixedSize,
             },
           };
@@ -2740,9 +2808,12 @@ export class AtomicMessageBusComposition {
             nft: {
               ...verifier.token!.nft!,
               commitment: `${verifier.token!.nft!.commitment.slice(0, 12)}${binToHex(bindingDigest)}`
-                + (verifierProgram.splitLifecycle === true
-                  ? `${((participant.lifecycle?.count ?? 0) & 0xff).toString(16).padStart(2, '0')}`
-                    + `${((participant.lifecycle?.count ?? 0) >>> 8).toString(16).padStart(2, '0')}`
+                + (verifierProgram.lifecycle === true || verifierProgram.splitLifecycle === true
+                  ? (() => {
+                    const code = participant.lifecycle?.kind === 'merge'
+                      ? -BigInt(participant.lifecycle.count) : BigInt(participant.lifecycle?.count ?? 0);
+                    return binToHex(fixedVmNumber(code, 2));
+                  })()
                   : ''),
             },
           },
@@ -3617,6 +3688,12 @@ export function compose(options: ComposeAtomicMessageBusOptions): AtomicMessageB
         ...split,
         funders: Object.freeze([...split.funders]),
         createdValues: Object.freeze([...split.createdValues]),
+      }))),
+    }),
+    ...(options.lifecycleMerges && {
+      lifecycleMerges: Object.freeze(options.lifecycleMerges.map((merge) => Object.freeze({
+        ...merge,
+        consumedMasters: Object.freeze([...merge.consumedMasters]),
       }))),
     }),
   });

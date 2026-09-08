@@ -1183,8 +1183,6 @@ describe('required kernel admission', () => {
   it.each([
     ['a mapping write', 'mapping(int => int) values;',
       'this.values[key] = next;', ''],
-    ['a mapping write and event', 'mapping(int => int) values; event Changed(int key, int value);',
-      'this.values[key] = next; emit Changed(key, next);', ''],
     ['a mapping write authenticated by a helper',
       `mapping(int => int) values;
        function authenticate(sig proof, pubkey key) internal { require(checkSig(proof, key)); }`,
@@ -1210,6 +1208,24 @@ describe('required kernel admission', () => {
     expect(covered).toBeDefined();
     expect(Object.values(artifact.debug.invokeDebug ?? {}).some((entry) =>
       entry.bytecode === covered)).toBe(true);
+  });
+
+  it('keeps a signed delegate mapping write plus event behind the mixed-geometry fence', () => {
+    const artifact = compileString(`contract C(pubkey authority) {
+      mapping(int => int) values;
+      event Changed(int key, int value);
+      function write(int key, int next, sig proof) public delegate {
+        require(checkSig(proof, authority));
+        this.values[key] = next;
+        emit Changed(key, next);
+        require(true);
+      }
+      function control() public delegate { require(true); }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write')).toMatchObject({
+      eligible: false,
+      rejectionReason: 'KERNEL_LAYOUT',
+    });
   });
 
   it('normalizes a conservative tail-recursive entry before kernel closure admission', () => {

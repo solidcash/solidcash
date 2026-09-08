@@ -180,6 +180,7 @@ import {
   selectPersistedValueChunkWrite,
   selectValueChunkWriteCategory,
   permitsLegacyNamedValueChunkFallback,
+  legacyPlannedChunkableValueWriteCollection,
   rememberValueChunkUnlockRecipe,
   selectValueChunkCommitmentObservations,
   type ValueChunkTraceObservation,
@@ -1671,6 +1672,11 @@ export function chunkableWriterGroupIndex(
   if (candidates.length === 1) return candidates[0];
   if (groups.some(hasPublishedEntryEffects)) return -1;
   if (!permitsLegacyNamedValueChunkFallback(groups, ownerConvention)) return -1;
+  const plannedLegacyCandidates = groups.flatMap((group, index) => (
+    legacyPlannedChunkableValueWriteCollection(group) === undefined ? [] : [index]
+  ));
+  if (plannedLegacyCandidates.length === 1) return plannedLegacyCandidates[0];
+  if (plannedLegacyCandidates.length > 1) return -1;
   // Compatibility only for artifacts predating compiler-published entry effects.
   return groups.findIndex((group) => group.functionName === 'publishJobEvent');
 }

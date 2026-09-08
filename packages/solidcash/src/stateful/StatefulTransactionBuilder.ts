@@ -2637,6 +2637,7 @@ type ChunkableArrayWriteGroup = {
   functionName?: string;
   logicalFunctionName?: string;
   stateLayout?: StateLayout;
+  blockLayout?: FunctionBlockLayout;
   logicalArtifact?: Artifact;
   externalContract?: { inner?: { artifact?: Artifact } };
   compilerRoute?: {
@@ -2644,6 +2645,10 @@ type ChunkableArrayWriteGroup = {
     rowArguments?: readonly { handler: AbiFunction }[];
   };
   valueChunkWrites?: readonly ValueChunkWriteDescriptor[];
+  /** Legacy planners can publish the concrete continuation region without publishing entry-effect metadata. */
+  valueChunkOutputBase?: number;
+  valueChunkOutputCount?: number;
+  derivedTrailingOutputs?: ReadonlyMap<number, unknown>;
 };
 
 /**
@@ -2728,7 +2733,39 @@ export function groupWritesSingleChunkableArrayCollection(group: Parameters<
 
 function groupChunkableValueWriteIdentity(group: ChunkableArrayWriteGroup): string | undefined {
   return groupChunkableArrayWriteCollection(group)
-    ?? (group.valueChunkWrites?.length === 1 ? group.valueChunkWrites[0].collection : undefined);
+    ?? (group.valueChunkWrites?.length === 1 ? group.valueChunkWrites[0].collection : undefined)
+    ?? legacyPlannedChunkableValueWriteCollection(group);
+}
+
+/**
+ * Recover a descriptor-free legacy writer only when its already-planned transaction geometry proves the role.
+ *
+ * A continuation output base/count (or derived continuation output) is stronger than an application ABI name:
+ * it is produced only after the planner has identified a chunked value write. The remaining checks bind that
+ * region to one entry-bearing stateful function and one possible chunkable array collection. Any ambiguity is
+ * deliberately left unresolved, allowing the caller to fail closed or use the historical named migration path.
+ */
+export function legacyPlannedChunkableValueWriteCollection(
+  group: ChunkableArrayWriteGroup,
+): string | undefined {
+  const hasPlannedContinuations = group.valueChunkOutputBase !== undefined
+    || group.valueChunkOutputCount !== undefined
+    || (group.derivedTrailingOutputs?.size ?? 0) > 0;
+  if (!hasPlannedContinuations) return undefined;
+  const artifact = group.logicalArtifact ?? group.externalContract?.inner?.artifact;
+  if (artifact?.messageBus?.convention === 'kernel-row-loop') return undefined;
+  const layout = group.stateLayout ?? artifact?.stateLayout;
+  const collections = (layout?.collections ?? []).filter((collection) => (
+    collection.chunkableValue === true && collection.valueType.endsWith('[]')
+  ));
+  if (collections.length !== 1) return undefined;
+  const logicalName = group.logicalFunctionName ?? group.functionName;
+  const abiFunction = group.compilerRoute?.abiFunction
+    ?? artifact?.abi.find((candidate: AbiFunction) => candidate.name === logicalName);
+  const blockLayout = abiFunction?.blockLayout ?? group.blockLayout;
+  if (!abiFunction || abiFunction.writesState === false
+    || !blockLayout?.slots.some((slot) => slot.kind === 'entry')) return undefined;
+  return collections[0].name;
 }
 
 /** Resolve a single physical chunkable-value writer from compiler metadata, independent of ABI names. */

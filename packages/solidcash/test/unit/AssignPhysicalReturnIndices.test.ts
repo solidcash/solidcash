@@ -149,6 +149,7 @@ import {
   groupChunkableArrayWriteCollection,
   groupWritesSingleChunkableArrayCollection,
   selectChunkableValueWriteExecution,
+  legacyPlannedChunkableValueWriteCollection,
   permitsLegacyNamedValueChunkFallback,
   permitsLegacyValueChunkEventReconstruction,
   permitsLegacyDelegateEventRepair,
@@ -277,6 +278,57 @@ describe('generic persisted value-chunk write identity', () => {
     ])).toMatchObject({
       inputIndex: 17, collection: 'notices', abiFunction: { name: 'appendNotice' },
     });
+  });
+
+  it('recovers an alpha-renamed legacy writer from exact planned continuation geometry', () => {
+    const structuralLegacy = (functionName: string, collectionName: string) => {
+      const collection = {
+        name: collectionName,
+        signature: `${collectionName}:mapping(int => Notice[])`,
+        kind: 'mapping' as const,
+        keyType: 'int',
+        valueType: 'Notice[]',
+        chunkableValue: true,
+      };
+      const handler = {
+        name: functionName,
+        inputs: [],
+        writesState: true,
+        blockLayout: {
+          blockSize: 2,
+          slots: [
+            { kind: 'master' as const, offset: 0 },
+            { kind: 'entry' as const, offset: 1, slotIndex: 0 },
+          ],
+        },
+      };
+      return {
+        functionName,
+        stateLayout: { variables: [], collections: [collection] },
+        logicalArtifact: {
+          abi: [handler],
+          stateLayout: { variables: [], collections: [collection] },
+          messageBus: { convention: 'legacy-unroll' },
+        } as unknown as Artifact,
+        valueChunkOutputBase: 12,
+        valueChunkOutputCount: 2,
+      };
+    };
+    const historicallyNamed = structuralLegacy('publishJobEvent', 'jobEvents');
+    const alphaRenamed = structuralLegacy('appendNotice', 'notices');
+    expect(legacyPlannedChunkableValueWriteCollection(historicallyNamed)).toBe('jobEvents');
+    expect(legacyPlannedChunkableValueWriteCollection(alphaRenamed)).toBe('notices');
+
+    const ambiguous = structuralLegacy('appendNotice', 'notices');
+    ambiguous.stateLayout.collections.push({
+      ...ambiguous.stateLayout.collections[0],
+      name: 'history', signature: 'history:mapping(int => Notice[])',
+    });
+    expect(legacyPlannedChunkableValueWriteCollection(ambiguous)).toBeUndefined();
+
+    const kernel = structuralLegacy('publishJobEvent', 'jobEvents');
+    kernel.logicalArtifact.messageBus = { convention: 'kernel-row-loop' } as Artifact['messageBus'];
+    expect(legacyPlannedChunkableValueWriteCollection(kernel)).toBeUndefined();
   });
 
   it('uses the routed writer layout and collection even when its artifact contains a legacy-named decoy', () => {

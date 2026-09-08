@@ -93,6 +93,43 @@ describe('compiler-owned participant identity', () => {
     expect(chunkableWriterGroupIndex([renamed])).toBe(0);
   });
 
+  it('selects alpha-renamed legacy writers from exact planned continuation geometry', () => {
+    const planned = (name: string, collectionName: string): ExternalCallUtxoGroup => {
+      const stateLayout = {
+        ...layout,
+        collections: [{
+          name: collectionName,
+          signature: `${collectionName}:mapping(int => Notice[])`,
+          keyType: 'int', valueType: 'Notice[]', chunkableValue: true,
+        }],
+      } as StateLayout;
+      const abi = {
+        name, selector: '00000000', inputs: [], outputs: [], writesState: true,
+        blockLayout: {
+          blockSize: 2,
+          slots: [
+            { kind: 'master', offset: 0 },
+            { kind: 'entry', offset: 1, slotIndex: 0 },
+          ],
+        },
+      } as AbiFunction;
+      const candidate = group(name, abi);
+      candidate.stateLayout = stateLayout;
+      (candidate.externalContract!.inner!.artifact as Artifact).stateLayout = stateLayout;
+      candidate.valueChunkOutputBase = 10;
+      candidate.valueChunkOutputCount = 2;
+      return candidate;
+    };
+    expect(chunkableWriterGroupIndex([planned('publishJobEvent', 'jobEvents')])).toBe(0);
+    expect(chunkableWriterGroupIndex([planned('appendNotice', 'notices')])).toBe(0);
+    expect(chunkableWriterGroupIndex([
+      planned('appendNotice', 'notices'), planned('recordHistory', 'history'),
+    ])).toBe(-1);
+    expect(chunkableWriterGroupIndex(
+      [planned('publishJobEvent', 'jobEvents')], 'kernel-row-loop',
+    )).toBe(-1);
+  });
+
   it('retains the name fallback only when old artifacts publish no entry effects', () => {
     const legacy = group('transferFrom', {
       name: 'transferFrom', selector: '00000000', inputs: [], outputs: [], writesState: true,

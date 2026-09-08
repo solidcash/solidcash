@@ -6076,6 +6076,8 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       baseLength: ExpressionNode;
       pushesPerIteration: number;
       pushesPerIterationExpression?: ExpressionNode;
+      /** A helper assigns `array[counter]` over this exact runtime progression rather than appending densely. */
+      indexedDomain?: { bound: ExpressionNode };
     };
     type ArrayWrite = {
       index: ExpressionNode;
@@ -6413,29 +6415,48 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           const step = recurrence.stepExpression
             ? cloneNode(recurrence.stepExpression) : new IntLiteralNode(recurrence.step);
           step.location = access.location;
-          const logicalStep = new BinaryOpNode(occurrence, BinaryOperator.MUL, step);
-          logicalStep.location = access.location;
-          const logicalCounter = new BinaryOpNode(
-            new IntLiteralNode(recurrence.start), BinaryOperator.PLUS, logicalStep,
-          );
-          logicalCounter.location = access.location;
+          const logicalCounter = recurrence.indexedDomain
+            ? cloneNode(access.index) as ExpressionNode
+            : (() => {
+              const logicalStep = new BinaryOpNode(occurrence, BinaryOperator.MUL, step);
+              logicalStep.location = access.location;
+              const counter = new BinaryOpNode(
+                new IntLiteralNode(recurrence.start), BinaryOperator.PLUS, logicalStep,
+              );
+              counter.location = access.location;
+              return counter as ExpressionNode;
+            })();
           selectedValue = replaceIdentifier(write.value, recurrence.counter, logicalCounter);
           if (write.condition) {
             selectedCondition = replaceIdentifier(
               write.condition, recurrence.counter, logicalCounter,
             );
           }
-          const atOrAfter = new BinaryOpNode(
-            cloneNode(access.index), BinaryOperator.GE, cloneNode(recurrence.baseLength),
-          );
-          atOrAfter.location = access.location;
-          const beforeLength = new BinaryOpNode(
-            cloneNode(access.index), BinaryOperator.LT, cloneNode(plan.length),
-          );
-          beforeLength.location = access.location;
-          matches = new BinaryOpNode(atOrAfter, BinaryOperator.AND, beforeLength);
-          matches.location = access.location;
-          if (recurrence.pushesPerIterationExpression || recurrence.pushesPerIteration > 1) {
+          if (recurrence.indexedDomain) {
+            const startsInDomain = new BinaryOpNode(
+              cloneNode(access.index), BinaryOperator.GE, new IntLiteralNode(recurrence.start),
+            );
+            startsInDomain.location = access.location;
+            const beforeBound = new BinaryOpNode(
+              cloneNode(access.index), BinaryOperator.LT, cloneNode(recurrence.indexedDomain.bound),
+            );
+            beforeBound.location = access.location;
+            matches = new BinaryOpNode(startsInDomain, BinaryOperator.AND, beforeBound);
+            matches.location = access.location;
+          } else {
+            const atOrAfter = new BinaryOpNode(
+              cloneNode(access.index), BinaryOperator.GE, cloneNode(recurrence.baseLength),
+            );
+            atOrAfter.location = access.location;
+            const beforeLength = new BinaryOpNode(
+              cloneNode(access.index), BinaryOperator.LT, cloneNode(plan.length),
+            );
+            beforeLength.location = access.location;
+            matches = new BinaryOpNode(atOrAfter, BinaryOperator.AND, beforeLength);
+            matches.location = access.location;
+          }
+          if (!recurrence.indexedDomain
+            && (recurrence.pushesPerIterationExpression || recurrence.pushesPerIteration > 1)) {
             const ordinal = new BinaryOpNode(
               cloneNode(relative), BinaryOperator.MOD, recurrenceWidth,
             );
@@ -6609,6 +6630,9 @@ export default class LowerVMapCounterLoops extends AstTraversal {
             ...(write.recurrence.stepExpression && {
               stepExpression: cloneNode(write.recurrence.stepExpression) as ExpressionNode,
             }),
+            ...(write.recurrence.indexedDomain && { indexedDomain: {
+              bound: cloneNode(write.recurrence.indexedDomain.bound) as ExpressionNode,
+            } }),
           } }),
         })),
         ...(plan.recurrence && { recurrence: {
@@ -6622,6 +6646,9 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           ...(plan.recurrence.stepExpression && {
             stepExpression: cloneNode(plan.recurrence.stepExpression) as ExpressionNode,
           }),
+          ...(plan.recurrence.indexedDomain && { indexedDomain: {
+            bound: cloneNode(plan.recurrence.indexedDomain.bound) as ExpressionNode,
+          } }),
         } }),
         ...(plan.prefixCountTrace && { prefixCountTrace: {
           witnessParam: plan.prefixCountTrace.witnessParam,
@@ -7898,25 +7925,29 @@ export default class LowerVMapCounterLoops extends AstTraversal {
                 || (ascending && step < 0n) || (descending && step > 0n)
                 || (!ascending && !descending && comparison !== BinaryOperator.NE)) return undefined;
               if (runtimeBoundRange && comparison === BinaryOperator.NE) return undefined;
-              // A canonical full-array initialization has a closed symbolic form even when the allocation
-              // length is runtime-sized: `for (i = 0; i < xs.length; i++) xs[i] = f(i)`. Record that one
-              // source-ordered recurrence instead of expanding an untrusted number of helper iterations. The
-              // later mapping-key rewrite still compares the executable array element with this recipe, so the
-              // helper remains authoritative and a forged settlement witness cannot choose another key domain.
-              // Keep this exact: unit ascending pre-test traversal, writes only to the selected counter position,
-              // and the same symbolic length for every mutated array. More general partial/strided domains need
-              // an explicit congruence predicate before they can share ArrayWrite.recurrence.
+              // A canonical full initialization and its exact one-trailing-hole variant have closed symbolic
+              // forms even when the allocation length is runtime-sized. The one-hole recipe selects precisely
+              // `0 <= index < xs.length - 1` and leaves the final element at its prior value. This is the widest
+              // partial domain currently representable without inevitably producing repeated default keys.
+              // Keep this exact: unit ascending pre-test traversal from zero, writes only to the counter position,
+              // and a bound canonically equal to the array length or `array.length - 1`. Arbitrary runtime bounds,
+              // strides, offset indices, descending loops, and post-test loops remain fenced.
               if (typeof boundValue !== 'bigint' && !runtimeBoundRange) {
-                const symbolicFullArrayWrite = helperStatement instanceof WhileNode
+                const symbolicIndexedArrayWrite = helperStatement instanceof WhileNode
                   && comparison === BinaryOperator.LT && initial.value === 0n && step === 1n
                   && statements.slice(0, -1).length > 0
                   && statements.slice(0, -1).every((candidate) =>
                     candidate instanceof ArrayAssignNode || candidate instanceof RequireNode);
-                if (!symbolicFullArrayWrite || !bound) return undefined;
+                if (!symbolicIndexedArrayWrite || !bound) return undefined;
                 const symbolicCounter = cloneNode(counterNode) as IdentifierNode;
                 const symbolicValues = new Map(values);
                 symbolicValues.set(counterName, symbolicCounter);
-                const plannedWrites: { plan: ArrayPlan; value: ExpressionNode; location: Node['location'] }[] = [];
+                const plannedWrites: {
+                  plan: ArrayPlan;
+                  value: ExpressionNode;
+                  location: Node['location'];
+                  leavesOneTrailingElement: boolean;
+                }[] = [];
                 for (const candidate of statements.slice(0, -1)) {
                   if (candidate instanceof RequireNode) continue;
                   if (!(candidate instanceof ArrayAssignNode)) return undefined;
@@ -7931,9 +7962,22 @@ export default class LowerVMapCounterLoops extends AstTraversal {
                   );
                   const boundIdentity = canonicalizeUpsertKeyExpression(bound, new Set());
                   const lengthIdentity = canonicalizeUpsertKeyExpression(plan.length, new Set());
-                  if (!(index instanceof IdentifierNode) || index.name !== counterName || !value
-                    || !boundIdentity || !lengthIdentity || boundIdentity !== lengthIdentity) return undefined;
-                  plannedWrites.push({ plan, value, location: candidate.location });
+                  const oneBeforeLength = new BinaryOpNode(
+                    cloneNode(plan.length), BinaryOperator.MINUS, new IntLiteralNode(1n),
+                  );
+                  const oneBeforeLengthIdentity = canonicalizeUpsertKeyExpression(
+                    oneBeforeLength, new Set(),
+                  );
+                  const fillsWholeArray = Boolean(boundIdentity && lengthIdentity
+                    && boundIdentity === lengthIdentity);
+                  const leavesOneTrailingElement = Boolean(boundIdentity && oneBeforeLengthIdentity
+                    && boundIdentity === oneBeforeLengthIdentity);
+                  if (!(index instanceof IdentifierNode)
+                    || index.name !== counterName || !value
+                    || (!fillsWholeArray && !leavesOneTrailingElement)) return undefined;
+                  plannedWrites.push({
+                    plan, value, location: candidate.location, leavesOneTrailingElement,
+                  });
                 }
                 if (plannedWrites.length === 0) return undefined;
                 for (const planned of plannedWrites) {
@@ -7945,14 +7989,24 @@ export default class LowerVMapCounterLoops extends AstTraversal {
                     recurrence: {
                       counter: counterName,
                       start: 0n,
-                      step: 1n,
+                      step,
                       baseLength,
                       pushesPerIteration: 1,
                       ordinal: 0,
+                      ...(planned.leavesOneTrailingElement && { indexedDomain: {
+                        bound: cloneNode(bound) as ExpressionNode,
+                      } }),
                     },
                   });
                 }
-                values.set(counterName, cloneNode(bound) as ExpressionNode);
+                // The exact final counter for an empty array would be -1 rather than the loop's initial zero.
+                // It is scoped to the helper loop and normally dead; dropping the symbolic binding ensures any
+                // later source use fails closed rather than observing an invalid approximation.
+                if (plannedWrites.some((write) => write.leavesOneTrailingElement)) {
+                  values.delete(counterName);
+                } else {
+                  values.set(counterName, cloneNode(bound) as ExpressionNode);
+                }
                 continue;
               }
               const exhaustedBound = typeof boundValue === 'bigint'

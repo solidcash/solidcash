@@ -24,6 +24,24 @@ const SOURCE = `contract RuntimeArrayFill() {
   function check(int key, int expected) public { require(this.records[key] == expected); }
 }`;
 
+const INDEXED_DOMAIN_SOURCE = `contract IndexedRuntimeArrayFill() {
+  mapping(int => int) records;
+  function fillPartial(int[] memory keys, int base) internal pure {
+    for (int cursor = 0; cursor < keys.length - 1; cursor = cursor + 1) {
+      keys[cursor] = base + cursor;
+    }
+  }
+  function applyPartial(int count, int base) public {
+    int[] memory keys = new int[](count);
+    fillPartial(keys, base);
+    for (int cursor = 0; cursor < count; cursor = cursor + 1) {
+      this.records[keys[cursor]] = cursor + 10;
+    }
+    require(true);
+  }
+  function check(int key, int expected) public { require(this.records[key] == expected); }
+}`;
+
 describe('runtime-sized full-array key fill BCH VM', () => {
   it('executes the exact derived domain and rejects missing or extra iterations', async () => {
     const provider = createTestProvider();
@@ -77,6 +95,33 @@ describe('runtime-sized full-array key fill BCH VM', () => {
       txid: expect.stringMatching(/^[0-9a-f]{64}$/),
     });
     for (const [key, expected] of [[40n, 10n], [41n, 11n], [42n, 12n]] as const) {
+      await expect(contract.call.check(key, expected).send()).resolves.toBeDefined();
+    }
+  }, 180_000);
+
+  it.each([
+    ['partial', 'applyPartial', [3n, 40n], [[40n, 10n], [41n, 11n], [0n, 12n]]],
+  ] as const)('persists the exact %s fill domain including its trailing default key', async (
+    _label, functionName, args, expectedEntries,
+  ) => {
+    const provider = createTestProvider();
+    const artifact = compileString(INDEXED_DOMAIN_SOURCE, {
+      forceStateful: true,
+      messageBus: true,
+      messageBusKernel: true,
+      maximumInputBytes: 1_000_000,
+    });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === functionName))
+      .toMatchObject({ eligible: true });
+
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+    );
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    await expect(contract.batch([{ function: functionName, args: [...args] }]).send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    for (const [key, expected] of expectedEntries) {
       await expect(contract.call.check(key, expected).send()).resolves.toBeDefined();
     }
   }, 180_000);

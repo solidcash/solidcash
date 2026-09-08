@@ -679,7 +679,10 @@ export const provisionalInvocationResult = (
     return binToHex(Uint8Array.from(resultTypes.flatMap((type) => [
       // A transaction signature used as result data is a compact byte string, not a deferred signer. Seed it
       // with canonical empty bytes; passing numeric zero to the byte encoder is neither typed nor encodable.
-      ...encodePushdataValue(type === 'bool' ? true : type === 'sig' ? new Uint8Array() : 0n,
+      // Keep the optimistic `true` seed used to discover conditional graph edges, but derive every other seed from
+      // the compiler-authored type graph. Numeric zero is not a value of bytes, arrays, or structs, and attempting
+      // to encode it made otherwise supported native aggregate results fail before the first discovery pass.
+      ...encodePushdataValue(type === 'bool' ? true : getDefaultStateValue(type, artifact.structs),
         type, artifact.structs),
     ])));
   }
@@ -772,30 +775,64 @@ export const evmInvocationResultLength = (
 };
 
 /** Accept either a raw invocation vector or the one-push aggregate used by participant return events. */
+const canonicalNativeResultField = (
+  vector: Uint8Array, cursor: number, type: string, structs: readonly StructDefinitionInfo[] | undefined,
+): { bytesConsumed: number; encoded: Uint8Array } => {
+  try {
+    const decoded = decodePushdataValue(vector, cursor, type, structs);
+    return {
+      bytesConsumed: decoded.bytesConsumed,
+      encoded: encodePushdataValue(decoded.value, type, structs),
+    };
+  } catch (error) {
+    // `encodeFunctionArgument` protects an empty top-level dynamic array count from an enclosing unlocking push by
+    // spelling the value as `01 00`. If that transport spelling is forwarded into a provisional result vector,
+    // consume it as exactly one empty array field and immediately restore the canonical result spelling (`00`).
+    const array = parseArrayTypeString(type);
+    if (array?.bound === undefined && vector[cursor] === 0x01 && vector[cursor + 1] === 0x00) {
+      return { bytesConsumed: 2, encoded: encodePushdataValue([], type, structs) };
+    }
+    throw error;
+  }
+};
+
 const preparedInvocationResult = (
   commitment: Uint8Array | undefined, artifact: Artifact, resultTypes: readonly string[],
 ): string | undefined => {
   if (!commitment) return undefined;
-  const consumesExactly = (candidate: Uint8Array): boolean => {
+  const canonical = (candidate: Uint8Array): Uint8Array | undefined => {
     try {
       if (artifactUsesSolidityAbi(artifact)) {
-        return evmInvocationResultLength(candidate, 0, resultTypes, artifact) === candidate.length;
+        return evmInvocationResultLength(candidate, 0, resultTypes, artifact) === candidate.length
+          ? candidate : undefined;
       }
       let cursor = 0;
+      const fields: Uint8Array[] = [];
       for (const type of resultTypes) {
-        cursor += decodePushdataValue(candidate, cursor, type, artifact.structs).bytesConsumed;
+        const decoded = canonicalNativeResultField(candidate, cursor, type, artifact.structs);
+        cursor += decoded.bytesConsumed;
+        fields.push(decoded.encoded);
       }
-      return cursor === candidate.length;
+      return cursor === candidate.length ? concatBytes(fields) : undefined;
     } catch {
-      return false;
+      return undefined;
     }
   };
-  if (consumesExactly(commitment)) return binToHex(commitment);
+  const direct = canonical(commitment);
+  if (direct) return binToHex(direct);
   try {
     const outer = decodePushdataValue(commitment, 0, 'bytes');
-    if (outer.value instanceof Uint8Array
-      && outer.bytesConsumed === commitment.length
-      && consumesExactly(outer.value)) return binToHex(outer.value);
+    if (outer.value instanceof Uint8Array && outer.bytesConsumed === commitment.length) {
+      const inner = canonical(outer.value);
+      if (inner) return binToHex(inner);
+      // An empty top-level dynamic array requires `01 00` when transported as an unlocking argument so its count
+      // byte survives the outer push. That transport escape is not the array value itself: result vectors use the
+      // canonical one-byte `00` count. Accept it only for this exact schema/value and normalize it immediately.
+      const only = resultTypes.length === 1 ? parseArrayTypeString(resultTypes[0]) : undefined;
+      if (only?.bound === undefined && outer.value.length === 0) {
+        return binToHex(encodePushdataValue([], resultTypes[0], artifact.structs));
+      }
+    }
   } catch {
     // The caller below reports one stable error for malformed prepared data.
   }
@@ -3005,6 +3042,7 @@ export class AtomicMessageBusComposition {
       priorResults: Readonly<Record<number, string>>, missingParticipants: Set<number>,
     ): Record<number, string> => {
       const derivedResults: Record<number, string> = { ...priorResults };
+      let normalizedNativeReturnOutput = false;
       // Every participant probe observes the same immutable provisional transaction. Materialize its unlocking
       // bytecode and source-output vector once per derivation pass; rebuilding both for each participant is
       // quadratic in large atomic graphs and cannot change the observed program.
@@ -3087,11 +3125,19 @@ export class AtomicMessageBusComposition {
               outer.value, cursor, invocation.resultTypes, participant.artifact,
             );
           } else {
+            const canonicalFields: Uint8Array[] = [];
             for (const type of invocation.resultTypes) {
-              cursor += decodePushdataValue(outer.value, cursor, type, participant.artifact.structs).bytesConsumed;
+              const decoded = canonicalNativeResultField(
+                outer.value, cursor, type, participant.artifact.structs,
+              );
+              cursor += decoded.bytesConsumed;
+              canonicalFields.push(decoded.encoded);
             }
+            derivedResults[invocationIndex] = binToHex(concatBytes(canonicalFields));
           }
-          derivedResults[invocationIndex] = binToHex(outer.value.slice(start, cursor));
+          if (artifactUsesSolidityAbi(participant.artifact)) {
+            derivedResults[invocationIndex] = binToHex(outer.value.slice(start, cursor));
+          }
         }
         if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
           ?.SOLIDC_DEBUG_RETURN_VECTOR === '1') {
@@ -3110,7 +3156,28 @@ export class AtomicMessageBusComposition {
         if (cursor !== outer.value.length) {
           throw new Error(`messageBus: participant ${participant.participant} return vector has an unchecked suffix`);
         }
+        if (!artifactUsesSolidityAbi(participant.artifact)) {
+          // The trace extractor can observe the provisional output before the route's completed result still live
+          // above it. Re-materialize the output from the completely decoded, canonical field vector; final BCH VM
+          // preflight remains the authority and rejects this claim if it differs from the producer's actual result.
+          const canonicalBlob = participantReturnBlob(participant.participant, derivedResults);
+          const canonicalCommitment = participantReturnCommitment(canonicalBlob);
+          const outputIndex = participantBase + returnSlot.offset;
+          const output = provisional.outputs[outputIndex];
+          if (!canonicalCommitment || !output?.token?.nft) {
+            throw new Error(`messageBus: participant ${participant.participant} lost its native return output`);
+          }
+          const commitmentHex = binToHex(canonicalCommitment);
+          if (output.token.nft.commitment !== commitmentHex) {
+            provisional.outputs[outputIndex] = {
+              ...output,
+              token: { ...output.token, nft: { ...output.token.nft, commitment: commitmentHex } },
+            };
+            normalizedNativeReturnOutput = true;
+          }
+        }
       }
+      if (normalizedNativeReturnOutput) rebalanceFeeTail(provisional, 'canonicalized native return results');
       return derivedResults;
     };
 

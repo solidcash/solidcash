@@ -199,6 +199,14 @@ export function encodeMessageBusArguments(
     const type = parseType(typeName);
     const composite = type instanceof ArrayType
       || structs?.some((definition) => definition.name === typeName);
+    // `encodeFunctionArgument` uses `01 00` for an empty top-level array so the count byte survives when a normal
+    // unlocking template pushes that argument. Message-bus composites are already copied inline into `argsBlob`,
+    // so retaining the outer transport escape changes the value from canonical empty-array `00` to a non-minimal
+    // count. Remove it only for this exact dynamic-array value; fixed arrays and nonempty arrays are unchanged.
+    if (type instanceof ArrayType && type.bound === undefined
+      && argument.length === 2 && argument[0] === 0x01 && argument[1] === 0x00) {
+      return Uint8Array.of(0x00);
+    }
     return composite ? argument : scriptToBytecode([argument]);
   }));
 }

@@ -307,9 +307,11 @@ itself, balance both stacks, and perform pure operations or read-only transactio
 must converge on both stack heights. A loop may change loop-carried values, but after `OP_UNTIL` consumes its local
 condition it must restore both loop-entry heights; conditionals and loops may nest with proper structural pairing.
 CLTV and CSV thresholds and indexed-inspection operands must also be block-local. `OP_PICK` is admitted only when its
-exact depth is statically known and selects another block-local value. `OP_ACTIVEBYTECODE`, transaction-signature
-checks, dynamic stack reach, underflow, malformed control flow, and unknown opcodes remain `KERNEL_OPAQUE_EFFECT`;
-they either change with the invocation/signature context or cannot be proven isolated by the static stack walk.
+exact depth is statically known and selects another block-local value. An immediately discarded
+`OP_ACTIVEBYTECODE OP_DROP` read is neutral and admitted; copying, hashing, transforming, or otherwise consuming the
+active-bytecode value remains `KERNEL_OPAQUE_EFFECT`, as do transaction-signature checks, dynamic stack reach,
+underflow, malformed control flow, and unknown opcodes. Those shapes either depend on the invocation/signature context
+or cannot be proven isolated by the static stack walk.
 Typed external calls, collection-plus-typed-call handlers (a mapping journal clone promoted
 onto the graph `OP_INVOKE` frame), interface-typed state receivers (`this.data.userRegistered(..)`),
 literal `new T[](N)` key arrays, counter-keyed `m[i]` loops,

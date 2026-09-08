@@ -241,6 +241,8 @@ describe('kernel whole-struct state getter composition', () => {
         }
         function read() public view returns (Record memory) { return record; }
       }`, OPTIONS);
+    expect(artifact.abi.find((entry) => entry.name === 'read')?.dynamicReads)
+      .toEqual(['record__note', 'record__marks']);
     const base = new Contract(artifact, [], { provider });
     const setup = await setupStatefulUtxos(provider, base, artifact.stateLayout!, {
       record__note: '', record__marks: [],
@@ -263,5 +265,48 @@ describe('kernel whole-struct state getter composition', () => {
     const vm = createVirtualMachineBch2026ForProvider(provider);
     expect(vm.stateSuccess(vm.evaluate({ inputIndex: sourceRouteInput, sourceOutputs, transaction })))
       .not.toBe(true);
+
+    const singleTransaction = single.buildLibauthTransaction();
+    const singleSources = generateLibauthSourceOutputs(single.inputs);
+    const singleRouteInput = single.inputs.findIndex((input) => 'contract' in input.unlocker
+      && input.unlocker.contract.artifact.contractName === 'Source'
+      && input.unlocker.abiFunction.name === artifact.messageBus!.route.name);
+    const firstChunk = singleRouteInput + artifact.messageBus!.route.blockLayout!.trailingBase!;
+    expect(singleRouteInput).toBeGreaterThanOrEqual(0);
+    expect(singleTransaction.inputs.length).toBeGreaterThan(firstChunk + 1);
+    const rejected = (
+      candidateTransaction: typeof singleTransaction, candidateSources: typeof singleSources,
+    ): boolean => vm.stateSuccess(vm.evaluate({
+      inputIndex: singleRouteInput,
+      sourceOutputs: candidateSources,
+      transaction: candidateTransaction,
+    })) !== true;
+
+    const forgedSources = singleSources.map((output) => ({
+      ...output,
+      lockingBytecode: output.lockingBytecode.slice(),
+      token: output.token === undefined ? undefined : {
+        ...output.token,
+        category: output.token.category.slice(),
+        nft: output.token.nft === undefined ? undefined : {
+          ...output.token.nft, commitment: output.token.nft.commitment.slice(),
+        },
+      },
+    }));
+    const forgedCommitment = forgedSources[firstChunk].token!.nft!.commitment;
+    forgedCommitment[forgedCommitment.length - 1] ^= 1;
+    expect(rejected(singleTransaction, forgedSources)).toBe(true);
+
+    const reorderedSources = singleSources.slice();
+    [reorderedSources[firstChunk], reorderedSources[firstChunk + 1]] =
+      [reorderedSources[firstChunk + 1], reorderedSources[firstChunk]];
+    expect(rejected(singleTransaction, reorderedSources)).toBe(true);
+
+    const missingTransaction = {
+      ...singleTransaction,
+      inputs: singleTransaction.inputs.filter((_input, index) => index !== firstChunk),
+    };
+    const missingSources = singleSources.filter((_output, index) => index !== firstChunk);
+    expect(rejected(missingTransaction, missingSources)).toBe(true);
   }, 120_000);
 });

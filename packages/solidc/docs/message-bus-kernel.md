@@ -439,6 +439,10 @@ already-consumed selected settlement cursors before jumping. A `continue` which 
 step can repeat a logical value and remains refused. Equivalent additive spellings such as `i = d + i`,
 `i = i + d`, and unit `++i` / `i++` are treated as the same step. A desugared `for` already runs its update on `continue` and
 is supported.
+Literal-bounded mapping loops may instead expand to ordinary static entry sites. Before expansion, the compiler
+substitutes each exact induction value and replays `continue` and `break` in source order. Expansion proceeds only
+when every reached escape condition becomes a compile-time boolean; a runtime-selected escape leaves the loop on
+the bounded row-loop path or fails closed when no exact row representation exists.
 A handler may contain multiple unconditional top-level counter loops in source order,
 including loops over the same physical collection. The compiler threads exact accumulated input and output widths
 between those loops, and the SDK publishes their predecessor and commitment runs in the same order. If their

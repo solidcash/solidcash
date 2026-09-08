@@ -7883,20 +7883,36 @@ export default class LowerVMapCounterLoops extends AstTraversal {
                 );
                 if (!iteration) return undefined;
                 if (runtimeBoundRange) {
-                  if (iteration.returnValues || iteration.loopControl
-                    || iteration.breakCondition || iteration.continueCondition) return undefined;
-                  const active = unconditionalPostTest
+                  // A finite runtime remainder still has an exact source domain when an iteration breaks: replay
+                  // every candidate, gate it by the executable loop condition and by the accumulated stopped bit,
+                  // then prevent every later candidate after the first reached break. Continue remains fenced here
+                  // because a while-form helper can skip its explicit counter update and cease to make progress.
+                  if (iteration.returnValues || iteration.loopControl === 'continue'
+                    || iteration.continueCondition) return undefined;
+                  const conditionActive = unconditionalPostTest
                     ? (() => {
                       const selected = new BoolLiteralNode(true);
                       selected.location = helperStatement.location;
                       return selected as ExpressionNode;
                     })()
                     : replayExpression(condition, loopValues, loopPlans, scope);
-                  if (!active) return undefined;
-                  const inactive = new UnaryOpNode(UnaryOperator.NOT, cloneNode(active));
+                  if (!conditionActive) return undefined;
+                  let candidateActive = conditionActive;
+                  if (stoppedCondition) {
+                    const notStopped = new UnaryOpNode(
+                      UnaryOperator.NOT, cloneNode(stoppedCondition),
+                    );
+                    notStopped.location = helperStatement.location;
+                    const reached = new BinaryOpNode(
+                      candidateActive, BinaryOperator.AND, notStopped,
+                    );
+                    reached.location = helperStatement.location;
+                    candidateActive = reached;
+                  }
+                  const inactive = new UnaryOpNode(UnaryOperator.NOT, cloneNode(candidateActive));
                   inactive.location = helperStatement.location;
                   const arms = [
-                    { ...iteration, condition: active },
+                    { ...iteration, condition: candidateActive },
                     { ...beforeIteration, condition: inactive as ExpressionNode },
                   ];
                   loopPlans = new Map([...beforeIteration.plans].map(([name, plan]) => [name, mergePlan(
@@ -7905,15 +7921,55 @@ export default class LowerVMapCounterLoops extends AstTraversal {
                     })),
                   )]));
                   loopValues = mergeValues(beforeIteration.values, arms);
+                  let breaks: ExpressionNode | undefined;
+                  if (iteration.loopControl === 'break') {
+                    const always = new BoolLiteralNode(true);
+                    always.location = helperStatement.location;
+                    breaks = always;
+                  } else if (iteration.breakCondition) {
+                    breaks = cloneNode(iteration.breakCondition) as ExpressionNode;
+                  }
+                  let stopsNow: ExpressionNode | undefined;
+                  if (breaks) {
+                    const selectedBreak = new BinaryOpNode(
+                      cloneNode(candidateActive), BinaryOperator.AND, cloneNode(breaks),
+                    );
+                    selectedBreak.location = helperStatement.location;
+                    stopsNow = selectedBreak;
+                    if (stoppedCondition) {
+                      const combined = new BinaryOpNode(
+                        stoppedCondition, BinaryOperator.OR, cloneNode(selectedBreak),
+                      );
+                      combined.location = helperStatement.location;
+                      stoppedCondition = combined;
+                    } else stoppedCondition = cloneNode(selectedBreak) as ExpressionNode;
+                  }
                   const nextCounter = new IntLiteralNode(counter + step);
                   nextCounter.location = counterNode.location;
                   nextCounter.type = counterNode.type ?? new IntType(true, 256);
+                  let advances = cloneNode(candidateActive) as ExpressionNode;
+                  if (breaks) {
+                    const notBreak = new UnaryOpNode(UnaryOperator.NOT, cloneNode(breaks));
+                    notBreak.location = helperStatement.location;
+                    const selectedAdvance = new BinaryOpNode(
+                      advances, BinaryOperator.AND, notBreak,
+                    );
+                    selectedAdvance.location = helperStatement.location;
+                    advances = selectedAdvance;
+                  }
                   const selectedCounter = new TernaryOpNode(
-                    cloneNode(active), nextCounter, runtimeFinalCounter,
+                    advances, nextCounter, runtimeFinalCounter,
                   );
                   selectedCounter.location = helperStatement.location;
                   selectedCounter.type = nextCounter.type;
-                  runtimeFinalCounter = selectedCounter;
+                  if (stopsNow) {
+                    const stoppedCounter = new TernaryOpNode(
+                      stopsNow, counterValue, selectedCounter,
+                    );
+                    stoppedCounter.location = helperStatement.location;
+                    stoppedCounter.type = nextCounter.type;
+                    runtimeFinalCounter = stoppedCounter;
+                  } else runtimeFinalCounter = selectedCounter;
                   counter += step;
                   continue;
                 }

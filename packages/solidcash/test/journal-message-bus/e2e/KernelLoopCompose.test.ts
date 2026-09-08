@@ -8993,4 +8993,72 @@ describe('kernel composite counter-key settlement', () => {
     }
     await expect(contract.getState()).resolves.toMatchObject({ total: 6n });
   }, 180_000);
+
+  it('authenticates keys filled by a finite helper up to its first replayable break', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(`contract FiniteHelperBreak() {
+      mapping(int => int) records;
+      function fill(int[] memory keys, int base, int limit) internal pure {
+        for (int cursor = 0; cursor < limit; cursor = cursor + 1) {
+          if (cursor == 1) { break; }
+          keys[cursor] = base + cursor;
+        }
+      }
+      function write(int count, int base, int runtimeLimit) public {
+        int[] memory keys = new int[](count);
+        fill(keys, base, runtimeLimit % 4);
+        for (int cursor = 0; cursor < count; cursor = cursor + 1) {
+          this.records[keys[cursor]] = cursor + 1;
+        }
+        require(count == 3);
+      }
+      function check(int key, int expected) public { require(this.records[key] == expected); }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
+      .toMatchObject({ eligible: true });
+    const write = artifact.abi.find((handler) => handler.name === 'write')!;
+    const permutationName = write.sortedUpsertLoopInfo?.[0]?.varyingArrayParam;
+    expect(permutationName).toMatch(/^__internal__vmapCounterPerm_/);
+
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+    );
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    const call = contract.batch([{ function: 'write', args: [3n, 10n, 3n] }]);
+    const builder = await call.build();
+    const transaction = builder.buildLibauthTransaction();
+    const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+    const vm = createVirtualMachineBch2026ForProvider(provider);
+    for (let inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex += 1) {
+      expect(vm.stateSuccess(vm.evaluate({ inputIndex, sourceOutputs, transaction })), `input ${inputIndex}`)
+        .toBe(true);
+    }
+
+    const routeInputIndex = builder.inputs.findIndex((input) =>
+      'abiFunction' in input.unlocker && input.unlocker.abiFunction.name === artifact.messageBus!.route.name);
+    const routeUnlocker = builder.inputs[routeInputIndex]?.unlocker;
+    if (!routeUnlocker || !('params' in routeUnlocker)) throw new Error('kernel route has no parameters');
+    const permutationIndex = artifact.messageBus!.route.inputs.findIndex(
+      (input) => input.name === permutationName,
+    );
+    expect(permutationIndex).toBeGreaterThanOrEqual(0);
+    const selector = artifact.messageBus!.route.selector;
+    if (!selector) throw new Error('kernel route has no selector');
+    const recreate = routeUnlocker.contract.createCompilerRouteUnlocker(
+      routeUnlocker.abiFunction, hexToBin(selector),
+    );
+    const hostileParams = [...routeUnlocker.params];
+    hostileParams[permutationIndex] = [[0n, 0n, 2n]];
+    builder.inputs[routeInputIndex].unlocker = recreate(...hostileParams);
+    const hostile = builder.buildLibauthTransaction();
+    expect(vm.stateSuccess(vm.evaluate({
+      inputIndex: routeInputIndex, sourceOutputs, transaction: hostile,
+    })), 'duplicate helper-key permutation').not.toBe(true);
+    builder.inputs[routeInputIndex].unlocker = routeUnlocker;
+
+    await expect(call.send()).resolves.toBeDefined();
+    await expect(contract.call.check(0n, 3n).send()).resolves.toBeDefined();
+    await expect(contract.call.check(10n, 1n).send()).resolves.toBeDefined();
+  }, 180_000);
 });

@@ -81,11 +81,51 @@ describe('constructed-array exhausted finite helper replay', () => {
     expect(handler).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_UNBOUNDED_KEY' });
   });
 
-  it('keeps a runtime-bounded helper with an abrupt exit fenced', () => {
+  it('exhausts a finite runtime-remainder helper through its first replayable break', () => {
     const handler = compile(`
       function fill(int[] memory keys, int base, int limit) internal pure {
         for (int cursor = 0; cursor < limit; cursor = cursor + 1) {
           if (cursor == 1) { break; }
+          keys[cursor] = base + cursor;
+        }
+      }
+    `, 'fill(keys, base, runtimeLimit % 4);');
+    expect(handler).toMatchObject({ eligible: true });
+  });
+
+  it('keeps an opaque state-derived helper break fenced', () => {
+    const artifact = compileString(`contract C() {
+      bool stopped;
+      mapping(int => int) slots;
+      function shouldStop(int cursor) internal returns (bool) {
+        return this.stopped && cursor > 0;
+      }
+      function fill(int[] memory keys, int base, int limit) internal {
+        for (int cursor = 0; cursor < limit; cursor = cursor + 1) {
+          if (shouldStop(cursor)) { break; }
+          keys[cursor] = base + cursor;
+        }
+      }
+      function write(int count, int base, int runtimeLimit) public {
+        int[] memory keys = new int[](count);
+        fill(keys, base, runtimeLimit % 4);
+        for (int cursor = 0; cursor < count; cursor = cursor + 1) {
+          this.slots[keys[cursor]] = cursor + 1;
+        }
+        require(count == 3);
+      }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_UNBOUNDED_KEY' });
+  });
+
+  it('keeps nested runtime-loop break provenance fenced', () => {
+    const handler = compile(`
+      function fill(int[] memory keys, int base, int limit) internal pure {
+        for (int cursor = 0; cursor < limit; cursor = cursor + 1) {
+          for (int inner = 0; inner < limit; inner = inner + 1) {
+            if (inner == cursor) { break; }
+          }
           keys[cursor] = base + cursor;
         }
       }

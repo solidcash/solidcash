@@ -72,6 +72,9 @@ import {
   childStateLayoutDigest,
   abiTypeString,
   BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX,
+  KERNEL_ENTRY_JOURNAL_MAX_RECORDS,
+  KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX,
+  KERNEL_ENTRY_JOURNAL_RECORDS_PER_SEGMENT,
 } from '@solidcash/utils';
 import {
   analyzeChildDeploymentRecipes, childDeploymentCollectionDefinitions, childDeploymentGenesisEntries,
@@ -91,6 +94,7 @@ import {
   vmapRuntimeInputCountName,
   vmapRuntimeOutputCountName,
 } from '../semantic/LowerVMapCounterLoops.js';
+
 import {
   ContractNode,
   ParameterNode,
@@ -1270,8 +1274,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   // and the physical epilogue will consume it during the final flush.
   private runtimeLoopEntryJournalCountActive = false;
   private static readonly RUNTIME_LOOP_ENTRY_JOURNAL_COUNT = '__internal__runtimeLoopEntryJournalCount';
-  /** Immutable route-entry snapshot used by the fail-closed pre-mutation journal settlement scaffold. */
-  private static readonly KERNEL_JOURNAL_RECORDS_INITIAL = '__internal__kernelJournalRecordsInitial';
+  /** Compact route-entry carrier identity and validated cardinality retained across row execution. */
+  private static readonly KERNEL_JOURNAL_RECORDS_EXPECTED_COUNT = '__internal__kernelJournalRecordsExpectedCount';
+  private static readonly KERNEL_JOURNAL_RECORDS_INITIAL_HASH = '__internal__kernelJournalRecordsInitialHash';
   private runtimeLoopEntryOutputCountActive = false;
   private static readonly RUNTIME_LOOP_ENTRY_OUTPUT_COUNT = '__internal__runtimeLoopEntryOutputCount';
   // Counter-loop events are accumulated as framed (commitment, locking-bytecode) records while the source loop
@@ -5592,9 +5597,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         }
       }
     }
-    if (this.isDefineSubTraversal && node.graphEmissionHandler) {
+    const contextThreadedDefine = this.isDefineSubTraversal && (node.graphEmissionHandler
+      || runtimeLoopEntryInputCountRequired || runtimeLoopEntryOutputCountRequired
+      || runtimeLoopEventContextRequired || activeJournalSlots.length > 0
+      || node.parameters.some((parameter) => parameter.name.startsWith(VMAP_RUNTIME_INPUT_COUNT_PREFIX)
+        || parameter.name.startsWith(VMAP_RUNTIME_OUTPUT_COUNT_PREFIX)
+        || parameter.name === KERNEL_JOURNAL_RECORDS
+        || parameter.name.startsWith(KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX)));
+    if (contextThreadedDefine) {
       // The caller pushes this before every other hidden operand, so it is the deepest item in the local frame.
-      // It lets epilogue cleanup distinguish handler temporaries from the still-live route frame below them.
+      // It lets epilogue cleanup distinguish runtime-only temporaries from the still-live caller frame below it.
       this.pushToStack(GRAPH_HANDLER_CALLER_DEPTH, true);
     }
     // Only ABI entry frames contain attacker-supplied raw stack values. An OP_DEFINE subroutine is reachable
@@ -5810,11 +5822,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.runtimeLoopEntryJournalCountActive = true;
     }
     if (!this.isDefineSubTraversal && this.isCompilerMessageBusRoute(node)
-      && this.runtimeLoopEntryJournalCountActive && this.stack.includes(KERNEL_JOURNAL_RECORDS)) {
+      && this.runtimeLoopEntryJournalCountActive && this.hasKernelJournalRecordCarrier()) {
       const loc = { location: node.location, positionHint: PositionHint.START } as SingleLocationData;
-      this.emit(encodeInt(BigInt(this.getStackIndex(KERNEL_JOURNAL_RECORDS))), loc);
-      this.emit(Op.OP_PICK, loc);
-      this.pushToStack(GenerateTargetTraversalWithLocation.KERNEL_JOURNAL_RECORDS_INITIAL);
+      this.emitKernelJournalSegmentsValidate(loc);
+      this.pushToStack(GenerateTargetTraversalWithLocation.KERNEL_JOURNAL_RECORDS_EXPECTED_COUNT);
+      this.emitKernelJournalSegmentsHash(loc);
+      this.pushToStack(GenerateTargetTraversalWithLocation.KERNEL_JOURNAL_RECORDS_INITIAL_HASH);
     }
     if (runtimeLoopEntryOutputCountRequired) {
       // Runtime mapping loops and dynamic-state writes share one trailing frame. Keep an exact path-stable total
@@ -5928,19 +5941,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_NUMEQUALVERIFY, loc);
     }
     if (!this.isDefineSubTraversal && this.isCompilerMessageBusRoute(node)
-      && this.runtimeLoopEntryJournalCountActive && this.stack.includes(KERNEL_JOURNAL_RECORDS)) {
+      && this.runtimeLoopEntryJournalCountActive && this.hasKernelJournalRecordCarrier()) {
       const loc = { location: node.body.location, positionHint: PositionHint.END } as SingleLocationData;
       // A byte-identical carrier used only the established per-row settlement path. A changed carrier must pass
       // the all-dirty, exactly-once route flush; mixed topology/read records fail closed in that branch.
-      const initial = this.getStackIndex(
-        GenerateTargetTraversalWithLocation.KERNEL_JOURNAL_RECORDS_INITIAL, true,
-      );
-      if (initial < 0) throw new Error('Kernel journal settlement lost its initial record carrier');
-      this.emit(encodeInt(BigInt(this.getStackIndex(KERNEL_JOURNAL_RECORDS))), loc);
-      this.emit(Op.OP_PICK, loc);
-      this.emit(encodeInt(BigInt(initial + 1)), loc);
-      this.emit(Op.OP_PICK, loc);
-      this.emit(Op.OP_EQUAL, loc);
+      this.emitKernelJournalSegmentsHash(loc);
+      this.emit(encodeInt(BigInt(this.getStackIndex(
+        GenerateTargetTraversalWithLocation.KERNEL_JOURNAL_RECORDS_INITIAL_HASH,
+      ) + 1)), loc);
+      this.emit(Op.OP_PICK, loc); this.emit(Op.OP_EQUAL, loc);
       this.emit(Op.OP_IF, loc);
       this.scopeDepth += 1;
       this.scopeDepth -= 1;
@@ -5949,36 +5958,25 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emitKernelJournalFinalScalarFlush(node, loc);
       this.scopeDepth -= 1;
       this.emit(Op.OP_ENDIF, loc);
-      this.emit(encodeInt(BigInt(initial)), loc);
-      this.emit(Op.OP_ROLL, loc);
-      this.emit(Op.OP_DROP, loc);
-      this.removeFromStack(initial);
+      const initialHash = this.getStackIndex(
+        GenerateTargetTraversalWithLocation.KERNEL_JOURNAL_RECORDS_INITIAL_HASH,
+      );
+      this.emit(encodeInt(BigInt(initialHash)), loc); this.emit(Op.OP_ROLL, loc); this.emit(Op.OP_DROP, loc);
+      this.removeFromStack(initialHash);
       // Per-access checks admit only a dense first-touch prefix. Bind that prefix to the complete carrier vector,
       // so a caller cannot append an otherwise-valid unused record after the last executed row.
-      this.emit(encodeInt(BigInt(this.getStackIndex(KERNEL_JOURNAL_RECORDS))), loc);
-      this.emit(Op.OP_PICK, loc);
-      this.emitPushdataDecode(PrimitiveType.BIGINT, loc);
-      // Validate the complete bytes[] payload, not only its declared count. Otherwise trailing framed bytes remain
-      // outside the dense-prefix accounting and can be smuggled through either the unchanged or dirty branch.
-      this.emit(Op.OP_OVER, loc); // count, elements, remaining
-      this.emit(Op.OP_DUP, loc); this.emit(Op.OP_0, loc); this.emit(Op.OP_GREATERTHAN, loc);
-      this.emit(Op.OP_IF, loc);
-      this.scopeDepth += 1;
-      this.emit(Op.OP_BEGIN, loc);
-      this.emit(Op.OP_SWAP, loc); // count, remaining, elements
-      this.emitGenericPushdataDecode(new BytesType(), loc); // count, remaining, record, rest
-      this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_DROP, loc); // count, remaining, rest
-      this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_1SUB, loc); // count, rest, remaining'
-      this.emit(Op.OP_DUP, loc); this.emit(Op.OP_0, loc); this.emit(Op.OP_NUMEQUAL, loc);
-      this.emit(Op.OP_UNTIL, loc);
-      this.scopeDepth -= 1;
-      this.emit(Op.OP_ENDIF, loc);
-      this.emit(Op.OP_DROP, loc); // count, rest
-      this.emit(Op.OP_0, loc); this.emit(Op.OP_EQUALVERIFY, loc);
+      this.emit(encodeInt(BigInt(this.getStackIndex(
+        GenerateTargetTraversalWithLocation.KERNEL_JOURNAL_RECORDS_EXPECTED_COUNT,
+      ))), loc); this.emit(Op.OP_PICK, loc);
       this.emit(encodeInt(BigInt(this.getStackIndex(
         GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_JOURNAL_COUNT,
       ) + 1)), loc);
       this.emit(Op.OP_PICK, loc); this.emit(Op.OP_NUMEQUALVERIFY, loc);
+      const expectedCount = this.getStackIndex(
+        GenerateTargetTraversalWithLocation.KERNEL_JOURNAL_RECORDS_EXPECTED_COUNT,
+      );
+      this.emit(encodeInt(BigInt(expectedCount)), loc); this.emit(Op.OP_ROLL, loc); this.emit(Op.OP_DROP, loc);
+      this.removeFromStack(expectedCount);
     }
 
     // Drop the function-level deploy counter (roll it up from wherever it sits - the body is depth-balanced, so
@@ -6095,29 +6093,35 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (this.pendingGraphEmissionRows !== 0) {
         throw new Error(`Unconsumed graph emission rows: ${this.pendingGraphEmissionRows}`);
       }
+      const cleanupLoc = { location: node.body.location, positionHint: PositionHint.END } as SingleLocationData;
+      if (this.stack.includes(GRAPH_HANDLER_CALLER_DEPTH)) this.emitDropUntrackedStackItems(cleanupLoc);
       const slots = node.functionId === undefined ? [] : (this.journalSlotsByFunctionId.get(node.functionId) ?? []);
-      const journalNames = new Set(slots.flatMap((sv) => this.journalContextNames(sv)));
-      for (const parameter of node.parameters) {
-        if (parameter.name.startsWith(VMAP_RUNTIME_INPUT_COUNT_PREFIX)
-          || parameter.name.startsWith(VMAP_RUNTIME_OUTPUT_COUNT_PREFIX)
-          || parameter.name === KERNEL_JOURNAL_RECORDS) {
-          journalNames.add(parameter.name);
-        }
-      }
-      if (node.graphRuntimeEmissionHandler) journalNames.add('__internal__graphEmissions');
+      const runtimeCardinalityNames = node.parameters.map((parameter) => parameter.name)
+        .filter((name) => name.startsWith(VMAP_RUNTIME_INPUT_COUNT_PREFIX)
+          || name.startsWith(VMAP_RUNTIME_OUTPUT_COUNT_PREFIX));
+      const kernelJournalRecordNames = node.parameters.map((parameter) => parameter.name)
+        .filter((name) => name === KERNEL_JOURNAL_RECORDS
+          || name.startsWith(KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX));
+      const journalNames = [
+        ...runtimeCardinalityNames,
+        ...kernelJournalRecordNames,
+        ...(node.graphRuntimeEmissionHandler ? ['__internal__graphEmissions'] : []),
+      ];
       if (runtimeLoopEntryInputCountRequired) {
-        journalNames.add(GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_INPUT_COUNT);
-        journalNames.add(GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_JOURNAL_COUNT);
+        journalNames.push(GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_INPUT_COUNT);
+        journalNames.push(GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_JOURNAL_COUNT);
       }
       if (runtimeLoopEntryOutputCountRequired) {
-        journalNames.add(GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_OUTPUT_COUNT);
+        journalNames.push(GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_OUTPUT_COUNT);
       }
       if (runtimeLoopEventContextRequired) {
-        journalNames.add(GenerateTargetTraversalWithLocation.RUNTIME_LOOP_EVENT_START);
-        journalNames.add(GenerateTargetTraversalWithLocation.RUNTIME_LOOP_EVENT_END);
+        journalNames.push(GenerateTargetTraversalWithLocation.RUNTIME_LOOP_EVENT_START);
+        journalNames.push(GenerateTargetTraversalWithLocation.RUNTIME_LOOP_EVENT_END);
       }
+      journalNames.push(...slots.flatMap((sv) => this.journalContextNames(sv)));
+      const retained = new Set(journalNames);
       for (let i = 0; i < this.stack.length;) {
-        if (journalNames.has(this.stack[i])) {
+        if (retained.has(this.stack[i])) {
           i += 1;
           continue;
         }
@@ -6125,6 +6129,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(Op.OP_ROLL, { location: node.body.location, positionHint: PositionHint.END });
         this.emit(Op.OP_DROP, { location: node.body.location, positionHint: PositionHint.END });
         this.removeFromStack(i);
+      }
+      // Return every retained copy in the same declared context order used by returning handlers. Parameter
+      // order alone is not a physical return order: a void handler may have moved any bank member while
+      // executing. Canonicalizing here lets the caller replace its route-owned slots by stable ordinal.
+      for (let i = journalNames.length - 1; i >= 0; i -= 1) {
+        const index = this.getStackIndex(journalNames[i]);
+        this.emit(encodeInt(BigInt(index)), { location: node.body.location, positionHint: PositionHint.END });
+        this.emit(Op.OP_ROLL, { location: node.body.location, positionHint: PositionHint.END });
+        const [name] = this.stack.splice(index, 1);
+        this.stack.unshift(name);
       }
       if (this.graphStraightRuntimeMode) {
         this.emit(Op.OP_0, { location: node.body.location, positionHint: PositionHint.END });
@@ -10037,6 +10051,141 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     return bound;
   }
 
+  /** Copy a contiguous fixed segment bank into a callee frame in reverse-argument order using constant code. */
+  private emitKernelJournalSegmentCallArguments(
+    targetFunc: FunctionDefinitionNode, locationData: SingleLocationData,
+  ): number {
+    const names = targetFunc.parameters.map((parameter) => parameter.name)
+      .filter((name) => name.startsWith(KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX));
+    if (names.length === 0) return 0;
+    const expected = names.map((_name, index) => `${KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX}${index}`);
+    if (names.some((name, index) => name !== expected[index])) {
+      throw new Error(`Kernel journal segment ABI for '${targetFunc.name}' is not canonical`);
+    }
+    const indices = names.map((name) => this.getStackIndex(name));
+    const step = indices.length < 2 ? 0 : indices[1] - indices[0];
+    if (indices.some((index, ordinal) => index !== indices[0] + ordinal * step)
+      || (indices.length > 1 && Math.abs(step) !== 1)) {
+      throw new Error(`Kernel journal segment caller bank for '${targetFunc.name}' is not contiguous`);
+    }
+    if (step === 1) {
+      // Each copied item raises every source depth by one while the source ordinal falls by one, so the physical
+      // PICK depth is invariant. Count down to zero directly; this saves three executed operations per bank slot.
+      this.emit(encodeInt(BigInt(names.length)), locationData);
+      this.emit(Op.OP_BEGIN, locationData);
+      this.emit(encodeInt(BigInt(indices[0] + names.length)), locationData);
+      this.emit(Op.OP_PICK, locationData);
+      this.emit(Op.OP_SWAP, locationData); this.emit(Op.OP_1SUB, locationData);
+      this.emit(Op.OP_DUP, locationData); this.emit(Op.OP_NOT, locationData); this.emit(Op.OP_UNTIL, locationData);
+      this.emit(Op.OP_DROP, locationData);
+      for (let ordinal = names.length - 1; ordinal >= 0; ordinal -= 1) {
+        this.pushToStack(`(__kernel_segment_arg_${targetFunc.functionId}_${ordinal})`);
+      }
+      return names.length;
+    }
+    this.emit(encodeInt(BigInt(names.length - 1)), locationData);
+    this.emit(Op.OP_BEGIN, locationData);
+    if (step - 1 !== 0) {
+      this.emit(Op.OP_DUP, locationData);
+      this.emit(encodeInt(BigInt(step - 1)), locationData); this.emit(Op.OP_MUL, locationData);
+    } else {
+      this.emit(Op.OP_0, locationData);
+    }
+    this.emit(encodeInt(BigInt(indices[0] + names.length)), locationData);
+    this.emit(Op.OP_ADD, locationData); this.emit(Op.OP_PICK, locationData);
+    this.emit(Op.OP_SWAP, locationData); this.emit(Op.OP_1SUB, locationData);
+    this.emit(Op.OP_DUP, locationData); this.emit(encodeInt(-1n), locationData);
+    this.emit(Op.OP_NUMEQUAL, locationData); this.emit(Op.OP_UNTIL, locationData);
+    this.emit(Op.OP_DROP, locationData);
+    for (let ordinal = names.length - 1; ordinal >= 0; ordinal -= 1) {
+      this.pushToStack(`(__kernel_segment_arg_${targetFunc.functionId}_${ordinal})`);
+    }
+    return names.length;
+  }
+
+  /** Replace a caller's contiguous segment bank from the contiguous returned bank using constant code. */
+  private emitKernelJournalReturnedSegmentBank(
+    targetFunc: FunctionDefinitionNode, physicalUntrackedSuffixWidth: number,
+    locationData: SingleLocationData,
+  ): number {
+    const names = targetFunc.parameters.map((parameter) => parameter.name)
+      .filter((name) => name.startsWith(KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX));
+    if (names.length === 0) return 0;
+    const indices = names.map((name) => this.getStackIndex(name));
+    const step = indices.length < 2 ? 0 : indices[1] - indices[0];
+    if (indices.some((index, ordinal) => index !== indices[0] + ordinal * step)
+      || (indices.length > 1 && Math.abs(step) !== 1)) {
+      throw new Error(`Kernel journal returned bank for '${targetFunc.name}' is not contiguous`);
+    }
+    this.emit(Op.OP_0, locationData); // returned segment ordinal
+    this.emit(Op.OP_BEGIN, locationData);
+    this.emit(Op.OP_DUP, locationData); this.emit(Op.OP_TOALTSTACK, locationData); // retain ordinal
+    this.emit(Op.OP_1, locationData); this.emit(Op.OP_ROLL, locationData); // ordinal, replacement
+    // Validation and record replacement preserve carrier occupancy. Once the returned bank reaches its first
+    // canonical empty vector, both banks have the same all-empty suffix; discard those copies directly and end.
+    this.emit(Op.OP_DUP, locationData); this.emit(new Uint8Array([0x00]), locationData);
+    this.emit(Op.OP_EQUAL, locationData); this.emit(Op.OP_IF, locationData);
+    this.emit(Op.OP_DROP, locationData); // ordinal
+    this.emit(encodeInt(BigInt(names.length - 1)), locationData); this.emit(Op.OP_SWAP, locationData);
+    this.emit(Op.OP_SUB, locationData); // number of returned suffix copies still below the counter
+    this.emit(Op.OP_DUP, locationData); this.emit(Op.OP_IF, locationData);
+    this.emit(Op.OP_BEGIN, locationData);
+    this.emit(Op.OP_NIP, locationData);
+    this.emit(Op.OP_1SUB, locationData); this.emit(Op.OP_DUP, locationData); this.emit(Op.OP_NOT, locationData);
+    this.emit(Op.OP_UNTIL, locationData);
+    this.emit(Op.OP_DROP, locationData);
+    this.emit(Op.OP_ELSE, locationData); this.emit(Op.OP_DROP, locationData); this.emit(Op.OP_ENDIF, locationData);
+    this.emit(Op.OP_FROMALTSTACK, locationData); this.emit(Op.OP_DROP, locationData);
+    this.emit(encodeInt(BigInt(names.length - 1)), locationData); this.emit(Op.OP_TOALTSTACK, locationData);
+    this.emit(Op.OP_ELSE, locationData);
+    if (step - 1 !== 0) {
+      this.emit(Op.OP_OVER, locationData);
+      this.emit(encodeInt(BigInt(step - 1)), locationData); this.emit(Op.OP_MUL, locationData);
+    } else {
+      this.emit(Op.OP_0, locationData);
+    }
+    this.emit(encodeInt(BigInt(indices[0] - 1 + physicalUntrackedSuffixWidth)), locationData);
+    this.emit(Op.OP_ADD, locationData);
+    // Returned banks are sparse: most carriers are the unchanged canonical empty suffix. Compare with the
+    // caller-owned slot before the physical shuttle and discard equal copies in constant work.
+    // With `[depth, replacement, ordinal, ...]`, the caller slot is `depth + 2` after OP_PICK consumes
+    // its numeric operand. (`depth + 3` counts that operand itself and selects one slot below the carrier.)
+    this.emit(Op.OP_DUP, locationData); this.emit(encodeInt(2n), locationData);
+    this.emit(Op.OP_ADD, locationData); this.emit(Op.OP_PICK, locationData);
+    this.emit(encodeInt(2n), locationData); this.emit(Op.OP_PICK, locationData);
+    this.emit(Op.OP_EQUAL, locationData); this.emit(Op.OP_IF, locationData);
+    this.emit(Op.OP_2DROP, locationData); this.emit(Op.OP_DROP, locationData);
+    this.emit(Op.OP_ELSE, locationData);
+    // Retain the number of intervening values, then roll out and discard the old segment.
+    this.emit(Op.OP_DUP, locationData); this.emit(Op.OP_TOALTSTACK, locationData);
+    this.emit(encodeInt(2n), locationData); this.emit(Op.OP_ADD, locationData);
+    this.emit(Op.OP_ROLL, locationData); this.emit(Op.OP_DROP, locationData);
+    this.emit(Op.OP_SWAP, locationData); this.emit(Op.OP_DROP, locationData); // replacement
+    this.emit(Op.OP_FROMALTSTACK, locationData); // replacement, insertion depth
+    this.emit(Op.OP_DUP, locationData); this.emit(Op.OP_IF, locationData);
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(Op.OP_BEGIN, locationData);
+    this.emit(encodeInt(3n), locationData); this.emit(Op.OP_ROLL, locationData);
+    this.emit(Op.OP_TOALTSTACK, locationData); this.emit(Op.OP_1SUB, locationData);
+    this.emit(Op.OP_DUP, locationData); this.emit(Op.OP_0, locationData);
+    this.emit(Op.OP_NUMEQUAL, locationData); this.emit(Op.OP_UNTIL, locationData);
+    this.emit(Op.OP_DROP, locationData);
+    this.emit(Op.OP_BEGIN, locationData);
+    this.emit(Op.OP_FROMALTSTACK, locationData); this.emit(Op.OP_SWAP, locationData);
+    this.emit(Op.OP_1SUB, locationData); this.emit(Op.OP_DUP, locationData); this.emit(Op.OP_0, locationData);
+    this.emit(Op.OP_NUMEQUAL, locationData); this.emit(Op.OP_UNTIL, locationData);
+    this.emit(Op.OP_DROP, locationData);
+    this.emit(Op.OP_ELSE, locationData); this.emit(Op.OP_DROP, locationData); this.emit(Op.OP_ENDIF, locationData);
+    this.emit(Op.OP_ENDIF, locationData);
+    this.emit(Op.OP_ENDIF, locationData);
+    this.emit(Op.OP_FROMALTSTACK, locationData); this.emit(Op.OP_1ADD, locationData);
+    this.emit(Op.OP_DUP, locationData); this.emit(encodeInt(BigInt(names.length)), locationData);
+    this.emit(Op.OP_NUMEQUAL, locationData); this.emit(Op.OP_UNTIL, locationData);
+    this.emit(Op.OP_DROP, locationData);
+    this.popFromStack(names.length);
+    return names.length;
+  }
+
   visitUserFunctionCall(node: FunctionCallNode, targetFunc: FunctionDefinitionNode): Node {
     // Fold side-effect-free literal/immutable getters and empty extension hooks after inheritance expansion.
     // Only identifiers and literals may be elided as arguments: complex expressions must still be evaluated.
@@ -10144,7 +10293,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         || name.startsWith(VMAP_RUNTIME_OUTPUT_COUNT_PREFIX));
     const targetKernelJournalRecordNames = targetFunc.parameters
       .map((parameter) => parameter.name)
-      .filter((name) => name === KERNEL_JOURNAL_RECORDS);
+      .filter((name) => name === KERNEL_JOURNAL_RECORDS
+        || name.startsWith(KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX));
     const targetJournalContextNames = [
       ...(targetFunc.graphRuntimeEmissionThreaded ? ['__internal__graphEmissions'] : []),
       ...(targetRuntimeLoopEntryInputCount
@@ -10165,12 +10315,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       ...targetKernelJournalRecordNames,
       ...targetJournalContextNames,
     ];
-    const targetDeclaredReturnedContextNames = [
-      ...targetRuntimeCardinalityNames,
-      ...targetKernelJournalRecordNames,
-    ];
     let hiddenContextCount = 0;
-    if (targetFunc.graphEmissionHandler) {
+    if (targetFunc.graphEmissionHandler || targetReturnedContextNames.length > 0) {
       // Capture the physical boundary before adding any invocation operands. Handler epilogues use it to avoid
       // classifying the caller's live route frame as untracked temporary data.
       this.emit(Op.OP_DEPTH, locationData);
@@ -10195,6 +10341,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
             || stackName === GenerateTargetTraversalWithLocation.RUNTIME_LOOP_EVENT_END ? -1n : 0n;
           this.emit(encodeInt(neutral), locationData);
           this.pushToStack(`(__runtime_context_arg_${targetFunc.functionId}_${i})`);
+          hiddenContextCount += 1;
           continue;
         }
         throw new Error(`Missing journal context '${stackName}' while invoking '${targetFunc.name}'`);
@@ -10204,12 +10351,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_PICK, locationData);
       const contextName = `(__journal_arg_${targetFunc.functionId}_${i})`;
       this.pushToStack(contextName);
+      hiddenContextCount += 1;
     }
     if (targetFunc.graphRuntimeEmissionHandler && !targetFunc.graphRuntimeEmissionThreaded) {
       const expected = '__internal__graphEmissions';
       this.emit(encodeInt(BigInt(this.getStackIndex(expected))), locationData);
       this.emit(Op.OP_PICK, locationData);
       this.pushToStack(`(__graph_emissions_arg_${targetFunc.functionId})`);
+      hiddenContextCount += 1;
     }
     if (targetFunc.graphEmissionHandler && this.contractUsesMsgValue) {
       const contextLoc = { location: node.location, positionHint: PositionHint.START };
@@ -10402,12 +10551,20 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Evaluate arguments in REVERSE order so first param ends up on top
     // (matches the SDK's [...encodedArgs].reverse() convention)
     let pushedArgs = 0;
+    let pushedSegmentBank = false;
     for (let i = node.parameters.length - 1; i >= 0; i--) {
       if (skipArg(i)) continue;
       const argument = this.bindMessageBusPhysicalEntryArgument(
         node.parameters[i], targetFunc.parameters[i], targetFunc,
       );
       const targetParameterName = targetFunc.parameters[i]?.name;
+      if (targetParameterName?.startsWith(KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX)) {
+        if (!pushedSegmentBank) {
+          pushedArgs += this.emitKernelJournalSegmentCallArguments(targetFunc, locationData);
+          pushedSegmentBank = true;
+        }
+        continue;
+      }
       if (argument instanceof IdentifierNode && (targetParameterName?.startsWith(VMAP_RUNTIME_INPUT_COUNT_PREFIX)
         || targetParameterName?.startsWith(VMAP_RUNTIME_OUTPUT_COUNT_PREFIX)
         || targetParameterName === KERNEL_JOURNAL_RECORDS)) {
@@ -10457,11 +10614,19 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     // Update stack tracking: pop the pushed arguments, push return values
     this.popFromStack(pushedArgs + hiddenContextCount);
-    // Declared copy-in/copy-out parameters are removed from the tracked call frame with the ordinary arguments,
-    // while hidden journal contexts have always remained deliberately untracked during replacement. Restore the
-    // complete declared prefix in one reverse loop: splitting cardinalities from the record carrier would track
-    // the carrier above the cardinalities even though the callee preserves their declared physical order.
-    for (let i = targetDeclaredReturnedContextNames.length - 1; i >= 0; i--) {
+    const staleInvocationMarker = this.stack.find((name) =>
+      name === `(__graph_handler_caller_depth_${targetFunc.functionId})`
+      || name.startsWith(`(__journal_arg_${targetFunc.functionId}_`)
+      || name.startsWith(`(__runtime_context_arg_${targetFunc.functionId}_`)
+      || name === `(__graph_emissions_arg_${targetFunc.functionId})`);
+    if (staleInvocationMarker) {
+      throw new Error(`Stale invocation operand '${staleInvocationMarker}' after '${targetFunc.name}'`);
+    }
+    // Every copied context is consumed as an invocation operand and returned by the callee in canonical order.
+    // Restore markers for the complete physical return bank, including hidden journal contexts. Previously the
+    // unpopped `__journal_arg_*` invocation markers accidentally represented that suffix; once operand accounting
+    // correctly consumes them, restoring only the declared prefix leaves replacement with no tracked top value.
+    for (let i = targetReturnedContextNames.length - 1; i >= 0; i--) {
       this.pushToStack(`(__returned_context_${targetFunc.functionId}_${i})`);
     }
     if (targetFunc.graphRuntimeEmissionHandler && !targetFunc.graphRuntimeEmissionThreaded) {
@@ -10472,8 +10637,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // The callee returns the journal copies in canonical order. Replace each
     // caller-owned slot at its original depth, consuming the returned copy and
     // leaving the surrounding frame byte-for-byte in its pre-call order.
+    let replacedReturnedSegmentBank = false;
     for (let i = 0; i < targetReturnedContextNames.length; i++) {
       const originalName = targetReturnedContextNames[i];
+      if (originalName.startsWith(KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX)) {
+        if (!replacedReturnedSegmentBank) {
+          this.emitKernelJournalReturnedSegmentBank(
+            targetFunc, targetFunc.returnTypes.length, locationData,
+          );
+          replacedReturnedSegmentBank = true;
+        }
+        continue;
+      }
       if ((originalName === GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_INPUT_COUNT
           && !callerOwnsRuntimeLoopEntryInputCount)
         || (originalName === GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_JOURNAL_COUNT
@@ -10774,7 +10949,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         || name.startsWith(VMAP_RUNTIME_OUTPUT_COUNT_PREFIX));
     const kernelJournalRecordNames = this.currentFunction.parameters
       .map((parameter) => parameter.name)
-      .filter((name) => name === KERNEL_JOURNAL_RECORDS);
+      .filter((name) => name === KERNEL_JOURNAL_RECORDS
+        || name.startsWith(KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX));
     if (this.isDefineSubTraversal && (this.activeJournalSlots.length > 0 || graphEmissionContext
       || this.runtimeLoopEntryInputCountActive || this.runtimeLoopEntryJournalCountActive
       || this.runtimeLoopEntryOutputCountActive
@@ -18650,7 +18826,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(encodeInt(BigInt(VALUE_HEAD_SIZE)), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_DROP, loc);
     this.emit(Op.OP_CAT, loc); // root32 || headData28
     this.emit(Op.OP_ELSE, loc);
-    this.emit(encodeInt(2n), loc); this.emit(Op.OP_PICK, loc);
+    this.emit(encodeInt(3n), loc); this.emit(Op.OP_PICK, loc);
     this.emit(Op.OP_ENDIF, loc);
     this.emit(Op.OP_CAT, loc); this.emit(Op.OP_NIP, loc); this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_DROP, loc); // [tail]
   }
@@ -22233,7 +22409,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); // [addr, P_slot, P_oldnext, P_value, P'_slot, P'_next, P'_value]
 
     // P' re-points P: verify P'_slot==P_slot, P'_value==P_value, and P_slot < P'_next (first new key is inside the gap).
-    this.emit(encodeInt(2n), loc); this.emit(Op.OP_PICK, loc);
+    this.emit(encodeInt(3n), loc); this.emit(Op.OP_PICK, loc);
     this.emit(encodeInt(6n), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_EQUALVERIFY, loc); // P'_slot==P_slot
     this.emit(Op.OP_DUP, loc); this.emit(encodeInt(3n), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_EQUALVERIFY, loc); // P'_value==P_value
     this.emit(encodeInt(5n), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_BIN2NUM, loc);
@@ -23576,6 +23752,311 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emitKernelJournalRecordSelectInline(loc);
   }
 
+  private kernelJournalRecordSegmentNames(): string[] {
+    return this.stack.filter((name) => name.startsWith(KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX))
+      .sort((left, right) => Number(left.slice(KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX.length))
+        - Number(right.slice(KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX.length)));
+  }
+
+  private hasKernelJournalRecordCarrier(): boolean {
+    return this.getStackIndex(KERNEL_JOURNAL_RECORDS, true) >= 0
+      || this.kernelJournalRecordSegmentNames().length > 0;
+  }
+
+  /** [raw record] -> [], accepting only canonical clean pre-state journal records. */
+  private emitKernelJournalCleanRecordValidate(loc: SingleLocationData): void {
+    this.emit(Op.OP_DUP, loc); this.emit(Op.OP_SIZE, loc); this.emit(Op.OP_NIP, loc);
+    this.emit(Op.OP_DUP, loc); this.emit(encodeInt(86n), loc);
+    this.emit(Op.OP_GREATERTHANOREQUAL, loc); this.emit(Op.OP_VERIFY, loc);
+    this.emit(encodeInt(151n), loc); this.emit(Op.OP_LESSTHAN, loc); this.emit(Op.OP_VERIFY, loc);
+    this.emit(Op.OP_DUP, loc); this.emit(Op.OP_1, loc); this.emit(Op.OP_SPLIT, loc);
+    this.emit(Op.OP_DROP, loc); this.emit(new Uint8Array([0x05]), loc); this.emit(Op.OP_EQUALVERIFY, loc);
+    this.emit(Op.OP_DUP, loc); this.emit(Op.OP_1, loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_NIP, loc);
+    this.emit(Op.OP_1, loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_DROP, loc); // record, flags
+    this.emit(Op.OP_DUP, loc); this.emit(new Uint8Array([0x01]), loc); this.emit(Op.OP_EQUAL, loc);
+    this.emit(Op.OP_OVER, loc); this.emit(new Uint8Array([0x0c]), loc); this.emit(Op.OP_EQUAL, loc);
+    this.emit(Op.OP_BOOLOR, loc); this.emit(Op.OP_VERIFY, loc);
+    this.emit(Op.OP_DUP, loc); this.emit(new Uint8Array([0x0c]), loc); this.emit(Op.OP_EQUAL, loc);
+    this.emit(Op.OP_IF, loc);
+    this.emit(Op.OP_OVER, loc); this.emit(Op.OP_SIZE, loc); this.emit(Op.OP_NIP, loc);
+    this.emit(encodeInt(86n), loc); this.emit(Op.OP_NUMEQUALVERIFY, loc);
+    this.emit(Op.OP_OVER, loc); this.emit(encodeInt(54n), loc); this.emit(Op.OP_SPLIT, loc);
+    this.emit(Op.OP_NIP, loc); this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc);
+    this.emit(Op.OP_DROP, loc); this.emit(new Uint8Array(32), loc); this.emit(Op.OP_EQUALVERIFY, loc);
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_2DROP, loc);
+  }
+
+  /** [encoded bytes[] segment] -> [record count], proving exact framing and clean record semantics. */
+  private emitKernelJournalSegmentValidate(
+    loc: SingleLocationData, maximumRecords = KERNEL_ENTRY_JOURNAL_RECORDS_PER_SEGMENT,
+  ): void {
+    const tracked = [...this.stack];
+    this.emitPushdataDecode(PrimitiveType.BIGINT, loc); // count, encoded elements
+    this.stack = tracked;
+    this.emit(Op.OP_OVER, loc); this.emit(encodeInt(BigInt(maximumRecords)), loc);
+    this.emit(Op.OP_LESSTHANOREQUAL, loc); this.emit(Op.OP_VERIFY, loc);
+    this.emit(Op.OP_OVER, loc); this.emit(Op.OP_TOALTSTACK, loc); // retain the declared count
+    this.emit(Op.OP_OVER, loc); this.emit(Op.OP_0, loc); this.emit(Op.OP_GREATERTHAN, loc);
+    this.emit(Op.OP_IF, loc);
+    this.emit(Op.OP_BEGIN, loc);
+    this.emitGenericPushdataDecode(new BytesType(), loc); // remaining, record, rest
+    this.emit(Op.OP_TOALTSTACK, loc);
+    this.emitKernelJournalCleanRecordValidate(loc);
+    this.emit(Op.OP_FROMALTSTACK, loc); // remaining, rest
+    this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_1SUB, loc); this.emit(Op.OP_SWAP, loc);
+    this.emit(Op.OP_OVER, loc); this.emit(Op.OP_0, loc); this.emit(Op.OP_NUMEQUAL, loc);
+    this.emit(Op.OP_UNTIL, loc);
+    this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_DROP, loc); // rest
+    this.emit(Op.OP_ELSE, loc);
+    this.emit(Op.OP_NIP, loc); // zero count, empty remainder -> empty remainder
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_0, loc); this.emit(Op.OP_EQUALVERIFY, loc);
+    this.emit(Op.OP_FROMALTSTACK, loc); // declared count
+  }
+
+  /** Validate the complete fixed carrier bank with one bounded runtime loop. */
+  private emitKernelJournalSegmentsValidate(loc: SingleLocationData): void {
+    const names = this.kernelJournalRecordSegmentNames();
+    if (names.length === 0) {
+      this.emit(encodeInt(BigInt(this.getStackIndex(KERNEL_JOURNAL_RECORDS))), loc); this.emit(Op.OP_PICK, loc);
+      this.emit(Op.OP_DUP, loc); this.emit(Op.OP_SIZE, loc); this.emit(Op.OP_NIP, loc);
+      this.emit(encodeInt(BigInt(MAX_MESSAGE_BUS_BLOB_BYTES)), loc);
+      this.emit(Op.OP_LESSTHANOREQUAL, loc); this.emit(Op.OP_VERIFY, loc);
+      this.emitKernelJournalSegmentValidate(loc, KERNEL_ENTRY_JOURNAL_MAX_RECORDS);
+      return;
+    }
+    const indices = names.map((name) => this.getStackIndex(name));
+    const step = indices.length < 2 ? 0 : indices[1] - indices[0];
+    if (indices.some((index, ordinal) => index !== indices[0] + ordinal * step)
+      || (indices.length > 1 && Math.abs(step) !== 1)) {
+      throw new Error('Kernel journal segment inputs must occupy contiguous stack slots');
+    }
+    // Validate only the non-empty prefix in the full decoder. BCH charges the base cost of instructions in an
+    // inactive branch, so keeping the complete record validator inside a loop over every fixed carrier slot
+    // charged it again for each empty tail segment. Stop this loop at the first canonical empty vector, then
+    // prove the remaining fixed slots with the minimal equality loop below.
+    this.emit(Op.OP_0, loc); this.emit(Op.OP_0, loc); // index, total
+    this.emit(Op.OP_BEGIN, loc);
+    this.emit(Op.OP_OVER, loc); // index, total, index
+    if (step !== 0) {
+      this.emit(encodeInt(BigInt(step)), loc); this.emit(Op.OP_MUL, loc);
+    }
+    this.emit(encodeInt(BigInt(indices[0] + 2)), loc); this.emit(Op.OP_ADD, loc); this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_DUP, loc); this.emit(new Uint8Array([0x00]), loc); this.emit(Op.OP_EQUAL, loc);
+    this.emit(Op.OP_IF, loc);
+    this.emit(Op.OP_DROP, loc); this.emit(Op.OP_1, loc); // index, total, done
+    this.emit(Op.OP_ELSE, loc);
+    this.emitKernelJournalSegmentValidate(loc); // index, total, segment count
+    // Every segment before another non-empty segment must be full. The first segment is unrestricted; after it,
+    // a cumulative count divisible by the fixed segment width proves dense occupancy inductively.
+    this.emit(encodeInt(2n), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_0, loc);
+    this.emit(Op.OP_NUMEQUAL, loc);
+    this.emit(encodeInt(2n), loc); this.emit(Op.OP_PICK, loc);
+    this.emit(encodeInt(BigInt(KERNEL_ENTRY_JOURNAL_RECORDS_PER_SEGMENT)), loc); this.emit(Op.OP_MOD, loc);
+    this.emit(Op.OP_0, loc); this.emit(Op.OP_NUMEQUAL, loc); this.emit(Op.OP_BOOLOR, loc); this.emit(Op.OP_VERIFY, loc);
+    this.emit(Op.OP_ROT, loc); this.emit(Op.OP_1ADD, loc); this.emit(Op.OP_TOALTSTACK, loc);
+    this.emit(Op.OP_ADD, loc); this.emit(Op.OP_FROMALTSTACK, loc); // total', index'
+    this.emit(Op.OP_DUP, loc); this.emit(encodeInt(BigInt(names.length)), loc);
+    this.emit(Op.OP_NUMEQUAL, loc); this.emit(Op.OP_TOALTSTACK, loc);
+    this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_FROMALTSTACK, loc); // index', total', done
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_UNTIL, loc); // index, total
+
+    // The active loop stops on the first empty segment without consuming its index. Prove that segment and the
+    // complete remaining fixed bank are exactly the canonical empty vector; any non-empty-after-empty witness
+    // therefore still fails closed.
+    this.emit(Op.OP_OVER, loc); this.emit(encodeInt(BigInt(names.length)), loc);
+    this.emit(Op.OP_LESSTHAN, loc); this.emit(Op.OP_IF, loc);
+    this.emit(Op.OP_BEGIN, loc);
+    this.emit(Op.OP_OVER, loc);
+    if (step !== 0) {
+      this.emit(encodeInt(BigInt(step)), loc); this.emit(Op.OP_MUL, loc);
+    }
+    this.emit(encodeInt(BigInt(indices[0] + 2)), loc); this.emit(Op.OP_ADD, loc); this.emit(Op.OP_PICK, loc);
+    this.emit(new Uint8Array([0x00]), loc); this.emit(Op.OP_EQUALVERIFY, loc);
+    this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_1ADD, loc);
+    this.emit(Op.OP_DUP, loc); this.emit(encodeInt(BigInt(names.length)), loc);
+    this.emit(Op.OP_NUMEQUAL, loc); this.emit(Op.OP_TOALTSTACK, loc);
+    this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_FROMALTSTACK, loc);
+    this.emit(Op.OP_UNTIL, loc);
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_DROP, loc); // total
+    this.emit(Op.OP_DUP, loc); this.emit(encodeInt(BigInt(KERNEL_ENTRY_JOURNAL_MAX_RECORDS)), loc);
+    this.emit(Op.OP_LESSTHANOREQUAL, loc); this.emit(Op.OP_VERIFY, loc);
+  }
+
+  /** [] -> [bank hash], hashing the validated non-empty prefix without constructing a >520-byte value. */
+  private emitKernelJournalSegmentsHash(loc: SingleLocationData): void {
+    const names = this.kernelJournalRecordSegmentNames();
+    if (names.length === 0) {
+      this.emit(encodeInt(BigInt(this.getStackIndex(KERNEL_JOURNAL_RECORDS))), loc); this.emit(Op.OP_PICK, loc);
+      this.emit(Op.OP_SHA256, loc);
+      return;
+    }
+    const indices = names.map((name) => this.getStackIndex(name));
+    const step = indices.length < 2 ? 0 : indices[1] - indices[0];
+    if (indices.some((index, ordinal) => index !== indices[0] + ordinal * step)
+      || (indices.length > 1 && Math.abs(step) !== 1)) {
+      throw new Error('Kernel journal segment inputs must occupy contiguous stack slots');
+    }
+    this.emit(new Uint8Array(32), loc); this.emit(Op.OP_0, loc); // rolling hash, segment index
+    this.emit(Op.OP_BEGIN, loc);
+    this.emit(Op.OP_DUP, loc);
+    if (step !== 0) {
+      this.emit(encodeInt(BigInt(step)), loc); this.emit(Op.OP_MUL, loc);
+    }
+    this.emit(encodeInt(BigInt(indices[0] + 2)), loc); this.emit(Op.OP_ADD, loc); this.emit(Op.OP_PICK, loc);
+    // Validation proves that the first canonical empty vector terminates the active prefix and every later slot is
+    // also empty. Hashing those identical inactive slots is redundant for the entry/final equality check.
+    this.emit(Op.OP_DUP, loc); this.emit(new Uint8Array([0x00]), loc); this.emit(Op.OP_EQUAL, loc);
+    this.emit(Op.OP_IF, loc);
+    this.emit(Op.OP_DROP, loc); this.emit(Op.OP_1, loc); // rolling hash, index, done
+    this.emit(Op.OP_ELSE, loc);
+    this.emit(Op.OP_SHA256, loc);
+    this.emit(encodeInt(2n), loc); this.emit(Op.OP_ROLL, loc); this.emit(Op.OP_SWAP, loc);
+    this.emit(Op.OP_CAT, loc); this.emit(Op.OP_SHA256, loc); // index, rolling hash'
+    this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_1ADD, loc); // rolling hash', index'
+    this.emit(Op.OP_DUP, loc); this.emit(encodeInt(BigInt(names.length)), loc);
+    this.emit(Op.OP_NUMEQUAL, loc); // rolling hash', index', done
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_UNTIL, loc);
+    this.emit(Op.OP_DROP, loc); // rolling hash
+  }
+
+  /** [global ordinal] -> [segment index, local ordinal, encoded segment]. */
+  private emitKernelJournalSegmentSelect(loc: SingleLocationData): void {
+    const names = this.kernelJournalRecordSegmentNames();
+    if (names.length === 0) {
+      this.emit(Op.OP_0, loc); this.emit(Op.OP_SWAP, loc);
+      this.emit(encodeInt(BigInt(this.getStackIndex(KERNEL_JOURNAL_RECORDS) + 2)), loc);
+      this.emit(Op.OP_PICK, loc);
+      return;
+    }
+    const indices = names.map((name) => this.getStackIndex(name));
+    const step = indices.length < 2 ? 0 : indices[1] - indices[0];
+    if (indices.some((index, ordinal) => index !== indices[0] + ordinal * step)
+      || (indices.length > 1 && Math.abs(step) !== 1)) {
+      throw new Error('Kernel journal segment inputs must occupy contiguous stack slots');
+    }
+    this.emit(Op.OP_DUP, loc);
+    this.emit(encodeInt(BigInt(KERNEL_ENTRY_JOURNAL_RECORDS_PER_SEGMENT)), loc);
+    this.emit(Op.OP_DIV, loc); // global, segment index
+    this.emit(Op.OP_DUP, loc); this.emit(encodeInt(BigInt(names.length)), loc);
+    this.emit(Op.OP_LESSTHAN, loc); this.emit(Op.OP_VERIFY, loc);
+    this.emit(Op.OP_DUP, loc);
+    if (step !== 0) {
+      this.emit(encodeInt(BigInt(step)), loc); this.emit(Op.OP_MUL, loc);
+    }
+    this.emit(encodeInt(BigInt(indices[0] + 2)), loc); this.emit(Op.OP_ADD, loc);
+    this.emit(Op.OP_PICK, loc); // global, segment index, encoded segment
+    this.emit(encodeInt(2n), loc); this.emit(Op.OP_ROLL, loc);
+    this.emit(encodeInt(BigInt(KERNEL_ENTRY_JOURNAL_RECORDS_PER_SEGMENT)), loc);
+    this.emit(Op.OP_MOD, loc);
+    this.emit(Op.OP_SWAP, loc); // segment index, local ordinal, encoded segment
+  }
+
+  /** [global ordinal] -> [raw record]. */
+  private emitKernelJournalRecordExtractGlobal(loc: SingleLocationData): void {
+    this.emitKernelJournalSegmentSelect(loc);
+    this.emitPushdataSkip(PrimitiveType.BIGINT, loc);
+    this.emit(Op.OP_SWAP, loc);
+    this.emitKernelJournalRecordExtract(loc);
+    this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_DROP, loc);
+  }
+
+  /** [global ordinal, raw replacement] -> [], updating exactly one fixed compiler-owned segment slot. */
+  private emitKernelJournalRecordReplaceGlobal(node: Node, loc: SingleLocationData): void {
+    const names = this.kernelJournalRecordSegmentNames();
+    if (names.length === 0) {
+      this.emit(encodeInt(BigInt(this.getStackIndex(KERNEL_JOURNAL_RECORDS) + 2)), loc);
+      this.emit(Op.OP_PICK, loc);
+      this.emit(encodeInt(2n), loc); this.emit(Op.OP_ROLL, loc); this.emit(Op.OP_ROT, loc);
+      this.emitKernelJournalRecordReplaceInline(loc);
+      this.emitReplace(this.getStackIndex(KERNEL_JOURNAL_RECORDS) + 1, node);
+      return;
+    }
+    const indices = names.map((name) => this.getStackIndex(name));
+    const step = indices.length < 2 ? 0 : indices[1] - indices[0];
+    if (indices.some((index, ordinal) => index !== indices[0] + ordinal * step)
+      || (indices.length > 1 && Math.abs(step) !== 1)) {
+      throw new Error('Kernel journal segment inputs must occupy contiguous stack slots');
+    }
+    this.emit(Op.OP_TOALTSTACK, loc);
+    this.emitKernelJournalSegmentSelect(loc); // segment index, local ordinal, encoded segment
+    this.emit(Op.OP_FROMALTSTACK, loc);
+    this.emit(encodeInt(2n), loc); this.emit(Op.OP_ROLL, loc); this.emit(Op.OP_SWAP, loc);
+    this.emitKernelJournalRecordReplaceInline(loc); // segment index, replacement segment
+    // Remove the selected tracked segment, then insert its replacement at the same runtime depth. The two
+    // bounded loops shuttle only the intervening contiguous segment/frame values through altstack and restore
+    // them in their original order. The physical stack therefore finishes with exactly the statically tracked
+    // shape, while code size stays constant as the protocol segment capacity grows.
+    this.emit(Op.OP_OVER, loc); // segment index, replacement, segment index
+    if (step !== 0) {
+      this.emit(encodeInt(BigInt(step)), loc); this.emit(Op.OP_MUL, loc);
+    }
+    this.emit(encodeInt(BigInt(indices[0])), loc); this.emit(Op.OP_ADD, loc); // tracked depth
+    this.emit(Op.OP_DUP, loc); this.emit(Op.OP_TOALTSTACK, loc); // retain insertion depth
+    this.emit(encodeInt(2n), loc); this.emit(Op.OP_ADD, loc); this.emit(Op.OP_ROLL, loc);
+    this.emit(Op.OP_DROP, loc); // segment index, replacement
+    this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_DROP, loc); // replacement
+    this.emit(Op.OP_FROMALTSTACK, loc); // replacement, insertion depth
+    this.emit(Op.OP_DUP, loc); this.emit(Op.OP_0, loc); this.emit(Op.OP_GREATERTHAN, loc);
+    this.emit(Op.OP_IF, loc);
+    this.emit(Op.OP_DUP, loc); // replacement, total depth, remaining
+    this.emit(Op.OP_BEGIN, loc);
+    this.emit(encodeInt(3n), loc); this.emit(Op.OP_ROLL, loc); this.emit(Op.OP_TOALTSTACK, loc);
+    this.emit(Op.OP_1SUB, loc);
+    this.emit(Op.OP_DUP, loc); this.emit(Op.OP_0, loc); this.emit(Op.OP_NUMEQUAL, loc);
+    this.emit(Op.OP_UNTIL, loc);
+    this.emit(Op.OP_DROP, loc); // replacement, total depth
+    this.emit(Op.OP_BEGIN, loc);
+    this.emit(Op.OP_FROMALTSTACK, loc); this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_1SUB, loc);
+    this.emit(Op.OP_DUP, loc); this.emit(Op.OP_0, loc); this.emit(Op.OP_NUMEQUAL, loc);
+    this.emit(Op.OP_UNTIL, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.emit(Op.OP_ELSE, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.emit(Op.OP_ENDIF, loc);
+    void node;
+  }
+
+  /** Build a bounded two-record carrier (target at 0, predecessor at 1) from one access cursor. */
+  private emitKernelJournalPairCarrier(cursorName: string, loc: SingleLocationData): void {
+    this.emit(encodeInt(BigInt(this.getStackIndex(cursorName))), loc); this.emit(Op.OP_PICK, loc);
+    this.emit(encodeInt(21n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_NIP, loc);
+    this.emit(Op.OP_1, loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_NIP, loc);
+    this.emit(encodeInt(2n), loc); this.emit(Op.OP_SPLIT, loc);
+    this.emit(encodeInt(2n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_DROP, loc);
+    this.emit(Op.OP_BIN2NUM, loc); this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_BIN2NUM, loc);
+    this.emit(Op.OP_SWAP, loc); // target ordinal, predecessor ordinal
+    this.emit(Op.OP_TOALTSTACK, loc);
+    this.emitKernelJournalRecordExtractGlobal(loc); // target record
+    this.emit(Op.OP_DUP, loc); this.emit(Op.OP_TOALTSTACK, loc);
+    this.emit(Op.OP_SIZE, loc); this.emit(Op.OP_1, loc); this.emit(Op.OP_NUM2BIN, loc);
+    this.emit(new Uint8Array([0x4c]), loc); this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_CAT, loc);
+    this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_CAT, loc); // framed target
+    this.emit(Op.OP_FROMALTSTACK, loc); // raw target
+    this.emit(Op.OP_FROMALTSTACK, loc); // predecessor ordinal
+    this.emit(Op.OP_DUP, loc); this.emit(Op.OP_0, loc); this.emit(Op.OP_LESSTHAN, loc);
+    this.emit(Op.OP_IF, loc);
+    this.emit(Op.OP_DROP, loc); // no-predecessor marker
+    this.emit(Op.OP_ELSE, loc);
+    // Keep the selector's tracked bank depths exact: neither framing temporary is represented in `this.stack`.
+    this.emit(Op.OP_ROT, loc); this.emit(Op.OP_TOALTSTACK, loc); // raw target, predecessor; park framed target
+    this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_TOALTSTACK, loc); // predecessor; park raw target
+    this.emitKernelJournalRecordExtractGlobal(loc);
+    this.emit(Op.OP_FROMALTSTACK, loc); this.emit(Op.OP_DROP, loc); // predecessor record
+    this.emit(Op.OP_FROMALTSTACK, loc); this.emit(Op.OP_SWAP, loc); // framed target, predecessor record
+    this.emit(Op.OP_ENDIF, loc); // framed target, raw predecessor (or target)
+    this.emit(Op.OP_SIZE, loc); this.emit(Op.OP_1, loc); this.emit(Op.OP_NUM2BIN, loc);
+    this.emit(new Uint8Array([0x4c]), loc); this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_CAT, loc);
+    this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_CAT, loc);
+    this.emit(Op.OP_CAT, loc); // framed target || framed predecessor
+    this.emit(new Uint8Array([0x52]), loc); // canonical bytes[] count 2
+    this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_CAT, loc);
+  }
+
   /** Replace one variable-width bytes[] element: [encoded array, ordinal, raw element] -> [encoded array']. */
   private emitKernelJournalRecordReplaceInline(loc: SingleLocationData): void {
     // Preserve the replacement while splitting the array into its canonical length, prefix, selected element,
@@ -23613,7 +24094,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     node: MappingAssignNode | MappingDeleteNode, isRawbytes: boolean, isChunkable: boolean,
   ): boolean {
     return this.sortedUpsertLoopJournalAccessStreamIndex !== undefined
-      && this.getStackIndex(KERNEL_JOURNAL_RECORDS, true) >= 0
+      && this.hasKernelJournalRecordCarrier()
       && this.getStackIndex(this.sortedUpsertLoopJournalCursorName, true) >= 0
       && this.getStackIndex(GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_JOURNAL_COUNT, true) >= 0
       && (node instanceof MappingAssignNode || node instanceof MappingDeleteNode)
@@ -23661,13 +24142,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(encodeInt(2n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_DROP, loc);
     this.emit(Op.OP_BIN2NUM, loc); // target ordinal
     this.emit(Op.OP_DUP, loc); this.emit(Op.OP_TOALTSTACK, loc);
-    this.emit(encodeInt(BigInt(this.getStackIndex(KERNEL_JOURNAL_RECORDS) + 1)), loc);
-    this.emit(Op.OP_PICK, loc);
-    this.emit(Op.OP_DUP, loc); this.emit(Op.OP_SIZE, loc); this.emit(Op.OP_NIP, loc);
-    this.emit(Op.OP_1, loc); this.emit(Op.OP_GREATERTHAN, loc); this.emit(Op.OP_VERIFY, loc);
-    this.emitPushdataSkip(PrimitiveType.BIGINT, loc); this.emit(Op.OP_SWAP, loc);
-    this.stack = [...trackedStack];
-    this.emitKernelJournalRecordExtract(loc); // selected carrier
+    this.emitKernelJournalRecordExtractGlobal(loc); // selected carrier
     this.stack = [...trackedStack];
 
     // Accept authenticated clean pre-state (first touch), authenticated dirty pending state, or a synthetic live
@@ -23756,14 +24231,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(encodeInt(3n), loc); this.emit(Op.OP_ROLL, loc); this.emit(Op.OP_CAT, loc);
     this.emit(encodeInt(2n), loc); this.emit(Op.OP_ROLL, loc); this.emit(Op.OP_CAT, loc);
     this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_CAT, loc); // dirty record
-    this.emit(encodeInt(BigInt(this.getStackIndex(KERNEL_JOURNAL_RECORDS) + 1)), loc);
-    this.emit(Op.OP_PICK, loc);
-    this.emit(Op.OP_FROMALTSTACK, loc); // record, records, ordinal
-    this.emit(Op.OP_DUP, loc); this.emit(Op.OP_TOALTSTACK, loc); // retain ordinal for dense-prefix accounting
-    this.emit(Op.OP_ROT, loc); // records, ordinal, record
-    this.emitKernelJournalRecordReplaceInline(loc);
+    this.emit(Op.OP_FROMALTSTACK, loc); // record, ordinal
+    this.emit(Op.OP_DUP, loc); this.emit(Op.OP_TOALTSTACK, loc);
+    this.emit(Op.OP_SWAP, loc); // ordinal, record
     this.stack = [...trackedStack];
-    this.emitReplace(this.getStackIndex(KERNEL_JOURNAL_RECORDS) + 1, node);
+    this.emitKernelJournalRecordReplaceGlobal(node, loc);
 
     // Consume this access tuple and advance the transaction-wide dense first-touch count.
     this.emit(encodeInt(BigInt(this.getStackIndex(cursorName))), loc); this.emit(Op.OP_PICK, loc);
@@ -23818,10 +24290,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     this.emit(encodeInt(BigInt(this.getStackIndex('(kernel_insert_predecessor_ordinal)'))), loc);
     this.emit(Op.OP_PICK, loc);
-    this.emit(Op.OP_DUP, loc);
-    this.emit(encodeInt(BigInt(this.getStackIndex(KERNEL_JOURNAL_RECORDS) + 2)), loc); this.emit(Op.OP_PICK, loc);
-    this.emitPushdataSkip(PrimitiveType.BIGINT, loc); this.emit(Op.OP_SWAP, loc);
-    this.emitKernelJournalRecordExtract(loc); // predecessor ordinal, predecessor record
+    // Retain the replacement ordinal off the main stack so the shared selector's tracked carrier depths remain
+    // exact. Leaving the duplicate below the selected ordinal shifts every segment lookup by one slot.
+    this.emit(Op.OP_DUP, loc); this.emit(Op.OP_TOALTSTACK, loc);
+    this.emitKernelJournalRecordExtractGlobal(loc); // predecessor ordinal, predecessor record
+    this.emit(Op.OP_FROMALTSTACK, loc); this.emit(Op.OP_SWAP, loc);
     this.emit(encodeInt(2n), loc); this.emit(Op.OP_SPLIT, loc); // ordinal, header, body
     this.emit(Op.OP_SWAP, loc); // ordinal, body, header
     this.emit(Op.OP_DUP, loc); this.emit(new Uint8Array([0x05, 0x01]), loc); this.emit(Op.OP_EQUAL, loc);
@@ -23847,11 +24320,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(encodeInt(BigInt(this.getStackIndex('(credit_hk)') + 3)), loc); this.emit(Op.OP_PICK, loc);
     this.emit(Op.OP_CAT, loc); this.emit(Op.OP_CAT, loc);
     this.emit(Op.OP_FROMALTSTACK, loc); this.emit(Op.OP_CAT, loc); // ordinal, predecessor replacement
-    this.emit(encodeInt(BigInt(this.getStackIndex(KERNEL_JOURNAL_RECORDS) + 2)), loc); this.emit(Op.OP_PICK, loc);
-    this.emit(encodeInt(2n), loc); this.emit(Op.OP_ROLL, loc); this.emit(Op.OP_ROT, loc);
-    this.emitKernelJournalRecordReplaceInline(loc);
     this.stack = [...trackedStack];
-    this.emitReplace(this.getStackIndex(KERNEL_JOURNAL_RECORDS) + 1, node);
+    this.emitKernelJournalRecordReplaceGlobal(node, loc);
 
     // The predecessor successor is the only value retained on the altstack.
     this.emit(Op.OP_FROMALTSTACK, loc); // old next
@@ -23863,11 +24333,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(encodeInt(2n), loc); this.emit(Op.OP_ROLL, loc); this.emit(Op.OP_CAT, loc);
     this.emit(encodeInt(BigInt(this.getStackIndex('(credit_amt)') + 2)), loc); this.emit(Op.OP_PICK, loc);
     this.emit(Op.OP_BIN2NUM, loc); this.emit(Op.OP_CAT, loc); // target ordinal, target replacement
-    this.emit(encodeInt(BigInt(this.getStackIndex(KERNEL_JOURNAL_RECORDS) + 2)), loc); this.emit(Op.OP_PICK, loc);
-    this.emit(encodeInt(2n), loc); this.emit(Op.OP_ROLL, loc); this.emit(Op.OP_ROT, loc);
-    this.emitKernelJournalRecordReplaceInline(loc);
     this.stack = [...trackedStack];
-    this.emitReplace(this.getStackIndex(KERNEL_JOURNAL_RECORDS) + 1, node);
+    this.emitKernelJournalRecordReplaceGlobal(node, loc);
     this.emit(Op.OP_DROP, loc); this.popFromStack();
     this.emit(Op.OP_DROP, loc); this.popFromStack();
   }
@@ -23945,14 +24412,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_FROMALTSTACK, loc); // cursor tail, flags, target, predecessor, encoded records
     // The route-wide validator authenticates the array framing and cardinality. Skip its encoded count here: an
     // out-of-range record ordinal still fails closed in the variable-element scan.
-    this.emitPushdataSkip(PrimitiveType.BIGINT, loc); // ..., predecessor, encoded records
+    // The compiler-produced pair carrier always has the canonical single-byte `OP_2` count prefix.
+    this.emit(Op.OP_1, loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_NIP, loc);
     // Select target: [..., target, predecessor, elements] -> [..., elements, target].
     // Keep a second copy of the encoded record vector for the predecessor selection below.
-    this.emit(Op.OP_DUP, loc); this.emit(Op.OP_TOALTSTACK, loc);
-    this.emit(Op.OP_1, loc); this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_0, loc);
     // The variable-element scan fails closed if the untrusted record ordinal is out of range.
     this.emitKernelJournalRecordIdentitySelect(loc);
-    this.emit(Op.OP_FROMALTSTACK, loc); // target carrier, identity, encoded records
+    this.emit(Op.OP_ROT, loc); // target carrier, identity, encoded records
     this.emit(Op.OP_FROMALTSTACK, loc); // target carrier, identity, encoded records, target slot
     this.emit(Op.OP_FROMALTSTACK, loc); // target carrier, identity, encoded records, target slot, header
     this.emit(encodeInt(4n), loc); this.emit(Op.OP_ROLL, loc); this.emit(Op.OP_TOALTSTACK, loc);
@@ -23977,7 +24445,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(encodeInt(4n), loc); this.emit(Op.OP_AND, loc); this.emit(Op.OP_BIN2NUM, loc);
     this.emit(Op.OP_0NOTEQUAL, loc);
     this.emit(Op.OP_IF, loc);
-    this.emit(encodeInt(2n), loc); this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_1, loc);
     this.emitKernelJournalRecordIdentitySelect(loc);
     this.emit(Op.OP_FROMALTSTACK, loc); // predecessor carrier, identity, header
     this.emit(Op.OP_DUP, loc);
@@ -24049,8 +24517,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * Flush an all-dirty record vector once, in first-touch ordinal order. Mixed clean/dirty vectors are rejected;
-   * topology-changing and read-only streams therefore retain their existing per-row settlement path.
+   * Flush all dirty record segments once, in global first-touch ordinal order. Dynamic segment selection keeps
+   * this loop constant-size; only mutation replacement dispatches across the fixed compiler-owned slots.
    */
   private emitKernelJournalFinalScalarFlush(node: FunctionDefinitionNode, loc: SingleLocationData): void {
     // The synthesized route has no loop-info of its own. Its entry-slot manifest is the stable compiler-owned
@@ -24063,20 +24531,28 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_0, loc); this.emit(Op.OP_VERIFY, loc);
       return;
     }
-    this.emit(encodeInt(BigInt(this.getStackIndex(KERNEL_JOURNAL_RECORDS))), loc); this.emit(Op.OP_PICK, loc);
-    const savedStack = [...this.stack];
-    this.emitPushdataDecode(PrimitiveType.BIGINT, loc); // count, elements
-    this.stack = savedStack;
-    this.emit(Op.OP_SWAP, loc); // elements, count
+    this.emit(encodeInt(BigInt(this.getStackIndex(
+      GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_JOURNAL_COUNT,
+    ))), loc);
+    this.emit(Op.OP_PICK, loc); // count
     this.emit(Op.OP_DUP, loc); this.emit(Op.OP_0, loc); this.emit(Op.OP_GREATERTHAN, loc); this.emit(Op.OP_VERIFY, loc);
     this.emit(Op.OP_DUP, loc); this.emit(Op.OP_TOALTSTACK, loc); // retain exact first-touch output cardinality
-    this.emit(Op.OP_0, loc); // elements, remaining, output ordinal
+    // Keep the carried tail explicit from iteration zero. Park it before every segment selection so the
+    // selector always sees the same physical frame as its tracked `remaining` cell; creating this value only
+    // after the first selection made all later carrier picks one slot shallow (segment 1 read access-stream 0).
+    this.emit(new Uint8Array(), loc); this.emit(Op.OP_SWAP, loc);
+    this.emit(Op.OP_0, loc); // rest, remaining, output ordinal
     this.emit(Op.OP_BEGIN, loc);
-    // Decode the next independently framed record.
-    this.emit(encodeInt(2n), loc); this.emit(Op.OP_ROLL, loc); // remaining, ordinal, elements
-    this.emitGenericPushdataDecode(new BytesType(), loc); // remaining, ordinal, record, rest
-    this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_TOALTSTACK, loc); // remaining, ordinal, rest; retain record
-    this.emit(Op.OP_FROMALTSTACK, loc); // remaining, ordinal, rest, record
+    this.emit(encodeInt(2n), loc); this.emit(Op.OP_ROLL, loc); this.emit(Op.OP_TOALTSTACK, loc); // park rest
+    this.emit(Op.OP_DUP, loc); this.emit(Op.OP_TOALTSTACK, loc);
+    // Keep only the persistent remaining-count cell in the tracked frame while selection consumes the main-stack
+    // ordinal. Parking the retained ordinal avoids an untracked copy between the carrier bank and selector.
+    const trackedBeforeFlushSelect = [...this.stack];
+    this.pushToStack('(kernel_flush_remaining)');
+    this.emitKernelJournalRecordExtractGlobal(loc); // remaining, record
+    this.stack = trackedBeforeFlushSelect;
+    this.emit(Op.OP_FROMALTSTACK, loc); this.emit(Op.OP_SWAP, loc); // remaining, ordinal, record
+    this.emit(Op.OP_FROMALTSTACK, loc); this.emit(Op.OP_SWAP, loc); // remaining, ordinal, rest, record
     this.emit(encodeInt(2n), loc); this.emit(Op.OP_SPLIT, loc);
     this.emit(Op.OP_SWAP, loc);
     this.emit(Op.OP_DUP, loc); this.emit(new Uint8Array([0x05, 0x03]), loc); this.emit(Op.OP_EQUAL, loc);
@@ -24160,7 +24636,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   private emitKernelJournalTargetSlotCheck(node: Node, loc: SingleLocationData): void {
     if (this.sortedUpsertLoopJournalAccessStreamIndex === undefined
-      || this.getStackIndex(KERNEL_JOURNAL_RECORDS, true) < 0
+      || !this.hasKernelJournalRecordCarrier()
       || this.getStackIndex(this.sortedUpsertLoopJournalCursorName, true) < 0
       || this.getStackIndex(GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_JOURNAL_COUNT, true) < 0) {
       this.emit(Op.OP_FROMALTSTACK, loc); this.emit(Op.OP_DROP, loc);
@@ -24171,8 +24647,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(encodeInt(BigInt(this.getStackIndex(this.sortedUpsertLoopJournalCursorName))), loc);
     this.emit(Op.OP_PICK, loc);
     this.pushToStack('(kernel_journal_tuple_tail)');
-    this.emit(encodeInt(BigInt(this.getStackIndex(KERNEL_JOURNAL_RECORDS))), loc);
-    this.emit(Op.OP_PICK, loc);
+    this.emitKernelJournalPairCarrier(this.sortedUpsertLoopJournalCursorName, loc);
     this.emit(encodeInt(BigInt(this.getStackIndex('(credit_hk)') + 1)), loc);
     this.emit(Op.OP_PICK, loc);
     this.emit(Op.OP_FROMALTSTACK, loc);
@@ -24643,9 +25118,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(encodeInt(24n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_NIP, loc);
       this.emit(encodeInt(2n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_DROP, loc);
       this.emit(Op.OP_BIN2NUM, loc);
-      this.emit(encodeInt(BigInt(this.getStackIndex(KERNEL_JOURNAL_RECORDS) + 1)), loc); this.emit(Op.OP_PICK, loc);
-      this.emitPushdataSkip(PrimitiveType.BIGINT, loc); this.emit(Op.OP_SWAP, loc);
-      this.emitKernelJournalRecordExtract(loc);
+      this.emitKernelJournalRecordExtractGlobal(loc);
       this.emit(encodeInt(2n), loc); this.emit(Op.OP_SPLIT, loc);
       this.emit(Op.OP_SWAP, loc);
       this.emit(Op.OP_DUP, loc); this.emit(new Uint8Array([0x05, 0x03]), loc); this.emit(Op.OP_EQUAL, loc);

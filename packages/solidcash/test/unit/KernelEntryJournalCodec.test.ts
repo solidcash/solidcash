@@ -98,25 +98,28 @@ describe('kernel pending-entry journal codec', () => {
     const records = Array.from({ length: 7 }, (_unused, ordinal) => journalRecord(ordinal + 1));
     expect(encodePushdataValue(records, 'bytes[]').length).toBeGreaterThan(MAX_MESSAGE_BUS_BLOB_BYTES);
     const inputs = Array.from({ length: 4 }, (_unused, segmentIndex) => ({
-      name: kernelEntryJournalRecordSegmentName(segmentIndex), type: 'bytes[]',
+      name: kernelEntryJournalRecordSegmentName(segmentIndex), type: 'bytes',
     }));
     const { slots } = kernelJournalRecordSegmentWitnesses(inputs, records);
-    expect(slots.map(({ name, inputIndex, records: segment }) => ({
-      name, inputIndex, recordCount: segment.length,
+    expect(slots.map(({ name, inputIndex, carrier }) => ({
+      name, inputIndex, carrier: binToHex(carrier),
     }))).toEqual([
-      { name: `${KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX}0`, inputIndex: 0, recordCount: 3 },
-      { name: `${KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX}1`, inputIndex: 1, recordCount: 3 },
-      { name: `${KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX}2`, inputIndex: 2, recordCount: 1 },
-      { name: `${KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX}3`, inputIndex: 3, recordCount: 0 },
+      { name: `${KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX}0`, inputIndex: 0,
+        carrier: binToHex(encodePushdataValue(records.slice(0, 3), 'bytes[]')) },
+      { name: `${KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX}1`, inputIndex: 1,
+        carrier: binToHex(encodePushdataValue(records.slice(3, 6), 'bytes[]')) },
+      { name: `${KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX}2`, inputIndex: 2,
+        carrier: binToHex(encodePushdataValue(records.slice(6), 'bytes[]')) },
+      { name: `${KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX}3`, inputIndex: 3,
+        carrier: binToHex(encodePushdataValue([], 'bytes[]')) },
     ]);
-    expect(slots.flatMap((slot) => slot.records)).toEqual(records);
     expect(kernelEntryJournalRecordSegmentIndex(inputs[2].name)).toBe(2);
   });
 
   it('rejects insufficient, gapped, duplicated, and non-canonical compiler segment slots', () => {
     const records = Array.from({ length: 4 }, (_unused, ordinal) => journalRecord(ordinal + 1));
     const input = (suffix: string): { name: string; type: string } => ({
-      name: `${KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX}${suffix}`, type: 'bytes[]',
+      name: `${KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX}${suffix}`, type: 'bytes',
     });
     expect(() => kernelJournalRecordSegmentWitnesses([input('0')], records))
       .toThrow('requires 2 carrier segments');
@@ -128,7 +131,7 @@ describe('kernel pending-entry journal codec', () => {
       .toThrow('non-canonical index');
     expect(() => kernelJournalRecordSegmentWitnesses([
       { ...input('0'), type: 'bytes[][]' }, input('1'),
-    ], records)).toThrow('must have type bytes[]');
+    ], records)).toThrow('must have type bytes');
   });
 
   it('builds a dense canonical placeholder vector from stream ordinals, independent of schema names', () => {

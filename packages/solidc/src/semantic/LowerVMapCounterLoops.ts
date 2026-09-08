@@ -23,6 +23,7 @@ import { BinaryOperator, UnaryOperator } from '../ast/Operator.js';
 import { canonicalizeUpsertKeyExpression } from '../generation/upsertKeySources.js';
 import {
   AddressType, ArrayType, BytesType, FixedType, FunctionType, IntType, PrimitiveType, StructType, Type,
+  KERNEL_ENTRY_JOURNAL_MAX_SEGMENTS, KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX,
 } from '@solidcash/utils';
 import {
   isFunctionEntryInvariantMappingKey, VMAP_KEY_SNAPSHOT_PREFIX,
@@ -262,7 +263,8 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       || parameter.name.startsWith(VMAP_RUNTIME_INPUT_COUNT_PREFIX)
       || parameter.name.startsWith(VMAP_RUNTIME_OUTPUT_COUNT_PREFIX)
       || parameter.name === KERNEL_JOURNAL_ACCESS_STREAMS
-      || parameter.name === KERNEL_JOURNAL_RECORDS;
+      || parameter.name === KERNEL_JOURNAL_RECORDS
+      || parameter.name.startsWith(KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX);
     const visibleArity = (fn: FunctionDefinitionNode): number =>
       fn.parameters.filter((parameter) => !parameter.name.startsWith('__internal__')).length;
     const callVisibleArity = (call: FunctionCallNode): number => call.parameters.filter((argument) =>
@@ -338,7 +340,8 @@ export default class LowerVMapCounterLoops extends AstTraversal {
     const unsafe = new Set(functions.filter((fn) => fn.kernelJournalContextUnsafeCall === true));
     for (const [caller, arities] of pointerCalls) {
       if (arities.some((arity) => functions.some((target) => visibleArity(target) === arity
-        && target.parameters.some((parameter) => parameter.name === KERNEL_JOURNAL_RECORDS)))) {
+        && target.parameters.some((parameter) => parameter.name === KERNEL_JOURNAL_RECORDS
+          || parameter.name.startsWith(KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX))))) {
         unsafe.add(caller);
       }
     }
@@ -1353,6 +1356,51 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       }
       return expanded;
     };
+    const pureBooleanHelperExpression = (
+      call: FunctionCallNode,
+    ): { expression: ExpressionNode; key: string } | undefined => {
+      const candidates = call.resolvedFunction
+        ? [call.resolvedFunction]
+        : (this.functionsByName.get(call.identifier.name) ?? [])
+          .filter((candidate) => candidate.parameters.length === call.parameters.length);
+      if (candidates.length !== 1) return undefined;
+      const target = candidates[0];
+      const statements = target.body?.statements ?? [];
+      const returned = statements.length === 1 && statements[0] instanceof ReturnNode
+        ? statements[0] : undefined;
+      if (!returned || returned.expressions.length !== 1
+        || !target.modifiers.includes(FunctionModifier.PURE)
+        || (!target.modifiers.includes(FunctionModifier.INTERNAL)
+          && !target.modifiers.includes(FunctionModifier.PRIVATE))
+        || target.returnTypes.length !== 1 || target.returnTypes[0] !== PrimitiveType.BOOL
+        || target.parameters.length !== call.parameters.length) return undefined;
+      const replacements = new Map(target.parameters.map((parameter, index) => [
+        parameter.name, call.parameters[index],
+      ]));
+      const substitute = (candidate: ExpressionNode): ExpressionNode => {
+        if (candidate instanceof IdentifierNode && replacements.has(candidate.name)) {
+          return cloneNode(replacements.get(candidate.name)!);
+        }
+        const expanded = cloneNode(candidate) as ExpressionNode;
+        for (const key of Object.keys(expanded)) {
+          if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type'
+            || key === 'resolvedFunction' || key === 'functionReference' || key === 'collection'
+            || key === 'stateVariable' || key === 'identifier') continue;
+          const value = (expanded as unknown as Record<string, unknown>)[key];
+          if (value instanceof ExpressionNode) {
+            (expanded as unknown as Record<string, unknown>)[key] = substitute(value);
+          } else if (Array.isArray(value)) {
+            (expanded as unknown as Record<string, unknown>)[key] = value.map((item) =>
+              item instanceof ExpressionNode ? substitute(item) : item);
+          }
+        }
+        return expanded;
+      };
+      return {
+        expression: substitute(returned.expressions[0]),
+        key: `helper:${target.functionId ?? target.name}:${target.parameters.length}`,
+      };
+    };
     const mutatesIdentifier = (candidate: Node, name: string): boolean => {
       if (candidate instanceof AssignNode && candidate.identifier.name === name) return true;
       for (const key of Object.keys(candidate)) {
@@ -1486,7 +1534,13 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         }
       };
       find(node.body);
-      return !reassigned && definitions.length === 1 ? definitions[0].expression : undefined;
+      // Returning helpers are hoisted into a local before this pass. Replaying the initializer is sound only for
+      // helpers explicitly proven pure: otherwise the SDK predicate would retain the return expression while the
+      // helper's state/effect statements remain solely in the on-chain source loop.
+      return !reassigned && definitions.length === 1
+        && definitions[0].inlinedReturningHelperPure !== false
+        ? definitions[0].expression
+        : undefined;
     };
     const containsNode = (root: Node, target: Node): boolean => {
       if (root === target) return true;
@@ -1754,6 +1808,18 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       localValues: ReadonlyMap<string, ExpressionNode> = new Map(),
     ): boolean => {
       if (expression instanceof LiteralNode) return true;
+      if (expression instanceof FunctionCallNode) {
+        if (PURE_COUNTER_VALUE_BUILTINS.has(expression.identifier.name)) {
+          return expression.parameters.every((parameter) => runtimePathExpressionSupported(
+            parameter, counterName, resolving, stateValues, localValues,
+          ));
+        }
+        const helper = pureBooleanHelperExpression(expression);
+        if (!helper || resolving.has(helper.key)) return false;
+        return runtimePathExpressionSupported(
+          helper.expression, counterName, new Set(resolving).add(helper.key), stateValues, localValues,
+        );
+      }
       if (expression instanceof StateAccessNode) {
         if (!runtimePathMutatedState.has(expression.name)) return true;
         if (resolving.has(`state:${expression.name}`)) return true;
@@ -1807,6 +1873,16 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       stateValues: ReadonlyMap<string, ExpressionNode> = new Map(),
       localValues: ReadonlyMap<string, ExpressionNode> = new Map(),
     ): ExpressionNode | undefined => {
+      if (expression instanceof FunctionCallNode) {
+        const helper = pureBooleanHelperExpression(expression);
+        if (helper) {
+          if (resolving.has(helper.key)) return undefined;
+          return expandRuntimePathExpression(
+            helper.expression, counterName, new Set(resolving).add(helper.key), stateValues, localValues,
+          );
+        }
+        if (!PURE_COUNTER_VALUE_BUILTINS.has(expression.identifier.name)) return undefined;
+      }
       if (expression instanceof StateAccessNode && runtimePathMutatedState.has(expression.name)) {
         if (resolving.has(`state:${expression.name}`)) return cloneNode(expression);
         const assigned = stateValues.get(expression.name);
@@ -3924,8 +4000,13 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           return;
         }
         if (candidate instanceof BranchNode) {
-          inspectSourceContinues(candidate.ifBlock);
-          if (candidate.elseBlock) inspectSourceContinues(candidate.elseBlock);
+          // An abrupt path guarded by a literal cannot execute. Ignore that arm rather than requiring a canonical
+          // counter step which is unreachable in both the source program and the lowered physical loop.
+          if (!(candidate.condition instanceof BoolLiteralNode) || candidate.condition.value) {
+            inspectSourceContinues(candidate.ifBlock);
+          }
+          if ((!(candidate.condition instanceof BoolLiteralNode) || !candidate.condition.value)
+            && candidate.elseBlock) inspectSourceContinues(candidate.elseBlock);
           return;
         }
         if (candidate instanceof SwitchNode) {
@@ -6023,9 +6104,14 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       && !node.parameters.some((parameter) => parameter.name === KERNEL_JOURNAL_ACCESS_STREAMS)) {
       const accesses = new ParameterNode(new ArrayType(new BytesType()), KERNEL_JOURNAL_ACCESS_STREAMS);
       accesses.location = node.location;
-      const records = new ParameterNode(new ArrayType(new BytesType()), KERNEL_JOURNAL_RECORDS);
-      records.location = node.location;
-      added.push(accesses, records);
+      const recordSegments = Array.from({ length: KERNEL_ENTRY_JOURNAL_MAX_SEGMENTS }, (_unused, index) => {
+        const records = new ParameterNode(
+          new BytesType(), `${KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX}${index}`,
+        );
+        records.location = node.location;
+        return records;
+      });
+      added.push(accesses, ...recordSegments);
     }
     if (keySnapshotPrelude.length > 0 || prelude.length > 0) {
       node.body.statements = [...keySnapshotPrelude, ...prelude, ...(node.body.statements ?? [])];

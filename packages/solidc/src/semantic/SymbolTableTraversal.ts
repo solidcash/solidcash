@@ -218,6 +218,7 @@ import {
   IntType, FixedType, MappingType, FunctionType,
   FunctionBlockLayout, BlockLayoutSlot, resolveLibraries, ExternalLibrary, parseTypeStrict,
   INLINE_MAX_BLOB_LENGTH, isDynamicStorageType, isChunkableValueType, encodeInt, implicitlyCastable, LocationI,
+  KERNEL_ENTRY_JOURNAL_MAX_SEGMENTS, KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX,
 } from '@solidcash/utils';
 import { binToHex } from '@bitauth/libauth';
 import { walkInvocationAst } from '../analysis/InvocationAnalysis.js';
@@ -1587,6 +1588,12 @@ export default class SymbolTableTraversal extends AstTraversal {
   }
 
   visitParameter(node: ParameterNode): Node {
+    const journalSegmentSuffix = node.name.startsWith(KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX)
+      ? node.name.slice(KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX.length)
+      : undefined;
+    const compilerOwnedJournalSegment = journalSegmentSuffix !== undefined
+      && /^(0|[1-9][0-9]*)$/.test(journalSegmentSuffix)
+      && Number(journalSegmentSuffix) < KERNEL_ENTRY_JOURNAL_MAX_SEGMENTS;
     const compilerOwnedParameter = node.name.startsWith('__internal__vmapCounterPerm_')
       || node.name.startsWith('__internal__vmapCounterOld_')
       || node.name.startsWith('__internal__vmapCounterValue_')
@@ -1599,6 +1606,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       || node.name.startsWith('__internal__valueWitness_')
       || node.name.startsWith('__internal__leadingPushValue_')
       || node.name.startsWith('__internal__collectionIter')
+      || compilerOwnedJournalSegment
       || [
         '__internal__msgData',
         '__internal__msgSig',
@@ -1637,7 +1645,12 @@ export default class SymbolTableTraversal extends AstTraversal {
       throw new VariableRedefinitionError(node);
     }
 
-    this.symbolTables[0].set(Symbol.variable(node));
+    const symbol = Symbol.variable(node);
+    // Synthesized route/handler parameters are consumed by code generation rather than source identifiers.
+    // Treat that compiler-owned use as a reference so every journal-aware function does not emit a warning for
+    // the access carrier and each fixed segment slot.
+    if (compilerOwnedParameter) symbol.references.push({ name: node.name } as IdentifierNode);
+    this.symbolTables[0].set(symbol);
     return node;
   }
 

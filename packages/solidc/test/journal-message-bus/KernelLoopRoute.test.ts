@@ -1,6 +1,9 @@
 import { hexToBin } from '@bitauth/libauth';
 import { describe, expect, it, vi } from 'vitest';
-import { ArrayType, bytecodeToAsm, BytesType, IntType } from '@solidcash/utils';
+import {
+  ArrayType, bytecodeToAsm, BytesType, IntType,
+  KERNEL_ENTRY_JOURNAL_MAX_SEGMENTS, KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX,
+} from '@solidcash/utils';
 import { compileString, parseCode } from '../../src/compiler.js';
 import { ParameterNode, type FunctionDefinitionNode, type SourceFileNode } from '../../src/ast/AST.js';
 import LowerVMapCounterLoops, {
@@ -198,10 +201,17 @@ contract Acc() {
     expect(erase).toMatchObject({ eligible: true });
 
     const records = artifact.messageBus?.route.inputs.filter(
-      (input) => input.name === '__internal__kernelJournalRecords',
+      (input) => input.name.startsWith(KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX),
     );
-    expect(records).toHaveLength(1);
-    expect(records?.[0]?.type).toBe('bytes[]');
+    expect(records).toHaveLength(KERNEL_ENTRY_JOURNAL_MAX_SEGMENTS);
+    expect(records?.map((input) => input.name)).toEqual(Array.from(
+      { length: KERNEL_ENTRY_JOURNAL_MAX_SEGMENTS },
+      (_unused, index) => `${KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX}${index}`,
+    ));
+    expect(records?.every((input) => input.type === 'bytes')).toBe(true);
+    const routeByteLength = artifact.bytecode.length / 2;
+    // The 33-slot carrier route is currently 9,603 bytes; retain at least 350 bytes below the 10,000-byte limit.
+    expect(routeByteLength, `segmented route bytecode is ${routeByteLength} bytes`).toBeLessThan(9_650);
 
     // The route retains the unchanged per-row path, while a changed carrier enters the covenant-verified final
     // commitment flush and an exact address-cardinality scan.
@@ -236,8 +246,9 @@ contract Acc() {
     expect(artifact.messageBus?.handlers.filter((handler) =>
       handler.name === 'setRows' || handler.name === 'addRows'))
       .toEqual([expect.objectContaining({ eligible: true }), expect.objectContaining({ eligible: true })]);
-    expect(artifact.messageBus?.route.inputs.filter((input) => input.name === KERNEL_JOURNAL_RECORDS))
-      .toHaveLength(1);
+    expect(artifact.messageBus?.route.inputs.filter((input) =>
+      input.name.startsWith(KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX)))
+      .toHaveLength(KERNEL_ENTRY_JOURNAL_MAX_SEGMENTS);
     const asm = routeAsm(artifact);
     expect(asm).toContain('OP_OUTPUTTOKENCOMMITMENT');
     expect(asm).toContain('OP_TXOUTPUTCOUNT');

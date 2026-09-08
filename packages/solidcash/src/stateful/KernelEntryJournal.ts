@@ -1,4 +1,16 @@
-import { encodePushdataValue, MAX_MESSAGE_BUS_BLOB_BYTES } from '@solidcash/utils';
+import {
+  encodePushdataValue,
+  KERNEL_ENTRY_JOURNAL_MAX_RECORDS,
+  KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX,
+  KERNEL_ENTRY_JOURNAL_RECORDS_PER_SEGMENT,
+  MAX_MESSAGE_BUS_BLOB_BYTES,
+} from '@solidcash/utils';
+export {
+  KERNEL_ENTRY_JOURNAL_MAX_RECORDS,
+  KERNEL_ENTRY_JOURNAL_MAX_SEGMENTS,
+  KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX,
+  KERNEL_ENTRY_JOURNAL_RECORDS_PER_SEGMENT,
+} from '@solidcash/utils';
 import {
   SortedList,
   type JournaledMutationAccess,
@@ -16,19 +28,6 @@ export const KERNEL_ENTRY_JOURNAL_ACCESS_TAG = 0x06;
 
 /** Entry NFT commitments are capped at 128 bytes: slot + next slot + at most 64 bytes of value tail. */
 export const KERNEL_ENTRY_JOURNAL_MAX_VALUE_BYTES = 64;
-
-/**
- * Maximum number of records in one independently-pushed journal segment.
- *
- * A maximum-size record is 150 bytes and its `bytes[]` element frame is 152 bytes. The array count occupies
- * one byte for this cardinality, so three records encode to 457 bytes while four encode to 609 bytes. Keeping
- * this bound value-independent is important: a clean record may acquire a longer dirty value tail in the route,
- * but its global ordinal must continue to address the same segment and local position.
- */
-export const KERNEL_ENTRY_JOURNAL_RECORDS_PER_SEGMENT = 3;
-
-/** Compiler-owned route input prefix for independently-pushed journal record segments. */
-export const KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX = '__internal__kernelJournalRecordSegment_';
 
 /** Return the stable compiler-owned input name for one zero-based journal record segment. */
 export function kernelEntryJournalRecordSegmentName(segmentIndex: number): string {
@@ -77,6 +76,16 @@ const KNOWN_ACCESS_FLAGS = ACCESS_FLAG_PRESENT_BEFORE
 const NO_PREDECESSOR = 0xffff;
 /** `tag || count || N * (flags || target-u16le || predecessor-u16le)` must remain one BCH item. */
 export const KERNEL_ENTRY_JOURNAL_MAX_ACCESSES = Math.floor((520 - ACCESS_HEADER_BYTES) / ACCESS_BYTES);
+
+/**
+ * Explicit protocol-wide transport/indexing ceiling across all access streams. It is aligned as a deliberate v1
+ * budget with the reviewed one-stream access ceiling so permissive compiler profiles cannot create unbounded
+ * hidden ABIs; several streams may collectively request more records, in which case admission fails closed at
+ * this global cap. Finalized transactions remain subject to independent BCH size and cost checks.
+ */
+if (KERNEL_ENTRY_JOURNAL_MAX_RECORDS !== KERNEL_ENTRY_JOURNAL_MAX_ACCESSES) {
+  throw new Error('kernel entry journal record and compact-access protocol caps diverged');
+}
 
 export interface KernelEntryJournalRecord {
   /** Hash of the collection signature; combined with the owner category to derive its entry covenant address. */
@@ -253,9 +262,17 @@ function encodedKernelEntryJournalSegmentLength(segment: readonly Uint8Array[]):
   return encodePushdataValue([...segment], 'bytes[]').length;
 }
 
+/** Encode one canonical record vector as the opaque, independently bounded wire carrier. */
+export function encodeKernelEntryJournalRecordSegment(segment: readonly Uint8Array[]): Uint8Array {
+  return encodePushdataValue([...segment], 'bytes[]');
+}
+
 function requireSegmentRecordCount(recordCount: number): void {
-  if (!Number.isSafeInteger(recordCount) || recordCount < 0 || recordCount >= NO_PREDECESSOR) {
-    throw new Error('kernel entry journal segmented record count must be below 65535');
+  if (!Number.isSafeInteger(recordCount) || recordCount < 0
+    || recordCount > KERNEL_ENTRY_JOURNAL_MAX_RECORDS) {
+    throw new Error(
+      `kernel entry journal segmented record count must not exceed ${KERNEL_ENTRY_JOURNAL_MAX_RECORDS}`,
+    );
   }
 }
 

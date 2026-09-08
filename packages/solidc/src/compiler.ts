@@ -20,6 +20,7 @@ import {
   ATOMIC_MESSAGE_BUS_MAX_PARTICIPANTS, ATOMIC_MESSAGE_BUS_MAX_ROWS,
   ChildDeploymentSiteAbi, SplitArtifactBundle, SplitStateFootprint, StructType, TupleType, Type,
   ValueType, BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX, isDynamicStorageType,
+  KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX,
   messageBusVerifierLockingBytecode, childStateLayoutDigest, abiTypeString, implicitlyCastableSignature,
 } from '@solidcash/utils';
 import { generateArtifact, generateDeclarationArtifact, occurrenceInfoOf } from './artifact/Artifact.js';
@@ -1399,16 +1400,25 @@ function compileStringUnchecked(code: string, compilerOptions: CompileOptions = 
     const admittedMessageBusHandlers = speculativeHandlers
       .filter((handler) => handler.eligible)
       .map(exactMessageBusHandlerReference);
+    // A post-codegen safety gate may demote the last transaction-signature handler when its exact CHECKSIG
+    // provenance frame cannot be published. In that case, do not carry the speculative signature verifier into
+    // the rebound unsigned route. If any signed handler survives, retain the existing disappearance/stability
+    // checks below so body binding cannot silently weaken its policy.
+    const admittedSignatureVerifierSource = speculativeHandlers.some((handler) =>
+      handler.eligible && handler.usesTransactionSignature === true)
+      ? signatureVerifierSource
+      : undefined;
     // The bound route replaces the speculative embedded-verifier artifact wholesale. Release that often-large
-    // object before parsing/code-generating the second pass, otherwise a one-CPU compatibility compile holds two
-    // complete contracts at the peak (Unicrow exceeds the practical heap despite selecting only `pay`).
+    // object before parsing/code-generating the second pass, otherwise a one-CPU compatibility compile can hold
+    // two complete large contracts at the peak even when the route selects only one public handler.
     artifact = undefined as unknown as Artifact;
     (globalThis as typeof globalThis & { gc?: () => void }).gc?.();
     const bindingOptions = normalizeCompilerOptions({
       ...artifactCompilerOptions,
       messageBusHandlers: admittedMessageBusHandlers,
       __messageBusVerifierProgram: verifierProgram,
-      ...(signatureVerifierSource && { __messageBusSignatureVerifierSource: signatureVerifierSource }),
+      ...(admittedSignatureVerifierSource
+        && { __messageBusSignatureVerifierSource: admittedSignatureVerifierSource }),
     });
     const binderStarted = Date.now();
     const binderAst = pristineAstBox.ast ?? parseAndResolve(
@@ -1420,10 +1430,10 @@ function compileStringUnchecked(code: string, compilerOptions: CompileOptions = 
       code, bindingOptions,
     );
     const reboundVerifierProgram = artifact.messageBus?.verifierProgram;
-    if (signatureVerifierSource && !reboundVerifierProgram) {
+    if (admittedSignatureVerifierSource && !reboundVerifierProgram) {
       throw new Error('message-bus transaction-signature verifier disappeared during body binding');
     }
-    if (signatureVerifierSource && reboundVerifierProgram
+    if (admittedSignatureVerifierSource && reboundVerifierProgram
       && JSON.stringify(reboundVerifierProgram) !== JSON.stringify(verifierProgram)) {
       // Binding the detached verifier changes the participant route's helper-id allocation. Re-specialize KTS1
       // against those final OP_INVOKE bodies, then bind that stable program once more. A third distinct program
@@ -1433,7 +1443,7 @@ function compileStringUnchecked(code: string, compilerOptions: CompileOptions = 
         ...artifactCompilerOptions,
         messageBusHandlers: admittedMessageBusHandlers,
         __messageBusVerifierProgram: verifierProgram,
-        __messageBusSignatureVerifierSource: signatureVerifierSource,
+        __messageBusSignatureVerifierSource: admittedSignatureVerifierSource,
       } as InternalCompilerOptions);
       artifact = compileResolvedAst(
         parseAndResolve(code, stableOptions, errorListener, primaryContractName), code, stableOptions,
@@ -2724,18 +2734,16 @@ function injectChunkableEntryWitnesses(ast: Ast): void {
     // entry clones insert their physical key/owner arguments after the source parameters, so the newly inserted
     // source argument is not a suffix of the already-generated call.
     //
-    // Mirror the essential batch classification here: a fixed sorted write participates unless the same
-    // collection also owns a runtime-loop write. CacheMappingEntryInLoop deliberately flushes its invariant entry
-    // outside the loop, so mixed `fixed collection A + runtime collection B` is detected without knowing any
-    // contract-specific shape.
+    // Mirror the essential batch classification here. A fixed sorted write always participates, including when
+    // the same collection also owns a distinct runtime-loop stream: the fixed transition retains its ordinary
+    // authenticated slot while the runtime entries occupy the bounded trailing region.
     const fixedSortedWrites = new Set<string>();
-    const loopSortedWrites = new Set<string>();
     const scanWrites = (node: Node, inLoop: boolean): void => {
       const nowLoop = inLoop || node instanceof WhileNode || node instanceof DoWhileNode;
       const collection = node instanceof MappingAssignNode || node instanceof MappingFieldAssignNode
         || node instanceof MappingDeleteNode || node instanceof ArrayAssignNode ? node.name : undefined;
       if (collection && sorted.has(collection)) {
-        (nowLoop ? loopSortedWrites : fixedSortedWrites).add(collection);
+        if (!nowLoop) fixedSortedWrites.add(collection);
       }
       for (const [field, value] of Object.entries(node)) {
         if (['location', 'resolvedFunction', 'functionReference', 'definition', 'collection', 'symbolTable',
@@ -2747,7 +2755,7 @@ function injectChunkableEntryWitnesses(ast: Ast): void {
       }
     };
     if (sorted.size > 0) scanWrites(fn.body, false);
-    const hasFixedSortedBatch = [...fixedSortedWrites].some((collection) => !loopSortedWrites.has(collection));
+    const hasFixedSortedBatch = fixedSortedWrites.size > 0;
     if ((written.size > 0 || hasFixedSortedBatch)
       && !fn.parameters.some((parameter) => parameter.name === '__internal__vmapBatchTrailingCount')) {
       fn.parameters.push(new ParameterNode(PrimitiveType.BIGINT, '__internal__vmapBatchTrailingCount'));
@@ -5996,6 +6004,12 @@ function synthesizeMessageBusRoute(
   ): void => {
     const runtimeLoopCollections = runtimeLoopCollectionsByHandler.get(source) ?? new Set<string>();
     normalizeBareEntryAccesses(handler);
+    const runtimeLoopEntry = (node: MappingAccessNode | MappingAssignNode | MappingDeleteNode
+    | MappingFieldAssignNode): boolean => {
+      if (!runtimeLoopCollections.has(node.name)) return false;
+      const occurrence = occurrenceInfoOf(handler, node);
+      return occurrence.occurrence === 'loop' && occurrence.maximumOccurrences === undefined;
+    };
     if (process.env.SOLIDC_DEBUG_ROUTE === '1') {
       const mappings: Array<{ kind: string; name: string; keys: string[] }> = [];
       walkInvocationAst(handler.body, (node) => {
@@ -6014,7 +6028,7 @@ function synthesizeMessageBusRoute(
     const alternatives = new Map<string, string[]>();
     walkInvocationAst(handler.body, (node) => {
       if (!isMappingNode(node) || !collectionByName.has(node.name)) return;
-      if (runtimeLoopCollections.has(node.name)) return;
+      if (runtimeLoopEntry(node)) return;
       const list = alternatives.get(node.name) ?? [];
       const signature = keySignature(node);
       if (!list.includes(signature)) list.push(signature);
@@ -6057,7 +6071,7 @@ function synthesizeMessageBusRoute(
     const declared = new Set<string>();
     walkInvocationAst(handler.body, (node) => {
       if (!isMappingNode(node)) return;
-      if (runtimeLoopCollections.has(node.name)) return;
+      if (runtimeLoopEntry(node)) return;
       const collection = collectionByName.get(node.name);
       if (!collection || node.keys.length !== collection.allKeyTypes.length) return;
       const safeName = node.name.replace(/[^A-Za-z0-9_]/g, '_');
@@ -7010,7 +7024,8 @@ function synthesizeMessageBusRoute(
                 if (parameter.name === KERNEL_JOURNAL_ACCESS_STREAMS) {
                   return kernelLoopDispatch ? `${parameter.name}[${rowExpression}]` : parameter.name;
                 }
-                if (parameter.name === KERNEL_JOURNAL_RECORDS) return parameter.name;
+                if (parameter.name === KERNEL_JOURNAL_RECORDS
+                  || parameter.name.startsWith(KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX)) return parameter.name;
                 if (parameter.name.startsWith(VMAP_RUNTIME_INPUT_COUNT_PREFIX)
                   || parameter.name.startsWith(VMAP_RUNTIME_OUTPUT_COUNT_PREFIX)) return parameter.name;
                 if (parameter.name.startsWith('__internal__collectionIter')
@@ -7198,6 +7213,7 @@ function synthesizeMessageBusRoute(
         && !parameter.name.startsWith(VMAP_RUNTIME_OUTPUT_COUNT_PREFIX)
         && parameter.name !== KERNEL_JOURNAL_ACCESS_STREAMS
         && parameter.name !== KERNEL_JOURNAL_RECORDS
+        && !parameter.name.startsWith(KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX)
         && !parameter.name.startsWith('__internal__collectionIter')
         && !parameter.name.startsWith('__internal__valueWitness_')
         && !parameter.name.startsWith('__internal__leadingPushValue_')
@@ -8456,40 +8472,6 @@ function synthesizeMessageBusRoute(
     return Array.from({ length: bound }, (_unused, index) =>
       `require(${routeStateReference(name)}[${index}] == ${routeStateReference(name)}[${index}]);`);
   }).join('\n');
-  const kernelJournalValidation = !kernelJournalAccessMode ? '' : `
-        require(${KERNEL_JOURNAL_RECORDS}.length <= 65535);
-        for (int __message_bus_journal_record_index = 0;
-          __message_bus_journal_record_index < ${KERNEL_JOURNAL_RECORDS}.length;
-          __message_bus_journal_record_index = __message_bus_journal_record_index + 1) {
-          bytes __message_bus_journal_record =
-            ${KERNEL_JOURNAL_RECORDS}[__message_bus_journal_record_index];
-          require(within(__message_bus_journal_record.length, 86, 151));
-          require(__message_bus_journal_record.slice(0, 1) == hex"05");
-          bigint __message_bus_journal_record_flags = int(bytes.concat(
-            __message_bus_journal_record.slice(1, 2), hex"00"
-          ));
-          require(__message_bus_journal_record_flags < 16);
-          // Unlocking data is always a pre-state witness. Dirty records are created only by reached kernel rows;
-          // accepting one at route entry would let the caller choose the alleged read-your-writes value.
-          require(__message_bus_journal_record_flags == 1
-            || __message_bus_journal_record_flags == 12);
-          require(__message_bus_journal_record_flags % 2 != 1
-            || __message_bus_journal_record_flags < 8);
-          require(__message_bus_journal_record_flags % 2 == 1
-            || __message_bus_journal_record_flags >= 8);
-          require(__message_bus_journal_record_flags < 8
-            || __message_bus_journal_record_flags % 8 >= 2);
-          require(__message_bus_journal_record_flags < 4
-            || __message_bus_journal_record_flags % 4 >= 2
-            || __message_bus_journal_record_flags >= 8);
-          if (__message_bus_journal_record_flags % 8 >= 4) {
-            require(__message_bus_journal_record.length == 86);
-          }
-          if (__message_bus_journal_record_flags == 12) {
-            require(__message_bus_journal_record.slice(54, 86) == hex"${'00'.repeat(32)}");
-          }
-        }
-  `;
   const routeStructs = [...ast.structDefinitions, ...contract.structDefinitions]
     .filter((definition, index, all) =>
       all.findIndex((candidate) => candidate.name === definition.name) === index)
@@ -8621,7 +8603,6 @@ function synthesizeMessageBusRoute(
         ${kernelUpgradeMode ? 'bigint __message_bus_upgrade_position = -1;' : ''}
         ${kernelV2SignatureFence ? 'bigint __message_bus_signature_count = 0;' : ''}
         ${fixedIterationEntryPins}
-        ${kernelJournalValidation}
         require(batchBlob.length >= 7);
         require(batchBlob.length <= ${MAX_MESSAGE_BUS_BLOB_BYTES});
         // This carrier can approach the transaction-size ceiling. A control-flow scope makes its lifetime
@@ -10771,52 +10752,6 @@ function compileResolvedAst(
   const artifact = generateArtifact(
     ast, optimisationResult.script, code, debug, mergedCompilerOptions, functionBodies, fingerprint,
   );
-  // Route synthesis precedes the final symbol/type passes because collection and effect handlers must be cloned
-  // before their physical layouts are lowered. Solidity address transfers, however, only become dedicated typed
-  // AST nodes during those later passes. The ABI serializer above is therefore the first shared boundary at which
-  // every fixed BCH effect has its final, SDK-consumable operand and activation descriptors.
-  //
-  // Refuse any handler whose descriptor is incomplete before publishing messageBus.handlers. The ordinary
-  // verifier-binding flow consumes these verdicts and recompiles the pristine AST with only eligible handler
-  // names, so the shipped route is resynthesized without this dispatch arm rather than merely relabeled. Reading
-  // the emitted descriptor also keeps admission and composition on one recipe language: no second AST evaluator,
-  // source-name convention, or Solidity intrinsic heuristic is introduced here.
-  if (mergedCompilerOptions.messageBus && mergedCompilerOptions.messageBusKernel === true) {
-    const sourceHandlers = [
-      ...ast.contract.functions,
-      ast.contract.fallbackDef,
-      ast.contract.receiveDef,
-    ].filter((fn): fn is FunctionDefinitionNode => !!fn && fn.isEntryPoint && !fn.messageBusRoute);
-    for (const fn of sourceHandlers) {
-      if (fn.messageBusEligible !== true) continue;
-      const selector = fn.functionSelector ? binToHex(fn.functionSelector) : undefined;
-      const abi = artifact.abi.find((candidate) => selector !== undefined
-        ? candidate.selector === selector
-        : fn === ast.contract.fallbackDef ? candidate.isFallback === true
-          : fn === ast.contract.receiveDef ? candidate.isReceive === true
-            : false);
-      const incomplete = abi?.transfers?.some((transfer) =>
-        (transfer.recipientRecipe === undefined && transfer.derivedRecipient === undefined)
-        || transfer.amountRecipe === undefined
-        || transfer.condition === null) === true;
-      if (!incomplete) continue;
-      fn.messageBusEligible = false;
-      fn.messageBusRejectionReason = 'KERNEL_LAYOUT';
-    }
-  }
-  mark('artifact');
-  profileLog('resolved', resolvedStarted, {
-    contract: artifact.contractName,
-    bytecodeBytes: artifact.debug?.bytecode ? artifact.debug.bytecode.length / 2 : undefined,
-  });
-  // Solidity-compatible upgradeable contracts are marked delegate in the primary compilation pass (the
-  // initializer/reinitializer inference above), rather than through the lazy `autoDelegate` variant. They use
-  // the same pinned delegate covenant and must publish the same certificate; otherwise the SDK keeps the
-  // default proxy's strict output-cardinality check and valid mapping-growing initializers fail at input 0.
-  const hasCompilerDelegate = artifact.abi.some((fn) => fn.modifiers?.includes(FunctionModifier.DELEGATE));
-  if (mergedCompilerOptions.autoDelegate || hasCompilerDelegate) {
-    artifact.delegateProxyStateOutputCountPinned = true;
-  }
   const signatureFrameHex = (fn: FunctionDefinitionNode): string | undefined => {
     const parameterIndices = fn.messageBusAllOutputSignatureParameters;
     const coveredKeys = fn.messageBusSignatureCoveredFunctionKeys;
@@ -10852,6 +10787,61 @@ function compileResolvedAst(
     }
     return parts.join('');
   };
+  // Route synthesis precedes the final symbol/type passes because collection and effect handlers must be cloned
+  // before their physical layouts are lowered. Solidity address transfers, however, only become dedicated typed
+  // AST nodes during those later passes. The ABI serializer above is therefore the first shared boundary at which
+  // every fixed BCH effect has its final, SDK-consumable operand and activation descriptors.
+  //
+  // Refuse any handler whose descriptor is incomplete before publishing messageBus.handlers. The ordinary
+  // verifier-binding flow consumes these verdicts and recompiles the pristine AST with only eligible handler
+  // names, so the shipped route is resynthesized without this dispatch arm rather than merely relabeled. Reading
+  // the emitted descriptor also keeps admission and composition on one recipe language: no second AST evaluator,
+  // source-name convention, or Solidity intrinsic heuristic is introduced here.
+  if (mergedCompilerOptions.messageBus && mergedCompilerOptions.messageBusKernel === true) {
+    const sourceHandlers = [
+      ...ast.contract.functions,
+      ast.contract.fallbackDef,
+      ast.contract.receiveDef,
+    ].filter((fn): fn is FunctionDefinitionNode => !!fn && fn.isEntryPoint && !fn.messageBusRoute);
+    for (const fn of sourceHandlers) {
+      if (fn.messageBusEligible !== true) continue;
+      // Signature bytes remain outside the committed invocation row. An eligible handler must therefore publish
+      // the complete KTS1 provenance frame which binds each detached leaf to its exact invoked CHECKSIG body.
+      // Some lowered handler shapes execute through a clone and leave no source-body bytecode to bind; refuse
+      // those after code generation so the verifier-binder pass recompiles without the unsafe dispatch arm.
+      if (fn.messageBusUsesTransactionSignature === true && signatureFrameHex(fn) === undefined) {
+        fn.messageBusEligible = false;
+        fn.messageBusRejectionReason = 'KERNEL_TX_SIGNATURE';
+        continue;
+      }
+      const selector = fn.functionSelector ? binToHex(fn.functionSelector) : undefined;
+      const abi = artifact.abi.find((candidate) => selector !== undefined
+        ? candidate.selector === selector
+        : fn === ast.contract.fallbackDef ? candidate.isFallback === true
+          : fn === ast.contract.receiveDef ? candidate.isReceive === true
+            : false);
+      const incomplete = abi?.transfers?.some((transfer) =>
+        (transfer.recipientRecipe === undefined && transfer.derivedRecipient === undefined)
+        || transfer.amountRecipe === undefined
+        || transfer.condition === null) === true;
+      if (!incomplete) continue;
+      fn.messageBusEligible = false;
+      fn.messageBusRejectionReason = 'KERNEL_LAYOUT';
+    }
+  }
+  mark('artifact');
+  profileLog('resolved', resolvedStarted, {
+    contract: artifact.contractName,
+    bytecodeBytes: artifact.debug?.bytecode ? artifact.debug.bytecode.length / 2 : undefined,
+  });
+  // Solidity-compatible upgradeable contracts are marked delegate in the primary compilation pass (the
+  // initializer/reinitializer inference above), rather than through the lazy `autoDelegate` variant. They use
+  // the same pinned delegate covenant and must publish the same certificate; otherwise the SDK keeps the
+  // default proxy's strict output-cardinality check and valid mapping-growing initializers fail at input 0.
+  const hasCompilerDelegate = artifact.abi.some((fn) => fn.modifiers?.includes(FunctionModifier.DELEGATE));
+  if (mergedCompilerOptions.autoDelegate || hasCompilerDelegate) {
+    artifact.delegateProxyStateOutputCountPinned = true;
+  }
   const signaturePolicyVerification = (): string => {
     const policies = [
       ...ast.contract.functions,

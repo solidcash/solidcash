@@ -2,6 +2,43 @@ import { describe, expect, it } from 'vitest';
 import { compileString } from '../../src/compiler.js';
 
 describe('message-bus heavy work is per function', () => {
+  it('preallocates legacy message-bus events independently for state-writing handlers', () => {
+    const artifact = compileString(`
+      contract Ledger {
+        int total;
+        event Increased(int value);
+        event Replaced(int value);
+
+        function increase(int amount) public {
+          this.total = this.total + amount;
+          emit Increased(this.total);
+          require(amount >= 0);
+        }
+
+        function replace(int value) public {
+          this.total = value;
+          emit Replaced(value);
+          require(value >= 0);
+        }
+      }
+    `, {
+      forceStateful: true,
+      messageBus: true,
+      messageBusKernel: false,
+      maximumInputBytes: 1_000_000,
+      suppressWarnings: true,
+    });
+
+    expect(artifact.messageBus).toBeDefined();
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'increase'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'replace'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.abi.map((entry) => entry.name)).toEqual(
+      expect.arrayContaining(['increase', 'replace']),
+    );
+  });
+
   it('keeps kernel bytecode independent of the diagnostic input-size ceiling', () => {
     const arithmetic = Array.from({ length: 60 }, (_unused, index) =>
       `next = (next * 3 + ${index + 2}) % 1000003;`).join('\n');

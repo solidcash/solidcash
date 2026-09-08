@@ -1138,6 +1138,21 @@ export interface InvocationAnalysisArtifact {
  */
 export const MAX_MESSAGE_BUS_BLOB_BYTES = 520;
 
+/**
+ * Shared wire ABI for bounded kernel entry-journal transport. Each opaque `bytes` slot contains a canonical
+ * encoded bytes[] vector. A maximum-size record is 150 bytes plus its two-byte element frame, so three records
+ * stay below BCH's 520-byte item ceiling while four may not. Segment membership is ordinal-based and therefore
+ * remains stable when a clean record acquires a longer dirty value tail. The 99-record limit is an explicit
+ * global transport/indexing ceiling across all streams, aligned as a deliberate v1 budget with the reviewed
+ * one-stream access ceiling. Finalized transactions remain subject to independent BCH size and cost limits.
+ */
+export const KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX = '__internal__kernelJournalRecordSegment_';
+export const KERNEL_ENTRY_JOURNAL_RECORDS_PER_SEGMENT = 3;
+export const KERNEL_ENTRY_JOURNAL_MAX_RECORDS = 99;
+export const KERNEL_ENTRY_JOURNAL_MAX_SEGMENTS = Math.ceil(
+  KERNEL_ENTRY_JOURNAL_MAX_RECORDS / KERNEL_ENTRY_JOURNAL_RECORDS_PER_SEGMENT,
+);
+
 /** Shared wire constants for the atomic single-transaction message bus. */
 export const ATOMIC_MESSAGE_BUS_DOMAIN_HEX = '4c33425553310000';
 export const ATOMIC_MESSAGE_BUS_MAX_PARTICIPANTS = 8;

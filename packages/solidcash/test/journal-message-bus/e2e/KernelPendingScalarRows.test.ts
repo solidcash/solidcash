@@ -2,6 +2,7 @@ import {
   bigIntToVmNumber, binToHex, decodeAuthenticationInstructions, encodeAuthenticationInstructions,
   hexToBin, vmNumberToBigInt,
 } from '@bitauth/libauth';
+import { decodePushdataValue, KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX } from '@solidcash/utils';
 import { compileString } from 'solidc';
 import { describe, expect, it } from 'vitest';
 import { Contract, StatefulContract, encodeFunctionArgument } from '../../../src/index.js';
@@ -355,23 +356,25 @@ describe('kernel pending fixed-width scalar rows', () => {
     expect(routeSucceeds(intermediate), 'extra intermediate output').toBe(false);
 
     const recordIndex = artifact.messageBus!.route.inputs.findIndex((input) =>
-      input.name === '__internal__kernelJournalRecords');
+      input.name === `${KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX}0`);
     const originalUnlocker = routeInput.unlocker;
     const hostileParams = [...originalUnlocker.params];
-    const records = originalUnlocker.params[recordIndex] as Uint8Array[];
+    const encodedCarrier = originalUnlocker.params[recordIndex] as Uint8Array;
+    const records = decodePushdataValue(encodedCarrier, 0, 'bytes[]').value as Uint8Array[];
     const dirtyAtEntry = records.map((record, index) => {
       const copy = new Uint8Array(record);
       if (index === 0) copy[1] = 0x03;
       return copy;
     });
-    hostileParams[recordIndex] = dirtyAtEntry;
+    hostileParams[recordIndex] = encodeFunctionArgument(
+      dirtyAtEntry, 'bytes[]', artifact.stateLayout!.structs,
+    ) as Uint8Array;
     routeInput.unlocker = originalUnlocker.contract.createCompilerRouteUnlocker(
       originalUnlocker.abiFunction, hexToBin(artifact.messageBus!.route.selector),
     )(...hostileParams);
     expect(routeSucceeds(builder.buildLibauthTransaction()), 'caller-supplied dirty carrier').toBe(false);
     routeInput.unlocker = originalUnlocker;
 
-    const encodedCarrier = encodeFunctionArgument(records, 'bytes[]') as Uint8Array;
     const carrierInstructions = decodeAuthenticationInstructions(transaction.inputs[routeInputIndex].unlockingBytecode);
     const carrierInstructionIndex = carrierInstructions.findIndex((instruction) => 'data' in instruction
       && binToHex(instruction.data) === binToHex(encodedCarrier));
@@ -399,7 +402,7 @@ describe('kernel pending fixed-width scalar rows', () => {
     const emptyInstructions = decodeAuthenticationInstructions(emptyTx.inputs[emptyRouteIndex].unlockingBytecode);
     const emptyCarrier = emptyInstructions[carrierInstructionIndex];
     if (!('data' in emptyCarrier)) throw new Error('empty kernel carrier is not a pushed item');
-    expect(binToHex(emptyCarrier.data)).toBe(binToHex(encodeFunctionArgument([], 'bytes[]') as Uint8Array));
+    expect(binToHex(emptyCarrier.data)).toBe('00');
     emptyInstructions[carrierInstructionIndex] = {
       ...emptyCarrier, data: new Uint8Array([...emptyCarrier.data, ...trailingFrame]),
     };
@@ -518,8 +521,17 @@ describe('kernel pending fixed-width scalar rows', () => {
       .resolves.toBeDefined();
     await expect(contract.batch([{ function: 'addMany', args: [[0n, 1n, 2n, 3n, 4n], 1n] }]).build())
       .resolves.toBeDefined();
-    await expect(contract.batch([{ function: 'addMany', args: [[0n, 1n, 2n, 3n, 4n, 5n], 1n] }]).build())
-      .rejects.toThrow(/requires segmented carrier inputs/);
+    await expect(contract.batch([{ function: 'addMany', args: [[0n, 1n, 2n, 3n, 4n, 5n], 1n] }]).send())
+      .resolves.toBeDefined();
+    const collection = artifact.stateLayout!.collections.find((candidate) => candidate.name === 'values')!;
+    const entries = await provider.getUtxos(getEntryNftAddress(inner, categoryId, collection.signature));
+    for (let key = 0n; key < 6n; key += 1n) {
+      const entry = entries.find((utxo) =>
+        binToHex(hexToBin(utxo.token!.nft!.commitment).slice(0, 32)) === binToHex(keyToSlot(bigIntToVmNumber(key))));
+      expect(vmNumberToBigInt(hexToBin(entry!.token!.nft!.commitment).slice(64), {
+        requireMinimalEncoding: false,
+      })).toBe(key === 0n ? 3n : 2n);
+    }
   }, 180_000);
 
   it('rejects pending settlement mixed with runtime effect output segments', async () => {

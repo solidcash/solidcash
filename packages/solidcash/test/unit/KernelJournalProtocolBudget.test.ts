@@ -2,9 +2,16 @@ import {
   KERNEL_ENTRY_JOURNAL_MAX_RECORDS,
   KERNEL_ENTRY_JOURNAL_MAX_SEGMENTS,
   KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX,
+  decodePushdataValue,
 } from '@solidcash/utils';
 import { describe, expect, it } from 'vitest';
-import { encodeKernelEntryJournalRecord } from '../../src/stateful/KernelEntryJournal.js';
+import {
+  encodeKernelEntryJournalRecord,
+  kernelEntryJournalRecordPosition,
+  segmentKernelEntryJournalRecords,
+  validateKernelEntryJournalRecordSegmentSlots,
+  validateKernelEntryJournalRecordSegments,
+} from '../../src/stateful/KernelEntryJournal.js';
 import {
   assertKernelJournalRecordBudget,
   kernelJournalRecordSegmentWitnesses,
@@ -23,7 +30,7 @@ const record = (ordinal: number): Uint8Array => encodeKernelEntryJournalRecord({
 
 const segmentInput = (index: number): { name: string; type: string } => ({
   name: `${KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX}${index}`,
-  type: 'bytes[]',
+  type: 'bytes',
 });
 
 describe('kernel journal protocol budget', () => {
@@ -41,8 +48,27 @@ describe('kernel journal protocol budget', () => {
     const witnesses = kernelJournalRecordSegmentWitnesses(inputs, records);
 
     expect(witnesses.slots).toHaveLength(KERNEL_ENTRY_JOURNAL_MAX_SEGMENTS);
-    expect(witnesses.slots.flatMap((slot) => slot.records)).toHaveLength(KERNEL_ENTRY_JOURNAL_MAX_RECORDS);
-    expect(witnesses.slots.every((slot) => slot.records.length === 3)).toBe(true);
+    const decoded = witnesses.slots.flatMap((slot) =>
+      decodePushdataValue(slot.carrier, 0, 'bytes[]').value as Uint8Array[]);
+    expect(decoded).toHaveLength(KERNEL_ENTRY_JOURNAL_MAX_RECORDS);
+    expect(witnesses.slots.every((slot) =>
+      (decodePushdataValue(slot.carrier, 0, 'bytes[]').value as Uint8Array[]).length === 3)).toBe(true);
+    expect(kernelEntryJournalRecordPosition(98, records.length))
+      .toEqual({ segmentIndex: 32, segmentRecordIndex: 2 });
+    expect(() => kernelEntryJournalRecordPosition(99, records.length)).toThrow('out of range');
+    expect(() => segmentKernelEntryJournalRecords([...records, record(99)]))
+      .toThrow('must not exceed 99');
+  });
+
+  it('rejects sparse and over-capacity segment partitions', () => {
+    const records = Array.from({ length: 4 }, (_unused, ordinal) => record(ordinal));
+    const [full, tail] = segmentKernelEntryJournalRecords(records);
+    expect(() => validateKernelEntryJournalRecordSegments([[...full, tail[0]]]))
+      .toThrow('non-canonical record partition');
+    expect(() => validateKernelEntryJournalRecordSegmentSlots([full, [], tail], 2))
+      .toThrow('authenticated non-empty prefix');
+    expect(() => validateKernelEntryJournalRecordSegmentSlots([full, [], tail], 3))
+      .toThrow('authenticated non-empty prefix');
   });
 
   it('rejects compiler ABI segment slots outside the protocol domain', () => {

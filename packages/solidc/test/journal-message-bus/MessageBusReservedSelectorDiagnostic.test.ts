@@ -43,13 +43,13 @@ describe('callManifest-v1 static refusal classes', () => {
     expect(classifyMessageBusRejection(reason)).toBe(code);
   });
 
-  it('admits a code-local signature check after preserving the stable legacy classifier', () => {
+  it('fences a code-local signature check after preserving the stable legacy classifier', () => {
     const artifact = compileString(`pragma solidcash >=0.8.0;
       contract SignatureRefusal(pubkey owner) {
         function signed() public { require(checkSig(sig(hex"00"), owner)); }
         function open() public { require(true); }
-      }`, { forceStateful: true, messageBus: true });
+    }`, { forceStateful: true, messageBus: true });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'signed'))
-      .toMatchObject({ eligible: true });
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_TX_SIGNATURE' });
   });
 });

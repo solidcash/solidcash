@@ -123,12 +123,14 @@ import {
   encodeEntryCommitment, decodeEntryCommitment,
 } from './SortedList.js';
 import {
+  decodeKernelEntryJournalRecord,
   decodeKernelEntryJournalAccesses,
   encodeKernelEntryJournalAccesses,
   KERNEL_ENTRY_JOURNAL_MAX_RECORDS,
   KERNEL_ENTRY_JOURNAL_MAX_SEGMENTS,
   kernelEntryJournalRecordSegmentIndex,
   kernelEntryJournalRecordSegmentName,
+  encodeKernelEntryJournalRecordSegment,
   planKernelEntryJournalAccessTopology,
   segmentKernelEntryJournalRecords,
   validateKernelEntryJournalRecordSegmentSlots,
@@ -446,8 +448,10 @@ export function resolvePreparedKernelDelegateExecution(input: {
 
 function defaultInternalFunctionArg(input: { name: string; type?: string }): FunctionArgument {
   const { name, type = '' } = input;
-  if (name === KERNEL_JOURNAL_ACCESS_STREAMS || name === KERNEL_JOURNAL_RECORDS
-    || kernelEntryJournalRecordSegmentIndex(name) !== undefined) return [];
+  if (kernelEntryJournalRecordSegmentIndex(name) !== undefined) {
+    return encodeKernelEntryJournalRecordSegment([]);
+  }
+  if (name === KERNEL_JOURNAL_ACCESS_STREAMS || name === KERNEL_JOURNAL_RECORDS) return [];
   if (name.includes('Selector') || type === 'bytes4') return new Uint8Array(4);
   if (name.includes('Category') || name.includes('BatchSlot')
     || name.includes('BatchNext') || type === 'bytes32') return new Uint8Array(32);
@@ -461,7 +465,7 @@ function defaultInternalFunctionArg(input: { name: string; type?: string }): Fun
 
 export interface KernelJournalRecordSegmentWitnesses {
   /** Stable compiler-owned slot names in global segment-index order, including trailing empty capacity. */
-  slots: ReadonlyArray<{ name: string; inputIndex: number; records: Uint8Array[] }>;
+  slots: ReadonlyArray<{ name: string; inputIndex: number; carrier: Uint8Array }>;
 }
 
 /** Enforce the protocol-wide record budget across every independently planned collection/stream group. */
@@ -496,8 +500,8 @@ export function kernelJournalRecordSegmentWitnesses(
         + `${KERNEL_ENTRY_JOURNAL_MAX_SEGMENTS} slots.`,
       );
     }
-    if (input.type !== 'bytes[]') {
-      throw new Error(`Kernel journal segment input '${input.name}' must have type bytes[].`);
+    if (input.type !== 'bytes') {
+      throw new Error(`Kernel journal segment input '${input.name}' must have type bytes.`);
     }
     return [{ name: input.name, inputIndex, segmentIndex }];
   });
@@ -522,18 +526,20 @@ export function kernelJournalRecordSegmentWitnesses(
       + `${discovered.length} segment slots.`,
     );
   }
+  const rawSlots = Array.from({ length: discovered.length }, (_unused, segmentIndex) =>
+    segments[segmentIndex] ?? []);
+  validateKernelEntryJournalRecordSegmentSlots(
+    rawSlots, segments.length,
+    { expectedRecordCount: encodedRecords.length, transportOnly: true },
+  );
   const slots = Array.from({ length: discovered.length }, (_unused, segmentIndex) => {
     const slot = byIndex.get(segmentIndex)!;
     return {
       name: kernelEntryJournalRecordSegmentName(segmentIndex),
       inputIndex: slot.inputIndex,
-      records: segments[segmentIndex] ?? [],
+      carrier: encodeKernelEntryJournalRecordSegment(rawSlots[segmentIndex]),
     };
   });
-  validateKernelEntryJournalRecordSegmentSlots(
-    slots.map((slot) => slot.records), segments.length,
-    { expectedRecordCount: encodedRecords.length, transportOnly: true },
-  );
   return { slots };
 }
 
@@ -18380,10 +18386,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         accessesByStream.get(stream)![compactIndex] = scheduledAccesses[index];
       });
       const accesses = collectionStreams.map((stream) => accessesByStream.get(stream)!);
-      // Keep ordinary first-touch rows on their established direct-output path. Carrier settlement is selected
-      // only when an access consumes state produced by another runtime stream. Repeated operations within one
-      // stream use its established loop-local pending registers; crossing a row or an interleaved write site
-      // requires the transaction carrier. Mark the producer too so it publishes that state.
+      // Discover dependencies on a prior carrier mutation, including same-stream chains. Cross-stream
+      // dependencies in one execution group remain unsupported interleaving; every sound dependency marks both
+      // its consumer and producer before the transaction-wide carrier phase marks the remaining mutations.
       const priorProducer = new Map<number, {
         stream: (typeof runtimeKernelJournalStreams)[number];
         access: ReturnType<typeof decodeKernelEntryJournalAccesses>[number];
@@ -18398,14 +18403,15 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           }
           const carrierProducers = dependencies.map((ordinal) => priorProducer.get(ordinal))
             .filter((producer): producer is NonNullable<typeof producer> => (
-              producer !== undefined && producer.stream !== stream
+              producer !== undefined
             ));
           if (carrierProducers.length > 0) {
             access.pending = true;
             hasPendingScalarDependency = true;
             for (const producer of carrierProducers) {
               producer.access.pending = true;
-              if (producer.stream.executionGroup === stream.executionGroup) {
+              if (producer.stream !== stream
+                && producer.stream.executionGroup === stream.executionGroup) {
                 hasInterleavedStreamDependency = true;
               }
             }
@@ -18481,20 +18487,28 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       collectionPlan.globalOrdinals.set(local, ordinal);
       kernelJournalRecords.push(record);
       // Pending settlement verifies output ordinal N against carrier ordinal N. Bind the builder's physical
-      // trailing-output schedule to that same global order rather than relying on collection-grouped commitment
-      // maps or an independently reconstructed row schedule. Within one collection, topology records and final
-      // scalar commitments share the planner's first-touch ordinal space.
+      // trailing-output schedule to that same global order. A record ordinal is local to the journal plan, while
+      // the commitment vector is accumulated procedurally across selected rows, so their numeric indices are not
+      // interchangeable. The authenticated slot is their stable shared identity.
       const commitments = sortedLoopCommitments.get(stream.collection) ?? [];
-      if (commitments[local] === undefined) {
+      const recordSlot = decodeKernelEntryJournalRecord(record).slot;
+      const matchingCommitmentIndices = commitments.flatMap((commitment, index) => (
+        binsAreEqual(decodeEntryCommitment(hexToBin(commitment)).slot, recordSlot) ? [index] : []
+      ));
+      if (matchingCommitmentIndices.length !== 1) {
         throw new Error(
-          `Kernel pending scalar output for '${stream.collection}' has no commitment at local ordinal ${local}.`,
+          `Kernel pending scalar output for '${stream.collection}' requires exactly one commitment for journal `
+          + `record ${local}; found ${matchingCommitmentIndices.length}.`,
         );
       }
+      const commitmentIndex = matchingCommitmentIndices[0]!;
       const previous = pendingScalarOutputSegments[pendingScalarOutputSegments.length - 1];
-      if (previous?.collection === stream.collection && previous.offset + previous.count === local) {
+      if (previous?.collection === stream.collection && previous.offset + previous.count === commitmentIndex) {
         previous.count += 1;
       } else {
-        pendingScalarOutputSegments.push({ rowIndex: ordinal, collection: stream.collection, offset: local, count: 1 });
+        pendingScalarOutputSegments.push({
+          rowIndex: ordinal, collection: stream.collection, offset: commitmentIndex, count: 1,
+        });
       }
       return ordinal;
     };
@@ -18534,7 +18548,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     if (kernelJournalRecords.length > 0 && journalRecordsIndex < 0 && segmentWitnesses.slots.length === 0) {
       throw new Error('Kernel runtime journal records have no compiler-owned route input.');
     }
-    const replaceJournalArgument = (argumentIndex: number, records: Uint8Array[]): void => {
+    const replaceJournalArgument = (argumentIndex: number, records: Uint8Array[] | Uint8Array): void => {
       while (finalArgs.length <= argumentIndex) {
         const pending = entryAbiFunction!.inputs[finalArgs.length];
         if (!pending?.name.startsWith('__internal__')) {
@@ -18550,7 +18564,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       entryArgs[argumentIndex] = records;
       finalArgs[argumentIndex] = records;
     };
-    const publishJournalWitness = (name: string, records: Uint8Array[]): void => {
+    const publishJournalWitness = (name: string, records: Uint8Array[] | Uint8Array): void => {
       for (const frame of upsertPlanningFrames) {
         if (!frame.routed) continue;
         frame.row!.internalArgs = {
@@ -18567,8 +18581,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     };
     if (segmentWitnesses.slots.length > 0) {
       for (const slot of segmentWitnesses.slots) {
-        replaceJournalArgument(slot.inputIndex, slot.records);
-        publishJournalWitness(slot.name, slot.records);
+        replaceJournalArgument(slot.inputIndex, slot.carrier);
+        publishJournalWitness(slot.name, slot.carrier);
       }
     } else if (journalRecordsIndex >= 0) {
       const encodedKernelJournalCarrier = encodeFunctionArgument(

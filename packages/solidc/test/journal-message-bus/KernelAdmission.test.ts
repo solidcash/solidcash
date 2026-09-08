@@ -192,7 +192,7 @@ describe('required kernel admission', () => {
     });
   });
 
-  it('does not mistake an implied selfdestruct for a topology-preserving row', () => {
+  it('classifies a selfdestruct statement as lifecycle even without a lifecycle modifier', () => {
     const artifact = compileString(`contract C() {
       address beneficiary;
       function retire() public { selfdestruct(this.beneficiary); }
@@ -544,12 +544,12 @@ describe('required kernel admission', () => {
     });
   });
 
-  it('publishes reachable transaction-signature checks for ordinary graph ancestors', () => {
+  it('keeps reachable transaction-signature checks fenced without a detached signing policy', () => {
     const artifact = compileString(`contract C() {
       function execute(bytes proof, pubkey key) public { require(checkSig(sig(proof), key)); }
     }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'execute')).toMatchObject({
-      eligible: true, usesTransactionSignature: true,
+      eligible: false, rejectionReason: 'KERNEL_TX_SIGNATURE',
     });
 
     const legacy = compileString(`contract C() {
@@ -565,7 +565,7 @@ describe('required kernel admission', () => {
       }
     `, { ...KERNEL, maximumInputBytes: 1_000_000 });
     expect(free.messageBus?.handlers.find((handler) => handler.name === 'execute'))
-      .toMatchObject({ eligible: true, usesTransactionSignature: true });
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_TX_SIGNATURE' });
 
     const library = compileString(`
       library Auth {
@@ -576,7 +576,7 @@ describe('required kernel admission', () => {
       }
     `, { ...KERNEL, maximumInputBytes: 1_000_000 });
     expect(library.messageBus?.handlers.find((handler) => handler.name === 'execute'))
-      .toMatchObject({ eligible: true, usesTransactionSignature: true });
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_TX_SIGNATURE' });
   });
 
   it('binds a scalar transaction signature as a row-aligned route witness', () => {
@@ -605,7 +605,7 @@ describe('required kernel admission', () => {
     ['a reassigned parameter', 'proof = sig(hex"00"); require(checkSig(proof, authority));', 'sig proof'],
     ['an outgoing graph edge', `require(checkSig(proof, authority));
       ITarget(target).run(); require(true);`, 'sig proof, address target'],
-  ])('does not publish an all-output policy for an ordinary signature reached through %s',
+  ])('keeps an ordinary signature reached through %s fenced without an all-output policy',
     (_label, body, parameters) => {
       const artifact = compileString(`interface ITarget { function run(); }
       contract C(pubkey authority) {
@@ -613,7 +613,7 @@ describe('required kernel admission', () => {
         function control() public { require(true); }
       }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
       const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'signed');
-      expect(handler).toMatchObject({ eligible: true, usesTransactionSignature: true });
+      expect(handler).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_TX_SIGNATURE' });
       expect(handler).not.toHaveProperty('transactionSignaturePolicy');
     });
 
@@ -1624,13 +1624,13 @@ describe('required kernel admission', () => {
     }));
   });
 
-  it('admits a transaction signature check with a code-local signature', () => {
+  it('keeps a code-local transaction signature fenced without a detached signing policy', () => {
     const artifact = compileString(`contract C(pubkey owner) {
       function denied() public { require(checkSig(sig(hex"00"), owner)); }
       function control() public { require(true); }
     }`, KERNEL);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied'))
-      .toMatchObject({ eligible: true });
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_TX_SIGNATURE' });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control'))
       .toMatchObject({ eligible: true });
   });

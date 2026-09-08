@@ -16514,13 +16514,22 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // Fail closed (throw) when a key is already present (update-in-loop) or two keys share a predecessor (same-gap).
     const sortedLoopCommitments = new Map<string, string[]>();
     const insertLoopPredecessors: UnlockableUtxo[] = [];
+    // Existing fixed-width scalar records are co-spent and assigned one output at first touch. Later kernel rows
+    // update that same eventual commitment in source order; the route covenant carries the value between rows and
+    // verifies the one final output. Topology-changing and aggregate values never enter this table.
+    const runtimeJournalPendingExisting = new Map<string, {
+      value: bigint; commitments: string[]; commitmentIndex: number; slot: Uint8Array; nextKey: Uint8Array;
+    }>();
     const runtimeLoopEntrySegments: Array<{
       rowIndex: number; collection: string; offset: number; count: number;
     }> = [];
     const runtimeJournalInputIds = new Set<string>();
-    const appendRuntimeJournalInput = (input: UnlockableUtxo, collection: string): void => {
+    const appendRuntimeJournalInput = (
+      input: UnlockableUtxo, collection: string, allowExistingScalarReuse = false,
+    ): boolean => {
       const id = `${input.txid}:${input.vout}`;
       if (runtimeJournalInputIds.has(id)) {
+        if (allowExistingScalarReuse) return false;
         throw new Error(
           `Message-bus runtime mapping rows overlap the '${collection}' pre-state journal at ${id}; `
           + 'a read-your-writes transition is required.',
@@ -16528,6 +16537,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       }
       runtimeJournalInputIds.add(id);
       insertLoopPredecessors.push(input);
+      return true;
     };
     for (const info of entryAbiFunction?.sortedInsertLoopInfo ?? []) {
       const collection = (stateLayout.collections ?? []).find((c) => c.name === info.collection);
@@ -17878,18 +17888,40 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         const entry = list.find(slot);
         if (entry) {
           // UPDATE (existing recipient): co-spend the entry, mint the updated value ('delete' -> the type default 0).
-          if (cospent.has(uidOf(entry.utxo))) {
+          const journalSettledScalar = journalArgumentIndex >= 0
+            && !collection.chunkableValue
+            && /^(?:u?int\d*|u?fixed\d*x\d*|bigint)$/.test(collection.valueType)
+            && (info.op === '+' || info.op === 'set');
+          // Collection hash and resolved covenant address are compiler/owner identities; source-level names are not.
+          const journalIdentity = `${info.collectionHash}:${entryAddr}:${slotHex}`;
+          const priorPending = journalSettledScalar
+            ? runtimeJournalPendingExisting.get(journalIdentity) : undefined;
+          if (cospent.has(uidOf(entry.utxo)) && !priorPending) {
             throw new Error(
               `vmap upsert loop ${info.collection}: recipient ${i}'s entry is already co-spent this tx; `
                 + 'a read-your-writes transition is required',
             );
           }
           cospent.add(uidOf(entry.utxo));
-          const oldVal = info.op === '+' || info.op === '-'
-            ? vmNumberToBigInt(entry.value, { requireMinimalEncoding: false }) as bigint : 0n;
+          const oldVal = priorPending?.value ?? (info.op === '+' || info.op === '-'
+            ? vmNumberToBigInt(entry.value, { requireMinimalEncoding: false }) as bigint : 0n);
           const newVal: bigint | Uint8Array = isDelete ? 0n : info.op === 'set' || info.op === 'read' ? amt
             : info.op === '-' ? oldVal - (amt as bigint) : oldVal + (amt as bigint);
-          appendRuntimeJournalInput({ ...entry.utxo, unlocker: wUnlocker }, info.collection);
+          if (priorPending) {
+            if (!priorPending.commitments[priorPending.commitmentIndex]) {
+              throw new Error('Kernel pending scalar journal lost its first-touch output');
+            }
+            priorPending.value = newVal as bigint;
+            priorPending.commitments[priorPending.commitmentIndex] = binToHex(encodeEntryCommitment(
+              priorPending.slot, priorPending.nextKey, commitValue(priorPending.value),
+            ));
+            // This row consumes no second input and creates no intermediate output. Its access program selects the
+            // dirty carrier returned by the earlier row.
+            continue;
+          }
+          appendRuntimeJournalInput(
+            { ...entry.utxo, unlocker: wUnlocker }, info.collection, journalSettledScalar,
+          );
           if (collection.chunkableValue && info.op !== 'read') {
             const oldTail = entry.value;
             if (oldTail.length >= 36
@@ -17909,6 +17941,15 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             };
           }
           commitments.push(binToHex(encodeEntryCommitment(entry.slot, entry.nextKey, commitValue(newVal))));
+          if (journalSettledScalar) {
+            runtimeJournalPendingExisting.set(journalIdentity, {
+              value: newVal as bigint,
+              commitments,
+              commitmentIndex: commitments.length - 1,
+              slot: entry.slot,
+              nextKey: entry.nextKey,
+            });
+          }
           if (info.op === 'read') {
             priorReadProof = {
               uid: uidOf(entry.utxo), slot: entry.slot, nextKey: entry.nextKey,
@@ -17994,7 +18035,17 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       }
       if (commitments.length > 0) {
         const prior = sortedLoopCommitments.get(info.collection) ?? [];
-        sortedLoopCommitments.set(info.collection, [...prior, ...commitments]);
+        const offset = prior.length;
+        const merged = [...prior, ...commitments];
+        sortedLoopCommitments.set(info.collection, merged);
+        for (const pending of runtimeJournalPendingExisting.values()) {
+          if (pending.commitments === prior) {
+            pending.commitments = merged;
+          } else if (pending.commitments === commitments) {
+            pending.commitments = merged;
+            pending.commitmentIndex += offset;
+          }
+        }
         if (upsertFrame.routed) {
           const rowIndex = routeRowIndex(upsertFrame.row!);
           if (rowIndex < 0) throw new Error('Message-bus runtime loop row is missing from its route frame');
@@ -18046,6 +18097,18 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         records: plan.encodedRecords,
         globalOrdinals: new Map(),
       });
+    }
+    if (runtimeJournalPendingExisting.size > 0) {
+      const unsupported = [...plannedKernelStreamAccesses.values()].flat().some((access) => (
+        !access.presentBefore || !access.presentAfter || !access.mutates
+        || access.predecessorRecordOrdinal !== undefined
+      ));
+      if (unsupported) {
+        throw new Error(
+          'Kernel pending scalar settlement cannot mix existing-entry updates with reads, inserts, removals, '
+          + 'or predecessor rewrites in one transaction.',
+        );
+      }
     }
 
     // Materialize record carriers in source execution order. Streams in one compiler-published execution group
@@ -18129,6 +18192,15 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     ) ?? -1;
     if (kernelJournalRecords.length > 0 && journalRecordsIndex < 0) {
       throw new Error('Kernel runtime journal records have no compiler-owned route input.');
+    }
+    const encodedKernelJournalCarrier = encodeFunctionArgument(
+      kernelJournalRecords, 'bytes[]', stateLayout.structs,
+    ) as Uint8Array;
+    if (encodedKernelJournalCarrier.length > 520) {
+      throw new Error(
+        `Kernel entry journal carrier is ${encodedKernelJournalCarrier.length} bytes, exceeding the 520-byte `
+        + 'BCH stack-item limit; split the batch or use fewer distinct first-touch entries.',
+      );
     }
     if (journalRecordsIndex >= 0) {
       while (finalArgs.length <= journalRecordsIndex) {
@@ -25904,6 +25976,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     | { kind: 'events'; offset: number; count: number }
     | { kind: 'transfers'; offset: number; count: number }
     > = [];
+    if (runtimeJournalPendingExisting.size > 0
+      && (runtimeLoopEventSegments.length > 0 || runtimeLoopTransferSegments.length > 0)) {
+      throw new Error(
+        'Kernel pending scalar settlement cannot share a transaction with runtime event or transfer output segments.',
+      );
+    }
     if (runtimeLoopEntrySegments.length > 0 || runtimeLoopEventSegments.length > 0
       || runtimeLoopTransferSegments.length > 0) {
       const rowIndices = new Set([

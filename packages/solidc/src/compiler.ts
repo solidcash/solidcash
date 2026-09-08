@@ -8082,6 +8082,10 @@ function synthesizeMessageBusRoute(
             __message_bus_journal_record.slice(1, 2), hex"00"
           ));
           require(__message_bus_journal_record_flags < 16);
+          // Unlocking data is always a pre-state witness. Dirty records are created only by reached kernel rows;
+          // accepting one at route entry would let the caller choose the alleged read-your-writes value.
+          require(__message_bus_journal_record_flags == 1
+            || __message_bus_journal_record_flags == 12);
           require(__message_bus_journal_record_flags % 2 != 1
             || __message_bus_journal_record_flags < 8);
           require(__message_bus_journal_record_flags % 2 == 1
@@ -10420,6 +10424,10 @@ function compileResolvedAst(
   if (mergedCompilerOptions.autoDelegate || hasCompilerDelegate) {
     artifact.delegateProxyStateOutputCountPinned = true;
   }
+  const detachedVerifierProgram = mergedCompilerOptions.messageBus
+    && ast.contract.functions.some((fn) => fn.messageBusRoute)
+    ? singlePassVerifierProgram ?? extractMessageBusVerifierProgram(ast, traversal, optimisationResult.script)
+    : undefined;
   // X149. `artifact.bytecode` IS NOT BYTES. `generateArtifact` publishes it as `scriptToAsm(script)` - the
   // human-readable listing, in which one 1-byte opcode occupies `OP_CHECKSIGVERIFY ` - so `.length / 2` is
   // half a character count and OVERSTATES the script on every contract: 1,332 against a real 283 on a small
@@ -10432,7 +10440,15 @@ function compileResolvedAst(
   // is the same script - measured twice, once correctly.
   const artifactBytes = scriptToBytecode(optimisationResult.script).length;
   const maximumInputBytes = mergedCompilerOptions.maximumInputBytes ?? MAX_INPUT_BYTESIZE;
-  if (artifactBytes > maximumInputBytes) {
+  // A placeholder-bound pass temporarily contains the participant route and the detached verifier closure in one
+  // bare artifact. It is never deployed: publication extracts the verifier covenant and recompiles the participant,
+  // whose own artifact is checked here on that final pass. Reporting this intermediate sum as one BCH input gives a
+  // false consensus error even when both independently deployed scripts fit the limit.
+  const detachedVerifierIntermediate = (mergedCompilerOptions as InternalCompilerOptions)
+    .__synthesizeBoundRoutePlaceholder === true
+    || (!!detachedVerifierProgram && !mergedCompilerOptions.__messageBusVerifierProgram
+      && process.env.SOLIDC_SKIP_MESSAGE_BUS_BINDER !== '1');
+  if (artifactBytes > maximumInputBytes && !detachedVerifierIntermediate) {
     const message = `Contract '${artifact.contractName}' is ${artifactBytes} bytes, exceeding the configured `
       + `${maximumInputBytes}-byte input-script limit by ${artifactBytes - maximumInputBytes}. `
       + 'Every spend of it is invalid at consensus; it cannot be deployed without splitting '
@@ -10569,8 +10585,7 @@ function compileResolvedAst(
     }
     const messageBusRouteFn = ast.contract.functions.find((fn) => fn.messageBusRoute);
     const messageBusMaximumRows = messageBusRouteFn?.messageBusMaximumRows ?? MAX_MESSAGE_BUS_ROWS;
-    const extractedVerifierProgram = singlePassVerifierProgram
-      ?? extractMessageBusVerifierProgram(ast, traversal, optimisationResult.script);
+    const extractedVerifierProgram = detachedVerifierProgram;
     artifact.messageBus = {
       version: 1,
       selector: MESSAGE_BUS_SELECTOR_HEX,

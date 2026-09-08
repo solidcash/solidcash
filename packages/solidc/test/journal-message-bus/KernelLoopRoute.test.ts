@@ -1,5 +1,5 @@
 import { hexToBin } from '@bitauth/libauth';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { ArrayType, bytecodeToAsm, BytesType, IntType } from '@solidcash/utils';
 import { compileString, parseCode } from '../../src/compiler.js';
 import { ParameterNode, type FunctionDefinitionNode, type SourceFileNode } from '../../src/ast/AST.js';
@@ -203,12 +203,44 @@ contract Acc() {
     expect(records).toHaveLength(1);
     expect(records?.[0]?.type).toBe('bytes[]');
 
-    // The carrier is immutable in this transport-only stage: the route snapshots it before dispatch and binds
-    // the returned value back to that snapshot before its existing dense-prefix length check.
+    // The route retains the unchanged per-row path, while a changed carrier enters the covenant-verified final
+    // commitment flush and an exact address-cardinality scan.
     const asm = routeAsm(artifact);
-    expect(asm).toContain('OP_EQUALVERIFY');
+    expect(asm).toContain('OP_OUTPUTTOKENCOMMITMENT');
+    expect(asm).toContain('OP_TXOUTPUTCOUNT');
     expect(selectorPushCount(asm, write!.selector)).toBe(1);
     expect(selectorPushCount(asm, erase!.selector)).toBe(1);
+  });
+
+  it('publishes one transaction-wide final flush for general scalar set and add rows', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const artifact = compileString(`
+      pragma solidcash ^0.13.0;
+      contract Store() {
+        mapping(int => int) values;
+        function setRows(int[] keys, int value) public {
+          for (int i = 0; i < keys.length; i = i + 1) { this.values[keys[i]] = value; }
+          require(true);
+        }
+        function addRows(int[] keys, int value) public {
+          for (int i = 0; i < keys.length; i = i + 1) {
+            this.values[keys[i]] = this.values[keys[i]] + value;
+          }
+          require(true);
+        }
+      }
+    `, OPTIONS);
+    expect(warn.mock.calls.flat().join(' ')).not.toContain('input-script limit');
+    warn.mockRestore();
+    expect(artifact.diagnostics?.some((diagnostic) => diagnostic.code === 'contract-size-limit')).not.toBe(true);
+    expect(artifact.messageBus?.handlers.filter((handler) =>
+      handler.name === 'setRows' || handler.name === 'addRows'))
+      .toEqual([expect.objectContaining({ eligible: true }), expect.objectContaining({ eligible: true })]);
+    expect(artifact.messageBus?.route.inputs.filter((input) => input.name === KERNEL_JOURNAL_RECORDS))
+      .toHaveLength(1);
+    const asm = routeAsm(artifact);
+    expect(asm).toContain('OP_OUTPUTTOKENCOMMITMENT');
+    expect(asm).toContain('OP_TXOUTPUTCOUNT');
   });
 
   it('propagates the journal context through direct and one-level internal calls', () => {

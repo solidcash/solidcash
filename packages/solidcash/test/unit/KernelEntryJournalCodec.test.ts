@@ -7,6 +7,7 @@ import {
   KERNEL_ENTRY_JOURNAL_ACCESS_TAG,
   KERNEL_ENTRY_JOURNAL_TAG,
   KERNEL_ENTRY_JOURNAL_RECORDS_PER_SEGMENT,
+  KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX,
   decodeKernelEntryJournalAccesses,
   decodeKernelEntryJournalRecord,
   encodeKernelEntryJournalAccesses,
@@ -16,13 +17,17 @@ import {
   planKernelEntryJournalStreams,
   segmentKernelEntryJournalRecords,
   kernelEntryJournalRecordPosition,
+  kernelEntryJournalRecordSegmentIndex,
+  kernelEntryJournalRecordSegmentName,
   validateKernelEntryJournalRecordSegments,
   validateKernelEntryJournalRecordSegmentSlots,
   validateKernelEntryJournalTransportRecords,
 } from '../../src/stateful/KernelEntryJournal.js';
 import { SortedList, encodeEntryCommitment, slotValueToBytes } from '../../src/stateful/SortedList.js';
 import type { Utxo } from '../../src/interfaces.js';
-import { kernelJournalAccessStreamPlaceholders } from '../../src/stateful/StatefulContract.js';
+import {
+  kernelJournalAccessStreamPlaceholders, kernelJournalRecordSegmentWitnesses,
+} from '../../src/stateful/StatefulContract.js';
 
 const bytes = (length: number, fill: number): Uint8Array => new Uint8Array(length).fill(fill);
 const ACCESS_COLLECTION_HASH = bytes(20, 0xcc);
@@ -87,6 +92,43 @@ describe('kernel pending-entry journal codec', () => {
     expect(() => validateKernelEntryJournalRecordSegmentSlots([canonical[0], canonical[1], []], 1))
       .toThrow('authenticated non-empty prefix');
     expect(() => kernelEntryJournalRecordPosition(5, 5)).toThrow('out of range');
+  });
+
+  it('binds a carrier above 520 bytes to compiler-published stable segment slots', () => {
+    const records = Array.from({ length: 7 }, (_unused, ordinal) => journalRecord(ordinal + 1));
+    expect(encodePushdataValue(records, 'bytes[]').length).toBeGreaterThan(MAX_MESSAGE_BUS_BLOB_BYTES);
+    const inputs = Array.from({ length: 4 }, (_unused, segmentIndex) => ({
+      name: kernelEntryJournalRecordSegmentName(segmentIndex), type: 'bytes[]',
+    }));
+    const { slots } = kernelJournalRecordSegmentWitnesses(inputs, records);
+    expect(slots.map(({ name, inputIndex, records: segment }) => ({
+      name, inputIndex, recordCount: segment.length,
+    }))).toEqual([
+      { name: `${KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX}0`, inputIndex: 0, recordCount: 3 },
+      { name: `${KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX}1`, inputIndex: 1, recordCount: 3 },
+      { name: `${KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX}2`, inputIndex: 2, recordCount: 1 },
+      { name: `${KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX}3`, inputIndex: 3, recordCount: 0 },
+    ]);
+    expect(slots.flatMap((slot) => slot.records)).toEqual(records);
+    expect(kernelEntryJournalRecordSegmentIndex(inputs[2].name)).toBe(2);
+  });
+
+  it('rejects insufficient, gapped, duplicated, and non-canonical compiler segment slots', () => {
+    const records = Array.from({ length: 4 }, (_unused, ordinal) => journalRecord(ordinal + 1));
+    const input = (suffix: string): { name: string; type: string } => ({
+      name: `${KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX}${suffix}`, type: 'bytes[]',
+    });
+    expect(() => kernelJournalRecordSegmentWitnesses([input('0')], records))
+      .toThrow('requires 2 carrier segments');
+    expect(() => kernelJournalRecordSegmentWitnesses([input('0'), input('2')], records))
+      .toThrow('missing slot 1');
+    expect(() => kernelJournalRecordSegmentWitnesses([input('0'), input('0')], records))
+      .toThrow('published more than once');
+    expect(() => kernelJournalRecordSegmentWitnesses([input('00')], records))
+      .toThrow('non-canonical index');
+    expect(() => kernelJournalRecordSegmentWitnesses([
+      { ...input('0'), type: 'bytes[][]' }, input('1'),
+    ], records)).toThrow('must have type bytes[]');
   });
 
   it('builds a dense canonical placeholder vector from stream ordinals, independent of schema names', () => {

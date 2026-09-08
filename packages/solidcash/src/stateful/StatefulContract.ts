@@ -125,7 +125,10 @@ import {
 import {
   decodeKernelEntryJournalAccesses,
   encodeKernelEntryJournalAccesses,
+  kernelEntryJournalRecordSegmentIndex,
+  kernelEntryJournalRecordSegmentName,
   planKernelEntryJournalAccessTopology,
+  segmentKernelEntryJournalRecords,
   type KernelEntryJournalTopologyOperation,
 } from './KernelEntryJournal.js';
 import { resolveKernelDelegatePromotion } from './KernelDelegateForwarding.js';
@@ -156,10 +159,12 @@ import {
   liveChunkSlotsByOwner,
   rememberJobEventsValue,
   stageJobEventsValue,
+  stageValueChunkWrite,
   persistedJobEventsValue,
   persistedJobEventsWidth,
   persistedJobEventsLock,
   isPersistedJobEventsReady,
+  isValueChunkWriteReady,
   boundedDerivationIterations,
   shouldGrowSpeculativeChunkRegion,
   rememberJobEventsLock,
@@ -421,7 +426,8 @@ export function resolvePreparedKernelDelegateExecution(input: {
 
 function defaultInternalFunctionArg(input: { name: string; type?: string }): FunctionArgument {
   const { name, type = '' } = input;
-  if (name === KERNEL_JOURNAL_ACCESS_STREAMS || name === KERNEL_JOURNAL_RECORDS) return [];
+  if (name === KERNEL_JOURNAL_ACCESS_STREAMS || name === KERNEL_JOURNAL_RECORDS
+    || kernelEntryJournalRecordSegmentIndex(name) !== undefined) return [];
   if (name.includes('Selector') || type === 'bytes4') return new Uint8Array(4);
   if (name.includes('Category') || name.includes('BatchSlot')
     || name.includes('BatchNext') || type === 'bytes32') return new Uint8Array(32);
@@ -431,6 +437,60 @@ function defaultInternalFunctionArg(input: { name: string; type?: string }): Fun
     || name.includes('OutputIdx')) return -1n;
   if (type === 'bool') return false;
   return 0n;
+}
+
+export interface KernelJournalRecordSegmentWitnesses {
+  /** Stable compiler-owned slot names in global segment-index order, including trailing empty capacity. */
+  slots: ReadonlyArray<{ name: string; inputIndex: number; records: Uint8Array[] }>;
+}
+
+/**
+ * Bind a global journal record vector to the finite, compiler-published segment slots of one ABI function.
+ * Slot capacity comes exclusively from the ABI. Every unused trailing slot receives the canonical empty array.
+ */
+export function kernelJournalRecordSegmentWitnesses(
+  inputs: readonly Pick<AbiInput, 'name' | 'type'>[],
+  encodedRecords: readonly Uint8Array[],
+): KernelJournalRecordSegmentWitnesses {
+  const discovered = inputs.flatMap((input, inputIndex) => {
+    const segmentIndex = kernelEntryJournalRecordSegmentIndex(input.name);
+    if (segmentIndex === undefined) return [];
+    if (input.type !== 'bytes[]') {
+      throw new Error(`Kernel journal segment input '${input.name}' must have type bytes[].`);
+    }
+    return [{ name: input.name, inputIndex, segmentIndex }];
+  });
+  const byIndex = new Map<number, (typeof discovered)[number]>();
+  for (const slot of discovered) {
+    if (byIndex.has(slot.segmentIndex)) {
+      throw new Error(`Kernel journal segment slot ${slot.segmentIndex} is published more than once.`);
+    }
+    byIndex.set(slot.segmentIndex, slot);
+  }
+  for (let segmentIndex = 0; segmentIndex < discovered.length; segmentIndex += 1) {
+    if (!byIndex.has(segmentIndex)) {
+      throw new Error(`Kernel journal segment slots must be contiguous from 0; missing slot ${segmentIndex}.`);
+    }
+  }
+  // No published slots means the caller may still use the bounded monolithic compatibility input.
+  if (discovered.length === 0) return { slots: [] };
+  const segments = segmentKernelEntryJournalRecords(encodedRecords);
+  if (segments.length > discovered.length) {
+    throw new Error(
+      `Kernel entry journal requires ${segments.length} carrier segments, but the compiler published `
+      + `${discovered.length} segment slots.`,
+    );
+  }
+  return {
+    slots: Array.from({ length: discovered.length }, (_unused, segmentIndex) => {
+      const slot = byIndex.get(segmentIndex)!;
+      return {
+        name: kernelEntryJournalRecordSegmentName(segmentIndex),
+        inputIndex: slot.inputIndex,
+        records: segments[segmentIndex] ?? [],
+      };
+    }),
+  };
 }
 
 /** Build the canonical empty access vector for one handler's compiler-published stream ordinal space. */
@@ -1566,7 +1626,10 @@ function deriveRouteValueChunks(
     const selection = selectValueChunkWriteCategory(
       group.valueChunkWrites ?? describeValueChunkWrites(group),
     );
-    if (selection.status === 'absent') {
+    if (selection.status === 'absent' && permitsLegacyNamedValueChunkFallback(
+      [group], (physicalExternalCallFunction(group) as MessageBusRuntimeAbiFunction | undefined)
+        ?.messageBusConvention,
+    )) {
       // Compatibility only for descriptor-free artifacts.
       rememberJobEventsValue(group.categoryId, lastExtractedComputedValue);
     }
@@ -4909,6 +4972,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     if (capability.route.inputs.some((input) => input.name === KERNEL_JOURNAL_RECORDS)
       && resolvedCallerInternalWitnesses[KERNEL_JOURNAL_RECORDS] === undefined) {
       resolvedCallerInternalWitnesses[KERNEL_JOURNAL_RECORDS] = [];
+    }
+    for (const input of capability.route.inputs) {
+      if (kernelEntryJournalRecordSegmentIndex(input.name) !== undefined
+        && resolvedCallerInternalWitnesses[input.name] === undefined) {
+        resolvedCallerInternalWitnesses[input.name] = [];
+      }
     }
     for (const input of capability.route.inputs) {
       const permutationSpec = vmapCounterPermutationSpec(input.name);
@@ -10935,9 +11004,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       group.valueChunkWrites = describeValueChunkWrites(group);
       return group.valueChunkWrites;
     });
-    const persistedChunkWrite = isPersistedJobEventsReady()
-      ? selectPersistedValueChunkWrite(valueChunkWrites)
-      : undefined;
+    const selectedPersistedChunkWrite = selectPersistedValueChunkWrite(valueChunkWrites);
+    const persistedChunkWrite = selectedPersistedChunkWrite
+      && isValueChunkWriteReady(selectedPersistedChunkWrite) ? selectedPersistedChunkWrite : undefined;
     const persistWidthAtEntry = persistedChunkWrite
       ? persistedValueChunkWriteState(persistedChunkWrite)!.width : 0;
 
@@ -12827,7 +12896,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 const selection = selectValueChunkWriteCategory(valueChunkWrites.filter(
                   (write) => write.categoryId.toLowerCase() === chunkCategory.toLowerCase(),
                 ));
-                if (selection.status === 'absent') {
+                if (selection.status === 'absent' && permitsLegacyNamedValueChunkFallback(
+                  [llc, ...(proxyGroup ? [proxyGroup] : [])],
+                  (llc.compilerRoute?.abiFunction as MessageBusRuntimeAbiFunction | undefined)
+                    ?.messageBusConvention,
+                )) {
                   // Compatibility only for descriptor-free artifacts.
                   rememberJobEventsValue(chunkCategory, lastExtractedComputedValue);
                 }
@@ -12840,7 +12913,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               const selection = selectValueChunkWriteCategory(valueChunkWrites.filter(
                 (write) => write.categoryId.toLowerCase() === chunkCategory.toLowerCase(),
               ));
-              if (selection.status === 'absent') {
+              if (selection.status === 'absent' && permitsLegacyNamedValueChunkFallback(
+                [llc, ...(proxyGroup ? [proxyGroup] : [])],
+                (llc.compilerRoute?.abiFunction as MessageBusRuntimeAbiFunction | undefined)
+                  ?.messageBusConvention,
+              )) {
                 // Compatibility only for descriptor-free artifacts.
                 rememberJobEventsLock(chunkCategory, redeemLock);
               }
@@ -18369,20 +18446,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const journalRecordsIndex = entryAbiFunction?.inputs.findIndex(
       (input) => input.name === KERNEL_JOURNAL_RECORDS,
     ) ?? -1;
-    if (kernelJournalRecords.length > 0 && journalRecordsIndex < 0) {
+    const segmentWitnesses = kernelJournalRecordSegmentWitnesses(
+      entryAbiFunction?.inputs ?? [], kernelJournalRecords,
+    );
+    if (kernelJournalRecords.length > 0 && journalRecordsIndex < 0 && segmentWitnesses.slots.length === 0) {
       throw new Error('Kernel runtime journal records have no compiler-owned route input.');
     }
-    const encodedKernelJournalCarrier = encodeFunctionArgument(
-      kernelJournalRecords, 'bytes[]', stateLayout.structs,
-    ) as Uint8Array;
-    if (encodedKernelJournalCarrier.length > 520) {
-      throw new Error(
-        `Kernel entry journal carrier is ${encodedKernelJournalCarrier.length} bytes, exceeding the 520-byte `
-        + 'BCH stack-item limit; split the batch or use fewer distinct first-touch entries.',
-      );
-    }
-    if (journalRecordsIndex >= 0) {
-      while (finalArgs.length <= journalRecordsIndex) {
+    const replaceJournalArgument = (argumentIndex: number, records: Uint8Array[]): void => {
+      while (finalArgs.length <= argumentIndex) {
         const pending = entryAbiFunction!.inputs[finalArgs.length];
         if (!pending?.name.startsWith('__internal__')) {
           throw new Error(
@@ -18391,24 +18462,44 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         }
         finalArgs.push(defaultInternalFunctionArg(pending));
       }
-      while (entryArgs.length <= journalRecordsIndex) {
+      while (entryArgs.length <= argumentIndex) {
         entryArgs.push(defaultInternalFunctionArg(entryAbiFunction!.inputs[entryArgs.length]));
       }
-      entryArgs[journalRecordsIndex] = kernelJournalRecords;
-      finalArgs[journalRecordsIndex] = kernelJournalRecords;
+      entryArgs[argumentIndex] = records;
+      finalArgs[argumentIndex] = records;
+    };
+    const publishJournalWitness = (name: string, records: Uint8Array[]): void => {
       for (const frame of upsertPlanningFrames) {
         if (!frame.routed) continue;
         frame.row!.internalArgs = {
           ...frame.row!.internalArgs,
-          [KERNEL_JOURNAL_RECORDS]: kernelJournalRecords,
+          [name]: records,
         };
       }
       if (entryCompilerRoute) {
         entryCompilerRoute.internalArgs = {
           ...entryCompilerRoute.internalArgs,
-          [KERNEL_JOURNAL_RECORDS]: kernelJournalRecords,
+          [name]: records,
         };
       }
+    };
+    if (segmentWitnesses.slots.length > 0) {
+      for (const slot of segmentWitnesses.slots) {
+        replaceJournalArgument(slot.inputIndex, slot.records);
+        publishJournalWitness(slot.name, slot.records);
+      }
+    } else if (journalRecordsIndex >= 0) {
+      const encodedKernelJournalCarrier = encodeFunctionArgument(
+        kernelJournalRecords, 'bytes[]', stateLayout.structs,
+      ) as Uint8Array;
+      if (encodedKernelJournalCarrier.length > 520) {
+        throw new Error(
+          `Kernel entry journal requires segmented carrier inputs, but this compiler published only the legacy `
+          + `${encodedKernelJournalCarrier.length}-byte monolithic carrier.`,
+        );
+      }
+      replaceJournalArgument(journalRecordsIndex, kernelJournalRecords);
+      publishJournalWitness(KERNEL_JOURNAL_RECORDS, kernelJournalRecords);
     }
 
     // Every row which can touch a collection receives the same transaction-wide runtime cardinality. The route
@@ -21892,7 +21983,40 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                         const previousValue = childStoredValues.get(routeSlot);
                         if (previousValue && previousValue.length > VALUE_HEAD_SIZE
                           && nextValue.length > VALUE_HEAD_SIZE) {
-                          stageJobEventsValue(callee.categoryId, nextValue);
+                          const physicalRouteSlot = access.slotIndex ?? routeSlot;
+                          const blockSlot = selectedLayout.slots.find((slot) =>
+                            slot.kind === 'entry' && slot.slotIndex === physicalRouteSlot)?.offset;
+                          const insert = blockSlot === undefined ? undefined
+                            : childPlannedEntryInserts.find((planned) => planned.blockSlot === blockSlot);
+                          const commitment = insert?.newCommitment
+                            ?? (blockSlot === undefined ? undefined
+                              : childBlockInputs?.[blockSlot]?.token?.nft?.commitment);
+                          const commitmentBytes = typeof commitment === 'string'
+                            ? hexToBin(commitment) : commitment;
+                          const exactWrite: ValueChunkWriteDescriptor | undefined = commitmentBytes
+                            && commitmentBytes.length >= 32 ? {
+                              categoryId: callee.categoryId,
+                              collection: collection.name,
+                              collectionSignature: collection.signature,
+                              collectionHash: binToHex(computeCollectionHash(collection.signature)),
+                              keySlot: binToHex(decodeEntryCommitment(commitmentBytes).slot),
+                              entryAccessSlot: routeSlot,
+                              routeSlot: physicalRouteSlot,
+                              operation: insert ? 'insert' : 'update',
+                              outputBase: -1,
+                              outputCount: 0,
+                            } : undefined;
+                          if (exactWrite) {
+                            stageValueChunkWrite(exactWrite, nextValue);
+                          } else if (permitsLegacyNamedValueChunkFallback(
+                            [{
+                              logicalArtifact: sharedLogicalArtifact,
+                              externalContract: { inner: { artifact: sharedLogicalArtifact } },
+                            }],
+                            (selectedFn as MessageBusRuntimeAbiFunction | undefined)?.messageBusConvention,
+                          )) {
+                            stageJobEventsValue(callee.categoryId, nextValue);
+                          }
                         }
                       }
                       encodedPayloadBytes = Math.max(encodedPayloadBytes, payloadBytes);
@@ -27721,7 +27845,16 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       setGraphValueChunkOutputBase(builder.getValueChunkOutputBase());
       if (applyMintingMasterFills()) builder._refreshInputs();
       timing('pre-derive-layout-ready');
-      const persistBeforeDerive = isPersistedJobEventsReady() ? persistedJobEventsWidth() : 0;
+      const describedPersistedWrites = [
+        ...builder.getExternalCallUtxoGroups(), ...builder.getLowLevelCallUtxoGroups(),
+      ].flatMap((group) => group.valueChunkWrites ?? describeValueChunkWrites(group));
+      const describedPersistedWrite = selectPersistedValueChunkWrite(describedPersistedWrites);
+      const persistBeforeDerive = describedPersistedWrite && isValueChunkWriteReady(describedPersistedWrite)
+        ? (persistedValueChunkWriteState(describedPersistedWrite)?.width ?? 0)
+        : (describedPersistedWrites.length === 0 && permitsLegacyNamedValueChunkFallback(
+          [...builder.getExternalCallUtxoGroups(), ...builder.getLowLevelCallUtxoGroups()],
+          (entryAbiFunction as MessageBusRuntimeAbiFunction | undefined)?.messageBusConvention,
+        ) && isPersistedJobEventsReady() ? persistedJobEventsWidth() : 0);
       const layoutRevisionBeforeDerive = builder.getDynamicLayoutRevision();
       const firstDeriveStarted = Date.now();
       deriveResult = await this._deriveFullTransactionState(

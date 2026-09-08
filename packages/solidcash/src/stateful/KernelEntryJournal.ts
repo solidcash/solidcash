@@ -27,6 +27,31 @@ export const KERNEL_ENTRY_JOURNAL_MAX_VALUE_BYTES = 64;
  */
 export const KERNEL_ENTRY_JOURNAL_RECORDS_PER_SEGMENT = 3;
 
+/** Compiler-owned route input prefix for independently-pushed journal record segments. */
+export const KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX = '__internal__kernelJournalRecordSegment_';
+
+/** Return the stable compiler-owned input name for one zero-based journal record segment. */
+export function kernelEntryJournalRecordSegmentName(segmentIndex: number): string {
+  if (!Number.isSafeInteger(segmentIndex) || segmentIndex < 0) {
+    throw new Error('kernel entry journal segment index must be a non-negative safe integer');
+  }
+  return `${KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX}${segmentIndex}`;
+}
+
+/** Parse a canonical compiler-owned segment input name, rejecting aliases such as `_00`. */
+export function kernelEntryJournalRecordSegmentIndex(name: string): number | undefined {
+  if (!name.startsWith(KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX)) return undefined;
+  const suffix = name.slice(KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX.length);
+  if (!/^(0|[1-9][0-9]*)$/.test(suffix)) {
+    throw new Error(`kernel entry journal segment input '${name}' has a non-canonical index`);
+  }
+  const segmentIndex = Number(suffix);
+  if (!Number.isSafeInteger(segmentIndex)) {
+    throw new Error(`kernel entry journal segment input '${name}' exceeds the safe index range`);
+  }
+  return segmentIndex;
+}
+
 const COLLECTION_HASH_BYTES = 20;
 const SLOT_BYTES = 32;
 const HEADER_BYTES = 2 + COLLECTION_HASH_BYTES + SLOT_BYTES * 2;

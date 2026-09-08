@@ -503,7 +503,7 @@ describe('kernel pending fixed-width scalar rows', () => {
       .rejects.toThrow(/topology dependency between interleaved mapping write sites/);
   }, 180_000);
 
-  it('settles mixed scalar insertion topology and rejects carriers above one BCH stack item', async () => {
+  it('settles mixed scalar insertion topology and requires published segments above one BCH stack item', async () => {
     const provider = createTestProvider();
     const artifact = compileString(SOURCE, KERNEL);
     const inner = new Contract(artifact, [], { provider });
@@ -519,7 +519,7 @@ describe('kernel pending fixed-width scalar rows', () => {
     await expect(contract.batch([{ function: 'addMany', args: [[0n, 1n, 2n, 3n, 4n], 1n] }]).build())
       .resolves.toBeDefined();
     await expect(contract.batch([{ function: 'addMany', args: [[0n, 1n, 2n, 3n, 4n, 5n], 1n] }]).build())
-      .rejects.toThrow(/exceeding the 520-byte BCH stack-item limit/);
+      .rejects.toThrow(/requires segmented carrier inputs/);
   }, 180_000);
 
   it('rejects pending settlement mixed with runtime effect output segments', async () => {

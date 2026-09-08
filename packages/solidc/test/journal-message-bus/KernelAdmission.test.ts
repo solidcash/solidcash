@@ -308,7 +308,7 @@ describe('required kernel admission', () => {
     });
   });
 
-  it('keeps an overloaded helper name conservative before typed overload resolution', () => {
+  it('ignores an exactly selected non-signature overload beside a signature helper', () => {
     const artifact = compileString(`contract C(pubkey admin) {
       function inspect(sig proof) internal { require(checkSig(proof, admin)); }
       function inspect(int value) internal pure returns (int) { return value + 1; }
@@ -316,6 +316,35 @@ describe('required kernel admission', () => {
         int ignored = inspect(1);
         sig selected = proof;
         require(ignored == 2 && checkSig(selected, admin));
+      }
+      function control() public { require(true); }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'migrate')).toMatchObject({
+      eligible: true,
+      transactionSignaturePolicy: { hashType: 'all', parameterIndices: [0] },
+    });
+  });
+
+  it('proves an exactly typed signature overload without inheriting a same-name sibling body', () => {
+    const artifact = compileString(`contract C(pubkey admin) {
+      function authorize(sig proof, pubkey key) internal { require(checkSig(proof, key)); }
+      function authorize(int value) internal pure returns (int) { return value + 1; }
+      function migrate(sig proof) public upgrade { authorize(proof, admin); require(true); }
+      function control() public { require(true); }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'migrate')).toMatchObject({
+      eligible: true,
+      transactionSignaturePolicy: { hashType: 'all', parameterIndices: [0] },
+    });
+  });
+
+  it('does not guess a signature overload when the pre-semantic argument type is unresolved', () => {
+    const artifact = compileString(`contract C(pubkey admin) {
+      function authorize(sig proof, pubkey key) internal { require(checkSig(proof, key)); }
+      function authorize(int value, pubkey key) internal pure returns (int) { return value + bytes(key).length; }
+      function migrate(sig proof, bool choose) public upgrade {
+        authorize(choose ? proof : proof, admin);
+        require(true);
       }
       function control() public { require(true); }
     }`, { ...KERNEL, maximumInputBytes: 1_000_000 });

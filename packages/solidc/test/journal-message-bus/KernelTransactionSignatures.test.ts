@@ -136,6 +136,48 @@ describe('kernel transaction-signature boundaries', () => {
       .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_TX_SIGNATURE' });
   });
 
+  it('proves a data-only result through the exact pure overload', () => {
+    const artifact = compileString(`contract OverloadedDataFlow() {
+      function convert(bytes value) internal pure returns (sig) { return sig(value); }
+      function convert(sig witness) internal pure returns (sig) { return witness; }
+      function expose(sig witness, bytes value) public pure returns (sig) {
+        return convert(value);
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'expose'))
+      .toMatchObject({ eligible: true, outputs: [{ type: 'sig' }] });
+  });
+
+  it('does not prove provenance from a pure sibling of the selected non-pure overload', () => {
+    const artifact = compileString(`contract OverloadedDataFlowFence() {
+      function convert(bytes value) internal returns (sig) { return sig(value); }
+      function convert(sig witness) internal pure returns (sig) { return witness; }
+      function expose(sig witness, bytes value) public returns (sig) {
+        return convert(value);
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'expose'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_TX_SIGNATURE' });
+  });
+
+  it('keeps an unresolved overloaded result helper fail-closed', () => {
+    const artifact = compileString(`contract OverloadedDataFlowFence() {
+      function convert(bytes value) internal pure returns (sig) { return sig(value); }
+      function convert(sig witness) internal pure returns (sig) { return witness; }
+      function expose(sig witness, bool choose) public pure returns (sig) {
+        return convert(choose ? witness : witness);
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'expose'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_TX_SIGNATURE' });
+  });
+
   it('requires every signature leaf in aggregates to be independently proven', () => {
     const artifact = compileString(`contract AggregateDataFlow() {
       struct Result { sig left; int sequence; sig right; }

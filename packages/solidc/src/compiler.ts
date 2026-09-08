@@ -20,7 +20,7 @@ import {
   ATOMIC_MESSAGE_BUS_MAX_PARTICIPANTS, ATOMIC_MESSAGE_BUS_MAX_ROWS,
   ChildDeploymentSiteAbi, SplitArtifactBundle, SplitStateFootprint, StructType, TupleType, Type,
   ValueType, BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX, isDynamicStorageType,
-  messageBusVerifierLockingBytecode, childStateLayoutDigest, abiTypeString,
+  messageBusVerifierLockingBytecode, childStateLayoutDigest, abiTypeString, implicitlyCastableSignature,
 } from '@solidcash/utils';
 import { generateArtifact, generateDeclarationArtifact, occurrenceInfoOf } from './artifact/Artifact.js';
 import {
@@ -3203,17 +3203,73 @@ function synthesizeMessageBusRoute(
       }
     });
   }
-  const reachesTransactionSignatureCheck = (root: FunctionDefinitionNode): boolean => {
-    let found = false;
-    for (const name of collectNamedFunctionClosure(root, signatureClosureByName)) {
-      for (const candidate of signatureClosureByName.get(name) ?? []) {
-        walkInvocationAst(candidate.body, (node) => {
-          if (node instanceof FunctionCallNode && [
-            GlobalFunction.CHECKSIG, GlobalFunction.CHECKMULTISIG,
-          ].includes(node.identifier.name as GlobalFunction)) found = true;
-        });
-      }
+  /**
+   * Resolve only the part of a pre-semantic overload set for which source types are already authoritative.
+   * Literal/cast nodes carry their type from parsing; an identifier is usable when exactly one lexical binding
+   * of that name exists in the owning function. If those facts select one exact signature, the later type pass
+   * must select it too (an exact match wins over implicit conversions). Anything less remains unresolved.
+   */
+  const exactPreSemanticCallTarget = (
+    call: FunctionCallNode, owner: FunctionDefinitionNode,
+  ): FunctionDefinitionNode | undefined => {
+    const sourceParameters = (candidate: FunctionDefinitionNode): ParameterNode[] =>
+      candidate.parameters.filter((parameter) => !parameter.name.startsWith('__internal__'));
+    const candidates = (signatureClosureByName.get(call.identifier.name) ?? [])
+      .filter((candidate) => sourceParameters(candidate).length === call.parameters.length);
+    if (call.resolvedFunction && candidates.includes(call.resolvedFunction)) return call.resolvedFunction;
+    const definition = call.identifier.definition?.definition;
+    if (definition instanceof FunctionDefinitionNode && candidates.includes(definition)) return definition;
+    const lexicalType = (expression: ExpressionNode): Type | undefined => {
+      if (expression.type !== undefined) return expression.type;
+      if (!(expression instanceof IdentifierNode)) return undefined;
+      const resolved = expression.definition?.definition;
+      if (resolved instanceof ParameterNode || resolved instanceof VariableDefinitionNode) return resolved.type;
+      const bindings: Array<ParameterNode | VariableDefinitionNode> = owner.parameters
+        .filter((parameter) => parameter.name === expression.name);
+      walkInvocationAst(owner.body, (node) => {
+        if (node instanceof VariableDefinitionNode && node.name === expression.name) bindings.push(node);
+      });
+      return bindings.length === 1 ? bindings[0].type : undefined;
+    };
+    const actualTypes = call.parameters.map(lexicalType);
+    const exact = candidates.filter((candidate) => sourceParameters(candidate).every((parameter, index) =>
+      actualTypes[index] === undefined || parameter.type.toString() === actualTypes[index]?.toString()));
+    // At least one known argument must distinguish this target. With no type evidence, preserve the established
+    // unique-source-signature fallback but never guess among overloads.
+    if (actualTypes.some((type) => type !== undefined) && exact.length === 1) return exact[0];
+    if (actualTypes.every((type): type is Type => type !== undefined)) {
+      const compatible = candidates.filter((candidate) => implicitlyCastableSignature(
+        actualTypes, sourceParameters(candidate).map((parameter) => parameter.type),
+      ));
+      if (compatible.length === 1) return compatible[0];
     }
+    return candidates.length === 1 ? candidates[0] : undefined;
+  };
+  const transactionSignatureReachability = new Map<FunctionDefinitionNode, boolean>();
+  const reachesTransactionSignatureCheck = (
+    root: FunctionDefinitionNode, active = new Set<FunctionDefinitionNode>(),
+  ): boolean => {
+    const cached = transactionSignatureReachability.get(root);
+    if (cached !== undefined) return cached;
+    if (active.has(root)) return true;
+    const nextActive = new Set(active).add(root);
+    let found = false;
+    walkInvocationAst(root.body, (node) => {
+      if (found || !(node instanceof FunctionCallNode)) return;
+      if ([GlobalFunction.CHECKSIG, GlobalFunction.CHECKMULTISIG]
+        .includes(node.identifier.name as GlobalFunction)) {
+        found = true;
+        return;
+      }
+      const candidates = signatureClosureByName.get(node.identifier.name) ?? [];
+      if (candidates.length === 0) return;
+      const exact = exactPreSemanticCallTarget(node, root);
+      // An unresolved overload remains fail-closed if any possible target reaches a transaction signature.
+      found = exact !== undefined
+        ? reachesTransactionSignatureCheck(exact, nextActive)
+        : candidates.some((candidate) => reachesTransactionSignatureCheck(candidate, nextActive));
+    });
+    transactionSignatureReachability.set(root, found);
     return found;
   };
   interface AllOutputSignatureProof {
@@ -3320,16 +3376,13 @@ function synthesizeMessageBusRoute(
       return leaves[0].path.every((segment, index) =>
         segment.kind === 'field' && segment.name === fieldPath[index]) ? origin : undefined;
     };
-    const exactInternalHelper = (call: FunctionCallNode): FunctionDefinitionNode | undefined => {
-      const candidates = (signatureClosureByName.get(call.identifier.name) ?? []).filter((candidate) =>
-        !candidate.isFreeFunction
+    const exactInternalHelper = (
+      call: FunctionCallNode, owner: FunctionDefinitionNode,
+    ): FunctionDefinitionNode | undefined => {
+      const target = exactPreSemanticCallTarget(call, owner);
+      return target && !target.isFreeFunction
         && [StateVariableVisibility.INTERNAL, StateVariableVisibility.PRIVATE]
-          .includes(candidate.visibility as StateVariableVisibility)
-        && candidate.parameters.length === call.parameters.length
-        && candidate.parameters.every((parameter, index) => call.parameters[index].type === undefined
-          || parameter.type.toString() === call.parameters[index].type?.toString()));
-      if (call.resolvedFunction && candidates.includes(call.resolvedFunction)) return call.resolvedFunction;
-      return candidates.length === 1 ? candidates[0] : undefined;
+          .includes(target.visibility as StateVariableVisibility) ? target : undefined;
     };
     const capturesContractParameter = (fn: FunctionDefinitionNode): boolean => {
       const localNames = new Set(fn.parameters.map((parameter) => parameter.name));
@@ -3371,9 +3424,9 @@ function synthesizeMessageBusRoute(
         }
         const namedCandidates = signatureClosureByName.get(node.identifier.name) ?? [];
         if (namedCandidates.length === 0) return;
-        if (!namedCandidates.some((candidate) => reachesTransactionSignatureCheck(candidate))) return;
-        const helper = exactInternalHelper(node);
-        if (!helper || !reachesTransactionSignatureCheck(helper) || capturesContractParameter(helper)) {
+        const helper = exactInternalHelper(node, fn);
+        if (helper && !reachesTransactionSignatureCheck(helper)) return;
+        if (!helper || capturesContractParameter(helper)) {
           unsupported = true;
           return;
         }
@@ -5042,19 +5095,14 @@ function synthesizeMessageBusRoute(
       : values.includes('unproven') ? 'unproven' : 'independent';
   type SignatureEnvironment = ReadonlyMap<string, SignatureProvenance>;
   const signatureAnalysisStack = new Set<FunctionDefinitionNode>();
-  const resolvedPureSignatureHelper = (call: FunctionCallNode): FunctionDefinitionNode | undefined => {
-    if (call.resolvedFunction?.modifiers.includes(FunctionModifier.PURE)) return call.resolvedFunction;
-    const definition = call.identifier.definition?.definition;
-    if (definition instanceof FunctionDefinitionNode && definition.modifiers.includes(FunctionModifier.PURE)) {
-      return definition;
-    }
-    const candidates = (signatureClosureByName.get(call.identifier.name) ?? []).filter((candidate) =>
-      candidate.modifiers.includes(FunctionModifier.PURE)
-      && candidate.parameters.length === call.parameters.length
-      && candidate.parameters.every((parameter, index) =>
-        call.parameters[index].type === undefined
-          || parameter.type.toString() === call.parameters[index].type?.toString()));
-    return candidates.length === 1 ? candidates[0] : undefined;
+  const resolvedPureSignatureHelper = (
+    call: FunctionCallNode, owner: FunctionDefinitionNode,
+  ): FunctionDefinitionNode | undefined => {
+    // Resolve against the complete overload set before checking mutability. Filtering to pure candidates first
+    // can select a same-name sibling which the source call does not invoke and prove provenance from the wrong
+    // body.
+    const target = exactPreSemanticCallTarget(call, owner);
+    return target?.modifiers.includes(FunctionModifier.PURE) ? target : undefined;
   };
   const localSignatureSources = (
     fn: FunctionDefinitionNode, identifier: IdentifierNode,
@@ -5105,7 +5153,7 @@ function synthesizeMessageBusRoute(
     if (expression instanceof FunctionCallNode) {
       if ([GlobalFunction.CHECKSIG, GlobalFunction.CHECKMULTISIG]
         .includes(expression.identifier.name as GlobalFunction)) return 'transaction-signature';
-      const helper = resolvedPureSignatureHelper(expression);
+      const helper = resolvedPureSignatureHelper(expression, fn);
       if (!helper || signatureAnalysisStack.has(helper)) return 'unproven';
       const helperEnvironment = new Map<string, SignatureProvenance>();
       helper.parameters.forEach((parameter, index) => helperEnvironment.set(
@@ -5159,7 +5207,7 @@ function synthesizeMessageBusRoute(
       signatureResultExpressionProvenance(expression.ifFalse, type, fn, environment, resolving),
     );
     if (expression instanceof FunctionCallNode) {
-      const helper = resolvedPureSignatureHelper(expression);
+      const helper = resolvedPureSignatureHelper(expression, fn);
       if (!helper || signatureAnalysisStack.has(helper)) {
         // A struct constructor has no function declaration and is handled by the typed aggregate case below.
         if (!(type instanceof StructType && expression.identifier.name === type.name)) return 'unproven';

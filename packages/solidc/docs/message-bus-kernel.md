@@ -346,8 +346,9 @@ mapping values of `pubkey` / `datasig` / `fixedMxN` / `ufixedMxN`, public fixed-
 the recursive EVM ABI encoder (journal cache defaults are type-correct empty/`0` rather than `int` 0). The recursive
 encoder applies one cumulative 10,000-byte envelope to the complete result graph, including mixed multi-results and
 top-level dynamic values. A nonrecursive dynamic struct array loaded directly from state uses the same authenticated,
-ordered chunk run as other dynamic state reads. A whole state-backed struct containing a dynamic array remains
-`KERNEL_LAYOUT`: its indirect aggregate provenance does not yet have that physical result representation.
+ordered chunk run as other dynamic state reads. A whole flattened state struct containing dynamic leaves uses one
+authenticated read for each flattened value, including the ordered chunk run for each dynamic array, `bytes`, or
+`string` leaf; the recursive result encoder then reconstructs the declared aggregate without trusting result bytes.
 Fixed-point scalar, array, and struct-field results use their scaled signed/unsigned integer representation in that
 same recursive encoder.
 Native `pubkey` and `datasig` results use compact ABI framing. A data-only `sig` value constructed from ordinary

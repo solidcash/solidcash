@@ -46,7 +46,7 @@ describe('kernel whole-struct state getters', () => {
     });
   });
 
-  it('rejects a whole state struct containing a dynamic array', () => {
+  it('authenticates a whole flattened state struct containing a dynamic array', () => {
     const artifact = compileString(`pragma solidity ^0.8.0;
       struct Record { uint256 value; uint16[] marks; }
       contract Source {
@@ -55,8 +55,10 @@ describe('kernel whole-struct state getters', () => {
       }`, OPTIONS);
 
     expect(artifact.messageBus?.handlers.find((entry) => entry.name === 'read')).toMatchObject({
-      eligible: false,
-      rejectionReason: 'KERNEL_LAYOUT',
+      eligible: true,
+      outputs: [{ type: 'Record' }],
     });
+    expect(artifact.abi.find((entry) => entry.name === 'read')?.dynamicReads).toEqual(['record__marks']);
+    expect(artifact.messageBus?.route.dynamicReads).toEqual(['record__marks']);
   });
 });

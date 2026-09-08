@@ -118,7 +118,7 @@ describe('kernel graph result dependencies', () => {
     });
   });
 
-  it('publishes ordered multi-value identity but freezes its consumer pending transaction proof', () => {
+  it('publishes ordered multi-value producer identities for a conditional consumer', () => {
     const artifact = compileString(`pragma solidity ^0.8.0;
       interface IReader {
         function read(uint id) external returns (uint value, address recipient);
@@ -152,7 +152,7 @@ describe('kernel graph result dependencies', () => {
     `, KERNEL);
 
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'apply'))
-      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+      .toMatchObject({ eligible: true });
 
     const calls = artifact.abi.find((fn) => fn.name === 'apply')?.externalCalls ?? [];
     expect(calls).toHaveLength(2);
@@ -180,6 +180,15 @@ describe('kernel graph result dependencies', () => {
         } },
       ],
     });
+    expect(artifact.abi.find((fn) => fn.name === 'apply')?.resultConsumers).toEqual([
+      { consumerCallsiteId: 1, argument: 1, producerCallsiteId: 0, resultIndex: 0 },
+      { consumerCallsiteId: 1, argument: 2, producerCallsiteId: 0, resultIndex: 1 },
+    ]);
+    const graphHandler = artifact.invocationAnalysis?.functions.find((fn) =>
+      fn.name === '__message_bus_handler_apply');
+    expect(graphHandler).toBeDefined();
+    expect(artifact.invocationAnalysis?.functions.find((fn) => fn.name === '__message_bus1')?.calls)
+      .toContain(graphHandler?.id);
   });
 
   it('keeps identical result schemas separately addressable by stable callsite and component', () => {
@@ -214,10 +223,9 @@ describe('kernel graph result dependencies', () => {
       }
     `, KERNEL);
 
-    // Equal interfaces and equal result schemas are not interchangeable callsites. Keep the public fence until
-    // the complete producer-to-consumer composition passes its transaction-level differential proof.
+    // Equal interfaces and equal result schemas are not interchangeable callsites.
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'apply'))
-      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+      .toMatchObject({ eligible: true });
 
     const calls = artifact.abi.find((fn) => fn.name === 'apply')?.externalCalls ?? [];
     expect(calls.map((call) => ({
@@ -236,10 +244,10 @@ describe('kernel graph result dependencies', () => {
       { kind: 'expression', expression: { kind: 'producerResult', callsiteId: 1, resultIndex: 1 } },
     ]);
     expect(artifact.abi.find((fn) => fn.name === 'apply')?.resultConsumers).toEqual([
-      { consumerCallsiteId: 2, argument: 0, producerCallsiteId: 0 },
-      { consumerCallsiteId: 2, argument: 1, producerCallsiteId: 0 },
-      { consumerCallsiteId: 2, argument: 2, producerCallsiteId: 1 },
-      { consumerCallsiteId: 2, argument: 3, producerCallsiteId: 1 },
+      { consumerCallsiteId: 2, argument: 0, producerCallsiteId: 0, resultIndex: 0 },
+      { consumerCallsiteId: 2, argument: 1, producerCallsiteId: 0, resultIndex: 1 },
+      { consumerCallsiteId: 2, argument: 2, producerCallsiteId: 1, resultIndex: 0 },
+      { consumerCallsiteId: 2, argument: 3, producerCallsiteId: 1, resultIndex: 1 },
     ]);
   });
 });

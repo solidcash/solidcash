@@ -208,6 +208,7 @@ describe('Release 0 shared invocation analysis', () => {
       consumerCallsiteId: 1,
       argument: 0,
       producerCallsiteId: 0,
+      resultIndex: 0,
     }]);
     expect(artifact.abi.find((fn) => fn.name === 'run')!.resultConsumers)
       .toEqual(summary.resultConsumers);
@@ -231,12 +232,14 @@ describe('Release 0 shared invocation analysis', () => {
     expect(calls[1].argSources?.[0]).toMatchObject({
       kind: 'expression',
       expression: {
-        kind: 'externalCall',
-        name: 'IProducer.quote',
+        kind: 'producerResult',
         callsiteId: 0,
+        resultIndex: 0,
         type: 'bigint',
       },
     });
+    expect(artifact.invocationAnalysis!.functions.find((fn) => fn.name === 'run')!.resultConsumers)
+      .toEqual([{ consumerCallsiteId: 1, argument: 0, producerCallsiteId: 0, resultIndex: 0 }]);
   });
 
   it('links each used tuple result through its synthetic local definition', () => {
@@ -252,8 +255,8 @@ describe('Release 0 shared invocation analysis', () => {
       }`, { forceStateful: true });
     expect(artifact.invocationAnalysis!.functions.find((fn) => fn.name === 'run')!.resultConsumers)
       .toEqual([
-        { consumerCallsiteId: 1, argument: 0, producerCallsiteId: 0 },
-        { consumerCallsiteId: 1, argument: 1, producerCallsiteId: 0 },
+        { consumerCallsiteId: 1, argument: 0, producerCallsiteId: 0, resultIndex: 0 },
+        { consumerCallsiteId: 1, argument: 1, producerCallsiteId: 0, resultIndex: 1 },
       ]);
   });
 
@@ -276,18 +279,43 @@ describe('Release 0 shared invocation analysis', () => {
       consumerCallsiteId: 1,
       argument: 0,
       producerCallsiteId: 0,
+      resultIndex: 0,
     }]);
     expect(fn.externalCalls?.[1].argSources?.[0]).toMatchObject({
       kind: 'expression',
       expression: {
-        kind: 'externalCall',
-        name: 'IProducer.quote',
+        kind: 'producerResult',
         callsiteId: 0,
+        resultIndex: 0,
         type: 'bigint',
-        target: {
-          kind: 'source',
-          source: { kind: 'forward', paramIndex: 0 },
-        },
+      },
+    });
+  });
+
+  it('deduplicates repeated uses of one exact producer component in a consumer argument', () => {
+    const artifact = compileString(`pragma solidcash >=0.8.0;
+      interface IProducer { function quote(bigint n) returns (bigint); }
+      interface IConsumer { function settle(bigint quoted); }
+      contract RepeatedResultFlow() {
+        function run(address producer, address consumer, bigint n) public {
+          bigint quoted = IProducer(producer).quote(n);
+          IConsumer(consumer).settle(quoted + quoted);
+          require(quoted >= 0);
+        }
+      }`, { forceStateful: true });
+    const fn = artifact.abi.find((candidate) => candidate.name === 'run')!;
+    expect(fn.resultConsumers).toEqual([{
+      consumerCallsiteId: 1,
+      argument: 0,
+      producerCallsiteId: 0,
+      resultIndex: 0,
+    }]);
+    expect(fn.externalCalls?.[1].argSources?.[0]).toMatchObject({
+      kind: 'expression',
+      expression: {
+        kind: 'binary',
+        left: { kind: 'producerResult', callsiteId: 0, resultIndex: 0 },
+        right: { kind: 'producerResult', callsiteId: 0, resultIndex: 0 },
       },
     });
   });

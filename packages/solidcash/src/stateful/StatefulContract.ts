@@ -2880,6 +2880,15 @@ export function externalReturnsForCallsites(
   argSources: readonly ArgSource[] | undefined,
   results: ReadonlyMap<number, FunctionArgument>,
   producerCalls: readonly ExternalCallAbi[],
+  consumer?: {
+    callsiteId: number;
+    resultConsumers?: readonly {
+      consumerCallsiteId: number;
+      argument: number;
+      producerCallsiteId: number;
+      resultIndex?: number;
+    }[];
+  },
 ): Map<string, FunctionArgument> {
   const resolved = new Map<string, FunctionArgument>();
   const producerById = new Map<number, ExternalCallAbi>();
@@ -2892,11 +2901,38 @@ export function externalReturnsForCallsites(
     }
     producerById.set(producer.callsiteId, producer);
   }
-  const visit = (expression: ExternalCallExpression | undefined): void => {
+  if (consumer?.resultConsumers) {
+    const lanes = new Set<string>();
+    for (const lane of consumer.resultConsumers) {
+      if (!Number.isInteger(lane.consumerCallsiteId) || lane.consumerCallsiteId < 0
+        || !Number.isInteger(lane.argument) || lane.argument < 0
+        || !Number.isInteger(lane.producerCallsiteId) || lane.producerCallsiteId < 0) {
+        throw new Error('Graph result-consumer metadata requires nonnegative integer callsite and argument lanes.');
+      }
+      const producer = producerById.get(lane.producerCallsiteId);
+      if (!producer) {
+        throw new Error(
+          `Graph result-consumer metadata references missing producer callsite ${lane.producerCallsiteId}.`,
+        );
+      }
+      if (lane.resultIndex !== undefined && (!Number.isInteger(lane.resultIndex) || lane.resultIndex < 0
+        || lane.resultIndex >= (producer.returnTypes?.length ?? 0))) {
+        throw new Error(
+          `Graph result-consumer metadata has invalid result index ${String(lane.resultIndex)} for producer `
+          + `${lane.producerCallsiteId}.`,
+        );
+      }
+      const key = `${lane.consumerCallsiteId}:${lane.argument}:${lane.producerCallsiteId}`
+        + `:${lane.resultIndex ?? '*'}`;
+      if (lanes.has(key)) throw new Error(`Graph result-consumer metadata has duplicate lane ${key}.`);
+      lanes.add(key);
+    }
+  }
+  const visit = (expression: ExternalCallExpression | undefined, argument: number): void => {
     if (!expression) return;
     for (const child of [expression.target, expression.expression, expression.left, expression.right,
-      expression.condition, expression.ifTrue, expression.ifFalse]) visit(child);
-    for (const child of expression.args ?? []) visit(child);
+      expression.condition, expression.ifTrue, expression.ifFalse]) visit(child, argument);
+    for (const child of expression.args ?? []) visit(child, argument);
     if (expression.kind === 'producerResult' && expression.callsiteId !== undefined) {
       const producer = producerById.get(expression.callsiteId);
       const resultIndex = expression.resultIndex;
@@ -2906,7 +2942,26 @@ export function externalReturnsForCallsites(
           `Graph producerResult ${expression.callsiteId}:${String(resultIndex)} does not identify one published result.`,
         );
       }
+      if (consumer?.resultConsumers) {
+        const lanes = consumer.resultConsumers.filter((lane) =>
+          lane.consumerCallsiteId === consumer.callsiteId && lane.argument === argument
+          && lane.producerCallsiteId === expression.callsiteId
+          && (lane.resultIndex === undefined || lane.resultIndex === resultIndex));
+        if (lanes.length !== 1) {
+          throw new Error(
+            `Graph producerResult ${expression.callsiteId}:${resultIndex} does not identify exactly one `
+            + `published consumer lane ${consumer.callsiteId}:${argument}.`,
+          );
+        }
+      }
       const result = results.get(expression.callsiteId);
+      if (result !== undefined && (producer.returnTypes?.length ?? 0) > 1
+        && (!Array.isArray(result) || result.length !== producer.returnTypes!.length)) {
+        throw new Error(
+          `Authenticated graph result for producer ${expression.callsiteId} does not match its `
+          + `${producer.returnTypes!.length}-component schema.`,
+        );
+      }
       const selected = (producer.returnTypes?.length ?? 0) === 1
         ? result : Array.isArray(result) ? result[resultIndex] as FunctionArgument : undefined;
       if (selected !== undefined) resolved.set(JSON.stringify(expression), selected);
@@ -2916,7 +2971,7 @@ export function externalReturnsForCallsites(
     const result = results.get(expression.callsiteId);
     if (result !== undefined) resolved.set(JSON.stringify(expression), result);
   };
-  for (const source of argSources ?? []) visit(source.expression);
+  for (const [argument, source] of (argSources ?? []).entries()) visit(source.expression, argument);
   return resolved;
 }
 
@@ -21018,6 +21073,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 ? (results: ReadonlyMap<number, FunctionArgument>): FunctionArgument[] | undefined => {
                   const externalReturns = externalReturnsForCallsites(
                     nestedSources, results, publishedNestedExternalCalls,
+                    nested.callsiteId === undefined ? undefined : {
+                      callsiteId: nested.callsiteId,
+                      resultConsumers: delegateFn?.resultConsumers,
+                    },
                   );
                   if (externalReturns.size === 0) return undefined;
                   return this._resolveExternalArgs(
@@ -22886,6 +22945,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   preparedAtomicNodes[atomicNodeIndex].refreshArgsFromResults = (results) => {
                     const externalReturns = externalReturnsForCallsites(
                       nestedSources, results, publishedNestedExternalCalls,
+                      nested.callsiteId === undefined ? undefined : {
+                        callsiteId: nested.callsiteId,
+                        resultConsumers: delegateFn?.resultConsumers,
+                      },
                     );
                     if (externalReturns.size === 0) return false;
                     const nextLogicalArgs = this._resolveExternalArgs(
@@ -23139,6 +23202,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             ? (results: ReadonlyMap<number, FunctionArgument>): FunctionArgument[] | undefined => {
               const externalReturns = externalReturnsForCallsites(
                 graphChildSources, results, parentFn.externalCalls ?? [],
+                nested.callsiteId === undefined ? undefined : {
+                  callsiteId: nested.callsiteId,
+                  resultConsumers: parentFn.resultConsumers,
+                },
               );
               if (externalReturns.size === 0) return undefined;
               return logicalParentContract._resolveExternalArgs(
@@ -28142,6 +28209,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             if (!values) continue;
             const value = (values.length === 1 ? values[0] : values) as FunctionArgument;
             const siblings = resultsByParent.get(node.parent) ?? new Map<number, FunctionArgument>();
+            if (siblings.has(node.callsiteId)) {
+              throw new Error(
+                `Atomic graph has duplicate authenticated producer lane ${node.parent}:${node.callsiteId}.`,
+              );
+            }
             siblings.set(node.callsiteId, value);
             resultsByParent.set(node.parent, siblings);
           }
@@ -28933,42 +29005,133 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     allowProvisional = false,
   ): Promise<Map<string, FunctionArgument>> {
     const resolved = new Map<string, FunctionArgument>();
+    const producerByCallsite = new Map<number, ExternalCallAbi>();
+    for (const producer of producerCalls ?? []) {
+      // Calls from artifacts predating stable graph identities remain usable for ordinary expression discovery.
+      // A producerResult can never select one of them: that branch requires an exact published callsite below.
+      if (producer.callsiteId === undefined) continue;
+      if (!Number.isInteger(producer.callsiteId) || producer.callsiteId < 0) {
+        throw new Error('Graph external-call metadata requires a nonnegative callsiteId for every producer.');
+      }
+      if (producerByCallsite.has(producer.callsiteId)) {
+        throw new Error(`Graph external-call metadata has duplicate callsiteId ${producer.callsiteId}.`);
+      }
+      producerByCallsite.set(producer.callsiteId, producer);
+    }
+    const producerResults = new Map<number, FunctionArgument>();
+    const resolvingProducers = new Set<number>();
+    const provisionalValue = (type: string): FunctionArgument => type === 'bool' ? false
+      : type === 'string' ? ''
+        : type.endsWith('[]') ? []
+          : type.startsWith('bytes') || type.startsWith('address') ? new Uint8Array()
+            : 0n;
+    const registeredTarget = (
+      interfaceName: string, target: FunctionArgument | undefined,
+    ): StatefulContract | {
+        forward(name: string, args: FunctionArgument[]): StatefulFunctionCall;
+      } | undefined => {
+      const deploymentAtTarget = typeof target === 'string'
+        ? (findDeploymentByAddress(this.inner.provider, target)
+          ?? findDeploymentByLockingBytecode(this.inner.provider, target))?.contract
+        : target instanceof Uint8Array
+          ? findDeploymentByLockingBytecode(this.inner.provider, binToHex(target))?.contract
+          : undefined;
+      return (deploymentAtTarget
+        ?? registryOwner._externalRegistry.get(interfaceName)
+        ?? this._externalRegistry.get(interfaceName)
+        ?? findDeploymentByName(this.inner.provider, interfaceName)?.contract) as StatefulContract | {
+        forward(name: string, args: FunctionArgument[]): StatefulFunctionCall;
+      } | undefined;
+    };
+    const derive = async (
+      interfaceName: string,
+      functionName: string,
+      values: FunctionArgument[],
+      target: FunctionArgument | undefined,
+      returnTypes: readonly string[] | undefined,
+    ): Promise<FunctionArgument | undefined> => {
+      const registered = registeredTarget(interfaceName, target);
+      if (!registered) return undefined;
+      try {
+        if (typeof registered === 'object' && 'forward' in registered
+          && typeof (registered as { forward?: unknown }).forward === 'function') {
+          return await (registered as {
+            forward(name: string, args: FunctionArgument[]): StatefulFunctionCall;
+          }).forward(functionName, values).staticCall() as FunctionArgument;
+        }
+        return await (registered as StatefulContract)._deriveReturnValue(
+          functionName, values,
+        ) as FunctionArgument;
+      } catch (error) {
+        if (!allowProvisional || !(error instanceof Error)
+          || !error.message.includes('Could not derive the return value')) throw error;
+        if (!returnTypes?.length) return 0n;
+        const placeholders = returnTypes.map(provisionalValue);
+        return placeholders.length === 1 ? placeholders[0] : placeholders as unknown as FunctionArgument;
+      }
+    };
+    const resolveProducer = async (producer: ExternalCallAbi): Promise<FunctionArgument | undefined> => {
+      const callsiteId = producer.callsiteId!;
+      if (producerResults.has(callsiteId)) return producerResults.get(callsiteId);
+      if (resolvingProducers.has(callsiteId)) {
+        throw new Error(`Graph producer callsite ${callsiteId} has a cyclic result dependency.`);
+      }
+      resolvingProducers.add(callsiteId);
+      try {
+        const sources = producer.rawArgSources ?? producer.argSources ?? [];
+        for (const source of sources) {
+          if (source.kind === 'expression') await visit(source.expression);
+        }
+        if (producer.addressSource?.kind === 'expression') await visit(producer.addressSource.expression);
+        const values = this._resolveExternalArgs(
+          sources, functionArgs, registryOwner.inner.artifact, state, callerInputs, resolved,
+          0, false, executionSelfAddress,
+        );
+        if (!values) return undefined;
+        const target = producer.addressSource
+          ? this._resolveExternalArgs(
+            [producer.addressSource], functionArgs, registryOwner.inner.artifact, state, callerInputs, resolved,
+            0, false, executionSelfAddress,
+          )?.[0]
+          : undefined;
+        const value = await derive(
+          producer.interfaceName, producer.functionName, values, target, producer.returnTypes,
+        );
+        if (value !== undefined) producerResults.set(callsiteId, value);
+        return value;
+      } finally {
+        resolvingProducers.delete(callsiteId);
+      }
+    };
     const visit = async (expression: ExternalCallExpression | undefined): Promise<void> => {
       if (!expression) return;
       for (const child of [expression.target, expression.expression, expression.left, expression.right,
         expression.condition, expression.ifTrue, expression.ifFalse]) await visit(child);
       for (const child of expression.args ?? []) await visit(child);
       if (expression.kind === 'producerResult' && expression.callsiteId !== undefined) {
-        const producers = producerCalls?.filter((candidate) => candidate.callsiteId === expression.callsiteId) ?? [];
-        const producer = producers[0];
+        const producer = producerByCallsite.get(expression.callsiteId);
         const resultIndex = expression.resultIndex;
-        if (producers.length !== 1 || !producer || resultIndex === undefined
+        if (!producer || resultIndex === undefined
           || !Number.isInteger(resultIndex) || resultIndex < 0
           || resultIndex >= (producer.returnTypes?.length ?? 0)) {
           throw new Error(
             `Graph producerResult ${expression.callsiteId}:${String(resultIndex)} does not identify one published result.`,
           );
         }
-        const asExpression = (source: ArgSource): ExternalCallExpression => (
-          source.kind === 'expression' && source.expression
-            ? source.expression : { kind: 'source', source }
-        );
-        const producerExpression: ExternalCallExpression = {
-          kind: 'externalCall',
-          name: `${producer.interfaceName}.${producer.functionName}`,
-          callsiteId: producer.callsiteId,
-          ...(producer.addressSource && { target: asExpression(producer.addressSource) }),
-          args: (producer.rawArgSources ?? producer.argSources ?? []).map(asExpression),
-          ...((producer.returnTypes?.length ?? 0) === 1 && { type: producer.returnTypes![0] }),
-        };
-        await visit(producerExpression);
-        const result = resolved.get(JSON.stringify(producerExpression));
+        const result = await resolveProducer(producer);
         const selected = (producer.returnTypes?.length ?? 0) === 1
           ? result : Array.isArray(result) ? result[resultIndex] as FunctionArgument : undefined;
         if (selected !== undefined) resolved.set(JSON.stringify(expression), selected);
         return;
       }
       if (expression.kind !== 'externalCall' || !expression.name) return;
+      const publishedProducer = expression.callsiteId === undefined
+        ? undefined : producerByCallsite.get(expression.callsiteId);
+      if (publishedProducer) {
+        const value = await resolveProducer(publishedProducer);
+        if (value !== undefined) resolved.set(JSON.stringify(expression), value);
+        return;
+      }
       const separator = expression.name.indexOf('.');
       if (separator < 1 || separator === expression.name.length - 1) return;
       const interfaceName = expression.name.slice(0, separator);
@@ -28982,39 +29145,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         expression.target, functionArgs, registryOwner.inner.artifact, state, callerInputs, resolved,
         0, false, executionSelfAddress,
       );
-      const deploymentAtTarget = typeof target === 'string'
-        ? (findDeploymentByAddress(this.inner.provider, target)
-          ?? findDeploymentByLockingBytecode(this.inner.provider, target))?.contract
-        : target instanceof Uint8Array
-          ? findDeploymentByLockingBytecode(this.inner.provider, binToHex(target))?.contract
-          : undefined;
-      const registered = deploymentAtTarget
-        ?? registryOwner._externalRegistry.get(interfaceName)
-        ?? this._externalRegistry.get(interfaceName)
-        ?? findDeploymentByName(this.inner.provider, interfaceName)?.contract;
-      if (!registered) return;
-      let value: StateValue;
-      try {
-        if (typeof registered === 'object' && 'forward' in registered
-          && typeof (registered as { forward?: unknown }).forward === 'function') {
-          value = await (registered as {
-            forward(name: string, args: FunctionArgument[]): StatefulFunctionCall;
-          }).forward(functionName, values as FunctionArgument[]).staticCall();
-        } else {
-          value = await (registered as StatefulContract)._deriveReturnValue(
-            functionName, values as FunctionArgument[],
-          );
-        }
-      } catch (error) {
-        if (!allowProvisional || !(error instanceof Error)
-          || !error.message.includes('Could not derive the return value')) throw error;
-        value = expression.type === 'bool' ? false
-          : expression.type === 'string' ? ''
-            : expression.type?.startsWith('bytes') || expression.type?.startsWith('address')
-              ? new Uint8Array()
-              : 0n;
-      }
-      resolved.set(JSON.stringify(expression), value as FunctionArgument);
+      const value = await derive(
+        interfaceName, functionName, values as FunctionArgument[], target,
+        expression.type ? [expression.type] : undefined,
+      );
+      if (value !== undefined) resolved.set(JSON.stringify(expression), value);
     };
     for (const source of argSources ?? []) await visit(source.expression);
     return resolved;

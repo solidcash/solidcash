@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { encodePushdataValue, type ArgSource, type ExternalCallAbi } from '@solidcash/utils';
+import type { FunctionArgument } from '../src/Argument.js';
 import {
   decodeAuthenticatedProducerResultVector,
   externalReturnsForCallsites,
@@ -66,6 +67,55 @@ describe('graph producer-result identities', () => {
     expect(() => externalReturnsForCallsites(
       [source(3, 1)], new Map([[3, 7n]]), [producer(3, ['uint256'])],
     )).toThrow(/does not identify one published result/);
+
+    expect(() => externalReturnsForCallsites(
+      [source(3, 1)], new Map([[3, [7n]]]), [producer(3, ['uint256', 'bool'])],
+    )).toThrow(/does not match its 2-component schema/);
+  });
+
+  it('binds consumer arguments to exact callsite/result lanes and accepts old lane metadata', () => {
+    const sources = [source(3, 0), source(3, 1)];
+    const calls = [producer(3, ['uint256', 'bool'])];
+    const results = new Map<number, FunctionArgument>([
+      [3, [7n, true] as unknown as FunctionArgument],
+    ]);
+
+    const current = externalReturnsForCallsites(sources, results, calls, {
+      callsiteId: 8,
+      resultConsumers: [
+        { consumerCallsiteId: 8, argument: 0, producerCallsiteId: 3, resultIndex: 0 },
+        { consumerCallsiteId: 8, argument: 1, producerCallsiteId: 3, resultIndex: 1 },
+      ],
+    });
+    expect(sources.map(({ expression }) => current.get(JSON.stringify(expression))))
+      .toEqual([7n, true]);
+
+    const legacy = externalReturnsForCallsites([sources[1]], results, calls, {
+      callsiteId: 8,
+      resultConsumers: [
+        { consumerCallsiteId: 8, argument: 0, producerCallsiteId: 3 },
+      ],
+    });
+    expect(legacy.get(JSON.stringify(sources[1].expression))).toBe(true);
+  });
+
+  it('rejects duplicate, mismatched, and invalid consumer lanes', () => {
+    const calls = [producer(3, ['uint256', 'bool'])];
+    const results = new Map<number, FunctionArgument>([
+      [3, [7n, true] as unknown as FunctionArgument],
+    ]);
+    const lane = { consumerCallsiteId: 8, argument: 0, producerCallsiteId: 3, resultIndex: 1 };
+
+    expect(() => externalReturnsForCallsites([source(3, 1)], results, calls, {
+      callsiteId: 8, resultConsumers: [lane, lane],
+    })).toThrow(/duplicate lane 8:0:3:1/);
+    expect(() => externalReturnsForCallsites([source(3, 0)], results, calls, {
+      callsiteId: 8, resultConsumers: [lane],
+    })).toThrow(/does not identify exactly one published consumer lane 8:0/);
+    expect(() => externalReturnsForCallsites([source(3, 1)], results, calls, {
+      callsiteId: 8,
+      resultConsumers: [{ ...lane, resultIndex: 2 }],
+    })).toThrow(/invalid result index 2/);
   });
 
   it('decodes an exact native multi-result vector and rejects unchecked bytes', () => {

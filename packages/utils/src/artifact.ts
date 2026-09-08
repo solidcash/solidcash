@@ -508,6 +508,8 @@ export interface AbiFunction {
     consumerCallsiteId: number;
     argument: number;
     producerCallsiteId: number;
+    /** Exact component selected from the producer's canonical return tuple. */
+    resultIndex?: number;
   }[];
   externalOutStateReads?: readonly ExternalOutStateAbi[];
   emits?: readonly EmitAbi[];
@@ -1102,6 +1104,8 @@ export interface InvocationAnalysisFunction {
     consumerCallsiteId: number;
     argument: number;
     producerCallsiteId: number;
+    /** Exact component selected from the producer's canonical return tuple. */
+    resultIndex?: number;
   }[];
   /**
    * True only when every external-call occurrence is statically singular. Conditional and loop callsites

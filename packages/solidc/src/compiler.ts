@@ -11452,19 +11452,6 @@ function compileResolvedAst(
         fn.messageBusRejectionReason = 'KERNEL_LAYOUT';
         continue;
       }
-      // Multi-result identities and vector decoding are represented without cloning call nodes, but the complete
-      // producer-to-consumer composition has not passed the transaction-level differential gate. Keep this
-      // general type/flow family fail-closed until that proof exists; unrelated tuple returns and all
-      // single-result dependencies remain valid.
-      const hasMultiResultProducerDependency = abi?.resultConsumers?.some((consumer) => {
-        const producer = abi.externalCalls?.find((call) => call.callsiteId === consumer.producerCallsiteId);
-        return (producer?.returnTypes?.length ?? 0) > 1;
-      }) === true;
-      if (hasMultiResultProducerDependency) {
-        fn.messageBusEligible = false;
-        fn.messageBusRejectionReason = 'KERNEL_LAYOUT';
-        continue;
-      }
       const incomplete = abi?.transfers?.some((transfer) =>
         (transfer.recipientRecipe === undefined && transfer.derivedRecipient === undefined)
         || transfer.amountRecipe === undefined

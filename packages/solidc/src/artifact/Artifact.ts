@@ -17,7 +17,8 @@ import {
   LowLevelCallStatementNode, StateAccessNode, RequireNode, ExternalFunctionCallNode,
   StateAssignNode, MappingAssignNode, MappingFieldAssignNode, StateArrayAssignNode,
   MappingAccessNode, ArrayAccessNode, FieldAccessNode, ExternalCallExpression, ExternalCallArgSource,
-  EmitStatementNode, TernaryOpNode, TokenContainerMethodStatementNode, UnaryOpNode, BranchNode, BoolLiteralNode,
+  ExternalCallStatement, EmitStatementNode, TernaryOpNode, TokenContainerMethodStatementNode,
+  UnaryOpNode, BranchNode, BoolLiteralNode,
   SwitchNode, TryCatchNode, InstantiationNode,
 } from '../ast/AST.js';
 import { BinaryOperator, UnaryOperator } from '../ast/Operator.js';
@@ -1082,14 +1083,12 @@ function buildFunctionAbiMetadata(
       .sort((left, right) => left.selector.localeCompare(right.selector));
   };
   const resultConsumers = (): readonly {
-    consumerCallsiteId: number; argument: number; producerCallsiteId: number;
+    consumerCallsiteId: number; argument: number; producerCallsiteId: number; resultIndex: number;
   }[] => {
     const slots = func.externalCalls ?? [];
     const slotByCall = new Map<Node, number>(slots
       .filter((slot) => !!slot.sourceCallNode)
       .map((slot) => [slot.sourceCallNode!, slot.slotIndex] as const));
-    const producerByDefinition = new Map<Node, number>();
-    const producerByTupleName = new Map<string, number>();
     const visit = (value: unknown, action: (node: Node) => void, seen = new Set<object>()): void => {
       if (!(value instanceof Node) || seen.has(value)) return;
       seen.add(value);
@@ -1103,64 +1102,8 @@ function buildFunctionAbiMetadata(
         else if (Array.isArray(child)) for (const item of child) visit(item, action, seen);
       }
     };
-    visit(func.body, (node) => {
-      const expression = node instanceof VariableDefinitionNode
-        ? node.expression : node instanceof TupleAssignmentNode ? node.tuple : undefined;
-      if (!expression) return;
-      let producer: number | undefined;
-      visit(expression, (candidate) => {
-        const slot = slotByCall.get(candidate);
-        if (slot !== undefined) producer = slot;
-      });
-      if (producer === undefined) return;
-      if (node instanceof VariableDefinitionNode) producerByDefinition.set(node, producer);
-      else if (node instanceof TupleAssignmentNode) {
-        node.elements.filter((element) => !element.skip && !!element.name)
-          .forEach((element) => producerByTupleName.set(element.name!, producer!));
-      }
-    });
-    const result: {
-      consumerCallsiteId: number; argument: number; producerCallsiteId: number;
-    }[] = [];
-    for (const slot of slots) {
-      slot.sourceCallNode?.parameters.forEach((parameter, argument) => {
-        const producers = new Set<number>();
-        visit(parameter, (candidate) => {
-          if (!(candidate instanceof IdentifierNode)) return;
-          const definition = candidate.definition?.definition;
-          if (definition instanceof Node) {
-            let producer = producerByDefinition.get(definition);
-            // Tuple declarations are represented in the symbol table by synthetic VariableDefinitionNodes
-            // whose initializer is the shared tuple call, rather than as children of the function body.
-            if (producer === undefined && definition instanceof VariableDefinitionNode
-              && definition.expression) {
-              visit(definition.expression, (expression) => {
-                const slotIndex = slotByCall.get(expression);
-                if (slotIndex !== undefined) producer = slotIndex;
-              });
-            }
-            if (producer !== undefined) producers.add(producer);
-          }
-          const tupleProducer = producerByTupleName.get(candidate.name);
-          if (tupleProducer !== undefined) producers.add(tupleProducer);
-        });
-        for (const producerCallsiteId of producers) {
-          result.push({
-            consumerCallsiteId: slot.slotIndex,
-            argument,
-            producerCallsiteId,
-          });
-        }
-      });
-    }
-    if (!func.body || slots.length < 2
-      || !slots.some((slot) => slot.returnTypes?.length === 1)) {
-      return result.sort((left, right) =>
-        left.consumerCallsiteId - right.consumerCallsiteId
-        || left.argument - right.argument
-        || left.producerCallsiteId - right.producerCallsiteId);
-    }
-
+    if (func.body && slots.length >= 2
+      && slots.some((slot) => slot.returnTypes?.length === 1)) {
     // A result can flow through state before a later call consumes it:
     // `items[i].id = producer.make(); consumer.use(items[i].id)`. Pre-transaction state cannot resolve that
     // consumer argument. Convert only an exact, dominating whole-field write into the external-call expression
@@ -1371,7 +1314,7 @@ function buildFunctionAbiMetadata(
     for (const slot of slots) {
       const consumerPosition = slot.sourceCallNode && statementPositions.get(slot.sourceCallNode);
       if (!consumerPosition || !slot.argSources) continue;
-      slot.argSources.forEach((source, argument) => {
+      slot.argSources.forEach((source) => {
         if (source.kind !== 'expression' || !source.expression) return;
         for (const write of stateWrites) {
           if (write.position.block !== consumerPosition.block
@@ -1380,18 +1323,98 @@ function buildFunctionAbiMetadata(
           const rewritten = rewriteStateRead(source.expression, write);
           if (!rewritten.changed) continue;
           source.expression = rewritten.expression;
-          result.push({
-            consumerCallsiteId: slot.slotIndex,
-            argument,
-            producerCallsiteId: write.producerCallsiteId,
-          });
         }
       });
     }
-    return result.sort((left, right) =>
+    }
+
+    // Canonical serialized argument expressions are the sole dependency authority. AST definitions are useful
+    // while constructing those expressions, but revisiting them here can conflate equal-shaped call nodes or
+    // publish a dependency which the final argument recipe no longer consumes. Normalize the remaining legacy
+    // `externalCall` spelling only after stable physical callsite assignment, then derive and validate the edge
+    // set from the exact producerResult components which code generation and the SDK evaluate.
+    const producerByCallsite = new Map(slots.map((slot) => [slot.slotIndex, slot] as const));
+    const result = new Map<string, {
+      consumerCallsiteId: number; argument: number; producerCallsiteId: number; resultIndex: number;
+    }>();
+    const canonicalize = (
+      expression: ExternalCallExpression,
+      consumerCallsiteId: number,
+      argument: number,
+    ): ExternalCallExpression => {
+      const rewrite = (child: ExternalCallExpression | undefined): ExternalCallExpression | undefined =>
+        child && canonicalize(child, consumerCallsiteId, argument);
+      const rewriteSource = (source: ExternalCallArgSource | undefined): ExternalCallArgSource | undefined =>
+        source && {
+          ...source,
+          ...(source.expression && { expression: rewrite(source.expression) }),
+          ...(source.stepExpression && { stepExpression: rewrite(source.stepExpression) }),
+        };
+      const rewriteStatement = (statement: ExternalCallStatement): ExternalCallStatement => ({
+        ...statement,
+        ...(statement.expression && { expression: rewrite(statement.expression) }),
+        ...(statement.condition && { condition: rewrite(statement.condition) }),
+        ...(statement.statements && { statements: statement.statements.map(rewriteStatement) }),
+        ...(statement.elseStatements && { elseStatements: statement.elseStatements.map(rewriteStatement) }),
+      });
+      const normalized: ExternalCallExpression = {
+        ...expression,
+        ...(expression.source && { source: rewriteSource(expression.source) }),
+        ...(expression.target && { target: rewrite(expression.target) }),
+        ...(expression.expression && { expression: rewrite(expression.expression) }),
+        ...(expression.left && { left: rewrite(expression.left) }),
+        ...(expression.right && { right: rewrite(expression.right) }),
+        ...(expression.condition && { condition: rewrite(expression.condition) }),
+        ...(expression.ifTrue && { ifTrue: rewrite(expression.ifTrue) }),
+        ...(expression.ifFalse && { ifFalse: rewrite(expression.ifFalse) }),
+        ...(expression.args && { args: expression.args.map((child) => rewrite(child)!) }),
+        ...(expression.statements && { statements: expression.statements.map(rewriteStatement) }),
+      };
+      if (normalized.kind !== 'externalCall' && normalized.kind !== 'producerResult') return normalized;
+      const producerCallsiteId = normalized.callsiteId;
+      const producer = producerCallsiteId === undefined
+        ? undefined : producerByCallsite.get(producerCallsiteId);
+      if (!producer || !producer.returnTypes || producer.returnTypes.length === 0) {
+        throw new Error(`Result dependency in '${func.name}' references a non-returning producer callsite`);
+      }
+      if (producerCallsiteId! >= consumerCallsiteId) {
+        throw new Error(`Result dependency in '${func.name}' does not follow its producer callsite`);
+      }
+      const resultIndex = normalized.resultIndex
+        ?? (producer.returnTypes.length === 1 ? 0 : undefined);
+      if (resultIndex === undefined || !Number.isInteger(resultIndex)
+        || resultIndex < 0 || resultIndex >= producer.returnTypes.length) {
+        throw new Error(`Result dependency in '${func.name}' selects an invalid producer result`);
+      }
+      const key = `${consumerCallsiteId}:${argument}:${producerCallsiteId}:${resultIndex}`;
+      result.set(key, { consumerCallsiteId, argument, producerCallsiteId: producerCallsiteId!, resultIndex });
+      return {
+        kind: 'producerResult',
+        callsiteId: producerCallsiteId,
+        resultIndex,
+        ...(normalized.type && { type: normalized.type }),
+      };
+    };
+    const canonicalizeSources = (
+      sources: ExternalCallArgSource[] | undefined, consumerCallsiteId: number,
+    ): void => {
+      sources?.forEach((source, argument) => {
+        if (source.expression) source.expression = canonicalize(source.expression, consumerCallsiteId, argument);
+        if (source.stepExpression) {
+          source.stepExpression = canonicalize(source.stepExpression, consumerCallsiteId, argument);
+        }
+      });
+    };
+    for (const slot of slots) {
+      canonicalizeSources(slot.argSources, slot.slotIndex);
+      canonicalizeSources(slot.rawArgSources, slot.slotIndex);
+      for (const row of slot.batchInvocations ?? []) canonicalizeSources(row.argSources, slot.slotIndex);
+    }
+    return [...result.values()].sort((left, right) =>
       left.consumerCallsiteId - right.consumerCallsiteId
       || left.argument - right.argument
-      || left.producerCallsiteId - right.producerCallsiteId);
+      || left.producerCallsiteId - right.producerCallsiteId
+      || left.resultIndex - right.resultIndex);
   };
   const consumers = resultConsumers();
   // X37. Both walks are paid for only by a function that has the construct they describe: a body with no

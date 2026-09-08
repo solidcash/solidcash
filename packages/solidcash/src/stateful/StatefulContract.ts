@@ -18451,7 +18451,18 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         + 'write sites in one loop; split the write sites into separate actions.',
       );
     }
-    const pendingScalarSettlementActive = hasPendingScalarDependency || hasPendingExistingScalarSettlement;
+    // A singleton runtime-computed scalar has no later physical iteration from which trace convergence can
+    // replace its provisional typed-default entry output. Route that one-access stream through the authenticated
+    // carrier phase so the value computed by the row is published. Multi-access streams already expose their
+    // runtime values through the ordinary deferred transition, while literal/argument-derived values retain the
+    // smaller direct path. This is a value-provenance/cardinality rule, independent of loop syntax or names.
+    const singletonRuntimeExpressionSettlement = [...runtimeExpressionLoopCollections].some((collection) => (
+      runtimeKernelJournalStreams
+        .filter((stream) => stream.collection === collection)
+        .reduce((count, stream) => count + stream.writes.length, 0) === 1
+    ));
+    const pendingScalarSettlementActive = hasPendingScalarDependency || hasPendingExistingScalarSettlement
+      || singletonRuntimeExpressionSettlement;
     if (pendingScalarSettlementActive) {
       // The current final flush intentionally settles one dense all-dirty carrier vector. Once an existing-value
       // settlement or a true cross-row dependency activates that protocol, every supported mutating access in the

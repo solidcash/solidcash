@@ -3376,6 +3376,14 @@ export default class SymbolTableTraversal extends AstTraversal {
         // slot.addressParam off the stack after the body, so a regular body use (e.g. `address(car).balance`
         // alongside `car.method()`) must not OP_ROLL-consume it. Same rationale as the token-container key params.
         for (const slot of externalCallSlots) {
+          // Inlining may replace the executable receiver with a generated local while the authenticated callsite
+          // metadata continues to name its constructor origin. Graph verification consumes that origin inside
+          // the handler OP_INVOKE, after the generated local's initializer. Count the metadata use for liveness:
+          // otherwise final-use lowering rolls the sole constructor capture into that initializer and the later
+          // identity check has no receiver. This is idempotent when the body also references the parameter.
+          if (slot.addressSource?.kind === 'constructorArg' && slot.addressSource.paramName) {
+            node.opRolls.delete(slot.addressSource.paramName);
+          }
           if (slot.addressParam && !slot.addressIsMsgSender) {
             node.opRolls.delete(slot.addressParam);
             // Inlined low-level-call helpers use a compiler-owned alias (`__extaddr_ll_token`) for their

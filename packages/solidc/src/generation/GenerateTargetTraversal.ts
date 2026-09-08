@@ -1681,6 +1681,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       || !this.contractFunctionKeys.has(`${func.functionId}:${func.name}`)) return [];
     const collector = new IdentifierUsageCollector();
     collector.visit(func.body);
+    // External-call lowering can replace a constructor-bound receiver in the executable body with a
+    // compiler-owned local (for example, an inlined low-level call uses `__extaddr_ll_<param>`). The stable
+    // callsite metadata still names the original authenticated constructor parameter, and graph verification
+    // consumes that identity after entering the handler's OP_INVOKE frame. Include such metadata-only receiver
+    // dependencies in the same capture set as body identifiers. Filtering through contractParameters below
+    // preserves declaration order, while the Set ensures a receiver also present in the body is captured once.
+    for (const slot of func.externalCalls ?? []) {
+      if (slot.addressSource?.kind === 'constructorArg' && slot.addressSource.paramName) {
+        collector.names.add(slot.addressSource.paramName);
+      }
+    }
     return this.contractParameters.filter((param) => collector.names.has(param.name));
   }
 
@@ -1730,6 +1741,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private ownsFixedEntrySlot(slotIndex: number): boolean {
     const slot = this.entrySlots[slotIndex];
     if (slot === undefined || slot.inLoop === true) return false;
+    // The aggregate route publishes the union layout, but outlined handlers own these transitions behind
+    // OP_INVOKE. Their local slot ordinals are scoped to the handler and can collide with an unrelated physical
+    // route slot. Treating either ordinal as an outer-owned fixed slot preallocates a speculative journal write.
+    if (this.currentFunction.messageBusRoute
+      && this.currentFunction.messageBusHandlerManagedEntrySlots?.includes(slotIndex)) return false;
     if (this.currentFunction.name.startsWith('__message_bus_')
       && this.currentFunction.messageBusPhysicalEntrySlots !== undefined) {
       return this.currentFunction.entryAccesses
@@ -5188,6 +5204,34 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
   }
 
+  /**
+   * Source values replayed by the deploy covenant after a returning graph handler has evaluated its result.
+   *
+   * A fixed deployment is created in the handler body, but its folded constructor state and finite entry
+   * commitments are authenticated at the handler's single effect-settlement exit. Those expressions retain
+   * their resolved source bindings, so keep exactly those bindings alive across visitReturn's ordinary
+   * parameter/local cleanup. This is derived from the same folded expressions the covenant consumes rather
+   * than from source names or a particular constructor shape.
+   */
+  private graphDeploySettlementDependencies(): string[] {
+    if (!this.isDefineSubTraversal || !this.currentFunction.graphEmissionHandler) return [];
+    const collector = new IdentifierUsageCollector();
+    for (const deploy of this.pendingDeploys) {
+      const deployNode = deploy.node;
+      for (const field of deployNode.deployedStateVars) {
+        const folded = deployNode.foldedStateInit?.get(field.name);
+        if (folded) collector.visit(folded);
+      }
+      if (deployNode.deployedEntryNftCount === deployNode.foldedCollectionEntries?.length) {
+        for (const entry of deployNode.foldedCollectionEntries ?? []) {
+          collector.visit(entry.key);
+          collector.visit(entry.value);
+        }
+      }
+    }
+    return [...collector.names].filter((name) => this.stack.includes(name));
+  }
+
   visitFunctionDefinition(node: FunctionDefinitionNode): Node {
     this.currentFunction = node;
     this.currentFunctionIsMessageBusRoute = node.messageBusRoute === true
@@ -6055,6 +6099,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const loc = { location: node.body.location, positionHint: PositionHint.END } as SingleLocationData;
       for (const name of [
         GRAPH_EFFECT_SITE, GRAPH_STATIC_DIRTY, GRAPH_STATIC_MODE, GRAPH_HANDLER_CALLER_DEPTH,
+        ...this.graphDeploySettlementDependencies(),
       ]) {
         const index = this.getStackIndex(name, true);
         if (index < 0) continue;
@@ -10891,8 +10936,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   visitReturn(node: ReturnNode): Node {
     const locationData = { location: node.location, positionHint: PositionHint.END };
 
+    // Returning graph handlers settle fixed child-deployment commitments after the source return expression.
+    // Evaluate that result through the non-consuming identifier path whenever it reads a settlement dependency,
+    // otherwise an OP_ROLL here could consume the only authenticated handler-input copy before the epilogue.
+    const graphDeployDependencies = this.graphDeploySettlementDependencies();
+    const returnIdentifiers = new IdentifierUsageCollector();
+    for (const expression of node.expressions) returnIdentifiers.visit(expression);
+    const preserveDeployDependency = graphDeployDependencies.some((name) => returnIdentifiers.names.has(name));
+
     // Evaluate return expressions - they will be left on the stack
+    if (preserveDeployDependency) this.scopeDepth += 1;
     node.expressions = this.visitList(node.expressions) as ExpressionNode[];
+    if (preserveDeployDependency) this.scopeDepth -= 1;
 
     // For entry-point functions with return types (B-side):
     // Pushdata-encode each value and CAT into a single blob, similar to emit.
@@ -10997,6 +11052,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         GRAPH_STATIC_DIRTY,
         GRAPH_STATIC_MODE,
         GRAPH_HANDLER_CALLER_DEPTH,
+        ...graphDeployDependencies,
         ...this.pendingEmits.flatMap((emit) => [emit.stackName, emit.identityStackName]),
         ...this.pendingTransfers.flatMap((transfer) => [
           transfer.lockingBytecodeStackName, transfer.amountStackName,
@@ -15650,7 +15706,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   // tracking, ending with the N decoded values on top (blob slot removed). getStackIndex is only ever taken for
   // the blob slot; every other pick uses a known local depth, and every VM op is mirrored so that index stays exact.
   private emitEvmAbiDecodeDynamic(schema: readonly Type[], loc: SingleLocationData): void {
-    const dyn = (t: Type): boolean => t === PrimitiveType.STRING || (t instanceof BytesType && t.bound === undefined);
     const isArr = (t: Type): boolean => t instanceof ArrayType && t.bound === undefined;
     // Head bytes per field: a dynamic field is one offset word; a static value/composite is its full ABI static
     // size (a fixed-array or nested static struct occupies several words in the head). Positions are cumulative.

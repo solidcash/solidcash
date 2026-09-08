@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { bytecodeToAsm } from '@solidcash/utils';
 import { compileStringMulti } from '../../src/compiler.js';
 
 const KERNEL = {
@@ -86,6 +87,37 @@ describe('kernel typed Yul contract creation', () => {
           { name: 'tag', value: { kind: 'handlerInput', inputIndex: 1 } },
         ] },
         salt: { kind: 'handlerInput', inputIndex: 2 },
+      }],
+    });
+    const routeBody = artifact.functionBodies?.['53434231'];
+    expect(routeBody).toBeDefined();
+    expect(bytecodeToAsm(Uint8Array.from(Buffer.from(routeBody!, 'hex')))).toContain('OP_INVOKE');
+  });
+
+  it('keeps a returned handler input live through typed deployment settlement', () => {
+    const artifact = compileStringMulti(`
+      contract Unit(int initial) {
+        int marker;
+        constructor() { this.marker = initial; }
+      }
+      contract Factory() {
+        function materialize(int initial, bytes32 salt) public returns (int echoed) {
+          bytes memory creation = abi.encodePacked(type(Unit).creationCode, abi.encode(initial));
+          address deployed;
+          assembly { deployed := create2(0, add(creation, 0x20), mload(creation), salt) }
+          echoed = initial;
+          require(deployed != address(0));
+        }
+      }
+    `, { ...KERNEL, suppressWarnings: true }).Factory;
+    const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'materialize');
+    expect(handler).toMatchObject({
+      eligible: true,
+      childDeployments: [{
+        constructorArgs: [{ kind: 'handlerInput', inputIndex: 0 }],
+        genesisState: { fields: [{
+          name: 'marker', value: { kind: 'handlerInput', inputIndex: 0 },
+        }] },
       }],
     });
   });

@@ -184,7 +184,7 @@ describe('inferred message-bus batching for repeated external callees', () => {
   });
 
   it('reconstructs deterministic raw calldata from constructor and handler arguments', () => {
-    const artifact = compileString(`
+    const source = `
       interface IERC20 { function transfer(address to, uint amount) external returns (bool); }
       library SafeTransfer {
         function send(address token, address to, uint amount) internal {
@@ -200,10 +200,33 @@ describe('inferred message-bus batching for repeated external callees', () => {
           require(amount >= 0);
         }
       }
-    `, { forceStateful: true, messageBus: true });
+    `;
+    for (const [messageBusKernel, convention] of [
+      [true, 'kernel-row-loop'], [false, 'legacy-unroll'],
+    ] as const) {
+      const attemptFailureBox = {
+        failures: [] as Array<{
+          stage: string; errorName: string; message: string; internalCodegen: boolean;
+        }>,
+      };
+      const artifact = compileString(source, {
+        forceStateful: true,
+        messageBus: true,
+        messageBusKernel,
+        solidityImportCompat: true,
+        suppressWarnings: true,
+        __artifactCache: false,
+        __attemptFailureBox: attemptFailureBox,
+        __strictNoInternalRecovery: true,
+      });
 
-    expect(artifact.contractName).toBe('Caller');
-    expect(artifact.bytecode.length).toBeGreaterThan(0);
+      expect(artifact.contractName).toBe('Caller');
+      expect(artifact.bytecode.length).toBeGreaterThan(0);
+      expect(artifact.messageBus?.convention).toBe(convention);
+      expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'withdraw'))
+        .toMatchObject({ eligible: true });
+      expect(attemptFailureBox.failures).toEqual([]);
+    }
   });
 
   it('rejects explicit messageBus false when one UTXO owner must serve repeated calls', () => {

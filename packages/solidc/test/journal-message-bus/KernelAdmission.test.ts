@@ -16,6 +16,40 @@ ReturnType<typeof compileString>['messageBus']
 };
 
 describe('required kernel admission', () => {
+  it('rechecks full handler bodies after cheap kernel admission selects a late-failing row', () => {
+    const artifact = compileString(`pragma solidity ^0.8.7;
+      interface Remote {
+        function read(uint key) external returns (uint);
+        function write(uint value) external;
+      }
+      contract Neutral {
+        Remote immutable remote;
+        constructor(address target) { remote = Remote(target); }
+        function batch(uint[] calldata keys) external {
+          for (uint cursor = 0; cursor < keys.length; ++cursor) {
+            uint value = remote.read(keys[cursor]);
+            remote.write(value);
+          }
+        }
+      }`, {
+      ...KERNEL,
+      solidityImportCompat: true,
+      messageBusGraphContext: true,
+      optimizeForCompilationSpeed: true,
+      suppressWarnings: true,
+      maximumInputBytes: 10_000_000,
+      commitmentLimit: 10_000_000,
+      __artifactCache: false,
+    });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'batch')).toMatchObject({
+      eligible: false,
+      rejectionReason: 'KERNEL_LAYOUT',
+    });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'remote')).toMatchObject({
+      eligible: true,
+    });
+  });
+
   it('admits a pre-call outState projection from the graph-authenticated final settlement', () => {
     const artifact = compileString(`
       interface IRegister {
@@ -423,6 +457,21 @@ describe('required kernel admission', () => {
     }`, 'migrate')).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_TX_SIGNATURE' });
   });
 
+  it('finds a transaction-signature check reachable through a mutual recursion cycle', () => {
+    expect(denied(`contract C(pubkey admin) {
+      function left(sig proof, pubkey key, int depth) internal {
+        if (depth > 0) right(proof, key, depth - 1);
+        require(true);
+      }
+      function right(sig proof, pubkey key, int depth) internal {
+        if (depth > 0) left(proof, key, depth - 1);
+        require(checkSig(proof, key));
+      }
+      function migrate(sig proof) public upgrade { left(proof, admin, 1); require(true); }
+      function control() public { require(true); }
+    }`, 'migrate')).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_TX_SIGNATURE' });
+  });
+
   it('proves an immutable root signature through a scalar alias chain', () => {
     const artifact = compileString(`contract C(pubkey admin) {
       function migrate(sig proof) public upgrade {
@@ -601,21 +650,346 @@ describe('required kernel admission', () => {
     });
   });
 
-  it.each([
-    ['a reassigned parameter', 'proof = sig(hex"00"); require(checkSig(proof, authority));', 'sig proof'],
-    ['an outgoing graph edge', `require(checkSig(proof, authority));
-      ITarget(target).run(); require(true);`, 'sig proof, address target'],
-  ])('keeps an ordinary signature reached through %s fenced without an all-output policy',
-    (_label, body, parameters) => {
-      const artifact = compileString(`interface ITarget { function run(); }
+  it('keeps a reassigned transaction-signature parameter fenced without an all-output policy', () => {
+    const artifact = compileString(`contract C(pubkey authority) {
+      function signed(sig proof) public {
+        proof = sig(hex"00"); require(checkSig(proof, authority));
+      }
+      function control() public { require(true); }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'signed');
+    expect(handler).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_TX_SIGNATURE' });
+    expect(handler).not.toHaveProperty('transactionSignaturePolicy');
+  });
+
+  it('binds a signed typed external-call row to its final graph dispatcher', () => {
+    const artifact = compileString(`interface ITarget { function run(int value); }
       contract C(pubkey authority) {
-        function signed(${parameters}) public { ${body} }
+        function execute(sig proof, address target, int value) public {
+          require(checkSig(proof, authority));
+          ITarget(target).run(value);
+          require(true);
+        }
         function control() public { require(true); }
       }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
-      const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'signed');
-      expect(handler).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_TX_SIGNATURE' });
-      expect(handler).not.toHaveProperty('transactionSignaturePolicy');
+    const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'execute');
+    expect(handler).toMatchObject({
+      eligible: true, usesTransactionSignature: true,
+      transactionSignaturePolicy: { hashType: 'all', parameterIndices: [0] },
     });
+    const covered = handler?.transactionSignaturePolicy?.coveredBytecodes?.[0]?.bytecode;
+    expect(covered).toBeDefined();
+    const coveredInvoke = Object.values(artifact.debug.invokeDebug ?? {})
+      .find((entry) => entry.bytecode === covered);
+    expect(coveredInvoke?.name).toBe('__message_bus_handler_execute');
+  });
+
+  it('retains the exact helper signing body for a helper-authenticated typed external-call row', () => {
+    const artifact = compileString(`interface ITarget { function run(int value); }
+      contract C(pubkey authority) {
+        function authorize(sig selected, pubkey key) internal { require(checkSig(selected, key)); }
+        function execute(sig proof, address target, int value) public {
+          authorize(proof, authority);
+          ITarget(target).run(value);
+          require(true);
+        }
+        function control() public { require(true); }
+      }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'execute');
+    expect(handler).toMatchObject({
+      eligible: true,
+      transactionSignaturePolicy: { hashType: 'all', parameterIndices: [0] },
+    });
+    const covered = handler?.transactionSignaturePolicy?.coveredBytecodes?.[0]?.bytecode;
+    expect(covered).toBeDefined();
+    expect(covered).not.toBe(handler?.signatureBytecode);
+    expect(Object.values(artifact.debug.invokeDebug ?? {}).some((entry) => entry.bytecode === covered)).toBe(true);
+  });
+
+  it('inlines a signed typed external-call helper into the authenticated root frame', () => {
+    const artifact = compileString(`interface ITarget { function run(int value); }
+      contract C(pubkey authority) {
+        function forward(address target, int value) internal { ITarget(target).run(value); }
+        function execute(sig proof, address target, int value) public {
+          require(checkSig(proof, authority));
+          forward(target, value);
+          require(true);
+        }
+        function control() public { require(true); }
+      }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'execute');
+    expect(handler).toMatchObject({
+      eligible: true,
+      transactionSignaturePolicy: { hashType: 'all', parameterIndices: [0] },
+    });
+    expect(Object.values(artifact.debug.invokeDebug ?? {})
+      .some((entry) => entry.name === 'forward')).toBe(false);
+  });
+
+  it('fences a signed row whose raw external call is hidden behind an internal helper frame', () => {
+    const artifact = compileString(`contract C(pubkey authority) {
+      function forward(address target, bytes payload) internal { address(target).call(payload); }
+      function execute(sig proof, address target, bytes payload) public {
+        require(checkSig(proof, authority));
+        forward(target, payload);
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'execute');
+    expect(handler).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_TX_SIGNATURE' });
+    expect(handler).not.toHaveProperty('transactionSignaturePolicy');
+  });
+
+  it.each([
+    ['an argument', 'ITarget(target).run(bytes(proof));'],
+    ['a control predicate', `if (bytes(proof).length > 0) { ITarget(target).run(hex"01"); }
+      else { ITarget(target).run(hex"02"); }`],
+    ['a mutable alias joined from a branch', `bytes payload = hex"01";
+      if (target == target) { payload = bytes(proof); }
+      ITarget(target).run(payload);`],
+    ['a ternary-derived alias', `bytes payload = bytes(proof).length > 0 ? hex"01" : hex"02";
+      ITarget(target).run(payload);`],
+  ])('keeps a typed external call with a signature-derived %s fenced', (_label, call) => {
+    const artifact = compileString(`interface ITarget { function run(bytes value); }
+      contract C(pubkey authority) {
+        function execute(sig proof, address target) public {
+          require(checkSig(proof, authority));
+          ${call}
+          require(true);
+        }
+        function control() public { require(true); }
+      }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'execute');
+    expect(handler).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_TX_SIGNATURE' });
+    expect(handler).not.toHaveProperty('transactionSignaturePolicy');
+  });
+
+  it.each([
+    ['scalar state', 'int marker;', 'this.marker = int(bytes(proof));'],
+    ['mapping state', 'mapping(int => bytes) payloads;', 'this.payloads[0] = bytes(proof);'],
+    ['dynamic-array state', 'bytes[] payloads;', 'this.payloads.push(bytes(proof));'],
+  ])('keeps a typed external call fenced after a signature-derived %s write', (
+    _label, state, write,
+  ) => {
+    const artifact = compileString(`interface ITarget { function run(bytes value); }
+      contract C(pubkey authority) {
+        ${state}
+        function execute(sig proof, address target) public {
+          require(checkSig(proof, authority));
+          ${write}
+          ITarget(target).run(hex"01");
+          require(true);
+        }
+        function control() public { require(true); }
+      }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'execute');
+    expect(handler).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_TX_SIGNATURE' });
+    expect(handler).not.toHaveProperty('transactionSignaturePolicy');
+  });
+
+  it.each([
+    ['a dynamic-array element alias', `bytes[] memory values = new bytes[](1);
+      values[0] = bytes(proof); ITarget(target).run(values);`, 'bytes[]'],
+    ['a fixed-array element alias', `bytes[1] memory values;
+      values[0] = bytes(proof); ITarget(target).run(values);`, 'bytes[1]'],
+  ])('keeps a typed external call with %s fenced', (_label, call, argumentType) => {
+    const artifact = compileString(`interface ITarget { function run(${argumentType} value); }
+      contract C(pubkey authority) {
+        function execute(sig proof, address target) public {
+          require(checkSig(proof, authority));
+          ${call}
+          require(true);
+        }
+        function control() public { require(true); }
+      }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'execute');
+    expect(handler).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_TX_SIGNATURE' });
+    expect(handler).not.toHaveProperty('transactionSignaturePolicy');
+  });
+
+  it.each([
+    ['value', 'value: int(bytes(proof))'],
+    ['gas', 'gas: int(bytes(proof))'],
+    ['salt', 'salt: bytes32(bytes(proof))'],
+  ])('keeps a typed external call with a signature-derived %s option fenced', (_label, option) => {
+    const artifact = compileString(`interface ITarget { function run(); }
+      contract C(pubkey authority) {
+        function execute(sig proof, address target) public {
+          require(checkSig(proof, authority));
+          ITarget(target).run{${option}}();
+          require(true);
+        }
+        function control() public { require(true); }
+      }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'execute');
+    expect(handler).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_TX_SIGNATURE' });
+    expect(handler).not.toHaveProperty('transactionSignaturePolicy');
+  });
+
+  it.each([
+    ['event argument', 'event Observed(bytes value);', 'emit Observed(bytes(proof));'],
+    ['event predicate', 'event Observed(bytes value);',
+      'if (bytes(proof).length > 0) emit Observed(hex"01");'],
+    ['token transfer amount', '',
+      'this.tokens[category].transfer(recipient, int(bytes(proof)));'],
+  ])('keeps signature-derived %s out of graph material', (_label, declaration, effect) => {
+    const artifact = compileString(`${declaration}
+      contract C(pubkey authority) {
+        function execute(sig proof, bytes32 category, bytes recipient) public {
+          require(checkSig(proof, authority));
+          ${effect}
+          require(true);
+        }
+        function control() public { require(true); }
+      }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'execute');
+    expect(handler).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_TX_SIGNATURE' });
+    expect(handler).not.toHaveProperty('transactionSignaturePolicy');
+  });
+
+  it('retains SIGHASH_ALL admission for signature-independent event and token effects', () => {
+    const artifact = compileString(`event Observed(bytes value);
+      contract C(pubkey authority) {
+        function execute(sig proof, bytes32 category, bytes recipient, int amount) public {
+          require(checkSig(proof, authority));
+          emit Observed(hex"01");
+          this.tokens[category].transfer(recipient, amount);
+          require(true);
+        }
+        function control() public { require(true); }
+      }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'execute')).toMatchObject({
+      eligible: true,
+      transactionSignaturePolicy: { hashType: 'all', parameterIndices: [0] },
+    });
+  });
+
+  it('does not treat a signature-derived local aggregate as persisted graph material', () => {
+    const artifact = compileString(`contract C(pubkey authority) {
+      function execute(sig proof) public {
+        bytes[] memory values = new bytes[](1);
+        values[0] = bytes(proof);
+        require(checkSig(proof, authority));
+        require(values.length == 1);
+      }
+      function control() public { require(true); }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'execute')).toMatchObject({
+      eligible: true,
+      transactionSignaturePolicy: { hashType: 'all', parameterIndices: [0] },
+    });
+  });
+
+  it('keeps an effectful helper invocation under a signature-derived predicate fenced', () => {
+    const artifact = compileString(`event Observed(bytes value);
+      contract C(pubkey authority) {
+        function record() internal { emit Observed(hex"01"); }
+        function execute(sig proof) public {
+          require(checkSig(proof, authority));
+          if (bytes(proof).length > 0) record();
+          require(true);
+        }
+        function control() public { require(true); }
+      }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'execute');
+    expect(handler).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_TX_SIGNATURE' });
+    expect(handler).not.toHaveProperty('transactionSignaturePolicy');
+  });
+
+  it.each([
+    ['a direct state write', 'int marker;', '', 'this.marker = 1;'],
+    ['a collection-writing helper', 'mapping(int => int) records;',
+      'function record() internal { this.records[0] = 1; }', 'record();'],
+  ])('keeps %s under a signature-derived predicate fenced', (_label, state, helper, effect) => {
+    const artifact = compileString(`contract C(pubkey authority) {
+      ${state}
+      ${helper}
+      function execute(sig proof) public {
+        require(checkSig(proof, authority));
+        if (bytes(proof).length > 0) { ${effect} }
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'execute');
+    expect(handler).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_TX_SIGNATURE' });
+    expect(handler).not.toHaveProperty('transactionSignaturePolicy');
+  });
+
+  it('keeps a short-circuit-gated typed external call signature-fenced', () => {
+    const artifact = compileString(`interface ITarget { function accept(bytes value) returns (bool); }
+      contract C(pubkey authority) {
+        function execute(sig proof, address target) public {
+          require(checkSig(proof, authority));
+          require(bytes(proof).length == 0 || ITarget(target).accept(hex"01"));
+        }
+        function control() public { require(true); }
+      }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'execute');
+    expect(handler).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_TX_SIGNATURE' });
+    expect(handler).not.toHaveProperty('transactionSignaturePolicy');
+  });
+
+  it.each([
+    ['raw', 'address(target).call(payload)[0]', 'KERNEL_OPAQUE_EFFECT'],
+    ['delegate', 'address(target).delegatecall(payload)[0]', 'KERNEL_FOREIGN_DELEGATE'],
+  ])('keeps a signed %s call in a branch condition fenced', (_label, condition, rejectionReason) => {
+    const artifact = compileString(`contract C(pubkey authority) {
+      function execute(sig proof, address target, bytes payload) public {
+        require(checkSig(proof, authority));
+        if (${condition}) { require(true); }
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'execute');
+    expect(handler).toMatchObject({ eligible: false, rejectionReason });
+    expect(handler).not.toHaveProperty('transactionSignaturePolicy');
+  });
+
+  it('keeps a signature-derived typed call in a branch condition fenced', () => {
+    const artifact = compileString(`interface ITarget { function accept(bytes value) returns (bool); }
+      contract C(pubkey authority) {
+        function execute(sig proof, address target) public {
+          require(checkSig(proof, authority));
+          if (ITarget(target).accept(bytes(proof))) { require(true); }
+          require(true);
+        }
+        function control() public { require(true); }
+      }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'execute');
+    expect(handler).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_TX_SIGNATURE' });
+    expect(handler).not.toHaveProperty('transactionSignaturePolicy');
+  });
+
+  it('keeps an unresolved external function-pointer call in a branch condition fenced', () => {
+    const artifact = compileString(`contract C(pubkey authority) {
+      function execute(sig proof, function() external returns (bool) callback) public {
+        require(checkSig(proof, authority));
+        if (callback()) { require(true); }
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'execute');
+    expect(handler?.eligible).not.toBe(true);
+    expect(handler?.transactionSignaturePolicy).toBeUndefined();
+  });
+
+  it('keeps a signed raw statement call behind the transaction-signature fence', () => {
+    const artifact = compileString(`contract C(pubkey authority) {
+      function execute(sig proof, address target, bytes payload) public {
+        require(checkSig(proof, authority));
+        address(target).call(payload);
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'execute');
+    expect(handler).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_TX_SIGNATURE' });
+    expect(handler).not.toHaveProperty('transactionSignaturePolicy');
+  });
 
   it('publishes an all-output policy for an ordinary immutable signature alias', () => {
     const artifact = compileString(`contract C(pubkey authority) {
@@ -693,6 +1067,51 @@ describe('required kernel admission', () => {
     }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
     expect(artifact.abi.find((entry) => entry.name === '__updateBlockOracle')?.modifiers ?? [])
       .not.toContain('delegate');
+  });
+
+  it('assigns a mixed contract oracle updater to its only delegate consumer', () => {
+    const artifact = compileString(`contract C() {
+      int stored;
+      function delegated() public delegate { this.stored = block.number; require(true); }
+      function inspect() public view returns (int) { return this.stored; }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.abi.find((entry) => entry.name === '__updateBlockOracle')?.modifiers)
+      .toContain('delegate');
+  });
+
+  it('counts a fallback oracle read as a direct consumer on a mixed surface', () => {
+    const artifact = compileString(`contract C() {
+      int stored;
+      fallback(bytes input) external {
+        this.stored = block.number + input.length;
+        require(true);
+      }
+      function delegated(int next) public delegate { this.stored = next; require(true); }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.abi.find((entry) => entry.name === '__updateBlockOracle')?.modifiers ?? [])
+      .not.toContain('delegate');
+  });
+
+  it('refuses one oracle register reached through both direct and delegate roots via a shared helper', () => {
+    expect(() => compileString(`contract C() {
+      int stored;
+      function height() internal view returns (uint) { return block.number; }
+      function delegated() public delegate { this.stored = height(); require(true); }
+      function direct() public view returns (uint) { return height(); }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 })).toThrow(
+      /block-oracle state from both direct and delegate execution surfaces/,
+    );
+  });
+
+  it('treats a constructor oracle read as direct ownership beside a delegate consumer', () => {
+    expect(() => compileString(`contract C() {
+      uint stored;
+      function height() internal view returns (uint) { return block.number; }
+      constructor() { this.stored = height(); }
+      function delegated() public delegate { this.stored = block.number; require(true); }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 })).toThrow(
+      /block-oracle state from both direct and delegate execution surfaces/,
+    );
   });
 
   it.each([
@@ -8745,6 +9164,29 @@ describe('required kernel admission', () => {
         conditions: [{ kind: 'source', source: { kind: 'forward', paramIndex: 1 } }],
       }],
     });
+  });
+
+  it.each([
+    ['a scalar-state read', 'return value + this.marker;'],
+    ['a scalar-state write', 'this.marker = value; return value;'],
+  ])('keeps lazy event-helper return replay fenced across %s', (_label, helperTail) => {
+    const artifact = compileString(`event Observed(int value);
+      contract C() {
+        mapping(int => int) values;
+        int marker;
+        function record(int value) internal returns (int) {
+          emit Observed(value);
+          ${helperTail}
+        }
+        function apply(int count, bool enabled) public {
+          for (int cursor = 0; cursor < count; cursor = cursor + 1) {
+            this.values[cursor] = enabled ? record(cursor) : 0;
+          }
+          require(true);
+        }
+      }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'apply'))
+      .toMatchObject({ eligible: false });
   });
 
   it.each([

@@ -1538,7 +1538,8 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       // helpers explicitly proven pure: otherwise the SDK predicate would retain the return expression while the
       // helper's state/effect statements remain solely in the on-chain source loop.
       return !reassigned && definitions.length === 1
-        && definitions[0].inlinedReturningHelperPure !== false
+        && (definitions[0].inlinedReturningHelperPure !== false
+          || definitions[0].inlinedReturningHelperSeparableEvent === true)
         ? definitions[0].expression
         : undefined;
     };
@@ -2950,7 +2951,8 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         if (candidate !== block && (candidate instanceof WhileNode || candidate instanceof DoWhileNode)) return;
         if (candidate instanceof VariableDefinitionNode) {
           definitionCounts.set(candidate.name, (definitionCounts.get(candidate.name) ?? 0) + 1);
-          if (candidate.inlinedReturningHelperPure === false) {
+          if (candidate.inlinedReturningHelperPure === false
+            && candidate.inlinedReturningHelperSeparableEvent !== true) {
             effectfulHelperResultLocals.add(candidate.name);
           }
         }
@@ -3022,7 +3024,8 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         if (!(statement instanceof VariableDefinitionNode) || !statement.expression
           || definitionCounts.get(statement.name) !== 1
           || countAssignmentsTo(block, statement.name) !== 0
-          || statement.inlinedReturningHelperPure === false
+          || (statement.inlinedReturningHelperPure === false
+            && statement.inlinedReturningHelperSeparableEvent !== true)
           || hasObservableEffect(statement.expression)
           || readsCollection(statement.expression)
           || readsState(statement.expression)
@@ -7530,8 +7533,26 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         type HelperScope = {
           arrayNames: ReadonlySet<string>;
           planNamesByParameter: ReadonlyMap<string, string>;
+          /** Every name owned by this helper frame; a missing value binding must not leak as a public source. */
+          localNames: ReadonlySet<string>;
         };
-        const initialScope: HelperScope = { arrayNames, planNamesByParameter };
+        const helperLocalNames = (helper: FunctionDefinitionNode): Set<string> => {
+          const names = new Set(helper.parameters.map((parameter) => parameter.name));
+          if (helper.body) {
+            walk(helper.body, (candidate) => {
+              if (candidate instanceof VariableDefinitionNode) names.add(candidate.name);
+            });
+          }
+          return names;
+        };
+        const initialScope: HelperScope = {
+          arrayNames,
+          planNamesByParameter,
+          localNames: helperLocalNames(target),
+        };
+        // Share one cap across fixed-loop replay and expression-helper folding. This bounds both symbolic work
+        // and the expanded recipe/frame shape even when a source nests many individually small helpers.
+        let fixedHelperIterationBudget = 256;
         const replayExpression = (
           expression: ExpressionNode,
           values: ReadonlyMap<string, ExpressionNode>,
@@ -7542,7 +7563,10 @@ export default class LowerVMapCounterLoops extends AstTraversal {
             const planName = scope.planNamesByParameter.get(parameterName);
             return planName === undefined ? undefined : helperPlans.get(planName);
           };
-          const resolve = (candidate: ExpressionNode): ExpressionNode | undefined => {
+          const resolve = (
+            candidate: ExpressionNode,
+            resolvingHelpers = new Set<FunctionDefinitionNode>(),
+          ): ExpressionNode | undefined => {
             // Numeric-literal indexing parses as tuple extraction before type resolution, including for arrays.
             // Normalize that representation into the same symbolic array read used by runtime indices.
             if (candidate instanceof TupleIndexOpNode && candidate.tuple instanceof IdentifierNode
@@ -7560,7 +7584,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
               && scope.arrayNames.has(candidate.array.name)) {
               const plan = planFor(candidate.array.name);
               if (!plan) return undefined;
-              const index = resolve(candidate.index);
+              const index = resolve(candidate.index, resolvingHelpers);
               if (!index) return undefined;
               const access = cloneNode(candidate) as ArrayAccessNode;
               access.index = index;
@@ -7579,6 +7603,68 @@ export default class LowerVMapCounterLoops extends AstTraversal {
               return plan ? cloneNode(plan.length) as ExpressionNode : undefined;
             }
             if (candidate instanceof IdentifierNode && scope.arrayNames.has(candidate.name)) return undefined;
+            // replaceSnapshots above substitutes every currently exact helper-frame value. If a helper-owned
+            // identifier survives, its value was deliberately invalidated (for example the final counter of a
+            // possibly-empty partial loop) and must not be mistaken for an outer public argument with the same
+            // spelling.
+            if (candidate instanceof IdentifierNode && scope.localNames.has(candidate.name)
+              && !values.has(candidate.name)) return undefined;
+            if (candidate instanceof FunctionCallNode) {
+              if (candidate.lexicalIndirectCall) return undefined;
+              const overloads = (this.functionsByName.get(candidate.identifier.name) ?? [])
+                .filter((target) => target.parameters.length === candidate.parameters.length);
+              const resolvedTarget = candidate.resolvedFunction && overloads.includes(candidate.resolvedFunction)
+                ? candidate.resolvedFunction
+                : (() => {
+                  // This pass normally runs before symbol/type resolution. Select an overload only when the
+                  // source types already identify one exact declaration; arity alone is safe solely for a
+                  // single declaration. Implicitly-convertible or otherwise ambiguous overloads stay fenced.
+                  const expressionType = (argument: ExpressionNode): Type | undefined => {
+                    if (argument.type !== undefined) return argument.type;
+                    if (!(argument instanceof IdentifierNode)) return undefined;
+                    const outerParameters = node.parameters.filter((parameter) => parameter.name === argument.name);
+                    return outerParameters.length === 1 ? outerParameters[0].type : undefined;
+                  };
+                  const exact = overloads.filter((target) => candidate.parameters.every((argument, index) =>
+                    expressionType(argument)?.toString() === target.parameters[index].type.toString()));
+                  if (exact.length === 1) return exact[0];
+                  return overloads.length === 1 ? overloads[0] : undefined;
+                })();
+              const targetStatements = resolvedTarget?.body?.statements;
+              if (!resolvedTarget || resolvingHelpers.has(resolvedTarget)
+                || !resolvedTarget.modifiers.includes(FunctionModifier.PURE)
+                || (resolvedTarget.visibility !== 'internal' && resolvedTarget.visibility !== 'private')
+                || resolvedTarget.customModifiers.length !== 0
+                || resolvedTarget.returnTypes.length !== 1
+                || !targetStatements || targetStatements.length !== 1
+                || !(targetStatements[0] instanceof ReturnNode)
+                || targetStatements[0].expressions.length !== 1) return undefined;
+              if (fixedHelperIterationBudget <= 0) return undefined;
+              fixedHelperIterationBudget -= 1;
+              const returned = targetStatements[0].expressions[0];
+              const parameterOccurrences = new Map(resolvedTarget.parameters.map((parameter) => [parameter.name, 0]));
+              walk(returned, (descendant) => {
+                if (descendant instanceof IdentifierNode && parameterOccurrences.has(descendant.name)) {
+                  parameterOccurrences.set(descendant.name, parameterOccurrences.get(descendant.name)! + 1);
+                }
+              });
+              // Replaying a call as a value recipe must neither drop nor duplicate argument evaluation. This
+              // also preserves checked-failure behavior for arithmetic arguments rather than merely matching
+              // the helper's successful return value.
+              if ([...parameterOccurrences.values()].some((count) => count !== 1)) return undefined;
+              let expanded = cloneNode(returned) as ExpressionNode;
+              for (let index = 0; index < resolvedTarget.parameters.length; index += 1) {
+                const formal = resolvedTarget.parameters[index];
+                const actual = resolve(candidate.parameters[index], resolvingHelpers);
+                if (!actual) return undefined;
+                const converted = new CastNode(formal.type, actual, false);
+                converted.location = candidate.parameters[index].location;
+                expanded = replaceIdentifier(expanded, formal.name, converted);
+              }
+              const convertedReturn = new CastNode(resolvedTarget.returnTypes[0], expanded, false);
+              convertedReturn.location = candidate.location;
+              return resolve(convertedReturn, new Set(resolvingHelpers).add(resolvedTarget));
+            }
             const replaced = cloneNode(candidate) as ExpressionNode;
             for (const key of Object.keys(replaced)) {
               if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type'
@@ -7586,14 +7672,14 @@ export default class LowerVMapCounterLoops extends AstTraversal {
                 || key === 'stateVariable' || key === 'identifier') continue;
               const value = (replaced as unknown as Record<string, unknown>)[key];
               if (value instanceof ExpressionNode) {
-                const child = resolve(value);
+                const child = resolve(value, resolvingHelpers);
                 if (!child) return undefined;
                 (replaced as unknown as Record<string, unknown>)[key] = child;
               } else if (Array.isArray(value)) {
                 const children: unknown[] = [];
                 for (const item of value) {
                   if (!(item instanceof ExpressionNode)) { children.push(item); continue; }
-                  const child = resolve(item);
+                  const child = resolve(item, resolvingHelpers);
                   if (!child) return undefined;
                   children.push(child);
                 }
@@ -7604,10 +7690,8 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           };
           return resolve(replaceSnapshots(expression, values));
         };
-        // Fixed helper loops are replayed symbolically rather than rewritten in the executable AST. Keep a
-        // shared budget across nested helper calls/loops so a source with many small nested bounds cannot turn
-        // admission into an exponential compile-time expansion.
-        let fixedHelperIterationBudget = 256;
+        // Fixed helper loops are replayed symbolically rather than rewritten in the executable AST. The shared
+        // budget above prevents many small nested bounds/calls from becoming exponential compile-time expansion.
         const summarize = (
           helperBlock: BlockNode,
           source: HelperSummary,
@@ -7824,7 +7908,11 @@ export default class LowerVMapCounterLoops extends AstTraversal {
             const nestedSummary = summarize(
               nestedTarget.body,
               { plans: nestedSourcePlans, values: nestedValues },
-              { arrayNames: nestedArrayNames, planNamesByParameter: nestedPlanNames },
+              {
+                arrayNames: nestedArrayNames,
+                planNamesByParameter: nestedPlanNames,
+                localNames: helperLocalNames(nestedTarget),
+              },
               new Set(visiting).add(nestedTarget),
             );
             if (!nestedSummary) return undefined;

@@ -28,16 +28,18 @@ import {
   Ast, AssignNode, BinaryOpNode, BlockNode, BoolLiteralNode, ContractNode, ContractReferenceNode, EmitStatementNode,
   ExpressionNode, FieldAccessNode, LiteralNode,
   FunctionCallNode, FunctionDefinitionNode, InterfaceFunctionNode, InterfaceNode,
-  ExternalFunctionCallNode, ExternalOutputStateAccessNode, FunctionModifier, HexLiteralNode, IdentifierNode,
+  ExternalCallMode, ExternalFunctionCallNode, ExternalOutputStateAccessNode, FunctionModifier, HexLiteralNode,
+  IdentifierNode,
   InstantiationNode,
   ArrayAccessNode, ArrayAssignNode, ArrayDeleteNode, ArrayNode, ArrayPushNode, ArrayPopNode, CollectionIterationNode,
   CollectionIterationMode,
   CollectionNode, StateAccessNode, StateAssignNode, StateArrayPushNode, StateArrayPopNode, StateArrayAssignNode,
+  StateArrayDeleteNode,
   FunctionCallStatementNode,
   LowLevelCallNode, LowLevelCallStatementNode, MappingAccessNode, MappingAssignNode, MappingDeleteNode,
   MappingFieldAssignNode,
   MethodCallNode, MethodCallStatementNode, Node, ParameterNode, RequireNode, RevertNode,
-  NullaryOpNode, TupleAssignmentNode, VariableDefinitionNode, DeleteLocalNode,
+  NullaryOpNode, TupleAssignmentNode, VariableDefinitionNode, DeleteLocalNode, DeleteStateNode,
   SourceFileNode, StatementNode, TransferStatementNode, AddressTransferStatementNode, AddressSendExpressionNode,
   TypeIntrospectionNode, AbiDecodeNode, ReturnNode,
   TokenContainerMethodStatementNode, SelfdestructStatementNode,
@@ -1341,6 +1343,7 @@ function compileStringUnchecked(code: string, compilerOptions: CompileOptions = 
   // there: eligibility is decided in synthesis, and the verifier program only needs the route/verifier closure.
   if (mergedCompilerOptions.optimizeForCompilationSpeed
     && mergedCompilerOptions.messageBus
+    && (artifactCompilerOptions as InternalCompilerOptions).__cheapAdmissionCodegen !== false
     && !artifactCompilerOptions.__messageBusVerifierProgram) {
     mergedCompilerOptions.__cheapAdmissionCodegen = true;
   }
@@ -1369,11 +1372,29 @@ function compileStringUnchecked(code: string, compilerOptions: CompileOptions = 
       artifact = compileResolvedAst(fullAst, code, { ...fullOptions, messageBus: false }, false, true);
     } else if (winner) {
       fullOptions.__synthesizeBoundRoutePlaceholder = true;
-      artifact = compileResolvedAst(
-        fullAst, code, fullOptions, false,
-        winner.admitExternalHandlers, winner.normalizeBareEntries, winner.relaxResultRouteEffects,
-        winner.admitMixedScalarHandlers, winner.admitBareForwardingHandlers,
-      );
+      try {
+        artifact = compileResolvedAst(
+          fullAst, code, fullOptions, false,
+          winner.admitExternalHandlers, winner.normalizeBareEntries, winner.relaxResultRouteEffects,
+          winner.admitMixedScalarHandlers, winner.admitBareForwardingHandlers,
+        );
+      } catch (winnerError) {
+        // Cheap admission deliberately stubs user and handler-clone bodies, so it can select a route whose full
+        // body later exposes a code-generation refusal (for example, a view-return witness introduced only by
+        // semantic external-call lowering). Replay the ordinary full attribution ladder from the pristine AST:
+        // it can quarantine exactly the offending handler while retaining every independently valid row. The
+        // placeholder belongs to the already-selected winner and must not constrain this fresh search.
+        delete fullOptions.__synthesizeBoundRoutePlaceholder;
+        try {
+          artifact = compileWithExternalAdmissionFallback(
+            code, fullOptions, errorListener, primaryContractName,
+          );
+        } catch {
+          // If ordinary admission cannot recover either, retain the first full-body diagnostic rather than a
+          // retry artifact/error which may merely reflect a narrower speculative rung.
+          throw winnerError;
+        }
+      }
     } else {
       artifact = compileWithExternalAdmissionFallback(
         code, fullOptions, errorListener, primaryContractName,
@@ -1425,10 +1446,33 @@ function compileStringUnchecked(code: string, compilerOptions: CompileOptions = 
       code, bindingOptions, errorListener, primaryContractName,
     );
     pristineAstBox.ast = undefined;
-    artifact = compileResolvedAst(
-      binderAst,
-      code, bindingOptions,
-    );
+    try {
+      artifact = compileResolvedAst(
+        binderAst,
+        code, bindingOptions,
+      );
+    } catch (binderError) {
+      // A cheap speculative artifact can carry a verifier program even though one of its stubbed handler bodies
+      // fails only when the verifier-bound route is fully emitted. Restart once with cheap admission disabled so
+      // the ordinary attribution ladder observes that body and can refuse just its selector before constructing
+      // a new, matching verifier program. This retains the public speed option; the false flag is compiler-only
+      // and is stripped from cache/artifact metadata below.
+      if (artifactCompilerOptions.optimizeForCompilationSpeed === true
+        && (artifactCompilerOptions as InternalCompilerOptions).__cheapAdmissionCodegen !== false) {
+        try {
+          return compileStringUnchecked(code, {
+            ...artifactCompilerOptions,
+            errorListener,
+            primaryContractName,
+            suppressWarnings,
+            __cheapAdmissionCodegen: false,
+          } as CompileOptions);
+        } catch {
+          throw binderError;
+        }
+      }
+      throw binderError;
+    }
     const reboundVerifierProgram = artifact.messageBus?.verifierProgram;
     if (admittedSignatureVerifierSource && !reboundVerifierProgram) {
       throw new Error('message-bus transaction-signature verifier disappeared during body binding');
@@ -3326,8 +3370,12 @@ function synthesizeMessageBusRoute(
     root: FunctionDefinitionNode, active = new Set<FunctionDefinitionNode>(),
   ): boolean => {
     const cached = transactionSignatureReachability.get(root);
-    if (cached !== undefined) return cached;
-    if (active.has(root)) return true;
+    if (cached === true) return true;
+    // A recursion back-edge is not itself a transaction-signature operation. Continue scanning the body which
+    // owns that active frame; it will still discover any CHECKSIG reachable elsewhere in the cycle. Do not cache
+    // false results below: a member first visited beneath another active cycle member may have skipped that
+    // ancestor, while a fresh traversal rooted at the member must inspect the ancestor's other outgoing edges.
+    if (active.has(root)) return false;
     const nextActive = new Set(active).add(root);
     let found = false;
     walkInvocationAst(root.body, (node) => {
@@ -3345,7 +3393,7 @@ function synthesizeMessageBusRoute(
         ? reachesTransactionSignatureCheck(exact, nextActive)
         : candidates.some((candidate) => reachesTransactionSignatureCheck(candidate, nextActive));
     });
-    transactionSignatureReachability.set(root, found);
+    if (found) transactionSignatureReachability.set(root, true);
     return found;
   };
   interface AllOutputSignatureProof {
@@ -3362,9 +3410,9 @@ function synthesizeMessageBusRoute(
   // boundary, so the proof records that body per root parameter for the SDK signer. Ambiguous overloads,
   // recursion, and one parameter checked in multiple bodies remain fenced.
   const directAllOutputSignatureParameters = (root: FunctionDefinitionNode): AllOutputSignatureProof | undefined => {
-    if (analyseFunctionFootprint(root, byName, footprintCache).effects.includes('external-call')) return undefined;
     const indices = new Set<number>();
     const interfaceReceivers = interfaceTypedReceivers(root);
+    const interfaceDefinitionNames = new Set(ast.interfaceDefinitions.map((iface) => iface.name));
     const coveredFunctionByParameter = new Map<number, FunctionDefinitionNode>();
     let found = false;
     let unsupported = false;
@@ -3521,15 +3569,225 @@ function synthesizeMessageBusRoute(
     });
     analyse(root, rootEnvironment);
     if (!found || unsupported) return undefined;
+    const outgoingCall = (node: Node): boolean =>
+      node instanceof ExternalFunctionCallNode || contractTypedReceiverCall(node, interfaceReceivers)
+      || node instanceof LowLevelCallNode || node instanceof LowLevelCallStatementNode
+      || (node instanceof MethodCallNode && !intrinsicNamespaceMethodCall(node))
+      || (node instanceof FunctionCallNode && node.identifier.name.includes('.')
+        && !['abi', 'bytes', 'string'].includes(node.identifier.name.split('.')[0]));
+    const typedOutgoingCall = (node: Node): boolean =>
+      (node instanceof ExternalFunctionCallNode && node.interfaceName !== '__raw__'
+        && node.callMode !== ExternalCallMode.DELEGATECALL)
+      || contractTypedReceiverCall(node, interfaceReceivers)
+      || (node instanceof MethodCallNode
+        && ((node.object instanceof CastNode && node.object.type instanceof AddressType
+          && node.object.type.interfaceName !== undefined)
+          || (node.object instanceof FunctionCallNode
+            && interfaceDefinitionNames.has(node.object.identifier.name)))
+        && !['call', 'staticcall', 'delegatecall'].includes(node.methodName));
+    const signatureFlowBackrefs = new Set([
+      'resolvedFunction', 'functionReference', 'definition', 'collection', 'symbolTable', 'stateVariable',
+    ]);
+    const taintedBindings = new Set(root.parameters
+      .filter((parameter) => containsTransactionSignature(parameter.type))
+      .map((parameter) => parameter.name));
+    const referencesTaintedBinding = (node: Node): boolean => {
+      if (node instanceof IdentifierNode) {
+        return taintedBindings.has(node.name);
+      }
+      for (const [key, child] of Object.entries(node)) {
+        if (signatureFlowBackrefs.has(key)) continue;
+        if (child instanceof Node && referencesTaintedBinding(child)) return true;
+        if (Array.isArray(child) && child.some((item) =>
+          item instanceof Node && referencesTaintedBinding(item))) return true;
+      }
+      return false;
+    };
+    // Flow-insensitive taint is intentional: once a local has held signature-derived data, admitting a later use
+    // would require a path-sensitive SSA proof across branch joins. The graph recipe admission is already more
+    // restrictive than that, so retaining taint is both sound and consistent with its immutable input model.
+    let discoveredTaint = true;
+    while (discoveredTaint) {
+      discoveredTaint = false;
+      walkInvocationAst(root.body, (node) => {
+        if (node instanceof VariableDefinitionNode && node.expression
+          && referencesTaintedBinding(node.expression) && !taintedBindings.has(node.name)) {
+          taintedBindings.add(node.name);
+          discoveredTaint = true;
+        }
+        if (node instanceof AssignNode && referencesTaintedBinding(node.expression)
+          && !taintedBindings.has(node.identifier.name)) {
+          taintedBindings.add(node.identifier.name);
+          discoveredTaint = true;
+        }
+        if (node instanceof TupleAssignmentNode
+          && (referencesTaintedBinding(node.tuple)
+            || (node.tupleExpressions?.some((expression) => referencesTaintedBinding(expression)) ?? false))) {
+          for (const element of node.elements) {
+            if (element.name && !taintedBindings.has(element.name)) {
+              taintedBindings.add(element.name);
+              discoveredTaint = true;
+            }
+          }
+        }
+        // An aggregate binding becomes tainted when any selected element is signature-derived. Array mutation
+        // nodes survive until this admission boundary, so looking only at scalar AssignNode aliases would let a
+        // later typed call consume `items` without seeing the witness stored in `items[i]`.
+        if (node instanceof ArrayAssignNode
+          && (referencesTaintedBinding(node.index) || referencesTaintedBinding(node.value))
+          && !taintedBindings.has(node.name)) {
+          taintedBindings.add(node.name);
+          discoveredTaint = true;
+        }
+        if (node instanceof ArrayPushNode && referencesTaintedBinding(node.value)
+          && !taintedBindings.has(node.name)) {
+          taintedBindings.add(node.name);
+          discoveredTaint = true;
+        }
+      });
+    }
+    const expressionDependsOnSignature = (node: Node): boolean => referencesTaintedBinding(node);
+    const callOptionsDependOnSignature = (node: Node): boolean => {
+      // CallOptions is a plain object rather than an AST Node. The generic recursive walk deliberately follows
+      // only Nodes/Node arrays, so value/gas/salt must be audited explicitly.
+      const options = (node as Node & {
+        callOptions?: { value?: ExpressionNode; gas?: ExpressionNode; salt?: ExpressionNode };
+      }).callOptions;
+      return options !== undefined && [options.value, options.gas, options.salt]
+        .some((option) => option !== undefined && referencesTaintedBinding(option));
+    };
+    const persistentArrayNode = (node: Node): boolean => 'name' in node && typeof node.name === 'string'
+      && (collectionByName.has(node.name)
+        || contract.stateVariables.some((stateVariable) => stateVariable.name === node.name));
+    const persistentWriteNode = (node: Node): boolean => node instanceof StateAssignNode
+      || node instanceof DeleteStateNode
+      || node instanceof MappingAssignNode || node instanceof MappingFieldAssignNode
+      || node instanceof MappingDeleteNode
+      || node instanceof StateArrayAssignNode || node instanceof StateArrayPushNode
+      || node instanceof StateArrayPopNode || node instanceof StateArrayDeleteNode
+      || ((node instanceof ArrayAssignNode || node instanceof ArrayPushNode
+        || node instanceof ArrayPopNode || node instanceof ArrayDeleteNode) && persistentArrayNode(node));
+    const helperCarriesPersistentWrite = (node: Node): boolean => {
+      if (!(node instanceof FunctionCallNode)) return false;
+      const target = exactPreSemanticCallTarget(node, root);
+      return target !== undefined && analyseFunctionFootprint(target, byName, footprintCache).writes.length > 0;
+    };
+    const signatureDerivedPersistentWrite = (node: Node): boolean => {
+      if (helperCarriesPersistentWrite(node) && referencesTaintedBinding(node)) return true;
+      if (node instanceof StateAssignNode) return referencesTaintedBinding(node.expression);
+      if (node instanceof MappingAssignNode) {
+        return node.keys.some(referencesTaintedBinding)
+          || referencesTaintedBinding(node.expression)
+          || (node.arrayIndex !== undefined && referencesTaintedBinding(node.arrayIndex));
+      }
+      if (node instanceof MappingFieldAssignNode) {
+        return node.keys.some(referencesTaintedBinding) || referencesTaintedBinding(node.expression);
+      }
+      if (node instanceof MappingDeleteNode) return node.keys.some(referencesTaintedBinding);
+      if (node instanceof StateArrayAssignNode) {
+        return referencesTaintedBinding(node.index) || referencesTaintedBinding(node.value);
+      }
+      if (node instanceof StateArrayPushNode) return referencesTaintedBinding(node.value);
+      if (node instanceof StateArrayPopNode) {
+        return node.resizeTo !== undefined && referencesTaintedBinding(node.resizeTo);
+      }
+      if (node instanceof StateArrayDeleteNode) return referencesTaintedBinding(node.index);
+      // ArrayAssign/ArrayPush can represent a collection-backed array as well as a local aggregate. Local
+      // bindings were tainted above; only the contract-state interpretation is itself committed graph material.
+      if (persistentArrayNode(node) && node instanceof ArrayAssignNode) {
+        return referencesTaintedBinding(node.index) || referencesTaintedBinding(node.value);
+      }
+      if (persistentArrayNode(node) && node instanceof ArrayPushNode) return referencesTaintedBinding(node.value);
+      if (persistentArrayNode(node) && node instanceof ArrayDeleteNode) return referencesTaintedBinding(node.index);
+      return false;
+    };
+    const helperCarriesGraphEffect = (node: Node): boolean => {
+      if (!(node instanceof FunctionCallNode)) return false;
+      const target = exactPreSemanticCallTarget(node, root);
+      if (!target) return false;
+      const effects = analyseFunctionFootprint(target, byName, footprintCache).effects;
+      return effects.some((effect) => effect === 'external-call' || effect === 'events'
+        || effect === 'value' || effect === 'deploy');
+    };
+    const graphEffectNode = (node: Node): boolean => node instanceof EmitStatementNode
+      || node instanceof TransferStatementNode || node instanceof AddressTransferStatementNode
+      || node instanceof AddressSendExpressionNode || node instanceof TokenContainerMethodStatementNode
+      || helperCarriesGraphEffect(node);
+    const signatureDerivedGraphEffect = (node: Node): boolean =>
+      graphEffectNode(node) && referencesTaintedBinding(node);
+    // KTS1 covers the exact physical body executed by a row, but it cannot safely authorize graph material whose
+    // identity or presence is itself selected by that transaction signature. Keep target, arguments, options,
+    // runtime selector and surrounding control predicates independent of every detached signature root.
+    const auditGraphSignatureFlow = (node: Node, signatureGuard = false): void => {
+      if (outgoingCall(node)) {
+        // This slice proves only statically typed graph edges. Raw calls, delegate calls, unresolved method
+        // receivers and function-pointer dispatch retain their existing topology-specific fences.
+        if (!typedOutgoingCall(node) || signatureGuard || expressionDependsOnSignature(node)
+          || callOptionsDependOnSignature(node)) unsupported = true;
+      }
+      // A signed graph row cannot pre-materialize a resource transition whose identity/value comes from the
+      // transaction signature which will authorize the completed graph. Until graph construction supports an
+      // explicit post-signing witness phase, reject every such persistent/aggregate write conservatively.
+      if (signatureDerivedPersistentWrite(node)) unsupported = true;
+      // The write expression can be constant while a signature-derived branch decides whether it occurs. That
+      // still changes the committed state graph, as does invoking a state-writing helper under the same guard.
+      if (signatureGuard && (persistentWriteNode(node) || helperCarriesPersistentWrite(node))) unsupported = true;
+      // Events and value/token transfers are graph outputs just like typed-call argument frames. They cannot be
+      // constructed from a signature which commits to those same outputs. Include effectful helper calls so an
+      // internal wrapper cannot hide the dependency from this root-body walk.
+      if (signatureDerivedGraphEffect(node)) unsupported = true;
+      if (signatureGuard && graphEffectNode(node)) unsupported = true;
+      if (node instanceof BranchNode) {
+        auditGraphSignatureFlow(node.condition, signatureGuard);
+        const guarded = signatureGuard || expressionDependsOnSignature(node.condition);
+        auditGraphSignatureFlow(node.ifBlock, guarded);
+        if (node.elseBlock) auditGraphSignatureFlow(node.elseBlock, guarded);
+        return;
+      }
+      if (node instanceof WhileNode || node instanceof DoWhileNode) {
+        auditGraphSignatureFlow(node.condition, signatureGuard);
+        auditGraphSignatureFlow(node.block, signatureGuard || expressionDependsOnSignature(node.condition));
+        return;
+      }
+      if (node instanceof SwitchNode) {
+        auditGraphSignatureFlow(node.expression, signatureGuard);
+        for (const candidate of node.cases) auditGraphSignatureFlow(candidate.value, signatureGuard);
+        const guarded = signatureGuard || expressionDependsOnSignature(node.expression)
+          || node.cases.some((candidate) => expressionDependsOnSignature(candidate.value));
+        for (const candidate of node.cases) auditGraphSignatureFlow(candidate.body, guarded);
+        if (node.defaultCase) auditGraphSignatureFlow(node.defaultCase, guarded);
+        return;
+      }
+      if (node instanceof TernaryOpNode) {
+        auditGraphSignatureFlow(node.condition, signatureGuard);
+        const guarded = signatureGuard || expressionDependsOnSignature(node.condition);
+        auditGraphSignatureFlow(node.ifTrue, guarded);
+        auditGraphSignatureFlow(node.ifFalse, guarded);
+        return;
+      }
+      if (node instanceof BinaryOpNode
+        && [BinaryOperator.AND, BinaryOperator.OR].includes(node.operator)) {
+        auditGraphSignatureFlow(node.left, signatureGuard);
+        auditGraphSignatureFlow(
+          node.right, signatureGuard || expressionDependsOnSignature(node.left),
+        );
+        return;
+      }
+      for (const [key, child] of Object.entries(node)) {
+        if (signatureFlowBackrefs.has(key)) continue;
+        if (child instanceof Node) auditGraphSignatureFlow(child, signatureGuard);
+        else if (Array.isArray(child)) {
+          for (const item of child) if (item instanceof Node) auditGraphSignatureFlow(item, signatureGuard);
+        }
+      }
+    };
+    auditGraphSignatureFlow(root.body);
     walkInvocationAst(root.body, (node) => {
-      if (node instanceof ExternalFunctionCallNode || contractTypedReceiverCall(node, interfaceReceivers)
-        || node instanceof LowLevelCallNode
-        || (node instanceof MethodCallNode && !intrinsicNamespaceMethodCall(node))
-        || (node instanceof FunctionCallNode && node.identifier.name.includes('.')
-          && !['abi', 'bytes', 'string'].includes(node.identifier.name.split('.')[0]))) {
-        // Outgoing graph handlers execute through a hidden-argument clone whose OP_INVOKE body is not yet the
-        // detached signatureBytecode published to the signer. Keep this policy on leaf handler topology.
+      // Child construction is a lifecycle graph, not the typed tail-call row proven here. Its final deployment
+      // frame has separate bytecode/commitment ownership and remains behind the signed lifecycle fence.
+      if (node instanceof InstantiationNode) {
         unsupported = true;
+        return;
       }
       if (node instanceof AssignNode) {
         const index = parameterIndex(root, node.identifier);
@@ -3631,8 +3889,20 @@ function synthesizeMessageBusRoute(
     let graphHasDelegatecall = false;
     let graphHasLowLevelCall = false;
     let graphHasCallValue = false;
+    let graphHasNestedExternalCall = false;
     let routeUsesForeignTryCatch = false;
     let routeUsesOpaqueAssembly = false;
+    // External-call lowering appends compiler-owned settlement operands to the function which physically owns
+    // the call. A source entry invokes an internal helper with only its declared parameters, so a signed kernel
+    // row cannot yet bind that augmented helper frame to the detached KTS1 witness. Detect the exact helper edge
+    // here, before graph clones or semantic call frames are synthesized. The footprint is transitive, which also
+    // covers a neutral wrapper around the actual caller without depending on any source naming convention.
+    walkInvocationAst(fn.body, (node) => {
+      if (!(node instanceof FunctionCallNode)) return;
+      const target = exactPreSemanticCallTarget(node, fn);
+      if (target && analyseFunctionFootprint(target, byName, footprintCache)
+        .effects.includes('external-call')) graphHasNestedExternalCall = true;
+    });
     for (const name of collectNamedFunctionClosure(fn, byName)) {
       for (const candidate of byName.get(name) ?? []) {
         const receivers = interfaceTypedReceivers(candidate);
@@ -4688,6 +4958,12 @@ function synthesizeMessageBusRoute(
       reason = 'foreign-try-catch-callManifest-ineligible';
     } else if (!reason && routeUsesOpaqueAssembly) {
       reason = 'opaque-assembly-effects-callManifest-ineligible';
+    } else if (!reason && compilerOptions.messageBusKernel === true
+      && fn.messageBusUsesTransactionSignature === true && graphHasNestedExternalCall) {
+      // KTS1 currently authenticates the root/selected graph body, not a second hidden settlement frame owned
+      // by an internal helper. Fail closed before helper augmentation can make the source-arity invocation
+      // ill-typed. Direct typed calls and helpers which only perform authorization retain their established path.
+      reason = 'transaction-signature-route-binding-required';
     } else if (!reason && graphHasDelegatecall) {
       // A delegate executor shares the proxy's state authority rather than owning an independent participant
       // block. Until the atomic callManifest publishes and verifies that execution frame, advertising the
@@ -6698,46 +6974,46 @@ function synthesizeMessageBusRoute(
       contract.functions.push(handler);
     }
   }
-  // Delegate entry calls are normally inlined into the enclosing proxy frame. A transaction signature instead
-  // needs one non-self-referential OP_INVOKE body whose final specialized shape is the body named by KTS1. Run
+  // A transaction signature needs one non-self-referential OP_INVOKE body whose final specialized shape is the
+  // body named by KTS1. Delegate entry calls additionally need a detached clone because they are normally inlined
+  // into the enclosing proxy frame. Run
   // after collection, dynamic-state, effect, fixed-array, visibility, and caller-context clone selection: an
   // earlier generic clone can be superseded by one of those physical dispatchers, leaving the signing policy
   // bound to bytecode which the row never executes. Capture an explicit stable identity before later journal
   // lowering adds physical value-threading parameters. A proof covering a named internal helper retains that
   // helper's own covered body.
-  if (isDelegateRoute) {
-    for (const sourceHandler of eligible) {
-      if (sourceHandler.messageBusUsesTransactionSignature !== true) continue;
-      let selectedName = sourceHandler === resourceShapedHandler
-        ? resourceHandlerInvokeName
-        : (graphHandlerInvokeNames.get(sourceHandler) ?? siblingHandlerInvokeNames.get(sourceHandler)
-          ?? fixedArrayHandlerInvokeNames.get(sourceHandler));
-      if (!selectedName) {
-        const handler = cloneMessageBusHandler(sourceHandler, cheapAdmission);
-        nameMessageBusClone(handler, 'handler', sourceHandler);
-        handler.modifiers = [FunctionModifier.INTERNAL];
-        handler.functionId = undefined;
-        handler.functionSelector = undefined;
-        handler.messageBusEligible = undefined;
-        handler.messageBusRejectionReason = undefined;
-        handler.messageBusKeyWitnesses = undefined;
-        bindEntryKeyParameters(handler, sourceHandler);
-        siblingHandlerInvokeNames.set(sourceHandler, handler.name);
-        contract.functions.push(handler);
-        selectedName = handler.name;
-      }
-      const handler = contract.functions.find((candidate) => candidate.name === selectedName);
-      if (!handler) continue;
-      handler.messageBusDetachedSignatureHandler = true;
-      handler.messageBusSignatureIdentity = signatureFunctionKey(handler);
-      const sourceKey = signatureFunctionKey(sourceHandler);
-      for (const [parameterIndexText, coveredKey] of Object.entries(
-        sourceHandler.messageBusSignatureCoveredFunctionKeys ?? {},
-      )) {
-        if (coveredKey === sourceKey) {
-          sourceHandler.messageBusSignatureCoveredFunctionKeys![Number(parameterIndexText)]
-            = handler.messageBusSignatureIdentity;
-        }
+  for (const sourceHandler of eligible) {
+    if (sourceHandler.messageBusUsesTransactionSignature !== true) continue;
+    let selectedName = sourceHandler === resourceShapedHandler
+      ? resourceHandlerInvokeName
+      : (graphHandlerInvokeNames.get(sourceHandler) ?? siblingHandlerInvokeNames.get(sourceHandler)
+        ?? fixedArrayHandlerInvokeNames.get(sourceHandler));
+    if (!selectedName && isDelegateRoute) {
+      const handler = cloneMessageBusHandler(sourceHandler, cheapAdmission);
+      nameMessageBusClone(handler, 'handler', sourceHandler);
+      handler.modifiers = [FunctionModifier.INTERNAL];
+      handler.functionId = undefined;
+      handler.functionSelector = undefined;
+      handler.messageBusEligible = undefined;
+      handler.messageBusRejectionReason = undefined;
+      handler.messageBusKeyWitnesses = undefined;
+      bindEntryKeyParameters(handler, sourceHandler);
+      siblingHandlerInvokeNames.set(sourceHandler, handler.name);
+      contract.functions.push(handler);
+      selectedName = handler.name;
+    }
+    if (!selectedName) continue;
+    const handler = contract.functions.find((candidate) => candidate.name === selectedName);
+    if (!handler) continue;
+    handler.messageBusDetachedSignatureHandler = true;
+    handler.messageBusSignatureIdentity = signatureFunctionKey(handler);
+    const sourceKey = signatureFunctionKey(sourceHandler);
+    for (const [parameterIndexText, coveredKey] of Object.entries(
+      sourceHandler.messageBusSignatureCoveredFunctionKeys ?? {},
+    )) {
+      if (coveredKey === sourceKey) {
+        sourceHandler.messageBusSignatureCoveredFunctionKeys![Number(parameterIndexText)]
+          = handler.messageBusSignatureIdentity;
       }
     }
   }
@@ -6854,7 +7130,7 @@ function synthesizeMessageBusRoute(
                 }`;
             })()
             : requireSignatureAll(witness);
-          return fn.modifiers.includes(FunctionModifier.UPGRADE)
+          return fn.modifiers.includes(FunctionModifier.UPGRADE) || graphTailHandlers.has(fn)
             ? requireAll : `if (__message_bus_version == 2) { ${requireAll} }`;
         }).join(' ')
         : kernelV2SignatureFence && fn.messageBusUsesTransactionSignature === true
@@ -9446,15 +9722,6 @@ function stubCheapAdmissionBodies(ast: Ast): void {
 
 // Compile a parsed+resolved AST (whose `contract` is the chosen primary) into a single Artifact. Shared by
 // compileString and compileStringMulti.
-/** True only when every public execution surface belongs to the delegate owner. */
-function hasWholeContractDelegateExecution(contract: ContractNode, autoDelegate = false): boolean {
-  if (autoDelegate) return true;
-  const externallyCallable = contract.functions.filter((fn) => fn.modifiers.some((modifier) =>
-    modifier === FunctionModifier.PUBLIC || modifier === FunctionModifier.EXTERNAL));
-  return externallyCallable.length > 0
-    && externallyCallable.every((fn) => fn.modifiers.includes(FunctionModifier.DELEGATE));
-}
-
 function compileResolvedAst(
   ast: Ast, code: string, mergedCompilerOptions: CompilerOptions, omitConstructor = false,
   admitExternalHandlers = true, normalizeBareEntries = true, relaxResultRouteEffects = true,
@@ -9680,12 +9947,9 @@ function compileResolvedAst(
   // delegate entry whether the variant came from `autoDelegate` or Solidity initializer inference.
   const inlineDelegateStateHelpers = (mergedCompilerOptions.autoDelegate ?? false)
     || ast.contract.functions.some((fn) => fn.modifiers.includes(FunctionModifier.DELEGATE));
-  // Oracle state has one physical owner. Only inherit delegate execution when the complete externally callable
-  // surface is known to execute against that owner; a single explicit delegate member in an otherwise direct
-  // contract is insufficient evidence and must not silently redirect the compiler-owned updater.
-  const oracleDelegateExecutionContext = hasWholeContractDelegateExecution(
-    ast.contract, mergedCompilerOptions.autoDelegate === true,
-  );
+  // Auto-delegate compilation is an explicit whole-artifact owner context even before every function is marked.
+  // Ordinary explicit/inferred surfaces are resolved from the actual oracle-consumer graph in the synthesis pass.
+  const oracleDelegateExecutionContext = mergedCompilerOptions.autoDelegate === true;
 
   // Modifier expansion (before semantic analysis)
   const hasCustomModifiers = ast.contract.modifierDefinitions.length > 0
@@ -9843,6 +10107,18 @@ function compileResolvedAst(
       mergedCompilerOptions.solidityImportCompat ?? false,
       inlineDelegateStateHelpers,
     )) as Ast;
+    if (earlyEntryFeatures?.needsExternalCallLowering) {
+      // External-call covenant operands belong to the physical function which owns the call. Inline eligible
+      // internal wrappers before message-bus admission/cloning so both the source entry and its selected kernel
+      // body discover those operands in the same frame. Waiting for the ordinary late pass leaves graph clones
+      // marked as non-inlineable and lets semantic analysis augment the retained helper while its source-arity
+      // invocation remains unchanged.
+      const signedKernelRoots = new Set(ast.contract.functions.filter((fn) => fn.isEntryPoint
+        && fn.parameters.some((parameter) => containsTransactionSignature(parameter.type))));
+      if (mergedCompilerOptions.messageBusKernel === true && signedKernelRoots.size > 0) {
+        ast = ast.accept(new InlineExternalCallHelpers((fn) => signedKernelRoots.has(fn))) as Ast;
+      }
+    }
   }
 
   // Kernel admission must classify the program the compiler will actually execute. Supported Yul is already
@@ -12262,7 +12538,7 @@ function prepareSplitAst(
   if (!(rootSourceCoversProgram(ast) && !code.includes('block.') && !code.includes('now'))) {
     ast = ast.accept(new SynthesizeBlockOracle(
       options.solidityImportCompat ?? false,
-      hasWholeContractDelegateExecution(ast.contract, options.autoDelegate === true),
+      options.autoDelegate === true,
     )) as Ast;
   }
   return ast;
@@ -12544,7 +12820,7 @@ function compileReferencedContracts(
     singleAst = singleAst.accept(new SynthesizeExternalAddressLocals()) as Ast;
     singleAst = singleAst.accept(new SynthesizeBlockOracle(
       compilerOptions.solidityImportCompat ?? false,
-      hasWholeContractDelegateExecution(singleAst.contract, compilerOptions.autoDelegate === true),
+      compilerOptions.autoDelegate === true,
     )) as Ast;
     // Carry the file's library free functions in ONLY for symbol resolution + type checking, AFTER the desugar/
     // inline passes have run (so their already-desugared bodies are not re-desugared, which duplicated locals).

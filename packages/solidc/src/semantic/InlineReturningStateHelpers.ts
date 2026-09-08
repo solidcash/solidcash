@@ -41,6 +41,15 @@ import {
   BoolLiteralNode,
   LiteralNode,
   EmitStatementNode,
+  AssemblyStatementNode,
+  DeleteStateNode,
+  MappingDeleteNode,
+  ArrayDeleteNode,
+  ArrayPushNode,
+  ArrayPopNode,
+  TransferStatementNode,
+  TokenContainerMethodStatementNode,
+  InstantiationNode,
   NullaryOpNode,
   RequireNode,
   FunctionModifier,
@@ -52,7 +61,7 @@ import {
 import {
   StructType, AddressType, BytesType, MappingType, ArrayType, Type, ValueType, PrimitiveType,
 } from '@solidcash/utils';
-import { Modifier } from '../ast/Globals.js';
+import { GlobalFunction, Modifier } from '../ast/Globals.js';
 import { BinaryOperator, NullaryOperator, UnaryOperator } from '../ast/Operator.js';
 import AstTraversal from '../ast/AstTraversal.js';
 import { cloneNode } from '../ast/clone.js';
@@ -739,6 +748,49 @@ export default class InlineReturningStateHelpers extends AstTraversal {
         && this.transitivelyContainsEvent(callee, next)) return true;
     }
     return false;
+  }
+
+  /** Prove that a non-pure helper's effects can be separated from replay of its returned value. Event statements
+   * have an independent runtime occurrence protocol; every other observable effect or resource dependency stays
+   * fenced. Unknown non-pure calls are rejected rather than inferred from their spelling. */
+  private hasOnlySeparableEventEffects(
+    fn: FunctionDefinitionNode, seen = new Set<string>(),
+  ): boolean {
+    const key = inlineKey(fn.name, fn.parameters.length);
+    if (seen.has(key) || !this.transitivelyContainsEvent(fn)
+      || this.touchesScalarState(fn) || this.readsEntry(fn)
+      || this.containsLowLevelCall(fn) || this.transitivelyContainsExternalCall(fn)) return false;
+    const next = new Set(seen).add(key);
+    const pureGlobals = new Set<string>([
+      GlobalFunction.ABS, GlobalFunction.MIN, GlobalFunction.MAX, GlobalFunction.WITHIN,
+      GlobalFunction.ADDMOD, GlobalFunction.MULMOD, GlobalFunction.RIPEMD160, GlobalFunction.SHA1,
+      GlobalFunction.SHA256, GlobalFunction.HASH160, GlobalFunction.HASH256,
+      GlobalFunction.TO_PADDED_BYTES, GlobalFunction.INT_TO_STRING, GlobalFunction.STRING_TO_INT,
+    ]);
+    for (const node of this.nodesOf(fn)) {
+      if (node instanceof WhileNode || node instanceof DoWhileNode
+        || node instanceof AssemblyStatementNode || node instanceof InstantiationNode
+        || node instanceof StateAssignNode || node instanceof DeleteStateNode
+        || node instanceof MappingAssignNode || node instanceof MappingFieldAssignNode
+        || node instanceof MappingDeleteNode || node instanceof StateArrayAssignNode
+        || node instanceof StateArrayPushNode || node instanceof StateArrayPopNode
+        || node instanceof StateArrayDeleteNode || node instanceof ArrayPushNode
+        || node instanceof ArrayPopNode || node instanceof ArrayDeleteNode
+        || node instanceof TransferStatementNode || node instanceof TokenContainerMethodStatementNode
+        || (node instanceof ArrayAssignNode && this.mappingNames.has(node.name))) return false;
+      if (!(node instanceof FunctionCallNode)) continue;
+      if ([GlobalFunction.CHECKSIG, GlobalFunction.CHECKMULTISIG, GlobalFunction.CHECKDATASIG]
+        .includes(node.identifier.name as GlobalFunction)) return false;
+      if (this.ambiguousInlineKeys.has(inlineKey(node.identifier.name, node.parameters.length))) return false;
+      const callee = this.lookupOverload(node.identifier.name, node.parameters.length);
+      if (!callee) {
+        if (!pureGlobals.has(node.identifier.name)) return false;
+        continue;
+      }
+      if (!callee.modifiers.includes(FunctionModifier.PURE)
+        && !this.hasOnlySeparableEventEffects(callee, next)) return false;
+    }
+    return true;
   }
 
   private transitivelyTouchesRawEvmStorage(fn: FunctionDefinitionNode, seen: Set<string> = new Set()): boolean {
@@ -1442,6 +1494,7 @@ export default class InlineReturningStateHelpers extends AstTraversal {
       const retDef = new VariableDefinitionNode(callee.returnTypes[k], [], retName, ret.expressions[k]);
       retDef.location = callee.location;
       retDef.inlinedReturningHelperPure = callee.modifiers.includes(FunctionModifier.PURE);
+      retDef.inlinedReturningHelperSeparableEvent = this.hasOnlySeparableEventEffects(callee);
       retDefs.push(retDef);
       const id = new IdentifierNode(retName);
       id.location = callee.location;

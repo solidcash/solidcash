@@ -22,6 +22,9 @@ import {
   DoWhileNode,
   UncheckedNode,
   ReturnNode,
+  ExternalFunctionCallNode,
+  LowLevelCallNode,
+  LowLevelCallStatementNode,
 } from '../ast/AST.js';
 import { collectAmbiguousInlineKeys, inlineKey } from './inlineOverloadGuard.js';
 import { AmbiguousInlineOverloadError } from '../Errors.js';
@@ -61,12 +64,18 @@ export default class InlineExternalCallHelpers extends AstTraversal {
   private voidExternalCallHelpers: Set<string> = new Set();
   private freeFns: FunctionDefinitionNode[] = [];
   private fileUsingForDirectives: { libraryName?: string, targetTypeName?: string }[] = [];
+  private interfaceNames: Set<string> = new Set();
   private constNames: Set<string> = new Set(); // qualified names of file-level (library) constants (L.SIG)
   private counter = 0;
+
+  constructor(private readonly earlyRootFilter?: (fn: FunctionDefinitionNode) => boolean) {
+    super();
+  }
 
   visitSourceFile(node: SourceFileNode): Node {
     this.freeFns = node.freeFunctions ?? [];
     this.fileUsingForDirectives = node.usingForDirectives ?? [];
+    this.interfaceNames = new Set((node.interfaceDefinitions ?? []).map((iface) => iface.name));
     this.constNames = new Set((node.constantDefinitions ?? []).map((c) => c.name));
     if (node.contract) node.contract = this.visit(node.contract) as ContractNode;
     return node;
@@ -104,9 +113,11 @@ export default class InlineExternalCallHelpers extends AstTraversal {
     // covenant parameters. Inlining the same helper body here leaves L.g with the direct external call and its own
     // correctly discovered witness parameters.
     for (const fn of this.freeFns) {
+      if (this.earlyRootFilter && !this.earlyRootFilter(fn)) continue;
       if (fn.body) fn.body.statements = this.inlineStatements(fn.body.statements ?? [], [fn.name]);
     }
     for (const fn of node.functions) {
+      if (this.earlyRootFilter && !this.earlyRootFilter(fn)) continue;
       if (fn.body) fn.body.statements = this.inlineStatements(fn.body.statements ?? [], [fn.name]);
     }
     return node;
@@ -181,6 +192,14 @@ export default class InlineExternalCallHelpers extends AstTraversal {
     let found = false;
     this.walk(fn.body, (n) => {
       if (found) return;
+      // Message-bus admission may run after an earlier syntax-normalization pass has already replaced the
+      // surface method spelling with a dedicated external-call node. Treat the pre- and post-normalization
+      // representations identically so early physical-frame inlining does not depend on pipeline position.
+      if (this.earlyRootFilter && (n instanceof ExternalFunctionCallNode || n instanceof LowLevelCallNode
+        || n instanceof LowLevelCallStatementNode)) {
+        found = true;
+        return;
+      }
       if (n instanceof VariableDefinitionNode) env.set(n.name, n.type);
       if (n instanceof FunctionCallNode) {
         const name = n.identifier.name;
@@ -192,6 +211,10 @@ export default class InlineExternalCallHelpers extends AstTraversal {
       }
       if (n instanceof MethodCallNode) {
         if (n.object instanceof IdentifierNode && this.isInterfaceTyped(env.get(n.object.name))) { found = true; return; }
+        if (this.earlyRootFilter && n.object instanceof CastNode
+          && this.isInterfaceTyped(n.object.type)) { found = true; return; }
+        if (this.earlyRootFilter && n.object instanceof FunctionCallNode
+          && this.interfaceNames.has(n.object.identifier.name)) { found = true; return; }
         if (InlineExternalCallHelpers.isLowLevel(n.methodName)) found = true;
       }
     });

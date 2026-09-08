@@ -158,12 +158,140 @@ describe('kernel runtime-sized constructed-key initialization', () => {
     expect(literalValues).toContain('100');
   });
 
-  it('does not infer a replayable public bound from a pure helper call', () => {
+  it('folds an exact pure single-return helper into a replayable public bound', () => {
     const artifact = compileString(`contract Registry() {
       mapping(int => int) records;
       function identity(int value) internal pure returns (int) { return value; }
       function fill(int[] memory keys, int base, int limit) internal pure {
         for (int cursor = 0; cursor < identity(limit); cursor = cursor + 1) {
+          keys[cursor] = base + cursor;
+        }
+      }
+      function apply(int count, int base, int limit) public {
+        int[] memory keys = new int[](count);
+        fill(keys, base, limit);
+        for (int cursor = 0; cursor < count; cursor = cursor + 1) {
+          this.records[keys[cursor]] = cursor;
+        }
+        require(true);
+      }
+    }`, KERNEL);
+
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'apply'))
+      .toMatchObject({ eligible: true });
+    const expression = artifact.abi.find((entry) => entry.name === 'apply')
+      ?.sortedUpsertLoopInfo?.[0]?.varyingKeyExpressions?.[0];
+    const operators: string[] = [];
+    const collectOperators = (candidate: unknown): void => {
+      if (!candidate || typeof candidate !== 'object') return;
+      const record = candidate as Record<string, unknown>;
+      if (record.kind === 'binary' && typeof record.operator === 'string') operators.push(record.operator);
+      for (const value of Object.values(record)) collectOperators(value);
+    };
+    collectOperators(expression);
+    expect(operators).toContain('<');
+  });
+
+  it('folds the exactly typed overload and retains checked bound arithmetic', () => {
+    const artifact = compileString(`contract Registry() {
+      mapping(int => int) records;
+      function boundary(bytes value) internal pure returns (int) { return int(value); }
+      function boundary(int value) internal pure returns (int) { return value + 1; }
+      function fill(int[] memory keys, int base, int limit) internal pure {
+        for (int cursor = 0; cursor < boundary(limit); cursor = cursor + 1) {
+          keys[cursor] = base + cursor;
+        }
+      }
+      function apply(int count, int base, int limit) public {
+        int[] memory keys = new int[](count);
+        fill(keys, base, limit);
+        for (int cursor = 0; cursor < count; cursor = cursor + 1) {
+          this.records[keys[cursor]] = cursor;
+        }
+        require(true);
+      }
+    }`, KERNEL);
+
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'apply'))
+      .toMatchObject({ eligible: true });
+    const expression = artifact.abi.find((entry) => entry.name === 'apply')
+      ?.sortedUpsertLoopInfo?.[0]?.varyingKeyExpressions?.[0];
+    const operators: string[] = [];
+    let retainedCheckedIncrement = false;
+    const collectOperators = (candidate: unknown): void => {
+      if (!candidate || typeof candidate !== 'object') return;
+      const record = candidate as Record<string, unknown>;
+      if (record.kind === 'binary' && typeof record.operator === 'string') operators.push(record.operator);
+      if (record.kind === 'binary' && record.operator === '+') {
+        const right = record.right as Record<string, unknown> | undefined;
+        if (right?.kind === 'literal' && right.value === '1') retainedCheckedIncrement = true;
+      }
+      for (const value of Object.values(record)) collectOperators(value);
+    };
+    collectOperators(expression);
+    expect(operators).toContain('+');
+    expect(retainedCheckedIncrement).toBe(true);
+  });
+
+  it.each([
+    ['a state-dependent helper',
+      'int cap; function boundary(int value) internal view returns (int) { return this.cap; }'],
+    ['a transaction-dependent helper',
+      'function boundary(int value) internal view returns (int) { return tx.inputs.length; }'],
+    ['a recursive helper',
+      'function boundary(int value) internal pure returns (int) { return boundary(value); }'],
+    ['a mutating helper',
+      'int cap; function boundary(int value) internal returns (int) { this.cap = value; return value; }'],
+  ])('keeps %s out of a constructed-array bound recipe', (_label, helper) => {
+    const artifact = compileString(`contract Registry() {
+      mapping(int => int) records;
+      ${helper}
+      function fill(int[] memory keys, int base, int limit) internal {
+        for (int cursor = 0; cursor < boundary(limit); cursor = cursor + 1) {
+          keys[cursor] = base + cursor;
+        }
+      }
+      function apply(int count, int base, int limit) public {
+        int[] memory keys = new int[](count);
+        fill(keys, base, limit);
+        for (int cursor = 0; cursor < count; cursor = cursor + 1) {
+          this.records[keys[cursor]] = cursor;
+        }
+        require(true);
+      }
+    }`, KERNEL);
+
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'apply'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_UNBOUNDED_KEY' });
+  });
+
+  it('does not guess between ambiguous bound-helper overloads', () => {
+    expect(() => compileString(`contract Registry() {
+      mapping(int => int) records;
+      function boundary(int value) internal pure returns (int) { return value; }
+      function boundary(uint value) internal pure returns (int) { return int(value); }
+      function fill(int[] memory keys, int base) internal pure {
+        for (int cursor = 0; cursor < boundary(1); cursor = cursor + 1) {
+          keys[cursor] = base + cursor;
+        }
+      }
+      function apply(int count, int base) public {
+        int[] memory keys = new int[](count);
+        fill(keys, base);
+        for (int cursor = 0; cursor < count; cursor = cursor + 1) {
+          this.records[keys[cursor]] = cursor;
+        }
+        require(true);
+      }
+    }`, KERNEL)).toThrow(/No unique declaration|ambiguous.*overload/i);
+  });
+
+  it('keeps a multi-return helper out of a constructed-array bound recipe', () => {
+    const artifact = compileString(`contract Registry() {
+      mapping(int => int) records;
+      function boundary(int value) internal pure returns (int, int) { return (value, value); }
+      function fill(int[] memory keys, int base, int limit) internal pure {
+        for (int cursor = 0; cursor < boundary(limit)[0]; cursor = cursor + 1) {
           keys[cursor] = base + cursor;
         }
       }

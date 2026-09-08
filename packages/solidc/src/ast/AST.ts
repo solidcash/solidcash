@@ -898,8 +898,12 @@ export class VariableDefinitionNode extends StatementNode implements Named, Type
   // Yul create-address lowering still needs the compile-time blob after that representation change.
   memoryLiteralValue?: Uint8Array;
   // Return temporary produced by InlineReturningStateHelpers. Counter-loop admission uses the callee's declared
-  // purity after the surface FunctionCallNode has been normalized into statements plus this SSA result.
+  // purity after the surface FunctionCallNode has been normalized into statements plus this SSA result, or the
+  // separate proof below when the complete non-pure effect closure contains only source-ordered events.
   inlinedReturningHelperPure?: boolean;
+  // A non-pure helper whose complete effect closure contains only events. Its return expression may be replayed
+  // independently while the event statements retain their source-ordered runtime occurrence plan.
+  inlinedReturningHelperSeparableEvent?: boolean;
 
   constructor(
     public type: Type,

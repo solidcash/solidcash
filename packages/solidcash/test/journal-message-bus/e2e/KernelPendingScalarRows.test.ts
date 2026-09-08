@@ -24,6 +24,23 @@ contract PendingScalarRows() {
   }
 }`;
 
+const DEFAULT_SOURCE = `pragma solidcash ^0.13.0;
+contract DefaultScalarRows() {
+  mapping(int => int) values;
+  function addMany(int[] keys, int delta) public {
+    for (int i = 0; i < keys.length; i = i + 1) { this.values[keys[i]] = this.values[keys[i]] + delta; }
+    require(true);
+  }
+  function setMany(int[] keys, int value) public {
+    for (int i = 0; i < keys.length; i = i + 1) { this.values[keys[i]] = value; }
+    require(true);
+  }
+  function clearMany(int[] keys) public {
+    for (int i = 0; i < keys.length; i = i + 1) { delete this.values[keys[i]]; }
+    require(true);
+  }
+}`;
+
 const EFFECT_SOURCE = `pragma solidcash ^0.13.0;
 contract PendingScalarEffectFence() {
   mapping(int => int) values;
@@ -64,6 +81,106 @@ contract InterleavedMappingWrites() {
 }`;
 
 describe('kernel pending fixed-width scalar rows', () => {
+  it('composes zero writes and present-key deletes without removing list nodes', async () => {
+    const provider = createMessageBusSemanticTestProvider();
+    const artifact = compileString(DEFAULT_SOURCE, KERNEL);
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+    );
+    const ranked = Array.from({ length: 48 }, (_unused, index) => BigInt(index + 1)).sort((left, right) => {
+      const leftSlot = bytesToSlotValue(keyToSlot(bigIntToVmNumber(left)));
+      const rightSlot = bytesToSlotValue(keyToSlot(bigIntToVmNumber(right)));
+      return leftSlot < rightSlot ? -1 : 1;
+    });
+    const insertedKey = ranked[8];
+    const presentKey = ranked[24];
+    const absentKey = ranked[44];
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    await contract.call.setMany([presentKey], 9n).send();
+
+    // Explicit assignment may insert a zero-valued enumerable node. Delete nullifies only an entry whose presence
+    // is already proven; neither operation requests a physical linked-list splice.
+    const call = StatefulContract.withCategory(inner, categoryId).batch([
+      { function: 'setMany', args: [[insertedKey], 0n] },
+      { function: 'clearMany', args: [[presentKey]] },
+      { function: 'setMany', args: [[insertedKey], 5n] },
+      { function: 'clearMany', args: [[insertedKey]] },
+      { function: 'setMany', args: [[presentKey], 2n] },
+    ]);
+    const builder = await call.build();
+    const vm = createVirtualMachineBch2026ForProvider(provider);
+    const transaction = builder.buildLibauthTransaction();
+    const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+    for (let inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex += 1) {
+      expect(vm.stateSuccess(vm.evaluate({ inputIndex, sourceOutputs, transaction })), `input ${inputIndex}`)
+        .toBe(true);
+    }
+    await expect(call.send()).resolves.toBeDefined();
+
+    const collection = artifact.stateLayout!.collections.find((candidate) => candidate.name === 'values')!;
+    const entries = await provider.getUtxos(getEntryNftAddress(inner, categoryId, collection.signature));
+    for (const [key, value] of [[presentKey, 2n], [insertedKey, 0n]] as const) {
+      const slot = binToHex(keyToSlot(bigIntToVmNumber(key)));
+      const entry = entries.find((candidate) =>
+        binToHex(hexToBin(candidate.token!.nft!.commitment).slice(0, 32)) === slot);
+      expect(entry, `retained node ${key}`).toBeDefined();
+      expect(vmNumberToBigInt(hexToBin(entry!.token!.nft!.commitment).slice(64), {
+        requireMinimalEncoding: false,
+      })).toBe(value);
+    }
+
+    // An absent delete is observably different from inserting a zero node because mappings are enumerable. It
+    // remains fail-closed until the kernel route can authenticate and omit the no-op access.
+    await expect(StatefulContract.withCategory(inner, categoryId)
+      .batch([{ function: 'clearMany', args: [[absentKey]] }]).build())
+      .rejects.toThrow(/cannot delete key 0 - it has no entry/);
+  }, 180_000);
+
+  it('settles an inserted node before a later row updates its dirty predecessor', async () => {
+    const provider = createMessageBusSemanticTestProvider();
+    const artifact = compileString(DEFAULT_SOURCE, KERNEL);
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+    );
+    const ranked = Array.from({ length: 48 }, (_unused, index) => BigInt(index + 1)).sort((left, right) => {
+      const leftSlot = bytesToSlotValue(keyToSlot(bigIntToVmNumber(left)));
+      const rightSlot = bytesToSlotValue(keyToSlot(bigIntToVmNumber(right)));
+      return leftSlot < rightSlot ? -1 : 1;
+    });
+    const predecessorKey = ranked[24];
+    const insertedKey = ranked[40];
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    await contract.call.setMany([predecessorKey], 9n).send();
+
+    const call = StatefulContract.withCategory(inner, categoryId).batch([
+      { function: 'setMany', args: [[insertedKey], 5n] },
+      { function: 'clearMany', args: [[predecessorKey]] },
+    ]);
+    const builder = await call.build();
+    const vm = createVirtualMachineBch2026ForProvider(provider);
+    const transaction = builder.buildLibauthTransaction();
+    const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+    for (let inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex += 1) {
+      expect(vm.stateSuccess(vm.evaluate({ inputIndex, sourceOutputs, transaction })), `input ${inputIndex}`)
+        .toBe(true);
+    }
+    await expect(call.send()).resolves.toBeDefined();
+
+    const collection = artifact.stateLayout!.collections.find((candidate) => candidate.name === 'values')!;
+    const entries = await provider.getUtxos(getEntryNftAddress(inner, categoryId, collection.signature));
+    for (const [key, value] of [[predecessorKey, 0n], [insertedKey, 5n]] as const) {
+      const slot = binToHex(keyToSlot(bigIntToVmNumber(key)));
+      const entry = entries.find((candidate) =>
+        binToHex(hexToBin(candidate.token!.nft!.commitment).slice(0, 32)) === slot);
+      expect(entry).toBeDefined();
+      expect(vmNumberToBigInt(hexToBin(entry!.token!.nft!.commitment).slice(64), {
+        requireMinimalEncoding: false,
+      })).toBe(value);
+    }
+  }, 180_000);
+
   it('chains insertions and updates across rows without crossing an authenticated successor', async () => {
     const provider = createMessageBusSemanticTestProvider();
     const artifact = compileString(SOURCE, KERNEL);

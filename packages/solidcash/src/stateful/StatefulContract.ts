@@ -17934,7 +17934,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         const journalSettledScalar = journalArgumentIndex >= 0
           && !collection.chunkableValue
           && /^(?:u?int\d*|u?fixed\d*x\d*|bigint)$/.test(collection.valueType)
-          && (info.op === '+' || info.op === 'set');
+          && (info.op === '+' || info.op === 'set' || isDelete);
         const originalEntry = list.find(slot);
         const journalIdentity = `${info.collectionHash}:${entryAddr}:${slotHex}`;
         const priorPending = journalSettledScalar
@@ -18004,7 +18004,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           }
         } else {
           // INSERT (a NEW recipient): co-spend the bracketing predecessor (from the ORIGINAL list) + mint P' then NEW.
-          // 'delete'/'-' on an absent key fail closed (nothing to nullify/debit).
+          // Deleting an absent enumerable mapping key is a language no-op, not permission to insert an observable
+          // zero-valued node. Until the row route can prove and omit that physical access, keep it fail-closed.
           if (info.op === '-' || isDelete) {
             const operation = isDelete ? 'delete' : 'debit';
             throw new Error(`vmap upsert loop ${info.collection}: cannot ${operation} key ${i} - `
@@ -18122,7 +18123,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         }
         if (journalArgumentIndex >= 0 && !collection.chunkableValue
           && /^(?:u?int\d*|u?fixed\d*x\d*|bigint)$/.test(collection.valueType)
-          && (info.op === '+' || info.op === 'set')) {
+          && (info.op === '+' || info.op === 'set' || isDelete)) {
           merged.forEach((commitment, commitmentIndex) => {
             const decoded = decodeEntryCommitment(hexToBin(commitment));
             runtimeJournalPendingScalar.set(

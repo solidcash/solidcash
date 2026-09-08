@@ -23616,10 +23616,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       && this.getStackIndex(KERNEL_JOURNAL_RECORDS, true) >= 0
       && this.getStackIndex(this.sortedUpsertLoopJournalCursorName, true) >= 0
       && this.getStackIndex(GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_JOURNAL_COUNT, true) >= 0
-      && node instanceof MappingAssignNode
-      && (this.sortedUpsertLoopOp === 'set' || this.sortedUpsertLoopOp === '+')
+      && (node instanceof MappingAssignNode || node instanceof MappingDeleteNode)
+      && (this.sortedUpsertLoopOp === 'set' || this.sortedUpsertLoopOp === '+'
+        || this.sortedUpsertLoopOp === 'delete')
       && !isRawbytes && !isChunkable
-      && node.arrayIndex === undefined && !node.arrayPush && !node.arrayPop;
+      && (node instanceof MappingDeleteNode
+        || (node.arrayIndex === undefined && !node.arrayPush && !node.arrayPop));
   }
 
   /** Leave true iff the current access tuple is an existing-entry mutation (flags low nibble 0b1011). */
@@ -23639,7 +23641,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * first touch. No row observes or publishes an intermediate commitment.
    */
   private emitKernelJournalExistingScalarMutation(
-    node: MappingAssignNode, loc: SingleLocationData, isMinus: boolean,
+    node: MappingAssignNode | MappingDeleteNode, loc: SingleLocationData, isMinus: boolean,
   ): void {
     const trackedStack = [...this.stack];
     const cursorName = this.sortedUpsertLoopJournalCursorName;
@@ -23740,7 +23742,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_ENDIF, loc); // slot, next, old value
 
     // Apply the language operation to the pending value in source order.
-    if (this.sortedUpsertLoopOp === 'set') {
+    if (this.sortedUpsertLoopOp === 'set' || this.sortedUpsertLoopOp === 'delete') {
       this.emit(Op.OP_DROP, loc);
       this.emit(encodeInt(BigInt(this.getStackIndex('(credit_amt)') + 2)), loc); this.emit(Op.OP_PICK, loc);
       this.emit(Op.OP_BIN2NUM, loc);
@@ -23808,7 +23810,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * The predecessor keeps its value and provenance while linking to the target; the target becomes a live dirty
    * synthetic node linked to the predecessor's former successor.
    */
-  private emitKernelJournalInsertMutation(node: MappingAssignNode, loc: SingleLocationData): void {
+  private emitKernelJournalInsertMutation(
+    node: MappingAssignNode | MappingDeleteNode, loc: SingleLocationData,
+  ): void {
     const trackedStack = [...this.stack];
     const collectionHash = computeCollectionHash(this.entrySlots[node.entrySlotIndex]!.collectionSignature);
 
@@ -24429,7 +24433,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         pushIdx(this.sortedUpsertLoopOutCounterName, 0, 3);
         this.emitVerifySortedValueOutput(loc, addrIdx() + 4, 3, 2, 1, 4);
         this.emit(Op.OP_1, loc);
-      } else {
+      } else if (!settleScalar) {
         pushIdx(this.sortedUpsertLoopOutCounterName, 0, 3);                  // P' outIdx (U=4)
         this.emitVerifySortedValueOutput(loc, addrIdx() + 4, 3, hkIdx() + 4, 1, 4); // P' = coSlot|Hk|coValue
       }
@@ -24587,7 +24591,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emitKernelJournalExistingMutationCondition(loc);
       this.emit(Op.OP_IF, loc);
       this.scopeDepth += 1;
-      this.emitKernelJournalExistingScalarMutation(node as MappingAssignNode, loc, isMinus);
+      this.emitKernelJournalExistingScalarMutation(node, loc, isMinus);
       this.scopeDepth -= 1;
       this.emit(Op.OP_ELSE, loc);
       this.scopeDepth += 1;
@@ -24675,7 +24679,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(encodeInt(BigInt(this.getStackIndex('(kernel_insert_pending_access)'))), loc);
       this.emit(Op.OP_PICK, loc);
       this.emit(Op.OP_IF, loc);
-      this.emitKernelJournalInsertMutation(node as MappingAssignNode, loc);
+      this.emitKernelJournalInsertMutation(node, loc);
       this.emit(Op.OP_ELSE, loc);
       this.stack = [...insertionBranchStack];
       this.emit(Op.OP_DROP, loc); this.popFromStack();

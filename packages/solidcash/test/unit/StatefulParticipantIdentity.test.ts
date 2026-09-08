@@ -104,7 +104,9 @@ describe('compiler-owned participant identity', () => {
         }],
       } as StateLayout;
       const abi = {
-        name, selector: '00000000', inputs: [], outputs: [], writesState: true,
+        name, selector: '00000000',
+        inputs: [{ name: '__internal__valueChunkOutputBase', type: 'int' }],
+        outputs: [], writesState: true,
         blockLayout: {
           blockSize: 2,
           slots: [

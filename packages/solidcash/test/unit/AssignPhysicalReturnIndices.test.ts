@@ -292,7 +292,7 @@ describe('generic persisted value-chunk write identity', () => {
       };
       const handler = {
         name: functionName,
-        inputs: [],
+        inputs: [{ name: '__internal__valueChunkOutputBase', type: 'int' }],
         writesState: true,
         blockLayout: {
           blockSize: 2,
@@ -329,6 +329,49 @@ describe('generic persisted value-chunk write identity', () => {
     const kernel = structuralLegacy('publishJobEvent', 'jobEvents');
     kernel.logicalArtifact.messageBus = { convention: 'kernel-row-loop' } as Artifact['messageBus'];
     expect(legacyPlannedChunkableValueWriteCollection(kernel)).toBeUndefined();
+
+    const noWidth = structuralLegacy('appendNotice', 'notices');
+    noWidth.valueChunkOutputCount = 0;
+    expect(legacyPlannedChunkableValueWriteCollection(noWidth)).toBeUndefined();
+    delete noWidth.valueChunkOutputCount;
+    (noWidth as typeof noWidth & { derivedTrailingOutputs: Map<number, unknown> })
+      .derivedTrailingOutputs = new Map([[7, { unrelated: true }]]);
+    expect(legacyPlannedChunkableValueWriteCollection(noWidth)).toBeUndefined();
+
+    const noWitness = structuralLegacy('appendNotice', 'notices');
+    noWitness.logicalArtifact.abi[0].inputs = [];
+    expect(legacyPlannedChunkableValueWriteCollection(noWitness)).toBeUndefined();
+
+    const overloaded = structuralLegacy('appendNotice', 'notices');
+    overloaded.logicalArtifact.abi.push({
+      ...overloaded.logicalArtifact.abi[0],
+      selector: '01020304',
+      inputs: [
+        { name: 'key', type: 'int' },
+        { name: '__internal__valueChunkOutputBase', type: 'int' },
+      ],
+    });
+    expect(legacyPlannedChunkableValueWriteCollection(overloaded)).toBeUndefined();
+
+    const mixedConvention = structuralLegacy('appendNotice', 'notices');
+    mixedConvention.externalContract = { inner: { artifact: {
+      ...mixedConvention.logicalArtifact,
+      messageBus: { convention: 'kernel-row-loop' },
+    } as Artifact } };
+    expect(legacyPlannedChunkableValueWriteCollection(mixedConvention)).toBeUndefined();
+
+    const driftedLayout = structuralLegacy('appendNotice', 'notices');
+    driftedLayout.externalContract = { inner: { artifact: {
+      ...driftedLayout.logicalArtifact,
+      stateLayout: {
+        ...driftedLayout.logicalArtifact.stateLayout,
+        collections: [{
+          ...driftedLayout.logicalArtifact.stateLayout!.collections![0],
+          name: 'otherNotices',
+        }],
+      },
+    } as Artifact } };
+    expect(legacyPlannedChunkableValueWriteCollection(driftedLayout)).toBeUndefined();
   });
 
   it('uses the routed writer layout and collection even when its artifact contains a legacy-named decoy', () => {

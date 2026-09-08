@@ -2648,7 +2648,6 @@ type ChunkableArrayWriteGroup = {
   /** Legacy planners can publish the concrete continuation region without publishing entry-effect metadata. */
   valueChunkOutputBase?: number;
   valueChunkOutputCount?: number;
-  derivedTrailingOutputs?: ReadonlyMap<number, unknown>;
 };
 
 /**
@@ -2748,24 +2747,41 @@ function groupChunkableValueWriteIdentity(group: ChunkableArrayWriteGroup): stri
 export function legacyPlannedChunkableValueWriteCollection(
   group: ChunkableArrayWriteGroup,
 ): string | undefined {
-  const hasPlannedContinuations = group.valueChunkOutputBase !== undefined
-    || group.valueChunkOutputCount !== undefined
-    || (group.derivedTrailingOutputs?.size ?? 0) > 0;
-  if (!hasPlannedContinuations) return undefined;
-  const artifact = group.logicalArtifact ?? group.externalContract?.inner?.artifact;
-  if (artifact?.messageBus?.convention === 'kernel-row-loop') return undefined;
-  const layout = group.stateLayout ?? artifact?.stateLayout;
-  const collections = (layout?.collections ?? []).filter((collection) => (
-    collection.chunkableValue === true && collection.valueType.endsWith('[]')
-  ));
-  if (collections.length !== 1) return undefined;
+  if (!Number.isSafeInteger(group.valueChunkOutputCount) || group.valueChunkOutputCount! <= 0) {
+    return undefined;
+  }
+  if (!permitsLegacyNamedValueChunkFallback([group])) return undefined;
+  const routeFunction = group.compilerRoute?.abiFunction;
+  if ((routeFunction as (AbiFunction & { messageBusConvention?: string }) | undefined)
+    ?.messageBusConvention === 'kernel-row-loop') return undefined;
+  const artifacts = [group.logicalArtifact, group.externalContract?.inner?.artifact]
+    .filter((artifact, index, all): artifact is Artifact => artifact !== undefined
+      && all.indexOf(artifact) === index);
   const logicalName = group.logicalFunctionName ?? group.functionName;
-  const abiFunction = group.compilerRoute?.abiFunction
-    ?? artifact?.abi.find((candidate: AbiFunction) => candidate.name === logicalName);
-  const blockLayout = abiFunction?.blockLayout ?? group.blockLayout;
-  if (!abiFunction || abiFunction.writesState === false
-    || !blockLayout?.slots.some((slot) => slot.kind === 'entry')) return undefined;
-  return collections[0].name;
+  const namedFunctions = routeFunction ? [routeFunction] : artifacts.flatMap((artifact) => (
+    (artifact.abi as readonly AbiFunction[]).filter((candidate) => candidate.name === logicalName)
+  ));
+  const identities = new Set(namedFunctions.map((candidate) => (
+    `${candidate.selector ?? ''}:${candidate.inputs.map((input) => input.type).join(',')}`
+  )));
+  if (namedFunctions.length === 0 || identities.size !== 1) return undefined;
+  if (namedFunctions.some((candidate) => (
+    candidate.writesState === false
+    || !candidate.inputs.some((input) => input.name === '__internal__valueChunkOutputBase')
+    || !(candidate.blockLayout ?? group.blockLayout)?.slots.some((slot) => slot.kind === 'entry')
+  ))) return undefined;
+
+  const layouts = [group.stateLayout, ...artifacts.map((artifact) => artifact.stateLayout)]
+    .filter((layout, index, all): layout is StateLayout => layout !== undefined
+      && all.indexOf(layout) === index);
+  const collectionsByLayout = layouts.map((layout) => (layout.collections ?? []).filter((collection) => (
+    collection.chunkableValue === true && collection.valueType.endsWith('[]')
+  )));
+  if (collectionsByLayout.length === 0 || collectionsByLayout.some((collections) => collections.length !== 1)) {
+    return undefined;
+  }
+  const collectionNames = new Set(collectionsByLayout.map(([collection]) => collection.name));
+  return collectionNames.size === 1 ? collectionsByLayout[0][0].name : undefined;
 }
 
 /** Resolve a single physical chunkable-value writer from compiler metadata, independent of ABI names. */

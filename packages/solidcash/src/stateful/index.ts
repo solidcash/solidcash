@@ -137,9 +137,9 @@ export {
   type ResolvedKernelLifecycleSpan, type ResolvedKernelLifecycleTopology,
 } from './KernelLifecycleTopology.js';
 export {
-  planKernelDelegateForwarding,
-  type KernelDelegateForwardingFrame, type KernelDelegateForwardingMetadata,
-  type ResolvedKernelDelegateForwarding,
+  planKernelDelegateForwarding, resolveKernelDelegateExecution,
+  type KernelDelegateExecutionTarget, type KernelDelegateForwardingFrame, type KernelDelegateForwardingMetadata,
+  type ResolvedKernelDelegateForwarding, type ResolvedKernelDelegateExecution,
 } from './KernelDelegateForwarding.js';
 export {
   registerDeployment, findDeploymentByName, findDeploymentByAddress, findDeploymentByLockingBytecode,

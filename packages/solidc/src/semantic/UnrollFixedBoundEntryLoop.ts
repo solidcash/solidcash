@@ -54,9 +54,9 @@ const MAX_UNROLL = 64;
  * keys get distinct entry slots, so the unrolled form is equivalent to hand-written static writes.
  *
  * Restricted to be sound: only fires when the body contains a mapping write, a keccak256 call, a contract
- * instantiation, or an indirect external function-pointer call (else unrolling is needless). For child-deployment
- * loops, a break/continue is admitted only when substituting each fixed induction value makes every reached escape
- * decision static; returns and runtime-selected escapes remain rolled. Also requires
+ * instantiation, or an indirect external function-pointer call (else unrolling is needless). A break/continue is
+ * admitted only when substituting each fixed induction value makes every reached escape decision static; returns
+ * and runtime-selected escapes remain rolled. Also requires
  * N <= MAX_UNROLL (avoid code blow-up). Runs before break/continue expansion + SymbolTableTraversal so the static
  * writes / keccak calls get their slots. A fixed-bound keccak256 loop unrolls to N syntactic calls (N compute
  * side-cars, each resolved by the complex-arg probe); a runtime-bound keccak loop stays flagged keccakInLoop.
@@ -326,11 +326,6 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
       : (!hasMappingWrite && !this.hasKeccakCall(bodyStmts)
         && !this.hasChildDeployment(bodyStmts))) return undefined;
     const hasSourceEscape = this.hasControlFlowEscape(bodyStmts);
-    if (hasSourceEscape && !this.hasChildDeployment(bodyStmts)) {
-      w.fixedUnrollForbidden = true;
-      return undefined;
-    }
-
     // A pointer-table dispatch loop with a FIXED literal trip count reaches exactly `values.length` rows. Record
     // that ceiling so the artifact can publish one bounded loop callsite instead of N indistinguishable rows.
     if (hasIndirectCall

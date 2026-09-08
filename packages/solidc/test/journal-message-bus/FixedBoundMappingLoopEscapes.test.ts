@@ -24,10 +24,23 @@ const compile = (body: string): { handler: Handler | undefined } => {
 };
 
 describe('mapping loops with source escapes', () => {
-  it('keeps a mixed multi-site escape domain fenced when no exact loop form exists', () => {
+  it('statically replays a mixed multi-site escape domain after substituting the fixed counter', () => {
     const { handler } = compile(`for (int i = 1; i < 10; i = i + 2) {
       this.before[i] = i;
       if (i == 3) continue;
+      this.after[i] = i + 10;
+      if (i == 7) break;
+      this.tail[i] = i + 20;
+    }`);
+    expect(handler).toMatchObject({ eligible: true });
+    // Four `before`, three `after`, and two `tail` writes survive the statically replayed escapes.
+    expect(handler?.physicalEntrySlots).toHaveLength(9);
+  });
+
+  it('keeps the equivalent runtime-selected mixed escape domain fenced', () => {
+    const { handler } = compile(`for (int i = 1; i < 10; i = i + 2) {
+      this.before[i] = i;
+      if (skip) continue;
       this.after[i] = i + 10;
       if (i == 7) break;
       this.tail[i] = i + 20;

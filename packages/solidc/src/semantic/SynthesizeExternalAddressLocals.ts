@@ -605,7 +605,7 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
     return localName;
   }
 
-  // Hoist the underlying target of an interface-cast init expression (`IUnicrow(unicrowAddress)` / `IFoo(s.field)` /
+  // Hoist the underlying target of an interface-cast init expression (`IFoo(targetAddress)` / `IFoo(s.field)` /
   // `IFoo(param.field)`) into an __extaddr_ local, reusing the state-var / self-pinned-chain / param-field resolvers,
   // and return the local name. Undefined when the init is not a recognized (self-pinned or caller-witness) target.
   private hoistTargetLocalFor(init: ExpressionNode): string | undefined {

@@ -55,6 +55,10 @@ export default class InlineForeignFunctionPointerReturns extends AstTraversal {
 
     this.candidates = new Map();
     for (const fn of node.functions) {
+      // Compiler-owned graph and detached-signature handlers are physical OP_INVOKE bodies. Even a
+      // side-effect-free, single-return handler must retain that boundary: its hidden graph/signature frame is
+      // attached to the invocation, not to an expression substituted into the enclosing route.
+      if (fn.graphEmissionHandler || fn.messageBusDetachedSignatureHandler) continue;
       // Public helpers are eligible too (`this.eval(x)` is a self-external call to a public fn): inline the
       // internal call sites but keep the public ABI entry (only remove internal/private candidates below).
       const isPublic = fn.visibility !== 'internal' && fn.visibility !== 'private';

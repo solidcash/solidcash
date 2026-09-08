@@ -72,11 +72,75 @@ describe('kernel graph result dependencies', () => {
       argSources: [
         { kind: 'forward', paramIndex: 0 },
         { kind: 'expression', expression: { kind: 'field', expression: {
-          kind: 'externalCall', callsiteId: 0,
+          kind: 'producerResult', callsiteId: 0, resultIndex: 0,
         } } },
         { kind: 'expression', expression: { kind: 'field', expression: {
-          kind: 'externalCall', callsiteId: 0,
+          kind: 'producerResult', callsiteId: 0, resultIndex: 0,
         } } },
+      ],
+    });
+  });
+
+  it('publishes ordered multi-value identity but freezes its consumer until vector authentication exists', () => {
+    const artifact = compileString(`pragma solidity ^0.8.0;
+      interface IReader {
+        function read(uint id) external returns (uint value, address recipient);
+      }
+
+      interface IWriter {
+        function write(uint id, uint value, address recipient) external;
+      }
+
+      contract Coordinator {
+        IReader immutable reader;
+        IWriter immutable writer;
+        uint touched;
+        event Applied(uint value, address recipient);
+
+        constructor(address reader_, address writer_) {
+          reader = IReader(reader_);
+          writer = IWriter(writer_);
+        }
+
+        function apply(uint id, bool forward) external {
+          (uint value, address recipient) = reader.read(id);
+          if (forward) {
+            writer.write(id, value, recipient);
+          }
+          touched = value;
+          emit Applied(value, recipient);
+          require(true);
+        }
+      }
+    `, KERNEL);
+
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'apply'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+
+    const calls = artifact.abi.find((fn) => fn.name === 'apply')?.externalCalls ?? [];
+    expect(calls).toHaveLength(2);
+    expect(calls[0]).toMatchObject({
+      callsiteId: 0,
+      interfaceName: 'IReader',
+      functionName: 'read',
+      hasReturnValues: true,
+      returnTypes: ['uint256', 'address'],
+      occurrence: 'once',
+    });
+    expect(calls[1]).toMatchObject({
+      callsiteId: 1,
+      interfaceName: 'IWriter',
+      functionName: 'write',
+      occurrence: 'conditional',
+      maximumOccurrences: 1,
+      argSources: [
+        { kind: 'forward', paramIndex: 0 },
+        { kind: 'expression', expression: {
+          kind: 'producerResult', callsiteId: 0, resultIndex: 0,
+        } },
+        { kind: 'expression', expression: {
+          kind: 'producerResult', callsiteId: 0, resultIndex: 1,
+        } },
       ],
     });
   });

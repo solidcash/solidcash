@@ -2816,16 +2816,42 @@ export function decodeEvmReturnValue(value: Uint8Array, type: string): FunctionA
 }
 
 /** Bind compiler-identified returning call expressions to already authenticated invocation results. */
-function externalReturnsForCallsites(
+export function externalReturnsForCallsites(
   argSources: readonly ArgSource[] | undefined,
   results: ReadonlyMap<number, FunctionArgument>,
+  producerCalls: readonly ExternalCallAbi[],
 ): Map<string, FunctionArgument> {
   const resolved = new Map<string, FunctionArgument>();
+  const producerById = new Map<number, ExternalCallAbi>();
+  for (const producer of producerCalls) {
+    if (producer.callsiteId === undefined || producer.callsiteId < 0) {
+      throw new Error('Graph external-call metadata requires a nonnegative callsiteId for every producer.');
+    }
+    if (producerById.has(producer.callsiteId)) {
+      throw new Error(`Graph external-call metadata has duplicate callsiteId ${producer.callsiteId}.`);
+    }
+    producerById.set(producer.callsiteId, producer);
+  }
   const visit = (expression: ExternalCallExpression | undefined): void => {
     if (!expression) return;
     for (const child of [expression.target, expression.expression, expression.left, expression.right,
       expression.condition, expression.ifTrue, expression.ifFalse]) visit(child);
     for (const child of expression.args ?? []) visit(child);
+    if (expression.kind === 'producerResult' && expression.callsiteId !== undefined) {
+      const producer = producerById.get(expression.callsiteId);
+      const resultIndex = expression.resultIndex;
+      if (!producer || resultIndex === undefined || !Number.isInteger(resultIndex)
+        || resultIndex < 0 || resultIndex >= (producer.returnTypes?.length ?? 0)) {
+        throw new Error(
+          `Graph producerResult ${expression.callsiteId}:${String(resultIndex)} does not identify one published result.`,
+        );
+      }
+      const result = results.get(expression.callsiteId);
+      const selected = (producer.returnTypes?.length ?? 0) === 1
+        ? result : Array.isArray(result) ? result[resultIndex] as FunctionArgument : undefined;
+      if (selected !== undefined) resolved.set(JSON.stringify(expression), selected);
+      return;
+    }
     if (expression.kind !== 'externalCall' || expression.callsiteId === undefined) return;
     const result = results.get(expression.callsiteId);
     if (result !== undefined) resolved.set(JSON.stringify(expression), result);
@@ -5223,19 +5249,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       capability.route.inputs.flatMap((input, index) => input.name.startsWith('__internal__')
         ? [[input.name, routeArgs[index]]] : []),
     ) as Record<string, FunctionArgument>;
-    if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-      ?.SOLIDC_DEBUG_UNICROW_PAY === '1') {
-      console.error('unicrow-batch-route-args', JSON.stringify({
-        contract: executionArtifact.contractName,
-        blockBase,
-        args: capability.route.inputs.map((input, index) => ({
-          name: input.name,
-          value: routeArgs[index] instanceof Uint8Array ? binToHex(routeArgs[index] as Uint8Array) : String(routeArgs[index]),
-        })),
-        internalRouteWitnesses: Object.fromEntries(Object.entries(resolvedCallerInternalWitnesses)
-          .map(([name, value]) => [name, value instanceof Uint8Array ? binToHex(value) : String(value)])),
-      }));
-    }
     const rowCount = blob.length > 6 ? blob[6] : 0;
     // Recover the reached selectors from the canonical blob so conditional token-transfer slots are derived only
     // for rows that actually execute such a handler. Leaving the inactive suffix as 1-token probe placeholders
@@ -13477,18 +13490,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 stb.setChunkRawCommitments(dv.name, dv.delegateSuffix === true && existing.length > exact.length
                   ? [...exact, ...existing.slice(exact.length)] : exact);
                 commitmentProgress += exact.filter((commitment, index) => commitment !== existing[index]).length;
-                if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-                  ?.SOLIDC_DEBUG_JOBS === '1' && dv.name === 'jobs') {
-                  console.error('jobs-exact-dynamic-chunks', {
-                    iter, len, recoveredBytes: derivedDynamicBytes.length, existing, exact,
-                  });
-                }
-              } else if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-                ?.SOLIDC_DEBUG_JOBS === '1' && dv.name === 'jobs') {
-                console.error('jobs-dynamic-bytes-missing', {
-                  iter, len, derivedDynamicValueType: typeof derivedDynamicValue,
-                  traceStackLengths: [...new Set(fullTrace2.flatMap((step) => step.stack.map((item) => item.length)))],
-                });
               }
               if (nNew > 0) {
                 // X10: key each observation by ITS output index (chunk i lives at chunkOffset + i), not
@@ -13979,54 +13980,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               const commitMap = extractCommitmentMapFromTrace(
                 fullTrace2, { min: chunkOffset, max: chunkOffset + existing.length }, true,
               );
-              if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-                ?.SOLIDC_DEBUG_JOBS === '1' && dv.name === 'jobs') {
-                const terminal = fullTrace2.at(-1);
-                const failIp = terminal?.ip ?? 0;
-                const failOps = (terminal?.instructions ?? []).slice(Math.max(0, failIp - 16), failIp + 3)
-                  .map((instruction, offset) => {
-                    const at = Math.max(0, failIp - 16) + offset;
-                    const data = 'data' in instruction && instruction.data instanceof Uint8Array
-                      ? `<${binToHex(instruction.data).slice(0, 24)}>` : '';
-                    return `${at}:${instruction.opcode.toString(16).padStart(2, '0')}${data}`;
-                  });
-                const jobsLock = binToHex(dv.lockingBytecode);
-                const matchingOutputs = probeBuilder2.outputs
-                  .map((output, index) => ({
-                    index,
-                    to: output.to instanceof Uint8Array ? binToHex(output.to) : String(output.to),
-                    category: output.token?.category,
-                    capability: output.token?.nft?.capability,
-                    commitment: output.token?.nft?.commitment,
-                  }))
-                  .filter((output) => output.to === jobsLock || output.category !== undefined);
-                console.error('jobs-chunk-probe', {
-                  iter, chunkOffset, existing, observed: [...commitMap.entries()],
-                  jobsLock,
-                  outputCount: probeBuilder2.outputs.length,
-                  matchingOutputs,
-                  terminal: terminal && {
-                    ip: terminal.ip,
-                    opcode: terminal.instructions[terminal.ip]?.opcode,
-                    bodyLen: terminal.instructions.length,
-                    error: terminal.error,
-                    stack: terminal.stack.slice(-8).map((item) => binToHex(item)),
-                  },
-                  failOps,
-                  traceTail: fullTrace2.slice(-12).map((state) => ({
-                    ip: state.ip,
-                    opcode: state.instructions[state.ip]?.opcode,
-                    bodyLen: state.instructions.length,
-                    error: state.error,
-                    stack: state.stack.slice(-8).map((item) => binToHex(item)),
-                  })),
-                  loops: stb.getLoopEntryVars().map((value) => ({
-                    collection: value.collection,
-                    categoryId: value.categoryId,
-                    commitments: stb.getLoopEntryCommitments(value.collection),
-                  })),
-                });
-              }
               if (['SOLIDC_DEBUG_ROUTE_CONCISE', 'SOLIDC_DEBUG_RETURN'].some((name) =>
                 (globalThis as { process?: { env?: Record<string, string> } }).process?.env?.[name] === '1')) {
                 console.error('root-dynamic-chunk-scan', {
@@ -20052,21 +20005,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             })),
           });
         }
-        if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-          ?.SOLIDC_DEBUG_UNICROW_PAY === '1'
-          && group.externalContract.inner.artifact.contractName === 'Unicrow') {
-          console.error('unicrow-pay-route-args', JSON.stringify({
-            function: group.functionName,
-            masterInputIndex,
-            args: bAbiInputs.map((input, index) => ({
-              name: input.name,
-              value: bFinalArgs[index] instanceof Uint8Array
-                ? binToHex(bFinalArgs[index] as Uint8Array) : String(bFinalArgs[index]),
-            })),
-            routeInternalArgs: Object.fromEntries(Object.entries(group.compilerRoute?.internalArgs ?? {})
-              .map(([name, value]) => [name, value instanceof Uint8Array ? binToHex(value) : String(value)])),
-          }));
-        }
         group.masterUtxo = { ...group.masterUtxo, unlocker: bMasterUnlocker } as UnlockableUtxo;
         const applyMasterUnlocker = (unlocker: Unlocker): void => {
           group.masterUtxo = { ...group.masterUtxo, unlocker } as UnlockableUtxo;
@@ -20789,6 +20727,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 onChainState.state,
                 delegateVisibleInputs,
                 delegateSelfAddress,
+                publishedNestedExternalCalls,
               );
               const active = this._evaluateExternalExpression(
                 nested.condition,
@@ -20926,7 +20865,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               const containsReturningExpression = (value: unknown, seen = new Set<object>()): boolean => {
                 if (!value || typeof value !== 'object' || seen.has(value as object)) return false;
                 seen.add(value as object);
-                if ((value as { kind?: string }).kind === 'externalCall') return true;
+                if (['externalCall', 'producerResult'].includes((value as { kind?: string }).kind ?? '')) return true;
                 return Object.values(value).some((child) => (
                   Array.isArray(child)
                     ? child.some((item) => containsReturningExpression(item, seen))
@@ -20939,6 +20878,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   nestedSources, delegateVisibleArgs, callInfo.contract, onChainState.state,
                   delegateVisibleInputs,
                   delegateSelfAddress,
+                  publishedNestedExternalCalls,
                   preparedAtomicNodes !== undefined,
                 )
                 : undefined;
@@ -20969,6 +20909,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 ? await this._resolveExternalExpressionReturns(
                   nestedSources, delegateVisibleArgs, callInfo.contract, onChainState.state,
                   delegateVisibleInputs, delegateSelfAddress,
+                  publishedNestedExternalCalls,
                   true,
                 )
                 : nestedExpressionReturns;
@@ -20980,7 +20921,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 : nestedArgs;
               const resolveGraphNestedArgs = preparedAtomicNodes && nestedSources
                 ? (results: ReadonlyMap<number, FunctionArgument>): FunctionArgument[] | undefined => {
-                  const externalReturns = externalReturnsForCallsites(nestedSources, results);
+                  const externalReturns = externalReturnsForCallsites(
+                    nestedSources, results, publishedNestedExternalCalls,
+                  );
                   if (externalReturns.size === 0) return undefined;
                   return this._resolveExternalArgs(
                     nestedSources, delegateVisibleArgs, callInfo.contract.inner.artifact, onChainState.state,
@@ -22132,15 +22075,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                       childBlockInputs.push(takeFunder());
                     }
                   }
-                  if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-                    ?.SOLIDC_DEBUG_UNICROW_PAY === '1'
-                    && ((proxyCallee as { implementation?: { inner: { artifact: Artifact } } } | undefined)
-                      ?.implementation?.inner.artifact.contractName
-                      ?? callee.inner.artifact.contractName) === 'Unicrow') {
-                    console.error('unicrow-pay-value-chunk-reservation', {
-                      encodedPayloadBytes, childValueChunkSlots,
-                    });
-                  }
                 }
                 const batchInsertBase = insertBase + childPlannedEntryInserts.length + childValueChunkSlots;
                 let childBatchTrailingCount = 0;
@@ -22192,25 +22126,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                     proxyCallee?.implementation.inner ?? callee.inner,
                     0, callee.categoryId, batch.collection,
                   ).generateLockingBytecode();
-                  if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-                    ?.SOLIDC_DEBUG_UNICROW_PAY === '1'
-                    && (proxyCallee?.implementation.inner.artifact.contractName
-                      ?? callee.inner.artifact.contractName) === 'Unicrow') {
-                    console.error('unicrow-pay-entry-plan', {
-                      categoryId: callee.categoryId,
-                      selectedFunction: selectedFn?.name,
-                      collection: batch.collection,
-                      layoutCollection: childLayout.collections?.find(
-                        (candidate) => candidate.name === batch.collection
-                          || candidate.signature === batch.collection,
-                      ),
-                      targetSlots: batch.slotIndices.map((slotIndex) => ({
-                        slotIndex,
-                        target: binToHex(childBatchTargets.get(slotIndex) ?? new Uint8Array()),
-                      })),
-                      entryLockingBytecode: binToHex(entryLockingBytecode),
-                    });
-                  }
                   if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
                     ?.SOLIDC_DEBUG_INPUTS === '1') {
                     console.error('nested-batch-plan', {
@@ -22874,7 +22789,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   childCompilerRoute;
                 if (atomicNodeIndex !== undefined) {
                   preparedAtomicNodes[atomicNodeIndex].refreshArgsFromResults = (results) => {
-                    const externalReturns = externalReturnsForCallsites(nestedSources, results);
+                    const externalReturns = externalReturnsForCallsites(
+                      nestedSources, results, publishedNestedExternalCalls,
+                    );
                     if (externalReturns.size === 0) return false;
                     const nextLogicalArgs = this._resolveExternalArgs(
                       nestedSources, delegateVisibleArgs, callInfo.contract.inner.artifact, onChainState.state,
@@ -23125,7 +23042,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           const graphChildSources = nested.rawArgSources ?? nested.argSources;
           const resolveGraphChildArgs = preparedAtomicNodes && graphChildSources
             ? (results: ReadonlyMap<number, FunctionArgument>): FunctionArgument[] | undefined => {
-              const externalReturns = externalReturnsForCallsites(graphChildSources, results);
+              const externalReturns = externalReturnsForCallsites(
+                graphChildSources, results, parentFn.externalCalls ?? [],
+              );
               if (externalReturns.size === 0) return undefined;
               return logicalParentContract._resolveExternalArgs(
                 graphChildSources, [...graphParentArgs], logicalParentArtifact, parentState,
@@ -23716,14 +23635,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         Math.max(delegatedLoopOutputCount, insertLoopPredecessors.length * 2) - insertLoopPredecessors.length,
       );
       timing('delegate-loop-count');
-      if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-        ?.SOLIDC_DEBUG_EXTERNAL_ARGS === '1' && legacyRouteDelegateFn?.name === 'publishJobPost') {
-        console.error('publish-job-loop-output-width', {
-          delegatedLoopCollections: [...delegatedLoopCollections],
-          sortedLoopCommitments: [...sortedLoopCommitments.entries()],
-          delegatedLoopOutputCount,
-        });
-      }
       // `_buildInputs` materializes the complete route block, then every low-level implementation input, then
       // participant blocks. Input coordinates therefore start after that implementation band; output coordinates
       // remain packed from `nestedOutputBase` and are intentionally tracked separately below.
@@ -23790,13 +23701,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         // RMW write chunks occupy impl+trailing outputs (burned, recreated at the suffix).
         // Without them here, nested output bases sit two slots early once jobs already has chunks.
         + delegatedDynamicWriteChunkCount;
-      if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-        ?.SOLIDC_DEBUG_EXTERNAL_ARGS === '1' && legacyRouteDelegateFn?.name === 'publishJobPost') {
-        console.error('publish-job-base-geometry', {
-          delegatedDynamicSuffix, delegatedLoopOutputCount, packedNestedOutputBase,
-          projectedRouteBlockSize, blockBase: overrides?.blockBase, nestedOutputBase,
-        });
-      }
       const nestedMasterIndices: number[] = [];
       const nestedOutputBases: number[] = [];
       for (let groupIdx = 0; groupIdx < externalCallUtxoGroups.length; groupIdx++) {
@@ -24632,17 +24536,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               compactGroups: nestedGroups,
             })
           );
-          if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-            ?.SOLIDC_DEBUG_EXTERNAL_ARGS === '1' && group.functionName === 'publishJobPost') {
-            console.error('publish-job-nested-groups', nestedGroups.map((groupIndex, slot) => ({
-              slot,
-              groupIndex,
-              masterIndex: nestedMasterIndices[groupIndex],
-              functionName: externalCallUtxoGroups[groupIndex]?.functionName,
-              contract: externalCallUtxoGroups[groupIndex]?.externalContract.inner.artifact.contractName,
-              sharedGroupIndex: externalCallUtxoGroups[groupIndex]?.sharedGroupIndex,
-            })));
-          }
           // Resolve logical-to-physical identity once for every nested call shape. The absolute anchor input
           // index remains deferred until the builder has materialized all layout bands.
           const { anchorBandBySlot, proxyAnchorSlots } = await resolveNestedIdentityAnchorBands(
@@ -25041,20 +24934,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 if (tokenCategory) tokenCallInputCategory = tokenCategory;
                 tokenCallGroup = externalCallUtxoGroups[tokenNested];
               }
-              if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-                ?.SOLIDC_DEBUG_RETURN === '1' && group.functionName === 'updateJobPost') {
-                console.error('update-call-input-index', {
-                  input: inp.name, callIndex, targetKind: lowLevelCall?.target?.kind,
-                  tokenNested, nestedGroup,
-                  nestedGroups, nestedMasterIndices,
-                  groupFns: nestedGroups.map((idx) => ({
-                    idx, fn: externalCallUtxoGroups[idx]?.functionName,
-                    routed: externalCallUtxoGroups[idx]?.compilerRoute?.abiFunction.name,
-                    master: nestedMasterIndices[idx],
-                  })),
-                  callInputIndex: callInputIndex.toString(),
-                });
-              }
               return callInputIndex;
             }
             throw new Error(`Unsupported SDK-filled delegate parameter '${inp.name}' on ${group.functionName}.`);
@@ -25111,25 +24990,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             });
           }
           if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-            ?.SOLIDC_DEBUG_UNICROW_PAY === '1' && bArt.contractName === 'Unicrow') {
-            console.error('unicrow-pay-lowlevel-route-args', JSON.stringify({
-              function: group.functionName,
-              groupLocalIdx,
-              nestedGroups,
-              nestedMasterIndices,
-              args: bFunc.inputs.map((input, index) => ({
-                name: input.name,
-                value: encodedArgs[index] instanceof Uint8Array
-                  ? binToHex(encodedArgs[index]) : String(encodedArgs[index]),
-              })),
-              routeInternalArgs: Object.fromEntries(Object.entries(group.compilerRoute?.internalArgs ?? {})
-                .map(([name, value]) => [name, value instanceof Uint8Array ? binToHex(value) : String(value)])),
-            }));
-          }
-          if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-            ?.SOLIDC_DEBUG_ROUTE_CONCISE === '1'
-            || ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-              ?.SOLIDC_DEBUG_COLLECTION_FETCH === '1' && group.functionName === 'getEvents')) {
+            ?.SOLIDC_DEBUG_ROUTE_CONCISE === '1') {
             console.error('delegate-encoded-args', {
               groupLocalIdx,
               functionName: group.functionName,
@@ -25191,16 +25052,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             }
             group.refreshInternalArgs?.({});
           };
-          if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-            ?.SOLIDC_DEBUG_EXTERNAL_ARGS === '1' && group.functionName === 'publishJobPost') {
-            const arbIndex = bFunc.inputs.findIndex((input) => input.name === 'arbitrator_');
-            const arbValue = arbIndex >= 0 ? encodedArgs[arbIndex] : undefined;
-            console.error('publish-job-arbitrator-arg', {
-              type: typeof arbValue,
-              hex: arbValue instanceof Uint8Array ? binToHex(arbValue) : String(arbValue),
-              length: arbValue instanceof Uint8Array ? arbValue.length : undefined,
-            });
-          }
           if (timingEnabled) console.error('delegate-refresh-start', { groupLocalIdx });
           group.refreshInternalArgs({});
           if (timingEnabled) console.error('delegate-refresh-complete', { groupLocalIdx });
@@ -25791,17 +25642,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           && utxo.token?.nft?.commitment && utxo.token.nft.commitment.length > 0)
         .map((utxo) => ({ utxo, chunkIndex: parseChunkCommitment(utxo.token!.nft!.commitment).chunkIndex }))
         .sort((a, b) => a.chunkIndex - b.chunkIndex);
-      if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env?.SOLIDC_DEBUG_JOBS === '1'
-        && v.name === 'jobs') {
-        console.error('jobs-old-chunk-fetch', {
-          categoryId: this.categoryId, chunkAddr,
-          lockingBytecode: binToHex(dynamicChunkVars.find((candidate) => candidate.name === v.name)!.lockingBytecode),
-          utxos: utxos.map((utxo) => ({ txid: utxo.txid, vout: utxo.vout,
-            category: utxo.token?.category, capability: utxo.token?.nft?.capability,
-            commitment: utxo.token?.nft?.commitment })),
-          chunks: chunks.length,
-        });
-      }
       oldDynamicChunkCounts.set(v.name, chunks.length);
       oldDynamicChunkCommitments.set(v.name, chunks.map(({ utxo }) => utxo.token!.nft!.commitment));
       for (const { utxo } of chunks) {
@@ -26408,16 +26248,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     if (runtimeLoopEntrySegments.length > 0 || runtimeLoopEventSegments.length > 0
       || runtimeLoopTransferSegments.length > 0) {
       const rowIndices = new Set([
-        ...(pendingScalarSettlementActive ? pendingScalarOutputSegments : runtimeLoopEntrySegments)
-          .map((segment) => segment.rowIndex),
+        ...runtimeLoopEntrySegments.map((segment) => segment.rowIndex),
         ...runtimeLoopEventSegments.map((segment) => segment.rowIndex),
         ...runtimeLoopTransferSegments.map((segment) => segment.rowIndex),
         ...runtimeLoopEffectOccurrences.map((occurrence) => occurrence.rowIndex),
       ]);
       for (const rowIndex of [...rowIndices].sort((left, right) => left - right)) {
-        const entrySegments = pendingScalarSettlementActive
-          ? pendingScalarOutputSegments : runtimeLoopEntrySegments;
-        for (const segment of entrySegments.filter((candidate) => candidate.rowIndex === rowIndex)) {
+        for (const segment of runtimeLoopEntrySegments.filter((candidate) => candidate.rowIndex === rowIndex)) {
           runtimeLoopTrailingSegments.push({
             kind: 'entries', collection: segment.collection,
             offset: segment.offset, count: segment.count,
@@ -28898,14 +28735,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     }
     const structs = delegatedReturn?.artifact.stateLayout?.structs ?? this.inner.artifact.stateLayout?.structs;
     if (outputs.length === 1) {
-      if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-        ?.SOLIDC_DEBUG_COLLECTION_FETCH === '1' && functionName === 'getEvents') {
-        console.error('getEvents-return-blob', {
-          blobBytes: blob.length,
-          blobHead: binToHex(blob).slice(0, 160),
-          outputType: outputs[0].type,
-        });
-      }
       const returnArtifact = resultArtifact;
       const scalar = artifactUsesSolidityAbi(returnArtifact)
         ? decodeEvmScalarReturn(blob, outputs[0].type) : undefined;
@@ -28924,20 +28753,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           if (derivationError) throw derivationError;
         }
         throw decodeError;
-      }
-      if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-        ?.SOLIDC_DEBUG_COLLECTION_FETCH === '1' && functionName === 'getEvents') {
-        const events = Array.isArray(decoded) ? decoded : [decoded];
-        console.error('getEvents-decoded', events.map((event) => {
-          const record = event as { type_?: unknown; address_?: unknown; data_?: unknown };
-          return {
-            type_: record.type_?.toString(),
-            addressHead: record.address_ instanceof Uint8Array
-              ? binToHex(record.address_).slice(0, 40) : String(record.address_ ?? '').slice(0, 40),
-            dataHead: record.data_ instanceof Uint8Array
-              ? binToHex(record.data_).slice(0, 40) : String(record.data_ ?? '').slice(0, 40),
-          };
-        }));
       }
       const addressBytecode = decoded instanceof Uint8Array
         ? decoded
@@ -29035,6 +28850,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     state?: Record<string, unknown>,
     callerInputs?: readonly { type: string }[],
     executionSelfAddress?: FunctionArgument,
+    producerCalls?: readonly ExternalCallAbi[],
     allowProvisional = false,
   ): Promise<Map<string, FunctionArgument>> {
     const resolved = new Map<string, FunctionArgument>();
@@ -29043,6 +28859,36 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       for (const child of [expression.target, expression.expression, expression.left, expression.right,
         expression.condition, expression.ifTrue, expression.ifFalse]) await visit(child);
       for (const child of expression.args ?? []) await visit(child);
+      if (expression.kind === 'producerResult' && expression.callsiteId !== undefined) {
+        const producers = producerCalls?.filter((candidate) => candidate.callsiteId === expression.callsiteId) ?? [];
+        const producer = producers[0];
+        const resultIndex = expression.resultIndex;
+        if (producers.length !== 1 || !producer || resultIndex === undefined
+          || !Number.isInteger(resultIndex) || resultIndex < 0
+          || resultIndex >= (producer.returnTypes?.length ?? 0)) {
+          throw new Error(
+            `Graph producerResult ${expression.callsiteId}:${String(resultIndex)} does not identify one published result.`,
+          );
+        }
+        const asExpression = (source: ArgSource): ExternalCallExpression => (
+          source.kind === 'expression' && source.expression
+            ? source.expression : { kind: 'source', source }
+        );
+        const producerExpression: ExternalCallExpression = {
+          kind: 'externalCall',
+          name: `${producer.interfaceName}.${producer.functionName}`,
+          callsiteId: producer.callsiteId,
+          ...(producer.addressSource && { target: asExpression(producer.addressSource) }),
+          args: (producer.rawArgSources ?? producer.argSources ?? []).map(asExpression),
+          ...((producer.returnTypes?.length ?? 0) === 1 && { type: producer.returnTypes![0] }),
+        };
+        await visit(producerExpression);
+        const result = resolved.get(JSON.stringify(producerExpression));
+        const selected = (producer.returnTypes?.length ?? 0) === 1
+          ? result : Array.isArray(result) ? result[resultIndex] as FunctionArgument : undefined;
+        if (selected !== undefined) resolved.set(JSON.stringify(expression), selected);
+        return;
+      }
       if (expression.kind !== 'externalCall' || !expression.name) return;
       const separator = expression.name.indexOf('.');
       if (separator < 1 || separator === expression.name.length - 1) return;
@@ -29618,6 +29464,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       return Array.from({ length }, () => empty) as FunctionArgument;
     }
     if (expression.kind === 'externalCall') {
+      return externalReturns?.get(JSON.stringify(expression));
+    }
+    if (expression.kind === 'producerResult') {
       return externalReturns?.get(JSON.stringify(expression));
     }
     if (expression.kind === 'arrayAccess' && expression.left && expression.right) {

@@ -888,6 +888,8 @@ export interface ExternalCallExpression {
   name?: string;
   /** Compiler-stable producer identity within the containing function. */
   callsiteId?: number;
+  /** Zero-based ABI result position selected from the producer (also explicit for a sole result). */
+  resultIndex?: number;
   /** Authenticated receiver expression for a returning external call. */
   target?: ExternalCallExpression;
   type?: string;

@@ -1587,8 +1587,8 @@ export default class InlineReturningStateHelpers extends AstTraversal {
       } else if (n instanceof FieldAccessNode) {
         // n.name is a STRUCT FIELD MEMBER, never a variable - never rename it. The base `expression` is still
         // walked as a child, so a renamed receiver is applied there. Without this guard, an inlined local that
-        // shares a struct field's name (Unicrow `uint16 arbitratorFee` vs `arbitrator.arbitratorFee`) corrupts
-        // the field access to `arbitrator.__rhN_arbitratorFee` -> "Struct has no field __rhN_arbitratorFee".
+        // shares a struct field's name (`uint16 fee` vs `terms.fee`) corrupts the field access to
+        // `terms.__rhN_fee` -> "Struct has no field __rhN_fee".
       } else if (n instanceof TupleAssignmentNode) {
         // New element objects, not in-place mutation: cloneNode shares the plain-object `elements` across clones,
         // so mutating a name would stomp another inline frame's rename (dangling `__rhN_<slot>`).

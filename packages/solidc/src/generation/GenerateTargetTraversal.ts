@@ -229,7 +229,7 @@ import {
 import { analyzeInlineAssembly } from '../semantic/InlineAssemblyDiagnostics.js';
 import { isKernelSafeNativeAssembly } from '../semantic/NativeAssemblyKernelSafety.js';
 import { analyseContractInvocations } from '../analysis/InvocationAnalysis.js';
-import { cloneNode } from '../ast/clone.js';
+import { cloneNode, cloneNodeReplacing } from '../ast/clone.js';
 import { substituteInExpression } from '../semantic/InheritanceExpansionTransformation.js';
 
 // Upper bound on the element count of a bounded array whose default value is materialized inline. A covenant
@@ -5140,6 +5140,54 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     return false;
   }
 
+  /** Settle the fixed effect frame while a graph handler's OP_INVOKE context is still live. */
+  private emitGraphHandlerEffectSettlement(node: FunctionDefinitionNode): void {
+    if (!node.graphEmissionHandler) return;
+    const loc = { location: node.body!.location, positionHint: PositionHint.END } as SingleLocationData;
+    this.emit(encodeInt(BigInt(this.getStackIndex(GRAPH_STATIC_MODE))), loc);
+    this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_2, loc);
+    this.emit(Op.OP_MOD, loc);
+    this.emit(Op.OP_1, loc);
+    this.emit(Op.OP_NUMEQUAL, loc);
+    this.emit(Op.OP_IF, loc);
+    this.emit(encodeInt(BigInt(this.getStackIndex(GRAPH_STATIC_DIRTY))), loc);
+    this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_0, loc);
+    this.emit(Op.OP_NUMEQUALVERIFY, loc);
+    this.emit(Op.OP_ENDIF, loc);
+
+    if (!node.graphEffectFrame) return;
+    if (this.pendingTransfers.length > 0) {
+      this.emitTransferCovenantVerification(node);
+      this.emitTransferCleanup(node);
+    }
+    for (let unused = this.pendingTransfers.length;
+      unused < node.graphEffectFrame.transferWidth; unused += 1) {
+      this.emitNotTakenGraphTransferSlotBinding(unused, loc);
+    }
+    if (this.pendingEmits.length > 0) this.emitEventCovenantVerification(node);
+    if (this.pendingTokenContainerTransfers.length > 0) {
+      this.emitTokenContainerTransferCovenantVerification(node);
+      this.emitTokenContainerTransferCleanup(node);
+    }
+    if (this.pendingDeploys.length > 0) {
+      this.emitDeployCovenantVerification(node);
+      const ownedDeployWidth = this.pendingDeploys.reduce(
+        (total, deploy) => total + 1 + deploy.node.deployedDataNftCount
+          + deploy.node.deployedEntryNftCount, 0,
+      );
+      for (let member = ownedDeployWidth; member < (node.graphEffectFrame.deployWidth ?? 0); member += 1) {
+        this.emitInactiveGraphDeployOutput(member, loc);
+      }
+    }
+    this.emitConditionalGraphDeployBinding(node);
+    for (let unused = this.pendingEmits.length;
+      unused < (node.graphEffectFrame.eventWidth ?? 0); unused += 1) {
+      this.emitNotTakenEventSlotBinding(unused, loc);
+    }
+  }
+
   visitFunctionDefinition(node: FunctionDefinitionNode): Node {
     this.currentFunction = node;
     this.currentFunctionIsMessageBusRoute = node.messageBusRoute === true
@@ -5999,6 +6047,24 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emitRuntimeLoopEffectVerification(node);
     }
 
+    // Collection-journal lowering can give an otherwise-void graph handler a typed return channel. It remains
+    // an effect-owning handler: settle its event/transfer/deploy frame before the generic returning-internal
+    // fast exit. visitReturn retained these compiler-owned values specifically for this single exit.
+    if (this.isDefineSubTraversal && node.graphEmissionHandler && node.returnTypes.length > 0) {
+      this.emitGraphHandlerEffectSettlement(node);
+      const loc = { location: node.body.location, positionHint: PositionHint.END } as SingleLocationData;
+      for (const name of [
+        GRAPH_EFFECT_SITE, GRAPH_STATIC_DIRTY, GRAPH_STATIC_MODE, GRAPH_HANDLER_CALLER_DEPTH,
+      ]) {
+        const index = this.getStackIndex(name, true);
+        if (index < 0) continue;
+        this.emit(encodeInt(BigInt(index)), loc);
+        this.emit(Op.OP_ROLL, loc);
+        this.emit(Op.OP_DROP, loc);
+        this.removeFromStack(index);
+      }
+    }
+
     // Internal/private functions with return types handle their own stack cleanup
     // via visitReturn. They don't need covenant verification.
     // Entry-point functions with return types DO need covenant verification
@@ -6013,66 +6079,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     // Void handlers drop ordinary locals/params but return hidden journal slots in canonical order.
     if (this.isDefineSubTraversal) {
-      if (node.graphEmissionHandler) {
-        const loc = { location: node.body.location, positionHint: PositionHint.END };
-        this.emit(encodeInt(BigInt(this.getStackIndex(GRAPH_STATIC_MODE))), loc);
-        this.emit(Op.OP_PICK, loc);
-        this.emit(Op.OP_2, loc);
-        this.emit(Op.OP_MOD, loc);
-        this.emit(Op.OP_1, loc);
-        this.emit(Op.OP_NUMEQUAL, loc);
-        this.emit(Op.OP_IF, loc);
-        this.emit(encodeInt(BigInt(this.getStackIndex(GRAPH_STATIC_DIRTY))), loc);
-        this.emit(Op.OP_PICK, loc);
-        this.emit(Op.OP_0, loc);
-        this.emit(Op.OP_NUMEQUALVERIFY, loc);
-        this.emit(Op.OP_ENDIF, loc);
-      }
       // X29. Settle the handler's OWN physical effects here, before the frame is torn down. The route cannot do
       // it: the emit blob and the transfer's recipient/amount only exist inside this frame. The output indices
       // come from the per-dispatch-site frame the route reserved (emitGraphEffectSlotIndex), so N invocations
       // of ONE subroutine body produce N distinct, individually authenticated outputs.
-      if (node.graphEmissionHandler && node.graphEffectFrame) {
-        if (this.pendingTransfers.length > 0) {
-          this.emitTransferCovenantVerification(node);
-          this.emitTransferCleanup(node);
-        }
-        // A heterogeneous graph frame uses the largest handler transfer count as every row's width. The
-        // reached handler owns only its declared prefix; bind all remaining capacity to canonical balanced
-        // slots while its authenticated row ordinal is still live. This also covers a transfer-free sibling.
-        for (let unused = this.pendingTransfers.length;
-          unused < node.graphEffectFrame.transferWidth; unused += 1) {
-          this.emitNotTakenGraphTransferSlotBinding(unused, {
-            location: node.body.location, positionHint: PositionHint.END,
-          });
-        }
-        if (this.pendingEmits.length > 0) this.emitEventCovenantVerification(node);
-        if (this.pendingTokenContainerTransfers.length > 0) {
-          this.emitTokenContainerTransferCovenantVerification(node);
-          this.emitTokenContainerTransferCleanup(node);
-        }
-        if (this.pendingDeploys.length > 0) {
-          this.emitDeployCovenantVerification(node);
-          const ownedDeployWidth = this.pendingDeploys.reduce(
-            (total, deploy) => total + 1 + deploy.node.deployedDataNftCount
-              + deploy.node.deployedEntryNftCount, 0,
-          );
-          for (let member = ownedDeployWidth; member < (node.graphEffectFrame.deployWidth ?? 0); member += 1) {
-            this.emitInactiveGraphDeployOutput(member, {
-              location: node.body.location, positionHint: PositionHint.END,
-            });
-          }
-        }
-        this.emitConditionalGraphDeployBinding(node);
-        // Heterogeneous event frames use the route-wide maximum width. The reached handler owns exactly its
-        // own prefix of that window; bind the unused suffix here, where the authenticated site ordinal is live.
-        for (let unused = this.pendingEmits.length;
-          unused < (node.graphEffectFrame.eventWidth ?? 0); unused += 1) {
-          this.emitNotTakenEventSlotBinding(unused, {
-            location: node.body.location, positionHint: PositionHint.END,
-          });
-        }
-      }
+      this.emitGraphHandlerEffectSettlement(node);
       if (this.graphStraightRuntimeMode) {
         const loc = { location: node.body.location, positionHint: PositionHint.END };
         this.emit(new Uint8Array(), loc);
@@ -10951,7 +10962,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       .map((parameter) => parameter.name)
       .filter((name) => name === KERNEL_JOURNAL_RECORDS
         || name.startsWith(KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX));
-    if (this.isDefineSubTraversal && (this.activeJournalSlots.length > 0 || graphEmissionContext
+    if (this.isDefineSubTraversal && (this.currentFunction.graphEmissionHandler
+      || this.activeJournalSlots.length > 0 || graphEmissionContext
       || this.runtimeLoopEntryInputCountActive || this.runtimeLoopEntryJournalCountActive
       || this.runtimeLoopEntryOutputCountActive
       || this.runtimeLoopEventActive || runtimeCardinalityNames.length > 0
@@ -10976,7 +10988,25 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           GenerateTargetTraversalWithLocation.RUNTIME_LOOP_EVENT_COUNT,
         ] : []),
       ];
-      const retained = new Set(journalNames);
+      // A returning graph helper settles its fixed effects at the single function exit, after this terminal
+      // return has evaluated the source result. Preserve the authenticated invocation context and effect values
+      // until that epilogue runs; treating the compiler-added collection-journal result like an ordinary
+      // internal return previously discarded the event blob and skipped the whole graph-effect epilogue.
+      const graphEffectNames = this.currentFunction.graphEmissionHandler ? [
+        GRAPH_EFFECT_SITE,
+        GRAPH_STATIC_DIRTY,
+        GRAPH_STATIC_MODE,
+        GRAPH_HANDLER_CALLER_DEPTH,
+        ...this.pendingEmits.flatMap((emit) => [emit.stackName, emit.identityStackName]),
+        ...this.pendingTransfers.flatMap((transfer) => [
+          transfer.lockingBytecodeStackName, transfer.amountStackName,
+        ]),
+        ...this.pendingTokenContainerTransfers.flatMap((transfer) => transfer.argStackNames),
+        ...this.pendingDeploys.flatMap((deploy) => [deploy.masterLbcStackName, deploy.categoryStackName]),
+        ...[...this.functionDeploySites.keys()].map((siteIndex) =>
+          `${GRAPH_CONDITIONAL_DEPLOY_REACHED}_${siteIndex}`),
+      ] : [];
+      const retained = new Set([...journalNames, ...graphEffectNames]);
       for (let i = returnCount; i < this.stack.length;) {
         if (retained.has(this.stack[i])) {
           i += 1;
@@ -17782,71 +17812,93 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   ): number {
     const { disposition, parametersAreCallArguments = false } = verification;
     const materializeGraphExpression = (expression: ExpressionNode): ExpressionNode => {
+      // A later graph edge may be parameterized by a local initialized from an earlier returning edge. Expanding
+      // that local exposes the producer call, but it must never be cloned into the route: one source call has one
+      // stable identity. Replace it with the authenticated hidden-frame result while cloning instead.
+      const currentOrdinal = handler.externalCalls?.indexOf(slot) ?? -1;
+      const projectProducerResult = (
+        producerNode: ExternalFunctionCallNode, resultIndex: number,
+      ): IdentifierNode => {
+        const producer = (handler.externalCalls ?? []).find((candidate) =>
+          candidate.slotIndex === producerNode.callInfo!.externalCallSlotIndex
+          && candidate.interfaceName === producerNode.interfaceName
+          && candidate.functionName === producerNode.functionName);
+        const producerOrdinal = producer === undefined ? -1 : handler.externalCalls!.indexOf(producer);
+        if (!producer || currentOrdinal < 0 || producerOrdinal < 0 || producerOrdinal >= currentOrdinal
+          || producer.returnSlotIndex === undefined || resultIndex < 0
+          || resultIndex >= (producer.returnTypes?.length ?? 0) || producerNode.opaqueReturn) {
+          throw new UnboundReturnCallError(
+            producerNode, handler.name, `${producerNode.interfaceName}.${producerNode.functionName}()`,
+            producerNode.callInfo!.externalCallSlotIndex, handler.externalCalls?.length ?? 0,
+          );
+        }
+        const projected = new IdentifierNode(this.graphResultName(producer, resultIndex));
+        projected.location = producerNode.location;
+        projected.type = producer.returnTypes![resultIndex];
+        return projected;
+      };
+      const projectProducer = (candidate: Node): Node | undefined => {
+        if (candidate instanceof TupleIndexOpNode && candidate.tuple instanceof ExternalFunctionCallNode
+          && candidate.tuple.callInfo?.hasReturnValues) {
+          return projectProducerResult(candidate.tuple, candidate.index);
+        }
+        if (candidate instanceof ExternalFunctionCallNode && candidate.callInfo?.hasReturnValues) {
+          if (candidate.callInfo.returnTypes?.length !== 1) {
+            throw new UnboundReturnCallError(
+              candidate, handler.name, `${candidate.interfaceName}.${candidate.functionName}()`,
+              candidate.callInfo.externalCallSlotIndex, handler.externalCalls?.length ?? 0,
+            );
+          }
+          return projectProducerResult(candidate, 0);
+        }
+        return undefined;
+      };
+      const cloneProjected = (candidate: ExpressionNode): ExpressionNode => (
+        cloneNodeReplacing(candidate, projectProducer) as ExpressionNode
+      );
       const substitutions = new Map<string, ExpressionNode>(handler.parameters.map((parameter, index) =>
-        [parameter.name, parameters[index]]));
+        [parameter.name, cloneProjected(parameters[index])]));
       const seen = new Set<VariableDefinitionNode>();
       const collector = new (class extends AstTraversal {
         visitIdentifier(identifier: IdentifierNode): Node {
           const definition = identifier.definition?.definition;
           if (definition instanceof VariableDefinitionNode && definition.expression && !seen.has(definition)) {
             seen.add(definition);
-            substitutions.set(identifier.name, definition.expression);
+            // Pre-project before this value enters substituteInExpression: that helper clones replacements, so
+            // allowing a producer node into the substitution map would already violate callsite uniqueness.
+            substitutions.set(identifier.name, cloneProjected(definition.expression));
             this.visit(definition.expression);
           }
           return identifier;
         }
       })();
       collector.visit(expression);
-      let resolved = cloneNode(expression);
-      // A helper-local can point at another helper-local. Repeating substitution to
-      // the number of discovered bindings resolves that finite acyclic initializer
-      // chain while the collector's `seen` guard prevents malformed cycles.
+      let resolved = cloneProjected(expression);
+      // A helper-local can point at another helper-local. Repeating substitution to the number of discovered
+      // bindings resolves that finite acyclic initializer chain; every replacement was pre-projected above.
       for (let i = 0; i <= substitutions.size; i += 1) {
         resolved = substituteInExpression(resolved, substitutions);
       }
-      // A later graph edge may be parameterized by a local initialized from an earlier returning edge. Expanding
-      // that local above exposes the producer's ExternalFunctionCallNode, but visiting it here would execute an
-      // ordinary return-event read in the enclosing route (which owns no such slots). The graph handler already
-      // receives every authenticated producer result in its hidden frame; project the exact prior single result
-      // to that frame name instead. Do not guess at multi/opaque returns or forward references.
-      const currentOrdinal = handler.externalCalls?.indexOf(slot) ?? -1;
-      const projectPriorResult = (node: Node): Node => {
-        if (node instanceof ExternalFunctionCallNode && node.callInfo?.hasReturnValues) {
-          const producer = (handler.externalCalls ?? []).find((candidate) =>
-            candidate.slotIndex === node.callInfo!.externalCallSlotIndex
-            && candidate.interfaceName === node.interfaceName
-            && candidate.functionName === node.functionName);
-          const producerOrdinal = producer === undefined ? -1 : handler.externalCalls!.indexOf(producer);
-          if (!producer || currentOrdinal < 0 || producerOrdinal < 0 || producerOrdinal >= currentOrdinal
-            || producer.returnSlotIndex === undefined || producer.returnTypes?.length !== 1
-            || node.opaqueReturn) {
-            throw new UnboundReturnCallError(
-              node, handler.name, `${node.interfaceName}.${node.functionName}()`,
-              node.callInfo.externalCallSlotIndex, handler.externalCalls?.length ?? 0,
-            );
-          }
-          const projected = new IdentifierNode(this.graphResultName(producer, 0));
-          projected.location = node.location;
-          projected.type = producer.returnTypes[0];
-          return projected;
+      // Instrumentable invariant: a future substitution source must not reintroduce an executable producer.
+      const assertNoProducer = (candidate: Node, visited = new Set<Node>()): void => {
+        if (visited.has(candidate)) return;
+        visited.add(candidate);
+        if (candidate instanceof ExternalFunctionCallNode && candidate.callInfo?.hasReturnValues) {
+          throw new Error('Graph expression materialization retained a producer call after projection');
         }
-        for (const key of Object.keys(node)) {
+        for (const [key, child] of Object.entries(candidate)) {
           if (key === 'location' || key === 'type' || key === 'resolvedFunction'
             || key === 'functionReference' || key === 'definition' || key === 'symbolTable'
             || key === 'referencedContract' || key === 'stateVariable' || key === 'collection'
             || key === 'sourceCallNode') continue;
-          const child = (node as unknown as Record<string, unknown>)[key];
-          if (child instanceof Node) {
-            (node as unknown as Record<string, unknown>)[key] = projectPriorResult(child);
-          } else if (Array.isArray(child)) {
-            for (let index = 0; index < child.length; index += 1) {
-              if (child[index] instanceof Node) child[index] = projectPriorResult(child[index] as Node);
-            }
+          if (child instanceof Node) assertNoProducer(child, visited);
+          else if (Array.isArray(child)) {
+            for (const item of child) if (item instanceof Node) assertNoProducer(item, visited);
           }
         }
-        return node;
       };
-      return projectPriorResult(resolved) as ExpressionNode;
+      assertNoProducer(resolved);
+      return resolved;
     };
     const rawCall = slot.interfaceName === '__raw__' && slot.functionName === '__raw__';
     const canonicalRawParameters = rawCall && slot.rawSelector

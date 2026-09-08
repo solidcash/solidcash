@@ -15529,13 +15529,6 @@ export class StatefulTransactionBuilder {
               ip: number; instructions: Array<{ opcode: number; data?: Uint8Array }>; stack: Uint8Array[];
             };
             const instruction = state.instructions[state.ip];
-            if (instruction?.opcode === 0xaa && state.instructions.length === 23
-              && (globalThis as { process?: { env?: Record<string, string> } }).process?.env
-                ?.SOLIDC_DEBUG_UNICROW_PAY === '1') {
-              console.error('unicrow-entry-covenant-preimage', binToHex(
-                state.stack[state.stack.length - 1] ?? new Uint8Array(),
-              ));
-            }
             if (instruction?.opcode === Op.OP_OUTPUTBYTECODE) {
               const encodedIndex = state.stack[state.stack.length - 1];
               pendingOutputBytecodeIndex = encodedIndex === undefined ? undefined : encodedIndex.reduce(

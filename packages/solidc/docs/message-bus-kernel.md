@@ -44,6 +44,50 @@ for (bigint row = 0; row < rowCount; row = row + 1) {
 Kernel work extends that loop to results and effects. It does not introduce a new bytecode format, a
 new envelope domain, or a new `artifact.messageBus` version. Additive handler metadata is allowed.
 
+### Beta checkpoint and stopping rule
+
+The beta checkpoint is an architectural and regression gate, not an attempt to admit every source shape.
+Further admission widening pauses once the candidate satisfies all of these invariants:
+
+1. Every graph call has exactly one stable callsite-metadata record.
+2. A later call consumes an authenticated producer-result identity (including its explicit result index), never a
+   cloned `ExternalFunctionCallNode`; field and index projections remain ordinary expressions over that identity.
+3. Every graph handler remains behind the same authenticated `OP_INVOKE` boundary; lowering and inlining may not
+   move its body into the route.
+4. A successful fresh compile has no suppressed speculative stack or code-generation error. Retry behavior must
+   start from a pristine source AST and must not turn a failed attempt into hidden compiler state.
+5. Admission, refusal, and lowering are determined only by type, effect, flow, and authenticated-layout properties.
+   Contract, function, state-variable, and application names are never evidence.
+6. Differential tests compare kernel and legacy observable semantics for their shared supported surface. Separate
+   scaling tests establish that kernel route size is proportional to row logic and does not grow with the maximum
+   unrolled row count.
+
+A beta candidate may be cut when those invariants have focused regressions, fresh cold compiles of the maintained
+corpus complete without hidden diagnostics, the kernel admission/cutover/row-loop suites and the one-shot build
+pass, the differential corpus agrees, and the route-scaling check passes. Any invariant violation, semantic
+difference, nondeterministic fresh compile, suppressed codegen failure, or route growth proportional to maximum
+rows blocks the checkpoint.
+
+At that point, pause general edge-case expansion and keep unsupported handlers fail-closed behind the published
+`KERNEL_*` reasons. Post-beta work on a frozen shape is not release-critical unless it fixes a soundness defect,
+regression, nondeterminism, or one of the invariants above. Promoting an additional shape is separately scoped work
+with its own representation argument and differential/scaling coverage; the existence of an experimental lowering
+does not by itself move the beta boundary.
+
+The conservative beta boundary currently keeps these shapes frozen:
+
+| Code | Frozen beta examples |
+| --- | --- |
+| `KERNEL_UNBOUNDED_KEY` | Counter loops with `continue` or `break` when a permutation of the full domain cannot represent the reached-key set; runtime-constructed key arrays without a bounded replay proof |
+| `KERNEL_LAYOUT` | Whole-struct getters, dynamic arrays of records as results, multi-result producer-to-consumer graph dependencies without authenticated vector decoding, recursive mappings, runtime mapping mutations combined with repeated event/transfer effects, and child creation (`new Child` / `create2`) without authenticated row geometry |
+| `KERNEL_TX_SIGNATURE` | Transaction-signature values or `checkSig` / `checkMultiSig` execution in a row when the signature cannot be detached and finalized without circularity |
+| `KERNEL_OPAQUE_EFFECT` | Yul or native `assembly { OP_* }` whose stack and effects have no complete static summary |
+| `KERNEL_FOREIGN_DELEGATE` | A foreign `delegatecall` executing as the participant owner |
+| `KERNEL_LIFECYCLE` | `deploy`, `upgrade`, `selfdestruct`, or `unsafe` as a bus row without explicit authenticated lifecycle geometry |
+
+This table defines the beta release boundary, not a claim that every other program is implemented. Section 5
+remains the normative meaning of each refusal category; uncertain or unrepresented cases fail closed.
+
 ---
 
 ## 2. Handler ABI
@@ -155,7 +199,7 @@ Do not add a new code without changing this document and every kernel toy.
 | `KERNEL_UNBOUNDED_KEY` | A locally constructed key array whose length is not derivable within the bounded replay model; a counter-keyed mapping loop whose exact iteration domain is not one of the canonical forms; mutation of its counter or a bound mutation which cannot be reduced to a finite source expression; nested-loop control flow or a predicate with unsupported/mutated provenance | Parameter-keyed, `msg.sender`-keyed, expression-keyed (`m[records.length-1]`), parameter-array loop (`m[k][xs[i]]`), bounded locally constructed arrays with replayable dominating writes, canonical ascending `for (int i = S; i < n; i = i + D)` / `i = D + i` / `i <= n` and descending `for (int i = S; i > n; i = i - D)` / `i >= n` domains for positive constant or replayable runtime `D`, plus `i != n` when the signed step reaches the endpoint exactly (also through replayable straight-line or finite conditional bound assignments, and with either comparison operand orientation), or equivalent canonical source `while` and `do-while` forms over `m[i]` / nested `m[k][i]`, multiple sequential loops whose runtime keys are disjoint (including loops over one physical collection), same- or cross-collection counter-derived reads carried by independent authenticated streams, a stable depth-one scalar entry keyed by a public parameter/literal/`msg.sender`/`tx.origin` or a pure expression over public arguments beside those counter writes, or those rewrites beneath serializable outer and inner `if`/`else`/`switch`/`continue`/`break`/`return` paths and the reachable body of `try`/`catch`; loop predicates may consume scalar state updated by replayable straight-line, finite `if`/`else`, or finite `switch` assignments before the loop; typed calls and path-predicated event, BCH-transfer, fungible-token-transfer, and NFT-transfer sites remain in source order |
 | `KERNEL_FOREIGN_DELEGATE` | `delegatecall` to a foreign executor treated as this participant's owner | `delegate` on this contract's own implementation |
 | `KERNEL_OPAQUE_EFFECT` | Native assembly which is not statically isolated and stack-neutral (including active-bytecode/signature context), unsupported Yul which cannot be lowered, or a low-level call the journal cannot summarize as a call/effect row | Isolated pure/read-only BCH assembly, including transaction inspection whose operands are block-local, balanced `OP_IF`/`OP_NOTIF` arms whose main and alt stacks converge, and `OP_BEGIN`/`OP_UNTIL` loops which restore both loop-entry stack heights after consuming their block-local condition; Yul translated to ordinary typed operations before admission; after Solidity-compat lowering to `call` plus returndata |
-| `KERNEL_LAYOUT` | The handler needs physical topology the row wrapper cannot publish, such as a child deployment whose constructor/value/salt/genesis state cannot be replayed from the authenticated row, a mutable journal with no stable physical entry identity, a non-normalizable recursive effect domain, an indirectly state-backed or recursive dynamic aggregate, or a result with no canonical route encoding | Journaled state accessed through the wrapper; a stable fixed-entry or token-container journal combined with independently indexed chunk-backed state arrays, `bytes`, or `string`; public fixed-layout structs and direct nonrecursive state-backed or runtime-constructed dynamic struct-array results within the cumulative result envelope; ordinary nested mappings; affine pre- and post-recursion mapping streams; replayable straight-line and finite-conditional child deployments with fixed-layout scalar, enum, fixed-point, or nested-struct genesis state; `new LockingBytecodeP2PKH` / `P2SH20` / `P2SH32` / `NullData` constructors |
+| `KERNEL_LAYOUT` | The handler needs physical topology the row wrapper cannot publish, such as a child deployment whose constructor/value/salt/genesis state cannot be replayed from the authenticated row, a mutable journal with no stable physical entry identity, a runtime mapping mutation combined with a repeated event/transfer effect before those output cursors have separate authenticated frames, a non-normalizable recursive effect domain, an indirectly state-backed or recursive dynamic aggregate, or a result with no canonical route encoding | Journaled state accessed through the wrapper; a stable fixed-entry or token-container journal combined with independently indexed chunk-backed state arrays, `bytes`, or `string`; public fixed-layout structs and direct nonrecursive state-backed or runtime-constructed dynamic struct-array results within the cumulative result envelope; ordinary nested mappings; affine pre- and post-recursion mapping streams; replayable straight-line and finite-conditional child deployments with fixed-layout scalar, enum, fixed-point, or nested-struct genesis state; `new LockingBytecodeP2PKH` / `P2SH20` / `P2SH32` / `NullData` constructors |
 
 Legacy `messageBusRejectionReason` strings (`dynamic-and-collection-route-not-enabled`,
 `atomic-delegate-context-unpreservable`, …) remain on the legacy path only so existing diagnostics

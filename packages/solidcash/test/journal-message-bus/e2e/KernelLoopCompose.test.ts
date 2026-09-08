@@ -4599,7 +4599,7 @@ describe('kernel composite counter-key settlement', () => {
     }
   }, 180_000);
 
-  it('settles repeated loop events in source order while mapping keys use the authenticated permutation', async () => {
+  it('freezes repeated loop events beside runtime mapping mutation', async () => {
     const provider = createTestProvider();
     const artifact = compileString(COUNTER_MAPPING_EVENT_SOURCE, KERNEL);
     const write = artifact.abi.find((candidate) => candidate.name === 'write')!;
@@ -4612,8 +4612,9 @@ describe('kernel composite counter-key settlement', () => {
       { repeatCount: 1, eventSignatures: ['After(int256)'] },
     ]);
     expect(write.emits).toBeUndefined();
-    expect(artifact.messageBus?.route.blockLayout?.trailingCapacity).toBe(3 * 64 + 3);
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write')?.eligible).toBe(true);
+    const routed = artifact.messageBus?.handlers.find((handler) => handler.name === 'write');
+    expect(routed).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+    if (routed?.eligible === false) return;
 
     const inner = new Contract(artifact, [], { provider });
     const { categoryId } = await setupStatefulUtxos(
@@ -5287,8 +5288,7 @@ describe('kernel composite counter-key settlement', () => {
     }
   }, 180_000);
 
-  it('keeps recurrent event values in source order beside permuted mapping writes', async () => {
-    const provider = createTestProvider();
+  it('freezes recurrent effects beside runtime mapping mutations until their output frames are separate', () => {
     const artifact = compileString(`contract MixedReplayedEventValues() {
       int total;
       mapping(int => int) values;
@@ -5305,46 +5305,8 @@ describe('kernel composite counter-key settlement', () => {
       }
     }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
-      .toMatchObject({ eligible: true });
-    const inner = new Contract(artifact, [], { provider });
-    const { categoryId } = await setupStatefulUtxos(
-      provider, inner, artifact.stateLayout!, { total: 5n }, { saltContract: true },
-    );
-    const contract = StatefulContract.withCategory(inner, categoryId);
-    const builder = await contract.batch([{ function: 'write', args: [3n, 10n, 2n] }]).build();
-    const transaction = builder.buildLibauthTransaction();
-    const event = artifact.events!.find((candidate) => candidate.name === 'Tick')!;
-    expect(transaction.outputs
-      .filter((output) => output.token?.nft?.capability === 'none')
-      .map((output) => binToHex(output.token!.nft!.commitment)))
-      .toEqual([[10n, 7n], [11n, 9n], [12n, 11n]].map((values) =>
-        binToHex(encodeEventCommitment(event.parameters, values, artifact.structs))));
-
-    const vm = createVirtualMachineBch2026ForProvider(provider);
-    const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
-    for (let inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex += 1) {
-      expect(vm.stateSuccess(vm.evaluate({ inputIndex, sourceOutputs, transaction })), `input ${inputIndex}`)
-        .toBe(true);
-    }
-
-    const eventIndex = transaction.outputs.findIndex(
-      (output) => output.token?.nft?.capability === 'none',
-    );
-    const eventOutput = transaction.outputs[eventIndex];
-    const hostileTransaction = {
-      ...transaction,
-      outputs: transaction.outputs.map((output, index) => index === eventIndex ? {
-        ...output,
-        token: {
-          ...eventOutput.token!,
-          nft: { ...eventOutput.token!.nft!, commitment: Uint8Array.of(13) },
-        },
-      } : output),
-    };
-    expect(vm.stateSuccess(vm.evaluate({
-      inputIndex: 0, sourceOutputs, transaction: hostileTransaction,
-    }))).not.toBe(true);
-  }, 180_000);
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+  });
 
   it('settles event-only loop breaks in source order', async () => {
     const exercise = async (
@@ -5606,7 +5568,7 @@ describe('kernel composite counter-key settlement', () => {
     await expect(contract.getState()).resolves.toMatchObject({ calls: 4n });
   }, 180_000);
 
-  it('settles repeated BCH transfers after the permuted mapping journal', async () => {
+  it('freezes repeated BCH transfers beside runtime mapping mutation', async () => {
     const provider = createTestProvider();
     const artifact = compileString(COUNTER_MAPPING_TRANSFER_SOURCE, { ...KERNEL, maximumInputBytes: 1_000_000 });
     const pay = artifact.abi.find((candidate) => candidate.name === 'pay')!;
@@ -5628,7 +5590,9 @@ describe('kernel composite counter-key settlement', () => {
     expect(payMixed.runtimeLoopTransfers).toEqual([
       expect.objectContaining({ effectSequence: 0, effectOrder: [1] }),
     ]);
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'pay')?.eligible).toBe(true);
+    const routed = artifact.messageBus?.handlers.find((handler) => handler.name === 'pay');
+    expect(routed).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+    if (routed?.eligible === false) return;
 
     const inner = new Contract(artifact, [], { provider });
     const { categoryId } = await setupStatefulUtxos(

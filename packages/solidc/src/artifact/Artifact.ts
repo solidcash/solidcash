@@ -1333,17 +1333,12 @@ function buildFunctionAbiMetadata(
         });
       }
     });
-    const sourceExpression = (source: ExternalCallArgSource): ExternalCallExpression =>
-      source.kind === 'expression' && source.expression
-        ? source.expression : { kind: 'source', source };
     const producerExpression = (write: StateResultWrite): ExternalCallExpression => ({
-      kind: 'externalCall',
-      name: `${write.producer.interfaceName}.${write.producer.functionName}`,
+      // This value was produced by the already-indexed callsite. Keep the dependency as an authenticated result
+      // identity; duplicating target/arguments here makes metadata look like a second executable call.
+      kind: 'producerResult',
       callsiteId: write.producer.slotIndex,
-      ...(write.producer.addressSource && {
-        target: sourceExpression(write.producer.addressSource),
-      }),
-      args: (write.producer.argSources ?? []).map(sourceExpression),
+      resultIndex: 0,
       type: write.producer.returnTypes![0].toString(),
     });
     const rewriteStateRead = (

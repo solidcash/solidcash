@@ -24,13 +24,13 @@ import AstTraversal from '../ast/AstTraversal.js';
 import { cloneNode } from '../ast/clone.js';
 
 /**
- * An array-field element WRITE on a LOCAL/PARAM struct var whose struct type was IMPORTED - `escrow.split[j] = v`
- * on `Escrow memory escrow` (Unicrow) - is mis-built by the AstBuilder as a mapping-field assign: the struct type
+ * An array-field element WRITE on a LOCAL/PARAM struct var whose struct type was IMPORTED - `record.parts[j] = v`
+ * on `T memory record` - is mis-built by the AstBuilder as a mapping-field assign: the struct type
  * is unknown at parse time (not in localStructTypes), so `x.field[i] = v` falls through to the `MappingFieldAssign`
  * default, which later errors "Undefined mapping 'records'". Now that imports are merged and types re-resolved,
  * rewrite it into the same read-modify-rebuild the AstBuilder emits for a same-file struct local:
  *
- *   T tmp = escrow.split; tmp[j] = v; escrow = Escrow(escrow.f0, .., tmp, ..);
+ *   U tmp = record.parts; tmp[j] = v; record = T(record.f0, .., tmp, ..);
  *
  * Runs pre-semantic, after modifier expansion + reresolveImportedStructTypes and before LowerMemoryModel (which
  * lowers the resulting local-struct assignment). Scoped to LOCAL/PARAM struct receivers (a real mapping name is

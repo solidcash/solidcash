@@ -2424,6 +2424,8 @@ export interface ExternalCallExpression {
   name?: string;
   /** Compiler-stable producer identity within the containing function. */
   callsiteId?: number;
+  /** Zero-based ABI result position selected from the producer (also explicit for a sole result). */
+  resultIndex?: number;
   /** Authenticated receiver expression for a returning external call. */
   target?: ExternalCallExpression;
   type?: string;
@@ -2785,6 +2787,8 @@ export class EmitStatementNode extends StatementNode {
 
 export class TransferStatementNode extends StatementNode {
   transferIndex: number = 0;
+  /** Fixed-effect replay proof captured before helper/value lowering rewrites this operand. */
+  sourceEffectRecipeProvenanceSafe?: boolean;
   /** Runtime transfer site within a lowered counter-keyed mapping loop; excluded from fixed transfer slots. */
   runtimeLoopTransfer?: { loopIndex: number; siteIndex: number };
   /** Source predicate controlling this transfer, evaluated by the SDK to plan the exact output stream. */
@@ -2825,6 +2829,8 @@ export class SelfdestructStatementNode extends StatementNode {
 
 export class AddressTransferStatementNode extends StatementNode {
   transferIndex: number = 0;
+  /** Fixed-effect replay proof captured before helper/value lowering rewrites this operand. */
+  sourceEffectRecipeProvenanceSafe?: boolean;
   /** The intrinsic came from an inlined library helper and already follows the ordinary BCH transfer lowering. */
   inlinedLibraryEffect: boolean = false;
 
@@ -2842,6 +2848,8 @@ export class AddressTransferStatementNode extends StatementNode {
 
 export class AddressSendExpressionNode extends ExpressionNode {
   transferIndex: number = 0;
+  /** Fixed-effect replay proof captured before helper/value lowering rewrites this operand. */
+  sourceEffectRecipeProvenanceSafe?: boolean;
   /** The intrinsic came from an inlined library helper and already follows the ordinary BCH transfer lowering. */
   inlinedLibraryEffect: boolean = false;
 

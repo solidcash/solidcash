@@ -3353,7 +3353,8 @@ export default class SymbolTableTraversal extends AstTraversal {
         ): void => {
           if (!expression || seen.has(expression)) return;
           seen.add(expression);
-          if (expression.kind === 'externalCall' && expression.callsiteId !== undefined
+          if ((expression.kind === 'externalCall' || expression.kind === 'producerResult')
+            && expression.callsiteId !== undefined
             && expression.callsiteId >= 0) {
             const logicalProducer = logicalCallSlots[expression.callsiteId];
             if (logicalProducer) expression.callsiteId = logicalProducer.slotIndex;
@@ -6537,7 +6538,9 @@ export default class SymbolTableTraversal extends AstTraversal {
       const idx = node.elements.findIndex((el) => el.name === name && !el.skip);
       if (idx >= 0 && node.tupleExpressions?.[idx]) return node.tupleExpressions[idx];
       if (idx >= 0 && node.tuple) {
-        const value = new TupleIndexOpNode(cloneNode(node.tuple) as ExpressionNode, idx);
+        // This is a provenance view, not a second execution of the RHS. Keep the canonical call node so its
+        // stable callsite identity survives; callers that intend to rewrite the expression clone explicitly.
+        const value = new TupleIndexOpNode(node.tuple, idx);
         value.location = node.location;
         return value;
       }
@@ -7168,7 +7171,15 @@ export default class SymbolTableTraversal extends AstTraversal {
           // exactly rather than treating the locking bytecode as untyped bytes.
           ...((source.kind === 'msgSender' || source.kind === 'selfAddress') && { type: 'address' }),
         };
-        const resolved = preservedLocal ? expression : resolveInitializer(expression);
+        // Tuple declarations retain a synthetic VariableDefinitionNode whose initializer is the pre-visit
+        // surface call. The executable TupleAssignmentNode, however, owns the resolved RHS (including an
+        // ExternalFunctionCallNode and its stable callsite id). Prefer that live per-element provenance so two
+        // results from `(a, b) = producer()` do not collapse into the same opaque surface `producer()` call.
+        const tupleInitializer = !preservedLocal && expression instanceof IdentifierNode
+          && this.currentFunction?.body
+          ? this.findTupleInit(this.currentFunction.body, expression.name)
+          : undefined;
+        const resolved = preservedLocal ? expression : tupleInitializer ?? resolveInitializer(expression);
         if (resolved !== expression) return serializeExpression(resolved, seen);
         if (expression instanceof IntLiteralNode) {
           return { kind: 'literal', type: 'bigint', value: expression.value.toString() };
@@ -7404,6 +7415,25 @@ export default class SymbolTableTraversal extends AstTraversal {
           const index = serializeExpression(expression.index, seen);
           return array && index && { kind: 'arrayAccess', left: array, right: index };
         }
+        if (expression instanceof TupleIndexOpNode) {
+          // Consumers reference the authenticated producer result by stable identity. Re-serializing the
+          // producer call here would both duplicate the callsite and erase which tuple component was selected.
+          if (expression.tuple instanceof ExternalFunctionCallNode
+            && expression.tuple.callInfo?.hasReturnValues
+            && expression.tuple.callInfo.externalCallSlotIndex >= 0) {
+            return {
+              kind: 'producerResult',
+              callsiteId: expression.tuple.callInfo.externalCallSlotIndex,
+              resultIndex: expression.index,
+            };
+          }
+          const tuple = serializeExpression(expression.tuple, seen);
+          return tuple && {
+            kind: 'arrayAccess',
+            left: tuple,
+            right: { kind: 'literal', type: 'bigint', value: expression.index.toString() },
+          };
+        }
         if (expression instanceof ArrayNode) {
           const elements = expression.elements.map((item) => serializeExpression(item, seen));
           return elements.every((item): item is ExternalCallExpression => item !== undefined)
@@ -7436,18 +7466,19 @@ export default class SymbolTableTraversal extends AstTraversal {
           };
         }
         if (expression instanceof ExternalFunctionCallNode) {
-          const values = serializeArgs(expression.parameters);
-          const target = serializeExpression(expression.addressExpression, seen);
-          return values && {
-            kind: 'externalCall',
-            name: `${expression.interfaceName}.${expression.functionName}`,
-            ...(expression.callInfo?.externalCallSlotIndex !== undefined && {
+          if (expression.callInfo?.hasReturnValues
+            && expression.callInfo.externalCallSlotIndex >= 0
+            && expression.callInfo.returnTypes?.length === 1) {
+            return {
+              kind: 'producerResult',
               callsiteId: expression.callInfo.externalCallSlotIndex,
-            }),
-            ...(target && { target }),
-            args: values,
-            ...(expression.type && { type: expression.type.toString() }),
-          };
+              resultIndex: 0,
+              ...(expression.type && { type: expression.type.toString() }),
+            };
+          }
+          // Multi-result calls require an explicit TupleIndexOp projection above. Keeping the complete call as
+          // an expression would turn one executed edge into a second metadata-level producer.
+          return undefined;
         }
         if (expression instanceof FunctionCallNode) {
           const values = serializeArgs(expression.parameters);
@@ -9853,6 +9884,23 @@ export default class SymbolTableTraversal extends AstTraversal {
     } else {
       node.tuple = this.visit(node.tuple);
     }
+
+    // The symbols above are installed before visiting the RHS so references in later statements can bind, but
+    // their synthetic initializer must describe the resolved value, not the stale surface FunctionCallNode.
+    // Record an explicit component projection for a multi-return RHS; downstream graph lowering can then refer
+    // to one stable producer callsite and result index without rediscovering or cloning the call.
+    node.elements.forEach((variable, index) => {
+      if (variable.skip || variable.existing || !variable.name) return;
+      const definition = this.symbolTables[0].get(variable.name)?.definition;
+      if (!(definition instanceof VariableDefinitionNode)) return;
+      if (node.tupleExpressions) definition.expression = node.tupleExpressions[index];
+      else {
+        const projection = new TupleIndexOpNode(node.tuple, index);
+        projection.location = node.location;
+        projection.type = variable.type;
+        definition.expression = projection;
+      }
+    });
 
     // Existing-lvalue targets are written here, so their slots must survive: drop them from opRolls so
     // their RHS/prior reads PICK instead of ROLL (mirrors how visitAssign protects an assigned var).

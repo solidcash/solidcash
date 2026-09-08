@@ -157,7 +157,8 @@ import {
   AbstractContractInstantiationError, CircularContractReferenceError, LibrarySelfExternalCallError,
   UndefinedReferenceError, UnknownContractTypeError, EmittingStateHelperEventError, SolidcDiagnosticError,
   CompilerRecursionLimitError, UnsupportedInlineAssemblyError, NestedSelfdestructError,
-  SortedMappingCodegenPendingError,
+  SortedMappingCodegenPendingError, BlockLayoutUnavailableError, StackVariableUnavailableError,
+  UnboundReturnCallError,
 } from './Errors.js';
 import { generatedOriginOf, Location, Point, withGeneratedSource, withSourceFile } from './ast/Location.js';
 import { MAX_INPUT_BYTESIZE } from './constants.js';
@@ -310,6 +311,13 @@ type AdmissionWinner = {
   admitMixedScalarHandlers: boolean;
   admitBareForwardingHandlers: boolean;
 };
+type CaughtCompilerAttempt = {
+  stage: 'admission' | 'full-recompile' | 'verifier-bind';
+  errorName: string;
+  message: string;
+  internalCodegen: boolean;
+};
+type InternalAttemptFailureState = { firstError?: unknown };
 type InternalCompilerOptions = CompilerOptions & {
   __messageBusExplicitlyDisabled?: boolean;
   __messageBusMode?: MessageBusMode;
@@ -325,6 +333,8 @@ type InternalCompilerOptions = CompilerOptions & {
   __synthesizeBoundRoutePlaceholder?: boolean;
   /** Inlined verifier source for `__synthesizeBoundRoutePlaceholder`; compiled as a detached mini-contract. */
   __singlePassVerifierSource?: string;
+  /** Test-only route ceiling used to verify that kernel code size is independent of the admitted row bound. */
+  __messageBusMaximumRows?: number;
   /** Unspecialized verifier template retained across the participant-lock binding pass. */
   __messageBusSignatureVerifierSource?: string;
   /**
@@ -332,7 +342,54 @@ type InternalCompilerOptions = CompilerOptions & {
    * a missing verifierProgram does not replay the whole search as full compiles.
    */
   __admissionWinnerBox?: { winner?: AdmissionWinner };
+  /** Test-only observation of failures consumed by an admission/rebinding recovery path. */
+  __attemptFailureBox?: { failures: CaughtCompilerAttempt[] };
+  /** Test-only explicit audit flag; kernel compiles enforce this invariant regardless of the flag's value. */
+  __strictNoInternalRecovery?: boolean;
+  /** Compiler-owned shared state propagated through binder/recovery recursion. */
+  __internalAttemptFailureState?: InternalAttemptFailureState;
 };
+
+function isInternalCodegenAttemptFailure(error: unknown): boolean {
+  if (error instanceof BlockLayoutUnavailableError
+    || error instanceof StackVariableUnavailableError
+    || error instanceof UnboundReturnCallError) return true;
+  const message = error instanceof Error ? error.message : String(error);
+  // Some older generator invariants predate named error classes. Keep the strict audit useful while those are
+  // migrated, without treating typed KERNEL_* admission fences as compiler failures.
+  return message.startsWith('Block slot not found:')
+    || message.startsWith('Missing journal context ')
+    || /lacks compiler metadata \(slot /.test(message);
+}
+
+function recordCaughtCompilerAttempt(
+  options: InternalCompilerOptions,
+  stage: CaughtCompilerAttempt['stage'],
+  error: unknown,
+): void {
+  const internalCodegen = isInternalCodegenAttemptFailure(error);
+  const box = options.__attemptFailureBox;
+  if (box) {
+    box.failures.push({
+      stage,
+      errorName: error instanceof Error ? error.name : typeof error,
+      message: error instanceof Error ? error.message : String(error),
+      internalCodegen,
+    });
+  }
+  if (internalCodegen && options.__internalAttemptFailureState?.firstError === undefined) {
+    options.__internalAttemptFailureState!.firstError = error;
+  }
+}
+
+function assertNoInternalAttemptRecovery(options: InternalCompilerOptions): void {
+  // Internal frame/layout failures are compiler defects, not handler-shape refusals. A kernel compile must never
+  // turn one into a successful artifact through its speculative admission ladder. Keep the explicit flag for
+  // non-kernel regression probes, but do not let `false` weaken the shipped kernel invariant.
+  if (options.messageBusKernel !== true && !options.__strictNoInternalRecovery) return;
+  const error = options.__internalAttemptFailureState?.firstError;
+  if (error !== undefined) throw error;
+}
 
 interface OptionalLoweringFeatures {
   hasFunctionPointers: boolean;
@@ -678,6 +735,10 @@ function recordArtifactCacheHit(detail: Record<string, unknown>): void {
 function artifactCacheEnabled(
   options: CompilerOptions, errorListener: SolidCashErrorListener | undefined, suppressWarnings: boolean,
 ): boolean {
+  const internal = options as InternalCompilerOptions;
+  // Attempt auditing is meaningful only for a fresh pipeline. A cached artifact has no attempts to observe and
+  // would let strict mode report a vacuous success after a prior non-strict compilation populated the cache.
+  if (internal.__attemptFailureBox || internal.__strictNoInternalRecovery) return false;
   const want = process.env.SOLIDC_COMPILE_CACHE === '1' || options.__artifactCache === true;
   return want
     && !errorListener
@@ -697,8 +758,12 @@ function cacheableCompilerOptions(options: CompilerOptions): Record<string, unkn
   delete keyOptions.__pristineAstBox;
   delete keyOptions.__synthesizeBoundRoutePlaceholder;
   delete keyOptions.__singlePassVerifierSource;
+  delete keyOptions.__messageBusMaximumRows;
   delete keyOptions.__messageBusSignatureVerifierSource;
   delete keyOptions.__admissionWinnerBox;
+  delete keyOptions.__attemptFailureBox;
+  delete keyOptions.__strictNoInternalRecovery;
+  delete keyOptions.__internalAttemptFailureState;
   return keyOptions;
 }
 
@@ -1037,6 +1102,7 @@ function compileWithExternalAdmissionFallback(
         admitMixedScalarHandlers, admitBareForwardingHandlers, attribution,
       );
     } catch (error) {
+      recordCaughtCompilerAttempt(onceOptions, 'admission', error);
       profileLog('compileOnce:throw', onceStarted, {
         primary: primaryContractName,
         admitExternalHandlers,
@@ -1072,8 +1138,8 @@ function compileWithExternalAdmissionFallback(
     let firstError: unknown;
     let latestError: unknown;
     // An explicit atomic route is a requested capability, not a best-effort optimization. Try the widest
-    // external-entry shape once before the speed ladder: otherwise every `external` graph root is silently
-    // stamped unsupported solely because the caller asked for faster compilation (Unicrow.pay is such a root).
+    // external-entry shape once before the speed ladder: otherwise every external graph root is silently
+    // stamped unsupported solely because the caller asked for faster compilation.
     // A failing speculative route still falls through to the existing public-only rungs below.
     if (messageBusMode === 'enabled' || messageBusMode === 'required') {
       try {
@@ -1308,6 +1374,12 @@ function compileStringUnchecked(code: string, compilerOptions: CompileOptions = 
   const {
     errorListener, primaryContractName, suppressWarnings = false, ...artifactCompilerOptions
   } = compilerOptions;
+  const internalOptions = artifactCompilerOptions as InternalCompilerOptions;
+  if (((internalOptions.messageBusKernel ?? DEFAULT_COMPILER_OPTIONS.messageBusKernel) === true
+      || internalOptions.__strictNoInternalRecovery)
+    && !internalOptions.__internalAttemptFailureState) {
+    internalOptions.__internalAttemptFailureState = {};
+  }
   delete artifactCompilerOptions.compileDeclarations;
   const parsedAst = (compilerOptions as InternalCompilerOptions).__parsedAst;
   delete (artifactCompilerOptions as InternalCompilerOptions).__parsedAst;
@@ -1357,6 +1429,7 @@ function compileStringUnchecked(code: string, compilerOptions: CompileOptions = 
   let artifact = compileWithExternalAdmissionFallback(
     code, mergedCompilerOptions, errorListener, primaryContractName,
   );
+  assertNoInternalAttemptRecovery(mergedCompilerOptions);
   profileLog('admission', admissionStarted, { primary: primaryContractName });
   if (mergedCompilerOptions.__messageBusMode === 'required' && !artifact.messageBus) {
     throw new Error('messageBus: required route generation did not produce a composable artifact');
@@ -1385,6 +1458,7 @@ function compileStringUnchecked(code: string, compilerOptions: CompileOptions = 
           winner.admitMixedScalarHandlers, winner.admitBareForwardingHandlers,
         );
       } catch (winnerError) {
+        recordCaughtCompilerAttempt(fullOptions, 'full-recompile', winnerError);
         // Cheap admission deliberately stubs user and handler-clone bodies, so it can select a route whose full
         // body later exposes a code-generation refusal (for example, a view-return witness introduced only by
         // semantic external-call lowering). Replay the ordinary full attribution ladder from the pristine AST:
@@ -1411,6 +1485,7 @@ function compileStringUnchecked(code: string, compilerOptions: CompileOptions = 
       direct: winner?.direct === true,
       hasVerifier: !!artifact.messageBus?.verifierProgram,
     });
+    assertNoInternalAttemptRecovery(mergedCompilerOptions);
   }
   const alreadyVerifierBound = artifact.messageBus?.route?.inputs
     ?.some((input) => input.name === '__internal__activeVerifierIndex') === true;
@@ -1461,6 +1536,7 @@ function compileStringUnchecked(code: string, compilerOptions: CompileOptions = 
         code, bindingOptions,
       );
     } catch (binderError) {
+      recordCaughtCompilerAttempt(bindingOptions, 'verifier-bind', binderError);
       // A cheap speculative artifact can carry a verifier program even though one of its stubbed handler bodies
       // fails only when the verifier-bound route is fully emitted. Restart once with cheap admission disabled so
       // the ordinary attribution ladder observes that body and can refuse just its selector before constructing
@@ -1526,6 +1602,7 @@ function compileStringUnchecked(code: string, compilerOptions: CompileOptions = 
   // these options (including its own binder), so leaving the flag set would skip user/graph bodies in
   // the shipped proxy artifact.
   delete mergedCompilerOptions.__cheapAdmissionCodegen;
+  assertNoInternalAttemptRecovery(mergedCompilerOptions);
   attachDelegateVariant(
     artifact, code, mergedCompilerOptions, errorListener, primaryContractName,
     cacheable || !suppressWarnings,
@@ -3869,6 +3946,36 @@ function synthesizeMessageBusRoute(
       }
     }
     const footprint = analyseFunctionFootprint(fn, byName, footprintCache);
+    // Beta fence: a deferred runtime mapping journal and a repeated observable effect currently share one
+    // trailing-output cursor. If the mapping topology selects transaction-wide pending
+    // settlement, its entry carriers must form a dense ordinal band while events/transfers still advance the
+    // source-row cursor. Until those are separate authenticated frames, advertising this composition as a kernel
+    // row can make an otherwise successful compile construct an output geometry neither verifier agrees on.
+    // Classify only structural type/effect/flow properties; runtime key values and source names are irrelevant.
+    const closureFunctions = [...collectNamedFunctionClosure(fn, byName)]
+      .flatMap((name) => byName.get(name) ?? []);
+    const hasRuntimeCollectionMutation = closureFunctions.some((candidate) => {
+      if (candidate.sortedUpsertLoopInfo?.some((info) => info.op !== 'read') === true) return true;
+      let found = false;
+      walkInvocationAst(candidate.body, (node) => {
+        const mutation = node instanceof MappingAssignNode || node instanceof MappingFieldAssignNode
+          || node instanceof MappingDeleteNode || node instanceof StateArrayAssignNode
+          || node instanceof StateArrayPushNode || node instanceof StateArrayPopNode
+          || node instanceof StateArrayDeleteNode
+          || ((node instanceof ArrayAssignNode || node instanceof ArrayPushNode
+            || node instanceof ArrayPopNode || node instanceof ArrayDeleteNode)
+            && collectionByName.has(node.name));
+        if (!mutation) return;
+        const occurrence = occurrenceInfoOf(candidate, node);
+        if (occurrence.occurrence === 'loop' && occurrence.maximumOccurrences === undefined) found = true;
+      });
+      return found;
+    });
+    const hasRuntimeEffect = closureFunctions.some((candidate) =>
+      (candidate.runtimeLoopEvents?.length ?? 0) > 0
+      || (candidate.runtimeLoopTransfers?.length ?? 0) > 0);
+    const hasMixedPendingJournalEffectGeometry = compilerOptions.messageBusKernel === true
+      && hasRuntimeCollectionMutation && hasRuntimeEffect;
     const kernelLifecycleKind = compilerOptions.messageBusKernel !== true ? undefined
       : fn.modifiers.includes(FunctionModifier.SPLIT) ? 'split' as const
         : fn.modifiers.includes(FunctionModifier.MERGE) ? 'merge' as const : undefined;
@@ -4762,7 +4869,7 @@ function synthesizeMessageBusRoute(
         if ((value instanceof TransferStatementNode && value.runtimeLoopTransfer === undefined)
           || value instanceof AddressTransferStatementNode || value instanceof AddressSendExpressionNode) {
           const analysis = fixedEffectRecipes.get(value);
-          if (!analysis?.recipient || !analysis.amount) {
+          if (value.sourceEffectRecipeProvenanceSafe === false || !analysis?.recipient || !analysis.amount) {
             hasUnsupportedFixedTransferRecipe = true;
           }
           if (analysis?.activationSupported === false) hasUnsupportedFixedTransferActivation = true;
@@ -5278,7 +5385,9 @@ function synthesizeMessageBusRoute(
       // symbolic element plan, including invariant variable-width branches and replayable straight-line or finite
       // exhaustive loop-local value assignments. Escaped or counter-variably resized constructed key arrays,
       // non-canonical iteration domains, and repeated fixed-slot effects still have no kernel representation.
-      if (hasUnsupportedSortedRuntimeLoopWrite(fn)) {
+      if (hasMixedPendingJournalEffectGeometry) {
+        reason = 'KERNEL_LAYOUT';
+      } else if (hasUnsupportedSortedRuntimeLoopWrite(fn)) {
         reason = 'KERNEL_UNBOUNDED_KEY';
       } else if (deploys && !kernelDeploySupported
         && (reason === undefined || kernelAdmissionReason(reason) === 'KERNEL_LAYOUT')) {
@@ -6068,11 +6177,18 @@ function synthesizeMessageBusRoute(
   }
 
   const selector = sourceFunctionSelectorHex;
-  const routeMaximumRows = resourceShapedHandler
+  const defaultRouteMaximumRows = resourceShapedHandler
     ? (compilerOptions.maximumInputBytes !== undefined
       && compilerOptions.maximumInputBytes > MAX_INPUT_BYTESIZE
       ? MAX_MESSAGE_BUS_ROWS : RESOURCE_SHAPED_BATCH_ROWS)
     : MAX_MESSAGE_BUS_ROWS;
+  const requestedRouteMaximumRows = (compilerOptions as InternalCompilerOptions).__messageBusMaximumRows;
+  if (requestedRouteMaximumRows !== undefined
+    && (!Number.isSafeInteger(requestedRouteMaximumRows)
+      || requestedRouteMaximumRows < 1 || requestedRouteMaximumRows > defaultRouteMaximumRows)) {
+    throw new Error(`Invalid internal message-bus maximum rows: ${requestedRouteMaximumRows}`);
+  }
+  const routeMaximumRows = requestedRouteMaximumRows ?? defaultRouteMaximumRows;
   const kernelDeploymentFrameWidth = Math.max(0, ...eligible.map((fn) =>
     (kernelDeploymentSiteWidths.get(fn) ?? []).reduce((total, width) => total + width, 0)));
   const kernelDeploymentSelectorRegistration = eligible
@@ -10083,6 +10199,74 @@ function compileResolvedAst(
     )) as Ast;
   }
 
+  // Capture the source-level fixed-effect proof before returning-helper and storage-pointer lowering can simplify
+  // an operand. A materializable expression produced later is not proof that the SDK can replay the original
+  // dependency closure. The marker follows cloned effect nodes and keeps this gate based on type/effect/flow
+  // properties rather than helper names or application shapes.
+  if (mergedCompilerOptions.messageBusKernel === true) {
+    for (const fn of ast.contract.functions) {
+      const sourceRecipes = analyzeFixedBchEffectRecipes(fn, ast.contract.functions, ast.contract.stateVariables);
+      const declarationCounts = new Map<string, number>();
+      walkInvocationAst(fn.body, (node) => {
+        if (node instanceof VariableDefinitionNode) {
+          declarationCounts.set(node.name, (declarationCounts.get(node.name) ?? 0) + 1);
+        }
+      });
+      const hasShadowedLocals = [...declarationCounts.values()].some((count) => count > 1);
+      const helperSignatureCounts = new Map<string, number>();
+      for (const helper of ast.contract.functions) {
+        const key = `${helper.name}/${helper.parameters.length}`;
+        helperSignatureCounts.set(key, (helperSignatureCounts.get(key) ?? 0) + 1);
+      }
+      const dependencyProvenanceSafe = (
+        value: unknown, seen = new WeakSet<object>(), resolving = new Set<VariableDefinitionNode>(),
+      ): boolean => {
+        if (Array.isArray(value)) return value.every((item) => dependencyProvenanceSafe(item, seen, resolving));
+        if (!(value instanceof Node) || seen.has(value)) return true;
+        seen.add(value);
+        if (value instanceof IdentifierNode) {
+          const definition = value.definition?.definition;
+          if (definition instanceof VariableDefinitionNode) {
+            // Until the executable recipe carries declaration IDs, a shadowed spelling cannot prove which
+            // initializer it replayed. Preserve the conservative boundary even if later lowering picks one.
+            if ((declarationCounts.get(definition.name) ?? 0) > 1) return false;
+            if (definition.expression && !resolving.has(definition)) {
+              const nested = new Set(resolving);
+              nested.add(definition);
+              if (!dependencyProvenanceSafe(definition.expression, new WeakSet<object>(), nested)) return false;
+            }
+          }
+        }
+        if (value instanceof FunctionCallNode) {
+          const key = `${value.identifier.name}/${value.parameters.length}`;
+          // Keep overload admission closed until the source snapshot publishes the resolved signature, not just
+          // a same-name/same-arity spelling that later inlining happens to disambiguate.
+          if ((helperSignatureCounts.get(key) ?? 0) > 1) return false;
+        }
+        for (const [key, child] of Object.entries(value)) {
+          if (['definition', 'functionReference', 'resolvedFunction', 'referencedContract', 'symbolTable',
+            'stateVariable', 'collection'].includes(key)) continue;
+          if (!dependencyProvenanceSafe(child, seen, resolving)) return false;
+        }
+        return true;
+      };
+      walkInvocationAst(fn.body, (node) => {
+        if ((node instanceof TransferStatementNode && node.runtimeLoopTransfer === undefined)
+          || node instanceof AddressTransferStatementNode || node instanceof AddressSendExpressionNode) {
+          const sourceRecipe = sourceRecipes.get(node);
+          node.sourceEffectRecipeProvenanceSafe = !!sourceRecipe?.recipient && !!sourceRecipe.amount
+            && sourceRecipe.activationSupported
+            // Earlier normalization can substitute the selected initializer before this snapshot. Until recipes
+            // retain declaration IDs, any shadowing in the effect owner leaves that substitution unauditable.
+            && !hasShadowedLocals
+            && dependencyProvenanceSafe(node instanceof TransferStatementNode
+              ? node.lockingBytecode : node.addressExpression)
+            && dependencyProvenanceSafe(node.amount);
+        }
+      });
+    }
+  }
+
   // A fixed-array collection iteration must expose its compiler-owned indexed accesses before deciding whether
   // the hidden route is synthesized at the early collection boundary. Otherwise an unrelated collection
   // handler can move synthesis ahead of the ordinary unroll pass and leave the iteration's stale blanket marker.
@@ -11168,6 +11352,19 @@ function compileResolvedAst(
         : fn === ast.contract.fallbackDef ? candidate.isFallback === true
           : fn === ast.contract.receiveDef ? candidate.isReceive === true
             : false);
+      // The atomic result refresher currently authenticates one ABI result per producer callsite. Preserve the
+      // stable `(callsiteId, resultIndex)` metadata for tuples, but do not advertise a row whose later edge needs
+      // a multi-result producer until the completed return commitment is decoded as one authenticated vector.
+      // This is a type/flow boundary: unrelated tuple returns remain valid, as do all single-result dependencies.
+      const hasMultiResultProducerDependency = abi?.resultConsumers?.some((consumer) => {
+        const producer = abi.externalCalls?.find((call) => call.callsiteId === consumer.producerCallsiteId);
+        return (producer?.returnTypes?.length ?? 0) > 1;
+      }) === true;
+      if (hasMultiResultProducerDependency) {
+        fn.messageBusEligible = false;
+        fn.messageBusRejectionReason = 'KERNEL_LAYOUT';
+        continue;
+      }
       const incomplete = abi?.transfers?.some((transfer) =>
         (transfer.recipientRecipe === undefined && transfer.derivedRecipient === undefined)
         || transfer.amountRecipe === undefined
@@ -14075,8 +14272,8 @@ function reresolveImportedStructTypes(ast: Ast): void {
       else if (Array.isArray(v)) for (const it of v) if (it instanceof Node) fixDecls(it);
     }
   };
-  // Fix the primary AND every imported contract - an imported contract's own state var (e.g. a Unicrow with a
-  // `Counters.Counter` field, imported by an arbitrator) is still type-checked, so its placeholder must resolve.
+  // Fix the primary AND every imported contract: an imported contract's own state variable with an imported
+  // library-struct type is still type-checked, so its placeholder must resolve.
   // CollectionNode.type is ArrayType | MappingType; fix() resolves an imported struct placeholder in an array's
   // element OR a mapping's key/value (`mapping(uint => Escrow)`) in place, so just call it on every collection.
   const fixContract = (c: ContractNode): void => {

@@ -52,7 +52,7 @@ import AstTraversal from '../ast/AstTraversal.js';
 import { cloneNode } from '../ast/clone.js';
 import { substituteInFunction } from './InheritanceExpansionTransformation.js';
 import { collectAmbiguousInlineKeys, inlineKey } from './inlineOverloadGuard.js';
-import { AmbiguousInlineOverloadError, GraphEmissionEffectError } from '../Errors.js';
+import { AmbiguousInlineOverloadError } from '../Errors.js';
 
 /**
  * Inlines internal calls to void functions that take `storage` reference parameters
@@ -85,6 +85,7 @@ export default class InlineStoragePointerCalls extends AstTraversal {
     private readonly inlineSolidityInitializers = false,
     private readonly inlineDelegateStateHelpers = false,
   ) { super(); }
+
   private funcByName: Map<string, FunctionDefinitionNode> = new Map();
   // Overload-aware callee lookup keyed by inlineKey(name, arity): a name-only map returns the wrong overload for a
   // call whose arity differs (OZ ERC20 `_approve/3` -> `_approve/4`), so the arity-mismatched call is never inlined
@@ -203,40 +204,9 @@ export default class InlineStoragePointerCalls extends AstTraversal {
     // not safely droppable-after-inline; exclude such names from the state-touching criteria.
     const valueReferenced = this.collectValueReferencedNames(node);
     for (const fn of node.functions) {
-      // Delegate signature rows must remain a standalone OP_INVOKE body: CHECKSIG signs that body, while the
-      // enclosing route embeds the verifier which authenticates its hash and therefore cannot sign itself.
-      if (fn.messageBusDetachedSignatureHandler) continue;
-      // A graph emission handler executes behind OP_INVOKE precisely so its hidden callManifest/caller/result
-      // frame authenticates every reached edge. Flattening one into __message_bus1 makes that the current
-      // function at code generation, so its external calls take the ordinary-call path and no emission row is ever
-      // recomputed and compared - the callManifest can then state any target and any arguments. Same guard, and
-      // the same reason, as InlineExternalCallHelpers and InlineReturningStateHelpers. Reachable only when
-      // route synthesis ran BEFORE this pass (compiler.ts synthesizeBatchBeforeLowering).
-      //
-      // X29 replaced SEC-6's refusal for the `emit` / `transfer` carrying clones: they stay behind OP_INVOKE
-      // too, which is what keeps their edges bound, and their effect is no longer dropped because the ROUTE now
-      // reserves an owner-local frame per dispatch site on their behalf (SymbolTableTraversal
-      // planGraphEffectFrames) and pushes the site ordinal as hidden context, against which the subroutine
-      // resolves its own event/transfer OUTPUT indices (GenerateTargetTraversal emitGraphEffectSlotIndex).
-      // Delegate initializer/owner guards must still flatten into the entry even when a message-bus
-      // clone would otherwise keep them behind OP_INVOKE. Those clones address INPUTINDEX, not the
-      // proxy pending write, so `initialize` fails `_checkInitializing` on a clean compile.
-      if (this.keepsGraphEmissionBinding(fn)
-        && !/^(?:_checkInitializing|_checkOwner|_requireNotPaused)$/.test(fn.name)) continue;
-      // SEC-7. A TOKEN-CONTAINER operation is still refused, and for the reason X29 removed for events and
-      // transfers rather than an unexamined one: `this.tokens[c].transfer(..)` needs a co-spent tokenContainer
-      // INPUT slot as well as its tcTransfer outputs, and an input slot is not a per-site output frame - it
-      // shifts every later input index in the block and is co-spent once for the whole route, not once per
-      // dispatch site. Flattening the clone instead is exactly what SEC-6 measured forgeable, so the shape is
-      // refused rather than published with unbound edges.
-      //
-      // Scoped to a clone that actually HAS an outgoing edge. `graphTailHandlers` also admits a handler that
-      // merely reads msg.sender / msg.value in a graph route, and such a clone has no external call for the
-      // callManifest to misstate - flattening it loses nothing and refusing it would refuse a sound shape.
-      if (fn.graphEmissionHandler && this.hasOutgoingCall(fn)) {
-        throw new GraphEmissionEffectError(fn, fn.name.replace(/^__message_bus_(graph|resource)_/, ''),
-          this.hasTokenContainerEffects(fn) ? 'a token-container operation' : 'a storage-pointer parameter');
-      }
+      // Compiler-owned graph and detached-signature handlers are physical OP_INVOKE bodies. Their hidden
+      // protocol context belongs to that invocation, so no storage/effect shape may flatten them into the route.
+      if (fn.graphEmissionHandler || fn.messageBusDetachedSignatureHandler) continue;
       // Any state access disqualifies an OP_INVOKE subroutine: entry reads need block-layout slots, and
       // scalar reads/writes live in the ENTRY traversal's commitment model (a subroutine's are invisible
       // to it). Inline all state-touching void callees; entry points keep their definition (still
@@ -289,8 +259,8 @@ export default class InlineStoragePointerCalls extends AstTraversal {
       addedWrapper = false;
       for (const fn of node.functions) {
         if (!fn.body || fn.returnTypes.length > 0 || this.inlinedFns.has(fn.name)
-          || fn.messageBusDetachedSignatureHandler
-          || this.keepsGraphEmissionBinding(fn) || valueReferenced.has(fn.name)) continue;
+          || fn.graphEmissionHandler || fn.messageBusDetachedSignatureHandler
+          || valueReferenced.has(fn.name)) continue;
         let callsSelected = false;
         for (const candidate of this.nodesOf(fn)) {
           if (candidate instanceof FunctionCallNode && this.inlinedFns.has(candidate.identifier.name)) {
@@ -329,6 +299,7 @@ export default class InlineStoragePointerCalls extends AstTraversal {
     this.exprInlinableFns = new Map();
     const exprEligible: FunctionDefinitionNode[] = [];
     for (const fn of [...node.functions, ...this.freeFns]) {
+      if (fn.graphEmissionHandler || fn.messageBusDetachedSignatureHandler) continue;
       if (this.isSingleReturnStoragePointerFn(fn)) this.exprInlinableFns.set(fn.name, fn);
       if (this.isSingleReturnStoragePointerFn(fn)) exprEligible.push(fn);
     }
@@ -357,35 +328,6 @@ export default class InlineStoragePointerCalls extends AstTraversal {
     // which stay dispatchable.
     node.functions = node.functions.filter((fn) => !this.inlinedFns.has(fn.name) || this.keepDefFns.has(fn.name));
     return node;
-  }
-
-  // A graph emission handler clone that must stay behind OP_INVOKE to keep its emission binding. Since X29 that
-  // includes clones carrying an `emit` or a `transfer`: the route reserves their OUTPUT frames, one per dispatch
-  // site, so leaving them subroutines no longer loses the effect. A token-container operation still needs a
-  // co-spent INPUT slot, which no per-site output frame can express, so it stays excluded (refused above).
-  private keepsGraphEmissionBinding(fn: FunctionDefinitionNode): boolean {
-    if (!fn.graphEmissionHandler || this.hasTokenContainerEffects(fn) || this.hasStoragePointerParam(fn)) {
-      return false;
-    }
-    // Effect-carrying clones are kept ONLY when they have an outgoing edge, which is the whole defect surface:
-    // an edge is what a callManifest can misstate. `graphTailHandlers` also admits an edge-free handler that
-    // merely reads msg.value or msg.sender (Release 4's value batch is exactly that), and flattening one loses
-    // nothing while un-flattening it moves its transfer covenant behind OP_INVOKE - measured to break the SDK's
-    // auto-derivation of the transfer outputs. Keep every edge-free clone on the established path.
-    return !this.hasPhysicalEffects(fn) || this.hasOutgoingCall(fn);
-  }
-
-  // An outgoing external edge, in the pre-semantic shapes this pass sees: `IFoo(a).m()` is a MethodCall until
-  // LowerExternalCalls runs, and `a.call/staticcall/delegatecall(..)` is either a LowLevelCall or a dotted
-  // FunctionCall. Mirrors the `methodCallCount` test compiler.ts applies at route synthesis.
-  private hasOutgoingCall(fn: FunctionDefinitionNode): boolean {
-    for (const node of this.nodesOf(fn)) {
-      if (node instanceof MethodCallNode || node instanceof LowLevelCallNode
-        || node instanceof LowLevelCallStatementNode) return true;
-      else if (node instanceof FunctionCallNode
-        && /\.(call|staticcall|delegatecall)$/.test(node.identifier?.name ?? '')) return true;
-    }
-    return false;
   }
 
   private isScalarJournalEligible(fn: FunctionDefinitionNode): boolean {

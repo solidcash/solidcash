@@ -139,6 +139,37 @@ describe('message-bus kernel loop route', () => {
     expect(artifact.messageBus?.route.inputs.some((input) => /_r\d+$/.test(input.name))).toBe(false);
   });
 
+  it('keeps kernel route size independent of the configured row ceiling', () => {
+    const compileAt = (messageBusKernel: boolean, maximumRows: number): ReturnType<typeof compileString> =>
+      compileString(RETURN_SOURCE, {
+        ...OPTIONS,
+        messageBusKernel,
+        __messageBusMaximumRows: maximumRows,
+      } as Parameters<typeof compileString>[1]);
+    const kernelTwo = compileAt(true, 2);
+    const kernelEight = compileAt(true, 8);
+    const legacyTwo = compileAt(false, 2);
+    const legacyEight = compileAt(false, 8);
+
+    for (const [artifact, maximumRows] of [
+      [kernelTwo, 2], [kernelEight, 8], [legacyTwo, 2], [legacyEight, 8],
+    ] as const) {
+      expect(artifact.messageBus?.maximumRows).toBe(maximumRows);
+    }
+    expect(kernelTwo.messageBus?.convention).toBe('kernel-row-loop');
+    expect(kernelEight.messageBus?.convention).toBe('kernel-row-loop');
+    expect(legacyTwo.messageBus?.convention).toBe('legacy-unroll');
+    expect(legacyEight.messageBus?.convention).toBe('legacy-unroll');
+    const routeBytes = (artifact: ReturnType<typeof compileString>): number =>
+      artifact.functionBodies!['53434231'].length / 2;
+    const kernelGrowth = Math.abs(routeBytes(kernelEight) - routeBytes(kernelTwo));
+    const legacyGrowth = routeBytes(legacyEight) - routeBytes(legacyTwo);
+    // The kernel checks one runtime bound and executes one row body. The legacy route emits another physical
+    // dispatch band for every admitted row, so this neutral scalar handler provides the direct control.
+    expect(kernelGrowth).toBeLessThan(64);
+    expect(legacyGrowth).toBeGreaterThan(400);
+  });
+
   it('dispatches event-emitting handlers from the runtime row loop without a new clone family', () => {
     const artifact = compileString(`
 pragma solidcash ^0.13.0;
@@ -191,6 +222,57 @@ contract Acc() {
     const addAsm = bytecodeToAsm(hexToBin(artifact.functionBodies![add!.selector]));
     // bump is function id 0 (first declared). Three call sites share one defined body.
     expect([...addAsm.replace(/\s+/g, ' ').matchAll(/OP_0 OP_INVOKE/g)]).toHaveLength(3);
+  });
+
+  it('keeps a reference-typed graph handler behind one body-independent OP_INVOKE boundary', () => {
+    const source = (arithmeticSteps: number): string => `
+      interface Remote {
+        function read(int key) external returns (int);
+        function write(int value) external;
+      }
+      contract Pipeline(Remote remote) {
+        int total;
+        function process(int[] memory keys) public {
+          for (int cursor = 0; cursor < keys.length; cursor = cursor + 1) {
+            int value = remote.read(keys[cursor]);
+            ${Array.from({ length: arithmeticSteps }, (_, index) =>
+    `value = (value + ${index + 1}) * 2 - ${index + 1};`).join('\n')}
+            remote.write(value);
+            this.total = value;
+          }
+          require(true);
+        }
+      }
+    `;
+    const compile = (steps: number): ReturnType<typeof compileString> => compileString(source(steps), {
+      ...OPTIONS,
+      messageBusGraphContext: true,
+      maximumInputBytes: 1_000_000,
+      suppressWarnings: true,
+    });
+    const small = compile(4);
+    const large = compile(64);
+
+    for (const artifact of [small, large]) {
+      expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'process'))
+        .toMatchObject({ eligible: true });
+      const functions = artifact.invocationAnalysis?.functions ?? [];
+      const route = functions.find((fn) => fn.name === '__message_bus1');
+      const handler = functions.find((fn) => fn.name === '__message_bus_handler_process');
+      expect(handler).toBeDefined();
+      expect(route?.calls).toContain(handler!.id);
+      expect(route?.calls.filter((id) => id === handler!.id)).toHaveLength(1);
+    }
+
+    const smallRouteBytes = small.functionBodies!['53434231'].length / 2;
+    const largeRouteBytes = large.functionBodies!['53434231'].length / 2;
+    const routeGrowth = Math.abs(largeRouteBytes - smallRouteBytes);
+    const emittedGrowth = large.debug.bytecode.length / 2 - small.debug.bytecode.length / 2;
+    // Optimizer thresholds may slightly reshape the dispatcher, but sixty additional typed arithmetic steps
+    // belong to the handler body and must not scale the route. This catches any transform which substitutes the
+    // compiler-owned handler body into its row-loop call site while tolerating ordinary outline decisions.
+    expect(emittedGrowth).toBeGreaterThan(400);
+    expect(routeGrowth).toBeLessThan(128);
   });
 
   it('threads one route-owned record carrier through each direct journal-aware handler', () => {

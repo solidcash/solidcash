@@ -5936,7 +5936,7 @@ export default class AstBuilder
     const name = alias ? alias.container : rawName;
 
     // Storage-pointer alias to a mapping-value struct, ARRAY-field element write: `p.arr[j] op= v` where
-    // `T storage p = m[k]` (e.g. Unicrow's `escrow.split[WHO] = v` on `Escrow storage escrow = escrows[id]`).
+    // `T storage p = m[k]` (e.g. `record.parts[j] = v` on `T storage record = records[id]`).
     // The trailing `[j]` indexes the array FIELD, not the mapping, so route it through the mapping-value-struct
     // roundtrip (read entry into a temp, write the element, write back) like the direct `m[k].arr[j]` form -
     // NOT the alias key-merge below (which would treat `j` as a second mapping key).

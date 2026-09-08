@@ -126,7 +126,7 @@ describe('required kernel admission', () => {
     expect(artifact.messageBus?.route.entryAccesses?.find((entry) => entry.collection === 'source'))
       .toMatchObject({ slotIndex: 0, operations: expect.arrayContaining(['read', 'write']) });
   });
-  it('admits a field-shaped struct getter while fencing an unbounded struct array', () => {
+  it('admits field-shaped and authenticated dynamic-struct state getters', () => {
     const artifact = compileString(`pragma solidity ^0.8.0;
       contract C() {
       struct Rec { int value; }
@@ -137,7 +137,9 @@ describe('required kernel admission', () => {
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'current'))
       .toMatchObject({ eligible: true });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'all'))
-      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+      .toMatchObject({ eligible: true, outputs: [{ type: 'Rec[]' }] });
+    expect(artifact.abi.find((handler) => handler.name === 'all')?.dynamicReads).toEqual(['records']);
+    expect(artifact.messageBus?.route.dynamicReads).toEqual(['records']);
   });
 
   it('admits a whole flattened state struct with dynamic value leaves', () => {
@@ -6297,7 +6299,7 @@ describe('required kernel admission', () => {
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
   });
 
-  it('keeps an unbounded Rec[] result behind KERNEL_LAYOUT without demoting control', () => {
+  it('admits a directly authenticated unbounded Rec[] state result without demoting control', () => {
     const artifact = compileString(`pragma solidity ^0.8.0;
       struct Rec { uint x; }
       contract C {
@@ -6305,10 +6307,10 @@ describe('required kernel admission', () => {
         function denied() public view returns (Rec[] memory) { return records; }
         function control() public { require(true); }
       }`, { ...KERNEL, solidityImportCompat: true });
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')).toMatchObject({
-      eligible: false,
-      rejectionReason: 'KERNEL_LAYOUT',
-    });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied'))
+      .toMatchObject({ eligible: true, outputs: [{ type: 'Rec[]' }] });
+    expect(artifact.abi.find((handler) => handler.name === 'denied')?.dynamicReads).toEqual(['records']);
+    expect(artifact.messageBus?.route.dynamicReads).toEqual(['records']);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
   });
 

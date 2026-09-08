@@ -24,6 +24,86 @@ const vmAccepts = (builder: TransactionBuilder): boolean => {
 };
 
 describe('kernel transaction-bound upgrade signature', () => {
+  it('authenticates a detached nested-struct signature through an expanded modifier', async () => {
+    const provider = createMessageBusCapstoneTestProvider();
+    const currentArtifact = compileString(`contract Current() {
+      struct Authorization { sig proof; pubkey key; }
+      struct Auth { Authorization authorization; int nonce; }
+      int marker;
+      modifier authorized(Auth selected) {
+        require(checkSig(selected.authorization.proof, selected.authorization.key)); _;
+      }
+      function replace(Auth auth) public upgrade authorized(auth) { require(auth.nonce >= 0); }
+    }`, KERNEL);
+    const replacementArtifact = compileString(`contract Replacement() {
+      struct Authorization { sig proof; pubkey key; }
+      struct Auth { Authorization authorization; int nonce; }
+      int marker;
+      function read() public view returns (int) { return this.marker; }
+    }`, KERNEL);
+    expect(currentArtifact.messageBus?.handlers.find((handler) => handler.name === 'replace'))
+      .toMatchObject({
+        eligible: true, usesTransactionSignature: true,
+        transactionSignaturePolicy: { hashType: 'all', parameterIndices: [0] },
+      });
+    expect(currentArtifact.messageBus?.route.inputs).toContainEqual(expect.objectContaining({
+      name: '__message_bus_sig_0_0_rows', type: 'sig[]',
+    }));
+
+    const base = new Contract(currentArtifact, [], { provider });
+    const setup = await setupStatefulUtxos(
+      provider, base, currentArtifact.stateLayout!, { marker: 7n }, { saltContract: true },
+    );
+    const current = StatefulContract.withCategory(
+      base.withCategory(hexToBin(setup.categoryId)), setup.categoryId,
+    );
+    const coordinatorArtifact = compileString(`
+      struct Authorization { sig proof; pubkey key; }
+      struct Auth { Authorization authorization; int nonce; }
+      interface ICurrent { function replace(Auth auth); }
+      contract Coordinator(address target) {
+        function forward(Auth auth) public { ICurrent(target).replace(auth); require(true); }
+      }
+    `, KERNEL);
+    const coordinatorBase = new Contract(
+      coordinatorArtifact, [hexToBin(current.inner.lockingBytecode)], { provider },
+    );
+    const coordinatorSetup = await setupStatefulUtxos(
+      provider, coordinatorBase, coordinatorArtifact.stateLayout!, {}, { saltContract: true },
+    );
+    const coordinator = StatefulContract.withCategory(
+      coordinatorBase.withCategory(hexToBin(coordinatorSetup.categoryId)), coordinatorSetup.categoryId,
+    );
+    const build = async (hashType?: HashType): Promise<TransactionBuilder> => {
+      const fee = await createBareP2pkhFeeFunder(provider, 500_000n);
+      const auth = {
+        authorization: { proof: new SignatureTemplate(alicePriv, hashType), key: alicePub },
+        nonce: 1n,
+      };
+      return messageBus.compose({
+        calls: [
+          coordinator.call.forward(auth),
+          current.call.replace(auth).upgradeTo(replacementArtifact, []),
+        ],
+        funder: fee,
+        changeAddress: fee.unlocker.generateLockingBytecode(),
+      }).build();
+    };
+
+    expect(vmAccepts(await build())).toBe(true);
+    await expect(build(HashType.SIGHASH_NONE))
+      .rejects.toThrow(/BCH-2026 preflight failed.*OP_VERIFY/);
+
+    const tampered = await build(HashType.SIGHASH_ALL);
+    const transaction = tampered.buildLibauthTransaction();
+    transaction.outputs.at(-1)!.valueSatoshis += 1n;
+    const sourceOutputs = generateLibauthSourceOutputs(tampered.inputs);
+    const vm = createVirtualMachineBch2026ForProvider(provider);
+    expect(transaction.inputs.every((_input, inputIndex) => vm.stateSuccess(
+      vm.evaluate({ inputIndex, sourceOutputs, transaction }),
+    ) === true)).toBe(false);
+  }, 180_000);
+
   it('accepts SIGHASH_ALL and rejects weaker authorization and output tampering in the BCH-2026 VM', async () => {
     const provider = createMessageBusCapstoneTestProvider();
     const currentArtifact = compileString(`contract Current(pubkey authority) {

@@ -381,6 +381,56 @@ describe('required kernel admission', () => {
     expect(covered?.[0].bytecode).not.toBe(selected?.signatureBytecode);
   });
 
+  it.each([
+    ['directly', 'require(checkSig(auth.authorization.proof, auth.authorization.key));'],
+    ['through an internal helper', 'authorize(auth); require(true);', `
+      function authorize(Auth selected) internal {
+        require(checkSig(selected.authorization.proof, selected.authorization.key));
+      }`],
+    ['through an expanded modifier', 'require(true);', `
+      modifier authorized(Auth selected) {
+        require(checkSig(selected.authorization.proof, selected.authorization.key)); _;
+      }`, 'authorized(auth)'],
+  ])('proves a detached scalar signature in a nested finite struct %s',
+    (_label, body, support = '', customModifier = '') => {
+      const artifact = compileString(`contract C() {
+        struct Authorization { sig proof; pubkey key; }
+        struct Auth { Authorization authorization; int nonce; }
+        int marker;
+        ${support}
+        function migrate(Auth auth, int next) public upgrade ${customModifier} {
+          ${body} this.marker = next; require(true);
+        }
+      }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+      expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'migrate')).toMatchObject({
+        eligible: true, usesTransactionSignature: true,
+        transactionSignaturePolicy: { hashType: 'all', parameterIndices: [0] },
+      });
+      expect(artifact.messageBus?.route.inputs).toContainEqual(expect.objectContaining({
+        name: '__message_bus_sig_0_0_rows', type: 'sig[]',
+      }));
+    });
+
+  it.each([
+    ['a reassigned aggregate', `
+      auth = Auth(Authorization(sig(hex"00"), auth.authorization.key), auth.nonce);
+      require(checkSig(auth.authorization.proof, auth.authorization.key));`],
+    ['more than one detached signature leaf',
+      'require(checkSig(auth.first, auth.key));', 'struct Auth { sig first; sig second; pubkey key; }'],
+    ['a runtime-selected aggregate element',
+      'require(checkSig(auth[which].proof, auth[which].key));',
+      'struct Auth { sig proof; pubkey key; }', 'Auth[2] auth, int which'],
+  ])('keeps finite-aggregate signature provenance fenced for %s',
+    (_label, body, declaration = `
+      struct Authorization { sig proof; pubkey key; }
+      struct Auth { Authorization authorization; int nonce; }`, parameters = 'Auth auth') => {
+      expect(denied(`contract C() {
+        ${declaration}
+        function migrate(${parameters}) public upgrade { ${body} }
+        function control() public { require(true); }
+      }`, 'migrate')).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_TX_SIGNATURE' });
+    });
+
   it('keeps a helper-captured constructor value fenced from the detached call frame', () => {
     const artifact = compileString(`contract C(pubkey admin) {
       function authorize(sig selected) internal { require(checkSig(selected, admin)); }

@@ -3286,6 +3286,40 @@ function synthesizeMessageBusRoute(
         || !bindingImmutable(fn, expression.name) || resolving.has(expression.name)) return undefined;
       return exactOrigin(declarations[0].expression, fn, environment, new Set(resolving).add(expression.name));
     };
+    const exactCheckedSignatureOrigin = (
+      expression: ExpressionNode, fn: FunctionDefinitionNode, environment: OriginEnvironment,
+      check: GlobalFunction,
+    ): number | undefined => {
+      // Scalar signatures and whole signature arrays retain the established identifier/immutable-alias proof.
+      const direct = exactOrigin(expression, fn, environment);
+      if (direct !== undefined) {
+        const parameterType = root.parameters[direct]?.type;
+        if (check === GlobalFunction.CHECKSIG && parameterType === PrimitiveType.SIG) return direct;
+        if (check === GlobalFunction.CHECKMULTISIG && parameterType instanceof ArrayType
+          && parameterType.elementType === PrimitiveType.SIG) return direct;
+        return undefined;
+      }
+      // A finite struct is already copied into the committed row with each transaction-signature leaf erased and
+      // rebuilt from a detached witness. Follow only an exact typed field chain to that one scalar leaf: multiple
+      // leaves need independent SIGHASH policy witnesses, and array projection remains runtime-selected.
+      if (check !== GlobalFunction.CHECKSIG) return undefined;
+      const fieldPath: string[] = [];
+      let base = expression;
+      while (base instanceof FieldAccessNode) {
+        fieldPath.unshift(base.name);
+        base = base.expression;
+      }
+      const origin = exactOrigin(base, fn, environment);
+      if (origin === undefined) return undefined;
+      const rootType = root.parameters[origin]?.type;
+      if (!rootType) return undefined;
+      const leaves = transactionSignatureLeaves(rootType);
+      if (leaves?.length !== 1 || leaves[0].type !== 'sig' || leaves[0].path.length !== fieldPath.length) {
+        return undefined;
+      }
+      return leaves[0].path.every((segment, index) =>
+        segment.kind === 'field' && segment.name === fieldPath[index]) ? origin : undefined;
+    };
     const exactInternalHelper = (call: FunctionCallNode): FunctionDefinitionNode | undefined => {
       const candidates = (signatureClosureByName.get(call.identifier.name) ?? []).filter((candidate) =>
         !candidate.isFreeFunction
@@ -3323,12 +3357,10 @@ function synthesizeMessageBusRoute(
         if ([GlobalFunction.CHECKSIG, GlobalFunction.CHECKMULTISIG]
           .includes(node.identifier.name as GlobalFunction)) {
           found = true;
-          const index = node.parameters[0] ? exactOrigin(node.parameters[0], fn, environment) : undefined;
-          const parameterType = index === undefined ? undefined : root.parameters[index]?.type;
-          const exactType = node.identifier.name === GlobalFunction.CHECKSIG
-            ? parameterType === PrimitiveType.SIG
-            : parameterType instanceof ArrayType && parameterType.elementType === PrimitiveType.SIG;
-          if (index === undefined || !exactType) unsupported = true;
+          const index = node.parameters[0] ? exactCheckedSignatureOrigin(
+            node.parameters[0], fn, environment, node.identifier.name as GlobalFunction,
+          ) : undefined;
+          if (index === undefined) unsupported = true;
           else {
             indices.add(index);
             const prior = coveredFunctionByParameter.get(index);
@@ -3428,9 +3460,9 @@ function synthesizeMessageBusRoute(
       fn.messageBusRejectionReason = 'KERNEL_FOREIGN_DELEGATE';
       continue;
     }
-    // An upgrade authorization must cover every output. Admit only the smallest proven topology here: each
-    // reachable checkSig directly consumes an immutable scalar sig parameter. Its detached row witness is
-    // constrained to SIGHASH_ALL by the generated wrapper. Every alias/helper/multisig topology stays fenced.
+    // An upgrade authorization must cover every output. Admit only the proven topology here: each reachable
+    // signature check consumes an immutable detached root parameter, or the unique scalar signature field in a
+    // finite struct rooted at that parameter. The generated wrapper constrains its witness to SIGHASH_ALL.
     if (compilerOptions.messageBusKernel === true
       && fn.modifiers.includes(FunctionModifier.UPGRADE)
       && fn.messageBusUsesTransactionSignature === true) {

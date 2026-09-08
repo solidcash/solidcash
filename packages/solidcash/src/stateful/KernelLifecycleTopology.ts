@@ -18,11 +18,66 @@ export interface ResolvedKernelLifecycleTopology {
   outputSpans: readonly ResolvedKernelLifecycleSpan[];
 }
 
+export interface KernelLifecycleTransactionPoint {
+  lockingBytecode: string;
+  tokenCategory: string;
+  nftCapability: 'none' | 'mutable' | 'minting';
+  nftCommitment: string;
+  tokenAmount: bigint;
+  satoshis: bigint;
+}
+
+export interface KernelLifecycleTransactionFrame {
+  participantLockingBytecode: string;
+  participantTokenCategory: string;
+  inputBase: number;
+  outputBase: number;
+  inputs: readonly KernelLifecycleTransactionPoint[];
+  outputs: readonly KernelLifecycleTransactionPoint[];
+}
+
+export interface BoundKernelLifecycleTransaction extends ResolvedKernelLifecycleTopology {
+  participantLockingBytecode: string;
+  participantTokenCategory: string;
+  inputBase: number;
+  outputBase: number;
+  transcript: Uint8Array;
+}
+
 type UnknownRecord = Record<string, unknown>;
 
 const isRecord = (value: unknown): value is UnknownRecord => (
   typeof value === 'object' && value !== null && !Array.isArray(value)
 );
+
+const canonicalHex = (value: unknown, bytes: number | undefined, label: string): string => {
+  if (typeof value !== 'string' || !/^(?:[0-9a-fA-F]{2})*$/.test(value)
+    || value.length === 0 || (bytes !== undefined && value.length !== bytes * 2)) {
+    throw new Error(`${label} must be canonical${bytes === undefined ? '' : ` ${bytes}-byte`} hex`);
+  }
+  return value.toLowerCase();
+};
+
+const coordinate = (value: unknown, label: string): number => {
+  if (!Number.isSafeInteger(value) || (value as number) < 0 || (value as number) > 0xffff) {
+    throw new Error(`${label} must be a uint16 transaction coordinate`);
+  }
+  return value as number;
+};
+
+const hexBytes = (hex: string): Uint8Array => Uint8Array.from(
+  hex.match(/../g)?.map((part) => Number.parseInt(part, 16)) ?? [],
+);
+
+const concat = (...parts: readonly Uint8Array[]): Uint8Array => {
+  const result = new Uint8Array(parts.reduce((length, part) => length + part.length, 0));
+  let cursor = 0;
+  for (const part of parts) { result.set(part, cursor); cursor += part.length; }
+  return result;
+};
+
+const uint16 = (value: number): Uint8Array => Uint8Array.of(value & 0xff, (value >>> 8) & 0xff);
+const framed = (value: Uint8Array): Uint8Array => concat(uint16(value.length), value);
 
 const exactRecord = (value: unknown, expected: UnknownRecord, label: string): void => {
   if (!isRecord(value)) throw new Error(`${label} must be an object`);
@@ -180,4 +235,89 @@ export function planKernelLifecycleTopology(
     outputSpans: [resolveSpan(topology.outputSpans[0], parameters, 'preserve', 0,
       preservedIdentity, 'fixed', parameterIndex, 'outputSpans[0]')],
   };
+}
+
+/** Bind the published lifecycle spans to concrete transaction identities and a transaction-wide category census. */
+export function bindKernelLifecycleTransaction(
+  topology: unknown,
+  parameters: readonly unknown[],
+  frame: KernelLifecycleTransactionFrame,
+): BoundKernelLifecycleTransaction {
+  const plan = planKernelLifecycleTopology(topology, parameters);
+  const owner = canonicalHex(frame.participantLockingBytecode, undefined, 'participant locking bytecode');
+  const category = canonicalHex(frame.participantTokenCategory, 32, 'participant token category');
+  const inputBase = coordinate(frame.inputBase, 'lifecycle input base');
+  const outputBase = coordinate(frame.outputBase, 'lifecycle output base');
+
+  const validatePoint = (
+    point: KernelLifecycleTransactionPoint | undefined,
+    label: string,
+  ): KernelLifecycleTransactionPoint => {
+    if (!point) throw new Error(`${label} is absent`);
+    if (canonicalHex(point.lockingBytecode, undefined, `${label} locking bytecode`) !== owner
+      || canonicalHex(point.tokenCategory, 32, `${label} token category`) !== category
+      || point.nftCapability !== 'minting') {
+      throw new Error(`${label} does not preserve the participant minting identity`);
+    }
+    if (!/^(?:[0-9a-fA-F]{2})*$/.test(point.nftCommitment)
+      || typeof point.tokenAmount !== 'bigint' || point.tokenAmount < 0n
+      || typeof point.satoshis !== 'bigint' || point.satoshis < 0n) {
+      throw new Error(`${label} has a non-canonical value or commitment`);
+    }
+    return point;
+  };
+
+  for (const span of plan.inputSpans) {
+    for (let index = 0; index < span.count; index += 1) {
+      validatePoint(frame.inputs[inputBase + span.offset + index], `lifecycle input ${span.offset + index}`);
+    }
+  }
+  for (const span of plan.outputSpans) {
+    for (let index = 0; index < span.count; index += 1) {
+      validatePoint(frame.outputs[outputBase + span.offset + index], `lifecycle output ${span.offset + index}`);
+    }
+  }
+
+  const preservedInput = validatePoint(frame.inputs[inputBase], 'preserved lifecycle input');
+  const preservedOutput = validatePoint(frame.outputs[outputBase], 'preserved lifecycle output');
+  if (preservedOutput.nftCommitment.toLowerCase() !== preservedInput.nftCommitment.toLowerCase()
+    || preservedOutput.tokenAmount < preservedInput.tokenAmount
+    || preservedOutput.satoshis !== preservedInput.satoshis) {
+    throw new Error('lifecycle preserved master changes commitment, decreases tokens, or changes satoshis');
+  }
+  if (plan.kind === 'split') {
+    for (const span of plan.outputSpans.filter((candidate) => candidate.mode === 'create')) {
+      for (let index = 0; index < span.count; index += 1) {
+        const created = frame.outputs[outputBase + span.offset + index]!;
+        if (created.nftCommitment.length !== 0 || created.tokenAmount !== 0n || created.satoshis <= 0n) {
+          throw new Error('lifecycle created master must be empty, token-free, and funded');
+        }
+      }
+    }
+  }
+
+  const categoryCount = (points: readonly KernelLifecycleTransactionPoint[]): number => points.filter((point) =>
+    point.nftCapability === 'minting'
+    && point.tokenCategory.toLowerCase() === category).length;
+  const inputCount = categoryCount(frame.inputs);
+  const outputCount = categoryCount(frame.outputs);
+  if (inputCount !== plan.categoryCensus.inputCount || outputCount !== plan.categoryCensus.outputCount) {
+    throw new Error(
+      `lifecycle category census is ${inputCount}/${outputCount}, expected `
+      + `${plan.categoryCensus.inputCount}/${plan.categoryCensus.outputCount}`,
+    );
+  }
+
+  const transcript = concat(
+    hexBytes('4b4c4332'), // `KLC2`
+    Uint8Array.of(plan.kind === 'split' ? 0 : 1),
+    uint16(inputBase), uint16(outputBase),
+    framed(hexBytes(owner)), hexBytes(category),
+    uint16(plan.categoryCensus.inputCount), uint16(plan.categoryCensus.outputCount),
+    framed(hexBytes(preservedInput.nftCommitment)), framed(hexBytes(preservedOutput.nftCommitment)),
+  );
+  return Object.freeze({
+    ...plan, participantLockingBytecode: owner, participantTokenCategory: category,
+    inputBase, outputBase, transcript,
+  });
 }

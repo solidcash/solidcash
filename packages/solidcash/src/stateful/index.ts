@@ -133,8 +133,9 @@ export {
   type KernelEntryJournalTopologyOperation, type KernelEntryJournalAccessTopologyPlan,
 } from './KernelEntryJournal.js';
 export {
-  planKernelLifecycleTopology,
-  type ResolvedKernelLifecycleSpan, type ResolvedKernelLifecycleTopology,
+  bindKernelLifecycleTransaction, planKernelLifecycleTopology,
+  type BoundKernelLifecycleTransaction, type KernelLifecycleTransactionFrame,
+  type KernelLifecycleTransactionPoint, type ResolvedKernelLifecycleSpan, type ResolvedKernelLifecycleTopology,
 } from './KernelLifecycleTopology.js';
 export {
   planKernelDelegateForwarding, resolveKernelDelegateExecution,

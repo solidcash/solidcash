@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { planKernelLifecycleTopology } from '../../src/stateful/KernelLifecycleTopology.js';
+import {
+  bindKernelLifecycleTransaction, planKernelLifecycleTopology, type KernelLifecycleTransactionPoint,
+} from '../../src/stateful/KernelLifecycleTopology.js';
 
 const preservedIdentity = {
   lockingBytecode: 'participant', tokenCategory: 'participant', nftCapability: 'minting',
@@ -54,6 +56,38 @@ const mergeTopology = () => ({
 });
 
 const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
+
+const owner = 'aa20';
+const category = '11'.repeat(32);
+const point = (overrides: Partial<KernelLifecycleTransactionPoint> = {}): KernelLifecycleTransactionPoint => ({
+  lockingBytecode: owner,
+  tokenCategory: category,
+  nftCapability: 'minting' as const,
+  nftCommitment: 'abcd',
+  tokenAmount: 2n,
+  satoshis: 1000n,
+  ...overrides,
+});
+
+// eslint-disable-next-line @typescript-eslint/explicit-function-return-type
+const splitFrame = () => ({
+  participantLockingBytecode: owner,
+  participantTokenCategory: category,
+  inputBase: 0,
+  outputBase: 0,
+  inputs: [point()],
+  outputs: [point(), point({ nftCommitment: '', tokenAmount: 0n }), point({ nftCommitment: '', tokenAmount: 0n })],
+});
+
+// eslint-disable-next-line @typescript-eslint/explicit-function-return-type
+const mergeFrame = () => ({
+  participantLockingBytecode: owner,
+  participantTokenCategory: category,
+  inputBase: 0,
+  outputBase: 0,
+  inputs: [point(), point({ nftCommitment: '0102' }), point({ nftCommitment: '0304' })],
+  outputs: [point()],
+});
 
 describe('kernel lifecycle topology planning prerequisite', () => {
   it('resolves canonical split and merge participant spans', () => {
@@ -129,5 +163,47 @@ describe('kernel lifecycle topology planning prerequisite', () => {
     expect(() => planKernelLifecycleTopology(splitTopology(), ['2'])).toThrow(/positive safe integer/);
     expect(() => planKernelLifecycleTopology(splitTopology(), [BigInt(Number.MAX_SAFE_INTEGER) + 1n]))
       .toThrow(/positive safe integer/);
+  });
+
+  it('binds exact split and merge transaction frames', () => {
+    const split = bindKernelLifecycleTransaction(splitTopology(), [2n], splitFrame());
+    expect(split).toMatchObject({
+      kind: 'split', inputBase: 0, outputBase: 0,
+      categoryCensus: { inputCount: 1, outputCount: 3 },
+    });
+    expect(Array.from(split.transcript.slice(0, 4))).toEqual([0x4b, 0x4c, 0x43, 0x32]);
+    expect(bindKernelLifecycleTransaction(mergeTopology(), [2n], mergeFrame())).toMatchObject({
+      kind: 'merge', categoryCensus: { inputCount: 3, outputCount: 1 },
+    });
+  });
+
+  it('rejects split identity, created-output, and census tampering', () => {
+    const wrongOwner = splitFrame();
+    wrongOwner.outputs[1]!.lockingBytecode = 'bb20';
+    const wrongCategory = splitFrame();
+    wrongCategory.outputs[1]!.tokenCategory = '22'.repeat(32);
+    const dirtyCreated = splitFrame();
+    dirtyCreated.outputs[1]!.nftCommitment = '00';
+    const unfundedCreated = splitFrame();
+    unfundedCreated.outputs[1]!.satoshis = 0n;
+    const extraCategory = splitFrame();
+    extraCategory.inputs.push(point());
+    for (const frame of [wrongOwner, wrongCategory, dirtyCreated, unfundedCreated, extraCategory]) {
+      expect(() => bindKernelLifecycleTransaction(splitTopology(), [2n], frame)).toThrow();
+    }
+  });
+
+  it('rejects preserved-master and merge-input tampering', () => {
+    const changedCommitment = mergeFrame();
+    changedCommitment.outputs[0]!.nftCommitment = 'ffff';
+    const reducedTokens = mergeFrame();
+    reducedTokens.outputs[0]!.tokenAmount = 1n;
+    const changedValue = mergeFrame();
+    changedValue.outputs[0]!.satoshis = 999n;
+    const foreignConsumed = mergeFrame();
+    foreignConsumed.inputs[2]!.lockingBytecode = 'bb20';
+    for (const frame of [changedCommitment, reducedTokens, changedValue, foreignConsumed]) {
+      expect(() => bindKernelLifecycleTransaction(mergeTopology(), [2n], frame)).toThrow();
+    }
   });
 });

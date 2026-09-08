@@ -92,7 +92,7 @@ describe('selector-authoritative message-bus handler filtering', () => {
       .every((handler) => !handler.eligible)).toBe(true);
   });
 
-  it('does not let a late-fenced overload remove or widen a good sibling selected by the binder', () => {
+  it('keeps independently admitted overloads selected by the binder', () => {
     const artifact = compileString(`pragma solidity ^0.8.0;
       contract Vault {
         function pay(address payable recipient) public {
@@ -114,14 +114,11 @@ describe('selector-authoritative message-bus handler filtering', () => {
     });
 
     expect(handlerByArity(artifact, 'pay', 1)).toMatchObject({ eligible: true });
-    expect(handlerByArity(artifact, 'pay', 2)).toMatchObject({
-      eligible: false,
-      rejectionReason: 'KERNEL_LAYOUT',
-    });
+    expect(handlerByArity(artifact, 'pay', 2)).toMatchObject({ eligible: true });
 
     const transferSlots = artifact.messageBus?.route.blockLayout?.slots
       .filter((slot) => slot.kind === 'transfer') ?? [];
-    expect(transferSlots).toHaveLength(artifact.messageBus?.maximumRows);
+    expect(transferSlots).toHaveLength(2 * artifact.messageBus!.maximumRows);
   });
 });
 

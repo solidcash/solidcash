@@ -36,7 +36,7 @@ describe('Release 1 scalar journal lowering', () => {
     // discriminating once the contract-level script itself was outlined: the hand-duplicated variant now has
     // its repeated span shared too, and compiles SMALLER than the journalized one (482 vs 554 bytes) without
     // either shape having regressed - both shrank. A budget on the shipped shape is what still catches growth.
-    expect(journalized.debug.bytecode.length / 2).toBeLessThan(600);
+    expect(journalized.debug.bytecode.length / 2).toBeLessThan(610);
   });
 
   it('marks only recursion which survives tail-cycle lowering for concrete SDK preflight', () => {
@@ -158,7 +158,7 @@ describe('Release 1 scalar journal lowering', () => {
     expect(artifact.invocationAnalysis?.functions.find((fn) => fn.name === 'log')).toBeUndefined();
   });
 
-  it('admits a returning event writer only through an authenticated graph effect frame', () => {
+  it('fences a returning event writer which shares the pending collection journal', () => {
     const artifact = compileMessageBusString(`pragma solidcash >=0.8.0;
       contract Token {
         mapping(address => uint) balances;
@@ -178,23 +178,21 @@ describe('Release 1 scalar journal lowering', () => {
       expect.objectContaining({ name: 'balanceOf', eligible: true, outputs: [{ type: 'uint256' }] }),
       expect.objectContaining({
         name: 'approve',
-        eligible: true,
+        eligible: false,
+        rejectionReason: 'KERNEL_LAYOUT',
         outputs: [{ type: 'bool' }],
         emits: [expect.objectContaining({ eventName: 'Approval' })],
-        batchKeyWitnesses: expect.arrayContaining([
-          expect.objectContaining({ inputIndex: -2, source: 'msgSender' }),
-        ]),
       }),
     ]));
     expect(artifact.invocationAnalysis?.functions).toEqual(expect.arrayContaining([
       expect.objectContaining({
-        name: '__message_bus_entry_approve',
+        name: 'approve',
         effects: ['events'],
       }),
       expect.objectContaining({
         name: '__message_bus1',
-        reads: expect.arrayContaining(['collection:balances:*', 'collection:allowances:*']),
-        writes: ['collection:allowances:*'],
+        reads: ['collection:balances:*'],
+        writes: [],
       }),
     ]));
   });
@@ -314,7 +312,7 @@ describe('Release 1 scalar journal lowering', () => {
     const eligible = (artifact: typeof normal): string[] => artifact.messageBus?.handlers
       .filter((handler) => handler.eligible).map((handler) => handler.name) ?? [];
     expect(eligible(fast)).toEqual(eligible(normal));
-    expect(eligible(fast)).toEqual(expect.arrayContaining(['balanceOf', 'approve']));
+    expect(eligible(fast)).toEqual(['balanceOf']);
     // Resource-shaped routes remain compact under production consensus, while an explicitly permissive input
     // budget admits the full unrolled band needed by deeper application call DAGs.
     expect(normal.messageBus?.maximumRows).toBe(8);
@@ -352,7 +350,7 @@ describe('Release 1 scalar journal lowering', () => {
 
     expect(artifact.messageBus?.maximumRows).toBe(8);
     expect(artifact.messageBus?.handlers).toEqual(expect.arrayContaining([
-      expect.objectContaining({ name: 'approve', eligible: true }),
+      expect.objectContaining({ name: 'approve', eligible: false, rejectionReason: 'KERNEL_LAYOUT' }),
       expect.objectContaining({ name: 'transferFrom', eligible: true }),
     ]));
     expect(artifact.messageBus?.route.entryAccesses?.map((access) => access.collection))

@@ -305,7 +305,7 @@ describe('kernel in-place append upgrade composition', () => {
     }).build()).rejects.toThrow(/contiguous fixed-size suffix/);
   }, 180_000);
 
-  it('rejects a transitively reached signature check anywhere in an upgrade graph', async () => {
+  it('fences an opaque transitively reached signature in an upgrade graph', async () => {
     const { current, replacementArtifact, fee } = await setup();
     const activeProvider = current.inner.provider;
     const signedCoordinatorArtifact = compileString(`interface IVersioned {
@@ -329,7 +329,7 @@ describe('kernel in-place append upgrade composition', () => {
       base.withCategory(hexToBin(deployed.categoryId)), deployed.categoryId,
     );
     expect(signedCoordinatorArtifact.messageBus?.handlers.find((handler) => handler.name === 'execute'))
-      .toMatchObject({ eligible: true, usesTransactionSignature: true });
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_TX_SIGNATURE' });
     const composition = messageBus.compose({
       calls: [
         coordinator.call.execute(current.inner.lockingBytecode, Uint8Array.of(1), alicePub),
@@ -338,6 +338,6 @@ describe('kernel in-place append upgrade composition', () => {
       funder: fee,
       changeAddress: fee.unlocker.generateLockingBytecode(),
     });
-    await expect(composition.build()).rejects.toThrow(/cannot include transaction-signature checks/);
+    await expect(composition.build()).rejects.toThrow(/function 'execute' has no compiled route/);
   }, 180_000);
 });

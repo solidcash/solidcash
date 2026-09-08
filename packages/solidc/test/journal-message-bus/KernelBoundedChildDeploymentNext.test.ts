@@ -158,7 +158,7 @@ describe('kernel bounded child-deployment next slice', () => {
     expect(selected.transfers?.map((transfer) => transfer.transferIndex)).toEqual([2]);
   });
 
-  it('refuses the whole handler when any sibling value recipe is not materializable', () => {
+  it('materializes pure sibling value recipes independently of source shape', () => {
     const { selected } = handler(`
       contract Unit() { int marker; }
       contract Coordinator() {
@@ -169,6 +169,6 @@ describe('kernel bounded child-deployment next slice', () => {
         }
       }
     `);
-    expect(selected).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+    expect(selected).toMatchObject({ eligible: true });
   });
 });

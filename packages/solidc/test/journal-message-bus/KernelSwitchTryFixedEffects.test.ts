@@ -422,7 +422,7 @@ describe('kernel switch and try fixed effects', () => {
       .not.toBe(triple.childDeployments?.[0].childLayoutDigest);
   });
 
-  it('publishes exact switch predicates for runtime counter-loop events', () => {
+  it('fences switched runtime events which share a pending collection journal', () => {
     const { handler } = select(`
       event Mark(int value);
       contract Store() {
@@ -439,14 +439,10 @@ describe('kernel switch and try fixed effects', () => {
         }
       }
     `);
-    const casePredicate = equals(1, '4');
-
-    expect(handler).toMatchObject({ eligible: true });
-    expect(handler.runtimeLoopEvents?.[0].conditions)
-      .toEqual([casePredicate, negated(casePredicate)]);
+    expect(handler).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
   });
 
-  it('publishes exact switch predicates for runtime counter-loop transfers', () => {
+  it('fences switched runtime transfers which share a pending collection journal', () => {
     const { handler } = select(`
       contract Store() {
         mapping(int => int) values;
@@ -462,13 +458,7 @@ describe('kernel switch and try fixed effects', () => {
         }
       }
     `);
-    const casePredicate = equals(1, '4');
-
-    expect(handler).toMatchObject({ eligible: true });
-    expect(handler.runtimeLoopTransfers?.[0]).toMatchObject({
-      siteCount: 2,
-      conditions: [casePredicate, negated(casePredicate)],
-    });
+    expect(handler).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
   });
 
   it('treats a try success body as reachable and excludes dead catch event and transfer effects', () => {

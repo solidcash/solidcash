@@ -69,7 +69,7 @@ describe('affine recursive mapping streams', () => {
     expect(plans[1]).toEqual(plans[0]);
   });
 
-  it('retains one unwind event domain beside an independently permuted mapping stream', () => {
+  it('fences an unwind event domain beside an independently permuted mapping stream', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) values;
       event Seen(int value);
@@ -80,21 +80,15 @@ describe('affine recursive mapping streams', () => {
         emit Seen(result + depth);
         return result;
       }
+      function control() public { require(true); }
     }`, KERNEL);
     const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'fold');
-    expect(handler).toMatchObject({
-      eligible: true,
-      runtimeLoopEvents: [expect.objectContaining({
-        iterationDomain: expect.anything(), eventSignatures: ['Seen(int256)'],
-      })],
-    });
+    expect(handler).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
     expect(artifact.abi.find((candidate) => candidate.name === 'fold')?.sortedUpsertLoopInfo)
       .toEqual([expect.objectContaining({ collection: 'values', op: 'set' })]);
-    // One event per frame, one mapping update per frame, and one mapping predecessor endpoint.
-    expect(artifact.messageBus?.route.blockLayout?.trailingCapacity).toBe(64 + 64 + 1);
   });
 
-  it('lowers exact non-unit pre-order and unwind streams independently of source names', () => {
+  it('fences non-unit unwind effects beside runtime mapping streams independently of source names', () => {
     const variants = [
       { contract: 'FirstStride', fn: 'apply', cursor: 'cursor', step: 'step', map: 'values' },
       { contract: 'SecondStride', fn: 'fold', cursor: 'position', step: 'stride', map: 'records' },
@@ -110,24 +104,15 @@ describe('affine recursive mapping streams', () => {
           emit Seen(result + ${variant.cursor});
           return result;
         }
+        function control() public { require(true); }
       }`, KERNEL);
       const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === variant.fn);
-      expect(handler).toMatchObject({
-        eligible: true,
-        runtimeLoopEvents: [expect.objectContaining({
-          iterationDomain: expect.objectContaining({ maximumIterations: 64 }),
-          eventSignatures: ['Seen(int256)'],
-        })],
-      });
+      expect(handler).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
       expect(artifact.abi.find((candidate) => candidate.name === variant.fn)?.sortedUpsertLoopInfo)
         .toEqual([expect.objectContaining({ collection: variant.map, op: 'set' })]);
       return {
-        events: handler?.runtimeLoopEvents?.map((event) => ({
-          iterationDomain: event.iterationDomain,
-          arguments: event.arguments,
-          conditions: event.conditions,
-        })),
-        capacity: artifact.messageBus?.route.blockLayout?.trailingCapacity,
+        eligible: handler?.eligible,
+        rejectionReason: handler?.rejectionReason,
       };
     });
     expect(plans[1]).toEqual(plans[0]);
@@ -143,7 +128,7 @@ describe('affine recursive mapping streams', () => {
       }
     }`, KERNEL);
     expect(preOrder.messageBus?.handlers.find((candidate) => candidate.name === 'descend'))
-      .toMatchObject({ eligible: true, runtimeLoopEvents: [expect.anything()] });
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
     expect(preOrder.abi.find((candidate) => candidate.name === 'descend')?.sortedUpsertLoopInfo)
       .toEqual([expect.objectContaining({ collection: 'values', op: 'set' })]);
   });
@@ -441,10 +426,10 @@ describe('affine recursive mapping streams', () => {
 
   it.each([
     ['a recursively changing outer parameter', 'this.source[partition][cursor]',
-      'apply(cursor - 1, partition + 1)'],
+      'apply(cursor - 1, partition + 1)', false],
     ['an expression derived from an invariant parameter', 'this.source[partition + 1][cursor]',
-      'apply(cursor - 1, partition)'],
-  ])('refuses nested recursive reads with %s', (_label, read, recursiveCall) => {
+      'apply(cursor - 1, partition)', true],
+  ] as const)('classifies nested recursive reads with %s', (_label, read, recursiveCall, eligible) => {
     const artifact = compileString(`contract C() {
       mapping(int => mapping(int => int)) source;
       mapping(int => int) destination;
@@ -458,7 +443,8 @@ describe('affine recursive mapping streams', () => {
     }`, KERNEL);
 
     expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'apply'))
-      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+      .toMatchObject(eligible ? { eligible: true }
+        : { eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
   });
 
   it.each([

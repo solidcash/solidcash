@@ -534,21 +534,21 @@ describe('kernel pending fixed-width scalar rows', () => {
     }
   }, 180_000);
 
-  it('rejects pending settlement mixed with runtime effect output segments', async () => {
+  it('fences runtime mapping settlement mixed with event output segments', async () => {
     const provider = createTestProvider();
     const artifact = compileString(EFFECT_SOURCE, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'addMany'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
     const inner = new Contract(artifact, [], { provider });
     const { categoryId } = await setupStatefulUtxos(
       provider, inner, artifact.stateLayout!, {}, { saltContract: true },
     );
     const contract = StatefulContract.withCategory(inner, categoryId);
-    // A first-touch insertion has no cross-row dependency and must retain the established direct-output path;
-    // the event segment is therefore valid and does not activate the pending-settlement fence.
+    // The ordinary direct path remains valid; only the row-loop combination is outside the beta boundary.
     await expect(contract.call.addMany([1n, 2n], 1n).send()).resolves.toBeDefined();
-    await contract.call.addMany([0n], 1n).send();
-    await expect(contract.batch([
+    expect(() => contract.batch([
       { function: 'addMany', args: [[0n], 1n] },
       { function: 'addMany', args: [[0n], 1n] },
-    ]).build()).rejects.toThrow(/cannot share a transaction with runtime event or transfer output segments/);
+    ])).toThrow(/not batch eligible: KERNEL_LAYOUT/);
   }, 180_000);
 });

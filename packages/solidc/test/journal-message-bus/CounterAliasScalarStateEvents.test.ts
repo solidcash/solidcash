@@ -66,7 +66,7 @@ describe('counter-alias scalar-state event recurrences', () => {
       .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
   });
 
-  it('keeps an effectful helper result alias fenced', () => {
+  it('replays an effectful helper result alias while preserving effect order', () => {
     const artifact = compileString(`event Phase(int value); event Auxiliary(int value);
       contract C() {
         int total;
@@ -84,6 +84,6 @@ describe('counter-alias scalar-state event recurrences', () => {
         }
       }`, KERNEL);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'accumulate'))
-      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+      .toMatchObject({ eligible: true });
   });
 });

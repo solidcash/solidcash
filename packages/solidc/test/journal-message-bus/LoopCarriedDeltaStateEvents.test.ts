@@ -123,8 +123,6 @@ describe('loop-carried delta scalar-state event recurrences', () => {
   it.each([
     ['a resource-dependent update', `delta = delta + this.source[cursor];
       this.total = this.total + delta;`],
-    ['an effect-dependent update', `delta = delta + derive(cursor);
-      this.total = this.total + delta;`],
     ['a coupled update', `delta = delta + coupled; coupled = coupled + 1;
       this.total = this.total + delta;`],
     ['two carried deltas', `this.total = this.total + delta + coupled;
@@ -137,6 +135,11 @@ describe('loop-carried delta scalar-state event recurrences', () => {
       delta = delta + increment; if (flag) { break; }`],
   ])('keeps %s fenced', (_label, body) => {
     expect(handlerFor(body)).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+  });
+
+  it('replays an effect-dependent update while preserving helper effects', () => {
+    expect(handlerFor(`delta = delta + derive(cursor);
+      this.total = this.total + delta;`)).toMatchObject({ eligible: true });
   });
 
   it.each([

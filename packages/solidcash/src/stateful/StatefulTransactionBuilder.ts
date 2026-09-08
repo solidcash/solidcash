@@ -34,7 +34,7 @@ import {
   Op,
 } from '@solidcash/utils';
 import {
-  binToHex, hexToBin, isHex, encodeTransaction, createVirtualMachineBch2026, utf8ToBin,
+  binToHex, binsAreEqual, hexToBin, isHex, encodeTransaction, createVirtualMachineBch2026, utf8ToBin,
   lockingBytecodeToCashAddress, encodeDataPush,
 } from '@bitauth/libauth';
 import { getDustThreshold } from '@mem-cash/validation';
@@ -16810,7 +16810,10 @@ export class StatefulTransactionBuilder {
       const available = funderTotal - (covenantOutputTotal - covenantInputTotal);
       const changeAmount = available - neededFee;
 
-      if (changeAmount >= DUST_MINIMUM) {
+      // Exact-dust auto-change has no adjustable value: any late signature or witness growth makes the finalized
+      // transaction underfunded. Leave that dust in the fee instead. Larger, configured change remains available
+      // to the exact finalizer below and is returned except for the bytes actually required by serialization.
+      if (changeAmount > DUST_MINIMUM) {
         const changeOutput = { to: changeTo, amount: changeAmount };
         // Keep [late chunks][one terminal suffix] contiguous at the end. The compiler authenticates chunk i by
         // counting backward from OP_TXOUTPUTCOUNT, so fee change must precede the entire suffix region.
@@ -16987,14 +16990,17 @@ export class StatefulTransactionBuilder {
     // participant displaced by fixed block assembly; counting that stale input
     // reports a fictitious surplus even though it is absent from the bytes.
     const totalInputSats = finalBuilder.inputs.reduce((sum, input) => sum + input.satoshis, 0n);
+    const configuredChangeLocks = [
+      this.funderChangeAddress,
+      ...this.funderUtxos.map((funder) => funder.unlocker.generateLockingBytecode()),
+    ].filter((lock): lock is Uint8Array => lock instanceof Uint8Array);
     const findChangeIndex = (requiredReduction: bigint): number | undefined => [...finalBuilder.outputs]
       .map((output, index) => ({ output, index }))
       .reverse()
       .find(({ output }) => {
         const lock = output.to instanceof Uint8Array ? output.to : undefined;
-        return !!lock && lock.length === 25 && lock[0] === 0x76 && lock[1] === 0xa9
-          && !output.token
-          && (output.amount ?? 0n) >= requiredReduction + BigInt(calculateDust(output));
+        return !!lock && configuredChangeLocks.some((candidate) => binsAreEqual(candidate, lock)) && !output.token
+          && (output.amount ?? 0n) >= requiredReduction;
       })?.index;
     const finalizeFeeBeforeValidation = (
       transaction: ReturnType<TransactionBuilder['buildLibauthTransaction']>,
@@ -17026,7 +17032,15 @@ export class StatefulTransactionBuilder {
         );
       }
       const current = finalBuilder.outputs[changeIndex];
-      finalBuilder.outputs[changeIndex] = { ...current, amount: (current.amount ?? 0n) - reduction };
+      const remaining = (current.amount ?? 0n) - reduction;
+      if (remaining >= BigInt(calculateDust(current))) {
+        finalBuilder.outputs[changeIndex] = { ...current, amount: remaining };
+      } else {
+        // Consuming a sub-dust remainder as fee is preferable to retaining a non-standard change output. Preserve
+        // the output coordinate as a zero-value OP_RETURN so authenticated suffix indices do not shift during the
+        // final convergence pass; the shorter serialization only increases the resulting fee margin.
+        finalBuilder.outputs[changeIndex] = { to: Uint8Array.of(0x6a), amount: 0n };
+      }
       return true;
     };
 

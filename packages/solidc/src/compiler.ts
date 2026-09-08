@@ -9151,7 +9151,8 @@ function synthesizeMessageBusRoute(
           require(__internal__upgradeBytecode != tx.inputs[this.activeInputIndex].lockingBytecode);
           bytes __message_bus_upgrade_envelope = tx.inputs[tx.inputs.length - 2].unlockingBytecode;
           require(__message_bus_upgrade_envelope.length >= 19
-            && __message_bus_upgrade_envelope.slice(11, 19) == hex"4c33425553320000");
+            && (__message_bus_upgrade_envelope.slice(11, 19) == hex"4c33425553320000"
+              || __message_bus_upgrade_envelope.slice(11, 19) == hex"4c33425553340000"));
         }`
     : ''}
         ${kernelV2SignatureFence

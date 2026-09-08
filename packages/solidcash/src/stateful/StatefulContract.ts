@@ -2815,6 +2815,66 @@ export function decodeEvmReturnValue(value: Uint8Array, type: string): FunctionA
   return binToHex(utf8ToBin(decoded)) === binToHex(payload) ? decoded : undefined;
 }
 
+/** Decode one complete, schema-authenticated invocation result without flattening its components. */
+export function decodeAuthenticatedProducerResultVector(
+  value: Uint8Array,
+  types: readonly string[],
+  structs: Artifact['structs'],
+  solidityAbi: boolean,
+): FunctionArgument[] | undefined {
+  if (types.length === 0) return undefined;
+  if (!solidityAbi) {
+    const decoded: FunctionArgument[] = [];
+    let offset = 0;
+    try {
+      for (const type of types) {
+        const component = decodePushdataValue(value, offset, type, structs);
+        if (component.bytesConsumed <= 0) return undefined;
+        offset += component.bytesConsumed;
+        decoded.push(component.value as FunctionArgument);
+      }
+    } catch {
+      return undefined;
+    }
+    return offset === value.length ? decoded : undefined;
+  }
+
+  if (!isCanonicalEvmReturnVector(value, types)) return undefined;
+  const decoded: FunctionArgument[] = [];
+  for (let index = 0; index < types.length; index += 1) {
+    const type = types[index];
+    const wordOffset = index * 32;
+    if (EVM_DYNAMIC_RETURN_TYPES.has(type)) {
+      const payloadOffset = decodeEvmReturnWord(value, wordOffset);
+      if (payloadOffset === undefined) return undefined;
+      const length = decodeEvmReturnWord(value, payloadOffset);
+      if (length === undefined) return undefined;
+      const payload = value.slice(payloadOffset + 32, payloadOffset + 32 + length);
+      if (type === 'bytes') decoded.push(payload);
+      else {
+        const stringValue = binToUtf8(payload);
+        if (binToHex(utf8ToBin(stringValue)) !== binToHex(payload)) return undefined;
+        decoded.push(stringValue);
+      }
+      continue;
+    }
+    const word = value.slice(wordOffset, wordOffset + 32);
+    const scalar = decodeEvmScalarReturn(word, type);
+    if (scalar !== undefined) {
+      decoded.push(scalar);
+      continue;
+    }
+    if (type === 'address' || type === 'address payable') {
+      decoded.push(word.slice(12));
+      continue;
+    }
+    const fixedBytes = /^bytes([1-9]|[12][0-9]|3[0-2])$/.exec(type);
+    if (!fixedBytes) return undefined;
+    decoded.push(word.slice(0, Number(fixedBytes[1])));
+  }
+  return decoded;
+}
+
 /** Bind compiler-identified returning call expressions to already authenticated invocation results. */
 export function externalReturnsForCallsites(
   argSources: readonly ArgSource[] | undefined,
@@ -28042,26 +28102,16 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             const artifact = node.executionArtifact ?? node.contract.inner.artifact;
             const output = (artifact.abi as readonly AbiFunction[])
               .find((candidate) => candidate.name === node.functionName)?.outputs;
-            if (output?.length !== 1) continue;
+            if (!output?.length) continue;
             const commitment = hexToBin(commitmentHex);
-            let value: FunctionArgument | undefined;
-            if (artifactUsesSolidityAbi(artifact)) {
-              if (isCanonicalEvmScalarReturnVector(commitment, [output[0].type])) {
-                value = decodeEvmScalarReturn(commitment, output[0].type);
-              }
-            } else {
-              try {
-                const decoded = decodePushdataValue(
-                  commitment, 0, output[0].type, artifact.structs ?? artifact.stateLayout?.structs,
-                );
-                if (decoded.bytesConsumed === commitment.length) {
-                  value = decoded.value as FunctionArgument;
-                }
-              } catch {
-                // A provisional or composite return is not an authenticated scalar result.
-              }
-            }
-            if (value === undefined) continue;
+            const values = decodeAuthenticatedProducerResultVector(
+              commitment,
+              output.map((component) => component.type),
+              artifact.structs ?? artifact.stateLayout?.structs,
+              artifactUsesSolidityAbi(artifact),
+            );
+            if (!values) continue;
+            const value = (values.length === 1 ? values[0] : values) as FunctionArgument;
             const siblings = resultsByParent.get(node.parent) ?? new Map<number, FunctionArgument>();
             siblings.set(node.callsiteId, value);
             resultsByParent.set(node.parent, siblings);

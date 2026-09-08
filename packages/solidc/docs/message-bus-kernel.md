@@ -74,12 +74,17 @@ regression, nondeterminism, or one of the invariants above. Promoting an additio
 with its own representation argument and differential/scaling coverage; the existence of an experimental lowering
 does not by itself move the beta boundary.
 
+For the beta cut, feature scope freezes at this checkpoint. After the release gates above pass, do not start another
+admission family in the release branch. A candidate widening that has compiler or SDK unit coverage but fails its
+transaction-level proof returns to the frozen table; it does not extend the stabilization window. Release work may
+still fix blockers, improve diagnostics, and add negative or differential coverage without widening admission.
+
 The conservative beta boundary currently keeps these shapes frozen:
 
 | Code | Frozen beta examples |
 | --- | --- |
 | `KERNEL_UNBOUNDED_KEY` | Counter loops with `continue` or `break` when a permutation of the full domain cannot represent the reached-key set; runtime-constructed key arrays without a bounded replay proof |
-| `KERNEL_LAYOUT` | Whole-struct getters, dynamic arrays of records as results, multi-result producer-to-consumer graph dependencies without authenticated vector decoding, recursive mappings, runtime mapping mutations combined with repeated event/transfer effects, and child creation (`new Child` / `create2`) without authenticated row geometry |
+| `KERNEL_LAYOUT` | Whole-struct getters, dynamic arrays of records as results, multi-result producer-to-consumer graph dependencies without a passing transaction-level proof, recursive mappings, runtime mapping mutations combined with repeated event/transfer effects, and child creation (`new Child` / `create2`) without authenticated row geometry |
 | `KERNEL_TX_SIGNATURE` | Transaction-signature values or `checkSig` / `checkMultiSig` execution in a row when the signature cannot be detached and finalized without circularity |
 | `KERNEL_OPAQUE_EFFECT` | Yul or native `assembly { OP_* }` whose stack and effects have no complete static summary |
 | `KERNEL_FOREIGN_DELEGATE` | A foreign `delegatecall` executing as the participant owner |

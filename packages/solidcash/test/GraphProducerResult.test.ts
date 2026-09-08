@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import type { ArgSource, ExternalCallAbi } from '@solidcash/utils';
-import { externalReturnsForCallsites } from '../src/stateful/StatefulContract.js';
+import { encodePushdataValue, type ArgSource, type ExternalCallAbi } from '@solidcash/utils';
+import {
+  decodeAuthenticatedProducerResultVector,
+  externalReturnsForCallsites,
+} from '../src/stateful/StatefulContract.js';
 
 const producer = (
   callsiteId: number, returnTypes: string[],
@@ -20,6 +23,26 @@ const source = (callsiteId: number, resultIndex: number): ArgSource => ({
   kind: 'expression',
   expression: { kind: 'producerResult', callsiteId, resultIndex },
 });
+
+const concat = (...values: Uint8Array[]): Uint8Array => {
+  const result = new Uint8Array(values.reduce((length, value) => length + value.length, 0));
+  let offset = 0;
+  for (const value of values) {
+    result.set(value, offset);
+    offset += value.length;
+  }
+  return result;
+};
+
+const evmWord = (value: bigint): Uint8Array => {
+  const result = new Uint8Array(32);
+  let remaining = value;
+  for (let index = result.length - 1; index >= 0; index -= 1) {
+    result[index] = Number(remaining & 0xffn);
+    remaining >>= 8n;
+  }
+  return result;
+};
 
 describe('graph producer-result identities', () => {
   it('selects distinct components from one authenticated multi-result callsite', () => {
@@ -43,5 +66,49 @@ describe('graph producer-result identities', () => {
     expect(() => externalReturnsForCallsites(
       [source(3, 1)], new Map([[3, 7n]]), [producer(3, ['uint256'])],
     )).toThrow(/does not identify one published result/);
+  });
+
+  it('decodes an exact native multi-result vector and rejects unchecked bytes', () => {
+    const commitment = concat(
+      encodePushdataValue(17n, 'int256'),
+      encodePushdataValue(true, 'bool'),
+      encodePushdataValue(new Uint8Array([0xaa, 0xbb]), 'bytes2'),
+    );
+
+    expect(decodeAuthenticatedProducerResultVector(
+      commitment, ['int256', 'bool', 'bytes2'], undefined, false,
+    )).toEqual([17n, true, new Uint8Array([0xaa, 0xbb])]);
+    expect(decodeAuthenticatedProducerResultVector(
+      concat(commitment, new Uint8Array([0])), ['int256', 'bool', 'bytes2'], undefined, false,
+    )).toBeUndefined();
+  });
+
+  it('decodes one canonical Solidity mixed result tuple by component index', () => {
+    const payload = new Uint8Array([0xca, 0xfe, 0xba]);
+    const commitment = concat(
+      evmWord(23n),
+      evmWord(1n),
+      evmWord(96n),
+      evmWord(BigInt(payload.length)),
+      payload,
+      new Uint8Array(29),
+    );
+    const decoded = decodeAuthenticatedProducerResultVector(
+      commitment, ['uint256', 'bool', 'bytes'], undefined, true,
+    );
+    expect(decoded).toEqual([23n, true, payload]);
+
+    const sources = [source(8, 0), source(8, 1), source(8, 2)];
+    const resolved = externalReturnsForCallsites(
+      sources, new Map([[8, decoded!]]), [producer(8, ['uint256', 'bool', 'bytes'])],
+    );
+    expect(sources.map(({ expression }) => resolved.get(JSON.stringify(expression))))
+      .toEqual([23n, true, payload]);
+
+    const malformed = commitment.slice();
+    malformed[95] = 95;
+    expect(decodeAuthenticatedProducerResultVector(
+      malformed, ['uint256', 'bool', 'bytes'], undefined, true,
+    )).toBeUndefined();
   });
 });

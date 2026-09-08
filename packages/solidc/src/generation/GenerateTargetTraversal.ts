@@ -18226,6 +18226,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Decode the complete producer-authenticated ABI vector. This mirrors ordinary external-return decoding:
     // each non-final field leaves the exact remainder for the next declared type, and the final decoder
     // consumes the whole remainder. The enclosing result-length equality above prevents prefix acceptance.
+    //
+    // Keep the ordinary tuple stack convention too: result N-1 is on top and result 0 is deepest. The old
+    // graph-only decoder parked prefix fields on the altstack and restored them after the final field, putting
+    // result 0 on top. Its symbolic result names still described the ordinary order, so a two-result producer
+    // silently supplied component 1 when the handler requested component 0 (and vice versa).
     this.popFromStack();
     for (let i = 0; i < returnTypes.length; i++) {
       if (i === returnTypes.length - 1) {
@@ -18233,16 +18238,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.pushToStack(`(__graph_result_value_${i})`);
       } else {
         this.emitPushdataDecode(returnTypes[i], locationData);
-        // Keep the remainder on the main stack and park the decoded prefix field. Function-call tuples are
-        // represented with their first declared result on top, so after the final field is decoded we restore
-        // these saved fields in reverse order.
+        // Keep the remainder on top for the next decoder while the earlier result remains below it. Naming the
+        // decoded result after the swap matches visitExternalFunctionCall and visitTupleAssignment: subsequent
+        // results are pushed above earlier ones, leaving the rightmost tuple component on top.
         this.emit(Op.OP_SWAP, locationData);
-        this.emit(Op.OP_TOALTSTACK, locationData);
+        this.pushToStack(`(__graph_result_value_${i})`);
       }
-    }
-    for (let i = returnTypes.length - 2; i >= 0; i--) {
-      this.emit(Op.OP_FROMALTSTACK, locationData);
-      this.pushToStack(`(__graph_result_value_${i})`);
     }
     return returnTypes.length;
   }

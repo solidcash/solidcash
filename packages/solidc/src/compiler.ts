@@ -11352,10 +11352,10 @@ function compileResolvedAst(
         : fn === ast.contract.fallbackDef ? candidate.isFallback === true
           : fn === ast.contract.receiveDef ? candidate.isReceive === true
             : false);
-      // The atomic result refresher currently authenticates one ABI result per producer callsite. Preserve the
-      // stable `(callsiteId, resultIndex)` metadata for tuples, but do not advertise a row whose later edge needs
-      // a multi-result producer until the completed return commitment is decoded as one authenticated vector.
-      // This is a type/flow boundary: unrelated tuple returns remain valid, as do all single-result dependencies.
+      // Multi-result identities and vector decoding are represented without cloning call nodes, but the complete
+      // producer-to-consumer composition has not passed the transaction-level differential gate. Keep this
+      // general type/flow family fail-closed until that proof exists; unrelated tuple returns and all
+      // single-result dependencies remain valid.
       const hasMultiResultProducerDependency = abi?.resultConsumers?.some((consumer) => {
         const producer = abi.externalCalls?.find((call) => call.callsiteId === consumer.producerCallsiteId);
         return (producer?.returnTypes?.length ?? 0) > 1;

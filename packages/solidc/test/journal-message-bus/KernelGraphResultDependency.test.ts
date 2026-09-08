@@ -12,6 +12,43 @@ const KERNEL = {
 } as const;
 
 describe('kernel graph result dependencies', () => {
+  it('keeps a multi-result producer behind one invoke boundary when no later edge consumes it', () => {
+    const artifact = compileString(`pragma solidcash ^0.13.0;
+      interface IReader {
+        function read(bigint id) returns (bigint value, bool accepted);
+      }
+
+      contract Recorder(address reader) {
+        bigint recordedValue;
+        bool recordedAcceptance;
+
+        function capture(bigint id) public {
+          bigint nextValue, bool nextAccepted = IReader(reader).read(id);
+          recordedValue = nextValue;
+          recordedAcceptance = nextAccepted;
+          require(true);
+        }
+      }
+    `, {
+      ...KERNEL,
+      solidityImportCompat: false,
+    });
+
+    expect(artifact.messageBus?.convention).toBe('kernel-row-loop');
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'capture'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.abi.find((fn) => fn.name === 'capture')?.externalCalls).toMatchObject([{
+      callsiteId: 0,
+      functionName: 'read',
+      returnTypes: ['bigint', 'bool'],
+    }]);
+    const graphHandler = artifact.invocationAnalysis?.functions.find((fn) =>
+      fn.name === '__message_bus_handler_capture');
+    expect(graphHandler).toBeDefined();
+    expect(artifact.invocationAnalysis?.functions.find((fn) => fn.name === '__message_bus1')?.calls)
+      .toContain(graphHandler?.id);
+  });
+
   it('threads a prior typed struct result into a later void call', () => {
     const artifact = compileString(`pragma solidity ^0.8.0;
       struct Snapshot { uint value; address recipient; }
@@ -81,7 +118,7 @@ describe('kernel graph result dependencies', () => {
     });
   });
 
-  it('publishes ordered multi-value identity but freezes its consumer until vector authentication exists', () => {
+  it('publishes ordered multi-value identity but freezes its consumer pending transaction proof', () => {
     const artifact = compileString(`pragma solidity ^0.8.0;
       interface IReader {
         function read(uint id) external returns (uint value, address recipient);
@@ -143,5 +180,66 @@ describe('kernel graph result dependencies', () => {
         } },
       ],
     });
+  });
+
+  it('keeps identical result schemas separately addressable by stable callsite and component', () => {
+    const artifact = compileString(`pragma solidity ^0.8.0;
+      interface IReader {
+        function read(uint id) external returns (uint value, bool accepted);
+      }
+
+      interface ISink {
+        function write(uint leftValue, bool leftAccepted, uint rightValue, bool rightAccepted) external;
+      }
+
+      contract Coordinator {
+        IReader immutable left;
+        IReader immutable right;
+        ISink immutable sink;
+        uint touched;
+
+        constructor(address left_, address right_, address sink_) {
+          left = IReader(left_);
+          right = IReader(right_);
+          sink = ISink(sink_);
+        }
+
+        function apply(uint id) external {
+          (uint leftValue, bool leftAccepted) = left.read(id);
+          (uint rightValue, bool rightAccepted) = right.read(id + 1);
+          sink.write(leftValue, leftAccepted, rightValue, rightAccepted);
+          touched = leftValue + rightValue;
+          require(true);
+        }
+      }
+    `, KERNEL);
+
+    // Equal interfaces and equal result schemas are not interchangeable callsites. Keep the public fence until
+    // the complete producer-to-consumer composition passes its transaction-level differential proof.
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'apply'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+
+    const calls = artifact.abi.find((fn) => fn.name === 'apply')?.externalCalls ?? [];
+    expect(calls.map((call) => ({
+      callsiteId: call.callsiteId,
+      functionName: call.functionName,
+      returnTypes: call.returnTypes,
+    }))).toEqual([
+      { callsiteId: 0, functionName: 'read', returnTypes: ['uint256', 'bool'] },
+      { callsiteId: 1, functionName: 'read', returnTypes: ['uint256', 'bool'] },
+      { callsiteId: 2, functionName: 'write', returnTypes: undefined },
+    ]);
+    expect(calls[2].argSources).toEqual([
+      { kind: 'expression', expression: { kind: 'producerResult', callsiteId: 0, resultIndex: 0 } },
+      { kind: 'expression', expression: { kind: 'producerResult', callsiteId: 0, resultIndex: 1 } },
+      { kind: 'expression', expression: { kind: 'producerResult', callsiteId: 1, resultIndex: 0 } },
+      { kind: 'expression', expression: { kind: 'producerResult', callsiteId: 1, resultIndex: 1 } },
+    ]);
+    expect(artifact.abi.find((fn) => fn.name === 'apply')?.resultConsumers).toEqual([
+      { consumerCallsiteId: 2, argument: 0, producerCallsiteId: 0 },
+      { consumerCallsiteId: 2, argument: 1, producerCallsiteId: 0 },
+      { consumerCallsiteId: 2, argument: 2, producerCallsiteId: 1 },
+      { consumerCallsiteId: 2, argument: 3, producerCallsiteId: 1 },
+    ]);
   });
 });

@@ -33,9 +33,11 @@ const ACCESS_FLAG_HAS_PREDECESSOR = 1 << 2;
 const ACCESS_FLAG_MUTATES = 1 << 3;
 const ACCESS_FLAG_AUTHENTICATES_TARGET = 1 << 4;
 const ACCESS_FLAG_AUTHENTICATES_PREDECESSOR = 1 << 5;
+/** The access participates in a transaction-local dependency and must publish/consume a dirty carrier. */
+const ACCESS_FLAG_PENDING = 1 << 6;
 const KNOWN_ACCESS_FLAGS = ACCESS_FLAG_PRESENT_BEFORE
   | ACCESS_FLAG_PRESENT_AFTER | ACCESS_FLAG_HAS_PREDECESSOR | ACCESS_FLAG_MUTATES
-  | ACCESS_FLAG_AUTHENTICATES_TARGET | ACCESS_FLAG_AUTHENTICATES_PREDECESSOR;
+  | ACCESS_FLAG_AUTHENTICATES_TARGET | ACCESS_FLAG_AUTHENTICATES_PREDECESSOR | ACCESS_FLAG_PENDING;
 const NO_PREDECESSOR = 0xffff;
 /** `tag || count || N * (flags || target-u16le || predecessor-u16le)` must remain one BCH item. */
 export const KERNEL_ENTRY_JOURNAL_MAX_ACCESSES = Math.floor((520 - ACCESS_HEADER_BYTES) / ACCESS_BYTES);
@@ -64,6 +66,11 @@ export interface KernelEntryJournalStreamPlan {
   /** One compact access program for each source stream, in the same order as the input stream vector. */
   encodedAccessStreams: Uint8Array[];
 }
+
+export type KernelEntryJournalAccess = JournaledMutationAccess & {
+  /** This access or an earlier producer it depends on must use the route-final carrier settlement protocol. */
+  pending?: true;
+};
 
 /**
  * Value-independent operation classes used while assigning stable access ordinals. A SolidCash mapping `delete`
@@ -308,7 +315,7 @@ function requireRecordOrdinal(name: string, ordinal: number): void {
  */
 export function encodeKernelEntryJournalAccesses(
   collectionHash: Uint8Array,
-  accesses: readonly JournaledMutationAccess[],
+  accesses: readonly KernelEntryJournalAccess[],
 ): Uint8Array {
   requireIdentity('collectionHash', collectionHash, COLLECTION_HASH_BYTES);
   if (accesses.length > KERNEL_ENTRY_JOURNAL_MAX_ACCESSES) {
@@ -348,6 +355,7 @@ export function encodeKernelEntryJournalAccesses(
     if (access.mutates) flags |= ACCESS_FLAG_MUTATES;
     if (access.authenticatesTarget) flags |= ACCESS_FLAG_AUTHENTICATES_TARGET;
     if (access.authenticatesPredecessor) flags |= ACCESS_FLAG_AUTHENTICATES_PREDECESSOR;
+    if (access.pending) flags |= ACCESS_FLAG_PENDING;
     const offset = ACCESS_HEADER_BYTES + index * ACCESS_BYTES;
     const predecessor = access.predecessorRecordOrdinal ?? NO_PREDECESSOR;
     encoded[offset] = flags;
@@ -360,7 +368,7 @@ export function encodeKernelEntryJournalAccesses(
 }
 
 /** Decode and canonically validate one compact row-owned mutation stream. */
-export function decodeKernelEntryJournalAccesses(encoded: Uint8Array): JournaledMutationAccess[] {
+export function decodeKernelEntryJournalAccesses(encoded: Uint8Array): KernelEntryJournalAccess[] {
   if (encoded.length < ACCESS_HEADER_BYTES) throw new Error('kernel entry journal access stream is truncated');
   if (encoded[0] !== KERNEL_ENTRY_JOURNAL_ACCESS_TAG) {
     throw new Error('invalid kernel entry journal access stream tag');
@@ -414,6 +422,7 @@ export function decodeKernelEntryJournalAccesses(encoded: Uint8Array): Journaled
       ...((flags & ACCESS_FLAG_AUTHENTICATES_TARGET) !== 0 && { authenticatesTarget: true as const }),
       ...((flags & ACCESS_FLAG_AUTHENTICATES_PREDECESSOR) !== 0
         && { authenticatesPredecessor: true as const }),
+      ...((flags & ACCESS_FLAG_PENDING) !== 0 && { pending: true as const }),
     };
   });
 }

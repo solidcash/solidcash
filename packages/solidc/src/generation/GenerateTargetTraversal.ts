@@ -23702,6 +23702,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_FROMALTSTACK, loc); // replacement header
     this.emit(Op.OP_FROMALTSTACK, loc); // target ordinal
     this.emit(Op.OP_FROMALTSTACK, loc); // access flags
+    this.emit(encodeInt(63n), loc); this.emit(Op.OP_AND, loc);
     this.emit(encodeInt(27n), loc); this.emit(Op.OP_NUMEQUALVERIFY, loc);
     this.emit(Op.OP_TOALTSTACK, loc); // retain target ordinal
     this.emit(Op.OP_TOALTSTACK, loc); // retain replacement header above it
@@ -23731,6 +23732,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_FROMALTSTACK, loc); // replacement header
     this.emit(Op.OP_FROMALTSTACK, loc); // ordinal
     this.emit(Op.OP_FROMALTSTACK, loc); // access flags
+    this.emit(encodeInt(63n), loc); this.emit(Op.OP_AND, loc);
     this.emit(encodeInt(11n), loc); this.emit(Op.OP_NUMEQUALVERIFY, loc);
     this.emit(Op.OP_TOALTSTACK, loc); // ordinal
     this.emit(Op.OP_TOALTSTACK, loc); // replacement header above it
@@ -23784,6 +23786,21 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_BIN2NUM, loc); this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_BIN2NUM, loc);
     this.emit(Op.OP_SWAP, loc); // target ordinal, predecessor ordinal
     this.stack.unshift('(kernel_insert_predecessor_ordinal)', '(kernel_insert_target_ordinal)');
+  }
+
+  /** True only for an access selected by the SDK's collection-wide transaction dependency analysis. */
+  private emitKernelJournalPendingAccessCondition(loc: SingleLocationData, untrackedOffset = 0): void {
+    this.emit(encodeInt(BigInt(
+      this.getStackIndex(this.sortedUpsertLoopJournalCursorName) + untrackedOffset,
+    )), loc);
+    this.emit(Op.OP_PICK, loc);
+    this.emit(encodeInt(21n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_NIP, loc);
+    this.emit(Op.OP_1, loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_DROP, loc);
+    // This helper is used only by the absent-target insertion arm. Its two canonical low-bit shapes are 46
+    // (physical predecessor authentication) and 14 (pending predecessor); bit 6 marks their carrier variants.
+    this.emit(Op.OP_DUP, loc); this.emit(new Uint8Array([110]), loc); this.emit(Op.OP_EQUAL, loc);
+    this.emit(Op.OP_SWAP, loc); this.emit(new Uint8Array([78]), loc); this.emit(Op.OP_EQUAL, loc);
+    this.emit(Op.OP_BOOLOR, loc);
   }
 
   /**
@@ -23905,8 +23922,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_SWAP, loc);
     this.emit(new Uint8Array([0]), loc); this.emit(Op.OP_CAT, loc);
     this.emit(Op.OP_BIN2NUM, loc);
-    this.emit(Op.OP_DUP, loc); this.emit(encodeInt(64n), loc); this.emit(Op.OP_LESSTHAN, loc);
+    this.emit(Op.OP_DUP, loc); this.emit(encodeInt(128n), loc); this.emit(Op.OP_LESSTHAN, loc);
     this.emit(Op.OP_VERIFY, loc);
+    this.emit(encodeInt(63n), loc); this.emit(Op.OP_AND, loc);
     this.emit(Op.OP_SWAP, loc);
     this.emit(encodeInt(2n), loc); this.emit(Op.OP_SPLIT, loc); // cursor tail, flags, target, predecessor
     this.emit(encodeInt(2n), loc); this.emit(Op.OP_PICK, loc);
@@ -24646,10 +24664,25 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // The branch shape is [proof slot, successor, actual predecessor]. Discard the first two only after parking the
     // predecessor, then bind both selected journal records to the target/proof identities used by this iteration.
     this.emit(Op.OP_TOALTSTACK, loc); this.emit(Op.OP_2DROP, loc);
-    if (settleScalar) this.emitKernelJournalInsertOrdinals(loc);
+    if (settleScalar) {
+      this.emitKernelJournalPendingAccessCondition(loc);
+      this.pushToStack('(kernel_insert_pending_access)');
+      this.emitKernelJournalInsertOrdinals(loc);
+    }
     this.emitKernelJournalTargetSlotCheck(node, loc);
     if (settleScalar) {
+      const insertionBranchStack = [...this.stack];
+      this.emit(encodeInt(BigInt(this.getStackIndex('(kernel_insert_pending_access)'))), loc);
+      this.emit(Op.OP_PICK, loc);
+      this.emit(Op.OP_IF, loc);
       this.emitKernelJournalInsertMutation(node as MappingAssignNode, loc);
+      this.emit(Op.OP_ELSE, loc);
+      this.stack = [...insertionBranchStack];
+      this.emit(Op.OP_DROP, loc); this.popFromStack();
+      this.emit(Op.OP_DROP, loc); this.popFromStack();
+      this.emit(Op.OP_ENDIF, loc);
+      this.stack = insertionBranchStack.slice(2);
+      this.emit(Op.OP_DROP, loc); this.popFromStack();
       this.scopeDepth -= 1;
       this.emit(Op.OP_ENDIF, loc);
     }

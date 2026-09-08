@@ -307,7 +307,7 @@ describe('kernel pending fixed-width scalar rows', () => {
     for (let key = 0n; key < 6n; key += 1n) {
       await contract.call.addMany([key], 1n).send();
     }
-    await expect(contract.batch([{ function: 'addMany', args: [[0n, 6n], 1n] }]).build())
+    await expect(contract.batch([{ function: 'addMany', args: [[0n, 6n], 1n] }]).send())
       .resolves.toBeDefined();
     await expect(contract.batch([{ function: 'addMany', args: [[0n, 1n, 2n, 3n, 4n], 1n] }]).build())
       .resolves.toBeDefined();
@@ -323,6 +323,9 @@ describe('kernel pending fixed-width scalar rows', () => {
       provider, inner, artifact.stateLayout!, {}, { saltContract: true },
     );
     const contract = StatefulContract.withCategory(inner, categoryId);
+    // A first-touch insertion has no cross-row dependency and must retain the established direct-output path;
+    // the event segment is therefore valid and does not activate the pending-settlement fence.
+    await expect(contract.call.addMany([1n, 2n], 1n).send()).resolves.toBeDefined();
     await contract.call.addMany([0n], 1n).send();
     await expect(contract.batch([
       { function: 'addMany', args: [[0n], 1n] },

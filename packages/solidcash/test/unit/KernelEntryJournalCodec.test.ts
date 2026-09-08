@@ -194,6 +194,21 @@ describe('kernel pending-entry journal codec', () => {
       .toEqual(plan.accesses);
   });
 
+  it('round-trips the transaction-local pending protocol marker independently of topology flags', () => {
+    const access = {
+      targetRecordOrdinal: 3,
+      predecessorRecordOrdinal: 1,
+      presentBefore: false,
+      presentAfter: true,
+      mutates: true,
+      authenticatesPredecessor: true as const,
+      pending: true as const,
+    };
+    expect(decodeKernelEntryJournalAccesses(
+      encodeKernelEntryJournalAccesses(ACCESS_COLLECTION_HASH, [access]),
+    )).toEqual([access]);
+  });
+
   it('shares pending values and record ordinals across generically named source streams', () => {
     const slot = (value: bigint): Uint8Array => slotValueToBytes(value);
     const entry = (txidByte: string, value: bigint, next: bigint, tail = 0): Utxo => ({

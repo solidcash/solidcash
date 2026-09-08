@@ -16558,6 +16558,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       value: bigint; commitments: string[]; commitmentIndex: number; slot: Uint8Array; nextKey: Uint8Array;
     };
     const runtimeJournalPendingScalar = new Map<string, RuntimeJournalPendingScalar>();
+    let hasPendingExistingScalarSettlement = false;
     const runtimeLoopEntrySegments: Array<{
       rowIndex: number; collection: string; offset: number; count: number;
     }> = [];
@@ -16697,6 +16698,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const runtimeKernelJournalStreams: Array<{
       collection: string;
       collectionHash: Uint8Array;
+      frameIndex: number;
       executionGroup: string;
       executionOrder: number;
       /** Source-loop occurrences which consume each compact access. These deliberately remain in selected-frame
@@ -17600,6 +17602,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         runtimeKernelJournalStreams.push({
           collection: info.collection,
           collectionHash: computeCollectionHash(collection.signature),
+          frameIndex: upsertFrameIndex,
           executionGroup: `${upsertFrameIndex}:${Number.isSafeInteger(info.journalExecutionGroup)
             ? info.journalExecutionGroup : info.journalAccessStreamIndex}`,
           executionOrder: info.journalAccessStreamIndex,
@@ -17980,6 +17983,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           }
           commitments.push(binToHex(encodeEntryCommitment(entry.slot, entry.nextKey, commitValue(newVal))));
           if (journalSettledScalar) {
+            hasPendingExistingScalarSettlement = true;
             runtimeJournalPendingScalar.set(journalIdentity, {
               value: newVal as bigint,
               commitments,
@@ -18164,6 +18168,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const plannedKernelStreamAccesses = new Map<
     (typeof runtimeKernelJournalStreams)[number], ReturnType<typeof decodeKernelEntryJournalAccesses>
     >();
+    let hasPendingScalarDependency = false;
     for (const [collectionIdentity, collectionStreams] of kernelStreamsByCollection) {
       const plan = planKernelEntryJournalAccessTopology(
         collectionStreams[0].list,
@@ -18171,13 +18176,56 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         collectionStreams.map((stream) => stream.writes),
       );
       const accesses = plan.encodedAccessStreams.map(decodeKernelEntryJournalAccesses);
+      // Keep ordinary first-touch rows on their established direct-output path. Carrier settlement is selected
+      // only when a later access consumes topology/value state produced by an earlier access. Mark the producer
+      // too, since it must publish the dirty carrier which makes that dependency available.
+      const priorRowProducer = new Map<number, ReturnType<typeof decodeKernelEntryJournalAccesses>[number]>();
+      let currentFrame = -1;
+      let currentRowProducers = new Map<number, ReturnType<typeof decodeKernelEntryJournalAccesses>[number]>();
+      for (const [streamIndex, streamAccesses] of accesses.entries()) {
+        const frameIndex = collectionStreams[streamIndex].frameIndex;
+        if (frameIndex !== currentFrame) {
+          for (const [ordinal, producer] of currentRowProducers) priorRowProducer.set(ordinal, producer);
+          currentRowProducers = new Map();
+          currentFrame = frameIndex;
+        }
+        for (const access of streamAccesses) {
+          const dependencies: number[] = [];
+          if (access.presentBefore && !access.authenticatesTarget) dependencies.push(access.targetRecordOrdinal);
+          if (access.predecessorRecordOrdinal !== undefined && !access.authenticatesPredecessor) {
+            dependencies.push(access.predecessorRecordOrdinal);
+          }
+          const crossRowProducers = dependencies.map((ordinal) => priorRowProducer.get(ordinal))
+            .filter((producer): producer is NonNullable<typeof producer> => producer !== undefined);
+          if (crossRowProducers.length > 0) {
+            access.pending = true;
+            hasPendingScalarDependency = true;
+            for (const producer of crossRowProducers) producer.pending = true;
+          }
+          if (access.mutates) {
+            currentRowProducers.set(access.targetRecordOrdinal, access);
+            if (access.predecessorRecordOrdinal !== undefined) {
+              currentRowProducers.set(access.predecessorRecordOrdinal, access);
+            }
+          }
+        }
+      }
       collectionStreams.forEach((stream, index) => plannedKernelStreamAccesses.set(stream, accesses[index]));
       plannedKernelCollections.set(collectionIdentity, {
         records: plan.encodedRecords,
         globalOrdinals: new Map(),
       });
     }
-    if (runtimeJournalPendingScalar.size > 0) {
+    const pendingScalarSettlementActive = hasPendingScalarDependency || hasPendingExistingScalarSettlement;
+    if (pendingScalarSettlementActive) {
+      // The current final flush intentionally settles one dense all-dirty carrier vector. Once an existing-value
+      // settlement or a true cross-row dependency activates that protocol, every supported mutating access in the
+      // transaction must take the carrier path; reject reads/removals below rather than mixing carrier phases.
+      for (const accesses of plannedKernelStreamAccesses.values()) {
+        for (const access of accesses) if (access.mutates) access.pending = true;
+      }
+    }
+    if (pendingScalarSettlementActive) {
       const unsupported = [...plannedKernelStreamAccesses.values()].flat().some((access) => (
         !access.presentAfter || !access.mutates
         || (access.presentBefore && access.predecessorRecordOrdinal !== undefined)
@@ -26079,7 +26127,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     | { kind: 'events'; offset: number; count: number }
     | { kind: 'transfers'; offset: number; count: number }
     > = [];
-    if (runtimeJournalPendingScalar.size > 0
+    if (pendingScalarSettlementActive
       && (runtimeLoopEventSegments.length > 0 || runtimeLoopTransferSegments.length > 0)) {
       throw new Error(
         'Kernel pending scalar settlement cannot share a transaction with runtime event or transfer output segments.',

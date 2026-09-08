@@ -1435,7 +1435,7 @@ export function seedChunksFromPersistedValue(
   categoryId?: string,
 ): number {
   const chunks = applyRedeemLockToChunks(
-    chunksFromJobEventsValue(value, lock, categoryId),
+    chunksFromValue(value, { lockingBytecode: lock, categoryId }),
     lock,
   );
   let placed = 0;
@@ -1559,7 +1559,32 @@ export function selectHashedValueForChunkPin(
   return best;
 }
 
-/** Split a persisted/extracted jobEvents blob into continuation NFTs. */
+/**
+ * Split a value into continuation NFTs only when the caller supplies an authenticated locking identity.
+ * A compiler descriptor may derive that identity; missing or inconsistent authority fails closed.
+ */
+export function chunksFromValue(
+  value: Uint8Array,
+  authority: {
+    lockingBytecode?: Uint8Array;
+    write?: ValueChunkWriteDescriptor | null;
+    categoryId?: string;
+  },
+): AuthenticatedValueChunk[] {
+  if (value.length <= VALUE_HEAD_SIZE) return [];
+  const categoryId = authority.categoryId ?? authority.write?.categoryId;
+  const lock = authority.lockingBytecode
+    ?? persistValueChunkLock(categoryId, value, authority.write);
+  if (!lock) return [];
+  return splitValueIntoValueChunks(value).map((data, index) => ({
+    commitment: buildValueChunkCommitment(index, data),
+    lockingBytecode: lock,
+    categoryId,
+  })).filter((chunk) => chunk.commitment.length >= 3 && chunk.commitment !== '00'
+    && !(chunk.commitment.length >= 16 && isEmptyValueChunkCommitment(chunk.commitment)));
+}
+
+/** Explicit compatibility adapter for the historical descriptor-free JobEvent collection. */
 export function chunksFromJobEventsValue(
   value: Uint8Array,
   lockingBytecode?: Uint8Array,
@@ -1570,12 +1595,7 @@ export function chunksFromJobEventsValue(
     ?? legacyJobEventsPersistValueChunkLock(categoryId, value)
     ?? (categoryId ? persistedJobEventsLock(categoryId) : undefined)
     ?? p2sh32LockFromValueRoot(sha256Sync(value));
-  return splitValueIntoValueChunks(value).map((data, index) => ({
-    commitment: buildValueChunkCommitment(index, data),
-    lockingBytecode: lock,
-    categoryId,
-  })).filter((chunk) => chunk.commitment.length >= 3 && chunk.commitment !== '00'
-    && !(chunk.commitment.length >= 16 && isEmptyValueChunkCommitment(chunk.commitment)));
+  return chunksFromValue(value, { lockingBytecode: lock, categoryId });
 }
 
 /**
@@ -8131,7 +8151,11 @@ export class StatefulTransactionBuilder {
                 ? inputLock : undefined,
             });
           const persistChunks = persistValue
-            ? chunksFromJobEventsValue(persistValue, destLock ?? persistRecipeLock, persistCat) : [];
+            ? chunksFromValue(persistValue, {
+              lockingBytecode: destLock ?? persistRecipeLock,
+              write: this._persistedValueChunkWrite(persistCat),
+              categoryId: persistCat,
+            }) : [];
           // The entry carries the same authenticated chunkable-value header as every sorted mapping:
           // len4 || root32 || head28 for a long value. Continuations stay uint16-le value chunks.
           const persistChunk = destOffset === 0 && persistValue
@@ -8205,7 +8229,10 @@ export class StatefulTransactionBuilder {
         ? this._persistedValueChunkValue(input.token?.category ?? categoryId)
         : undefined;
       const persistChunk = persistValue && chunkIndex !== undefined
-        ? chunksFromJobEventsValue(persistValue, lock, input.token?.category)[chunkIndex]
+        ? chunksFromValue(persistValue, {
+          lockingBytecode: lock,
+          categoryId: input.token?.category,
+        })[chunkIndex]
         : undefined;
       const token = persistChunk
         ? {
@@ -10218,15 +10245,25 @@ export class StatefulTransactionBuilder {
     const rematerialize = this._shouldRematerializePersistUpdate();
     const stagedValue = this._stagedValueChunkWrite(stateOwnerCategory)
       ?? this._stagedValueChunkWrite(categoryId);
+    const stagedLock = this._persistValueChunkLock(stateOwnerCategory, stagedValue)
+      ?? this._persistValueChunkLock(categoryId, stagedValue);
     const fromStaged = stagedValue
-      ? chunksFromJobEventsValue(stagedValue, undefined, stateOwnerCategory)
+      ? chunksFromValue(stagedValue, {
+        lockingBytecode: stagedLock,
+        write: this._persistedValueChunkWrite(stateOwnerCategory),
+        categoryId: stateOwnerCategory,
+      })
       : [];
     const persistedValue = rematerialize
       ? (this._persistedValueChunkValue(stateOwnerCategory)
         ?? this._persistedValueChunkValue(categoryId))
       : undefined;
     const fromValue = persistedValue
-      ? chunksFromJobEventsValue(persistedValue, undefined, stateOwnerCategory)
+      ? chunksFromValue(persistedValue, {
+        lockingBytecode: this._persistValueChunkLock(stateOwnerCategory, persistedValue),
+        write: this._persistedValueChunkWrite(stateOwnerCategory),
+        categoryId: stateOwnerCategory,
+      })
       : [];
     const persistChunks = rematerialize
       ? (this.persistedJobEventsChunks.length > 0
@@ -10389,10 +10426,18 @@ export class StatefulTransactionBuilder {
         ?? this._persistedValueChunkValue(categoryId))
       : undefined;
     const fromValue = persistedValue
-      ? chunksFromJobEventsValue(persistedValue, redeemLock, persistTokenCategory)
+      ? chunksFromValue(persistedValue, {
+        lockingBytecode: redeemLock,
+        write: this._persistedValueChunkWrite(persistTokenCategory),
+        categoryId: persistTokenCategory,
+      })
       : [];
     const fromStaged = stagedValue
-      ? chunksFromJobEventsValue(stagedValue, redeemLock, persistTokenCategory)
+      ? chunksFromValue(stagedValue, {
+        lockingBytecode: redeemLock,
+        write: this._persistedValueChunkWrite(persistTokenCategory),
+        categoryId: persistTokenCategory,
+      })
       : [];
     const observed = selectObservedValueChunkRun(fromStaged, fromDerived);
     const source = this._shouldRematerializePersistUpdate()

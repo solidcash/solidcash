@@ -348,6 +348,13 @@ export default class LowerMemoryModel extends AstTraversal {
   private isPassByRefInlinable(fn: FunctionDefinitionNode): boolean {
     const vis = fn.visibility;
     if (vis !== 'internal' && vis !== 'private') return false;
+    // A graph handler's external-call manifest is authenticated at its OP_INVOKE boundary. Inlining that
+    // compiler-owned body into the message-bus row loop changes the current codegen function to the route,
+    // whose layout intentionally owns no per-handler external-return slots. Besides making returning calls
+    // unbound, flattening would bypass recomputation of every outgoing graph row. Reference-typed arguments
+    // do not weaken that boundary: keep the handler as a subroutine and lower its memory values in its own body.
+    // Detached signature handlers have the same hard boundary because CHECKSIG authenticates that exact body.
+    if (fn.graphEmissionHandler || fn.messageBusDetachedSignatureHandler) return false;
     if (fn.customModifiers.length !== 0 || !fn.body) return false;
     if (!fn.parameters.some((p) => this.isRefType(p.type))) return false;
     if (this.bodyHas(fn.body, (n) => n instanceof FunctionCallNode && n.identifier?.name === fn.name)) return false;

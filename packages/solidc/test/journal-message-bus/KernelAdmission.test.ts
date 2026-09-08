@@ -56,7 +56,12 @@ describe('required kernel admission', () => {
       const eligible = (artifact: typeof fast): string[] => artifact.messageBus?.handlers
         .filter((handler) => handler.eligible).map((handler) => handler.name) ?? [];
       expect(eligible(fast)).toEqual(eligible(normal));
+      expect(eligible(fast)).toContain('batch');
       expect(profile.mock.calls.flat().join(' ')).not.toContain('MESSAGE_BUS_RESERVED_SELECTOR_COLLISION');
+      // A reference-typed handler argument must not make LowerMemoryModel flatten the compiler-owned graph
+      // handler into the row loop. That OP_INVOKE boundary owns the outgoing-call/result frame; losing it made
+      // the route compile `remote.read(..)` with zero external-return slots and rely on admission retry.
+      expect(profile.mock.calls.flat().join(' ')).not.toContain('resolved:throw');
     } finally {
       profile.mockRestore();
       if (previousProfile === undefined) delete process.env.SOLIDC_PROFILE;

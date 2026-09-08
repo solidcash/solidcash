@@ -12,6 +12,7 @@ import {
   encodeKernelEntryJournalRecords,
   planKernelEntryJournalAccessTopology,
   planKernelEntryJournalStreams,
+  validateKernelEntryJournalTransportRecords,
 } from '../../src/stateful/KernelEntryJournal.js';
 import { SortedList, encodeEntryCommitment, slotValueToBytes } from '../../src/stateful/SortedList.js';
 import type { Utxo } from '../../src/interfaces.js';
@@ -79,6 +80,27 @@ describe('kernel pending-entry journal codec', () => {
       tombstone: false,
       synthetic: false,
     });
+  });
+
+  it('fails closed on dirty or malformed transport records until final flush exists', () => {
+    const clean = encodeKernelEntryJournalRecord({
+      collectionHash: bytes(20, 1), slot: bytes(32, 2), nextKey: bytes(32, 3),
+      value: Uint8Array.of(4), authenticated: true, dirty: false, tombstone: false, synthetic: false,
+    });
+    const absent = encodeKernelEntryJournalRecord({
+      collectionHash: bytes(20, 1), slot: bytes(32, 5), nextKey: bytes(32, 0),
+      value: new Uint8Array(), authenticated: false, dirty: false, tombstone: true, synthetic: true,
+    });
+    expect(validateKernelEntryJournalTransportRecords([clean, absent])).toHaveLength(2);
+
+    const dirty = encodeKernelEntryJournalRecord({
+      collectionHash: bytes(20, 1), slot: bytes(32, 2), nextKey: bytes(32, 3),
+      value: Uint8Array.of(4), authenticated: true, dirty: true, tombstone: false, synthetic: false,
+    });
+    expect(() => validateKernelEntryJournalTransportRecords([dirty]))
+      .toThrow('require final-flush settlement');
+    expect(() => validateKernelEntryJournalTransportRecords([Uint8Array.of(0x05)]))
+      .toThrow('truncated');
   });
 
   it('keeps the largest entry-tail record independently below BCH item limits', () => {

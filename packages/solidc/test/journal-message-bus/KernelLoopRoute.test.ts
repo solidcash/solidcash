@@ -30,6 +30,21 @@ contract Acc() {
 }
 `;
 
+const TWO_JOURNAL_HANDLER_SOURCE = `
+pragma solidcash ^0.13.0;
+contract Store() {
+  mapping(int => int) values;
+  function write(int n, int value) public {
+    for (int i = 0; i < n; i = i + 1) { this.values[i] = value; }
+    require(true);
+  }
+  function erase(int n) public {
+    for (int i = 0; i < n; i = i + 1) { delete this.values[i]; }
+    require(true);
+  }
+}
+`;
+
 const routeAsm = (artifact: ReturnType<typeof compileString>): string => {
   const body = artifact.functionBodies?.['53434231'];
   expect(body).toBeDefined();
@@ -148,5 +163,26 @@ contract Acc() {
     const addAsm = bytecodeToAsm(hexToBin(artifact.functionBodies![add!.selector]));
     // bump is function id 0 (first declared). Three call sites share one defined body.
     expect([...addAsm.replace(/\s+/g, ' ').matchAll(/OP_0 OP_INVOKE/g)]).toHaveLength(3);
+  });
+
+  it('threads one route-owned record carrier through each direct journal-aware handler', () => {
+    const artifact = compileString(TWO_JOURNAL_HANDLER_SOURCE, OPTIONS);
+    const write = artifact.messageBus?.handlers.find((handler) => handler.name === 'write');
+    const erase = artifact.messageBus?.handlers.find((handler) => handler.name === 'erase');
+    expect(write).toMatchObject({ eligible: true });
+    expect(erase).toMatchObject({ eligible: true });
+
+    const records = artifact.messageBus?.route.inputs.filter(
+      (input) => input.name === '__internal__kernelJournalRecords',
+    );
+    expect(records).toHaveLength(1);
+    expect(records?.[0]?.type).toBe('bytes[]');
+
+    // The carrier is immutable in this transport-only stage: the route snapshots it before dispatch and binds
+    // the returned value back to that snapshot before its existing dense-prefix length check.
+    const asm = routeAsm(artifact);
+    expect(asm).toContain('OP_EQUALVERIFY');
+    expect(selectorPushCount(asm, write!.selector)).toBe(1);
+    expect(selectorPushCount(asm, erase!.selector)).toBe(1);
   });
 });

@@ -1270,6 +1270,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   // and the physical epilogue will consume it during the final flush.
   private runtimeLoopEntryJournalCountActive = false;
   private static readonly RUNTIME_LOOP_ENTRY_JOURNAL_COUNT = '__internal__runtimeLoopEntryJournalCount';
+  /** Immutable route-entry snapshot used by the fail-closed pre-mutation journal settlement scaffold. */
+  private static readonly KERNEL_JOURNAL_RECORDS_INITIAL = '__internal__kernelJournalRecordsInitial';
   private runtimeLoopEntryOutputCountActive = false;
   private static readonly RUNTIME_LOOP_ENTRY_OUTPUT_COUNT = '__internal__runtimeLoopEntryOutputCount';
   // Counter-loop events are accumulated as framed (commitment, locking-bytecode) records while the source loop
@@ -5807,6 +5809,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.runtimeLoopEntryInputCountActive = true;
       this.runtimeLoopEntryJournalCountActive = true;
     }
+    if (!this.isDefineSubTraversal && this.isCompilerMessageBusRoute(node)
+      && this.runtimeLoopEntryJournalCountActive && this.stack.includes(KERNEL_JOURNAL_RECORDS)) {
+      const loc = { location: node.location, positionHint: PositionHint.START } as SingleLocationData;
+      this.emit(encodeInt(BigInt(this.getStackIndex(KERNEL_JOURNAL_RECORDS))), loc);
+      this.emit(Op.OP_PICK, loc);
+      this.pushToStack(GenerateTargetTraversalWithLocation.KERNEL_JOURNAL_RECORDS_INITIAL);
+    }
     if (runtimeLoopEntryOutputCountRequired) {
       // Runtime mapping loops and dynamic-state writes share one trailing frame. Keep an exact path-stable total
       // of mapping outputs so the dynamic epilogue cannot claim the same first output. A physical entry starts
@@ -5921,6 +5930,23 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (!this.isDefineSubTraversal && this.isCompilerMessageBusRoute(node)
       && this.runtimeLoopEntryJournalCountActive && this.stack.includes(KERNEL_JOURNAL_RECORDS)) {
       const loc = { location: node.body.location, positionHint: PositionHint.END } as SingleLocationData;
+      // Commit 1 of route-wide pending-entry settlement is deliberately transport-only. Every journal-aware
+      // OP_INVOKE returns the carrier into this route-owned cell, but no operation may mutate it until the final
+      // output flush exists. Bind the returned carrier to the entry snapshot here so any accidental or hostile
+      // dirty-record transition fails closed rather than becoming an unconstrained pseudo-flush.
+      const initial = this.getStackIndex(
+        GenerateTargetTraversalWithLocation.KERNEL_JOURNAL_RECORDS_INITIAL, true,
+      );
+      if (initial < 0) throw new Error('Kernel journal settlement lost its initial record carrier');
+      this.emit(encodeInt(BigInt(this.getStackIndex(KERNEL_JOURNAL_RECORDS))), loc);
+      this.emit(Op.OP_PICK, loc);
+      this.emit(encodeInt(BigInt(initial + 1)), loc);
+      this.emit(Op.OP_PICK, loc);
+      this.emit(Op.OP_EQUALVERIFY, loc);
+      this.emit(encodeInt(BigInt(initial)), loc);
+      this.emit(Op.OP_ROLL, loc);
+      this.emit(Op.OP_DROP, loc);
+      this.removeFromStack(initial);
       // Per-access checks admit only a dense first-touch prefix. Bind that prefix to the complete carrier vector,
       // so a caller cannot append an otherwise-valid unused record after the last executed row.
       this.emit(encodeInt(BigInt(this.getStackIndex(KERNEL_JOURNAL_RECORDS))), loc);
@@ -6051,7 +6077,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const journalNames = new Set(slots.flatMap((sv) => this.journalContextNames(sv)));
       for (const parameter of node.parameters) {
         if (parameter.name.startsWith(VMAP_RUNTIME_INPUT_COUNT_PREFIX)
-          || parameter.name.startsWith(VMAP_RUNTIME_OUTPUT_COUNT_PREFIX)) {
+          || parameter.name.startsWith(VMAP_RUNTIME_OUTPUT_COUNT_PREFIX)
+          || parameter.name === KERNEL_JOURNAL_RECORDS) {
           journalNames.add(parameter.name);
         }
       }
@@ -10093,6 +10120,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       .map((parameter) => parameter.name)
       .filter((name) => name.startsWith(VMAP_RUNTIME_INPUT_COUNT_PREFIX)
         || name.startsWith(VMAP_RUNTIME_OUTPUT_COUNT_PREFIX));
+    const targetKernelJournalRecordNames = targetFunc.parameters
+      .map((parameter) => parameter.name)
+      .filter((name) => name === KERNEL_JOURNAL_RECORDS);
     const targetJournalContextNames = [
       ...(targetFunc.graphRuntimeEmissionThreaded ? ['__internal__graphEmissions'] : []),
       ...(targetRuntimeLoopEntryInputCount
@@ -10110,7 +10140,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     ];
     const targetReturnedContextNames = [
       ...targetRuntimeCardinalityNames,
+      ...targetKernelJournalRecordNames,
       ...targetJournalContextNames,
+    ];
+    const targetDeclaredReturnedContextNames = [
+      ...targetRuntimeCardinalityNames,
+      ...targetKernelJournalRecordNames,
     ];
     let hiddenContextCount = 0;
     if (targetFunc.graphEmissionHandler) {
@@ -10352,11 +10387,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       );
       const targetParameterName = targetFunc.parameters[i]?.name;
       if (argument instanceof IdentifierNode && (targetParameterName?.startsWith(VMAP_RUNTIME_INPUT_COUNT_PREFIX)
-        || targetParameterName?.startsWith(VMAP_RUNTIME_OUTPUT_COUNT_PREFIX))) {
+        || targetParameterName?.startsWith(VMAP_RUNTIME_OUTPUT_COUNT_PREFIX)
+        || targetParameterName === KERNEL_JOURNAL_RECORDS)) {
         // These declared parameters are copy-in/copy-out route context. Never let ordinary final-use lowering
         // OP_ROLL the caller's cell: the returned remainder must replace that same stable frame slot and a later
         // row must receive the updated value.
-        this.emit(encodeInt(BigInt(this.getStackIndex(argument.name))), locationData);
+        const contextIndex = this.getStackIndex(argument.name, true);
+        if (contextIndex < 0) {
+          throw new Error(
+            `Missing route-owned context '${argument.name}' while invoking '${targetFunc.name}'`,
+          );
+        }
+        this.emit(encodeInt(BigInt(contextIndex)), locationData);
         this.emit(Op.OP_PICK, locationData);
         this.pushToStack(`(__vmap_cardinality_arg_${targetFunc.functionId}_${i})`);
       } else {
@@ -10393,11 +10435,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     // Update stack tracking: pop the pushed arguments, push return values
     this.popFromStack(pushedArgs + hiddenContextCount);
-    // Runtime cardinalities are declared arguments rather than hidden journal arguments, so the ordinary argument
-    // cleanup removes their call-site markers. The callee deliberately returns their updated cells above all other
-    // contexts; restore those markers before consuming the canonical returned-context sequence below.
-    for (let i = targetRuntimeCardinalityNames.length - 1; i >= 0; i--) {
-      this.pushToStack(`(__vmap_cardinality_return_${targetFunc.functionId}_${i})`);
+    // Declared copy-in/copy-out parameters are removed from the tracked call frame with the ordinary arguments,
+    // while hidden journal contexts have always remained deliberately untracked during replacement. Restore the
+    // complete declared prefix in one reverse loop: splitting cardinalities from the record carrier would track
+    // the carrier above the cardinalities even though the callee preserves their declared physical order.
+    for (let i = targetDeclaredReturnedContextNames.length - 1; i >= 0; i--) {
+      this.pushToStack(`(__returned_context_${targetFunc.functionId}_${i})`);
     }
     if (targetFunc.graphRuntimeEmissionHandler && !targetFunc.graphRuntimeEmissionThreaded) {
       this.emit(Op.OP_0, locationData);
@@ -10707,12 +10750,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       .map((parameter) => parameter.name)
       .filter((name) => name.startsWith(VMAP_RUNTIME_INPUT_COUNT_PREFIX)
         || name.startsWith(VMAP_RUNTIME_OUTPUT_COUNT_PREFIX));
+    const kernelJournalRecordNames = this.currentFunction.parameters
+      .map((parameter) => parameter.name)
+      .filter((name) => name === KERNEL_JOURNAL_RECORDS);
     if (this.isDefineSubTraversal && (this.activeJournalSlots.length > 0 || graphEmissionContext
       || this.runtimeLoopEntryInputCountActive || this.runtimeLoopEntryJournalCountActive
       || this.runtimeLoopEntryOutputCountActive
-      || this.runtimeLoopEventActive || runtimeCardinalityNames.length > 0)) {
+      || this.runtimeLoopEventActive || runtimeCardinalityNames.length > 0
+      || kernelJournalRecordNames.length > 0)) {
       const journalNames = [
         ...runtimeCardinalityNames,
+        ...kernelJournalRecordNames,
         ...(graphEmissionContext ? ['__internal__graphEmissions'] : []),
         ...(this.functionNeedsRuntimeLoopEntryInputCount(this.currentFunction)
           ? [

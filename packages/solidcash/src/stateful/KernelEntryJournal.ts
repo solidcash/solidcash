@@ -173,6 +173,25 @@ export function decodeKernelEntryJournalRecord(encoded: Uint8Array): KernelEntry
   };
 }
 
+/**
+ * Validate the record vector accepted by the transport-only kernel route.
+ *
+ * Dirty records describe a pending state transition and require covenant-verified final output settlement. Until
+ * that flush is implemented, accepting one here would give callers a carrier shape the route cannot soundly
+ * publish. Clean authenticated records and clean synthetic absence tombstones are the only supported forms.
+ */
+export function validateKernelEntryJournalTransportRecords(
+  encodedRecords: readonly Uint8Array[],
+): KernelEntryJournalRecord[] {
+  return encodedRecords.map((encoded) => {
+    const record = decodeKernelEntryJournalRecord(encoded);
+    if (record.dirty) {
+      throw new Error('dirty kernel entry journal records require final-flush settlement');
+    }
+    return record;
+  });
+}
+
 /** Encode a planner's first-touch-ordered records for one collection into the exact covenant carrier format. */
 export function encodeKernelEntryJournalRecords(
   collectionHash: Uint8Array,

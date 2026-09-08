@@ -126,6 +126,7 @@ export {
   KERNEL_ENTRY_JOURNAL_TAG, KERNEL_ENTRY_JOURNAL_ACCESS_TAG,
   KERNEL_ENTRY_JOURNAL_MAX_VALUE_BYTES, KERNEL_ENTRY_JOURNAL_MAX_ACCESSES,
   encodeKernelEntryJournalRecord, encodeKernelEntryJournalRecords, decodeKernelEntryJournalRecord,
+  validateKernelEntryJournalTransportRecords,
   encodeKernelEntryJournalAccesses, decodeKernelEntryJournalAccesses,
   planKernelEntryJournalStreams, planKernelEntryJournalAccessTopology,
   type KernelEntryJournalRecord, type KernelEntryJournalStreamPlan,

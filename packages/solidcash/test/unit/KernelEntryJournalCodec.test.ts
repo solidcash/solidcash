@@ -269,6 +269,63 @@ describe('kernel pending-entry journal codec', () => {
     ]);
   });
 
+  it('keeps repeated same-slot row carriers immutable during topology-only planning', () => {
+    const slot = (value: bigint): Uint8Array => slotValueToBytes(value);
+    const entry = (txidByte: string, value: bigint, next: bigint, tail = 0): Utxo => ({
+      txid: txidByte.repeat(64), vout: 0, satoshis: 1000n,
+      token: {
+        category: '11'.repeat(32), amount: 0n,
+        nft: {
+          capability: 'mutable',
+          commitment: binToHex(encodeEntryCommitment(slot(value), slot(next), Uint8Array.of(tail))),
+        },
+      },
+    });
+    const collectionHash = bytes(20, 0xaa);
+    const list = SortedList.fromUtxos([
+      entry('0', 0n, 10n),
+      entry('1', 10n, 0n, 4),
+    ]);
+
+    const present = planKernelEntryJournalAccessTopology(list, collectionHash, [
+      [{ slot: slot(10n), operation: 'write' }],
+      [{ slot: slot(10n), operation: 'write' }],
+    ]);
+    expect(present.recordCount).toBe(1);
+    expect(present.encodedAccessStreams.map(decodeKernelEntryJournalAccesses)).toEqual([
+      [{ targetRecordOrdinal: 0, presentBefore: true, presentAfter: true, mutates: true,
+        authenticatesTarget: true }],
+      [{ targetRecordOrdinal: 0, presentBefore: true, presentAfter: true, mutates: true }],
+    ]);
+    expect(present.encodedRecords.map(decodeKernelEntryJournalRecord)).toEqual([
+      {
+        collectionHash, slot: slot(10n), nextKey: slot(0n), value: Uint8Array.of(4),
+        authenticated: true, dirty: false, tombstone: false, synthetic: false,
+      },
+    ]);
+
+    const absent = planKernelEntryJournalAccessTopology(list, collectionHash, [
+      [{ slot: slot(20n), operation: 'write' }],
+      [{ slot: slot(20n), operation: 'write' }],
+    ]);
+    expect(absent.recordCount).toBe(2);
+    expect(absent.encodedAccessStreams.map(decodeKernelEntryJournalAccesses)).toEqual([
+      [{ targetRecordOrdinal: 1, predecessorRecordOrdinal: 0,
+        presentBefore: false, presentAfter: true, mutates: true, authenticatesPredecessor: true }],
+      [{ targetRecordOrdinal: 1, presentBefore: true, presentAfter: true, mutates: true }],
+    ]);
+    expect(absent.encodedRecords.map(decodeKernelEntryJournalRecord)).toEqual([
+      {
+        collectionHash, slot: slot(10n), nextKey: slot(0n), value: Uint8Array.of(4),
+        authenticated: true, dirty: false, tombstone: false, synthetic: false,
+      },
+      {
+        collectionHash, slot: slot(20n), nextKey: slot(0n), value: new Uint8Array(),
+        authenticated: false, dirty: false, tombstone: true, synthetic: true,
+      },
+    ]);
+  });
+
   it('round-trips insert, update, delete, and absent-delete access states', () => {
     const accesses = [
       { targetRecordOrdinal: 1, predecessorRecordOrdinal: 0, presentBefore: false, presentAfter: true, mutates: true },

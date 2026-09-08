@@ -1019,21 +1019,31 @@ export function persistValueChunkLock(
     return undefined;
   }
   const root = sha256Sync(value);
-  if (write === null) return undefined;
-  if (write) {
-    if (write.categoryId.toLowerCase() !== categoryId.toLowerCase()
-      || !/^[0-9a-f]{64}$/i.test(write.keySlot)) return undefined;
-    try {
-      if (binToHex(computeCollectionHash(write.collectionSignature))
-        !== write.collectionHash.toLowerCase()) return undefined;
-      return getValueChunkLockingBytecode(
-        categoryId, write.collectionSignature, hexToBin(write.keySlot), root,
-      );
-    } catch {
-      return undefined;
-    }
+  // Missing and ambiguous descriptors fail closed. Historical schema recovery is
+  // available only through the explicitly named legacy adapter below.
+  if (!write) return undefined;
+  if (write.categoryId.toLowerCase() !== categoryId.toLowerCase()
+    || !/^[0-9a-f]{64}$/i.test(write.keySlot)) return undefined;
+  try {
+    if (binToHex(computeCollectionHash(write.collectionSignature))
+      !== write.collectionHash.toLowerCase()) return undefined;
+    return getValueChunkLockingBytecode(
+      categoryId, write.collectionSignature, hexToBin(write.keySlot), root,
+    );
+  } catch {
+    return undefined;
   }
-  // Compatibility only for artifacts predating exact collection-write descriptors.
+}
+
+/** Explicit adapter for descriptor-free plans using the historical JobEvent collection schema. */
+export function legacyJobEventsPersistValueChunkLock(
+  categoryId: string | undefined,
+  value?: Uint8Array,
+): Uint8Array | undefined {
+  if (!categoryId || !/^[0-9a-f]{64}$/i.test(categoryId) || !value || value.length === 0) {
+    return undefined;
+  }
+  const root = sha256Sync(value);
   const slot = keyToSlot(new Uint8Array());
   for (const collection of [
     'jobEvents',
@@ -1557,7 +1567,7 @@ export function chunksFromJobEventsValue(
 ): AuthenticatedValueChunk[] {
   if (value.length <= VALUE_HEAD_SIZE) return [];
   const lock = lockingBytecode
-    ?? persistValueChunkLock(categoryId, value)
+    ?? legacyJobEventsPersistValueChunkLock(categoryId, value)
     ?? (categoryId ? persistedJobEventsLock(categoryId) : undefined)
     ?? p2sh32LockFromValueRoot(sha256Sync(value));
   return splitValueIntoValueChunks(value).map((data, index) => ({
@@ -8107,16 +8117,9 @@ export class StatefulTransactionBuilder {
           const inputLock = input.unlocker?.generateLockingBytecode();
           const publishCategory = this._jobEventsPublishCategory();
           const inputCategory = input.token?.category ?? persistCat;
-          const persistVLock = persistValueChunkLock(
-            publishCategory, persistValue, this._persistedValueChunkWrite(publishCategory),
-          )
-            ?? persistValueChunkLock(
-              persistLockCategory, persistValue,
-              this._persistedValueChunkWrite(persistLockCategory),
-            )
-            ?? persistValueChunkLock(
-              inputCategory, persistValue, this._persistedValueChunkWrite(inputCategory),
-            )
+          const persistVLock = this._persistValueChunkLock(publishCategory, persistValue)
+            ?? this._persistValueChunkLock(persistLockCategory, persistValue)
+            ?? this._persistValueChunkLock(inputCategory, persistValue)
             ?? persistLock;
           const destLock = index === chunk0Dest
             ? (persistVLock ?? persistLock)
@@ -10374,12 +10377,8 @@ export class StatefulTransactionBuilder {
     const persistValue = stagedValue
       ?? this._persistedValueChunkValue(persistTokenCategory);
     const publishCategory = this._jobEventsPublishCategory();
-    const persistVLock = persistValueChunkLock(
-      persistTokenCategory, persistValue, this._persistedValueChunkWrite(persistTokenCategory),
-    )
-      ?? persistValueChunkLock(
-        publishCategory, persistValue, this._persistedValueChunkWrite(publishCategory),
-      );
+    const persistVLock = this._persistValueChunkLock(persistTokenCategory, persistValue)
+      ?? this._persistValueChunkLock(publishCategory, persistValue);
 
     const redeemLock = persistVLock
       ?? persistDigestLock
@@ -11663,6 +11662,19 @@ export class StatefulTransactionBuilder {
       .filter((write) => categoryId === undefined || write.categoryId === categoryId);
     if (writes.length === 0) return undefined;
     return selectPersistedValueChunkWrite(writes, categoryId) ?? null;
+  }
+
+  /** Resolve an exact collection lock, retaining schema inference only for descriptor-free legacy plans. */
+  private _persistValueChunkLock(
+    categoryId?: string, value?: Uint8Array,
+  ): Uint8Array | undefined {
+    const write = this._persistedValueChunkWrite(categoryId);
+    const exact = persistValueChunkLock(categoryId, value, write);
+    if (exact || write !== undefined) return exact;
+    if (this._hasChunkableValueWriteMetadata() || !this._permitsLegacyNamedValueChunkFallback()) {
+      return undefined;
+    }
+    return legacyJobEventsPersistValueChunkLock(categoryId, value);
   }
 
   /** Exact staged value, with category-wide storage retained only for descriptor-free legacy plans. */

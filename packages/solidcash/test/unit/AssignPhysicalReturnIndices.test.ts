@@ -125,6 +125,7 @@ import {
   persistUpdateRedeemLock,
   persistUpdateDigestLock,
   legacyJobEventsPersistUpdateDigestLock,
+  legacyJobEventsPersistValueChunkLock,
   persistUpdateDestLock,
   persistValueChunkLock,
   isWithdrawShapedJobEvent,
@@ -2537,7 +2538,7 @@ describe('assignPhysicalReturnIndices', () => {
       destOffset: 2, entryLock, persistLock: persistVLock, inputLock: dummyDigestLock,
     }) ?? new Uint8Array())).toBe(binToHex(persistVLock));
     const persistV = utf8ToBin('Create a marketplace in solidity');
-    const computedPersistLock = persistValueChunkLock(
+    const computedPersistLock = legacyJobEventsPersistValueChunkLock(
       'ee643a1671fbbe5333480fe40ff0fa72b65b6df0818805a2209586e991ca0af0',
       persistV,
     );

@@ -112,6 +112,41 @@ describe('atomic single-transaction codec', () => {
       .toThrow(/non-canonical lifecycle geometry/);
   });
 
+  it('round-trips KTS1 signature provenance only on V4 and rejects malformed or misplaced frames', () => {
+    const ordinary = sample();
+    const scalarFrame = `4b545331010100000100${'ab'.repeat(32)}`;
+    const participants = ordinary.participants.map((participant) => ({
+      ...participant, outputLockingBytecode: participant.lockingBytecode,
+    }));
+    const value: messageBus.AtomicMessageBusCallManifest = {
+      ...ordinary, version: 4, participants,
+      rows: [{ ...ordinary.rows[0], transactionSignatureFrameHex: scalarFrame }, ordinary.rows[1]],
+    };
+    const encoded = messageBus.encodeAtomicMessageBusCallManifest(value);
+    expect(binToHex(encoded.slice(0, 8))).toBe(messageBus.ATOMIC_MESSAGE_BUS_DOMAIN_V4);
+    expect(messageBus.decodeAtomicMessageBusCallManifest(encoded)).toEqual(value);
+    expect(() => messageBus.encodeAtomicMessageBusCallManifest({ ...value, version: 3 }))
+      .toThrow(/cannot authenticate transaction-signature provenance/);
+    expect(() => messageBus.encodeAtomicMessageBusCallManifest({ ...value, rows: ordinary.rows }))
+      .toThrow(/V4 requires transaction-signature provenance/);
+    expect(() => messageBus.encodeAtomicMessageBusCallManifest({
+      ...value, rows: [{ ...ordinary.rows[0], transactionSignatureFrameHex: `4b5453310201${scalarFrame.slice(12)}` }],
+    })).toThrow(/does not require SIGHASH_ALL/);
+    expect(() => messageBus.encodeAtomicMessageBusCallManifest({
+      ...value, rows: [{ ...ordinary.rows[0], transactionSignatureFrameHex:
+        `4b54533101010000010102ffff${'ab'.repeat(32)}` }],
+    })).toThrow(/unknown signature path segment/);
+    expect(() => messageBus.encodeAtomicMessageBusCallManifest({
+      ...value, rows: [{ ...ordinary.rows[1], transactionSignatureFrameHex: scalarFrame }],
+    })).toThrow(/non-invocation row/);
+
+    const changedCoveredProgram = {
+      ...value, rows: [{ ...value.rows[0], transactionSignatureFrameHex:
+        `${scalarFrame.slice(0, -64)}${'ac'.repeat(32)}` }, value.rows[1]],
+    };
+    expect(messageBus.encodeAtomicMessageBusCallManifest(changedCoveredProgram)).not.toEqual(encoded);
+  });
+
   it('rejects malformed or truncated V2 output identities', () => {
     const value: messageBus.AtomicMessageBusCallManifest = {
       ...sample(),

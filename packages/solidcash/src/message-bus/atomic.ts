@@ -9,6 +9,8 @@ export const ATOMIC_MESSAGE_BUS_DOMAIN = ATOMIC_MESSAGE_BUS_DOMAIN_HEX;
 export const ATOMIC_MESSAGE_BUS_DOMAIN_V2 = '4c33425553320000';
 /** Lifecycle-capable wire domain: ASCII `L3BUS3\0\0`. */
 export const ATOMIC_MESSAGE_BUS_DOMAIN_V3 = '4c33425553330000';
+/** Transaction-signature provenance domain: ASCII `L3BUS4\0\0`. */
+export const ATOMIC_MESSAGE_BUS_DOMAIN_V4 = '4c33425553340000';
 export { ATOMIC_MESSAGE_BUS_MAX_PARTICIPANTS, ATOMIC_MESSAGE_BUS_MAX_ROWS };
 
 /** Atomic envelopes must use Bitcoin Script OP_PUSHDATA2 in every verifier unlocking bytecode. */
@@ -117,11 +119,13 @@ export interface AtomicRow {
   resultHex: string;
   /** State commitment, event data, transfer amount/token fields, or sidecar response. */
   effectHex: string;
+  /** KTS1 compiler-derived signature provenance. Signature bytes remain outside the manifest to avoid a hash cycle. */
+  transactionSignatureFrameHex?: string;
 }
 
 export interface AtomicMessageBusCallManifest {
-  /** V2 authenticates output identities; V3 additionally authenticates lifecycle geometry. */
-  version?: 1 | 2 | 3;
+  /** V2 authenticates outputs, V3 lifecycle geometry, and V4 transaction-signature provenance. */
+  version?: 1 | 2 | 3 | 4;
   participants: readonly AtomicParticipant[];
   rows: readonly AtomicRow[];
 }
@@ -135,23 +139,61 @@ const checkedHex = (value: string, bytes: number | undefined, field: string): Ui
   return result;
 };
 
+const validateTransactionSignatureFrame = (bytes: Uint8Array, field: string): void => {
+  if (bytes.length === 0) return;
+  const reader = new Reader(bytes);
+  if (binToHex(reader.take(4, `${field}.domain`)) !== '4b545331') {
+    throw new Error(`messageBus: ${field} has an invalid KTS1 domain`);
+  }
+  if (reader.uint(1, `${field}.hashType`) !== 1) {
+    throw new Error(`messageBus: ${field} does not require SIGHASH_ALL`);
+  }
+  const parameters = reader.uint(1, `${field}.parameterCount`);
+  if (parameters === 0) throw new Error(`messageBus: ${field} has no signature parameters`);
+  let prior = -1;
+  for (let parameter = 0; parameter < parameters; parameter += 1) {
+    const index = reader.uint(2, `${field}.parameterIndex`);
+    if (index <= prior) throw new Error(`messageBus: ${field} parameter indices are not canonical`);
+    prior = index;
+    const leaves = reader.uint(1, `${field}.leafCount`);
+    if (leaves === 0) throw new Error(`messageBus: ${field} has an empty signature leaf set`);
+    for (let leaf = 0; leaf < leaves; leaf += 1) {
+      const depth = reader.uint(1, `${field}.pathDepth`);
+      for (let segment = 0; segment < depth; segment += 1) {
+        const kind = reader.uint(1, `${field}.pathKind`);
+        if (kind > 1) throw new Error(`messageBus: ${field} has an unknown signature path segment`);
+        reader.take(2, `${field}.pathValue`);
+      }
+      reader.take(32, `${field}.coveredBytecodeHash`);
+    }
+  }
+  if (!reader.eof()) throw new Error(`messageBus: ${field} has trailing signature provenance bytes`);
+};
+
 export function encodeAtomicMessageBusCallManifest(callManifest: AtomicMessageBusCallManifest): Uint8Array {
   const { participants, rows } = callManifest;
   const requiresV2 = participants.some((participant) => participant.outputLockingBytecode !== undefined
     && participant.outputLockingBytecode.toLowerCase() !== participant.lockingBytecode.toLowerCase());
   const requiresV3 = participants.some((participant) => participant.lifecycle !== undefined);
-  const version = callManifest.version ?? (requiresV3 ? 3 : requiresV2 ? 2 : 1);
+  const requiresV4 = rows.some((row) => (row.transactionSignatureFrameHex?.length ?? 0) > 0);
+  const version = callManifest.version ?? (requiresV4 ? 4 : requiresV3 ? 3 : requiresV2 ? 2 : 1);
   if (version === 1 && requiresV2) {
     throw new Error('messageBus: atomic V1 cannot authenticate a distinct participant output locking bytecode');
   }
   if (version < 3 && requiresV3) {
     throw new Error('messageBus: atomic V1/V2 cannot authenticate participant lifecycle geometry');
   }
+  if (version < 4 && requiresV4) {
+    throw new Error('messageBus: atomic V1/V2/V3 cannot authenticate transaction-signature provenance');
+  }
   if (version === 2 && !requiresV2) {
     throw new Error('messageBus: atomic V2 requires at least one distinct participant output locking bytecode');
   }
   if (version === 3 && !requiresV3) {
     throw new Error('messageBus: atomic V3 requires at least one lifecycle participant');
+  }
+  if (version === 4 && !requiresV4) {
+    throw new Error('messageBus: atomic V4 requires transaction-signature provenance');
   }
   if (participants.length < 2 || participants.length > ATOMIC_MESSAGE_BUS_MAX_PARTICIPANTS) {
     throw new Error(`messageBus: participant count must be in [2, ${ATOMIC_MESSAGE_BUS_MAX_PARTICIPANTS}]`);
@@ -171,8 +213,8 @@ export function encodeAtomicMessageBusCallManifest(callManifest: AtomicMessageBu
   }
   const participantParts = participants.map((participant, index) => {
     const lifecycle = participant.lifecycle;
-    if (version === 3 && participant.outputLockingBytecode === undefined) {
-      throw new Error(`messageBus: atomic V3 participant ${index} must spell its output locking bytecode`);
+    if (version >= 3 && participant.outputLockingBytecode === undefined) {
+      throw new Error(`messageBus: atomic V${version} participant ${index} must spell its output locking bytecode`);
     }
     if (lifecycle !== undefined) {
       const split = lifecycle.kind === 'split';
@@ -226,7 +268,7 @@ export function encodeAtomicMessageBusCallManifest(callManifest: AtomicMessageBu
       uint(participant.maximumSize, 2, 'participant maximum size'),
       uint(participant.trailingUsed, 2, 'participant trailing use'),
       uint(participant.returnOffset, 2, 'return output offset'),
-      ...(version === 3 ? [
+      ...(version >= 3 ? [
         uint(lifecycle === undefined ? 0 : lifecycle.kind === 'split' ? 1 : 2, 1, 'lifecycle mode'),
         uint(lifecycle?.count ?? 0, 2, 'lifecycle count'),
       ] : []),
@@ -244,6 +286,13 @@ export function encodeAtomicMessageBusCallManifest(callManifest: AtomicMessageBu
     const args = checkedHex(row.argsHex, undefined, `row ${index} arguments`);
     const result = checkedHex(row.resultHex, undefined, `row ${index} result`);
     const effect = checkedHex(row.effectHex, undefined, `row ${index} effect`);
+    const signatureFrame = checkedHex(
+      row.transactionSignatureFrameHex ?? '', undefined, `row ${index} transaction signature frame`,
+    );
+    if (signatureFrame.length > 0 && row.kind !== 0) {
+      throw new Error(`messageBus: row ${index} attaches transaction-signature provenance to a non-invocation row`);
+    }
+    validateTransactionSignatureFrame(signatureFrame, `row ${index} transaction signature frame`);
     return concat(
       uint(row.kind, 1, 'row kind'), uint(row.owner, 1, 'row owner'),
       uint(row.consumer, 1, 'row consumer'), uint(row.slot, 2, 'row slot'),
@@ -253,10 +302,11 @@ export function encodeAtomicMessageBusCallManifest(callManifest: AtomicMessageBu
       uint(row.depth, 1, 'row depth'), uint(row.subtreeEnd, 2, 'row subtree end'),
       frame(subject, 'row subject'), frame(args, 'row arguments'),
       frame(result, 'row result'), frame(effect, 'row effect'),
+      ...(version === 4 ? [frame(signatureFrame, 'row transaction signature frame')] : []),
     );
   });
   const body = concat(
-    hexToBin(version === 3 ? ATOMIC_MESSAGE_BUS_DOMAIN_V3
+    hexToBin(version === 4 ? ATOMIC_MESSAGE_BUS_DOMAIN_V4 : version === 3 ? ATOMIC_MESSAGE_BUS_DOMAIN_V3
       : version === 2 ? ATOMIC_MESSAGE_BUS_DOMAIN_V2 : ATOMIC_MESSAGE_BUS_DOMAIN),
     uint(participants.length, 1, 'participant count'), ...participantParts,
     uint(rows.length, 2, 'row count'), ...rowParts,
@@ -269,7 +319,8 @@ export function decodeAtomicMessageBusCallManifest(bytes: Uint8Array): AtomicMes
   const domain = binToHex(reader.take(8, 'domain'));
   const version = domain === ATOMIC_MESSAGE_BUS_DOMAIN ? 1
     : domain === ATOMIC_MESSAGE_BUS_DOMAIN_V2 ? 2
-      : domain === ATOMIC_MESSAGE_BUS_DOMAIN_V3 ? 3 : undefined;
+      : domain === ATOMIC_MESSAGE_BUS_DOMAIN_V3 ? 3
+        : domain === ATOMIC_MESSAGE_BUS_DOMAIN_V4 ? 4 : undefined;
   if (version === undefined) {
     throw new Error('messageBus: invalid atomic callManifest domain');
   }
@@ -291,8 +342,8 @@ export function decodeAtomicMessageBusCallManifest(bytes: Uint8Array): AtomicMes
     const maximumSize = reader.uint(2, `participant ${index}.maximumSize`);
     const trailingUsed = reader.uint(2, `participant ${index}.trailingUsed`);
     const returnOffset = reader.uint(2, `participant ${index}.returnOffset`);
-    const lifecycleMode = version === 3 ? reader.uint(1, `participant ${index}.lifecycleMode`) : 0;
-    const lifecycleCount = version === 3 ? reader.uint(2, `participant ${index}.lifecycleCount`) : 0;
+    const lifecycleMode = version >= 3 ? reader.uint(1, `participant ${index}.lifecycleMode`) : 0;
+    const lifecycleCount = version >= 3 ? reader.uint(2, `participant ${index}.lifecycleCount`) : 0;
     if (lifecycleMode > 2 || (lifecycleMode === 0) !== (lifecycleCount === 0)) {
       throw new Error(`messageBus: participant ${index} has non-canonical lifecycle geometry`);
     }
@@ -351,6 +402,14 @@ export function decodeAtomicMessageBusCallManifest(bytes: Uint8Array): AtomicMes
     const argsHex = binToHex(reader.frame(`row ${index}.arguments`));
     const resultHex = binToHex(reader.frame(`row ${index}.result`));
     const effectHex = binToHex(reader.frame(`row ${index}.effect`));
+    const transactionSignatureFrameHex = version === 4
+      ? binToHex(reader.frame(`row ${index}.transactionSignatureFrame`)) : '';
+    validateTransactionSignatureFrame(
+      hexToBin(transactionSignatureFrameHex), `row ${index} transaction signature frame`,
+    );
+    if (transactionSignatureFrameHex.length > 0 && kind !== 0) {
+      throw new Error(`messageBus: row ${index} attaches transaction-signature provenance to a non-invocation row`);
+    }
     if (kind > 6 || owner >= participantCount || consumer >= participantCount) {
       throw new Error(`messageBus: row ${index} has an invalid kind or participant`);
     }
@@ -358,7 +417,11 @@ export function decodeAtomicMessageBusCallManifest(bytes: Uint8Array): AtomicMes
       kind, owner, consumer, slot, mode, sourceOffset, targetOffset, selectorHex, position,
       parent, depth, subtreeEnd,
       subjectHex, argsHex, resultHex, effectHex,
+      ...(version === 4 && transactionSignatureFrameHex.length > 0 && { transactionSignatureFrameHex }),
     });
+  }
+  if (version === 4 && !rows.some((row) => (row.transactionSignatureFrameHex?.length ?? 0) > 0)) {
+    throw new Error('messageBus: atomic V4 requires transaction-signature provenance');
   }
   if (!reader.eof()) throw new Error('messageBus: trailing bytes after atomic callManifest');
   return { ...(version > 1 && { version }), participants, rows };

@@ -1,8 +1,8 @@
 import { bigIntToVmNumber, binToHex } from '@bitauth/libauth';
-import { scriptToBytecode } from '@solidcash/utils';
+import { scriptToBytecode, type Artifact } from '@solidcash/utils';
 import { describe, expect, it } from 'vitest';
 import { compileString } from 'solidc';
-import { messageBus } from '../../src/index.js';
+import { messageBus, SignatureTemplate } from '../../src/index.js';
 import { encodeFunctionArgument } from '../../src/Argument.js';
 import { provisionalInvocationResult } from '../../src/message-bus/compose.js';
 
@@ -108,6 +108,58 @@ describe('messageBus.encodeMessageBatch', () => {
     ]);
     expect(hex.startsWith(`53434231010002${add.selector}000000000000`)).toBe(true);
     expect(hex).toContain(`${clear.selector}0100000000000000`);
+  });
+
+  it('derives direct and composite KTS1 provenance from compiler policy without embedding signatures', () => {
+    const selector = 'a1b2c3d4';
+    const inputs = [{ name: 'direct', type: 'sig' }, { name: 'authorization', type: 'Authorization' }];
+    const signed = {
+      ...artifact,
+      abi: [{ name: 'authorize', selector, inputs, outputs: [], modifiers: ['public'] }],
+      structs: [{ name: 'Authorization', fields: [{ name: 'proof', type: 'sig' }, { name: 'key', type: 'pubkey' }] }],
+      messageBus: {
+        ...artifact.messageBus!,
+        handlers: [{
+          name: 'authorize', selector, inputs, outputs: [], eligible: true,
+          usesTransactionSignature: true,
+          transactionSignaturePolicy: {
+            hashType: 'all' as const, parameterIndices: [0, 1],
+            coveredBytecodes: [{ parameterIndex: 1, bytecode: '52' }],
+          },
+          signatureBytecode: '51',
+        }],
+      },
+    } as Artifact;
+    const direct = new SignatureTemplate(new Uint8Array(32).fill(0x11));
+    const nested = new SignatureTemplate(new Uint8Array(32).fill(0x22));
+    const encoded = messageBus.encodeMessageBatch(signed, [{
+      function: 'authorize', args: [direct, { proof: nested, key: new Uint8Array(33).fill(3) }],
+    }]);
+    const provenance = encoded.rows[0].transactionSignatureFrameHex;
+
+    expect(provenance.startsWith('4b5453310102')).toBe(true);
+    expect(provenance).not.toContain('11'.repeat(32));
+    expect(provenance).not.toContain('22'.repeat(32));
+    expect(provenance).toBe(messageBus.messageBusTransactionSignatureFrameHex(signed, 'authorize', selector));
+
+    const reordered = structuredClone(signed);
+    reordered.messageBus!.handlers[0].transactionSignaturePolicy!.parameterIndices = [1, 0];
+    expect(() => messageBus.encodeMessageBatch(reordered, [{
+      function: 'authorize', args: [direct, { proof: nested, key: new Uint8Array(33).fill(3) }],
+    }])).toThrow(/non-canonical transaction-signature parameter index/);
+    const uncovered = structuredClone(signed);
+    delete uncovered.messageBus!.handlers[0].signatureBytecode;
+    uncovered.messageBus!.handlers[0].transactionSignaturePolicy!.coveredBytecodes = [];
+    expect(() => messageBus.encodeMessageBatch(uncovered, [{
+      function: 'authorize', args: [direct, { proof: nested, key: new Uint8Array(33).fill(3) }],
+    }])).toThrow(/has no covered bytecode/);
+    const foreignCoverage = structuredClone(signed);
+    foreignCoverage.messageBus!.handlers[0].transactionSignaturePolicy!.coveredBytecodes = [
+      { parameterIndex: 2, bytecode: '52' },
+    ];
+    expect(() => messageBus.encodeMessageBatch(foreignCoverage, [{
+      function: 'authorize', args: [direct, { proof: nested, key: new Uint8Array(33).fill(3) }],
+    }])).toThrow(/non-canonical covered-bytecode parameter index/);
   });
 
   it('authenticates mixed static and ordinary rows for one participant in message-bus v2 order', () => {

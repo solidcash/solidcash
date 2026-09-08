@@ -4,7 +4,7 @@ import type {
 } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
 import {
-  encodeMessageBatch, resolveMessageBusAbiFunction, resolveMessageBusHandler,
+  encodeMessageBatch, messageBusTransactionSignatureFrameHex, resolveMessageBusAbiFunction, resolveMessageBusHandler,
   type EncodedMessageBatch, type MessageBatchCall,
 } from './message-bus.js';
 import { MessageBusDiagnosticError } from './diagnostics.js';
@@ -404,6 +404,15 @@ export function atomicParticipantPolicyHash(artifact: Artifact): string {
     tokenOperations: (handler.tokenContainerAccesses ?? []).map((access) =>
       [access.keyParam, ...access.operations, access.transferCount ?? 0, access.transferNftCount ?? 0]),
     lifecycleTopology: handler.lifecycleTopology ?? null,
+    usesTransactionSignature: handler.usesTransactionSignature ?? false,
+    transactionSignaturePolicy: handler.transactionSignaturePolicy ? {
+      hashType: handler.transactionSignaturePolicy.hashType,
+      parameterIndices: [...handler.transactionSignaturePolicy.parameterIndices],
+      coveredBytecodes: (handler.transactionSignaturePolicy.coveredBytecodes ?? []).map((entry) => ({
+        parameterIndex: entry.parameterIndex, bytecode: entry.bytecode.toLowerCase(),
+      })),
+    } : null,
+    signatureBytecode: handler.signatureBytecode?.toLowerCase() ?? '',
     childDeployments: (handler.childDeployments ?? []).map((site) => ({
       siteIndex: site.siteIndex,
       contractName: site.contractName,
@@ -464,6 +473,16 @@ export function finalizeAtomicInvocationGraph(
     participant.outputLockingBytecode !== undefined
       && participant.outputLockingBytecode.toLowerCase() !== participant.lockingBytecode.toLowerCase());
   const lifecycleV3 = plan.participants.some((participant) => participant.lifecycle !== undefined);
+  const transactionSignatureFrames = plan.invocations.map((invocation) => {
+    const participant = plan.participants[invocation.callee];
+    return participant.artifact.messageBus?.atomicMessageBus?.protocolVersions?.includes(4)
+      ? messageBusTransactionSignatureFrameHex(participant.artifact, invocation.function, invocation.selectorHex)
+      : '';
+  });
+  const signatureV4 = transactionSignatureFrames.some((signatureFrame, invocationIndex) =>
+    signatureFrame.length > 0
+      && plan.participants[plan.invocations[invocationIndex].callee]
+        .artifact.messageBus?.atomicMessageBus?.protocolVersions?.includes(4));
   if (outputIdentityV2) {
     const legacy = plan.participants.findIndex((participant) =>
       !participant.artifact.messageBus?.atomicMessageBus?.protocolVersions?.includes(2));
@@ -479,6 +498,15 @@ export function finalizeAtomicInvocationGraph(
     if (legacy >= 0) {
       throw new Error(
         `messageBus: participant ${legacy} verifier does not advertise atomic callManifest protocol 3`,
+      );
+    }
+  }
+  if (signatureV4) {
+    const legacy = plan.participants.findIndex((participant) =>
+      !participant.artifact.messageBus?.atomicMessageBus?.protocolVersions?.includes(4));
+    if (legacy >= 0) {
+      throw new Error(
+        `messageBus: participant ${legacy} verifier does not advertise atomic callManifest protocol 4`,
       );
     }
   }
@@ -516,7 +544,7 @@ export function finalizeAtomicInvocationGraph(
     const internalCategory = (category.match(/../g) as string[]).reverse().join('');
     return {
       lockingBytecode, stateCategory: internalCategory,
-      ...((outputIdentityV2 || lifecycleV3) && { outputLockingBytecode }),
+      ...((outputIdentityV2 || lifecycleV3 || signatureV4) && { outputLockingBytecode }),
       fixedSize, actualSize, maximumSize,
       trailingUsed: actualSize - fixedSize,
       // Route layouts publish the union of every eligible handler, so a void selected batch can retain a physical
@@ -547,6 +575,21 @@ export function finalizeAtomicInvocationGraph(
     if (completion === undefined) {
       throw new Error(`messageBus: invocation ${invocation.index} has no compiler-authored completion position`);
     }
+    const signatureFrame = transactionSignatureFrames[invocation.index];
+    if (signatureV4) {
+      const projected = plan.participants[invocation.callee].batch.rows[invocation.localRow];
+      if (projected === undefined || projected.selectorHex.toLowerCase() !== invocation.selectorHex.toLowerCase()
+        || projected.argsHex.toLowerCase() !== invocation.argsHex.toLowerCase()) {
+        throw new Error(
+          `messageBus: invocation ${invocation.index} signature provenance is not aligned with its encoded row`,
+        );
+      }
+      if (projected.transactionSignatureFrameHex.toLowerCase() !== signatureFrame.toLowerCase()) {
+        throw new Error(
+          `messageBus: invocation ${invocation.index} signature provenance disagrees with compiler policy`,
+        );
+      }
+    }
     return {
       kind: 0, owner: caller === 0xff ? invocation.callee : caller, consumer: invocation.callee,
       slot: invocation.consumerCallsiteId ?? 0xffff, mode: callOptionsByte(invocation),
@@ -559,6 +602,7 @@ export function finalizeAtomicInvocationGraph(
       position: completion, parent: invocation.parent ?? 0xffff, depth: invocation.depth,
       subtreeEnd: invocation.subtreeEnd, subjectHex, argsHex: invocation.argsHex, resultHex: result.toLowerCase(),
       effectHex: '',
+      ...(signatureV4 && signatureFrame.length > 0 && { transactionSignatureFrameHex: signatureFrame }),
     };
   });
   const resourceKeys = new Set(resourceEffects.map((effect) => `${effect.participant}:${effect.offset}`));
@@ -998,7 +1042,8 @@ export function finalizeAtomicInvocationGraph(
     ...deploymentRows, ...sidecarRows,
   ];
   const callManifest = {
-    ...(lifecycleV3 ? { version: 3 as const } : outputIdentityV2 ? { version: 2 as const } : {}), participants, rows,
+    ...(signatureV4 ? { version: 4 as const }
+      : lifecycleV3 ? { version: 3 as const } : outputIdentityV2 ? { version: 2 as const } : {}), participants, rows,
   };
   const bytes = encodeAtomicMessageBusCallManifest(callManifest);
   return Object.freeze({ plan, layout, callManifest, bytes, messageEnvelope: encodeAtomicMessageEnvelope(callManifest) });

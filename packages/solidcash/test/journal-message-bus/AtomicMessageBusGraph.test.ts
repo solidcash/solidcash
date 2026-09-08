@@ -4,6 +4,9 @@ import { compileString } from 'solidc';
 import { messageBus, SignatureTemplate } from '../../src/index.js';
 
 const artifact = (selector: string, inputType = 'int'): Artifact => ({
+  contractName: 'Participant',
+  abi: [{ name: 'run', selector, inputs: [{ name: 'n', type: inputType }], outputs: [], modifiers: ['public'] }],
+  structs: [],
   messageBus: {
     maximumRows: 1,
     atomicMessageBus: { protocolVersions: [1, 2, 3] },
@@ -14,7 +17,9 @@ const artifact = (selector: string, inputType = 'int'): Artifact => ({
   // Only policy fields are consumed by this pure planner fixture.
 } as unknown as Artifact);
 
-const lifecycleArtifact = (kind: 'split' | 'merge', protocolVersions: readonly (1 | 2 | 3)[] = [1, 2, 3]): Artifact => {
+const lifecycleArtifact = (
+  kind: 'split' | 'merge', protocolVersions: readonly (1 | 2 | 3 | 4)[] = [1, 2, 3],
+): Artifact => {
   const selector = kind === 'split' ? '31313131' : '32323232';
   const fixedOne = { source: 'fixed' as const, value: 1 };
   const count = { source: 'parameter' as const, parameterIndex: 0, addend: 0 };
@@ -153,6 +158,72 @@ describe('atomic compiled invocation graph', () => {
       lifecycle: { kind: 'split', inputTail: 'funding', outputTail: 'created-masters' },
     });
     expect(finalized.layout.participantInputs).toEqual([0, 3]);
+  });
+
+  it('derives V4 signature provenance from handler policy and refuses row or protocol drift', () => {
+    const base = plan();
+    const v4Artifact = (source: Artifact, signed: boolean): Artifact => ({
+      ...source,
+      messageBus: {
+        ...source.messageBus!,
+        atomicMessageBus: { ...source.messageBus!.atomicMessageBus!, protocolVersions: [1, 2, 3, 4] },
+        handlers: source.messageBus!.handlers.map((handler) => signed ? {
+          ...handler, usesTransactionSignature: true, signatureBytecode: '51',
+          transactionSignaturePolicy: { hashType: 'all' as const, parameterIndices: [0] },
+          inputs: [{ name: 'proof', type: 'sig' }],
+        } : handler),
+      },
+      abi: signed ? [{
+        name: 'run', selector: source.abi[0].selector, inputs: [{ name: 'proof', type: 'sig' }],
+        outputs: [], modifiers: ['public'],
+      }] : source.abi,
+    });
+    const firstArtifact = v4Artifact(base.participants[0].artifact, true);
+    const secondArtifact = v4Artifact(base.participants[1].artifact, false);
+    const signatureFrame = messageBus.messageBusTransactionSignatureFrameHex(firstArtifact, 'run', '11111111');
+    const signedPlan: messageBus.CompiledGraphPlan = {
+      ...base,
+      participants: base.participants.map((participant, index) => ({
+        ...participant,
+        artifact: index === 0 ? firstArtifact : secondArtifact,
+        batch: {
+          blob: new Uint8Array(), routeWitnesses: [], rowCount: 1, results: [],
+          rows: [{
+            row: 0, function: 'run', selectorHex: index === 0 ? '11111111' : '22222222',
+            argsHex: index === 0 ? '01' : '02',
+            transactionSignatureFrameHex: index === 0 ? signatureFrame : '',
+          }],
+        },
+      })),
+    };
+    const finalized = messageBus.finalizeAtomicInvocationGraph(
+      signedPlan, ['aa'.repeat(32), 'bb'.repeat(32)], { 1: '2a' },
+    );
+    expect(finalized.callManifest.version).toBe(4);
+    expect(finalized.callManifest.rows[0].transactionSignatureFrameHex).toBe(signatureFrame);
+    expect(finalized.callManifest.rows[1].transactionSignatureFrameHex).toBeUndefined();
+
+    const changedPolicy = structuredClone(firstArtifact);
+    changedPolicy.messageBus!.handlers[0].signatureBytecode = '52';
+    expect(messageBus.atomicParticipantPolicyHash(changedPolicy))
+      .not.toBe(messageBus.atomicParticipantPolicyHash(firstArtifact));
+
+    const misaligned = structuredClone(signedPlan);
+    misaligned.participants[0].batch.rows[0].argsHex = '02';
+    expect(() => messageBus.finalizeAtomicInvocationGraph(
+      misaligned, ['aa'.repeat(32), 'bb'.repeat(32)], { 1: '2a' },
+    )).toThrow(/provenance is not aligned/);
+    const forged = structuredClone(signedPlan);
+    forged.participants[0].batch.rows[0].transactionSignatureFrameHex =
+      `${signatureFrame.slice(0, -2)}${signatureFrame.endsWith('00') ? '01' : '00'}`;
+    expect(() => messageBus.finalizeAtomicInvocationGraph(
+      forged, ['aa'.repeat(32), 'bb'.repeat(32)], { 1: '2a' },
+    )).toThrow(/provenance disagrees with compiler policy/);
+    const legacyPeer = structuredClone(signedPlan);
+    legacyPeer.participants[1].artifact.messageBus!.atomicMessageBus!.protocolVersions = [1, 2, 3];
+    expect(() => messageBus.finalizeAtomicInvocationGraph(
+      legacyPeer, ['aa'.repeat(32), 'bb'.repeat(32)], { 1: '2a' },
+    )).toThrow(/protocol 4/);
   });
 
   it('projects forwarded and constructed signature arrays out of child invocation bytes', () => {

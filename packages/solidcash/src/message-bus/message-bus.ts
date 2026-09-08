@@ -1,4 +1,4 @@
-import { binToHex, encodeLockingBytecodeP2pkh, hexToBin } from '@bitauth/libauth';
+import { binToHex, encodeLockingBytecodeP2pkh, hexToBin, sha256 } from '@bitauth/libauth';
 import {
   ArrayType, decodePushdataValue, parseArrayTypeString, parseType, type Artifact, type StateValue, scriptToBytecode,
   type StructDefinitionInfo, type ExternalCallExpression,
@@ -93,6 +93,8 @@ export interface EncodedMessageBatch {
     selectorHex: string;
     /** Exact pushdata-encoded ABI argument vector parsed by message-bus batch. */
     argsHex: string;
+    /** Compiler-derived transaction-signature provenance; never contains signature bytes. */
+    transactionSignatureFrameHex: string;
   }[];
 }
 
@@ -259,6 +261,72 @@ const transactionSignatureLeaves = (
   activeStructs.delete(type);
   return leaves;
 };
+
+const TRANSACTION_SIGNATURE_FRAME = Uint8Array.of(0x4b, 0x54, 0x53, 0x31); // KTS1
+
+/**
+ * Commit the exact row-local signature provenance without creating a signature/manifest hash cycle. Signature
+ * bytes remain in aligned route witnesses; SIGHASH_ALL binds those bytes to the transaction carrying this frame.
+ */
+const transactionSignatureFrame = (
+  handler: NonNullable<Artifact['messageBus']>['handlers'][number],
+  structs: readonly StructDefinitionInfo[] | undefined,
+): Uint8Array => {
+  if (!handler.usesTransactionSignature) return new Uint8Array();
+  const policy = handler.transactionSignaturePolicy;
+  if (policy?.hashType !== 'all' || policy.parameterIndices.length === 0) {
+    throw new Error(`Handler '${handler.name}' has no exact SIGHASH_ALL transaction-signature policy`);
+  }
+  if (policy.parameterIndices.length > 0xff) {
+    throw new Error(`Handler '${handler.name}' has too many transaction-signature parameters`);
+  }
+  const covered = new Map<number, string>();
+  for (const entry of policy.coveredBytecodes ?? []) {
+    if (!Number.isSafeInteger(entry.parameterIndex)
+      || !policy.parameterIndices.includes(entry.parameterIndex)
+      || covered.has(entry.parameterIndex)) {
+      throw new Error(`Handler '${handler.name}' has a non-canonical covered-bytecode parameter index`);
+    }
+    covered.set(entry.parameterIndex, entry.bytecode);
+  }
+  const parts: Uint8Array[] = [TRANSACTION_SIGNATURE_FRAME, Uint8Array.of(1, policy.parameterIndices.length)];
+  let prior = -1;
+  for (const parameterIndex of policy.parameterIndices) {
+    if (!Number.isSafeInteger(parameterIndex) || parameterIndex <= prior || parameterIndex >= handler.inputs.length) {
+      throw new Error(`Handler '${handler.name}' has a non-canonical transaction-signature parameter index`);
+    }
+    prior = parameterIndex;
+    const leaves = transactionSignatureLeaves(handler.inputs[parameterIndex].type, structs);
+    if (leaves.length === 0 || leaves.length > 0xff) {
+      throw new Error(`Handler '${handler.name}' transaction-signature parameter ${parameterIndex} has no exact leaves`);
+    }
+    const bytecode = covered.get(parameterIndex) ?? handler.signatureBytecode;
+    if (bytecode === undefined || !/^(?:[0-9a-fA-F]{2})+$/.test(bytecode)) {
+      throw new Error(`Handler '${handler.name}' transaction-signature parameter ${parameterIndex} has no covered bytecode`);
+    }
+    parts.push(uintLe(BigInt(parameterIndex), 2), Uint8Array.of(leaves.length));
+    for (const leaf of leaves) {
+      if (leaf.path.length > 0xff) throw new Error(`Handler '${handler.name}' transaction-signature path is too deep`);
+      parts.push(Uint8Array.of(leaf.path.length));
+      for (const segment of leaf.path) {
+        parts.push(segment.kind === 'field'
+          ? concat(Uint8Array.of(0), uintLe(BigInt(segment.index), 2))
+          : concat(Uint8Array.of(1), uintLe(BigInt(segment.bound ?? 0xffff), 2)));
+      }
+      parts.push(sha256.hash(hexToBin(bytecode)));
+    }
+  }
+  return concat(...parts);
+};
+
+/** Derive the canonical KTS1 frame from compiler-owned handler metadata, never invocation input. */
+export function messageBusTransactionSignatureFrameHex(
+  artifact: Artifact, name: string, selector?: string,
+): string {
+  const handler = resolveMessageBusHandler(artifact, name, selector);
+  if (!handler) throw new Error(`Unknown message-bus batch handler '${name}'`);
+  return binToHex(transactionSignatureFrame(handler, artifact.structs));
+}
 
 const isEntireTransactionSignatureType = (type: string): boolean => {
   if (type === 'sig') return true;
@@ -518,7 +586,7 @@ export function encodeMessageBatch(
   const signatureWitnessValues = new Map<string, FunctionArgument>();
   const results: { row: number; types: readonly string[] }[] = [];
   const projectedRows: {
-    row: number; function: string; selectorHex: string; argsHex: string;
+    row: number; function: string; selectorHex: string; argsHex: string; transactionSignatureFrameHex: string;
   }[] = [];
   const rows = invocations.map((invocation, rowIndex) => {
     const handler = resolveMessageBusHandler(artifact, invocation.function, invocation.selector);
@@ -691,6 +759,7 @@ export function encodeMessageBatch(
       function: invocation.function,
       selectorHex: handler.selector,
       argsHex: binToHex(argsBlob),
+      transactionSignatureFrameHex: binToHex(transactionSignatureFrame(handler, structs)),
     });
     let logicalValue = invocation.msgValue ?? 0n;
     if (handler.usesMsgValue && (handler.transfers?.length ?? 0) > 0) {

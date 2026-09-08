@@ -3763,15 +3763,15 @@ describe('kernel counter-key mapping loop compose', () => {
     await expect(contract.batch([
       { function: 'write', args: [2n, 10n] },
       { function: 'write', args: [3n, 10n] },
-    ]).build()).rejects.toThrow(/read-your-writes transition/);
+    ]).build()).resolves.toBeDefined();
     await expect(contract.batch([
       { function: 'write', args: [3n, 10n] },
       { function: 'write', args: [3n, 11n] },
-    ]).build()).rejects.toThrow(/read-your-writes transition/);
+    ]).build()).resolves.toBeDefined();
     await expect(contract.batch([
       { function: 'write', args: [3n, 10n] },
       { function: 'write', args: [3n, 10n] },
-    ]).build()).rejects.toThrow(/read-your-writes transition/);
+    ]).build()).resolves.toBeDefined();
 
     const zeroCall = contract.batch([{ function: 'write', args: [0n, 10n] }]);
     const zeroBuilder = await zeroCall.build();

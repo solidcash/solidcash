@@ -176,9 +176,9 @@ export function decodeKernelEntryJournalRecord(encoded: Uint8Array): KernelEntry
 /**
  * Validate the record vector accepted by the transport-only kernel route.
  *
- * Dirty records describe a pending state transition and require covenant-verified final output settlement. Until
- * that flush is implemented, accepting one here would give callers a carrier shape the route cannot soundly
- * publish. Clean authenticated records and clean synthetic absence tombstones are the only supported forms.
+ * Dirty records describe an in-progress state transition. They are valid only after compiler-generated route
+ * execution has authenticated and transformed a clean carrier; accepting one from the caller would bypass that
+ * provenance check. Transport therefore admits only clean authenticated records and clean synthetic tombstones.
  */
 export function validateKernelEntryJournalTransportRecords(
   encodedRecords: readonly Uint8Array[],

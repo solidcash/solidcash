@@ -23609,7 +23609,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /** True for the fixed-width scalar operations whose value can live entirely in one journal carrier. */
-  private kernelJournalCanSettleExistingScalar(
+  private kernelJournalCanSettleScalar(
     node: MappingAssignNode | MappingDeleteNode, isRawbytes: boolean, isChunkable: boolean,
   ): boolean {
     return this.sortedUpsertLoopJournalAccessStreamIndex !== undefined
@@ -23668,16 +23668,24 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emitKernelJournalRecordExtract(loc); // selected carrier
     this.stack = [...trackedStack];
 
-    // Accept only authenticated clean pre-state (first touch) or authenticated dirty pending state (later touch).
+    // Accept authenticated clean pre-state (first touch), authenticated dirty pending state, or a synthetic live
+    // node created by an earlier insertion in this transaction. Preserve provenance in the replacement header.
     this.emit(encodeInt(2n), loc); this.emit(Op.OP_SPLIT, loc); // tag+flags, body
     this.emit(Op.OP_SWAP, loc);
     this.emit(Op.OP_DUP, loc); this.emit(new Uint8Array([0x05, 0x01]), loc); this.emit(Op.OP_EQUAL, loc);
     this.emit(Op.OP_IF, loc);
-    this.emit(Op.OP_DROP, loc); this.emit(Op.OP_1, loc); // first touch
+    this.emit(Op.OP_DROP, loc); this.emit(Op.OP_1, loc); this.emit(new Uint8Array([0x05, 0x03]), loc);
+    // first touch, authenticated dirty header
     this.emit(Op.OP_ELSE, loc);
-    this.emit(new Uint8Array([0x05, 0x03]), loc); this.emit(Op.OP_EQUALVERIFY, loc);
-    this.emit(Op.OP_0, loc); // pending touch
+    this.emit(Op.OP_DUP, loc); this.emit(new Uint8Array([0x05, 0x03]), loc); this.emit(Op.OP_EQUAL, loc);
+    this.emit(Op.OP_IF, loc);
+    this.emit(Op.OP_DROP, loc); this.emit(Op.OP_0, loc); this.emit(new Uint8Array([0x05, 0x03]), loc);
+    this.emit(Op.OP_ELSE, loc);
+    this.emit(new Uint8Array([0x05, 0x0a]), loc); this.emit(Op.OP_EQUALVERIFY, loc);
+    this.emit(Op.OP_0, loc); this.emit(new Uint8Array([0x05, 0x0a]), loc);
+    this.emit(Op.OP_ENDIF, loc);
     this.emit(Op.OP_ENDIF, loc); // body, first
+    this.emit(Op.OP_TOALTSTACK, loc); // replacement header
     this.emit(Op.OP_SWAP, loc);
     this.emit(encodeInt(20n), loc); this.emit(Op.OP_SPLIT, loc); // first, collection, slot|next|value
     this.emit(Op.OP_SWAP, loc); this.emit(collectionHash, loc); this.emit(Op.OP_EQUALVERIFY, loc);
@@ -23691,10 +23699,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_FROMALTSTACK, loc); // slot, next, old value, first
     this.emit(Op.OP_IF, loc);
     this.scopeDepth += 1;
+    this.emit(Op.OP_FROMALTSTACK, loc); // replacement header
     this.emit(Op.OP_FROMALTSTACK, loc); // target ordinal
     this.emit(Op.OP_FROMALTSTACK, loc); // access flags
     this.emit(encodeInt(27n), loc); this.emit(Op.OP_NUMEQUALVERIFY, loc);
-    this.emit(Op.OP_TOALTSTACK, loc); // retain ordinal
+    this.emit(Op.OP_TOALTSTACK, loc); // retain target ordinal
+    this.emit(Op.OP_TOALTSTACK, loc); // retain replacement header above it
     // Authenticate exactly one physical entry input and reserve its one route-final output.
     const blockSize = this.currentFunction.blockLayout?.blockSize ?? 1;
     this.emitTrailingWriteInputBase(blockSize, loc, undefined, 3);
@@ -23718,10 +23728,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.scopeDepth -= 1;
     this.emit(Op.OP_ELSE, loc);
     this.scopeDepth += 1;
+    this.emit(Op.OP_FROMALTSTACK, loc); // replacement header
     this.emit(Op.OP_FROMALTSTACK, loc); // ordinal
     this.emit(Op.OP_FROMALTSTACK, loc); // access flags
     this.emit(encodeInt(11n), loc); this.emit(Op.OP_NUMEQUALVERIFY, loc);
     this.emit(Op.OP_TOALTSTACK, loc); // ordinal
+    this.emit(Op.OP_TOALTSTACK, loc); // replacement header above it
     this.scopeDepth -= 1;
     this.emit(Op.OP_ENDIF, loc); // slot, next, old value
 
@@ -23735,8 +23747,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(encodeInt(BigInt(this.getStackIndex('(credit_amt)') + 3)), loc); this.emit(Op.OP_PICK, loc);
       this.emit(Op.OP_BIN2NUM, loc); this.emit(isMinus ? Op.OP_SUB : Op.OP_ADD, loc);
     }
-    // Encode a dirty authenticated carrier: 05|03|collection20|slot32|next32|newValue.
-    this.emit(new Uint8Array([0x05, 0x03, ...collectionHash]), loc);
+    // Encode the dirty carrier while preserving authenticated/synthetic provenance.
+    this.emit(Op.OP_FROMALTSTACK, loc); this.emit(collectionHash, loc); this.emit(Op.OP_CAT, loc);
     this.emit(encodeInt(3n), loc); this.emit(Op.OP_ROLL, loc); this.emit(Op.OP_CAT, loc);
     this.emit(encodeInt(2n), loc); this.emit(Op.OP_ROLL, loc); this.emit(Op.OP_CAT, loc);
     this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_CAT, loc); // dirty record
@@ -23761,11 +23773,89 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.stack = trackedStack;
   }
 
+  /** Capture the current insertion's target and predecessor ordinals across the topology verifier. */
+  private emitKernelJournalInsertOrdinals(loc: SingleLocationData): void {
+    this.emit(encodeInt(BigInt(this.getStackIndex(this.sortedUpsertLoopJournalCursorName))), loc);
+    this.emit(Op.OP_PICK, loc);
+    this.emit(encodeInt(21n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_NIP, loc);
+    this.emit(Op.OP_1, loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_NIP, loc);
+    this.emit(encodeInt(2n), loc); this.emit(Op.OP_SPLIT, loc); // target, predecessor || tail
+    this.emit(encodeInt(2n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_DROP, loc);
+    this.emit(Op.OP_BIN2NUM, loc); this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_BIN2NUM, loc);
+    this.emit(Op.OP_SWAP, loc); // target ordinal, predecessor ordinal
+    this.stack.unshift('(kernel_insert_predecessor_ordinal)', '(kernel_insert_target_ordinal)');
+  }
+
+  /**
+   * Transition an insertion's predecessor and synthetic target after their identities/topology were authenticated.
+   * The predecessor keeps its value and provenance while linking to the target; the target becomes a live dirty
+   * synthetic node linked to the predecessor's former successor.
+   */
+  private emitKernelJournalInsertMutation(node: MappingAssignNode, loc: SingleLocationData): void {
+    const trackedStack = [...this.stack];
+    const collectionHash = computeCollectionHash(this.entrySlots[node.entrySlotIndex]!.collectionSignature);
+
+    this.emit(encodeInt(BigInt(this.getStackIndex('(kernel_insert_predecessor_ordinal)'))), loc);
+    this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(encodeInt(BigInt(this.getStackIndex(KERNEL_JOURNAL_RECORDS) + 2)), loc); this.emit(Op.OP_PICK, loc);
+    this.emitPushdataSkip(PrimitiveType.BIGINT, loc); this.emit(Op.OP_SWAP, loc);
+    this.emitKernelJournalRecordExtract(loc); // predecessor ordinal, predecessor record
+    this.emit(encodeInt(2n), loc); this.emit(Op.OP_SPLIT, loc); // ordinal, header, body
+    this.emit(Op.OP_SWAP, loc); // ordinal, body, header
+    this.emit(Op.OP_DUP, loc); this.emit(new Uint8Array([0x05, 0x01]), loc); this.emit(Op.OP_EQUAL, loc);
+    this.emit(Op.OP_IF, loc);
+    this.emit(Op.OP_DROP, loc); this.emit(new Uint8Array([0x05, 0x03, ...collectionHash]), loc);
+    this.emit(Op.OP_ELSE, loc);
+    this.emit(Op.OP_DUP, loc); this.emit(new Uint8Array([0x05, 0x03]), loc); this.emit(Op.OP_EQUAL, loc);
+    this.emit(Op.OP_IF, loc);
+    this.emit(Op.OP_DROP, loc); this.emit(new Uint8Array([0x05, 0x03, ...collectionHash]), loc);
+    this.emit(Op.OP_ELSE, loc);
+    this.emit(new Uint8Array([0x05, 0x0a]), loc); this.emit(Op.OP_EQUALVERIFY, loc);
+    this.emit(new Uint8Array([0x05, 0x0a, ...collectionHash]), loc);
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_ENDIF, loc); // ordinal, body, dirty header
+    this.emit(Op.OP_SWAP, loc); // ordinal, header, body
+    this.emit(encodeInt(20n), loc); this.emit(Op.OP_SPLIT, loc);
+    this.emit(Op.OP_SWAP, loc); this.emit(collectionHash, loc); this.emit(Op.OP_EQUALVERIFY, loc);
+    this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc);
+    this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); // ordinal, header, slot, old next, value
+    this.emit(encodeInt(1n), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_TOALTSTACK, loc); // old next
+    this.emit(Op.OP_TOALTSTACK, loc); // predecessor value
+    this.emit(Op.OP_DROP, loc); // old next
+    this.emit(encodeInt(BigInt(this.getStackIndex('(credit_hk)') + 3)), loc); this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_CAT, loc); this.emit(Op.OP_CAT, loc);
+    this.emit(Op.OP_FROMALTSTACK, loc); this.emit(Op.OP_CAT, loc); // ordinal, predecessor replacement
+    this.emit(encodeInt(BigInt(this.getStackIndex(KERNEL_JOURNAL_RECORDS) + 2)), loc); this.emit(Op.OP_PICK, loc);
+    this.emit(encodeInt(2n), loc); this.emit(Op.OP_ROLL, loc); this.emit(Op.OP_ROT, loc);
+    this.emitKernelJournalRecordReplaceInline(loc);
+    this.stack = [...trackedStack];
+    this.emitReplace(this.getStackIndex(KERNEL_JOURNAL_RECORDS) + 1, node);
+
+    // The predecessor successor is the only value retained on the altstack.
+    this.emit(Op.OP_FROMALTSTACK, loc); // old next
+    this.emit(encodeInt(BigInt(this.getStackIndex('(kernel_insert_target_ordinal)') + 1)), loc);
+    this.emit(Op.OP_PICK, loc); // old next, target ordinal
+    this.emit(new Uint8Array([0x05, 0x0a, ...collectionHash]), loc);
+    this.emit(encodeInt(BigInt(this.getStackIndex('(credit_hk)') + 3)), loc); this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_CAT, loc);
+    this.emit(encodeInt(2n), loc); this.emit(Op.OP_ROLL, loc); this.emit(Op.OP_CAT, loc);
+    this.emit(encodeInt(BigInt(this.getStackIndex('(credit_amt)') + 2)), loc); this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_BIN2NUM, loc); this.emit(Op.OP_CAT, loc); // target ordinal, target replacement
+    this.emit(encodeInt(BigInt(this.getStackIndex(KERNEL_JOURNAL_RECORDS) + 2)), loc); this.emit(Op.OP_PICK, loc);
+    this.emit(encodeInt(2n), loc); this.emit(Op.OP_ROLL, loc); this.emit(Op.OP_ROT, loc);
+    this.emitKernelJournalRecordReplaceInline(loc);
+    this.stack = [...trackedStack];
+    this.emitReplace(this.getStackIndex(KERNEL_JOURNAL_RECORDS) + 1, node);
+    this.emit(Op.OP_DROP, loc); this.popFromStack();
+    this.emit(Op.OP_DROP, loc); this.popFromStack();
+  }
+
   private emitKernelJournalRecordIdentitySelect(loc: SingleLocationData): void {
     this.emitKernelJournalRecordExtract(loc);
     // A selected carrier is either authenticated pre-state (0x01), an internally-produced authenticated dirty
-    // value (0x03), or a clean synthetic absence tombstone (0x0c). Route-entry validation excludes caller-supplied
-    // dirty carriers; only the exact existing-scalar mutation path can create 0x03.
+    // value (0x03), a live synthetic node created by an earlier row (0x0a), or a clean synthetic absence tombstone
+    // (0x0c). Route-entry validation excludes caller-supplied dirty carriers.
     this.emit(Op.OP_DUP, loc);
     this.emit(Op.OP_1, loc); this.emit(Op.OP_SPLIT, loc);
     this.emit(Op.OP_SWAP, loc);
@@ -23775,6 +23865,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_SWAP, loc); // carrier, flags || body, body, flags
     this.emit(Op.OP_DUP, loc); this.emit(Op.OP_1, loc); this.emit(Op.OP_EQUAL, loc);
     this.emit(Op.OP_OVER, loc); this.emit(Op.OP_3, loc); this.emit(Op.OP_NUMEQUAL, loc);
+    this.emit(Op.OP_BOOLOR, loc);
+    this.emit(Op.OP_OVER, loc); this.emit(encodeInt(10n), loc); this.emit(Op.OP_NUMEQUAL, loc);
     this.emit(Op.OP_BOOLOR, loc);
     this.emit(Op.OP_IF, loc);
     this.emit(Op.OP_DROP, loc); // authenticated flags
@@ -23964,7 +24056,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_TOALTSTACK, loc); // remaining, ordinal, rest; retain record
     this.emit(Op.OP_FROMALTSTACK, loc); // remaining, ordinal, rest, record
     this.emit(encodeInt(2n), loc); this.emit(Op.OP_SPLIT, loc);
-    this.emit(Op.OP_SWAP, loc); this.emit(new Uint8Array([0x05, 0x03]), loc); this.emit(Op.OP_EQUALVERIFY, loc);
+    this.emit(Op.OP_SWAP, loc);
+    this.emit(Op.OP_DUP, loc); this.emit(new Uint8Array([0x05, 0x03]), loc); this.emit(Op.OP_EQUAL, loc);
+    this.emit(Op.OP_SWAP, loc); this.emit(new Uint8Array([0x05, 0x0a]), loc); this.emit(Op.OP_EQUAL, loc);
+    this.emit(Op.OP_BOOLOR, loc); this.emit(Op.OP_VERIFY, loc);
     this.emit(encodeInt(20n), loc); this.emit(Op.OP_SPLIT, loc); // ..., collection, slot|next|value
 
     // Resolve the collection address only from compiler-published collection hashes and the authenticated owner
@@ -24189,7 +24284,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
     }
     this.emit(Op.OP_0, loc); this.pushToStack(physicalCommitment);
-    const settleExistingScalar = this.kernelJournalCanSettleExistingScalar(node, isRawbytes, isChunkableVal);
+    const settleScalar = this.kernelJournalCanSettleScalar(node, isRawbytes, isChunkableVal);
+    const useLegacyPending = this.sortedUpsertPendActive && !settleScalar;
     // tracked: [credit_amt(0), credit_hk(1), outCounter(2), iterCounter(3), addr(4), ..]
 
     // NORMAL per-recipient step: co-spend k[i]'s entry (UPDATE) or its bracketing predecessor (INSERT), mint, bump
@@ -24262,7 +24358,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(isMinus ? Op.OP_SUB : Op.OP_ADD, loc);                     // newValue# (U=4)
         this.emit(Op.OP_NIP, loc);                                           // [.., coSlot, coNext, newValue] U=3
       }
-      if (this.sortedUpsertPendActive) {
+      if (useLegacyPending) {
         // UPDATE-DEFER (crediting loops): stash [coSlot, coNext, newValue] into the pending registers; the mint is
         // deferred to the next iteration's flush (which may re-point it) or teardown. delta = 0 (nothing minted here).
         this.emit(Op.OP_DUP, loc);                                            // newValue copy (U=4)
@@ -24319,7 +24415,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         pushIdx(this.sortedUpsertLoopOutCounterName, 0, 3);                  // P' outIdx (U=4)
         this.emitVerifySortedValueOutput(loc, addrIdx() + 4, 3, hkIdx() + 4, 1, 4); // P' = coSlot|Hk|coValue
       }
-      if (op !== 'read' && this.sortedUpsertPendActive) {
+      if (op !== 'read' && useLegacyPending) {
         // CHAIN-DEFER: defer the NEW node (pu_slot=Hk, pu_val=amt, pu_next=coNext) instead of minting it, so a further
         // new key in this SAME gap chains off it - even when the predecessor is UNTOUCHED or the HEAD sentinel (a
         // fresh-map airdrop cluster). delta = 1 (only P' minted here); the teardown / next flush mints the last node.
@@ -24330,12 +24426,20 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(encodeInt(BigInt(hkIdx() + 3)), loc); this.emit(Op.OP_PICK, loc);    // Hk copy (U=4)
         this.emitReplace(this.getStackIndex(this.sortedUpsertPendSlotName) + 4, node); // pu_slot = Hk -> U=3
         this.emit(Op.OP_1, loc);                                             // delta = 1 (U=4)
-      } else if (op !== 'read') {
+      } else if (op !== 'read' && !settleScalar) {
         pushIdx(this.sortedUpsertLoopOutCounterName, 1, 3);                  // NEW outIdx2 (U=4)
         this.emitVerifySortedValueOutput(
           loc, addrIdx() + 4, hkIdx() + 4, 2, amtIdx() + 4, 4,
         ); // NEW = Hk|coNext|v[i]
         this.emit(Op.OP_2, loc);                                             // delta = 2 (U=4)
+      } else if (op !== 'read') {
+        // Journal settlement emits no row-local intermediate output. Reserve two final records when this row
+        // authenticated a clean predecessor, or only the new target when a dirty predecessor was already pending.
+        this.emit(encodeInt(BigInt(this.getStackIndex(physicalCommitment) + 3)), loc);
+        this.emit(Op.OP_PICK, loc); this.emit(Op.OP_SIZE, loc); this.emit(Op.OP_NIP, loc);
+        this.emit(Op.OP_0NOTEQUAL, loc);
+        this.emit(Op.OP_IF, loc); this.emit(Op.OP_2, loc);
+        this.emit(Op.OP_ELSE, loc); this.emit(Op.OP_1, loc); this.emit(Op.OP_ENDIF, loc);
       }
       // The target was absent, so the co-spent node is the exact predecessor. Replace the disposable branch value
       // below delta with a copy of its slot for the journal-record identity check.
@@ -24461,7 +24565,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // pending's gap it is a NEW node right after the pending: re-point the pending + mint NEW here (consumed = 1),
     // and skip the current key's normal processing (it co-spent nothing). Otherwise mint the pending normally and
     // fall through to the merge/normal dispatch.
-    if (settleExistingScalar) {
+    if (settleScalar) {
       this.emitKernelJournalExistingMutationCondition(loc);
       this.emit(Op.OP_IF, loc);
       this.scopeDepth += 1;
@@ -24470,7 +24574,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_ELSE, loc);
       this.scopeDepth += 1;
     }
-    if (this.sortedUpsertPendActive) {
+    if (useLegacyPending) {
       // Preserve the pre-transition pending slot. A consumed duplicate has no predecessor; a consumed in-gap insert
       // uses this exact pending node as its predecessor even though the flush replaces pu_slot with the new target.
       this.emit(encodeInt(BigInt(this.getStackIndex(this.sortedUpsertPendSlotName))), loc);
@@ -24493,15 +24597,59 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       emitReadProofOrNormalDispatch();                                        // -> [x,x,x] U=3
       this.scopeDepth -= 1;
       this.emit(Op.OP_ENDIF, loc);                                            // [x,x,x] U=3
-    } else {
+    } else if (!settleScalar) {
       emitReadProofOrNormalDispatch();                                        // -> [coSlot,coNext,X] U=3
+    } else {
+      // An insertion with an already-dirty predecessor consumes no second physical input. Rehydrate that
+      // predecessor's body from the authenticated journal carrier; otherwise run the ordinary physical proof.
+      this.emit(encodeInt(BigInt(this.getStackIndex(this.sortedUpsertLoopJournalCursorName))), loc);
+      this.emit(Op.OP_PICK, loc);
+      this.emit(encodeInt(21n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_NIP, loc);
+      this.emit(Op.OP_1, loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_DROP, loc);
+      this.emit(new Uint8Array([0]), loc); this.emit(Op.OP_CAT, loc); this.emit(Op.OP_BIN2NUM, loc);
+      this.emit(encodeInt(32n), loc); this.emit(Op.OP_AND, loc);
+      this.emit(Op.OP_BIN2NUM, loc); this.emit(Op.OP_0NOTEQUAL, loc);
+      this.emit(Op.OP_IF, loc);
+      this.scopeDepth += 1;
+      emitNormalStep();
+      this.scopeDepth -= 1;
+      this.emit(Op.OP_ELSE, loc);
+      this.scopeDepth += 1;
+      // Select the predecessor ordinal from the access tuple, then decode its dirty authenticated/synthetic body.
+      this.emit(encodeInt(BigInt(this.getStackIndex(this.sortedUpsertLoopJournalCursorName))), loc);
+      this.emit(Op.OP_PICK, loc);
+      this.emit(encodeInt(24n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_NIP, loc);
+      this.emit(encodeInt(2n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_DROP, loc);
+      this.emit(Op.OP_BIN2NUM, loc);
+      this.emit(encodeInt(BigInt(this.getStackIndex(KERNEL_JOURNAL_RECORDS) + 1)), loc); this.emit(Op.OP_PICK, loc);
+      this.emitPushdataSkip(PrimitiveType.BIGINT, loc); this.emit(Op.OP_SWAP, loc);
+      this.emitKernelJournalRecordExtract(loc);
+      this.emit(encodeInt(2n), loc); this.emit(Op.OP_SPLIT, loc);
+      this.emit(Op.OP_SWAP, loc);
+      this.emit(Op.OP_DUP, loc); this.emit(new Uint8Array([0x05, 0x03]), loc); this.emit(Op.OP_EQUAL, loc);
+      this.emit(Op.OP_SWAP, loc); this.emit(new Uint8Array([0x05, 0x0a]), loc); this.emit(Op.OP_EQUAL, loc);
+      this.emit(Op.OP_BOOLOR, loc); this.emit(Op.OP_VERIFY, loc);
+      this.emit(encodeInt(20n), loc); this.emit(Op.OP_SPLIT, loc);
+      this.emit(Op.OP_SWAP, loc);
+      this.emit(computeCollectionHash(this.entrySlots[node.entrySlotIndex]!.collectionSignature), loc);
+      this.emit(Op.OP_EQUALVERIFY, loc);
+      this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc);
+      this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); // coSlot, coNext, coValue
+      this.emit(Op.OP_DROP, loc); this.emit(Op.OP_OVER, loc); // coSlot, coNext, actual predecessor
+      this.emit(encodeInt(BigInt(this.getStackIndex(this.sortedUpsertLoopOutCounterName) + 3)), loc);
+      this.emit(Op.OP_PICK, loc); this.emit(Op.OP_1ADD, loc);
+      this.emitReplace(this.getStackIndex(this.sortedUpsertLoopOutCounterName) + 4, node);
+      this.scopeDepth -= 1;
+      this.emit(Op.OP_ENDIF, loc);
     }
 
     // The branch shape is [proof slot, successor, actual predecessor]. Discard the first two only after parking the
     // predecessor, then bind both selected journal records to the target/proof identities used by this iteration.
     this.emit(Op.OP_TOALTSTACK, loc); this.emit(Op.OP_2DROP, loc);
+    if (settleScalar) this.emitKernelJournalInsertOrdinals(loc);
     this.emitKernelJournalTargetSlotCheck(node, loc);
-    if (settleExistingScalar) {
+    if (settleScalar) {
+      this.emitKernelJournalInsertMutation(node as MappingAssignNode, loc);
       this.scopeDepth -= 1;
       this.emit(Op.OP_ENDIF, loc);
     }

@@ -16547,15 +16547,17 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // predecessors (iterationEntryInputs, in loop order -> input[master+blockSize+i]) and emit N interleaved (P', NEW)
     // commitment pairs at the trailing loop-entry outputs (output[master+blockSize+2i / +2i+1]). Both are known
     // EXACTLY from the off-chain sorted list (SortedList.planInsert); the covenant pins them, so no trace derivation.
-    // Fail closed (throw) when a key is already present (update-in-loop) or two keys share a predecessor (same-gap).
+    // Transaction-local scalar journal carriers allow later rows to update or extend an earlier row's output.
+    // Unsupported removal, aggregate, and dynamic-value shapes remain fail-closed below.
     const sortedLoopCommitments = new Map<string, string[]>();
     const insertLoopPredecessors: UnlockableUtxo[] = [];
     // Existing fixed-width scalar records are co-spent and assigned one output at first touch. Later kernel rows
     // update that same eventual commitment in source order; the route covenant carries the value between rows and
     // verifies the one final output. Topology-changing and aggregate values never enter this table.
-    const runtimeJournalPendingExisting = new Map<string, {
+    type RuntimeJournalPendingScalar = {
       value: bigint; commitments: string[]; commitmentIndex: number; slot: Uint8Array; nextKey: Uint8Array;
-    }>();
+    };
+    const runtimeJournalPendingScalar = new Map<string, RuntimeJournalPendingScalar>();
     const runtimeLoopEntrySegments: Array<{
       rowIndex: number; collection: string; offset: number; count: number;
     }> = [];
@@ -17921,26 +17923,27 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           throw new Error(`vmap upsert loop ${info.collection}: duplicate recipient (each entry can be co-spent once)`);
         }
         seenSlots.add(slotHex);
-        const entry = list.find(slot);
-        if (entry) {
+        const journalSettledScalar = journalArgumentIndex >= 0
+          && !collection.chunkableValue
+          && /^(?:u?int\d*|u?fixed\d*x\d*|bigint)$/.test(collection.valueType)
+          && (info.op === '+' || info.op === 'set');
+        const originalEntry = list.find(slot);
+        const journalIdentity = `${info.collectionHash}:${entryAddr}:${slotHex}`;
+        const priorPending = journalSettledScalar
+          ? runtimeJournalPendingScalar.get(journalIdentity) : undefined;
+        if (originalEntry || priorPending) {
           // UPDATE (existing recipient): co-spend the entry, mint the updated value ('delete' -> the type default 0).
-          const journalSettledScalar = journalArgumentIndex >= 0
-            && !collection.chunkableValue
-            && /^(?:u?int\d*|u?fixed\d*x\d*|bigint)$/.test(collection.valueType)
-            && (info.op === '+' || info.op === 'set');
           // Collection hash and resolved covenant address are compiler/owner identities; source-level names are not.
-          const journalIdentity = `${info.collectionHash}:${entryAddr}:${slotHex}`;
-          const priorPending = journalSettledScalar
-            ? runtimeJournalPendingExisting.get(journalIdentity) : undefined;
-          if (cospent.has(uidOf(entry.utxo)) && !priorPending) {
+          const entry = originalEntry;
+          if (entry && cospent.has(uidOf(entry.utxo)) && !priorPending) {
             throw new Error(
               `vmap upsert loop ${info.collection}: recipient ${i}'s entry is already co-spent this tx; `
                 + 'a read-your-writes transition is required',
             );
           }
-          cospent.add(uidOf(entry.utxo));
+          if (entry) cospent.add(uidOf(entry.utxo));
           const oldVal = priorPending?.value ?? (info.op === '+' || info.op === '-'
-            ? vmNumberToBigInt(entry.value, { requireMinimalEncoding: false }) as bigint : 0n);
+            ? vmNumberToBigInt(entry!.value, { requireMinimalEncoding: false }) as bigint : 0n);
           const newVal: bigint | Uint8Array = isDelete ? 0n : info.op === 'set' || info.op === 'read' ? amt
             : info.op === '-' ? oldVal - (amt as bigint) : oldVal + (amt as bigint);
           if (priorPending) {
@@ -17955,9 +17958,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             // dirty carrier returned by the earlier row.
             continue;
           }
-          appendRuntimeJournalInput(
-            { ...entry.utxo, unlocker: wUnlocker }, info.collection, journalSettledScalar,
-          );
+          if (!entry) throw new Error('Kernel pending scalar entry lost its transaction-local carrier.');
+          appendRuntimeJournalInput({ ...entry.utxo, unlocker: wUnlocker }, info.collection, journalSettledScalar);
           if (collection.chunkableValue && info.op !== 'read') {
             const oldTail = entry.value;
             if (oldTail.length >= 36
@@ -17978,7 +17980,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           }
           commitments.push(binToHex(encodeEntryCommitment(entry.slot, entry.nextKey, commitValue(newVal))));
           if (journalSettledScalar) {
-            runtimeJournalPendingExisting.set(journalIdentity, {
+            runtimeJournalPendingScalar.set(journalIdentity, {
               value: newVal as bigint,
               commitments,
               commitmentIndex: commitments.length - 1,
@@ -17999,9 +18001,23 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             throw new Error(`vmap upsert loop ${info.collection}: cannot ${operation} key ${i} - `
               + 'it has no entry');
           }
-          const pred = list.predecessorOf(slot);
+          const basePred = list.predecessorOf(slot);
+          let pendingPred: RuntimeJournalPendingScalar | undefined;
+          if (journalSettledScalar) {
+            const targetSlotValue = bytesToSlotValue(slot);
+            for (const [identity, candidate] of runtimeJournalPendingScalar) {
+              const candidateSlotValue = bytesToSlotValue(candidate.slot);
+              const candidateNextValue = bytesToSlotValue(candidate.nextKey);
+              const bracketsTarget = candidateSlotValue < targetSlotValue
+                && (candidateNextValue === 0n || targetSlotValue < candidateNextValue);
+              if (identity.startsWith(`${info.collectionHash}:${entryAddr}:`) && bracketsTarget
+                && (!pendingPred || bytesToSlotValue(pendingPred.slot) < candidateSlotValue)) {
+                pendingPred = candidate;
+              }
+            }
+          }
           if (info.op === 'read') {
-            const predecessorId = uidOf(pred.utxo);
+            const predecessorId = uidOf(basePred.utxo);
             const slotValue = bytesToSlotValue(slot);
             const reusesPriorProof = priorReadProof?.uid === predecessorId
               && bytesToSlotValue(priorReadProof.slot) < slotValue
@@ -18013,9 +18029,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 + 'predecessor; a shared absence proof is required');
             }
             cospent.add(predecessorId);
-            appendRuntimeJournalInput({ ...pred.utxo, unlocker: wUnlocker }, info.collection);
-            commitments.push(binToHex(encodeEntryCommitment(pred.slot, pred.nextKey, pred.value)));
-            priorReadProof = { uid: predecessorId, slot: pred.slot, nextKey: pred.nextKey };
+            appendRuntimeJournalInput({ ...basePred.utxo, unlocker: wUnlocker }, info.collection);
+            commitments.push(binToHex(encodeEntryCommitment(basePred.slot, basePred.nextKey, basePred.value)));
+            priorReadProof = { uid: predecessorId, slot: basePred.slot, nextKey: basePred.nextKey };
             continue;
           }
           const deferred: DeferredEntry | null = lastDeferred; // the covenant's pending; an insert never defers
@@ -18039,7 +18055,20 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               continue;
             }
           }
-          if (debitEntry && uidOf(debitEntry.utxo as { txid: string; vout: number }) === uidOf(pred.utxo)) {
+          if (pendingPred) {
+            const oldNext = pendingPred.nextKey;
+            pendingPred.nextKey = slot;
+            pendingPred.commitments[pendingPred.commitmentIndex] = binToHex(encodeEntryCommitment(
+              pendingPred.slot, slot, commitValue(pendingPred.value),
+            ));
+            const pendingCommitmentIndex = commitments.length;
+            commitments.push(binToHex(encodeEntryCommitment(slot, oldNext, commitValue(amt))));
+            lastDeferred = {
+              uid: '', commitIndex: pendingCommitmentIndex, slot, newVal: amt, oldNext,
+            };
+            continue;
+          }
+          if (debitEntry && uidOf(debitEntry.utxo as { txid: string; vout: number }) === uidOf(basePred.utxo)) {
             // MERGE with the debit (R1): the covenant re-points the debit's output to R1 (via the register) and DEFERS
             // R1, so a further new key in the debit's gap chains off it (handled by the fold check above). Record R1 as
             // the pending. The mergedNewCount guard fails closed on a SECOND, non-chainable debit-merge (unreachable
@@ -18050,23 +18079,23 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             }
             mergedNewCount += 1;
             const mCommitIndex = commitments.length;
-            commitments.push(binToHex(encodeEntryCommitment(slot, pred.nextKey, commitValue(amt)))); // NEW = 0 + amt (R1)
-            lastDeferred = { uid: '', commitIndex: mCommitIndex, slot, newVal: amt, oldNext: pred.nextKey };
+            commitments.push(binToHex(encodeEntryCommitment(slot, basePred.nextKey, commitValue(amt)))); // NEW = 0 + amt (R1)
+            lastDeferred = { uid: '', commitIndex: mCommitIndex, slot, newVal: amt, oldNext: basePred.nextKey };
             continue;
           }
-          if (cospent.has(uidOf(pred.utxo))) {
+          if (cospent.has(uidOf(basePred.utxo))) {
             throw new Error(`vmap upsert loop ${info.collection}: new recipient ${i}'s bracketing predecessor is already `
               + 'co-spent in this tx (a non-adjacent credited recipient, or another new recipient in the '
               + 'same gap). Reorder so the predecessor is credited immediately before, or split into separate transactions.');
           }
-          cospent.add(uidOf(pred.utxo));
-          appendRuntimeJournalInput({ ...pred.utxo, unlocker: wUnlocker }, info.collection);
-          commitments.push(binToHex(encodeEntryCommitment(pred.slot, slot, pred.value)));           // P' (re-pointed)
+          cospent.add(uidOf(basePred.utxo));
+          appendRuntimeJournalInput({ ...basePred.utxo, unlocker: wUnlocker }, info.collection);
+          commitments.push(binToHex(encodeEntryCommitment(basePred.slot, slot, basePred.value)));           // P' (re-pointed)
           const uCommitIndex = commitments.length;
-          commitments.push(binToHex(encodeEntryCommitment(slot, pred.nextKey, commitValue(amt)))); // NEW = 0 + amt
+          commitments.push(binToHex(encodeEntryCommitment(slot, basePred.nextKey, commitValue(amt)))); // NEW = 0 + amt
           // DEFER this new node (mirrors the covenant's chain-defer) so a further new key in this same UNTOUCHED / HEAD
           // gap chains off it - a fresh-map airdrop cluster. The reorder groups + ascending-sorts same-gap inserts.
-          if (foldActive) lastDeferred = { uid: '', commitIndex: uCommitIndex, slot, newVal: amt, oldNext: pred.nextKey };
+          if (foldActive) lastDeferred = { uid: '', commitIndex: uCommitIndex, slot, newVal: amt, oldNext: basePred.nextKey };
         }
       }
       if (commitments.length > 0) {
@@ -18074,13 +18103,27 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         const offset = prior.length;
         const merged = [...prior, ...commitments];
         sortedLoopCommitments.set(info.collection, merged);
-        for (const pending of runtimeJournalPendingExisting.values()) {
+        for (const pending of runtimeJournalPendingScalar.values()) {
           if (pending.commitments === prior) {
             pending.commitments = merged;
           } else if (pending.commitments === commitments) {
             pending.commitments = merged;
             pending.commitmentIndex += offset;
           }
+        }
+        if (journalArgumentIndex >= 0 && !collection.chunkableValue
+          && /^(?:u?int\d*|u?fixed\d*x\d*|bigint)$/.test(collection.valueType)
+          && (info.op === '+' || info.op === 'set')) {
+          merged.forEach((commitment, commitmentIndex) => {
+            const decoded = decodeEntryCommitment(hexToBin(commitment));
+            runtimeJournalPendingScalar.set(
+              `${info.collectionHash}:${entryAddr}:${binToHex(decoded.slot)}`,
+              {
+                value: vmNumberToBigInt(decoded.value, { requireMinimalEncoding: false }) as bigint,
+                commitments: merged, commitmentIndex, slot: decoded.slot, nextKey: decoded.nextKey,
+              },
+            );
+          });
         }
         if (upsertFrame.routed) {
           const rowIndex = routeRowIndex(upsertFrame.row!);
@@ -18134,15 +18177,15 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         globalOrdinals: new Map(),
       });
     }
-    if (runtimeJournalPendingExisting.size > 0) {
+    if (runtimeJournalPendingScalar.size > 0) {
       const unsupported = [...plannedKernelStreamAccesses.values()].flat().some((access) => (
-        !access.presentBefore || !access.presentAfter || !access.mutates
-        || access.predecessorRecordOrdinal !== undefined
+        !access.presentAfter || !access.mutates
+        || (access.presentBefore && access.predecessorRecordOrdinal !== undefined)
       ));
       if (unsupported) {
         throw new Error(
-          'Kernel pending scalar settlement cannot mix existing-entry updates with reads, inserts, removals, '
-          + 'or predecessor rewrites in one transaction.',
+          'Kernel pending scalar settlement supports only fixed-width scalar updates and insertions; reads, removals, '
+          + 'deletions, dynamic values, and unrelated predecessor rewrites remain separate transactions.',
         );
       }
     }
@@ -26036,7 +26079,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     | { kind: 'events'; offset: number; count: number }
     | { kind: 'transfers'; offset: number; count: number }
     > = [];
-    if (runtimeJournalPendingExisting.size > 0
+    if (runtimeJournalPendingScalar.size > 0
       && (runtimeLoopEventSegments.length > 0 || runtimeLoopTransferSegments.length > 0)) {
       throw new Error(
         'Kernel pending scalar settlement cannot share a transaction with runtime event or transfer output segments.',

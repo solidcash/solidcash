@@ -7,8 +7,11 @@ import { describe, expect, it } from 'vitest';
 import { Contract, StatefulContract, encodeFunctionArgument } from '../../../src/index.js';
 import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';
 import { getEntryNftAddress } from '../../../src/stateful/covenant-helpers.js';
+import { decodeKernelEntryJournalAccesses } from '../../../src/stateful/KernelEntryJournal.js';
+import { bytesToSlotValue, keyToSlot } from '../../../src/stateful/SortedList.js';
 import { addressToLockScript, generateLibauthSourceOutputs } from '../../../src/utils.js';
 import { createTestProvider, setupStatefulUtxos } from '../../test-util.js';
+import { createMessageBusSemanticTestProvider } from './message-bus-semantic-profile.js';
 
 const KERNEL = { forceStateful: true, messageBus: true, messageBusKernel: true } as const;
 
@@ -35,6 +38,110 @@ contract PendingScalarEffectFence() {
 }`;
 
 describe('kernel pending fixed-width scalar rows', () => {
+  it('chains insertions and updates across rows without crossing an authenticated successor', async () => {
+    const provider = createMessageBusSemanticTestProvider();
+    const artifact = compileString(SOURCE, KERNEL);
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+    );
+    const ranked = Array.from({ length: 48 }, (_unused, index) => BigInt(index + 1)).sort((left, right) => {
+      const leftSlot = bytesToSlotValue(keyToSlot(bigIntToVmNumber(left)));
+      const rightSlot = bytesToSlotValue(keyToSlot(bigIntToVmNumber(right)));
+      return leftSlot < rightSlot ? -1 : 1;
+    });
+    const low = ranked[8];
+    const lowNext = ranked[12];
+    const boundary = ranked[24];
+    const high = ranked[40];
+    const initial = StatefulContract.withCategory(inner, categoryId);
+    await initial.call.addMany([boundary], 1n).send();
+
+    const current = StatefulContract.withCategory(inner, categoryId);
+    const call = current.batch([
+      { function: 'addMany', args: [[low], 4n] },
+      { function: 'addMany', args: [[lowNext], 5n] },
+      { function: 'addMany', args: [[high], 3n] },
+      { function: 'addMany', args: [[low], 2n] },
+    ]);
+    const builder = await call.build();
+    const vm = createVirtualMachineBch2026ForProvider(provider);
+    const transaction = builder.buildLibauthTransaction();
+    const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+    for (let inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex += 1) {
+      expect(vm.stateSuccess(vm.evaluate({ inputIndex, sourceOutputs, transaction })), `input ${inputIndex}`)
+        .toBe(true);
+    }
+    const routeInputIndex = builder.inputs.findIndex((input) => 'abiFunction' in input.unlocker
+      && input.unlocker.abiFunction.name === artifact.messageBus?.route.name);
+    expect(routeInputIndex).toBeGreaterThanOrEqual(0);
+    const routeInput = builder.inputs[routeInputIndex];
+    if (!('params' in routeInput.unlocker)) throw new Error('kernel route has no parameterized unlocker');
+    const journalIndex = artifact.messageBus!.route.inputs.findIndex((input) =>
+      input.name === '__internal__kernelJournalAccessStreams');
+    const rowStreams = routeInput.unlocker.params[journalIndex] as Uint8Array[][];
+    const pendingRowIndex = rowStreams.findIndex((streams) => streams.some((stream) =>
+      decodeKernelEntryJournalAccesses(stream).some((access) => !access.presentBefore
+        && access.predecessorRecordOrdinal !== undefined && !access.authenticatesPredecessor)));
+    expect(pendingRowIndex).toBeGreaterThanOrEqual(0);
+    const pendingStreamIndex = rowStreams[pendingRowIndex].findIndex((stream) =>
+      decodeKernelEntryJournalAccesses(stream).some((access) => !access.presentBefore
+        && access.predecessorRecordOrdinal !== undefined && !access.authenticatesPredecessor));
+    const routeSucceeds = (candidate: typeof transaction): boolean => vm.stateSuccess(vm.evaluate({
+      inputIndex: routeInputIndex, sourceOutputs, transaction: candidate,
+    })) === true;
+    const originalUnlocker = routeInput.unlocker;
+    const routeSelector = artifact.messageBus!.route.selector;
+    if (!routeSelector) throw new Error('kernel route has no selector');
+    for (const [label, mutate] of [
+      ['aliased pending predecessor ordinal', (stream: Uint8Array) => {
+        stream[25] = stream[23]; stream[26] = stream[24];
+      }],
+      ['false physical predecessor authentication', (stream: Uint8Array) => { stream[22] |= 0x20; }],
+    ] as const) {
+      const hostileRows = rowStreams.map((streams) => streams.map((stream) => new Uint8Array(stream)));
+      mutate(hostileRows[pendingRowIndex][pendingStreamIndex]);
+      const hostileParams = [...originalUnlocker.params];
+      hostileParams[journalIndex] = hostileRows;
+      routeInput.unlocker = originalUnlocker.contract.createCompilerRouteUnlocker(
+        originalUnlocker.abiFunction, hexToBin(routeSelector),
+      )(...hostileParams);
+      expect(routeSucceeds(builder.buildLibauthTransaction()), label).toBe(false);
+    }
+    const pendingAccess = decodeKernelEntryJournalAccesses(rowStreams[pendingRowIndex][pendingStreamIndex])
+      .find((access) => !access.presentBefore && !access.authenticatesPredecessor)!;
+    const highRowIndex = 2;
+    const highStreamIndex = rowStreams[highRowIndex].findIndex((stream) =>
+      decodeKernelEntryJournalAccesses(stream).some((access) => !access.presentBefore
+        && access.authenticatesPredecessor));
+    expect(highStreamIndex).toBeGreaterThanOrEqual(0);
+    const crossGapRows = rowStreams.map((streams) => streams.map((stream) => new Uint8Array(stream)));
+    const crossGapStream = crossGapRows[highRowIndex][highStreamIndex];
+    crossGapStream[22] &= ~0x20;
+    crossGapStream[25] = pendingAccess.targetRecordOrdinal & 0xff;
+    crossGapStream[26] = pendingAccess.targetRecordOrdinal >>> 8;
+    const crossGapParams = [...originalUnlocker.params];
+    crossGapParams[journalIndex] = crossGapRows;
+    routeInput.unlocker = originalUnlocker.contract.createCompilerRouteUnlocker(
+      originalUnlocker.abiFunction, hexToBin(routeSelector),
+    )(...crossGapParams);
+    expect(routeSucceeds(builder.buildLibauthTransaction()), 'pending predecessor outside its open successor interval')
+      .toBe(false);
+    routeInput.unlocker = originalUnlocker;
+    await expect(call.send()).resolves.toBeDefined();
+    const entryAddress = getEntryNftAddress(
+      inner, categoryId, artifact.stateLayout!.collections.find((candidate) => candidate.name === 'values')!.signature,
+    );
+    const settledEntries = await provider.getUtxos(entryAddress);
+    for (const [key, expected] of [[low, 6n], [lowNext, 5n], [boundary, 1n], [high, 3n]] as const) {
+      const entry = settledEntries.find((utxo) =>
+        binToHex(hexToBin(utxo.token!.nft!.commitment).slice(0, 32)) === binToHex(keyToSlot(bigIntToVmNumber(key))));
+      expect(vmNumberToBigInt(hexToBin(entry!.token!.nft!.commitment).slice(64), {
+        requireMinimalEncoding: false,
+      })).toBe(expected);
+    }
+  }, 180_000);
+
   it('settles same present keys once across source-ordered rows', async () => {
     const provider = createTestProvider();
     const artifact = compileString(SOURCE, KERNEL);
@@ -189,7 +296,7 @@ describe('kernel pending fixed-width scalar rows', () => {
     await expect(threeRows.send()).resolves.toBeDefined();
   }, 180_000);
 
-  it('rejects mixed topology and carriers above one BCH stack item', async () => {
+  it('settles mixed scalar insertion topology and rejects carriers above one BCH stack item', async () => {
     const provider = createTestProvider();
     const artifact = compileString(SOURCE, KERNEL);
     const inner = new Contract(artifact, [], { provider });
@@ -201,7 +308,7 @@ describe('kernel pending fixed-width scalar rows', () => {
       await contract.call.addMany([key], 1n).send();
     }
     await expect(contract.batch([{ function: 'addMany', args: [[0n, 6n], 1n] }]).build())
-      .rejects.toThrow(/cannot mix existing-entry updates with reads, inserts, removals, or predecessor rewrites/);
+      .resolves.toBeDefined();
     await expect(contract.batch([{ function: 'addMany', args: [[0n, 1n, 2n, 3n, 4n], 1n] }]).build())
       .resolves.toBeDefined();
     await expect(contract.batch([{ function: 'addMany', args: [[0n, 1n, 2n, 3n, 4n, 5n], 1n] }]).build())

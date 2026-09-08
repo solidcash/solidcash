@@ -1221,22 +1221,48 @@ export interface Artifact {
       /** Compiler-authored lifecycle authority. Append-v1 preserves the existing state geometry and permits
        * only a canonical fixed-field suffix in the final existing data NFT. */
       lifecycle?: { kind: 'upgrade'; layout: 'same' | 'in-place-append-v1' };
-      /** Participant-local lifecycle geometry. Metadata only until a callManifest version authenticates it. */
+      /** Participant-local lifecycle planning metadata. This describes the identities a future authenticated
+       * call-manifest protocol must enforce; publishing it does not admit or covenant lifecycle handlers. */
       lifecycleTopology?: {
-        version: 1;
+        version: 2;
         kind: 'split' | 'merge';
         coordinate: 'participant';
+        /** Exact transaction-wide census for the participant's minting NFT category. */
+        categoryCensus: {
+          tokenCategory: 'participant';
+          nftCapability: 'minting';
+          inputCount: { source: 'fixed'; value: number }
+          | { source: 'parameter'; parameterIndex: number; addend: number };
+          outputCount: { source: 'fixed'; value: number }
+          | { source: 'parameter'; parameterIndex: number; addend: number };
+        };
         inputSpans: readonly {
           mode: 'preserve' | 'consume';
           offset: number;
           count: { source: 'fixed'; value: number }
           | { source: 'parameter'; parameterIndex: number; addend: number };
+          identity: {
+            lockingBytecode: 'participant';
+            tokenCategory: 'participant';
+            nftCapability: 'minting';
+            nftCommitment: 'preserve' | 'unconstrained';
+            tokenAmount: 'nondecrease' | 'unconstrained';
+            satoshis: 'preserve' | 'reclaim';
+          };
         }[];
         outputSpans: readonly {
           mode: 'preserve' | 'create';
           offset: number;
           count: { source: 'fixed'; value: number }
           | { source: 'parameter'; parameterIndex: number; addend: number };
+          identity: {
+            lockingBytecode: 'participant';
+            tokenCategory: 'participant';
+            nftCapability: 'minting';
+            nftCommitment: 'preserve' | 'empty';
+            tokenAmount: 'nondecrease' | 'zero';
+            satoshis: 'preserve' | 'funded';
+          };
         }[];
       };
       /** The selected handler's compiler-resolved call closure can execute CHECKSIG/CHECKMULTISIG. */

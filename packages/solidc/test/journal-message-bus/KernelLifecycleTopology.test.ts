@@ -1,11 +1,28 @@
 import { describe, expect, it } from 'vitest';
+import { Artifact } from '@solidcash/utils';
 import { compileString } from '../../src/compiler.js';
 
 const KERNEL = {
   forceStateful: true, messageBus: true, messageBusKernel: true, maximumInputBytes: 1_000_000,
 } as const;
 
-const selected = (source: string, name: string) => {
+const preservedMaster = {
+  lockingBytecode: 'participant', tokenCategory: 'participant', nftCapability: 'minting',
+  nftCommitment: 'preserve', tokenAmount: 'nondecrease', satoshis: 'preserve',
+};
+const consumedMaster = {
+  lockingBytecode: 'participant', tokenCategory: 'participant', nftCapability: 'minting',
+  nftCommitment: 'unconstrained', tokenAmount: 'unconstrained', satoshis: 'reclaim',
+};
+const createdMaster = {
+  lockingBytecode: 'participant', tokenCategory: 'participant', nftCapability: 'minting',
+  nftCommitment: 'empty', tokenAmount: 'zero', satoshis: 'funded',
+};
+
+const selected = (source: string, name: string): {
+  artifact: Artifact;
+  handler: NonNullable<Artifact['messageBus']>['handlers'][number];
+} => {
   const artifact = compileString(source, KERNEL);
   const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === name);
   expect(handler, `missing handler ${name}`).toBeDefined();
@@ -22,15 +39,23 @@ describe('kernel lifecycle topology metadata', () => {
       eligible: false,
       rejectionReason: 'KERNEL_LIFECYCLE',
       lifecycleTopology: {
-        version: 1,
+        version: 2,
         kind: 'split',
         coordinate: 'participant',
+        categoryCensus: {
+          tokenCategory: 'participant', nftCapability: 'minting',
+          inputCount: { source: 'fixed', value: 1 },
+          outputCount: { source: 'parameter', parameterIndex: 0, addend: 1 },
+        },
         inputSpans: [
-          { mode: 'preserve', offset: 0, count: { source: 'fixed', value: 1 } },
+          { mode: 'preserve', offset: 0, count: { source: 'fixed', value: 1 }, identity: preservedMaster },
         ],
         outputSpans: [
-          { mode: 'preserve', offset: 0, count: { source: 'fixed', value: 1 } },
-          { mode: 'create', offset: 1, count: { source: 'parameter', parameterIndex: 0, addend: 0 } },
+          { mode: 'preserve', offset: 0, count: { source: 'fixed', value: 1 }, identity: preservedMaster },
+          {
+            mode: 'create', offset: 1,
+            count: { source: 'parameter', parameterIndex: 0, addend: 0 }, identity: createdMaster,
+          },
         ],
       },
     });
@@ -47,15 +72,23 @@ describe('kernel lifecycle topology metadata', () => {
       eligible: false,
       rejectionReason: 'KERNEL_LIFECYCLE',
       lifecycleTopology: {
-        version: 1,
+        version: 2,
         kind: 'merge',
         coordinate: 'participant',
+        categoryCensus: {
+          tokenCategory: 'participant', nftCapability: 'minting',
+          inputCount: { source: 'parameter', parameterIndex: 1, addend: 1 },
+          outputCount: { source: 'fixed', value: 1 },
+        },
         inputSpans: [
-          { mode: 'preserve', offset: 0, count: { source: 'fixed', value: 1 } },
-          { mode: 'consume', offset: 1, count: { source: 'parameter', parameterIndex: 1, addend: 0 } },
+          { mode: 'preserve', offset: 0, count: { source: 'fixed', value: 1 }, identity: preservedMaster },
+          {
+            mode: 'consume', offset: 1,
+            count: { source: 'parameter', parameterIndex: 1, addend: 0 }, identity: consumedMaster,
+          },
         ],
         outputSpans: [
-          { mode: 'preserve', offset: 0, count: { source: 'fixed', value: 1 } },
+          { mode: 'preserve', offset: 0, count: { source: 'fixed', value: 1 }, identity: preservedMaster },
         ],
       },
     });

@@ -10214,7 +10214,9 @@ function compileResolvedAst(
   const deploymentTopologyKey = (fn: FunctionDefinitionNode): string => `${fn.name}(${fn.parameters
     .filter((parameter) => !parameter.name.startsWith('__internal__'))
     .map((parameter) => parameter.type.toString()).join(',')})`;
-  const lifecycleTopologyOf = (fn: FunctionDefinitionNode) => {
+  const lifecycleTopologyOf = (fn: FunctionDefinitionNode): NonNullable<
+  NonNullable<Artifact['messageBus']>['handlers'][number]['lifecycleTopology']
+  > | undefined => {
     const kind = fn.modifiers.includes(FunctionModifier.SPLIT) ? 'split' as const
       : fn.modifiers.includes(FunctionModifier.MERGE) ? 'merge' as const : undefined;
     const countName = kind === 'split' ? fn.splitCountParam
@@ -10225,22 +10227,44 @@ function compileResolvedAst(
     if (parameterIndex < 0) return undefined;
     const fixedOne = { source: 'fixed' as const, value: 1 };
     const parameterCount = { source: 'parameter' as const, parameterIndex, addend: 0 };
+    const parameterCountPlusOne = { source: 'parameter' as const, parameterIndex, addend: 1 };
+    const preservedMaster = {
+      lockingBytecode: 'participant' as const, tokenCategory: 'participant' as const,
+      nftCapability: 'minting' as const, nftCommitment: 'preserve' as const,
+      tokenAmount: 'nondecrease' as const, satoshis: 'preserve' as const,
+    };
+    const consumedMaster = {
+      lockingBytecode: 'participant' as const, tokenCategory: 'participant' as const,
+      nftCapability: 'minting' as const, nftCommitment: 'unconstrained' as const,
+      tokenAmount: 'unconstrained' as const, satoshis: 'reclaim' as const,
+    };
+    const createdMaster = {
+      lockingBytecode: 'participant' as const, tokenCategory: 'participant' as const,
+      nftCapability: 'minting' as const, nftCommitment: 'empty' as const,
+      tokenAmount: 'zero' as const, satoshis: 'funded' as const,
+    };
     return {
-      version: 1 as const,
+      version: 2 as const,
       kind,
       coordinate: 'participant' as const,
+      categoryCensus: {
+        tokenCategory: 'participant' as const,
+        nftCapability: 'minting' as const,
+        inputCount: kind === 'split' ? fixedOne : parameterCountPlusOne,
+        outputCount: kind === 'split' ? parameterCountPlusOne : fixedOne,
+      },
       inputSpans: kind === 'split'
-        ? [{ mode: 'preserve' as const, offset: 0, count: fixedOne }]
+        ? [{ mode: 'preserve' as const, offset: 0, count: fixedOne, identity: preservedMaster }]
         : [
-          { mode: 'preserve' as const, offset: 0, count: fixedOne },
-          { mode: 'consume' as const, offset: 1, count: parameterCount },
+          { mode: 'preserve' as const, offset: 0, count: fixedOne, identity: preservedMaster },
+          { mode: 'consume' as const, offset: 1, count: parameterCount, identity: consumedMaster },
         ],
       outputSpans: kind === 'split'
         ? [
-          { mode: 'preserve' as const, offset: 0, count: fixedOne },
-          { mode: 'create' as const, offset: 1, count: parameterCount },
+          { mode: 'preserve' as const, offset: 0, count: fixedOne, identity: preservedMaster },
+          { mode: 'create' as const, offset: 1, count: parameterCount, identity: createdMaster },
         ]
-        : [{ mode: 'preserve' as const, offset: 0, count: fixedOne }],
+        : [{ mode: 'preserve' as const, offset: 0, count: fixedOne, identity: preservedMaster }],
     };
   };
   const childDeploymentsBySignature = new Map<string, ChildDeploymentSiteAbi[]>();

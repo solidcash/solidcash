@@ -132,6 +132,10 @@ export {
   type KernelEntryJournalTopologyOperation, type KernelEntryJournalAccessTopologyPlan,
 } from './KernelEntryJournal.js';
 export {
+  planKernelLifecycleTopology,
+  type ResolvedKernelLifecycleSpan, type ResolvedKernelLifecycleTopology,
+} from './KernelLifecycleTopology.js';
+export {
   registerDeployment, findDeploymentByName, findDeploymentByAddress, findDeploymentByLockingBytecode,
   findDeploymentImplementing, clearDeployments, takeDeploymentRegistrySnapshot,
   type RegisteredDeployment, type DeploymentRegistrySnapshot,

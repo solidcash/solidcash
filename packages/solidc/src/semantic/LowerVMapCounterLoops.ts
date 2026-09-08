@@ -7,7 +7,7 @@ import {
   DeleteLocalNode, DeleteStateNode,
   EmitStatementNode, ExpressionNode, ExpressionStatementNode, ExternalFunctionCallNode, FunctionCallNode,
   FunctionCallStatementNode,
-  FieldAccessNode, FunctionDefinitionNode, IdentifierNode, IntLiteralNode, LiteralNode, MappingAccessNode,
+  FieldAccessNode, FunctionDefinitionNode, IdentifierNode, IndirectCallNode, IntLiteralNode, LiteralNode, MappingAccessNode,
   MappingAssignNode, MappingDeleteNode,
   MappingFieldAssignNode, MethodCallNode, MethodCallStatementNode, NewArrayNode, Node, ParameterNode, RequireNode,
   SourceFileNode,
@@ -22,7 +22,7 @@ import { createDefaultValueExpression } from '../ast/defaults.js';
 import { BinaryOperator, UnaryOperator } from '../ast/Operator.js';
 import { canonicalizeUpsertKeyExpression } from '../generation/upsertKeySources.js';
 import {
-  AddressType, ArrayType, BytesType, FixedType, IntType, PrimitiveType, StructType, Type,
+  AddressType, ArrayType, BytesType, FixedType, FunctionType, IntType, PrimitiveType, StructType, Type,
 } from '@solidcash/utils';
 import {
   isFunctionEntryInvariantMappingKey, VMAP_KEY_SNAPSHOT_PREFIX,
@@ -221,7 +221,139 @@ export default class LowerVMapCounterLoops extends AstTraversal {
     if (node.constructorDef) node.constructorDef = this.visit(node.constructorDef) as FunctionDefinitionNode;
     if (node.fallbackDef) node.fallbackDef = this.visit(node.fallbackDef) as FunctionDefinitionNode;
     if (node.receiveDef) node.receiveDef = this.visit(node.receiveDef) as FunctionDefinitionNode;
+    if (this.publishJournalAccessStreams) this.propagateKernelJournalContext(node);
     return node;
+  }
+
+  /**
+   * Thread the runtime-journal ABI to a fixed point over ordinary internal calls.
+   *
+   * The route owns one transaction-wide record vector, while the leaf which interprets an access stream can be
+   * several OP_INVOKE edges below it. Every intermediate DEFINE therefore accepts the same compiler-only
+   * parameters and forwards them unchanged. Parameters retain the leaf's canonical order, and are inserted before
+   * the independently threaded physical-owner context. Source ABI signatures remain unchanged because all names
+   * are compiler-reserved.
+   *
+   * Function-pointer calls have no declared place for this hidden ABI. If a locally declared pointer could reach
+   * a context-bearing target, retain an explicit refusal marker and propagate it to every named caller. This is
+   * deliberately fail-closed until pointer target-set analysis can prove and encode one uniform hidden frame.
+   */
+  propagateKernelJournalContext(contract: ContractNode): void {
+    const functions = [
+      ...contract.functions,
+      ...(contract.constructorDef ? [contract.constructorDef] : []),
+      ...(contract.fallbackDef ? [contract.fallbackDef] : []),
+      ...(contract.receiveDef ? [contract.receiveDef] : []),
+    ];
+    const byName = new Map<string, FunctionDefinitionNode[]>();
+    for (const fn of functions) {
+      const overloads = byName.get(fn.name) ?? [];
+      overloads.push(fn);
+      byName.set(fn.name, overloads);
+    }
+    const contextParameter = (parameter: ParameterNode): boolean =>
+      parameter.name.startsWith(VMAP_COUNTER_PERM_PREFIX)
+      || parameter.name.startsWith(VMAP_COUNTER_OLD_PREFIX)
+      || parameter.name.startsWith(VMAP_COUNTER_VALUE_PREFIX)
+      || parameter.name.startsWith(VMAP_COUNTER_PREFIX_COUNT_PREFIX)
+      || parameter.name.startsWith(VMAP_COUNTER_SOURCE_INDEX_PREFIX)
+      || parameter.name.startsWith(VMAP_COUNTER_INPUT_COUNT_PREFIX)
+      || parameter.name.startsWith(VMAP_COUNTER_OUTPUT_COUNT_PREFIX)
+      || parameter.name.startsWith(VMAP_RUNTIME_INPUT_COUNT_PREFIX)
+      || parameter.name.startsWith(VMAP_RUNTIME_OUTPUT_COUNT_PREFIX)
+      || parameter.name === KERNEL_JOURNAL_ACCESS_STREAMS
+      || parameter.name === KERNEL_JOURNAL_RECORDS;
+    const visibleArity = (fn: FunctionDefinitionNode): number =>
+      fn.parameters.filter((parameter) => !parameter.name.startsWith('__internal__')).length;
+    const callVisibleArity = (call: FunctionCallNode): number => call.parameters.filter((argument) =>
+      !(argument instanceof IdentifierNode && argument.name.startsWith('__internal__'))).length;
+    const directCalls = new Map<FunctionDefinitionNode, Set<FunctionDefinitionNode>>();
+    const pointerCalls = new Map<FunctionDefinitionNode, number[]>();
+    const walk = (root: Node, visit: (candidate: Node) => void): void => {
+      visit(root);
+      for (const [key, value] of Object.entries(root)) {
+        if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type'
+          || key === 'resolvedFunction' || key === 'functionReference' || key === 'collection'
+          || key === 'stateVariable') continue;
+        if (value instanceof Node) walk(value, visit);
+        else if (Array.isArray(value)) for (const item of value) if (item instanceof Node) walk(item, visit);
+      }
+    };
+    for (const fn of functions) {
+      const callees = new Set<FunctionDefinitionNode>();
+      const functionPointerNames = new Set(fn.parameters
+        .filter((parameter) => parameter.type instanceof FunctionType)
+        .map((parameter) => parameter.name));
+      walk(fn.body, (candidate) => {
+        if (candidate instanceof VariableDefinitionNode && candidate.type instanceof FunctionType) {
+          functionPointerNames.add(candidate.name);
+        }
+      });
+      walk(fn.body, (candidate) => {
+        if (candidate instanceof FunctionCallNode) {
+          if (functionPointerNames.has(candidate.identifier.name) || candidate.lexicalIndirectCall) {
+            const arities = pointerCalls.get(fn) ?? [];
+            arities.push(callVisibleArity(candidate));
+            pointerCalls.set(fn, arities);
+            return;
+          }
+          const targets = (byName.get(candidate.identifier.name) ?? [])
+            .filter((target) => visibleArity(target) === callVisibleArity(candidate));
+          for (const target of targets) callees.add(target);
+        } else if (candidate instanceof IndirectCallNode) {
+          const arities = pointerCalls.get(fn) ?? [];
+          arities.push(candidate.parameters.length);
+          pointerCalls.set(fn, arities);
+        }
+      });
+      directCalls.set(fn, callees);
+    }
+
+    const addContext = (caller: FunctionDefinitionNode, callee: FunctionDefinitionNode): boolean => {
+      let changed = false;
+      const existing = new Set(caller.parameters.map((parameter) => parameter.name));
+      const ownerIndex = caller.parameters.findIndex(
+        (parameter) => parameter.name === '__internal__messageBusOwnerInput',
+      );
+      let insertionIndex = ownerIndex < 0 ? caller.parameters.length : ownerIndex;
+      for (const parameter of callee.parameters.filter(contextParameter)) {
+        if (existing.has(parameter.name)) continue;
+        const forwarded = new ParameterNode(parameter.type, parameter.name, [...parameter.modifier]);
+        forwarded.location = caller.location;
+        forwarded.syntheticallyUsed = true;
+        caller.parameters.splice(insertionIndex++, 0, forwarded);
+        existing.add(parameter.name);
+        changed = true;
+      }
+      return changed;
+    };
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const caller of functions) {
+        for (const callee of directCalls.get(caller) ?? []) changed = addContext(caller, callee) || changed;
+      }
+    }
+
+    const unsafe = new Set(functions.filter((fn) => fn.kernelJournalContextUnsafeCall === true));
+    for (const [caller, arities] of pointerCalls) {
+      if (arities.some((arity) => functions.some((target) => visibleArity(target) === arity
+        && target.parameters.some((parameter) => parameter.name === KERNEL_JOURNAL_RECORDS)))) {
+        unsafe.add(caller);
+      }
+    }
+    let unsafeChanged = true;
+    while (unsafeChanged) {
+      unsafeChanged = false;
+      for (const caller of functions) {
+        if (unsafe.has(caller)) continue;
+        if ([...(directCalls.get(caller) ?? [])].some((callee) => unsafe.has(callee))) {
+          unsafe.add(caller);
+          unsafeChanged = true;
+        }
+      }
+    }
+    for (const fn of unsafe) fn.kernelJournalContextUnsafeCall = true;
   }
 
   visitFunctionDefinition(node: FunctionDefinitionNode): Node {

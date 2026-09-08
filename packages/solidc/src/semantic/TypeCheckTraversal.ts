@@ -2358,7 +2358,8 @@ export default class TypeCheckTraversal extends AstTraversal {
     // route cannot call a delegate-marked getter (`owner()`) at all.
     const FORWARDABLE = new Set([
       '__internal__blockhashInputIndex', '__internal__proxyMasterOutputIndex',
-      '__internal__proxyMasterIndex',
+      '__internal__proxyMasterIndex', '__internal__kernelJournalAccessStreams',
+      '__internal__kernelJournalRecords',
     ]);
     const callerParams = new Map(this.currentFunction.parameters.map((p) => [p.name, p]));
     const canForwardByName = (p: ParameterNode): boolean => {
@@ -2367,7 +2368,9 @@ export default class TypeCheckTraversal extends AstTraversal {
         || p.name === '__internal__proxyMasterIndex')) return true;
       return !!callerParam && callerParam.type.toString() === p.type.toString()
         && (FORWARDABLE.has(p.name) || p.name.startsWith('__internal__valueWitness_')
-          || p.name.startsWith('__internal__leadingPushValue_'));
+          || p.name.startsWith('__internal__leadingPushValue_')
+          || p.name.startsWith('__internal__vmapCounter')
+          || p.name.startsWith('__internal__vmapRuntime'));
     };
     if (!pending.every((p) => p.name === '__internal__returnOutputIdx' || canForwardByName(p))) return;
     for (const p of pending) {

@@ -3638,6 +3638,9 @@ function synthesizeMessageBusRoute(
     }
     fn.usesMsgValue = routeUsesMsgValue;
     let reason: string | undefined;
+    if (compilerOptions.messageBusKernel === true && fn.kernelJournalContextUnsafeCall === true) {
+      reason = 'KERNEL_LAYOUT';
+    }
     // In auto mode the message bus is an optional capability. One entry point with an unsupported low-level
     // call shape must not suppress clean siblings (or make the direct contract fail to compile); refuse only
     // that handler. An explicitly required route retains the source-level hard diagnostic below.

@@ -558,6 +558,9 @@ export class FunctionDefinitionNode extends Node implements Named {
   /** A recursive varying-key mapping read which no authenticated affine stream claimed. Kernel admission must
    * retain this marker across speculative clones and refuse the generic tail-loop representation. */
   unloweredVaryingRecursiveMappingRead?: boolean;
+  /** An indirect internal call may reach a journal-context ABI without a statically complete target set. The
+   * kernel must refuse that handler rather than invoke a context-bearing OP_DEFINE with the source-only frame. */
+  kernelJournalContextUnsafeCall?: boolean;
   // Release 3: helper was lowered to a value-threaded collection journal.
   collectionJournal?: boolean;
   /** Compiler-owned batch clone: journal it through the wrapper's shared entry pool even when it touches a

@@ -1,7 +1,11 @@
 import { hexToBin } from '@bitauth/libauth';
 import { describe, expect, it } from 'vitest';
-import { bytecodeToAsm } from '@solidcash/utils';
-import { compileString } from '../../src/compiler.js';
+import { ArrayType, bytecodeToAsm, BytesType, IntType } from '@solidcash/utils';
+import { compileString, parseCode } from '../../src/compiler.js';
+import { ParameterNode, type FunctionDefinitionNode, type SourceFileNode } from '../../src/ast/AST.js';
+import LowerVMapCounterLoops, {
+  KERNEL_JOURNAL_ACCESS_STREAMS, KERNEL_JOURNAL_RECORDS,
+} from '../../src/semantic/LowerVMapCounterLoops.js';
 
 const OPTIONS = { messageBus: true as const, forceStateful: true, messageBusKernel: true };
 
@@ -64,6 +68,27 @@ const selectorPushCount = (asm: string, selectorHex: string): number => {
   }
   return count;
 };
+
+const contextPropagatedFunctions = (
+  source: string, leaves: Record<string, string[]>,
+): Map<string, FunctionDefinitionNode> => {
+  const ast = parseCode(source) as SourceFileNode;
+  for (const [name, parameters] of Object.entries(leaves)) {
+    const fn = ast.contract.functions.find((candidate) => candidate.name === name)!;
+    for (const parameter of parameters) {
+      const type = parameter === KERNEL_JOURNAL_ACCESS_STREAMS || parameter === KERNEL_JOURNAL_RECORDS
+        ? new ArrayType(new BytesType()) : new IntType(true, 256);
+      fn.parameters.push(new ParameterNode(type, parameter));
+    }
+  }
+  new LowerVMapCounterLoops(true).propagateKernelJournalContext(ast.contract);
+  return new Map(ast.contract.functions.map((fn) => [fn.name, fn]));
+};
+
+const journalContextNames = (fn: FunctionDefinitionNode): string[] => fn.parameters
+  .map((parameter) => parameter.name)
+  .filter((name) => name.startsWith('__internal__vmap')
+    || name === KERNEL_JOURNAL_ACCESS_STREAMS || name === KERNEL_JOURNAL_RECORDS);
 
 describe('message-bus kernel loop route', () => {
   it('dispatches a void handler from one row loop rather than unrolled rowCount bands', () => {
@@ -184,5 +209,110 @@ contract Acc() {
     expect(asm).toContain('OP_EQUALVERIFY');
     expect(selectorPushCount(asm, write!.selector)).toBe(1);
     expect(selectorPushCount(asm, erase!.selector)).toBe(1);
+  });
+
+  it('propagates the journal context through direct and one-level internal calls', () => {
+    const functions = contextPropagatedFunctions(`
+      pragma solidcash ^0.13.0;
+      contract Store() {
+        mapping(int => int) values;
+        function leaf(int n) internal {
+          for (int i = 0; i < n; i = i + 1) { this.values[i] = n; }
+          require(true);
+        }
+        function outer(int n) public { leaf(n); require(true); }
+      }
+    `, { leaf: [
+      '__internal__vmapRuntimeInputCount_values', '__internal__vmapRuntimeOutputCount_values',
+      KERNEL_JOURNAL_ACCESS_STREAMS, KERNEL_JOURNAL_RECORDS,
+    ] });
+    const leaf = journalContextNames(functions.get('leaf')!);
+    const outer = journalContextNames(functions.get('outer')!);
+    expect(leaf).toContain(KERNEL_JOURNAL_RECORDS);
+    expect(outer).toEqual(leaf);
+  });
+
+  it('reaches a fixed point through two returning helper levels', () => {
+    const source = `
+      pragma solidcash ^0.13.0;
+      contract Store() {
+        mapping(int => int) values;
+        function leaf(int n) internal returns (int) {
+          for (int i = 0; i < n; i = i + 1) { this.values[i] = n; }
+          return n + 1;
+        }
+        function middle(int n) internal returns (int) { return leaf(n); }
+        function outer(int n) public { int result = middle(n); require(result > n); }
+      }
+    `;
+    const functions = contextPropagatedFunctions(source, { leaf: [
+      '__internal__vmapRuntimeInputCount_values', '__internal__vmapRuntimeOutputCount_values',
+      KERNEL_JOURNAL_ACCESS_STREAMS, KERNEL_JOURNAL_RECORDS,
+    ] });
+    const leaf = journalContextNames(functions.get('leaf')!);
+    expect(journalContextNames(functions.get('middle')!)).toEqual(leaf);
+    expect(journalContextNames(functions.get('outer')!)).toEqual(leaf);
+
+    const artifact = compileString(source, { ...OPTIONS, maximumInputBytes: 100_000 });
+    expect(artifact.abi.find((entry) => entry.name === 'outer')?.inputs.map((input) => input.name))
+      .toEqual(['n']);
+  });
+
+  it('unions mixed collection cardinalities while keeping one record carrier', () => {
+    const functions = contextPropagatedFunctions(`
+      pragma solidcash ^0.13.0;
+      contract Store() {
+        mapping(int => int) left;
+        mapping(int => int) right;
+        function writeLeft(int n) internal {
+          for (int i = 0; i < n; i = i + 1) { this.left[i] = n; }
+          require(true);
+        }
+        function writeRight(int n) internal {
+          for (int i = 0; i < n; i = i + 1) { this.right[i] = n; }
+          require(true);
+        }
+        function outer(int n) public { writeLeft(n); writeRight(n); require(true); }
+      }
+    `, {
+      writeLeft: [
+        '__internal__vmapRuntimeInputCount_left', '__internal__vmapRuntimeOutputCount_left',
+        KERNEL_JOURNAL_ACCESS_STREAMS, KERNEL_JOURNAL_RECORDS,
+      ],
+      writeRight: [
+        '__internal__vmapRuntimeInputCount_right', '__internal__vmapRuntimeOutputCount_right',
+        KERNEL_JOURNAL_ACCESS_STREAMS, KERNEL_JOURNAL_RECORDS,
+      ],
+    });
+    const outer = journalContextNames(functions.get('outer')!);
+    expect(outer.filter((name) => name === KERNEL_JOURNAL_RECORDS)).toHaveLength(1);
+    expect(outer.filter((name) => name === KERNEL_JOURNAL_ACCESS_STREAMS)).toHaveLength(1);
+    expect(outer).toEqual(expect.arrayContaining([
+      '__internal__vmapRuntimeInputCount_left', '__internal__vmapRuntimeOutputCount_left',
+      '__internal__vmapRuntimeInputCount_right', '__internal__vmapRuntimeOutputCount_right',
+    ]));
+  });
+
+  it('fails closed when an unresolved function pointer could enter the journal context ABI', () => {
+    const artifact = compileString(`
+      pragma solidcash ^0.13.0;
+      contract Store() {
+        mapping(int => int) values;
+        function leaf(int n) internal {
+          for (int i = 0; i < n; i = i + 1) { this.values[i] = n; }
+          require(true);
+        }
+        function indirect(int n) public {
+          function(int) internal target = leaf;
+          target(n);
+          require(true);
+        }
+        function control() public { require(true); }
+      }
+    `, { ...OPTIONS, maximumInputBytes: 100_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'indirect'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control'))
+      .toMatchObject({ eligible: true });
   });
 });

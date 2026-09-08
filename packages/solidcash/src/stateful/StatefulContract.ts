@@ -125,10 +125,13 @@ import {
 import {
   decodeKernelEntryJournalAccesses,
   encodeKernelEntryJournalAccesses,
+  KERNEL_ENTRY_JOURNAL_MAX_RECORDS,
+  KERNEL_ENTRY_JOURNAL_MAX_SEGMENTS,
   kernelEntryJournalRecordSegmentIndex,
   kernelEntryJournalRecordSegmentName,
   planKernelEntryJournalAccessTopology,
   segmentKernelEntryJournalRecords,
+  validateKernelEntryJournalRecordSegmentSlots,
   type KernelEntryJournalTopologyOperation,
 } from './KernelEntryJournal.js';
 import { resolveKernelDelegatePromotion } from './KernelDelegateForwarding.js';
@@ -444,6 +447,21 @@ export interface KernelJournalRecordSegmentWitnesses {
   slots: ReadonlyArray<{ name: string; inputIndex: number; records: Uint8Array[] }>;
 }
 
+/** Enforce the protocol-wide record budget across every independently planned collection/stream group. */
+export function assertKernelJournalRecordBudget(recordCounts: readonly number[]): number {
+  if (recordCounts.some((count) => !Number.isSafeInteger(count) || count < 0)) {
+    throw new Error('Kernel entry journal record counts must be non-negative safe integers.');
+  }
+  const total = recordCounts.reduce((sum, count) => sum + count, 0);
+  if (!Number.isSafeInteger(total) || total > KERNEL_ENTRY_JOURNAL_MAX_RECORDS) {
+    throw new Error(
+      `Kernel entry journal has ${total} records across all streams, exceeding the protocol cap of `
+      + `${KERNEL_ENTRY_JOURNAL_MAX_RECORDS}.`,
+    );
+  }
+  return total;
+}
+
 /**
  * Bind a global journal record vector to the finite, compiler-published segment slots of one ABI function.
  * Slot capacity comes exclusively from the ABI. Every unused trailing slot receives the canonical empty array.
@@ -455,6 +473,12 @@ export function kernelJournalRecordSegmentWitnesses(
   const discovered = inputs.flatMap((input, inputIndex) => {
     const segmentIndex = kernelEntryJournalRecordSegmentIndex(input.name);
     if (segmentIndex === undefined) return [];
+    if (segmentIndex >= KERNEL_ENTRY_JOURNAL_MAX_SEGMENTS) {
+      throw new Error(
+        `Kernel journal segment input '${input.name}' exceeds the protocol cap of `
+        + `${KERNEL_ENTRY_JOURNAL_MAX_SEGMENTS} slots.`,
+      );
+    }
     if (input.type !== 'bytes[]') {
       throw new Error(`Kernel journal segment input '${input.name}' must have type bytes[].`);
     }
@@ -481,16 +505,19 @@ export function kernelJournalRecordSegmentWitnesses(
       + `${discovered.length} segment slots.`,
     );
   }
-  return {
-    slots: Array.from({ length: discovered.length }, (_unused, segmentIndex) => {
-      const slot = byIndex.get(segmentIndex)!;
-      return {
-        name: kernelEntryJournalRecordSegmentName(segmentIndex),
-        inputIndex: slot.inputIndex,
-        records: segments[segmentIndex] ?? [],
-      };
-    }),
-  };
+  const slots = Array.from({ length: discovered.length }, (_unused, segmentIndex) => {
+    const slot = byIndex.get(segmentIndex)!;
+    return {
+      name: kernelEntryJournalRecordSegmentName(segmentIndex),
+      inputIndex: slot.inputIndex,
+      records: segments[segmentIndex] ?? [],
+    };
+  });
+  validateKernelEntryJournalRecordSegmentSlots(
+    slots.map((slot) => slot.records), segments.length,
+    { expectedRecordCount: encodedRecords.length, transportOnly: true },
+  );
+  return { slots };
 }
 
 /** Build the canonical empty access vector for one handler's compiler-published stream ordinal space. */
@@ -18378,6 +18405,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         globalOrdinals: new Map(),
       });
     }
+    assertKernelJournalRecordBudget(
+      [...plannedKernelCollections.values()].map((plan) => plan.records.length),
+    );
     if (hasInterleavedStreamDependency) {
       throw new Error(
         'Kernel runtime journal cannot yet materialize a topology dependency between interleaved mapping '
@@ -18422,8 +18452,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       const collectionPlan = plannedKernelCollections.get(collectionIdentity)!;
       const prior = collectionPlan.globalOrdinals.get(local);
       if (prior !== undefined) return prior;
-      if (kernelJournalRecords.length >= 0xffff) {
-        throw new Error('Kernel entry journal exceeds the unsigned 16-bit record ordinal space.');
+      if (kernelJournalRecords.length >= KERNEL_ENTRY_JOURNAL_MAX_RECORDS) {
+        throw new Error(
+          `Kernel entry journal exceeds the protocol cap of ${KERNEL_ENTRY_JOURNAL_MAX_RECORDS} records.`,
+        );
       }
       const ordinal = kernelJournalRecords.length;
       const record = collectionPlan.records[local];

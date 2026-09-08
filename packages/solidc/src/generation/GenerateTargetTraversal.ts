@@ -24775,7 +24775,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_1, loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_SWAP, loc); // count, rest, flags
     this.emit(Op.OP_BIN2NUM, loc);
     this.emit(Op.OP_DUP, loc); this.emit(Op.OP_DUP, loc);
-    this.emit(encodeInt(63n), loc); this.emit(Op.OP_AND, loc);
+    this.emit(encodeInt(127n), loc); this.emit(Op.OP_AND, loc);
     this.emit(Op.OP_NUMEQUALVERIFY, loc); // reject unknown flag bits
     this.emit(Op.OP_SWAP, loc); // count, flags, rest
     this.emit(encodeInt(2n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_SWAP, loc);

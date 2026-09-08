@@ -80,6 +80,9 @@ describe('kernel pending fixed-width scalar rows', () => {
     const journalIndex = artifact.messageBus!.route.inputs.findIndex((input) =>
       input.name === '__internal__kernelJournalAccessStreams');
     const rowStreams = routeInput.unlocker.params[journalIndex] as Uint8Array[][];
+    const decodedRowAccesses = rowStreams.flatMap((streams) =>
+      streams.flatMap((stream) => decodeKernelEntryJournalAccesses(stream)));
+    expect(decodedRowAccesses.filter((access) => access.mutates).every((access) => access.pending)).toBe(true);
     const pendingRowIndex = rowStreams.findIndex((streams) => streams.some((stream) =>
       decodeKernelEntryJournalAccesses(stream).some((access) => !access.presentBefore
         && access.predecessorRecordOrdinal !== undefined && !access.authenticatesPredecessor)));

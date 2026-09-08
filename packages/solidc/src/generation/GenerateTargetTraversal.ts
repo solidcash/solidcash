@@ -17804,7 +17804,49 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       for (let i = 0; i <= substitutions.size; i += 1) {
         resolved = substituteInExpression(resolved, substitutions);
       }
-      return resolved;
+      // A later graph edge may be parameterized by a local initialized from an earlier returning edge. Expanding
+      // that local above exposes the producer's ExternalFunctionCallNode, but visiting it here would execute an
+      // ordinary return-event read in the enclosing route (which owns no such slots). The graph handler already
+      // receives every authenticated producer result in its hidden frame; project the exact prior single result
+      // to that frame name instead. Do not guess at multi/opaque returns or forward references.
+      const currentOrdinal = handler.externalCalls?.indexOf(slot) ?? -1;
+      const projectPriorResult = (node: Node): Node => {
+        if (node instanceof ExternalFunctionCallNode && node.callInfo?.hasReturnValues) {
+          const producer = (handler.externalCalls ?? []).find((candidate) =>
+            candidate.slotIndex === node.callInfo!.externalCallSlotIndex
+            && candidate.interfaceName === node.interfaceName
+            && candidate.functionName === node.functionName);
+          const producerOrdinal = producer === undefined ? -1 : handler.externalCalls!.indexOf(producer);
+          if (!producer || currentOrdinal < 0 || producerOrdinal < 0 || producerOrdinal >= currentOrdinal
+            || producer.returnSlotIndex === undefined || producer.returnTypes?.length !== 1
+            || node.opaqueReturn) {
+            throw new UnboundReturnCallError(
+              node, handler.name, `${node.interfaceName}.${node.functionName}()`,
+              node.callInfo.externalCallSlotIndex, handler.externalCalls?.length ?? 0,
+            );
+          }
+          const projected = new IdentifierNode(this.graphResultName(producer, 0));
+          projected.location = node.location;
+          projected.type = producer.returnTypes[0];
+          return projected;
+        }
+        for (const key of Object.keys(node)) {
+          if (key === 'location' || key === 'type' || key === 'resolvedFunction'
+            || key === 'functionReference' || key === 'definition' || key === 'symbolTable'
+            || key === 'referencedContract' || key === 'stateVariable' || key === 'collection'
+            || key === 'sourceCallNode') continue;
+          const child = (node as unknown as Record<string, unknown>)[key];
+          if (child instanceof Node) {
+            (node as unknown as Record<string, unknown>)[key] = projectPriorResult(child);
+          } else if (Array.isArray(child)) {
+            for (let index = 0; index < child.length; index += 1) {
+              if (child[index] instanceof Node) child[index] = projectPriorResult(child[index] as Node);
+            }
+          }
+        }
+        return node;
+      };
+      return projectPriorResult(resolved) as ExpressionNode;
     };
     const rawCall = slot.interfaceName === '__raw__' && slot.functionName === '__raw__';
     const canonicalRawParameters = rawCall && slot.rawSelector

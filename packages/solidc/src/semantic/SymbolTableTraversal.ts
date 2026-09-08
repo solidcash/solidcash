@@ -6133,10 +6133,18 @@ export default class SymbolTableTraversal extends AstTraversal {
 
   private viewReturnCounter = 0;
 
+  // These fields point outside the lexical body currently being rewritten. Following one while replacing a
+  // call would mutate a callee (or a compiler-owned handler clone) while appending the corresponding witness
+  // parameter to the caller. Keep this transform function-local, like the other invocation-AST surveys.
+  private static readonly VIEW_RETURN_BACKREF_KEYS = new Set([
+    'resolvedFunction', 'functionReference', 'definition', 'symbolTable', 'referencedContract',
+    'stateVariable', 'collection', 'sourceCallNode',
+  ]);
+
   // Replace `target` with `replacement` wherever it is referenced under `root` (the parent field / array slot).
   private replaceNodeInTree(root: Node, target: Node, replacement: Node): boolean {
     for (const k of Object.keys(root)) {
-      if (k === 'location' || k === 'type' || k === 'symbolTable' || k === 'definition') continue;
+      if (k === 'location' || k === 'type' || SymbolTableTraversal.VIEW_RETURN_BACKREF_KEYS.has(k)) continue;
       const v = (root as unknown as Record<string, unknown>)[k];
       if (v === target) { (root as unknown as Record<string, unknown>)[k] = replacement; return true; }
       if (Array.isArray(v)) {
@@ -6155,7 +6163,8 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (!node || seen.has(node)) return undefined;
     seen.add(node);
     if (node instanceof TupleAssignmentNode && node.tuple === call) return node;
-    for (const v of Object.values(node)) {
+    for (const [key, v] of Object.entries(node)) {
+      if (key === 'location' || key === 'type' || SymbolTableTraversal.VIEW_RETURN_BACKREF_KEYS.has(key)) continue;
       if (v instanceof Node) {
         const result = this.findTupleAssignmentWithRhs(v, call, seen);
         if (result) return result;
@@ -6180,6 +6189,11 @@ export default class SymbolTableTraversal extends AstTraversal {
   private rewriteMultiUseViewCalls(fn: FunctionDefinitionNode): boolean {
     const body = fn.body;
     if (!body) return false;
+    // A graph handler does not physically co-spend the receiver once per call. Its calls are authenticated
+    // logical emission rows, and their return values arrive in the graph result frame. Replacing them with
+    // caller-supplied direct-route witnesses both discards those rows and creates a hidden parameter which the
+    // already-synthesized route cannot own. Preserve every call for the normal graph-slot collector instead.
+    if (fn.graphEmissionHandler) return true;
     const byLocal = new Map<string, ExternalFunctionCallNode[]>();
     const allCalls = new Set<ExternalFunctionCallNode>();
     const removed = new Set<ExternalFunctionCallNode>();
@@ -6196,6 +6210,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         }
       }
       for (const key in n) {
+        if (key === 'location' || key === 'type' || SymbolTableTraversal.VIEW_RETURN_BACKREF_KEYS.has(key)) continue;
         const v = n[key as keyof Node];
         if (v instanceof Node) gather(v, seen);
         else if (Array.isArray(v)) for (const e of v) if (e instanceof Node) gather(e, seen);

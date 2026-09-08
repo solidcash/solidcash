@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { asmToBytecode, bytecodeToAsm, StructType } from '@solidcash/utils';
 import { compileString, compileStringMulti } from '../../src/compiler.js';
 import { FunctionCallNode, IdentifierNode } from '../../src/ast/AST.js';
@@ -16,6 +16,54 @@ ReturnType<typeof compileString>['messageBus']
 };
 
 describe('required kernel admission', () => {
+  it('retries a multi-declaration speed compile from source-only AST state', () => {
+    const source = `pragma solidity ^0.8.7;
+      interface Remote {
+        function read(uint key) external returns (uint);
+        function write(uint value) external;
+      }
+      contract Neutral {
+        Remote public immutable remote;
+        address public sink;
+        uint public count;
+        constructor(address target) { remote = Remote(target); }
+        function setSink(address value) external { sink = value; }
+        function batch(uint[] calldata keys) external {
+          for (uint cursor = 0; cursor < keys.length; ++cursor) {
+            uint value = remote.read(keys[cursor]);
+            remote.write(value);
+            count = value;
+          }
+        }
+        function clock() public view returns (uint) { return block.timestamp; }
+      }`;
+    const options = {
+      ...KERNEL,
+      solidityImportCompat: true,
+      messageBusGraphContext: true,
+      suppressWarnings: true,
+      maximumInputBytes: 10_000_000,
+      commitmentLimit: 10_000_000,
+      compileDeclarations: ['Neutral'],
+      __artifactCache: false,
+    } as const;
+    const previousProfile = process.env.SOLIDC_PROFILE;
+    process.env.SOLIDC_PROFILE = '1';
+    const profile = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      const fast = compileStringMulti(source, { ...options, optimizeForCompilationSpeed: true }).Neutral;
+      const normal = compileStringMulti(source, options).Neutral;
+      const eligible = (artifact: typeof fast): string[] => artifact.messageBus?.handlers
+        .filter((handler) => handler.eligible).map((handler) => handler.name) ?? [];
+      expect(eligible(fast)).toEqual(eligible(normal));
+      expect(profile.mock.calls.flat().join(' ')).not.toContain('MESSAGE_BUS_RESERVED_SELECTOR_COLLISION');
+    } finally {
+      profile.mockRestore();
+      if (previousProfile === undefined) delete process.env.SOLIDC_PROFILE;
+      else process.env.SOLIDC_PROFILE = previousProfile;
+    }
+  });
+
   it('rechecks full handler bodies after cheap kernel admission selects a late-failing row', () => {
     const artifact = compileString(`pragma solidity ^0.8.7;
       interface Remote {

@@ -976,8 +976,14 @@ function compileWithExternalAdmissionFallback(
   // failures are properties of the source, not of a route candidate; replaying them at every rung duplicates
   // listener notifications and can replace the user's first diagnostic with retry noise.
   const incomingPristine = (mergedCompilerOptions as InternalCompilerOptions).__pristineAstBox?.ast;
-  let initialAst: Ast | undefined = (mergedCompilerOptions as InternalCompilerOptions).__parsedAst
-    ?? (incomingPristine !== undefined ? cloneAst(incomingPristine, 'incoming-pristine') : undefined)
+  // `__parsedAst` is an optimization owned by the outer multi-declaration compiler. The first admission pass
+  // consumes and mutates that tree, while the outer normalized options intentionally retain the pointer for the
+  // later full-body pass. Once a pristine snapshot exists it must therefore win over that stale pointer: taking
+  // the parsed tree again can present the already-generated `__message_bus1` as source on a retry, causing a
+  // bogus reserved-selector collision before the offending source handler can be quarantined.
+  let initialAst: Ast | undefined = (incomingPristine !== undefined
+    ? cloneAst(incomingPristine, 'incoming-pristine')
+    : (mergedCompilerOptions as InternalCompilerOptions).__parsedAst)
     ?? parseAndResolve(
       code, mergedCompilerOptions, errorListener, primaryContractName,
     );
@@ -1442,9 +1448,12 @@ function compileStringUnchecked(code: string, compilerOptions: CompileOptions = 
         && { __messageBusSignatureVerifierSource: admittedSignatureVerifierSource }),
     });
     const binderStarted = Date.now();
-    const binderAst = pristineAstBox.ast ?? parseAndResolve(
-      code, bindingOptions, errorListener, primaryContractName,
-    );
+    // The box is the immutable retry seed, not a disposable lowering tree. Keep that ownership boundary even
+    // though the ordinary successful binder clears it immediately afterward: if binding throws, recovery must
+    // never observe compiler-generated route functions or semantic rewrites as source.
+    const binderAst = pristineAstBox.ast !== undefined
+      ? cloneAst(pristineAstBox.ast, 'binder')
+      : parseAndResolve(code, bindingOptions, errorListener, primaryContractName);
     pristineAstBox.ast = undefined;
     try {
       artifact = compileResolvedAst(

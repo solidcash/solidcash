@@ -7205,6 +7205,7 @@ function synthesizeMessageBusRoute(
         bigint activeFixedSize = 0;
         bigint activeBlockSize = 0;
         bigint activeMaximumSize = 0;
+        bigint activeOutputBase = 65535;
         bigint activeReturnOutput = 65535;
         bytes activeCategory;
         bytes participantBases = hex"";
@@ -7278,6 +7279,7 @@ function synthesizeMessageBusRoute(
             activeFixedSize = fixedSize;
             activeBlockSize = blockSize;
             activeMaximumSize = maximumSize;
+            activeOutputBase = participantOutputBase;
             activeReturnOutput = returnOutput;
             activeCategory = category;
             ${kernelUpgradeMode
@@ -7818,14 +7820,10 @@ function synthesizeMessageBusRoute(
         // A delegate route can execute from an authenticated interior slot. Resource cardinality belongs to
         // the participant block, so scan from the canonical base selected from the manifest rather than from
         // the executing slot.
-        bigint activeOutputBase = activeBase;
-        if (!(${atomicManifestV2Expression})) {
-          for (bigint outputIndex = 0; outputIndex < tx.outputs.length; outputIndex = outputIndex + 1) {
-            if (tx.outputs[outputIndex].lockingBytecode == tx.inputs[activeBase].lockingBytecode) {
-              activeOutputBase = outputIndex;
-            }
-          }
-        }
+        // Participant parsing already selected this output with both covenant identity and master category.
+        // Re-scanning by locking bytecode alone aliases an ordinary BCH transfer to the participant whenever
+        // its recipient is that same covenant, shifting the entire physical settlement window.
+        require(activeOutputBase != 65535);
         for (bigint slot = activeBase;
           slot < activeBase + activeBlockSize; slot = slot + 1) {
           bigint outputSlot = activeOutputBase + slot - activeBase;
@@ -10345,12 +10343,7 @@ function compileResolvedAst(
         (transfer.recipientRecipe === undefined && transfer.derivedRecipient === undefined)
         || transfer.amountRecipe === undefined
         || transfer.condition === null) === true;
-      // A row-local logical caller is materializable for a leaf participant and for an owner-local batch. An
-      // emitting handler which also owns a caller-directed BCH effect still needs a combined graph settlement
-      // frame: the current route verifies those two roles independently and rejects the honest root spend.
-      const callerTransferBesideEmission = (abi?.externalCalls?.length ?? 0) > 0
-        && abi?.transfers?.some((transfer) => transfer.recipientRecipe?.kind === 'logicalCaller') === true;
-      if (!incomplete && !callerTransferBesideEmission) continue;
+      if (!incomplete) continue;
       fn.messageBusEligible = false;
       fn.messageBusRejectionReason = 'KERNEL_LAYOUT';
     }

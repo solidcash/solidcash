@@ -1355,7 +1355,7 @@ contract C() {
     expect(artifact.abi.some((fn) => clonePrefix.test(fn.name))).toBe(false);
   });
 
-  it('fences a caller-directed BCH effect beside a graph emission until their settlement frames compose', () => {
+  it('dispatches a caller-directed BCH effect beside a graph emission', () => {
     const artifact = compileString(`
 pragma solidcash ^0.13.0;
 interface I { function next(); }
@@ -1367,9 +1367,12 @@ contract C(address child) {
   }
   function control() public { require(true); }
 }
-`, OPTIONS);
+    `, OPTIONS);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'refundAndCall'))
-      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+      .toMatchObject({
+        eligible: true,
+        transfers: [{ recipientRecipe: { kind: 'logicalCaller', resultType: 'address' } }],
+      });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
   });
 

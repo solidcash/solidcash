@@ -3222,19 +3222,23 @@ describe('messageBus.compose atomic transaction', () => {
       interface ILogicalCallerRecipientNested { function refund(); }
       contract LogicalCallerRecipientRoot(address nested) {
         function run() public {
+          this.transfer(msg.sender, 1000);
           ILogicalCallerRecipientNested(nested).refund();
           require(true);
         }
       }
     `, { forceStateful: true, messageBus: true, messageBusKernel: true, messageBusGraphContext: true });
     expect(rootArtifact.messageBus?.handlers.find((handler) => handler.name === 'run'))
-      .toMatchObject({ eligible: true });
+      .toMatchObject({ eligible: true, transfers: [{ recipientRecipe: { kind: 'logicalCaller' } }] });
     const rootBase = new Contract(rootArtifact, [nestedInner.lockingBytecode], { provider });
     const rootSetup = await setupStatefulUtxos(
       provider, rootBase, rootArtifact.stateLayout!, {}, { saltContract: true },
     );
     const rootInner = rootBase.withCategory(hexToBin(rootSetup.categoryId));
     const root = StatefulContract.withCategory(rootInner, rootSetup.categoryId);
+    await provider.addUtxo(getSatoshiContainerAddress(rootInner, rootSetup.categoryId), {
+      txid: 'd2'.repeat(32), vout: 1, satoshis: 20_000n,
+    });
     const fee = await createBareP2pkhFeeFunder(provider, 1_000_000n);
     const rootCaller = fee.unlocker.generateLockingBytecode();
     const composition = messageBus.compose({
@@ -3244,14 +3248,21 @@ describe('messageBus.compose atomic transaction', () => {
     });
 
     const built = await composition.build();
+    const rootRefund = built.outputs.findIndex((output) => output.amount === 1000n && !output.token
+      && typeof output.to !== 'string' && binToHex(output.to) === binToHex(rootCaller));
     const nestedRefund = built.outputs.findIndex((output) => output.amount === 2000n && !output.token
       && typeof output.to !== 'string' && binToHex(output.to) === rootInner.lockingBytecode);
+    expect(rootRefund).toBeGreaterThan(0);
     expect(nestedRefund).toBeGreaterThan(0);
     expect(vmRejects(built)).toBe(false);
 
-    const hostile = await composition.build();
-    hostile.outputs[nestedRefund].to = rootCaller;
-    expect(vmRejects(hostile)).toBe(true);
+    const hostileRoot = await composition.build();
+    hostileRoot.outputs[rootRefund].to = hexToBin(nestedInner.lockingBytecode);
+    expect(vmRejects(hostileRoot)).toBe(true);
+
+    const hostileNested = await composition.build();
+    hostileNested.outputs[nestedRefund].to = rootCaller;
+    expect(vmRejects(hostileNested)).toBe(true);
   }, 120_000);
 
   it('materializes a local batch BCH recipient from authenticated tx.origin', async () => {

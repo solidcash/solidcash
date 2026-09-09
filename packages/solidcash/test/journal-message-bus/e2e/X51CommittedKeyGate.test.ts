@@ -502,11 +502,9 @@ contract X51MixedProxy(bytes20 adminPkh) {
         .reason).toContain('hash160-committed-key');
     });
 
-    /** X51 changes nothing about the classes this gate cannot SEE; those are occurrence and the decoy target. */
-    it('leaves the undetected list unchanged', () => {
-      expect(messageBus.UNDETECTED_BY_THIS_GATE).toEqual([
-        'conditional-delegate-edge', 'iterated-delegate-edge', 'decoy-committed-target',
-      ]);
+    /** Occurrence metadata now detects conditional/iterated edges; only the decoy target remains invisible. */
+    it('retains only the delegate class which still lacks published evidence', () => {
+      expect(messageBus.UNDETECTED_BY_THIS_GATE).toEqual(['decoy-committed-target']);
     });
   });
 });

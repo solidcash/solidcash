@@ -10692,12 +10692,14 @@ function compileResolvedAst(
 
   // A whole dynamic-array copy with a differing element type (`bytes10[] = bytes8[]`) desugars to a delete +
   // per-element casting push loop; must precede CacheDynamicArrayInLoop so the emitted push-in-loop is cached.
-  if (needsLoop || !(rootSourceCoversProgram(ast) && !code.includes('[]'))) {
+  const needsDynamicArrayLowering = needsLoop || !(rootSourceCoversProgram(ast) && !code.includes('[]'));
+  if (needsDynamicArrayLowering) {
     ast = ast.accept(new DesugarDynamicArrayCopyCast()) as Ast;
   }
   // A dynamic (chunk-backed) array written inside a loop can't use the once-per-function pending-value write
-  // model; cache it in a local, mutate the local in the loop, flush back once.
-  if (needsLoop) ast = ast.accept(new CacheDynamicArrayInLoop()) as Ast;
+  // model; cache it in a local, mutate the local in the loop, flush back once. The copy-cast pass immediately
+  // above can synthesize such a loop from loop-free source, so its admission predicate must carry through here.
+  if (needsDynamicArrayLowering) ast = ast.accept(new CacheDynamicArrayInLoop()) as Ast;
   // A vmap (sorted) mapping ARRAY value written in a loop `for(..) m[k][j]=v` is cached the same way: read m[k] once,
   // mutate the local array in the runtime loop, flush `m[k] = local` as one upsert (never unroll the loop).
   // Loop-free same-key writes (`m[k]=m[k]+a; m[k]=m[k]+b`) also need the one-upsert cache.
@@ -13615,6 +13617,7 @@ const parseProfileTotals = { files: 0, sllFails: 0, bytes: 0, ms: 0 };
 const STATEMENT_DECISION = 167;
 const STATEMENT_ALT_PLACEHOLDER = 1;
 const STATEMENT_ALT_BLOCK = 2;
+const STATEMENT_ALT_TIME_OP = 10;
 const STATEMENT_ALT_REQUIRE = 11;
 const STATEMENT_ALT_IF = 12;
 const STATEMENT_ALT_EMIT = 15;
@@ -14079,7 +14082,12 @@ function installExpressionPrefixFastPath(parser: SolidCashParser): void {
       const token = input.LA(1);
       if (token === placeholderTok) return STATEMENT_ALT_PLACEHOLDER;
       if (token === lbrace) return STATEMENT_ALT_BLOCK;
-      if (token === requireTok) return STATEMENT_ALT_REQUIRE;
+      if (token === requireTok) {
+        // `timeOpStatement` and ordinary `requireStatement` share the `require (` prefix. Preserve the grammar's
+        // exact `require ( TxVar >=` distinction in this optimized decision.
+        return input.LA(3) === SolidCashParser.TxVar && input.LA(4) === SolidCashParser.T__22
+          ? STATEMENT_ALT_TIME_OP : STATEMENT_ALT_REQUIRE;
+      }
       if (token === ifTok) return STATEMENT_ALT_IF;
       if (token === emitTok) return STATEMENT_ALT_EMIT;
       if (token === returnTok) return STATEMENT_ALT_RETURN;

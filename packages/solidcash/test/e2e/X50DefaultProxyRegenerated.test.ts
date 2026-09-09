@@ -182,7 +182,12 @@ describe('X50: the shipped default proxy is a compile of its own source', () => 
     const preX37 = {
       ...grafted,
       abi: grafted.abi.map((entry) => (entry.name !== '__forward' ? entry : {
-        ...entry, lowLevelCalls: [{ callMode: 'delegatecall' as const }],
+        ...entry,
+        lowLevelCalls: entry.lowLevelCalls?.map((call) => {
+          const withoutTarget = { ...call };
+          delete withoutTarget.target;
+          return withoutTarget;
+        }),
       })),
     } as Artifact;
     expect(() => classifyDelegateParticipant({

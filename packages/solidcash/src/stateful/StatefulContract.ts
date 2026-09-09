@@ -19185,12 +19185,18 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         // This list is emitted for every callsite. An explicit empty list is authoritative: mapping-only calls
         // do not co-spend fixed-state NFTs, and expanding empty to "all" shifts every later block slot.
         const concreteAbi = callInfo.externalContract.inner.artifact.abi as readonly AbiFunction[];
+        const selectedConcreteAbi = compilerRoute ? undefined : resolveStatefulAbiFunction(
+          callInfo.externalContract.inner.artifact, callInfo.functionName, callInfo.args,
+        );
         const bRequiredNftIndices = compilerRoute
           ? [...new Set(compilerRoute.rowArguments.flatMap((row) => (
             concreteAbi.find((candidate) => candidate.selector === row.selector)?.requiredNftIndices
               ?? row.handler.requiredNftIndices ?? []
           )))]
-          : [...ec.requiredDataNftIndices];
+          // A low-level callsite cannot publish the callee function's state footprint: only the runtime
+          // `.withExternalCall()` binding identifies that function. Once bound, use the selected concrete ABI's
+          // exact footprint. The callsite list remains the fallback for typed calls and older artifacts.
+          : [...(selectedConcreteAbi?.requiredNftIndices ?? ec.requiredDataNftIndices)];
         if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
           ?.SOLIDC_DEBUG_RETURN_SNAPSHOT === '1' && callInfo.functionName === 'approve') {
           console.error('approve-required-nfts', {

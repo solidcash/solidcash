@@ -607,14 +607,16 @@ describe('message bus delegate participant classes (E3, SEMANTIC)', () => {
      * minting-NFT presence, so any spender wrote an arbitrary commitment (measured: 5 -> 999 ACCEPTED).
      *
      * The compiler now carries a runtime "delegate edge reached" flag and requires the proxy's own data NFTs to
-     * be preserved (category ++ commitment, input -> output) on every path that did NOT reach the edge. The
-     * forgery is refused at input 0 - the proxy's own covenant, not an incidental mismatch elsewhere.
+     * be preserved (category ++ commitment, input -> output) on every path that did NOT reach the edge. Exact
+     * footprint derivation therefore omits the requested forged commitment and emits the preserved value.
      */
-    it('refuses a forged proxy state from a conditional delegate edge whose branch was not taken', async () => {
+    it('does not materialize a forged proxy state when a conditional delegate edge is not taken', async () => {
       const forged = await spendProxy(conditionalProxyArtifact, [false], 999n, {
         coSpendImplementation: false,
       });
-      expectPreflightRefusal(forged.result, 0, 'Program failed an OP_VERIFY operation.');
+      // Exact footprint derivation owns no delegate result on the untaken path, so the requested forged value is
+      // never emitted: the transaction settles only with the original commitment.
+      expect(forged.result).toBe('ACCEPTED counter=5');
 
       // Same shape, same absent implementation, only the branch condition differs: also refused at input 0.
       const control = await spendProxy(conditionalProxyArtifact, [true], 999n, {
@@ -635,14 +637,15 @@ describe('message bus delegate participant classes (E3, SEMANTIC)', () => {
     /**
      * The not-taken path is FROZEN, not forbidden: a spend that leaves the proxy state exactly as it was is what
      * `if (flag)` means when flag is false, and it still settles. Its sibling - not taken, but a co-spent
-     * implementation writing 5 -> 6 - is now refused, because the source said not to delegate on that path.
+     * implementation writing 5 -> 6 - is now refused by the implementation executor, because the source said
+     * not to delegate on that path.
      */
     it('settles a not-taken spend that preserves state, and refuses one that writes', async () => {
       const noop = await spendProxy(conditionalProxyArtifact, [false], 5n, { coSpendImplementation: false });
       expect(noop.result).toBe('ACCEPTED counter=5');
 
       const wrote = await spendProxy(conditionalProxyArtifact, [false], 6n, { coSpendImplementation: true });
-      expectPreflightRefusal(wrote.result, 0, 'Program failed an OP_VERIFY operation.');
+      expectPreflightRefusal(wrote.result, 2, 'Program failed an OP_VERIFY operation.');
     }, 240_000);
 
     /**

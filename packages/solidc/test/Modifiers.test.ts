@@ -55,3 +55,27 @@ describe('function modifier / custom-modifier interleaving (Solidity allows any 
       + ' function f() public M(1) { require(true); } }')).toBe('C');
   });
 });
+
+describe('custom modifiers containing time requirements', () => {
+  it('keeps ordinary guards, branches, CLTV, and CSV as distinct statements', () => {
+    const artifact = compileString(`
+      contract C {
+        modifier bounded(int absolute, int relative) {
+          require(absolute > 0);
+          if (relative > 0) { require(relative < absolute); }
+          require(tx.time >= absolute);
+          require(this.age >= relative);
+          _;
+        }
+
+        function spend(int absolute, int relative) bounded(absolute, relative) {
+          require(absolute >= relative);
+        }
+      }
+    `);
+
+    expect(artifact.contractName).toBe('C');
+    expect(artifact.bytecode).toContain('OP_CHECKLOCKTIMEVERIFY');
+    expect(artifact.bytecode).toContain('OP_CHECKSEQUENCEVERIFY');
+  });
+});

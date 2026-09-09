@@ -357,8 +357,6 @@ describe('kernel runtime-sized constructed-key initialization', () => {
       'keys[cursor + 1] = cursor + 20;'],
     ['a runtime stride', 'int step', 'cursor < keys.length', 'cursor = cursor + step',
       'keys[cursor] = cursor + 20;'],
-    ['a literal stride', 'int step', 'cursor < keys.length', 'cursor = cursor + 2',
-      'keys[cursor] = cursor + 20;'],
     ['a mutated runtime bound', 'int limit', 'cursor < limit', 'cursor = cursor + 1',
       'keys[cursor] = cursor + 20; limit = limit - 1;'],
   ])('keeps %s fenced when the exact written index set is unavailable', (
@@ -381,5 +379,42 @@ describe('kernel runtime-sized constructed-key initialization', () => {
     }`, KERNEL);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'apply'))
       .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_UNBOUNDED_KEY' });
+  });
+
+  it('derives the exact sparse domain and default value for a literal-stride fill', () => {
+    const artifact = compileString(`contract Registry() {
+      mapping(int => int) records;
+      function fill(int[] memory keys, int unused) internal pure {
+        for (int cursor = 0; cursor < keys.length; cursor = cursor + 2) {
+          keys[cursor] = cursor + 20;
+        }
+      }
+      function apply(int count, int boundary) public {
+        int[] memory keys = new int[](count);
+        fill(keys, boundary);
+        for (int cursor = 0; cursor < count; cursor = cursor + 1) {
+          this.records[keys[cursor]] = cursor;
+        }
+        require(true);
+      }
+    }`, KERNEL);
+
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'apply'))
+      .toMatchObject({ eligible: true });
+    const expression = artifact.abi.find((entry) => entry.name === 'apply')
+      ?.sortedUpsertLoopInfo?.[0]?.varyingKeyExpressions?.[0];
+    expect(expression).toMatchObject({
+      kind: 'ternary',
+      ifFalse: { kind: 'literal', value: '0' },
+    });
+    const operators: string[] = [];
+    const collectOperators = (candidate: unknown): void => {
+      if (!candidate || typeof candidate !== 'object') return;
+      const record = candidate as Record<string, unknown>;
+      if (typeof record.operator === 'string') operators.push(record.operator);
+      for (const value of Object.values(record)) collectOperators(value);
+    };
+    collectOperators(expression);
+    expect(operators).toEqual(expect.arrayContaining(['>=', '<', '%', '==', '&&', '-']));
   });
 });

@@ -151,6 +151,97 @@ export interface KernelEntryJournalSettlementOccurrence {
   access: KernelEntryJournalAccess;
 }
 
+/**
+ * Compiler-owned coordinates for one compact journal stream.
+ *
+ * `frameIndex` orders selected invocations, `executionGroup` orders distinct source control-flow regions within
+ * that invocation, and `executionOrder` orders access sites which execute at the same source occurrence. The SDK
+ * supplies only the runtime occurrence coordinates selected by the compiler-published flow recipe; array/map
+ * insertion order is never part of this protocol.
+ */
+export interface KernelEntryJournalExecutionStream {
+  frameIndex: number;
+  executionGroup: number;
+  executionOrder: number;
+  accessStreamIndex: number;
+  sourceOccurrences?: readonly number[];
+}
+
+export interface KernelEntryJournalScheduledOccurrence<T, S extends KernelEntryJournalExecutionStream> {
+  stream: S;
+  value: T;
+  compactIndex: number;
+  sourceOccurrence: number;
+}
+
+/**
+ * Reconstruct the route's semantic journal execution order from compiler-owned coordinates.
+ *
+ * Streams in one source loop are interleaved by occurrence (`A0, B0, A1, B1`), while later execution groups and
+ * later selected frames remain outside that interleave. Rejecting duplicate stream/site coordinates is important:
+ * otherwise two artifact streams can describe different physical-input schedules while sorting identically.
+ */
+export function scheduleKernelEntryJournalOccurrences<
+T,
+S extends KernelEntryJournalExecutionStream,
+>(
+  streams: readonly S[],
+  values: (stream: S) => readonly T[],
+): Array<KernelEntryJournalScheduledOccurrence<T, S>> {
+  const streamCoordinates = new Set<string>();
+  const siteCoordinates = new Set<string>();
+  const scheduled: Array<KernelEntryJournalScheduledOccurrence<T, S>> = [];
+  for (const stream of streams) {
+    for (const [label, coordinate] of [
+      ['frame index', stream.frameIndex],
+      ['execution group', stream.executionGroup],
+      ['execution order', stream.executionOrder],
+      ['access stream index', stream.accessStreamIndex],
+    ] as const) {
+      if (!Number.isSafeInteger(coordinate) || coordinate < 0) {
+        throw new Error(`kernel journal ${label} must be a non-negative safe integer`);
+      }
+    }
+    const streamCoordinate = `${stream.frameIndex}:${stream.accessStreamIndex}`;
+    if (streamCoordinates.has(streamCoordinate)) {
+      throw new Error(`kernel journal repeats access stream coordinate ${streamCoordinate}`);
+    }
+    streamCoordinates.add(streamCoordinate);
+    const siteCoordinate = `${stream.frameIndex}:${stream.executionGroup}:${stream.executionOrder}`;
+    if (siteCoordinates.has(siteCoordinate)) {
+      throw new Error(`kernel journal repeats execution site coordinate ${siteCoordinate}`);
+    }
+    siteCoordinates.add(siteCoordinate);
+
+    const streamValues = values(stream);
+    if (stream.sourceOccurrences && stream.sourceOccurrences.length !== streamValues.length) {
+      throw new Error(
+        `kernel journal access stream ${stream.accessStreamIndex} has ${streamValues.length} accesses but `
+        + `${stream.sourceOccurrences.length} source occurrences`,
+      );
+    }
+    let priorSourceOccurrence = -1;
+    streamValues.forEach((value, compactIndex) => {
+      const sourceOccurrence = stream.sourceOccurrences?.[compactIndex] ?? compactIndex;
+      if (!Number.isSafeInteger(sourceOccurrence) || sourceOccurrence < 0) {
+        throw new Error('kernel journal source occurrence must be a non-negative safe integer');
+      }
+      if (sourceOccurrence <= priorSourceOccurrence) {
+        throw new Error(
+          `kernel journal access stream ${stream.accessStreamIndex} source occurrences are not strictly ordered`,
+        );
+      }
+      priorSourceOccurrence = sourceOccurrence;
+      scheduled.push({ stream, value, compactIndex, sourceOccurrence });
+    });
+  }
+  return scheduled.sort((left, right) => left.stream.frameIndex - right.stream.frameIndex
+    || left.stream.executionGroup - right.stream.executionGroup
+    || left.sourceOccurrence - right.sourceOccurrence
+    || left.stream.executionOrder - right.stream.executionOrder
+    || left.compactIndex - right.compactIndex);
+}
+
 export interface KernelEntryJournalSettlementStream {
   /** Compiler-published control-flow group, already scoped to the selected invocation frame. */
   executionGroup: string;
@@ -409,13 +500,23 @@ export interface KernelEntryJournalPhysicalSettlementPlan {
 /**
  * A value body produced by the final mutating authority for one dirty record.
  *
- * `recordOrdinal` is deliberately supplied by the caller's authenticated settlement binding, rather than
- * reconstructed from a collection name, source handler, or a best-effort slot search.  The body is the complete
- * entry-NFT commitment (`slot || nextKey || value`), not merely a value tail: this gives the resolver one object
- * on which to check the final link as well as the value.
+ * The producer coordinate names one compiler-authenticated access and record role. The resolver obtains its
+ * global record ordinal from the settlement plan rather than reconstructing identity from a collection name,
+ * source handler, or best-effort slot search. The body is the complete entry-NFT commitment
+ * (`slot || nextKey || value`), not merely a value tail, so the final link and value travel together.
  */
+export type KernelEntryJournalDirtyFinalBodyProducer = Pick<
+KernelEntryJournalSettlementReference,
+'frameIndex' | 'accessStreamIndex' | 'accessOrdinal' | 'recordRole'
+>;
+
 export interface KernelEntryJournalDirtyFinalBodyCandidate {
-  recordOrdinal: number;
+  /**
+   * Stable compiler/runtime access identity which produced this complete body. The global record ordinal is
+   * deliberately absent: the authenticated settlement plan, not the materializer, resolves this producer to a
+   * record. This prevents a slot or collection scan from relabelling a provisional body as a final result.
+   */
+  producer: KernelEntryJournalDirtyFinalBodyProducer;
   commitment: Uint8Array;
 }
 
@@ -978,12 +1079,13 @@ export function planKernelEntryJournalPhysicalSettlement(
     .sort(([left], [right]) => left - right)) {
     if (disposition.reference.settlementDisposition === 'absence') continue;
     const hasInput = inputs.some((input) => input.recordOrdinal === recordOrdinal);
-    const source = occurrences.find((occurrence) => occurrence.frameIndex === disposition.reference.frameIndex
-      && occurrence.identity.accessStreamIndex === disposition.reference.accessStreamIndex
-      && occurrence.accessOrdinal === disposition.reference.accessOrdinal);
-    const reference = source === undefined ? undefined : physicalSettlementReferences(source, occurrences.indexOf(source))
-      .find((candidate) => candidate.recordOrdinal === recordOrdinal && candidate.recordRole === disposition.reference.recordRole);
-    if (!hasInput && (!source || !reference || !isSyntheticPresentRecord(source, reference))) {
+    // A later insertion can mutate an earlier synthetic target as its predecessor. Final ownership then belongs
+    // to the later predecessor reference, but physical origin still belongs to the earlier absent-to-present
+    // target transition. Validate existence against the complete source-ordered record history, not finalOwner.
+    const hasSyntheticProducer = referencesByRecord.get(recordOrdinal)?.some((reference) => (
+      isSyntheticPresentRecord(occurrences[reference.occurrenceIndex]!, reference)
+    )) === true;
+    if (!hasInput && !hasSyntheticProducer) {
       throw new Error(`kernel physical settlement present record ${recordOrdinal} has no input or synthetic producer`);
     }
     outputs.push({ recordOrdinal, outputOrdinal: outputs.length, finalOwner: disposition.reference });
@@ -1017,8 +1119,8 @@ export function planKernelEntryJournalPhysicalSettlement(
  * The topology/settlement planner deliberately does not manufacture dynamic value bodies.  Legacy per-handler
  * materialization, however, can leave several provisional commitments for the same slot.  Selecting "the last"
  * of those would silently reintroduce source-order materialization under the new dense final-flush protocol.  A
- * future versioned dirty-carrier transport must therefore bind its final bodies to record ordinals and call this
- * resolver.  It fails closed for zero, duplicate, malformed, clean, tombstoned, or out-of-plan candidates.
+ * future versioned dirty-carrier transport must therefore bind each body to its producing access identity and call
+ * this resolver. It fails closed for zero, duplicate, malformed, clean, tombstoned, or out-of-plan candidates.
  *
  * This helper is pure and has no capability check by design.  Capability publication remains the responsibility
  * of the caller which has verified the matching route bytecode; exporting this helper alone cannot omit an input
@@ -1030,6 +1132,10 @@ export function resolveKernelEntryJournalDirtyFinalBodies(
   candidates: readonly KernelEntryJournalDirtyFinalBodyCandidate[],
 ): KernelEntryJournalDirtyFinalBodyResolution[] {
   const dirtyOutputs = new Map<number, KernelEntryJournalPhysicalSettlementOutput>();
+  const dirtyOutputsByProducer = new Map<string, KernelEntryJournalPhysicalSettlementOutput>();
+  const producerKey = (producer: KernelEntryJournalDirtyFinalBodyProducer): string => (
+    `${producer.frameIndex}:${producer.accessStreamIndex}:${producer.accessOrdinal}:${producer.recordRole}`
+  );
   for (const output of plan.outputs) {
     if (!Number.isSafeInteger(output.recordOrdinal) || output.recordOrdinal < 0
       || !Number.isSafeInteger(output.outputOrdinal) || output.outputOrdinal < 0) {
@@ -1047,35 +1153,45 @@ export function resolveKernelEntryJournalDirtyFinalBodies(
         throw new Error(`kernel dirty final-body resolution cannot recreate tombstoned record ${output.recordOrdinal}`);
       }
       dirtyOutputs.set(output.recordOrdinal, output);
+      const key = producerKey(output.finalOwner);
+      if (dirtyOutputsByProducer.has(key)) {
+        throw new Error(`kernel dirty final-body resolution has duplicate producer identity ${key}`);
+      }
+      dirtyOutputsByProducer.set(key, output);
     }
   }
 
   const candidatesByRecord = new Map<number, KernelEntryJournalDirtyFinalBodyCandidate[]>();
   for (const candidate of candidates) {
-    if (!Number.isSafeInteger(candidate.recordOrdinal) || candidate.recordOrdinal < 0) {
-      throw new Error('kernel dirty final-body resolution received an invalid record ordinal');
+    const { producer } = candidate;
+    if (!Number.isSafeInteger(producer.frameIndex) || producer.frameIndex < 0
+      || !Number.isSafeInteger(producer.accessStreamIndex) || producer.accessStreamIndex < 0
+      || !Number.isSafeInteger(producer.accessOrdinal) || producer.accessOrdinal < 0
+      || (producer.recordRole !== 'target' && producer.recordRole !== 'predecessor')) {
+      throw new Error('kernel dirty final-body resolution received an invalid producer identity');
     }
-    const output = dirtyOutputs.get(candidate.recordOrdinal);
+    const output = dirtyOutputsByProducer.get(producerKey(producer));
     if (!output) {
-      throw new Error(`kernel dirty final-body resolution received an unexpected candidate for record ${candidate.recordOrdinal}`);
+      throw new Error(`kernel dirty final-body resolution received an unexpected producer ${producerKey(producer)}`);
     }
-    const record = records[candidate.recordOrdinal]!;
+    const { recordOrdinal } = output;
+    const record = records[recordOrdinal]!;
     // `decodeEntryCommitment` intentionally permits callers which know the commitment shape. At this protocol
     // boundary require the full fixed link prefix explicitly, then bind its slot to the authenticated record.
     if (candidate.commitment.length < SLOT_BYTES * 2
       || candidate.commitment.length > SLOT_BYTES * 2 + KERNEL_ENTRY_JOURNAL_MAX_VALUE_BYTES) {
-      throw new Error(`kernel dirty final-body resolution has malformed commitment for record ${candidate.recordOrdinal}`);
+      throw new Error(`kernel dirty final-body resolution has malformed commitment for record ${recordOrdinal}`);
     }
     const body = decodeEntryCommitment(candidate.commitment);
     if (!body.slot.every((byte, index) => byte === record.slot[index])) {
-      throw new Error(`kernel dirty final-body resolution commitment slot mismatches record ${candidate.recordOrdinal}`);
+      throw new Error(`kernel dirty final-body resolution commitment slot mismatches record ${recordOrdinal}`);
     }
     if (!body.nextKey.every((byte, index) => byte === record.nextKey[index])) {
-      throw new Error(`kernel dirty final-body resolution commitment next key mismatches record ${candidate.recordOrdinal}`);
+      throw new Error(`kernel dirty final-body resolution commitment next key mismatches record ${recordOrdinal}`);
     }
-    const group = candidatesByRecord.get(candidate.recordOrdinal) ?? [];
+    const group = candidatesByRecord.get(recordOrdinal) ?? [];
     group.push(candidate);
-    candidatesByRecord.set(candidate.recordOrdinal, group);
+    candidatesByRecord.set(recordOrdinal, group);
   }
 
   return [...dirtyOutputs.entries()]

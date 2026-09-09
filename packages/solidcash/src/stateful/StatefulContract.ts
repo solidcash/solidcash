@@ -136,6 +136,7 @@ import {
   kernelEntryJournalReadCarrierCapabilityFromArtifact,
   kernelEntryJournalReadCarrierCapabilityCovers,
   planKernelEntryJournalAccessTopology,
+  scheduleKernelEntryJournalOccurrences,
   planKernelEntryJournalPhysicalSettlement,
   resolveKernelEntryJournalDirtyFinalBodies,
   planKernelEntryJournalSettlementAuthority,
@@ -16851,6 +16852,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // verifies the one final output. Topology-changing and aggregate values never enter this table.
     type RuntimeJournalPendingScalar = {
       value: bigint; commitments: string[]; commitmentIndex: number; slot: Uint8Array; nextKey: Uint8Array;
+      /** Present only for deferred carrier materialization; aliases the retained intent's producer vector. */
+      producers?: KernelEntryJournalDirtyFinalBodyCandidate['producer'][];
     };
     const runtimeJournalPendingScalar = new Map<string, RuntimeJournalPendingScalar>();
     let hasPendingExistingScalarSettlement = false;
@@ -16880,8 +16883,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     type RuntimeJournalMaterializationIntent =
       | { kind: 'input'; input: UnlockableUtxo; collection: string }
       | { kind: 'outputs'; collection: string; commitments: string[];
-        /** Compiler-owned source stream coordinate; required before a deferred dirty body may be ordinal-bound. */
-        journalStream?: { frameIndex: number; accessStreamIndex: number } };
+        /** Exact access/record-role producer for each commitment, retained in the same vector order. */
+        producers?: KernelEntryJournalDirtyFinalBodyCandidate['producer'][] };
     const runtimeJournalMaterializationIntents: RuntimeJournalMaterializationIntent[] = [];
     const captureRuntimeJournalInputIntent = (
       input: UnlockableUtxo, collection: string, allowExistingScalarReuse = false,
@@ -16904,9 +16907,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const captureRuntimeJournalOutputIntent = (
       collection: string,
       commitments: string[],
-      journalStream?: { frameIndex: number; accessStreamIndex: number },
+      producers?: KernelEntryJournalDirtyFinalBodyCandidate['producer'][],
     ): void => {
-      runtimeJournalMaterializationIntents.push({ kind: 'outputs', collection, commitments, journalStream });
+      if (producers !== undefined && producers.length !== commitments.length) {
+        throw new Error('Kernel journal output commitments and producer identities have different cardinality.');
+      }
+      runtimeJournalMaterializationIntents.push({ kind: 'outputs', collection, commitments, producers });
     };
     const materializeLegacyRuntimeJournalIntents = (start: number): void => {
       if (deferRuntimeJournalMaterialization) return;
@@ -17050,7 +17056,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       collection: string;
       collectionHash: Uint8Array;
       frameIndex: number;
-      executionGroup: string;
+      executionGroup: number;
       executionOrder: number;
       accessStreamIndex: number;
       settlementIdentity?: SortedUpsertLoopAbi['settlementIdentity'];
@@ -17997,8 +18003,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           collection: info.collection,
           collectionHash: computeCollectionHash(collection.signature),
           frameIndex: upsertFrameIndex,
-          executionGroup: `${upsertFrameIndex}:${Number.isSafeInteger(info.journalExecutionGroup)
-            ? info.journalExecutionGroup : info.journalAccessStreamIndex}`,
+          executionGroup: Number.isSafeInteger(info.journalExecutionGroup) && info.journalExecutionGroup! >= 0
+            ? info.journalExecutionGroup! : info.journalAccessStreamIndex,
           executionOrder: info.journalAccessStreamIndex,
           accessStreamIndex: info.journalAccessStreamIndex,
           ...(info.settlementIdentity && { settlementIdentity: info.settlementIdentity }),
@@ -18255,6 +18261,16 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       // updated node), an INSERT contributes 2 (P' = the re-pointed predecessor, then NEW). One co-spent input per
       // recipient. cospent = co-spent UTXO ids for conflict detection (an entry / predecessor can be co-spent once).
       const commitments: string[] = [];
+      const commitmentProducers: KernelEntryJournalDirtyFinalBodyCandidate['producer'][] = [];
+      const commitmentProducer = (
+        accessOrdinal: number,
+        recordRole: KernelEntryJournalDirtyFinalBodyCandidate['producer']['recordRole'],
+      ): KernelEntryJournalDirtyFinalBodyCandidate['producer'] => ({
+        frameIndex: upsertFrameIndex,
+        accessStreamIndex: info.journalAccessStreamIndex,
+        accessOrdinal,
+        recordRole,
+      });
       const seenSlots = new Set<string>();
       const cospent = new Set<string>();
       const uidOf = (u: { txid: string; vout: number }): string => `${u.txid}:${u.vout}`;
@@ -18309,6 +18325,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             lastDeferred.newVal = (lastDeferred.newVal as bigint) + (info.op === '-' ? -(amt as bigint) : (amt as bigint));
             commitments[lastDeferred.commitIndex] =
               binToHex(encodeEntryCommitment(lastDeferred.slot, lastDeferred.oldNext, commitValue(lastDeferred.newVal)));
+            commitmentProducers[lastDeferred.commitIndex] = commitmentProducer(i, 'target');
             continue;
           }
           // A compiler-owned permutation leaves public key/value arrays untouched. Repeated logical keys therefore
@@ -18319,6 +18336,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             lastDeferred.newVal = amt;
             commitments[lastDeferred.commitIndex] =
               binToHex(encodeEntryCommitment(lastDeferred.slot, lastDeferred.oldNext, commitValue(amt)));
+            commitmentProducers[lastDeferred.commitIndex] = commitmentProducer(i, 'target');
             continue;
           }
           throw new Error(`vmap upsert loop ${info.collection}: duplicate recipient (each entry can be co-spent once)`);
@@ -18327,13 +18345,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         const journalSettledScalar = journalArgumentIndex >= 0
           && !collection.chunkableValue
           && /^(?:u?int\d*|u?fixed\d*x\d*|bigint)$/.test(collection.valueType)
-          && (info.op === '+' || info.op === 'set' || isDelete);
+          && (info.op === '+' || info.op === '-' || info.op === 'set' || isDelete);
         const originalEntry = list.find(slot);
         const journalIdentity = `${info.collectionHash}:${entryAddr}:${slotHex}`;
-        // The physical-carrier branch retains final bodies by record ordinal below.  In particular, it must not
-        // borrow the legacy per-handler scalar cache: that cache is keyed by a provisional collection/slot and
-        // assumes its commitment has already been appended to the handler-local output band.
-        const priorPending = journalSettledScalar && !deferRuntimeJournalMaterialization
+        // Pending scalar state is semantic, not physical: the same table carries read-your-writes values whether
+        // outputs are appended immediately or retained for the transaction-wide final flush. In deferred mode its
+        // producer vector aliases the retained intent, so a later access changes both the body and its authenticated
+        // final-owner coordinate rather than relabelling a stale provisional value.
+        const priorPending = journalSettledScalar
           ? runtimeJournalPendingScalar.get(journalIdentity) : undefined;
         if (originalEntry || priorPending) {
           // UPDATE (existing recipient): co-spend the entry, mint the updated value ('delete' -> the type default 0).
@@ -18358,6 +18377,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             priorPending.commitments[priorPending.commitmentIndex] = binToHex(encodeEntryCommitment(
               priorPending.slot, priorPending.nextKey, commitValue(priorPending.value),
             ));
+            if (deferRuntimeJournalMaterialization) {
+              if (!priorPending.producers) {
+                throw new Error('Kernel pending scalar journal lost its deferred producer vector');
+              }
+              priorPending.producers[priorPending.commitmentIndex] = commitmentProducer(i, 'target');
+            }
             // This row consumes no second input and creates no intermediate output. Its access program selects the
             // dirty carrier returned by the earlier row.
             continue;
@@ -18383,15 +18408,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             };
           }
           commitments.push(binToHex(encodeEntryCommitment(entry.slot, entry.nextKey, commitValue(newVal))));
+          commitmentProducers.push(commitmentProducer(i, 'target'));
           if (journalSettledScalar && !deferRuntimeJournalMaterialization) {
             hasPendingExistingScalarSettlement = true;
-            runtimeJournalPendingScalar.set(journalIdentity, {
-              value: newVal as bigint,
-              commitments,
-              commitmentIndex: commitments.length - 1,
-              slot: entry.slot,
-              nextKey: entry.nextKey,
-            });
           }
           if (info.op === 'read') {
             priorReadProof = {
@@ -18437,6 +18456,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             cospent.add(predecessorId);
             captureRuntimeJournalInputIntent({ ...basePred.utxo, unlocker: wUnlocker }, info.collection);
             commitments.push(binToHex(encodeEntryCommitment(basePred.slot, basePred.nextKey, basePred.value)));
+            commitmentProducers.push(commitmentProducer(i, 'predecessor'));
             priorReadProof = { uid: predecessorId, slot: basePred.slot, nextKey: basePred.nextKey };
             continue;
           }
@@ -18454,8 +18474,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             const nV = bytesToSlotValue(d.oldNext); // 0 = +inf
             if (pV < sV && (nV === 0n || sV < nV)) {
               commitments[d.commitIndex] = binToHex(encodeEntryCommitment(d.slot, slot, commitValue(d.newVal)));
+              commitmentProducers[d.commitIndex] = commitmentProducer(i, 'predecessor');
               const newCommitIndex = commitments.length;
               commitments.push(binToHex(encodeEntryCommitment(slot, d.oldNext, commitValue(amt)))); // NEW
+              commitmentProducers.push(commitmentProducer(i, 'target'));
               const chained: DeferredEntry = { uid: '', commitIndex: newCommitIndex, slot, newVal: amt, oldNext: d.oldNext };
               lastDeferred = chained;
               continue;
@@ -18467,8 +18489,15 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             pendingPred.commitments[pendingPred.commitmentIndex] = binToHex(encodeEntryCommitment(
               pendingPred.slot, slot, commitValue(pendingPred.value),
             ));
+            if (deferRuntimeJournalMaterialization) {
+              if (!pendingPred.producers) {
+                throw new Error('Kernel pending predecessor lost its deferred producer vector');
+              }
+              pendingPred.producers[pendingPred.commitmentIndex] = commitmentProducer(i, 'predecessor');
+            }
             const pendingCommitmentIndex = commitments.length;
             commitments.push(binToHex(encodeEntryCommitment(slot, oldNext, commitValue(amt))));
+            commitmentProducers.push(commitmentProducer(i, 'target'));
             lastDeferred = {
               uid: '', commitIndex: pendingCommitmentIndex, slot, newVal: amt, oldNext,
             };
@@ -18486,6 +18515,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             mergedNewCount += 1;
             const mCommitIndex = commitments.length;
             commitments.push(binToHex(encodeEntryCommitment(slot, basePred.nextKey, commitValue(amt)))); // NEW = 0 + amt (R1)
+            commitmentProducers.push(commitmentProducer(i, 'target'));
             lastDeferred = { uid: '', commitIndex: mCommitIndex, slot, newVal: amt, oldNext: basePred.nextKey };
             continue;
           }
@@ -18497,8 +18527,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           cospent.add(uidOf(basePred.utxo));
           captureRuntimeJournalInputIntent({ ...basePred.utxo, unlocker: wUnlocker }, info.collection);
           commitments.push(binToHex(encodeEntryCommitment(basePred.slot, slot, basePred.value)));           // P' (re-pointed)
+          commitmentProducers.push(commitmentProducer(i, 'predecessor'));
           const uCommitIndex = commitments.length;
           commitments.push(binToHex(encodeEntryCommitment(slot, basePred.nextKey, commitValue(amt)))); // NEW = 0 + amt
+          commitmentProducers.push(commitmentProducer(i, 'target'));
           // DEFER this new node (mirrors the covenant's chain-defer) so a further new key in this same UNTOUCHED / HEAD
           // gap chains off it - a fresh-map airdrop cluster. The reorder groups + ascending-sorts same-gap inserts.
           if (foldActive) lastDeferred = { uid: '', commitIndex: uCommitIndex, slot, newVal: amt, oldNext: basePred.nextKey };
@@ -18506,19 +18538,16 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       }
       if (commitments.length > 0) {
         const prior = sortedLoopCommitments.get(info.collection) ?? [];
-        captureRuntimeJournalOutputIntent(info.collection, commitments, {
-          frameIndex: upsertFrameIndex,
-          accessStreamIndex: info.journalAccessStreamIndex,
-        });
+        captureRuntimeJournalOutputIntent(info.collection, commitments, commitmentProducers);
         materializeLegacyRuntimeJournalIntents(runtimeJournalIntentStart);
         // Deferred carrier materialization deliberately leaves the legacy collection-local output cache empty.
         // Keep using this handler's exact final commitments for its local bookkeeping; global settlement will bind
         // each dirty body to a record ordinal once topology has assigned the transaction-wide coordinates.
         const merged = deferRuntimeJournalMaterialization ? commitments
           : sortedLoopCommitments.get(info.collection)!;
-        if (!deferRuntimeJournalMaterialization && journalArgumentIndex >= 0 && !collection.chunkableValue
+        if (journalArgumentIndex >= 0 && !collection.chunkableValue
           && /^(?:u?int\d*|u?fixed\d*x\d*|bigint)$/.test(collection.valueType)
-          && (info.op === '+' || info.op === 'set' || isDelete)) {
+          && (info.op === '+' || info.op === '-' || info.op === 'set' || isDelete)) {
           merged.forEach((commitment, commitmentIndex) => {
             const decoded = decodeEntryCommitment(hexToBin(commitment));
             runtimeJournalPendingScalar.set(
@@ -18526,6 +18555,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               {
                 value: vmNumberToBigInt(decoded.value, { requireMinimalEncoding: false }) as bigint,
                 commitments: merged, commitmentIndex, slot: decoded.slot, nextKey: decoded.nextKey,
+                ...(deferRuntimeJournalMaterialization && { producers: commitmentProducers }),
               },
             );
           });
@@ -18576,7 +18606,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       }
     }
     validateKernelEntryJournalSettlementGroups(runtimeKernelJournalStreams.map((stream) => ({
-      executionGroup: stream.executionGroup,
+      executionGroup: `${stream.frameIndex}:${stream.executionGroup}`,
       mutates: stream.writes.some((write) => write.operation !== 'read'),
       identity: stream.settlementIdentity,
     })));
@@ -18594,43 +18624,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const plannedKernelStreamAccesses = new Map<
     (typeof runtimeKernelJournalStreams)[number], ReturnType<typeof decodeKernelEntryJournalAccesses>
     >();
-    const scheduleKernelJournalOperations = <T>(
-      streams: typeof runtimeKernelJournalStreams,
-      values: (stream: (typeof runtimeKernelJournalStreams)[number]) => readonly T[],
-    ): Array<{ stream: (typeof runtimeKernelJournalStreams)[number]; value: T; compactIndex: number }> => {
-      const byExecutionGroup = new Map<string, typeof runtimeKernelJournalStreams>();
-      for (const stream of streams) {
-        const group = byExecutionGroup.get(stream.executionGroup) ?? [];
-        group.push(stream);
-        byExecutionGroup.set(stream.executionGroup, group);
-      }
-      return [...byExecutionGroup.values()].flatMap((groupUnsorted) => {
-        const group = [...groupUnsorted].sort((left, right) => left.executionOrder - right.executionOrder);
-        return group.flatMap((stream) => {
-          const streamValues = values(stream);
-          if (stream.sourceOccurrences && stream.sourceOccurrences.length !== streamValues.length) {
-            throw new Error(
-              `Kernel entry journal stream '${stream.collection}' has ${streamValues.length} accesses but `
-              + `${stream.sourceOccurrences.length} source occurrences.`,
-            );
-          }
-          return streamValues.map((value, compactIndex) => ({
-            stream,
-            value,
-            compactIndex,
-            sourceOccurrence: stream.sourceOccurrences?.[compactIndex] ?? compactIndex,
-          }));
-        }).sort((left, right) => left.sourceOccurrence - right.sourceOccurrence
-          || left.stream.executionOrder - right.stream.executionOrder
-          || left.compactIndex - right.compactIndex);
-      });
-    };
     let hasPendingScalarDependency = false;
     for (const [collectionIdentity, collectionStreams] of kernelStreamsByCollection) {
       // The topology transition must see operations in language execution order. Multiple write sites in one
       // counter loop publish separate compact streams, so flattening whole streams would incorrectly execute
       // A0,A1,B0,B1 instead of A0,B0,A1,B1 and can assign an invalid predecessor topology.
-      const scheduledWrites = scheduleKernelJournalOperations(collectionStreams, (stream) => stream.writes);
+      const scheduledWrites = scheduleKernelEntryJournalOccurrences(collectionStreams, (stream) => stream.writes);
       const plan = planKernelEntryJournalAccessTopology(
         collectionStreams[0].list,
         collectionStreams[0].collectionHash,
@@ -18652,31 +18651,31 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         stream: (typeof runtimeKernelJournalStreams)[number];
         access: ReturnType<typeof decodeKernelEntryJournalAccesses>[number];
       }>();
-      for (const { stream, value: access } of scheduleKernelJournalOperations(
+      for (const { stream, value: access } of scheduleKernelEntryJournalOccurrences(
         collectionStreams, (candidate) => accessesByStream.get(candidate)!,
       )) {
-          const dependencies: number[] = [];
-          if (access.presentBefore && !access.authenticatesTarget) dependencies.push(access.targetRecordOrdinal);
-          if (access.predecessorRecordOrdinal !== undefined && !access.authenticatesPredecessor) {
-            dependencies.push(access.predecessorRecordOrdinal);
+        const dependencies: number[] = [];
+        if (access.presentBefore && !access.authenticatesTarget) dependencies.push(access.targetRecordOrdinal);
+        if (access.predecessorRecordOrdinal !== undefined && !access.authenticatesPredecessor) {
+          dependencies.push(access.predecessorRecordOrdinal);
+        }
+        const carrierProducers = dependencies.map((ordinal) => priorProducer.get(ordinal))
+          .filter((producer): producer is NonNullable<typeof producer> => (
+            producer !== undefined
+          ));
+        if (carrierProducers.length > 0) {
+          access.pending = true;
+          hasPendingScalarDependency = true;
+          for (const producer of carrierProducers) {
+            producer.access.pending = true;
           }
-          const carrierProducers = dependencies.map((ordinal) => priorProducer.get(ordinal))
-            .filter((producer): producer is NonNullable<typeof producer> => (
-              producer !== undefined
-            ));
-          if (carrierProducers.length > 0) {
-            access.pending = true;
-            hasPendingScalarDependency = true;
-            for (const producer of carrierProducers) {
-              producer.access.pending = true;
-            }
+        }
+        if (access.mutates) {
+          priorProducer.set(access.targetRecordOrdinal, { stream, access });
+          if (access.predecessorRecordOrdinal !== undefined) {
+            priorProducer.set(access.predecessorRecordOrdinal, { stream, access });
           }
-          if (access.mutates) {
-            priorProducer.set(access.targetRecordOrdinal, { stream, access });
-            if (access.predecessorRecordOrdinal !== undefined) {
-              priorProducer.set(access.predecessorRecordOrdinal, { stream, access });
-            }
-          }
+        }
       }
       collectionStreams.forEach((stream, index) => plannedKernelStreamAccesses.set(stream, accesses[index]));
       plannedKernelCollections.set(collectionIdentity, {
@@ -18751,25 +18750,25 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       recordOriginStreams.set(ordinal, stream);
       return ordinal;
     };
-    for (const { stream, value: access, compactIndex } of scheduleKernelJournalOperations(
+    for (const { stream, value: access, compactIndex } of scheduleKernelEntryJournalOccurrences(
       runtimeKernelJournalStreams, (candidate) => plannedKernelStreamAccesses.get(candidate) ?? [],
     )) {
-        const remapped = {
-          ...access,
-          ...(access.predecessorRecordOrdinal !== undefined && {
-            predecessorRecordOrdinal: globalRecordOrdinal(stream, access.predecessorRecordOrdinal),
-          }),
-          targetRecordOrdinal: globalRecordOrdinal(stream, access.targetRecordOrdinal),
-        };
-        const streamAccesses = remappedKernelStreamAccesses.get(stream) ?? [];
-        streamAccesses.push(remapped);
-        remappedKernelStreamAccesses.set(stream, streamAccesses);
-        if (stream.settlementIdentity) settlementOccurrences.push({
-          frameIndex: stream.frameIndex,
-          identity: stream.settlementIdentity,
-          accessOrdinal: compactIndex,
-          access: remapped,
-        });
+      const remapped = {
+        ...access,
+        ...(access.predecessorRecordOrdinal !== undefined && {
+          predecessorRecordOrdinal: globalRecordOrdinal(stream, access.predecessorRecordOrdinal),
+        }),
+        targetRecordOrdinal: globalRecordOrdinal(stream, access.targetRecordOrdinal),
+      };
+      const streamAccesses = remappedKernelStreamAccesses.get(stream) ?? [];
+      streamAccesses.push(remapped);
+      remappedKernelStreamAccesses.set(stream, streamAccesses);
+      if (stream.settlementIdentity) settlementOccurrences.push({
+        frameIndex: stream.frameIndex,
+        identity: stream.settlementIdentity,
+        accessOrdinal: compactIndex,
+        access: remapped,
+      });
     }
     for (const [collectionIdentity, plan] of plannedKernelCollections) {
       if (plan.globalOrdinals.size !== plan.records.length) {
@@ -18846,7 +18845,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       // This path remains behind the unpublished compiler capability, but is deliberately complete enough that a
       // future publication cannot accidentally revive the legacy source-order cache.
       const finalRecords = kernelJournalRecords.map((encoded) => decodeKernelEntryJournalRecord(encoded));
-      const streamForSettlementReference = (reference: KernelEntryJournalSettlementReference) => {
+      const streamForSettlementReference = (
+        reference: KernelEntryJournalSettlementReference,
+      ): { stream: (typeof runtimeKernelJournalStreams)[number]; access: KernelEntryJournalAccess } => {
         const stream = runtimeKernelJournalStreams.find((candidate) => (
           candidate.frameIndex === reference.frameIndex
           && candidate.accessStreamIndex === reference.accessStreamIndex
@@ -18869,39 +18870,29 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       }
 
       // `runtimeJournalMaterializationIntents` carries the exact complete commitments calculated from current
-      // state and user arguments. It is not an authority map. First identify a final output record, then attach
-      // its global ordinal to an exactly-one collection/slot candidate before handing it to the resolver.
+      // state and user arguments. It is not an authority map. Each commitment retains the exact access/role which
+      // produced it; the authenticated final settlement plan alone maps that producer to a global record ordinal.
+      const dirtyProducerKey = (producer: KernelEntryJournalDirtyFinalBodyCandidate['producer']): string => (
+        `${producer.frameIndex}:${producer.accessStreamIndex}:${producer.accessOrdinal}:${producer.recordRole}`
+      );
+      const dirtyProducerKeys = new Set(physicalSettlementPlan.outputs
+        .filter((output) => finalRecords[output.recordOrdinal]!.dirty)
+        .map((output) => dirtyProducerKey(output.finalOwner)));
       const deferredOutputCandidates = runtimeJournalMaterializationIntents
         .filter((intent): intent is Extract<RuntimeJournalMaterializationIntent, { kind: 'outputs' }> => (
           intent.kind === 'outputs'
         ))
-        .flatMap((intent) => intent.commitments.map((commitment) => ({
-          collection: intent.collection,
-          commitment: hexToBin(commitment),
-          journalStream: intent.journalStream,
-        })));
-      const dirtyCandidates: KernelEntryJournalDirtyFinalBodyCandidate[] = [];
-      for (const output of physicalSettlementPlan.outputs) {
-        const record = finalRecords[output.recordOrdinal]!;
-        if (!record.dirty) continue;
-        const { stream } = streamForSettlementReference(output.finalOwner);
-        const matches = deferredOutputCandidates.filter((candidate) => {
-          if (candidate.collection !== stream.collection
-            || candidate.journalStream?.frameIndex !== output.finalOwner.frameIndex
-            || candidate.journalStream?.accessStreamIndex !== output.finalOwner.accessStreamIndex) return false;
-          const decoded = decodeEntryCommitment(candidate.commitment);
-          return binsAreEqual(decoded.slot, record.slot);
-        });
-        // Do not choose a "last" provisional body. Multiple candidates mean the row-local materializer has
-        // expressed an ambiguity which this version of the carrier protocol cannot authenticate.
-        if (matches.length !== 1) {
-          throw new Error(
-            `Kernel physical settlement requires exactly one ordinal-bound dirty body for record ${output.recordOrdinal}; `
-            + `found ${matches.length}.`,
-          );
-        }
-        dirtyCandidates.push({ recordOrdinal: output.recordOrdinal, commitment: matches[0]!.commitment });
-      }
+        .flatMap((intent) => {
+          if (!intent.producers || intent.producers.length !== intent.commitments.length) {
+            throw new Error('Kernel physical settlement output body has no stable access producer identity.');
+          }
+          return intent.commitments.map((commitment, index) => ({
+            commitment: hexToBin(commitment),
+            producer: intent.producers![index]!,
+          }));
+        })
+        .filter((candidate) => dirtyProducerKeys.has(dirtyProducerKey(candidate.producer)));
+      const dirtyCandidates: KernelEntryJournalDirtyFinalBodyCandidate[] = deferredOutputCandidates;
       const dirtyBodies = new Map(resolveKernelEntryJournalDirtyFinalBodies(
         physicalSettlementPlan, finalRecords, dirtyCandidates,
       ).map((body) => [body.recordOrdinal, body.commitment]));

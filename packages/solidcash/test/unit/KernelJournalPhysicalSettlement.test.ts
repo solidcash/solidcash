@@ -49,8 +49,9 @@ describe('kernel journal physical settlement plan', () => {
     // The final value intentionally differs from the topology record's typed/default tail. The resolver accepts
     // it only as an explicitly record-ordinal-bound complete body, never by guessing from collection/slot order.
     const finalBody = encodeEntryCommitment(dirty.slot, dirty.nextKey, Uint8Array.of(42));
-    const resolution = resolveKernelEntryJournalDirtyFinalBodies(oneDirtyOutput(), [dirty, record(false)], [{
-      recordOrdinal: 0, commitment: finalBody,
+    const plan = oneDirtyOutput();
+    const resolution = resolveKernelEntryJournalDirtyFinalBodies(plan, [dirty, record(false)], [{
+      producer: plan.outputs[0]!.finalOwner, commitment: finalBody,
     }]);
     expect(resolution).toEqual([{
       recordOrdinal: 0, outputOrdinal: 0, commitment: finalBody,
@@ -61,24 +62,67 @@ describe('kernel journal physical settlement plan', () => {
   it('fails closed rather than choosing among missing, duplicate, malformed, or unrelated dirty bodies', () => {
     const dirty = record(true);
     const body = encodeEntryCommitment(dirty.slot, dirty.nextKey, Uint8Array.of(42));
-    const resolve = (candidates: Array<{ recordOrdinal: number; commitment: Uint8Array }>) => (
-      resolveKernelEntryJournalDirtyFinalBodies(oneDirtyOutput(), [dirty, record(false)], candidates)
+    const plan = oneDirtyOutput();
+    const producer = plan.outputs[0]!.finalOwner;
+    const resolve = (candidates: Array<{ producer: typeof producer; commitment: Uint8Array }>) => (
+      resolveKernelEntryJournalDirtyFinalBodies(plan, [dirty, record(false)], candidates)
     );
     expect(() => resolve([])).toThrow('requires exactly one final body for record 0; found 0');
-    expect(() => resolve([{ recordOrdinal: 0, commitment: body }, { recordOrdinal: 0, commitment: body }]))
+    expect(() => resolve([{ producer, commitment: body }, { producer, commitment: body }]))
       .toThrow('requires exactly one final body for record 0; found 2');
-    expect(() => resolve([{ recordOrdinal: 0, commitment: Uint8Array.of(1) }]))
+    expect(() => resolve([{ producer, commitment: Uint8Array.of(1) }]))
       .toThrow('malformed commitment for record 0');
     const wrongSlot = body.slice();
     wrongSlot[0] ^= 1;
-    expect(() => resolve([{ recordOrdinal: 0, commitment: wrongSlot }]))
+    expect(() => resolve([{ producer, commitment: wrongSlot }]))
       .toThrow('commitment slot mismatches record 0');
     const wrongNextKey = body.slice();
     wrongNextKey[32] ^= 1;
-    expect(() => resolve([{ recordOrdinal: 0, commitment: wrongNextKey }]))
+    expect(() => resolve([{ producer, commitment: wrongNextKey }]))
       .toThrow('commitment next key mismatches record 0');
-    expect(() => resolve([{ recordOrdinal: 1, commitment: body }]))
-      .toThrow('unexpected candidate for record 1');
+    expect(() => resolve([{
+      producer: { ...producer, accessOrdinal: producer.accessOrdinal + 1 }, commitment: body,
+    }])).toThrow('unexpected producer');
+  });
+
+  it('binds a chained insert body to the later predecessor role, not the earlier target role', () => {
+    const plan = planKernelEntryJournalPhysicalSettlement([{
+      frameIndex: 0, identity: identity(0, 'mutation-settlement'), accessOrdinal: 0,
+      access: {
+        targetRecordOrdinal: 1, predecessorRecordOrdinal: 0,
+        presentBefore: false, presentAfter: true, mutates: true,
+        authenticatesPredecessor: true,
+      },
+    }, {
+      frameIndex: 0, identity: identity(1, 'mutation-settlement'), accessOrdinal: 0,
+      access: {
+        targetRecordOrdinal: 2, predecessorRecordOrdinal: 1,
+        presentBefore: false, presentAfter: true, mutates: true,
+      },
+    }]);
+    const records = [1, 2, 3].map((fill): KernelEntryJournalRecord => ({
+      ...record(true),
+      slot: new Uint8Array(32).fill(fill),
+      nextKey: new Uint8Array(32).fill(fill + 10),
+    }));
+    const candidates = plan.outputs.map((output) => ({
+      producer: output.finalOwner,
+      commitment: encodeEntryCommitment(
+        records[output.recordOrdinal]!.slot,
+        records[output.recordOrdinal]!.nextKey,
+        Uint8Array.of(output.recordOrdinal + 20),
+      ),
+    }));
+
+    expect(plan.outputs.find((output) => output.recordOrdinal === 1)?.finalOwner)
+      .toMatchObject({ accessStreamIndex: 1, recordRole: 'predecessor' });
+    expect(resolveKernelEntryJournalDirtyFinalBodies(plan, records, candidates))
+      .toHaveLength(3);
+    const chained = candidates.find((candidate) => candidate.producer.recordOrdinal === 1)!;
+    expect(() => resolveKernelEntryJournalDirtyFinalBodies(plan, records, [
+      ...candidates.filter((candidate) => candidate !== chained),
+      { ...chained, producer: { ...chained.producer, recordRole: 'target' } },
+    ])).toThrow('commitment slot mismatches record 2');
   });
 
   it('separates source-order first inputs from dense global final outputs and normalizes clean consumers', () => {

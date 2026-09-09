@@ -814,12 +814,6 @@ export interface SortedUpsertLoopAbi {
   varyingKeyExpressions?: readonly ExternalCallExpression[];
   /** The key recipe replays a historical constructed-array resize without an authenticated prefix identity. */
   constructedKeyReplay?: boolean;
-  /** Compiler-owned source-vector identity for a stream descended from one exact mapping write. */
-  constructedKeyVectorBinding?: {
-    vectorOrdinal: number;
-    vectorElementComponent: number;
-    keyComponentCount: number;
-  };
   /** The key recipe selects among more than two branch-merged constructed-array definitions. */
   multiArmConstructedKeyReplay?: boolean;
   /** The key recipe consumes a mutable helper array whose history reads a distinct mutable array identity. */
@@ -987,7 +981,7 @@ export interface ExternalCallExpression {
  */
 export interface ConstructedKeyVectorV1Abi {
   version: 1;
-  /** Stable source-allocation ordinal within the owning handler; never a local identifier. */
+  /** Stable ordinal within the owning handler's compact journal-access stream. */
   vectorOrdinal: number;
   /** Exact fixed-width element ABI type. */
   elementType: string;
@@ -1011,19 +1005,6 @@ export interface ConstructedKeyVectorV1Abi {
     vectorElementComponent: number;
     keyComponentCount: number;
     fixedComponents: readonly { component: number; expression: ExternalCallExpression }[];
-  };
-  /**
-   * Present only when this exact source consumer survived as one authenticated runtime journal stream.
-   * This binds the SDK replay proof to stream/rank/key coordinates but does not admit the handler to the route.
-   */
-  journalBinding?: {
-    journalAccessStreamIndex: number;
-    journalExecutionGroup: number;
-    rank: 'consumer-index';
-    key: {
-      vectorElementComponent: number;
-      keyComponentCount: number;
-    };
   };
 }
 

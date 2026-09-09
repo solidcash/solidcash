@@ -526,7 +526,10 @@ removes that duplicate source step, executes the retained tail step on the conti
 already-consumed selected settlement cursors before jumping. A `continue` which omits or changes the canonical
 step can repeat a logical value and remains refused. Equivalent additive spellings such as `i = d + i`,
 `i = i + d`, and unit `++i` / `i++` are treated as the same step. A desugared `for` already runs its update on `continue` and
-is supported.
+is supported. A non-progressing `continue` is also harmless when a restricted affine-domain proof establishes its
+guard is false at every reachable counter value: direct counter comparisons against a literal or canonical bound,
+and literal modulo congruence whose step preserves the incompatible residue. Dynamic/state predicates and reachable
+guards remain refused because they would change the reached-key set.
 Literal-bounded mapping loops may instead expand to ordinary static entry sites. Before expansion, the compiler
 substitutes each exact induction value and replays `continue` and `break` in source order. Expansion proceeds only
 when every reached escape condition becomes a compile-time boolean; a runtime-selected escape leaves the loop on
@@ -815,9 +818,10 @@ cumulative stopped predicate across later iterations, including the source count
 using that loop-exit protocol merges its ordinary result at the post-loop join.
 Reversed comparison operands and exact `!=` endpoints use the same replay. A shared 256-iteration budget covers
 nested loops and nested helper calls; exceeding it conservatively leaves the handler `KERNEL_UNBOUNDED_KEY`.
-For a constructed array filled by a canonical post-test helper loop, the symbolic plan includes the mandatory first
-iteration and the exact public-bound prefix. Positive constant steps, including sparse progressions, publish their
-reachability predicate; a runtime-selected step remains `KERNEL_UNBOUNDED_KEY` until its constructed-array domain
+For a constructed array filled by a canonical helper loop, the symbolic plan publishes the exact reachable key
+domain. A post-test loop includes its mandatory first iteration and public-bound prefix; a zero-start ascending
+pre-test `while` or normalized `for` has the exact sparse domain `0 <= i < bound && i % step == 0` for a positive
+literal step. Runtime-selected or mutated steps remain `KERNEL_UNBOUNDED_KEY` until their constructed-array domain
 has an equivalent authenticated proof.
 Direct source assignments use the same point-in-time resolver, including literal and runtime array indices.
 Mixed push/pop paths which restore their entry length without popping into the pre-existing prefix are replayed

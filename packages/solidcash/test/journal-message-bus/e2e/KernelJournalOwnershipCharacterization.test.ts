@@ -15,6 +15,8 @@ const SOURCE = `contract JournalOwnership() {
   mapping(int => Pair) pairs;
   mapping(int => int) first;
   mapping(int => int) second;
+  mapping(int => int) left;
+  mapping(int => int) right;
 
   function seed(int key) public {
     this.source[key] = key + 10;
@@ -22,6 +24,8 @@ const SOURCE = `contract JournalOwnership() {
     this.pairs[key] = Pair(key, key + 100);
     this.first[key] = 0;
     this.second[key] = 0;
+    this.left[key] = 0;
+    this.right[key] = 0;
     require(true);
   }
   function runtimeCopy(int count) public {
@@ -45,11 +49,21 @@ const SOURCE = `contract JournalOwnership() {
     }
     require(true);
   }
+  function fanout(int count) public {
+    for (int i = 0; i < count; i = i + 1) {
+      this.left[i] = this.source[i];
+      this.right[i] = this.source[i];
+    }
+    require(true);
+  }
   function check(int key, int expectedDestination, int expectedLeft, int expectedRight,
     int expectedFirst, int expectedSecond) public {
     require(this.destination[key] == expectedDestination
       && this.pairs[key].left == expectedLeft && this.pairs[key].right == expectedRight
       && this.first[key] == expectedFirst && this.second[key] == expectedSecond);
+  }
+  function checkFanout(int key, int expected) public {
+    require(this.left[key] == expected && this.right[key] == expected);
   }
 }`;
 
@@ -181,6 +195,65 @@ describe('kernel journal ownership characterization', () => {
         [hostile.outputs[outputs[1]!.index].token, hostile.outputs[outputs[0]!.index].token];
       expect(vm.stateSuccess(vm.evaluate({ inputIndex: ownerInput, sourceOutputs, transaction: hostile }))).not.toBe(true);
     }
+  }, 180_000);
+
+  it('settles one read carrier into two same-row result collections in canonical order', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(SOURCE, { ...OPTIONS, messageBusKernel: true });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'fanout'))
+      .toMatchObject({ eligible: true });
+    const fanoutStreams = artifact.abi.find((fn) => fn.name === 'fanout')?.sortedUpsertLoopInfo ?? [];
+    expect(fanoutStreams.filter((stream) => stream.op === 'read')).toHaveLength(1);
+    expect(fanoutStreams.filter((stream) => stream.op === 'set')).toHaveLength(2);
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(provider, inner, artifact.stateLayout!, {}, { saltContract: true });
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    // The kernel's physical order is slot order, not source counter order. Seed in the opposite source order so
+    // count=2 exercises the shared carrier/output plan independently of insertion order.
+    await contract.call.seed(1n).send();
+    await contract.call.seed(0n).send();
+    const call = contract.call.fanout(2n);
+    const builder = await call.build();
+    expect(vmAccepts(builder)).toBe(true);
+    const transaction = builder.buildLibauthTransaction();
+    const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+    const routeInput = builder.inputs.findIndex((input) => 'abiFunction' in input.unlocker
+      && input.unlocker.abiFunction.name === 'fanout');
+    expect(routeInput).toBeGreaterThanOrEqual(0);
+    const vm = createVirtualMachineBch2026ForProvider(provider);
+    for (const collection of ['source', 'left', 'right']) {
+      const address = binToHex(addressToLockScript(getEntryNftAddress(contract.inner, categoryId, collection)));
+      const outputs = transaction.outputs.map((output, index) => ({ output, index }))
+        .filter(({ output }) => binToHex(output.lockingBytecode) === address);
+      expect(outputs).toHaveLength(2);
+      const hostile = structuredClone(transaction);
+      [hostile.outputs[outputs[0]!.index].token, hostile.outputs[outputs[1]!.index].token] =
+        [hostile.outputs[outputs[1]!.index].token, hostile.outputs[outputs[0]!.index].token];
+      expect(vm.stateSuccess(vm.evaluate({ inputIndex: routeInput, sourceOutputs, transaction: hostile }))).not.toBe(true);
+    }
+    const routeBuilderInput = builder.inputs[routeInput]!;
+    if (!('params' in routeBuilderInput.unlocker)) throw new Error('kernel route has no parameterized unlocker');
+    const originalUnlocker = routeBuilderInput.unlocker;
+    const journalIndex = originalUnlocker.abiFunction.inputs.findIndex((input) =>
+      input.name === '__internal__kernelJournalAccessStreams');
+    expect(journalIndex).toBeGreaterThanOrEqual(0);
+    const hostileStreams = (originalUnlocker.params[journalIndex] as Uint8Array[])
+      .map((stream) => new Uint8Array(stream));
+    hostileStreams[0]![0] ^= 0x01;
+    const hostileParams = [...originalUnlocker.params];
+    hostileParams[journalIndex] = hostileStreams;
+    const routeSelector = artifact.messageBus!.route.selector;
+    if (!routeSelector) throw new Error('kernel route has no selector');
+    routeBuilderInput.unlocker = originalUnlocker.contract.createCompilerRouteUnlocker(
+      originalUnlocker.abiFunction, hexToBin(routeSelector),
+    )(...hostileParams);
+    expect(vm.stateSuccess(vm.evaluate({
+      inputIndex: routeInput, sourceOutputs, transaction: builder.buildLibauthTransaction(),
+    }))).not.toBe(true);
+    routeBuilderInput.unlocker = originalUnlocker;
+    await expect(call.send()).resolves.toBeDefined();
+    await expect(contract.call.checkFanout(0n, 10n).send()).resolves.toBeDefined();
+    await expect(contract.call.checkFanout(1n, 11n).send()).resolves.toBeDefined();
   }, 180_000);
 
   it('inserts destination entries from authenticated source-only carriers', async () => {

@@ -285,6 +285,38 @@ describe('required kernel admission', () => {
       .toMatchObject({ eligible: true });
   });
 
+  it('admits a fixed-width read carrier fan-out only across one shared key schedule', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) source;
+      mapping(int => int) left;
+      mapping(int => int) right;
+      function fanout(int count) public {
+        for (int i = 0; i < count; i = i + 1) {
+          this.left[i] = this.source[i]; this.right[i] = this.source[i];
+        }
+        require(true);
+      }
+      function shifted(int count) public {
+        for (int i = 0; i < count; i = i + 1) {
+          this.left[i] = this.source[i]; this.right[i] = this.source[i + 1];
+        }
+        require(true);
+      }
+    }`, KERNEL);
+    const fanout = artifact.abi.find((handler) => handler.name === 'fanout')!;
+    const streams = fanout.sortedUpsertLoopInfo!;
+    const read = streams.find((stream) => stream.op === 'read')!;
+    expect(streams).toHaveLength(3);
+    expect(streams.filter((stream) => stream.op === 'set')).toEqual(expect.arrayContaining([
+      expect.objectContaining({ collection: 'left', valueArrayParam: read.oldValuesWitnessParam }),
+      expect.objectContaining({ collection: 'right', valueArrayParam: read.oldValuesWitnessParam }),
+    ]));
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'fanout'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'shifted'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+  });
+
   it('shares a literal fixed-key entry between a row writer and a counter-loop reader', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) source;

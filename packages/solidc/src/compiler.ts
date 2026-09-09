@@ -11580,32 +11580,41 @@ function compileResolvedAst(
       const hasRuntimeJournalRead = runtimeJournalAccesses.some((access) => access.op === 'read');
       const collectionByName = new Map(ast.contract.collections.map((collection) => [collection.name, collection]));
       // Carrier reads authenticate existing inputs, while mutations authorize result outputs. The current row
-      // flush can transfer one authenticated fixed-width carrier vector into one distinct set-result vector when
-      // both consume the same canonical row permutation. This is a dataflow property: the read's typed old-value
-      // witness must be the set's only value vector, indexed by that same permutation. Other mixed phases remain
-      // fenced, including multiple streams, aliases, selected domains, and dynamic/aggregate values.
+      // flush can transfer one authenticated fixed-width carrier vector into one or more distinct set-result
+      // vectors when every consumer uses the same canonical row permutation. This is a dataflow property: the
+      // read's typed old-value witness must be each set's only value vector, indexed by that same permutation.
+      // Other mixed phases remain fenced, including multiple read streams, aliases, selected domains, and
+      // dynamic/aggregate values.
       const journalDispositionSources = runtimeJournalAccesses
         .map((access) => access.settlementIdentity?.recordDispositionSource);
       const sameJson = (left: unknown, right: unknown): boolean => JSON.stringify(left ?? null) === JSON.stringify(right ?? null);
       const hasSupportedReadToSetCarrierTransfer = (() => {
-        if (!hasRuntimeJournalMutation || !hasRuntimeJournalRead || runtimeJournalAccesses.length !== 2) return false;
-        const read = runtimeJournalAccesses.find((access) => access.op === 'read');
-        const mutation = runtimeJournalAccesses.find((access) => access.op !== 'read');
-        if (!read || !mutation || mutation.op !== 'set' || read.collectionHash === mutation.collectionHash
-          || read.journalExecutionGroup === undefined
-          || read.journalExecutionGroup !== mutation.journalExecutionGroup
-          || !read.varyingArrayParam || read.varyingArrayParam !== mutation.varyingArrayParam
+        if (!hasRuntimeJournalMutation || !hasRuntimeJournalRead) return false;
+        const reads = runtimeJournalAccesses.filter((access) => access.op === 'read');
+        const mutations = runtimeJournalAccesses.filter((access) => access.op !== 'read');
+        if (reads.length !== 1 || mutations.length === 0) return false;
+        const [read] = reads;
+        if (!read || read.journalExecutionGroup === undefined || !read.varyingArrayParam
           || !read.oldValuesWitnessParam || read.valueArrayParam !== read.oldValuesWitnessParam
-          || mutation.valueArrayParam !== read.oldValuesWitnessParam
-          || mutation.valueArrayIndexParam !== read.varyingArrayParam
-          || read.oldValuesWitnessDomain === 'selected-source'
-          || mutation.valueRuntimeLocal !== undefined || mutation.mutation !== undefined
-          || mutation.valueRuntimeExpression === true) return false;
+          || read.oldValuesWitnessDomain === 'selected-source') return false;
         const readType = collectionByName.get(read.collection)?.innermostValueType;
-        const mutationType = collectionByName.get(mutation.collection)?.innermostValueType;
-        return readType !== undefined && mutationType !== undefined
-          && isFixedWidthType(readType) && isFixedWidthType(mutationType)
-          && !(readType instanceof ArrayType || readType instanceof StructType || readType instanceof TupleType)
+        if (readType === undefined || !isFixedWidthType(readType)
+          || readType instanceof ArrayType || readType instanceof StructType || readType instanceof TupleType) {
+          return false;
+        }
+        const distinctCollections = new Set([read.collectionHash, ...mutations.map((mutation) => mutation.collectionHash)]);
+        if (distinctCollections.size !== mutations.length + 1) return false;
+        return mutations.every((mutation) => {
+          const mutationType = collectionByName.get(mutation.collection)?.innermostValueType;
+          return mutation.op === 'set'
+          && mutation.journalExecutionGroup === read.journalExecutionGroup
+          && mutation.varyingArrayParam === read.varyingArrayParam
+          && mutation.valueArrayParam === read.oldValuesWitnessParam
+          && mutation.valueArrayIndexParam === read.varyingArrayParam
+          && mutation.valueRuntimeLocal === undefined && mutation.mutation === undefined
+          && mutation.valueRuntimeExpression !== true
+          && mutationType !== undefined && isFixedWidthType(mutationType)
+          && !(mutationType instanceof ArrayType || mutationType instanceof StructType || mutationType instanceof TupleType)
           && readType.toString() === mutationType.toString()
           && sameJson(read.fixedKeySources, mutation.fixedKeySources)
           && sameJson(read.varyingKeyIndices, mutation.varyingKeyIndices)
@@ -11617,6 +11626,7 @@ function compileResolvedAst(
           && sameJson(read.iterationBound, mutation.iterationBound)
           && sameJson(read.iterationStep, mutation.iterationStep)
           && sameJson(read.sourceOrderIndexParam, mutation.sourceOrderIndexParam);
+        });
       })();
       const hasIncompatibleJournalDispositionPhases = hasRuntimeJournalMutation && hasRuntimeJournalRead
         && (journalDispositionSources.some((source) => source === undefined)

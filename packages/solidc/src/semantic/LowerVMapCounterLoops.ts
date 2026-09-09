@@ -4291,6 +4291,10 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       // transition: a present source entry is authenticated
       // and reproduced byte-for-byte; an absent key authenticates the language default against its bracketing
       // predecessor and reproduces that predecessor unchanged. The typed witness vector feeds the destination.
+      // A plan is keyed by both the complete read recipe and the destination key schedule. This lets several
+      // distinct result collections consume one authenticated source vector in one row, while refusing to merge
+      // superficially similar reads whose destination permutation/key domain differs.
+      const destinationReadPlansBySchedule = new Map<string, RuntimeReadPlan>();
       for (const destination of [...keyed]) {
         if (!(destination instanceof MappingAssignNode || destination instanceof ArrayAssignNode)) continue;
         const destinationCollection = this.collectionsByName.get(destination.name);
@@ -4317,7 +4321,12 @@ export default class LowerVMapCounterLoops extends AstTraversal {
               && valueType.toString() === destinationCollection.innermostValueType.toString()) {
               authorizedRuntimeReads.add(candidate);
               const shape = `${candidateAccess.name}\0${candidateAccess.keys.map(expressionShape).join('|')}`;
-              let plan = plansByShape.get(shape);
+              // `writeKeyShape` excludes the collection name: left[i] and right[i] intentionally share the
+              // schedule, whereas left[i] and right[i + 1] cannot borrow one physical source carrier.
+              const destinationPath = writePaths.get(destination);
+              const schedule = `${shape}\0${writeKeyShape(destination)}\0${destinationPath
+                ? expressionShape(destinationPath) : ''}`;
+              let plan = destinationReadPlansBySchedule.get(schedule);
               if (!plan) {
                 const witnessParam = `${VMAP_COUNTER_OLD_PREFIX}read_${candidateAccess.name}_${serial}_${runtimeReadPlans.length}`;
                 const witness = new IdentifierNode(witnessParam);
@@ -4345,9 +4354,10 @@ export default class LowerVMapCounterLoops extends AstTraversal {
                   authenticatedReads: [witnessRead, authenticatedRead],
                   consumerReads: [],
                 };
-                plansByShape.set(shape, plan);
+                destinationReadPlansBySchedule.set(schedule, plan);
                 runtimeReadPlans.push(plan);
               }
+              plansByShape.set(shape, plan);
               const witness = new IdentifierNode(plan.witnessParam);
               witness.location = candidate.location ?? destination.location;
               witness.type = new ArrayType(valueType);

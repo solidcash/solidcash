@@ -816,6 +816,11 @@ export class ParameterNode extends Node implements Named, Typed {
   // reference (a delegate-library forwarded arg `L.f(x)`, or a branded library's `__brand` ctor arg). The
   // unused-variable warning must skip it.
   syntheticallyUsed = false;
+  /**
+   * Physical kernel-journal context copied from a callee solely to keep an internal OP_INVOKE chain's frame
+   * uniform. This operand belongs to the generated route, not to the source entry point's published ABI.
+   */
+  kernelJournalForwardedContext = false;
 
   constructor(
     public type: Type,

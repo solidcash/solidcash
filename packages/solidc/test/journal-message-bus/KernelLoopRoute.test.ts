@@ -506,7 +506,16 @@ contract Acc() {
     expect(journalContextNames(functions.get('middle')!)).toEqual(leaf);
     expect(journalContextNames(functions.get('outer')!)).toEqual(leaf);
 
-    const artifact = compileString(source, { ...OPTIONS, maximumInputBytes: 100_000 });
+    const attemptFailureBox = { failures: [] };
+    const artifact = compileString(source, {
+      ...OPTIONS, maximumInputBytes: 100_000, __artifactCache: false, __attemptFailureBox: attemptFailureBox,
+    } as Parameters<typeof compileString>[1]);
+    expect(attemptFailureBox.failures).toEqual([]);
+    expect(artifact.messageBus).toBeDefined();
+    expect(artifact.messageBus?.convention).toBe('kernel-row-loop');
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'outer'))
+      .toMatchObject({ eligible: true });
+    expect(routeAsm(artifact)).toContain('OP_INVOKE');
     expect(artifact.abi.find((entry) => entry.name === 'outer')?.inputs.map((input) => input.name))
       .toEqual(['n']);
   });

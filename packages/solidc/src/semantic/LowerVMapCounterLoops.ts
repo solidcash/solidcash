@@ -327,6 +327,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         const forwarded = new ParameterNode(parameter.type, parameter.name, [...parameter.modifier]);
         forwarded.location = caller.location;
         forwarded.syntheticallyUsed = true;
+        forwarded.kernelJournalForwardedContext = true;
         caller.parameters.splice(insertionIndex++, 0, forwarded);
         existing.add(parameter.name);
         changed = true;

@@ -2340,7 +2340,12 @@ export function generateArtifact(
   const abi: AbiFunction[] = abiFunctions.map((func) => ({
     name: func.name,
     ...(func.functionSelector && { selector: binToHex(func.functionSelector) }),
-    inputs: func.parameters.map((parameter) => ({
+    // A caller several OP_INVOKE edges above a runtime journal receives a physical copy of the leaf's hidden
+    // context so generated calls have one typed frame. Those forwarded operands are route-owned implementation
+    // details; publishing them as source inputs leaks the depth of the helper closure and makes equivalent
+    // source signatures ABI-incompatible. Parameters introduced by the function's own lowering remain present:
+    // SDK journal planning still consumes those physical witness declarations.
+    inputs: func.parameters.filter((parameter) => !parameter.kernelJournalForwardedContext).map((parameter) => ({
       name: parameter.name,
       type: abiTypeString(parameter.type),
     })),

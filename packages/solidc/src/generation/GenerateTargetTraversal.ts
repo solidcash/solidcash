@@ -133,6 +133,7 @@ import {
   StateAccessNode,
   StateAssignNode,
   StateVariableNode,
+  CollectionNode,
   MappingAccessNode,
   MappingAssignNode,
   MappingFieldAssignNode,
@@ -1225,6 +1226,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   // State-related tracking
   private stateVariables: StateVariableNode[] = [];
   private collectionCount: number = 0;
+  private collectionDefinitions: CollectionNode[] = [];
   private sortedCollections: Set<string> = new Set(); // vmap sorted (linked-list) collection names
   private sortedEntryAddressIds: Map<string, bigint> = new Map(); // collection hash hex -> contract-local helper id
   private sortedWrittenCollections: Set<string> = new Set(); // sorted collections written in the current function
@@ -2485,6 +2487,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Store state variable info for code generation
     this.stateVariables = node.stateVariables;
     this.collectionCount = node.collections.length;
+    this.collectionDefinitions = node.collections;
     // Dynamic helpers use the shortest available script-number IDs while remaining disjoint from every user
     // function in this contract. Four-byte selectors naturally remain distinct; small internal IDs are reserved.
     const contractFunctionsForIds = [
@@ -3984,6 +3987,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       probe.stack = [...this.stack];
       probe.stateVariables = this.stateVariables;
       probe.collectionCount = this.collectionCount;
+      probe.collectionDefinitions = this.collectionDefinitions;
       probe.dataNftCount = this.dataNftCount;
       probe.eventDefinitions = this.eventDefinitions;
       probe.currentContractIsSplitFacet = this.currentContractIsSplitFacet;
@@ -4156,6 +4160,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Copy necessary context for state-accessing functions
     subTraversal.stateVariables = this.stateVariables;
     subTraversal.collectionCount = this.collectionCount;
+    subTraversal.collectionDefinitions = this.collectionDefinitions;
     subTraversal.dataNftCount = this.dataNftCount;
     subTraversal.eventDefinitions = this.eventDefinitions;
     // X12. Contract-level, and an outlined body never runs visitContract - copy it or the delegate
@@ -4504,6 +4509,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // Copy necessary context
       subTraversal.stateVariables = this.stateVariables;
       subTraversal.collectionCount = this.collectionCount;
+      subTraversal.collectionDefinitions = this.collectionDefinitions;
       subTraversal.dataNftCount = this.dataNftCount;
       subTraversal.eventDefinitions = this.eventDefinitions;
       // X12. Contract-level, and an outlined body never runs visitContract - copy it or the delegate
@@ -21216,6 +21222,23 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     ])];
   }
 
+  /**
+   * Resolve the authenticated collection identity independently of a function's fixed entry projection.
+   *
+   * A runtime journal reached through an internal call closure can legitimately give its public invoker no
+   * fixed `entryAccesses`: every entry belongs to the loop's trailing stream. The hidden cardinality ABI still
+   * has to authenticate that stream against the declared collection, so use the contract-level declaration as
+   * the source of truth when there is no fixed slot from which to copy the same canonical signature.
+   */
+  private vmapCollectionSignature(collectionName: string): string | undefined {
+    const projected = this.entrySlots.find((slot) => slot.collection === collectionName)?.collectionSignature;
+    if (projected !== undefined) return projected;
+    const declaration = this.collectionDefinitions.find((collection) => collection.name === collectionName);
+    return declaration === undefined
+      ? undefined
+      : computeCollectionSignature(declaration.name, declaration.type.toString());
+  }
+
   private emitRuntimeAliasWitnessPreflight(node: FunctionDefinitionNode): void {
     const loc = { location: node.location, positionHint: PositionHint.START } as SingleLocationData;
     const copy = (name: string): void => {
@@ -21228,9 +21251,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       && !this.currentFunctionIsDelegate) {
       for (const collectionName of this.vmapRuntimeCollections(node)) {
         const cardinalityProofStartIp = this.getMostRecentInstructionPointer() + 1;
-        const collectionSignature = this.entrySlots.find(
-          (slot) => slot.collection === collectionName,
-        )?.collectionSignature;
+        const collectionSignature = this.vmapCollectionSignature(collectionName);
         if (!collectionSignature) {
           throw new Error(`Missing sorted-upsert collection signature for '${collectionName}'`);
         }
@@ -21901,9 +21922,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (this.isCompilerMessageBusRoute(node)) {
       for (const collection of runtimeCollections) {
         if (cardinalityScanned.has(collection)) continue;
-        const collectionSignature = this.entrySlots.find(
-          (slot) => slot.collection === collection,
-        )?.collectionSignature;
+        const collectionSignature = this.vmapCollectionSignature(collection);
         if (!collectionSignature) throw new Error(`Missing sorted-upsert collection signature for '${collection}'`);
         const addr = `(__vmap_runtime_addr_${collection})`;
         this.emitMasterInputIndex(loc); bin(Op.OP_UTXOTOKENCATEGORY);
@@ -25769,9 +25788,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const nFixed = this.entrySlots.filter(
         (slot, index) => slot.collection === collection && this.ownsFixedEntrySlot(index),
       ).length;
-      const collectionSignature = this.entrySlots.find(
-        (slot) => slot.collection === collection,
-      )?.collectionSignature;
+      const collectionSignature = this.vmapCollectionSignature(collection);
       if (!collectionSignature) throw new Error(`Missing sorted-upsert collection signature for '${collection}'`);
       this.emitMasterInputIndex(loc);
       this.emit(Op.OP_UTXOTOKENCATEGORY, loc);

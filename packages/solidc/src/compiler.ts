@@ -3225,6 +3225,7 @@ function synthesizeMessageBusRoute(
     }
     const paramIndex = owner.parameters.findIndex((parameter) => parameter.name === arrayName);
     if (paramIndex >= 0) {
+      const targetParameter = owner.parameters[paramIndex];
       let sawCall = false;
       let allSupported = true;
       for (const callerName of closure) {
@@ -3235,7 +3236,17 @@ function synthesizeMessageBusRoute(
             if (!(node instanceof FunctionCallNode) || node.identifier.name !== owner.name) return;
             sawCall = true;
             const argument = node.parameters[paramIndex];
-            const argumentName = argument === undefined ? undefined : expressionIdentifier(argument);
+            // Kernel journal context is propagated before route synthesis, while the corresponding call
+            // operands are appended only after symbol resolution by `padMessageBusCloneCalls`. At this boundary
+            // a missing compiler-owned operand therefore means exact same-name pass-through, provided the caller
+            // owns that parameter. Treating it as an arbitrary source argument would be unsound; requiring both
+            // the reserved name and the caller declaration preserves the typed flow proof across any number of
+            // returning or void helper levels.
+            const argumentName = argument === undefined
+              && targetParameter.name.startsWith('__internal__')
+              && caller.parameters.some((parameter) => parameter.name === targetParameter.name)
+              ? targetParameter.name
+              : argument === undefined ? undefined : expressionIdentifier(argument);
             if (argumentName === undefined
               || !arraySupportedFromSource(
                 argumentName, caller, source, closure, visiting,

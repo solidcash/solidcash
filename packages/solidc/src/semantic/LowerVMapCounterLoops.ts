@@ -3989,6 +3989,95 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         }
         return false;
       };
+      /**
+       * A source `while`/`do-while` continue normally has to carry the canonical counter update: without it the
+       * source can stutter on one logical key while the authenticated permutation advances through a finite
+       * domain. There is one useful exception. A direct predicate which is false for every member of the already
+       * proved affine domain cannot take that abrupt edge at all, so it is semantically equivalent to the literal
+       * `if (false) continue` case below. Keep this deliberately proof-shaped: no general expression evaluation,
+       * no state reads, and no attempt to turn a potentially-live stutter into a skip set.
+       */
+      const continuePredicateFalseOnDomain = (condition: ExpressionNode): boolean => {
+        const invertComparison = (operator: BinaryOperator): BinaryOperator | undefined => ({
+          [BinaryOperator.LT]: BinaryOperator.GT,
+          [BinaryOperator.LE]: BinaryOperator.GE,
+          [BinaryOperator.GT]: BinaryOperator.LT,
+          [BinaryOperator.GE]: BinaryOperator.LE,
+          [BinaryOperator.EQ]: BinaryOperator.EQ,
+          [BinaryOperator.NE]: BinaryOperator.NE,
+        } as Partial<Record<BinaryOperator, BinaryOperator>>)[operator];
+        const isLogical = (expression: ExpressionNode): boolean => expression instanceof IdentifierNode
+          && expression.name === logical;
+        const canonicalBound = (): ExpressionNode | undefined => boundExpression
+          ?? (boundOffset === 0n ? new IdentifierNode(count) : undefined);
+        const comparisonFalse = (
+          operator: BinaryOperator,
+          right: ExpressionNode,
+        ): boolean => {
+          if (right instanceof IntLiteralNode) {
+            // Every reached member of a monotone progression remains on this side of its literal start. This
+            // intentionally proves only one-sided facts; the runtime bound may be caller-selected.
+            if (step > 0n) {
+              if ((operator === BinaryOperator.LT && start >= right.value)
+                || (operator === BinaryOperator.LE && start > right.value)
+                || (operator === BinaryOperator.EQ && start > right.value)) return true;
+            } else {
+              if ((operator === BinaryOperator.GT && start <= right.value)
+                || (operator === BinaryOperator.GE && start < right.value)
+                || (operator === BinaryOperator.EQ && start < right.value)) return true;
+            }
+            return false;
+          }
+          // A post-test body always reaches its initial value, even when its continuation test is false. Do not
+          // infer a relation to the bound there. Exact `!=` domains do still exclude the bound itself.
+          const bound = canonicalBound();
+          if (postTest || !bound || expressionShape(right) !== expressionShape(bound)) return false;
+          if (operator === BinaryOperator.EQ) return true;
+          if (step > 0n) return operator === BinaryOperator.GE || operator === BinaryOperator.GT;
+          return operator === BinaryOperator.LE || operator === BinaryOperator.LT;
+        };
+        const moduloComparisonFalse = (
+          operator: BinaryOperator,
+          right: ExpressionNode,
+          modulo: BinaryOpNode | undefined,
+        ): boolean => {
+          if (!(right instanceof IntLiteralNode)) return false;
+          if (!modulo || !isLogical(modulo.left) || !(modulo.right instanceof IntLiteralNode)
+            || modulo.right.value <= 0n || step % modulo.right.value !== 0n
+            || (operator !== BinaryOperator.EQ && operator !== BinaryOperator.NE)) return false;
+          // Script integer remainder has the dividend's sign; using the source start's BigInt remainder therefore
+          // matches every reached value when the literal stride is congruent to zero.
+          const remainder = start % modulo.right.value;
+          return operator === BinaryOperator.EQ ? remainder !== right.value : remainder === right.value;
+        };
+        if (condition instanceof BoolLiteralNode) return !condition.value;
+        if (!(condition instanceof BinaryOpNode)) return false;
+        if (condition.operator === BinaryOperator.AND) {
+          return continuePredicateFalseOnDomain(condition.left)
+            || continuePredicateFalseOnDomain(condition.right);
+        }
+        if (condition.operator === BinaryOperator.OR) {
+          return continuePredicateFalseOnDomain(condition.left)
+            && continuePredicateFalseOnDomain(condition.right);
+        }
+        const moduloNormalized = condition.left instanceof BinaryOpNode
+          && condition.left.operator === BinaryOperator.MOD
+          ? { operator: condition.operator, right: condition.right, modulo: condition.left }
+          : condition.right instanceof BinaryOpNode && condition.right.operator === BinaryOperator.MOD
+            ? { operator: invertComparison(condition.operator), right: condition.left, modulo: condition.right }
+            : undefined;
+        if (moduloNormalized?.operator !== undefined
+          && moduloComparisonFalse(
+            moduloNormalized.operator, moduloNormalized.right, moduloNormalized.modulo,
+          )) return true;
+        const normalized = isLogical(condition.left)
+          ? { operator: condition.operator, right: condition.right }
+          : isLogical(condition.right)
+            ? { operator: invertComparison(condition.operator), right: condition.left }
+            : undefined;
+        if (normalized?.operator === undefined) return false;
+        return comparisonFalse(normalized.operator, normalized.right);
+      };
       let sourceContinueValid = true;
       const inspectSourceContinues = (candidate: Node): void => {
         if (!sourceContinueValid) return;
@@ -4022,13 +4111,14 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           return;
         }
         if (candidate instanceof BranchNode) {
-          // An abrupt path guarded by a literal cannot execute. Ignore that arm rather than requiring a canonical
-          // counter step which is unreachable in both the source program and the lowered physical loop.
-          if (!(candidate.condition instanceof BoolLiteralNode) || candidate.condition.value) {
+          // An abrupt path guarded by a literal, or by a narrowly proved false affine-domain predicate, cannot
+          // execute. Ignore that arm rather than requiring a canonical counter step which is unreachable in both
+          // the source program and the lowered physical loop.
+          const falseOnDomain = continuePredicateFalseOnDomain(candidate.condition);
+          if (!falseOnDomain) {
             inspectSourceContinues(candidate.ifBlock);
           }
-          if ((!(candidate.condition instanceof BoolLiteralNode) || !candidate.condition.value)
-            && candidate.elseBlock) inspectSourceContinues(candidate.elseBlock);
+          if (falseOnDomain && candidate.elseBlock) inspectSourceContinues(candidate.elseBlock);
           return;
         }
         if (candidate instanceof SwitchNode) {
@@ -8243,8 +8333,10 @@ export default class LowerVMapCounterLoops extends AstTraversal {
               // reverts at the original write rather than being silently clamped by this recipe. Keep the first
               // slice exact: unit ascending traversal from zero, writes only to the counter position. A post-test
               // traversal has the equally exact domain `index < (bound > 0 ? bound : 1)`: its first iteration is
-              // unconditional, while every later iteration uses the source predicate. Strides, offset indices,
-              // and descending loops remain fenced.
+              // unconditional, while every later iteration uses the source predicate. A positive literal stride
+              // is likewise exact: `index >= 0 && index < bound && index % stride == 0` for pre-test loops, with
+              // the first-iteration alternative for post-test loops. Offset indices, runtime strides, and
+              // descending loops remain fenced.
               if (typeof boundValue !== 'bigint' && !runtimeBoundRange) {
                 // This is deliberately the same closed expression vocabulary the artifact recipe serializer
                 // and SDK evaluator share. In particular, do not infer purity from a resolved call: even a
@@ -8279,7 +8371,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
                 const symbolicIndexedArrayWrite = (helperStatement instanceof WhileNode
                   || helperStatement instanceof DoWhileNode)
                   && comparison === BinaryOperator.LT && initial.value === 0n
-                  && (step === 1n || (helperStatement instanceof DoWhileNode && step > 1n))
+                  && step > 0n
                   && publicBound
                   && statements.slice(0, -1).length > 0
                   && statements.slice(0, -1).every((candidate) =>

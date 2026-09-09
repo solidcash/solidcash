@@ -297,6 +297,68 @@ export interface KernelEntryJournalReadCarrierPhysicalPlan {
   streamAccounting: KernelEntryJournalReadCarrierStreamAccounting[];
 }
 
+/** A source access after the physical carrier planner has removed any duplicate clean-read authentication. */
+export interface KernelEntryJournalPhysicalSettlementOccurrence {
+  /** The compiler-authenticated source coordinate. This order is also the carrier producer order. */
+  occurrence: KernelEntryJournalSettlementOccurrence;
+  /**
+   * The compact access program the SDK must publish. This is equal to `occurrence.access` except that a later
+   * clean reader of an already-owned physical record has its relevant authentication bit cleared.
+   */
+  access: KernelEntryJournalAccess;
+  /** The source occurrence is the unique physical input owner for at least one record. */
+  materializesInput: boolean;
+  /** At least one access authentication bit was cleared for an internal clean-carrier consumer. */
+  rewritesToZeroAuthConsumer: boolean;
+}
+
+/** One physical pre-state entry, ordered by its first source authentication rather than record ordinal. */
+export interface KernelEntryJournalPhysicalSettlementInput {
+  recordOrdinal: number;
+  recordRole: 'target' | 'predecessor';
+  firstOwner: KernelEntryJournalSettlementReference;
+}
+
+/** One dense final entry output, ordered by the authenticated global record ordinal. */
+export interface KernelEntryJournalPhysicalSettlementOutput {
+  recordOrdinal: number;
+  outputOrdinal: number;
+  finalOwner: KernelEntryJournalSettlementReference;
+}
+
+/** Per compact stream cardinalities after physical input ownership and final output authority are separated. */
+export interface KernelEntryJournalPhysicalSettlementStreamAccounting {
+  frameIndex: number;
+  accessStreamIndex: number;
+  inputCount: number;
+  outputCount: number;
+}
+
+/**
+ * Pure, inactive reconciliation of source-order physical inputs with global-order final settlement outputs.
+ *
+ * This planner deliberately does not inspect an artifact capability and does not construct any UTXOs. It gives
+ * the eventual runtime activation one auditable authority for four facts which must otherwise never be inferred
+ * independently: first physical authentication, zero-auth clean consumers, final record disposition, and dense
+ * output rank. In particular, publishing this plan alone never authorizes the SDK to omit an input.
+ */
+export interface KernelEntryJournalPhysicalSettlementPlan {
+  occurrences: KernelEntryJournalPhysicalSettlementOccurrence[];
+  /** First physical owners in source execution order. */
+  inputs: KernelEntryJournalPhysicalSettlementInput[];
+  /** Final present records in dense global-record order. */
+  outputs: KernelEntryJournalPhysicalSettlementOutput[];
+  streamAccounting: KernelEntryJournalPhysicalSettlementStreamAccounting[];
+  /**
+   * The one global final-flush cursor delta. It intentionally equals `outputs.length`, rather than the sum of
+   * any caller-maintained collection bands: an eventual activation must advance its physical output cursor once
+   * after the dense flush and must not also add per-stream output counts.
+   */
+  finalOutputCursorDelta: number;
+  /** The normalized settlement authority consumed to derive `outputs`. */
+  settlement: KernelEntryJournalSettlementPlan;
+}
+
 type KernelEntryJournalReadCarrierReference = {
   occurrence: KernelEntryJournalReadCarrierOccurrence;
   recordOrdinal: number;
@@ -383,6 +445,19 @@ export function planKernelEntryJournalReadCarrierMaterialization(
   return materializations.sort((left, right) => left.recordOrdinal - right.recordOrdinal);
 }
 
+/**
+ * Rewrite only the redundant physical-authentication bits of later clean-read carrier consumers.
+ *
+ * Topology construction can legitimately nominate the same physical record in more than one source row. Once a
+ * route has the versioned internal-carrier capability, exactly the first source occurrence may co-spend that
+ * record; each later occurrence must take the no-input arm. This helper deliberately changes neither collection
+ * identity, source order, record ordinal, predecessor ordinal, topology, nor mutation/pending state. It also
+ * does not add an authentication bit: the first occurrence must already be the authenticated producer.
+ *
+ * This is a pure planning boundary, not activation. Callers still need the compiler capability, carrier-aware
+ * bytecode, and matching physical input/output materialization before using the rewritten accesses in a
+ * transaction.
+ */
 /**
  * Convert source-ordered clean-read occurrences into the complete physical ownership plan after the caller has
  * assigned global record ordinals. This is deliberately dormant until the compiler advertises the corresponding
@@ -625,6 +700,187 @@ export function planKernelEntryJournalSettlementOutputs(
     outputs.push({ recordOrdinal, outputOrdinal: outputs.length, collection, offset });
   }
   return outputs;
+}
+
+type KernelEntryJournalPhysicalReference = {
+  occurrenceIndex: number;
+  recordOrdinal: number;
+  recordRole: 'target' | 'predecessor';
+  authenticates: boolean;
+  cleanCarrier: boolean;
+};
+
+function physicalSettlementReferences(
+  occurrence: KernelEntryJournalSettlementOccurrence,
+  occurrenceIndex: number,
+): KernelEntryJournalPhysicalReference[] {
+  const { access } = occurrence;
+  const cleanCarrier = !access.mutates && !access.pending && access.presentBefore === access.presentAfter;
+  const references: KernelEntryJournalPhysicalReference[] = [{
+    occurrenceIndex,
+    recordOrdinal: access.targetRecordOrdinal,
+    recordRole: 'target',
+    authenticates: access.authenticatesTarget === true,
+    // An absent target is synthetic protocol state, not an entry NFT carrier. Its predecessor, if any, remains
+    // the selected physical record for a clean non-membership proof.
+    cleanCarrier: cleanCarrier && access.presentBefore,
+  }];
+  if (access.predecessorRecordOrdinal !== undefined) {
+    references.push({
+      occurrenceIndex,
+      recordOrdinal: access.predecessorRecordOrdinal,
+      recordRole: 'predecessor',
+      authenticates: access.authenticatesPredecessor === true,
+      cleanCarrier,
+    });
+  }
+  return references;
+}
+
+function isSyntheticPresentRecord(
+  occurrence: KernelEntryJournalSettlementOccurrence,
+  reference: KernelEntryJournalPhysicalReference,
+): boolean {
+  // Only a mutating absent target may introduce a present record without an input. A predecessor is always an
+  // existing link and a clean present target always needs a physical authenticator.
+  return reference.recordRole === 'target' && occurrence.access.mutates
+    && !occurrence.access.presentBefore && occurrence.access.presentAfter;
+}
+
+/**
+ * Derive one complete physical settlement model from the source-ordered compact accesses.
+ *
+ * A topology prepass may conservatively set authentication on every clean read. A later read of an already-owned
+ * clean carrier is not a second physical authority: this routine rewrites that specific flag to zero, then feeds
+ * the normalized accesses into the ordinary global settlement-authority verifier. Mutating accesses are never
+ * rewritten here; a repeated mutating authenticator is therefore rejected rather than silently changing protocol
+ * semantics.
+ */
+export function planKernelEntryJournalPhysicalSettlement(
+  occurrences: readonly KernelEntryJournalSettlementOccurrence[],
+): KernelEntryJournalPhysicalSettlementPlan {
+  const referencesByRecord = new Map<number, KernelEntryJournalPhysicalReference[]>();
+  occurrences.forEach((occurrence, occurrenceIndex) => {
+    const references = physicalSettlementReferences(occurrence, occurrenceIndex);
+    for (const reference of references) {
+      requireRecordOrdinal(`${reference.recordRole}RecordOrdinal`, reference.recordOrdinal);
+      const group = referencesByRecord.get(reference.recordOrdinal) ?? [];
+      group.push(reference);
+      referencesByRecord.set(reference.recordOrdinal, group);
+    }
+  });
+
+  const rewritten = occurrences.map((occurrence) => occurrence.access);
+  const rewrites = new Set<number>();
+  const inputReferences: KernelEntryJournalPhysicalReference[] = [];
+  for (const [recordOrdinal, references] of referencesByRecord) {
+    const authenticators = references.filter((reference) => reference.authenticates);
+    if (authenticators.length === 0) continue;
+    const firstAuthenticator = authenticators[0]!;
+    if (references[0] !== firstAuthenticator) {
+      throw new Error(`kernel physical settlement consumer precedes authenticated producer for record ${recordOrdinal}`);
+    }
+    inputReferences.push(firstAuthenticator);
+    for (const duplicate of authenticators.slice(1)) {
+      const occurrence = occurrences[duplicate.occurrenceIndex]!;
+      if (!duplicate.cleanCarrier) {
+        throw new Error(`kernel physical settlement record ${recordOrdinal} has multiple non-clean authenticators`);
+      }
+      const current = rewritten[duplicate.occurrenceIndex]!;
+      // The public access representation uses optional literal `true` flags; omit the selected flag so the
+      // compact encoder emits canonical zero rather than widening the type with a non-canonical `false`.
+      if (duplicate.recordRole === 'target') {
+        const { authenticatesTarget: _target, ...withoutAuthentication } = current;
+        rewritten[duplicate.occurrenceIndex] = withoutAuthentication;
+      } else {
+        const { authenticatesPredecessor: _predecessor, ...withoutAuthentication } = current;
+        rewritten[duplicate.occurrenceIndex] = withoutAuthentication;
+      }
+      rewrites.add(duplicate.occurrenceIndex);
+    }
+  }
+
+  // A clean consumer is allowed to arrive with its flag already cleared, but only after a source-ordered owner.
+  // Validate that situation explicitly, rather than allowing an unauthenticated present entry to become an output.
+  for (const [recordOrdinal, references] of referencesByRecord) {
+    if (references.some((reference) => reference.authenticates)) continue;
+    const first = references[0]!;
+    const occurrence = occurrences[first.occurrenceIndex]!;
+    const isAbsentOnly = references.every((reference) => reference.recordRole === 'target'
+      && !occurrences[reference.occurrenceIndex]!.access.presentAfter);
+    if (!isAbsentOnly && !isSyntheticPresentRecord(occurrence, first)) {
+      throw new Error(`kernel physical settlement record ${recordOrdinal} has no authenticated producer`);
+    }
+  }
+
+  const normalizedOccurrences = occurrences.map((occurrence, occurrenceIndex) => ({
+    ...occurrence,
+    access: rewritten[occurrenceIndex]!,
+  }));
+  const settlement = planKernelEntryJournalSettlementAuthority(normalizedOccurrences);
+  const referenceByCoordinate = new Map<string, KernelEntryJournalSettlementReference>();
+  for (const reference of settlement.references) {
+    referenceByCoordinate.set(
+      `${reference.frameIndex}:${reference.accessStreamIndex}:${reference.accessOrdinal}:${reference.recordRole}`,
+      reference,
+    );
+  }
+  const inputs = inputReferences.map((input) => {
+    const occurrence = occurrences[input.occurrenceIndex]!;
+    const firstOwner = referenceByCoordinate.get(
+      `${occurrence.frameIndex}:${occurrence.identity.accessStreamIndex}:${occurrence.accessOrdinal}:${input.recordRole}`,
+    );
+    if (!firstOwner) throw new Error('kernel physical settlement lost first input owner');
+    return { recordOrdinal: input.recordOrdinal, recordRole: input.recordRole, firstOwner };
+  });
+  const inputCoordinates = new Set(inputs.map((input) => (
+    `${input.firstOwner.frameIndex}:${input.firstOwner.accessStreamIndex}:${input.firstOwner.accessOrdinal}`
+  )));
+  const plannedOccurrences = normalizedOccurrences.map((occurrence, occurrenceIndex) => {
+    const coordinate = `${occurrence.frameIndex}:${occurrence.identity.accessStreamIndex}:${occurrence.accessOrdinal}`;
+    return {
+      occurrence: occurrences[occurrenceIndex]!,
+      access: occurrence.access,
+      materializesInput: inputCoordinates.has(coordinate),
+      rewritesToZeroAuthConsumer: rewrites.has(occurrenceIndex),
+    };
+  });
+  const outputs: KernelEntryJournalPhysicalSettlementOutput[] = [];
+  for (const [recordOrdinal, disposition] of [...settlement.recordDispositions.entries()]
+    .sort(([left], [right]) => left - right)) {
+    if (disposition.reference.settlementDisposition === 'absence') continue;
+    const hasInput = inputs.some((input) => input.recordOrdinal === recordOrdinal);
+    const source = occurrences.find((occurrence) => occurrence.frameIndex === disposition.reference.frameIndex
+      && occurrence.identity.accessStreamIndex === disposition.reference.accessStreamIndex
+      && occurrence.accessOrdinal === disposition.reference.accessOrdinal);
+    const reference = source === undefined ? undefined : physicalSettlementReferences(source, occurrences.indexOf(source))
+      .find((candidate) => candidate.recordOrdinal === recordOrdinal && candidate.recordRole === disposition.reference.recordRole);
+    if (!hasInput && (!source || !reference || !isSyntheticPresentRecord(source, reference))) {
+      throw new Error(`kernel physical settlement present record ${recordOrdinal} has no input or synthetic producer`);
+    }
+    outputs.push({ recordOrdinal, outputOrdinal: outputs.length, finalOwner: disposition.reference });
+  }
+  const accounting = new Map<string, KernelEntryJournalPhysicalSettlementStreamAccounting>();
+  const account = (frameIndex: number, accessStreamIndex: number): KernelEntryJournalPhysicalSettlementStreamAccounting => {
+    const key = `${frameIndex}:${accessStreamIndex}`;
+    const existing = accounting.get(key);
+    if (existing) return existing;
+    const fresh = { frameIndex, accessStreamIndex, inputCount: 0, outputCount: 0 };
+    accounting.set(key, fresh);
+    return fresh;
+  };
+  for (const occurrence of occurrences) account(occurrence.frameIndex, occurrence.identity.accessStreamIndex);
+  for (const input of inputs) account(input.firstOwner.frameIndex, input.firstOwner.accessStreamIndex).inputCount += 1;
+  for (const output of outputs) account(output.finalOwner.frameIndex, output.finalOwner.accessStreamIndex).outputCount += 1;
+  return {
+    occurrences: plannedOccurrences,
+    inputs,
+    outputs,
+    streamAccounting: [...accounting.values()].sort((left, right) => left.frameIndex - right.frameIndex
+      || left.accessStreamIndex - right.accessStreamIndex),
+    finalOutputCursorDelta: outputs.length,
+    settlement,
+  };
 }
 
 /** Convert the canonical output plan into the compact builder ordering form without changing its order. */

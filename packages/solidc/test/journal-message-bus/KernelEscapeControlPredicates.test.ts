@@ -48,6 +48,37 @@ describe('kernel counter-loop dead escape control', () => {
   });
 
   it.each([
+    ['ascending bound', `int i = 0;
+      while (i < n) {
+        if (i >= n) { continue; }
+        this.values[i] = i;
+        i = i + 1;
+      }`],
+    ['descending literal floor', `int i = 4;
+      while (i > n) {
+        if (i >= 5) { continue; }
+        this.values[i] = i;
+        i = i - 1;
+      }`],
+    ['post-test literal floor', `int i = 0;
+      do {
+        if (i < 0) { continue; }
+        this.values[i] = i;
+        i = i + 1;
+      } while (i < n);`],
+    ['literal stride congruence', `int i = 0;
+      while (i < n) {
+        if (i % 2 == 1) { continue; }
+        this.values[i] = i;
+        i = i + 2;
+      }`],
+  ])('admits a %s predicate which is false over the complete affine counter domain', (_kind, loop) => {
+    const result = handler(contract(loop));
+    expect(result.admission).toMatchObject({ eligible: true });
+    expect(result.stream).toBeDefined();
+  });
+
+  it.each([
     ['while', `int i = 0;
       while (i < n) {
         if (gate) { continue; }
@@ -61,6 +92,26 @@ describe('kernel counter-loop dead escape control', () => {
         i = i + 1;
       } while (i < n);`],
   ])('still refuses a runtime-selected non-progressing continue in a canonical %s', (_kind, loop) => {
+    expect(handler(contract(loop)).admission).toMatchObject({
+      eligible: false,
+      rejectionReason: 'KERNEL_UNBOUNDED_KEY',
+    });
+  });
+
+  it.each([
+    ['reachable equality', `int i = 0;
+      while (i < n) {
+        if (i == 1) { continue; }
+        this.values[i] = i;
+        i = i + 1;
+      }`],
+    ['reachable congruence', `int i = 0;
+      while (i < n) {
+        if (i % 2 == 0) { continue; }
+        this.values[i] = i;
+        i = i + 2;
+      }`],
+  ])('keeps a %s non-progressing continue fenced', (_kind, loop) => {
     expect(handler(contract(loop)).admission).toMatchObject({
       eligible: false,
       rejectionReason: 'KERNEL_UNBOUNDED_KEY',

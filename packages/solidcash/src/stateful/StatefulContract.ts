@@ -17046,38 +17046,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       : (entryAbiFunction?.sortedUpsertLoopInfo?.length ?? 0) > 0
         ? [{ abiFunction: entryAbiFunction!, args: entryArgs, routed: false, row: undefined }]
         : [];
-    const scopedJournalStreams = upsertPlanningFrames.flatMap((frame) => (
-      (frame.abiFunction.sortedUpsertLoopInfo ?? []).map((info) => ({
-        selector: frame.abiFunction.selector,
-        accessStreamIndex: info.journalAccessStreamIndex,
-      }))
-    ));
-    if (internalReadCarrierCapability && scopedJournalStreams.length > 0) {
-      // A sorted-loop descriptor alone is also used by the legacy materializer.  It is not evidence that this
-      // handler has the compiler-owned compact access-vector argument which the 0x11 route protocol consumes.
-      // Since deferral is transaction-wide, allowing such a frame into this branch would silently suppress its
-      // ordinary inputs/outputs while it never appears in `runtimeKernelJournalStreams` below.
-      const nonCarrierFrame = upsertPlanningFrames.find((frame) => (
-        (frame.abiFunction.sortedUpsertLoopInfo?.length ?? 0) > 0
-        && !frame.abiFunction.inputs.some((input) => input.name === KERNEL_JOURNAL_ACCESS_STREAMS)
-      ));
-      if (nonCarrierFrame) {
-        throw new Error(
-          'Compiler internal-read-carrier capability selected a runtime loop without a compact journal access stream; '
-          + 'refusing mixed legacy and carrier materialization.',
-        );
-      }
-      const uncovered = scopedJournalStreams.find((stream) => !kernelEntryJournalReadCarrierCapabilityCovers(
-        internalReadCarrierCapability, stream.selector, stream.accessStreamIndex,
-      ));
-      if (uncovered) {
-        throw new Error(
-          'Compiler internal-read-carrier capability does not cover every selected runtime journal stream; '
-          + 'refusing mixed legacy and carrier materialization.',
-        );
-      }
-      deferRuntimeJournalMaterialization = true;
-    }
     const runtimeKernelJournalStreams: Array<{
       collection: string;
       collectionHash: Uint8Array;
@@ -17094,6 +17062,32 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       writes: Array<{ slot: Uint8Array; operation: KernelEntryJournalTopologyOperation }>;
       publish: (encoded: Uint8Array) => void;
     }> = [];
+    /**
+     * A capability changes physical ownership, so it must be checked against a concrete runtime stream rather than
+     * a speculative handler descriptor. At this point its selector/index and compact argument have survived row
+     * selection; the call site is deliberately before the first legacy intent drain for that stream.
+     */
+    const enableDeferredJournalMaterialization = (
+      abiFunction: AbiFunction,
+      journalAccessStreamIndex: number,
+    ): void => {
+      if (!internalReadCarrierCapability) return;
+      if (!abiFunction.inputs.some((input) => input.name === KERNEL_JOURNAL_ACCESS_STREAMS)) {
+        throw new Error(
+          'Compiler internal-read-carrier capability selected a runtime loop without a compact journal access stream; '
+          + 'refusing mixed legacy and carrier materialization.',
+        );
+      }
+      if (!kernelEntryJournalReadCarrierCapabilityCovers(
+        internalReadCarrierCapability, abiFunction.selector, journalAccessStreamIndex,
+      )) {
+        throw new Error(
+          'Compiler internal-read-carrier capability does not cover every selected runtime journal stream; '
+          + 'refusing mixed legacy and carrier materialization.',
+        );
+      }
+      deferRuntimeJournalMaterialization = true;
+    };
     const runtimeLoopsByCollection = new Map<string, Array<(typeof upsertPlanningFrames)[number]>>();
     for (const frame of upsertPlanningFrames) {
       for (const info of frame.abiFunction.sortedUpsertLoopInfo ?? []) {
@@ -18031,6 +18025,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             replaceLoopArgument(journalArgumentIndex, streams);
           },
         });
+        enableDeferredJournalMaterialization(loopAbiFunction, streamIndex);
       }
       if (info.valueRuntimeLocal) {
         const oldWitnesses: ConstructorArgument[] = [];

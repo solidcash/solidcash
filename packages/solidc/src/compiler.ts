@@ -10282,6 +10282,9 @@ function compileResolvedAst(
   if (mergedCompilerOptions.messageBusKernel === true) {
     for (const fn of ast.contract.functions) {
       const sourceRecipes = analyzeFixedBchEffectRecipes(fn, ast.contract.functions, ast.contract.stateVariables);
+      const sourceHandlerInputTypes = new Map(fn.parameters
+        .filter((parameter) => !parameter.name.startsWith('__internal__'))
+        .map((parameter) => [parameter.name, abiTypeString(parameter.type)]));
       const declarationCounts = new Map<string, number>();
       walkInvocationAst(fn.body, (node) => {
         if (node instanceof VariableDefinitionNode) {
@@ -10318,7 +10321,7 @@ function compileResolvedAst(
           // Use the executable recipe resolver's semantic identity / unique exact-signature decision. This
           // accepts a proven overload without guessing from spelling, arity, or traversal order.
           if ((helperSignatureCounts.get(key) ?? 0) > 1
-            && !hasExactRecipeHelperIdentity(value, ast.contract.functions)) return false;
+            && !hasExactRecipeHelperIdentity(value, ast.contract.functions, sourceHandlerInputTypes)) return false;
         }
         for (const [key, child] of Object.entries(value)) {
           if (['definition', 'functionReference', 'resolvedFunction', 'referencedContract', 'symbolTable',

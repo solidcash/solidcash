@@ -83,7 +83,7 @@ describe('pure helper fixed BCH effect recipes', () => {
     });
   });
 
-  it('keeps a same-arity overload ambiguous at early recipe admission', () => {
+  it('selects a same-arity pure helper by its exact argument type', () => {
     const artifact = compileString(`contract Payer() {
       function derive(uint amount) internal pure returns (uint) { return amount + 1; }
       function derive(int amount) internal pure returns (int) { return amount + 2; }
@@ -94,8 +94,17 @@ describe('pure helper fixed BCH effect recipes', () => {
     }`, KERNEL);
 
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'pay')).toMatchObject({
-      eligible: false,
-      rejectionReason: 'KERNEL_LAYOUT',
+      eligible: true,
+      transfers: [{
+        recipientRecipe: { kind: 'handlerInput', inputIndex: 0 },
+        amountRecipe: {
+          kind: 'cast', resultType: 'uint256',
+          operand: {
+            kind: 'binary', operator: '+',
+            right: { kind: 'intLiteral', value: '1' },
+          },
+        },
+      }],
     });
   });
 

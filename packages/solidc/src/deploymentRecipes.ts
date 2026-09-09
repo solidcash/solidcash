@@ -96,16 +96,20 @@ const exactHelperSignature = (
     const aliasedType = (linkedDefinition && aliases?.get(linkedDefinition)?.resultType)
       || (namedDefinition && (!linkedDefinition || cloneEquivalentDefinition(linkedDefinition, namedDefinition))
         && aliases?.get(namedDefinition)?.resultType);
-    const argumentType = argument.type?.toString()
-      ?? (linkedDefinition as { type?: Type } | undefined)?.type?.toString()
-      ?? aliasedType
+    const definitionType = (linkedDefinition as { type?: Type } | undefined)?.type;
+    // An identifier's declaration is the source type authority. Before overload resolution completes, the
+    // expression node can temporarily carry the parameter type of a traversal-order overload candidate.
+    const typedArgument = argument instanceof IdentifierNode
+      ? definitionType : argument.type ?? definitionType;
+    const argumentType = aliasedType
       ?? (argument instanceof IdentifierNode ? handlerInputTypes?.get(argument.name) : undefined)
+      ?? (typedArgument ? abiTypeString(typedArgument) : undefined)
       // Early kernel admission precedes the final type pass. Hash intrinsics nevertheless have one fixed result
       // type, so they can select an overload exactly without guessing from its name/arity or argument contents.
       ?? (argument instanceof FunctionCallNode && !argument.resolvedFunction
         && pureHashFunctions.has(argument.identifier.name) && argument.parameters.length === 1
         ? pureHashResultType(argument.identifier.name) : undefined);
-    return argumentType !== undefined && argumentType === candidate.parameters[index].type.toString();
+    return argumentType !== undefined && argumentType === abiTypeString(candidate.parameters[index].type);
   });
 
 /** Resolve only semantic identity or a unique exact argument-type signature; never guess by name and arity. */
@@ -117,22 +121,27 @@ const resolvedRecipeHelper = (
 ): FunctionDefinitionNode | undefined => {
   const namedCandidates = helperFunctions.filter((candidate) =>
     candidate.name === call.identifier.name && candidate.parameters.length === call.parameters.length);
+  const exactCandidates = namedCandidates.filter((candidate) => exactHelperSignature(
+    call, candidate, handlerInputTypes, aliases, aliasDefinitions,
+  ));
+  // Prefer a unique typed signature over an early symbol-table link. Same-arity overloads are not finalized until
+  // type checking, so a pre-semantic link can still name the traversal-order candidate rather than the overload
+  // selected by the source argument types.
+  if (exactCandidates.length === 1) return exactCandidates[0];
   if (call.resolvedFunction
     && call.resolvedFunction.name === call.identifier.name
     && call.resolvedFunction.parameters.length === call.parameters.length) {
     return namedCandidates.find((candidate) =>
       cloneEquivalentDefinition(candidate, call.resolvedFunction!)) ?? call.resolvedFunction;
   }
-  const exactCandidates = namedCandidates.filter((candidate) => exactHelperSignature(
-    call, candidate, handlerInputTypes, aliases, aliasDefinitions,
-  ));
-  return exactCandidates.length === 1 ? exactCandidates[0] : undefined;
+  return undefined;
 };
 
 /** True only when a recipe helper call is bound by semantic identity or one unique exact parameter signature. */
 export const hasExactRecipeHelperIdentity = (
   call: FunctionCallNode, helperFunctions: readonly FunctionDefinitionNode[],
-): boolean => resolvedRecipeHelper(call, helperFunctions) !== undefined;
+  handlerInputTypes?: ReadonlyMap<string, string>,
+): boolean => resolvedRecipeHelper(call, helperFunctions, handlerInputTypes) !== undefined;
 
 const materializableGenesisType = (type: Type, stack: ReadonlySet<StructType> = new Set()): boolean => {
   if (type instanceof ArrayType) {

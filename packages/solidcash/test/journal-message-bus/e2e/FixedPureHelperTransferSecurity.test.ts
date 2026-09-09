@@ -35,6 +35,7 @@ describe('pure helper fixed BCH transfer transcript security', () => {
           uint incremented = amount + 7;
           return incremented;
         }
+        function adjusted(int amount) internal pure returns (int) { return amount + 101; }
         function pay(bool enabled, bool alternate, address first, address second, uint amount) public {
           if (enabled) this.transfer(choose(alternate, first, second), adjusted(amount));
           this.transfer(first, amount);

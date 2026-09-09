@@ -1,3 +1,4 @@
+import { execFileSync } from 'child_process';
 import { describe, expect, it } from 'vitest';
 import { compileString } from '../../src/compiler.js';
 
@@ -318,6 +319,46 @@ describe('kernel graph result dependencies', () => {
     expect(Object.values(first.debug.invokeDebug ?? {})
       .filter((entry) => entry.name === '__message_bus_handler_apply')).toHaveLength(1);
   });
+
+  it('publishes helper-origin graph metadata in a process-cold, cache-disabled kernel compile', () => {
+    const source = `pragma solidity ^0.8.0;
+      interface ISource { function read(uint id) external returns (uint value); }
+      interface ISink { function write(uint id, uint value) external; }
+      contract ColdGraphCoordinator {
+        ISource immutable source; ISink immutable sink; uint touched;
+        constructor(address source_, address sink_) { source = ISource(source_); sink = ISink(sink_); }
+        function forward(uint id) internal returns (uint value) {
+          value = source.read(id); sink.write(id, value);
+        }
+        function apply(uint id) external { touched = forward(id); require(true); }
+      }`;
+    const program = `import { compileString } from './dist/compiler.js';
+      const source = Buffer.from(process.argv[1], 'base64').toString('utf8');
+      const artifact = compileString(source, ${JSON.stringify(KERNEL)});
+      const apply = artifact.abi.find((entry) => entry.name === 'apply');
+      process.stdout.write(JSON.stringify({
+        convention: artifact.messageBus?.convention,
+        eligible: artifact.messageBus?.handlers.find((entry) => entry.name === 'apply')?.eligible,
+        calls: apply?.externalCalls?.map((entry) => ({ callsiteId: entry.callsiteId, name: entry.functionName })),
+        consumers: apply?.resultConsumers,
+        graphHandlers: Object.values(artifact.debug.invokeDebug ?? {})
+          .filter((entry) => entry.name === '__message_bus_handler_apply').length,
+      }));`;
+    const output = execFileSync(process.execPath, [
+      '--input-type=module', '--eval', program, Buffer.from(source).toString('base64'),
+    ], {
+      cwd: process.cwd(), encoding: 'utf8', env: {
+        ...process.env,
+        SOLIDC_COMPILE_CACHE: '0', SOLIDC_COMPILE_CACHE_DIR: '',
+      },
+    });
+    expect(JSON.parse(output)).toEqual({
+      convention: 'kernel-row-loop', eligible: true,
+      calls: [{ callsiteId: 0, name: 'read' }, { callsiteId: 1, name: 'write' }],
+      consumers: [{ consumerCallsiteId: 1, argument: 1, producerCallsiteId: 0, resultIndex: 0 }],
+      graphHandlers: 1,
+    });
+  }, 120_000);
 
   it('does not authenticate ambiguous or non-dominating helper result aliases', () => {
     const artifact = compileString(`pragma solidity ^0.8.0;

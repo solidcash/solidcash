@@ -122,20 +122,22 @@ describe('multi-result graph observable parity', () => {
       ).slice(2));
       const compose = (
         sinkArgs: readonly [bigint, bigint], commitment = result,
+        sourceCallsiteId = 0, sinkCallsiteId = 1,
       ): ReturnType<typeof messageBus.compose> => messageBus.compose({
         preparedCalls: [
           { contract: coordinator, functionName: 'apply', args: [5n] },
           {
-            contract: producer, functionName: 'read', args: [5n], callsiteId: 0,
+            contract: producer, functionName: 'read', args: [5n], callsiteId: sourceCallsiteId,
             provisionalResultCommitment: commitment,
           },
-          { contract: sink, functionName: 'accept', args: sinkArgs, callsiteId: 1 },
+          { contract: sink, functionName: 'accept', args: sinkArgs, callsiteId: sinkCallsiteId },
         ],
         funder,
         changeAddress: funder.unlocker.generateLockingBytecode(),
       });
 
       await expect(compose([34n, 16n]).build()).rejects.toThrow();
+      await expect(compose([16n, 34n], result, 1, 0).build()).rejects.toThrow();
       const call = compose([16n, 34n]);
       const builder = await call.build();
       const transaction = builder.buildLibauthTransaction();

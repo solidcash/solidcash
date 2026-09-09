@@ -1,4 +1,4 @@
-import { Type, PrimitiveType, BytesType, MappingType, ArrayType, StructType, EnumType, ValueType, TupleType, FunctionBlockLayout, LibraryCallArg } from '@solidcash/utils';
+import { Type, PrimitiveType, BytesType, MappingType, ArrayType, StructType, EnumType, ValueType, TupleType, FunctionBlockLayout, LibraryCallArg, JournalSettlementIdentityAbi } from '@solidcash/utils';
 import { TimeOp } from './Globals.js';
 import AstVisitor from './AstVisitor.js';
 import { BinaryOperator, NullaryOperator, UnaryOperator } from './Operator.js';
@@ -419,6 +419,7 @@ export class FunctionDefinitionNode extends Node implements Named {
   // valueScalarParam (a loop-INVARIANT param, e.g. `+= amount` fixed-amount airdrop), or valueConst (an int literal).
   sortedUpsertLoopInfo?: Array<{
     collection: string; collectionHash: string; journalAccessStreamIndex: number; journalExecutionGroup: number;
+    settlementIdentity: JournalSettlementIdentityAbi;
     fixedKeyParams: string[]; varyingArrayParam: string;
     fixedKeySources?: KeySourceInfo[];
     /** Composite-key positions populated from the same varying array element. Omitted for the usual final key. */

@@ -6228,11 +6228,26 @@ describe('required kernel admission', () => {
     }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied'))
       .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
-    expect(artifact.abi.find((handler) => handler.name === 'denied')?.sortedUpsertLoopInfo)
+    const streams = artifact.abi.find((handler) => handler.name === 'denied')?.sortedUpsertLoopInfo ?? [];
+    expect(streams)
       .toEqual(expect.arrayContaining([
         expect.objectContaining({ collection: 'b', op: 'read' }),
         expect.objectContaining({ collection: 'a', op: 'set' }),
       ]));
+    expect(streams.find((stream) => stream.op === 'read')?.settlementIdentity).toEqual({
+      accessStreamIndex: streams.find((stream) => stream.op === 'read')?.journalAccessStreamIndex,
+      accessOrdinalSource: 'access-program-order',
+      recordOrdinalSources: ['target-record-ordinal', 'predecessor-record-ordinal'],
+      settlementRole: 'carrier-only',
+      settlementOwnership: 'none',
+    });
+    expect(streams.find((stream) => stream.op !== 'read')?.settlementIdentity).toEqual({
+      accessStreamIndex: streams.find((stream) => stream.op !== 'read')?.journalAccessStreamIndex,
+      accessOrdinalSource: 'access-program-order',
+      recordOrdinalSources: ['target-record-ordinal', 'predecessor-record-ordinal'],
+      settlementRole: 'mutation-settlement',
+      settlementOwnership: 'last-mutating-access',
+    });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
   });
 
@@ -6600,13 +6615,15 @@ describe('required kernel admission', () => {
     `, { ...KERNEL, maximumInputBytes: 1_000_000 });
     const streamShape = (
       artifact: ReturnType<typeof compileString>, operation: string,
-    ): { handlerWitness?: string; routeWitness?: string; ordinals?: number[] } => ({
+    ): { handlerWitness?: string; routeWitness?: string; ordinals?: number[]; identities?: unknown[] } => ({
       handlerWitness: artifact.abi.find((candidate) => candidate.name === operation)?.inputs
         .find((input) => input.name === '__internal__kernelJournalAccessStreams')?.type,
       routeWitness: artifact.messageBus?.route.inputs
         .find((input) => input.name === '__internal__kernelJournalAccessStreams')?.type,
       ordinals: artifact.abi.find((candidate) => candidate.name === operation)?.sortedUpsertLoopInfo
         ?.map((info) => info.journalAccessStreamIndex),
+      identities: artifact.abi.find((candidate) => candidate.name === operation)?.sortedUpsertLoopInfo
+        ?.map((info) => info.settlementIdentity),
     });
     const ledger = compileRenamed('Ledger', 'credits', 'debits', 'reconcile');
     const registry = compileRenamed('Registry', 'primary', 'secondary', 'apply');
@@ -6617,6 +6634,13 @@ describe('required kernel admission', () => {
       .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
     expect(streamShape(ledger, 'reconcile')).toEqual({
       handlerWitness: 'bytes[]', routeWitness: undefined, ordinals: [0, 1],
+      identities: [0, 1].map((accessStreamIndex) => ({
+        accessStreamIndex,
+        accessOrdinalSource: 'access-program-order',
+        recordOrdinalSources: ['target-record-ordinal', 'predecessor-record-ordinal'],
+        settlementRole: 'mutation-settlement',
+        settlementOwnership: 'last-mutating-access',
+      })),
     });
     expect(streamShape(registry, 'apply')).toEqual(streamShape(ledger, 'reconcile'));
   });
@@ -7946,6 +7970,13 @@ describe('required kernel admission', () => {
     const streams = artifact.abi.find((handler) => handler.name === 'denied')?.sortedUpsertLoopInfo ?? [];
     expect(streams).toHaveLength(2);
     expect(new Set(streams.map((stream) => stream.journalExecutionGroup)).size).toBe(1);
+    expect(streams.map((stream) => stream.settlementIdentity)).toEqual(streams.map((stream) => ({
+      accessStreamIndex: stream.journalAccessStreamIndex,
+      accessOrdinalSource: 'access-program-order',
+      recordOrdinalSources: ['target-record-ordinal', 'predecessor-record-ordinal'],
+      settlementRole: 'mutation-settlement',
+      settlementOwnership: 'last-mutating-access',
+    })));
   });
 
   it('admits independently sorted key shapes in one physical collection', () => {

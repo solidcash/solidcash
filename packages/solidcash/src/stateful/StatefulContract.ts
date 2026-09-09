@@ -132,8 +132,10 @@ import {
   kernelEntryJournalRecordSegmentName,
   encodeKernelEntryJournalRecordSegment,
   planKernelEntryJournalAccessTopology,
+  planKernelEntryJournalSettlementAuthority,
   segmentKernelEntryJournalRecords,
   validateKernelEntryJournalRecordSegmentSlots,
+  type KernelEntryJournalSettlementOccurrence,
   type KernelEntryJournalTopologyOperation,
 } from './KernelEntryJournal.js';
 import { resolveKernelDelegatePromotion } from './KernelDelegateForwarding.js';
@@ -16944,6 +16946,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       frameIndex: number;
       executionGroup: string;
       executionOrder: number;
+      accessStreamIndex: number;
+      settlementIdentity?: SortedUpsertLoopAbi['settlementIdentity'];
       /** Source-loop occurrences which consume each compact access. These deliberately remain in selected-frame
        * order when the key permutation is sorted/reordered: source frame i executes the next physical key, so the
        * occurrence pairs with the compact access position, not with the key's pre-permutation logical identity. */
@@ -17863,6 +17867,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           executionGroup: `${upsertFrameIndex}:${Number.isSafeInteger(info.journalExecutionGroup)
             ? info.journalExecutionGroup : info.journalAccessStreamIndex}`,
           executionOrder: info.journalAccessStreamIndex,
+          accessStreamIndex: info.journalAccessStreamIndex,
+          ...(info.settlementIdentity && { settlementIdentity: info.settlementIdentity }),
           ...(journalSourceOccurrences && { sourceOccurrences: journalSourceOccurrences }),
           list,
           writes: keysArr.map((key) => ({ slot: slotForKey(key), operation })),
@@ -18412,6 +18418,24 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     }
 
     const kernelStreamsByCollection = new Map<string, typeof runtimeKernelJournalStreams>();
+    const settlementIdentityStreamCount = runtimeKernelJournalStreams.filter(
+      (stream) => stream.settlementIdentity !== undefined,
+    ).length;
+    if (settlementIdentityStreamCount > 0
+      && settlementIdentityStreamCount !== runtimeKernelJournalStreams.length) {
+      throw new Error(
+        'Kernel journal cannot mix compiler settlement identities with legacy access streams.',
+      );
+    }
+    for (const stream of runtimeKernelJournalStreams) {
+      if (stream.settlementIdentity
+        && stream.settlementIdentity.accessStreamIndex !== stream.accessStreamIndex) {
+        throw new Error(
+          `Kernel journal settlement identity stream ${stream.settlementIdentity.accessStreamIndex} does not match `
+          + `its containing access stream ${stream.accessStreamIndex}.`,
+        );
+      }
+    }
     for (const stream of runtimeKernelJournalStreams) {
       const collectionIdentity = binToHex(stream.collectionHash);
       const collectionStreams = kernelStreamsByCollection.get(collectionIdentity) ?? [];
@@ -18568,12 +18592,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // group and stream ordinals are opaque structural metadata; no contract, collection, or function names
     // participate in this schedule.
     const kernelJournalRecords: Uint8Array[] = [];
-    const pendingScalarOutputSegments: Array<{
-      rowIndex: number; collection: string; offset: number; count: number;
-    }> = [];
     const remappedKernelStreamAccesses = new Map<
     (typeof runtimeKernelJournalStreams)[number], ReturnType<typeof decodeKernelEntryJournalAccesses>
     >();
+    const settlementOccurrences: KernelEntryJournalSettlementOccurrence[] = [];
+    const recordOriginStreams = new Map<number, (typeof runtimeKernelJournalStreams)[number]>();
     const globalRecordOrdinal = (stream: (typeof runtimeKernelJournalStreams)[number], local: number): number => {
       const collectionIdentity = binToHex(stream.collectionHash);
       const collectionPlan = plannedKernelCollections.get(collectionIdentity)!;
@@ -18589,33 +18612,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       if (record === undefined) throw new Error('Kernel entry journal references an unknown local record ordinal.');
       collectionPlan.globalOrdinals.set(local, ordinal);
       kernelJournalRecords.push(record);
-      // Pending settlement verifies output ordinal N against carrier ordinal N. Bind the builder's physical
-      // trailing-output schedule to that same global order. A record ordinal is local to the journal plan, while
-      // the commitment vector is accumulated procedurally across selected rows, so their numeric indices are not
-      // interchangeable. The authenticated slot is their stable shared identity.
-      const commitments = sortedLoopCommitments.get(stream.collection) ?? [];
-      const recordSlot = decodeKernelEntryJournalRecord(record).slot;
-      const matchingCommitmentIndices = commitments.flatMap((commitment, index) => (
-        binsAreEqual(decodeEntryCommitment(hexToBin(commitment)).slot, recordSlot) ? [index] : []
-      ));
-      if (matchingCommitmentIndices.length !== 1) {
-        throw new Error(
-          `Kernel pending scalar output for '${stream.collection}' requires exactly one commitment for journal `
-          + `record ${local}; found ${matchingCommitmentIndices.length}.`,
-        );
-      }
-      const commitmentIndex = matchingCommitmentIndices[0]!;
-      const previous = pendingScalarOutputSegments[pendingScalarOutputSegments.length - 1];
-      if (previous?.collection === stream.collection && previous.offset + previous.count === commitmentIndex) {
-        previous.count += 1;
-      } else {
-        pendingScalarOutputSegments.push({
-          rowIndex: ordinal, collection: stream.collection, offset: commitmentIndex, count: 1,
-        });
-      }
+      recordOriginStreams.set(ordinal, stream);
       return ordinal;
     };
-    for (const { stream, value: access } of scheduleKernelJournalOperations(
+    for (const { stream, value: access, compactIndex } of scheduleKernelJournalOperations(
       runtimeKernelJournalStreams, (candidate) => plannedKernelStreamAccesses.get(candidate) ?? [],
     )) {
         const remapped = {
@@ -18628,12 +18628,52 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         const streamAccesses = remappedKernelStreamAccesses.get(stream) ?? [];
         streamAccesses.push(remapped);
         remappedKernelStreamAccesses.set(stream, streamAccesses);
+        if (stream.settlementIdentity) settlementOccurrences.push({
+          frameIndex: stream.frameIndex,
+          identity: stream.settlementIdentity,
+          accessOrdinal: compactIndex,
+          access: remapped,
+        });
     }
     for (const [collectionIdentity, plan] of plannedKernelCollections) {
       if (plan.globalOrdinals.size !== plan.records.length) {
         throw new Error(
           `Kernel entry journal for collection ${collectionIdentity} contains an unreachable record carrier.`,
         );
+      }
+    }
+    const stableSettlementPlan = settlementOccurrences.length > 0
+      ? planKernelEntryJournalSettlementAuthority(settlementOccurrences) : undefined;
+    if (pendingScalarSettlementActive) {
+      // Current artifacts assign mutation-settlement authority from authenticated access identity. This validates
+      // the physical vector but deliberately does not reorder it: the compiler's final flush still addresses the
+      // reserved journal band by global first-touch record ordinal. Legacy artifacts are accepted only through the
+      // prior exact-slot fallback, whose physical output must remain unique.
+      for (let recordOrdinal = 0; recordOrdinal < kernelJournalRecords.length; recordOrdinal += 1) {
+        const authority = stableSettlementPlan?.settlementAuthorities.get(recordOrdinal);
+        if (stableSettlementPlan && !authority) {
+          throw new Error(
+            `Kernel journal settlement identity has no mutation authority for record ${recordOrdinal}.`,
+          );
+        }
+        const authorityStream = authority
+          ? runtimeKernelJournalStreams.find((stream) => stream.frameIndex === authority.frameIndex
+            && stream.accessStreamIndex === authority.accessStreamIndex)
+          : recordOriginStreams.get(recordOrdinal);
+        if (!authorityStream) {
+          throw new Error(`Kernel journal settlement record ${recordOrdinal} has no containing access stream.`);
+        }
+        const commitments = sortedLoopCommitments.get(authorityStream.collection) ?? [];
+        const recordSlot = decodeKernelEntryJournalRecord(kernelJournalRecords[recordOrdinal]!).slot;
+        const matchingCommitmentIndices = commitments.flatMap((commitment, index) => (
+          binsAreEqual(decodeEntryCommitment(hexToBin(commitment)).slot, recordSlot) ? [index] : []
+        ));
+        if (matchingCommitmentIndices.length !== 1) {
+          throw new Error(
+            `Kernel pending scalar output for '${authorityStream.collection}' requires exactly one commitment for `
+            + `journal record ${recordOrdinal}; found ${matchingCommitmentIndices.length}.`,
+          );
+        }
       }
     }
     for (const stream of runtimeKernelJournalStreams) {

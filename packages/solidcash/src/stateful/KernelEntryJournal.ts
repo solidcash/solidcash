@@ -4,6 +4,7 @@ import {
   KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX,
   KERNEL_ENTRY_JOURNAL_RECORDS_PER_SEGMENT,
   MAX_MESSAGE_BUS_BLOB_BYTES,
+  type JournalSettlementIdentityAbi,
 } from '@solidcash/utils';
 export {
   KERNEL_ENTRY_JOURNAL_MAX_RECORDS,
@@ -134,6 +135,123 @@ export interface KernelEntryJournalAccessTopologyPlan {
   encodedRecords: Uint8Array[];
   /** One compact access program for each source stream. */
   encodedAccessStreams: Uint8Array[];
+}
+
+export interface KernelEntryJournalSettlementOccurrence {
+  /** Selected invocation/frame owning the compiler-local stream index. */
+  frameIndex: number;
+  /** Compiler-published identity recipe for the containing compact access stream. */
+  identity: JournalSettlementIdentityAbi;
+  /** Zero-based position in that stream's compact access program. */
+  accessOrdinal: number;
+  /** Runtime access after collection-local ordinals have been remapped into the transaction-wide carrier space. */
+  access: KernelEntryJournalAccess;
+}
+
+export interface KernelEntryJournalSettlementReference {
+  frameIndex: number;
+  accessStreamIndex: number;
+  accessOrdinal: number;
+  recordOrdinal: number;
+  recordRole: 'target' | 'predecessor';
+  settlementRole: JournalSettlementIdentityAbi['settlementRole'];
+}
+
+export interface KernelEntryJournalSettlementPlan {
+  /** Every authenticated record reference, in caller-supplied execution order. */
+  references: KernelEntryJournalSettlementReference[];
+  /** Unique final settlement authority per mutated runtime record ordinal. */
+  settlementAuthorities: ReadonlyMap<number, KernelEntryJournalSettlementReference>;
+}
+
+/**
+ * Consume compiler-published settlement recipes against concrete compact access programs.
+ *
+ * The compiler binds the stream and permitted record roles; runtime topology supplies the actual record ordinals.
+ * Callers must provide occurrences in source execution order. Replacing the authority on each mutating reference
+ * implements the published `last-mutating-access` rule without using collection iteration order, commitment-vector
+ * position, or a best-effort slot scan as the semantic settlement identity.
+ */
+export function planKernelEntryJournalSettlementAuthority(
+  occurrences: readonly KernelEntryJournalSettlementOccurrence[],
+): KernelEntryJournalSettlementPlan {
+  const streamRecipes = new Map<string, string>();
+  const ordinalsByStream = new Map<string, Set<number>>();
+  const references: KernelEntryJournalSettlementReference[] = [];
+  const settlementAuthorities = new Map<number, KernelEntryJournalSettlementReference>();
+  for (const { frameIndex, identity, accessOrdinal, access } of occurrences) {
+    if (!Number.isSafeInteger(frameIndex) || frameIndex < 0) {
+      throw new Error('kernel journal settlement identity has an invalid frame index');
+    }
+    if (!Number.isSafeInteger(identity.accessStreamIndex) || identity.accessStreamIndex < 0) {
+      throw new Error('kernel journal settlement identity has an invalid access stream index');
+    }
+    if (identity.accessOrdinalSource !== 'access-program-order'
+      || identity.recordOrdinalSources.length !== 2
+      || identity.recordOrdinalSources[0] !== 'target-record-ordinal'
+      || identity.recordOrdinalSources[1] !== 'predecessor-record-ordinal') {
+      throw new Error('kernel journal settlement identity has an unsupported record recipe');
+    }
+    if ((identity.settlementRole === 'carrier-only') !== (identity.settlementOwnership === 'none')
+      || (identity.settlementRole === 'mutation-settlement')
+        !== (identity.settlementOwnership === 'last-mutating-access')) {
+      throw new Error('kernel journal settlement identity has an inconsistent settlement ownership rule');
+    }
+    const recipe = [
+      identity.accessStreamIndex,
+      identity.accessOrdinalSource,
+      identity.recordOrdinalSources[0],
+      identity.recordOrdinalSources[1],
+      identity.settlementRole,
+      identity.settlementOwnership,
+    ].join('\0');
+    const scopedStream = `${frameIndex}:${identity.accessStreamIndex}`;
+    const priorRecipe = streamRecipes.get(scopedStream);
+    if (priorRecipe !== undefined && priorRecipe !== recipe) {
+      throw new Error(`kernel journal settlement stream ${identity.accessStreamIndex} changes identity recipe`);
+    }
+    streamRecipes.set(scopedStream, recipe);
+    if (!Number.isSafeInteger(accessOrdinal) || accessOrdinal < 0) {
+      throw new Error('kernel journal settlement access ordinal must be a non-negative safe integer');
+    }
+    const streamOrdinals = ordinalsByStream.get(scopedStream) ?? new Set<number>();
+    if (streamOrdinals.has(accessOrdinal)) {
+      throw new Error(
+        `kernel journal settlement stream ${identity.accessStreamIndex} repeats access ordinal ${accessOrdinal}`,
+      );
+    }
+    if (accessOrdinal !== streamOrdinals.size) {
+      throw new Error(
+        `kernel journal settlement stream ${identity.accessStreamIndex} expected access ordinal `
+        + `${streamOrdinals.size}, received ${accessOrdinal}`,
+      );
+    }
+    streamOrdinals.add(accessOrdinal);
+    ordinalsByStream.set(scopedStream, streamOrdinals);
+    if ((identity.settlementRole === 'mutation-settlement') !== access.mutates) {
+      throw new Error(
+        `kernel journal settlement stream ${identity.accessStreamIndex} settlement role disagrees with its access`,
+      );
+    }
+    const append = (recordOrdinal: number, recordRole: 'target' | 'predecessor'): void => {
+      requireRecordOrdinal(`${recordRole}RecordOrdinal`, recordOrdinal);
+      const reference: KernelEntryJournalSettlementReference = {
+        frameIndex,
+        accessStreamIndex: identity.accessStreamIndex,
+        accessOrdinal,
+        recordOrdinal,
+        recordRole,
+        settlementRole: identity.settlementRole,
+      };
+      references.push(reference);
+      if (access.mutates) settlementAuthorities.set(recordOrdinal, reference);
+    };
+    append(access.targetRecordOrdinal, 'target');
+    if (access.predecessorRecordOrdinal !== undefined) {
+      append(access.predecessorRecordOrdinal, 'predecessor');
+    }
+  }
+  return { references, settlementAuthorities };
 }
 
 export interface KernelEntryJournalRecordPosition {

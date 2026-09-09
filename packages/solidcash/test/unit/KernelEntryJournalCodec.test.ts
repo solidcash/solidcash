@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex } from '@bitauth/libauth';
-import { encodePushdataValue, MAX_MESSAGE_BUS_BLOB_BYTES } from '@solidcash/utils';
+import {
+  encodePushdataValue, MAX_MESSAGE_BUS_BLOB_BYTES, type JournalSettlementIdentityAbi,
+} from '@solidcash/utils';
 import {
   KERNEL_ENTRY_JOURNAL_MAX_VALUE_BYTES,
   KERNEL_ENTRY_JOURNAL_MAX_ACCESSES,
@@ -14,6 +16,7 @@ import {
   encodeKernelEntryJournalRecord,
   encodeKernelEntryJournalRecords,
   planKernelEntryJournalAccessTopology,
+  planKernelEntryJournalSettlementAuthority,
   planKernelEntryJournalStreams,
   segmentKernelEntryJournalRecords,
   kernelEntryJournalRecordPosition,
@@ -416,6 +419,120 @@ describe('kernel pending-entry journal codec', () => {
           authenticatesPredecessor: true },
       ],
     ]);
+  });
+
+  it('assigns record settlement authority to stable last-mutating access identities', () => {
+    const identity = (
+      accessStreamIndex: number,
+      settlementRole: JournalSettlementIdentityAbi['settlementRole'],
+    ): JournalSettlementIdentityAbi => ({
+      accessStreamIndex,
+      accessOrdinalSource: 'access-program-order',
+      recordOrdinalSources: ['target-record-ordinal', 'predecessor-record-ordinal'],
+      settlementRole,
+      settlementOwnership: settlementRole === 'mutation-settlement' ? 'last-mutating-access' : 'none',
+    });
+    const update = (targetRecordOrdinal: number): {
+      targetRecordOrdinal: number; presentBefore: boolean; presentAfter: boolean; mutates: boolean;
+    } => ({
+      targetRecordOrdinal, presentBefore: true, presentAfter: true, mutates: true,
+    });
+    const plan = planKernelEntryJournalSettlementAuthority([
+      { frameIndex: 4, identity: identity(0, 'mutation-settlement'), accessOrdinal: 0, access: update(0) },
+      {
+        frameIndex: 4,
+        identity: identity(1, 'mutation-settlement'),
+        accessOrdinal: 0,
+        access: {
+          targetRecordOrdinal: 1, predecessorRecordOrdinal: 0,
+          presentBefore: false, presentAfter: true, mutates: true,
+        },
+      },
+      { frameIndex: 4, identity: identity(0, 'mutation-settlement'), accessOrdinal: 1, access: update(0) },
+      {
+        frameIndex: 4,
+        identity: identity(2, 'carrier-only'),
+        accessOrdinal: 0,
+        access: { targetRecordOrdinal: 2, presentBefore: true, presentAfter: true, mutates: false },
+      },
+      {
+        frameIndex: 4,
+        identity: identity(3, 'mutation-settlement'),
+        accessOrdinal: 0,
+        access: {
+          targetRecordOrdinal: 3, predecessorRecordOrdinal: 4,
+          presentBefore: true, presentAfter: false, mutates: true,
+        },
+      },
+    ]);
+
+    expect(plan.references.map(({ accessStreamIndex, accessOrdinal, recordOrdinal, recordRole }) => ({
+      accessStreamIndex, accessOrdinal, recordOrdinal, recordRole,
+    }))).toEqual([
+      { accessStreamIndex: 0, accessOrdinal: 0, recordOrdinal: 0, recordRole: 'target' },
+      { accessStreamIndex: 1, accessOrdinal: 0, recordOrdinal: 1, recordRole: 'target' },
+      { accessStreamIndex: 1, accessOrdinal: 0, recordOrdinal: 0, recordRole: 'predecessor' },
+      { accessStreamIndex: 0, accessOrdinal: 1, recordOrdinal: 0, recordRole: 'target' },
+      { accessStreamIndex: 2, accessOrdinal: 0, recordOrdinal: 2, recordRole: 'target' },
+      { accessStreamIndex: 3, accessOrdinal: 0, recordOrdinal: 3, recordRole: 'target' },
+      { accessStreamIndex: 3, accessOrdinal: 0, recordOrdinal: 4, recordRole: 'predecessor' },
+    ]);
+    expect([...plan.settlementAuthorities].map(([recordOrdinal, authority]) => ({
+      recordOrdinal,
+      accessStreamIndex: authority.accessStreamIndex,
+      accessOrdinal: authority.accessOrdinal,
+      recordRole: authority.recordRole,
+    }))).toEqual([
+      { recordOrdinal: 0, accessStreamIndex: 0, accessOrdinal: 1, recordRole: 'target' },
+      { recordOrdinal: 1, accessStreamIndex: 1, accessOrdinal: 0, recordRole: 'target' },
+      { recordOrdinal: 3, accessStreamIndex: 3, accessOrdinal: 0, recordRole: 'target' },
+      { recordOrdinal: 4, accessStreamIndex: 3, accessOrdinal: 0, recordRole: 'predecessor' },
+    ]);
+  });
+
+  it('rejects forged or ambiguous settlement identity programs', () => {
+    const mutationIdentity: JournalSettlementIdentityAbi = {
+      accessStreamIndex: 0,
+      accessOrdinalSource: 'access-program-order',
+      recordOrdinalSources: ['target-record-ordinal', 'predecessor-record-ordinal'],
+      settlementRole: 'mutation-settlement',
+      settlementOwnership: 'last-mutating-access',
+    };
+    const mutation = {
+      targetRecordOrdinal: 0, presentBefore: true, presentAfter: true, mutates: true,
+    };
+    expect(() => planKernelEntryJournalSettlementAuthority([
+      { frameIndex: 0, identity: mutationIdentity, accessOrdinal: 0, access: mutation },
+      { frameIndex: 0, identity: mutationIdentity, accessOrdinal: 0, access: mutation },
+    ])).toThrow('repeats access ordinal 0');
+    expect(() => planKernelEntryJournalSettlementAuthority([
+      { frameIndex: 0, identity: mutationIdentity, accessOrdinal: 1, access: mutation },
+    ])).toThrow('expected access ordinal 0, received 1');
+    expect(() => planKernelEntryJournalSettlementAuthority([
+      { frameIndex: 0, identity: mutationIdentity, accessOrdinal: 0, access: mutation },
+      { frameIndex: 0, identity: mutationIdentity, accessOrdinal: 2, access: mutation },
+    ])).toThrow('expected access ordinal 1, received 2');
+    expect(() => planKernelEntryJournalSettlementAuthority([{
+      frameIndex: 0,
+      identity: { ...mutationIdentity, settlementOwnership: 'none' },
+      accessOrdinal: 0,
+      access: mutation,
+    }])).toThrow('inconsistent settlement ownership rule');
+    expect(() => planKernelEntryJournalSettlementAuthority([{
+      frameIndex: 0,
+      identity: { ...mutationIdentity, settlementRole: 'carrier-only', settlementOwnership: 'none' },
+      accessOrdinal: 0,
+      access: mutation,
+    }])).toThrow('settlement role disagrees with its access');
+    expect(() => planKernelEntryJournalSettlementAuthority([{
+      frameIndex: 0,
+      identity: {
+        ...mutationIdentity,
+        recordOrdinalSources: ['predecessor-record-ordinal', 'target-record-ordinal'],
+      } as unknown as JournalSettlementIdentityAbi,
+      accessOrdinal: 0,
+      access: mutation,
+    }])).toThrow('unsupported record recipe');
   });
 
   it('keeps repeated same-slot row carriers immutable during topology-only planning', () => {

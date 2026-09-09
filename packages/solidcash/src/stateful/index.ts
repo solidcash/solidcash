@@ -137,9 +137,12 @@ export {
   validateKernelEntryJournalRecordSegments, validateKernelEntryJournalRecordSegmentSlots,
   encodeKernelEntryJournalAccesses, decodeKernelEntryJournalAccesses,
   planKernelEntryJournalStreams, planKernelEntryJournalAccessTopology,
+  planKernelEntryJournalSettlementAuthority,
   type KernelEntryJournalRecord, type KernelEntryJournalStreamPlan,
   type KernelEntryJournalRecordPosition, type KernelEntryJournalSegmentValidationOptions,
   type KernelEntryJournalTopologyOperation, type KernelEntryJournalAccessTopologyPlan,
+  type KernelEntryJournalSettlementOccurrence, type KernelEntryJournalSettlementReference,
+  type KernelEntryJournalSettlementPlan,
 } from './KernelEntryJournal.js';
 export {
   bindKernelLifecycleTransaction, planKernelLifecycleTopology,

@@ -744,6 +744,36 @@ export interface SortedInsertLoopAbi {
   valueBool?: boolean;               // ... or is this bool literal (true -> 0x01 tail, false -> empty tail)
 }
 
+/**
+ * Stable identity recipe for every access in one runtime journal stream.
+ *
+ * Record ordinals are necessarily runtime values: first-touch order depends on the actual keys and whether each
+ * key is present. Consumers derive one identity per referenced record as
+ * `(accessStreamIndex, access-program ordinal, decoded record ordinal, record role)`. The predecessor role is
+ * active only when the compact access flags publish a predecessor. Settlement ownership is resolved across the
+ * complete scheduled journal by choosing the last mutating access for each referenced record. This identity names
+ * the access responsible for a record's final disposition; it neither promises that a physical output exists (a
+ * delete can settle to absence) nor changes the journal band's global first-touch record-ordinal ordering.
+ */
+export interface JournalSettlementIdentityAbi {
+  /** Must equal the containing stream's journalAccessStreamIndex. */
+  accessStreamIndex: number;
+  /** The compact access program's zero-based operation order supplies the source occurrence. */
+  accessOrdinalSource: 'access-program-order';
+  /**
+   * Runtime record references carried by each compact access. The predecessor role is present only when the
+   * canonical access flags carry predecessorRecordOrdinal; listing it here does not itself grant output ownership.
+   */
+  recordOrdinalSources: readonly ['target-record-ordinal', 'predecessor-record-ordinal'];
+  /**
+   * Stream capability, intersected with the decoded access flags: target mutates iff `access.mutates`, predecessor
+   * mutates iff `access.mutates && predecessorRecordOrdinal !== undefined`; all other references are carriers.
+   */
+  settlementRole: 'carrier-only' | 'mutation-settlement';
+  /** Rule selecting the unique settlement owner for a record referenced by several accesses. */
+  settlementOwnership: 'none' | 'last-mutating-access';
+}
+
 // Per-iteration vmap UPDATE loop `for(i) m[k[i]] += v[i]` (multitransfer credit to existing recipients): the SDK
 // co-spends each k[i]'s existing entry at input[master+blockSize+i] and mints its updated commitment at
 // output[master+blockSize+i] with value = oldValue op v[i].
@@ -753,6 +783,8 @@ export interface SortedUpsertLoopAbi {
   collectionHash: string;
   /** Stable source-order position of this stream in the selected row's compact journal-access vector. */
   journalAccessStreamIndex: number;
+  /** Stable runtime record/settlement identity recipe. Optional only for backward compatibility with old artifacts. */
+  settlementIdentity?: JournalSettlementIdentityAbi;
   /** Opaque compiler ordinal shared by operation streams executed within the same source loop. */
   journalExecutionGroup?: number;
   fixedKeyParams: readonly string[];

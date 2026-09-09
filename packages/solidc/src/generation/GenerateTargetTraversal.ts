@@ -23501,8 +23501,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         ?.get(varyingArrayParam);
       const varyingKeyExpressions = this.currentFunction.runtimeCounterLoopKeyExpressions
         ?.get(`${varyingArrayParam}\0${collection.name}`);
+      const journalAccessStreamIndex = infos.length;
       infos.push({ collection: collection.name, collectionHash: binToHex(collectionHash),
-        journalAccessStreamIndex: infos.length, journalExecutionGroup: -1,
+        journalAccessStreamIndex, journalExecutionGroup: -1,
+        settlementIdentity: {
+          accessStreamIndex: journalAccessStreamIndex,
+          accessOrdinalSource: 'access-program-order',
+          recordOrdinalSources: ['target-record-ordinal', 'predecessor-record-ordinal'],
+          settlementRole: op === 'read' ? 'carrier-only' : 'mutation-settlement',
+          settlementOwnership: op === 'read' ? 'none' : 'last-mutating-access',
+        },
         fixedKeyParams, fixedKeySources, varyingArrayParam,
         ...(this.currentFunction.runtimeCounterLoopConstructedKeyReplays
           ?.has(`${varyingArrayParam}\0${collection.name}`)

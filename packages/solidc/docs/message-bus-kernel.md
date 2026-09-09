@@ -699,6 +699,16 @@ It also publishes an opaque `journalExecutionGroup` shared by streams emitted fr
 the structural control-flow identity the SDK uses to interleave streams once per physical iteration, even when
 independently sorted mapping expressions address different collections. Groups are scoped by their selected row;
 neither scheduling nor record assignment depends on contract, function, or collection names.
+Each stream also publishes a `settlementIdentity` recipe. It binds the compiler stream index to access-program
+order and names the target and conditional-predecessor record-ordinal roles carried by each compact access. The
+SDK scopes that tuple by the selected frame, requires an exact dense access-ordinal sequence, and assigns final
+disposition authority to the last mutating access for each record. A delete may own a tombstone disposition and
+therefore does not imply that an output exists. Mixed described/undescribed stream sets, a stream-index mismatch,
+an unsupported recipe, duplicate or reordered access ordinals, and mutation-role disagreement fail before
+construction. This metadata establishes stable record-to-settlement ownership; it deliberately does not yet
+reorder the physical trailing output band. Runtime reads combined with writes, row-local aggregate carriers, and
+multiple mutation streams in one execution group remain `KERNEL_LAYOUT` until that band is emitted and proven in
+global record-ordinal order.
 The source handler carries that vector as the compiler-owned `bytes[] __internal__kernelJournalAccessStreams`
 context. The kernel route adds only its outer row dimension (`bytes[][]`) and selects `[row]` in the physical
 dispatcher, instead of adding one dynamic ABI band for every stream. The SDK initializes every handler vector as

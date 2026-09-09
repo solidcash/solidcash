@@ -51,7 +51,9 @@ function entryIndices(
 describe('kernel repeated clean-read carriers', () => {
   it.skip('shares each physical clean input across copy(2), copy(2) and settles a dense mixed final flush', async () => {
     const artifact = compileString(SOURCE, KERNEL);
-    expect(artifact.messageBus?.capabilities).toContain('internal-read-carrier');
+    expect(artifact.messageBus?.kernelEntryJournal?.capabilities).toContainEqual(expect.objectContaining({
+      kind: 'internal-read-carrier', version: 1,
+    }));
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'copy')).toMatchObject({ eligible: true });
     const provider = createTestProvider();
     const inner = new Contract(artifact, [], { provider });

@@ -65,6 +65,25 @@
       "tests": [
         "rejects repeated clean reads before broadcast while the carrier protocol is unpublished"
       ]
+    },
+    {
+      "id": "kernel-lifecycle-boundary",
+      "workspace": "solidc",
+      "file": "test/journal-message-bus/KernelLifecycleTopology.test.ts",
+      "tests": [
+        "fails closed for split lifecycle geometry until it has an authenticated row protocol",
+        "fails closed for merge lifecycle geometry until it has an authenticated row protocol",
+        "does not invent bounded spans for other lifecycle modes"
+      ]
+    },
+    {
+      "id": "kernel-lifecycle-planning-boundary",
+      "workspace": "solidcash",
+      "file": "test/journal-message-bus/AtomicMessageBusGraph.test.ts",
+      "tests": [
+        "fails closed for a resource-free lifecycle row until the advertised protocol can compose it",
+        "cannot plan compiler-fenced lifecycle rows carrying detached signature leaves"
+      ]
     }
   ],
   "coldCompiles": [

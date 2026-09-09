@@ -23,7 +23,9 @@ const vmAccepts = (builder: TransactionBuilder): boolean => {
   }
 };
 
-describe('kernel atomic merge lifecycle', () => {
+// Post-beta protocol work: merge changes participant cardinality and remains fenced as KERNEL_LIFECYCLE until
+// selector-derived authority and the complete input/output topology are authenticated by the row protocol.
+describe.skip('kernel atomic merge lifecycle (post-beta)', () => {
   it('consumes exact category masters with non-dispatch tails and preserves one survivor', async () => {
     const provider = createMessageBusCapstoneTestProvider();
     const artifacts = compileStringMulti(`

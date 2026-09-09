@@ -11618,6 +11618,9 @@ function compileResolvedAst(
     // survived every remaining KERNEL_LAYOUT fence below. The future capability publisher must consume this
     // exact set in the same change that enables the paired SDK/GTT physical protocol; kernel convention and a
     // superficially similar read/write pair are not sufficient authority to omit an entry input.
+    // Keep candidate detection available for post-beta development, but do not let metadata-only readiness
+    // relax admission until codegen and SDK settlement are released as one authenticated protocol.
+    const internalReadCarrierProtocolReleased = false;
     const internalReadCarrierReadySelectors = new Set<string>();
     const sourceHandlers = [
       ...ast.contract.functions,
@@ -11667,6 +11670,7 @@ function compileResolvedAst(
         .map((access) => access.settlementIdentity?.recordDispositionSource);
       const sameJson = (left: unknown, right: unknown): boolean => JSON.stringify(left ?? null) === JSON.stringify(right ?? null);
       const hasSupportedReadToSetCarrierTransfer = (() => {
+        if (!internalReadCarrierProtocolReleased) return false;
         if (!hasRuntimeJournalMutation || !hasRuntimeJournalRead) return false;
         const reads = runtimeJournalAccesses.filter((access) => access.op === 'read');
         const mutations = runtimeJournalAccesses.filter((access) => access.op !== 'read');

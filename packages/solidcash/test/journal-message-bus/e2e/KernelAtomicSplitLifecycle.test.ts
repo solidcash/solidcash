@@ -76,7 +76,9 @@ const mutateManifest = (
   }
 };
 
-describe('kernel atomic split lifecycle', () => {
+// Post-beta protocol work: split changes participant cardinality and remains fenced as KERNEL_LIFECYCLE until
+// selector-derived authority and the complete input/output topology are authenticated by the row protocol.
+describe.skip('kernel atomic split lifecycle (post-beta)', () => {
   it('executes a non-first split participant and rejects lifecycle geometry and identity forgery', async () => {
     const provider = createMessageBusCapstoneTestProvider();
     const artifacts = compileStringMulti(`

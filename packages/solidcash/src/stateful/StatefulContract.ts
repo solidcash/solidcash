@@ -133,12 +133,15 @@ import {
   kernelEntryJournalRecordSegmentIndex,
   kernelEntryJournalRecordSegmentName,
   encodeKernelEntryJournalRecordSegment,
+  kernelEntryJournalReadCarrierCapabilityFromArtifact,
   planKernelEntryJournalAccessTopology,
+  planKernelEntryJournalPhysicalSettlement,
   planKernelEntryJournalSettlementAuthority,
   planKernelEntryJournalSettlementOutputs,
   validateKernelEntryJournalSettlementGroups,
   segmentKernelEntryJournalRecords,
   validateKernelEntryJournalRecordSegmentSlots,
+  type KernelEntryJournalAccess,
   type KernelEntryJournalSettlementOccurrence,
   type KernelEntryJournalSettlementReference,
   type KernelEntryJournalTopologyOperation,
@@ -16858,6 +16861,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       recordOrdinal: number; outputOrdinal: number; collection: string; offset: number;
     }> | undefined;
     const runtimeJournalInputIds = new Set<string>();
+    // This is intentionally an exact compiler-published protocol boundary. A kernel preference is not enough to
+    // change physical input ownership: without the in-bytecode 0x11 producer/consumer protocol, deferring this
+    // materialization would merely create a transaction whose route still expects the old input geometry.
+    const internalReadCarrierCapability = kernelEntryJournalReadCarrierCapabilityFromArtifact(entryArtifact);
+    const deferRuntimeJournalMaterialization = internalReadCarrierCapability !== undefined;
     /**
      * A handler describes its physical journal effects while it is traversed.  The legacy materializer below
      * deliberately drains those descriptions at the end of that handler for now, preserving its established
@@ -16873,7 +16881,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     ): boolean => {
       const id = `${input.txid}:${input.vout}`;
       if (runtimeJournalInputIds.has(id)) {
-        if (allowExistingScalarReuse) return false;
+        // In the capability-gated path, topology is retained until global record ordinals exist. The unified
+        // planner, not this early discovery walk, then decides whether the second logical access is a zero-auth
+        // consumer. Keep the first physical witness as the canonical candidate.
+        if (allowExistingScalarReuse || deferRuntimeJournalMaterialization) return false;
         throw new Error(
           `Message-bus runtime mapping rows overlap the '${collection}' pre-state journal at ${id}; `
           + 'a read-your-writes transition is required.',
@@ -16887,6 +16898,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       runtimeJournalMaterializationIntents.push({ kind: 'outputs', collection, commitments });
     };
     const materializeLegacyRuntimeJournalIntents = (start: number): void => {
+      if (deferRuntimeJournalMaterialization) return;
       for (const intent of runtimeJournalMaterializationIntents.slice(start)) {
         if (intent.kind === 'input') {
           insertLoopPredecessors.push(intent.input);
@@ -18718,8 +18730,122 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         );
       }
     }
-    const stableSettlementPlan = settlementOccurrences.length > 0
-      ? planKernelEntryJournalSettlementAuthority(settlementOccurrences) : undefined;
+    // Do not infer a physical carrier protocol from ordinary journal flags. When (and only when) the compiler has
+    // published the exact in-route marker capability, this one plan owns every cross-stream decision: first input,
+    // rewritten zero-auth consumer, final output, and per-stream cardinality. A partial identity vector is not a
+    // compatibility mode; it is an invalid claim for a route which asked the SDK to defer materialization.
+    if (deferRuntimeJournalMaterialization
+      && settlementOccurrences.length !== runtimeKernelJournalStreams.reduce(
+        (count, stream) => count + (remappedKernelStreamAccesses.get(stream)?.length ?? 0), 0,
+      )) {
+      throw new Error(
+        'Compiler internal-read-carrier capability requires settlement identities for every runtime journal access.',
+      );
+    }
+    const physicalSettlementPlan = deferRuntimeJournalMaterialization && settlementOccurrences.length > 0
+      ? planKernelEntryJournalPhysicalSettlement(settlementOccurrences) : undefined;
+    const stableSettlementPlan = physicalSettlementPlan?.settlement ?? (settlementOccurrences.length > 0
+      ? planKernelEntryJournalSettlementAuthority(settlementOccurrences) : undefined);
+
+    if (physicalSettlementPlan) {
+      // Replace only accesses returned by the authenticated global planner. Mapping by object identity keeps the
+      // source-coordinate association intact even when a counter permutation makes compact stream order differ from
+      // source execution order.
+      const rewrittenAccesses = new Map<object, KernelEntryJournalAccess>();
+      for (const planned of physicalSettlementPlan.occurrences) {
+        rewrittenAccesses.set(planned.occurrence.access, planned.access);
+      }
+      for (const [stream, accesses] of remappedKernelStreamAccesses) {
+        remappedKernelStreamAccesses.set(stream, accesses.map((access) => {
+          const rewritten = rewrittenAccesses.get(access);
+          if (!rewritten) {
+            throw new Error('Kernel physical settlement lost a runtime journal access coordinate.');
+          }
+          return rewritten;
+        }));
+      }
+
+      // The retained intent list supplies concrete UTXOs/unlockers only. Record identity and ownership come from
+      // the planner, never from discovery order or application collection names.
+      const inputByRecord = new Map<string, UnlockableUtxo>();
+      for (const intent of runtimeJournalMaterializationIntents) {
+        if (intent.kind !== 'input') continue;
+        const commitment = intent.input.token?.nft?.commitment;
+        if (!commitment) continue;
+        const decoded = decodeEntryCommitment(hexToBin(commitment));
+        const key = `${intent.collection}:${binToHex(decoded.slot)}`;
+        const prior = inputByRecord.get(key);
+        if (prior && (prior.txid !== intent.input.txid || prior.vout !== intent.input.vout)) {
+          throw new Error(`Kernel physical settlement has ambiguous input candidates for ${key}.`);
+        }
+        inputByRecord.set(key, intent.input);
+      }
+      for (const input of physicalSettlementPlan.inputs) {
+        const record = decodeKernelEntryJournalRecord(kernelJournalRecords[input.recordOrdinal]!);
+        const owner = runtimeKernelJournalStreams.find((stream) => stream.frameIndex === input.firstOwner.frameIndex
+          && stream.accessStreamIndex === input.firstOwner.accessStreamIndex);
+        if (!owner) throw new Error('Kernel physical settlement input has no owning stream.');
+        const candidate = inputByRecord.get(`${owner.collection}:${binToHex(record.slot)}`);
+        if (!candidate) {
+          throw new Error(`Kernel physical settlement input ${input.recordOrdinal} has no retained UTXO intent.`);
+        }
+        insertLoopPredecessors.push(candidate);
+      }
+
+      // Output records are dense in global ordinal order. A clean record can be recreated directly from the
+      // authenticated carrier; a dirty body needs a future versioned dirty-carrier body protocol and is refused
+      // rather than guessed from a source-level write. This keeps the unpublished read capability incapable of
+      // accidentally admitting mixed settlement.
+      const physicalLocations = new Map<number, { collection: string; offset: number }>();
+      for (const output of physicalSettlementPlan.outputs) {
+        const record = decodeKernelEntryJournalRecord(kernelJournalRecords[output.recordOrdinal]!);
+        if (record.dirty) {
+          throw new Error(
+            'Compiler internal-read-carrier capability cannot settle dirty journal bodies without a versioned '
+            + 'dirty-carrier protocol.',
+          );
+        }
+        const owner = runtimeKernelJournalStreams.find((stream) => stream.frameIndex === output.finalOwner.frameIndex
+          && stream.accessStreamIndex === output.finalOwner.accessStreamIndex);
+        if (!owner) throw new Error('Kernel physical settlement output has no owning stream.');
+        const commitments = sortedLoopCommitments.get(owner.collection) ?? [];
+        const offset = commitments.length;
+        commitments.push(binToHex(encodeEntryCommitment(record.slot, record.nextKey, record.value)));
+        sortedLoopCommitments.set(owner.collection, commitments);
+        physicalLocations.set(output.recordOrdinal, { collection: owner.collection, offset });
+      }
+      kernelJournalSettlementOutputPlan = physicalSettlementPlan.outputs.map((output) => {
+        const location = physicalLocations.get(output.recordOrdinal);
+        if (!location) throw new Error('Kernel physical settlement lost a dense output location.');
+        return { recordOrdinal: output.recordOrdinal, outputOrdinal: output.outputOrdinal, ...location };
+      });
+      kernelJournalSettlementEntrySegments = kernelEntryJournalSettlementOutputSegments(
+        kernelJournalSettlementOutputPlan,
+      );
+
+      // The route witnesses transaction-wide collection cardinality. Recompute it solely from physical ownership;
+      // the deferred discovery walk deliberately did not advance the legacy per-handler counters.
+      runtimeLoopCardinality.clear();
+      const addPhysicalCardinality = (collection: string, inputs: number, outputs: number): void => {
+        const prior = runtimeLoopCardinality.get(collection) ?? { inputs: 0, outputs: 0 };
+        runtimeLoopCardinality.set(collection, {
+          inputs: prior.inputs + inputs,
+          outputs: prior.outputs + outputs,
+        });
+      };
+      for (const input of physicalSettlementPlan.inputs) {
+        const stream = runtimeKernelJournalStreams.find((candidate) => candidate.frameIndex === input.firstOwner.frameIndex
+          && candidate.accessStreamIndex === input.firstOwner.accessStreamIndex);
+        if (!stream) throw new Error('Kernel physical settlement input cardinality has no stream.');
+        addPhysicalCardinality(stream.collection, 1, 0);
+      }
+      for (const output of physicalSettlementPlan.outputs) {
+        const stream = runtimeKernelJournalStreams.find((candidate) => candidate.frameIndex === output.finalOwner.frameIndex
+          && candidate.accessStreamIndex === output.finalOwner.accessStreamIndex);
+        if (!stream) throw new Error('Kernel physical settlement output cardinality has no stream.');
+        addPhysicalCardinality(stream.collection, 0, 1);
+      }
+    }
     if (pendingScalarSettlementActive) {
       // Current artifacts distinguish mutation authority from the final disposition of every record. Resolve the
       // physical present-record subsequence here; the trailing segment planner below emits that live band in global

@@ -3985,14 +3985,14 @@ function synthesizeMessageBusRoute(
         : fn.modifiers.includes(FunctionModifier.MERGE) ? 'merge' as const : undefined;
     const lifecycleHasDetachedTransactionSignature = kernelLifecycleKind !== undefined
       && fn.parameters.some((parameter) => (transactionSignatureLeaves(parameter.type)?.length ?? 0) > 0);
-    // Participant-changing lifecycle remains orthogonal to state/effect settlement until both share one physical
-    // frame. Every `sig` leaf is detached from the committed row even when the source merely treats it as bytes,
-    // so the fence is based on the ABI type rather than the presence of CHECKSIG. Otherwise compilation publishes
-    // a lifecycle/V4 combination which the atomic planner must reject later. `datasig` is ordinary row data and
-    // does not enter this transaction-signature provenance boundary.
-    if (kernelLifecycleKind && (footprint.unknown || footprint.reads.length > 0 || footprint.writes.length > 0
-      || footprint.effects.length > 0 || lifecycleHasDetachedTransactionSignature
-      || fn.messageBusUsesTransactionSignature === true)) {
+    // The V3 lifecycle manifest and its V4 successor are not yet accepted coherently by every detached verifier:
+    // V4 currently requires the participant lifecycle suffix to be neutral, while the SDK correctly refuses a
+    // graph that combines V4 provenance with lifecycle geometry. Do not publish a split/merge route merely
+    // because its body has no resources: that used to defer a compiler-admitted handler to an SDK-only failure.
+    // Keep the specialized signature diagnostic where a detached `sig` value is the immediate missing protocol;
+    // all other participant-changing lifecycle forms remain KERNEL_LIFECYCLE until one authenticated frame binds
+    // both its geometry and row provenance.
+    if (kernelLifecycleKind) {
       fn.messageBusEligible = false;
       fn.messageBusRejectionReason = lifecycleHasDetachedTransactionSignature
         || fn.messageBusUsesTransactionSignature === true

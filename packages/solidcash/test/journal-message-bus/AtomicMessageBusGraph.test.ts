@@ -116,6 +116,28 @@ const plan = (): messageBus.CompiledGraphPlan => ({
 });
 
 describe('atomic compiled invocation graph', () => {
+  it('fails closed for a resource-free lifecycle row until the advertised protocol can compose it', () => {
+    const compiled = compileString(`contract LifecycleProtocolBoundary() {
+      function divide(int count) public split(count) {
+        require(count > 0);
+      }
+      function control() public { require(true); }
+    }`, {
+      forceStateful: true, messageBus: true, messageBusKernel: true, maximumInputBytes: 1_000_000,
+    });
+    expect(compiled.messageBus?.handlers.find((handler) => handler.name === 'divide')).toMatchObject({
+      eligible: false,
+      rejectionReason: 'KERNEL_LIFECYCLE',
+      lifecycleTopology: { kind: 'split' },
+    });
+    // The compiler publishes the refusal on the selected handler, so callers can diagnose the unsupported
+    // protocol before attempting composition.
+    expect(() => messageBus.planCompiledGraph([
+      { artifact: compiled, lockingBytecode: '51'.repeat(64) },
+    ], [{ parent: null, callee: 0, function: 'divide', args: [2n] }]))
+      .toThrow(/lifecycle participant .* does not advertise selector-derived authority|not message-bus eligible/);
+  });
+
   it('cannot plan compiler-fenced lifecycle rows carrying detached signature leaves', () => {
     const compiled = compileString(`contract LifecycleSignatureBoundary() {
       struct Authorization { sig proof; int nonce; }

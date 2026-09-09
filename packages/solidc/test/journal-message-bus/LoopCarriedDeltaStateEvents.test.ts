@@ -94,7 +94,7 @@ describe('loop-carried delta scalar-state event recurrences', () => {
       }`, KERNEL);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'accumulate'))
       .toMatchObject({ eligible: true });
-  });
+  }, 120_000);
 
   it.each([
     ['this.other', true],

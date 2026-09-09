@@ -24,20 +24,18 @@ const vmAccepts = (builder: TransactionBuilder): boolean => {
 };
 
 describe('kernel transaction-bound upgrade signature', () => {
-  it('authenticates a detached nested-struct signature through an expanded modifier', async () => {
+  it('authenticates two detached aggregate signatures through one exact helper body', async () => {
     const provider = createMessageBusCapstoneTestProvider();
     const currentArtifact = compileString(`contract Current() {
-      struct Authorization { sig proof; pubkey key; }
-      struct Auth { Authorization authorization; int nonce; }
+      struct Auth { sig first; sig second; pubkey key; int nonce; }
       int marker;
       modifier authorized(Auth selected) {
-        require(checkSig(selected.authorization.proof, selected.authorization.key)); _;
+        require(checkSig(selected.first, selected.key)); require(checkSig(selected.second, selected.key)); _;
       }
       function replace(Auth auth) public upgrade authorized(auth) { require(auth.nonce >= 0); }
     }`, KERNEL);
     const replacementArtifact = compileString(`contract Replacement() {
-      struct Authorization { sig proof; pubkey key; }
-      struct Auth { Authorization authorization; int nonce; }
+      struct Auth { sig first; sig second; pubkey key; int nonce; }
       int marker;
       function read() public view returns (int) { return this.marker; }
     }`, KERNEL);
@@ -47,7 +45,10 @@ describe('kernel transaction-bound upgrade signature', () => {
         transactionSignaturePolicy: { hashType: 'all', parameterIndices: [0] },
       });
     expect(currentArtifact.messageBus?.route.inputs).toContainEqual(expect.objectContaining({
-      name: '__message_bus_sig_0_0_rows', type: 'sig[]',
+      name: '__message_bus_sig_0_0_0_rows', type: 'sig[]',
+    }));
+    expect(currentArtifact.messageBus?.route.inputs).toContainEqual(expect.objectContaining({
+      name: '__message_bus_sig_0_0_1_rows', type: 'sig[]',
     }));
 
     const base = new Contract(currentArtifact, [], { provider });
@@ -58,8 +59,7 @@ describe('kernel transaction-bound upgrade signature', () => {
       base.withCategory(hexToBin(setup.categoryId)), setup.categoryId,
     );
     const coordinatorArtifact = compileString(`
-      struct Authorization { sig proof; pubkey key; }
-      struct Auth { Authorization authorization; int nonce; }
+      struct Auth { sig first; sig second; pubkey key; int nonce; }
       interface ICurrent { function replace(Auth auth); }
       contract Coordinator(address target) {
         function forward(Auth auth) public { ICurrent(target).replace(auth); require(true); }
@@ -77,7 +77,7 @@ describe('kernel transaction-bound upgrade signature', () => {
     const build = async (hashType?: HashType): Promise<TransactionBuilder> => {
       const fee = await createBareP2pkhFeeFunder(provider, 500_000n);
       const auth = {
-        authorization: { proof: new SignatureTemplate(alicePriv, hashType), key: alicePub },
+        first: new SignatureTemplate(alicePriv, hashType), second: new SignatureTemplate(alicePriv, hashType), key: alicePub,
         nonce: 1n,
       };
       return messageBus.compose({

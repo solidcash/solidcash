@@ -22,6 +22,72 @@ const vmRejects = (candidate: TransactionBuilder): boolean => {
 };
 
 describe('pure helper fixed BCH transfer transcript security', () => {
+  it('authenticates a read-only helper result from incoming scalar state', async () => {
+    const provider = createMessageBusCapstoneTestProvider();
+    const artifacts = compileStringMulti(`interface IPayer {
+        function pay(address recipient, uint increment, uint replacement);
+      }
+      contract Payer() {
+        uint saved;
+        function quote(uint increment) internal view returns (uint) {
+          return this.saved + increment;
+        }
+        function pay(address recipient, uint increment, uint replacement) public {
+          this.transfer(recipient, quote(increment));
+          this.saved = replacement;
+          require(true);
+        }
+      }
+      contract Driver(address payer) {
+        function run(address recipient, uint increment, uint replacement) public {
+          IPayer(payer).pay(recipient, increment, replacement);
+          require(true);
+        }
+      }`, {
+      forceStateful: true, messageBus: true, messageBusKernel: true, maximumInputBytes: 1_000_000,
+    });
+    expect(artifacts.Payer.messageBus?.handlers.find((handler) => handler.name === 'pay')).toMatchObject({
+      eligible: true,
+      transfers: [{ amountRecipe: {
+        kind: 'binary', operator: '+', left: { kind: 'state', name: 'saved' },
+      } }],
+    });
+    const connect = async (
+      artifact: Artifact, args: readonly unknown[] = [], state: Record<string, unknown> = {},
+    ): Promise<StatefulContract> => {
+      const base = new Contract(artifact, args as never[], { provider });
+      const setup = await setupStatefulUtxos(
+        provider, base, artifact.stateLayout!, state, { saltContract: true },
+      );
+      return StatefulContract.withCategory(base.withCategory(hexToBin(setup.categoryId)), setup.categoryId);
+    };
+    const payer = await connect(artifacts.Payer, [], { saved: 2_000n });
+    const driver = await connect(artifacts.Driver, [hexToBin(payer.inner.lockingBytecode)]);
+    await provider.addUtxo(getSatoshiContainerAddress(payer.inner, payer.categoryId), {
+      txid: 'c8'.repeat(32), vout: 1, satoshis: 30_000n,
+    });
+    const fee = await createBareP2pkhFeeFunder(provider, 1_000_000n);
+    const recipient = fee.unlocker.generateLockingBytecode();
+    const builder = await messageBus.compose({
+      preparedCalls: [
+        { contract: driver, functionName: 'run', args: [recipient, 7n, 3_000n] },
+        { contract: payer, functionName: 'pay', args: [recipient, 7n, 3_000n] },
+      ],
+      funder: fee,
+      changeAddress: recipient,
+    }).build();
+
+    expect(vmRejects(builder)).toBe(false);
+    const payment = builder.outputs.find((output) => !output.token && output.amount === 2_007n
+      && binToHex(output.to as Uint8Array) === binToHex(recipient));
+    expect(payment).toBeDefined();
+    payment!.amount += 1n;
+    expect(vmRejects(builder)).toBe(true);
+    payment!.amount -= 1n;
+    payment!.to = Uint8Array.from([...recipient.slice(0, -1), recipient.at(-1)! ^ 1]);
+    expect(vmRejects(builder)).toBe(true);
+  }, 240_000);
+
   it('composes the reduced recipes and rejects recipient or amount tampering', async () => {
     const provider = createMessageBusCapstoneTestProvider();
     const artifacts = compileStringMulti(`interface IPayer {

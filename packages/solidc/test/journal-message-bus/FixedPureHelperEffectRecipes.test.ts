@@ -63,7 +63,6 @@ describe('pure helper fixed BCH effect recipes', () => {
   });
 
   it.each([
-    ['state-reading', 'uint saved;', 'view', 'return this.saved;', ''],
     ['transaction-reading', '', 'view', 'return uint(tx.outputs[0].value) + amount;', ''],
     ['effectful', '', '', 'this.transfer(recipient, 1); return amount;', 'address recipient, '],
     ['recursive', '', 'pure', 'return derive(amount);', ''],
@@ -73,6 +72,58 @@ describe('pure helper fixed BCH effect recipes', () => {
       function derive(${prefix}uint amount) internal ${mutability} returns (uint) { ${body} }
       function pay(address recipient, uint amount) public {
         this.transfer(recipient, derive(${prefix ? 'recipient, ' : ''}amount));
+        require(true);
+      }
+    }`, KERNEL);
+
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'pay')).toMatchObject({
+      eligible: false,
+      rejectionReason: 'KERNEL_LAYOUT',
+    });
+  });
+
+  it('replays a read-only scalar-state helper from its exact source-ordered value', () => {
+    const artifact = compileString(`contract Payer() {
+      uint saved;
+      function quote(uint increment) internal view returns (uint) { return this.saved + increment; }
+      function before(address recipient, uint increment, uint replacement) public {
+        this.transfer(recipient, quote(increment));
+        this.saved = replacement;
+        require(true);
+      }
+      function after(address recipient, uint increment, uint replacement) public {
+        this.saved = replacement;
+        this.transfer(recipient, quote(increment));
+        require(true);
+      }
+    }`, KERNEL);
+
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'before')).toMatchObject({
+      eligible: true,
+      transfers: [{
+        amountRecipe: {
+          kind: 'binary', operator: '+', left: { kind: 'state', name: 'saved' },
+        },
+      }],
+    });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'after')).toMatchObject({
+      eligible: true,
+      transfers: [{
+        amountRecipe: {
+          kind: 'binary', operator: '+', left: { kind: 'handlerInput', inputIndex: 2 },
+        },
+      }],
+    });
+  });
+
+  it('drops helper state provenance after an unreplayable prior write', () => {
+    const artifact = compileString(`contract Payer() {
+      uint saved;
+      function quote() private view returns (uint) { return this.saved; }
+      function replaceFromTransaction() internal { this.saved = uint(tx.outputs[0].value); }
+      function pay(address recipient) public {
+        replaceFromTransaction();
+        this.transfer(recipient, quote());
         require(true);
       }
     }`, KERNEL);

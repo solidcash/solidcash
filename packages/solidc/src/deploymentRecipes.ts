@@ -366,7 +366,10 @@ export function childDeploymentValueRecipe(
       expression, helperFunctions, handlerInputTypes, aliases, aliasDefinitions,
     );
     if (!helper) return undefined;
-    if (!helper.modifiers.includes(FunctionModifier.PURE)
+    // A view helper is replayable only when every statement below reduces to the same closed recipe language.
+    // State reads therefore resolve solely when the caller supplied an authenticated, source-ordered alias;
+    // transaction reads, effects, control flow, and unknown calls still fail closed.
+    if (!(helper.modifiers.includes(FunctionModifier.PURE) || helper.modifiers.includes(FunctionModifier.VIEW))
       || !(helper.modifiers.includes(FunctionModifier.INTERNAL)
         || helper.modifiers.includes(FunctionModifier.PRIVATE))
       || helper.returnTypes.length !== 1 || helperStack.has(helper)) return undefined;
@@ -634,8 +637,15 @@ export function analyzeFixedBchEffectRecipes(
     return definition;
   };
   const stateVariableTypes = new Map(stateVariables.map((variable) => [variable.name, variable.type]));
-  // Seed only direct scalar reads from the authenticated incoming state. Subsequent source-ordered writes and
-  // stateful calls update or delete these aliases below, so a transfer can never silently reuse stale pre-state.
+  for (const variable of stateVariables) {
+    const resultType = physicalRecipeType(variable.type);
+    if (!materializableGenesisLeafType.test(resultType) || resultType === 'sig') continue;
+    const definition = stateDefinition(variable.name);
+    initialAliases.set(definition, { kind: 'state', name: variable.name, resultType });
+    initialDefinitions.set(`this.${variable.name}`, definition);
+  }
+  // Rebind cloned direct reads to the scalar roots seeded above. Subsequent source-ordered writes and stateful
+  // calls update or delete these aliases below, so a transfer can never silently reuse stale pre-state.
   // Collections and transaction signatures are deliberately absent from the executable recipe language.
   const collectPreState = (value: unknown, seen = new WeakSet<object>()): void => {
     if (Array.isArray(value)) {

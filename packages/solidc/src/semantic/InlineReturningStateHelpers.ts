@@ -601,7 +601,7 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     );
   }
 
-  // Contains an EXTERNAL contract call (`unicrow.getEscrow(id)` / `token.balanceOf(a)` / `this.f(x)`): pre-semantic
+  // Contains an EXTERNAL contract call (`receiver.lookup(id)` / `token.balanceOf(a)` / `this.f(x)`): pre-semantic
   // this is a DOTTED FunctionCall whose full name is NOT a known internal/library function (those are in funcByName)
   // - i.e. the receiver is a state var / param / `this`, an interface/contract-typed value. Like a low-level call
   // it injects the external-call covenant param (input index / return slot), threaded only at an entry point, so a

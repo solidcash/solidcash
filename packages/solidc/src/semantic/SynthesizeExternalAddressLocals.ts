@@ -338,7 +338,7 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
         && this.singleAssignLocals.has(varName) && this.localInits.has(varName)) {
         // A SINGLE-ASSIGNMENT local aliasing an interface-cast target (`ITarget target = ITarget(targetAddress);
         // target.run(..)`). The interface local is not materialized (the cast is a no-op), so
-        // sourcing it in codegen fails "variable 'unicrow' does not exist on the stack". Resolve the init to the
+        // sourcing it in codegen fails because the interface alias has no stack slot. Resolve the init to the
         // underlying state-var / self-pinned chain and hoist THAT, rewriting the call to the __extaddr_ local.
         const local = this.hoistTargetLocalFor(this.localInits.get(varName)!);
         if (local) {

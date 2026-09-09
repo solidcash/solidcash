@@ -11,6 +11,7 @@
  *   node --max-old-space-size=8192 scripts/profile-marketplace-compile.mjs --kernel
  */
 import { performance } from 'node:perf_hooks';
+import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { compileFileMulti } from 'solidc';
@@ -53,6 +54,8 @@ const options = {
   maximumInputBytes: 10_000_000,
   commitmentLimit: 10_000_000,
   __artifactCache: false,
+  __attemptFailureBox: { failures: [] },
+  __strictNoInternalRecovery: true,
   ...(!compileAllDeclarations ? { compileDeclarations: ['MarketplaceV1'] } : {}),
 };
 
@@ -63,6 +66,7 @@ const artifact = artifacts.MarketplaceV1;
 if (!artifact) throw new Error(`MarketplaceV1 was not emitted while compiling ${source}`);
 
 const bodyBytes = (body) => typeof body === 'string' ? body.length / 2 : 0;
+const sha256 = (value) => createHash('sha256').update(value ?? '').digest('hex');
 const handlers = artifact.messageBus?.handlers ?? [];
 const refusals = handlers.filter((handler) => !handler.eligible).map((handler) => ({
   name: handler.name,
@@ -83,7 +87,12 @@ const result = {
       .reduce((total, body) => total + bodyBytes(body), 0),
     artifactJsonBytes: Buffer.byteLength(JSON.stringify(artifact)),
   },
+  hashes: {
+    route: sha256(artifact.functionBodies?.[artifact.messageBus?.selector ?? '']),
+    full: sha256(artifact.debug?.bytecode),
+  },
   timing: { compilerMs },
+  caughtCompilerAttempts: options.__attemptFailureBox.failures,
   handlers: {
     total: handlers.length,
     eligible: handlers.length - refusals.length,

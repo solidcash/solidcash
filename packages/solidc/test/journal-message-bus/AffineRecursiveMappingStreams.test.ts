@@ -239,7 +239,7 @@ describe('affine recursive mapping streams', () => {
     }`, KERNEL)).toThrow(/argument|parameter|matching function/i);
   });
 
-  it('lowers void post-recursion effects with replayable requirements', () => {
+  it('publishes void post-recursion metadata but fences its multi-stream settlement', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) selected;
       mapping(int => int) removed;
@@ -253,14 +253,14 @@ describe('affine recursive mapping streams', () => {
     }`, KERNEL);
     const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'apply');
     const operationInfo = artifact.abi.find((candidate) => candidate.name === 'apply')?.sortedUpsertLoopInfo;
-    expect(handler).toMatchObject({ eligible: true });
+    expect(handler).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
     expect(operationInfo?.map((info) => [info.collection, info.op])).toEqual([
       ['selected', 'set'], ['removed', 'delete'],
     ]);
     expect(operationInfo?.every((info) => info.iterationCondition !== undefined)).toBe(true);
   });
 
-  it('lowers post-recursion sets and deletes in call-stack unwind order', () => {
+  it('publishes unwind-order set/delete metadata but fences its multi-stream settlement', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) selected;
       mapping(int => int) removed;
@@ -274,15 +274,14 @@ describe('affine recursive mapping streams', () => {
     }`, KERNEL);
     const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'apply');
     const operationInfo = artifact.abi.find((candidate) => candidate.name === 'apply')?.sortedUpsertLoopInfo;
-    expect(handler).toMatchObject({ eligible: true });
+    expect(handler).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
     expect(operationInfo?.map((info) => [info.collection, info.op])).toEqual([
       ['selected', 'set'], ['removed', 'delete'],
     ]);
     expect(operationInfo?.every((info) => info.iterationCondition !== undefined)).toBe(true);
-    expect(artifact.messageBus?.route.blockLayout?.trailingCapacity).toBe(2 * 64 + 2);
   });
 
-  it('authenticates post-recursion mapping reads as independent unwind streams', () => {
+  it('publishes independent unwind read metadata but fences read/write settlement', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) source;
       mapping(int => int) destination;
@@ -296,14 +295,13 @@ describe('affine recursive mapping streams', () => {
     const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'apply');
     const operationInfo = artifact.abi.find((candidate) => candidate.name === 'apply')?.sortedUpsertLoopInfo;
 
-    expect(handler).toMatchObject({ eligible: true });
+    expect(handler).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
     expect(operationInfo?.map((info) => [info.collection, info.op])).toEqual([
       ['source', 'read'], ['destination', 'set'],
     ]);
-    expect(artifact.messageBus?.route.blockLayout?.trailingCapacity).toBe(2 * 64 + 2);
   });
 
-  it('authenticates one affine nested read stream under a literal outer key', () => {
+  it('publishes a nested affine read recipe but fences read/write settlement', () => {
     const artifact = compileString(`contract C() {
       mapping(int => mapping(int => int)) source;
       mapping(int => int) destination;
@@ -317,7 +315,7 @@ describe('affine recursive mapping streams', () => {
     const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'apply');
     const operationInfo = artifact.abi.find((candidate) => candidate.name === 'apply')?.sortedUpsertLoopInfo;
 
-    expect(handler).toMatchObject({ eligible: true });
+    expect(handler).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
     expect(operationInfo?.map((info) => [info.collection, info.op])).toEqual([
       ['source', 'read'], ['destination', 'set'],
     ]);
@@ -326,7 +324,7 @@ describe('affine recursive mapping streams', () => {
     });
   });
 
-  it('authenticates disjoint nested read streams by their complete literal tuple prefix', () => {
+  it('publishes disjoint nested read recipes but fences read/write settlement', () => {
     const artifact = compileString(`contract C() {
       mapping(int => mapping(int => int)) source;
       mapping(int => int) destination;
@@ -339,7 +337,7 @@ describe('affine recursive mapping streams', () => {
     }`, KERNEL);
     const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'apply');
     const operations = artifact.abi.find((candidate) => candidate.name === 'apply')?.sortedUpsertLoopInfo;
-    expect(handler).toMatchObject({ eligible: true });
+    expect(handler).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
     expect(operations?.map((operation) => [operation.collection, operation.op])).toEqual([
       ['source', 'read'], ['source', 'read'], ['destination', 'set'],
     ]);
@@ -364,8 +362,9 @@ describe('affine recursive mapping streams', () => {
     ['a recursion-invariant runtime outer key', 'this.source[partition][cursor]', [1]],
     ['a varying non-final component', 'this.source[cursor][7]', [0]],
     ['two varying key components', 'this.source[cursor][cursor + 1]', [0, 1]],
-  ])('authenticates nested recursive reads with %s', (_label, read, varyingKeyIndices) => {
-    const artifact = compileString(`contract C() {
+  ])('publishes nested recursive read metadata with %s but fences read/write settlement',
+    (_label, read, varyingKeyIndices) => {
+      const artifact = compileString(`contract C() {
       mapping(int => mapping(int => int)) source;
       mapping(int => int) destination;
       function apply(int cursor, int partition) public returns (int) {
@@ -377,18 +376,18 @@ describe('affine recursive mapping streams', () => {
       function control() public { require(true); }
     }`, KERNEL);
 
-    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'apply'))
-      .toMatchObject({ eligible: true });
-    const stream = artifact.abi.find((candidate) => candidate.name === 'apply')?.sortedUpsertLoopInfo?.[0];
-    expect(stream).toMatchObject({ collection: 'source', op: 'read' });
-    expect(stream?.varyingKeyIndices ?? [1]).toEqual(varyingKeyIndices);
-    if (read.includes('partition')) expect(stream?.fixedKeyParams).toContain('partition');
-    if (varyingKeyIndices.length > 1) expect(stream?.varyingKeyExpressions).toHaveLength(2);
-    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'control'))
-      .toMatchObject({ eligible: true });
-  });
+      expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'apply'))
+        .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+      const stream = artifact.abi.find((candidate) => candidate.name === 'apply')?.sortedUpsertLoopInfo?.[0];
+      expect(stream).toMatchObject({ collection: 'source', op: 'read' });
+      expect(stream?.varyingKeyIndices ?? [1]).toEqual(varyingKeyIndices);
+      if (read.includes('partition')) expect(stream?.fixedKeyParams).toContain('partition');
+      if (varyingKeyIndices.length > 1) expect(stream?.varyingKeyExpressions).toHaveLength(2);
+      expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'control'))
+        .toMatchObject({ eligible: true });
+    });
 
-  it('proves disjoint tuple streams when their affine components require conflicting frame deltas', () => {
+  it('derives disjoint tuple metadata but fences its read/write settlement', () => {
     const artifact = compileString(`contract C() {
       mapping(int => mapping(int => int)) source;
       mapping(int => int) destination;
@@ -402,7 +401,7 @@ describe('affine recursive mapping streams', () => {
     }`, KERNEL);
 
     expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'apply'))
-      .toMatchObject({ eligible: true });
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
     expect(artifact.abi.find((candidate) => candidate.name === 'apply')?.sortedUpsertLoopInfo
       ?.filter((stream) => stream.collection === 'source')).toHaveLength(2);
   });
@@ -429,8 +428,9 @@ describe('affine recursive mapping streams', () => {
       'apply(cursor - 1, partition + 1)', false],
     ['an expression derived from an invariant parameter', 'this.source[partition + 1][cursor]',
       'apply(cursor - 1, partition)', true],
-  ] as const)('classifies nested recursive reads with %s', (_label, read, recursiveCall, eligible) => {
-    const artifact = compileString(`contract C() {
+  ] as const)('classifies and fences nested recursive reads with %s',
+    (_label, read, recursiveCall, _eligible) => {
+      const artifact = compileString(`contract C() {
       mapping(int => mapping(int => int)) source;
       mapping(int => int) destination;
       function apply(int cursor, int partition) public returns (int) {
@@ -442,10 +442,9 @@ describe('affine recursive mapping streams', () => {
       function control() public { require(true); }
     }`, KERNEL);
 
-    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'apply'))
-      .toMatchObject(eligible ? { eligible: true }
-        : { eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
-  });
+      expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'apply'))
+        .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+    });
 
   it.each([
     ['value', `function apply(int cursor, int floor) public returns (int) {
@@ -461,7 +460,7 @@ describe('affine recursive mapping streams', () => {
       require(this.observed[cursor] >= floor);
       this.recorded[cursor + 64] = floor;
     }`],
-  ])('authenticates mapping reads consumed by direct %s unwind requirements', (_kind, fn) => {
+  ])('publishes direct %s unwind read metadata but fences read/write settlement', (_kind, fn) => {
     const artifact = compileString(`contract C() {
       mapping(int => int) observed;
       mapping(int => int) recorded;
@@ -470,15 +469,14 @@ describe('affine recursive mapping streams', () => {
     const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'apply');
     const operationInfo = artifact.abi.find((candidate) => candidate.name === 'apply')?.sortedUpsertLoopInfo;
 
-    expect(handler).toMatchObject({ eligible: true });
+    expect(handler).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
     expect(operationInfo?.map((info) => [info.collection, info.op])).toEqual([
       ['observed', 'read'], ['recorded', 'set'],
     ]);
     expect(operationInfo?.[0].oldValuesWitnessParam).toMatch(/^__internal__vmapCounterOld_read_/);
-    expect(artifact.messageBus?.route.blockLayout?.trailingCapacity).toBe(2 * 64 + 2);
   });
 
-  it('keeps the read requirement in source order beside an independently permuted write', () => {
+  it('preserves read source-order metadata but fences the independently permuted write', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) observed;
       mapping(int => int) recorded;
@@ -494,11 +492,10 @@ describe('affine recursive mapping streams', () => {
     const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'apply');
     const operationInfo = artifact.abi.find((candidate) => candidate.name === 'apply')?.sortedUpsertLoopInfo;
 
-    expect(handler).toMatchObject({ eligible: true });
+    expect(handler).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
     expect(operationInfo?.map((info) => [info.collection, info.op])).toEqual([
       ['observed', 'read'], ['recorded', 'set'],
     ]);
-    expect(artifact.messageBus?.route.blockLayout?.trailingCapacity).toBe(2 * 64 + 2);
   });
 
   it('authenticates a requirement-only affine unwind as a bounded read stream', () => {
@@ -535,7 +532,7 @@ describe('affine recursive mapping streams', () => {
       .toEqual([expect.objectContaining({ collection: 'observed', op: 'read' })]);
   });
 
-  it('authenticates only taken nested requirements with selected read domains', () => {
+  it('fences multiple selected read domains without shared frame identity', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) observed;
       mapping(int => int) alternate;
@@ -555,7 +552,7 @@ describe('affine recursive mapping streams', () => {
     }`, KERNEL);
     const streams = artifact.abi.find((candidate) => candidate.name === 'apply')?.sortedUpsertLoopInfo;
     expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'apply'))
-      .toMatchObject({ eligible: true });
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
     expect(streams?.map((stream) => [stream.collection, stream.op])).toEqual([
       ['observed', 'read'], ['alternate', 'read'],
     ]);
@@ -566,7 +563,7 @@ describe('affine recursive mapping streams', () => {
     ))).toBe(true);
   });
 
-  it('authenticates recursive switch requirements with first-match selected domains', () => {
+  it('fences first-match selected streams without shared frame identity', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) first;
       mapping(int => int) second;
@@ -585,7 +582,7 @@ describe('affine recursive mapping streams', () => {
     }`, KERNEL);
     const streams = artifact.abi.find((candidate) => candidate.name === 'apply')?.sortedUpsertLoopInfo;
     expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'apply'))
-      .toMatchObject({ eligible: true });
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
     expect(streams?.map((stream) => [stream.collection, stream.op])).toEqual([
       ['first', 'read'], ['second', 'read'], ['fallbackValues', 'read'],
     ]);
@@ -595,7 +592,7 @@ describe('affine recursive mapping streams', () => {
     expect(streams?.[1].iterationCondition).not.toEqual(streams?.[0].iterationCondition);
   });
 
-  it('authenticates dynamic switch cases even when a later case is runtime-shadowed', () => {
+  it('fences runtime-shadowable selected streams without shared frame identity', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) first;
       mapping(int => int) second;
@@ -612,7 +609,7 @@ describe('affine recursive mapping streams', () => {
       function control() public { require(true); }
     }`, KERNEL);
     expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'apply'))
-      .toMatchObject({ eligible: true });
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
     const streams = artifact.abi.find((candidate) => candidate.name === 'apply')?.sortedUpsertLoopInfo;
     expect(streams?.map((stream) => [stream.collection, stream.op])).toEqual([
       ['first', 'read'], ['second', 'read'],
@@ -714,7 +711,7 @@ describe('affine recursive mapping streams', () => {
       .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
   });
 
-  it('admits same-collection recursive streams only when their full affine domains are disjoint', () => {
+  it('publishes disjoint same-collection metadata but fences multi-stream settlement', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) values;
       function apply(int cursor) public returns (int) {
@@ -728,7 +725,7 @@ describe('affine recursive mapping streams', () => {
     const operationInfo = artifact.abi.find((candidate) => candidate.name === 'apply')?.sortedUpsertLoopInfo;
 
     expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'apply'))
-      .toMatchObject({ eligible: true });
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
     expect(operationInfo?.map((info) => [info.collection, info.op])).toEqual([
       ['values', 'set'], ['values', 'delete'],
     ]);
@@ -751,7 +748,7 @@ describe('affine recursive mapping streams', () => {
       .toEqual([expect.objectContaining({ collection: 'values', op: '+' })]);
   });
 
-  it('proves disjoint same-collection domains using the exact constant recursive stride', () => {
+  it('derives exact-stride disjoint domains but fences multi-stream settlement', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) values;
       function apply(int cursor) public returns (int) {
@@ -764,7 +761,7 @@ describe('affine recursive mapping streams', () => {
     }`, KERNEL);
 
     expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'apply'))
-      .toMatchObject({ eligible: true });
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
   });
 
   it.each([
@@ -791,7 +788,7 @@ describe('affine recursive mapping streams', () => {
       .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
   });
 
-  it('lowers source-ordered sets and deletes across independent collections', () => {
+  it('publishes source-ordered sets and deletes but fences multi-stream settlement', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) left;
       mapping(int => int) right;
@@ -807,17 +804,16 @@ describe('affine recursive mapping streams', () => {
     const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'apply');
     const operationInfo = artifact.abi.find((candidate) => candidate.name === 'apply')?.sortedUpsertLoopInfo;
 
-    expect(handler).toMatchObject({ eligible: true });
+    expect(handler).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
     expect(operationInfo).toEqual([
       expect.objectContaining({ collection: 'left', op: 'set' }),
       expect.objectContaining({ collection: 'right', op: 'delete' }),
       expect.objectContaining({ collection: 'finalValues', op: 'set' }),
     ]);
     // Each independently keyed stream reserves 64 operations plus its own authenticated predecessor.
-    expect(artifact.messageBus?.route.blockLayout?.trailingCapacity).toBe(3 * 64 + 3);
   });
 
-  it('publishes replayable predicates for conditional operations, including false frames', () => {
+  it('publishes conditional predicates but fences multi-stream settlement', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) evenValues;
       mapping(int => int) highValues;
@@ -836,13 +832,12 @@ describe('affine recursive mapping streams', () => {
     const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'apply');
     const operationInfo = artifact.abi.find((candidate) => candidate.name === 'apply')?.sortedUpsertLoopInfo;
 
-    expect(handler).toMatchObject({ eligible: true });
+    expect(handler).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
     expect(operationInfo).toHaveLength(3);
     expect(operationInfo?.map((info) => [info.collection, info.op])).toEqual([
       ['evenValues', 'set'], ['highValues', 'delete'], ['alternateValues', 'set'],
     ]);
     expect(operationInfo?.every((info) => info.iterationCondition !== undefined)).toBe(true);
-    expect(artifact.messageBus?.route.blockLayout?.trailingCapacity).toBe(3 * 64 + 3);
   });
 
   it.each([

@@ -11443,6 +11443,14 @@ function compileResolvedAst(
         ?.some((access) => access.op !== 'read') === true;
       const runtimeJournalAccesses = abi?.sortedUpsertLoopInfo ?? [];
       const hasRuntimeJournalRead = runtimeJournalAccesses.some((access) => access.op === 'read');
+      // Compact selected-source witnesses are independently ordered within each read stream. The current row
+      // protocol authenticates that order for one stream, but it does not publish a shared frame-selection
+      // identity across two or more conditional streams. In particular, mutually exclusive switch arms can each
+      // verify their local witness while disagreeing about which source frame owns the read. Keep the proven
+      // single-stream shape and fail closed on the ambiguous multi-stream geometry.
+      const selectedRuntimeJournalReadCount = runtimeJournalAccesses.filter((access) =>
+        access.op === 'read' && access.oldValuesWitnessDomain === 'selected-source').length;
+      const hasUnauthenticatedSelectedReadGeometry = selectedRuntimeJournalReadCount > 1;
       const chunkableCollections = new Set((artifact.stateLayout?.collections ?? [])
         .filter((collection) => collection.chunkableValue === true).map((collection) => collection.name));
       // A row-local value carrier currently lacks an independently authenticated pending output identity.
@@ -11565,6 +11573,7 @@ function compileResolvedAst(
         || hasDistinctEventMutationStreams
         || hasScalarAndJournalEventSettlement
         || (hasRuntimeJournalMutation && hasRuntimeJournalRead)
+        || hasUnauthenticatedSelectedReadGeometry
         || hasRuntimeLocalJournalValue
         || hasUnsupportedMultiMutationExecutionGroup
         || hasConstructedKeyReplay

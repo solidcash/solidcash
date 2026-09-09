@@ -26,10 +26,10 @@ describe('recursive mapping derived invariant tuple keys', () => {
     ['arithmetic', 'scope + 1'],
     ['cast', 'int(uint32(scope))'],
     ['conditional', 'scope >= 0 ? scope + 1 : 0'],
-  ])('admits a %s component derived only from an unchanged public parameter', (_label, fixedKey) => {
+  ])('publishes a %s invariant-key recipe but fences its read/write settlement', (_label, fixedKey) => {
     const artifact = compile(fixedKey);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'copy'))
-      .toMatchObject({ eligible: true });
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
     const stream = artifact.abi.find((entry) => entry.name === 'copy')?.sortedUpsertLoopInfo
       ?.find((candidate) => candidate.collection === 'source');
     expect(stream).toMatchObject({ op: 'read', varyingKeyIndices: [0] });

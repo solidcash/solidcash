@@ -20,7 +20,7 @@ const KERNEL = {
 } as const;
 
 describe('affine recursive mapping streams', () => {
-  it('settles disjoint post-recursion streams which share one collection', async () => {
+  it('fences disjoint post-recursion streams which lack shared settlement geometry', async () => {
     const provider = createTestProvider();
     const artifact = compileString(`contract DisjointUnwind(bytes densityPadding) {
       mapping(int => int) values;
@@ -32,8 +32,9 @@ describe('affine recursive mapping streams', () => {
         return result;
       }
     }`, KERNEL);
-    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'apply'))
-      .toMatchObject({ eligible: true });
+    const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'apply');
+    expect(handler).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+    if (!handler?.eligible) return;
     const inner = new Contract(artifact, [new Uint8Array(256)], { provider });
     const zero = slotValueToBytes(0n);
     const existing = [1n, 2n, 65n, 66n].map((key) => ({
@@ -79,7 +80,7 @@ describe('affine recursive mapping streams', () => {
     expect([1n, 2n, 65n, 66n].map(valueAt)).toEqual([11n, 12n, 21n, 22n]);
   }, 60_000);
 
-  it('authenticates mapping values consumed by post-recursion unwind frames', async () => {
+  it('fences read/write post-recursion frames without a shared settlement identity', async () => {
     const provider = createTestProvider();
     // Two independently authenticated 64-row resources put this deliberately small fixture just beyond BCH's
     // operation-density ratio. A constructor byte vector increases locking-program density without changing the
@@ -94,8 +95,9 @@ describe('affine recursive mapping streams', () => {
         return result;
       }
     }`, KERNEL);
-    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'apply'))
-      .toMatchObject({ eligible: true });
+    const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'apply');
+    expect(handler).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+    if (!handler?.eligible) return;
     const inner = new Contract(artifact, [new Uint8Array(256)], { provider });
     const zero = slotValueToBytes(0n);
     const sourceEntries = [[1n, 10n], [2n, 20n], [3n, 30n]] as const;
@@ -169,7 +171,7 @@ describe('affine recursive mapping streams', () => {
     expect([1n, 2n, 3n].map(valueAt)).toEqual([15n, 25n, 35n]);
   }, 60_000);
 
-  it('authenticates disjoint affine nested reads under literal outer-key witnesses', async () => {
+  it('fences nested read/write streams without a shared settlement identity', async () => {
     const provider = createTestProvider();
     const artifact = compileString(`contract NestedUnwindRead(bytes densityPadding) {
       mapping(int => mapping(int => int)) source;
@@ -181,8 +183,9 @@ describe('affine recursive mapping streams', () => {
         return result;
       }
     }`, KERNEL);
-    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'apply'))
-      .toMatchObject({ eligible: true });
+    const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'apply');
+    expect(handler).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+    if (!handler?.eligible) return;
     const inner = new Contract(artifact, [new Uint8Array(256)], { provider });
     const zero = slotValueToBytes(0n);
     const sourceEntries = [[7n, 2n, 10n], [8n, 2n, 1n]] as const;
@@ -254,7 +257,7 @@ describe('affine recursive mapping streams', () => {
     expect(valueAt(1n)).toBe(16n);
   }, 60_000);
 
-  it('authenticates source-ordered mapping values before direct unwind requirements', async () => {
+  it('fences source-ordered reads beside an independently settled write', async () => {
     const provider = createTestProvider();
     const artifact = compileString(`contract UnwindRequirements(bytes densityPadding) {
       mapping(int => int) observed;
@@ -270,6 +273,9 @@ describe('affine recursive mapping streams', () => {
     const applyAbi = artifact.abi.find((candidate) => candidate.name === 'apply')!;
     const readInfo = applyAbi.sortedUpsertLoopInfo?.find((info) => info.collection === 'observed');
     expect(readInfo).toMatchObject({ op: 'read', oldValuesWitnessParam: expect.any(String) });
+    const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'apply');
+    expect(handler).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+    if (!handler?.eligible) return;
     const inner = new Contract(artifact, [new Uint8Array(2048)], { provider });
     const zero = slotValueToBytes(0n);
     const observedNodes = [1n, 2n, 3n].map((key) => ({
@@ -525,7 +531,7 @@ describe('affine recursive mapping streams', () => {
     await expect(call.send()).resolves.toBeDefined();
   }, 60_000);
 
-  it('uses first-match switch paths for compact recursive read witnesses', async () => {
+  it('fences multiple selected read streams without shared frame-selection identity', async () => {
     const provider = createTestProvider();
     const artifact = compileString(`contract SwitchUnwindReads(bytes densityPadding) {
       mapping(int => int) first;
@@ -549,6 +555,15 @@ describe('affine recursive mapping streams', () => {
     expect(reads.every((info) => info.sourceOrderIndexParam?.startsWith(
       '__internal__vmapCounterSourceIndex_',
     ))).toBe(true);
+    const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'apply');
+    expect(handler).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+    const refused = StatefulContract.withCategory(
+      new Contract(artifact, [new Uint8Array(2304)], { provider }), new Uint8Array(32),
+    );
+    expect(() => refused.batch([{
+      function: 'apply', args: [4n, 10n, 1n, 2n],
+    }])).toThrow(/KERNEL_LAYOUT/);
+    if (!handler?.eligible) return;
     const inner = new Contract(artifact, [new Uint8Array(2304)], { provider });
     const zero = slotValueToBytes(0n);
     const entries = new Map<string, Array<{ slot: Uint8Array; value: bigint }>>([
@@ -894,7 +909,7 @@ describe('affine recursive mapping streams', () => {
     expect([2n, 4n, 6n, 8n].map(valueAt)).toEqual([undefined, undefined, 10n, 12n]);
   }, 60_000);
 
-  it('settles source-ordered set and affine-key delete streams across two collections', async () => {
+  it('fences source-ordered mutations without shared settlement geometry', async () => {
     const provider = createTestProvider();
     const artifact = compileString(`contract RecursiveStreams() {
       mapping(int => int) retained;
@@ -906,8 +921,9 @@ describe('affine recursive mapping streams', () => {
         return apply(cursor - 1);
       }
     }`, KERNEL);
-    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'apply'))
-      .toMatchObject({ eligible: true });
+    const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'apply');
+    expect(handler).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+    if (!handler?.eligible) return;
     expect(artifact.abi.find((candidate) => candidate.name === 'apply')?.sortedUpsertLoopInfo)
       .toEqual([
         expect.objectContaining({ collection: 'retained', op: 'set' }),
@@ -974,7 +990,7 @@ describe('affine recursive mapping streams', () => {
     expect(cleared.some((entry) => [100n, 101n, 102n].includes(entry.value as bigint))).toBe(false);
   }, 60_000);
 
-  it('authenticates conditional frame selection and rejects omitted witnesses or altered outputs', async () => {
+  it('fences conditional multi-mutation frames without shared settlement geometry', async () => {
     const provider = createTestProvider();
     const artifact = compileString(`contract ConditionalStreams() {
       mapping(int => int) selected;
@@ -992,6 +1008,9 @@ describe('affine recursive mapping streams', () => {
       ['selected', 'set'], ['cleared', 'delete'],
     ]);
     expect(streams.every((stream) => stream.iterationCondition !== undefined)).toBe(true);
+    const routeHandler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'apply');
+    expect(routeHandler).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+    if (!routeHandler?.eligible) return;
     const inner = new Contract(artifact, [], { provider });
     const zero = slotValueToBytes(0n);
     const seeded = [0n, 1n, 2n, 3n, 4n].map((key) => ({

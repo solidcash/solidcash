@@ -223,9 +223,14 @@ export interface KernelEntryJournalReadCarrierOccurrence {
   access: KernelEntryJournalAccess;
 }
 
-/** The one physical input and final output owned by a global journal record/role. */
+/** The one physical input and final output owned by a global journal record. */
 export interface KernelEntryJournalReadCarrierMaterialization {
   recordOrdinal: number;
+  /**
+   * The proof role used by the first physical authentication. Later accesses may
+   * refer to the same physical record as the other role (a target can later be
+   * a predecessor); ownership nevertheless remains per record ordinal.
+   */
   recordRole: 'target' | 'predecessor';
   firstAuthenticator: KernelEntryJournalReadCarrierOccurrence;
   /** A present target and every predecessor are recreated once by the final flush. */
@@ -237,8 +242,9 @@ export interface KernelEntryJournalReadCarrierMaterialization {
  *
  * The prepass is intentionally dormant until GTT publishes `internal-read-carrier` capability and the route
  * recognizes its internally-produced marker. Without that capability, a later zero-auth access would otherwise
- * silently omit a pre-state UTXO under bytecode that still expects it. The key is `(global record ordinal, role)`,
- * not collection-local offset, source names, or caller witness data.
+ * silently omit a pre-state UTXO under bytecode that still expects it. The key is the global record ordinal, not
+ * collection-local offset, proof role, source names, or caller witness data. A physical record may legitimately
+ * occur first as a target and later as a predecessor.
  */
 export function planKernelEntryJournalReadCarrierMaterialization(
   capability: KernelEntryJournalReadCarrierCapability | undefined,
@@ -260,15 +266,19 @@ export function planKernelEntryJournalReadCarrierMaterialization(
     if (!Number.isSafeInteger(occurrence.frameIndex) || occurrence.frameIndex < 0
       || !Number.isSafeInteger(occurrence.accessStreamIndex) || occurrence.accessStreamIndex < 0
       || !Number.isSafeInteger(occurrence.accessOrdinal) || occurrence.accessOrdinal < 0
-      || access.mutates || access.pending) {
+      || access.mutates || access.pending || access.presentBefore !== access.presentAfter) {
       throw new Error('kernel read-carrier materialization accepts only ordered clean read accesses');
     }
-    requireRecordOrdinal('targetRecordOrdinal', access.targetRecordOrdinal);
-    references.push({
-      occurrence, recordOrdinal: access.targetRecordOrdinal, recordRole: 'target',
-      authenticates: access.authenticatesTarget === true,
-      finalOutput: access.presentAfter,
-    });
+    // An absent target is the synthetic 0x0c record. It never owns a physical
+    // carrier: the authenticated predecessor is the marker-bearing record.
+    if (access.presentBefore || access.presentAfter) {
+      requireRecordOrdinal('targetRecordOrdinal', access.targetRecordOrdinal);
+      references.push({
+        occurrence, recordOrdinal: access.targetRecordOrdinal, recordRole: 'target',
+        authenticates: access.authenticatesTarget === true,
+        finalOutput: access.presentAfter,
+      });
+    }
     if (access.predecessorRecordOrdinal !== undefined) {
       requireRecordOrdinal('predecessorRecordOrdinal', access.predecessorRecordOrdinal);
       references.push({
@@ -278,25 +288,24 @@ export function planKernelEntryJournalReadCarrierMaterialization(
       });
     }
   }
-  const byRecordRole = new Map<string, Reference[]>();
+  const byRecord = new Map<number, Reference[]>();
   for (const reference of references) {
-    const key = `${reference.recordOrdinal}:${reference.recordRole}`;
-    const group = byRecordRole.get(key) ?? [];
+    const group = byRecord.get(reference.recordOrdinal) ?? [];
     group.push(reference);
-    byRecordRole.set(key, group);
+    byRecord.set(reference.recordOrdinal, group);
   }
   const materializations: KernelEntryJournalReadCarrierMaterialization[] = [];
-  for (const group of byRecordRole.values()) {
+  for (const group of byRecord.values()) {
     const authenticators = group.filter((reference) => reference.authenticates);
     if (authenticators.length !== 1) {
-      throw new Error('kernel read-carrier record/role requires exactly one first authenticator');
+      throw new Error('kernel read-carrier record requires exactly one first authenticator');
     }
     const firstAuthenticator = authenticators[0]!;
     if (group[0] !== firstAuthenticator) {
       throw new Error('kernel read-carrier consumer precedes its authenticated producer');
     }
     if (group.some((reference) => reference.finalOutput !== firstAuthenticator.finalOutput)) {
-      throw new Error('kernel read-carrier record/role changes final disposition across consumers');
+      throw new Error('kernel read-carrier record changes final disposition across consumers');
     }
     materializations.push({
       recordOrdinal: firstAuthenticator.recordOrdinal,
@@ -305,8 +314,7 @@ export function planKernelEntryJournalReadCarrierMaterialization(
       finalOutput: firstAuthenticator.finalOutput,
     });
   }
-  return materializations.sort((left, right) => left.recordOrdinal - right.recordOrdinal
-    || (left.recordRole === right.recordRole ? 0 : left.recordRole === 'target' ? -1 : 1));
+  return materializations.sort((left, right) => left.recordOrdinal - right.recordOrdinal);
 }
 
 export interface KernelEntryJournalSettlementOutputSegment {

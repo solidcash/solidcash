@@ -572,7 +572,7 @@ describe('kernel pending-entry journal codec', () => {
     });
   });
 
-  it('plans one physical clean-read carrier per global record/role only with compiler capability', () => {
+  it('plans one physical clean-read carrier per global record only with compiler capability', () => {
     const capability = { kind: 'internal-read-carrier', version: 1 } as const;
     const producer = {
       frameIndex: 0, accessStreamIndex: 0, accessOrdinal: 0,
@@ -615,6 +615,37 @@ describe('kernel pending-entry journal codec', () => {
     expect(() => planKernelEntryJournalReadCarrierMaterialization(capability, [producer, {
       ...consumer, access: { ...consumer.access, authenticatesTarget: true },
     }])).toThrow('requires exactly one first authenticator');
+  });
+
+  it('retains one carrier when a physical record is first a target then a predecessor', () => {
+    const capability = { kind: 'internal-read-carrier', version: 1 } as const;
+    const targetProducer = {
+      frameIndex: 0, accessStreamIndex: 0, accessOrdinal: 0,
+      access: {
+        targetRecordOrdinal: 7, presentBefore: true, presentAfter: true, mutates: false,
+        authenticatesTarget: true,
+      },
+    };
+    const predecessorConsumer = {
+      frameIndex: 1, accessStreamIndex: 0, accessOrdinal: 0,
+      access: {
+        targetRecordOrdinal: 8, predecessorRecordOrdinal: 7,
+        presentBefore: false, presentAfter: false, mutates: false,
+        authenticatesPredecessor: false,
+      },
+    };
+    expect(planKernelEntryJournalReadCarrierMaterialization(
+      capability, [targetProducer, predecessorConsumer],
+    )).toEqual([{
+      recordOrdinal: 7,
+      recordRole: 'target',
+      firstAuthenticator: targetProducer,
+      finalOutput: true,
+    }]);
+    expect(() => planKernelEntryJournalReadCarrierMaterialization(capability, [{
+      ...targetProducer,
+      access: { ...targetProducer.access, presentAfter: false },
+    }])).toThrow('accepts only ordered clean read accesses');
   });
 
   it('rejects forged or ambiguous settlement identity programs', () => {

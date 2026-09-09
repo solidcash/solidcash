@@ -2841,11 +2841,10 @@ function injectChunkableEntryWitnesses(ast: Ast): void {
   );
   const chunkable = new Set(
     ast.contract.collections.filter((collection) => {
-      let current: Type = collection.type;
-      while (current instanceof MappingType) current = current.valueType;
-      return current instanceof ArrayType
-        || current === PrimitiveType.STRING
-        || (current instanceof BytesType && current.bound === undefined);
+      const valueType = collection.innermostValueType;
+      return valueType instanceof ArrayType
+        || valueType === PrimitiveType.STRING
+        || (valueType instanceof BytesType && valueType.bound === undefined);
     }).map((collection) => collection.name),
   );
   const inject = (fn: FunctionDefinitionNode | undefined): void => {

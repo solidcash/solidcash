@@ -20,6 +20,7 @@ import {
   kernelEntryJournalSettlementOutputSegments,
   planKernelEntryJournalSettlementOutputs,
   planKernelEntryJournalReadCarrierMaterialization,
+  planKernelEntryJournalReadCarrierPhysicalPlan,
   planKernelEntryJournalSettlementOutputSegments,
   validateKernelEntryJournalSettlementGroups,
   planKernelEntryJournalStreams,
@@ -646,6 +647,58 @@ describe('kernel pending-entry journal codec', () => {
       ...targetProducer,
       access: { ...targetProducer.access, presentAfter: false },
     }])).toThrow('accepts only ordered clean read accesses');
+  });
+
+  it('derives clean-read physical inputs, dense outputs, and stream accounting after global ordinals exist', () => {
+    const capability = { kind: 'internal-read-carrier', version: 1 } as const;
+    const firstTarget = {
+      frameIndex: 0, accessStreamIndex: 0, accessOrdinal: 0,
+      access: {
+        targetRecordOrdinal: 9, presentBefore: true, presentAfter: true, mutates: false,
+        authenticatesTarget: true,
+      },
+    };
+    const firstPredecessor = {
+      frameIndex: 0, accessStreamIndex: 1, accessOrdinal: 0,
+      access: {
+        targetRecordOrdinal: 10, predecessorRecordOrdinal: 4,
+        presentBefore: false, presentAfter: false, mutates: false,
+        authenticatesPredecessor: true,
+      },
+    };
+    const targetConsumer = {
+      frameIndex: 1, accessStreamIndex: 0, accessOrdinal: 0,
+      access: { targetRecordOrdinal: 9, presentBefore: true, presentAfter: true, mutates: false },
+    };
+    const predecessorConsumer = {
+      frameIndex: 1, accessStreamIndex: 1, accessOrdinal: 0,
+      access: {
+        targetRecordOrdinal: 11, predecessorRecordOrdinal: 4,
+        presentBefore: false, presentAfter: false, mutates: false,
+      },
+    };
+    const plan = planKernelEntryJournalReadCarrierPhysicalPlan(
+      capability, [firstTarget, firstPredecessor, targetConsumer, predecessorConsumer],
+    );
+    expect(plan.occurrences.map(({ recordOrdinal, recordRole, materializesInput }) => (
+      ({ recordOrdinal, recordRole, materializesInput })
+    ))).toEqual([
+      { recordOrdinal: 9, recordRole: 'target', materializesInput: true },
+      { recordOrdinal: 4, recordRole: 'predecessor', materializesInput: true },
+      { recordOrdinal: 9, recordRole: 'target', materializesInput: false },
+      { recordOrdinal: 4, recordRole: 'predecessor', materializesInput: false },
+    ]);
+    // Outputs are global-record order, not source execution order (9 appeared before 4).
+    expect(plan.outputs).toEqual([
+      { recordOrdinal: 4, outputOrdinal: 0 },
+      { recordOrdinal: 9, outputOrdinal: 1 },
+    ]);
+    expect(plan.streamAccounting).toEqual([
+      { frameIndex: 0, accessStreamIndex: 0, inputCount: 1, outputCount: 1 },
+      { frameIndex: 0, accessStreamIndex: 1, inputCount: 1, outputCount: 1 },
+      { frameIndex: 1, accessStreamIndex: 0, inputCount: 0, outputCount: 0 },
+      { frameIndex: 1, accessStreamIndex: 1, inputCount: 0, outputCount: 0 },
+    ]);
   });
 
   it('rejects forged or ambiguous settlement identity programs', () => {

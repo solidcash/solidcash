@@ -237,6 +237,85 @@ export interface KernelEntryJournalReadCarrierMaterialization {
   finalOutput: boolean;
 }
 
+/** One source occurrence after logical carrier ownership has been resolved. */
+export interface KernelEntryJournalReadCarrierPhysicalOccurrence {
+  occurrence: KernelEntryJournalReadCarrierOccurrence;
+  /** The global record selected by this read (target when present, predecessor when absent). */
+  recordOrdinal: number;
+  recordRole: 'target' | 'predecessor';
+  /** True only at the unique source occurrence which co-spends the entry NFT. */
+  materializesInput: boolean;
+}
+
+/** One dense final-flush output. Its order is global-record order, never source-stream order. */
+export interface KernelEntryJournalReadCarrierPhysicalOutput {
+  recordOrdinal: number;
+  outputOrdinal: number;
+}
+
+/**
+ * Accounting owned by a source stream. `outputCount` identifies output ownership only; callers must use
+ * `outputs` for physical output order because the route flushes those in dense global-record order.
+ */
+export interface KernelEntryJournalReadCarrierStreamAccounting {
+  frameIndex: number;
+  accessStreamIndex: number;
+  inputCount: number;
+  outputCount: number;
+}
+
+/**
+ * Pure boundary between logical journal topology and physical transaction construction for clean read carriers.
+ * It intentionally carries no UTXO, commitment, collection name, or source identifier: those are resolved by the
+ * caller only after this plan establishes authenticated global-record ownership.
+ */
+export interface KernelEntryJournalReadCarrierPhysicalPlan {
+  occurrences: KernelEntryJournalReadCarrierPhysicalOccurrence[];
+  inputs: KernelEntryJournalReadCarrierMaterialization[];
+  outputs: KernelEntryJournalReadCarrierPhysicalOutput[];
+  streamAccounting: KernelEntryJournalReadCarrierStreamAccounting[];
+}
+
+type KernelEntryJournalReadCarrierReference = {
+  occurrence: KernelEntryJournalReadCarrierOccurrence;
+  recordOrdinal: number;
+  recordRole: 'target' | 'predecessor';
+  authenticates: boolean;
+  finalOutput: boolean;
+};
+
+function readCarrierReferences(
+  occurrence: KernelEntryJournalReadCarrierOccurrence,
+): KernelEntryJournalReadCarrierReference[] {
+  const { access } = occurrence;
+  if (!Number.isSafeInteger(occurrence.frameIndex) || occurrence.frameIndex < 0
+    || !Number.isSafeInteger(occurrence.accessStreamIndex) || occurrence.accessStreamIndex < 0
+    || !Number.isSafeInteger(occurrence.accessOrdinal) || occurrence.accessOrdinal < 0
+    || access.mutates || access.pending || access.presentBefore !== access.presentAfter) {
+    throw new Error('kernel read-carrier materialization accepts only ordered clean read accesses');
+  }
+  const references: KernelEntryJournalReadCarrierReference[] = [];
+  // An absent target is the synthetic 0x0c record. It never owns a physical
+  // carrier: the authenticated predecessor is the marker-bearing record.
+  if (access.presentBefore || access.presentAfter) {
+    requireRecordOrdinal('targetRecordOrdinal', access.targetRecordOrdinal);
+    references.push({
+      occurrence, recordOrdinal: access.targetRecordOrdinal, recordRole: 'target',
+      authenticates: access.authenticatesTarget === true,
+      finalOutput: access.presentAfter,
+    });
+  }
+  if (access.predecessorRecordOrdinal !== undefined) {
+    requireRecordOrdinal('predecessorRecordOrdinal', access.predecessorRecordOrdinal);
+    references.push({
+      occurrence, recordOrdinal: access.predecessorRecordOrdinal, recordRole: 'predecessor',
+      authenticates: access.authenticatesPredecessor === true,
+      finalOutput: true,
+    });
+  }
+  return references;
+}
+
 /**
  * Plan physical ownership for repeated, read-only accesses after global topology is known.
  *
@@ -253,42 +332,8 @@ export function planKernelEntryJournalReadCarrierMaterialization(
   if (capability?.kind !== 'internal-read-carrier' || capability.version !== 1) {
     throw new Error('kernel read-carrier materialization requires compiler internal-read-carrier capability');
   }
-  type Reference = {
-    occurrence: KernelEntryJournalReadCarrierOccurrence;
-    recordOrdinal: number;
-    recordRole: 'target' | 'predecessor';
-    authenticates: boolean;
-    finalOutput: boolean;
-  };
-  const references: Reference[] = [];
-  for (const occurrence of occurrences) {
-    const { access } = occurrence;
-    if (!Number.isSafeInteger(occurrence.frameIndex) || occurrence.frameIndex < 0
-      || !Number.isSafeInteger(occurrence.accessStreamIndex) || occurrence.accessStreamIndex < 0
-      || !Number.isSafeInteger(occurrence.accessOrdinal) || occurrence.accessOrdinal < 0
-      || access.mutates || access.pending || access.presentBefore !== access.presentAfter) {
-      throw new Error('kernel read-carrier materialization accepts only ordered clean read accesses');
-    }
-    // An absent target is the synthetic 0x0c record. It never owns a physical
-    // carrier: the authenticated predecessor is the marker-bearing record.
-    if (access.presentBefore || access.presentAfter) {
-      requireRecordOrdinal('targetRecordOrdinal', access.targetRecordOrdinal);
-      references.push({
-        occurrence, recordOrdinal: access.targetRecordOrdinal, recordRole: 'target',
-        authenticates: access.authenticatesTarget === true,
-        finalOutput: access.presentAfter,
-      });
-    }
-    if (access.predecessorRecordOrdinal !== undefined) {
-      requireRecordOrdinal('predecessorRecordOrdinal', access.predecessorRecordOrdinal);
-      references.push({
-        occurrence, recordOrdinal: access.predecessorRecordOrdinal, recordRole: 'predecessor',
-        authenticates: access.authenticatesPredecessor === true,
-        finalOutput: true,
-      });
-    }
-  }
-  const byRecord = new Map<number, Reference[]>();
+  const references = occurrences.flatMap(readCarrierReferences);
+  const byRecord = new Map<number, KernelEntryJournalReadCarrierReference[]>();
   for (const reference of references) {
     const group = byRecord.get(reference.recordOrdinal) ?? [];
     group.push(reference);
@@ -315,6 +360,64 @@ export function planKernelEntryJournalReadCarrierMaterialization(
     });
   }
   return materializations.sort((left, right) => left.recordOrdinal - right.recordOrdinal);
+}
+
+/**
+ * Convert source-ordered clean-read occurrences into the complete physical ownership plan after the caller has
+ * assigned global record ordinals. This is deliberately dormant until the compiler advertises the corresponding
+ * internal marker capability: it does not itself authorize omitting an input.
+ */
+export function planKernelEntryJournalReadCarrierPhysicalPlan(
+  capability: KernelEntryJournalReadCarrierCapability | undefined,
+  occurrences: readonly KernelEntryJournalReadCarrierOccurrence[],
+): KernelEntryJournalReadCarrierPhysicalPlan {
+  const inputs = planKernelEntryJournalReadCarrierMaterialization(capability, occurrences);
+  const inputByRecord = new Map(inputs.map((input) => [input.recordOrdinal, input]));
+  const seenOccurrence = new Set<string>();
+  const plannedOccurrences: KernelEntryJournalReadCarrierPhysicalOccurrence[] = [];
+  const accounting = new Map<string, KernelEntryJournalReadCarrierStreamAccounting>();
+  const streamKey = (occurrence: KernelEntryJournalReadCarrierOccurrence): string => (
+    `${occurrence.frameIndex}:${occurrence.accessStreamIndex}`
+  );
+  for (const occurrence of occurrences) {
+    const occurrenceKey = `${streamKey(occurrence)}:${occurrence.accessOrdinal}`;
+    if (seenOccurrence.has(occurrenceKey)) {
+      throw new Error(`kernel read-carrier physical plan repeats source occurrence ${occurrenceKey}`);
+    }
+    seenOccurrence.add(occurrenceKey);
+    const references = readCarrierReferences(occurrence);
+    // A clean read names exactly one physical carrier: its present target or its absent-proof predecessor.
+    if (references.length !== 1) {
+      throw new Error('kernel read-carrier physical plan requires one selected record per clean read');
+    }
+    const reference = references[0]!;
+    const input = inputByRecord.get(reference.recordOrdinal);
+    if (!input) throw new Error('kernel read-carrier physical plan lost a selected record owner');
+    const materializesInput = input.firstAuthenticator === occurrence;
+    plannedOccurrences.push({
+      occurrence, recordOrdinal: reference.recordOrdinal, recordRole: reference.recordRole, materializesInput,
+    });
+    const key = streamKey(occurrence);
+    const counts = accounting.get(key) ?? {
+      frameIndex: occurrence.frameIndex, accessStreamIndex: occurrence.accessStreamIndex,
+      inputCount: 0, outputCount: 0,
+    };
+    if (materializesInput) {
+      counts.inputCount += 1;
+      if (input.finalOutput) counts.outputCount += 1;
+    }
+    accounting.set(key, counts);
+  }
+  const outputs = inputs.filter((input) => input.finalOutput).map((input, outputOrdinal) => ({
+    recordOrdinal: input.recordOrdinal, outputOrdinal,
+  }));
+  return {
+    occurrences: plannedOccurrences,
+    inputs,
+    outputs,
+    streamAccounting: [...accounting.values()].sort((left, right) => left.frameIndex - right.frameIndex
+      || left.accessStreamIndex - right.accessStreamIndex),
+  };
 }
 
 export interface KernelEntryJournalSettlementOutputSegment {

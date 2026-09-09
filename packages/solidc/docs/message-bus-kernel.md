@@ -104,7 +104,10 @@ The finite stop procedure is:
 4. Record the census commit, commands, pass counts, cold compile times, and route/full artifact sizes in the beta
    release notes. Performance numbers are evidence; only loss of row-loop scaling or an agreed hard platform limit
    is a blocker.
-5. Cut the beta and move all remaining fenced shapes and newly proposed admission families to the post-beta
+5. Treat a corpus compile above the platform limit as compatibility evidence, not deployability evidence. Every
+   contract advertised as deployable must prove that its actual executable root and every split facet, including
+   constructor and widest-call overhead, fit BCH's 10,000-byte per-input limit.
+6. Cut the beta and move all remaining fenced shapes and newly proposed admission families to the post-beta
    backlog. Resume the release branch only for a blocker defined above.
 
 The conservative beta boundary currently keeps these shapes frozen:

@@ -134,8 +134,10 @@ import {
   kernelEntryJournalRecordSegmentName,
   encodeKernelEntryJournalRecordSegment,
   kernelEntryJournalReadCarrierCapabilityFromArtifact,
+  kernelEntryJournalReadCarrierCapabilityCovers,
   planKernelEntryJournalAccessTopology,
   planKernelEntryJournalPhysicalSettlement,
+  resolveKernelEntryJournalDirtyFinalBodies,
   planKernelEntryJournalSettlementAuthority,
   planKernelEntryJournalSettlementOutputs,
   validateKernelEntryJournalSettlementGroups,
@@ -144,6 +146,7 @@ import {
   type KernelEntryJournalAccess,
   type KernelEntryJournalSettlementOccurrence,
   type KernelEntryJournalSettlementReference,
+  type KernelEntryJournalDirtyFinalBodyCandidate,
   type KernelEntryJournalTopologyOperation,
 } from './KernelEntryJournal.js';
 import { resolveKernelDelegatePromotion } from './KernelDelegateForwarding.js';
@@ -16865,7 +16868,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // change physical input ownership: without the in-bytecode 0x11 producer/consumer protocol, deferring this
     // materialization would merely create a transaction whose route still expects the old input geometry.
     const internalReadCarrierCapability = kernelEntryJournalReadCarrierCapabilityFromArtifact(entryArtifact);
-    const deferRuntimeJournalMaterialization = internalReadCarrierCapability !== undefined;
+    // Scope validation happens after the selected handler frames are known. Until then preserve the legacy
+    // materializer: a route-level capability must never be treated as permission for an unrelated stream.
+    let deferRuntimeJournalMaterialization = false;
     /**
      * A handler describes its physical journal effects while it is traversed.  The legacy materializer below
      * deliberately drains those descriptions at the end of that handler for now, preserving its established
@@ -16874,7 +16879,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
      */
     type RuntimeJournalMaterializationIntent =
       | { kind: 'input'; input: UnlockableUtxo; collection: string }
-      | { kind: 'outputs'; collection: string; commitments: string[] };
+      | { kind: 'outputs'; collection: string; commitments: string[];
+        /** Compiler-owned source stream coordinate; required before a deferred dirty body may be ordinal-bound. */
+        journalStream?: { frameIndex: number; accessStreamIndex: number } };
     const runtimeJournalMaterializationIntents: RuntimeJournalMaterializationIntent[] = [];
     const captureRuntimeJournalInputIntent = (
       input: UnlockableUtxo, collection: string, allowExistingScalarReuse = false,
@@ -16894,8 +16901,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       runtimeJournalMaterializationIntents.push({ kind: 'input', input, collection });
       return true;
     };
-    const captureRuntimeJournalOutputIntent = (collection: string, commitments: string[]): void => {
-      runtimeJournalMaterializationIntents.push({ kind: 'outputs', collection, commitments });
+    const captureRuntimeJournalOutputIntent = (
+      collection: string,
+      commitments: string[],
+      journalStream?: { frameIndex: number; accessStreamIndex: number },
+    ): void => {
+      runtimeJournalMaterializationIntents.push({ kind: 'outputs', collection, commitments, journalStream });
     };
     const materializeLegacyRuntimeJournalIntents = (start: number): void => {
       if (deferRuntimeJournalMaterialization) return;
@@ -17035,6 +17046,24 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       : (entryAbiFunction?.sortedUpsertLoopInfo?.length ?? 0) > 0
         ? [{ abiFunction: entryAbiFunction!, args: entryArgs, routed: false, row: undefined }]
         : [];
+    const scopedJournalStreams = upsertPlanningFrames.flatMap((frame) => (
+      (frame.abiFunction.sortedUpsertLoopInfo ?? []).map((info) => ({
+        selector: frame.abiFunction.selector,
+        accessStreamIndex: info.journalAccessStreamIndex,
+      }))
+    ));
+    if (internalReadCarrierCapability && scopedJournalStreams.length > 0) {
+      const uncovered = scopedJournalStreams.find((stream) => !kernelEntryJournalReadCarrierCapabilityCovers(
+        internalReadCarrierCapability, stream.selector, stream.accessStreamIndex,
+      ));
+      if (uncovered) {
+        throw new Error(
+          'Compiler internal-read-carrier capability does not cover every selected runtime journal stream; '
+          + 'refusing mixed legacy and carrier materialization.',
+        );
+      }
+      deferRuntimeJournalMaterialization = true;
+    }
     const runtimeKernelJournalStreams: Array<{
       collection: string;
       collectionHash: Uint8Array;
@@ -18292,7 +18321,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           && (info.op === '+' || info.op === 'set' || isDelete);
         const originalEntry = list.find(slot);
         const journalIdentity = `${info.collectionHash}:${entryAddr}:${slotHex}`;
-        const priorPending = journalSettledScalar
+        // The physical-carrier branch retains final bodies by record ordinal below.  In particular, it must not
+        // borrow the legacy per-handler scalar cache: that cache is keyed by a provisional collection/slot and
+        // assumes its commitment has already been appended to the handler-local output band.
+        const priorPending = journalSettledScalar && !deferRuntimeJournalMaterialization
           ? runtimeJournalPendingScalar.get(journalIdentity) : undefined;
         if (originalEntry || priorPending) {
           // UPDATE (existing recipient): co-spend the entry, mint the updated value ('delete' -> the type default 0).
@@ -18342,7 +18374,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             };
           }
           commitments.push(binToHex(encodeEntryCommitment(entry.slot, entry.nextKey, commitValue(newVal))));
-          if (journalSettledScalar) {
+          if (journalSettledScalar && !deferRuntimeJournalMaterialization) {
             hasPendingExistingScalarSettlement = true;
             runtimeJournalPendingScalar.set(journalIdentity, {
               value: newVal as bigint,
@@ -18465,10 +18497,17 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       }
       if (commitments.length > 0) {
         const prior = sortedLoopCommitments.get(info.collection) ?? [];
-        captureRuntimeJournalOutputIntent(info.collection, commitments);
+        captureRuntimeJournalOutputIntent(info.collection, commitments, {
+          frameIndex: upsertFrameIndex,
+          accessStreamIndex: info.journalAccessStreamIndex,
+        });
         materializeLegacyRuntimeJournalIntents(runtimeJournalIntentStart);
-        const merged = sortedLoopCommitments.get(info.collection)!;
-        if (journalArgumentIndex >= 0 && !collection.chunkableValue
+        // Deferred carrier materialization deliberately leaves the legacy collection-local output cache empty.
+        // Keep using this handler's exact final commitments for its local bookkeeping; global settlement will bind
+        // each dirty body to a record ordinal once topology has assigned the transaction-wide coordinates.
+        const merged = deferRuntimeJournalMaterialization ? commitments
+          : sortedLoopCommitments.get(info.collection)!;
+        if (!deferRuntimeJournalMaterialization && journalArgumentIndex >= 0 && !collection.chunkableValue
           && /^(?:u?int\d*|u?fixed\d*x\d*|bigint)$/.test(collection.valueType)
           && (info.op === '+' || info.op === 'set' || isDelete)) {
           merged.forEach((commitment, commitmentIndex) => {
@@ -18651,7 +18690,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     ));
     const kernelRouteSettlement = entryArtifact.messageBus?.convention === 'kernel-row-loop'
       && entryAbiFunction?.selector === entryArtifact.messageBus.selector;
-    const pendingScalarSettlementActive = kernelRouteSettlement
+    const pendingScalarSettlementActive = !deferRuntimeJournalMaterialization && kernelRouteSettlement
       && (hasPendingScalarDependency || hasPendingExistingScalarSettlement
         || singletonRuntimeExpressionSettlement);
     if (pendingScalarSettlementActive) {
@@ -18792,25 +18831,83 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         insertLoopPredecessors.push(candidate);
       }
 
-      // Output records are dense in global ordinal order. A clean record can be recreated directly from the
-      // authenticated carrier; a dirty body needs a future versioned dirty-carrier body protocol and is refused
-      // rather than guessed from a source-level write. This keeps the unpublished read capability incapable of
-      // accidentally admitting mixed settlement.
-      const physicalLocations = new Map<number, { collection: string; offset: number }>();
-      for (const output of physicalSettlementPlan.outputs) {
-        const record = decodeKernelEntryJournalRecord(kernelJournalRecords[output.recordOrdinal]!);
-        if (record.dirty) {
+      // Output records are dense in global ordinal order. Clean bodies are reconstructed from their authenticated
+      // carrier. Dirty bodies are never inferred from the old per-handler commitment cache: after the planner has
+      // assigned global record ordinals, bind one complete candidate commitment to each dirty final authority.
+      // This path remains behind the unpublished compiler capability, but is deliberately complete enough that a
+      // future publication cannot accidentally revive the legacy source-order cache.
+      const finalRecords = kernelJournalRecords.map((encoded) => decodeKernelEntryJournalRecord(encoded));
+      const streamForSettlementReference = (reference: KernelEntryJournalSettlementReference) => {
+        const stream = runtimeKernelJournalStreams.find((candidate) => (
+          candidate.frameIndex === reference.frameIndex
+          && candidate.accessStreamIndex === reference.accessStreamIndex
+        ));
+        if (!stream) throw new Error('Kernel physical settlement output has no owning stream.');
+        const access = remappedKernelStreamAccesses.get(stream)?.[reference.accessOrdinal];
+        if (!access) {
           throw new Error(
-            'Compiler internal-read-carrier capability cannot settle dirty journal bodies without a versioned '
-            + 'dirty-carrier protocol.',
+            `Kernel physical settlement output has no access ${reference.accessOrdinal} in its owning stream.`,
           );
         }
-        const owner = runtimeKernelJournalStreams.find((stream) => stream.frameIndex === output.finalOwner.frameIndex
-          && stream.accessStreamIndex === output.finalOwner.accessStreamIndex);
-        if (!owner) throw new Error('Kernel physical settlement output has no owning stream.');
+        return { stream, access };
+      };
+      for (const output of physicalSettlementPlan.outputs) {
+        const { access } = streamForSettlementReference(output.finalOwner);
+        if ((output.finalOwner.settlementRole === 'mutation-settlement') !== access.mutates) {
+          throw new Error('Kernel physical settlement final authority disagrees with its compact access.');
+        }
+        if (access.mutates) finalRecords[output.recordOrdinal]!.dirty = true;
+      }
+
+      // `runtimeJournalMaterializationIntents` carries the exact complete commitments calculated from current
+      // state and user arguments. It is not an authority map. First identify a final output record, then attach
+      // its global ordinal to an exactly-one collection/slot candidate before handing it to the resolver.
+      const deferredOutputCandidates = runtimeJournalMaterializationIntents
+        .filter((intent): intent is Extract<RuntimeJournalMaterializationIntent, { kind: 'outputs' }> => (
+          intent.kind === 'outputs'
+        ))
+        .flatMap((intent) => intent.commitments.map((commitment) => ({
+          collection: intent.collection,
+          commitment: hexToBin(commitment),
+          journalStream: intent.journalStream,
+        })));
+      const dirtyCandidates: KernelEntryJournalDirtyFinalBodyCandidate[] = [];
+      for (const output of physicalSettlementPlan.outputs) {
+        const record = finalRecords[output.recordOrdinal]!;
+        if (!record.dirty) continue;
+        const { stream } = streamForSettlementReference(output.finalOwner);
+        const matches = deferredOutputCandidates.filter((candidate) => {
+          if (candidate.collection !== stream.collection
+            || candidate.journalStream?.frameIndex !== output.finalOwner.frameIndex
+            || candidate.journalStream?.accessStreamIndex !== output.finalOwner.accessStreamIndex) return false;
+          const decoded = decodeEntryCommitment(candidate.commitment);
+          return binsAreEqual(decoded.slot, record.slot);
+        });
+        // Do not choose a "last" provisional body. Multiple candidates mean the row-local materializer has
+        // expressed an ambiguity which this version of the carrier protocol cannot authenticate.
+        if (matches.length !== 1) {
+          throw new Error(
+            `Kernel physical settlement requires exactly one ordinal-bound dirty body for record ${output.recordOrdinal}; `
+            + `found ${matches.length}.`,
+          );
+        }
+        dirtyCandidates.push({ recordOrdinal: output.recordOrdinal, commitment: matches[0]!.commitment });
+      }
+      const dirtyBodies = new Map(resolveKernelEntryJournalDirtyFinalBodies(
+        physicalSettlementPlan, finalRecords, dirtyCandidates,
+      ).map((body) => [body.recordOrdinal, body.commitment]));
+      const physicalLocations = new Map<number, { collection: string; offset: number }>();
+      for (const output of physicalSettlementPlan.outputs) {
+        const record = finalRecords[output.recordOrdinal]!;
+        const { stream: owner } = streamForSettlementReference(output.finalOwner);
         const commitments = sortedLoopCommitments.get(owner.collection) ?? [];
         const offset = commitments.length;
-        commitments.push(binToHex(encodeEntryCommitment(record.slot, record.nextKey, record.value)));
+        const commitment = record.dirty ? dirtyBodies.get(output.recordOrdinal)
+          : encodeEntryCommitment(record.slot, record.nextKey, record.value);
+        if (!commitment) {
+          throw new Error(`Kernel physical settlement lost resolved dirty body for record ${output.recordOrdinal}.`);
+        }
+        commitments.push(binToHex(commitment));
         sortedLoopCommitments.set(owner.collection, commitments);
         physicalLocations.set(output.recordOrdinal, { collection: owner.collection, offset });
       }

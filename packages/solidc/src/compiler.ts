@@ -171,7 +171,7 @@ import { BinaryOperator, NullaryOperator, UnaryOperator } from './ast/Operator.j
 import {
   analyzeChildDeploymentRecipes, analyzeFixedBchEffectRecipes, childDeploymentCollectionDefinitions,
   childDeploymentGenesisEntries, childDeploymentGenesisState, childDeploymentStructDefinitions,
-  childDeploymentValueRecipe,
+  childDeploymentValueRecipe, hasExactRecipeHelperIdentity,
 } from './deploymentRecipes.js';
 import { cloneNode } from './ast/clone.js';
 import { hasEffectiveCallValue } from './semantic/branchOps.js';
@@ -10239,9 +10239,10 @@ function compileResolvedAst(
         }
         if (value instanceof FunctionCallNode) {
           const key = `${value.identifier.name}/${value.parameters.length}`;
-          // Keep overload admission closed until the source snapshot publishes the resolved signature, not just
-          // a same-name/same-arity spelling that later inlining happens to disambiguate.
-          if ((helperSignatureCounts.get(key) ?? 0) > 1) return false;
+          // Use the executable recipe resolver's semantic identity / unique exact-signature decision. This
+          // accepts a proven overload without guessing from spelling, arity, or traversal order.
+          if ((helperSignatureCounts.get(key) ?? 0) > 1
+            && !hasExactRecipeHelperIdentity(value, ast.contract.functions)) return false;
         }
         for (const [key, child] of Object.entries(value)) {
           if (['definition', 'functionReference', 'resolvedFunction', 'referencedContract', 'symbolTable',
@@ -10549,7 +10550,10 @@ function compileResolvedAst(
   }
 
   // Nested local-array element write `b[i][j] = v` -> read-modify-write over single-level ops (before semantic).
-  if (!(rootSourceCoversProgram(ast) && !code.includes('[]'))) {
+  // Fixed arrays spell their bound between the brackets (`S[1]`), but indexed struct-field writes on them are
+  // represented by the same pre-semantic MappingFieldAssign node as dynamic arrays. Any bracketed source can
+  // therefore require this safe no-op traversal; checking only the empty `[]` spelling skips the fixed case.
+  if (!(rootSourceCoversProgram(ast) && !code.includes('['))) {
     ast = ast.accept(new DesugarNestedArrayWrite()) as Ast;
   }
 
@@ -10692,14 +10696,15 @@ function compileResolvedAst(
 
   // A whole dynamic-array copy with a differing element type (`bytes10[] = bytes8[]`) desugars to a delete +
   // per-element casting push loop; must precede CacheDynamicArrayInLoop so the emitted push-in-loop is cached.
-  const needsDynamicArrayLowering = needsLoop || !(rootSourceCoversProgram(ast) && !code.includes('[]'));
-  if (needsDynamicArrayLowering) {
-    ast = ast.accept(new DesugarDynamicArrayCopyCast()) as Ast;
-  }
+  const shouldDesugarDynamicArrayCopy = needsLoop || !(rootSourceCoversProgram(ast) && !code.includes('[]'));
+  const dynamicArrayCopyDesugar = new DesugarDynamicArrayCopyCast();
+  if (shouldDesugarDynamicArrayCopy) ast = ast.accept(dynamicArrayCopyDesugar) as Ast;
   // A dynamic (chunk-backed) array written inside a loop can't use the once-per-function pending-value write
   // model; cache it in a local, mutate the local in the loop, flush back once. The copy-cast pass immediately
   // above can synthesize such a loop from loop-free source, so its admission predicate must carry through here.
-  if (needsDynamicArrayLowering) ast = ast.accept(new CacheDynamicArrayInLoop()) as Ast;
+  if (needsLoop || dynamicArrayCopyDesugar.didSynthesizeLoop) {
+    ast = ast.accept(new CacheDynamicArrayInLoop()) as Ast;
+  }
   // A vmap (sorted) mapping ARRAY value written in a loop `for(..) m[k][j]=v` is cached the same way: read m[k] once,
   // mutate the local array in the runtime loop, flush `m[k] = local` as one upsert (never unroll the loop).
   // Loop-free same-key writes (`m[k]=m[k]+a; m[k]=m[k]+b`) also need the one-upsert cache.

@@ -9,7 +9,7 @@ const KERNEL = {
 } as const;
 
 describe('kernel finite helper abrupt domains', () => {
-  it('carries disjoint nested break and continue paths into a derived mapping-key recipe', () => {
+  it('publishes the derived recipe but fences multi-arm helper replay for beta', () => {
     const artifact = compileString(`contract HelperAbruptDomains() {
       mapping(int => int) records;
       function derive(int[] memory keys, int base, bool stop) internal pure {
@@ -32,7 +32,7 @@ describe('kernel finite helper abrupt domains', () => {
     }`, KERNEL);
 
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'apply'))
-      .toMatchObject({ eligible: true });
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
     expect(artifact.abi.find((handler) => handler.name === 'apply')?.sortedUpsertLoopInfo?.[0])
       .toMatchObject({
         collection: 'records',

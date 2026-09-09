@@ -2705,10 +2705,10 @@ export function stripSurplusEmptyCollectionEntries(
   return stripped;
 }
 
-/** Resolve the one active chunkable dynamic-array collection written by a composed group.
+/** Resolve the one active chunkable dynamic-value collection written by a composed group.
  * Route rows are authoritative when present; a route-level active-write filter narrows union-shaped handlers.
  * Ambiguous metadata fails closed rather than selecting a collection by source-level name. */
-type ChunkableArrayWriteGroup = {
+type ChunkableValueWriteGroup = {
   functionName?: string;
   logicalFunctionName?: string;
   stateLayout?: StateLayout;
@@ -2731,7 +2731,7 @@ type ChunkableArrayWriteGroup = {
  * declares `kernel-row-loop`, missing descriptors mean "not described", never permission to guess from names.
  */
 export function permitsLegacyNamedValueChunkFallback(
-  groups: ReadonlyArray<ChunkableArrayWriteGroup>,
+  groups: ReadonlyArray<ChunkableValueWriteGroup>,
   ownerConvention?: 'legacy-unroll' | 'kernel-row-loop',
 ): boolean {
   if (ownerConvention === 'kernel-row-loop') return false;
@@ -2743,7 +2743,7 @@ export function permitsLegacyNamedValueChunkFallback(
 
 /** Permit inferred event reconstruction only for descriptor-free pre-kernel plans. */
 export function permitsLegacyValueChunkEventReconstruction(
-  groups: ReadonlyArray<ChunkableArrayWriteGroup>,
+  groups: ReadonlyArray<ChunkableValueWriteGroup>,
   hasChunkableValueWriteMetadata: boolean,
   ownerConvention?: 'legacy-unroll' | 'kernel-row-loop',
 ): boolean {
@@ -2753,14 +2753,14 @@ export function permitsLegacyValueChunkEventReconstruction(
 
 /** Legacy delegate event placement is unavailable once either the artifact or the active layout owns the frame. */
 export function permitsLegacyDelegateEventRepair(
-  groups: ReadonlyArray<ChunkableArrayWriteGroup>, compilerOwnedDelegateBlock: boolean,
+  groups: ReadonlyArray<ChunkableValueWriteGroup>, compilerOwnedDelegateBlock: boolean,
   ownerConvention?: 'legacy-unroll' | 'kernel-row-loop',
 ): boolean {
   return !compilerOwnedDelegateBlock
     && permitsLegacyNamedValueChunkFallback(groups, ownerConvention);
 }
 
-function groupChunkableArrayWriteCollections(group: ChunkableArrayWriteGroup): string[] {
+function groupChunkableValueWriteCollections(group: ChunkableValueWriteGroup): string[] {
   const route = group.compilerRoute;
   const artifact = group.logicalArtifact ?? group.externalContract?.inner?.artifact;
   const directName = group.logicalFunctionName ?? group.functionName;
@@ -2782,31 +2782,34 @@ function groupChunkableArrayWriteCollections(group: ChunkableArrayWriteGroup): s
         candidate === access.collection || candidate === collection?.name || candidate === collection?.signature
       ));
       if (!access.operations.includes('write') || !active) continue;
-      if (access.chunkableArrayValue === true) {
+      if (access.chunkableArrayValue === true || collection?.chunkableValue === true) {
         matches.add(collection?.name ?? access.collection);
-      } else if (collection?.chunkableValue === true && collection.valueType.endsWith('[]')) {
-        matches.add(collection.name);
       }
     }
   }
   return [...matches];
 }
 
-export function groupChunkableArrayWriteCollection(
-  group: ChunkableArrayWriteGroup,
+export function groupChunkableValueWriteCollection(
+  group: ChunkableValueWriteGroup,
 ): string | undefined {
-  const matches = groupChunkableArrayWriteCollections(group);
+  const matches = groupChunkableValueWriteCollections(group);
   return matches.length === 1 ? matches[0] : undefined;
 }
 
-export function groupWritesSingleChunkableArrayCollection(group: Parameters<
-  typeof groupChunkableArrayWriteCollection
+export function groupWritesSingleChunkableValueCollection(group: Parameters<
+  typeof groupChunkableValueWriteCollection
 >[0]): boolean {
-  return groupChunkableArrayWriteCollection(group) !== undefined;
+  return groupChunkableValueWriteCollection(group) !== undefined;
 }
 
-function groupChunkableValueWriteIdentity(group: ChunkableArrayWriteGroup): string | undefined {
-  return groupChunkableArrayWriteCollection(group)
+/** @deprecated Use the value-type-general helper. */
+export const groupChunkableArrayWriteCollection = groupChunkableValueWriteCollection;
+/** @deprecated Use the value-type-general helper. */
+export const groupWritesSingleChunkableArrayCollection = groupWritesSingleChunkableValueCollection;
+
+function groupChunkableValueWriteIdentity(group: ChunkableValueWriteGroup): string | undefined {
+  return groupChunkableValueWriteCollection(group)
     ?? (group.valueChunkWrites?.length === 1 ? group.valueChunkWrites[0].collection : undefined)
     ?? legacyPlannedChunkableValueWriteCollection(group);
 }
@@ -2820,7 +2823,7 @@ function groupChunkableValueWriteIdentity(group: ChunkableArrayWriteGroup): stri
  * deliberately left unresolved, allowing the caller to fail closed or use the historical named migration path.
  */
 export function legacyPlannedChunkableValueWriteCollection(
-  group: ChunkableArrayWriteGroup,
+  group: ChunkableValueWriteGroup,
 ): string | undefined {
   if (!Number.isSafeInteger(group.valueChunkOutputCount) || group.valueChunkOutputCount! <= 0) {
     return undefined;
@@ -2861,7 +2864,7 @@ export function legacyPlannedChunkableValueWriteCollection(
 
 /** Resolve a single physical chunkable-value writer from compiler metadata, independent of ABI names. */
 export function selectChunkableValueWriteExecution(
-  candidates: ReadonlyArray<{ group: ChunkableArrayWriteGroup; inputIndex: number }>,
+  candidates: ReadonlyArray<{ group: ChunkableValueWriteGroup; inputIndex: number }>,
 ): { inputIndex: number; abiFunction: AbiFunction; collection: string } | undefined {
   const executions = new Map<string, {
     inputIndex: number; abiFunction: AbiFunction; collection: string;
@@ -6172,7 +6175,7 @@ export class StatefulTransactionBuilder {
   private _hasChunkableValueWriteMetadata(): boolean {
     return [...this.externalCallUtxoGroups, ...this.lowLevelCallUtxoGroups].some((group) =>
       (group.valueChunkWrites?.length ?? 0) > 0
-      || groupChunkableArrayWriteCollections(group).length > 0);
+      || groupChunkableValueWriteCollections(group).length > 0);
   }
 
   private _permitsLegacyNamedValueChunkFallback(): boolean {
@@ -6490,7 +6493,7 @@ export class StatefulTransactionBuilder {
         ? [this.lowLevelCallUtxoGroups[publishLlcIndex].valueChunkOutputCount ?? 0]
         : []),
     );
-    const activeCollection = structural?.collection ?? groupChunkableArrayWriteCollection(
+    const activeCollection = structural?.collection ?? groupChunkableValueWriteCollection(
       publishLlcIndex >= 0
         ? this.lowLevelCallUtxoGroups[publishLlcIndex]
         : publishExternal as ExternalCallUtxoGroup,
@@ -7507,7 +7510,7 @@ export class StatefulTransactionBuilder {
       ...this.externalCallUtxoGroups,
       ...this.lowLevelCallUtxoGroups,
     ];
-    const groupCollections = activeGroups.map(groupChunkableArrayWriteCollections);
+    const groupCollections = activeGroups.map(groupChunkableValueWriteCollections);
     if (groupCollections.some((collections) => collections.length > 1)) return;
     const selectedCollections = new Set(groupCollections.flat());
     for (const variable of this.loopEntryVars) {

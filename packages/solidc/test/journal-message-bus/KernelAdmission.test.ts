@@ -7421,7 +7421,7 @@ describe('required kernel admission', () => {
     });
   });
 
-  it('freezes a fixed transfer recipe whose helper has a same-arity overload', () => {
+  it('selects a fixed transfer recipe helper by its exact overload signature', () => {
     const artifact = compileString(`contract C() {
       int marker;
       function quote(bytes20 digest) internal pure returns (int) { return 2000; }
@@ -7432,8 +7432,7 @@ describe('required kernel admission', () => {
       }
     }`, KERNEL);
     expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'pay')).toMatchObject({
-      eligible: false,
-      rejectionReason: 'KERNEL_LAYOUT',
+      eligible: true,
     });
   });
 

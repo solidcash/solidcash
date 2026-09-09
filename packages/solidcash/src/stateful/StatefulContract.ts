@@ -1657,7 +1657,7 @@ function deriveRouteValueChunks(
   const explicitBase = group.valueChunkOutputBase;
   const witness = valueChunkOutputWitnessCarrier(stb, group);
   const usesSharedBand = explicitBase !== undefined && sharedBand?.start === explicitBase
-    && witness !== undefined && writesChunkableArrayValue(witness.carrier, witness.abiFunction);
+    && witness !== undefined && writesChunkableValue(witness.carrier, witness.abiFunction);
   const pinBand = explicitBase === undefined ? sharedBand : {
     start: explicitBase,
     end: explicitBase + VALUE_CHUNK_MAX_COUNT - 1,
@@ -1694,7 +1694,7 @@ function deriveRouteValueChunks(
     group.valueChunkWrites ?? describeValueChunkWrites(group),
   );
   if (witness && allChunks.length > 0) {
-    for (const collection of chunkableArrayWriteCollections(witness.carrier, witness.abiFunction)) {
+    for (const collection of chunkableValueWriteCollections(witness.carrier, witness.abiFunction)) {
       stb.rememberObservedValueChunks(group.categoryId, collection, allChunks.map((chunk) => ({
         ...chunk, categoryId: group.categoryId,
       })));
@@ -1838,7 +1838,7 @@ export function chunkableWriterGroupIndex(
 ): number {
   const candidates = groups.flatMap((group, index) => {
     const abi = physicalExternalCallFunction(group);
-    return abi && writesChunkableArrayValue(group, abi) ? [index] : [];
+    return abi && writesChunkableValue(group, abi) ? [index] : [];
   });
   if (candidates.length === 1) return candidates[0];
   if (groups.some(hasPublishedEntryEffects)) return -1;
@@ -1895,11 +1895,11 @@ function projectedExternalReturnCandidates(
   return candidates;
 }
 
-function writesChunkableArrayValue(
+function writesChunkableValue(
   group: ExternalCallUtxoGroup,
   abiFunction: AbiFunction,
 ): boolean {
-  return chunkableArrayWriteCollections(group, abiFunction).length > 0;
+  return chunkableValueWriteCollections(group, abiFunction).length > 0;
 }
 
 /** Build exact continuation identities from compiler entry metadata and the planner's authenticated entry input. */
@@ -1922,7 +1922,7 @@ export function describeValueChunkWrites(group: ExternalCallUtxoGroup): ValueChu
       if (!access.operations.includes('write')) continue;
       const collection = group.stateLayout.collections?.find((candidate) =>
         candidate.name === access.collection || candidate.signature === access.collection);
-      if (!collection?.chunkableValue || !collection.valueType.endsWith('[]')) continue;
+      if (!collection?.chunkableValue) continue;
       if (activeWriteCollections !== undefined && !activeWriteCollections.some((candidate) =>
         candidate === access.collection || candidate === collection.name
         || candidate === collection.signature)) continue;
@@ -1953,7 +1953,7 @@ export function describeValueChunkWrites(group: ExternalCallUtxoGroup): ValueChu
   return writes;
 }
 
-function chunkableArrayWriteCollections(
+function chunkableValueWriteCollections(
   group: ExternalCallUtxoGroup,
   abiFunction: AbiFunction,
 ): string[] {
@@ -1971,8 +1971,7 @@ function chunkableArrayWriteCollections(
         && !activeWriteCollections.includes(access.collection))) return [];
     const collection = group.stateLayout.collections?.find((candidate) =>
       candidate.name === access.collection || candidate.signature === access.collection);
-    return access.chunkableArrayValue === true
-      || (collection?.chunkableValue === true && collection.valueType.endsWith('[]'))
+    return access.chunkableArrayValue === true || collection?.chunkableValue === true
       ? [access.collection] : [];
   })))];
 }
@@ -11466,7 +11465,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           if (valueChunkWitness && group.valueChunkOutputBase === undefined) {
             const plannedBand = stb.getPublishJobEventsBand();
             const usesPlannedBand = plannedBand !== undefined
-              && writesChunkableArrayValue(valueChunkWitness.carrier, valueChunkWitness.abiFunction);
+              && writesChunkableValue(valueChunkWitness.carrier, valueChunkWitness.abiFunction);
             // Reuse an already-planned continuation band for the same chunkable writer. Only an unowned run is
             // append-only relative to the participant frame; it must then precede a reverse-indexed suffix and
             // its terminal anchor. Duplicating a planned run at the append coordinate makes later cardinality
@@ -19246,6 +19245,26 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         }> = [];
         const bRelativeOutputInternalArgs = new Set<string>();
         const bHasLoop = (bAbiFunc?.sortedUpsertLoopInfo?.length ?? 0) > 0;
+        // A whole chunkable value assigned from one published ABI parameter is known before VM derivation. Keep
+        // this tied to the compiler's entry effect and valueParam metadata: selecting a merely type-compatible
+        // argument would be ambiguous for functions with multiple dynamic values or collection writes.
+        const bDirectChunkValues = (bAbiFunc?.entryAccesses ?? []).flatMap((access) => {
+          if (!access.operations.includes('write') || access.valueParam === undefined) return [];
+          const collection = bStatelayout.collections?.find((candidate) => (
+            candidate.name === access.collection || candidate.signature === access.collection
+          ));
+          if (!collection?.chunkableValue) return [];
+          const parameterIndex = bAbiFunc!.inputs.findIndex((input) => input.name === access.valueParam);
+          if (parameterIndex < 0) return [];
+          const encoded = encodeFunctionArgument(
+            callInfo.args[parameterIndex], bAbiFunc!.inputs[parameterIndex].type, bStatelayout.structs,
+          );
+          return encoded instanceof Uint8Array ? [{ access, encoded }] : [];
+        });
+        const bDirectChunkValue = bDirectChunkValues.length === 1
+          ? bDirectChunkValues[0].encoded : undefined;
+        const bValueChunkOutputCount = bDirectChunkValue && bDirectChunkValue.length > VALUE_HEAD_SIZE
+          ? Math.ceil((bDirectChunkValue.length - VALUE_HEAD_SIZE) / VALUE_CHUNK_SIZE) : 0;
         // B's keccak256 side-cars (transitive): co-spent inside B's block so B's covenant reads them.
         const bKeccak = await this._resolveExternalKeccakSideCars(
           bAbiFunc, callInfo.args, externalCategoryId, callInfo.externalContract as StatefulContract | null,
@@ -19607,6 +19626,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 }
                 bBlockInputs.push(await makeFunder());
               }
+              for (let index = 0; index < bValueChunkOutputCount; index += 1) {
+                bBlockInputs.push(await makeFunder());
+              }
             }
           }
         }
@@ -19767,6 +19789,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             entryLoopStart: bEntryLoopStart,
             entryLoopCollection: bEntryLoopCollection,
           }),
+          ...(bValueChunkOutputCount > 0 && { valueChunkOutputCount: bValueChunkOutputCount }),
           ...(() => {
             const values: Record<string, StateValue> = {};
             for (const name of bAbiFunc?.dynamicWrites ?? []) {
@@ -19783,6 +19806,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             return Object.keys(values).length > 0 ? { dynamicStateValues: values } : {};
           })(),
         });
+        const directGroup = externalCallUtxoGroups[externalCallUtxoGroups.length - 1];
+        directGroup.valueChunkWrites = describeValueChunkWrites(directGroup);
+        if (bDirectChunkValue && directGroup.valueChunkWrites.length === 1) {
+          stageValueChunkWrite(directGroup.valueChunkWrites[0], bDirectChunkValue);
+        }
       }
 
       // Track per-group metadata (direct + transitive)
@@ -22790,6 +22818,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   refreshRouteDerivedArguments: refreshChunkableRouteWitnesses,
                 }),
               });
+              // Publish the exact continuation resource before constructing the transaction builder. Waiting for
+              // VM derivation is too late: output-band planning already treats compiler collection effects as
+              // authoritative and must not fall back to a category-wide or source-name guess.
+              const childGroup = externalCallUtxoGroups[childExternalGroupIndex];
+              childGroup.valueChunkWrites = describeValueChunkWrites(childGroup);
               if (preparedAtomicNodes) {
                 const atomicNodeIndex = preparedAtomicNodes.length;
                 const runtimeRows = childCompilerRoute?.rowArguments;
@@ -28028,7 +28061,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         let refreshed = false;
         for (const group of valueChunkWitnessGroups) {
           const witness = valueChunkOutputWitnessCarrier(builder, group);
-          if (!witness || !writesChunkableArrayValue(witness.carrier, witness.abiFunction)) continue;
+          if (!witness || !writesChunkableValue(witness.carrier, witness.abiFunction)) continue;
           group.valueChunkOutputBase = outputBase;
           witness.carrier.valueChunkOutputBase = outputBase;
           witness.carrier.internalArgs = {

@@ -25922,6 +25922,20 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // (emitConditionalDeleteVerification, after read-only preservation) so their key_enc/value_enc stay for now.
     for (const [slotIdx, writeInfo] of this.pendingEntryWrites) {
       if (this.condDeleteSlots.has(slotIdx)) continue;
+      const independentlySettled = this.currentFunction.sortedBatchInfo
+        ?.some((batch) => batch.slotIndices.includes(slotIdx))
+        || this.sortedWrittenCollections.has(this.entrySlots[slotIdx]?.collection);
+      if (independentlySettled) {
+        // Sorted upserts authenticate and consume their value at the operation site, then the batch verifier
+        // authenticates topology/cardinality. A branch pre-allocation can still register the logical write in
+        // pendingEntryWrites without leaving the generic key/value placeholders on every converged path (notably
+        // a void early return). Drop placeholders only when that independent path actually allocated them; their
+        // absence is not a lost covenant value because none of the generic verification loops above consumes it.
+        for (const name of [writeInfo.keyStackName, writeInfo.valueStackName]) {
+          if (this.getStackIndex(name, true) >= 0) this.emitDropSettlementValue(name, locationData, node);
+        }
+        continue;
+      }
       this.emitDropSettlementValue(writeInfo.keyStackName, locationData, node);
       this.emitDropSettlementValue(writeInfo.valueStackName, locationData, node);
     }

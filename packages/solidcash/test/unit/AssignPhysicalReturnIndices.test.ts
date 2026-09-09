@@ -148,6 +148,8 @@ import {
   selectProtectedLoopEntryCollections,
   isCompilerDescribedMintingBandWriter,
   StatefulTransactionBuilder,
+  groupChunkableValueWriteCollection,
+  groupWritesSingleChunkableValueCollection,
   groupChunkableArrayWriteCollection,
   groupWritesSingleChunkableArrayCollection,
   selectChunkableValueWriteExecution,
@@ -181,11 +183,13 @@ describe('generic persisted value-chunk write identity', () => {
   const categoryId = 'ab'.repeat(32);
   const slot = new Uint8Array(32).fill(7);
   const signature = 'notices:mapping(int => Notice[])';
-  const makeGroup = (name: string, collectionSignature = signature, insert = false) => {
+  const makeGroup = (
+    name: string, collectionSignature = signature, insert = false, valueType = 'Notice[]',
+  ): import('../../src/stateful/StatefulTransactionBuilder.js').ExternalCallUtxoGroup => {
     const collectionName = collectionSignature.slice(0, collectionSignature.indexOf(':'));
     const collection = {
       name: collectionName, signature: collectionSignature, kind: 'mapping' as const,
-      keyType: 'int', valueType: 'Notice[]', chunkableValue: true,
+      keyType: 'int', valueType, chunkableValue: true,
     };
     const fn = {
       name, inputs: [], outputs: [], entryAccesses: [{
@@ -212,6 +216,29 @@ describe('generic persisted value-chunk write identity', () => {
       }] }),
     } as unknown as import('../../src/stateful/StatefulTransactionBuilder.js').ExternalCallUtxoGroup;
   };
+
+  it('describes scalar bytes/string and array continuations from the same collection effect metadata', () => {
+    for (const valueType of ['bytes', 'string', 'Notice[]']) {
+      const collection = valueType === 'Notice[]' ? 'notices' : `scalar${valueType}`;
+      const candidateGroup = makeGroup(
+        `write${valueType}`, `${collection}:mapping(int => ${valueType})`, false, valueType,
+      );
+      const [descriptor] = describeValueChunkWrites(candidateGroup);
+      expect(descriptor).toMatchObject({
+        collection,
+        collectionSignature: `${collection}:mapping(int => ${valueType})`,
+        keySlot: binToHex(slot),
+        operation: 'update',
+      });
+      expect(groupChunkableValueWriteCollection(candidateGroup)).toBe(collection);
+      expect(groupWritesSingleChunkableValueCollection(candidateGroup)).toBe(true);
+    }
+
+    // The compatibility exports preserve the established array result while new callers use the general API.
+    const array = makeGroup('appendNotice');
+    expect(groupChunkableArrayWriteCollection(array)).toBe('notices');
+    expect(groupWritesSingleChunkableArrayCollection(array)).toBe(true);
+  });
 
   it('confines application-name recovery to pre-kernel artifacts', () => {
     const legacyNamed = { functionName: 'publishJobEvent' };

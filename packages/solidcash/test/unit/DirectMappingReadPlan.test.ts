@@ -95,9 +95,11 @@ describe('directMappingReadPlan', () => {
     const contract = Object.create(StatefulContract.prototype) as StatefulContract;
     Object.assign(contract as unknown as Record<string, unknown>, {
       _inner: { artifact, provider: {} },
-      _getSoftMapping: (collection: string, keys: unknown[]) => (
-        collection === 'quotas' && keys.length === 2 ? 41n : undefined
-      ),
+      // Exercise the strict authenticated-read branch. Soft mappings are intentionally available only to the
+      // explicit legacy corpus simulator, so this unit supplies the already-decoded collection entries.
+      getEntries: async (collection: string) => collection === 'quotas' ? [{
+        keys: [Uint8Array.of(1), Uint8Array.of(2)], value: 41n,
+      }] : [],
     });
     const result = await (contract as unknown as {
       _deriveReturnValue: (name: string, args: unknown[]) => Promise<unknown>;

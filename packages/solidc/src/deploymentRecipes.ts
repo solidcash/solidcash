@@ -129,6 +129,11 @@ const resolvedRecipeHelper = (
   return exactCandidates.length === 1 ? exactCandidates[0] : undefined;
 };
 
+/** True only when a recipe helper call is bound by semantic identity or one unique exact parameter signature. */
+export const hasExactRecipeHelperIdentity = (
+  call: FunctionCallNode, helperFunctions: readonly FunctionDefinitionNode[],
+): boolean => resolvedRecipeHelper(call, helperFunctions) !== undefined;
+
 const materializableGenesisType = (type: Type, stack: ReadonlySet<StructType> = new Set()): boolean => {
   if (type instanceof ArrayType) {
     return type.bound !== undefined && Number.isSafeInteger(type.bound) && type.bound >= 0

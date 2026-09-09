@@ -43,6 +43,9 @@ import { createDefaultValueExpression } from '../ast/defaults.js';
  * local shifts the pushed-to array's dynamic-write slot tracking and crashes codegen); it is not mutated here.
  */
 export default class DesugarDynamicArrayCopyCast extends AstTraversal {
+  /** True only when this traversal introduced a loop which later loop-sensitive passes must process. */
+  didSynthesizeLoop = false;
+
   private stateArrays = new Map<string, ArrayType>();
   private locals = new Set<string>();
   private localArrays = new Map<string, ArrayType>();
@@ -103,7 +106,10 @@ export default class DesugarDynamicArrayCopyCast extends AstTraversal {
       const desugared = visited instanceof AssignNode
         ? this.tryDesugar(visited)
         : visited instanceof StateArrayPushNode ? this.tryDesugarNestedPush(visited) : undefined;
-      if (desugared) out.push(...desugared);
+      if (desugared) {
+        if (desugared.some((statement) => statement instanceof WhileNode)) this.didSynthesizeLoop = true;
+        out.push(...desugared);
+      }
       else out.push(visited);
     }
     node.statements = out;

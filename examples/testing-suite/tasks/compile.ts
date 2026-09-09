@@ -2,6 +2,7 @@ import fs from 'fs';
 import { createRequire } from 'module';
 import { URL, fileURLToPath } from 'url';
 import path from 'path';
+import { writeArtifactIfChanged } from './artifact-freshness.js';
 
 const require = createRequire(import.meta.url);
 
@@ -100,15 +101,15 @@ export const compile = async (): Promise<void> => {
     try {
       const contents = fs.readFileSync(contractFile, { encoding: 'utf-8' });
       const artifact = compileString(contents);
-
-      fs.writeFileSync(jsonOutputFile, formatArtifact(artifact, 'json'));
-      fs.writeFileSync(tsOutputFile, formatArtifact(artifact, 'ts'));
+      const jsonPath = fileURLToPath(jsonOutputFile);
+      const tsPath = fileURLToPath(tsOutputFile);
+      const jsonChanged = writeArtifactIfChanged(jsonPath, formatArtifact(artifact, 'json'));
+      const tsChanged = writeArtifactIfChanged(tsPath, formatArtifact(artifact, 'ts'));
+      console.log(`${jsonChanged || tsChanged ? 'Successfully compiled' : 'Unchanged'} ${fn}`);
     } catch (error: any) {
       console.error(`Error compiling ${fn}: ${error.message}`);
       return;
     }
-
-    console.log(`Successfully compiled ${fn}`);
   });
 };
 

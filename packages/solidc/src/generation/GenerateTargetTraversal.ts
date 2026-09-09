@@ -25031,6 +25031,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       return;
     }
 
+    // Transition before introducing the verifier's untracked pair/slot arguments. It is a zero-result rewrite of
+    // the selected journal bank record, and its balanced altstack scratch leaves the caller's parked predecessor
+    // intact. The target-slot helper below therefore observes the authoritative post-transition carrier without
+    // a stale-depth cursor reparse after helper arguments have been introduced.
+    this.emitKernelJournalReadCarrierTransitionCheck(node, loc);
+
     // Give the shared verifier explicit values; the actual predecessor has already been parked on the altstack.
     this.emit(encodeInt(BigInt(this.getStackIndex(this.sortedUpsertLoopJournalCursorName))), loc);
     this.emit(Op.OP_PICK, loc);
@@ -25077,7 +25083,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_0, loc);
     this.emit(Op.OP_ENDIF, loc);
     this.emit(Op.OP_ROT, loc); this.emit(Op.OP_ADD, loc);
-    this.emitKernelJournalReadCarrierTransitionCheck(node, loc);
     this.emit(encodeInt(BigInt(this.getStackIndex(
       GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_JOURNAL_COUNT,
     ) + 5)), loc);

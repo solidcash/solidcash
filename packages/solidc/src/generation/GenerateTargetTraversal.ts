@@ -7617,23 +7617,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       && (this.isCompilerMessageBusRoute() || this.hasMessageBusParticipantOwner());
   }
 
-  /**
-   * Whether this physical frame defers journal entry outputs to the route-final dense flush.
-   *
-   * The ordinary runtime-loop output cursor has two intentionally separate consumers: per-collection
-   * cardinality proves the exact physical entry count, while trailing effects use it as their output base.
-   * A final journal flush still needs the former on every outlined row, but owns the latter exactly once at the
-   * enclosing route.  Do not infer this mode merely from a journal argument: direct/legacy entry points can
-   * carry ordinary journal context too.  A future release has to publish the capability and run behind the
-   * compiler-owned route/participant ABI.
-   */
-  private kernelJournalFinalOutputCursorReconciliationActive(): boolean {
-    return this.kernelJournalFinalOutputCursorReconciliationReleased()
-      && this.hasKernelJournalRecordCarrier()
-      && this.getStackIndex(GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_OUTPUT_COUNT, true) >= 0
-      && (this.isCompilerMessageBusRoute() || this.hasMessageBusParticipantOwner());
-  }
-
   private functionNeedsRuntimeLoopEventContext(node: FunctionDefinitionNode): boolean {
     return node.functionId !== undefined
       && this.runtimeLoopEventContextFunctionIds.has(node.functionId);

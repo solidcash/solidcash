@@ -7600,6 +7600,40 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     return GenerateTargetTraversalWithLocation.KERNEL_JOURNAL_FINAL_OUTPUT_CURSOR_RECONCILIATION_RELEASED;
   }
 
+  /**
+   * Whether this physical frame defers journal entry outputs to the route-final dense flush.
+   *
+   * The ordinary runtime-loop output cursor has two intentionally separate consumers: per-collection
+   * cardinality proves the exact physical entry count, while trailing effects use it as their output base.
+   * A final journal flush still needs the former on every outlined row, but owns the latter exactly once at the
+   * enclosing route. Do not infer this mode merely from a journal argument: direct/legacy entry points can
+   * carry ordinary journal context too. A future release has to publish the capability and run behind the
+   * compiler-owned route/participant ABI.
+   */
+  private kernelJournalFinalOutputCursorReconciliationActive(): boolean {
+    return this.kernelJournalFinalOutputCursorReconciliationReleased()
+      && this.hasKernelJournalRecordCarrier()
+      && this.getStackIndex(GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_OUTPUT_COUNT, true) >= 0
+      && (this.isCompilerMessageBusRoute() || this.hasMessageBusParticipantOwner());
+  }
+
+  /**
+   * Whether this physical frame defers journal entry outputs to the route-final dense flush.
+   *
+   * The ordinary runtime-loop output cursor has two intentionally separate consumers: per-collection
+   * cardinality proves the exact physical entry count, while trailing effects use it as their output base.
+   * A final journal flush still needs the former on every outlined row, but owns the latter exactly once at the
+   * enclosing route.  Do not infer this mode merely from a journal argument: direct/legacy entry points can
+   * carry ordinary journal context too.  A future release has to publish the capability and run behind the
+   * compiler-owned route/participant ABI.
+   */
+  private kernelJournalFinalOutputCursorReconciliationActive(): boolean {
+    return this.kernelJournalFinalOutputCursorReconciliationReleased()
+      && this.hasKernelJournalRecordCarrier()
+      && this.getStackIndex(GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_OUTPUT_COUNT, true) >= 0
+      && (this.isCompilerMessageBusRoute() || this.hasMessageBusParticipantOwner());
+  }
+
   private functionNeedsRuntimeLoopEventContext(node: FunctionDefinitionNode): boolean {
     return node.functionId !== undefined
       && this.runtimeLoopEventContextFunctionIds.has(node.functionId);
@@ -25731,10 +25765,19 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
     if (accumulate) {
       this.emitAccumulateRuntimeLoopEntryInputs(this.sortedUpsertLoopCounterName, loc);
-      this.emitAccumulateRuntimeLoopEntryOutputs(this.sortedUpsertLoopOutCounterName, loc);
+      // A released dense journal flush owns one transaction-wide output delta.  Keep the exact per-collection
+      // output cardinality checks above, but do not also advance the ordinary trailing-output cursor here: doing
+      // both shifts every later event/transfer/dynamic output by the complete journal band a second time.
+      // Input accumulation remains source-order physical ownership and is deliberately unaffected.
+      const finalJournalFlushOwnsCursor = this.kernelJournalFinalOutputCursorReconciliationActive();
+      if (!finalJournalFlushOwnsCursor) {
+        this.emitAccumulateRuntimeLoopEntryOutputs(this.sortedUpsertLoopOutCounterName, loc);
+      }
       if (includeGroupedBase) {
         this.emitAccumulateRuntimeLoopEntryInputs(this.sortedUpsertInputBaseName, loc);
-        this.emitAccumulateRuntimeLoopEntryOutputs(this.sortedUpsertOutputBaseName, loc);
+        if (!finalJournalFlushOwnsCursor) {
+          this.emitAccumulateRuntimeLoopEntryOutputs(this.sortedUpsertOutputBaseName, loc);
+        }
       }
     }
 

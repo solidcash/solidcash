@@ -22,6 +22,7 @@ import {
   planKernelEntryJournalReadCarrierMaterialization,
   planKernelEntryJournalReadCarrierPhysicalPlan,
   kernelEntryJournalReadCarrierCapabilityFromArtifact,
+  kernelEntryJournalReadCarrierCapabilityCovers,
   planKernelEntryJournalSettlementOutputSegments,
   validateKernelEntryJournalSettlementGroups,
   planKernelEntryJournalStreams,
@@ -44,6 +45,25 @@ const bytes = (length: number, fill: number): Uint8Array => new Uint8Array(lengt
 const ACCESS_COLLECTION_HASH = bytes(20, 0xcc);
 
 describe('kernel pending-entry journal codec', () => {
+  it('scopes a read-carrier capability to one handler journal stream', () => {
+    const capability = {
+      kind: 'internal-read-carrier' as const,
+      version: 1 as const,
+      scopes: [{ handlerSelector: 'a1b2c3d4', journalAccessStreamIndex: 2 }],
+    };
+    expect(kernelEntryJournalReadCarrierCapabilityCovers(capability, 'a1b2c3d4', 2)).toBe(true);
+    expect(kernelEntryJournalReadCarrierCapabilityCovers(capability, 'a1b2c3d4', 1)).toBe(false);
+    expect(kernelEntryJournalReadCarrierCapabilityCovers(capability, 'd4c3b2a1', 2)).toBe(false);
+    // Missing scopes are deliberately not artifact-global compatibility mode.
+    expect(kernelEntryJournalReadCarrierCapabilityCovers(
+      { kind: 'internal-read-carrier', version: 1 }, 'a1b2c3d4', 2,
+    )).toBe(false);
+    expect(kernelEntryJournalReadCarrierCapabilityCovers({
+      kind: 'internal-read-carrier', version: 1,
+      scopes: [{ handlerSelector: 'A1B2C3D4', journalAccessStreamIndex: 2 }],
+    }, 'a1b2c3d4', 2)).toBe(false);
+  });
+
   it('does not infer clean-read carrier ownership from a kernel convention', () => {
     const base = {
       messageBus: {
@@ -58,7 +78,16 @@ describe('kernel pending-entry journal codec', () => {
       messageBus: { ...base.messageBus!, kernelEntryJournal: { version: 1, capabilities: [{
         kind: 'internal-read-carrier', version: 1,
       }] } },
-    })).toEqual({ kind: 'internal-read-carrier', version: 1 });
+    })).toBeUndefined();
+    expect(kernelEntryJournalReadCarrierCapabilityFromArtifact({
+      messageBus: { ...base.messageBus!, kernelEntryJournal: { version: 1, capabilities: [{
+        kind: 'internal-read-carrier', version: 1,
+        scopes: [{ handlerSelector: 'a1b2c3d4', journalAccessStreamIndex: 2 }],
+      }] } },
+    })).toEqual({
+      kind: 'internal-read-carrier', version: 1,
+      scopes: [{ handlerSelector: 'a1b2c3d4', journalAccessStreamIndex: 2 }],
+    });
     expect(kernelEntryJournalReadCarrierCapabilityFromArtifact({
       messageBus: { ...base.messageBus!, routeInBytecode: false, kernelEntryJournal: { version: 1, capabilities: [{
         kind: 'internal-read-carrier', version: 1,

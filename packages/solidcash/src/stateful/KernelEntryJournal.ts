@@ -6,6 +6,7 @@ import {
   MAX_MESSAGE_BUS_BLOB_BYTES,
   type Artifact,
   type JournalSettlementIdentityAbi,
+  type KernelEntryJournalCapabilityScopeAbi,
 } from '@solidcash/utils';
 export {
   KERNEL_ENTRY_JOURNAL_MAX_RECORDS,
@@ -215,6 +216,34 @@ export interface KernelEntryJournalSettlementPlan {
 export interface KernelEntryJournalReadCarrierCapability {
   kind: 'internal-read-carrier';
   version: 1;
+  /** Explicitly bounded route streams. Missing scopes are never interpreted as a wildcard. */
+  scopes?: readonly KernelEntryJournalCapabilityScopeAbi[];
+}
+
+const isKernelEntryJournalReadCarrierScope = (
+  scope: KernelEntryJournalCapabilityScopeAbi,
+): boolean => /^[0-9a-f]{8}$/.test(scope.handlerSelector)
+  && Number.isSafeInteger(scope.journalAccessStreamIndex)
+  && scope.journalAccessStreamIndex >= 0;
+
+/**
+ * Whether an explicitly published capability covers this handler's compact journal stream.
+ *
+ * A capability is deliberately not artifact-global. In particular, missing or malformed
+ * scopes fail closed, so an eventual carrier release cannot defer a dirty/unrelated handler
+ * merely because another handler in the same route has a clean-read carrier.
+ */
+export function kernelEntryJournalReadCarrierCapabilityCovers(
+  capability: KernelEntryJournalReadCarrierCapability | undefined,
+  handlerSelector: string | undefined,
+  journalAccessStreamIndex: number,
+): boolean {
+  if (capability?.kind !== 'internal-read-carrier' || capability.version !== 1
+    || !handlerSelector || !/^[0-9a-f]{8}$/.test(handlerSelector)
+    || !Number.isSafeInteger(journalAccessStreamIndex) || journalAccessStreamIndex < 0) return false;
+  return capability.scopes?.some((scope) => isKernelEntryJournalReadCarrierScope(scope)
+    && scope.handlerSelector === handlerSelector
+    && scope.journalAccessStreamIndex === journalAccessStreamIndex) === true;
 }
 
 /**
@@ -233,8 +262,12 @@ export function kernelEntryJournalReadCarrierCapabilityFromArtifact(
     || route.kernelEntryJournal?.version !== 1
     || !route.atomicMessageBus?.protocolVersions?.includes(2)) return undefined;
   const capability = route.kernelEntryJournal.capabilities?.find((candidate) =>
-    candidate.kind === 'internal-read-carrier' && candidate.version === 1);
-  return capability ? { kind: 'internal-read-carrier', version: 1 } : undefined;
+    candidate.kind === 'internal-read-carrier' && candidate.version === 1
+    && candidate.scopes?.every(isKernelEntryJournalReadCarrierScope));
+  return capability ? {
+    kind: 'internal-read-carrier', version: 1,
+    ...(capability.scopes && { scopes: capability.scopes }),
+  } : undefined;
 }
 
 /** One source-ordered read access after collection-local ordinals have become route-global ordinals. */

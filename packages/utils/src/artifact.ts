@@ -649,6 +649,19 @@ export interface AbiFunction {
   ecrecoverLoopReads?: boolean; // dynamic ecrecover loop: the SDK co-spends one recovery pair per sig-array element
 }
 
+/**
+ * One compiler-authenticated runtime-journal stream which may use a route-local
+ * physical protocol. A handler selector and its compact access-stream ordinal
+ * are both required: a route capability must never defer unrelated handler
+ * rows merely because they share the same artifact.
+ */
+export interface KernelEntryJournalCapabilityScopeAbi {
+  /** Canonical four-byte external handler selector, lowercase hex without 0x. */
+  handlerSelector: string;
+  /** Stable compiler-owned ordinal in that handler's journal-access vector. */
+  journalAccessStreamIndex: number;
+}
+
 export interface CollectionIterationAbi {
   collection: string;
   mode: 'entries' | 'keys' | 'values';
@@ -1369,6 +1382,12 @@ export interface Artifact {
         kind: 'internal-read-carrier';
         /** Version of the route-local marker, first-authentication, and final-flush protocol. */
         version: 1;
+        /**
+         * Exact handler/access-stream pairs to which this physical protocol applies.
+         * Omission is not a wildcard: consumers must fail closed rather than
+         * globally deferring all runtime journal rows in the artifact.
+         */
+        scopes?: readonly KernelEntryJournalCapabilityScopeAbi[];
       }[];
     };
     /** Compiler-emitted OP_INVOKE program moved into genesis-deployed verifier covenants. */

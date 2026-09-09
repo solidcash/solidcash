@@ -24864,7 +24864,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Select from the start of the reserved journal band and add only the dense materialized-output ordinal.
     // The record ordinal remains independent so clean absence proofs cannot leave holes in the physical band.
     this.emitTrailingWriteOutputBase(blockSize, loc, undefined, 7, false);
-    this.emit(encodeInt(6n), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_ADD, loc); // output index
+    // The base is above `[remaining, output ordinal, record ordinal, address, slot, next, value]`.
+    // Pick the dense output ordinal (five below the base), never `remaining` (six below it): the latter
+    // reverses/offsets physical settlement whenever more than one record is present.
+    this.emit(encodeInt(5n), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_ADD, loc); // output index
     this.emit(Op.OP_DUP, loc); this.emit(Op.OP_OUTPUTBYTECODE, loc);
     this.emit(encodeInt(5n), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_EQUALVERIFY, loc);
     this.emit(Op.OP_DUP, loc); this.emit(Op.OP_OUTPUTTOKENCATEGORY, loc);

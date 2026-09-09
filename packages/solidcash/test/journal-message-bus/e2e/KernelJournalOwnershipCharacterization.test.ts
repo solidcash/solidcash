@@ -1,4 +1,4 @@
-import { binToHex } from '@bitauth/libauth';
+import { binToHex, hexToBin } from '@bitauth/libauth';
 import { compileString } from 'solidc';
 import { describe, expect, it } from 'vitest';
 import { Contract, StatefulContract, getEntryNftAddress } from '../../../src/index.js';
@@ -72,11 +72,13 @@ const vmAccepts = (builder: TransactionBuilder): boolean => {
 describe('kernel journal ownership characterization', () => {
   it('pins kernel and legacy bus boundaries while preserving exact stream topology', () => {
     const artifact = compileString(SOURCE, { ...OPTIONS, messageBusKernel: true });
-    for (const name of ['runtimeCopy', 'updatePairs']) {
+    for (const name of ['updatePairs']) {
       expect(artifact.messageBus?.handlers.find((handler) => handler.name === name))
         .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
     }
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'writeTwo'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'runtimeCopy'))
       .toMatchObject({ eligible: true });
     const runtime = artifact.abi.find((fn) => fn.name === 'runtimeCopy')!.sortedUpsertLoopInfo!;
     expect(runtime).toEqual(expect.arrayContaining([
@@ -153,6 +155,89 @@ describe('kernel journal ownership characterization', () => {
     expect(legacy.messageBus?.handlers.find((handler) => handler.name === 'writeTwo'))
       .toMatchObject({ eligible: false, rejectionReason: 'handler-route-generation-unsupported' });
   });
+
+  it('settles same-key source carriers and destination results in source order', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(SOURCE, { ...OPTIONS, messageBusKernel: true });
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(provider, inner, artifact.stateLayout!, {}, { saltContract: true });
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    await contract.call.seed(0n).send();
+    await contract.call.seed(1n).send();
+    const builder = await contract.call.runtimeCopy(2n).build();
+    expect(vmAccepts(builder)).toBe(true);
+    const transaction = builder.buildLibauthTransaction();
+    const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+    const ownerInput = builder.inputs.findIndex((input) => 'abiFunction' in input.unlocker
+      && input.unlocker.abiFunction.name === 'runtimeCopy');
+    const vm = createVirtualMachineBch2026ForProvider(provider);
+    for (const collection of ['source', 'destination']) {
+      const address = binToHex(addressToLockScript(getEntryNftAddress(contract.inner, categoryId, collection)));
+      const outputs = transaction.outputs.map((output, index) => ({ output, index }))
+        .filter(({ output }) => binToHex(output.lockingBytecode) === address);
+      expect(outputs).toHaveLength(2);
+      const hostile = structuredClone(transaction);
+      [hostile.outputs[outputs[0]!.index].token, hostile.outputs[outputs[1]!.index].token] =
+        [hostile.outputs[outputs[1]!.index].token, hostile.outputs[outputs[0]!.index].token];
+      expect(vm.stateSuccess(vm.evaluate({ inputIndex: ownerInput, sourceOutputs, transaction: hostile }))).not.toBe(true);
+    }
+  }, 180_000);
+
+  it('inserts destination entries from authenticated source-only carriers', async () => {
+    const source = `contract ReadToSetCarrier() {
+      mapping(int => int) source;
+      mapping(int => int) destination;
+      function seed(int key, int value) public { this.source[key] = value; require(true); }
+      function copy(int count) public {
+        for (int i = 0; i < count; i = i + 1) this.destination[i] = this.source[i];
+        require(true);
+      }
+      function check(int key, int expected) public { require(this.destination[key] == expected); }
+    }`;
+    const provider = createTestProvider();
+    const artifact = compileString(source, { ...OPTIONS, messageBusKernel: true });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'copy'))
+      .toMatchObject({ eligible: true });
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(provider, inner, artifact.stateLayout!, {}, { saltContract: true });
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    await contract.call.seed(0n, 10n).send();
+    await contract.call.seed(1n, 11n).send();
+    const call = contract.call.copy(2n);
+    const builder = await call.build();
+    expect(vmAccepts(builder)).toBe(true);
+    await expect(call.send()).resolves.toBeDefined();
+    await expect(contract.call.check(0n, 10n).send()).resolves.toBeDefined();
+    await expect(contract.call.check(1n, 11n).send()).resolves.toBeDefined();
+  }, 180_000);
+
+  it('preserves fixed-width bytes carriers across the shared key permutation', async () => {
+    const source = `contract BytesCarrier() {
+      mapping(int => bytes20) source;
+      mapping(int => bytes20) destination;
+      function seed(int key, bytes20 value) public { this.source[key] = value; require(true); }
+      function copy(int count) public {
+        for (int i = 0; i < count; i = i + 1) this.destination[i] = this.source[i];
+        require(true);
+      }
+      function check(int key, bytes20 expected) public { require(this.destination[key] == expected); }
+    }`;
+    const provider = createTestProvider();
+    const artifact = compileString(source, { ...OPTIONS, messageBusKernel: true });
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(provider, inner, artifact.stateLayout!, {}, { saltContract: true });
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    const first = hexToBin('11'.repeat(20));
+    const second = hexToBin('22'.repeat(20));
+    await contract.call.seed(0n, first).send();
+    await contract.call.seed(1n, second).send();
+    const call = contract.call.copy(2n);
+    const builder = await call.build();
+    expect(vmAccepts(builder)).toBe(true);
+    await expect(call.send()).resolves.toBeDefined();
+    await expect(contract.call.check(0n, first).send()).resolves.toBeDefined();
+    await expect(contract.call.check(1n, second).send()).resolves.toBeDefined();
+  }, 180_000);
 
   it('proves legacy-compiled direct-entry semantics and rejects swapped settlement identities', async () => {
     const provider = createTestProvider();

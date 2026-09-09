@@ -261,7 +261,7 @@ describe('required kernel admission', () => {
       .toMatchObject({ eligible: true });
   });
 
-  it('fences runtime read producers beside mutations while retaining fixed-key reads', () => {
+  it('admits one shared-permutation fixed-width read-to-set carrier transfer', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) source;
       mapping(int => int) destination;
@@ -280,7 +280,7 @@ describe('required kernel admission', () => {
       expect.objectContaining({ collection: 'destination', op: 'set' }),
     ]));
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'runtimeCopy'))
-      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+      .toMatchObject({ eligible: true });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'fixedCopy'))
       .toMatchObject({ eligible: true });
   });
@@ -6271,7 +6271,7 @@ describe('required kernel admission', () => {
       function control() public { require(true); }
     }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied'))
-      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+      .toMatchObject({ eligible: true });
     const streams = artifact.abi.find((handler) => handler.name === 'denied')?.sortedUpsertLoopInfo ?? [];
     expect(streams)
       .toEqual(expect.arrayContaining([
@@ -6299,7 +6299,7 @@ describe('required kernel admission', () => {
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
   });
 
-  it.each(['bool', 'fixed128x18', 'bytes20', 'address', 'pubkey', 'datasig'])(
+  it.each(['bool', 'fixed128x18', 'bytes20', 'pubkey'])(
     'authenticates a canonical counter loop read of %s values', (type) => {
       const artifact = compileString(`contract C() {
         mapping(int => ${type}) source;
@@ -6310,12 +6310,27 @@ describe('required kernel admission', () => {
         }
       }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
       expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'copy'))
-        .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+        .toMatchObject({ eligible: true });
       const read = artifact.abi.find((handler) => handler.name === 'copy')?.sortedUpsertLoopInfo
         ?.find((info) => info.collection === 'source');
       expect(read).toMatchObject({ op: 'read' });
       expect(artifact.abi.find((handler) => handler.name === 'copy')?.inputs)
         .toContainEqual(expect.objectContaining({ name: read!.oldValuesWitnessParam, type: `${type}[]` }));
+    },
+  );
+
+  it.each(['address', 'datasig'])(
+    'keeps unsupported fixed-width carrier value type %s fenced', (type) => {
+      const artifact = compileString(`contract C() {
+        mapping(int => ${type}) source;
+        mapping(int => ${type}) destination;
+        function copy(int n) public {
+          for (int i = 0; i < n; i = i + 1) { this.destination[i] = this.source[i]; }
+          require(true);
+        }
+      }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+      expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'copy'))
+        .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
     },
   );
 

@@ -11466,14 +11466,49 @@ function compileResolvedAst(
         ?.some((access) => access.op !== 'read') === true;
       const runtimeJournalAccesses = abi?.sortedUpsertLoopInfo ?? [];
       const hasRuntimeJournalRead = runtimeJournalAccesses.some((access) => access.op === 'read');
+      const collectionByName = new Map(ast.contract.collections.map((collection) => [collection.name, collection]));
       // Carrier reads authenticate existing inputs, while mutations authorize result outputs. The current row
-      // flush has no cross-phase disposition protocol, so a mixed handler remains fenced. Decide this from the
-      // published settlement identity (and fail closed for older artifacts), not from source syntax or names.
+      // flush can transfer one authenticated fixed-width carrier vector into one distinct set-result vector when
+      // both consume the same canonical row permutation. This is a dataflow property: the read's typed old-value
+      // witness must be the set's only value vector, indexed by that same permutation. Other mixed phases remain
+      // fenced, including multiple streams, aliases, selected domains, and dynamic/aggregate values.
       const journalDispositionSources = runtimeJournalAccesses
         .map((access) => access.settlementIdentity?.recordDispositionSource);
+      const sameJson = (left: unknown, right: unknown): boolean => JSON.stringify(left ?? null) === JSON.stringify(right ?? null);
+      const hasSupportedReadToSetCarrierTransfer = (() => {
+        if (!hasRuntimeJournalMutation || !hasRuntimeJournalRead || runtimeJournalAccesses.length !== 2) return false;
+        const read = runtimeJournalAccesses.find((access) => access.op === 'read');
+        const mutation = runtimeJournalAccesses.find((access) => access.op !== 'read');
+        if (!read || !mutation || mutation.op !== 'set' || read.collectionHash === mutation.collectionHash
+          || read.journalExecutionGroup === undefined
+          || read.journalExecutionGroup !== mutation.journalExecutionGroup
+          || !read.varyingArrayParam || read.varyingArrayParam !== mutation.varyingArrayParam
+          || !read.oldValuesWitnessParam || read.valueArrayParam !== read.oldValuesWitnessParam
+          || mutation.valueArrayParam !== read.oldValuesWitnessParam
+          || mutation.valueArrayIndexParam !== read.varyingArrayParam
+          || read.oldValuesWitnessDomain === 'selected-source'
+          || mutation.valueRuntimeLocal !== undefined || mutation.mutation !== undefined
+          || mutation.valueRuntimeExpression === true) return false;
+        if (!sameJson(read.fixedKeySources, mutation.fixedKeySources)
+          || !sameJson(read.varyingKeyIndices, mutation.varyingKeyIndices)
+          || !sameJson(read.varyingKeyExpressions, mutation.varyingKeyExpressions)
+          || !sameJson(read.keyDecodeTupleIndex, mutation.keyDecodeTupleIndex)
+          || !sameJson(read.keyDecodeTupleTypes, mutation.keyDecodeTupleTypes)
+          || !sameJson(read.condition, mutation.condition)
+          || !sameJson(read.iterationCondition, mutation.iterationCondition)
+          || !sameJson(read.iterationBound, mutation.iterationBound)
+          || !sameJson(read.iterationStep, mutation.iterationStep)
+          || !sameJson(read.sourceOrderIndexParam, mutation.sourceOrderIndexParam)) return false;
+        const readType = collectionByName.get(read.collection)?.innermostValueType;
+        const mutationType = collectionByName.get(mutation.collection)?.innermostValueType;
+        return readType !== undefined && mutationType !== undefined
+          && isFixedWidthType(readType) && isFixedWidthType(mutationType)
+          && !(readType instanceof ArrayType || readType instanceof StructType || readType instanceof TupleType)
+          && readType.toString() === mutationType.toString();
+      })();
       const hasIncompatibleJournalDispositionPhases = hasRuntimeJournalMutation && hasRuntimeJournalRead
         && (journalDispositionSources.some((source) => source === undefined)
-          || new Set(journalDispositionSources).size > 1);
+          || (new Set(journalDispositionSources).size > 1 && !hasSupportedReadToSetCarrierTransfer));
       // Compact selected-source witnesses are independently ordered within each read stream. The current row
       // protocol authenticates that order for one stream, but it does not publish a shared frame-selection
       // identity across two or more conditional streams. In particular, mutually exclusive switch arms can each
@@ -11495,7 +11530,6 @@ function compileResolvedAst(
         mutations.push(access);
         mutationsByExecutionGroup.set(access.journalExecutionGroup, mutations);
       }
-      const collectionByName = new Map(ast.contract.collections.map((collection) => [collection.name, collection]));
       const hasUnsupportedMultiMutationExecutionGroup = [...mutationsByExecutionGroup.values()]
         .some((mutations) => {
           if (mutations.length <= 1) return false;

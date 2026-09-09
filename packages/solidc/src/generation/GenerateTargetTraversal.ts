@@ -24869,7 +24869,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // `value`, `next`, `slot`, `address`, `record ordinal`, `output ordinal`, and `remaining`.
     this.emit(encodeInt(6n), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_ADD, loc); // output index
     this.emit(Op.OP_DUP, loc); this.emit(Op.OP_OUTPUTBYTECODE, loc);
-    this.emit(encodeInt(5n), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_EQUALVERIFY, loc);
+    this.emit(encodeInt(6n), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_EQUALVERIFY, loc);
     this.emit(Op.OP_DUP, loc); this.emit(Op.OP_OUTPUTTOKENCATEGORY, loc);
     this.emit(Op.OP_DUP, loc); this.emitDropFirst32(loc); this.emit(Op.OP_1, loc); this.emit(Op.OP_EQUALVERIFY, loc);
     this.emitTakeFirst32(loc);

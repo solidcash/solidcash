@@ -460,7 +460,8 @@ function replaceOps(
       // We get the locationData entries for every opcode in the pattern
       const patternLocations = newLocationData.slice(scriptIndex, scriptIndex + patternLength);
 
-      // We get the lowest start location and highest end location of the pattern
+      // Compiler-generated instructions can intentionally have no source range. Merge the concrete locations
+      // represented by the replacement; an entirely synthetic pattern remains synthetic.
       const lowestStart = getLowestStartLocation(patternLocations);
       const highestEnd = getHighestEndLocation(patternLocations);
 
@@ -474,12 +475,12 @@ function replaceOps(
 
       // We merge the lowest start and highest end locations into a single location data entry
       const mergedLocation = {
-        location: {
-          start: lowestStart.location.start,
-          end: highestEnd.location.end,
-        },
+        location: lowestStart && highestEnd ? {
+          start: lowestStart.location!.start,
+          end: highestEnd.location!.end,
+        } : undefined,
         positionHint,
-      };
+      } as SingleLocationData;
 
       // We replace the pattern locations with the merged location
       // (note that every opcode in the replacement has the same location)
@@ -573,34 +574,36 @@ function replaceOps(
   };
 }
 
-const getHighestEndLocation = (locations: SingleLocationData[]): SingleLocationData => {
-  return locations.reduce((highest, current) => {
-    if (current.location.end.line > highest.location.end.line) {
+const getHighestEndLocation = (locations: SingleLocationData[]): SingleLocationData | undefined => {
+  const located = locations.filter((entry) => entry.location !== undefined);
+  return located.reduce<SingleLocationData | undefined>((highest, current) => {
+    if (!highest || current.location!.end.line > highest.location!.end.line) {
       return current;
     }
 
-    if (highest.location.end.line === current.location.end.line) {
-      if (current.location.end.column > highest.location.end.column) {
+    if (highest.location!.end.line === current.location!.end.line) {
+      if (current.location!.end.column > highest.location!.end.column) {
         return current;
       }
     }
 
     return highest;
-  }, locations[0]);
+  }, undefined);
 };
 
-const getLowestStartLocation = (locations: SingleLocationData[]): SingleLocationData => {
-  return locations.reduce((lowest, current) => {
-    if (current.location.start.line < lowest.location.start.line) {
+const getLowestStartLocation = (locations: SingleLocationData[]): SingleLocationData | undefined => {
+  const located = locations.filter((entry) => entry.location !== undefined);
+  return located.reduce<SingleLocationData | undefined>((lowest, current) => {
+    if (!lowest || current.location!.start.line < lowest.location!.start.line) {
       return current;
     }
 
-    if (lowest.location.start.line === current.location.start.line) {
-      if (current.location.start.column < lowest.location.start.column) {
+    if (lowest.location!.start.line === current.location!.start.line) {
+      if (current.location!.start.column < lowest.location!.start.column) {
         return current;
       }
     }
 
     return lowest;
-  }, locations[0]);
+  }, undefined);
 };

@@ -250,4 +250,199 @@ describe('kernel graph result dependencies', () => {
       { consumerCallsiteId: 2, argument: 3, producerCallsiteId: 1, resultIndex: 1 },
     ]);
   });
+
+  it('preserves one authenticated callsite graph when producer and consumer originate in a helper', () => {
+    const source = `pragma solidity ^0.8.0;
+      interface ISource {
+        function read(uint id) external returns (uint value);
+      }
+
+      interface ISink {
+        function write(uint id, uint value) external;
+      }
+
+      contract Coordinator {
+        ISource immutable source;
+        ISink immutable sink;
+        uint touched;
+
+        constructor(address source_, address sink_) {
+          source = ISource(source_);
+          sink = ISink(sink_);
+        }
+
+        function forward(uint id) internal returns (uint value) {
+          value = source.read(id);
+          sink.write(id, value);
+        }
+
+        function apply(uint id) external {
+          touched = forward(id);
+          require(true);
+        }
+      }
+    `;
+    const first = compileString(source, KERNEL);
+    const second = compileString(source, KERNEL);
+
+    expect(first.messageBus?.handlers.find((handler) => handler.name === 'apply'))
+      .toMatchObject({ eligible: true });
+    const calls = first.abi.find((fn) => fn.name === 'apply')?.externalCalls ?? [];
+    expect(calls.map((call) => ({
+      callsiteId: call.callsiteId,
+      functionName: call.functionName,
+      sourceLocation: call.sourceLocation,
+    }))).toEqual([
+      { callsiteId: 0, functionName: 'read', sourceLocation: { line: 21, column: 18 } },
+      { callsiteId: 1, functionName: 'write', sourceLocation: { line: 22, column: 10 } },
+    ]);
+    expect(calls[1].argSources).toEqual([
+      { kind: 'forward', paramIndex: 0 },
+      {
+        kind: 'expression',
+        expression: { kind: 'producerResult', callsiteId: 0, resultIndex: 0, type: 'uint256' },
+      },
+    ]);
+    expect(first.abi.find((fn) => fn.name === 'apply')?.resultConsumers).toEqual([
+      { consumerCallsiteId: 1, argument: 1, producerCallsiteId: 0, resultIndex: 0 },
+    ]);
+    expect(second.abi.find((fn) => fn.name === 'apply')?.externalCalls).toEqual(calls);
+    expect(second.abi.find((fn) => fn.name === 'apply')?.resultConsumers)
+      .toEqual(first.abi.find((fn) => fn.name === 'apply')?.resultConsumers);
+
+    const functions = first.invocationAnalysis?.functions ?? [];
+    const route = functions.find((fn) => fn.name === '__message_bus1');
+    const handler = functions.find((fn) => fn.name === '__message_bus_handler_apply');
+    expect(handler).toBeDefined();
+    expect(route?.calls.filter((id) => id === handler?.id)).toHaveLength(1);
+    expect(Object.values(first.debug.invokeDebug ?? {})
+      .filter((entry) => entry.name === '__message_bus_handler_apply')).toHaveLength(1);
+  });
+
+  it('does not authenticate ambiguous or non-dominating helper result aliases', () => {
+    const artifact = compileString(`pragma solidity ^0.8.0;
+      interface ISource {
+        function read(uint id) external returns (uint value);
+      }
+
+      interface ISink {
+        function write(uint id, uint value) external;
+      }
+
+      contract Coordinator {
+        ISource immutable source;
+        ISink immutable sink;
+        uint touched;
+
+        constructor(address source_, address sink_) {
+          source = ISource(source_);
+          sink = ISink(sink_);
+        }
+
+        function conditional(uint id, bool take) internal returns (uint value) {
+          if (take) {
+            value = source.read(id);
+          }
+          sink.write(id, value);
+        }
+
+        function reassigned(uint id) internal returns (uint value) {
+          value = source.read(id);
+          value = value + 1;
+          sink.write(id, value);
+        }
+
+        function beforeProducer(uint id) internal returns (uint value) {
+          sink.write(id, value);
+          value = source.read(id);
+        }
+
+        function applyConditional(uint id, bool take) external {
+          touched = conditional(id, take);
+          require(true);
+        }
+
+        function applyReassigned(uint id) external {
+          touched = reassigned(id);
+          require(true);
+        }
+
+        function applyBeforeProducer(uint id) external {
+          touched = beforeProducer(id);
+          require(true);
+        }
+      }
+    `, KERNEL);
+
+    const assertNoAuthenticatedAlias = (name: string, functionNames: string[]): void => {
+      expect(artifact.messageBus?.handlers.find((handler) => handler.name === name))
+        .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+      const fn = artifact.abi.find((candidate) => candidate.name === name);
+      expect(fn?.externalCalls?.map((call) => call.functionName)).toEqual(functionNames);
+      expect(fn?.resultConsumers ?? []).toEqual([]);
+      expect(JSON.stringify(fn?.externalCalls)).not.toContain('producerResult');
+    };
+    assertNoAuthenticatedAlias('applyConditional', ['read', 'write']);
+    assertNoAuthenticatedAlias('applyReassigned', ['read', 'write']);
+    assertNoAuthenticatedAlias('applyBeforeProducer', ['write', 'read']);
+  });
+
+  it('authenticates an exact two-arm helper result join', () => {
+    const artifact = compileString(`pragma solidity ^0.8.0;
+      interface ISource {
+        function read(uint id) external returns (uint value);
+      }
+
+      interface ISink {
+        function write(uint value) external;
+      }
+
+      contract Coordinator {
+        ISource immutable left;
+        ISource immutable right;
+        ISink immutable sink;
+        uint touched;
+
+        constructor(address left_, address right_, address sink_) {
+          left = ISource(left_);
+          right = ISource(right_);
+          sink = ISink(sink_);
+        }
+
+        function select(uint id, bool chooseLeft) internal returns (uint value) {
+          if (chooseLeft) {
+            value = left.read(id);
+          } else {
+            value = right.read(id);
+          }
+          sink.write(value);
+        }
+
+        function apply(uint id, bool chooseLeft) external {
+          touched = select(id, chooseLeft);
+          require(true);
+        }
+      }
+    `, KERNEL);
+
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'apply'))
+      .toMatchObject({ eligible: true });
+    const fn = artifact.abi.find((candidate) => candidate.name === 'apply');
+    expect(fn?.externalCalls?.map((call) => [call.callsiteId, call.functionName])).toEqual([
+      [0, 'read'], [1, 'read'], [2, 'write'],
+    ]);
+    expect(fn?.externalCalls?.[2].argSources).toEqual([{
+      kind: 'expression',
+      expression: {
+        kind: 'ternary',
+        condition: { kind: 'source', source: { kind: 'forward', paramIndex: 1 } },
+        ifTrue: { kind: 'producerResult', callsiteId: 0, resultIndex: 0, type: 'uint256' },
+        ifFalse: { kind: 'producerResult', callsiteId: 1, resultIndex: 0, type: 'uint256' },
+      },
+    }]);
+    expect(fn?.resultConsumers).toEqual([
+      { consumerCallsiteId: 2, argument: 0, producerCallsiteId: 0, resultIndex: 0 },
+      { consumerCallsiteId: 2, argument: 0, producerCallsiteId: 1, resultIndex: 0 },
+    ]);
+  });
 });

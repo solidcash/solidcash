@@ -7151,6 +7151,115 @@ export default class SymbolTableTraversal extends AstTraversal {
         return visitBlock(this.currentFunction.body) ? prior : undefined;
       };
       const priorStatements = dominatingStatements();
+      let unresolvedProducerAlias = false;
+      const definitionDependsOnProducer = (
+        definition: VariableDefinitionNode, seenDefinitions = new Set<VariableDefinitionNode>(),
+      ): boolean => {
+        if (seenDefinitions.has(definition)) return false;
+        seenDefinitions = new Set(seenDefinitions).add(definition);
+        const expressionDependsOnProducer = (expression: ExpressionNode): boolean => {
+          if (expression instanceof ExternalFunctionCallNode
+            && expression.callInfo?.hasReturnValues === true) return true;
+          if (expression instanceof IdentifierNode) {
+            const nested = expression.definition?.definition;
+            if (nested instanceof VariableDefinitionNode
+              && definitionDependsOnProducer(nested, seenDefinitions)) return true;
+          }
+          for (const [key, child] of Object.entries(expression)) {
+            if (['resolvedFunction', 'functionReference', 'definition', 'symbolTable',
+              'referencedContract', 'stateVariable', 'collection', 'sourceCallNode'].includes(key)) continue;
+            if (child instanceof ExpressionNode && expressionDependsOnProducer(child)) return true;
+            if (Array.isArray(child) && child.some((item) =>
+              item instanceof ExpressionNode && expressionDependsOnProducer(item))) return true;
+          }
+          return false;
+        };
+        if (definition.expression && expressionDependsOnProducer(definition.expression)) return true;
+        let found = false;
+        const visitAssignments = (value: unknown, seen = new Set<object>()): void => {
+          if (found || !(value instanceof Node) || seen.has(value)) return;
+          seen.add(value);
+          if (value instanceof AssignNode
+            && value.identifier.definition?.definition === definition
+            && expressionDependsOnProducer(value.expression)) {
+            found = true;
+            return;
+          }
+          for (const [key, child] of Object.entries(value)) {
+            if (['resolvedFunction', 'functionReference', 'definition', 'symbolTable',
+              'referencedContract', 'stateVariable', 'collection', 'sourceCallNode'].includes(key)) continue;
+            if (child instanceof Node) visitAssignments(child, seen);
+            else if (Array.isArray(child)) for (const item of child) visitAssignments(item, seen);
+          }
+        };
+        visitAssignments(this.currentFunction?.body);
+        return found;
+      };
+      const singleAssignmentInitializer = (expression: IdentifierNode): ExpressionNode | undefined => {
+        const definition = expression.definition?.definition;
+        // Returning helpers are inlined with an uninitialized result local followed by one assignment. Preserve
+        // the assigned expression as provenance only when the resolved binding proves that exact SSA shape.
+        // Source names are irrelevant, and declarations with an initializer remain owned by resolveInitializer.
+        if (!(definition instanceof VariableDefinitionNode) || definition.expression) return undefined;
+        const assignments = (priorStatements ?? []).filter((statement): statement is AssignNode =>
+          statement instanceof AssignNode
+          && statement.identifier.definition?.definition === definition);
+        return assignments.length === 1 ? assignments[0].expression : undefined;
+      };
+      const branchAssignmentInitializer = (expression: IdentifierNode): ExpressionNode | undefined => {
+        const definition = expression.definition?.definition;
+        if (!(definition instanceof VariableDefinitionNode) || definition.expression) return undefined;
+        const assignmentIn = (block: BlockNode): ExpressionNode | undefined => {
+          const assignments: AssignNode[] = [];
+          const visit = (statement: Node): boolean => {
+            if (statement instanceof BranchNode || statement instanceof WhileNode
+              || statement instanceof DoWhileNode || statement instanceof TryCatchNode
+              || statement instanceof SwitchNode) return false;
+            if (statement instanceof AssignNode
+              && statement.identifier.definition?.definition === definition) assignments.push(statement);
+            if (statement instanceof BlockNode) {
+              return (statement.statements ?? []).every((child) => visit(child));
+            }
+            return true;
+          };
+          return (block.statements ?? []).every((statement) => visit(statement))
+            && assignments.length === 1 ? assignments[0].expression : undefined;
+        };
+        const candidates = (priorStatements ?? []).filter((statement): statement is BranchNode =>
+          statement instanceof BranchNode && statement.elseBlock !== undefined);
+        for (const branch of candidates) {
+          const ifValue = assignmentIn(branch.ifBlock);
+          const elseValue = branch.elseBlock && assignmentIn(branch.elseBlock);
+          if (!ifValue || !elseValue) continue;
+          const competing = (priorStatements ?? []).some((statement) => {
+            if (statement === branch) return false;
+            let found = false;
+            const visit = (value: unknown, seen = new Set<object>()): void => {
+              if (found || !(value instanceof Node) || seen.has(value)) return;
+              seen.add(value);
+              if (value instanceof AssignNode
+                && value.identifier.definition?.definition === definition) {
+                found = true;
+                return;
+              }
+              for (const [key, child] of Object.entries(value)) {
+                if (['resolvedFunction', 'functionReference', 'definition', 'symbolTable',
+                  'referencedContract', 'stateVariable', 'collection', 'sourceCallNode'].includes(key)) continue;
+                if (child instanceof Node) visit(child, seen);
+                else if (Array.isArray(child)) for (const item of child) visit(item, seen);
+              }
+            };
+            visit(statement);
+            return found;
+          });
+          if (competing) continue;
+          const joined = new TernaryOpNode(branch.condition, ifValue, elseValue);
+          joined.type = definition.type;
+          joined.location = branch.location;
+          return joined;
+        }
+        return undefined;
+      };
       let serializedProgramLocals: ReadonlySet<string> | undefined;
       const serializingPureHelpers = new Set<FunctionDefinitionNode>();
       const serializeExpression = (
@@ -7187,8 +7296,18 @@ export default class SymbolTableTraversal extends AstTraversal {
           && this.currentFunction?.body
           ? this.findTupleInit(this.currentFunction.body, expression.name)
           : undefined;
-        const resolved = preservedLocal ? expression : tupleInitializer ?? resolveInitializer(expression);
+        const assignedInitializer = !preservedLocal && expression instanceof IdentifierNode
+          ? singleAssignmentInitializer(expression) : undefined;
+        const joinedInitializer = !preservedLocal && expression instanceof IdentifierNode
+          ? branchAssignmentInitializer(expression) : undefined;
+        const resolved = preservedLocal
+          ? expression : tupleInitializer ?? assignedInitializer ?? joinedInitializer ?? resolveInitializer(expression);
         if (resolved !== expression) return serializeExpression(resolved, seen);
+        if (expression instanceof IdentifierNode) {
+          const definition = expression.definition?.definition;
+          if (definition instanceof VariableDefinitionNode
+            && definitionDependsOnProducer(definition)) unresolvedProducerAlias = true;
+        }
         if (expression instanceof IntLiteralNode) {
           return { kind: 'literal', type: 'bigint', value: expression.value.toString() };
         }
@@ -7606,6 +7725,14 @@ export default class SymbolTableTraversal extends AstTraversal {
             name: node.parameters[i]?.constructor.name ?? 'undefined',
           },
         };
+      }
+      if (unresolvedProducerAlias && this.compilerOptions.messageBusKernel === true
+        && this.currentFunction?.messageBusEligible === true) {
+        // A graph call cannot derive an ambiguous, conditional, reassigned, or future producer value from an
+        // unauthenticated local name. Keep the direct entry point, but refuse this route until its exact result
+        // identity can be represented as producerResult metadata.
+        this.currentFunction.messageBusEligible = false;
+        this.currentFunction.messageBusRejectionReason = 'KERNEL_LAYOUT';
       }
       if (!addressSource) {
         const resolvedAddressExpression = serializeExpression(resolveInitializer(node.addressExpression));

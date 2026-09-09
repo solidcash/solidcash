@@ -35,7 +35,10 @@ describe('message-bus runtime event identity', () => {
       optimizeForCompilationSpeed: true,
       suppressWarnings: true,
     });
-    expect(artifact.messageBus?.route.emits?.[0]?.eventName).toBe('A');
+    // The route is an envelope, not a semantic event producer. Event identity belongs to the
+    // selected handler even when multiple branches reuse the same physical event slot.
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'appendA')?.emits)
+      .toContainEqual(expect.objectContaining({ eventName: 'A' }));
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'appendB')?.emits)
       .toContainEqual(expect.objectContaining({ eventName: 'B' }));
 

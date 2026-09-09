@@ -70,13 +70,13 @@ describe('mapping loops with source escapes', () => {
     expect(handler).toMatchObject({ eligible: true });
   });
 
-  it('publishes a runtime-bound mapping escape set through the exact row loop', () => {
+  it('keeps runtime-selected streams without one shared schedule behind the layout fence', () => {
     const { handler } = compile(`for (int i = 0; i < n; i = i + 1) {
       this.before[i] = i;
       if (skip) continue;
       this.after[i] = i;
     }`);
-    expect(handler).toMatchObject({ eligible: true });
+    expect(handler).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
   });
 
   it('publishes a terminating do-while break domain', () => {

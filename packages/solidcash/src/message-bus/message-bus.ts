@@ -544,9 +544,14 @@ export function encodeMessageBatch(
   // A resource route has one shared entry and one row-local alternative. The compiler can advertise the two as
   // swappable, allowing the batch to choose the value common to every relevant row rather than assuming the
   // source handler's first mapping access is globally shared.
-  const swappableBases = new Set(capability.handlers.flatMap((handler) =>
-    (handler.batchKeyWitnesses ?? []).filter((binding) => binding.swappable && !binding.perRow)
-      .map((binding) => binding.routeInput)));
+  const swappableBases = new Set(capability.handlers.flatMap((handler) => {
+    const bindings = handler.batchKeyWitnesses ?? [];
+    return bindings.filter((binding) => binding.swappable
+      && !binding.routeInput.endsWith('_row')
+      && bindings.some((candidate) => candidate.swappable
+        && candidate.routeInput === `${binding.routeInput}_row`))
+      .map((binding) => binding.routeInput);
+  }));
   for (const base of swappableBases) {
     const choices: Array<Array<{ value: FunctionArgument; encoded: Uint8Array }>> = [];
     let rowBase = `${base}_row`;
@@ -555,7 +560,7 @@ export function encodeMessageBatch(
       if (!handler) continue;
       const bindings = handler.batchKeyWitnesses ?? [];
       const shared = bindings.find((binding) => binding.routeInput === base);
-      const varying = bindings.find((binding) => binding.swappable && binding.perRow
+      const varying = bindings.find((binding) => binding.swappable
         && binding.routeInput === `${base}_row`);
       const invocationArgs = invocation.args ?? [];
       const relevant = varying ? [shared, varying] : [shared];
@@ -679,10 +684,10 @@ export function encodeMessageBatch(
     });
     for (const binding of handler.batchKeyWitnesses ?? []) {
       if (binding.swappable) {
-        if (binding.perRow) continue;
+        if (binding.perRow || binding.routeInput.endsWith('_row')) continue;
         const global = swappableGlobals.get(binding.routeInput);
         const varying = handler.batchKeyWitnesses?.find((candidate) => candidate.swappable
-          && candidate.perRow && candidate.routeInput === `${binding.routeInput}_row`);
+          && candidate.routeInput === `${binding.routeInput}_row`);
         if (!global || !varying || binding.inputIndex < 0 || varying.inputIndex < 0) {
           throw new MessageBusDiagnosticError(
             'L3_RESOURCE_UNRESOLVED',
@@ -710,9 +715,19 @@ export function encodeMessageBatch(
           );
         }
         keyWitnessValues.set(binding.routeInput, { value: global.value, encoded: global.encoded });
-        keyWitnessValues.set(`${varying.routeInput}_r${rowIndex}`, sharedMatches
+        const varyingInput = varying.perRow ? `${varying.routeInput}_r${rowIndex}` : varying.routeInput;
+        const selectedVarying = sharedMatches
           ? { value: varyingValue, encoded: varyingEncoded }
-          : { value: sharedValue, encoded: sharedEncoded });
+          : { value: sharedValue, encoded: sharedEncoded };
+        const priorVarying = keyWitnessValues.get(varyingInput);
+        if (priorVarying && binToHex(priorVarying.encoded) !== binToHex(selectedVarying.encoded)) {
+          throw new MessageBusDiagnosticError(
+            'L3_RESOURCE_UNRESOLVED',
+            `message-bus batch collection witness '${varyingInput}' must identify one physical entry`,
+            { handler: handler.name, resourceIdentity: varyingInput, invocationIds: [rowIndex] },
+          );
+        }
+        if (!priorVarying) keyWitnessValues.set(varyingInput, selectedVarying);
         continue;
       }
       const value = binding.source === 'msgSender'

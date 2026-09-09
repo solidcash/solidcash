@@ -61,13 +61,13 @@ describe('constructed-array exhausted finite helper replay', () => {
       keys[cursor] = base + cursor;
       cursor = cursor + 1;
     } while (cursor < limit);`],
-  ])('exhausts a small runtime remainder bound in a %s helper', (_kind, loop) => {
+  ])('keeps a replay-expanded runtime remainder behind the layout fence in a %s helper', (_kind, loop) => {
     const handler = compile(`
       function fill(int[] memory keys, int base, int limit) internal pure {
         ${loop}
       }
     `, 'fill(keys, base, runtimeLimit % 4);');
-    expect(handler).toMatchObject({ eligible: true });
+    expect(handler).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
   });
 
   it('keeps a runtime remainder range beyond the shared expansion budget fenced', () => {

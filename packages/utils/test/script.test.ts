@@ -7,9 +7,13 @@ import {
   calculateBytesize,
   countOpcodes,
   encodeNullDataScript,
+  optimiseBytecode,
+  Op,
+  PositionHint,
   scriptToAsm,
   scriptToBytecode,
 } from '../src/index.js';
+import type { FullLocationData } from '../src/index.js';
 import { fixtures } from './script.fixture.js';
 
 describe('script utils', () => {
@@ -95,6 +99,28 @@ describe('script utils', () => {
       const output = hexToBin('04534c5000510747454e45534953034353530d43617368536372697074534c501768747470733a2f2f636173687363726970742e6f72672f005852080000000000000001');
 
       expect(encodeNullDataScript(input)).toEqual(output);
+    });
+  });
+
+  describe('optimiseBytecode()', () => {
+    it('preserves synthetic source locations while merging a mixed-location pattern', () => {
+      const concrete = {
+        location: { start: { line: 4, column: 2 }, end: { line: 4, column: 9 } },
+        positionHint: PositionHint.END,
+      };
+      const synthetic = { location: undefined, positionHint: PositionHint.START } as unknown as FullLocationData[number];
+      const mixed: FullLocationData = [synthetic, concrete];
+      const entirelySynthetic: FullLocationData = [synthetic, synthetic];
+
+      const mixedResult = optimiseBytecode([Op.OP_1, Op.OP_ADD], mixed, [], [], 0);
+      expect(mixedResult.script).toEqual([Op.OP_1ADD]);
+      expect(mixedResult.locationData).toEqual([{ ...concrete, positionHint: PositionHint.END }]);
+
+      const syntheticResult = optimiseBytecode(
+        [Op.OP_1, Op.OP_ADD], entirelySynthetic, [], [], 0,
+      );
+      expect(syntheticResult.script).toEqual([Op.OP_1ADD]);
+      expect(syntheticResult.locationData).toEqual([synthetic]);
     });
   });
 });

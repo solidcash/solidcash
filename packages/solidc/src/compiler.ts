@@ -2127,9 +2127,18 @@ function containsTransactionSignature(type: Type, seen = new Set<object>()): boo
 const isEntireTransactionSignatureType = (type: Type): boolean => type === PrimitiveType.SIG
   || (type instanceof ArrayType && isEntireTransactionSignatureType(type.elementType));
 
-/** Map a legacy admission reason onto the frozen kernel catalog. Unknown leftovers become KERNEL_LAYOUT. */
+const KERNEL_ADMISSION_REASONS = new Set([
+  'KERNEL_UNBOUNDED_KEY',
+  'KERNEL_LAYOUT',
+  'KERNEL_TX_SIGNATURE',
+  'KERNEL_OPAQUE_EFFECT',
+  'KERNEL_FOREIGN_DELEGATE',
+  'KERNEL_LIFECYCLE',
+]);
+
+/** Map an admission reason onto the frozen kernel catalog. Unknown leftovers become KERNEL_LAYOUT. */
 function kernelAdmissionReason(reason: string): string {
-  if (reason.startsWith('KERNEL_')) return reason;
+  if (KERNEL_ADMISSION_REASONS.has(reason)) return reason;
   if (reason === 'lifecycle-or-unsafe-handler') return 'KERNEL_LIFECYCLE';
   if (reason === 'transaction-signature-route-binding-required') return 'KERNEL_TX_SIGNATURE';
   if (reason === 'verified-mapping-runtime-loop-write-unsupported') return 'KERNEL_UNBOUNDED_KEY';
@@ -6525,6 +6534,7 @@ function synthesizeMessageBusRoute(
   };
   let resourceSelfAliasHandlerInvokeName: string | undefined;
   let resourceSwappedHandlerInvokeName: string | undefined;
+  const kernelSwappedHandlerInvokeNames = new Map<FunctionDefinitionNode, string>();
   const allGraphEmissionHandlersRuntime = graphTailHandlers.size > 0
     && [...graphTailHandlers].every((handler) => graphRuntimeHandlers.has(handler));
   // Collection-journal clones are created before the graph-effect clone pass. A handler that both
@@ -6802,6 +6812,51 @@ function synthesizeMessageBusRoute(
     bindEntryKeyParameters(handler, sourceHandler);
     siblingHandlerInvokeNames.set(sourceHandler, handler.name);
     contract.functions.push(handler);
+
+    // A kernel row owns one fixed pair of physical entries for a collection, but the source order of a
+    // two-key handler is not necessarily the orientation shared with sibling rows. Publish that pair as
+    // swappable and compile the inverse key binding too. The SDK can then choose the one orientation common to
+    // every selected row while this branch keeps source-level reads and writes attached to the right entry.
+    // Limit this representation to one one-dimensional pair: multiple independent pairs require a wider
+    // orientation bitset, not an accidental choice of one permutation.
+    if (kernelLoopDispatch) {
+      const entryShape = handlerEntryKeys.get(sourceHandler) ?? [];
+      const varying = entryShape.filter((entry) => entry.base.endsWith('_row'));
+      const pair = varying.length === 1
+        ? entryShape.find((entry) => entry.collection === varying[0].collection
+          && `${entry.base}_row` === varying[0].base)
+        : undefined;
+      const sharedBinding = pair && sourceHandler.messageBusKeyWitnesses?.find((binding) =>
+        binding.routeInput === pair.base && binding.source === 'argument');
+      const varyingBinding = pair && sourceHandler.messageBusKeyWitnesses?.find((binding) =>
+        binding.routeInput === varying[0].base && binding.source === 'argument');
+      if (pair && sharedBinding && varyingBinding
+        && collectionByName.get(pair.collection)?.allKeyTypes.length === 1) {
+        sharedBinding.swappable = true;
+        varyingBinding.swappable = true;
+        const swappedHandler = cloneNode(handler);
+        swappedHandler.name = `${handler.name}_swapped`;
+        walkInvocationAst(swappedHandler.body, (node) => {
+          if (!isMappingNode(node) || node.name !== pair.collection) return;
+          node.keys = node.keys.map((key) => {
+            if (!(key instanceof IdentifierNode)) return key;
+            if (key.name === `${ENTRY_KEY_PREFIX}${pair.base}`) {
+              return Object.assign(
+                new IdentifierNode(`${ENTRY_KEY_PREFIX}${varying[0].base}`), { location: key.location },
+              );
+            }
+            if (key.name === `${ENTRY_KEY_PREFIX}${varying[0].base}`) {
+              return Object.assign(
+                new IdentifierNode(`${ENTRY_KEY_PREFIX}${pair.base}`), { location: key.location },
+              );
+            }
+            return key;
+          });
+        });
+        kernelSwappedHandlerInvokeNames.set(sourceHandler, swappedHandler.name);
+        contract.functions.push(swappedHandler);
+      }
+    }
   }
   // A leaf handler with an owner-local event, BCH transfer, or token effect must execute behind a compiler-owned
   // graph helper even when it touches no collection. Calling the public function directly leaves its output
@@ -7193,6 +7248,11 @@ function synthesizeMessageBusRoute(
       const swapped = contract.functions.find((candidate) => candidate.name === resourceSwappedHandlerInvokeName);
       if (swapped) bindLogicalCaller(swapped);
     }
+    const kernelSwappedName = kernelSwappedHandlerInvokeNames.get(sourceHandler);
+    if (kernelSwappedName) {
+      const swapped = contract.functions.find((candidate) => candidate.name === kernelSwappedName);
+      if (swapped) bindLogicalCaller(swapped);
+    }
   }
 
   // Every compiler-generated handler runs against the route's published physical block. Direct routes own the
@@ -7414,8 +7474,9 @@ function synthesizeMessageBusRoute(
       });
       const logicalCaller = graphExecutionContext ? '__message_bus_graph_caller' : 'msg.sender';
       const swappableBindings = (fn.messageBusKeyWitnesses ?? []).filter((binding) => binding.swappable);
-      const swappableShared = swappableBindings.find((binding) => !binding.perRow);
-      const swappableVarying = swappableBindings.find((binding) => binding.perRow);
+      const swappableShared = swappableBindings.find((binding) => !binding.routeInput.endsWith('_row'));
+      const swappableVarying = swappableShared && swappableBindings.find((binding) =>
+        binding.routeInput === `${swappableShared.routeInput}_row`);
       const ordinaryKeyChecks = (fn.messageBusKeyWitnesses ?? []).filter((binding) => !binding.swappable).map((binding) =>
         binding.source === 'msgSender'
           ? `require(${witnessName(binding)} == ${logicalCaller});`
@@ -7517,11 +7578,16 @@ function synthesizeMessageBusRoute(
       const dispatchFor = (entryArgs: string[]): string => {
         const callArgs = [...sourceCallArgs, ...entryArgs, ...blockhashRowArgs, ...callerContextArgs,
           ...ownerContextArgs, ...blockhashBaseArgs].join(', ');
+        const kernelSwapped = kernelSwappedHandlerInvokeNames.get(fn);
+        const kernelOrientedInvoke = kernelSwapped && swappableShared && swappableVarying
+          ? `if (${decodedName(swappableShared.inputIndex)} == ${swappableShared.routeInput}) { `
+            + `${invoke(callArgs)} } else { ${invoke(callArgs, kernelSwapped)} }`
+          : invoke(callArgs);
         if (!(fn === resourceShapedHandler && rowIndex !== undefined
           && entryShape && varyingEntry
           && entryShape.filter((entry) => entry.perRow
             && entry.collection === varyingEntry.collection).length === 1
-          && sharedEntryIndex >= 0 && varyingEntry)) return invoke(callArgs);
+          && sharedEntryIndex >= 0 && varyingEntry)) return kernelOrientedInvoke;
         const shared = entryShape[sharedEntryIndex].base;
         const varying = `${varyingEntry.base}_r${rowIndex}`;
         // Shared-self aliasing is handled inside the clone so its call/return frame remains statically identical.
@@ -9203,6 +9269,7 @@ function synthesizeMessageBusRoute(
             resourceHandlerInvokeName,
             resourceSelfAliasHandlerInvokeName,
             resourceSwappedHandlerInvokeName,
+            kernelSwappedHandlerInvokeNames,
             graphHandlerInvokeNames,
             siblingHandlerInvokeNames,
             fixedArrayHandlerInvokeNames,
@@ -9486,6 +9553,7 @@ function buildMessageBusRowAliasPlans(input: {
   resourceHandlerInvokeName: string | undefined;
   resourceSelfAliasHandlerInvokeName: string | undefined;
   resourceSwappedHandlerInvokeName: string | undefined;
+  kernelSwappedHandlerInvokeNames: Map<FunctionDefinitionNode, string>;
   graphHandlerInvokeNames: Map<FunctionDefinitionNode, string>;
   siblingHandlerInvokeNames: Map<FunctionDefinitionNode, string>;
   fixedArrayHandlerInvokeNames: Map<FunctionDefinitionNode, string>;
@@ -9504,6 +9572,8 @@ function buildMessageBusRowAliasPlans(input: {
       if (input.resourceSelfAliasHandlerInvokeName) invokeNames.add(input.resourceSelfAliasHandlerInvokeName);
       if (input.resourceSwappedHandlerInvokeName) invokeNames.add(input.resourceSwappedHandlerInvokeName);
     }
+    const kernelSwapped = input.kernelSwappedHandlerInvokeNames.get(fn);
+    if (kernelSwapped) invokeNames.add(kernelSwapped);
     const entryShape = input.handlerEntryKeys.get(fn);
     const crossRowGroups = entryShape
       ? messageBusCrossRowGroups(entryShape, input.collectionByName, input.crossHandlerPerRowWitnesses)
@@ -11850,7 +11920,9 @@ function compileResolvedAst(
         // Resolve the same way the ABSENCE channel already does (`messageBusAbsenceMessage`'s `reasonOf`).
         ...(fn.messageBusEligible !== true && {
           ...(() => {
-            const reason = fn.messageBusRejectionReason ?? 'not-examined-by-route-synthesis';
+            const sourceReason = fn.messageBusRejectionReason ?? 'not-examined-by-route-synthesis';
+            const reason = mergedCompilerOptions.messageBusKernel === true
+              ? kernelAdmissionReason(sourceReason) : sourceReason;
             const handlerId = artifact.invocationAnalysis?.functions.find((candidate) =>
               candidate.name === fn.name
               && candidate.selector === (fn.functionSelector ? binToHex(fn.functionSelector) : undefined))?.id;
@@ -11975,7 +12047,7 @@ function compileResolvedAst(
             ? [ast.contract.receiveDef] : []),
         ].filter((fn) => !fn.messageBusRoute && fn.isEntryPoint).map((fn) => {
           const reason = fn.messageBusRejectionReason ?? 'not-examined-by-route-synthesis';
-          const kernelReason = reason.startsWith('KERNEL_') ? reason : kernelAdmissionReason(reason);
+          const kernelReason = kernelAdmissionReason(reason);
           const deployments = childDeploymentsBySignature.get(deploymentTopologyKey(fn)) ?? [];
           return {
             name: fn.name,

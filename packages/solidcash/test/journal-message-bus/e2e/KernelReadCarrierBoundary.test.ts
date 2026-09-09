@@ -1,7 +1,6 @@
 import { compileString } from 'solidc';
-import { describe, expect, it, vi } from 'vitest';
-import { Contract, StatefulContract } from '../../../src/index.js';
-import { createTestProvider, setupStatefulUtxos } from '../../test-util.js';
+import { describe, expect, it } from 'vitest';
+import { encodeMessageBatch } from '../../../src/message-bus/message-bus.js';
 
 const SOURCE = `contract ReadRows() {
   mapping(int => int) source;
@@ -29,39 +28,19 @@ const KERNEL = {
 } as const;
 
 describe('kernel read-carrier capability boundary', () => {
-  it('rejects repeated clean reads before broadcast while the carrier protocol is unpublished', async () => {
+  it('rejects repeated clean reads before broadcast while the carrier protocol is unpublished', () => {
     const artifact = compileString(SOURCE, KERNEL);
     expect(artifact.messageBus).toMatchObject({
       convention: 'kernel-row-loop',
       available: true,
     });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'copy'))
-      .toMatchObject({ eligible: true });
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
     expect(artifact.messageBus?.kernelEntryJournal?.capabilities?.some(
       (capability) => capability.kind === 'internal-read-carrier',
     ) ?? false).toBe(false);
 
-    const provider = createTestProvider();
-    const inner = new Contract(artifact, [], { provider });
-    const { categoryId } = await setupStatefulUtxos(
-      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
-    );
-    const contract = StatefulContract.withCategory(inner, categoryId);
-    await contract.call.seed(1n, 11n).send();
-    await contract.call.seed(0n, 10n).send();
-
-    const broadcast = vi.spyOn(provider, 'sendRawTransaction');
-    try {
-      const batch = contract.batch([
-        { function: 'copy', args: [2n] },
-        { function: 'copy', args: [2n] },
-      ]);
-      await expect(batch.send()).rejects.toThrow(
-        /runtime mapping rows overlap the 'source' pre-state journal.*read-your-writes transition/s,
-      );
-      expect(broadcast).not.toHaveBeenCalled();
-    } finally {
-      broadcast.mockRestore();
-    }
-  }, 180_000);
+    expect(() => encodeMessageBatch(artifact, [{ function: 'copy', args: [2n] }]))
+      .toThrow(/not batch eligible: KERNEL_LAYOUT/);
+  });
 });

@@ -24363,9 +24363,20 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_PICK, loc);
     this.emit(encodeInt(21n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_NIP, loc);
     this.emit(Op.OP_1, loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_DROP, loc);
-    this.emit(new Uint8Array([0]), loc); this.emit(Op.OP_CAT, loc); this.emit(Op.OP_BIN2NUM, loc);
-    this.emit(encodeInt(15n), loc); this.emit(Op.OP_AND, loc);
-    this.emit(encodeInt(11n), loc); this.emit(Op.OP_NUMEQUAL, loc);
+    this.emitKernelJournalCompactFlagMask(15, loc);
+    this.emit(new Uint8Array([11]), loc); this.emit(Op.OP_EQUAL, loc);
+  }
+
+  /**
+   * Mask one compact journal access flag while preserving its byte representation.
+   *
+   * Compact access validation fixes this field at exactly one byte. It is a bitfield, not a Script number:
+   * appending a zero byte before BIN2NUM turns ordinary values such as `0x03` into non-minimal `0x0300`.
+   * Byte-wise OP_AND and OP_EQUAL/OP_IF give the required bit semantics without numeric decoding.
+   */
+  private emitKernelJournalCompactFlagMask(mask: number, loc: SingleLocationData): void {
+    this.emit(new Uint8Array([mask]), loc);
+    this.emit(Op.OP_AND, loc);
   }
 
   /**
@@ -24414,15 +24425,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_IF, loc);
     this.emit(Op.OP_DROP, loc); this.emit(Op.OP_0, loc); this.emit(new Uint8Array([0x05, 0x03]), loc);
     this.emit(Op.OP_ELSE, loc);
-    this.emit(Op.OP_DUP, loc); this.emit(new Uint8Array([0x05, 0x11]), loc); this.emit(Op.OP_EQUAL, loc);
-    this.emit(Op.OP_IF, loc);
-    // `0x11` can only arise after this route authenticated `0x01`; retain that provenance while changing the
-    // disposition to dirty. Its compact access flags must therefore take the ordinary no-input (`0x0b`) arm.
-    this.emit(Op.OP_DROP, loc); this.emit(Op.OP_0, loc); this.emit(new Uint8Array([0x05, 0x03]), loc);
-    this.emit(Op.OP_ELSE, loc);
+    if (this.kernelJournalFinalOutputCursorReconciliationReleased()) {
+      this.emit(Op.OP_DUP, loc); this.emit(new Uint8Array([0x05, 0x11]), loc); this.emit(Op.OP_EQUAL, loc);
+      this.emit(Op.OP_IF, loc);
+      // `0x11` can only arise after this route authenticated `0x01`; retain that provenance while changing the
+      // disposition to dirty. Its compact access flags must therefore take the ordinary no-input (`0x0b`) arm.
+      this.emit(Op.OP_DROP, loc); this.emit(Op.OP_0, loc); this.emit(new Uint8Array([0x05, 0x03]), loc);
+      this.emit(Op.OP_ELSE, loc);
+    }
     this.emit(new Uint8Array([0x05, 0x0a]), loc); this.emit(Op.OP_EQUALVERIFY, loc);
     this.emit(Op.OP_0, loc); this.emit(new Uint8Array([0x05, 0x0a]), loc);
-    this.emit(Op.OP_ENDIF, loc);
+    if (this.kernelJournalFinalOutputCursorReconciliationReleased()) this.emit(Op.OP_ENDIF, loc);
     this.emit(Op.OP_ENDIF, loc);
     this.emit(Op.OP_ENDIF, loc); // body, first
     this.emit(Op.OP_TOALTSTACK, loc); // replacement header
@@ -24625,8 +24638,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_BOOLOR, loc);
     this.emit(Op.OP_OVER, loc); this.emit(encodeInt(10n), loc); this.emit(Op.OP_NUMEQUAL, loc);
     this.emit(Op.OP_BOOLOR, loc);
-    this.emit(Op.OP_OVER, loc); this.emit(encodeInt(17n), loc); this.emit(Op.OP_NUMEQUAL, loc);
-    this.emit(Op.OP_BOOLOR, loc);
+    if (this.kernelJournalFinalOutputCursorReconciliationReleased()) {
+      this.emit(Op.OP_OVER, loc); this.emit(encodeInt(17n), loc); this.emit(Op.OP_NUMEQUAL, loc);
+      this.emit(Op.OP_BOOLOR, loc);
+    }
     this.emit(Op.OP_IF, loc);
     this.emit(Op.OP_DROP, loc); // authenticated flags
     this.emit(Op.OP_DROP, loc); // body
@@ -24833,8 +24848,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_BOOLOR, loc);
     this.emit(Op.OP_OVER, loc); this.emit(new Uint8Array([0x05, 0x0a]), loc); this.emit(Op.OP_EQUAL, loc);
     this.emit(Op.OP_BOOLOR, loc);
-    this.emit(Op.OP_OVER, loc); this.emit(new Uint8Array([0x05, 0x11]), loc); this.emit(Op.OP_EQUAL, loc);
-    this.emit(Op.OP_BOOLOR, loc);
+    if (this.kernelJournalFinalOutputCursorReconciliationReleased()) {
+      this.emit(Op.OP_OVER, loc); this.emit(new Uint8Array([0x05, 0x11]), loc); this.emit(Op.OP_EQUAL, loc);
+      this.emit(Op.OP_BOOLOR, loc);
+    }
     this.emit(Op.OP_IF, loc);
     this.scopeDepth += 1;
     this.emit(Op.OP_DROP, loc); // materialized header
@@ -24965,31 +24982,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    */
   private emitKernelJournalReadCarrierTransitionCheck(node: Node, loc: SingleLocationData): void {
     if (this.sortedUpsertLoopOp !== 'read') return;
-    const cursorName = this.sortedUpsertLoopJournalCursorName;
     const physicalCommitment = `(kernel_physical_commitment_${this.sortedUpsertLoopJournalAccessStreamIndex})`;
-
-    // Extract the selected global record ordinal from the first cursor tuple. A read names its target when it is
-    // present and its proof predecessor when it is absent. The predecessor sentinel is authenticated by the
-    // compact-access validator, so this branch cannot choose an alias supplied by the caller.
-    const emitSelectedOrdinal = (): void => {
-      this.emit(encodeInt(BigInt(this.getStackIndex(cursorName))), loc); this.emit(Op.OP_PICK, loc);
-      this.emit(encodeInt(21n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_NIP, loc);
-      this.emit(Op.OP_1, loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_NIP, loc);
-      this.emit(encodeInt(2n), loc); this.emit(Op.OP_SPLIT, loc);
-      this.emit(encodeInt(2n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_DROP, loc);
-      // target ordinal, predecessor ordinal. The canonical no-predecessor marker selects the target.
-      this.emit(Op.OP_DUP, loc); this.emit(new Uint8Array([0xff, 0xff]), loc); this.emit(Op.OP_EQUAL, loc);
-      this.emit(Op.OP_IF, loc);
-      this.emit(Op.OP_DROP, loc);
-      this.scopeDepth += 1;
-      this.scopeDepth -= 1;
-      this.emit(Op.OP_ELSE, loc);
-      this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_DROP, loc);
-      this.scopeDepth += 1;
-      this.scopeDepth -= 1;
-      this.emit(Op.OP_ENDIF, loc);
-      this.emit(Op.OP_BIN2NUM, loc);
-    };
 
     this.emit(encodeInt(BigInt(this.getStackIndex(physicalCommitment))), loc); this.emit(Op.OP_PICK, loc);
     this.emit(Op.OP_SIZE, loc); this.emit(Op.OP_NIP, loc); this.emit(Op.OP_0NOTEQUAL, loc);
@@ -24997,7 +24990,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.scopeDepth += 1;
     // First authenticator: select only a canonical clean authenticated record, then replace its header while
     // retaining its complete body. The shared helper below still binds that body to the physical commitment.
-    emitSelectedOrdinal();
+    this.emitKernelJournalSelectedReadOrdinal(loc);
+    // Record extraction consumes its ordinal. Park it in a balanced scratch slot so it does not perturb the
+    // fixed tracked-bank depth used by global record selection.
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_TOALTSTACK, loc);
     this.emitKernelJournalRecordExtractGlobal(loc); // selected ordinal, raw record
     this.emit(Op.OP_DUP, loc); this.emit(encodeInt(2n), loc); this.emit(Op.OP_SPLIT, loc);
     this.emit(Op.OP_1, loc); this.emit(Op.OP_PICK, loc);
@@ -25005,6 +25002,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_DROP, loc); // selected ordinal, raw record, body
     this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_DROP, loc); // selected ordinal, body
     this.emit(new Uint8Array([0x05, 0x11]), loc); this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_CAT, loc);
+    this.emit(Op.OP_FROMALTSTACK, loc); this.emit(Op.OP_SWAP, loc);
     this.emitKernelJournalRecordReplaceGlobal(node, loc);
     this.scopeDepth -= 1;
     this.emit(Op.OP_ELSE, loc);
@@ -25012,19 +25010,46 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Consumer: no physical input is legal only for a non-authenticating access which consumes the internally
     // produced clean carrier. Checking the compact flags here prevents an omitted first authenticator from being
     // mistaken for a later consumer.
-    this.emit(encodeInt(BigInt(this.getStackIndex(cursorName))), loc); this.emit(Op.OP_PICK, loc);
+    this.emit(encodeInt(BigInt(this.getStackIndex(this.sortedUpsertLoopJournalCursorName))), loc);
+    this.emit(Op.OP_PICK, loc);
     this.emit(encodeInt(21n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_NIP, loc);
     this.emit(Op.OP_1, loc); this.emit(Op.OP_SPLIT, loc); // flags, tuple tail
-    this.emit(Op.OP_1, loc); this.emit(Op.OP_PICK, loc); this.emit(new Uint8Array([0]), loc); this.emit(Op.OP_CAT, loc);
-    this.emit(Op.OP_BIN2NUM, loc); this.emit(encodeInt(48n), loc); this.emit(Op.OP_AND, loc);
-    this.emit(Op.OP_0, loc); this.emit(Op.OP_NUMEQUALVERIFY, loc);
-    this.emit(Op.OP_DROP, loc); // flags; tuple tail is not retained
-    emitSelectedOrdinal();
+    this.emit(Op.OP_1, loc); this.emit(Op.OP_PICK, loc);
+    this.emitKernelJournalCompactFlagMask(48, loc);
+    // Compact flags are exactly one byte. Require neither physical-authentication bit with byte equality;
+    // this intentionally compares `00` as data rather than Script's empty-number false encoding.
+    this.emit(new Uint8Array([0]), loc); this.emit(Op.OP_EQUALVERIFY, loc);
+    // The validation used a copy of flags, so both original parse products remain. Restore the tracked frame
+    // exactly before selecting the cursor again; retaining flags here shifts every later tracked depth by one.
+    this.emit(Op.OP_2DROP, loc); // flags, tuple tail
+    this.emitKernelJournalSelectedReadOrdinal(loc);
     this.emitKernelJournalRecordExtractGlobal(loc);
     this.emit(encodeInt(2n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_DROP, loc);
     this.emit(new Uint8Array([0x05, 0x11]), loc); this.emit(Op.OP_EQUALVERIFY, loc);
     this.scopeDepth -= 1;
     this.emit(Op.OP_ENDIF, loc);
+  }
+
+  /** Select the present target, or the authenticated predecessor of an absent read, from the current access. */
+  private emitKernelJournalSelectedReadOrdinal(loc: SingleLocationData): void {
+    const cursorName = this.sortedUpsertLoopJournalCursorName;
+    this.emit(encodeInt(BigInt(this.getStackIndex(cursorName))), loc); this.emit(Op.OP_PICK, loc);
+    this.emit(encodeInt(21n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_NIP, loc);
+    this.emit(Op.OP_1, loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_NIP, loc);
+    this.emit(encodeInt(2n), loc); this.emit(Op.OP_SPLIT, loc);
+    this.emit(encodeInt(2n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_DROP, loc);
+    // target ordinal, predecessor ordinal. The canonical no-predecessor marker selects the target.
+    this.emit(Op.OP_DUP, loc); this.emit(new Uint8Array([0xff, 0xff]), loc); this.emit(Op.OP_EQUAL, loc);
+    this.emit(Op.OP_IF, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.scopeDepth += 1;
+    this.scopeDepth -= 1;
+    this.emit(Op.OP_ELSE, loc);
+    this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_DROP, loc);
+    this.scopeDepth += 1;
+    this.scopeDepth -= 1;
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_BIN2NUM, loc);
   }
 
   private emitKernelJournalTargetSlotCheck(node: Node, loc: SingleLocationData): void {
@@ -25040,7 +25065,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // the selected journal bank record, and its balanced altstack scratch leaves the caller's parked predecessor
     // intact. The target-slot helper below therefore observes the authoritative post-transition carrier without
     // a stale-depth cursor reparse after helper arguments have been introduced.
-    this.emitKernelJournalReadCarrierTransitionCheck(node, loc);
+    if (this.kernelJournalFinalOutputCursorReconciliationReleased()) {
+      this.emitKernelJournalReadCarrierTransitionCheck(node, loc);
+    }
 
     // Give the shared verifier explicit values; the actual predecessor has already been parked on the altstack.
     this.emit(encodeInt(BigInt(this.getStackIndex(this.sortedUpsertLoopJournalCursorName))), loc);
@@ -25105,6 +25132,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private emitSortedUpsertLoopBody(node: MappingAssignNode | MappingDeleteNode): Node {
     const loc = { location: node.location, positionHint: PositionHint.END };
     const collection = node.collection!;
+    const enclosingLoopContext = this.sortedUpsertContextForWrite(node);
+    const restoreEnclosingLoopContext = (): void => {
+      if (enclosingLoopContext) this.activateSortedUpsertLoopContext(enclosingLoopContext);
+    };
     const slotIndex = node.entrySlotIndex;
     if (this.entrySlots[slotIndex]) this.entrySlots[slotIndex].inLoop = true;
     const blockSize = this.currentFunction.blockLayout?.blockSize ?? 1;
@@ -25148,6 +25179,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.pushToStack('(credit_hk)');
     if (oldWitness) {
       this.visit(oldWitness);
+      restoreEnclosingLoopContext();
       // Expression visitors already track their result as `(value)`. Rename that real slot; pushing another
       // tracked name here creates a phantom stack item and makes the next physical iteration address the array
       // parameter at depth -1.
@@ -25160,10 +25192,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const arrayMutation = a.arrayIndex !== undefined || a.arrayPush || a.arrayPop;
       if (arrayMutation) {
         this.emitMappingArrayElementAssign(a, true, true);
+        restoreEnclosingLoopContext();
       } else if (op === 'set' || op === 'read') {
         a.expression = this.visit(a.expression);
+        restoreEnclosingLoopContext();
       } else {
         (a.expression as BinaryOpNode).right = this.visit((a.expression as BinaryOpNode).right);
+        restoreEnclosingLoopContext();
       }
       this.stack[0] = '(credit_amt)';
       if (isChunkableVal) {
@@ -25502,9 +25537,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_PICK, loc);
       this.emit(encodeInt(21n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_NIP, loc);
       this.emit(Op.OP_1, loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_DROP, loc);
-      this.emit(new Uint8Array([0]), loc); this.emit(Op.OP_CAT, loc); this.emit(Op.OP_BIN2NUM, loc);
-      this.emit(encodeInt(32n), loc); this.emit(Op.OP_AND, loc);
-      this.emit(Op.OP_BIN2NUM, loc); this.emit(Op.OP_0NOTEQUAL, loc);
+      this.emitKernelJournalCompactFlagMask(32, loc);
       this.emit(Op.OP_IF, loc);
       this.scopeDepth += 1;
       emitNormalStep();

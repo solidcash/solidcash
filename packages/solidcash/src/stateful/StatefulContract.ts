@@ -19011,11 +19011,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           }
           return location;
         };
-        kernelJournalSettlementOutputPlan = planKernelEntryJournalSettlementOutputs(
+        const pendingSettlementOutputs = planKernelEntryJournalSettlementOutputs(
           stableSettlementPlan, resolveSettlementOutput,
         );
         kernelJournalSettlementEntrySegments = kernelEntryJournalSettlementOutputSegments(
-          kernelJournalSettlementOutputPlan,
+          pendingSettlementOutputs,
         );
         const plannedOutputCount = kernelJournalSettlementEntrySegments
           .reduce((count, segment) => count + segment.count, 0);

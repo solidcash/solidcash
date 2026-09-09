@@ -10,6 +10,25 @@ export interface ConstructedKeyVectorReplay {
 }
 
 /**
+ * The replay program is safe to evaluate off-chain, but it is not by itself authority to omit or substitute
+ * journal witnesses. A kernel route must publish a covenant-checked binding from the replay's rank/key relation
+ * to its compact access stream before the SDK can use this metadata for transaction planning.
+ *
+ * Keep this check separate from `replayConstructedKeyVectorV1`: callers may use replay for diagnostics and test
+ * vectors, while only route planning needs the stronger on-chain authority.
+ */
+export function assertConstructedKeyVectorRouteBinding(
+  descriptors: readonly ConstructedKeyVectorV1[] | undefined,
+  binding: { kind: 'constructed-key-vector-replay'; version: 1 } | undefined,
+): void {
+  if (!descriptors?.length) return;
+  if (binding?.kind === 'constructed-key-vector-replay' && binding.version === 1) return;
+  throw new Error(
+    'kernel constructed key vector descriptors require an authenticated constructed-key-vector-replay route binding',
+  );
+}
+
+/**
  * Evaluate the deliberately small expression vocabulary used by a v1 constructed-vector replay. This is not the
  * general SDK expression evaluator: no state reads, calls, identifiers, helpers, or source names are accepted.
  */

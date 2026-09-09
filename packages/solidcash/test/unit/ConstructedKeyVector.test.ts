@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { replayConstructedKeyVectorV1, type ConstructedKeyVectorV1 } from '../../src/stateful/ConstructedKeyVector.js';
+import {
+  assertConstructedKeyVectorRouteBinding,
+  replayConstructedKeyVectorV1,
+  type ConstructedKeyVectorV1,
+} from '../../src/stateful/ConstructedKeyVector.js';
 
 const literal = (value: string): any => ({ kind: 'literal', type: 'int', value });
 const rank = (): any => ({ kind: 'source', source: { kind: 'loopIndex' } });
@@ -44,5 +48,14 @@ describe('constructed key vector v1 replay', () => {
       ...descriptor, consumer: { ...descriptor.consumer, index: { kind: 'identifier', name: 'userLocal' } },
     }, [], [0n])).toThrow("refuses expression kind 'identifier'");
     expect(() => replayConstructedKeyVectorV1(descriptor, [], [3n])).toThrow('consumer index is out of range');
+  });
+
+  it('does not treat an offline replay descriptor as kernel journal authority', () => {
+    expect(() => assertConstructedKeyVectorRouteBinding([descriptor], undefined))
+      .toThrow('require an authenticated constructed-key-vector-replay route binding');
+    expect(() => assertConstructedKeyVectorRouteBinding([descriptor], {
+      kind: 'constructed-key-vector-replay', version: 1,
+    })).not.toThrow();
+    expect(() => assertConstructedKeyVectorRouteBinding([], undefined)).not.toThrow();
   });
 });

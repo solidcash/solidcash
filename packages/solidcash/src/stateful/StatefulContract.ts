@@ -87,6 +87,7 @@ import {
   runtimeLoopEventIterationValues,
   runtimeLoopEventRepeatSource,
 } from './runtime-loop-event-domain.js';
+import { assertConstructedKeyVectorRouteBinding } from './ConstructedKeyVector.js';
 import { buildKeccakComputeSidecar, extractKeccakPreimageFromTrace } from '../keccak/keccakComputeSidecar.js';
 import {
   buildEcrecoverComputePlaceholders, buildEcrecoverComputeSidecars, computeEcrecoverWitness, probeEcrecoverSplit,
@@ -15486,6 +15487,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             ? { hexChars: arg.length - 2, head: arg.slice(2, 18), tail: arg.slice(-16) }
             : typeof arg),
       });
+    }
+    // A public constructed-vector descriptor proves only that the SDK can replay the source-local producer.
+    // It does not yet prove that this route's journal stream consumed the same rank/key vector. Refuse before
+    // any entry-input topology is derived if a future compiler accidentally marks such a route kernel-eligible.
+    // Direct/legacy invocations retain the ordinary on-chain array evaluation and never enter this route guard.
+    if (entryAbiFunction
+      && (entryAbiFunction as MessageBusRuntimeAbiFunction).messageBusConvention === 'kernel-row-loop') {
+      assertConstructedKeyVectorRouteBinding(entryAbiFunction.constructedKeyVectors, undefined);
     }
     let entryNfts: EntryNftInfo[] = [];
     let entryValueWitnesses: Array<Uint8Array | Uint8Array[]> = [];

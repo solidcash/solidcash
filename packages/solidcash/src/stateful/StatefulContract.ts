@@ -5173,18 +5173,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       args: [...row.args],
       internalArgs: { ...(row.internalArgs ?? {}) },
     }));
-    const runtimeEventMutationStreams = new Set((effectiveRowArguments ?? []).flatMap((row, rowIndex) =>
-      (row.handler.runtimeLoopEvents?.length ?? 0) === 0 ? []
-        : (row.handler.sortedUpsertLoopInfo ?? [])
-          .filter((stream) => stream.op !== 'read')
-          .map((stream) => [
-            row.handler.selector ?? `unresolved-row-${rowIndex}`,
-            stream.collection,
-            stream.journalAccessStreamIndex,
-          ].join(':'))));
-    if (runtimeEventMutationStreams.size > 1) {
+    const runtimeEventMutationRows = (effectiveRowArguments ?? []).filter((row) =>
+      (row.handler.runtimeLoopEvents?.length ?? 0) > 0
+      && (row.handler.sortedUpsertLoopInfo ?? []).some((stream) => stream.op !== 'read'));
+    if (runtimeEventMutationRows.length > 1) {
       throw new Error(
-        'Message-bus runtime event rows from distinct mutation journal streams cannot share one batch; '
+        'Multiple message-bus runtime event rows with journal mutations cannot share one batch; '
         + 'split the calls into separate transactions.',
       );
     }

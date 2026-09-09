@@ -24393,6 +24393,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Authenticate exactly one physical entry input and reserve its one route-final output.
     const blockSize = this.currentFunction.blockLayout?.blockSize ?? 1;
     this.emitTrailingWriteInputBase(blockSize, loc, undefined, 3);
+    if (this.sortedUpsertGrouped) {
+      this.emit(encodeInt(BigInt(this.getStackIndex(this.sortedUpsertInputBaseName) + 4)), loc);
+      this.emit(Op.OP_PICK, loc);
+      this.emit(Op.OP_ADD, loc);
+    }
     this.emit(encodeInt(BigInt(this.getStackIndex(inCountName) + 4)), loc); this.emit(Op.OP_PICK, loc);
     this.emit(Op.OP_ADD, loc); // slot,next,value,input index
     this.emit(Op.OP_DUP, loc); this.emit(Op.OP_UTXOBYTECODE, loc);

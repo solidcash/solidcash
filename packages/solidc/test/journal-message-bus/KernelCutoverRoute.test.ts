@@ -405,8 +405,8 @@ contract Slots() {
       input.name.startsWith('__internal__vmapCounterPerm_'))).toBe(true);
   });
 
-  it('journals a counter-keyed loop that writes two mappings on the row loop', () => {
-    const artifact = assertKernelRoute(`
+  it('fences two mutation streams in one counter-loop execution group', () => {
+    const artifact = compileString(`
 pragma solidcash ^0.13.0;
 contract Slots() {
   mapping(int => int) a;
@@ -417,9 +417,12 @@ contract Slots() {
   }
   function control() public { require(true); }
 }
-`, 'denied');
-    expect(artifact.messageBus?.route.inputs.some((input) =>
-      input.name.startsWith('__internal__vmapCounterPerm_'))).toBe(true);
+`, OPTIONS);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')).toMatchObject({
+      eligible: false,
+      rejectionReason: 'KERNEL_LAYOUT',
+    });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
   });
 
   it('journals a do-while counter-keyed mapping loop on the row loop', () => {

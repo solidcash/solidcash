@@ -5196,7 +5196,7 @@ describe('kernel composite counter-key settlement', () => {
     expect(() => contract.batch([
       { function: 'writeB', args: [2n] },
       { function: 'writeA', args: [3n] },
-    ])).toThrow(/runtime event rows from distinct mutation journal streams cannot share one batch/);
+    ])).toThrow(/Multiple message-bus runtime event rows with journal mutations cannot share one batch/);
     const call = contract.batch([{ function: 'writeA', args: [3n] }]);
     const builder = await call.build();
     const vm = createVirtualMachineBch2026ForProvider(provider);

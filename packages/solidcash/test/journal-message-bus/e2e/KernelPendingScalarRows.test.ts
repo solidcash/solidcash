@@ -536,21 +536,21 @@ describe('kernel pending fixed-width scalar rows', () => {
     }
   }, 180_000);
 
-  it('fences runtime mapping settlement mixed with event output segments', async () => {
+  it('admits one event-bearing mutation row and fences repeated rows at composition', async () => {
     const provider = createTestProvider();
     const artifact = compileString(EFFECT_SOURCE, KERNEL);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'addMany'))
-      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+      .toMatchObject({ eligible: true });
     const inner = new Contract(artifact, [], { provider });
     const { categoryId } = await setupStatefulUtxos(
       provider, inner, artifact.stateLayout!, {}, { saltContract: true },
     );
     const contract = StatefulContract.withCategory(inner, categoryId);
-    // The ordinary direct path remains valid; only the row-loop combination is outside the beta boundary.
-    await expect(contract.call.addMany([1n, 2n], 1n).send()).resolves.toBeDefined();
+    await expect(contract.batch([{ function: 'addMany', args: [[0n], 1n] }]).send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
     expect(() => contract.batch([
       { function: 'addMany', args: [[0n], 1n] },
-      { function: 'addMany', args: [[0n], 1n] },
-    ])).toThrow(/not batch eligible: KERNEL_LAYOUT/);
+      { function: 'addMany', args: [[1n], 2n] },
+    ])).toThrow(/Multiple message-bus runtime event rows with journal mutations/);
   }, 180_000);
 });

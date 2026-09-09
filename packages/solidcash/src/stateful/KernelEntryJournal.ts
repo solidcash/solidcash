@@ -4,6 +4,7 @@ import {
   KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX,
   KERNEL_ENTRY_JOURNAL_RECORDS_PER_SEGMENT,
   MAX_MESSAGE_BUS_BLOB_BYTES,
+  type Artifact,
   type JournalSettlementIdentityAbi,
 } from '@solidcash/utils';
 export {
@@ -213,6 +214,26 @@ export interface KernelEntryJournalSettlementPlan {
 export interface KernelEntryJournalReadCarrierCapability {
   kind: 'internal-read-carrier';
   version: 1;
+}
+
+/**
+ * Read the compiler's route-local clean-read carrier capability without inferring it from a kernel compilation.
+ *
+ * `messageBusKernel` is a code-generation preference, while this capability changes physical input/output
+ * ownership. The SDK must therefore require an executable in-bytecode kernel route and an exact, versioned
+ * compiler claim before it can turn a later read into a zero-input consumer. Older artifacts and legacy routes
+ * deliberately return `undefined` here.
+ */
+export function kernelEntryJournalReadCarrierCapabilityFromArtifact(
+  artifact: Pick<Artifact, 'messageBus'>,
+): KernelEntryJournalReadCarrierCapability | undefined {
+  const route = artifact.messageBus;
+  if (route?.convention !== 'kernel-row-loop' || route.available !== true || route.routeInBytecode !== true
+    || route.kernelEntryJournal?.version !== 1
+    || !route.atomicMessageBus?.protocolVersions?.includes(2)) return undefined;
+  const capability = route.kernelEntryJournal.capabilities?.find((candidate) =>
+    candidate.kind === 'internal-read-carrier' && candidate.version === 1);
+  return capability ? { kind: 'internal-read-carrier', version: 1 } : undefined;
 }
 
 /** One source-ordered read access after collection-local ordinals have become route-global ordinals. */

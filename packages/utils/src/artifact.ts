@@ -1324,6 +1324,21 @@ export interface Artifact {
       maximumParticipants: typeof ATOMIC_MESSAGE_BUS_MAX_PARTICIPANTS;
       maximumRows: typeof ATOMIC_MESSAGE_BUS_MAX_ROWS;
     };
+    /**
+     * Versioned route-local entry-journal capabilities. These describe code executed inside the participant's
+     * kernel route, rather than the atomic call-manifest wire format advertised above. A consumer must treat an
+     * absent capability as unsupported; in particular, a kernel convention alone never authorizes omitting a
+     * physical entry input.
+     */
+    kernelEntryJournal?: {
+      version: 1;
+      capabilities?: readonly {
+        /** The route creates and later consumes its reserved clean-read carrier marker (0x0511). */
+        kind: 'internal-read-carrier';
+        /** Version of the route-local marker, first-authentication, and final-flush protocol. */
+        version: 1;
+      }[];
+    };
     /** Compiler-emitted OP_INVOKE program moved into genesis-deployed verifier covenants. */
     verifierProgram?: {
       verifyFunctionId: number;

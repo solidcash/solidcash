@@ -21,6 +21,7 @@ import {
   planKernelEntryJournalSettlementOutputs,
   planKernelEntryJournalReadCarrierMaterialization,
   planKernelEntryJournalReadCarrierPhysicalPlan,
+  kernelEntryJournalReadCarrierCapabilityFromArtifact,
   planKernelEntryJournalSettlementOutputSegments,
   validateKernelEntryJournalSettlementGroups,
   planKernelEntryJournalStreams,
@@ -32,6 +33,7 @@ import {
   validateKernelEntryJournalRecordSegmentSlots,
   validateKernelEntryJournalTransportRecords,
 } from '../../src/stateful/KernelEntryJournal.js';
+import type { Artifact } from '@solidcash/utils';
 import { SortedList, encodeEntryCommitment, slotValueToBytes } from '../../src/stateful/SortedList.js';
 import type { Utxo } from '../../src/interfaces.js';
 import {
@@ -42,6 +44,33 @@ const bytes = (length: number, fill: number): Uint8Array => new Uint8Array(lengt
 const ACCESS_COLLECTION_HASH = bytes(20, 0xcc);
 
 describe('kernel pending-entry journal codec', () => {
+  it('does not infer clean-read carrier ownership from a kernel convention', () => {
+    const base = {
+      messageBus: {
+        convention: 'kernel-row-loop' as const,
+        available: true,
+        routeInBytecode: true,
+        atomicMessageBus: { protocolVersions: [1, 2] as const },
+      },
+    } as Pick<Artifact, 'messageBus'>;
+    expect(kernelEntryJournalReadCarrierCapabilityFromArtifact(base)).toBeUndefined();
+    expect(kernelEntryJournalReadCarrierCapabilityFromArtifact({
+      messageBus: { ...base.messageBus!, kernelEntryJournal: { version: 1, capabilities: [{
+        kind: 'internal-read-carrier', version: 1,
+      }] } },
+    })).toEqual({ kind: 'internal-read-carrier', version: 1 });
+    expect(kernelEntryJournalReadCarrierCapabilityFromArtifact({
+      messageBus: { ...base.messageBus!, routeInBytecode: false, kernelEntryJournal: { version: 1, capabilities: [{
+        kind: 'internal-read-carrier', version: 1,
+      }] } },
+    })).toBeUndefined();
+    expect(kernelEntryJournalReadCarrierCapabilityFromArtifact({
+      messageBus: { ...base.messageBus!, atomicMessageBus: { protocolVersions: [1] }, kernelEntryJournal: {
+        version: 1, capabilities: [{ kind: 'internal-read-carrier', version: 1 }],
+      } },
+    })).toBeUndefined();
+  });
+
   const journalRecord = (ordinal: number, valueBytes = KERNEL_ENTRY_JOURNAL_MAX_VALUE_BYTES): Uint8Array =>
     encodeKernelEntryJournalRecord({
       collectionHash: bytes(20, 0x11),

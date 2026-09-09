@@ -16,6 +16,19 @@ ReturnType<typeof compileString>['messageBus']
 };
 
 describe('required kernel admission', () => {
+  it('does not advertise dormant internal read-carrier support from kernel convention alone', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) values;
+      function read(int key) public view returns (int) { return this.values[key]; }
+    }`, KERNEL);
+    expect(artifact.messageBus).toMatchObject({
+      convention: 'kernel-row-loop', available: true, routeInBytecode: true,
+    });
+    // The route has compiler-side marker code, but SDK ownership/materialization has not been activated. Its
+    // capability must remain absent until both halves are released together.
+    expect(artifact.messageBus?.kernelEntryJournal).toBeUndefined();
+  });
+
   it('retries a multi-declaration speed compile from source-only AST state', () => {
     const source = `pragma solidity ^0.8.7;
       interface Remote {

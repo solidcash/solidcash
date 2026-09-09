@@ -249,6 +249,16 @@ const stockVmErrors = (builder: TransactionBuilder): string[] => {
 };
 
 describe('atomic single-transaction capacity', () => {
+  it('keeps successful return-output observations stable across independent graph identities', async () => {
+    // Each setup uses distinct participant/category identities. Before successful output-covenant observations
+    // were authoritative, some identities left a schema-shaped 32-byte stack word near an `int256` result; the
+    // generic fallback could select that unrelated word and make result claims oscillate between fixed-point passes.
+    for (let index = 0; index < 16; index += 1) {
+      const builder = await buildChain(4, true);
+      expect(builder.inputs).toHaveLength(builder.outputs.length);
+    }
+  }, 600_000);
+
   it.each([
     { convention: 'kernel' as const, messageBusKernel: true },
     { convention: 'legacy' as const, messageBusKernel: false },

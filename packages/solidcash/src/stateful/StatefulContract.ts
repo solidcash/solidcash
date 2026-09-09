@@ -28584,11 +28584,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // A converging return output can already satisfy an early preservation check with its provisional value.
     // That observation is weaker than a complete, schema-shaped result still live in the route frame: it proves
     // only that the seed was preserved at that earlier site, not that later handlers returned the same value.
-    // Prefer the live result only when the output extractor found nothing or merely rediscovered the concrete
-    // provisional commitment. A differing output-covenant expectation remains the strongest evidence.
+    // A completed output-covenant equality is authoritative even when it confirms the provisional commitment:
+    // native scalar schemas can otherwise mistake any unrelated stack word for a result. Only a failed trace may
+    // replace a rediscovered seed with the weaker schema scan; a differing output expectation remains authoritative.
     const schemaFallback = extractSchemaFallback(trace);
+    const traceFailed = trace.at(-1)?.error !== undefined;
     if (schemaFallback !== undefined
-      && (commitment === undefined || commitment === materializedReturnHex)) {
+      && (commitment === undefined || (traceFailed && commitment === materializedReturnHex))) {
       commitment = schemaFallback;
     }
     // A participant can compute its return only after checking several output/resource pins. Early semantic
@@ -28598,7 +28600,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // only a graph claim: the converged transaction still passes the ordinary, non-relaxed BCH VM preflight.
     let relaxedTrace: AuthenticationProgramStateCommon[] | undefined;
     let relaxedCommitment: string | undefined;
-    if (trace.at(-1)?.error !== undefined
+    if (traceFailed
       && (commitment === undefined || commitment === materializedReturnHex)) {
       relaxedTrace = evaluateProbeTrace(
         this.inner.provider, { inputIndex, sourceOutputs, transaction }, true,

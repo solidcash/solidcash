@@ -76,13 +76,25 @@ const shapedKernelLines = kernelImplementationFiles.flatMap((file) =>
 if (shapedKernelLines.length > 0) {
   throw new Error(`kernel implementation contains application-shaped production names:\n${shapedKernelLines.join('\n')}`);
 }
-const requiredTestIds = [
-  'build', 'generated-artifacts', 'utils-source-maps',
-  'compiler-journal', 'sdk-journal', 'sdk-regressions',
+const requiredTestCommands = [
+  { id: 'build', argv: ['yarn', 'build'] },
+  { id: 'generated-artifacts', argv: ['yarn', 'workspace', 'testing-suite', 'vitest', 'run', 'test/artifact-freshness.test.ts'] },
+  { id: 'utils-source-maps', argv: ['yarn', 'workspace', '@solidcash/utils', 'vitest', 'run', 'test/script.test.ts'] },
+  { id: 'compiler-journal', argv: ['yarn', 'workspace', 'solidc', 'vitest', 'run', 'test/journal-message-bus'] },
+  { id: 'sdk-journal', argv: ['yarn', 'workspace', 'solidcash', 'vitest', 'run', 'test/journal-message-bus'] },
+  {
+    id: 'sdk-regressions',
+    argv: [
+      'yarn', 'workspace', 'solidcash', 'vitest', 'run',
+      'test/unit/AssignPhysicalReturnIndices.test.ts', 'test/unit/DirectMappingReadPlan.test.ts',
+      'test/FnPtrStructFieldCall.test.ts', 'test/e2e/CrossContractSubcaseSoundness.test.ts',
+      'test/e2e/CrossContractSortedWrite.test.ts', 'test/e2e/DynamicArrayCopyCast.test.ts',
+      'test/e2e/X167ArrayCopyReplaces.test.ts',
+    ],
+  },
 ];
-if (JSON.stringify(manifest.testCommands.map(({ id }) => id)) !== JSON.stringify(requiredTestIds)
-  || manifest.testCommands.some(({ argv }) => !Array.isArray(argv) || argv.length === 0)) {
-  throw new Error(`kernel beta manifest must contain the exact ordered test roles: ${requiredTestIds.join(', ')}`);
+if (JSON.stringify(manifest.testCommands) !== JSON.stringify(requiredTestCommands)) {
+  throw new Error('kernel beta manifest must contain the exact ordered release commands');
 }
 const requiredColdMatrix = ['marketplace-v1:kernel,legacy', 'unicrow-claim:kernel'];
 const actualColdMatrix = manifest.coldCompiles.map((entry) =>
@@ -93,6 +105,25 @@ if (JSON.stringify(actualColdMatrix) !== JSON.stringify(requiredColdMatrix)) {
 const requiredProofs = manifest.requiredKernelProofs;
 if (!Array.isArray(requiredProofs) || requiredProofs.length === 0) {
   throw new Error('kernel beta manifest must pin at least one required kernel proof inventory');
+}
+const requiredProofIds = [
+  'kernel-loop-route',
+  'kernel-observable-parity',
+  'compiler-callsite-result-identity',
+  'kernel-graph-result-identity',
+  'kernel-multi-result-observable-parity',
+  'kernel-schema-name-isolation',
+  'kernel-journal-ownership',
+  'kernel-read-carrier-boundary',
+  'kernel-lifecycle-boundary',
+  'kernel-lifecycle-planning-boundary',
+  'kernel-upgrade-lifecycle',
+  'kernel-unsafe-tier2-lifecycle',
+  'kernel-typed-deploy-lifecycle',
+  'kernel-conditional-deploy-lifecycle',
+];
+if (JSON.stringify(requiredProofs.map(({ id }) => id)) !== JSON.stringify(requiredProofIds)) {
+  throw new Error(`kernel beta manifest must contain the exact ordered proof roles: ${requiredProofIds.join(', ')}`);
 }
 const proofIds = new Set();
 for (const proof of requiredProofs) {

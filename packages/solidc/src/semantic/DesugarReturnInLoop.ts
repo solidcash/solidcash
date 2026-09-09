@@ -5,6 +5,7 @@ import {
 } from '../ast/AST.js';
 import { PrimitiveType } from '@solidcash/utils';
 import AstTraversal from '../ast/AstTraversal.js';
+import { fixedForMaximum } from './FixedForLoop.js';
 
 /**
  * Desugars a `return` inside a loop into a flag + break + post-loop return. An internal/private solidcash
@@ -124,7 +125,8 @@ export default class DesugarReturnInLoop extends AstTraversal {
   private transformStatements(stmts: StatementNode[], loopDepth: number): [StatementNode[], boolean] {
     const out: StatementNode[] = [];
     let had = false;
-    for (const s of stmts) {
+    for (let statementIndex = 0; statementIndex < stmts.length; statementIndex += 1) {
+      const s = stmts[statementIndex];
       // A 1:1 return inside a loop -> stash the values + set the flag + break the loop.
       const returnedValues = s instanceof ReturnNode && loopDepth > 0
         ? (s.expressions.length === this.retCount
@@ -143,8 +145,16 @@ export default class DesugarReturnInLoop extends AstTraversal {
         out.push(this.stampLoc(new BreakNode(), s.location));
         had = true;
       } else if (s instanceof WhileNode || s instanceof DoWhileNode) {
+        // Capture the exact canonical-for ceiling before the injected return flag/break propagation changes the
+        // loop body and later break lowering changes its condition. The transformed loop may execute fewer
+        // iterations, so this remains a ceiling but must never be reused as a floor.
+        const authenticatedMaximum = s instanceof WhileNode
+          ? fixedForMaximum(stmts[statementIndex - 1], s) : undefined;
         const [inner, innerHad] = this.transformStatements(s.block.statements ?? [], loopDepth + 1);
         s.block.statements = inner;
+        if (s instanceof WhileNode && innerHad && authenticatedMaximum !== undefined) {
+          s.compilerAuthenticatedMaximumIterations = authenticatedMaximum;
+        }
         out.push(s);
         if (innerHad) { out.push(this.stampLoc(this.propagation(loopDepth), s.location)); had = true; }
       } else if (s instanceof BranchNode) {

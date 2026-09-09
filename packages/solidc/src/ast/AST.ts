@@ -1187,6 +1187,13 @@ export class WhileNode extends StatementNode {
   sourceAuthoredLoop?: boolean;
   /** A fixed-loop expansion saw source break/continue/return and must stay rolled on later passes. */
   fixedUnrollForbidden: boolean = false;
+  /**
+   * Exact source-loop ceiling proved before a lowering rewrites the canonical condition or update.
+   *
+   * This is compiler-owned evidence, not an admission hint: consumers may use it only as an upper bound. In
+   * particular, early-exit lowering can invalidate the matching lower bound while leaving this ceiling sound.
+   */
+  compilerAuthenticatedMaximumIterations?: number;
 
   constructor(
     public condition: ExpressionNode,

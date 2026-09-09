@@ -46,6 +46,44 @@
       ]
     },
     {
+      "id": "compiler-callsite-result-identity",
+      "workspace": "solidc",
+      "file": "test/InvocationAnalysis.test.ts",
+      "tests": [
+        "emits the complete compiler-resolved graph footprint per callsite",
+        "publishes the producer callsite for a directly nested external-call argument",
+        "links each used tuple result through its synthetic local definition",
+        "deduplicates repeated uses of one exact producer component in a consumer argument"
+      ]
+    },
+    {
+      "id": "kernel-graph-result-identity",
+      "workspace": "solidc",
+      "file": "test/journal-message-bus/KernelGraphResultDependency.test.ts",
+      "tests": [
+        "keeps identical result schemas separately addressable by stable callsite and component",
+        "preserves one authenticated callsite graph when producer and consumer originate in a helper",
+        "publishes helper-origin graph metadata in a process-cold, cache-disabled kernel compile",
+        "does not authenticate ambiguous or non-dominating helper result aliases"
+      ]
+    },
+    {
+      "id": "kernel-multi-result-observable-parity",
+      "workspace": "solidcash",
+      "file": "test/journal-message-bus/e2e/KernelMultiResultGraphParity.test.ts",
+      "tests": [
+        "forwards authenticated tuple lanes with kernel and legacy observable parity"
+      ]
+    },
+    {
+      "id": "kernel-schema-name-isolation",
+      "workspace": "solidcash",
+      "file": "test/journal-message-bus/e2e/KernelSchemaNameIsolation.test.ts",
+      "tests": [
+        "treats historical Marketplace identifiers exactly like an alpha-renamed chunkable write"
+      ]
+    },
+    {
       "id": "kernel-journal-ownership",
       "workspace": "solidcash",
       "file": "test/journal-message-bus/e2e/KernelJournalOwnershipCharacterization.test.ts",
@@ -81,6 +119,40 @@
       "tests": [
         "fails closed for a resource-free lifecycle row until the advertised protocol can compose it",
         "cannot plan compiler-fenced lifecycle rows carrying detached signature leaves"
+      ]
+    },
+    {
+      "id": "kernel-upgrade-lifecycle",
+      "workspace": "solidcash",
+      "file": "test/journal-message-bus/e2e/KernelUpgradeCompose.test.ts",
+      "tests": [
+        "authenticates one final upgrade row and preserves the master NFT geometry",
+        "appends canonical new fields after the post-row old state and rejects suffix tampering"
+      ]
+    },
+    {
+      "id": "kernel-unsafe-tier2-lifecycle",
+      "workspace": "solidcash",
+      "file": "test/journal-message-bus/e2e/KernelUnsafeTier2Compose.test.ts",
+      "tests": [
+        "executes a read-only validation row and rejects a forged state commitment"
+      ]
+    },
+    {
+      "id": "kernel-typed-deploy-lifecycle",
+      "workspace": "solidcash",
+      "file": "test/journal-message-bus/e2e/AtomicMessageBusCompose.test.ts",
+      "tests": [
+        "materializes multiple heterogeneous child sites across two rows and rejects hostile genesis data",
+        "keeps computed CREATE2 recipes site-local across repeated heterogeneous deployment rows"
+      ]
+    },
+    {
+      "id": "kernel-conditional-deploy-lifecycle",
+      "workspace": "solidcash",
+      "file": "test/journal-message-bus/e2e/ConditionalChildDeploymentSecurity.test.ts",
+      "tests": [
+        "binds active and inactive genesis spans to the repeated row source predicate"
       ]
     }
   ],

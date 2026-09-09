@@ -212,7 +212,8 @@ export const occurrenceInfoOf = (
       const statements = value.statements ?? [];
       statements.forEach((statement, index) => {
         if (statement instanceof WhileNode) {
-          const trips = fixedForMaximum(statements[index - 1], statement);
+          const trips = fixedForMaximum(statements[index - 1], statement)
+            ?? statement.compilerAuthenticatedMaximumIterations;
           counted.add(statement);
           const exactTrips = loopCanExitEarly(statement) ? undefined : trips;
           visit(statement, 'loop', composeCount(reachedMaximum, trips), composeCount(reachedExact, exactTrips));

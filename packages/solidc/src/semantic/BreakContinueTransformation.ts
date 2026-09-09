@@ -267,6 +267,7 @@ function transformWhileLoop(loop: WhileNode): StatementNode[] {
   const newLoop = new WhileNode(newCondition, newBlock);
   newLoop.forLoopUpdateCount = loop.forLoopUpdateCount;
   newLoop.fixedUnrollForbidden = loop.fixedUnrollForbidden;
+  newLoop.compilerAuthenticatedMaximumIterations = loop.compilerAuthenticatedMaximumIterations;
   newLoop.location = loop.location;
 
   const result: StatementNode[] = [];

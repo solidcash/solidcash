@@ -7,7 +7,9 @@ contract Analysis() {
   int x;
   mapping(int => int) balances;
   function leaf(int k) internal { this.x = this.x + k; }
-  function left(int k) internal { leaf(k); right(k); }
+  // Keep the mutual cycle non-tail-recursive so the tail-recursion lowering pass does not intentionally replace
+  // it with a program-counter loop before invocation analysis records the remaining call graph.
+  function left(int k) internal { right(k); leaf(k); }
   function right(int k) internal { if (k > 0) left(k - 1); }
   function run(int k) { left(k); require(k >= 0); }
   function readBalance(int k) view { require(balances[k] >= 0); }
@@ -74,6 +76,8 @@ describe('Release 0 shared invocation analysis', () => {
       transferIndex: 0,
       recipient: { kind: 'forward', paramIndex: 1 },
       amount: { kind: 'forward', paramIndex: 0 },
+      recipientRecipe: { kind: 'handlerInput', inputIndex: 1 },
+      amountRecipe: { kind: 'handlerInput', inputIndex: 0 },
     }]);
     expect(summary.transfers).toEqual(abi.transfers);
     expect(summary.dynamicWrites).toEqual(abi.dynamicWrites);

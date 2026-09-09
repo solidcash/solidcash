@@ -1,36 +1,7 @@
-import type { ExternalCallExpression } from '@solidcash/utils';
+import type { ConstructedKeyVectorV1Abi, ExternalCallExpression } from '@solidcash/utils';
 
-/** Strict v1 replay description; the compiler owns every expression and vector identity. */
-export interface ConstructedKeyVectorV1 {
-  version: 1;
-  vectorOrdinal: number;
-  elementType: string;
-  allocationLength: ExternalCallExpression;
-  producer: {
-    domain: {
-      kind: 'pre-test' | 'post-test';
-      start: ExternalCallExpression;
-      bound: ExternalCallExpression;
-      step: ExternalCallExpression;
-      comparison: '<' | '<=' | '>' | '>=';
-    };
-    writes: readonly {
-      index: ExternalCallExpression;
-      value: ExternalCallExpression;
-      condition?: ExternalCallExpression;
-    }[];
-  };
-  consumer: {
-    /** Evaluated once for each supplied consumer rank. */
-    index: ExternalCallExpression;
-    /** One mapping-key component receives the replayed vector element. */
-    vectorElementComponent: number;
-    /** Exact mapping-key arity; prevents an omitted component from silently acquiring a default. */
-    keyComponentCount: number;
-    /** All other key components are compiler expressions evaluated at the consumer rank. */
-    fixedComponents: readonly { component: number; expression: ExternalCallExpression }[];
-  };
-}
+/** Strict v1 replay description shared with compiler artifact metadata. */
+export type ConstructedKeyVectorV1 = ConstructedKeyVectorV1Abi;
 
 export interface ConstructedKeyVectorReplay {
   values: readonly unknown[];

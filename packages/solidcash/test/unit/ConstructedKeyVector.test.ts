@@ -25,6 +25,17 @@ describe('constructed key vector v1 replay', () => {
     });
   });
 
+  it('accepts the ordinary JSON ABI representation without source-local identities', () => {
+    const artifactDescriptor = JSON.parse(JSON.stringify(descriptor)) as ConstructedKeyVectorV1;
+    expect(Object.keys(artifactDescriptor).sort()).toEqual([
+      'allocationLength', 'consumer', 'elementType', 'producer', 'vectorOrdinal', 'version',
+    ]);
+    expect(replayConstructedKeyVectorV1(artifactDescriptor, [], [1n])).toEqual({
+      values: [40n, 41n, 42n],
+      keys: [[9n, 41n]],
+    });
+  });
+
   it('fails closed for incomplete coverage, unsupported expression kinds, and invalid consumer rank', () => {
     expect(() => replayConstructedKeyVectorV1({
       ...descriptor, producer: { ...descriptor.producer, writes: [{ index: literal('0'), value: literal('1') }] },

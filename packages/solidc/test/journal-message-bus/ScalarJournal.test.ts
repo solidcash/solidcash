@@ -158,7 +158,7 @@ describe('Release 1 scalar journal lowering', () => {
     expect(artifact.invocationAnalysis?.functions.find((fn) => fn.name === 'log')).toBeUndefined();
   });
 
-  it('fences a returning event writer which shares the pending collection journal', () => {
+  it('keeps a returning event writer on the same authenticated collection route', () => {
     const artifact = compileMessageBusString(`pragma solidcash >=0.8.0;
       contract Token {
         mapping(address => uint) balances;
@@ -178,8 +178,7 @@ describe('Release 1 scalar journal lowering', () => {
       expect.objectContaining({ name: 'balanceOf', eligible: true, outputs: [{ type: 'uint256' }] }),
       expect.objectContaining({
         name: 'approve',
-        eligible: false,
-        rejectionReason: 'KERNEL_LAYOUT',
+        eligible: true,
         outputs: [{ type: 'bool' }],
         emits: [expect.objectContaining({ eventName: 'Approval' })],
       }),
@@ -191,8 +190,9 @@ describe('Release 1 scalar journal lowering', () => {
       }),
       expect.objectContaining({
         name: '__message_bus1',
-        reads: ['collection:balances:*'],
-        writes: [],
+        reads: ['collection:allowances:*', 'collection:balances:*'],
+        writes: ['collection:allowances:*'],
+        effects: ['events'],
       }),
     ]));
   });
@@ -312,7 +312,7 @@ describe('Release 1 scalar journal lowering', () => {
     const eligible = (artifact: typeof normal): string[] => artifact.messageBus?.handlers
       .filter((handler) => handler.eligible).map((handler) => handler.name) ?? [];
     expect(eligible(fast)).toEqual(eligible(normal));
-    expect(eligible(fast)).toEqual(['balanceOf']);
+    expect(eligible(fast)).toEqual(['balanceOf', 'approve']);
     // Resource-shaped routes remain compact under production consensus, while an explicitly permissive input
     // budget admits the full unrolled band needed by deeper application call DAGs.
     expect(normal.messageBus?.maximumRows).toBe(8);
@@ -350,7 +350,7 @@ describe('Release 1 scalar journal lowering', () => {
 
     expect(artifact.messageBus?.maximumRows).toBe(8);
     expect(artifact.messageBus?.handlers).toEqual(expect.arrayContaining([
-      expect.objectContaining({ name: 'approve', eligible: false, rejectionReason: 'KERNEL_LAYOUT' }),
+      expect.objectContaining({ name: 'approve', eligible: true }),
       expect.objectContaining({ name: 'transferFrom', eligible: true }),
     ]));
     expect(artifact.messageBus?.route.entryAccesses?.map((access) => access.collection))

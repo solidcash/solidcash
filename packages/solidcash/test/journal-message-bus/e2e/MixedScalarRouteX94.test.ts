@@ -13,10 +13,9 @@ import { createTestProvider, setupStatefulUtxos } from '../../test-util.js';
  * scalar getter/bumper is refused purely for the company it keeps. What it protected against is exact: a row
  * that addresses no physical entry, landing in a route whose block reserves an entry slot on every row.
  *
- * The relaxation admits the scalar handler only while the route's entry slots are NOT per-row - i.e. while no
- * survivor carries a `perRow` key witness. On that shape `LowerCollectionJournalHelpers` hoists the physical
- * entry read to the top of the wrapper and its write-back to the bottom, both OUTSIDE the row dispatch, so a
- * scalar row flushes the entry unchanged rather than leaving its post-state unconstrained.
+ * Kernel dispatch keeps the row loop independent of the route's physical entry frame. A row without a mapping
+ * effect leaves the authenticated caches untouched; a row with two mapping identities selects their orientation
+ * from its decoded arguments. The VM cases below pin both forms and the unchanged-entry behavior.
  */
 
 const BUS = { forceStateful: true, messageBus: true };
@@ -47,19 +46,25 @@ contract X94Mixed() {
 }`;
 
 /**
- * A PER-ROW entry route: `move` keys `balances` twice over one collection, so the route allocates a row-local
- * entry slot per row. This is the shape the relaxation must keep refusing.
+ * A two-entry route: `move` keys `balances` twice over one collection, so the kernel reserves two authenticated
+ * entry slots and chooses their source orientation from the active row.
  */
 const PER_ROW = `pragma solidcash >=0.8.0;
 contract X94PerRow() {
   bigint total;
   mapping(bytes20 => bigint) balances;
   function bump(bigint a) public { this.total = this.total + a; require(a >= 0); }
+  function credit(bytes20 who, bigint a) public {
+    this.balances[who] = this.balances[who] + a; require(a >= 0);
+  }
   function move(bytes20 from, bytes20 to, bigint a) public {
     require(this.balances[from] >= a);
     this.balances[from] = this.balances[from] - a;
     this.balances[to] = this.balances[to] + a;
+    require(a >= 0);
   }
+  function checkTotal(bigint expected) public { require(this.total == expected); }
+  function checkBalance(bytes20 who, bigint expected) public { require(this.balances[who] == expected); }
 }`;
 
 async function deploy(source: string): Promise<StatefulContract> {
@@ -105,8 +110,8 @@ describe('X94 a scalar handler joins a collection route', () => {
     // slot and moves none. The entry slot the covenant addresses is the SAME slot at the SAME offset.
     expect(mixed.messageBus?.route.blockLayout)
       .toEqual(collectionOnly.messageBus?.route.blockLayout);
-    expect(mixed.messageBus?.route.blockLayout?.slots.map((slot: any) => slot.kind))
-      .toEqual(['master', 'dataNft', 'entry']);
+    expect(mixed.messageBus?.route.blockLayout?.slots.find((slot: any) => slot.kind === 'entry'))
+      .toEqual(collectionOnly.messageBus?.route.blockLayout?.slots.find((slot: any) => slot.kind === 'entry'));
   }, 180_000);
 
   it('settles a mixed batch on the VM, crediting the entry row and the scalar row', async () => {
@@ -198,37 +203,33 @@ describe('X94 a scalar handler joins a collection route', () => {
     await attacked.getFunction('checkBalance')(alicePkh, 100n).send();
   }, 240_000);
 
-  /**
-   * NEGATIVE CONTROL for the narrowing, not for the gate. `move` keys one collection twice, so the route
-   * allocates a ROW-LOCAL entry slot per row - the shape whose scalar row genuinely would leave an entry slot
-   * with no constraint. The scalar sibling must still be refused, and by the same named reason.
-   */
-  it('still refuses the scalar sibling on a per-row entry route', () => {
+  it('settles a scalar row beside a two-entry mapping row on the kernel loop', async () => {
     const artifact = compileString(PER_ROW, BUS);
     const handlers = artifact.messageBus?.handlers ?? [];
     expect(handlers.find((handler) => handler.name === 'move')).toMatchObject({ eligible: true });
-    expect(handlers.find((handler) => handler.name === 'bump')).toMatchObject({
-      eligible: false, rejectionReason: 'mixed-scalar-and-collection-route-not-enabled',
-    });
-    // The reason the refusal stands here: this route's entry witnesses are per-row.
+    expect(handlers.find((handler) => handler.name === 'bump')).toMatchObject({ eligible: true });
     expect(handlers.find((handler) => handler.name === 'move')?.batchKeyWitnesses
-      ?.some((witness: any) => witness.perRow)).toBe(true);
-    // And the slots that makes unbindable are real route inputs, one per row, with no row to bind them.
-    expect(artifact.messageBus?.route.inputs.map((input: any) => input.name))
-      .toEqual(expect.arrayContaining(['__message_bus_key_balances_0_row_r0', '__message_bus_key_balances_0_row_r1']));
+      ?.filter((witness: any) => witness.swappable)).toHaveLength(2);
+    const routeInputs = artifact.messageBus?.route.inputs.map((input: any) => input.name) ?? [];
+    expect(routeInputs).toEqual(expect.arrayContaining([
+      '__message_bus_key_balances_0', '__message_bus_key_balances_0_row',
+    ]));
+    expect(routeInputs.some((name: string) => /_r\d+$/.test(name))).toBe(false);
+
+    const contract = await deploy(PER_ROW);
+    await contract.getFunction('credit')(alicePkh, 100n).send();
+    await contract.getFunction('credit')(bobPkh, 0n).send();
+    await contract.batch([
+      { function: 'bump', args: [7n] },
+      { function: 'move', args: [alicePkh, bobPkh, 30n] },
+    ]).send();
+    await contract.getFunction('checkTotal')(7n).send();
+    await contract.getFunction('checkBalance')(alicePkh, 70n).send();
+    await contract.getFunction('checkBalance')(bobPkh, 30n).send();
   }, 180_000);
 
-  /**
-   * NEVER-SHRINK GUARD, with its own subject. The uniformity rules pick ONE shape for the whole set, so a
-   * newly admitted scalar handler can demote handlers that were already admitted - a RETURNING one makes the
-   * route result-shaped, an EMITTING one makes it event-shaped, and each of those refuses handlers the route
-   * already carried. The guard runs the rules over both sets and keeps the wider.
-   *
-   * Neither shape occurs in the four corpora - the corpus delta with the guard and without it is zero rows -
-   * so these are the only place the mechanism is exercised at all.
-   */
-  it('refuses event-emitting entry writers beside a returning scalar handler at the beta boundary', () => {
-    const artifact = compileString(`pragma solidcash >=0.8.0;
+  it('settles event-emitting entry writers beside a returning scalar handler', async () => {
+    const source = `pragma solidcash >=0.8.0;
 contract X94Result() {
   bigint total;
   mapping(bytes20 => bigint) balances;
@@ -240,26 +241,34 @@ contract X94Result() {
   function credit2(bytes20 who, bigint a) public {
     this.balances[who] = this.balances[who] + a; emit Moved(a); require(a >= 0);
   }
-    }`, BUS);
+  function checkBalance(bytes20 who, bigint expected) public {
+    require(this.balances[who] == expected);
+  }
+    }`;
+    const artifact = compileString(source, BUS);
     const handlers = artifact.messageBus?.handlers ?? [];
-    // Returning scalar rows remain admitted, while collection mutation plus an observable effect stays behind
-    // the mixed pending-journal/effect fence until those outputs have independent authenticated cursors.
     expect(handlers.filter((handler) => handler.eligible).map((handler) => handler.name))
-      .toEqual(['totalSupply']);
+      .toEqual(['totalSupply', 'credit', 'credit2', 'checkBalance']);
     expect(handlers.find((handler) => handler.name === 'totalSupply')).toMatchObject({
       eligible: true,
     });
     expect(handlers.find((handler) => handler.name === 'credit')).toMatchObject({
-      eligible: false,
-      rejectionReason: 'KERNEL_LAYOUT',
+      eligible: true,
     });
     expect(handlers.find((handler) => handler.name === 'credit2')).toMatchObject({
-      eligible: false,
-      rejectionReason: 'KERNEL_LAYOUT',
+      eligible: true,
     });
+
+    const contract = await deploy(source);
+    await contract.batch([
+      { function: 'totalSupply' },
+      { function: 'credit', args: [alicePkh, 5n] },
+      { function: 'credit2', args: [alicePkh, 6n] },
+    ]).send();
+    await contract.getFunction('checkBalance')(alicePkh, 11n).send();
   }, 180_000);
 
-  it('refuses an emitting scalar handler rather than let it demote two silent entry writers', () => {
+  it('admits an emitting scalar handler beside two silent entry writers', () => {
     const artifact = compileString(`pragma solidcash >=0.8.0;
 contract X94Event() {
   bigint total;
@@ -271,24 +280,18 @@ contract X94Event() {
 }`, BUS);
     const handlers = artifact.messageBus?.handlers ?? [];
     expect(handlers.filter((handler) => handler.eligible).map((handler) => handler.name))
-      .toEqual(['credit', 'debit']);
+      .toEqual(['bump', 'credit', 'debit']);
     expect(handlers.find((handler) => handler.name === 'bump')).toMatchObject({
-      eligible: false, rejectionReason: 'mixed-scalar-and-collection-route-not-enabled',
+      eligible: true,
     });
   }, 180_000);
 });
 
 /**
- * X88 + X89, and the pairing is the point. A collection ITERATION read never entered the footprint
- * (`CollectionIterationNode` carries `collectionName`, not `name`), which was harmless only because X88 stopped
- * the handler compiling: the enumerable-iteration lowering gives the handler extra parameters after the
- * wrapper's dispatch call has already been generated from the pre-lowering signature.
- *
- * Fixing the arity alone would have turned a compile error into a SILENT UNDER-RESERVATION - a handler admitted
- * with entry reads the block reserves nothing for. So the read is recovered AND the handler is refused by name,
- * and both halves are pinned here.
+ * X88 + X89 began as an arity/under-reservation regression. The kernel now publishes enumerable iteration as an
+ * explicit collection stream, so lowering's hidden operands and the route's physical trailing frame agree.
  */
-describe('X88/X89 a collection-iteration handler is refused by name, not crashed on arity', () => {
+describe('X88/X89 collection iteration on the kernel loop', () => {
   const iterating = (body: string, sibling = ''): string => `pragma solidcash >=0.8.0;
 contract X88Iter() {
   enumerable mapping(bytes20 => bigint) m;
@@ -309,31 +312,33 @@ contract X88Iter() {
     require(t >= 0);
   }`;
 
-  it('compiles the handler that used to crash the generated wrapper, with no route and a named reason', () => {
+  it('compiles entries and key iteration as explicit kernel collection streams', () => {
     for (const body of [scanEntries, scanKeys]) {
       const artifact = compileString(iterating(body), BUS);
-      expect(artifact.messageBus).toBeUndefined();
-      expect((artifact.diagnostics ?? []).map((entry) => entry.message).join(' '))
-        .toContain("'scan': collection-iteration-handler-not-enabled");
+      expect(artifact.messageBus?.convention).toBe('kernel-row-loop');
+      expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'scan'))
+        .toMatchObject({ eligible: true });
+      expect(artifact.messageBus?.route.collectionIterations)
+        .toEqual([expect.objectContaining({ collection: 'm' })]);
     }
   }, 240_000);
 
-  /**
-   * The half that makes the refusal load-bearing rather than cosmetic. Beside a handler the route DOES admit,
-   * the iteration handler must be refused for the iteration - not swept up by some other rule that happens to
-   * fire - and the route's entry slots must still be exactly the admitted handler's own.
-   */
-  it('refuses the iteration handler beside an admitted entry writer, and sizes only that writer', () => {
+  /** The iteration stream and fixed keyed access retain independent physical metadata on one route. */
+  it('keeps an iteration stream beside an independently keyed entry writer', () => {
     const artifact = compileString(iterating(
       scanEntries,
       'function credit(bytes20 who, bigint a) public { this.m[who] = this.m[who] + a; require(a >= 0); }',
     ), BUS);
     const handlers = artifact.messageBus?.handlers ?? [];
     expect(handlers.find((handler) => handler.name === 'scan')).toMatchObject({
-      eligible: false, rejectionReason: 'collection-iteration-handler-not-enabled',
+      eligible: true,
     });
     expect(handlers.find((handler) => handler.name === 'credit')).toMatchObject({ eligible: true });
     expect(artifact.messageBus?.route.entryAccesses)
-      .toEqual([{ collection: 'm', keyParams: ['__message_bus_key_m_0'], operations: ['read', 'write'] }]);
+      .toContainEqual(expect.objectContaining({
+        collection: 'm', keyParams: ['__message_bus_key_m_0'], operations: ['read', 'write'],
+      }));
+    expect(artifact.messageBus?.route.collectionIterations)
+      .toEqual([expect.objectContaining({ collection: 'm', mode: 'entries' })]);
   }, 240_000);
 });

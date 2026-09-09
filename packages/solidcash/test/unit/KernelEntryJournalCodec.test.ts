@@ -17,6 +17,8 @@ import {
   encodeKernelEntryJournalRecords,
   planKernelEntryJournalAccessTopology,
   planKernelEntryJournalSettlementAuthority,
+  kernelEntryJournalSettlementOutputSegments,
+  planKernelEntryJournalSettlementOutputs,
   planKernelEntryJournalSettlementOutputSegments,
   validateKernelEntryJournalSettlementGroups,
   planKernelEntryJournalStreams,
@@ -648,11 +650,17 @@ describe('kernel pending-entry journal codec', () => {
         [2, { reference: b0, basis: 'mutation-settlement' as const }],
       ]),
     };
-    expect(planKernelEntryJournalSettlementOutputSegments(plan, (reference) => (
+    const resolve = (reference: typeof a0) => (
       reference.accessStreamIndex === 0
         ? { collection: 'alpha', offset: reference.recordOrdinal === 0 ? 0 : 1 }
         : { collection: 'beta', offset: 0 }
-    ))).toEqual([
+    );
+    expect(planKernelEntryJournalSettlementOutputs(plan, resolve)).toEqual([
+      { recordOrdinal: 0, outputOrdinal: 0, collection: 'alpha', offset: 0 },
+      { recordOrdinal: 2, outputOrdinal: 1, collection: 'beta', offset: 0 },
+      { recordOrdinal: 3, outputOrdinal: 2, collection: 'alpha', offset: 1 },
+    ]);
+    expect(kernelEntryJournalSettlementOutputSegments(planKernelEntryJournalSettlementOutputs(plan, resolve))).toEqual([
       { collection: 'alpha', offset: 0, count: 1 },
       { collection: 'beta', offset: 0, count: 1 },
       { collection: 'alpha', offset: 1, count: 1 },

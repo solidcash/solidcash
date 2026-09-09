@@ -128,16 +128,18 @@ import {
   encodeKernelEntryJournalAccesses,
   KERNEL_ENTRY_JOURNAL_MAX_RECORDS,
   KERNEL_ENTRY_JOURNAL_MAX_SEGMENTS,
+  kernelEntryJournalSettlementOutputSegments,
   kernelEntryJournalRecordSegmentIndex,
   kernelEntryJournalRecordSegmentName,
   encodeKernelEntryJournalRecordSegment,
   planKernelEntryJournalAccessTopology,
   planKernelEntryJournalSettlementAuthority,
-  planKernelEntryJournalSettlementOutputSegments,
+  planKernelEntryJournalSettlementOutputs,
   validateKernelEntryJournalSettlementGroups,
   segmentKernelEntryJournalRecords,
   validateKernelEntryJournalRecordSegmentSlots,
   type KernelEntryJournalSettlementOccurrence,
+  type KernelEntryJournalSettlementReference,
   type KernelEntryJournalTopologyOperation,
 } from './KernelEntryJournal.js';
 import { resolveKernelDelegatePromotion } from './KernelDelegateForwarding.js';
@@ -16843,6 +16845,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     let kernelJournalSettlementEntrySegments: Array<{
       collection: string; offset: number; count: number;
     }> | undefined;
+    let kernelJournalSettlementOutputPlan: Array<{
+      recordOrdinal: number; outputOrdinal: number; collection: string; offset: number;
+    }> | undefined;
     const runtimeJournalInputIds = new Set<string>();
     const appendRuntimeJournalInput = (
       input: UnlockableUtxo, collection: string, allowExistingScalarReuse = false,
@@ -18727,17 +18732,20 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         }
       }
       if (stableSettlementPlan) {
-        kernelJournalSettlementEntrySegments = planKernelEntryJournalSettlementOutputSegments(
-          stableSettlementPlan,
-          (authority) => {
-            const location = physicalLocations.get(authority.recordOrdinal);
-            if (!location) {
-              throw new Error(
-                `Kernel journal settlement record ${authority.recordOrdinal} has no physical output location.`,
-              );
-            }
-            return location;
-          },
+        const resolveSettlementOutput = (authority: KernelEntryJournalSettlementReference) => {
+          const location = physicalLocations.get(authority.recordOrdinal);
+          if (!location) {
+            throw new Error(
+              `Kernel journal settlement record ${authority.recordOrdinal} has no physical output location.`,
+            );
+          }
+          return location;
+        };
+        kernelJournalSettlementOutputPlan = planKernelEntryJournalSettlementOutputs(
+          stableSettlementPlan, resolveSettlementOutput,
+        );
+        kernelJournalSettlementEntrySegments = kernelEntryJournalSettlementOutputSegments(
+          kernelJournalSettlementOutputPlan,
         );
         const plannedOutputCount = kernelJournalSettlementEntrySegments
           .reduce((count, segment) => count + segment.count, 0);
@@ -26747,6 +26755,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       ...(runtimeLoopEventOutputs.length > 0 && { runtimeLoopEventOutputs }),
       ...(runtimeLoopTransferOutputs.length > 0 && { runtimeLoopTransferOutputs }),
       ...(runtimeLoopTrailingSegments.length > 0 && { runtimeLoopTrailingSegments }),
+      ...(kernelJournalSettlementOutputPlan && { kernelJournalSettlementOutputPlan }),
       tokenContainers,
       tokenContainerLockingBytecodes,
       ...(satoshiContainerUtxo && { satoshiContainerUtxo, satoshiContainerLockingBytecode }),

@@ -4882,6 +4882,10 @@ export interface StatefulTransactionOptions extends TransactionBuilderOptions {
   | { kind: 'events'; offset: number; count: number }
   | { kind: 'transfers'; offset: number; count: number }
   >;
+  /** Canonical global-record to physical-entry ordering for a kernel carrier settlement. */
+  kernelJournalSettlementOutputPlan?: Array<{
+    recordOrdinal: number; outputOrdinal: number; collection: string; offset: number;
+  }>;
   eventDefinitions?: readonly EventDefinitionAbi[];
   eventNftLockingBytecodes?: Map<string, Uint8Array>; // eventSignature -> locking bytecode
   tokenContainers?: TokenContainerInfo[];
@@ -5145,6 +5149,7 @@ export class StatefulTransactionBuilder {
   }> = [];
   private runtimeLoopTransferOutputs: RuntimeLoopTransferOutput[] = [];
   private runtimeLoopTrailingSegments: NonNullable<StatefulTransactionOptions['runtimeLoopTrailingSegments']> = [];
+  private kernelJournalSettlementOutputPlan: NonNullable<StatefulTransactionOptions['kernelJournalSettlementOutputPlan']> = [];
 
   // P5b: collections whose loop-entry (NEW) commitment is known EXACTLY (a chunkable-value insert) and must NOT be
   // re-derived from the trace - the value-chunk pin adds OP_OUTPUTTOKENCOMMITMENT calls that the loop-entry
@@ -5255,6 +5260,8 @@ export class StatefulTransactionBuilder {
       ...(output.commitment && { commitment: Uint8Array.from(output.commitment) }),
     }));
     this.runtimeLoopTrailingSegments = options.runtimeLoopTrailingSegments?.map((segment) => ({ ...segment })) ?? [];
+    this.kernelJournalSettlementOutputPlan = options.kernelJournalSettlementOutputPlan
+      ?.map((entry) => ({ ...entry })) ?? [];
     this.eventDefinitions = options.eventDefinitions ?? [];
     this.eventNftLockingBytecodes = options.eventNftLockingBytecodes ?? new Map();
     this.tokenContainers = options.tokenContainers ?? [];
@@ -11462,6 +11469,15 @@ export class StatefulTransactionBuilder {
     if (!Number.isSafeInteger(commitmentIndex) || commitmentIndex < 0) {
       throw new Error(`Invalid loop entry commitment index ${commitmentIndex} for '${collection}'`);
     }
+    if (this.kernelJournalSettlementOutputPlan.length > 0) {
+      this.validateKernelJournalSettlementOutputPlan();
+      const entry = this.kernelJournalSettlementOutputPlan.find((candidate) =>
+        candidate.collection === collection && candidate.offset === commitmentIndex);
+      if (!entry) {
+        throw new Error(`Loop entry commitment ${collection}[${commitmentIndex}] is missing from settlement output plan`);
+      }
+      return this.getLoopEntryOutputBase() + entry.outputOrdinal;
+    }
     if (this.runtimeLoopTrailingSegments.length === 0) {
       let physical = this.getLoopEntryOutputBase();
       for (const variable of this._trailingLoopEntryVars()) {
@@ -11578,6 +11594,32 @@ export class StatefulTransactionBuilder {
       n += (this.loopEntryCommitments.get(lv.collection) ?? []).length;
     }
     return n;
+  }
+
+  /**
+   * The SDK derives this plan, but its coordinates must still be canonical before they decide output placement.
+   * The route final flush independently authenticates each selected record against the resulting output.
+   */
+  private validateKernelJournalSettlementOutputPlan(): void {
+    const records = new Set<number>();
+    const outputs = new Set<number>();
+    const locations = new Set<string>();
+    let priorRecord = -1;
+    for (const [index, entry] of this.kernelJournalSettlementOutputPlan.entries()) {
+      if (!Number.isSafeInteger(entry.recordOrdinal) || entry.recordOrdinal < 0
+        || !Number.isSafeInteger(entry.outputOrdinal) || entry.outputOrdinal !== index
+        || !entry.collection || !Number.isSafeInteger(entry.offset) || entry.offset < 0) {
+        throw new Error('Kernel journal settlement output plan has an invalid coordinate');
+      }
+      if (entry.recordOrdinal <= priorRecord || records.has(entry.recordOrdinal)
+        || outputs.has(entry.outputOrdinal) || locations.has(`${entry.collection}\0${entry.offset}`)) {
+        throw new Error('Kernel journal settlement output plan is not a one-to-one canonical mapping');
+      }
+      priorRecord = entry.recordOrdinal;
+      records.add(entry.recordOrdinal);
+      outputs.add(entry.outputOrdinal);
+      locations.add(`${entry.collection}\0${entry.offset}`);
+    }
   }
 
   /** Entry outputs preceding the source-ordered segment stream, including same-collection fixed prefixes. */
@@ -13864,6 +13906,8 @@ export class StatefulTransactionBuilder {
     };
     if (this.runtimeLoopTrailingSegments.length > 0) {
       const variables = new Map(this._trailingLoopEntryVars().map((variable) => [variable.collection, variable]));
+      const hasKernelSettlementOutputPlan = this.kernelJournalSettlementOutputPlan.length > 0;
+      if (hasKernelSettlementOutputPlan) this.validateKernelJournalSettlementOutputPlan();
       // Fixed-batch predecessor rewrites occupy the leading trailing coordinates, before the source-ordered
       // runtime row stream. They share `loopEntryCommitments` with runtime mapping outputs but deliberately have
       // no runtime segment: a segment describes a source-row occurrence, while these outputs authenticate the
@@ -13912,11 +13956,22 @@ export class StatefulTransactionBuilder {
           throw new Error(`Runtime loop ${kind} segments cover ${expected} of ${length} outputs`);
         }
       }
-      for (const variable of this._trailingLoopEntryVars()) {
-        const commitments = this.loopEntryCommitments.get(variable.collection) ?? [];
-        const prefixCount = prefixCounts.get(variable.collection) ?? commitments.length;
-        for (let index = 0; index < prefixCount; index++) {
-          appendLoopEntry(variable, commitments[index]!);
+      if (hasKernelSettlementOutputPlan) {
+        for (const entry of this.kernelJournalSettlementOutputPlan) {
+          const variable = variables.get(entry.collection);
+          const commitment = this.loopEntryCommitments.get(entry.collection)?.[entry.offset];
+          if (!variable || commitment === undefined) {
+            throw new Error(`Kernel journal settlement plan references missing ${entry.collection}[${entry.offset}]`);
+          }
+          appendLoopEntry(variable, commitment);
+        }
+      } else {
+        for (const variable of this._trailingLoopEntryVars()) {
+          const commitments = this.loopEntryCommitments.get(variable.collection) ?? [];
+          const prefixCount = prefixCounts.get(variable.collection) ?? commitments.length;
+          for (let index = 0; index < prefixCount; index++) {
+            appendLoopEntry(variable, commitments[index]!);
+          }
         }
       }
       for (const segment of this.runtimeLoopTrailingSegments) {
@@ -13932,6 +13987,7 @@ export class StatefulTransactionBuilder {
           }
           continue;
         }
+        if (hasKernelSettlementOutputPlan) continue;
         const variable = variables.get(segment.collection);
         if (!variable) throw new Error(`Runtime loop segment references unknown collection '${segment.collection}'`);
         const commitments = this.loopEntryCommitments.get(segment.collection) ?? [];

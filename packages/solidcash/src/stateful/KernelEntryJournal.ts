@@ -213,6 +213,21 @@ export interface KernelEntryJournalSettlementOutputSegment {
 }
 
 /**
+ * One physical entry output selected by the transaction-wide settlement authority.
+ *
+ * `recordOrdinal` is the compiler-authenticated global carrier coordinate; `outputOrdinal` is its dense
+ * materialized rank after absence records are removed. `offset` remains collection-local only for locating the
+ * SDK's already-derived commitment. Keeping both coordinates prevents collection-local sorting from silently
+ * becoming physical output order.
+ */
+export interface KernelEntryJournalSettlementOutputPlanEntry {
+  recordOrdinal: number;
+  outputOrdinal: number;
+  collection: string;
+  offset: number;
+}
+
+/**
  * Consume compiler-published settlement recipes against concrete compact access programs.
  *
  * The compiler binds the stream and permitted record roles; runtime topology supplies the actual record ordinals.
@@ -347,13 +362,13 @@ export function planKernelEntryJournalSettlementAuthority(
  * emitted as a dense subsequence of global record-ordinal order, even when collections or access streams interleave.
  * An absence disposition (a deleted/tombstoned target) is settled without emitting an NFT.
  */
-export function planKernelEntryJournalSettlementOutputSegments(
+export function planKernelEntryJournalSettlementOutputs(
   plan: KernelEntryJournalSettlementPlan,
   resolve: (authority: KernelEntryJournalSettlementReference) => {
     collection: string; offset: number;
   },
-): KernelEntryJournalSettlementOutputSegment[] {
-  const segments: KernelEntryJournalSettlementOutputSegment[] = [];
+): KernelEntryJournalSettlementOutputPlanEntry[] {
+  const outputs: KernelEntryJournalSettlementOutputPlanEntry[] = [];
   const usedLocations = new Set<string>();
   const ordered = [...plan.recordDispositions.entries()]
     .sort(([left], [right]) => left - right);
@@ -372,11 +387,35 @@ export function planKernelEntryJournalSettlementOutputSegments(
       throw new Error(`kernel journal settlement record ${recordOrdinal} aliases a physical output location`);
     }
     usedLocations.add(locationIdentity);
+    outputs.push({ recordOrdinal, outputOrdinal: outputs.length, collection, offset });
+  }
+  return outputs;
+}
+
+/** Convert the canonical output plan into the compact builder ordering form without changing its order. */
+export function kernelEntryJournalSettlementOutputSegments(
+  outputs: readonly KernelEntryJournalSettlementOutputPlanEntry[],
+): KernelEntryJournalSettlementOutputSegment[] {
+  const segments: KernelEntryJournalSettlementOutputSegment[] = [];
+  for (const entry of outputs) {
     const previous = segments[segments.length - 1];
-    if (previous?.collection === collection && previous.offset + previous.count === offset) previous.count += 1;
-    else segments.push({ collection, offset, count: 1 });
+    if (previous?.collection === entry.collection && previous.offset + previous.count === entry.offset) {
+      previous.count += 1;
+    } else {
+      segments.push({ collection: entry.collection, offset: entry.offset, count: 1 });
+    }
   }
   return segments;
+}
+
+/** Backward-compatible convenience wrapper for callers that have not yet retained the full output plan. */
+export function planKernelEntryJournalSettlementOutputSegments(
+  plan: KernelEntryJournalSettlementPlan,
+  resolve: (authority: KernelEntryJournalSettlementReference) => {
+    collection: string; offset: number;
+  },
+): KernelEntryJournalSettlementOutputSegment[] {
+  return kernelEntryJournalSettlementOutputSegments(planKernelEntryJournalSettlementOutputs(plan, resolve));
 }
 
 export interface KernelEntryJournalRecordPosition {

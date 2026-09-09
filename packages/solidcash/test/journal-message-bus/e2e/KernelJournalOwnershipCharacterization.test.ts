@@ -279,6 +279,38 @@ describe('kernel journal ownership characterization', () => {
     const call = contract.call.copy(2n);
     const builder = await call.build();
     expect(vmAccepts(builder)).toBe(true);
+    // 0x11 is a reserved internal carrier header, never an ingress witness. Changing one authenticated input
+    // record to that header must fail before the row loop can consume it.
+    const routeInput = builder.inputs.findIndex((input) => 'abiFunction' in input.unlocker
+      && input.unlocker.abiFunction.name === 'copy');
+    expect(routeInput).toBeGreaterThanOrEqual(0);
+    const routeBuilderInput = builder.inputs[routeInput]!;
+    if (!('params' in routeBuilderInput.unlocker)) throw new Error('kernel route has no parameterized unlocker');
+    const originalUnlocker = routeBuilderInput.unlocker;
+    const hostileParams = [...originalUnlocker.params];
+    let changed = false;
+    originalUnlocker.abiFunction.inputs.forEach((input, inputIndex) => {
+      if (!input.name.startsWith('__internal__kernelJournalRecordSegment_') || changed) return;
+      const segment = new Uint8Array(originalUnlocker.params[inputIndex] as Uint8Array);
+      for (let index = 0; index + 1 < segment.length; index += 1) {
+        if (segment[index] !== 0x05 || segment[index + 1] !== 0x01) continue;
+        segment[index + 1] = 0x11;
+        hostileParams[inputIndex] = segment;
+        changed = true;
+        break;
+      }
+    });
+    expect(changed).toBe(true);
+    const routeSelector = artifact.messageBus!.route.selector;
+    if (!routeSelector) throw new Error('kernel route has no selector');
+    routeBuilderInput.unlocker = originalUnlocker.contract.createCompilerRouteUnlocker(
+      originalUnlocker.abiFunction, hexToBin(routeSelector),
+    )(...hostileParams);
+    const transaction = builder.buildLibauthTransaction();
+    const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+    const vm = createVirtualMachineBch2026ForProvider(provider);
+    expect(vm.stateSuccess(vm.evaluate({ inputIndex: routeInput, sourceOutputs, transaction }))).not.toBe(true);
+    routeBuilderInput.unlocker = originalUnlocker;
     await expect(call.send()).resolves.toBeDefined();
     await expect(contract.call.check(0n, 10n).send()).resolves.toBeDefined();
     await expect(contract.call.check(1n, 11n).send()).resolves.toBeDefined();

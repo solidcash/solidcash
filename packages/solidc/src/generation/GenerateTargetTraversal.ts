@@ -24724,8 +24724,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * Flush all dirty record segments once, in global first-touch ordinal order. Dynamic segment selection keeps
-   * this loop constant-size; only mutation replacement dispatches across the fixed compiler-owned slots.
+   * Settle the final record vector once, traversing global first-touch ordinal order. Dynamic segment selection
+   * keeps this loop constant-size; only mutation replacement dispatches across fixed compiler-owned slots.
    */
   private emitKernelJournalFinalScalarFlush(node: FunctionDefinitionNode, loc: SingleLocationData): void {
     // The synthesized route has no loop-info of its own. Its entry-slot manifest is the stable compiler-owned
@@ -24743,28 +24743,34 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     ))), loc);
     this.emit(Op.OP_PICK, loc); // count
     this.emit(Op.OP_DUP, loc); this.emit(Op.OP_0, loc); this.emit(Op.OP_GREATERTHAN, loc); this.emit(Op.OP_VERIFY, loc);
-    this.emit(Op.OP_DUP, loc); this.emit(Op.OP_TOALTSTACK, loc); // retain exact first-touch output cardinality
-    // Keep the carried tail explicit from iteration zero. Park it before every segment selection so the
-    // selector always sees the same physical frame as its tracked `remaining` cell; creating this value only
-    // after the first selection made all later carrier picks one slot shallow (segment 1 read access-stream 0).
-    this.emit(new Uint8Array(), loc); this.emit(Op.OP_SWAP, loc);
-    this.emit(Op.OP_0, loc); // rest, remaining, output ordinal
+    // Record ordinals include clean synthetic absence proofs, which have no physical output. Carry a distinct
+    // dense output cursor so every materialized record remains contiguous while carrier selection stays in the
+    // transaction-wide first-touch ordinal space.
+    this.emit(Op.OP_0, loc); this.emit(Op.OP_0, loc); // remaining, output ordinal, record ordinal
     this.emit(Op.OP_BEGIN, loc);
-    this.emit(encodeInt(2n), loc); this.emit(Op.OP_ROLL, loc); this.emit(Op.OP_TOALTSTACK, loc); // park rest
     this.emit(Op.OP_DUP, loc); this.emit(Op.OP_TOALTSTACK, loc);
-    // Keep only the persistent remaining-count cell in the tracked frame while selection consumes the main-stack
-    // ordinal. Parking the retained ordinal avoids an untracked copy between the carrier bank and selector.
+    // Account for both persistent loop cells in the tracked frame while selection consumes the main-stack record
+    // ordinal. Parking the retained ordinal avoids another untracked copy between the carrier bank and selector.
     const trackedBeforeFlushSelect = [...this.stack];
     this.pushToStack('(kernel_flush_remaining)');
-    this.emitKernelJournalRecordExtractGlobal(loc); // remaining, record
+    this.pushToStack('(kernel_flush_output_ordinal)');
+    this.emitKernelJournalRecordExtractGlobal(loc); // remaining, output ordinal, record
     this.stack = trackedBeforeFlushSelect;
-    this.emit(Op.OP_FROMALTSTACK, loc); this.emit(Op.OP_SWAP, loc); // remaining, ordinal, record
-    this.emit(Op.OP_FROMALTSTACK, loc); this.emit(Op.OP_SWAP, loc); // remaining, ordinal, rest, record
+    this.emit(Op.OP_FROMALTSTACK, loc); this.emit(Op.OP_SWAP, loc);
+    // remaining, output ordinal, record ordinal, record
     this.emit(encodeInt(2n), loc); this.emit(Op.OP_SPLIT, loc);
     this.emit(Op.OP_SWAP, loc);
-    this.emit(Op.OP_DUP, loc); this.emit(new Uint8Array([0x05, 0x03]), loc); this.emit(Op.OP_EQUAL, loc);
-    this.emit(Op.OP_SWAP, loc); this.emit(new Uint8Array([0x05, 0x0a]), loc); this.emit(Op.OP_EQUAL, loc);
-    this.emit(Op.OP_BOOLOR, loc); this.emit(Op.OP_VERIFY, loc);
+    // Authenticated clean (0x01), authenticated dirty (0x03), and synthetic dirty (0x0a) records all materialize
+    // exactly one output. A clean synthetic tombstone (0x0c) is an authenticated absence proof: it participates in
+    // first-touch identity and dense-prefix checks, but must not create an entry NFT.
+    this.emit(Op.OP_DUP, loc); this.emit(new Uint8Array([0x05, 0x01]), loc); this.emit(Op.OP_EQUAL, loc);
+    this.emit(Op.OP_OVER, loc); this.emit(new Uint8Array([0x05, 0x03]), loc); this.emit(Op.OP_EQUAL, loc);
+    this.emit(Op.OP_BOOLOR, loc);
+    this.emit(Op.OP_OVER, loc); this.emit(new Uint8Array([0x05, 0x0a]), loc); this.emit(Op.OP_EQUAL, loc);
+    this.emit(Op.OP_BOOLOR, loc);
+    this.emit(Op.OP_IF, loc);
+    this.scopeDepth += 1;
+    this.emit(Op.OP_DROP, loc); // materialized header
     this.emit(encodeInt(20n), loc); this.emit(Op.OP_SPLIT, loc); // ..., collection, slot|next|value
 
     // Resolve the collection address only from compiler-published collection hashes and the authenticated owner
@@ -24781,15 +24787,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       else { this.emit(Op.OP_DROP, loc); this.emit(Op.OP_0, loc); this.emit(Op.OP_VERIFY, loc); }
       this.emit(Op.OP_ENDIF, loc);
     };
-    this.emit(Op.OP_SWAP, loc); // remaining, ordinal, rest, slot|next|value, collection
-    emitAddressForHash(0); // remaining, ordinal, rest, slot|next|value, address
+    this.emit(Op.OP_SWAP, loc); // remaining, output ordinal, record ordinal, slot|next|value, collection
+    emitAddressForHash(0); // remaining, output ordinal, record ordinal, slot|next|value, address
     this.emit(Op.OP_SWAP, loc);
     this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc);
     this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc);
-    // remaining, ordinal, rest, address, slot, next, value
+    // remaining, output ordinal, record ordinal, address, slot, next, value
     const blockSize = node.blockLayout?.blockSize ?? 1;
-    // The runtime output cursor already equals the complete first-touch width at route epilogue. Select from the
-    // start of that reserved band, then add the carrier's dense first-touch ordinal exactly once.
+    // Select from the start of the reserved journal band and add only the dense materialized-output ordinal.
+    // The record ordinal remains independent so clean absence proofs cannot leave holes in the physical band.
     this.emitTrailingWriteOutputBase(blockSize, loc, undefined, 7, false);
     this.emit(encodeInt(6n), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_ADD, loc); // output index
     this.emit(Op.OP_DUP, loc); this.emit(Op.OP_OUTPUTBYTECODE, loc);
@@ -24804,16 +24810,29 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(encodeInt(3n), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_CAT, loc);
     this.emit(encodeInt(2n), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_CAT, loc);
     this.emit(Op.OP_EQUALVERIFY, loc);
-    this.emit(Op.OP_2DROP, loc); this.emit(Op.OP_2DROP, loc); // remaining, ordinal, rest
-    this.emit(encodeInt(2n), loc); this.emit(Op.OP_ROLL, loc); this.emit(Op.OP_1SUB, loc); // ordinal, rest, remaining'
-    this.emit(encodeInt(2n), loc); this.emit(Op.OP_ROLL, loc); this.emit(Op.OP_1ADD, loc); // rest, remaining', ordinal'
-    this.emit(Op.OP_OVER, loc); this.emit(Op.OP_0, loc); this.emit(Op.OP_NUMEQUAL, loc);
+    this.emit(Op.OP_2DROP, loc); this.emit(Op.OP_2DROP, loc);
+    // remaining, output ordinal, record ordinal
+    this.emit(Op.OP_TOALTSTACK, loc); this.emit(Op.OP_1ADD, loc); this.emit(Op.OP_FROMALTSTACK, loc);
+    this.scopeDepth -= 1;
+    this.emit(Op.OP_ELSE, loc);
+    this.scopeDepth += 1;
+    // Only the canonical clean synthetic absence header may omit an output.
+    this.emit(new Uint8Array([0x05, 0x0c]), loc); this.emit(Op.OP_EQUALVERIFY, loc);
+    this.emit(Op.OP_DROP, loc); // absence body
+    this.scopeDepth -= 1;
+    this.emit(Op.OP_ENDIF, loc); // remaining, output ordinal, record ordinal
+
+    this.emit(Op.OP_1ADD, loc); this.emit(Op.OP_TOALTSTACK, loc); // record ordinal'
+    this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_1SUB, loc); this.emit(Op.OP_SWAP, loc);
+    this.emit(Op.OP_FROMALTSTACK, loc); // remaining', output ordinal, record ordinal'
+    this.emit(encodeInt(2n), loc); this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_0, loc); this.emit(Op.OP_NUMEQUAL, loc);
     this.emit(Op.OP_UNTIL, loc);
-    this.emit(Op.OP_2DROP, loc); // rest
-    this.emit(Op.OP_0, loc); this.emit(Op.OP_EQUALVERIFY, loc);
+    this.emit(Op.OP_DROP, loc); this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_DROP, loc); // output ordinal
+    this.emit(Op.OP_TOALTSTACK, loc); // retain exact materialized-output cardinality
 
     // No second NFT at any compiler-published entry address may escape the ordinal-indexed checks above. Count
-    // every output at the complete allow-list and bind their aggregate to the dirty carrier's first-touch width.
+    // every output at the complete allow-list and bind their aggregate to the materialized-record cursor.
     this.emit(Op.OP_0, loc); // aggregate
     for (const collectionHash of collectionHashes) {
       this.emitMasterInputIndex(loc, 1);

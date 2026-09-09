@@ -497,13 +497,15 @@ describe('kernel pending fixed-width scalar rows', () => {
   it('refuses interleaved write sites whose topology materialization crosses streams', async () => {
     const provider = createMessageBusSemanticTestProvider();
     const artifact = compileString(INTERLEAVED_SITE_SOURCE, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'writeBoth'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
     const inner = new Contract(artifact, [], { provider });
     const { categoryId } = await setupStatefulUtxos(
       provider, inner, artifact.stateLayout!, {}, { saltContract: true },
     );
-    await expect(StatefulContract.withCategory(inner, categoryId)
-      .batch([{ function: 'writeBoth', args: [[1n, 3n], [2n, 4n]] }]).build())
-      .rejects.toThrow(/topology dependency between interleaved mapping write sites/);
+    expect(() => StatefulContract.withCategory(inner, categoryId)
+      .batch([{ function: 'writeBoth', args: [[1n, 3n], [2n, 4n]] }]))
+      .toThrow(/not batch eligible: KERNEL_LAYOUT/);
   }, 180_000);
 
   it('settles mixed scalar insertion topology and requires published segments above one BCH stack item', async () => {

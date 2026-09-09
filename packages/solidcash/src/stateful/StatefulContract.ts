@@ -133,6 +133,7 @@ import {
   encodeKernelEntryJournalRecordSegment,
   planKernelEntryJournalAccessTopology,
   planKernelEntryJournalSettlementAuthority,
+  planKernelEntryJournalSettlementOutputSegments,
   segmentKernelEntryJournalRecords,
   validateKernelEntryJournalRecordSegmentSlots,
   type KernelEntryJournalSettlementOccurrence,
@@ -16807,6 +16808,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const runtimeLoopEntrySegments: Array<{
       rowIndex: number; collection: string; offset: number; count: number;
     }> = [];
+    let kernelJournalSettlementEntrySegments: Array<{
+      collection: string; offset: number; count: number;
+    }> | undefined;
     const runtimeJournalInputIds = new Set<string>();
     const appendRuntimeJournalInput = (
       input: UnlockableUtxo, collection: string, allowExistingScalarReuse = false,
@@ -18564,8 +18568,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         .filter((stream) => stream.collection === collection)
         .reduce((count, stream) => count + stream.writes.length, 0) === 1
     ));
-    const pendingScalarSettlementActive = hasPendingScalarDependency || hasPendingExistingScalarSettlement
-      || singletonRuntimeExpressionSettlement;
+    const kernelRouteSettlement = entryArtifact.messageBus?.convention === 'kernel-row-loop'
+      && entryAbiFunction?.selector === entryArtifact.messageBus.selector;
+    const pendingScalarSettlementActive = kernelRouteSettlement
+      && (hasPendingScalarDependency || hasPendingExistingScalarSettlement
+        || singletonRuntimeExpressionSettlement);
     if (pendingScalarSettlementActive) {
       // The current final flush intentionally settles one dense all-dirty carrier vector. Once an existing-value
       // settlement or a true cross-row dependency activates that protocol, every supported mutating access in the
@@ -18645,33 +18652,75 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const stableSettlementPlan = settlementOccurrences.length > 0
       ? planKernelEntryJournalSettlementAuthority(settlementOccurrences) : undefined;
     if (pendingScalarSettlementActive) {
-      // Current artifacts assign mutation-settlement authority from authenticated access identity. This validates
-      // the physical vector but deliberately does not reorder it: the compiler's final flush still addresses the
-      // reserved journal band by global first-touch record ordinal. Legacy artifacts are accepted only through the
-      // prior exact-slot fallback, whose physical output must remain unique.
+      // Current artifacts distinguish mutation authority from the final disposition of every record. Resolve the
+      // physical present-record subsequence here; the trailing segment planner below emits that live band in global
+      // first-touch order. Legacy artifacts retain only the exact-slot fallback and its existing physical order.
+      const physicalLocations = new Map<number, { collection: string; offset: number }>();
       for (let recordOrdinal = 0; recordOrdinal < kernelJournalRecords.length; recordOrdinal += 1) {
-        const authority = stableSettlementPlan?.settlementAuthorities.get(recordOrdinal);
-        if (stableSettlementPlan && !authority) {
+        const disposition = stableSettlementPlan?.recordDispositions.get(recordOrdinal);
+        if (stableSettlementPlan && !disposition) {
           throw new Error(
-            `Kernel journal settlement identity has no mutation authority for record ${recordOrdinal}.`,
+            `Kernel journal settlement identity has no disposition for record ${recordOrdinal}.`,
           );
         }
-        const authorityStream = authority
-          ? runtimeKernelJournalStreams.find((stream) => stream.frameIndex === authority.frameIndex
-            && stream.accessStreamIndex === authority.accessStreamIndex)
+        const physicalReference = disposition?.reference;
+        const authorityStream = physicalReference
+          ? runtimeKernelJournalStreams.find((stream) => stream.frameIndex === physicalReference.frameIndex
+            && stream.accessStreamIndex === physicalReference.accessStreamIndex)
           : recordOriginStreams.get(recordOrdinal);
         if (!authorityStream) {
           throw new Error(`Kernel journal settlement record ${recordOrdinal} has no containing access stream.`);
         }
-        const commitments = sortedLoopCommitments.get(authorityStream.collection) ?? [];
-        const recordSlot = decodeKernelEntryJournalRecord(kernelJournalRecords[recordOrdinal]!).slot;
-        const matchingCommitmentIndices = commitments.flatMap((commitment, index) => (
-          binsAreEqual(decodeEntryCommitment(hexToBin(commitment)).slot, recordSlot) ? [index] : []
+        // Deletion/absence has authenticated settlement authority but intentionally no entry NFT output. Current
+        // compiler admission keeps it out of pending scalar flushes; retaining the distinction here prevents this
+        // SDK planner from silently turning a future tombstone protocol into a recreated node.
+        if (physicalReference?.settlementDisposition === 'absence') continue;
+        let commitments = sortedLoopCommitments.get(authorityStream.collection) ?? [];
+        const record = decodeKernelEntryJournalRecord(kernelJournalRecords[recordOrdinal]!);
+        let matchingCommitmentIndices = commitments.flatMap((commitment, index) => (
+          binsAreEqual(decodeEntryCommitment(hexToBin(commitment)).slot, record.slot) ? [index] : []
         ));
+        if (matchingCommitmentIndices.length === 0 && disposition?.basis !== 'mutation-settlement') {
+          // A clean present read is still a materialized carrier in the compiler's final flush. Recreate its exact
+          // authenticated body; unlike a mutation settlement, no speculative value derivation is involved.
+          commitments = [...commitments, binToHex(encodeEntryCommitment(record.slot, record.nextKey, record.value))];
+          sortedLoopCommitments.set(authorityStream.collection, commitments);
+          matchingCommitmentIndices = [commitments.length - 1];
+        }
         if (matchingCommitmentIndices.length !== 1) {
           throw new Error(
             `Kernel pending scalar output for '${authorityStream.collection}' requires exactly one commitment for `
             + `journal record ${recordOrdinal}; found ${matchingCommitmentIndices.length}.`,
+          );
+        }
+        if (physicalReference) {
+          physicalLocations.set(recordOrdinal, {
+            collection: authorityStream.collection,
+            offset: matchingCommitmentIndices[0]!,
+          });
+        }
+      }
+      if (stableSettlementPlan) {
+        kernelJournalSettlementEntrySegments = planKernelEntryJournalSettlementOutputSegments(
+          stableSettlementPlan,
+          (authority) => {
+            const location = physicalLocations.get(authority.recordOrdinal);
+            if (!location) {
+              throw new Error(
+                `Kernel journal settlement record ${authority.recordOrdinal} has no physical output location.`,
+              );
+            }
+            return location;
+          },
+        );
+        const plannedOutputCount = kernelJournalSettlementEntrySegments
+          .reduce((count, segment) => count + segment.count, 0);
+        const availableOutputCount = [...sortedLoopCommitments.values()]
+          .reduce((count, commitments) => count + commitments.length, 0);
+        if (plannedOutputCount !== availableOutputCount) {
+          throw new Error(
+            `Kernel journal settlement identity covers ${plannedOutputCount} physical outputs; `
+            + `${availableOutputCount} runtime mapping outputs were planned.`,
           );
         }
       }
@@ -26441,16 +26490,28 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     | { kind: 'events'; offset: number; count: number }
     | { kind: 'transfers'; offset: number; count: number }
     > = [];
-    if (runtimeLoopEntrySegments.length > 0 || runtimeLoopEventSegments.length > 0
+    if (kernelJournalSettlementEntrySegments) {
+      // The compiler's final flush walks the present-record subsequence in global record-ordinal order. Settlement
+      // authority may move between access streams, but it never changes that order. Keep the complete live journal
+      // band contiguous before source-ordered effects; a tombstone/absence disposition contributes no output.
+      runtimeLoopTrailingSegments.push(...kernelJournalSettlementEntrySegments.map((segment) => ({
+        kind: 'entries' as const,
+        ...segment,
+      })));
+    }
+    const sourceOrderedRuntimeEntrySegments = kernelJournalSettlementEntrySegments
+      ? [] : runtimeLoopEntrySegments;
+    if (sourceOrderedRuntimeEntrySegments.length > 0 || runtimeLoopEventSegments.length > 0
       || runtimeLoopTransferSegments.length > 0) {
       const rowIndices = new Set([
-        ...runtimeLoopEntrySegments.map((segment) => segment.rowIndex),
+        ...sourceOrderedRuntimeEntrySegments.map((segment) => segment.rowIndex),
         ...runtimeLoopEventSegments.map((segment) => segment.rowIndex),
         ...runtimeLoopTransferSegments.map((segment) => segment.rowIndex),
         ...runtimeLoopEffectOccurrences.map((occurrence) => occurrence.rowIndex),
       ]);
       for (const rowIndex of [...rowIndices].sort((left, right) => left - right)) {
-        for (const segment of runtimeLoopEntrySegments.filter((candidate) => candidate.rowIndex === rowIndex)) {
+        for (const segment of sourceOrderedRuntimeEntrySegments
+          .filter((candidate) => candidate.rowIndex === rowIndex)) {
           runtimeLoopTrailingSegments.push({
             kind: 'entries', collection: segment.collection,
             offset: segment.offset, count: segment.count,

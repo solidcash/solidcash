@@ -11400,6 +11400,7 @@ function compileResolvedAst(
       // Runtime events have independent transaction coverage beside mapping rows. Runtime transfers of any kind
       // still share the pending-settlement output geometry, so their journal composition remains fail-closed.
       const hasRuntimeLoopTransfer = (abi?.runtimeLoopTransfers?.length ?? 0) > 0;
+      const hasRuntimeLoopEvent = (abi?.runtimeLoopEvents?.length ?? 0) > 0;
       const hasSelectedRuntimeEvent = abi?.runtimeLoopEvents?.some((effect) =>
         effect.conditions?.some((condition) => condition !== null) === true) === true;
       const hasTerminatedRuntimeJournalDomain = runtimeJournalAccesses
@@ -11434,6 +11435,7 @@ function compileResolvedAst(
       // A runtime read stream consumed by a mutation is currently promoted into pending settlement, but reads
       // intentionally have no mutation output. Fixed-key reads do not enter this stream and remain admitted.
       if ((hasRuntimeJournalMutation && hasRuntimeLoopTransfer)
+        || (hasRuntimeJournalMutation && hasRuntimeLoopEvent)
         || (hasRuntimeJournalMutation && hasSelectedRuntimeEvent)
         || (hasRuntimeJournalMutation && hasTerminatedRuntimeJournalDomain
           && (abi?.runtimeLoopEvents?.length ?? 0) > 0)

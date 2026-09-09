@@ -155,6 +155,8 @@ export interface KernelEntryJournalSettlementReference {
   recordOrdinal: number;
   recordRole: 'target' | 'predecessor';
   settlementRole: JournalSettlementIdentityAbi['settlementRole'];
+  /** Final logical disposition; absence has settlement authority but deliberately no physical NFT output. */
+  settlementDisposition: 'present-output' | 'absence';
 }
 
 export interface KernelEntryJournalSettlementPlan {
@@ -162,6 +164,17 @@ export interface KernelEntryJournalSettlementPlan {
   references: KernelEntryJournalSettlementReference[];
   /** Unique final settlement authority per mutated runtime record ordinal. */
   settlementAuthorities: ReadonlyMap<number, KernelEntryJournalSettlementReference>;
+  /** Final logical disposition and provenance for every referenced record, including clean carriers. */
+  recordDispositions: ReadonlyMap<number, {
+    reference: KernelEntryJournalSettlementReference;
+    basis: 'mutation-settlement' | 'authenticated-carrier' | 'origin-carrier';
+  }>;
+}
+
+export interface KernelEntryJournalSettlementOutputSegment {
+  collection: string;
+  offset: number;
+  count: number;
 }
 
 /**
@@ -179,6 +192,8 @@ export function planKernelEntryJournalSettlementAuthority(
   const ordinalsByStream = new Map<string, Set<number>>();
   const references: KernelEntryJournalSettlementReference[] = [];
   const settlementAuthorities = new Map<number, KernelEntryJournalSettlementReference>();
+  const origins = new Map<number, KernelEntryJournalSettlementReference>();
+  const authenticatedCarriers = new Map<number, KernelEntryJournalSettlementReference>();
   for (const { frameIndex, identity, accessOrdinal, access } of occurrences) {
     if (!Number.isSafeInteger(frameIndex) || frameIndex < 0) {
       throw new Error('kernel journal settlement identity has an invalid frame index');
@@ -242,16 +257,79 @@ export function planKernelEntryJournalSettlementAuthority(
         recordOrdinal,
         recordRole,
         settlementRole: identity.settlementRole,
+        settlementDisposition: recordRole === 'predecessor' || access.presentAfter
+          ? 'present-output' : 'absence',
       };
       references.push(reference);
-      if (access.mutates) settlementAuthorities.set(recordOrdinal, reference);
+      if (!origins.has(recordOrdinal)) origins.set(recordOrdinal, reference);
+      const authenticatesRecord = recordRole === 'target'
+        ? access.authenticatesTarget === true : access.authenticatesPredecessor === true;
+      if (authenticatesRecord) {
+        if (authenticatedCarriers.has(recordOrdinal)) {
+          throw new Error(`kernel journal record ${recordOrdinal} has multiple authenticating access identities`);
+        }
+        authenticatedCarriers.set(recordOrdinal, reference);
+      }
+      const changesRecord = access.mutates && (recordRole === 'target'
+        || access.presentBefore !== access.presentAfter);
+      if (changesRecord) settlementAuthorities.set(recordOrdinal, reference);
     };
     append(access.targetRecordOrdinal, 'target');
     if (access.predecessorRecordOrdinal !== undefined) {
       append(access.predecessorRecordOrdinal, 'predecessor');
     }
   }
-  return { references, settlementAuthorities };
+  const recordDispositions = new Map<number, {
+    reference: KernelEntryJournalSettlementReference;
+    basis: 'mutation-settlement' | 'authenticated-carrier' | 'origin-carrier';
+  }>();
+  for (const [recordOrdinal, origin] of origins) {
+    const mutation = settlementAuthorities.get(recordOrdinal);
+    const authenticated = authenticatedCarriers.get(recordOrdinal);
+    recordDispositions.set(recordOrdinal, mutation
+      ? { reference: mutation, basis: 'mutation-settlement' }
+      : authenticated
+        ? { reference: authenticated, basis: 'authenticated-carrier' }
+        : { reference: origin, basis: 'origin-carrier' });
+  }
+  return { references, settlementAuthorities, recordDispositions };
+}
+
+/**
+ * Resolve authenticated record dispositions into the physical contiguous settlement band. Present records are
+ * emitted as a dense subsequence of global record-ordinal order, even when collections or access streams interleave.
+ * An absence disposition (a deleted/tombstoned target) is settled without emitting an NFT.
+ */
+export function planKernelEntryJournalSettlementOutputSegments(
+  plan: KernelEntryJournalSettlementPlan,
+  resolve: (authority: KernelEntryJournalSettlementReference) => {
+    collection: string; offset: number;
+  },
+): KernelEntryJournalSettlementOutputSegment[] {
+  const segments: KernelEntryJournalSettlementOutputSegment[] = [];
+  const usedLocations = new Set<string>();
+  const ordered = [...plan.recordDispositions.entries()]
+    .sort(([left], [right]) => left - right);
+  for (const [recordOrdinal, disposition] of ordered) {
+    const { reference } = disposition;
+    if (reference.recordOrdinal !== recordOrdinal) {
+      throw new Error('kernel journal record disposition aliases a different record ordinal');
+    }
+    if (reference.settlementDisposition === 'absence') continue;
+    const { collection, offset } = resolve(reference);
+    if (!collection || !Number.isSafeInteger(offset) || offset < 0) {
+      throw new Error(`kernel journal settlement record ${recordOrdinal} has an invalid physical output location`);
+    }
+    const locationIdentity = `${collection}\0${offset}`;
+    if (usedLocations.has(locationIdentity)) {
+      throw new Error(`kernel journal settlement record ${recordOrdinal} aliases a physical output location`);
+    }
+    usedLocations.add(locationIdentity);
+    const previous = segments[segments.length - 1];
+    if (previous?.collection === collection && previous.offset + previous.count === offset) previous.count += 1;
+    else segments.push({ collection, offset, count: 1 });
+  }
+  return segments;
 }
 
 export interface KernelEntryJournalRecordPosition {

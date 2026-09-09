@@ -17,6 +17,7 @@ import {
   encodeKernelEntryJournalRecords,
   planKernelEntryJournalAccessTopology,
   planKernelEntryJournalSettlementAuthority,
+  planKernelEntryJournalSettlementOutputSegments,
   planKernelEntryJournalStreams,
   segmentKernelEntryJournalRecords,
   kernelEntryJournalRecordPosition,
@@ -453,7 +454,10 @@ describe('kernel pending-entry journal codec', () => {
         frameIndex: 4,
         identity: identity(2, 'carrier-only'),
         accessOrdinal: 0,
-        access: { targetRecordOrdinal: 2, presentBefore: true, presentAfter: true, mutates: false },
+        access: {
+          targetRecordOrdinal: 2, presentBefore: true, presentAfter: true, mutates: false,
+          authenticatesTarget: true,
+        },
       },
       {
         frameIndex: 4,
@@ -462,6 +466,16 @@ describe('kernel pending-entry journal codec', () => {
         access: {
           targetRecordOrdinal: 3, predecessorRecordOrdinal: 4,
           presentBefore: true, presentAfter: false, mutates: true,
+        },
+      },
+      {
+        frameIndex: 4,
+        identity: identity(4, 'carrier-only'),
+        accessOrdinal: 0,
+        access: {
+          targetRecordOrdinal: 5, predecessorRecordOrdinal: 6,
+          presentBefore: false, presentAfter: false, mutates: false,
+          authenticatesPredecessor: true,
         },
       },
     ]);
@@ -476,6 +490,8 @@ describe('kernel pending-entry journal codec', () => {
       { accessStreamIndex: 2, accessOrdinal: 0, recordOrdinal: 2, recordRole: 'target' },
       { accessStreamIndex: 3, accessOrdinal: 0, recordOrdinal: 3, recordRole: 'target' },
       { accessStreamIndex: 3, accessOrdinal: 0, recordOrdinal: 4, recordRole: 'predecessor' },
+      { accessStreamIndex: 4, accessOrdinal: 0, recordOrdinal: 5, recordRole: 'target' },
+      { accessStreamIndex: 4, accessOrdinal: 0, recordOrdinal: 6, recordRole: 'predecessor' },
     ]);
     expect([...plan.settlementAuthorities].map(([recordOrdinal, authority]) => ({
       recordOrdinal,
@@ -487,6 +503,19 @@ describe('kernel pending-entry journal codec', () => {
       { recordOrdinal: 1, accessStreamIndex: 1, accessOrdinal: 0, recordRole: 'target' },
       { recordOrdinal: 3, accessStreamIndex: 3, accessOrdinal: 0, recordRole: 'target' },
       { recordOrdinal: 4, accessStreamIndex: 3, accessOrdinal: 0, recordRole: 'predecessor' },
+    ]);
+    expect([...plan.recordDispositions].map(([recordOrdinal, disposition]) => ({
+      recordOrdinal,
+      basis: disposition.basis,
+      settlementDisposition: disposition.reference.settlementDisposition,
+    }))).toEqual([
+      { recordOrdinal: 0, basis: 'mutation-settlement', settlementDisposition: 'present-output' },
+      { recordOrdinal: 1, basis: 'mutation-settlement', settlementDisposition: 'present-output' },
+      { recordOrdinal: 2, basis: 'authenticated-carrier', settlementDisposition: 'present-output' },
+      { recordOrdinal: 3, basis: 'mutation-settlement', settlementDisposition: 'absence' },
+      { recordOrdinal: 4, basis: 'mutation-settlement', settlementDisposition: 'present-output' },
+      { recordOrdinal: 5, basis: 'origin-carrier', settlementDisposition: 'absence' },
+      { recordOrdinal: 6, basis: 'authenticated-carrier', settlementDisposition: 'present-output' },
     ]);
   });
 
@@ -533,6 +562,48 @@ describe('kernel pending-entry journal codec', () => {
       accessOrdinal: 0,
       access: mutation,
     }])).toThrow('unsupported record recipe');
+  });
+
+  it('emits settlement locations in global record order instead of grouping collections', () => {
+    const authority = (
+      recordOrdinal: number,
+      accessStreamIndex: number,
+    ): ReturnType<typeof planKernelEntryJournalSettlementAuthority>['references'][number] => ({
+      frameIndex: 0,
+      accessStreamIndex,
+      accessOrdinal: 0,
+      recordOrdinal,
+      recordRole: 'target',
+      settlementRole: 'mutation-settlement',
+      settlementDisposition: 'present-output',
+    });
+    const a0 = authority(0, 0);
+    const absent = { ...authority(1, 2), settlementDisposition: 'absence' as const };
+    const b0 = authority(2, 1);
+    const a1 = authority(3, 0);
+    const plan = {
+      references: [a0, absent, b0, a1],
+      // Deliberately insert in collection-grouped order; physical planning must sort authenticated ordinals.
+      settlementAuthorities: new Map([[0, a0], [3, a1], [1, absent], [2, b0]]),
+      recordDispositions: new Map([
+        [0, { reference: a0, basis: 'mutation-settlement' as const }],
+        [3, { reference: a1, basis: 'mutation-settlement' as const }],
+        [1, { reference: absent, basis: 'mutation-settlement' as const }],
+        [2, { reference: b0, basis: 'mutation-settlement' as const }],
+      ]),
+    };
+    expect(planKernelEntryJournalSettlementOutputSegments(plan, (reference) => (
+      reference.accessStreamIndex === 0
+        ? { collection: 'alpha', offset: reference.recordOrdinal === 0 ? 0 : 1 }
+        : { collection: 'beta', offset: 0 }
+    ))).toEqual([
+      { collection: 'alpha', offset: 0, count: 1 },
+      { collection: 'beta', offset: 0, count: 1 },
+      { collection: 'alpha', offset: 1, count: 1 },
+    ]);
+    expect(() => planKernelEntryJournalSettlementOutputSegments(plan, () => ({
+      collection: 'shared', offset: 0,
+    }))).toThrow('aliases a physical output location');
   });
 
   it('keeps repeated same-slot row carriers immutable during topology-only planning', () => {

@@ -359,6 +359,38 @@ contract Acc() {
     expect(asm).toContain('OP_TXOUTPUTCOUNT');
   });
 
+  it('keeps first-touch record ordinals separate from dense materialized output ordinals', () => {
+    const artifact = compileString(`
+      pragma solidcash ^0.13.0;
+      contract Store() {
+        mapping(int => int) source;
+        mapping(int => int) destination;
+        function copy(int n) public {
+          for (int i = 0; i < n; i = i + 1) { this.destination[i] = this.source[i]; }
+          require(true);
+        }
+        function write(int n, int value) public {
+          for (int i = 0; i < n; i = i + 1) { this.destination[i] = value; }
+          require(true);
+        }
+      }
+    `, { ...OPTIONS, maximumInputBytes: 1_000_000 });
+    // Admission remains deliberately unchanged until the SDK publishes the matching physical journal band.
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'copy'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write')?.eligible).toBe(true);
+
+    const asm = routeAsm(artifact);
+    // Clean authenticated, dirty authenticated, and dirty synthetic records materialize. Clean synthetic absence
+    // consumes a first-touch record ordinal but skips the output and its dense cursor increment.
+    expect(asm).toContain(
+      'OP_DUP 0501 OP_EQUAL OP_OVER 0503 OP_EQUAL OP_BOOLOR OP_OVER 050a OP_EQUAL OP_BOOLOR OP_IF',
+    );
+    expect(asm).toMatch(
+      /OP_2DROP OP_2DROP OP_TOALTSTACK OP_1ADD OP_FROMALTSTACK OP_ELSE 050c OP_EQUALVERIFY OP_DROP OP_ENDIF/,
+    );
+  });
+
   it('propagates the journal context through direct and one-level internal calls', () => {
     const functions = contextPropagatedFunctions(`
       pragma solidcash ^0.13.0;

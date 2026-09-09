@@ -84,12 +84,35 @@ describe('kernel journal ownership characterization', () => {
       }),
     ]));
     expect(new Set(runtime.map((stream) => stream.journalAccessStreamIndex)).size).toBe(2);
+    const readStream = runtime.find((stream) => stream.op === 'read')!;
+    const mutationStream = runtime.find((stream) => stream.op !== 'read')!;
+    expect(readStream.settlementIdentity).toEqual({
+      accessStreamIndex: readStream.journalAccessStreamIndex,
+      accessOrdinalSource: 'access-program-order',
+      recordOrdinalSources: ['target-record-ordinal', 'predecessor-record-ordinal'],
+      settlementRole: 'carrier-only',
+      settlementOwnership: 'none',
+    });
+    expect(mutationStream.settlementIdentity).toEqual({
+      accessStreamIndex: mutationStream.journalAccessStreamIndex,
+      accessOrdinalSource: 'access-program-order',
+      recordOrdinalSources: ['target-record-ordinal', 'predecessor-record-ordinal'],
+      settlementRole: 'mutation-settlement',
+      settlementOwnership: 'last-mutating-access',
+    });
 
     const local = artifact.abi.find((fn) => fn.name === 'updatePairs')!.sortedUpsertLoopInfo!;
     expect(local).toEqual([expect.objectContaining({
       collection: 'pairs', op: 'set', valueRuntimeLocal: 'pair',
       oldValuesWitnessParam: expect.stringMatching(/^__internal__vmapCounterOld_/),
       journalAccessStreamIndex: expect.any(Number),
+      settlementIdentity: {
+        accessStreamIndex: local[0].journalAccessStreamIndex,
+        accessOrdinalSource: 'access-program-order',
+        recordOrdinalSources: ['target-record-ordinal', 'predecessor-record-ordinal'],
+        settlementRole: 'mutation-settlement',
+        settlementOwnership: 'last-mutating-access',
+      },
     })]);
 
     const two = artifact.abi.find((fn) => fn.name === 'writeTwo')!.sortedUpsertLoopInfo!;
@@ -97,6 +120,13 @@ describe('kernel journal ownership characterization', () => {
     expect(new Set(two.map((stream) => stream.journalExecutionGroup)).size).toBe(1);
     expect(new Set(two.map((stream) => stream.journalAccessStreamIndex)).size).toBe(2);
     expect(two.map((stream) => stream.collection)).toEqual(['first', 'second']);
+    expect(two.map((stream) => stream.settlementIdentity)).toEqual(two.map((stream) => ({
+      accessStreamIndex: stream.journalAccessStreamIndex,
+      accessOrdinalSource: 'access-program-order',
+      recordOrdinalSources: ['target-record-ordinal', 'predecessor-record-ordinal'],
+      settlementRole: 'mutation-settlement',
+      settlementOwnership: 'last-mutating-access',
+    })));
 
     const legacy = compileString(SOURCE, { ...OPTIONS, messageBusKernel: false });
     expect(legacy.messageBus?.convention).toBe('legacy-unroll');
@@ -147,14 +177,15 @@ describe('kernel journal ownership characterization', () => {
           .filter(({ output }) => binToHex(output.lockingBytecode) === lockingBytecode)
           .map(({ index }) => index);
       });
+      expect(targetOutputGroups.every((indices) => indices.length === 2)).toBe(true);
       const swap = targetOutputGroups.length === 1
         ? targetOutputGroups[0].slice(0, 2)
         : [targetOutputGroups[0][0], targetOutputGroups[1][0]];
       expect(swap).toHaveLength(2);
       expect(swap.every((index) => index !== undefined && index >= 0)).toBe(true);
-      const hostile = { ...transaction, outputs: [...transaction.outputs] };
-      [hostile.outputs[swap[0]!], hostile.outputs[swap[1]!]] =
-        [hostile.outputs[swap[1]!], hostile.outputs[swap[0]!]];
+      const hostile = structuredClone(transaction);
+      [hostile.outputs[swap[0]!].token, hostile.outputs[swap[1]!].token] =
+        [hostile.outputs[swap[1]!].token, hostile.outputs[swap[0]!].token];
       const ownerInput = builder.inputs.findIndex((input) => 'abiFunction' in input.unlocker
         && input.unlocker.abiFunction.name === testCase.functionName);
       const vm = createVirtualMachineBch2026ForProvider(provider);
@@ -166,4 +197,5 @@ describe('kernel journal ownership characterization', () => {
     await expect(contract.call.check(0n, 10n, 1n, 100n, 1n, 20n).send()).resolves.toBeDefined();
     await expect(contract.call.check(1n, 11n, 2n, 101n, 2n, 21n).send()).resolves.toBeDefined();
   }, 180_000);
+
 });

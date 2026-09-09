@@ -112,7 +112,7 @@ The conservative beta boundary currently keeps these shapes frozen:
 | Code | Frozen beta examples |
 | --- | --- |
 | `KERNEL_UNBOUNDED_KEY` | Counter loops with `continue` or `break` when a permutation of the full domain cannot represent the reached-key set; runtime-constructed key arrays without a bounded replay proof |
-| `KERNEL_LAYOUT` | Whole-struct getters, dynamic arrays of records as results, recursive mappings, runtime read streams combined with mutation, journal values carried through runtime locals, multiple mutation streams in one execution group, unauthenticated constructed-array resize/multi-arm/cross-array/nested-helper-return key replay, same-iteration mutable selection, selected/break-terminated/scalar-state-composed runtime event domains or event rows spanning distinct mutation streams, runtime transfer effects combined with mutation, and child creation (`new Child` / `create2`) without authenticated row geometry |
+| `KERNEL_LAYOUT` | Whole-struct getters, dynamic arrays of records as results, recursive mappings, runtime read streams combined with mutation, journal values carried through runtime locals, multiple mutation streams in one execution group, unauthenticated constructed-array resize/multi-arm/cross-array/nested-helper-return key replay, same-iteration mutable selection, runtime event or transfer effects combined with runtime journal mutation, and child creation (`new Child` / `create2`) without authenticated row geometry |
 | `KERNEL_TX_SIGNATURE` | Transaction-signature values or `checkSig` / `checkMultiSig` execution in a row when the signature cannot be detached and finalized without circularity |
 | `KERNEL_OPAQUE_EFFECT` | Yul or native `assembly { OP_* }` whose stack and effects have no complete static summary |
 | `KERNEL_FOREIGN_DELEGATE` | A foreign `delegatecall` executing as the participant owner |
@@ -232,7 +232,7 @@ Do not add a new code without changing this document and every kernel toy.
 | `KERNEL_UNBOUNDED_KEY` | A locally constructed key array whose length is not derivable within the bounded replay model; a counter-keyed mapping loop whose exact iteration domain is not one of the canonical forms; mutation of its counter or a bound mutation which cannot be reduced to a finite source expression; nested-loop control flow or a predicate with unsupported/mutated provenance | Parameter-keyed, `msg.sender`-keyed, expression-keyed (`m[records.length-1]`), parameter-array loop (`m[k][xs[i]]`), bounded locally constructed arrays with replayable dominating writes, canonical ascending `for (int i = S; i < n; i = i + D)` / `i = D + i` / `i <= n` and descending `for (int i = S; i > n; i = i - D)` / `i >= n` domains for positive constant or replayable runtime `D`, plus `i != n` when the signed step reaches the endpoint exactly (also through replayable straight-line or finite conditional bound assignments, and with either comparison operand orientation), or equivalent canonical source `while` and `do-while` forms over `m[i]` / nested `m[k][i]`, multiple sequential loops whose runtime keys are disjoint (including loops over one physical collection), fixed-key reads from independent collections, a stable depth-one scalar entry keyed by a public parameter/literal/`msg.sender`/`tx.origin` or a pure expression over public arguments beside those counter writes, or those rewrites beneath serializable outer and inner `if`/`else`/`switch`/`continue`/`break`/`return` paths and the reachable body of `try`/`catch`; loop predicates may consume scalar state updated by replayable straight-line, finite `if`/`else`, or finite `switch` assignments before the loop; typed calls and supported path-predicated effects remain in source order |
 | `KERNEL_FOREIGN_DELEGATE` | `delegatecall` to a foreign executor treated as this participant's owner | `delegate` on this contract's own implementation |
 | `KERNEL_OPAQUE_EFFECT` | Native assembly which is not statically isolated and stack-neutral (including active-bytecode/signature context), unsupported Yul which cannot be lowered, or a low-level call the journal cannot summarize as a call/effect row | Isolated pure/read-only BCH assembly, including transaction inspection whose operands are block-local, balanced `OP_IF`/`OP_NOTIF` arms whose main and alt stacks converge, and `OP_BEGIN`/`OP_UNTIL` loops which restore both loop-entry stack heights after consuming their block-local condition; Yul translated to ordinary typed operations before admission; after Solidity-compat lowering to `call` plus returndata |
-| `KERNEL_LAYOUT` | The handler needs physical or flow topology the row wrapper cannot publish, such as a runtime read stream consumed beside mutation, a journal value carried through a runtime local, multiple mutation streams in one execution group, an unauthenticated constructed-array resize recurrence (including transient push/pop history) or multi-arm/cross-array/nested-helper-return key replay, a same-iteration mutable selection, selected/break-terminated/scalar-state-composed runtime event domains or event rows spanning distinct mutation streams, runtime BCH/token/NFT transfers beside mutation, a child deployment whose row geometry cannot be replayed, a non-normalizable recursive effect domain, an indirectly state-backed or recursive dynamic aggregate, or a result with no canonical route encoding | Single-stream journaled state accessed through the wrapper; fixed-key reads beside counter writes; sequentially grouped collection streams; constructed keys from dominating writes, binary joins, stable prefixes, or authenticated monotone-pop prefix counts; unconditional source-ordered runtime events beside one mapping mutation stream; public fixed-layout structs and direct nonrecursive state-backed or runtime-constructed dynamic struct-array results within the cumulative result envelope; ordinary nested mappings; affine pre- and post-recursion mapping streams; replayable straight-line and finite-conditional child deployments with fixed-layout scalar, enum, fixed-point, or nested-struct genesis state; `new LockingBytecodeP2PKH` / `P2SH20` / `P2SH32` / `NullData` constructors |
+| `KERNEL_LAYOUT` | The handler needs physical or flow topology the row wrapper cannot publish, such as a runtime read stream consumed beside mutation, a journal value carried through a runtime local, multiple mutation streams in one execution group, an unauthenticated constructed-array resize recurrence (including transient push/pop history) or multi-arm/cross-array/nested-helper-return key replay, a same-iteration mutable selection, runtime event or BCH/token/NFT transfer effects beside runtime journal mutation, a child deployment whose row geometry cannot be replayed, a non-normalizable recursive effect domain, an indirectly state-backed or recursive dynamic aggregate, or a result with no canonical route encoding | Single-stream journaled state accessed through the wrapper; fixed-key reads beside counter writes; sequentially grouped collection streams; runtime events without runtime journal mutation; constructed keys from dominating writes, binary joins, stable prefixes, or authenticated monotone-pop prefix counts; public fixed-layout structs and direct nonrecursive state-backed or runtime-constructed dynamic struct-array results within the cumulative result envelope; ordinary nested mappings; affine pre- and post-recursion mapping streams; replayable straight-line and finite-conditional child deployments with fixed-layout scalar, enum, fixed-point, or nested-struct genesis state; `new LockingBytecodeP2PKH` / `P2SH20` / `P2SH32` / `NullData` constructors |
 
 Legacy `messageBusRejectionReason` strings (`dynamic-and-collection-route-not-enabled`,
 `atomic-delegate-context-unpreservable`, …) remain on the legacy path only so existing diagnostics
@@ -318,11 +318,11 @@ minting-capability container may produce several NFT outputs; a non-minting
 container may reach at most one selected NFT site because one input NFT cannot authorize duplication. The SDK
 rejects a concrete non-minting plan which reaches more than one site.
 
-Runtime mapping entries and runtime events are planned as row-scoped trailing segments. Rows sharing one
-event-bearing mutation-journal identity compose in physical message order. Until cross-stream settlement has its own
-authenticated identity, the compiler refuses a handler spanning distinct event-bearing mutation streams and the SDK
-rejects a batch which combines them across handlers. Each admitted row retains its established within-row collection
-order; events follow that row's mapping-entry segments.
+Runtime mapping entries and runtime events each have row-scoped metadata, but their combined physical output
+geometry is frozen for beta. Dense journal settlement needs the final materialized record count before it can place
+events, while a row-local event verifier knows only the journal prefix reached so far. The compiler therefore refuses
+runtime event effects beside runtime journal mutation until route-wide live-output cardinality or deferred final
+event verification gives both effects one authenticated ordinal model.
 
 The handler ABI keeps each permutation as `int[]`. The kernel route adds one outer row dimension (`int[][]`) and
 selects `permutation[row]` inside the physical row loop. Empty elements represent rows dispatched to other
@@ -620,10 +620,10 @@ An immutable, direct loop-local value definition is expanded into the mapping va
 Mixed typed external calls and genuinely invariant `if`/`switch` in the same counter loop stay on the
 row loop: only direct uses of the counter in mapping keys and mapping values are rewritten to `perm[i]`;
 this includes values computed by explicitly `pure` internal helpers and resource-free builtins such as
-`max`. Calls keep source order. Unconditional events beside one mutation stream keep source order and use the bounded
-runtime-event stream described above; only mapping keys and direct counter uses inside mapping values follow the
-permutation. Selected/break-terminated event domains and event rows spanning distinct mutation streams remain
-`KERNEL_LAYOUT`. Runtime BCH and token transfers beside collection mutation also remain fenced until their effect and
+`max`. Calls keep source order. Runtime events beside collection mutation remain `KERNEL_LAYOUT` for beta until the
+dense journal band and event stream share one authenticated output-ordinal model; only mapping keys and direct
+counter uses inside mapping values follow the permutation. Runtime BCH and token transfers beside collection
+mutation also remain fenced until their effect and
 journal outputs have independent authenticated settlement identities. Fixed token effects retain their existing
 planning: each container conservation equation subtracts only matching authenticated outputs. Graph-frame token slots use the same rule:
 inactive and unowned slots are tokenless, and NFT capability relaxation records the reached site per physical
@@ -705,10 +705,11 @@ SDK scopes that tuple by the selected frame, requires an exact dense access-ordi
 disposition authority to the last mutating access for each record. A delete may own a tombstone disposition and
 therefore does not imply that an output exists. Mixed described/undescribed stream sets, a stream-index mismatch,
 an unsupported recipe, duplicate or reordered access ordinals, and mutation-role disagreement fail before
-construction. This metadata establishes stable record-to-settlement ownership; it deliberately does not yet
-reorder the physical trailing output band. Runtime reads combined with writes, row-local aggregate carriers, and
-multiple mutation streams in one execution group remain `KERNEL_LAYOUT` until that band is emitted and proven in
-global record-ordinal order.
+construction. This metadata establishes stable record-to-settlement ownership. The compiler and SDK emit the
+physical trailing output band as the dense present-record subsequence in global record-ordinal order; clean
+synthetic absence and tombstone records do not create holes. Runtime reads combined with writes, row-local
+aggregate carriers, and multiple mutation streams in one execution group remain `KERNEL_LAYOUT` until their
+complete composition has a positive transaction proof and hostile settlement-identity rejection.
 The source handler carries that vector as the compiler-owned `bytes[] __internal__kernelJournalAccessStreams`
 context. The kernel route adds only its outer row dimension (`bytes[][]`) and selects `[row]` in the physical
 dispatcher, instead of adding one dynamic ABI band for every stream. The SDK initializes every handler vector as
@@ -807,4 +808,5 @@ sibling handlers.
 
 The legacy convention is intentionally unchanged: it does not acquire this runtime event family and continues to
 refuse the corresponding bus handler with its historical route-generation diagnostic. The same function remains
-usable as a direct call, while the kernel convention publishes `runtimeLoopEvents` metadata and admits it as a row.
+usable as a direct call. Kernel compilation may publish `runtimeLoopEvents` metadata for analysis, but beta admission
+refuses the row when it also has runtime journal mutation.

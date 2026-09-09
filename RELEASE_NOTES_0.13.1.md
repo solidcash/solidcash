@@ -87,6 +87,22 @@ diagnostic when the required transaction shape cannot be produced.
   before the run was intentionally stopped at a durable boundary to prepare the handoff. This partial result is
   not the final matrix attestation.
 
+## Kernel beta gate attestation (2026-09-09)
+
+The frozen kernel beta implementation at `50b50b32f5bc67d917493c48cda7f15287c2e149`, against census commit
+`95fbe8f3c`, passed the exact clean `yarn test:kernel-beta` gate (`diagnosticOnly: false`). The gate ran the root
+build, generated-artifact freshness (2/2), utility script/source-map checks (26/26), the compiler journal corpus
+(62 files, 1,341/1,341), the SDK journal corpus (96 files passed and 6 intentionally skipped; 608 passed and 18
+skipped tests), and the selected SDK regressions (10 files, 164/164). All 17 required kernel proof roles passed,
+covering 58 proof tests in total, with no hidden caught compile attempts.
+
+The gate's two fresh, cache-disabled samples per profile were deterministic and retained the pinned bytecode and
+metadata hashes. MarketplaceV1 legacy unroll measured 5,747/5,624 ms, 40,019 route bytes, and 115,060 full bytes
+(28/39 eligible handlers). Its kernel row loop measured 6,502/6,228 ms, 12,102 route bytes, and 126,967 full bytes
+(39/39 eligible). UnicrowClaim's kernel row loop measured 3,006/3,160 ms, 2,918 route bytes, and 14,462 full bytes
+(11/11 eligible). These sizes are compile-output measurements; they do not assert deployability for artifacts
+over Bitcoin Cash's 10,000-byte script limit.
+
 These are candidate-worktree results, not a final release attestation. Before publishing, complete the
 fresh-chain BCHN matrix at the exact tested commit, record the tag, and replace this paragraph with the final
 results.

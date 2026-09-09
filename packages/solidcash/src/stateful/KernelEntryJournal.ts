@@ -250,6 +250,13 @@ export function planKernelEntryJournalSettlementAuthority(
         !== (identity.settlementOwnership === 'last-mutating-access')) {
       throw new Error('kernel journal settlement identity has an inconsistent settlement ownership rule');
     }
+    if (identity.recordDispositionSource !== undefined
+      && ((identity.settlementRole === 'carrier-only'
+        && identity.recordDispositionSource !== 'authenticated-carrier')
+        || (identity.settlementRole === 'mutation-settlement'
+          && identity.recordDispositionSource !== 'mutation-settlement'))) {
+      throw new Error('kernel journal settlement identity has an inconsistent record disposition source');
+    }
     const recipe = [
       identity.accessStreamIndex,
       identity.recordOrdinalScope ?? 'legacy-single-stream',
@@ -258,6 +265,7 @@ export function planKernelEntryJournalSettlementAuthority(
       identity.recordOrdinalSources[1],
       identity.settlementRole,
       identity.settlementOwnership,
+      identity.recordDispositionSource ?? 'legacy-unspecified-disposition',
     ].join('\0');
     const scopedStream = `${frameIndex}:${identity.accessStreamIndex}`;
     const priorRecipe = streamRecipes.get(scopedStream);

@@ -26,13 +26,17 @@ describe('recursive mapping derived invariant tuple keys', () => {
     ['arithmetic', 'scope + 1'],
     ['cast', 'int(uint32(scope))'],
     ['conditional', 'scope >= 0 ? scope + 1 : 0'],
-  ])('publishes a %s invariant-key recipe but fences its read/write settlement', (_label, fixedKey) => {
+  ])('publishes a %s invariant-key recipe but fences mixed settlement phases', (_label, fixedKey) => {
     const artifact = compile(fixedKey);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'copy'))
       .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
     const stream = artifact.abi.find((entry) => entry.name === 'copy')?.sortedUpsertLoopInfo
       ?.find((candidate) => candidate.collection === 'source');
     expect(stream).toMatchObject({ op: 'read', varyingKeyIndices: [0] });
+    expect(stream?.settlementIdentity).toMatchObject({
+      settlementRole: 'carrier-only', settlementOwnership: 'none', recordOrdinalScope: 'global-journal',
+      recordDispositionSource: 'authenticated-carrier',
+    });
     expect(stream?.varyingKeyExpressions).toHaveLength(2);
   });
 

@@ -6241,6 +6241,7 @@ describe('required kernel admission', () => {
       recordOrdinalSources: ['target-record-ordinal', 'predecessor-record-ordinal'],
       settlementRole: 'carrier-only',
       settlementOwnership: 'none',
+      recordDispositionSource: 'authenticated-carrier',
     });
     expect(streams.find((stream) => stream.op !== 'read')?.settlementIdentity).toEqual({
       accessStreamIndex: streams.find((stream) => stream.op !== 'read')?.journalAccessStreamIndex,
@@ -6249,6 +6250,7 @@ describe('required kernel admission', () => {
       recordOrdinalSources: ['target-record-ordinal', 'predecessor-record-ordinal'],
       settlementRole: 'mutation-settlement',
       settlementOwnership: 'last-mutating-access',
+      recordDispositionSource: 'mutation-settlement',
     });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
   });
@@ -6643,6 +6645,7 @@ describe('required kernel admission', () => {
         recordOrdinalSources: ['target-record-ordinal', 'predecessor-record-ordinal'],
         settlementRole: 'mutation-settlement',
         settlementOwnership: 'last-mutating-access',
+        recordDispositionSource: 'mutation-settlement',
       })),
     });
     expect(streamShape(registry, 'apply')).toEqual(streamShape(ledger, 'reconcile'));
@@ -7979,6 +7982,7 @@ describe('required kernel admission', () => {
       recordOrdinalSources: ['target-record-ordinal', 'predecessor-record-ordinal'],
       settlementRole: 'mutation-settlement',
       settlementOwnership: 'last-mutating-access',
+      recordDispositionSource: 'mutation-settlement',
     })));
   });
 

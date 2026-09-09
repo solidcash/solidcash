@@ -281,7 +281,7 @@ describe('affine recursive mapping streams', () => {
     expect(operationInfo?.every((info) => info.iterationCondition !== undefined)).toBe(true);
   });
 
-  it('publishes independent unwind read metadata but fences read/write settlement', () => {
+  it('publishes independent unwind read metadata but fences mixed settlement phases', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) source;
       mapping(int => int) destination;
@@ -299,9 +299,15 @@ describe('affine recursive mapping streams', () => {
     expect(operationInfo?.map((info) => [info.collection, info.op])).toEqual([
       ['source', 'read'], ['destination', 'set'],
     ]);
+    expect(operationInfo?.map((info) => info.settlementIdentity?.settlementRole)).toEqual([
+      'carrier-only', 'mutation-settlement',
+    ]);
+    expect(operationInfo?.map((info) => info.settlementIdentity?.recordDispositionSource)).toEqual([
+      'authenticated-carrier', 'mutation-settlement',
+    ]);
   });
 
-  it('publishes a nested affine read recipe but fences read/write settlement', () => {
+  it('publishes a nested affine read recipe but fences mixed settlement phases', () => {
     const artifact = compileString(`contract C() {
       mapping(int => mapping(int => int)) source;
       mapping(int => int) destination;
@@ -324,7 +330,7 @@ describe('affine recursive mapping streams', () => {
     });
   });
 
-  it('publishes disjoint nested read recipes but fences read/write settlement', () => {
+  it('publishes disjoint nested read recipes but fences mixed settlement phases', () => {
     const artifact = compileString(`contract C() {
       mapping(int => mapping(int => int)) source;
       mapping(int => int) destination;
@@ -362,7 +368,7 @@ describe('affine recursive mapping streams', () => {
     ['a recursion-invariant runtime outer key', 'this.source[partition][cursor]', [1]],
     ['a varying non-final component', 'this.source[cursor][7]', [0]],
     ['two varying key components', 'this.source[cursor][cursor + 1]', [0, 1]],
-  ])('publishes nested recursive read metadata with %s but fences read/write settlement',
+  ])('publishes nested recursive read metadata with %s but fences mixed settlement phases',
     (_label, read, varyingKeyIndices) => {
       const artifact = compileString(`contract C() {
       mapping(int => mapping(int => int)) source;
@@ -387,7 +393,7 @@ describe('affine recursive mapping streams', () => {
         .toMatchObject({ eligible: true });
     });
 
-  it('derives disjoint tuple metadata but fences its read/write settlement', () => {
+  it('derives disjoint tuple metadata but fences mixed settlement phases', () => {
     const artifact = compileString(`contract C() {
       mapping(int => mapping(int => int)) source;
       mapping(int => int) destination;
@@ -460,7 +466,7 @@ describe('affine recursive mapping streams', () => {
       require(this.observed[cursor] >= floor);
       this.recorded[cursor + 64] = floor;
     }`],
-  ])('publishes direct %s unwind read metadata but fences read/write settlement', (_kind, fn) => {
+  ])('publishes direct %s unwind read metadata but fences mixed settlement phases', (_kind, fn) => {
     const artifact = compileString(`contract C() {
       mapping(int => int) observed;
       mapping(int => int) recorded;
@@ -476,7 +482,7 @@ describe('affine recursive mapping streams', () => {
     expect(operationInfo?.[0].oldValuesWitnessParam).toMatch(/^__internal__vmapCounterOld_read_/);
   });
 
-  it('preserves read source-order metadata but fences the independently permuted write', () => {
+  it('preserves read source-order metadata but fences the independently settled write', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) observed;
       mapping(int => int) recorded;

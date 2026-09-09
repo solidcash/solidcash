@@ -11453,6 +11453,14 @@ function compileResolvedAst(
         ?.some((access) => access.op !== 'read') === true;
       const runtimeJournalAccesses = abi?.sortedUpsertLoopInfo ?? [];
       const hasRuntimeJournalRead = runtimeJournalAccesses.some((access) => access.op === 'read');
+      // Carrier reads authenticate existing inputs, while mutations authorize result outputs. The current row
+      // flush has no cross-phase disposition protocol, so a mixed handler remains fenced. Decide this from the
+      // published settlement identity (and fail closed for older artifacts), not from source syntax or names.
+      const journalDispositionSources = runtimeJournalAccesses
+        .map((access) => access.settlementIdentity?.recordDispositionSource);
+      const hasIncompatibleJournalDispositionPhases = hasRuntimeJournalMutation && hasRuntimeJournalRead
+        && (journalDispositionSources.some((source) => source === undefined)
+          || new Set(journalDispositionSources).size > 1);
       // Compact selected-source witnesses are independently ordered within each read stream. The current row
       // protocol authenticates that order for one stream, but it does not publish a shared frame-selection
       // identity across two or more conditional streams. In particular, mutually exclusive switch arms can each
@@ -11582,7 +11590,7 @@ function compileResolvedAst(
         || hasChunkedValueArrayEventSettlement
         || hasDistinctEventMutationStreams
         || hasScalarAndJournalEventSettlement
-        || (hasRuntimeJournalMutation && hasRuntimeJournalRead)
+        || hasIncompatibleJournalDispositionPhases
         || hasUnauthenticatedSelectedReadGeometry
         || hasRuntimeLocalJournalValue
         || hasUnsupportedMultiMutationExecutionGroup

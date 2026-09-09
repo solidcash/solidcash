@@ -23514,6 +23514,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           recordOrdinalSources: ['target-record-ordinal', 'predecessor-record-ordinal'],
           settlementRole: op === 'read' ? 'carrier-only' : 'mutation-settlement',
           settlementOwnership: op === 'read' ? 'none' : 'last-mutating-access',
+          recordDispositionSource: op === 'read' ? 'authenticated-carrier' : 'mutation-settlement',
         },
         fixedKeyParams, fixedKeySources, varyingArrayParam,
         ...(this.currentFunction.runtimeCounterLoopConstructedKeyReplays

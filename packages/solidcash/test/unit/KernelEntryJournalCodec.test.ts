@@ -599,6 +599,12 @@ describe('kernel pending-entry journal codec', () => {
     }])).toThrow('inconsistent settlement ownership rule');
     expect(() => planKernelEntryJournalSettlementAuthority([{
       frameIndex: 0,
+      identity: { ...mutationIdentity, recordDispositionSource: 'authenticated-carrier' },
+      accessOrdinal: 0,
+      access: mutation,
+    }])).toThrow('inconsistent record disposition source');
+    expect(() => planKernelEntryJournalSettlementAuthority([{
+      frameIndex: 0,
       identity: { ...mutationIdentity, settlementRole: 'carrier-only', settlementOwnership: 'none' },
       accessOrdinal: 0,
       access: mutation,

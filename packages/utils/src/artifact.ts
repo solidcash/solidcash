@@ -774,6 +774,11 @@ export interface JournalSettlementIdentityAbi {
   settlementRole: 'carrier-only' | 'mutation-settlement';
   /** Rule selecting the unique settlement owner for a record referenced by several accesses. */
   settlementOwnership: 'none' | 'last-mutating-access';
+  /**
+   * Physical disposition phase contributed by this stream. Optional only for backward compatibility: newly
+   * compiled carrier reads authenticate an existing input, while mutations authorize a resulting output.
+   */
+  recordDispositionSource?: 'authenticated-carrier' | 'mutation-settlement';
 }
 
 // Per-iteration vmap UPDATE loop `for(i) m[k[i]] += v[i]` (multitransfer credit to existing recipients): the SDK

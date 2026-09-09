@@ -80,7 +80,7 @@ describe('affine recursive mapping streams', () => {
     expect([1n, 2n, 65n, 66n].map(valueAt)).toEqual([11n, 12n, 21n, 22n]);
   }, 60_000);
 
-  it('fences read/write post-recursion frames without a shared settlement identity', async () => {
+  it('fences read/write post-recursion frames with mixed settlement phases', async () => {
     const provider = createTestProvider();
     // Two independently authenticated 64-row resources put this deliberately small fixture just beyond BCH's
     // operation-density ratio. A constructor byte vector increases locking-program density without changing the
@@ -171,7 +171,7 @@ describe('affine recursive mapping streams', () => {
     expect([1n, 2n, 3n].map(valueAt)).toEqual([15n, 25n, 35n]);
   }, 60_000);
 
-  it('fences nested read/write streams without a shared settlement identity', async () => {
+  it('fences nested read/write streams with mixed settlement phases', async () => {
     const provider = createTestProvider();
     const artifact = compileString(`contract NestedUnwindRead(bytes densityPadding) {
       mapping(int => mapping(int => int)) source;
@@ -272,7 +272,13 @@ describe('affine recursive mapping streams', () => {
     }`, KERNEL);
     const applyAbi = artifact.abi.find((candidate) => candidate.name === 'apply')!;
     const readInfo = applyAbi.sortedUpsertLoopInfo?.find((info) => info.collection === 'observed');
-    expect(readInfo).toMatchObject({ op: 'read', oldValuesWitnessParam: expect.any(String) });
+    expect(readInfo).toMatchObject({
+      op: 'read', oldValuesWitnessParam: expect.any(String),
+      settlementIdentity: {
+        settlementRole: 'carrier-only', settlementOwnership: 'none',
+        recordDispositionSource: 'authenticated-carrier',
+      },
+    });
     const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'apply');
     expect(handler).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
     if (!handler?.eligible) return;
@@ -363,7 +369,13 @@ describe('affine recursive mapping streams', () => {
     }`, KERNEL);
     const applyAbi = artifact.abi.find((candidate) => candidate.name === 'apply')!;
     const readInfo = applyAbi.sortedUpsertLoopInfo?.find((info) => info.collection === 'observed');
-    expect(readInfo).toMatchObject({ op: 'read', oldValuesWitnessParam: expect.any(String) });
+    expect(readInfo).toMatchObject({
+      op: 'read', oldValuesWitnessParam: expect.any(String),
+      settlementIdentity: {
+        settlementRole: 'carrier-only', settlementOwnership: 'none',
+        recordDispositionSource: 'authenticated-carrier',
+      },
+    });
     const inner = new Contract(artifact, [new Uint8Array(2048)], { provider });
     const zero = slotValueToBytes(0n);
     const observedNodes = [[3n, 13n], [5n, 15n], [7n, 17n]].map(([key, value]) => ({

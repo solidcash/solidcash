@@ -6,19 +6,6 @@ const KERNEL = {
   forceStateful: true, messageBus: true, messageBusKernel: true, maximumInputBytes: 1_000_000,
 } as const;
 
-const preservedMaster = {
-  lockingBytecode: 'participant', tokenCategory: 'participant', nftCapability: 'minting',
-  nftCommitment: 'preserve', tokenAmount: 'preserve', satoshis: 'preserve',
-};
-const consumedMaster = {
-  lockingBytecode: 'participant', tokenCategory: 'participant', nftCapability: 'minting',
-  nftCommitment: 'unconstrained', tokenAmount: 'unconstrained', satoshis: 'reclaim',
-};
-const createdMaster = {
-  lockingBytecode: 'participant', tokenCategory: 'participant', nftCapability: 'minting',
-  nftCommitment: 'empty', tokenAmount: 'zero', satoshis: 'funded',
-};
-
 const selected = (source: string, name: string): {
   artifact: Artifact;
   handler: NonNullable<Artifact['messageBus']>['handlers'][number];
@@ -30,74 +17,23 @@ const selected = (source: string, name: string): {
 };
 
 describe('kernel lifecycle topology metadata', () => {
-  it('admits the exact split topology and publishes participant-local input and output spans', () => {
-    const { artifact, handler } = selected(`contract Threads() {
+  it.each([
+    ['split', `contract Threads() {
       function divide(int count) public split(count) { require(count > 0); }
-    }`, 'divide');
-    expect(artifact.messageBus?.available).toBe(true);
-    expect(artifact.messageBus?.atomicMessageBus.protocolVersions).not.toContain(3);
-    expect(artifact.messageBus?.verifierProgram?.lifecycle).toBe(true);
-    expect(handler).toMatchObject({
-      eligible: true,
-      lifecycleTopology: {
-        version: 2,
-        kind: 'split',
-        coordinate: 'participant',
-        categoryCensus: {
-          tokenCategory: 'participant', nftCapability: 'minting',
-          inputCount: { source: 'fixed', value: 1 },
-          outputCount: { source: 'parameter', parameterIndex: 0, addend: 1 },
-        },
-        inputSpans: [
-          { mode: 'preserve', offset: 0, count: { source: 'fixed', value: 1 }, identity: preservedMaster },
-        ],
-        outputSpans: [
-          { mode: 'preserve', offset: 0, count: { source: 'fixed', value: 1 }, identity: preservedMaster },
-          {
-            mode: 'create', offset: 1,
-            count: { source: 'parameter', parameterIndex: 0, addend: 0 }, identity: createdMaster,
-          },
-        ],
-      },
-    });
-  });
-
-  it('publishes participant-local merge input and output spans', () => {
-    const { artifact, handler } = selected(`contract Threads() {
+    }`, 'divide'],
+    ['merge', `contract Threads() {
       function combine(bytes32 tag, uint count) external merge(count) {
         require(tag == tag && count > 0);
       }
-      function inspect() public { require(true); }
-    }`, 'combine');
-    expect(artifact.messageBus?.verifierProgram?.lifecycle).toBe(true);
+    }`, 'combine'],
+  ])('fails closed for %s lifecycle geometry until it has an authenticated row protocol', (_kind, source, name) => {
+    const { handler } = selected(source, name);
+    // The compiler may describe a statically known topology for diagnostics, but metadata is never an admission
+    // proof: lifecycle rows stay unavailable until one authenticated row protocol binds those spans.
     expect(handler).toMatchObject({
-      eligible: true,
-      lifecycleTopology: {
-        version: 2,
-        kind: 'merge',
-        coordinate: 'participant',
-        categoryCensus: {
-          tokenCategory: 'participant', nftCapability: 'minting',
-          inputCount: { source: 'parameter', parameterIndex: 1, addend: 1 },
-          outputCount: { source: 'fixed', value: 1 },
-        },
-        inputSpans: [
-          {
-            mode: 'preserve', offset: 0, count: { source: 'fixed', value: 1 },
-            identity: { ...preservedMaster, tokenAmount: 'nondecrease' },
-          },
-          {
-            mode: 'consume', offset: 1,
-            count: { source: 'parameter', parameterIndex: 1, addend: 0 }, identity: consumedMaster,
-          },
-        ],
-        outputSpans: [
-          {
-            mode: 'preserve', offset: 0, count: { source: 'fixed', value: 1 },
-            identity: { ...preservedMaster, tokenAmount: 'nondecrease' },
-          },
-        ],
-      },
+      eligible: false,
+      rejectionReason: 'KERNEL_LIFECYCLE',
+      lifecycleTopology: { version: 2, kind: _kind },
     });
   });
 

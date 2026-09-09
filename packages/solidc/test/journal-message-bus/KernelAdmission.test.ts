@@ -1366,7 +1366,7 @@ describe('required kernel admission', () => {
       .find((entry) => entry.name === '__message_bus_handler___updateBlockOracle');
     expect(signingBody).toBeDefined();
     expect(updater?.transactionSignaturePolicy?.coveredBytecodes).toEqual([{
-      parameterIndex: 0, bytecode: signingBody!.bytecode,
+      parameterIndex: 0, leafIndex: 0, bytecode: signingBody!.bytecode,
     }]);
     expect(updater?.signatureBytecode).toBeUndefined();
     expect(artifact.invocationAnalysis?.functions.find((fn) => fn.name === '__message_bus1')?.writes)

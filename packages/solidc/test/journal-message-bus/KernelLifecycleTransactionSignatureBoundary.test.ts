@@ -10,7 +10,7 @@ const KERNEL = {
 } as const;
 
 describe('kernel lifecycle transaction-signature boundary', () => {
-  it('keeps signed split and merge fenced without poisoning unsigned lifecycle siblings', () => {
+  it('classifies unsigned split and merge under the lifecycle fence while retaining the signature boundary', () => {
     const artifact = compileString(`contract Threads(pubkey authority) {
       function signedSplit(int count, sig proof) public split(count) {
         require(checkSig(proof, authority));
@@ -37,11 +37,13 @@ describe('kernel lifecycle transaction-signature boundary', () => {
       expect(handler(name)).not.toHaveProperty('transactionSignaturePolicy');
     }
     expect(handler('openSplit')).toMatchObject({
-      eligible: true,
+      eligible: false,
+      rejectionReason: 'KERNEL_LIFECYCLE',
       lifecycleTopology: { kind: 'split' },
     });
     expect(handler('openMerge')).toMatchObject({
-      eligible: true,
+      eligible: false,
+      rejectionReason: 'KERNEL_LIFECYCLE',
       lifecycleTopology: { kind: 'merge' },
     });
   });
@@ -65,14 +67,15 @@ describe('kernel lifecycle transaction-signature boundary', () => {
     });
     expect(handler('nested')).not.toHaveProperty('transactionSignaturePolicy');
     expect(handler('dataOnly')).toMatchObject({
-      eligible: true,
+      eligible: false,
+      rejectionReason: 'KERNEL_LIFECYCLE',
       lifecycleTopology: { kind: 'split' },
     });
     expect(artifact.messageBus?.route.inputs.some((input) => input.name.includes('__message_bus_sig_')))
       .toBe(false);
   });
 
-  it('retains exact SIGHASH_ALL provenance for an ordinary signed sibling', () => {
+  it('retains exact SIGHASH_ALL provenance for an ordinary signed sibling while lifecycle stays fenced', () => {
     const artifact = compileString(`contract Threads(pubkey authority) {
       function divide(int count) public split(count) { require(count > 0); }
       function signed(sig proof) public { require(checkSig(proof, authority)); }
@@ -90,7 +93,8 @@ describe('kernel lifecycle transaction-signature boundary', () => {
       type: 'sig[]',
     }));
     expect(artifact.messageBus?.handlers.find((entry) => entry.name === 'divide')).toMatchObject({
-      eligible: true,
+      eligible: false,
+      rejectionReason: 'KERNEL_LIFECYCLE',
       lifecycleTopology: { kind: 'split' },
     });
     expect(artifact.messageBus?.handlers.find((entry) => entry.name === 'open'))

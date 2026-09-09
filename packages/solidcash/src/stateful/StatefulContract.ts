@@ -3924,8 +3924,24 @@ let softOracleRate = 10n ** 28n;
  * connect()/as() clones — MistSwap `bobHelper = pairHelper.as(bob)` deposits then
  * `pairHelper.contract.balanceOf(bob)` reads the original instance.
  */
-const softStateByContract = new Map<string, Record<string, StateValue>>();
-const softMappingByContract = new Map<string, Map<string, Map<string, StateValue>>>();
+type SoftStateScope = {
+  states: Map<string, Record<string, StateValue>>;
+  mappings: Map<string, Map<string, Map<string, StateValue>>>;
+};
+
+// Categories are only unique within one network/provider. Keeping the mock overlay in one global category-keyed
+// map made two isolated fixture providers with the same deterministic genesis accidentally share simulated state.
+// A provider scope also makes a composition's view independent of unrelated suite order.
+const softStateScopes = new Map<NetworkProvider | undefined, SoftStateScope>();
+
+const softStateScope = (provider: NetworkProvider | undefined): SoftStateScope => {
+  let scope = softStateScopes.get(provider);
+  if (!scope) {
+    scope = { states: new Map(), mappings: new Map() };
+    softStateScopes.set(provider, scope);
+  }
+  return scope;
+};
 
 /** Corpus simulation is an explicit MockNetworkProvider capability; every other provider is strict. */
 function legacyStatefulSimulationEnabled(provider: NetworkProvider | undefined): boolean {
@@ -3946,8 +3962,7 @@ export function clearSoftBentoTotals(): void {
   softMasterContractApproval.clear();
   softSwapperApproved.clear();
   softOwnerByContract.clear();
-  softStateByContract.clear();
-  softMappingByContract.clear();
+  softStateScopes.clear();
   softOracleRate = 10n ** 28n;
 }
 
@@ -3966,11 +3981,13 @@ export function takeSoftStateSnapshot(): SoftStateSnapshot {
   const swappers = new Set(softSwapperApproved);
   const owners = new Map(softOwnerByContract);
   const oracleRate = softOracleRate;
-  const states = new Map([...softStateByContract].map(([key, value]) => [key, { ...value }]));
-  const mappings = new Map([...softMappingByContract].map(([contract, fields]) => [
-    contract,
-    new Map([...fields].map(([field, entries]) => [field, new Map(entries)])),
-  ]));
+  const scopes = new Map([...softStateScopes].map(([provider, scope]) => [provider, {
+    states: new Map([...scope.states].map(([key, value]) => [key, { ...value }])),
+    mappings: new Map([...scope.mappings].map(([contract, fields]) => [
+      contract,
+      new Map([...fields].map(([field, entries]) => [field, new Map(entries)])),
+    ])),
+  }]));
   return {
     restore: () => {
       clearSoftBentoTotals();
@@ -3982,11 +3999,14 @@ export function takeSoftStateSnapshot(): SoftStateSnapshot {
       for (const value of swappers) softSwapperApproved.add(value);
       for (const [key, value] of owners) softOwnerByContract.set(key, value);
       softOracleRate = oracleRate;
-      for (const [key, value] of states) softStateByContract.set(key, { ...value });
-      for (const [contract, fields] of mappings) {
-        softMappingByContract.set(contract, new Map(
-          [...fields].map(([field, entries]) => [field, new Map(entries)]),
-        ));
+      for (const [provider, scope] of scopes) {
+        softStateScopes.set(provider, {
+          states: new Map([...scope.states].map(([key, value]) => [key, { ...value }])),
+          mappings: new Map([...scope.mappings].map(([contract, fields]) => [
+            contract,
+            new Map([...fields].map(([field, entries]) => [field, new Map(entries)])),
+          ])),
+        });
       }
     },
   };
@@ -4493,10 +4513,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
   /** Mock-only scalar overlay, shared across connect()/as() clones. */
   get _softStateOverlay(): Record<string, StateValue> {
     const key = this._softContractKey();
-    let state = softStateByContract.get(key);
+    const scope = softStateScope(this._inner?.provider);
+    let state = scope.states.get(key);
     if (!state) {
       state = {};
-      softStateByContract.set(key, state);
+      scope.states.set(key, state);
     }
     return state;
   }
@@ -4504,10 +4525,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
   /** Mock-only mapping overlay, shared across connect()/as() clones. */
   private _softMappingOverlayFor(collection: string): Map<string, StateValue> {
     const key = this._softContractKey();
-    let fields = softMappingByContract.get(key);
+    const scope = softStateScope(this._inner?.provider);
+    let fields = scope.mappings.get(key);
     if (!fields) {
       fields = new Map();
-      softMappingByContract.set(key, fields);
+      scope.mappings.set(key, fields);
     }
     let entries = fields.get(collection);
     if (!entries) {

@@ -3741,27 +3741,36 @@ export class AtomicMessageBusComposition {
   async send(): Promise<TransactionDetails> { return (await this._build()).send() as Promise<TransactionDetails>; }
 }
 
+/**
+ * Composition is deferred, so its public inputs must not retain caller-owned mutable arrays, byte vectors, or
+ * plain struct records. Preserve class instances (contracts, unlockers, signature templates) by identity: they
+ * are capabilities rather than ABI values and cloning them would change their behavior. The resulting private
+ * snapshot is never exposed, so copied Uint8Arrays cannot subsequently be mutated by the caller.
+ */
+const snapshotCompositionValue = <T>(value: T): T => {
+  if (value instanceof Uint8Array) return Uint8Array.from(value) as T;
+  if (Array.isArray(value)) return Object.freeze(value.map(snapshotCompositionValue)) as T;
+  if (!value || typeof value !== 'object') return value;
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) return value;
+  return Object.freeze(Object.fromEntries(Object.entries(value as Record<string, unknown>)
+    .map(([key, child]) => [key, snapshotCompositionValue(child)]))) as T;
+};
+
+const snapshotPreparedCall = (call: PreparedAtomicMessageBusCall): PreparedAtomicMessageBusCall =>
+  snapshotCompositionValue(call);
+
 export function compose(options: ComposeAtomicMessageBusOptions): AtomicMessageBusComposition {
-  // Snapshot the caller-owned array so later mutation cannot alter the graph between compose() and send().
+  // Capture StatefulFunctionCall descriptors immediately. A prepared call is a value-level graph statement;
+  // retaining the call object deferred both its externally-owned ABI args and any later imperative mutation.
   if (!options.calls && !options.preparedCalls) {
     throw new Error('messageBus: composition requires calls or preparedCalls');
   }
-  return new AtomicMessageBusComposition({
-    ...options,
-    ...(options.calls && { calls: Object.freeze([...options.calls]) }),
-    ...(options.preparedCalls && { preparedCalls: Object.freeze([...options.preparedCalls]) }),
-    ...(options.lifecycleSplits && {
-      lifecycleSplits: Object.freeze(options.lifecycleSplits.map((split) => Object.freeze({
-        ...split,
-        funders: Object.freeze([...split.funders]),
-        createdValues: Object.freeze([...split.createdValues]),
-      }))),
-    }),
-    ...(options.lifecycleMerges && {
-      lifecycleMerges: Object.freeze(options.lifecycleMerges.map((merge) => Object.freeze({
-        ...merge,
-        consumedMasters: Object.freeze([...merge.consumedMasters]),
-      }))),
-    }),
-  });
+  const preparedCalls = options.preparedCalls
+    ?? options.calls!.map((call) => call._messageBusCompositionDescriptor());
+  const { calls: _calls, preparedCalls: _preparedCalls, ...rest } = options;
+  return new AtomicMessageBusComposition(Object.freeze({
+    ...snapshotCompositionValue(rest),
+    preparedCalls: Object.freeze(preparedCalls.map(snapshotPreparedCall)),
+  }));
 }

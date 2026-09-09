@@ -680,6 +680,50 @@ describe('required kernel admission', () => {
       }));
     });
 
+  it('proves one immutable nested sig[] leaf through its exact CHECKMULTISIG helper body', () => {
+    const artifact = compileString(`contract C() {
+      struct Auth { sig[] proofs; pubkey[] authorities; int nonce; }
+      int marker;
+      function authorize(Auth selected) internal {
+        require(checkMultiSig(selected.proofs, selected.authorities));
+      }
+      function migrate(Auth auth, int next) public upgrade {
+        authorize(auth); this.marker = next; require(true);
+      }
+      function control() public { require(true); }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    const selected = artifact.messageBus?.handlers.find((handler) => handler.name === 'migrate');
+    expect(selected).toMatchObject({
+      eligible: true, usesTransactionSignature: true,
+      transactionSignaturePolicy: { hashType: 'all', parameterIndices: [0] },
+    });
+    expect(selected?.transactionSignaturePolicy?.coveredBytecodes).toEqual([
+      expect.objectContaining({ parameterIndex: 0 }),
+    ]);
+    expect(artifact.messageBus?.route.inputs).toContainEqual(expect.objectContaining({
+      name: '__message_bus_sig_0_0_rows', type: 'sig[][]',
+    }));
+  });
+
+  it.each([
+    ['a reassigned aggregate', `
+      auth = auth;
+      require(checkMultiSig(auth.proofs, auth.authorities));`],
+    ['an unchecked sibling sig[] leaf',
+      'require(checkMultiSig(auth.first, auth.authorities));',
+      'struct Auth { sig[] first; sig[] second; pubkey[] authorities; }'],
+    ['a constructed signature array rather than one leaf',
+      'require(checkMultiSig([auth.first, auth.second], auth.authorities));',
+      'struct Auth { sig first; sig second; pubkey[] authorities; }'],
+  ])('keeps nested CHECKMULTISIG provenance fenced for %s', (_label, body, declaration =
+    'struct Auth { sig[] proofs; pubkey[] authorities; int nonce; }') => {
+    expect(denied(`contract C() {
+      ${declaration}
+      function migrate(Auth auth) public upgrade { ${body} }
+      function control() public { require(true); }
+    }`, 'migrate')).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_TX_SIGNATURE' });
+  });
+
   it.each([
     ['a reassigned aggregate', `
       auth = Auth(Authorization(sig(hex"00"), auth.authorization.key), auth.nonce);

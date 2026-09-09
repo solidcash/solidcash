@@ -29,15 +29,16 @@ const vmAccepts = (builder: TransactionBuilder): boolean => {
 };
 
 describe('kernel transaction-bound multisignature arrays', () => {
-  it('covenants every direct sig[] element to all outputs', async () => {
+  it('covenants an immutable aggregate sig[] leaf to all outputs', async () => {
     const provider = createMessageBusCapstoneTestProvider();
     const artifact = compileString(`contract MultisigLedger() {
       int total;
-      function verify(sig[] selected, pubkey[] authorities) internal {
-        require(checkMultiSig(selected, authorities));
+      struct Authorization { sig[] proofs; int nonce; }
+      function verify(Authorization auth, pubkey[] authorities) internal {
+        require(checkMultiSig(auth.proofs, authorities));
       }
-      function add(sig[] proofs, pubkey[] authorities, int amount) public {
-        verify(proofs, authorities);
+      function add(Authorization auth, pubkey[] authorities, int amount) public {
+        verify(auth, authorities);
         this.total = this.total + amount;
         require(true);
       }
@@ -62,7 +63,7 @@ describe('kernel transaction-bound multisignature arrays', () => {
     const build = async (proofs: SignatureTemplate[]): Promise<TransactionBuilder> => {
       const fee = await createBareP2pkhFeeFunder(provider, 500_000n);
       const encoded = encodeMessageBatch(artifact, [{
-        function: 'add', callMode: 'call', args: [proofs, [alicePub, bobPub], 1n],
+        function: 'add', callMode: 'call', args: [{ proofs, nonce: 0n }, [alicePub, bobPub], 1n],
       }]);
       const call = contract._batchRaw(encoded.blob, encoded.routeWitnesses);
       call.addInput(fee.utxo, fee.unlocker);

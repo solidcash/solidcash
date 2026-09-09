@@ -3587,7 +3587,11 @@ function synthesizeMessageBusRoute(
       // The witness retains every source array dimension, so an element check is still bound to the complete
       // reconstructed aggregate. Runtime-selected projections remain fenced: proving which detached leaf reaches
       // CHECKSIG would otherwise depend on row data rather than stable type/provenance metadata.
-      if (check !== GlobalFunction.CHECKSIG) return undefined;
+      // CHECKMULTISIG consumes one complete `sig[]` leaf, so an immutable aggregate projection is just as
+      // provenance-stable as the direct parameter case. Do not generalize this to partial scalar construction:
+      // the leaf/path check below intentionally requires the projected expression itself to be one signature
+      // array, and the final checked-leaf census still rejects aggregates with an unchecked sibling leaf.
+      if (check !== GlobalFunction.CHECKSIG && check !== GlobalFunction.CHECKMULTISIG) return undefined;
       const accessPath: Array<{ kind: 'field'; name: string } | { kind: 'array' }> = [];
       let base = expression;
       while (base instanceof FieldAccessNode || base instanceof TupleIndexOpNode) {
@@ -3604,13 +3608,22 @@ function synthesizeMessageBusRoute(
       const rootType = root.parameters[origin]?.type;
       if (!rootType) return undefined;
       const leaves = transactionSignatureLeaves(rootType);
-      const leafIndex = leaves?.findIndex((leaf) => leaf.path.length === accessPath.length
-        && leaf.path.every((segment, index) => {
-          const access = accessPath[index];
-          return segment.kind === access.kind
+      const pathMatches = (leaf: TransactionSignatureLeaf, length: number): boolean => leaf.path.length === length
+        && accessPath.every((access, index) => {
+          const segment = leaf.path[index];
+          return segment !== undefined && segment.kind === access.kind
             && (segment.kind !== 'field' || (access.kind === 'field' && segment.name === access.name));
-        })) ?? -1;
-      return leafIndex >= 0 ? { parameterIndex: origin, leafIndex } : undefined;
+        });
+      const leafIndex = leaves?.findIndex((leaf) => {
+        if (check !== GlobalFunction.CHECKMULTISIG) return pathMatches(leaf, accessPath.length);
+        // The expression ends at the signature-array container; its leaf additionally records that array's
+        // element traversal. This accepts `record.proofs` and `records[i].proofs`, but not a sig[][] value.
+        const tail = leaf.path[leaf.path.length - 1];
+        return pathMatches(leaf, accessPath.length + 1)
+          && tail?.kind === 'array' && tail.elementType === PrimitiveType.SIG.toString();
+      }) ?? -1;
+      if (leafIndex < 0) return undefined;
+      return { parameterIndex: origin, leafIndex };
     };
     const exactInternalHelper = (
       call: FunctionCallNode, owner: FunctionDefinitionNode,

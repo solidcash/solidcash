@@ -3,6 +3,7 @@ import { compileString } from 'solidc';
 import { describe, expect, it } from 'vitest';
 import { Contract, StatefulContract, getEntryNftAddress } from '../../../src/index.js';
 import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';
+import { decodeKernelEntryJournalAccesses } from '../../../src/stateful/KernelEntryJournal.js';
 import { addressToLockScript, generateLibauthSourceOutputs } from '../../../src/utils.js';
 import { createTestProvider, setupStatefulUtxos } from '../../test-util.js';
 
@@ -27,9 +28,6 @@ const KERNEL = {
   forceStateful: true, messageBus: true, messageBusKernel: true, maximumInputBytes: 1_000_000,
 } as const;
 
-const INTERNAL_CLEAN_CARRIER_HEADER = Uint8Array.of(0x05, 0x11);
-const AUTHENTICATED_CLEAN_HEADER = Uint8Array.of(0x05, 0x01);
-
 function entryIndices(
   transaction: { inputs: Array<{ lockingBytecode: Uint8Array }>; outputs: Array<{ lockingBytecode: Uint8Array }> },
   address: string,
@@ -41,19 +39,6 @@ function entryIndices(
     outputs: transaction.outputs.flatMap((output, index) =>
       binToHex(output.lockingBytecode) === lockingBytecode ? [index] : []),
   };
-}
-
-function replaceFirstHeader(streams: Uint8Array[], from: Uint8Array, to: Uint8Array): Uint8Array[] {
-  let replaced = false;
-  return streams.map((stream) => {
-    const result = new Uint8Array(stream);
-    for (let index = 0; !replaced && index + from.length <= result.length; index += 1) {
-      if (!from.every((byte, offset) => result[index + offset] === byte)) continue;
-      result.set(to, index);
-      replaced = true;
-    }
-    return result;
-  });
 }
 
 /**
@@ -103,13 +88,23 @@ describe('kernel repeated clean-read carriers', () => {
     const originalUnlocker = routeBuilderInput.unlocker;
     const journalIndex = originalUnlocker.abiFunction.inputs.findIndex((input) => input.name === '__internal__kernelJournalAccessStreams');
     expect(journalIndex).toBeGreaterThanOrEqual(0);
-    const streams = originalUnlocker.params[journalIndex] as Uint8Array[];
-    const hasInternalCarrier = streams.some((stream) => stream.some((_byte, index) =>
-      INTERNAL_CLEAN_CARRIER_HEADER.every((byte, offset) => stream[index + offset] === byte)));
-    expect(hasInternalCarrier).toBe(true);
+    const rowStreams = originalUnlocker.params[journalIndex] as Uint8Array[][];
+    // 0x0511 is route-internal state, never a caller-supplied access-stream byte sequence. The caller-visible
+    // proof of reuse is instead the second row's read program: it names the same global record ordinals with no
+    // target/predecessor authentication bits. The route alone turns the first authenticated clean records into
+    // internal carriers before that later zero-auth consumer executes.
+    const cleanReads = rowStreams.map((streams) => streams.flatMap((stream) =>
+      decodeKernelEntryJournalAccesses(stream).filter((access) =>
+        !access.mutates && access.presentBefore && access.presentAfter)));
+    expect(cleanReads).toHaveLength(2);
+    expect(cleanReads[0]).toHaveLength(2);
+    expect(cleanReads[1]).toHaveLength(2);
+    expect(cleanReads[0].every((access) => access.authenticatesTarget)).toBe(true);
+    expect(cleanReads[1].every((access) =>
+      !access.authenticatesTarget && !access.authenticatesPredecessor)).toBe(true);
     const selector = artifact.messageBus!.route.selector;
     if (!selector) throw new Error('kernel route has no selector');
-    const routeFails = (journalStreams: Uint8Array[]): boolean => {
+    const routeFails = (journalStreams: Uint8Array[][]): boolean => {
       const params = [...originalUnlocker.params];
       params[journalIndex] = journalStreams;
       routeBuilderInput.unlocker = originalUnlocker.contract.createCompilerRouteUnlocker(
@@ -119,10 +114,47 @@ describe('kernel repeated clean-read carriers', () => {
       routeBuilderInput.unlocker = originalUnlocker;
       return vm.stateSuccess(vm.evaluate({ inputIndex: routeInput, sourceOutputs, transaction: hostile })) !== true;
     };
-    // A later row can consume 0x0511, but cannot recreate physical authentication for an already-owned input.
-    expect(routeFails(replaceFirstHeader(streams, INTERNAL_CLEAN_CARRIER_HEADER, AUTHENTICATED_CLEAN_HEADER))).toBe(true);
-    // The marker is never ingress data; a forged marker must be rejected before row execution.
-    expect(routeFails(replaceFirstHeader(streams, AUTHENTICATED_CLEAN_HEADER, INTERNAL_CLEAN_CARRIER_HEADER))).toBe(true);
+    const duplicatedAuthentication = rowStreams.map((streams) => streams.map((stream) => new Uint8Array(stream)));
+    // Access encoding is `tag || count || collectionHash20 || flag || target-u16le || predecessor-u16le`.
+    // Re-authenticate one second-row clean target: it would claim a second physical authority over the first row's
+    // carrier and must be rejected by the route.
+    let reauthenticated = false;
+    for (const stream of duplicatedAuthentication[1]) {
+      const accesses = decodeKernelEntryJournalAccesses(stream);
+      const index = accesses.findIndex((access) => !access.mutates && access.presentBefore
+        && !access.authenticatesTarget && !access.authenticatesPredecessor);
+      if (index < 0) continue;
+      stream[22 + index * 5] |= 0x10;
+      reauthenticated = true;
+      break;
+    }
+    expect(reauthenticated).toBe(true);
+    expect(routeFails(duplicatedAuthentication)).toBe(true);
+
+    // 0x0511 itself is prohibited at journal-record ingress. Forge it in the record carrier, rather than in the
+    // compact access programs above, and require the route input (not an unrelated funding signature) to fail.
+    const forgedRecordParams = [...originalUnlocker.params];
+    let forgedRecord = false;
+    originalUnlocker.abiFunction.inputs.forEach((input, inputIndex) => {
+      if (!input.name.startsWith('__internal__kernelJournalRecordSegment_') || forgedRecord) return;
+      const segment = new Uint8Array(originalUnlocker.params[inputIndex] as Uint8Array);
+      for (let index = 0; index + 1 < segment.length; index += 1) {
+        if (segment[index] !== 0x05 || segment[index + 1] !== 0x01) continue;
+        segment[index + 1] = 0x11;
+        forgedRecordParams[inputIndex] = segment;
+        forgedRecord = true;
+        break;
+      }
+    });
+    expect(forgedRecord).toBe(true);
+    routeBuilderInput.unlocker = originalUnlocker.contract.createCompilerRouteUnlocker(
+      originalUnlocker.abiFunction, hexToBin(selector),
+    )(...forgedRecordParams);
+    const forgedRecordTransaction = builder.buildLibauthTransaction();
+    routeBuilderInput.unlocker = originalUnlocker;
+    expect(vm.stateSuccess(vm.evaluate({
+      inputIndex: routeInput, sourceOutputs, transaction: forgedRecordTransaction,
+    }))).not.toBe(true);
     const swapped = structuredClone(transaction);
     [swapped.outputs[sourceSlots.outputs[0]!]!.token, swapped.outputs[sourceSlots.outputs[1]!]!.token] = [
       swapped.outputs[sourceSlots.outputs[1]!]!.token, swapped.outputs[sourceSlots.outputs[0]!]!.token,

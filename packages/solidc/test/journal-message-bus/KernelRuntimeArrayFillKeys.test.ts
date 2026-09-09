@@ -1,4 +1,7 @@
-import { compileString } from '../../src/compiler.js';
+import { compileString, parseCode } from '../../src/compiler.js';
+import { FunctionDefinitionNode, SourceFileNode } from '../../src/ast/AST.js';
+import { cloneNode } from '../../src/ast/clone.js';
+import { captureConstructedKeyVectorProvenance } from '../../src/semantic/CaptureConstructedKeyVectorProvenance.js';
 import { describe, expect, it } from 'vitest';
 
 const KERNEL = {
@@ -9,6 +12,42 @@ const KERNEL = {
 } as const;
 
 describe('kernel runtime-sized constructed-key initialization', () => {
+  it('captures a complete typed producer/consumer proof by stable function identity before lowering', () => {
+    const ast = parseCode(`contract Registry() {
+      mapping(int => int) records;
+      function apply(int count, int base) public {
+        int[] memory first = new int[](count);
+        for (int producer = 0; producer < count; producer = producer + 1) {
+          first[producer] = base + producer;
+        }
+        for (int consumer = 0; consumer < count; consumer = consumer + 1) {
+          this.records[first[consumer]] = consumer;
+        }
+        require(true);
+      }
+    }`) as SourceFileNode;
+    const source = ast.contract.functions.find((fn) => fn.name === 'apply')!;
+    captureConstructedKeyVectorProvenance([source]);
+
+    const identity = source.messageBusSourceFunctionIdentity!;
+    const proof = source.messageBusConstructedKeyVectorProofPrograms?.get(identity);
+    expect(identity).toContain('apply(int256,int256)');
+    expect(proof).toMatchObject({
+      version: 1,
+      sourceFunctionIdentity: identity,
+      sourceFunctionSignature: 'apply(int256,int256)',
+      sourceParameterTypes: ['int256', 'int256'],
+      candidateVectorOrdinals: [0],
+    });
+    expect(proof?.sourceProgram).not.toBe(source.body);
+
+    // Physical route synthesis clones the function repeatedly. The proof must follow those clones by the
+    // source-function key, without relying on the local vector spelling (`first`).
+    const clone = cloneNode(source) as FunctionDefinitionNode;
+    expect(clone.messageBusConstructedKeyVectorProofPrograms?.get(identity)).toBe(proof);
+    expect(clone.messageBusConstructedKeyVectorProofPrograms?.has('first')).toBe(false);
+  });
+
   it('keeps a separately produced local key vector deterministically frozen pending route replay binding', () => {
     const artifact = compileString(`contract Registry() {
       mapping(int => int) records;

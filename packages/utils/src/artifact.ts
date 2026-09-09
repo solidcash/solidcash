@@ -612,12 +612,6 @@ export interface AbiFunction {
   // compute each H(k) = keyToSlotMulti([...fixedKeys, arr[i]]) and build the co-spend/output plan off-chain.
   sortedInsertLoopInfo?: readonly SortedInsertLoopAbi[];
   sortedUpsertLoopInfo?: readonly SortedUpsertLoopAbi[];
-  /**
-   * Optional compiler-owned replay programs for locally constructed key vectors. These become actionable only
-   * when the corresponding kernel route authenticates the replayed key/rank relation; consumers must ignore
-   * an artifact carrying a descriptor without that route capability.
-   */
-  constructedKeyVectors?: readonly ConstructedKeyVectorV1Abi[];
   /** Fixed straight-line vmap writes sharing one atomic linked-list transition. */
   sortedBatchInfo?: readonly { collection: string; slotIndices: readonly number[]; linear?: boolean }[];
   // Function params whose value feeds blockhash(n); the SDK reads the arg to resolve addr(n) and co-spend
@@ -965,42 +959,6 @@ export interface ExternalCallExpression {
   parameters?: readonly string[];
   /** Bounded statement program for a compiler-published pure helper body. */
   statements?: readonly ExternalCallStatement[];
-}
-
-/**
- * A compiler-authored, finite proof program for a locally constructed mapping-key vector.
- *
- * This is deliberately data-only ABI metadata: consumers must evaluate it with the narrow v1 replay
- * interpreter, never by executing source text or inspecting local variable names. Omission is not a weaker
- * descriptor; it means the compiler did not prove a replay program and kernel admission must remain closed.
- */
-export interface ConstructedKeyVectorV1Abi {
-  version: 1;
-  /** Stable ordinal within the owning handler's compact journal-access stream. */
-  vectorOrdinal: number;
-  /** Exact fixed-width element ABI type. */
-  elementType: string;
-  allocationLength: ExternalCallExpression;
-  producer: {
-    domain: {
-      kind: 'pre-test' | 'post-test';
-      start: ExternalCallExpression;
-      bound: ExternalCallExpression;
-      step: ExternalCallExpression;
-      comparison: '<' | '<=' | '>' | '>=';
-    };
-    writes: readonly {
-      index: ExternalCallExpression;
-      value: ExternalCallExpression;
-      condition?: ExternalCallExpression;
-    }[];
-  };
-  consumer: {
-    index: ExternalCallExpression;
-    vectorElementComponent: number;
-    keyComponentCount: number;
-    fixedComponents: readonly { component: number; expression: ExternalCallExpression }[];
-  };
 }
 
 export interface ExternalCallStatement {

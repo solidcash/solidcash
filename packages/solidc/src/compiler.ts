@@ -127,6 +127,7 @@ import LowerVMapCounterLoops, {
   VMAP_RUNTIME_INPUT_COUNT_PREFIX,
   VMAP_RUNTIME_OUTPUT_COUNT_PREFIX,
 } from './semantic/LowerVMapCounterLoops.js';
+import { captureConstructedKeyVectorProvenance } from './semantic/CaptureConstructedKeyVectorProvenance.js';
 import LowerLegacyVMapCounterLoops from './semantic/LowerLegacyVMapCounterLoops.js';
 import LowerInlineAssembly from './semantic/LowerInlineAssembly.js';
 import LowerMemoryModel from './semantic/LowerMemoryModel.js';
@@ -10423,6 +10424,14 @@ function compileResolvedAst(
         }
       });
     }
+  }
+
+  // Preserve a typed, source-owned proof program for bounded locally constructed mapping-key vectors before
+  // symbolic array rewriting or helper inlining can replace its producer/consumer relationship. Route clones
+  // inherit this snapshot by stable source-function identity; no ABI is emitted until descriptor lowering can
+  // bind the replay to the route's authenticated key stream.
+  if (mergedCompilerOptions.messageBusKernel === true) {
+    captureConstructedKeyVectorProvenance(ast.contract.functions);
   }
   if (earlyEntryFeatures?.needsReturnInLoop
     && (earlyEntryFeatures.needsTailRecursion || mergedCompilerOptions.messageBusKernel === true)) {

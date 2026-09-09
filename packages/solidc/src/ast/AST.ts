@@ -1,4 +1,4 @@
-import { Type, PrimitiveType, BytesType, MappingType, ArrayType, StructType, EnumType, ValueType, TupleType, FunctionBlockLayout, LibraryCallArg, JournalSettlementIdentityAbi, ConstructedKeyVectorV1Abi } from '@solidcash/utils';
+import { Type, PrimitiveType, BytesType, MappingType, ArrayType, StructType, EnumType, ValueType, TupleType, FunctionBlockLayout, LibraryCallArg, JournalSettlementIdentityAbi } from '@solidcash/utils';
 import { TimeOp } from './Globals.js';
 import AstVisitor from './AstVisitor.js';
 import { BinaryOperator, NullaryOperator, UnaryOperator } from './Operator.js';
@@ -316,25 +316,6 @@ export interface CustomModifierInvocation {
   location: Location;
 }
 
-/**
- * Lossless, typed source snapshot for a locally constructed mapping-key vector.
- *
- * This deliberately remains compiler-internal: a later descriptor lowering projects the replayable subset into
- * the SDK ABI. Keeping the complete source program here means that lowering/inlining cannot manufacture a
- * provenance proof after the fact. `sourceFunctionIdentity`, rather than a local variable spelling, is the
- * durable key shared by all physical route clones of the source function.
- */
-export interface MessageBusConstructedKeyVectorProofProgram {
-  version: 1;
-  sourceFunctionIdentity: string;
-  sourceFunctionSignature: string;
-  sourceParameterTypes: string[];
-  /** Ordinals of qualifying `new T[](n)` allocations in source preorder; never local identifiers. */
-  candidateVectorOrdinals: number[];
-  /** Detached typed source body, captured before symbolic-key lowering and helper inlining. */
-  sourceProgram: BlockNode;
-}
-
 export class FunctionDefinitionNode extends Node implements Named {
   symbolTable?: SymbolTable;
   // Set by semantic analysis after visiting the body. Codegen can skip its more detailed deploy-site survey when
@@ -546,15 +527,6 @@ export class FunctionDefinitionNode extends Node implements Named {
   messageBusUnboundedConstructedArray?: boolean;
   /** Pre-admission saw the narrow local-vector shape; final kernel admission still requires emitted provenance. */
   messageBusConstructedKeyVectorCandidate?: boolean;
-  /**
-   * Normalized compiler-owned vector proof programs ready for artifact publication. Raw AST provenance is never
-   * serialized here: an unsupported expression leaves this absent and preserves the KERNEL_LAYOUT fence.
-   */
-  messageBusConstructedKeyVectorDescriptors?: readonly ConstructedKeyVectorV1Abi[];
-  /** Stable source-level identity used to attach pre-lowering constructed-key proof programs. */
-  messageBusSourceFunctionIdentity?: string;
-  /** Source snapshots indexed exclusively by stable source-function identity. */
-  messageBusConstructedKeyVectorProofPrograms?: Map<string, MessageBusConstructedKeyVectorProofProgram>;
   /** Idempotence marker for the pre-admission constructed-array replay normalization. */
   messageBusConstructedArrayKeysNormalized?: boolean;
 

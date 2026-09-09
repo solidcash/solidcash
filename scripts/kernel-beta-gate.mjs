@@ -53,7 +53,10 @@ const shapedLines = addedProductionLines.filter((line) => applicationNamePattern
 if (shapedLines.length > 0) {
   throw new Error(`kernel implementation added application-shaped production names:\n${shapedLines.join('\n')}`);
 }
-const requiredTestIds = ['build', 'utils-source-maps', 'compiler-journal', 'sdk-journal', 'sdk-regressions'];
+const requiredTestIds = [
+  'build', 'generated-artifacts', 'utils-source-maps',
+  'compiler-journal', 'sdk-journal', 'sdk-regressions',
+];
 if (JSON.stringify(manifest.testCommands.map(({ id }) => id)) !== JSON.stringify(requiredTestIds)
   || manifest.testCommands.some(({ argv }) => !Array.isArray(argv) || argv.length === 0)) {
   throw new Error(`kernel beta manifest must contain the exact ordered test roles: ${requiredTestIds.join(', ')}`);

@@ -1837,6 +1837,13 @@ function buildFunctionAbiMetadata(
       // compiler lowering cannot mutate published metadata; no AST node or source-local identity escapes.
       constructedKeyVectors: func.messageBusConstructedKeyVectorDescriptors.map((descriptor) => ({ ...descriptor })),
     }),
+    ...(func.messageBusAffineRecursiveFrameDescriptors?.length && {
+      affineRecursiveFrames: func.messageBusAffineRecursiveFrameDescriptors.map((descriptor) => ({
+        ...descriptor,
+        parameterProgressions: descriptor.parameterProgressions.map((progression) => ({ ...progression })),
+        accesses: descriptor.accesses.map((access) => ({ ...access, key: [...access.key] })),
+      })),
+    }),
     ...(func.entryAccesses && func.entryAccesses.some((ea) => !ea.inLoop) && {
       // Loop mapping writes (inLoop) are surfaced via entryLoopWrites, not as fixed entry slots; exclude them
       // here so the SDK's static-entry path does not allocate a slot / derive them positionally.

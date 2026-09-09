@@ -12,7 +12,7 @@ import {
 import AstTraversal from '../ast/AstTraversal.js';
 import { cloneNode } from '../ast/clone.js';
 import { BinaryOperator, UnaryOperator } from '../ast/Operator.js';
-import { ArrayType, IntType, MappingType, PrimitiveType } from '@solidcash/utils';
+import { ArrayType, IntType, MappingType, PrimitiveType, AffineRecursiveFrameV1Abi } from '@solidcash/utils';
 
 type RecursiveFoldVariant =
   | {
@@ -347,6 +347,108 @@ export default class LowerTailRecursion extends AstTraversal {
       }
     }
     return true;
+  }
+
+  /**
+   * Publish a deliberately inert recursive-frame relation after the existing affine proof has accepted the
+   * source shape, but before lowering replaces source-frame expressions with compiler temporaries.  This does
+   * not identify a state collection by source name: access ordinal is the only link to the independently
+   * published journal stream.  In particular, this descriptor is not consulted by admission.
+   */
+  private publishAffineRecursiveFrame(
+    node: FunctionDefinitionNode,
+    inductionIndex: number,
+    inductionName: string,
+    stepExpression: ExpressionNode,
+    parameterProgressions: readonly AffineParameterProgression[],
+    effects: readonly StatementNode[],
+  ): void {
+    const visible = node.parameters.filter((parameter) => !parameter.name.startsWith('__internal__'));
+    const visibleInductionIndex = visible.findIndex((parameter) => parameter.name === inductionName);
+    const rewriteFrameIdentifier = (expression: ExternalCallExpression): ExternalCallExpression => {
+      if (expression.kind === 'identifier' && expression.name === inductionName) {
+        return { kind: 'source', source: { kind: 'forward', paramIndex: visibleInductionIndex } };
+      }
+      if (expression.kind === 'unary' || expression.kind === 'cast') {
+        return expression.expression === undefined ? expression
+          : { ...expression, expression: rewriteFrameIdentifier(expression.expression) };
+      }
+      if (expression.kind === 'binary') {
+        return expression.left === undefined || expression.right === undefined ? expression : {
+          ...expression,
+          left: rewriteFrameIdentifier(expression.left), right: rewriteFrameIdentifier(expression.right),
+        };
+      }
+      if (expression.kind === 'ternary') {
+        return expression.condition === undefined || expression.ifTrue === undefined || expression.ifFalse === undefined
+          ? expression : {
+          ...expression,
+          condition: rewriteFrameIdentifier(expression.condition),
+          ifTrue: rewriteFrameIdentifier(expression.ifTrue),
+          ifFalse: rewriteFrameIdentifier(expression.ifFalse),
+        };
+      }
+      return expression;
+    };
+    const recipe = (expression: ExpressionNode, allowInduction = false): ExternalCallExpression | undefined => {
+      const serialized = this.affineEventExpression(expression, node, inductionName, allowInduction);
+      return serialized === undefined ? undefined : rewriteFrameIdentifier(serialized);
+    };
+    const step = recipe(stepExpression);
+    if (visibleInductionIndex < 0 || !step) return;
+    const progressions: Array<AffineRecursiveFrameV1Abi['parameterProgressions'][number]> = [];
+    for (const progression of parameterProgressions) {
+      // The induction's rank equation is represented once by inductionParameterIndex + step.
+      if (progression.parameterIndex === inductionIndex) continue;
+      const parameter = node.parameters[progression.parameterIndex];
+      const parameterIndex = visible.findIndex((candidate) => candidate.name === parameter.name);
+      const progressionStep = recipe(progression.stepExpression);
+      const counterSlope = progression.counterSlope === undefined ? undefined : recipe(progression.counterSlope);
+      if (parameterIndex < 0 || !progressionStep || (progression.counterSlope !== undefined && !counterSlope)) return;
+      progressions.push({
+        parameterIndex,
+        direction: progression.subtract ? 'subtract' : 'add',
+        step: progressionStep,
+        ...(counterSlope && { counterSlope }),
+      });
+    }
+    const accesses: Array<AffineRecursiveFrameV1Abi['accesses'][number]> = [];
+    let complete = true;
+    const collect = (candidate: Node): void => {
+      const record = (operation: 'read' | 'set' | 'delete', keys: readonly ExpressionNode[]): void => {
+        const key = keys.map((component) => recipe(component, true));
+        if (key.some((component) => component === undefined)) {
+          complete = false;
+          return;
+        }
+        accesses.push({ accessOrdinal: accesses.length, operation, key: key as ExternalCallExpression[] });
+      };
+      if (candidate instanceof MappingAssignNode) {
+        record('set', candidate.keys);
+        // Only the value subtree can contain a typed read; destination-key reads were excluded by the affine proof.
+        collect(candidate.expression);
+        return;
+      }
+      if (candidate instanceof MappingDeleteNode) {
+        record('delete', candidate.keys);
+        return;
+      }
+      if (candidate instanceof MappingAccessNode) {
+        record('read', candidate.keys);
+        return;
+      }
+      for (const [key, child] of Object.entries(candidate)) {
+        if (['resolvedFunction', 'definition', 'symbolTable', 'location', 'type', 'collection'].includes(key)) continue;
+        if (child instanceof Node) collect(child);
+        else if (Array.isArray(child)) for (const item of child) if (item instanceof Node) collect(item);
+      }
+    };
+    for (const effect of effects) collect(effect);
+    if (!complete || accesses.length === 0) return;
+    node.messageBusAffineRecursiveFrameDescriptors = [{
+      version: 1, phase: 'unwind', inductionParameterIndex: visibleInductionIndex,
+      step, maximumFrames: 64, parameterProgressions: progressions, accesses,
+    }];
   }
 
   /** Prove the sole changing recursive argument is `counter - positiveInvariant`. Positivity is checked both
@@ -2904,12 +3006,20 @@ export default class LowerTailRecursion extends AstTraversal {
     }
     const affineVoidPostEffect = selfCalls === 1 ? this.affineVoidPostEffectRecursion(node) : undefined;
     if (affineVoidPostEffect) {
+      this.publishAffineRecursiveFrame(
+        node, affineVoidPostEffect.inductionIndex, node.parameters[affineVoidPostEffect.inductionIndex].name,
+        affineVoidPostEffect.stepExpression, affineVoidPostEffect.parameterProgressions, affineVoidPostEffect.effects,
+      );
       this.counter += 1;
       this.lowerAffineVoidPostEffectRecursion(node, affineVoidPostEffect, frame);
       return node;
     }
     const affinePostEffect = selfCalls === 1 ? this.affinePostEffectRecursion(node) : undefined;
     if (affinePostEffect) {
+      this.publishAffineRecursiveFrame(
+        node, affinePostEffect.inductionIndex, node.parameters[affinePostEffect.inductionIndex].name,
+        affinePostEffect.stepExpression, affinePostEffect.parameterProgressions, affinePostEffect.effects,
+      );
       this.counter += 1;
       this.lowerAffinePostEffectRecursion(node, affinePostEffect, frame);
       return node;

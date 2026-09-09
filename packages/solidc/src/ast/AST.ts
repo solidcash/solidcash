@@ -1,4 +1,4 @@
-import { Type, PrimitiveType, BytesType, MappingType, ArrayType, StructType, EnumType, ValueType, TupleType, FunctionBlockLayout, LibraryCallArg, JournalSettlementIdentityAbi, ConstructedKeyVectorV1Abi } from '@solidcash/utils';
+import { Type, PrimitiveType, BytesType, MappingType, ArrayType, StructType, EnumType, ValueType, TupleType, FunctionBlockLayout, LibraryCallArg, JournalSettlementIdentityAbi, ConstructedKeyVectorV1Abi, AffineRecursiveFrameV1Abi } from '@solidcash/utils';
 import { TimeOp } from './Globals.js';
 import AstVisitor from './AstVisitor.js';
 import { BinaryOperator, NullaryOperator, UnaryOperator } from './Operator.js';
@@ -447,6 +447,12 @@ export class FunctionDefinitionNode extends Node implements Named {
     varyingKeyExpressions?: ExpressionNode[];
     /** The key recipe replays a historical constructed-array resize without an authenticated prefix identity. */
     constructedKeyReplay?: boolean;
+    /** Compiler-owned source-vector identity for a stream descended from one exact mapping write. */
+    constructedKeyVectorBinding?: {
+      vectorOrdinal: number;
+      vectorElementComponent: number;
+      keyComponentCount: number;
+    };
     /** The key recipe selects among more than two branch-merged constructed-array definitions. */
     multiArmConstructedKeyReplay?: boolean;
     /** The key recipe consumes a mutable helper array whose history reads a distinct mutable array identity. */
@@ -518,6 +524,12 @@ export class FunctionDefinitionNode extends Node implements Named {
   runtimeCounterLoopKeyExpressions?: Map<string, ExpressionNode[]>;
   /** Key recipes which replay historical constructed-array resizes without authenticated prefix identities. */
   runtimeCounterLoopConstructedKeyReplays?: Set<string>;
+  /** Source-vector flow identities keyed by the compiler-owned permutation plus collection name. */
+  runtimeCounterLoopConstructedKeyVectorBindings?: Map<string, {
+    vectorOrdinal: number;
+    vectorElementComponent: number;
+    keyComponentCount: number;
+  }>;
   /** Key recipes selecting among more than two branch-merged constructed-array definitions. */
   runtimeCounterLoopMultiArmConstructedKeyReplays?: Set<string>;
   /** Key recipes fed by a mutable helper array history which reads a distinct mutable array identity. */
@@ -555,6 +567,8 @@ export class FunctionDefinitionNode extends Node implements Named {
   messageBusSourceFunctionIdentity?: string;
   /** Source snapshots indexed exclusively by stable source-function identity. */
   messageBusConstructedKeyVectorProofPrograms?: Map<string, MessageBusConstructedKeyVectorProofProgram>;
+  /** Names-free affine recursive mapping-frame proof; metadata only, never an admission capability. */
+  messageBusAffineRecursiveFrameDescriptors?: readonly AffineRecursiveFrameV1Abi[];
   /** Idempotence marker for the pre-admission constructed-array replay normalization. */
   messageBusConstructedArrayKeysNormalized?: boolean;
 
@@ -1406,6 +1420,12 @@ export class MappingAssignNode extends StatementNode implements Named {
   messageBusRuntimeMutationIndexExpression?: ExpressionNode;
   /** Compiler-synthesized no-op transition authenticating a counter-keyed read from another mapping. */
   messageBusRuntimeReadOnly?: boolean;
+  /** Compiler-only source-vector flow identity, copied to the exact lowered journal stream. */
+  messageBusConstructedKeyVectorUse?: {
+    vectorOrdinal: number;
+    vectorElementComponent: number;
+    keyComponentCount: number;
+  };
   /** Hidden source-order value vector used when physical key sorting cannot replay a loop-carried local. */
   messageBusRuntimeValueTrace?: {
     witnessParam: string;

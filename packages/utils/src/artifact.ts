@@ -618,6 +618,11 @@ export interface AbiFunction {
    * an artifact carrying a descriptor without that route capability.
    */
   constructedKeyVectors?: readonly ConstructedKeyVectorV1Abi[];
+  /**
+   * Compiler-authored affine recursive-frame relation. It is not a kernel capability:
+   * absence and presence both require the existing recursive settlement admission checks.
+   */
+  affineRecursiveFrames?: readonly AffineRecursiveFrameV1Abi[];
   /** Fixed straight-line vmap writes sharing one atomic linked-list transition. */
   sortedBatchInfo?: readonly { collection: string; slotIndices: readonly number[]; linear?: boolean }[];
   // Function params whose value feeds blockhash(n); the SDK reads the arg to resolve addr(n) and co-spend
@@ -809,6 +814,12 @@ export interface SortedUpsertLoopAbi {
   varyingKeyExpressions?: readonly ExternalCallExpression[];
   /** The key recipe replays a historical constructed-array resize without an authenticated prefix identity. */
   constructedKeyReplay?: boolean;
+  /** Compiler-owned source-vector identity for a stream descended from one exact mapping write. */
+  constructedKeyVectorBinding?: {
+    vectorOrdinal: number;
+    vectorElementComponent: number;
+    keyComponentCount: number;
+  };
   /** The key recipe selects among more than two branch-merged constructed-array definitions. */
   multiArmConstructedKeyReplay?: boolean;
   /** The key recipe consumes a mutable helper array whose history reads a distinct mutable array identity. */
@@ -976,7 +987,7 @@ export interface ExternalCallExpression {
  */
 export interface ConstructedKeyVectorV1Abi {
   version: 1;
-  /** Stable ordinal within the owning handler's compact journal-access stream. */
+  /** Stable source-allocation ordinal within the owning handler; never a local identifier. */
   vectorOrdinal: number;
   /** Exact fixed-width element ABI type. */
   elementType: string;
@@ -1001,6 +1012,46 @@ export interface ConstructedKeyVectorV1Abi {
     keyComponentCount: number;
     fixedComponents: readonly { component: number; expression: ExternalCallExpression }[];
   };
+  /**
+   * Present only when this exact source consumer survived as one authenticated runtime journal stream.
+   * This binds the SDK replay proof to stream/rank/key coordinates but does not admit the handler to the route.
+   */
+  journalBinding?: {
+    journalAccessStreamIndex: number;
+    journalExecutionGroup: number;
+    rank: 'consumer-index';
+    key: {
+      vectorElementComponent: number;
+      keyComponentCount: number;
+    };
+  };
+}
+
+/**
+ * A data-only proof of the relationship between a source recursive unwind rank and the
+ * mapping accesses made by that frame. It intentionally names neither source locals nor
+ * state declarations: `accessOrdinal` binds it to the already-published compact journal
+ * access order. A consumer must not treat this metadata as permission to change the
+ * physical settlement protocol; it is preparatory evidence for a future authenticated
+ * recursive-frame bridge.
+ */
+export interface AffineRecursiveFrameV1Abi {
+  version: 1;
+  phase: 'unwind';
+  inductionParameterIndex: number;
+  step: ExternalCallExpression;
+  maximumFrames: 64;
+  parameterProgressions: readonly {
+    parameterIndex: number;
+    direction: 'add' | 'subtract';
+    step: ExternalCallExpression;
+    counterSlope?: ExternalCallExpression;
+  }[];
+  accesses: readonly {
+    accessOrdinal: number;
+    operation: 'read' | 'set' | 'delete';
+    key: readonly ExternalCallExpression[];
+  }[];
 }
 
 export interface ExternalCallStatement {

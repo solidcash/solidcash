@@ -88,6 +88,54 @@ describe('affine recursive mapping streams', () => {
       .toEqual([expect.objectContaining({ collection: 'values', op: 'set' })]);
   });
 
+  it('publishes a names-free affine unwind-frame proof without admitting recursive settlement', () => {
+    const variants = [
+      { fn: 'fold', depth: 'remaining', seed: 'basis', map: 'records' },
+      { fn: 'walk', depth: 'cursor', seed: 'origin', map: 'cells' },
+    ];
+    const frames = variants.map(({ fn, depth, seed, map }) => {
+      const artifact = compileString(`contract C() {
+        mapping(int => int) ${map};
+        mapping(int => int) source;
+        function ${fn}(int ${depth}, int ${seed}) public returns (int) {
+          if (${depth} == 0) return ${seed};
+          int result = ${fn}(${depth} - 1, ${seed});
+          this.${map}[${depth}] = this.source[${depth}] + result;
+          return result;
+        }
+      }`, KERNEL);
+      expect(artifact.messageBus?.handlers.find((handler) => handler.name === fn))
+        .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+      const frame = artifact.abi.find((entry) => entry.name === fn)?.affineRecursiveFrames;
+      expect(frame).toEqual([{
+        version: 1, phase: 'unwind', inductionParameterIndex: 0, maximumFrames: 64,
+        step: { kind: 'literal', type: 'bigint', value: '1' },
+        parameterProgressions: [],
+        accesses: [
+          { accessOrdinal: 0, operation: 'set', key: [{ kind: 'source', source: { kind: 'forward', paramIndex: 0 } }] },
+          { accessOrdinal: 1, operation: 'read', key: [{ kind: 'source', source: { kind: 'forward', paramIndex: 0 } }] },
+        ],
+      }]);
+      return frame;
+    });
+    expect(frames[1]).toEqual(frames[0]);
+  });
+
+  it('omits recursive-frame metadata for an unsupported recursive key shape and preserves KERNEL_LAYOUT', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) values;
+      function walk(int cursor) public returns (int) {
+        if (cursor == 0) return 0;
+        int result = walk(cursor / 2);
+        this.values[cursor] = result;
+        return result;
+      }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'walk'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+    expect(artifact.abi.find((entry) => entry.name === 'walk')?.affineRecursiveFrames).toBeUndefined();
+  });
+
   it('fences non-unit unwind effects beside runtime mapping streams independently of source names', () => {
     const variants = [
       { contract: 'FirstStride', fn: 'apply', cursor: 'cursor', step: 'step', map: 'values' },

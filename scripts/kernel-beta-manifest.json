@@ -1,0 +1,63 @@
+{
+  "version": 1,
+  "censusCommit": "95fbe8f3c",
+  "forbiddenApplicationNames": ["Marketplace", "publishJobPost", "jobs", "Unicrow", "claimMultiple"],
+  "testCommands": [
+    { "id": "build", "argv": ["yarn", "build"] },
+    { "id": "utils-source-maps", "argv": ["yarn", "workspace", "@solidcash/utils", "vitest", "run", "test/script.test.ts"] },
+    { "id": "compiler-journal", "argv": ["yarn", "workspace", "solidc", "vitest", "run", "test/journal-message-bus"] },
+    { "id": "sdk-journal", "argv": ["yarn", "workspace", "solidcash", "vitest", "run", "test/journal-message-bus"] },
+    { "id": "sdk-regressions", "argv": ["yarn", "workspace", "solidcash", "vitest", "run", "test/unit/AssignPhysicalReturnIndices.test.ts", "test/unit/DirectMappingReadPlan.test.ts", "test/FnPtrStructFieldCall.test.ts", "test/e2e/CrossContractSubcaseSoundness.test.ts", "test/e2e/CrossContractSortedWrite.test.ts", "test/e2e/DynamicArrayCopyCast.test.ts", "test/e2e/X167ArrayCopyReplaces.test.ts"] }
+  ],
+  "coldCompiles": [
+    {
+      "name": "marketplace-v1",
+      "contract": "MarketplaceV1",
+      "source": "examples/effectiveacceleration/contracts/MarketplaceV1.sol",
+      "sourceSha256": "57d93a5bdf0edff5dfd74d5cda445f9b8653fc29ee10ba8b3e482b2be925bd72",
+      "sourceClosureSha256": "e0a1f481c9c49ed096035fddf25afc0bda1bec73cccf391f204e9630317e4749",
+      "evidenceKind": "compile-compatibility-only",
+      "deployability": "not-asserted",
+      "modes": {
+        "legacy": {
+          "convention": "legacy-unroll",
+          "routeBytes": 40019,
+          "fullBytes": 115060,
+          "routeHash": "2a1beb04fffa71fff3c8083d0be3323611787ca47f325a2a06a85c01624b0c0a",
+          "fullHash": "64adad05ea45d9be6ba0b7b6a89c63c6621c6bdd7f6aab43f2d8849cafbda6d9",
+          "metadataHash": "3f389326ceadb0f2e957dd9f240605fa6b1f66099bdd41eb1b41b9cf33cfbdbc",
+          "handlers": { "total": 39, "eligible": 28, "refused": 11 }
+        },
+        "kernel": {
+          "convention": "kernel-row-loop",
+          "routeBytes": 12102,
+          "fullBytes": 126967,
+          "routeHash": "f99e6e99a36d0dbb8e8583e815fba7224be8329616193798c824294e7830e6be",
+          "fullHash": "072386a584bacdd29c9d4e05278c590d60a2a851004244c23262158742f845ed",
+          "metadataHash": "0ae50cbb6c7b178de7346c9e25e9c890a89ae88dbd0bd5c6ad02e2c2fc47edbd",
+          "handlers": { "total": 39, "eligible": 39, "refused": 0 }
+        }
+      }
+    },
+    {
+      "name": "unicrow-claim",
+      "contract": "UnicrowClaim",
+      "source": "examples/effectiveacceleration/contracts/unicrow/UnicrowClaim.sol",
+      "sourceSha256": "7881e9d98e6239931e92a3ee07d364180d87789719c50917aa117901457fd3db",
+      "sourceClosureSha256": "e31d24048163d88b62040380b046ad93ef2c359017ea41811a8a110aedc13461",
+      "evidenceKind": "compile-compatibility-only",
+      "deployability": "not-asserted",
+      "modes": {
+        "kernel": {
+          "convention": "kernel-row-loop",
+          "routeBytes": 2918,
+          "fullBytes": 14462,
+          "routeHash": "e2cd8661f6cf2554c2ae7247b751f31c074b80103e041bdcf73af9652df9c6da",
+          "fullHash": "98d5fc99510f7c5cec22b158b9a937c18d4ece0fd97f82ba237bc87f8a44a835",
+          "metadataHash": "bd61e0a523f6921daf9e7126ccce6b8cb92443f9b462fefac3f9eaf1c048ba1a",
+          "handlers": { "total": 11, "eligible": 11, "refused": 0 }
+        }
+      }
+    }
+  ]
+}

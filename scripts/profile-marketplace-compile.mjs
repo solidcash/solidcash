@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /* eslint-disable @typescript-eslint/explicit-function-return-type */
 /**
- * Perform one uncached MarketplaceV1 compile and print a machine-readable result.
+ * Perform one uncached maintained-corpus compile and print a machine-readable result.
  *
  * Each invocation accepts exactly one dispatch convention. Run this script in a
  * fresh process for every sample so module initialization and compiler caches
@@ -35,6 +35,7 @@ const optionValue = (name) => {
 const mode = hasKernel ? 'kernel' : 'legacy';
 const source = path.resolve(optionValue('--source')
   ?? path.join(root, '.marketplace/contracts/MarketplaceV1.sol'));
+const contractName = optionValue('--contract') ?? 'MarketplaceV1';
 const compileAllDeclarations = process.argv.includes('--all-declarations');
 
 // Both cache layers are opt-in environment features. Remove them as well as
@@ -56,17 +57,29 @@ const options = {
   __artifactCache: false,
   __attemptFailureBox: { failures: [] },
   __strictNoInternalRecovery: true,
-  ...(!compileAllDeclarations ? { compileDeclarations: ['MarketplaceV1'] } : {}),
+  ...(!compileAllDeclarations ? { compileDeclarations: [contractName] } : {}),
 };
 
 const compilerStarted = performance.now();
 const artifacts = compileFileMulti(source, options);
 const compilerMs = performance.now() - compilerStarted;
-const artifact = artifacts.MarketplaceV1;
-if (!artifact) throw new Error(`MarketplaceV1 was not emitted while compiling ${source}`);
+const artifact = artifacts[contractName];
+if (!artifact) throw new Error(`${contractName} was not emitted while compiling ${source}`);
 
 const bodyBytes = (body) => typeof body === 'string' ? body.length / 2 : 0;
 const sha256 = (value) => createHash('sha256').update(value ?? '').digest('hex');
+const metadataProjection = {
+  messageBus: artifact.messageBus,
+  invocationAnalysis: artifact.invocationAnalysis,
+  abi: artifact.abi.map((fn) => ({
+    name: fn.name,
+    selector: fn.selector,
+    externalCalls: fn.externalCalls,
+    resultConsumers: fn.resultConsumers,
+    entryAccesses: fn.entryAccesses,
+    sortedUpsertLoopInfo: fn.sortedUpsertLoopInfo,
+  })),
+};
 const handlers = artifact.messageBus?.handlers ?? [];
 const refusals = handlers.filter((handler) => !handler.eligible).map((handler) => ({
   name: handler.name,
@@ -77,8 +90,9 @@ const refusals = handlers.filter((handler) => !handler.eligible).map((handler) =
 
 const result = {
   mode,
+  contract: contractName,
   source,
-  declarations: compileAllDeclarations ? 'all' : 'MarketplaceV1',
+  declarations: compileAllDeclarations ? 'all' : contractName,
   convention: artifact.messageBus?.convention,
   sizes: {
     routeBytes: bodyBytes(artifact.functionBodies?.[artifact.messageBus?.selector ?? '']),
@@ -90,6 +104,7 @@ const result = {
   hashes: {
     route: sha256(artifact.functionBodies?.[artifact.messageBus?.selector ?? '']),
     full: sha256(artifact.debug?.bytecode),
+    metadata: sha256(JSON.stringify(metadataProjection)),
   },
   timing: { compilerMs },
   caughtCompilerAttempts: options.__attemptFailureBox.failures,

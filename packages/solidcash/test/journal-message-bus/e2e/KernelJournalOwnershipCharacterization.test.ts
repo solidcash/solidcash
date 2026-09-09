@@ -93,7 +93,9 @@ describe('kernel journal ownership characterization', () => {
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'writeTwo'))
       .toMatchObject({ eligible: true });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'runtimeCopy'))
-      .toMatchObject({ eligible: true });
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'fanout'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
     const runtime = artifact.abi.find((fn) => fn.name === 'runtimeCopy')!.sortedUpsertLoopInfo!;
     expect(runtime).toEqual(expect.arrayContaining([
       expect.objectContaining({ collection: 'source', op: 'read', journalAccessStreamIndex: expect.any(Number) }),
@@ -170,9 +172,11 @@ describe('kernel journal ownership characterization', () => {
       .toMatchObject({ eligible: false, rejectionReason: 'handler-route-generation-unsupported' });
   });
 
-  it('settles same-key source carriers and destination results in source order', async () => {
+  it('preserves direct-entry fallback semantics for a fenced same-key read-to-set transfer', async () => {
     const provider = createTestProvider();
     const artifact = compileString(SOURCE, { ...OPTIONS, messageBusKernel: true });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'runtimeCopy'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
     const inner = new Contract(artifact, [], { provider });
     const { categoryId } = await setupStatefulUtxos(provider, inner, artifact.stateLayout!, {}, { saltContract: true });
     const contract = StatefulContract.withCategory(inner, categoryId);
@@ -197,7 +201,8 @@ describe('kernel journal ownership characterization', () => {
     }
   }, 180_000);
 
-  it('settles one read carrier into two same-row result collections in canonical order', async () => {
+  // Post-beta: re-enable only with the physical carrier band and final-settlement cursor release.
+  it.skip('settles one read carrier into two same-row result collections in canonical order', async () => {
     const provider = createTestProvider();
     const artifact = compileString(SOURCE, { ...OPTIONS, messageBusKernel: true });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'fanout'))
@@ -256,7 +261,8 @@ describe('kernel journal ownership characterization', () => {
     await expect(contract.call.checkFanout(1n, 11n).send()).resolves.toBeDefined();
   }, 180_000);
 
-  it('inserts destination entries from authenticated source-only carriers', async () => {
+  // Post-beta: this exercises the same unpublished carrier protocol for a cold destination entry.
+  it.skip('inserts destination entries from authenticated source-only carriers', async () => {
     const source = `contract ReadToSetCarrier() {
       mapping(int => int) source;
       mapping(int => int) destination;
@@ -316,7 +322,7 @@ describe('kernel journal ownership characterization', () => {
     await expect(contract.call.check(1n, 11n).send()).resolves.toBeDefined();
   }, 180_000);
 
-  it('preserves fixed-width bytes carriers across the shared key permutation', async () => {
+  it('preserves fixed-width bytes semantics through direct-entry fallback when its carrier is fenced', async () => {
     const source = `contract BytesCarrier() {
       mapping(int => bytes20) source;
       mapping(int => bytes20) destination;
@@ -329,6 +335,8 @@ describe('kernel journal ownership characterization', () => {
     }`;
     const provider = createTestProvider();
     const artifact = compileString(source, { ...OPTIONS, messageBusKernel: true });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'copy'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
     const inner = new Contract(artifact, [], { provider });
     const { categoryId } = await setupStatefulUtxos(provider, inner, artifact.stateLayout!, {}, { saltContract: true });
     const contract = StatefulContract.withCategory(inner, categoryId);

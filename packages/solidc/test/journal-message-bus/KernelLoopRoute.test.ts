@@ -442,23 +442,23 @@ contract Acc() {
         }
       }
     `, { ...OPTIONS, maximumInputBytes: 1_000_000 });
-    // One row can authenticate and settle this read-to-set shape without an internal carrier. Reusing the same
-    // clean input across rows remains separately gated until the SDK publishes the matching physical journal band.
+    // The compiler still publishes stable read/write stream metadata, but no read-carrier route is advertised until
+    // the SDK publishes the matching physical journal band and the final-settlement cursor is released.
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'copy'))
-      .toMatchObject({ eligible: true });
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write')?.eligible).toBe(true);
 
     const asm = routeAsm(artifact);
-    // Clean authenticated, internally carried clean, dirty authenticated, and dirty synthetic records materialize.
+    // Clean authenticated, dirty authenticated, and dirty synthetic records materialize.
     // Clean synthetic absence consumes a first-touch record ordinal but skips the output and dense cursor increment.
     // The optimizer may outline the first clean-header comparison, so inspect all emitted bodies for that marker.
     const emittedAsm = [asm, ...Object.values(artifact.debug?.invokeDebug ?? {})
       .map(({ bytecode }) => bytecodeToAsm(hexToBin(bytecode)))].join(' ');
     expect(emittedAsm).toContain('0501');
     expect(asm).toContain(
-      'OP_OVER 0503 OP_EQUAL OP_BOOLOR OP_OVER 050a OP_EQUAL OP_BOOLOR '
-      + 'OP_OVER 0511 OP_EQUAL OP_BOOLOR OP_IF',
+      'OP_OVER 0503 OP_EQUAL OP_BOOLOR OP_OVER 050a OP_EQUAL OP_BOOLOR OP_IF',
     );
+    expect(asm).not.toContain('OP_OVER 0511 OP_EQUAL OP_BOOLOR');
     expect(asm).toMatch(
       /OP_2DROP OP_2DROP OP_TOALTSTACK OP_1ADD OP_FROMALTSTACK OP_ELSE 050c OP_EQUALVERIFY OP_DROP OP_ENDIF/,
     );

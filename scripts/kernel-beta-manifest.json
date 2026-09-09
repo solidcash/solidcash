@@ -51,10 +51,8 @@
       "file": "test/journal-message-bus/e2e/KernelJournalOwnershipCharacterization.test.ts",
       "tests": [
         "pins kernel and legacy bus boundaries while preserving exact stream topology",
-        "settles same-key source carriers and destination results in source order",
-        "settles one read carrier into two same-row result collections in canonical order",
-        "inserts destination entries from authenticated source-only carriers",
-        "preserves fixed-width bytes carriers across the shared key permutation",
+        "preserves direct-entry fallback semantics for a fenced same-key read-to-set transfer",
+        "preserves fixed-width bytes semantics through direct-entry fallback when its carrier is fenced",
         "proves legacy-compiled direct-entry semantics and rejects swapped settlement identities"
       ]
     },
@@ -111,7 +109,7 @@
           "fullBytes": 126967,
           "routeHash": "f99e6e99a36d0dbb8e8583e815fba7224be8329616193798c824294e7830e6be",
           "fullHash": "072386a584bacdd29c9d4e05278c590d60a2a851004244c23262158742f845ed",
-          "metadataHash": "b73d7c225e15f61fa57768444fe41a1a41bad6edb6ff572820acf229af23d8c4",
+          "metadataHash": "1c50e3f05ada9ab6be4c71fcb5ea3a46c58f2844f4902278e9677f29a4d3d382",
           "handlers": { "total": 39, "eligible": 39, "refused": 0 }
         }
       }

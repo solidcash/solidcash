@@ -8212,8 +8212,10 @@ export default class LowerVMapCounterLoops extends AstTraversal {
               // independent of the runtime-sized allocation: each later read is `index < bound ? written : prior`.
               // The executable helper remains authoritative for bounds checks, so bound > array.length still
               // reverts at the original write rather than being silently clamped by this recipe. Keep the first
-              // slice exact: unit ascending pre-test traversal from zero, writes only to the counter position.
-              // Strides, offset indices, descending loops, and post-test loops remain fenced.
+              // slice exact: unit ascending traversal from zero, writes only to the counter position. A post-test
+              // traversal has the equally exact domain `index < (bound > 0 ? bound : 1)`: its first iteration is
+              // unconditional, while every later iteration uses the source predicate. Strides, offset indices,
+              // and descending loops remain fenced.
               if (typeof boundValue !== 'bigint' && !runtimeBoundRange) {
                 // This is deliberately the same closed expression vocabulary the artifact recipe serializer
                 // and SDK evaluator share. In particular, do not infer purity from a resolved call: even a
@@ -8245,7 +8247,8 @@ export default class LowerVMapCounterLoops extends AstTraversal {
                   return false;
                 };
                 const publicBound = bound !== undefined && publicBoundExpression(bound);
-                const symbolicIndexedArrayWrite = helperStatement instanceof WhileNode
+                const symbolicIndexedArrayWrite = (helperStatement instanceof WhileNode
+                  || helperStatement instanceof DoWhileNode)
                   && comparison === BinaryOperator.LT && initial.value === 0n && step === 1n
                   && publicBound
                   && statements.slice(0, -1).length > 0
@@ -8259,7 +8262,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
                   plan: ArrayPlan;
                   value: ExpressionNode;
                   location: Node['location'];
-                  indexedDomain: boolean;
+                  indexedDomain?: ExpressionNode;
                 }[] = [];
                 for (const candidate of statements.slice(0, -1)) {
                   if (candidate instanceof RequireNode) continue;
@@ -8279,9 +8282,23 @@ export default class LowerVMapCounterLoops extends AstTraversal {
                     && boundIdentity === lengthIdentity);
                   if (!(index instanceof IdentifierNode)
                     || index.name !== counterName || !value) return undefined;
-                  plannedWrites.push({
-                    plan, value, location: candidate.location, indexedDomain: !fillsWholeArray,
-                  });
+                  let indexedDomain: ExpressionNode | undefined;
+                  if (!fillsWholeArray) {
+                    indexedDomain = cloneNode(bound) as ExpressionNode;
+                    if (helperStatement instanceof DoWhileNode) {
+                      const positive = new BinaryOpNode(
+                        cloneNode(bound), BinaryOperator.GT, new IntLiteralNode(0n),
+                      );
+                      positive.location = helperStatement.location;
+                      const postTestBound = new TernaryOpNode(
+                        positive, cloneNode(bound), new IntLiteralNode(1n),
+                      );
+                      postTestBound.location = helperStatement.location;
+                      postTestBound.type = bound.type;
+                      indexedDomain = postTestBound;
+                    }
+                  }
+                  plannedWrites.push({ plan, value, location: candidate.location, indexedDomain });
                 }
                 if (plannedWrites.length === 0) return undefined;
                 for (const planned of plannedWrites) {
@@ -8298,7 +8315,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
                       pushesPerIteration: 1,
                       ordinal: 0,
                       ...(planned.indexedDomain && { indexedDomain: {
-                        bound: cloneNode(bound) as ExpressionNode,
+                        bound: cloneNode(planned.indexedDomain) as ExpressionNode,
                       } }),
                     },
                   });

@@ -62,6 +62,13 @@ describe('kernel pending-entry journal codec', () => {
       kind: 'internal-read-carrier', version: 1,
       scopes: [{ handlerSelector: 'A1B2C3D4', journalAccessStreamIndex: 2 }],
     }, 'a1b2c3d4', 2)).toBe(false);
+    expect(kernelEntryJournalReadCarrierCapabilityCovers({
+      kind: 'internal-read-carrier', version: 1,
+      scopes: [
+        { handlerSelector: 'a1b2c3d4', journalAccessStreamIndex: 2 },
+        { handlerSelector: 'a1b2c3d4', journalAccessStreamIndex: 2 },
+      ],
+    }, 'a1b2c3d4', 2)).toBe(false);
   });
 
   it('does not infer clean-read carrier ownership from a kernel convention', () => {
@@ -88,6 +95,25 @@ describe('kernel pending-entry journal codec', () => {
       kind: 'internal-read-carrier', version: 1,
       scopes: [{ handlerSelector: 'a1b2c3d4', journalAccessStreamIndex: 2 }],
     });
+    const valid = {
+      kind: 'internal-read-carrier' as const,
+      version: 1 as const,
+      scopes: [{ handlerSelector: 'a1b2c3d4', journalAccessStreamIndex: 2 }],
+    };
+    expect(kernelEntryJournalReadCarrierCapabilityFromArtifact({
+      messageBus: { ...base.messageBus!, kernelEntryJournal: { version: 1, capabilities: [valid, valid] } },
+    })).toBeUndefined();
+    expect(kernelEntryJournalReadCarrierCapabilityFromArtifact({
+      messageBus: { ...base.messageBus!, kernelEntryJournal: { version: 1, capabilities: [
+        valid,
+        { ...valid, scopes: [{ handlerSelector: 'd4c3b2a1', journalAccessStreamIndex: 3 }] },
+      ] } },
+    })).toBeUndefined();
+    expect(kernelEntryJournalReadCarrierCapabilityFromArtifact({
+      messageBus: { ...base.messageBus!, kernelEntryJournal: { version: 1, capabilities: [{
+        ...valid, scopes: [...valid.scopes, ...valid.scopes],
+      }] } },
+    })).toBeUndefined();
     expect(kernelEntryJournalReadCarrierCapabilityFromArtifact({
       messageBus: { ...base.messageBus!, routeInBytecode: false, kernelEntryJournal: { version: 1, capabilities: [{
         kind: 'internal-read-carrier', version: 1,

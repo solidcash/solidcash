@@ -73,6 +73,10 @@ describe('kernel journal physical settlement plan', () => {
     wrongSlot[0] ^= 1;
     expect(() => resolve([{ recordOrdinal: 0, commitment: wrongSlot }]))
       .toThrow('commitment slot mismatches record 0');
+    const wrongNextKey = body.slice();
+    wrongNextKey[32] ^= 1;
+    expect(() => resolve([{ recordOrdinal: 0, commitment: wrongNextKey }]))
+      .toThrow('commitment next key mismatches record 0');
     expect(() => resolve([{ recordOrdinal: 1, commitment: body }]))
       .toThrow('unexpected candidate for record 1');
   });

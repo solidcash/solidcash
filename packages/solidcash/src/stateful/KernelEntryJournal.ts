@@ -226,6 +226,14 @@ const isKernelEntryJournalReadCarrierScope = (
   && Number.isSafeInteger(scope.journalAccessStreamIndex)
   && scope.journalAccessStreamIndex >= 0;
 
+const hasCanonicalKernelEntryJournalReadCarrierScopes = (
+  scopes: readonly KernelEntryJournalCapabilityScopeAbi[] | undefined,
+): scopes is readonly KernelEntryJournalCapabilityScopeAbi[] => {
+  if (!scopes || scopes.length === 0 || !scopes.every(isKernelEntryJournalReadCarrierScope)) return false;
+  return new Set(scopes.map((scope) => `${scope.handlerSelector}:${scope.journalAccessStreamIndex}`)).size
+    === scopes.length;
+};
+
 /**
  * Whether an explicitly published capability covers this handler's compact journal stream.
  *
@@ -240,9 +248,10 @@ export function kernelEntryJournalReadCarrierCapabilityCovers(
 ): boolean {
   if (capability?.kind !== 'internal-read-carrier' || capability.version !== 1
     || !handlerSelector || !/^[0-9a-f]{8}$/.test(handlerSelector)
-    || !Number.isSafeInteger(journalAccessStreamIndex) || journalAccessStreamIndex < 0) return false;
-  return capability.scopes?.some((scope) => isKernelEntryJournalReadCarrierScope(scope)
-    && scope.handlerSelector === handlerSelector
+    || !Number.isSafeInteger(journalAccessStreamIndex) || journalAccessStreamIndex < 0
+    || !hasCanonicalKernelEntryJournalReadCarrierScopes(capability.scopes)) return false;
+  return capability.scopes.some((scope) =>
+    scope.handlerSelector === handlerSelector
     && scope.journalAccessStreamIndex === journalAccessStreamIndex) === true;
 }
 
@@ -261,13 +270,17 @@ export function kernelEntryJournalReadCarrierCapabilityFromArtifact(
   if (route?.convention !== 'kernel-row-loop' || route.available !== true || route.routeInBytecode !== true
     || route.kernelEntryJournal?.version !== 1
     || !route.atomicMessageBus?.protocolVersions?.includes(2)) return undefined;
-  const capability = route.kernelEntryJournal.capabilities?.find((candidate) =>
-    candidate.kind === 'internal-read-carrier' && candidate.version === 1
-    && candidate.scopes?.every(isKernelEntryJournalReadCarrierScope));
-  return capability ? {
+  const declarations = route.kernelEntryJournal.capabilities?.filter((candidate) =>
+    candidate.kind === 'internal-read-carrier') ?? [];
+  if (declarations.length !== 1) return undefined;
+  const [capability] = declarations;
+  if (capability?.version !== 1 || !hasCanonicalKernelEntryJournalReadCarrierScopes(capability.scopes)) {
+    return undefined;
+  }
+  return {
     kind: 'internal-read-carrier', version: 1,
-    ...(capability.scopes && { scopes: capability.scopes }),
-  } : undefined;
+    scopes: capability.scopes,
+  };
 }
 
 /** One source-ordered read access after collection-local ordinals have become route-global ordinals. */
@@ -1056,6 +1069,9 @@ export function resolveKernelEntryJournalDirtyFinalBodies(
     const body = decodeEntryCommitment(candidate.commitment);
     if (!body.slot.every((byte, index) => byte === record.slot[index])) {
       throw new Error(`kernel dirty final-body resolution commitment slot mismatches record ${candidate.recordOrdinal}`);
+    }
+    if (!body.nextKey.every((byte, index) => byte === record.nextKey[index])) {
+      throw new Error(`kernel dirty final-body resolution commitment next key mismatches record ${candidate.recordOrdinal}`);
     }
     const group = candidatesByRecord.get(candidate.recordOrdinal) ?? [];
     group.push(candidate);

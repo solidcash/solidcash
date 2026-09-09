@@ -57,6 +57,25 @@ const shapedLines = addedProductionLines.filter((line) => applicationNamePattern
 if (shapedLines.length > 0) {
   throw new Error(`kernel implementation added application-shaped production names:\n${shapedLines.join('\n')}`);
 }
+// The diff fence prevents new leaks anywhere in production. Also scan the complete kernel implementation so an
+// edited pre-census line cannot retain application-shaped evidence without appearing as a newly added token. Shared
+// SDK legacy adapters are intentionally outside this list; their kernel exclusion is covered by schema-name parity.
+const kernelImplementationFiles = [
+  'packages/solidc/src/compiler.ts',
+  'packages/solidc/src/generation/GenerateTargetTraversal.ts',
+  'packages/solidc/src/semantic/KernelJournalStreamPlan.ts',
+  'packages/solidc/src/semantic/LowerVMapCounterLoops.ts',
+  'packages/solidcash/src/stateful/KernelDelegateForwarding.ts',
+  'packages/solidcash/src/stateful/KernelEntryJournal.ts',
+  'packages/solidcash/src/stateful/KernelLifecycleTopology.ts',
+  'packages/utils/src/artifact.ts',
+];
+const shapedKernelLines = kernelImplementationFiles.flatMap((file) =>
+  readFileSync(resolve(root, file), 'utf8').split('\n').flatMap((line, index) =>
+    applicationNamePattern.test(line) ? [`${file}:${index + 1}:${line}`] : []));
+if (shapedKernelLines.length > 0) {
+  throw new Error(`kernel implementation contains application-shaped production names:\n${shapedKernelLines.join('\n')}`);
+}
 const requiredTestIds = [
   'build', 'generated-artifacts', 'utils-source-maps',
   'compiler-journal', 'sdk-journal', 'sdk-regressions',

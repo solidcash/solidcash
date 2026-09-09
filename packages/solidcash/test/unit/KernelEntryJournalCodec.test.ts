@@ -553,6 +553,57 @@ describe('kernel pending-entry journal codec', () => {
     ]);
   });
 
+  it('keeps a dirty record owned by its last mutation when clean carriers share its ordinal', () => {
+    const identity = (
+      accessStreamIndex: number,
+      settlementRole: JournalSettlementIdentityAbi['settlementRole'],
+    ): JournalSettlementIdentityAbi => ({
+      accessStreamIndex,
+      accessOrdinalSource: 'access-program-order',
+      recordOrdinalScope: 'global-journal',
+      recordOrdinalSources: ['target-record-ordinal', 'predecessor-record-ordinal'],
+      settlementRole,
+      settlementOwnership: settlementRole === 'mutation-settlement' ? 'last-mutating-access' : 'none',
+      recordDispositionSource: settlementRole === 'mutation-settlement'
+        ? 'mutation-settlement' : 'authenticated-carrier',
+    });
+    const cleanCarrier = {
+      targetRecordOrdinal: 7, presentBefore: true, presentAfter: true, mutates: false,
+      authenticatesTarget: true,
+    };
+    const dirtyMutation = {
+      targetRecordOrdinal: 7, presentBefore: true, presentAfter: true, mutates: true,
+    };
+    const plan = planKernelEntryJournalSettlementAuthority([
+      { frameIndex: 2, identity: identity(0, 'carrier-only'), accessOrdinal: 0, access: cleanCarrier },
+      { frameIndex: 2, identity: identity(1, 'mutation-settlement'), accessOrdinal: 0, access: dirtyMutation },
+      // A later clean observation must not steal final-flush authority from the dirty record.
+      {
+        frameIndex: 2, identity: identity(2, 'carrier-only'), accessOrdinal: 0,
+        access: { ...cleanCarrier, authenticatesTarget: false },
+      },
+      { frameIndex: 2, identity: identity(1, 'mutation-settlement'), accessOrdinal: 1, access: dirtyMutation },
+    ]);
+
+    expect(plan.settlementAuthorities.get(7)).toMatchObject({
+      frameIndex: 2, accessStreamIndex: 1, accessOrdinal: 1,
+      recordOrdinal: 7, recordRole: 'target', settlementRole: 'mutation-settlement',
+    });
+    expect(plan.recordDispositions.get(7)).toMatchObject({
+      basis: 'mutation-settlement',
+      reference: {
+        frameIndex: 2, accessStreamIndex: 1, accessOrdinal: 1,
+        recordOrdinal: 7, recordRole: 'target', settlementRole: 'mutation-settlement',
+      },
+    });
+    const resolved: Array<{ accessStreamIndex: number; accessOrdinal: number }> = [];
+    expect(planKernelEntryJournalSettlementOutputs(plan, (reference) => {
+      resolved.push({ accessStreamIndex: reference.accessStreamIndex, accessOrdinal: reference.accessOrdinal });
+      return { collection: 'entries', offset: 3 };
+    })).toEqual([{ recordOrdinal: 7, outputOrdinal: 0, collection: 'entries', offset: 3 }]);
+    expect(resolved).toEqual([{ accessStreamIndex: 1, accessOrdinal: 1 }]);
+  });
+
   it('requires authenticated global ordinals for multiple mutation streams in one execution group', () => {
     const identity = (
       accessStreamIndex: number,

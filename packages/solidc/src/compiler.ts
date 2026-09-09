@@ -19,7 +19,7 @@ import {
   scriptToBytecode, bytecodeToScript, decodeInt, Op, ATOMIC_MESSAGE_BUS_DOMAIN_HEX,
   ATOMIC_MESSAGE_BUS_MAX_PARTICIPANTS, ATOMIC_MESSAGE_BUS_MAX_ROWS,
   ChildDeploymentSiteAbi, SplitArtifactBundle, SplitStateFootprint, StructType, TupleType, Type,
-  ValueType, BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX, isDynamicStorageType,
+  ValueType, BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX, isDynamicStorageType, isFixedWidthType,
   KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX,
   messageBusVerifierLockingBytecode, childStateLayoutDigest, abiTypeString, implicitlyCastableSignature,
 } from '@solidcash/utils';
@@ -11380,10 +11380,58 @@ function compileResolvedAst(
         mutations.push(access);
         mutationsByExecutionGroup.set(access.journalExecutionGroup, mutations);
       }
-      // More than one mutation stream in one execution group currently lacks a single authenticated physical
-      // settlement identity, whether the streams target one collection or several.
-      const hasMultiMutationExecutionGroup = [...mutationsByExecutionGroup.values()]
-        .some((mutations) => mutations.length > 1);
+      const collectionByName = new Map(ast.contract.collections.map((collection) => [collection.name, collection]));
+      const hasUnsupportedMultiMutationExecutionGroup = [...mutationsByExecutionGroup.values()]
+        .some((mutations) => {
+          if (mutations.length <= 1) return false;
+          const first = mutations[0];
+          const firstCollection = collectionByName.get(first.collection);
+          const homogeneousOperation = mutations.every((mutation) => mutation.op === first.op);
+          const distinctCollections = new Set(mutations.map((mutation) => mutation.collectionHash)).size
+            === mutations.length;
+          const sharedKeyDomain = mutations.every((mutation) =>
+            mutation.varyingArrayParam === first.varyingArrayParam
+            && JSON.stringify(mutation.fixedKeySources ?? []) === JSON.stringify(first.fixedKeySources ?? [])
+            && JSON.stringify(collectionByName.get(mutation.collection)?.allKeyTypes.map((type) => type.toString()))
+              === JSON.stringify(firstCollection?.allKeyTypes.map((type) => type.toString())));
+          const globallyOwnedSettlements = mutations.every((mutation) =>
+            mutation.settlementIdentity?.recordOrdinalScope === 'global-journal'
+            && mutation.settlementIdentity.settlementRole === 'mutation-settlement'
+            && mutation.settlementIdentity.settlementOwnership === 'last-mutating-access');
+          const fixedWidthScalarValues = mutations.every((mutation) => {
+            const type = collectionByName.get(mutation.collection)?.innermostValueType;
+            return type !== undefined && isFixedWidthType(type)
+              && !(type instanceof ArrayType || type instanceof StructType || type instanceof TupleType)
+              && type.toString() === firstCollection?.innermostValueType.toString();
+          });
+          // The first general multi-stream family deliberately shares one unconditional compiler-owned
+          // permutation. Ranged/selected domains, structural value mutation, and replay traces retain the beta
+          // fence until their transaction geometry has an equally exact proof.
+          const simpleSharedSchedule = mutations.every((mutation) =>
+            mutation.condition === undefined
+            && mutation.iterationCondition === undefined
+            && mutation.iterationBreakCondition === undefined
+            && mutation.iterationBound === undefined
+            && mutation.iterationStep === undefined
+            && mutation.iterationExactBound !== true
+            && mutation.predicateArrayParam === undefined
+            && mutation.sourceOrderIndexParam === undefined
+            && mutation.varyingKeyIndices === undefined
+            && mutation.varyingKeyExpressions === undefined
+            && mutation.keyDecodeTupleIndex === undefined
+            && mutation.keyDecodeTupleTypes === undefined
+            && mutation.mutation === undefined
+            && mutation.valueRuntimeLocal === undefined
+            && mutation.valueTraceWitnessParam === undefined
+            && mutation.prefixCountWitnessParam === undefined
+            && mutation.constructedKeyReplay !== true
+            && mutation.multiArmConstructedKeyReplay !== true
+            && mutation.crossArrayKeyReplay !== true
+            && mutation.nestedHelperReturnReplay !== true
+            && mutation.sameIterationMutableSelectionReplay !== true);
+          return !(homogeneousOperation && distinctCollections && sharedKeyDomain
+            && globallyOwnedSettlements && fixedWidthScalarValues && simpleSharedSchedule);
+        });
       // Bounded symbolic replay can reconstruct keys read from a locally constructed array, but that provenance
       // currently has no authenticated old/absence carrier identity in the kernel settlement protocol. Preserve
       // the direct handler and fail closed only for the route until that proof identity is represented.
@@ -11442,7 +11490,7 @@ function compileResolvedAst(
         || hasScalarAndJournalEventSettlement
         || (hasRuntimeJournalMutation && hasRuntimeJournalRead)
         || hasRuntimeLocalJournalValue
-        || hasMultiMutationExecutionGroup
+        || hasUnsupportedMultiMutationExecutionGroup
         || hasConstructedKeyReplay
         || hasMultiArmConstructedKeyReplay
         || hasCrossArrayKeyReplay

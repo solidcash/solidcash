@@ -758,6 +758,8 @@ export interface SortedInsertLoopAbi {
 export interface JournalSettlementIdentityAbi {
   /** Must equal the containing stream's journalAccessStreamIndex. */
   accessStreamIndex: number;
+  /** Record references are decoded in the route-owned, transaction-wide first-touch ordinal domain. */
+  recordOrdinalScope?: 'global-journal';
   /** The compact access program's zero-based operation order supplies the source occurrence. */
   accessOrdinalSource: 'access-program-order';
   /**

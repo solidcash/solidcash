@@ -23507,6 +23507,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         settlementIdentity: {
           accessStreamIndex: journalAccessStreamIndex,
           accessOrdinalSource: 'access-program-order',
+          // Both tuple ordinals address the transaction-wide first-touch vector. The final flush traverses this
+          // same global space and assigns each present record its dense physical output ordinal, so independently
+          // ordered mutation streams cannot reinterpret an ordinal as stream- or collection-local.
+          recordOrdinalScope: 'global-journal',
           recordOrdinalSources: ['target-record-ordinal', 'predecessor-record-ordinal'],
           settlementRole: op === 'read' ? 'carrier-only' : 'mutation-settlement',
           settlementOwnership: op === 'read' ? 'none' : 'last-mutating-access',

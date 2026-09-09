@@ -18,6 +18,7 @@ import {
   planKernelEntryJournalAccessTopology,
   planKernelEntryJournalSettlementAuthority,
   planKernelEntryJournalSettlementOutputSegments,
+  validateKernelEntryJournalSettlementGroups,
   planKernelEntryJournalStreams,
   segmentKernelEntryJournalRecords,
   kernelEntryJournalRecordPosition,
@@ -517,6 +518,55 @@ describe('kernel pending-entry journal codec', () => {
       { recordOrdinal: 5, basis: 'origin-carrier', settlementDisposition: 'absence' },
       { recordOrdinal: 6, basis: 'authenticated-carrier', settlementDisposition: 'present-output' },
     ]);
+  });
+
+  it('requires authenticated global ordinals for multiple mutation streams in one execution group', () => {
+    const identity = (
+      accessStreamIndex: number,
+      recordOrdinalScope?: 'global-journal',
+    ): JournalSettlementIdentityAbi => ({
+      accessStreamIndex,
+      ...(recordOrdinalScope && { recordOrdinalScope }),
+      accessOrdinalSource: 'access-program-order',
+      recordOrdinalSources: ['target-record-ordinal', 'predecessor-record-ordinal'],
+      settlementRole: 'mutation-settlement',
+      settlementOwnership: 'last-mutating-access',
+    });
+    expect(() => validateKernelEntryJournalSettlementGroups([
+      { executionGroup: 'frame:group', mutates: true, identity: identity(0) },
+    ])).not.toThrow();
+    expect(() => validateKernelEntryJournalSettlementGroups([
+      { executionGroup: 'frame:group', mutates: true, identity: identity(0) },
+      { executionGroup: 'frame:group', mutates: true, identity: identity(1, 'global-journal') },
+    ])).toThrow('multiple mutation streams without authenticated global record ordinals');
+    expect(() => validateKernelEntryJournalSettlementGroups([
+      { executionGroup: 'frame:group', mutates: true, identity: identity(0, 'global-journal') },
+      { executionGroup: 'frame:group', mutates: true, identity: identity(1, 'global-journal') },
+    ])).not.toThrow();
+
+    const plan = planKernelEntryJournalSettlementAuthority([
+      {
+        frameIndex: 0,
+        identity: identity(0, 'global-journal'),
+        accessOrdinal: 0,
+        access: {
+          targetRecordOrdinal: 1, predecessorRecordOrdinal: 0,
+          presentBefore: false, presentAfter: true, mutates: true,
+        },
+      },
+      {
+        frameIndex: 0,
+        identity: identity(1, 'global-journal'),
+        accessOrdinal: 0,
+        access: {
+          targetRecordOrdinal: 2, predecessorRecordOrdinal: 0,
+          presentBefore: false, presentAfter: true, mutates: true,
+        },
+      },
+    ]);
+    expect(plan.settlementAuthorities.get(0)).toMatchObject({
+      accessStreamIndex: 1, accessOrdinal: 0, recordOrdinal: 0, recordRole: 'predecessor',
+    });
   });
 
   it('rejects forged or ambiguous settlement identity programs', () => {

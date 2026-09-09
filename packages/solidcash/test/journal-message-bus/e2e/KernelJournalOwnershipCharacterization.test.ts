@@ -70,12 +70,14 @@ const vmAccepts = (builder: TransactionBuilder): boolean => {
 };
 
 describe('kernel journal ownership characterization', () => {
-  it('pins kernel and legacy bus refusals while preserving exact stream topology', () => {
+  it('pins kernel and legacy bus boundaries while preserving exact stream topology', () => {
     const artifact = compileString(SOURCE, { ...OPTIONS, messageBusKernel: true });
-    for (const name of ['runtimeCopy', 'updatePairs', 'writeTwo']) {
+    for (const name of ['runtimeCopy', 'updatePairs']) {
       expect(artifact.messageBus?.handlers.find((handler) => handler.name === name))
         .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
     }
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'writeTwo'))
+      .toMatchObject({ eligible: true });
     const runtime = artifact.abi.find((fn) => fn.name === 'runtimeCopy')!.sortedUpsertLoopInfo!;
     expect(runtime).toEqual(expect.arrayContaining([
       expect.objectContaining({ collection: 'source', op: 'read', journalAccessStreamIndex: expect.any(Number) }),
@@ -89,6 +91,7 @@ describe('kernel journal ownership characterization', () => {
     expect(readStream.settlementIdentity).toEqual({
       accessStreamIndex: readStream.journalAccessStreamIndex,
       accessOrdinalSource: 'access-program-order',
+      recordOrdinalScope: 'global-journal',
       recordOrdinalSources: ['target-record-ordinal', 'predecessor-record-ordinal'],
       settlementRole: 'carrier-only',
       settlementOwnership: 'none',
@@ -96,6 +99,7 @@ describe('kernel journal ownership characterization', () => {
     expect(mutationStream.settlementIdentity).toEqual({
       accessStreamIndex: mutationStream.journalAccessStreamIndex,
       accessOrdinalSource: 'access-program-order',
+      recordOrdinalScope: 'global-journal',
       recordOrdinalSources: ['target-record-ordinal', 'predecessor-record-ordinal'],
       settlementRole: 'mutation-settlement',
       settlementOwnership: 'last-mutating-access',
@@ -109,6 +113,7 @@ describe('kernel journal ownership characterization', () => {
       settlementIdentity: {
         accessStreamIndex: local[0].journalAccessStreamIndex,
         accessOrdinalSource: 'access-program-order',
+        recordOrdinalScope: 'global-journal',
         recordOrdinalSources: ['target-record-ordinal', 'predecessor-record-ordinal'],
         settlementRole: 'mutation-settlement',
         settlementOwnership: 'last-mutating-access',
@@ -123,6 +128,7 @@ describe('kernel journal ownership characterization', () => {
     expect(two.map((stream) => stream.settlementIdentity)).toEqual(two.map((stream) => ({
       accessStreamIndex: stream.journalAccessStreamIndex,
       accessOrdinalSource: 'access-program-order',
+      recordOrdinalScope: 'global-journal',
       recordOrdinalSources: ['target-record-ordinal', 'predecessor-record-ordinal'],
       settlementRole: 'mutation-settlement',
       settlementOwnership: 'last-mutating-access',

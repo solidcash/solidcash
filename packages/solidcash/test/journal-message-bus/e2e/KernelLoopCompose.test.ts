@@ -484,6 +484,21 @@ contract KernelNestedMultiMapping() {
   }
 }`;
 
+const SAME_LOOP_MULTI_MAPPING_SOURCE = `pragma solidcash ^0.13.0;
+contract KernelSameLoopMultiMapping() {
+  mapping(int => int) a;
+  mapping(int => int) b;
+  function write(int n) public {
+    for (int i = 0; i < n; i = i + 1) {
+      this.a[i] = i + 10;
+      this.b[i] = i + 20;
+    }
+    require(true);
+  }
+  function checkA(int key, int expected) public { require(this.a[key] == expected); }
+  function checkB(int key, int expected) public { require(this.b[key] == expected); }
+}`;
+
 const SELECTED_MULTI_MAPPING_SOURCE = `pragma solidcash ^0.13.0;
 contract KernelSelectedMultiMapping() {
   mapping(int => mapping(int => int)) a;
@@ -3874,6 +3889,54 @@ describe('kernel composite counter-key settlement', () => {
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
       .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
   });
+
+  it('settles same-domain rows across distinct physical collections', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(SAME_LOOP_MULTI_MAPPING_SOURCE, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    const write = artifact.abi.find((candidate) => candidate.name === 'write')!;
+    expect(write.sortedUpsertLoopInfo).toHaveLength(2);
+    expect(new Set(write.sortedUpsertLoopInfo?.map((info) => info.varyingArrayParam)).size).toBe(1);
+    expect(new Set(write.sortedUpsertLoopInfo?.map((info) => info.journalExecutionGroup)).size).toBe(1);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
+      .toMatchObject({ eligible: true });
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+    );
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    const call = contract.batch([{ function: 'write', args: [2n] }]);
+    const builder = await call.build();
+    const transaction = builder.buildLibauthTransaction();
+    const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+    const vm = createVirtualMachineBch2026ForProvider(provider);
+    for (let inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex += 1) {
+      expect(vm.stateSuccess(vm.evaluate({ inputIndex, sourceOutputs, transaction })), `input ${inputIndex}`)
+        .toBe(true);
+    }
+
+    const collectionLocks = ['a', 'b'].map((name) => {
+      const collection = artifact.stateLayout!.collections.find((candidate) => candidate.name === name)!;
+      return binToHex(addressToLockScript(getEntryNftAddress(inner, categoryId, collection.signature)));
+    });
+    const crossCollectionOutputs = collectionLocks.map((lock) => transaction.outputs
+      .map((output, index) => ({ output, index }))
+      .filter(({ output }) => binToHex(output.lockingBytecode) === lock)
+      .at(-1)!.index);
+    const hostile = structuredClone(transaction);
+    [hostile.outputs[crossCollectionOutputs[0]], hostile.outputs[crossCollectionOutputs[1]]] =
+      [hostile.outputs[crossCollectionOutputs[1]], hostile.outputs[crossCollectionOutputs[0]]];
+    expect(vm.stateSuccess(vm.evaluate({ inputIndex: 0, sourceOutputs, transaction: hostile })))
+      .not.toBe(true);
+
+    await expect(call.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    const updated = StatefulContract.withCategory(inner, categoryId);
+    for (const [key, expected] of [[0n, 10n], [1n, 11n]] as const) {
+      await expect(updated.call.checkA(key, expected).send()).resolves.toBeDefined();
+    }
+    for (const [key, expected] of [[0n, 20n], [1n, 21n]] as const) {
+      await expect(updated.call.checkB(key, expected).send()).resolves.toBeDefined();
+    }
+  }, 180_000);
 
   it('fences independently selected collection streams without one physical row identity', () => {
     const artifact = compileString(SELECTED_MULTI_MAPPING_SOURCE, KERNEL);

@@ -2364,7 +2364,7 @@ describe('required kernel admission', () => {
       function fill(int count) public {
         for (int i = 0; i < count; i = i + 1) { left[i] = i; right[i] = i; }
         require(true);
-      }`, false],
+      }`, true],
     ['two loops over one collection', `
       mapping(int => int) values;
       function fill(int first, int second) public {
@@ -6237,6 +6237,7 @@ describe('required kernel admission', () => {
     expect(streams.find((stream) => stream.op === 'read')?.settlementIdentity).toEqual({
       accessStreamIndex: streams.find((stream) => stream.op === 'read')?.journalAccessStreamIndex,
       accessOrdinalSource: 'access-program-order',
+      recordOrdinalScope: 'global-journal',
       recordOrdinalSources: ['target-record-ordinal', 'predecessor-record-ordinal'],
       settlementRole: 'carrier-only',
       settlementOwnership: 'none',
@@ -6244,6 +6245,7 @@ describe('required kernel admission', () => {
     expect(streams.find((stream) => stream.op !== 'read')?.settlementIdentity).toEqual({
       accessStreamIndex: streams.find((stream) => stream.op !== 'read')?.journalAccessStreamIndex,
       accessOrdinalSource: 'access-program-order',
+      recordOrdinalScope: 'global-journal',
       recordOrdinalSources: ['target-record-ordinal', 'predecessor-record-ordinal'],
       settlementRole: 'mutation-settlement',
       settlementOwnership: 'last-mutating-access',
@@ -6637,6 +6639,7 @@ describe('required kernel admission', () => {
       identities: [0, 1].map((accessStreamIndex) => ({
         accessStreamIndex,
         accessOrdinalSource: 'access-program-order',
+        recordOrdinalScope: 'global-journal',
         recordOrdinalSources: ['target-record-ordinal', 'predecessor-record-ordinal'],
         settlementRole: 'mutation-settlement',
         settlementOwnership: 'last-mutating-access',
@@ -6933,7 +6936,7 @@ describe('required kernel admission', () => {
       ?.eligible).toBe(true);
   });
 
-  it('freezes site-specific mapping values split across two mutation streams', () => {
+  it('admits source-replayed scalar values split across two mutation streams', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) beforeValues;
       mapping(int => int) afterValues;
@@ -6948,7 +6951,7 @@ describe('required kernel admission', () => {
       }
     }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
-      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+      .toMatchObject({ eligible: true });
     expect(artifact.abi.find((handler) => handler.name === 'write')?.sortedUpsertLoopInfo)
       .toHaveLength(2);
   });
@@ -7953,7 +7956,7 @@ describe('required kernel admission', () => {
       input.name.startsWith('__internal__vmapCounterPerm_'))).toBe(true);
   });
 
-  it('freezes a counter-keyed loop that writes two mutation streams', () => {
+  it('admits two fixed-width scalar mutation streams with one shared key schedule', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) a;
       mapping(int => int) b;
@@ -7964,22 +7967,51 @@ describe('required kernel admission', () => {
       function control() public { require(true); }
     }`, KERNEL);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied'))
-      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+      .toMatchObject({ eligible: true });
     expect(artifact.messageBus?.route.inputs.some((input) =>
-      input.name.startsWith('__internal__vmapCounterPerm_'))).toBe(false);
+      input.name.startsWith('__internal__vmapCounterPerm_'))).toBe(true);
     const streams = artifact.abi.find((handler) => handler.name === 'denied')?.sortedUpsertLoopInfo ?? [];
     expect(streams).toHaveLength(2);
     expect(new Set(streams.map((stream) => stream.journalExecutionGroup)).size).toBe(1);
     expect(streams.map((stream) => stream.settlementIdentity)).toEqual(streams.map((stream) => ({
       accessStreamIndex: stream.journalAccessStreamIndex,
       accessOrdinalSource: 'access-program-order',
+      recordOrdinalScope: 'global-journal',
       recordOrdinalSources: ['target-record-ordinal', 'predecessor-record-ordinal'],
       settlementRole: 'mutation-settlement',
       settlementOwnership: 'last-mutating-access',
     })));
   });
 
-  it('admits independently sorted key shapes in one physical collection', () => {
+  it('admits shared multi-mutation geometry independently of source names', () => {
+    const compileRenamed = (contract: string, left: string, right: string, operation: string) => compileString(`
+      contract ${contract}() {
+        mapping(int => int) ${left};
+        mapping(int => int) ${right};
+        function ${operation}(int count) public {
+          for (int cursor = 0; cursor < count; cursor = cursor + 1) {
+            this.${left}[cursor] = 10;
+            this.${right}[cursor] = 20;
+          }
+          require(true);
+        }
+      }
+    `, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    const ledger = compileRenamed('Ledger', 'credits', 'debits', 'reconcile');
+    const registry = compileRenamed('Registry', 'primary', 'secondary', 'apply');
+    for (const [artifact, operation] of [[ledger, 'reconcile'], [registry, 'apply']] as const) {
+      expect(artifact.messageBus?.handlers.find((handler) => handler.name === operation))
+        .toMatchObject({ eligible: true });
+      const streams = artifact.abi.find((handler) => handler.name === operation)?.sortedUpsertLoopInfo ?? [];
+      expect(streams).toHaveLength(2);
+      expect(new Set(streams.map((stream) => stream.collectionHash)).size).toBe(2);
+      expect(new Set(streams.map((stream) => stream.varyingArrayParam)).size).toBe(1);
+      expect(streams.every((stream) =>
+        stream.settlementIdentity?.recordOrdinalScope === 'global-journal')).toBe(true);
+    }
+  });
+
+  it('freezes independently sorted key shapes in one physical collection', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) m;
       function write(int n) public {
@@ -8006,6 +8038,43 @@ describe('required kernel admission', () => {
       .toHaveLength(2);
     expect(handler.inputs.filter((input) => input.name.startsWith('__internal__vmapCounterOutputCount_')))
       .toHaveLength(2);
+  });
+
+  it('keeps multi-stream array-value mutation outside the fixed-width scalar family', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int[]) left;
+      mapping(int => int[]) right;
+      function write(int n) public {
+        for (int i = 0; i < n; i = i + 1) {
+          this.left[i].push(1);
+          this.right[i].push(2);
+        }
+        require(true);
+      }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+    expect(artifact.abi.find((handler) => handler.name === 'write')?.sortedUpsertLoopInfo)
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({ mutation: 'push' }),
+        expect.objectContaining({ mutation: 'push' }),
+      ]));
+  });
+
+  it('keeps distinct key projections outside the shared multi-stream schedule', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) direct;
+      mapping(bytes32 => int) projected;
+      function write(int n) public {
+        for (int i = 0; i < n; i = i + 1) {
+          this.direct[i] = i + 1;
+          this.projected[bytes32(i)] = i + 2;
+        }
+        require(true);
+      }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
   });
 
   it('admits a do-while counter-keyed mapping loop with a max(n, 1) permutation', () => {

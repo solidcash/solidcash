@@ -148,6 +148,41 @@ export interface KernelEntryJournalSettlementOccurrence {
   access: KernelEntryJournalAccess;
 }
 
+export interface KernelEntryJournalSettlementStream {
+  /** Compiler-published control-flow group, already scoped to the selected invocation frame. */
+  executionGroup: string;
+  /** Whether this stream contains at least one operation capable of mutating the journal. */
+  mutates: boolean;
+  /** Stable compiler-published settlement recipe, when emitted by the artifact version. */
+  identity?: JournalSettlementIdentityAbi;
+}
+
+/**
+ * Enforce the compatibility boundary for transaction-wide record ordinals. Legacy artifacts remain valid for a
+ * singleton mutation stream, where collection-local and global record identity cannot be confused. Once multiple
+ * mutation streams share an execution group, every stream in that group must explicitly authenticate the global
+ * journal ordinal domain used by scheduling and last-mutating settlement ownership.
+ */
+export function validateKernelEntryJournalSettlementGroups(
+  streams: readonly KernelEntryJournalSettlementStream[],
+): void {
+  const groups = new Map<string, KernelEntryJournalSettlementStream[]>();
+  for (const stream of streams) {
+    const group = groups.get(stream.executionGroup) ?? [];
+    group.push(stream);
+    groups.set(stream.executionGroup, group);
+  }
+  for (const [executionGroup, group] of groups) {
+    if (group.filter((stream) => stream.mutates).length < 2) continue;
+    if (group.some((stream) => stream.identity?.recordOrdinalScope !== 'global-journal')) {
+      throw new Error(
+        `kernel journal execution group '${executionGroup}' has multiple mutation streams without authenticated `
+        + 'global record ordinals',
+      );
+    }
+  }
+}
+
 export interface KernelEntryJournalSettlementReference {
   frameIndex: number;
   accessStreamIndex: number;
@@ -201,6 +236,9 @@ export function planKernelEntryJournalSettlementAuthority(
     if (!Number.isSafeInteger(identity.accessStreamIndex) || identity.accessStreamIndex < 0) {
       throw new Error('kernel journal settlement identity has an invalid access stream index');
     }
+    if (identity.recordOrdinalScope !== undefined && identity.recordOrdinalScope !== 'global-journal') {
+      throw new Error('kernel journal settlement identity has an unsupported record ordinal scope');
+    }
     if (identity.accessOrdinalSource !== 'access-program-order'
       || identity.recordOrdinalSources.length !== 2
       || identity.recordOrdinalSources[0] !== 'target-record-ordinal'
@@ -214,6 +252,7 @@ export function planKernelEntryJournalSettlementAuthority(
     }
     const recipe = [
       identity.accessStreamIndex,
+      identity.recordOrdinalScope ?? 'legacy-single-stream',
       identity.accessOrdinalSource,
       identity.recordOrdinalSources[0],
       identity.recordOrdinalSources[1],

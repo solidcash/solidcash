@@ -11332,37 +11332,54 @@ export class StatefulTransactionBuilder {
   }
 
   getRuntimeLoopEventOutputIndex(eventIndex: number): number {
+    if (!Number.isSafeInteger(eventIndex) || eventIndex < 0 || eventIndex >= this.runtimeLoopEventOutputs.length) {
+      throw new Error(`Invalid runtime loop event index ${eventIndex}`);
+    }
     if (this.runtimeLoopTrailingSegments.length === 0) {
       return this.getChunkOutputBase() - this.runtimeLoopTransferOutputs.length
         - this.runtimeLoopEventOutputs.length + eventIndex;
     }
     let physical = this.getChunkOutputBase()
       - this._trailingLoopEntryOutputCount() - this.runtimeLoopEventOutputs.length
-      - this.runtimeLoopTransferOutputs.length;
+      - this.runtimeLoopTransferOutputs.length + this._runtimeLoopUnsegmentedEntryPrefixCount();
+    let resolved: number | undefined;
     for (const segment of this.runtimeLoopTrailingSegments) {
       if (segment.kind === 'events'
         && eventIndex >= segment.offset && eventIndex < segment.offset + segment.count) {
-        return physical + eventIndex - segment.offset;
+        if (resolved !== undefined) {
+          throw new Error(`Runtime loop event ${eventIndex} has multiple output locations`);
+        }
+        resolved = physical + eventIndex - segment.offset;
       }
       physical += segment.count;
     }
+    if (resolved !== undefined) return resolved;
     throw new Error(`Runtime loop event ${eventIndex} is missing from the trailing segment plan`);
   }
 
   getRuntimeLoopTransferOutputIndex(transferIndex: number): number {
+    if (!Number.isSafeInteger(transferIndex) || transferIndex < 0
+      || transferIndex >= this.runtimeLoopTransferOutputs.length) {
+      throw new Error(`Invalid runtime loop transfer index ${transferIndex}`);
+    }
     if (this.runtimeLoopTrailingSegments.length === 0) {
       return this.getChunkOutputBase() - this.runtimeLoopTransferOutputs.length + transferIndex;
     }
     let physical = this.getChunkOutputBase()
       - this._trailingLoopEntryOutputCount() - this.runtimeLoopEventOutputs.length
-      - this.runtimeLoopTransferOutputs.length;
+      - this.runtimeLoopTransferOutputs.length + this._runtimeLoopUnsegmentedEntryPrefixCount();
+    let resolved: number | undefined;
     for (const segment of this.runtimeLoopTrailingSegments) {
       if (segment.kind === 'transfers'
         && transferIndex >= segment.offset && transferIndex < segment.offset + segment.count) {
-        return physical + transferIndex - segment.offset;
+        if (resolved !== undefined) {
+          throw new Error(`Runtime loop transfer ${transferIndex} has multiple output locations`);
+        }
+        resolved = physical + transferIndex - segment.offset;
       }
       physical += segment.count;
     }
+    if (resolved !== undefined) return resolved;
     throw new Error(`Runtime loop transfer ${transferIndex} is missing from the trailing segment plan`);
   }
 
@@ -11437,6 +11454,71 @@ export class StatefulTransactionBuilder {
       segment.kind === 'entries' && segment.collection === collection && segment.count > 0);
   }
 
+  /** Resolve a collection-local commitment offset through the authenticated trailing segment plan. */
+  getLoopEntryOutputIndex(collection: string, commitmentIndex: number): number {
+    if (!Number.isSafeInteger(commitmentIndex) || commitmentIndex < 0) {
+      throw new Error(`Invalid loop entry commitment index ${commitmentIndex} for '${collection}'`);
+    }
+    if (this.runtimeLoopTrailingSegments.length === 0) {
+      let physical = this.getLoopEntryOutputBase();
+      for (const variable of this._trailingLoopEntryVars()) {
+        const count = (this.loopEntryCommitments.get(variable.collection) ?? []).length;
+        if (variable.collection === collection) {
+          if (commitmentIndex >= count) break;
+          return physical + commitmentIndex;
+        }
+        physical += count;
+      }
+      throw new Error(`Loop entry commitment ${collection}[${commitmentIndex}] is missing from the output plan`);
+    }
+    const entrySegments = this.runtimeLoopTrailingSegments.filter((segment) => segment.kind === 'entries');
+    const prefixCounts = new Map<string, number>();
+    for (const segmentedCollection of new Set(entrySegments.map((segment) => segment.collection))) {
+      const commitments = this.loopEntryCommitments.get(segmentedCollection) ?? [];
+      const intervals = entrySegments.filter((segment) => segment.collection === segmentedCollection)
+        .sort((left, right) => left.offset - right.offset);
+      let expected = intervals[0]!.offset;
+      prefixCounts.set(segmentedCollection, expected);
+      for (const interval of intervals) {
+        if (!Number.isSafeInteger(interval.offset) || !Number.isSafeInteger(interval.count)
+          || interval.offset < 0 || interval.count <= 0 || interval.offset !== expected) {
+          throw new Error(`Runtime loop entry segments for '${segmentedCollection}' overlap or have a gap`);
+        }
+        expected += interval.count;
+      }
+      if (expected !== commitments.length) {
+        throw new Error(
+          `Runtime loop entry segments for '${segmentedCollection}' cover ${expected} of ${commitments.length} commitments`,
+        );
+      }
+    }
+    let physical = this.getLoopEntryOutputBase();
+    for (const variable of this._trailingLoopEntryVars()) {
+      const commitments = this.loopEntryCommitments.get(variable.collection) ?? [];
+      const prefixCount = prefixCounts.get(variable.collection) ?? commitments.length;
+      if (variable.collection === collection && commitmentIndex < prefixCount) {
+        if (commitmentIndex >= commitments.length) break;
+        return physical + commitmentIndex;
+      }
+      physical += prefixCount;
+    }
+    let resolved: number | undefined;
+    for (const segment of this.runtimeLoopTrailingSegments) {
+      if (segment.kind === 'entries' && segment.collection === collection
+        && commitmentIndex >= segment.offset && commitmentIndex < segment.offset + segment.count) {
+        if (resolved !== undefined) {
+          throw new Error(`Loop entry commitment ${collection}[${commitmentIndex}] has multiple output locations`);
+        }
+        resolved = physical + commitmentIndex - segment.offset;
+      }
+      physical += segment.count;
+    }
+    if (resolved === undefined) {
+      throw new Error(`Loop entry commitment ${collection}[${commitmentIndex}] is missing from the output plan`);
+    }
+    return resolved;
+  }
+
   setLoopEntryLockingBytecode(collection: string, lockingBytecode: Uint8Array): this {
     const variable = this.loopEntryVars.find((candidate) => candidate.collection === collection);
     if (!variable) throw new Error(`loop entry collection not registered: ${collection}`);
@@ -11493,6 +11575,20 @@ export class StatefulTransactionBuilder {
       n += (this.loopEntryCommitments.get(lv.collection) ?? []).length;
     }
     return n;
+  }
+
+  /** Entry outputs preceding the source-ordered segment stream, including same-collection fixed prefixes. */
+  private _runtimeLoopUnsegmentedEntryPrefixCount(): number {
+    const firstSegmentOffsets = new Map<string, number>();
+    for (const segment of this.runtimeLoopTrailingSegments) {
+      if (segment.kind !== 'entries') continue;
+      const prior = firstSegmentOffsets.get(segment.collection);
+      if (prior === undefined || segment.offset < prior) firstSegmentOffsets.set(segment.collection, segment.offset);
+    }
+    return this._trailingLoopEntryVars().reduce((count, variable) => {
+      const commitments = this.loopEntryCommitments.get(variable.collection) ?? [];
+      return count + (firstSegmentOffsets.get(variable.collection) ?? commitments.length);
+    }, 0);
   }
 
   private _delegateLoopEntryVars(): typeof this.loopEntryVars {
@@ -13770,13 +13866,54 @@ export class StatefulTransactionBuilder {
       // no runtime segment: a segment describes a source-row occurrence, while these outputs authenticate the
       // fixed entry transition surrounding that row. Previously, entering segmented mode omitted every such
       // collection and let the first runtime output occupy its advertised PredOut coordinate.
-      const segmentedCollections = new Set(this.runtimeLoopTrailingSegments.flatMap((segment) => (
-        segment.kind === 'entries' ? [segment.collection] : []
-      )));
+      for (const segment of this.runtimeLoopTrailingSegments) {
+        if (!Number.isSafeInteger(segment.offset) || !Number.isSafeInteger(segment.count)
+          || segment.offset < 0 || segment.count <= 0) {
+          throw new Error('Runtime loop trailing segment has an invalid offset or count');
+        }
+      }
+      const entrySegments = this.runtimeLoopTrailingSegments.filter((segment) => segment.kind === 'entries');
+      const prefixCounts = new Map<string, number>();
+      for (const collection of new Set(entrySegments.map((segment) => segment.collection))) {
+        const commitments = this.loopEntryCommitments.get(collection) ?? [];
+        const intervals = entrySegments.filter((segment) => segment.collection === collection)
+          .sort((left, right) => left.offset - right.offset);
+        let expected = intervals[0]!.offset;
+        prefixCounts.set(collection, expected);
+        for (const interval of intervals) {
+          if (interval.offset !== expected) {
+            throw new Error(`Runtime loop entry segments for '${collection}' overlap or have a gap`);
+          }
+          expected += interval.count;
+        }
+        if (expected !== commitments.length) {
+          throw new Error(
+            `Runtime loop entry segments for '${collection}' cover ${expected} of ${commitments.length} commitments`,
+          );
+        }
+      }
+      for (const [kind, length] of [
+        ['events', this.runtimeLoopEventOutputs.length],
+        ['transfers', this.runtimeLoopTransferOutputs.length],
+      ] as const) {
+        const intervals = this.runtimeLoopTrailingSegments.filter((segment) => segment.kind === kind)
+          .sort((left, right) => left.offset - right.offset);
+        let expected = 0;
+        for (const interval of intervals) {
+          if (interval.offset !== expected) {
+            throw new Error(`Runtime loop ${kind} segments overlap or have a gap`);
+          }
+          expected += interval.count;
+        }
+        if (expected !== length) {
+          throw new Error(`Runtime loop ${kind} segments cover ${expected} of ${length} outputs`);
+        }
+      }
       for (const variable of this._trailingLoopEntryVars()) {
-        if (segmentedCollections.has(variable.collection)) continue;
-        for (const commitment of this.loopEntryCommitments.get(variable.collection) ?? []) {
-          appendLoopEntry(variable, commitment);
+        const commitments = this.loopEntryCommitments.get(variable.collection) ?? [];
+        const prefixCount = prefixCounts.get(variable.collection) ?? commitments.length;
+        for (let index = 0; index < prefixCount; index++) {
+          appendLoopEntry(variable, commitments[index]!);
         }
       }
       for (const segment of this.runtimeLoopTrailingSegments) {

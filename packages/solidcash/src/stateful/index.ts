@@ -138,12 +138,14 @@ export {
   encodeKernelEntryJournalAccesses, decodeKernelEntryJournalAccesses,
   planKernelEntryJournalStreams, planKernelEntryJournalAccessTopology,
   planKernelEntryJournalSettlementAuthority, planKernelEntryJournalSettlementOutputSegments,
+  validateKernelEntryJournalSettlementGroups,
   type KernelEntryJournalRecord, type KernelEntryJournalStreamPlan,
   type KernelEntryJournalRecordPosition, type KernelEntryJournalSegmentValidationOptions,
   type KernelEntryJournalTopologyOperation, type KernelEntryJournalAccessTopologyPlan,
   type KernelEntryJournalSettlementOccurrence, type KernelEntryJournalSettlementReference,
   type KernelEntryJournalSettlementPlan,
   type KernelEntryJournalSettlementOutputSegment,
+  type KernelEntryJournalSettlementStream,
 } from './KernelEntryJournal.js';
 export {
   bindKernelLifecycleTransaction, planKernelLifecycleTopology,

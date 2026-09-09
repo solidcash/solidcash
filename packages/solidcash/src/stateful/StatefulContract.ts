@@ -134,6 +134,7 @@ import {
   planKernelEntryJournalAccessTopology,
   planKernelEntryJournalSettlementAuthority,
   planKernelEntryJournalSettlementOutputSegments,
+  validateKernelEntryJournalSettlementGroups,
   segmentKernelEntryJournalRecords,
   validateKernelEntryJournalRecordSegmentSlots,
   type KernelEntryJournalSettlementOccurrence,
@@ -13720,7 +13721,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               const scoll = stateLayout.collections?.find((c) => c.name === lv.collection);
               const isSortedValueMintColl = !!scoll?.sorted;
               const existing = stb.getLoopEntryCommitments(lv.collection);
-              if (existing.length > 0) {
+              const segmentedOutputIndices = stb.hasRuntimeLoopEntrySegments(lv.collection)
+                ? existing.map((_, index) => stb.getLoopEntryOutputIndex(lv.collection, index))
+                : undefined;
+              if (existing.length > 0 && segmentedOutputIndices === undefined) {
                 const loopBytecode = binToHex(lv.lockingBytecode);
                 const matches = probeBuilder2.outputs.map((output, index) => ({ output, index }))
                   .filter(({ output }) => output.to instanceof Uint8Array
@@ -13749,14 +13753,21 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               const loopMax = requiredCount > 0
                 ? loopOffset + requiredCount
                 : isSortedValueMintColl ? loopOffset + 1 : loopOffset + Math.max(1, existing.length);
-              const range = { min: loopOffset, max: loopMax };
+              const range = segmentedOutputIndices && segmentedOutputIndices.length > 0
+                ? { min: Math.min(...segmentedOutputIndices), max: Math.max(...segmentedOutputIndices) + 1 }
+                : { min: loopOffset, max: loopMax };
               // The compiler is authoritative for the precise collection covenant used by a synthesized
               // message-bus handler. Recover the bytecode from its tight OUTPUTBYTECODE equality before reading
               // commitments; proxy routes can graft a loop slot whose signature is not reconstructible from the
               // outer contract's state layout alone.
-              const derivedBytecodes = extractVerifiedValuesFromTrace(
-                fullTrace2, Op.OP_OUTPUTBYTECODE, range, true, true, delegatecallInputIndex !== undefined,
-              );
+              const derivedBytecodes = segmentedOutputIndices
+                ? segmentedOutputIndices.flatMap((outputIndex) => extractVerifiedValuesFromTrace(
+                  fullTrace2, Op.OP_OUTPUTBYTECODE, { min: outputIndex, max: outputIndex + 1 },
+                  true, true, delegatecallInputIndex !== undefined,
+                ))
+                : extractVerifiedValuesFromTrace(
+                  fullTrace2, Op.OP_OUTPUTBYTECODE, range, true, true, delegatecallInputIndex !== undefined,
+                );
               let loopBytecodeChanged = false;
               if (lv.delegate !== true && derivedBytecodes.length > 0
                 && binToHex(derivedBytecodes[0]) !== binToHex(lv.lockingBytecode)) {
@@ -13773,9 +13784,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               // A delegate's scalar NEW check executes in the implementation invocation after the proxy redeem
               // phase. Restricting extraction to the longest redeem-script suffix discards that observation,
               // causing the dynamic-region bootstrap to grow forever and shift NEW out of place.
-              const commitMap = extractCommitmentMapFromTrace(
-                fullTrace2, range, true,
-              );
+              const commitMap = segmentedOutputIndices
+                ? new Map(segmentedOutputIndices.flatMap((outputIndex) => ([...extractCommitmentMapFromTrace(
+                  fullTrace2, { min: outputIndex, max: outputIndex + 1 }, true,
+                )])))
+                : extractCommitmentMapFromTrace(fullTrace2, range, true);
+              const logicalIndexByPhysical = segmentedOutputIndices === undefined
+                ? undefined : new Map(segmentedOutputIndices.map((physical, logical) => [physical, logical]));
               const isChunkableLoop = lv.chunkable === true;
               if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
                 ?.SOLIDC_DEBUG_CHUNK_SCAN === '1') {
@@ -13802,6 +13817,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               }
               const derived: string[] = [];
               for (const [outIdx, commit] of commitMap) {
+                const logicalIndex = logicalIndexByPhysical?.get(outIdx) ?? outIdx - loopOffset;
+                if (logicalIndexByPhysical && !logicalIndexByPhysical.has(outIdx)) continue;
                 if (isChunkableLoop) {
                   try {
                     // Chunkable mapping loops can emit the same canonical chunk more than once (for example while
@@ -13809,13 +13826,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                     // embedded chunk index, determines the output position. Parsing remains a structural guard
                     // against neighbouring covenant observations being mistaken for loop rows.
                     parseChunkCommitment(commit);
-                    derived[outIdx - loopOffset] = commit;
+                    derived[logicalIndex] = commit;
                   } catch {
                     // A neighbouring covenant observation is not a canonical value chunk; do not let it grow
                     // this chunk-indexed region under a physical ordinal.
                   }
                 } else {
-                  derived[outIdx - loopOffset] = commit;
+                  derived[logicalIndex] = commit;
                 }
               }
               const derivedIndices = derived.map((commitment, index) => ({ commitment, index }))
@@ -18434,6 +18451,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         );
       }
     }
+    validateKernelEntryJournalSettlementGroups(runtimeKernelJournalStreams.map((stream) => ({
+      executionGroup: stream.executionGroup,
+      mutates: stream.writes.some((write) => write.operation !== 'read'),
+      identity: stream.settlementIdentity,
+    })));
     for (const stream of runtimeKernelJournalStreams) {
       const collectionIdentity = binToHex(stream.collectionHash);
       const collectionStreams = kernelStreamsByCollection.get(collectionIdentity) ?? [];
@@ -18480,7 +18502,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       });
     };
     let hasPendingScalarDependency = false;
-    let hasInterleavedStreamDependency = false;
     for (const [collectionIdentity, collectionStreams] of kernelStreamsByCollection) {
       // The topology transition must see operations in language execution order. Multiple write sites in one
       // counter loop publish separate compact streams, so flattening whole streams would incorrectly execute
@@ -18500,9 +18521,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         accessesByStream.get(stream)![compactIndex] = scheduledAccesses[index];
       });
       const accesses = collectionStreams.map((stream) => accessesByStream.get(stream)!);
-      // Discover dependencies on a prior carrier mutation, including same-stream chains. Cross-stream
-      // dependencies in one execution group remain unsupported interleaving; every sound dependency marks both
-      // its consumer and producer before the transaction-wide carrier phase marks the remaining mutations.
+      // Discover dependencies on a prior carrier mutation, including same-stream and interleaved-stream chains.
+      // Every dependency marks both its consumer and producer before the transaction-wide carrier phase marks the
+      // remaining mutations. Global record ordinals and last-mutating ownership keep cross-stream identity stable.
       const priorProducer = new Map<number, {
         stream: (typeof runtimeKernelJournalStreams)[number];
         access: ReturnType<typeof decodeKernelEntryJournalAccesses>[number];
@@ -18524,10 +18545,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             hasPendingScalarDependency = true;
             for (const producer of carrierProducers) {
               producer.access.pending = true;
-              if (producer.stream !== stream
-                && producer.stream.executionGroup === stream.executionGroup) {
-                hasInterleavedStreamDependency = true;
-              }
             }
           }
           if (access.mutates) {
@@ -18546,12 +18563,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     assertKernelJournalRecordBudget(
       [...plannedKernelCollections.values()].map((plan) => plan.records.length),
     );
-    if (hasInterleavedStreamDependency) {
-      throw new Error(
-        'Kernel runtime journal cannot yet materialize a topology dependency between interleaved mapping '
-        + 'write sites in one loop; split the write sites into separate actions.',
-      );
-    }
     // A singleton runtime-computed scalar has no later physical iteration from which trace convergence can
     // replace its provisional typed-default entry output. Route that one-access stream through the authenticated
     // carrier phase so the value computed by the row is published. Multi-access streams already expose their

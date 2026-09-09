@@ -405,7 +405,7 @@ contract Slots() {
       input.name.startsWith('__internal__vmapCounterPerm_'))).toBe(true);
   });
 
-  it('fences two mutation streams in one counter-loop execution group', () => {
+  it('routes two fixed-width scalar mutation streams in one counter-loop execution group', () => {
     const artifact = compileString(`
 pragma solidcash ^0.13.0;
 contract Slots() {
@@ -418,10 +418,10 @@ contract Slots() {
   function control() public { require(true); }
 }
 `, OPTIONS);
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')).toMatchObject({
-      eligible: false,
-      rejectionReason: 'KERNEL_LAYOUT',
-    });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.messageBus?.route.inputs.some((input) =>
+      input.name === '__internal__kernelJournalAccessStreams')).toBe(true);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
   });
 

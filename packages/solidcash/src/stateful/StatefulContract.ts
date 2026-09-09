@@ -16858,7 +16858,17 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       recordOrdinal: number; outputOrdinal: number; collection: string; offset: number;
     }> | undefined;
     const runtimeJournalInputIds = new Set<string>();
-    const appendRuntimeJournalInput = (
+    /**
+     * A handler describes its physical journal effects while it is traversed.  The legacy materializer below
+     * deliberately drains those descriptions at the end of that handler for now, preserving its established
+     * input/output geometry.  Keeping description and materialization distinct is the seam used by a later
+     * transaction-wide carrier topology planner; it must not be mistaken for an enabled carrier capability.
+     */
+    type RuntimeJournalMaterializationIntent =
+      | { kind: 'input'; input: UnlockableUtxo; collection: string }
+      | { kind: 'outputs'; collection: string; commitments: string[] };
+    const runtimeJournalMaterializationIntents: RuntimeJournalMaterializationIntent[] = [];
+    const captureRuntimeJournalInputIntent = (
       input: UnlockableUtxo, collection: string, allowExistingScalarReuse = false,
     ): boolean => {
       const id = `${input.txid}:${input.vout}`;
@@ -16870,8 +16880,31 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         );
       }
       runtimeJournalInputIds.add(id);
-      insertLoopPredecessors.push(input);
+      runtimeJournalMaterializationIntents.push({ kind: 'input', input, collection });
       return true;
+    };
+    const captureRuntimeJournalOutputIntent = (collection: string, commitments: string[]): void => {
+      runtimeJournalMaterializationIntents.push({ kind: 'outputs', collection, commitments });
+    };
+    const materializeLegacyRuntimeJournalIntents = (start: number): void => {
+      for (const intent of runtimeJournalMaterializationIntents.slice(start)) {
+        if (intent.kind === 'input') {
+          insertLoopPredecessors.push(intent.input);
+          continue;
+        }
+        const prior = sortedLoopCommitments.get(intent.collection) ?? [];
+        const offset = prior.length;
+        const merged = [...prior, ...intent.commitments];
+        sortedLoopCommitments.set(intent.collection, merged);
+        for (const pending of runtimeJournalPendingScalar.values()) {
+          if (pending.commitments === prior) {
+            pending.commitments = merged;
+          } else if (pending.commitments === intent.commitments) {
+            pending.commitments = merged;
+            pending.commitmentIndex += offset;
+          }
+        }
+      }
     };
     for (const info of entryAbiFunction?.sortedInsertLoopInfo ?? []) {
       const collection = (stateLayout.collections ?? []).find((c) => c.name === info.collection);
@@ -17082,6 +17115,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       let loopPredicateState: Record<string, unknown> = onChainState.state;
       for (const info of loopAbiFunction.sortedUpsertLoopInfo ?? []) {
       const runtimeInputStart = insertLoopPredecessors.length;
+      const runtimeJournalIntentStart = runtimeJournalMaterializationIntents.length;
       const collection = (stateLayout.collections ?? []).find((c) => c.name === info.collection);
       if (!collection) continue;
       const entryAddr = getEntryNftAddress(this.inner, this.categoryId, collection.signature);
@@ -17971,7 +18005,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               throw new Error(`vmap runtime struct loop ${info.collection}: entry ${i} is already co-spent`);
             }
             consumedInputs.add(inputId);
-            appendRuntimeJournalInput({ ...entry.utxo, unlocker: runtimeUnlocker }, info.collection);
+            captureRuntimeJournalInputIntent({ ...entry.utxo, unlocker: runtimeUnlocker }, info.collection);
             const tail = entry.value;
             if (tail.length < 4) throw new Error(`vmap runtime struct value for ${info.collection} has an invalid tail`);
             const len = tail[0] | (tail[1] << 8) | (tail[2] << 16) | (tail[3] << 24);
@@ -18013,7 +18047,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 throw new Error(`vmap runtime struct loop ${info.collection}: absent key ${i} shares a non-adjacent predecessor`);
               }
               consumedInputs.add(inputId);
-              appendRuntimeJournalInput({ ...predecessor.utxo, unlocker: runtimeUnlocker }, info.collection);
+              captureRuntimeJournalInputIntent({ ...predecessor.utxo, unlocker: runtimeUnlocker }, info.collection);
               deferred = { slot, nextKey: predecessor.nextKey };
               outputCount += 2;
             }
@@ -18036,6 +18070,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             rowIndex, collection: info.collection, offset: priorOutputCount, count: outputCount,
           });
         }
+        materializeLegacyRuntimeJournalIntents(runtimeJournalIntentStart);
         addRuntimeLoopCardinality(
           info.collection, insertLoopPredecessors.length - runtimeInputStart, outputCount,
         );
@@ -18275,7 +18310,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             continue;
           }
           if (!entry) throw new Error('Kernel pending scalar entry lost its transaction-local carrier.');
-          appendRuntimeJournalInput({ ...entry.utxo, unlocker: wUnlocker }, info.collection, journalSettledScalar);
+          captureRuntimeJournalInputIntent({ ...entry.utxo, unlocker: wUnlocker }, info.collection, journalSettledScalar);
           if (collection.chunkableValue && info.op !== 'read') {
             const oldTail = entry.value;
             if (oldTail.length >= 36
@@ -18347,7 +18382,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 + 'predecessor; a shared absence proof is required');
             }
             cospent.add(predecessorId);
-            appendRuntimeJournalInput({ ...basePred.utxo, unlocker: wUnlocker }, info.collection);
+            captureRuntimeJournalInputIntent({ ...basePred.utxo, unlocker: wUnlocker }, info.collection);
             commitments.push(binToHex(encodeEntryCommitment(basePred.slot, basePred.nextKey, basePred.value)));
             priorReadProof = { uid: predecessorId, slot: basePred.slot, nextKey: basePred.nextKey };
             continue;
@@ -18407,7 +18442,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               + 'same gap). Reorder so the predecessor is credited immediately before, or split into separate transactions.');
           }
           cospent.add(uidOf(basePred.utxo));
-          appendRuntimeJournalInput({ ...basePred.utxo, unlocker: wUnlocker }, info.collection);
+          captureRuntimeJournalInputIntent({ ...basePred.utxo, unlocker: wUnlocker }, info.collection);
           commitments.push(binToHex(encodeEntryCommitment(basePred.slot, slot, basePred.value)));           // P' (re-pointed)
           const uCommitIndex = commitments.length;
           commitments.push(binToHex(encodeEntryCommitment(slot, basePred.nextKey, commitValue(amt)))); // NEW = 0 + amt
@@ -18418,17 +18453,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       }
       if (commitments.length > 0) {
         const prior = sortedLoopCommitments.get(info.collection) ?? [];
-        const offset = prior.length;
-        const merged = [...prior, ...commitments];
-        sortedLoopCommitments.set(info.collection, merged);
-        for (const pending of runtimeJournalPendingScalar.values()) {
-          if (pending.commitments === prior) {
-            pending.commitments = merged;
-          } else if (pending.commitments === commitments) {
-            pending.commitments = merged;
-            pending.commitmentIndex += offset;
-          }
-        }
+        captureRuntimeJournalOutputIntent(info.collection, commitments);
+        materializeLegacyRuntimeJournalIntents(runtimeJournalIntentStart);
+        const merged = sortedLoopCommitments.get(info.collection)!;
         if (journalArgumentIndex >= 0 && !collection.chunkableValue
           && /^(?:u?int\d*|u?fixed\d*x\d*|bigint)$/.test(collection.valueType)
           && (info.op === '+' || info.op === 'set' || isDelete)) {
@@ -18450,6 +18477,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             rowIndex, collection: info.collection, offset: prior.length, count: commitments.length,
           });
         }
+      } else {
+        materializeLegacyRuntimeJournalIntents(runtimeJournalIntentStart);
       }
       const streamInputCount = insertLoopPredecessors.length - runtimeInputStart;
       const streamOutputCount = commitments.length;

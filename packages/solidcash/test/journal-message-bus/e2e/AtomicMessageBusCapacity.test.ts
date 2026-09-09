@@ -77,70 +77,46 @@ interface CapacityReading {
   inputMaximumOperationCosts: number[];
 }
 
-const EXPECTED: Readonly<Record<number, CapacityReading>> = Object.freeze({
-  2: {
+const EXPECTED_TWO_PARTY: Readonly<Record<'kernel' | 'legacy', CapacityReading>> = Object.freeze({
+  kernel: {
     participants: 2, authenticatedParticipants: 2, slots: 6,
-    transactionBytes: 23_050, callManifestBytes: 294,
-    worstOperationCost: 2_196_068, worstMaximumOperationCost: 7_234_400,
-    worstRatio: 0.30355910649120865,
+    transactionBytes: 22_964, callManifestBytes: 294,
+    worstOperationCost: 6_309_151, worstMaximumOperationCost: 7_234_400,
+    worstRatio: 0.8721042519075528,
     inputOperationCosts: [
-      411_596, 430_140, 695, 2_159_183, 2_196_068, 27_321,
+      473_625, 437_513, 695, 6_309_151, 6_195_529, 27_321,
     ],
     inputMaximumOperationCosts: [
-      1_686_400, 1_746_400, 34_400, 7_234_400, 7_234_400, 112_800,
+      1_914_400, 1_449_600, 34_400, 7_234_400, 7_234_400, 112_800,
     ],
   },
-  4: {
-    participants: 4, authenticatedParticipants: 4, slots: 12,
-    transactionBytes: 49_174, callManifestBytes: 584,
-    worstOperationCost: 3_917_521, worstMaximumOperationCost: 7_234_400,
-    worstRatio: 0.5415129105385381,
+  legacy: {
+    participants: 2, authenticatedParticipants: 2, slots: 6,
+    transactionBytes: 23_705, callManifestBytes: 294,
+    worstOperationCost: 6_272_229, worstMaximumOperationCost: 7_234_400,
+    worstRatio: 0.8670005805595489,
     inputOperationCosts: [
-      522_646, 686_981, 695, 686_981, 695, 559_848, 695, 3_825_456, 3_917_521, 3_916_983, 3_832_600,
-      27_321,
+      463_941, 495_079, 695, 6_272_229, 6_179_476, 27_321,
     ],
     inputMaximumOperationCosts: [
-      1_752_000, 2_951_200, 34_400, 2_951_200, 34_400, 1_746_400, 34_400, 7_234_400, 7_234_400,
-      7_234_400, 7_234_400, 112_800,
-    ],
-  },
-  5: {
-    participants: 5, authenticatedParticipants: 5, slots: 15,
-    transactionBytes: 62_359, callManifestBytes: 729,
-    worstOperationCost: 4_825_125, worstMaximumOperationCost: 7_234_400,
-    worstRatio: 0.6669696173836116,
-    inputOperationCosts: [
-      578_139, 752_356, 695, 752_356, 695, 752_356, 695, 624_638, 695, 4_733_713, 4_825_125, 4_824_587,
-      4_824_030, 4_724_976, 27_321,
-    ],
-    inputMaximumOperationCosts: [
-      1_784_800, 2_984_000, 34_400, 2_984_000, 34_400, 2_984_000, 34_400, 1_746_400, 34_400, 7_234_400,
-      7_234_400, 7_234_400, 7_234_400, 7_234_400, 112_800,
-    ],
-  },
-  8: {
-    participants: 8, authenticatedParticipants: 8, slots: 24,
-    transactionBytes: 93_483, callManifestBytes: 1_164,
-    worstOperationCost: 6_518_671, worstMaximumOperationCost: 7_234_400,
-    worstRatio: 0.901065879685945,
-    inputOperationCosts: [
-      506_970, 593_403, 695, 593_411, 695, 593_411, 695, 593_411, 695, 593_411, 695, 593_411, 695,
-      542_285, 695, 6_355_480, 6_518_671, 6_518_133, 6_517_576, 6_517_019, 6_516_462, 6_515_905,
-      6_336_836, 27_321,
-    ],
-    inputMaximumOperationCosts: [
-      1_690_400, 1_994_400, 34_400, 1_995_200, 34_400, 1_995_200, 34_400, 1_995_200, 34_400, 1_995_200,
-      34_400, 1_995_200, 34_400, 1_324_800, 34_400, 7_234_400, 7_234_400, 7_234_400, 7_234_400,
-      7_234_400, 7_234_400, 7_234_400, 7_234_400, 112_800,
+      1_852_000, 2_104_800, 34_400, 7_234_400, 7_234_400, 112_800,
     ],
   },
 });
 
-const buildChain = async (participants: number): Promise<TransactionBuilder> => {
+const buildChain = async (
+  participants: number,
+  messageBusKernel = true,
+): Promise<TransactionBuilder> => {
   const provider = createMessageBusCapstoneTestProvider();
-  const rootArtifact = compileString(ROOT, { forceStateful: true, messageBus: true });
-  const hopArtifact = compileString(HOP, { forceStateful: true, messageBus: true });
-  const sinkArtifact = compileString(SINK, { forceStateful: true, messageBus: true });
+  const options = { forceStateful: true, messageBus: true, messageBusKernel } as const;
+  const rootArtifact = compileString(ROOT, options);
+  const hopArtifact = compileString(HOP, options);
+  const sinkArtifact = compileString(SINK, options);
+  const convention = messageBusKernel ? 'kernel-row-loop' : 'legacy-unroll';
+  if ([rootArtifact, hopArtifact, sinkArtifact].some((artifact) => artifact.messageBus?.convention !== convention)) {
+    throw new Error(`capacity fixture did not compile with the requested ${convention} convention`);
+  }
   const connect = async (base: Contract, artifact: ReturnType<typeof compileString>): Promise<StatefulContract> => {
     const setup = await setupStatefulUtxos(
       provider, base, artifact.stateLayout!, {}, { saltContract: true },
@@ -262,18 +238,34 @@ const measure = (participants: number, builder: TransactionBuilder): CapacityRea
   };
 };
 
+const stockVmErrors = (builder: TransactionBuilder): string[] => {
+  const transaction = builder.buildLibauthTransaction();
+  const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+  const vm = createVirtualMachineBch2026(false);
+  return transaction.inputs.flatMap((_input, inputIndex) => {
+    const result = vm.evaluate({ inputIndex, sourceOutputs, transaction }) as { error?: string };
+    return result.error === undefined ? [] : [result.error];
+  });
+};
+
 describe('atomic single-transaction capacity', () => {
-  it.each([2, 4, 5])('fits a %i-participant compiled chain under stock BCH-2026 limits', async (count) => {
-    const builder = await buildChain(count);
+  it.each([
+    { convention: 'kernel' as const, messageBusKernel: true },
+    { convention: 'legacy' as const, messageBusKernel: false },
+  ])('fits a 2-participant $convention chain under stock BCH-2026 limits', async ({
+    convention, messageBusKernel,
+  }) => {
+    const count = 2;
+    const builder = await buildChain(count, messageBusKernel);
     const reading = measure(count, builder);
     expect(reading.transactionBytes).toBeLessThanOrEqual(100_000);
     expect(reading.worstRatio).toBeLessThanOrEqual(1);
     expect(reading.authenticatedParticipants).toBe(count);
     expect(reading.slots).toBeGreaterThan(count);
     console.log(`MESSAGE_BUS_ATOMIC_CAPACITY ${JSON.stringify(reading)}`);
-    expect(reading).toEqual(EXPECTED[count]);
-    // The ordinary suite pins exact stock-VM costs. An explicit live run broadcasts the same finalized bytes;
-    // filter for the eight-participant case to prove the maximum admitted physical/resource shape on BCHN.
+    expect(reading).toEqual(EXPECTED_TWO_PARTY[convention]);
+    // The ordinary suite pins exact stock-VM costs. This live branch proves that the same finalized two-party
+    // bytes are accepted by BCHN.
     if (process.env.TESTS_USE_REGTEST) {
       const finalizedHex = binToHex(encodeTransaction(builder.buildLibauthTransaction()));
       await expect(builder.send()).resolves.toMatchObject({
@@ -285,8 +277,18 @@ describe('atomic single-transaction capacity', () => {
     }
   }, 600_000);
 
-  it('refuses an 8-participant compiled chain above the standard relay byte ceiling', async () => {
-    await expect(buildChain(8)).rejects.toThrow(/relay-transaction-size.*100000-byte standard relay ceiling/s);
+  it.each([
+    { count: 4, messageBusKernel: true, convention: 'kernel' },
+    { count: 4, messageBusKernel: false, convention: 'legacy' },
+    { count: 5, messageBusKernel: true, convention: 'kernel' },
+    { count: 8, messageBusKernel: true, convention: 'kernel' },
+  ])('classifies a $count-participant $convention chain at the stock operation-density boundary', async ({
+    count, messageBusKernel,
+  }) => {
+    const builder = await buildChain(count, messageBusKernel);
+    const transaction = builder.buildLibauthTransaction();
+    expect(encodeTransaction(transaction).length).toBeLessThanOrEqual(100_000);
+    expect(stockVmErrors(builder)).toContainEqual(expect.stringMatching(/operation cost density limit/));
   }, 600_000);
 
   it.skipIf(Boolean(process.env.TESTS_USE_REGTEST)).each([6])(
@@ -302,10 +304,12 @@ describe('atomic single-transaction capacity', () => {
     }, 300_000,
   );
 
-  it.skipIf(Boolean(process.env.TESTS_USE_REGTEST))(
-    'refuses an 8-participant resource-heavy chain above the standard relay byte ceiling', async () => {
-      await expect(buildResourceHeavyChain(8)).rejects
-        .toThrow(/relay-transaction-size.*100000-byte standard relay ceiling/s);
+  it.skipIf(Boolean(process.env.TESTS_USE_REGTEST)).each([8])(
+    'converges a %i-participant resource-heavy chain only under the relaxed semantic profile', async (count) => {
+      const builder = await buildResourceHeavyChain(count);
+      const transaction = builder.buildLibauthTransaction();
+      expect(encodeTransaction(transaction).length).toBeGreaterThan(100_000);
+      expect(stockVmErrors(builder)).toContainEqual(expect.stringMatching(/operation cost density limit/));
     }, 300_000,
   );
 

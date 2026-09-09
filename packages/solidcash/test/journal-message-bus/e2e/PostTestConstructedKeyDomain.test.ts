@@ -16,7 +16,7 @@ const SOURCE = `contract C() {
     int cursor = 0;
     do {
       keys[cursor] = base + cursor;
-      cursor = cursor + 1;
+      cursor = cursor + 2;
     } while (cursor < limit);
   }
 
@@ -70,13 +70,25 @@ describe('post-test constructed mapping-key domain BCH VM', () => {
     await fund();
     await expect(contract.check(41n, 1n, alicePub, signature).send()).resolves.toBeDefined();
 
-    // A positive partial limit writes its prefix and leaves the remaining constructed element at zero.
+    // A positive non-unit progression writes only its exact sparse domain.
     await fund();
-    await expect(contract.write(3n, 51n, 2n).send()).resolves.toBeDefined();
-    for (const [key, value] of [[51n, 1n], [52n, 2n], [0n, 3n]] as const) {
+    await expect(contract.write(3n, 51n, 3n).send()).resolves.toBeDefined();
+    for (const [key, value] of [[51n, 1n], [0n, 2n], [53n, 3n]] as const) {
       await fund();
       await expect(contract.check(key, value, alicePub, signature).send()).resolves.toBeDefined();
     }
+
+    // The updated counter is tested before the second iteration: a bound below the stride writes only zero.
+    await fund();
+    await expect(contract.write(3n, 61n, 1n).send()).resolves.toBeDefined();
+    for (const [key, value] of [[61n, 1n], [0n, 3n], [63n, 0n]] as const) {
+      await fund();
+      await expect(contract.check(key, value, alicePub, signature).send()).resolves.toBeDefined();
+    }
+
+    // The symbolic recipe does not clamp source execution to the allocation: index two still faults here.
+    await fund();
+    await expect(contract.write(2n, 71n, 3n).send()).rejects.toThrow();
 
     await fund();
     const send = provider.sendRawTransaction.bind(provider);
@@ -86,7 +98,7 @@ describe('post-test constructed mapping-key domain BCH VM', () => {
       throw new Error('capture-only');
     };
     try {
-      await expect(contract.write(3n, 61n, 2n).send()).rejects.toThrow('capture-only');
+      await expect(contract.write(3n, 81n, 3n).send()).rejects.toThrow('capture-only');
     } finally {
       (provider as any).sendRawTransaction = send;
     }

@@ -10,13 +10,13 @@ const KERNEL = {
 
 const compile = (loop: string) => compileString(`contract C() {
   mapping(int => int) slots;
-  function fill(int[] memory keys, int base, int limit) internal pure {
+  function fill(int[] memory keys, int base, int limit, int step) internal pure {
     int cursor = 0;
     ${loop}
   }
-  function write(int count, int base, int limit) public {
+  function write(int count, int base, int limit, int step) public {
     int[] memory keys = new int[](count);
-    fill(keys, base, limit);
+    fill(keys, base, limit, step);
     for (int cursor = 0; cursor < count; cursor = cursor + 1) {
       this.slots[keys[cursor]] = cursor + 1;
     }
@@ -48,10 +48,32 @@ describe('post-test constructed mapping-key domains', () => {
     expect(operators).toContain('<');
   });
 
-  it('keeps a non-unit post-test progression fenced', () => {
+  it('publishes the exact sparse domain of a positive literal progression', () => {
     const artifact = compile(`do {
       keys[cursor] = base + cursor;
       cursor = cursor + 2;
+    } while (cursor < limit);`);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
+      .toMatchObject({ eligible: true });
+    const expression = artifact.abi.find((entry) => entry.name === 'write')
+      ?.sortedUpsertLoopInfo?.[0]?.varyingKeyExpressions?.[0];
+    const operators: string[] = [];
+    const collect = (candidate: unknown): void => {
+      if (!candidate || typeof candidate !== 'object') return;
+      const record = candidate as Record<string, unknown>;
+      if (typeof record.operator === 'string') operators.push(record.operator);
+      for (const value of Object.values(record)) collect(value);
+    };
+    collect(expression);
+    expect(operators).toContain('%');
+    expect(operators).toContain('||');
+    expect(operators).toContain('-');
+  });
+
+  it('keeps a runtime-selected post-test progression fenced', () => {
+    const artifact = compile(`do {
+      keys[cursor] = base + cursor;
+      cursor = cursor + step;
     } while (cursor < limit);`);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
       .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_UNBOUNDED_KEY' });

@@ -19,6 +19,7 @@ import {
   planKernelEntryJournalSettlementAuthority,
   kernelEntryJournalSettlementOutputSegments,
   planKernelEntryJournalSettlementOutputs,
+  planKernelEntryJournalReadCarrierMaterialization,
   planKernelEntryJournalSettlementOutputSegments,
   validateKernelEntryJournalSettlementGroups,
   planKernelEntryJournalStreams,
@@ -569,6 +570,51 @@ describe('kernel pending-entry journal codec', () => {
     expect(plan.settlementAuthorities.get(0)).toMatchObject({
       accessStreamIndex: 1, accessOrdinal: 0, recordOrdinal: 0, recordRole: 'predecessor',
     });
+  });
+
+  it('plans one physical clean-read carrier per global record/role only with compiler capability', () => {
+    const capability = { kind: 'internal-read-carrier', version: 1 } as const;
+    const producer = {
+      frameIndex: 0, accessStreamIndex: 0, accessOrdinal: 0,
+      access: {
+        targetRecordOrdinal: 4, presentBefore: true, presentAfter: true, mutates: false,
+        authenticatesTarget: true,
+      },
+    };
+    const consumer = {
+      frameIndex: 1, accessStreamIndex: 0, accessOrdinal: 0,
+      access: {
+        targetRecordOrdinal: 4, presentBefore: true, presentAfter: true, mutates: false,
+      },
+    };
+    const secondProducer = {
+      frameIndex: 0, accessStreamIndex: 0, accessOrdinal: 1,
+      access: {
+        targetRecordOrdinal: 9, presentBefore: true, presentAfter: true, mutates: false,
+        authenticatesTarget: true,
+      },
+    };
+    const secondConsumer = {
+      frameIndex: 1, accessStreamIndex: 0, accessOrdinal: 1,
+      access: {
+        targetRecordOrdinal: 9, presentBefore: true, presentAfter: true, mutates: false,
+      },
+    };
+    expect(planKernelEntryJournalReadCarrierMaterialization(
+      capability, [producer, secondProducer, consumer, secondConsumer],
+    ).map(({ recordOrdinal, recordRole, firstAuthenticator, finalOutput }) => ({
+      recordOrdinal, recordRole, frameIndex: firstAuthenticator.frameIndex, finalOutput,
+    }))).toEqual([
+      { recordOrdinal: 4, recordRole: 'target', frameIndex: 0, finalOutput: true },
+      { recordOrdinal: 9, recordRole: 'target', frameIndex: 0, finalOutput: true },
+    ]);
+    expect(() => planKernelEntryJournalReadCarrierMaterialization(undefined, [producer]))
+      .toThrow('requires compiler internal-read-carrier capability');
+    expect(() => planKernelEntryJournalReadCarrierMaterialization(capability, [consumer, producer]))
+      .toThrow('consumer precedes its authenticated producer');
+    expect(() => planKernelEntryJournalReadCarrierMaterialization(capability, [producer, {
+      ...consumer, access: { ...consumer.access, authenticatesTarget: true },
+    }])).toThrow('requires exactly one first authenticator');
   });
 
   it('rejects forged or ambiguous settlement identity programs', () => {

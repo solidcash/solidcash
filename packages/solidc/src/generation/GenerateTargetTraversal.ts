@@ -1277,6 +1277,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   /** Compact route-entry carrier identity and validated cardinality retained across row execution. */
   private static readonly KERNEL_JOURNAL_RECORDS_EXPECTED_COUNT = '__internal__kernelJournalRecordsExpectedCount';
   private static readonly KERNEL_JOURNAL_RECORDS_INITIAL_HASH = '__internal__kernelJournalRecordsInitialHash';
+  // A dense route-level flush has a different ownership model from the pre-existing per-row output counters:
+  // it consumes every global record once and contributes one *global* physical output delta.  Keep the GTT
+  // reconciliation below behind this hard release gate until the SDK materializer and the artifact capability
+  // are released together.  In particular, messageBusKernel is not that capability: it is only a codegen mode.
+  //
+  // This deliberately remains false rather than becoming an undocumented compiler option.  A future activation
+  // must change this gate in the same review which publishes `kernelEntryJournal.internal-read-carrier` and proves
+  // the paired input/flag rewrite on BCH VM.  That prevents a caller from enabling an incomplete physical protocol
+  // merely by passing a compiler preference.
+  private static readonly KERNEL_JOURNAL_FINAL_OUTPUT_CURSOR_RECONCILIATION_RELEASED = false;
   private runtimeLoopEntryOutputCountActive = false;
   private static readonly RUNTIME_LOOP_ENTRY_OUTPUT_COUNT = '__internal__runtimeLoopEntryOutputCount';
   // Counter-loop events are accumulated as framed (commitment, locking-bytecode) records while the source loop
@@ -7575,6 +7585,19 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private functionNeedsRuntimeLoopEntryOutputCount(node: FunctionDefinitionNode): boolean {
     return node.functionId !== undefined
       && this.runtimeLoopEntryOutputCountFunctionIds.has(node.functionId);
+  }
+
+  /**
+   * Whether this route may fold the dense final-journal output cursor into the ordinary trailing-output cursor.
+   *
+   * The final cursor is meaningful only as one transaction-wide physical settlement delta.  It must not be
+   * inferred from the kernel convention, from journal records, or from an SDK-side planner: all of those are
+   * preparatory state while later clean consumers still materialize eagerly.  Keep the emitted route on the
+   * established per-row accounting path until the versioned artifact capability is published with its complete
+   * SDK materialization protocol.
+   */
+  private kernelJournalFinalOutputCursorReconciliationReleased(): boolean {
+    return GenerateTargetTraversalWithLocation.KERNEL_JOURNAL_FINAL_OUTPUT_CURSOR_RECONCILIATION_RELEASED;
   }
 
   private functionNeedsRuntimeLoopEventContext(node: FunctionDefinitionNode): boolean {
@@ -24883,8 +24906,30 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_ROT, loc); this.emit(Op.OP_ADD, loc);
       this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_DROP, loc); // aggregate'
     }
-    this.emit(Op.OP_FROMALTSTACK, loc);
+    this.emit(Op.OP_FROMALTSTACK, loc); // aggregate, finalOutputCursorDelta
+    if (!this.kernelJournalFinalOutputCursorReconciliationReleased()) {
+      // The dormant physical-settlement planner deliberately has no effect on existing route accounting.  Until
+      // its matching SDK capability is published, preserve the historical stack and bytecode exactly.
+      this.emit(Op.OP_NUMEQUALVERIFY, loc);
+      return;
+    }
+
+    // Keep the authenticated dense final-output cursor while comparing it with the complete address census.
+    // `OP_NUMEQUALVERIFY` consumes both values, so park a duplicate before the comparison; after it succeeds the
+    // returned delta is the only live temporary above the tracked route frame.  This is intentionally one global
+    // addition: adding the per-stream accounting counters as well would double-count mixed clean/dirty settlement.
+    this.emit(Op.OP_DUP, loc); this.emit(Op.OP_TOALTSTACK, loc); // aggregate, delta; alt: delta
     this.emit(Op.OP_NUMEQUALVERIFY, loc);
+    this.emit(Op.OP_FROMALTSTACK, loc); // finalOutputCursorDelta
+    const deltaName = '(kernel_journal_final_output_cursor_delta)';
+    this.pushToStack(deltaName);
+    if (!this.runtimeLoopEntryOutputCountActive) {
+      throw new Error('Kernel final journal output reconciliation requires a runtime-loop output cursor');
+    }
+    this.emitAccumulateRuntimeLoopEntryOutputs(deltaName, loc);
+    const deltaIndex = this.getStackIndex(deltaName);
+    this.emit(encodeInt(BigInt(deltaIndex)), loc); this.emit(Op.OP_ROLL, loc); this.emit(Op.OP_DROP, loc);
+    this.removeFromStack(deltaIndex);
   }
 
   /**

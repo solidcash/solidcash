@@ -68,12 +68,13 @@ pass, the differential corpus agrees, and the route-scaling check passes. Any in
 difference, nondeterministic fresh compile, suppressed codegen failure, or route growth proportional to maximum
 rows blocks the checkpoint.
 
-The stabilization census is frozen when the current known-failure ledger has been classified. Every non-skipped
-end-to-end test at that census which expects a kernel handler to be eligible or sends a kernel batch is part of the
-advertised beta surface. The beta gate runs those positive proofs from a clean checkout. A failing positive proof is
-a release blocker until either the represented type/effect/flow family works end to end, or that family is moved
-behind a general `KERNEL_*` fence and the test is replaced by a negative admission regression. Record the census
-commit in the beta release notes; later tests do not silently move that boundary.
+The stabilization census is frozen when the current known-failure ledger has been classified. The positive proofs
+enumerated in `scripts/kernel-beta-manifest.json` define the advertised beta surface; the broader compiler and SDK
+suites remain regression gates but do not silently widen that surface. The beta gate runs the enumerated proofs from
+a clean checkout. A failing positive proof is a release blocker until either the represented type/effect/flow family
+works end to end, or that family is moved behind a general `KERNEL_*` fence and the proof is replaced by a negative
+admission regression. Record the census commit and proof inventory in the beta release notes; later tests do not
+silently move that boundary.
 
 A finding after the census blocks the beta only when it demonstrates a soundness, determinism, hidden-recovery,
 identity, `OP_INVOKE`, scaling, or observable-semantics defect in the frozen surface. A new source combination which
@@ -101,8 +102,10 @@ The finite stop procedure is:
 3. From a clean checkout, run the compiler and SDK journal/message-bus suites, kernel-versus-legacy differential
    tests, maintained fresh-compile corpus, route-scaling check, and the one-shot build. Repeat only a failed or
    nondeterministic gate; an open-ended soak is not part of the beta criterion. `yarn test:kernel-beta` is the
-   executable gate, with its frozen census and source digests in `scripts/kernel-beta-manifest.json`. The
-   `test:kernel-beta:local` variant intentionally omits cold-corpus evidence and is diagnostic only.
+   executable gate, with its frozen census, required proof titles, and source digests in
+   `scripts/kernel-beta-manifest.json`. A required proof which is removed, renamed, skipped, or does not pass fails
+   the gate even if the surrounding suite remains green. The `test:kernel-beta:local` variant intentionally omits
+   cold-corpus evidence and is diagnostic only.
 4. Record the census commit, commands, pass counts, cold compile times, and route/full artifact sizes in the beta
    release notes. Performance numbers are evidence; only loss of row-loop scaling or an agreed hard platform limit
    is a blocker.

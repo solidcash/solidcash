@@ -2,8 +2,9 @@
 /* eslint-disable no-console */
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
-import { dirname, relative, resolve } from 'node:path';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { dirname, join, relative, resolve } from 'node:path';
+import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -48,7 +49,10 @@ const addedProductionLines = productionDiff.split('\n')
   .filter((line) => line.startsWith('+') && !line.startsWith('+++'));
 const escapedApplicationNames = manifest.forbiddenApplicationNames
   .map((name) => name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
-const applicationNamePattern = new RegExp(`\\b(?:${escapedApplicationNames.join('|')})\\b`, 'i');
+// Treat the manifest entries as forbidden vocabulary stems. Application-shaped
+// identifiers are commonly suffixed (for example, a version or operation), so
+// word boundaries would let the most likely leaks through.
+const applicationNamePattern = new RegExp(`(?:${escapedApplicationNames.join('|')})`, 'i');
 const shapedLines = addedProductionLines.filter((line) => applicationNamePattern.test(line));
 if (shapedLines.length > 0) {
   throw new Error(`kernel implementation added application-shaped production names:\n${shapedLines.join('\n')}`);
@@ -66,6 +70,22 @@ const actualColdMatrix = manifest.coldCompiles.map((entry) =>
   `${entry.name}:${Object.keys(entry.modes).sort().join(',')}`).sort();
 if (JSON.stringify(actualColdMatrix) !== JSON.stringify(requiredColdMatrix)) {
   throw new Error(`kernel beta manifest must contain the exact cold matrix: ${requiredColdMatrix.join('; ')}`);
+}
+const requiredProofs = manifest.requiredKernelProofs;
+if (!Array.isArray(requiredProofs) || requiredProofs.length === 0) {
+  throw new Error('kernel beta manifest must pin at least one required kernel proof inventory');
+}
+const proofIds = new Set();
+for (const proof of requiredProofs) {
+  if (!proof || typeof proof.id !== 'string' || proof.id.length === 0
+    || typeof proof.workspace !== 'string' || proof.workspace.length === 0
+    || typeof proof.file !== 'string' || proof.file.length === 0 || proof.file.startsWith('/')
+    || proof.file.includes('..') || !Array.isArray(proof.tests) || proof.tests.length === 0
+    || proof.tests.some((name) => typeof name !== 'string' || name.length === 0)
+    || new Set(proof.tests).size !== proof.tests.length || proofIds.has(proof.id)) {
+    throw new Error('kernel beta positive proof inventory is malformed');
+  }
+  proofIds.add(proof.id);
 }
 if (!allowDirty && git('status', '--porcelain').length > 0) {
   throw new Error('kernel beta gate requires a clean checkout (use --allow-dirty only for local diagnosis)');
@@ -126,6 +146,37 @@ const pinnedCompileResult = (result) => ({
   },
 });
 
+const verifyRequiredProofInventory = () => {
+  const reportDirectory = mkdtempSync(join(tmpdir(), 'solidcash-kernel-beta-'));
+  try {
+    const report = [];
+    for (const proof of requiredProofs) {
+      const reportPath = join(reportDirectory, `${proof.id}.json`);
+      run('yarn', [
+        'workspace', proof.workspace, 'vitest', 'run', proof.file,
+        '--reporter=json', `--outputFile=${reportPath}`,
+      ]);
+      if (!existsSync(reportPath)) throw new Error(`${proof.id} did not write a Vitest report`);
+      const result = JSON.parse(readFileSync(reportPath, 'utf8'));
+      const assertions = result.testResults.flatMap((testFile) => testFile.assertionResults ?? []);
+      const byTitle = new Map(assertions.map((assertion) => [assertion.title, assertion.status]));
+      const missingOrInactive = proof.tests.filter((title) => byTitle.get(title) !== 'passed');
+      if (result.success !== true || result.numFailedTests !== 0 || missingOrInactive.length > 0) {
+        throw new Error(`${proof.id} no longer matches its frozen positive proof inventory: `
+          + `required ${JSON.stringify(proof.tests)}, inactive ${JSON.stringify(missingOrInactive)}, `
+          + `summary ${JSON.stringify({
+            total: result.numTotalTests, passed: result.numPassedTests, failed: result.numFailedTests,
+            pending: result.numPendingTests, todo: result.numTodoTests,
+          })}`);
+      }
+      report.push({ id: proof.id, passed: proof.tests.length });
+    }
+    return report;
+  } finally {
+    rmSync(reportDirectory, { recursive: true, force: true });
+  }
+};
+
 const profile = (entry, mode) => {
   const coldEnv = { ...process.env };
   delete coldEnv.SOLIDC_COMPILE_CACHE;
@@ -159,6 +210,7 @@ if (!coldOnly) {
   const [command, ...args] = manifest.testCommands.find(({ id }) => id === 'build').argv;
   run(command, args);
 }
+const requiredProofReport = coldOnly ? 'skipped' : verifyRequiredProofInventory();
 
 const compileReport = [];
 if (!testsOnly) {
@@ -209,5 +261,6 @@ console.log(JSON.stringify({
   censusCommit: manifest.censusCommit,
   head: git('rev-parse', 'HEAD'),
   tests: coldOnly ? 'skipped' : 'passed',
+  requiredKernelProofs: requiredProofReport,
   coldCompiles: testsOnly ? 'skipped' : compileReport,
 }, null, 2));

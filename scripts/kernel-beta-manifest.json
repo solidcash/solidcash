@@ -10,6 +10,63 @@
     { "id": "sdk-journal", "argv": ["yarn", "workspace", "solidcash", "vitest", "run", "test/journal-message-bus"] },
     { "id": "sdk-regressions", "argv": ["yarn", "workspace", "solidcash", "vitest", "run", "test/unit/AssignPhysicalReturnIndices.test.ts", "test/unit/DirectMappingReadPlan.test.ts", "test/FnPtrStructFieldCall.test.ts", "test/e2e/CrossContractSubcaseSoundness.test.ts", "test/e2e/CrossContractSortedWrite.test.ts", "test/e2e/DynamicArrayCopyCast.test.ts", "test/e2e/X167ArrayCopyReplaces.test.ts"] }
   ],
+  "requiredKernelProofs": [
+    {
+      "id": "kernel-loop-route",
+      "workspace": "solidc",
+      "file": "test/journal-message-bus/KernelLoopRoute.test.ts",
+      "tests": [
+        "copies the typed value rather than the enclosing carrier into an inline chunkable entry tail",
+        "dispatches a void handler from one row loop rather than unrolled rowCount bands",
+        "captures returning scalar results inside the same runtime loop",
+        "keeps the unknown-selector revert on the loop route",
+        "publishes maximumRows as a runtime bound, not an AST copy count",
+        "keeps kernel route size independent of the configured row ceiling",
+        "keeps 'nested counter-keyed mapping rows' proportional to row logic rather than the configured row ceiling",
+        "keeps 'typed-call event and result rows' proportional to row logic rather than the configured row ceiling",
+        "dispatches event-emitting handlers from the runtime row loop without a new clone family",
+        "journals a reusable scalar helper as one OP_INVOKE body on the kernel route",
+        "keeps a reference-typed graph handler behind one body-independent OP_INVOKE boundary",
+        "threads one route-owned record carrier through each direct journal-aware handler",
+        "publishes one transaction-wide final flush for general scalar set and add rows",
+        "keeps first-touch record ordinals separate from dense materialized output ordinals",
+        "propagates the journal context through direct and one-level internal calls",
+        "reaches a fixed point through two returning helper levels",
+        "unions mixed collection cardinalities while keeping one record carrier",
+        "fails closed when an unresolved function pointer could enter the journal context ABI"
+      ]
+    },
+    {
+      "id": "kernel-observable-parity",
+      "workspace": "solidcash",
+      "file": "test/journal-message-bus/e2e/KernelLegacyObservableParity.test.ts",
+      "tests": [
+        "preserves payload event effects across fresh route compiles",
+        "preserves scalar, repeated-key mapping, and branch effects across fresh route compiles"
+      ]
+    },
+    {
+      "id": "kernel-journal-ownership",
+      "workspace": "solidcash",
+      "file": "test/journal-message-bus/e2e/KernelJournalOwnershipCharacterization.test.ts",
+      "tests": [
+        "pins kernel and legacy bus boundaries while preserving exact stream topology",
+        "settles same-key source carriers and destination results in source order",
+        "settles one read carrier into two same-row result collections in canonical order",
+        "inserts destination entries from authenticated source-only carriers",
+        "preserves fixed-width bytes carriers across the shared key permutation",
+        "proves legacy-compiled direct-entry semantics and rejects swapped settlement identities"
+      ]
+    },
+    {
+      "id": "kernel-read-carrier-boundary",
+      "workspace": "solidcash",
+      "file": "test/journal-message-bus/e2e/KernelReadCarrierBoundary.test.ts",
+      "tests": [
+        "rejects repeated clean reads before broadcast while the carrier protocol is unpublished"
+      ]
+    }
+  ],
   "coldCompiles": [
     {
       "name": "marketplace-v1",
@@ -35,7 +92,7 @@
           "fullBytes": 126967,
           "routeHash": "f99e6e99a36d0dbb8e8583e815fba7224be8329616193798c824294e7830e6be",
           "fullHash": "072386a584bacdd29c9d4e05278c590d60a2a851004244c23262158742f845ed",
-          "metadataHash": "b73d7c225e15f61fa57768444fe41a1a41bad6edb6ff572820acf229af23d8c4",
+          "metadataHash": "1c50e3f05ada9ab6be4c71fcb5ea3a46c58f2844f4902278e9677f29a4d3d382",
           "handlers": { "total": 39, "eligible": 39, "refused": 0 }
         }
       }

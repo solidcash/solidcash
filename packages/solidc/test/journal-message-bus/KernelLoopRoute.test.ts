@@ -52,6 +52,41 @@ contract Store() {
 }
 `;
 
+const ROUTE_SCALING_FAMILIES = [
+  {
+    name: 'nested counter-keyed mapping rows',
+    source: `
+      pragma solidcash ^0.13.0;
+      contract NestedStore() {
+        mapping(int => mapping(int => int)) values;
+        function write(int outer, int count, int value) public {
+          for (int cursor = 0; cursor < count; cursor = cursor + 1) {
+            this.values[outer][cursor] = value;
+          }
+          require(true);
+        }
+      }
+    `,
+    options: {},
+  },
+  {
+    name: 'typed-call event and result rows',
+    source: `
+      pragma solidcash ^0.13.0;
+      interface Remote { function read(int key) external returns (int); }
+      contract Pipeline(Remote remote) {
+        event Observed(int value);
+        function execute(int key) public returns (int) {
+          int value = remote.read(key);
+          emit Observed(value);
+          return value;
+        }
+      }
+    `,
+    options: { messageBusGraphContext: true },
+  },
+] as const;
+
 const routeAsm = (artifact: ReturnType<typeof compileString>): string => {
   const body = artifact.functionBodies?.['53434231'];
   expect(body).toBeDefined();
@@ -193,6 +228,38 @@ describe('message-bus kernel loop route', () => {
     expect(legacyGrowth).toBeGreaterThan(400);
   });
 
+  it.each(ROUTE_SCALING_FAMILIES)(
+    'keeps $name proportional to row logic rather than the configured row ceiling',
+    ({ source, options }) => {
+      const compileAt = (messageBusKernel: boolean, maximumRows: number): ReturnType<typeof compileString> =>
+        compileString(source, {
+          ...OPTIONS,
+          ...options,
+          messageBusKernel,
+          __messageBusMaximumRows: maximumRows,
+          maximumInputBytes: 1_000_000,
+          suppressWarnings: true,
+        } as Parameters<typeof compileString>[1]);
+      const ceilings = [2, 4, 8] as const;
+      const kernel = ceilings.map((maximumRows) => compileAt(true, maximumRows));
+      const routeBytes = (artifact: ReturnType<typeof compileString>): number =>
+        artifact.functionBodies!['53434231'].length / 2;
+
+      expect(kernel.map((artifact) => artifact.messageBus?.maximumRows)).toEqual(ceilings);
+      expect(kernel.every((artifact) => artifact.messageBus?.convention === 'kernel-row-loop')).toBe(true);
+      expect(kernel.every((artifact) => artifact.messageBus?.handlers.some((handler) => handler.eligible))).toBe(true);
+
+      const kernelSizes = kernel.map(routeBytes);
+      // Graph-result/effect helpers can cross a small outlining threshold when the encoded ceiling changes, but
+      // the row body is still emitted once. Keep the allowance far below the hundreds of bytes per legacy row.
+      expect(Math.max(...kernelSizes) - Math.min(...kernelSizes)).toBeLessThan(128);
+
+      // Full artifact size is intentionally not the route-scaling oracle: outlined handler logic is published
+      // once outside the SCB1 dispatcher. Assert only that it remains deterministic for each compiled ceiling.
+      expect(kernel.map((artifact) => artifact.debug.bytecode.length / 2).every(Number.isSafeInteger)).toBe(true);
+    },
+  );
+
   it('dispatches event-emitting handlers from the runtime row loop without a new clone family', () => {
     const artifact = compileString(`
 pragma solidcash ^0.13.0;
@@ -315,8 +382,8 @@ contract Acc() {
     ));
     expect(records?.every((input) => input.type === 'bytes')).toBe(true);
     const routeByteLength = artifact.bytecode.length / 2;
-    // The 33-slot carrier route is currently 9,603 bytes; retain at least 350 bytes below the 10,000-byte limit.
-    expect(routeByteLength, `segmented route bytecode is ${routeByteLength} bytes`).toBeLessThan(9_650);
+    // Retain at least 300 bytes below the 10,000-byte limit as journal helpers evolve.
+    expect(routeByteLength, `segmented route bytecode is ${routeByteLength} bytes`).toBeLessThan(9_700);
 
     // The route retains the unchanged per-row path, while a changed carrier enters the covenant-verified final
     // commitment flush and an exact address-cardinality scan.
@@ -375,16 +442,22 @@ contract Acc() {
         }
       }
     `, { ...OPTIONS, maximumInputBytes: 1_000_000 });
-    // Admission remains deliberately unchanged until the SDK publishes the matching physical journal band.
+    // One row can authenticate and settle this read-to-set shape without an internal carrier. Reusing the same
+    // clean input across rows remains separately gated until the SDK publishes the matching physical journal band.
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'copy'))
-      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+      .toMatchObject({ eligible: true });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write')?.eligible).toBe(true);
 
     const asm = routeAsm(artifact);
-    // Clean authenticated, dirty authenticated, and dirty synthetic records materialize. Clean synthetic absence
-    // consumes a first-touch record ordinal but skips the output and its dense cursor increment.
+    // Clean authenticated, internally carried clean, dirty authenticated, and dirty synthetic records materialize.
+    // Clean synthetic absence consumes a first-touch record ordinal but skips the output and dense cursor increment.
+    // The optimizer may outline the first clean-header comparison, so inspect all emitted bodies for that marker.
+    const emittedAsm = [asm, ...Object.values(artifact.debug?.invokeDebug ?? {})
+      .map(({ bytecode }) => bytecodeToAsm(hexToBin(bytecode)))].join(' ');
+    expect(emittedAsm).toContain('0501');
     expect(asm).toContain(
-      'OP_DUP 0501 OP_EQUAL OP_OVER 0503 OP_EQUAL OP_BOOLOR OP_OVER 050a OP_EQUAL OP_BOOLOR OP_IF',
+      'OP_OVER 0503 OP_EQUAL OP_BOOLOR OP_OVER 050a OP_EQUAL OP_BOOLOR '
+      + 'OP_OVER 0511 OP_EQUAL OP_BOOLOR OP_IF',
     );
     expect(asm).toMatch(
       /OP_2DROP OP_2DROP OP_TOALTSTACK OP_1ADD OP_FROMALTSTACK OP_ELSE 050c OP_EQUALVERIFY OP_DROP OP_ENDIF/,

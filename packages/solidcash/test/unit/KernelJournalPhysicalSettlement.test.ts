@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import type { JournalSettlementIdentityAbi } from '@solidcash/utils';
-import { planKernelEntryJournalPhysicalSettlement } from '../../src/stateful/KernelEntryJournal.js';
+import {
+  planKernelEntryJournalPhysicalSettlement,
+  type KernelEntryJournalAccess,
+  type KernelEntryJournalSettlementOccurrence,
+} from '../../src/stateful/KernelEntryJournal.js';
 
 const identity = (
   accessStreamIndex: number,
@@ -125,5 +129,63 @@ describe('kernel journal physical settlement plan', () => {
     }])).toThrow('multiple non-clean authenticators');
     expect(() => planKernelEntryJournalPhysicalSettlement([clean(false, 0)]))
       .toThrow('has no authenticated producer');
+  });
+
+  it('does not derive physical settlement from a non-canonical access object', () => {
+    const occurrence = (access: unknown): KernelEntryJournalSettlementOccurrence => ({
+      frameIndex: 0, identity: identity(0, 'carrier-only'), accessOrdinal: 0,
+      access: access as KernelEntryJournalAccess,
+    });
+    // This direct object could otherwise look like a clean authenticated carrier whose final disposition is
+    // absence. The compact access format forbids it: a presence transition needs a predecessor and mutates.
+    expect(() => planKernelEntryJournalPhysicalSettlement([occurrence({
+      targetRecordOrdinal: 1, presentBefore: true, presentAfter: false, mutates: false,
+      authenticatesTarget: true,
+    })])).toThrow('journal access predecessor presence must match its topology transition');
+    expect(() => planKernelEntryJournalPhysicalSettlement([occurrence({
+      targetRecordOrdinal: 1, predecessorRecordOrdinal: 1,
+      presentBefore: false, presentAfter: false, mutates: false,
+      authenticatesPredecessor: true,
+    })])).toThrow('journal target and predecessor record ordinals must differ');
+  });
+
+  it('binds each record ordinal to one source-ordered presence flow', () => {
+    expect(() => planKernelEntryJournalPhysicalSettlement([
+      {
+        frameIndex: 0, identity: identity(0, 'carrier-only'), accessOrdinal: 0,
+        access: {
+          targetRecordOrdinal: 1, presentBefore: true, presentAfter: true, mutates: false,
+          authenticatesTarget: true,
+        },
+      },
+      {
+        frameIndex: 1, identity: identity(1, 'mutation-settlement'), accessOrdinal: 0,
+        access: {
+          // This is individually well-formed but contradicts the authenticated pre-state above.
+          targetRecordOrdinal: 1, predecessorRecordOrdinal: 2,
+          presentBefore: false, presentAfter: true, mutates: true,
+          authenticatesPredecessor: true,
+        },
+      },
+    ])).toThrow('changes target pre-state');
+
+    expect(() => planKernelEntryJournalPhysicalSettlement([
+      {
+        frameIndex: 0, identity: identity(0, 'mutation-settlement'), accessOrdinal: 0,
+        access: {
+          targetRecordOrdinal: 1, predecessorRecordOrdinal: 2,
+          presentBefore: true, presentAfter: false, mutates: true,
+          authenticatesTarget: true, authenticatesPredecessor: true,
+        },
+      },
+      {
+        frameIndex: 1, identity: identity(1, 'carrier-only'), accessOrdinal: 0,
+        access: {
+          targetRecordOrdinal: 3, predecessorRecordOrdinal: 1,
+          presentBefore: false, presentAfter: false, mutates: false,
+          authenticatesPredecessor: true,
+        },
+      },
+    ])).toThrow('deleted record 1 cannot be a predecessor');
   });
 });

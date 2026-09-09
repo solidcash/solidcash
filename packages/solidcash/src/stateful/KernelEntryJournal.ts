@@ -710,6 +710,65 @@ type KernelEntryJournalPhysicalReference = {
   cleanCarrier: boolean;
 };
 
+/**
+ * The physical planner accepts decoded access objects rather than their wire form, so retain the compact
+ * program's topology invariants at this boundary.  In particular, the planner must not be usable to derive
+ * an apparently valid absence settlement from an object which the compact encoder would reject.
+ */
+function validatePhysicalSettlementAccess(access: KernelEntryJournalAccess): void {
+  requireRecordOrdinal('targetRecordOrdinal', access.targetRecordOrdinal);
+  if (access.predecessorRecordOrdinal !== undefined) {
+    requireRecordOrdinal('predecessorRecordOrdinal', access.predecessorRecordOrdinal);
+    if (access.predecessorRecordOrdinal === access.targetRecordOrdinal) {
+      throw new Error('journal target and predecessor record ordinals must differ');
+    }
+  }
+  const requiresPredecessor = !access.presentBefore || !access.presentAfter;
+  if ((access.predecessorRecordOrdinal !== undefined) !== requiresPredecessor) {
+    throw new Error('journal access predecessor presence must match its topology transition');
+  }
+  if (!access.mutates && access.presentBefore !== access.presentAfter) {
+    throw new Error('a non-mutating journal access must preserve target presence');
+  }
+  if (access.authenticatesTarget && !access.presentBefore) {
+    throw new Error('journal access cannot authenticate an absent target');
+  }
+  if (access.authenticatesPredecessor && access.predecessorRecordOrdinal === undefined) {
+    throw new Error('journal access cannot authenticate an absent predecessor');
+  }
+}
+
+/**
+ * Record ordinals name one logical node for the entire selected route.  Retain that flow identity while the
+ * planner is still working on plain objects: a later target cannot invent a different pre-state for an ordinal,
+ * and a node deleted earlier cannot become a predecessor.  The compact access format encodes each individual
+ * transition, but only the transaction-wide planner can check this cross-stream property.
+ */
+function validatePhysicalSettlementFlow(
+  occurrences: readonly KernelEntryJournalSettlementOccurrence[],
+): void {
+  const presence = new Map<number, boolean>();
+  for (const occurrence of occurrences) {
+    const { access } = occurrence;
+    const knownTargetPresence = presence.get(access.targetRecordOrdinal);
+    if (knownTargetPresence !== undefined && knownTargetPresence !== access.presentBefore) {
+      throw new Error(`kernel physical settlement record ${access.targetRecordOrdinal} changes target pre-state`);
+    }
+    presence.set(access.targetRecordOrdinal, access.presentAfter);
+    if (access.predecessorRecordOrdinal !== undefined) {
+      const knownPredecessorPresence = presence.get(access.predecessorRecordOrdinal);
+      if (knownPredecessorPresence === false) {
+        throw new Error(
+          `kernel physical settlement deleted record ${access.predecessorRecordOrdinal} cannot be a predecessor`,
+        );
+      }
+      // A predecessor is an existing linked-list node in every valid topology transition. This also makes a
+      // later target reference bind to that existing physical state rather than silently treating it synthetic.
+      presence.set(access.predecessorRecordOrdinal, true);
+    }
+  }
+}
+
 function physicalSettlementReferences(
   occurrence: KernelEntryJournalSettlementOccurrence,
   occurrenceIndex: number,
@@ -761,6 +820,7 @@ export function planKernelEntryJournalPhysicalSettlement(
 ): KernelEntryJournalPhysicalSettlementPlan {
   const referencesByRecord = new Map<number, KernelEntryJournalPhysicalReference[]>();
   occurrences.forEach((occurrence, occurrenceIndex) => {
+    validatePhysicalSettlementAccess(occurrence.access);
     const references = physicalSettlementReferences(occurrence, occurrenceIndex);
     for (const reference of references) {
       requireRecordOrdinal(`${reference.recordRole}RecordOrdinal`, reference.recordOrdinal);
@@ -769,6 +829,7 @@ export function planKernelEntryJournalPhysicalSettlement(
       referencesByRecord.set(reference.recordOrdinal, group);
     }
   });
+  validatePhysicalSettlementFlow(occurrences);
 
   const rewritten = occurrences.map((occurrence) => occurrence.access);
   const rewrites = new Set<number>();

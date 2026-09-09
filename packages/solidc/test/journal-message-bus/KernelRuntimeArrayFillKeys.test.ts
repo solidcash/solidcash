@@ -9,6 +9,24 @@ const KERNEL = {
 } as const;
 
 describe('kernel runtime-sized constructed-key initialization', () => {
+  it('keeps a separately produced local key vector deterministically frozen pending route replay binding', () => {
+    const artifact = compileString(`contract Registry() {
+      mapping(int => int) records;
+      function apply(int count, int base) public {
+        int[] memory keys = new int[](count);
+        for (int producer = 0; producer < count; producer = producer + 1) {
+          keys[producer] = base + producer;
+        }
+        for (int consumer = 0; consumer < count; consumer = consumer + 1) {
+          this.records[keys[consumer]] = consumer;
+        }
+        require(true);
+      }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'apply'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+  });
+
   it('derives the exact key recipe for a canonical full-array helper fill', () => {
     const artifact = compileString(`contract Registry() {
       mapping(int => int) records;

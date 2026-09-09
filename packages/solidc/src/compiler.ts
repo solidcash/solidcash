@@ -31,7 +31,7 @@ import {
   ExternalCallMode, ExternalFunctionCallNode, ExternalOutputStateAccessNode, FunctionModifier, HexLiteralNode,
   IdentifierNode,
   InstantiationNode,
-  ArrayAccessNode, ArrayAssignNode, ArrayDeleteNode, ArrayNode, ArrayPushNode, ArrayPopNode, CollectionIterationNode,
+  ArrayAccessNode, ArrayAssignNode, ArrayDeleteNode, ArrayNode, NewArrayNode, ArrayPushNode, ArrayPopNode, CollectionIterationNode,
   CollectionIterationMode,
   CollectionNode, StateAccessNode, StateAssignNode, StateArrayPushNode, StateArrayPopNode, StateArrayAssignNode,
   StateArrayDeleteNode,
@@ -3163,6 +3163,37 @@ function synthesizeMessageBusRoute(
     });
     return init;
   };
+  // Pre-admission sees source keys before LowerVMapCounterLoops can replace a local-vector read with its
+  // compiler-owned replay. Admit only the narrow producer candidate which that pass can subsequently prove and
+  // publish; all other constructed arrays keep the historical KERNEL_UNBOUNDED_KEY fence.
+  const isFrozenVectorCandidate = (owner: FunctionDefinitionNode, arrayName: string): boolean => {
+    const allocation = localInitOf(owner, arrayName);
+    if (!(allocation instanceof NewArrayNode) || !owner.body) return false;
+    const allocationSize = expressionIdentifier(allocation.size);
+    if (!allocationSize) return false;
+    let candidate = false;
+    walkInvocationAst(owner.body, (node) => {
+      if (candidate || !(node instanceof WhileNode) || !(node.condition instanceof BinaryOpNode)
+        || node.condition.operator !== BinaryOperator.LT
+        || !(node.condition.left instanceof IdentifierNode)
+        || expressionIdentifier(node.condition.right) !== allocationSize) return;
+      const counter = node.condition.left.name;
+      const statements = node.block.statements ?? [];
+      const update = statements.at(-1);
+      const canonicalUpdate = update instanceof AssignNode && update.identifier.name === counter
+        && update.expression instanceof BinaryOpNode && update.expression.operator === BinaryOperator.PLUS
+        && update.expression.left instanceof IdentifierNode && update.expression.left.name === counter
+        && update.expression.right instanceof IntLiteralNode && update.expression.right.value === 1n;
+      const writes = statements.slice(0, -1).filter((statement) => statement instanceof ArrayAssignNode
+        && statement.name === arrayName && statement.index instanceof IdentifierNode
+        && statement.index.name === counter);
+      // One direct indexed write fills every allocation index. Any other array mutation, branch, call, or effect
+      // is intentionally not a candidate; the lowering rechecks the same flow before publishing metadata.
+      if (canonicalUpdate && writes.length === 1 && statements.length === 2) candidate = true;
+    });
+    if (candidate) owner.messageBusConstructedKeyVectorCandidate = true;
+    return candidate;
+  };
   /**
    * Graph clones of a source handler inline its closure. A verified-mapping write `m[k][xs[i]] = v` in a
    * runtime loop is only representable when `xs` is a parameter of THAT source handler (the SDK reads it from
@@ -3183,6 +3214,7 @@ function synthesizeMessageBusRoute(
     visiting.add(seen);
     if (owner === source) {
       if (source.parameters.some((parameter) => parameter.name === arrayName)) return true;
+      if (isFrozenVectorCandidate(owner, arrayName)) return true;
       const init = localInitOf(owner, arrayName);
       const alias = init === undefined ? undefined : expressionIdentifier(init);
       return alias !== undefined
@@ -11735,7 +11767,7 @@ function compileResolvedAst(
       // metadata-only capability until the route verifies the SDK's reconstructed rank/key program. Keep every
       // such stream out of the kernel dispatch even if an unsupported expression caused artifact serialization
       // to omit the optional descriptor: the AST provenance is the authoritative admission signal.
-      const hasConstructedKeyVector = (fn.runtimeCounterLoopConstructedKeyVectors?.size ?? 0) > 0;
+      const hasConstructedKeyVector = fn.messageBusConstructedKeyVectorCandidate === true;
       const hasMultiArmConstructedKeyReplay = runtimeJournalAccesses
         .some((access) => access.multiArmConstructedKeyReplay === true);
       const hasCrossArrayKeyReplay = runtimeJournalAccesses

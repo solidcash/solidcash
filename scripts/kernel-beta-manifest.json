@@ -8,7 +8,7 @@
     { "id": "utils-source-maps", "argv": ["yarn", "workspace", "@solidcash/utils", "vitest", "run", "test/script.test.ts"] },
     { "id": "compiler-journal", "argv": ["yarn", "workspace", "solidc", "vitest", "run", "test/journal-message-bus"] },
     { "id": "sdk-journal", "argv": ["yarn", "workspace", "solidcash", "vitest", "run", "test/journal-message-bus"] },
-    { "id": "sdk-regressions", "argv": ["yarn", "workspace", "solidcash", "vitest", "run", "test/unit/AssignPhysicalReturnIndices.test.ts", "test/unit/DirectMappingReadPlan.test.ts", "test/FnPtrStructFieldCall.test.ts", "test/e2e/CrossContractSubcaseSoundness.test.ts", "test/e2e/CrossContractSortedWrite.test.ts", "test/e2e/DynamicArrayCopyCast.test.ts", "test/e2e/X167ArrayCopyReplaces.test.ts"] }
+    { "id": "sdk-regressions", "argv": ["yarn", "workspace", "solidcash", "vitest", "run", "test/unit/AssignPhysicalReturnIndices.test.ts", "test/unit/DirectMappingReadPlan.test.ts", "test/unit/KernelJournalExecutionSchedule.test.ts", "test/unit/KernelDirtyCarrierResolution.test.ts", "test/unit/KernelJournalPhysicalSettlement.test.ts", "test/FnPtrStructFieldCall.test.ts", "test/e2e/CrossContractSubcaseSoundness.test.ts", "test/e2e/CrossContractSortedWrite.test.ts", "test/e2e/DynamicArrayCopyCast.test.ts", "test/e2e/X167ArrayCopyReplaces.test.ts"] }
   ],
   "requiredKernelProofs": [
     {
@@ -100,6 +100,39 @@
       "file": "test/journal-message-bus/e2e/KernelReadCarrierBoundary.test.ts",
       "tests": [
         "rejects repeated clean reads before broadcast while the carrier protocol is unpublished"
+      ]
+    },
+    {
+      "id": "kernel-journal-execution-schedule",
+      "workspace": "solidcash",
+      "file": "test/unit/KernelJournalExecutionSchedule.test.ts",
+      "tests": [
+        "uses compiler coordinates rather than stream insertion order and interleaves sites within one loop",
+        "rejects duplicate stream and execution-site coordinates",
+        "rejects malformed runtime occurrence coordinates rather than inventing an order"
+      ]
+    },
+    {
+      "id": "kernel-dirty-carrier-resolution",
+      "workspace": "solidcash",
+      "file": "test/unit/KernelDirtyCarrierResolution.test.ts",
+      "tests": [
+        "accepts one complete body only after the caller binds it to the final global ordinal",
+        "rejects ambiguous, cross-ordinal, and wrong-slot candidates rather than picking a provisional body"
+      ]
+    },
+    {
+      "id": "kernel-journal-physical-settlement",
+      "workspace": "solidcash",
+      "file": "test/unit/KernelJournalPhysicalSettlement.test.ts",
+      "tests": [
+        "binds a dirty final authority to one complete final body, not a legacy provisional output",
+        "fails closed rather than choosing among missing, duplicate, malformed, or unrelated dirty bodies",
+        "binds a chained insert body to the later predecessor role, not the earlier target role",
+        "separates source-order first inputs from dense global final outputs and normalizes clean consumers",
+        "fails closed for a consumer before its owner, repeated dirty proof, or unauthenticated live record",
+        "does not derive physical settlement from a non-canonical access object",
+        "binds each record ordinal to one source-ordered presence flow"
       ]
     },
     {

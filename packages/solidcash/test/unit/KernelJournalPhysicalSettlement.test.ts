@@ -2,9 +2,12 @@ import { describe, expect, it } from 'vitest';
 import type { JournalSettlementIdentityAbi } from '@solidcash/utils';
 import {
   planKernelEntryJournalPhysicalSettlement,
+  resolveKernelEntryJournalDirtyFinalBodies,
   type KernelEntryJournalAccess,
+  type KernelEntryJournalRecord,
   type KernelEntryJournalSettlementOccurrence,
 } from '../../src/stateful/KernelEntryJournal.js';
+import { encodeEntryCommitment } from '../../src/stateful/SortedList.js';
 
 const identity = (
   accessStreamIndex: number,
@@ -21,6 +24,59 @@ const identity = (
 });
 
 describe('kernel journal physical settlement plan', () => {
+  const record = (dirty: boolean): KernelEntryJournalRecord => ({
+    collectionHash: new Uint8Array(20).fill(7),
+    slot: new Uint8Array(32).fill(9),
+    nextKey: new Uint8Array(32).fill(10),
+    value: Uint8Array.of(1),
+    authenticated: !dirty,
+    dirty,
+    tombstone: false,
+    synthetic: dirty,
+  });
+
+  const oneDirtyOutput = () => planKernelEntryJournalPhysicalSettlement([{
+    frameIndex: 0, identity: identity(0, 'mutation-settlement'), accessOrdinal: 0,
+    access: {
+      targetRecordOrdinal: 0, predecessorRecordOrdinal: 1,
+      presentBefore: false, presentAfter: true, mutates: true,
+      authenticatesPredecessor: true,
+    },
+  }]);
+
+  it('binds a dirty final authority to one complete final body, not a legacy provisional output', () => {
+    const dirty = record(true);
+    // The final value intentionally differs from the topology record's typed/default tail. The resolver accepts
+    // it only as an explicitly record-ordinal-bound complete body, never by guessing from collection/slot order.
+    const finalBody = encodeEntryCommitment(dirty.slot, dirty.nextKey, Uint8Array.of(42));
+    const resolution = resolveKernelEntryJournalDirtyFinalBodies(oneDirtyOutput(), [dirty, record(false)], [{
+      recordOrdinal: 0, commitment: finalBody,
+    }]);
+    expect(resolution).toEqual([{
+      recordOrdinal: 0, outputOrdinal: 0, commitment: finalBody,
+    }]);
+    expect(resolution[0]!.commitment).not.toBe(finalBody);
+  });
+
+  it('fails closed rather than choosing among missing, duplicate, malformed, or unrelated dirty bodies', () => {
+    const dirty = record(true);
+    const body = encodeEntryCommitment(dirty.slot, dirty.nextKey, Uint8Array.of(42));
+    const resolve = (candidates: Array<{ recordOrdinal: number; commitment: Uint8Array }>) => (
+      resolveKernelEntryJournalDirtyFinalBodies(oneDirtyOutput(), [dirty, record(false)], candidates)
+    );
+    expect(() => resolve([])).toThrow('requires exactly one final body for record 0; found 0');
+    expect(() => resolve([{ recordOrdinal: 0, commitment: body }, { recordOrdinal: 0, commitment: body }]))
+      .toThrow('requires exactly one final body for record 0; found 2');
+    expect(() => resolve([{ recordOrdinal: 0, commitment: Uint8Array.of(1) }]))
+      .toThrow('malformed commitment for record 0');
+    const wrongSlot = body.slice();
+    wrongSlot[0] ^= 1;
+    expect(() => resolve([{ recordOrdinal: 0, commitment: wrongSlot }]))
+      .toThrow('commitment slot mismatches record 0');
+    expect(() => resolve([{ recordOrdinal: 1, commitment: body }]))
+      .toThrow('unexpected candidate for record 1');
+  });
+
   it('separates source-order first inputs from dense global final outputs and normalizes clean consumers', () => {
     const sourceCarrier = {
       frameIndex: 0, identity: identity(2, 'carrier-only'), accessOrdinal: 0,

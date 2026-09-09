@@ -138,7 +138,7 @@ export {
   encodeKernelEntryJournalAccesses, decodeKernelEntryJournalAccesses,
   planKernelEntryJournalStreams, planKernelEntryJournalAccessTopology,
   planKernelEntryJournalSettlementAuthority, planKernelEntryJournalSettlementOutputSegments,
-  planKernelEntryJournalPhysicalSettlement,
+  planKernelEntryJournalPhysicalSettlement, resolveKernelEntryJournalDirtyFinalBodies,
   validateKernelEntryJournalSettlementGroups,
   type KernelEntryJournalRecord, type KernelEntryJournalStreamPlan,
   type KernelEntryJournalRecordPosition, type KernelEntryJournalSegmentValidationOptions,
@@ -150,6 +150,8 @@ export {
   type KernelEntryJournalPhysicalSettlementInput,
   type KernelEntryJournalPhysicalSettlementOutput,
   type KernelEntryJournalPhysicalSettlementStreamAccounting,
+  type KernelEntryJournalDirtyFinalBodyCandidate,
+  type KernelEntryJournalDirtyFinalBodyResolution,
   type KernelEntryJournalSettlementOutputSegment,
   type KernelEntryJournalSettlementStream,
 } from './KernelEntryJournal.js';

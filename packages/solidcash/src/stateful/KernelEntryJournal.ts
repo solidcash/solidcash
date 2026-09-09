@@ -15,6 +15,7 @@ export {
 } from '@solidcash/utils';
 import {
   SortedList,
+  decodeEntryCommitment,
   type JournaledMutationAccess,
   type JournaledMutationPlan,
   type JournaledMutationRecord,
@@ -357,6 +358,26 @@ export interface KernelEntryJournalPhysicalSettlementPlan {
   finalOutputCursorDelta: number;
   /** The normalized settlement authority consumed to derive `outputs`. */
   settlement: KernelEntryJournalSettlementPlan;
+}
+
+/**
+ * A value body produced by the final mutating authority for one dirty record.
+ *
+ * `recordOrdinal` is deliberately supplied by the caller's authenticated settlement binding, rather than
+ * reconstructed from a collection name, source handler, or a best-effort slot search.  The body is the complete
+ * entry-NFT commitment (`slot || nextKey || value`), not merely a value tail: this gives the resolver one object
+ * on which to check the final link as well as the value.
+ */
+export interface KernelEntryJournalDirtyFinalBodyCandidate {
+  recordOrdinal: number;
+  commitment: Uint8Array;
+}
+
+/** A uniquely resolved dirty body, retained in dense final-output order. */
+export interface KernelEntryJournalDirtyFinalBodyResolution {
+  recordOrdinal: number;
+  outputOrdinal: number;
+  commitment: Uint8Array;
 }
 
 type KernelEntryJournalReadCarrierReference = {
@@ -942,6 +963,84 @@ export function planKernelEntryJournalPhysicalSettlement(
     finalOutputCursorDelta: outputs.length,
     settlement,
   };
+}
+
+/**
+ * Bind every dirty final authority to exactly one complete entry commitment.
+ *
+ * The topology/settlement planner deliberately does not manufacture dynamic value bodies.  Legacy per-handler
+ * materialization, however, can leave several provisional commitments for the same slot.  Selecting "the last"
+ * of those would silently reintroduce source-order materialization under the new dense final-flush protocol.  A
+ * future versioned dirty-carrier transport must therefore bind its final bodies to record ordinals and call this
+ * resolver.  It fails closed for zero, duplicate, malformed, clean, tombstoned, or out-of-plan candidates.
+ *
+ * This helper is pure and has no capability check by design.  Capability publication remains the responsibility
+ * of the caller which has verified the matching route bytecode; exporting this helper alone cannot omit an input
+ * or materialize an output.
+ */
+export function resolveKernelEntryJournalDirtyFinalBodies(
+  plan: Pick<KernelEntryJournalPhysicalSettlementPlan, 'outputs'>,
+  records: readonly KernelEntryJournalRecord[],
+  candidates: readonly KernelEntryJournalDirtyFinalBodyCandidate[],
+): KernelEntryJournalDirtyFinalBodyResolution[] {
+  const dirtyOutputs = new Map<number, KernelEntryJournalPhysicalSettlementOutput>();
+  for (const output of plan.outputs) {
+    if (!Number.isSafeInteger(output.recordOrdinal) || output.recordOrdinal < 0
+      || !Number.isSafeInteger(output.outputOrdinal) || output.outputOrdinal < 0) {
+      throw new Error('kernel dirty final-body resolution received an invalid output coordinate');
+    }
+    if (dirtyOutputs.has(output.recordOrdinal)) {
+      throw new Error(`kernel dirty final-body resolution has duplicate final authority for record ${output.recordOrdinal}`);
+    }
+    const record = records[output.recordOrdinal];
+    if (!record) {
+      throw new Error(`kernel dirty final-body resolution has no record ${output.recordOrdinal}`);
+    }
+    if (record.dirty) {
+      if (record.tombstone) {
+        throw new Error(`kernel dirty final-body resolution cannot recreate tombstoned record ${output.recordOrdinal}`);
+      }
+      dirtyOutputs.set(output.recordOrdinal, output);
+    }
+  }
+
+  const candidatesByRecord = new Map<number, KernelEntryJournalDirtyFinalBodyCandidate[]>();
+  for (const candidate of candidates) {
+    if (!Number.isSafeInteger(candidate.recordOrdinal) || candidate.recordOrdinal < 0) {
+      throw new Error('kernel dirty final-body resolution received an invalid record ordinal');
+    }
+    const output = dirtyOutputs.get(candidate.recordOrdinal);
+    if (!output) {
+      throw new Error(`kernel dirty final-body resolution received an unexpected candidate for record ${candidate.recordOrdinal}`);
+    }
+    const record = records[candidate.recordOrdinal]!;
+    // `decodeEntryCommitment` intentionally permits callers which know the commitment shape. At this protocol
+    // boundary require the full fixed link prefix explicitly, then bind its slot to the authenticated record.
+    if (candidate.commitment.length < SLOT_BYTES * 2
+      || candidate.commitment.length > SLOT_BYTES * 2 + KERNEL_ENTRY_JOURNAL_MAX_VALUE_BYTES) {
+      throw new Error(`kernel dirty final-body resolution has malformed commitment for record ${candidate.recordOrdinal}`);
+    }
+    const body = decodeEntryCommitment(candidate.commitment);
+    if (!body.slot.every((byte, index) => byte === record.slot[index])) {
+      throw new Error(`kernel dirty final-body resolution commitment slot mismatches record ${candidate.recordOrdinal}`);
+    }
+    const group = candidatesByRecord.get(candidate.recordOrdinal) ?? [];
+    group.push(candidate);
+    candidatesByRecord.set(candidate.recordOrdinal, group);
+  }
+
+  return [...dirtyOutputs.entries()]
+    .sort(([, left], [, right]) => left.outputOrdinal - right.outputOrdinal)
+    .map(([recordOrdinal, output]) => {
+      const group = candidatesByRecord.get(recordOrdinal) ?? [];
+      if (group.length !== 1) {
+        throw new Error(
+          `kernel dirty final-body resolution requires exactly one final body for record ${recordOrdinal}; found ${group.length}`,
+        );
+      }
+      // Return an owned copy so callers cannot mutate a post-validation body before builder materialization.
+      return { recordOrdinal, outputOrdinal: output.outputOrdinal, commitment: group[0]!.commitment.slice() };
+    });
 }
 
 /** Convert the canonical output plan into the compact builder ordering form without changing its order. */

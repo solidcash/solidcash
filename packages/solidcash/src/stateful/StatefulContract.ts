@@ -17053,6 +17053,20 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       }))
     ));
     if (internalReadCarrierCapability && scopedJournalStreams.length > 0) {
+      // A sorted-loop descriptor alone is also used by the legacy materializer.  It is not evidence that this
+      // handler has the compiler-owned compact access-vector argument which the 0x11 route protocol consumes.
+      // Since deferral is transaction-wide, allowing such a frame into this branch would silently suppress its
+      // ordinary inputs/outputs while it never appears in `runtimeKernelJournalStreams` below.
+      const nonCarrierFrame = upsertPlanningFrames.find((frame) => (
+        (frame.abiFunction.sortedUpsertLoopInfo?.length ?? 0) > 0
+        && !frame.abiFunction.inputs.some((input) => input.name === KERNEL_JOURNAL_ACCESS_STREAMS)
+      ));
+      if (nonCarrierFrame) {
+        throw new Error(
+          'Compiler internal-read-carrier capability selected a runtime loop without a compact journal access stream; '
+          + 'refusing mixed legacy and carrier materialization.',
+        );
+      }
       const uncovered = scopedJournalStreams.find((stream) => !kernelEntryJournalReadCarrierCapabilityCovers(
         internalReadCarrierCapability, stream.selector, stream.accessStreamIndex,
       ));

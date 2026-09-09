@@ -95,6 +95,7 @@ describe('kernel journal ownership characterization', () => {
       recordOrdinalSources: ['target-record-ordinal', 'predecessor-record-ordinal'],
       settlementRole: 'carrier-only',
       settlementOwnership: 'none',
+      recordDispositionSource: 'authenticated-carrier',
     });
     expect(mutationStream.settlementIdentity).toEqual({
       accessStreamIndex: mutationStream.journalAccessStreamIndex,
@@ -103,6 +104,7 @@ describe('kernel journal ownership characterization', () => {
       recordOrdinalSources: ['target-record-ordinal', 'predecessor-record-ordinal'],
       settlementRole: 'mutation-settlement',
       settlementOwnership: 'last-mutating-access',
+      recordDispositionSource: 'mutation-settlement',
     });
 
     const local = artifact.abi.find((fn) => fn.name === 'updatePairs')!.sortedUpsertLoopInfo!;
@@ -117,6 +119,7 @@ describe('kernel journal ownership characterization', () => {
         recordOrdinalSources: ['target-record-ordinal', 'predecessor-record-ordinal'],
         settlementRole: 'mutation-settlement',
         settlementOwnership: 'last-mutating-access',
+        recordDispositionSource: 'mutation-settlement',
       },
     })]);
 
@@ -132,6 +135,7 @@ describe('kernel journal ownership characterization', () => {
       recordOrdinalSources: ['target-record-ordinal', 'predecessor-record-ordinal'],
       settlementRole: 'mutation-settlement',
       settlementOwnership: 'last-mutating-access',
+      recordDispositionSource: 'mutation-settlement',
     })));
 
     const legacy = compileString(SOURCE, { ...OPTIONS, messageBusKernel: false });

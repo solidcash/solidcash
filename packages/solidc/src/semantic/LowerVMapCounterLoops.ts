@@ -8332,12 +8332,11 @@ export default class LowerVMapCounterLoops extends AstTraversal {
               // The executable helper remains authoritative for bounds checks, so bound > array.length still
               // reverts at the original write rather than being silently clamped by this recipe. Keep the first
               // slice exact: an ascending pre-test traversal writes the direct counter positions of its literal,
-              // non-negative affine domain. A post-test traversal remains zero-start-only and has the exact
-              // domain `index < (bound > 0 ? bound : 1)`: its first iteration is unconditional, while every
-              // later iteration uses the source predicate. A positive literal stride is likewise exact:
-              // `index >= start && index < bound && (index - start) % stride == 0` for pre-test loops. Offset
-              // indices, runtime strides, negative starts, descending loops, and non-zero-start post-tests stay
-              // fenced.
+              // non-negative affine domain. A post-test traversal has the exact mandatory-first domain
+              // `index >= start && (index == start || index < bound) && (index - start) % stride == 0`; this
+              // avoids manufacturing an overflow-prone adjusted bound. A positive literal stride is likewise
+              // exact for pre-test loops: `index >= start && index < bound && (index - start) % stride == 0`.
+              // Offset indices, runtime strides, negative starts, and descending loops stay fenced.
               if (typeof boundValue !== 'bigint' && !runtimeBoundRange) {
                 // This is deliberately the same closed expression vocabulary the artifact recipe serializer
                 // and SDK evaluator share. In particular, do not infer purity from a resolved call: even a
@@ -8372,8 +8371,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
                 const symbolicIndexedArrayWrite = (helperStatement instanceof WhileNode
                   || helperStatement instanceof DoWhileNode)
                   && comparison === BinaryOperator.LT
-                  && ((helperStatement instanceof WhileNode && initial.value >= 0n)
-                    || (helperStatement instanceof DoWhileNode && initial.value === 0n))
+                  && initial.value >= 0n
                   && step > 0n
                   && publicBound
                   && statements.slice(0, -1).length > 0
@@ -8441,7 +8439,8 @@ export default class LowerVMapCounterLoops extends AstTraversal {
                       ordinal: 0,
                       ...(planned.indexedDomain && { indexedDomain: {
                         bound: cloneNode(planned.indexedDomain) as ExpressionNode,
-                        ...(helperStatement instanceof DoWhileNode && step > 1n && { postTest: true }),
+                        ...(helperStatement instanceof DoWhileNode
+                          && (step > 1n || initial.value !== 0n) && { postTest: true }),
                       } }),
                     },
                   });

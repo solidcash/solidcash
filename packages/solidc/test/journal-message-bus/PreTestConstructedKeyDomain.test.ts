@@ -47,6 +47,8 @@ describe('pre-test constructed mapping-key domains', () => {
     ['non-zero normalized for', `for (int cursor = 3; cursor < limit; cursor = cursor + 2) {
       keys[cursor] = base + cursor;
     }`],
+    ['non-zero do-while', `int cursor = 3;
+      do { keys[cursor] = base + cursor; cursor = cursor + 2; } while (cursor < limit);`],
   ])('publishes the exact sparse domain for a canonical %s', (label, loop) => {
     const artifact = compile(loop);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
@@ -54,7 +56,8 @@ describe('pre-test constructed mapping-key domains', () => {
     const expression = artifact.abi.find((entry) => entry.name === 'write')
       ?.sortedUpsertLoopInfo?.[0]?.varyingKeyExpressions?.[0];
     expect(operators(expression)).toEqual(expect.arrayContaining(['>=', '<', '%', '==', '&&', '-']));
-    expect(operators(expression)).not.toContain('||');
+    if (label.includes('do-while')) expect(operators(expression)).toContain('||');
+    else expect(operators(expression)).not.toContain('||');
     if (label.startsWith('non-zero')) expect(JSON.stringify(expression)).toContain('"value":"3"');
   });
 
@@ -66,7 +69,7 @@ describe('pre-test constructed mapping-key domains', () => {
       while (cursor < limit) { keys[cursor] = base + cursor; step = step + 1; cursor = cursor + step; }`],
     ['negative start', `int cursor = -1;
       while (cursor < limit) { keys[cursor] = base + cursor; cursor = cursor + 2; }`],
-    ['non-zero post-test start', `int cursor = 3;
+    ['negative post-test start', `int cursor = -1;
       do { keys[cursor] = base + cursor; cursor = cursor + 2; } while (cursor < limit);`],
   ])('keeps a %s fenced', (_label, loop) => {
     const artifact = compile(loop);

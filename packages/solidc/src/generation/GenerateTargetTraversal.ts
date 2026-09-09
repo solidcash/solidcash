@@ -24559,8 +24559,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private emitKernelJournalRecordIdentitySelect(loc: SingleLocationData): void {
     this.emitKernelJournalRecordExtract(loc);
     // A selected carrier is either authenticated pre-state (0x01), an internally-produced authenticated dirty
-    // value (0x03), a live synthetic node created by an earlier row (0x0a), or a clean synthetic absence tombstone
-    // (0x0c). Route-entry validation excludes caller-supplied dirty carriers.
+    // value (0x03), a live synthetic node created by an earlier row (0x0a), an internally-produced authenticated
+    // clean-read carrier (0x11), or a clean synthetic absence tombstone (0x0c). Route-entry validation excludes
+    // every internal form, including 0x11: the latter can arise only after this route authenticated 0x01.
     this.emit(Op.OP_DUP, loc);
     this.emit(Op.OP_1, loc); this.emit(Op.OP_SPLIT, loc);
     this.emit(Op.OP_SWAP, loc);
@@ -24572,6 +24573,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_OVER, loc); this.emit(Op.OP_3, loc); this.emit(Op.OP_NUMEQUAL, loc);
     this.emit(Op.OP_BOOLOR, loc);
     this.emit(Op.OP_OVER, loc); this.emit(encodeInt(10n), loc); this.emit(Op.OP_NUMEQUAL, loc);
+    this.emit(Op.OP_BOOLOR, loc);
+    this.emit(Op.OP_OVER, loc); this.emit(encodeInt(17n), loc); this.emit(Op.OP_NUMEQUAL, loc);
     this.emit(Op.OP_BOOLOR, loc);
     this.emit(Op.OP_IF, loc);
     this.emit(Op.OP_DROP, loc); // authenticated flags
@@ -24770,13 +24773,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // remaining, output ordinal, record ordinal, record
     this.emit(encodeInt(2n), loc); this.emit(Op.OP_SPLIT, loc);
     this.emit(Op.OP_SWAP, loc);
-    // Authenticated clean (0x01), authenticated dirty (0x03), and synthetic dirty (0x0a) records all materialize
-    // exactly one output. A clean synthetic tombstone (0x0c) is an authenticated absence proof: it participates in
-    // first-touch identity and dense-prefix checks, but must not create an entry NFT.
+    // Authenticated clean (0x01), authenticated dirty (0x03), synthetic dirty (0x0a), and the route-internal
+    // authenticated clean-read carrier (0x11) all materialize exactly one output. A clean synthetic tombstone
+    // (0x0c) is an authenticated absence proof: it participates in first-touch identity and dense-prefix checks,
+    // but must not create an entry NFT.
     this.emit(Op.OP_DUP, loc); this.emit(new Uint8Array([0x05, 0x01]), loc); this.emit(Op.OP_EQUAL, loc);
     this.emit(Op.OP_OVER, loc); this.emit(new Uint8Array([0x05, 0x03]), loc); this.emit(Op.OP_EQUAL, loc);
     this.emit(Op.OP_BOOLOR, loc);
     this.emit(Op.OP_OVER, loc); this.emit(new Uint8Array([0x05, 0x0a]), loc); this.emit(Op.OP_EQUAL, loc);
+    this.emit(Op.OP_BOOLOR, loc);
+    this.emit(Op.OP_OVER, loc); this.emit(new Uint8Array([0x05, 0x11]), loc); this.emit(Op.OP_EQUAL, loc);
     this.emit(Op.OP_BOOLOR, loc);
     this.emit(Op.OP_IF, loc);
     this.scopeDepth += 1;
@@ -24870,6 +24876,79 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_NUMEQUALVERIFY, loc);
   }
 
+  /**
+   * Convert exactly the clean record just authenticated by a read operation into the route-internal read carrier.
+   *
+   * The compiler never accepts `0x11` at ingress (the segment validator accepts only 0x01/0x0c). A physical
+   * read first replaces its selected 0x01 record with 0x11, then the shared target-slot helper immediately proves
+   * the unchanged body against the co-spent entry NFT. A later read with no physical commitment must name that
+   * exact 0x11 record and must not set an authentication bit. This is deliberately a read-only transition: dirty
+   * pending records retain their existing protocol and cannot be used as clean read carriers.
+   */
+  private emitKernelJournalReadCarrierTransitionCheck(node: Node, loc: SingleLocationData): void {
+    if (this.sortedUpsertLoopOp !== 'read') return;
+    const cursorName = this.sortedUpsertLoopJournalCursorName;
+    const physicalCommitment = `(kernel_physical_commitment_${this.sortedUpsertLoopJournalAccessStreamIndex})`;
+
+    // Extract the selected global record ordinal from the first cursor tuple. A read names its target when it is
+    // present and its proof predecessor when it is absent. The predecessor sentinel is authenticated by the
+    // compact-access validator, so this branch cannot choose an alias supplied by the caller.
+    const emitSelectedOrdinal = (): void => {
+      this.emit(encodeInt(BigInt(this.getStackIndex(cursorName))), loc); this.emit(Op.OP_PICK, loc);
+      this.emit(encodeInt(21n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_NIP, loc);
+      this.emit(Op.OP_1, loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_NIP, loc);
+      this.emit(encodeInt(2n), loc); this.emit(Op.OP_SPLIT, loc);
+      this.emit(encodeInt(2n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_DROP, loc);
+      // target ordinal, predecessor ordinal. The canonical no-predecessor marker selects the target.
+      this.emit(Op.OP_DUP, loc); this.emit(new Uint8Array([0xff, 0xff]), loc); this.emit(Op.OP_EQUAL, loc);
+      this.emit(Op.OP_IF, loc);
+      this.emit(Op.OP_DROP, loc);
+      this.scopeDepth += 1;
+      this.scopeDepth -= 1;
+      this.emit(Op.OP_ELSE, loc);
+      this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_DROP, loc);
+      this.scopeDepth += 1;
+      this.scopeDepth -= 1;
+      this.emit(Op.OP_ENDIF, loc);
+      this.emit(Op.OP_BIN2NUM, loc);
+    };
+
+    this.emit(encodeInt(BigInt(this.getStackIndex(physicalCommitment))), loc); this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_SIZE, loc); this.emit(Op.OP_NIP, loc); this.emit(Op.OP_0NOTEQUAL, loc);
+    this.emit(Op.OP_IF, loc);
+    this.scopeDepth += 1;
+    // First authenticator: select only a canonical clean authenticated record, then replace its header while
+    // retaining its complete body. The shared helper below still binds that body to the physical commitment.
+    emitSelectedOrdinal();
+    this.emitKernelJournalRecordExtractGlobal(loc); // selected ordinal, raw record
+    this.emit(Op.OP_DUP, loc); this.emit(encodeInt(2n), loc); this.emit(Op.OP_SPLIT, loc);
+    this.emit(Op.OP_1, loc); this.emit(Op.OP_PICK, loc);
+    this.emit(new Uint8Array([0x05, 0x01]), loc); this.emit(Op.OP_EQUALVERIFY, loc);
+    this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_DROP, loc); // selected ordinal, raw record, body
+    this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_DROP, loc); // selected ordinal, body
+    this.emit(new Uint8Array([0x05, 0x11]), loc); this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_CAT, loc);
+    this.emitKernelJournalRecordReplaceGlobal(node, loc);
+    this.scopeDepth -= 1;
+    this.emit(Op.OP_ELSE, loc);
+    this.scopeDepth += 1;
+    // Consumer: no physical input is legal only for a non-authenticating access which consumes the internally
+    // produced clean carrier. Checking the compact flags here prevents an omitted first authenticator from being
+    // mistaken for a later consumer.
+    this.emit(encodeInt(BigInt(this.getStackIndex(cursorName))), loc); this.emit(Op.OP_PICK, loc);
+    this.emit(encodeInt(21n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_NIP, loc);
+    this.emit(Op.OP_1, loc); this.emit(Op.OP_SPLIT, loc); // flags, tuple tail
+    this.emit(Op.OP_1, loc); this.emit(Op.OP_PICK, loc); this.emit(new Uint8Array([0]), loc); this.emit(Op.OP_CAT, loc);
+    this.emit(Op.OP_BIN2NUM, loc); this.emit(encodeInt(48n), loc); this.emit(Op.OP_AND, loc);
+    this.emit(Op.OP_0, loc); this.emit(Op.OP_NUMEQUALVERIFY, loc);
+    this.emit(Op.OP_DROP, loc); // flags; tuple tail is not retained
+    emitSelectedOrdinal();
+    this.emitKernelJournalRecordExtractGlobal(loc);
+    this.emit(encodeInt(2n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_DROP, loc);
+    this.emit(new Uint8Array([0x05, 0x11]), loc); this.emit(Op.OP_EQUALVERIFY, loc);
+    this.scopeDepth -= 1;
+    this.emit(Op.OP_ENDIF, loc);
+  }
+
   private emitKernelJournalTargetSlotCheck(node: Node, loc: SingleLocationData): void {
     if (this.sortedUpsertLoopJournalAccessStreamIndex === undefined
       || !this.hasKernelJournalRecordCarrier()
@@ -24925,6 +25004,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_0, loc);
     this.emit(Op.OP_ENDIF, loc);
     this.emit(Op.OP_ROT, loc); this.emit(Op.OP_ADD, loc);
+    this.emitKernelJournalReadCarrierTransitionCheck(node, loc);
     this.emit(encodeInt(BigInt(this.getStackIndex(
       GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_JOURNAL_COUNT,
     ) + 5)), loc);

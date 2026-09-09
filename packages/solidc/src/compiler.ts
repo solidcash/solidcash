@@ -3492,7 +3492,7 @@ function synthesizeMessageBusRoute(
   };
   interface AllOutputSignatureProof {
     parameterIndices: number[];
-    coveredFunctionKeys: Record<number, string>;
+    coveredFunctionKeys: Record<number, Record<number, string>>;
   }
   interface CheckedSignatureOrigin {
     parameterIndex: number;
@@ -3511,7 +3511,7 @@ function synthesizeMessageBusRoute(
     const indices = new Set<number>();
     const interfaceReceivers = interfaceTypedReceivers(root);
     const interfaceDefinitionNames = new Set(ast.interfaceDefinitions.map((iface) => iface.name));
-    const coveredFunctionByParameter = new Map<number, FunctionDefinitionNode>();
+    const coveredFunctionByLeaf = new Map<string, FunctionDefinitionNode>();
     const checkedLeavesByParameter = new Map<number, Set<number>>();
     let found = false;
     let unsupported = false;
@@ -3669,9 +3669,10 @@ function synthesizeMessageBusRoute(
             const checkedLeaves = checkedLeavesByParameter.get(index) ?? new Set<number>();
             checkedLeaves.add(leafIndex);
             checkedLeavesByParameter.set(index, checkedLeaves);
-            const prior = coveredFunctionByParameter.get(index);
+            const coverageKey = `${index}:${leafIndex}`;
+            const prior = coveredFunctionByLeaf.get(coverageKey);
             if (prior && prior !== fn) unsupported = true;
-            else coveredFunctionByParameter.set(index, fn);
+            else coveredFunctionByLeaf.set(coverageKey, fn);
           }
           return;
         }
@@ -3941,8 +3942,13 @@ function synthesizeMessageBusRoute(
     if (unsupported) return undefined;
     return {
       parameterIndices: [...indices].sort((left, right) => left - right),
-      coveredFunctionKeys: Object.fromEntries([...coveredFunctionByParameter]
-        .map(([index, fn]) => [index, signatureFunctionKey(fn)])),
+      coveredFunctionKeys: [...coveredFunctionByLeaf].reduce<Record<number, Record<number, string>>>(
+        (result, [coverageKey, fn]) => {
+          const [parameterIndex, leafIndex] = coverageKey.split(':').map(Number);
+          result[parameterIndex] = { ...(result[parameterIndex] ?? {}), [leafIndex]: signatureFunctionKey(fn) };
+          return result;
+        }, {},
+      ),
     };
   };
   const kernelAllOutputSignatureParameters = new Map<FunctionDefinitionNode, number[]>();
@@ -7201,12 +7207,14 @@ function synthesizeMessageBusRoute(
     handler.messageBusDetachedSignatureHandler = true;
     handler.messageBusSignatureIdentity = signatureFunctionKey(handler);
     const sourceKey = signatureFunctionKey(sourceHandler);
-    for (const [parameterIndexText, coveredKey] of Object.entries(
+    for (const [parameterIndexText, coveredLeaves] of Object.entries(
       sourceHandler.messageBusSignatureCoveredFunctionKeys ?? {},
     )) {
-      if (coveredKey === sourceKey) {
-        sourceHandler.messageBusSignatureCoveredFunctionKeys![Number(parameterIndexText)]
-          = handler.messageBusSignatureIdentity;
+      for (const [leafIndexText, coveredKey] of Object.entries(coveredLeaves)) {
+        if (coveredKey === sourceKey) {
+          sourceHandler.messageBusSignatureCoveredFunctionKeys![Number(parameterIndexText)][Number(leafIndexText)]
+            = handler.messageBusSignatureIdentity;
+        }
       }
     }
   }
@@ -11396,16 +11404,17 @@ function compileResolvedAst(
     for (const parameterIndex of parameterIndices) {
       const parameter = fn.parameters[parameterIndex];
       const leaves = parameter ? transactionSignatureLeaves(parameter.type) : undefined;
-      const coveredKey = coveredKeys[parameterIndex];
-      const covered = coveredKey === undefined ? undefined : ast.contract.functions.find((candidate) =>
-        deploymentTopologyKey(candidate) === coveredKey);
-      const body = covered?.functionId === undefined
-        ? undefined : traversal.invokedFunctionBytecodes.get(covered.functionId);
       if (!Number.isSafeInteger(parameterIndex) || parameterIndex <= prior || parameterIndex > 0xffff
-        || !leaves || leaves.length === 0 || leaves.length > 0xff || !body) return undefined;
+        || !leaves || leaves.length === 0 || leaves.length > 0xff) return undefined;
       prior = parameterIndex;
       parts.push(byte16(parameterIndex), leaves.length.toString(16).padStart(2, '0'));
-      for (const leaf of leaves) {
+      for (const [leafIndex, leaf] of leaves.entries()) {
+        const coveredKey = coveredKeys[parameterIndex]?.[leafIndex];
+        const covered = coveredKey === undefined ? undefined : ast.contract.functions.find((candidate) =>
+          deploymentTopologyKey(candidate) === coveredKey);
+        const body = covered?.functionId === undefined
+          ? undefined : traversal.invokedFunctionBytecodes.get(covered.functionId);
+        if (!body) return undefined;
         if (leaf.path.length > 0xff) return undefined;
         parts.push(leaf.path.length.toString(16).padStart(2, '0'));
         for (const segment of leaf.path) {
@@ -11489,22 +11498,22 @@ function compileResolvedAst(
           || read.oldValuesWitnessDomain === 'selected-source'
           || mutation.valueRuntimeLocal !== undefined || mutation.mutation !== undefined
           || mutation.valueRuntimeExpression === true) return false;
-        if (!sameJson(read.fixedKeySources, mutation.fixedKeySources)
-          || !sameJson(read.varyingKeyIndices, mutation.varyingKeyIndices)
-          || !sameJson(read.varyingKeyExpressions, mutation.varyingKeyExpressions)
-          || !sameJson(read.keyDecodeTupleIndex, mutation.keyDecodeTupleIndex)
-          || !sameJson(read.keyDecodeTupleTypes, mutation.keyDecodeTupleTypes)
-          || !sameJson(read.condition, mutation.condition)
-          || !sameJson(read.iterationCondition, mutation.iterationCondition)
-          || !sameJson(read.iterationBound, mutation.iterationBound)
-          || !sameJson(read.iterationStep, mutation.iterationStep)
-          || !sameJson(read.sourceOrderIndexParam, mutation.sourceOrderIndexParam)) return false;
         const readType = collectionByName.get(read.collection)?.innermostValueType;
         const mutationType = collectionByName.get(mutation.collection)?.innermostValueType;
         return readType !== undefined && mutationType !== undefined
           && isFixedWidthType(readType) && isFixedWidthType(mutationType)
           && !(readType instanceof ArrayType || readType instanceof StructType || readType instanceof TupleType)
-          && readType.toString() === mutationType.toString();
+          && readType.toString() === mutationType.toString()
+          && sameJson(read.fixedKeySources, mutation.fixedKeySources)
+          && sameJson(read.varyingKeyIndices, mutation.varyingKeyIndices)
+          && sameJson(read.varyingKeyExpressions, mutation.varyingKeyExpressions)
+          && sameJson(read.keyDecodeTupleIndex, mutation.keyDecodeTupleIndex)
+          && sameJson(read.keyDecodeTupleTypes, mutation.keyDecodeTupleTypes)
+          && sameJson(read.condition, mutation.condition)
+          && sameJson(read.iterationCondition, mutation.iterationCondition)
+          && sameJson(read.iterationBound, mutation.iterationBound)
+          && sameJson(read.iterationStep, mutation.iterationStep)
+          && sameJson(read.sourceOrderIndexParam, mutation.sourceOrderIndexParam);
       })();
       const hasIncompatibleJournalDispositionPhases = hasRuntimeJournalMutation && hasRuntimeJournalRead
         && (journalDispositionSources.some((source) => source === undefined)
@@ -11934,19 +11943,25 @@ function compileResolvedAst(
         ...(() => {
           if (fn.messageBusAllOutputSignatureParameters === undefined
             || fn.messageBusSignatureCoveredFunctionKeys === undefined) return {};
-          const coveredBodies = fn.messageBusAllOutputSignatureParameters.map((parameterIndex) => {
-            const key = fn.messageBusSignatureCoveredFunctionKeys?.[parameterIndex];
-            const covered = key === undefined ? undefined : ast.contract.functions.find((candidate) =>
-              deploymentTopologyKey(candidate) === key);
-            const body = covered?.functionId === undefined
-              ? undefined : traversal.invokedFunctionBytecodes.get(covered.functionId);
-            return body === undefined ? undefined : { parameterIndex, covered, bytecode: binToHex(body) };
+          const coveredBodies = fn.messageBusAllOutputSignatureParameters.flatMap((parameterIndex) => {
+            const leaves = transactionSignatureLeaves(fn.parameters[parameterIndex]?.type);
+            if (!leaves) return [undefined];
+            return leaves.map((_, leafIndex) => {
+              const key = fn.messageBusSignatureCoveredFunctionKeys?.[parameterIndex]?.[leafIndex];
+              const covered = key === undefined ? undefined : ast.contract.functions.find((candidate) =>
+                deploymentTopologyKey(candidate) === key);
+              const body = covered?.functionId === undefined
+                ? undefined : traversal.invokedFunctionBytecodes.get(covered.functionId);
+              return body === undefined ? undefined : { parameterIndex, leafIndex, covered, bytecode: binToHex(body) };
+            });
           });
           // Never publish a policy whose detached signer program is incomplete. In particular, helper CHECKSIG
           // executes with the helper OP_INVOKE body rather than the public handler body.
           if (coveredBodies.some((entry) => entry === undefined)) return {};
           const coveredBytecodes = coveredBodies.flatMap((entry) =>
-            entry!.covered === fn ? [] : [{ parameterIndex: entry!.parameterIndex, bytecode: entry!.bytecode }]);
+            entry!.covered === fn ? [] : [{
+              parameterIndex: entry!.parameterIndex, leafIndex: entry!.leafIndex, bytecode: entry!.bytecode,
+            }]);
           return {
             transactionSignaturePolicy: {
               hashType: 'all' as const,

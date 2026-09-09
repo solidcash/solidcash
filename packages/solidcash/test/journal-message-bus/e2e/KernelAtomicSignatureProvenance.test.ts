@@ -105,10 +105,17 @@ describe('kernel atomic transaction-signature provenance', () => {
       forceStateful: true, messageBus: true, messageBusKernel: true,
     } as const;
     const leafArtifact = compileString(`contract SignedLeaf() {
-      struct Authorization { sig proof; pubkey authority; }
+      struct Authorization { sig first; sig second; pubkey firstAuthority; pubkey secondAuthority; }
       int marker;
+      function checkFirst(Authorization selected) internal {
+        require(checkSig(selected.first, selected.firstAuthority));
+      }
+      function checkSecond(Authorization selected) internal {
+        require(checkSig(selected.second, selected.secondAuthority));
+      }
       function set(Authorization authorization, int next) public {
-        require(checkSig(authorization.proof, authorization.authority));
+        checkFirst(authorization);
+        checkSecond(authorization);
         this.marker = next;
         require(true);
       }
@@ -121,7 +128,7 @@ describe('kernel atomic transaction-signature provenance', () => {
       leafBase.withCategory(hexToBin(leafSetup.categoryId)), leafSetup.categoryId,
     );
     const rootArtifact = compileString(`
-      struct Authorization { sig proof; pubkey authority; }
+      struct Authorization { sig first; sig second; pubkey firstAuthority; pubkey secondAuthority; }
       interface ISignedLeaf { function set(Authorization authorization, int next); }
       contract SignatureRoot(address target) {
         function forward(Authorization authorization, int next) public {
@@ -141,9 +148,19 @@ describe('kernel atomic transaction-signature provenance', () => {
     expect(rootArtifact.messageBus?.atomicMessageBus?.protocolVersions).toContain(4);
     expect(rootArtifact.messageBus?.handlers.find((handler) => handler.name === 'forward')
       ?.usesTransactionSignature).not.toBe(true);
+    const signedHandler = leafArtifact.messageBus?.handlers.find((handler) => handler.name === 'set');
+    expect(signedHandler?.transactionSignaturePolicy?.coveredBytecodes).toEqual([
+      expect.objectContaining({ parameterIndex: 0, leafIndex: 0 }),
+      expect.objectContaining({ parameterIndex: 0, leafIndex: 1 }),
+    ]);
+    expect(signedHandler?.transactionSignaturePolicy?.coveredBytecodes?.[0].bytecode)
+      .not.toBe(signedHandler?.transactionSignaturePolicy?.coveredBytecodes?.[1].bytecode);
 
     const build = async (): Promise<TransactionBuilder> => {
-      const authorization = { proof: new SignatureTemplate(alicePriv), authority: alicePub };
+      const authorization = {
+        first: new SignatureTemplate(alicePriv), second: new SignatureTemplate(alicePriv),
+        firstAuthority: alicePub, secondAuthority: alicePub,
+      };
       const funder = await createBareP2pkhFeeFunder(provider, 500_000n);
       return messageBus.compose({
         calls: [root.call.forward(authorization, 7n), leaf.call.set(authorization, 7n)],

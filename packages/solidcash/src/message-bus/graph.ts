@@ -409,7 +409,7 @@ export function atomicParticipantPolicyHash(artifact: Artifact): string {
       hashType: handler.transactionSignaturePolicy.hashType,
       parameterIndices: [...handler.transactionSignaturePolicy.parameterIndices],
       coveredBytecodes: (handler.transactionSignaturePolicy.coveredBytecodes ?? []).map((entry) => ({
-        parameterIndex: entry.parameterIndex, bytecode: entry.bytecode.toLowerCase(),
+        parameterIndex: entry.parameterIndex, leafIndex: entry.leafIndex, bytecode: entry.bytecode.toLowerCase(),
       })),
     } : null,
     signatureBytecode: handler.signatureBytecode?.toLowerCase() ?? '',

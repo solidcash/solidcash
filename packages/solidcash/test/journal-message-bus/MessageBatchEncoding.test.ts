@@ -124,7 +124,7 @@ describe('messageBus.encodeMessageBatch', () => {
           usesTransactionSignature: true,
           transactionSignaturePolicy: {
             hashType: 'all' as const, parameterIndices: [0, 1],
-            coveredBytecodes: [{ parameterIndex: 1, bytecode: '52' }],
+            coveredBytecodes: [{ parameterIndex: 1, leafIndex: 0, bytecode: '52' }],
           },
           signatureBytecode: '51',
         }],
@@ -155,7 +155,7 @@ describe('messageBus.encodeMessageBatch', () => {
     }])).toThrow(/has no covered bytecode/);
     const foreignCoverage = structuredClone(signed);
     foreignCoverage.messageBus!.handlers[0].transactionSignaturePolicy!.coveredBytecodes = [
-      { parameterIndex: 2, bytecode: '52' },
+      { parameterIndex: 2, leafIndex: 0, bytecode: '52' },
     ];
     expect(() => messageBus.encodeMessageBatch(foreignCoverage, [{
       function: 'authorize', args: [direct, { proof: nested, key: new Uint8Array(33).fill(3) }],

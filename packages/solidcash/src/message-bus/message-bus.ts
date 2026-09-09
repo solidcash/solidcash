@@ -288,14 +288,15 @@ const transactionSignatureFrame = (
   if (policy.parameterIndices.length > 0xff) {
     throw new Error(`Handler '${handler.name}' has too many transaction-signature parameters`);
   }
-  const covered = new Map<number, string>();
+  const covered = new Map<string, string>();
   for (const entry of policy.coveredBytecodes ?? []) {
     if (!Number.isSafeInteger(entry.parameterIndex)
       || !policy.parameterIndices.includes(entry.parameterIndex)
-      || covered.has(entry.parameterIndex)) {
+      || !Number.isSafeInteger(entry.leafIndex) || entry.leafIndex < 0
+      || covered.has(`${entry.parameterIndex}:${entry.leafIndex}`)) {
       throw new Error(`Handler '${handler.name}' has a non-canonical covered-bytecode parameter index`);
     }
-    covered.set(entry.parameterIndex, entry.bytecode);
+    covered.set(`${entry.parameterIndex}:${entry.leafIndex}`, entry.bytecode);
   }
   const parts: Uint8Array[] = [TRANSACTION_SIGNATURE_FRAME, Uint8Array.of(1, policy.parameterIndices.length)];
   let prior = -1;
@@ -308,12 +309,12 @@ const transactionSignatureFrame = (
     if (leaves.length === 0 || leaves.length > 0xff) {
       throw new Error(`Handler '${handler.name}' transaction-signature parameter ${parameterIndex} has no exact leaves`);
     }
-    const bytecode = covered.get(parameterIndex) ?? handler.signatureBytecode;
-    if (bytecode === undefined || !/^(?:[0-9a-fA-F]{2})+$/.test(bytecode)) {
-      throw new Error(`Handler '${handler.name}' transaction-signature parameter ${parameterIndex} has no covered bytecode`);
-    }
     parts.push(uintLe(BigInt(parameterIndex), 2), Uint8Array.of(leaves.length));
-    for (const leaf of leaves) {
+    for (const [leafIndex, leaf] of leaves.entries()) {
+      const bytecode = covered.get(`${parameterIndex}:${leafIndex}`) ?? handler.signatureBytecode;
+      if (bytecode === undefined || !/^(?:[0-9a-fA-F]{2})+$/.test(bytecode)) {
+        throw new Error(`Handler '${handler.name}' transaction-signature leaf ${parameterIndex}:${leafIndex} has no covered bytecode`);
+      }
       if (leaf.path.length > 0xff) throw new Error(`Handler '${handler.name}' transaction-signature path is too deep`);
       parts.push(Uint8Array.of(leaf.path.length));
       for (const segment of leaf.path) {

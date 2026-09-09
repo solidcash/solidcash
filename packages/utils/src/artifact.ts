@@ -1372,7 +1372,7 @@ export interface Artifact {
         hashType: 'all';
         parameterIndices: readonly number[];
         /** Exact OP_INVOKE body covered by signatures whose check executes in an internal/private helper. */
-        coveredBytecodes?: readonly { parameterIndex: number; bytecode: string }[];
+        coveredBytecodes?: readonly { parameterIndex: number; leafIndex: number; bytecode: string }[];
       };
       eligible: boolean;
       rejectionReason?: string;

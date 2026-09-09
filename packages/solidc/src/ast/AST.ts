@@ -341,8 +341,8 @@ export class FunctionDefinitionNode extends Node implements Named {
   messageBusUsesTransactionSignature?: boolean;
   /** Direct scalar or one-dimensional signature-array parameters constrained to SIGHASH_ALL by the route. */
   messageBusAllOutputSignatureParameters?: number[];
-  /** Exact active CHECKSIG body per all-output root parameter, keyed by source ABI parameter index. */
-  messageBusSignatureCoveredFunctionKeys?: Record<number, string>;
+  /** Exact OP_INVOKE signing body per detached root parameter and signature leaf. */
+  messageBusSignatureCoveredFunctionKeys?: Record<number, Record<number, string>>;
   /** Compiler-owned row clone kept as a stable OP_INVOKE signing body on delegate routes. */
   messageBusDetachedSignatureHandler?: boolean;
   /** Stable KTS1 identity captured before journal lowering appends physical value-threading parameters. */

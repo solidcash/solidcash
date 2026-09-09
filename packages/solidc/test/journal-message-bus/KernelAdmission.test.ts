@@ -284,6 +284,38 @@ describe('required kernel admission', () => {
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'fixedCopy'))
       .toMatchObject({ eligible: true });
   });
+
+  it('admits a fixed-width read carrier fan-out only across one shared key schedule', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) source;
+      mapping(int => int) left;
+      mapping(int => int) right;
+      function fanout(int count) public {
+        for (int i = 0; i < count; i = i + 1) {
+          this.left[i] = this.source[i]; this.right[i] = this.source[i];
+        }
+        require(true);
+      }
+      function shifted(int count) public {
+        for (int i = 0; i < count; i = i + 1) {
+          this.left[i] = this.source[i]; this.right[i] = this.source[i + 1];
+        }
+        require(true);
+      }
+    }`, KERNEL);
+    const fanout = artifact.abi.find((handler) => handler.name === 'fanout')!;
+    const streams = fanout.sortedUpsertLoopInfo!;
+    const read = streams.find((stream) => stream.op === 'read')!;
+    expect(streams).toHaveLength(3);
+    expect(streams.filter((stream) => stream.op === 'set')).toEqual(expect.arrayContaining([
+      expect.objectContaining({ collection: 'left', valueArrayParam: read.oldValuesWitnessParam }),
+      expect.objectContaining({ collection: 'right', valueArrayParam: read.oldValuesWitnessParam }),
+    ]));
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'fanout'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'shifted'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+  });
   it('shares a literal fixed-key entry between a row writer and a counter-loop reader', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) source;
@@ -703,6 +735,24 @@ describe('required kernel admission', () => {
     expect(artifact.messageBus?.route.inputs).toContainEqual(expect.objectContaining({
       name: '__message_bus_sig_0_0_rows', type: 'sig[][]',
     }));
+  });
+
+  it('binds each finite aggregate signature leaf to its exact helper OP_INVOKE body', () => {
+    const artifact = compileString(`contract C() {
+      struct Auth { sig left; sig right; pubkey leftKey; pubkey rightKey; }
+      function checkLeft(Auth selected) internal { require(checkSig(selected.left, selected.leftKey)); }
+      function checkRight(Auth selected) internal { require(checkSig(selected.right, selected.rightKey)); }
+      function run(Auth auth) public { checkLeft(auth); checkRight(auth); require(true); }
+    }`, KERNEL);
+    const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'run');
+    expect(handler).toMatchObject({ eligible: true, usesTransactionSignature: true,
+      transactionSignaturePolicy: { hashType: 'all', parameterIndices: [0] } });
+    expect(handler?.transactionSignaturePolicy?.coveredBytecodes).toEqual([
+      expect.objectContaining({ parameterIndex: 0, leafIndex: 0 }),
+      expect.objectContaining({ parameterIndex: 0, leafIndex: 1 }),
+    ]);
+    expect(handler?.transactionSignaturePolicy?.coveredBytecodes?.[0].bytecode)
+      .not.toBe(handler?.transactionSignaturePolicy?.coveredBytecodes?.[1].bytecode);
   });
 
   it.each([

@@ -599,6 +599,71 @@ function surveyOptionalLowerings(root: Node): OptionalLoweringFeatures {
   };
 }
 
+/**
+ * Preserve the source-level fact that an entry reaches an effect helper which closes over a contract constructor
+ * parameter. It must be recorded before early graph preparation: that preparation can inline the helper (so its
+ * physical external-call frame is well formed), but must not erase the admission fence carried by the source
+ * topology. This intentionally recognizes only lexical constructor capture plus outgoing-call syntax; it does
+ * not classify applications by declaration names or require a post-symbol synthetic call frame.
+ */
+function markConstructorCapturedHelperGraphEffects(ast: Ast): void {
+  const contractParameterNames = new Set(ast.contract.parameters.map((parameter) => parameter.name));
+  const functions = ast.contract.functions;
+  const candidatesFor = (call: FunctionCallNode): FunctionDefinitionNode[] => functions.filter((candidate) =>
+    candidate.name === call.identifier.name
+      && candidate.parameters.filter((parameter) => !parameter.name.startsWith('__internal__')).length
+        === call.parameters.length
+      && [StateVariableVisibility.INTERNAL, StateVariableVisibility.PRIVATE]
+        .includes(candidate.visibility as StateVariableVisibility));
+  const capturesConstructorParameter = (fn: FunctionDefinitionNode): boolean => {
+    const locals = new Set(fn.parameters.map((parameter) => parameter.name));
+    walkInvocationAst(fn.body, (node) => {
+      if (node instanceof VariableDefinitionNode) locals.add(node.name);
+    });
+    let captured = false;
+    walkInvocationAst(fn.body, (node) => {
+      if (node instanceof IdentifierNode && contractParameterNames.has(node.name) && !locals.has(node.name)) {
+        captured = true;
+      }
+    });
+    return captured;
+  };
+  const directOutgoingEffect = (fn: FunctionDefinitionNode): boolean => {
+    let found = false;
+    walkInvocationAst(fn.body, (node) => {
+      if (node instanceof ExternalFunctionCallNode || node instanceof LowLevelCallNode
+        || node instanceof LowLevelCallStatementNode) found = true;
+      // Pre-symbol typed calls retain their receiver/member structure here. Intrinsic namespace helpers have no
+      // graph edge, so exclude the compiler-owned spellings rather than treating every method-shaped expression
+      // as an external effect.
+      if (node instanceof MethodCallNode && !(node.object instanceof IdentifierNode
+        && ['abi', 'bytes', 'string'].includes(node.object.name))) found = true;
+      if (node instanceof FunctionCallNode && node.identifier.name.includes('.')
+        && !['abi', 'bytes', 'string'].includes(node.identifier.name.split('.')[0])) found = true;
+    });
+    return found;
+  };
+  const reachesCapturedEffect = (root: FunctionDefinitionNode): boolean => {
+    const visited = new Set<FunctionDefinitionNode>();
+    const visit = (fn: FunctionDefinitionNode, beneathEntry: boolean): boolean => {
+      if (visited.has(fn)) return false;
+      visited.add(fn);
+      if (beneathEntry && capturesConstructorParameter(fn) && directOutgoingEffect(fn)) return true;
+      let found = false;
+      walkInvocationAst(fn.body, (node) => {
+        if (found || !(node instanceof FunctionCallNode)) return;
+        const candidates = candidatesFor(node);
+        if (candidates.length === 1) found = visit(candidates[0], true);
+      });
+      return found;
+    };
+    return visit(root, false);
+  };
+  for (const fn of functions) {
+    fn.kernelConstructorCapturedHelperGraphEffect = reachesCapturedEffect(fn) || undefined;
+  }
+}
+
 
 function normalizeCompilerOptions(options: CompilerOptions): InternalCompilerOptions {
   const messageBusMode: MessageBusMode = options.__messageBusVerifierProgram
@@ -3459,6 +3524,50 @@ function synthesizeMessageBusRoute(
     }
     return candidates.length === 1 ? candidates[0] : undefined;
   };
+  // Graph lowering gives a physical effect helper extra settlement operands. A source entry can call that helper
+  // safely only when its target/value provenance can be reconstructed in the graph frame. A helper which closes
+  // over a contract constructor parameter has neither an entry-row argument nor a state/immutable read carrying
+  // that value. Detect the shape on the untouched source AST, before any helper receives hidden parameters. This
+  // is deliberately about lexical binding and effects, not contract/function names: direct graph calls and
+  // helpers that read ordinary state or immutables retain their existing paths.
+  const capturesContractParameter = (fn: FunctionDefinitionNode): boolean => {
+    const localNames = new Set(fn.parameters.map((parameter) => parameter.name));
+    walkInvocationAst(fn.body, (node) => {
+      if (node instanceof VariableDefinitionNode) localNames.add(node.name);
+    });
+    const constructorNames = new Set(contract.parameters.map((parameter) => parameter.name));
+    let captured = false;
+    walkInvocationAst(fn.body, (node) => {
+      if (node instanceof IdentifierNode && constructorNames.has(node.name) && !localNames.has(node.name)) {
+        captured = true;
+      }
+    });
+    return captured;
+  };
+  const helperCapturesConstructorGraphEffect = (root: FunctionDefinitionNode): boolean => {
+    const visited = new Set<FunctionDefinitionNode>();
+    const visit = (owner: FunctionDefinitionNode, beneathEntry: boolean): boolean => {
+      if (visited.has(owner)) return false;
+      visited.add(owner);
+      if (beneathEntry && capturesContractParameter(owner)
+        && analyseFunctionFootprint(owner, byName, footprintCache).effects.includes('external-call')) return true;
+      let found = false;
+      walkInvocationAst(owner.body, (node) => {
+        if (found || !(node instanceof FunctionCallNode)) return;
+        const target = exactPreSemanticCallTarget(node, owner);
+        if (!target || target.isFreeFunction
+          || ![StateVariableVisibility.INTERNAL, StateVariableVisibility.PRIVATE]
+            .includes(target.visibility as StateVariableVisibility)) return;
+        found = visit(target, true);
+      });
+      return found;
+    };
+    return visit(root, false);
+  };
+  for (const fn of functions) {
+    fn.kernelConstructorCapturedHelperGraphEffect = fn.kernelConstructorCapturedHelperGraphEffect === true
+      || helperCapturesConstructorGraphEffect(fn) || undefined;
+  }
   const transactionSignatureReachability = new Map<FunctionDefinitionNode, boolean>();
   const reachesTransactionSignatureCheck = (
     root: FunctionDefinitionNode, active = new Set<FunctionDefinitionNode>(),
@@ -3632,20 +3741,6 @@ function synthesizeMessageBusRoute(
       return target && !target.isFreeFunction
         && [StateVariableVisibility.INTERNAL, StateVariableVisibility.PRIVATE]
           .includes(target.visibility as StateVariableVisibility) ? target : undefined;
-    };
-    const capturesContractParameter = (fn: FunctionDefinitionNode): boolean => {
-      const localNames = new Set(fn.parameters.map((parameter) => parameter.name));
-      walkInvocationAst(fn.body, (node) => {
-        if (node instanceof VariableDefinitionNode) localNames.add(node.name);
-      });
-      const contractNames = new Set(contract.parameters.map((parameter) => parameter.name));
-      let captured = false;
-      walkInvocationAst(fn.body, (node) => {
-        if (node instanceof IdentifierNode && contractNames.has(node.name) && !localNames.has(node.name)) {
-          captured = true;
-        }
-      });
-      return captured;
     };
     const active = new Set<FunctionDefinitionNode>();
     const analyse = (fn: FunctionDefinitionNode, environment: OriginEnvironment): void => {
@@ -4197,6 +4292,10 @@ function synthesizeMessageBusRoute(
     fn.usesMsgValue = routeUsesMsgValue;
     let reason: string | undefined;
     if (compilerOptions.messageBusKernel === true && fn.kernelJournalContextUnsafeCall === true) {
+      reason = 'KERNEL_LAYOUT';
+    }
+    if (compilerOptions.messageBusKernel === true
+      && fn.kernelConstructorCapturedHelperGraphEffect === true) {
       reason = 'KERNEL_LAYOUT';
     }
     // In auto mode the message bus is an optional capability. One entry point with an unsupported low-level
@@ -10386,6 +10485,9 @@ function compileResolvedAst(
   }
 
   if (mergedCompilerOptions.messageBus) {
+    if (mergedCompilerOptions.messageBusKernel === true) {
+      markConstructorCapturedHelperGraphEffects(ast);
+    }
     ast = ast.accept(new InlineStoragePointerCalls(
       mergedCompilerOptions.solidityImportCompat ?? false,
       inlineDelegateStateHelpers,
@@ -10407,10 +10509,11 @@ function compileResolvedAst(
       // body discover those operands in the same frame. Waiting for the ordinary late pass leaves graph clones
       // marked as non-inlineable and lets semantic analysis augment the retained helper while its source-arity
       // invocation remains unchanged.
-      const signedKernelRoots = new Set(ast.contract.functions.filter((fn) => fn.isEntryPoint
-        && fn.parameters.some((parameter) => containsTransactionSignature(parameter.type))));
-      if (mergedCompilerOptions.messageBusKernel === true && signedKernelRoots.size > 0) {
-        ast = ast.accept(new InlineExternalCallHelpers((fn) => signedKernelRoots.has(fn))) as Ast;
+      const earlyKernelRoots = new Set(ast.contract.functions.filter((fn) => fn.isEntryPoint
+        && (fn.parameters.some((parameter) => containsTransactionSignature(parameter.type))
+          || fn.kernelConstructorCapturedHelperGraphEffect === true)));
+      if (mergedCompilerOptions.messageBusKernel === true && earlyKernelRoots.size > 0) {
+        ast = ast.accept(new InlineExternalCallHelpers((fn) => earlyKernelRoots.has(fn))) as Ast;
       }
     }
   }

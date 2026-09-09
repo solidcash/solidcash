@@ -586,6 +586,12 @@ export class FunctionDefinitionNode extends Node implements Named {
   /** An indirect internal call may reach a journal-context ABI without a statically complete target set. The
    * kernel must refuse that handler rather than invoke a context-bearing OP_DEFINE with the source-only frame. */
   kernelJournalContextUnsafeCall?: boolean;
+  /** A source entry reaches an internal effect helper which closes over a contract constructor parameter.
+   * External-call lowering appends a physical settlement frame to that helper, but the constructor-captured
+   * value has no source-row slot from which that frame can be rebuilt. Kernel admission records this before
+   * graph lowering so the handler remains a deterministic KERNEL_LAYOUT refusal rather than reaching type/codegen
+   * with a source-arity helper call. */
+  kernelConstructorCapturedHelperGraphEffect?: boolean;
   // Release 3: helper was lowered to a value-threaded collection journal.
   collectionJournal?: boolean;
   /** Compiler-owned batch clone: journal it through the wrapper's shared entry pool even when it touches a

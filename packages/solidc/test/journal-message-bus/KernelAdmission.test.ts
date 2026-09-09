@@ -773,6 +773,35 @@ describe('required kernel admission', () => {
       .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_TX_SIGNATURE' });
   });
 
+  it('fences a constructor-captured helper graph effect before hidden graph slots are injected', () => {
+    const attemptFailureBox = { failures: [] as Array<{ stage: string; errorName: string; message: string }> };
+    const artifact = compileString(`interface IReceiver { function set(uint value) external; }
+      contract C(address receiver) {
+        function forward(uint value) internal { IReceiver(receiver).set(value); }
+        function run(uint value) public { forward(value); require(true); }
+      }`, {
+      ...KERNEL, __artifactCache: false, __strictNoInternalRecovery: true, __attemptFailureBox: attemptFailureBox,
+    });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'run'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+    expect(attemptFailureBox.failures).toEqual([]);
+    const direct = compileString(`interface IReceiver { function set(uint value) external; }
+      contract Direct(address receiver) {
+        function run(uint value) public { IReceiver(receiver).set(value); require(true); }
+      }`, KERNEL);
+    expect(direct.messageBus?.handlers.find((handler) => handler.name === 'run'))
+      .toMatchObject({ eligible: true });
+    const immutableHelper = compileString(`interface IReceiver { function set(uint value) external; }
+      contract Stored {
+        IReceiver immutable receiver;
+        constructor(address receiver_) { receiver = IReceiver(receiver_); }
+        function forward(uint value) internal { receiver.set(value); }
+        function run(uint value) public { forward(value); require(true); }
+      }`, KERNEL);
+    expect(immutableHelper.messageBus?.handlers.find((handler) => handler.name === 'run'))
+      .toMatchObject({ eligible: true });
+  });
+
   it('keeps a mutated alias outside the exact detached-body proof', () => {
     expect(denied(`contract C(pubkey admin) {
       function migrate(sig proof) public upgrade {

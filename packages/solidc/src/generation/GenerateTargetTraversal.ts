@@ -24357,8 +24357,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emitKernelJournalRecordExtractGlobal(loc); // selected carrier
     this.stack = [...trackedStack];
 
-    // Accept authenticated clean pre-state (first touch), authenticated dirty pending state, or a synthetic live
-    // node created by an earlier insertion in this transaction. Preserve provenance in the replacement header.
+    // Accept authenticated clean pre-state (first touch), authenticated dirty pending state, a route-internal
+    // authenticated clean-read carrier, or a synthetic live node created by an earlier insertion in this
+    // transaction. A `0x11` carrier was already bound to its physical entry by an earlier read, so it deliberately
+    // follows the no-new-input arm while becoming authenticated dirty `0x03`. This is only an internal transition:
+    // route ingress still rejects `0x11`, and admission does not publish a read-then-mutate carrier capability
+    // until the SDK can plan its shared physical ownership/final settlement.
     this.emit(encodeInt(2n), loc); this.emit(Op.OP_SPLIT, loc); // tag+flags, body
     this.emit(Op.OP_SWAP, loc);
     this.emit(Op.OP_DUP, loc); this.emit(new Uint8Array([0x05, 0x01]), loc); this.emit(Op.OP_EQUAL, loc);
@@ -24370,8 +24374,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_IF, loc);
     this.emit(Op.OP_DROP, loc); this.emit(Op.OP_0, loc); this.emit(new Uint8Array([0x05, 0x03]), loc);
     this.emit(Op.OP_ELSE, loc);
+    this.emit(Op.OP_DUP, loc); this.emit(new Uint8Array([0x05, 0x11]), loc); this.emit(Op.OP_EQUAL, loc);
+    this.emit(Op.OP_IF, loc);
+    // `0x11` can only arise after this route authenticated `0x01`; retain that provenance while changing the
+    // disposition to dirty. Its compact access flags must therefore take the ordinary no-input (`0x0b`) arm.
+    this.emit(Op.OP_DROP, loc); this.emit(Op.OP_0, loc); this.emit(new Uint8Array([0x05, 0x03]), loc);
+    this.emit(Op.OP_ELSE, loc);
     this.emit(new Uint8Array([0x05, 0x0a]), loc); this.emit(Op.OP_EQUALVERIFY, loc);
     this.emit(Op.OP_0, loc); this.emit(new Uint8Array([0x05, 0x0a]), loc);
+    this.emit(Op.OP_ENDIF, loc);
     this.emit(Op.OP_ENDIF, loc);
     this.emit(Op.OP_ENDIF, loc); // body, first
     this.emit(Op.OP_TOALTSTACK, loc); // replacement header

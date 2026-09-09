@@ -29,6 +29,24 @@ describe('required kernel admission', () => {
     expect(artifact.messageBus?.kernelEntryJournal).toBeUndefined();
   });
 
+  it('keeps an internal clean-carrier-to-dirty handoff unpublished', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) source;
+      mapping(int => int) destination;
+      function copyThenMutate(int count) public {
+        for (int i = 0; i < count; i = i + 1) this.destination[i] = this.source[i];
+        for (int j = 0; j < count; j = j + 1) this.source[j] = 7;
+        require(true);
+      }
+    }`, KERNEL);
+    const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'copyThenMutate');
+    expect(handler).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+    // A later compiler row may turn the authenticated source `0x11` record into dirty `0x03`, but that
+    // transition is not independently materializable by the SDK yet. Do not let the compiler-side state machine
+    // become an advertised route capability before its physical ownership/final-settlement half exists.
+    expect(artifact.messageBus?.kernelEntryJournal).toBeUndefined();
+  });
+
   it('retries a multi-declaration speed compile from source-only AST state', () => {
     const source = `pragma solidity ^0.8.7;
       interface Remote {

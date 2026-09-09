@@ -476,8 +476,8 @@ function replaceOps(
       // We merge the lowest start and highest end locations into a single location data entry
       const mergedLocation = {
         location: lowestStart && highestEnd ? {
-          start: lowestStart.location!.start,
-          end: highestEnd.location!.end,
+          start: lowestStart.location.start,
+          end: highestEnd.location.end,
         } : undefined,
         positionHint,
       } as SingleLocationData;
@@ -574,15 +574,21 @@ function replaceOps(
   };
 }
 
-const getHighestEndLocation = (locations: SingleLocationData[]): SingleLocationData | undefined => {
-  const located = locations.filter((entry) => entry.location !== undefined);
-  return located.reduce<SingleLocationData | undefined>((highest, current) => {
-    if (!highest || current.location!.end.line > highest.location!.end.line) {
+type LocatedLocationData = SingleLocationData & {
+  location: NonNullable<SingleLocationData['location']>;
+};
+
+const getHighestEndLocation = (locations: SingleLocationData[]): LocatedLocationData | undefined => {
+  const located = locations.filter(
+    (entry): entry is LocatedLocationData => entry.location !== undefined,
+  );
+  return located.reduce<LocatedLocationData | undefined>((highest, current) => {
+    if (!highest || current.location.end.line > highest.location.end.line) {
       return current;
     }
 
-    if (highest.location!.end.line === current.location!.end.line) {
-      if (current.location!.end.column > highest.location!.end.column) {
+    if (highest.location.end.line === current.location.end.line) {
+      if (current.location.end.column > highest.location.end.column) {
         return current;
       }
     }
@@ -591,15 +597,17 @@ const getHighestEndLocation = (locations: SingleLocationData[]): SingleLocationD
   }, undefined);
 };
 
-const getLowestStartLocation = (locations: SingleLocationData[]): SingleLocationData | undefined => {
-  const located = locations.filter((entry) => entry.location !== undefined);
-  return located.reduce<SingleLocationData | undefined>((lowest, current) => {
-    if (!lowest || current.location!.start.line < lowest.location!.start.line) {
+const getLowestStartLocation = (locations: SingleLocationData[]): LocatedLocationData | undefined => {
+  const located = locations.filter(
+    (entry): entry is LocatedLocationData => entry.location !== undefined,
+  );
+  return located.reduce<LocatedLocationData | undefined>((lowest, current) => {
+    if (!lowest || current.location.start.line < lowest.location.start.line) {
       return current;
     }
 
-    if (lowest.location!.start.line === current.location!.start.line) {
-      if (current.location!.start.column < lowest.location!.start.column) {
+    if (lowest.location.start.line === current.location.start.line) {
+      if (current.location.start.column < lowest.location.start.column) {
         return current;
       }
     }

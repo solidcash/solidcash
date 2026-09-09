@@ -6,6 +6,7 @@ import {
 } from '../ast/AST.js';
 import { BinaryOperator } from '../ast/Operator.js';
 import { cloneNode } from '../ast/clone.js';
+import { planKernelJournalStreams } from './KernelJournalStreamPlan.js';
 import type { ConstructedKeyVectorV1Abi } from '@solidcash/utils';
 
 const replayValueType = (type: string): boolean => /^(?:u?int\d*|bigint|bool|bytes(?:[1-9]|[12]\d|3[0-2]))$/.test(type);
@@ -92,6 +93,9 @@ const isConsumerMappingWrite = (node: Node, arrayName: string): boolean => {
  */
 export function captureConstructedKeyVectorProvenance(functions: readonly FunctionDefinitionNode[]): void {
   for (const fn of functions) {
+    // This deliberately precedes candidate capture and route lowering. It is a private source-flow record only:
+    // no artifact consumer and no admission gate may use it until a future authenticated journal protocol exists.
+    planKernelJournalStreams(fn);
     if (!fn.body || fn.messageBusConstructedKeyVectorProofPrograms?.size) continue;
     const identity = sourceIdentityOf(fn);
     fn.messageBusSourceFunctionIdentity = identity;

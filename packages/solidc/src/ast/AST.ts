@@ -335,6 +335,39 @@ export interface MessageBusConstructedKeyVectorProofProgram {
   sourceProgram: BlockNode;
 }
 
+/**
+ * Compiler-only execution coordinate.  It intentionally contains neither source spellings nor source locations:
+ * statement paths give the source execution nesting and preorder gives a deterministic tie-breaker inside a
+ * statement.  It is retained solely to bind a future journal witness protocol to the source program which was
+ * actually analysed before lowering.
+ */
+export interface KernelJournalStreamExecutionCoordinate {
+  readonly statementPath: readonly number[];
+  readonly preorder: number;
+}
+
+/**
+ * One exact locally-constructed-vector data-flow edge discovered before kernel admission.
+ *
+ * This is deliberately not an ABI and must never influence route selection.  In particular, it lets later
+ * carrier work distinguish one allocation feeding one producer write and one mapping-key consumer from a
+ * merely similar lowered array expression, without using a local variable name as an identity.
+ */
+export interface KernelJournalStreamPlanEdge {
+  readonly allocationOrdinal: number;
+  readonly allocation: KernelJournalStreamExecutionCoordinate;
+  readonly producerLoop: KernelJournalStreamExecutionCoordinate;
+  readonly producerWrite: KernelJournalStreamExecutionCoordinate;
+  readonly consumerLoop: KernelJournalStreamExecutionCoordinate;
+  readonly consumerWrite: KernelJournalStreamExecutionCoordinate;
+  readonly consumerKeyComponent: number;
+}
+
+export interface KernelJournalStreamPlan {
+  readonly version: 1;
+  readonly edges: readonly KernelJournalStreamPlanEdge[];
+}
+
 export class FunctionDefinitionNode extends Node implements Named {
   symbolTable?: SymbolTable;
   // Set by semantic analysis after visiting the body. Codegen can skip its more detailed deploy-site survey when
@@ -555,6 +588,8 @@ export class FunctionDefinitionNode extends Node implements Named {
   messageBusSourceFunctionIdentity?: string;
   /** Source snapshots indexed exclusively by stable source-function identity. */
   messageBusConstructedKeyVectorProofPrograms?: Map<string, MessageBusConstructedKeyVectorProofProgram>;
+  /** Internal pre-admission source-flow plan. Never serialized and never an admission capability. */
+  messageBusKernelJournalStreamPlan?: KernelJournalStreamPlan;
   /** Names-free affine recursive mapping-frame proof; metadata only, never an admission capability. */
   messageBusAffineRecursiveFrameDescriptors?: readonly AffineRecursiveFrameV1Abi[];
   /** Idempotence marker for the pre-admission constructed-array replay normalization. */

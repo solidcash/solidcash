@@ -48,6 +48,58 @@ describe('kernel runtime-sized constructed-key initialization', () => {
     expect(clone.messageBusConstructedKeyVectorProofPrograms?.has('first')).toBe(false);
   });
 
+  it('records a names-free pre-admission allocation-write-consumer execution edge without publishing it', () => {
+    const sourceFor = (vectorName: string) => parseCode(`contract Registry() {
+      mapping(int => int) records;
+      function apply(int count, int base) public {
+        int[] memory ${vectorName} = new int[](count);
+        for (int producer = 0; producer < count; producer = producer + 1) {
+          ${vectorName}[producer] = base + producer;
+        }
+        for (int consumer = 0; consumer < count; consumer = consumer + 1) {
+          this.records[${vectorName}[consumer]] = consumer;
+        }
+        require(true);
+      }
+    }`) as SourceFileNode;
+    const first = sourceFor('first').contract.functions.find((fn) => fn.name === 'apply')!;
+    const deliberatelyNonSemanticName = sourceFor('deliberatelyNonSemanticName')
+      .contract.functions.find((fn) => fn.name === 'apply')!;
+    captureConstructedKeyVectorProvenance([first, deliberatelyNonSemanticName]);
+
+    const plan = first.messageBusKernelJournalStreamPlan;
+    expect(plan).toMatchObject({
+      version: 1,
+      edges: [{
+        allocationOrdinal: 0,
+        allocation: { statementPath: [0] },
+        // The parser lowers each source `for` initializer to its own executable statement, so these are the
+        // post-parse execution coordinates rather than source-text line numbers.
+        producerLoop: { statementPath: [2] },
+        producerWrite: { statementPath: [2, 0] },
+        consumerLoop: { statementPath: [4] },
+        consumerWrite: { statementPath: [4, 0] },
+        consumerKeyComponent: 0,
+      }],
+    });
+    expect(plan).toEqual(deliberatelyNonSemanticName.messageBusKernelJournalStreamPlan);
+    expect(JSON.stringify(plan)).not.toContain('first');
+    expect(JSON.stringify(plan)).not.toContain('deliberatelyNonSemanticName');
+
+    const artifact = compileString(`contract Registry() {
+      mapping(int => int) records;
+      function apply(int count, int base) public {
+        int[] memory keys = new int[](count);
+        for (int producer = 0; producer < count; producer = producer + 1) { keys[producer] = base + producer; }
+        for (int consumer = 0; consumer < count; consumer = consumer + 1) { this.records[keys[consumer]] = consumer; }
+        require(true);
+      }
+    }`, KERNEL);
+    expect(JSON.stringify(artifact)).not.toContain('messageBusKernelJournalStreamPlan');
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'apply'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+  });
+
   it('keeps a separately produced local key vector deterministically frozen pending route replay binding', () => {
     const artifact = compileString(`contract Registry() {
       mapping(int => int) records;

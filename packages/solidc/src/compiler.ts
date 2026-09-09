@@ -3983,12 +3983,19 @@ function synthesizeMessageBusRoute(
     const kernelLifecycleKind = compilerOptions.messageBusKernel !== true ? undefined
       : fn.modifiers.includes(FunctionModifier.SPLIT) ? 'split' as const
         : fn.modifiers.includes(FunctionModifier.MERGE) ? 'merge' as const : undefined;
+    const lifecycleHasDetachedTransactionSignature = kernelLifecycleKind !== undefined
+      && fn.parameters.some((parameter) => (transactionSignatureLeaves(parameter.type)?.length ?? 0) > 0);
     // Participant-changing lifecycle remains orthogonal to state/effect settlement until both share one physical
-    // frame. This fence is semantic and applies equally to split and merge.
+    // frame. Every `sig` leaf is detached from the committed row even when the source merely treats it as bytes,
+    // so the fence is based on the ABI type rather than the presence of CHECKSIG. Otherwise compilation publishes
+    // a lifecycle/V4 combination which the atomic planner must reject later. `datasig` is ordinary row data and
+    // does not enter this transaction-signature provenance boundary.
     if (kernelLifecycleKind && (footprint.unknown || footprint.reads.length > 0 || footprint.writes.length > 0
-      || footprint.effects.length > 0 || fn.messageBusUsesTransactionSignature === true)) {
+      || footprint.effects.length > 0 || lifecycleHasDetachedTransactionSignature
+      || fn.messageBusUsesTransactionSignature === true)) {
       fn.messageBusEligible = false;
-      fn.messageBusRejectionReason = fn.messageBusUsesTransactionSignature === true
+      fn.messageBusRejectionReason = lifecycleHasDetachedTransactionSignature
+        || fn.messageBusUsesTransactionSignature === true
         ? 'KERNEL_TX_SIGNATURE' : 'KERNEL_LIFECYCLE';
       continue;
     }

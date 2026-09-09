@@ -116,6 +116,29 @@ const plan = (): messageBus.CompiledGraphPlan => ({
 });
 
 describe('atomic compiled invocation graph', () => {
+  it('cannot plan compiler-fenced lifecycle rows carrying detached signature leaves', () => {
+    const compiled = compileString(`contract LifecycleSignatureBoundary() {
+      struct Authorization { sig proof; int nonce; }
+      function divide(int count, Authorization auth) public split(count) {
+        require(auth.nonce >= 0 && count > 0);
+      }
+      function control() public { require(true); }
+    }`, {
+      forceStateful: true, messageBus: true, messageBusKernel: true, maximumInputBytes: 1_000_000,
+    });
+    expect(compiled.messageBus?.handlers.find((handler) => handler.name === 'divide')).toMatchObject({
+      eligible: false,
+      rejectionReason: 'KERNEL_TX_SIGNATURE',
+      lifecycleTopology: { kind: 'split' },
+    });
+    expect(compiled.messageBus?.route.inputs.some((input) => input.name.includes('__message_bus_sig_')))
+      .toBe(false);
+    expect(() => messageBus.planCompiledGraph([
+      { artifact: compiled, lockingBytecode: '51'.repeat(64) },
+    ], [{ parent: null, callee: 0, function: 'divide', args: [2n, { proof: '00', nonce: 0n }] }]))
+      .toThrow(/lifecycle participant .* does not advertise selector-derived authority|not message-bus eligible/);
+  });
+
   it('derives lifecycle wire geometry from metadata and invocation args, never a caller transcript', () => {
     expect(messageBus.atomicParticipantPolicyHash(lifecycleArtifact('split')))
       .not.toBe(messageBus.atomicParticipantPolicyHash(lifecycleArtifact('merge')));

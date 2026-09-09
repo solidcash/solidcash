@@ -18,12 +18,18 @@ describe('kernel lifecycle transaction-signature boundary', () => {
       function signedMerge(int count, sig proof) public merge(count) {
         require(checkSig(proof, authority));
       }
+      function opaqueSplit(int count, sig payload) public split(count) {
+        require(bytes(payload).length >= 0);
+      }
+      function opaqueMerge(int count, sig payload) public merge(count) {
+        require(count > 0);
+      }
       function openSplit(int count) public split(count) { require(count > 0); }
       function openMerge(int count) public merge(count) { require(count > 0); }
     }`, KERNEL);
     const handler = (name: string) => artifact.messageBus?.handlers.find((entry) => entry.name === name);
 
-    for (const name of ['signedSplit', 'signedMerge']) {
+    for (const name of ['signedSplit', 'signedMerge', 'opaqueSplit', 'opaqueMerge']) {
       expect(handler(name)).toMatchObject({
         eligible: false,
         rejectionReason: 'KERNEL_TX_SIGNATURE',
@@ -38,6 +44,32 @@ describe('kernel lifecycle transaction-signature boundary', () => {
       eligible: true,
       lifecycleTopology: { kind: 'merge' },
     });
+  });
+
+  it('finds detached signature leaves by finite ABI shape while leaving data signatures in-row', () => {
+    const artifact = compileString(`contract Threads() {
+      struct Authorization { int nonce; sig proof; }
+      function nested(int count, Authorization auth) public split(count) {
+        require(auth.nonce >= 0);
+      }
+      function dataOnly(int count, datasig proof) public split(count) {
+        require(bytes(proof).length >= 0 && count > 0);
+      }
+    }`, KERNEL);
+    const handler = (name: string) => artifact.messageBus?.handlers.find((entry) => entry.name === name);
+
+    expect(handler('nested')).toMatchObject({
+      eligible: false,
+      rejectionReason: 'KERNEL_TX_SIGNATURE',
+      lifecycleTopology: { kind: 'split' },
+    });
+    expect(handler('nested')).not.toHaveProperty('transactionSignaturePolicy');
+    expect(handler('dataOnly')).toMatchObject({
+      eligible: true,
+      lifecycleTopology: { kind: 'split' },
+    });
+    expect(artifact.messageBus?.route.inputs.some((input) => input.name.includes('__message_bus_sig_')))
+      .toBe(false);
   });
 
   it('retains exact SIGHASH_ALL provenance for an ordinary signed sibling', () => {

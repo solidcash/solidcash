@@ -1,4 +1,60 @@
-import { describe, it } from 'vitest';
+import { binToHex, hexToBin } from '@bitauth/libauth';
+import { compileString } from 'solidc';
+import { describe, expect, it } from 'vitest';
+import { Contract, StatefulContract, getEntryNftAddress } from '../../../src/index.js';
+import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';
+import { addressToLockScript, generateLibauthSourceOutputs } from '../../../src/utils.js';
+import { createTestProvider, setupStatefulUtxos } from '../../test-util.js';
+
+const SOURCE = `contract RepeatedRowCarrier() {
+  mapping(int => int) source;
+  mapping(int => int) result;
+  function seed(int key, int value) public {
+    this.source[key] = value;
+    this.result[key] = 0;
+    require(true);
+  }
+  function copy(int count) public {
+    for (int cursor = 0; cursor < count; cursor = cursor + 1) {
+      this.result[cursor] = this.source[cursor];
+    }
+    require(true);
+  }
+  function check(int key, int expected) public { require(this.result[key] == expected); }
+}`;
+
+const KERNEL = {
+  forceStateful: true, messageBus: true, messageBusKernel: true, maximumInputBytes: 1_000_000,
+} as const;
+
+const INTERNAL_CLEAN_CARRIER_HEADER = Uint8Array.of(0x05, 0x11);
+const AUTHENTICATED_CLEAN_HEADER = Uint8Array.of(0x05, 0x01);
+
+function entryIndices(
+  transaction: { inputs: Array<{ lockingBytecode: Uint8Array }>; outputs: Array<{ lockingBytecode: Uint8Array }> },
+  address: string,
+): { inputs: number[]; outputs: number[] } {
+  const lockingBytecode = binToHex(addressToLockScript(address));
+  return {
+    inputs: transaction.inputs.flatMap((input, index) =>
+      binToHex(input.lockingBytecode) === lockingBytecode ? [index] : []),
+    outputs: transaction.outputs.flatMap((output, index) =>
+      binToHex(output.lockingBytecode) === lockingBytecode ? [index] : []),
+  };
+}
+
+function replaceFirstHeader(streams: Uint8Array[], from: Uint8Array, to: Uint8Array): Uint8Array[] {
+  let replaced = false;
+  return streams.map((stream) => {
+    const result = new Uint8Array(stream);
+    for (let index = 0; !replaced && index + from.length <= result.length; index += 1) {
+      if (!from.every((byte, offset) => result[index + offset] === byte)) continue;
+      result.set(to, index);
+      replaced = true;
+    }
+    return result;
+  });
+}
 
 /**
  * Activation fixture for the compiler-published `internal-read-carrier` capability.
@@ -8,29 +64,90 @@ import { describe, it } from 'vitest';
  * meaningful protocol precondition into a misleading SDK failure.
  */
 describe('kernel repeated clean-read carriers', () => {
-  it.skip('activates with compiler internal-read-carrier capability', async () => {
-    /*
-      contract RepeatedCleanRead() {
-        mapping(int => int) source;
-        mapping(int => int) target;
-        function seed(int key, int value) public { this.source[key] = value; require(true); }
-        function copy(int count) public {
-          for (int i = 0; i < count; i = i + 1) this.target[i] = this.source[i];
-          require(true);
-        }
-        function check(int key, int value) public { require(this.target[key] == value); }
-      }
+  it.skip('shares each physical clean input across copy(2), copy(2) and settles a dense mixed final flush', async () => {
+    const artifact = compileString(SOURCE, KERNEL);
+    expect(artifact.messageBus?.capabilities).toContain('internal-read-carrier');
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'copy')).toMatchObject({ eligible: true });
+    const provider = createTestProvider();
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(provider, inner, artifact.stateLayout!, {}, { saltContract: true });
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    // Reverse insertion order proves source order and physical entry order are independently authenticated.
+    await contract.call.seed(1n, 11n).send();
+    await contract.call.seed(0n, 10n).send();
+    const call = contract.batch([{ function: 'copy', args: [2n] }, { function: 'copy', args: [2n] }]);
+    const builder = await call.build();
+    const transaction = builder.buildLibauthTransaction();
+    const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+    const vm = createVirtualMachineBch2026ForProvider(provider);
+    for (let inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex += 1) {
+      expect(vm.stateSuccess(vm.evaluate({ inputIndex, sourceOutputs, transaction })), `input ${inputIndex}`).toBe(true);
+    }
 
-      Required proof once enabled:
-      1. Seed source[1] before source[0], then batch copy(2), copy(2).
-      2. Assert all BCH VM inputs succeed and target[0/1] equal 10/11 after send.
-      3. Forge a 0x11 header in caller-provided journal records: route must reject it at ingress.
-      4. Reorder the second row's compact accesses/global ordinals: route must reject it.
-      5. Duplicate the first row's authentication flag: route must reject duplicate physical authority.
+    const sourceSlots = entryIndices(transaction, getEntryNftAddress(contract.inner, categoryId, 'source'));
+    const resultSlots = entryIndices(transaction, getEntryNftAddress(contract.inner, categoryId, 'result'));
+    // Four logical clean reads collapse to two physical source inputs. The two source carriers and two dirty
+    // result slots each receive exactly one dense final output: 4 collection inputs and 4 collection outputs.
+    expect(sourceSlots.inputs).toHaveLength(2);
+    expect(sourceSlots.outputs).toHaveLength(2);
+    expect(resultSlots.inputs).toHaveLength(2);
+    expect(resultSlots.outputs).toHaveLength(2);
+    expect([...sourceSlots.inputs, ...resultSlots.inputs]).toHaveLength(4);
+    expect([...sourceSlots.outputs, ...resultSlots.outputs]).toHaveLength(4);
 
-      The marker is an internal route transition, never a caller witness. This fixture deliberately uses only
-      fixed-width scalars and two equal public rows, so the behavior is a flow/topology property, not a contract
-      naming convention.
-    */
-  });
+    const routeInput = builder.inputs.findIndex((input) => 'abiFunction' in input.unlocker
+      && input.unlocker.abiFunction.name === artifact.messageBus!.route.name);
+    expect(routeInput).toBeGreaterThanOrEqual(0);
+    const routeBuilderInput = builder.inputs[routeInput]!;
+    if (!('params' in routeBuilderInput.unlocker)) throw new Error('kernel route has no parameterized unlocker');
+    const originalUnlocker = routeBuilderInput.unlocker;
+    const journalIndex = originalUnlocker.abiFunction.inputs.findIndex((input) => input.name === '__internal__kernelJournalAccessStreams');
+    expect(journalIndex).toBeGreaterThanOrEqual(0);
+    const streams = originalUnlocker.params[journalIndex] as Uint8Array[];
+    const hasInternalCarrier = streams.some((stream) => stream.some((_byte, index) =>
+      INTERNAL_CLEAN_CARRIER_HEADER.every((byte, offset) => stream[index + offset] === byte)));
+    expect(hasInternalCarrier).toBe(true);
+    const selector = artifact.messageBus!.route.selector;
+    if (!selector) throw new Error('kernel route has no selector');
+    const routeFails = (journalStreams: Uint8Array[]): boolean => {
+      const params = [...originalUnlocker.params];
+      params[journalIndex] = journalStreams;
+      routeBuilderInput.unlocker = originalUnlocker.contract.createCompilerRouteUnlocker(
+        originalUnlocker.abiFunction, hexToBin(selector),
+      )(...params);
+      const hostile = builder.buildLibauthTransaction();
+      routeBuilderInput.unlocker = originalUnlocker;
+      return vm.stateSuccess(vm.evaluate({ inputIndex: routeInput, sourceOutputs, transaction: hostile })) !== true;
+    };
+    // A later row can consume 0x0511, but cannot recreate physical authentication for an already-owned input.
+    expect(routeFails(replaceFirstHeader(streams, INTERNAL_CLEAN_CARRIER_HEADER, AUTHENTICATED_CLEAN_HEADER))).toBe(true);
+    // The marker is never ingress data; a forged marker must be rejected before row execution.
+    expect(routeFails(replaceFirstHeader(streams, AUTHENTICATED_CLEAN_HEADER, INTERNAL_CLEAN_CARRIER_HEADER))).toBe(true);
+    const swapped = structuredClone(transaction);
+    [swapped.outputs[sourceSlots.outputs[0]!]!.token, swapped.outputs[sourceSlots.outputs[1]!]!.token] = [
+      swapped.outputs[sourceSlots.outputs[1]!]!.token, swapped.outputs[sourceSlots.outputs[0]!]!.token,
+    ];
+    expect(vm.stateSuccess(vm.evaluate({ inputIndex: routeInput, sourceOutputs, transaction: swapped }))).not.toBe(true);
+    await expect(call.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    await expect(contract.call.check(0n, 10n).send()).resolves.toBeDefined();
+    await expect(contract.call.check(1n, 11n).send()).resolves.toBeDefined();
+
+    // Legacy unrolling intentionally does not admit this runtime-mapping shape. Compare instead with the direct
+    // dispatcher, which is the independent observable-semantics baseline until legacy gains an equivalent route.
+    const legacy = compileString(SOURCE, { ...KERNEL, messageBusKernel: false });
+    expect(legacy.messageBus?.handlers.find((handler) => handler.name === 'copy')?.eligible).toBe(false);
+    const directArtifact = compileString(SOURCE, { forceStateful: true, messageBus: false });
+    const directProvider = createTestProvider();
+    const directInner = new Contract(directArtifact, [], { provider: directProvider });
+    const directState = await setupStatefulUtxos(
+      directProvider, directInner, directArtifact.stateLayout!, {}, { saltContract: true },
+    );
+    const direct = StatefulContract.withCategory(directInner, directState.categoryId);
+    await direct.call.seed(1n, 11n).send();
+    await direct.call.seed(0n, 10n).send();
+    await direct.call.copy(2n).send();
+    await direct.call.copy(2n).send();
+    await expect(direct.call.check(0n, 10n).send()).resolves.toBeDefined();
+    await expect(direct.call.check(1n, 11n).send()).resolves.toBeDefined();
+  }, 180_000);
 });

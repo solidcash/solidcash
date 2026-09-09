@@ -8331,12 +8331,13 @@ export default class LowerVMapCounterLoops extends AstTraversal {
               // independent of the runtime-sized allocation: each later read is `index < bound ? written : prior`.
               // The executable helper remains authoritative for bounds checks, so bound > array.length still
               // reverts at the original write rather than being silently clamped by this recipe. Keep the first
-              // slice exact: unit ascending traversal from zero, writes only to the counter position. A post-test
-              // traversal has the equally exact domain `index < (bound > 0 ? bound : 1)`: its first iteration is
-              // unconditional, while every later iteration uses the source predicate. A positive literal stride
-              // is likewise exact: `index >= 0 && index < bound && index % stride == 0` for pre-test loops, with
-              // the first-iteration alternative for post-test loops. Offset indices, runtime strides, and
-              // descending loops remain fenced.
+              // slice exact: an ascending pre-test traversal writes the direct counter positions of its literal,
+              // non-negative affine domain. A post-test traversal remains zero-start-only and has the exact
+              // domain `index < (bound > 0 ? bound : 1)`: its first iteration is unconditional, while every
+              // later iteration uses the source predicate. A positive literal stride is likewise exact:
+              // `index >= start && index < bound && (index - start) % stride == 0` for pre-test loops. Offset
+              // indices, runtime strides, negative starts, descending loops, and non-zero-start post-tests stay
+              // fenced.
               if (typeof boundValue !== 'bigint' && !runtimeBoundRange) {
                 // This is deliberately the same closed expression vocabulary the artifact recipe serializer
                 // and SDK evaluator share. In particular, do not infer purity from a resolved call: even a
@@ -8370,7 +8371,9 @@ export default class LowerVMapCounterLoops extends AstTraversal {
                 const publicBound = bound !== undefined && publicBoundExpression(bound);
                 const symbolicIndexedArrayWrite = (helperStatement instanceof WhileNode
                   || helperStatement instanceof DoWhileNode)
-                  && comparison === BinaryOperator.LT && initial.value === 0n
+                  && comparison === BinaryOperator.LT
+                  && ((helperStatement instanceof WhileNode && initial.value >= 0n)
+                    || (helperStatement instanceof DoWhileNode && initial.value === 0n))
                   && step > 0n
                   && publicBound
                   && statements.slice(0, -1).length > 0
@@ -8400,7 +8403,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
                   );
                   const boundIdentity = canonicalizeUpsertKeyExpression(bound, new Set());
                   const lengthIdentity = canonicalizeUpsertKeyExpression(plan.length, new Set());
-                  const fillsWholeArray = step === 1n && Boolean(boundIdentity && lengthIdentity
+                  const fillsWholeArray = initial.value === 0n && step === 1n && Boolean(boundIdentity && lengthIdentity
                     && boundIdentity === lengthIdentity);
                   if (!(index instanceof IdentifierNode)
                     || index.name !== counterName || !value) return undefined;
@@ -8431,7 +8434,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
                     value: planned.value,
                     recurrence: {
                       counter: counterName,
-                      start: 0n,
+                      start: initial.value,
                       step,
                       baseLength,
                       pushesPerIteration: 1,

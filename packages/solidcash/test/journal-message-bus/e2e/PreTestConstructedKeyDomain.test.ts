@@ -33,9 +33,9 @@ const source = (loop: string): string => `contract C() {
 
 describe('pre-test constructed mapping-key domain BCH VM', () => {
   it.each([
-    ['source while', `int cursor = 0;
+    ['non-zero source while', `int cursor = 3;
       while (cursor < limit) { keys[cursor] = base + cursor; cursor = cursor + 2; }`],
-    ['normalized for', `for (int cursor = 0; cursor < limit; cursor = cursor + 2) {
+    ['non-zero normalized for', `for (int cursor = 3; cursor < limit; cursor = cursor + 2) {
       keys[cursor] = base + cursor;
     }`],
   ])('executes the sparse prefix recipe for a %s and rejects a forged entry commitment', async (_label, loop) => {
@@ -72,25 +72,25 @@ describe('pre-test constructed mapping-key domain BCH VM', () => {
     await fund();
     await expect(contract.check(41n, 0n, alicePub, signature).send()).resolves.toBeDefined();
 
-    // A positive non-unit progression writes only zero and two; the untouched key slot is the array default.
+    // A positive non-unit progression writes only indices three and five; every other key is the array default.
     await fund();
-    await expect(contract.write(3n, 51n, 3n).send()).resolves.toBeDefined();
-    for (const [key, value] of [[51n, 1n], [0n, 2n], [53n, 3n]] as const) {
+    await expect(contract.write(6n, 51n, 6n).send()).resolves.toBeDefined();
+    for (const [key, value] of [[0n, 5n], [54n, 4n], [56n, 6n]] as const) {
       await fund();
       await expect(contract.check(key, value, alicePub, signature).send()).resolves.toBeDefined();
     }
 
-    // A bound below the stride executes just its zero index and preserves the source default for later keys.
+    // A bound below the start executes no helper iteration and preserves every source default.
     await fund();
     await expect(contract.write(3n, 61n, 1n).send()).resolves.toBeDefined();
-    for (const [key, value] of [[61n, 1n], [0n, 3n], [63n, 0n]] as const) {
+    for (const [key, value] of [[61n, 0n], [0n, 3n], [63n, 0n]] as const) {
       await fund();
       await expect(contract.check(key, value, alicePub, signature).send()).resolves.toBeDefined();
     }
 
     // The symbolic recipe never clamps the executable helper to the allocation.
     await fund();
-    await expect(contract.write(2n, 71n, 3n).send()).rejects.toThrow();
+    await expect(contract.write(5n, 71n, 6n).send()).rejects.toThrow();
 
     await fund();
     const send = provider.sendRawTransaction.bind(provider);
@@ -100,7 +100,7 @@ describe('pre-test constructed mapping-key domain BCH VM', () => {
       throw new Error('capture-only');
     };
     try {
-      await expect(contract.write(3n, 81n, 3n).send()).rejects.toThrow('capture-only');
+      await expect(contract.write(6n, 81n, 6n).send()).rejects.toThrow('capture-only');
     } finally {
       (provider as any).sendRawTransaction = send;
     }

@@ -42,7 +42,12 @@ describe('pre-test constructed mapping-key domains', () => {
     ['normalized for', `for (int cursor = 0; cursor < limit; cursor = cursor + 2) {
       keys[cursor] = base + cursor;
     }`],
-  ])('publishes the exact sparse domain for a canonical %s', (_label, loop) => {
+    ['non-zero source while', `int cursor = 3;
+      while (cursor < limit) { keys[cursor] = base + cursor; cursor = cursor + 2; }`],
+    ['non-zero normalized for', `for (int cursor = 3; cursor < limit; cursor = cursor + 2) {
+      keys[cursor] = base + cursor;
+    }`],
+  ])('publishes the exact sparse domain for a canonical %s', (label, loop) => {
     const artifact = compile(loop);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
       .toMatchObject({ eligible: true });
@@ -50,6 +55,7 @@ describe('pre-test constructed mapping-key domains', () => {
       ?.sortedUpsertLoopInfo?.[0]?.varyingKeyExpressions?.[0];
     expect(operators(expression)).toEqual(expect.arrayContaining(['>=', '<', '%', '==', '&&', '-']));
     expect(operators(expression)).not.toContain('||');
+    if (label.startsWith('non-zero')) expect(JSON.stringify(expression)).toContain('"value":"3"');
   });
 
   it.each([
@@ -58,6 +64,10 @@ describe('pre-test constructed mapping-key domains', () => {
     ['mutated stride', `int cursor = 0;
       int step = 2;
       while (cursor < limit) { keys[cursor] = base + cursor; step = step + 1; cursor = cursor + step; }`],
+    ['negative start', `int cursor = -1;
+      while (cursor < limit) { keys[cursor] = base + cursor; cursor = cursor + 2; }`],
+    ['non-zero post-test start', `int cursor = 3;
+      do { keys[cursor] = base + cursor; cursor = cursor + 2; } while (cursor < limit);`],
   ])('keeps a %s fenced', (_label, loop) => {
     const artifact = compile(loop);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))

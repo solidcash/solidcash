@@ -66,6 +66,75 @@ describe('kernel runtime-sized constructed-key initialization', () => {
       .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
   });
 
+  it('publishes a source-name-free replay descriptor for one fully serializable constructed key vector', () => {
+    const artifact = compileString(`contract Registry() {
+      mapping(int => int) records;
+      function apply(int count, int base) public {
+        int[] memory deliberatelyNonSemanticName = new int[](count);
+        for (int producer = 0; producer < count; producer = producer + 1) {
+          deliberatelyNonSemanticName[producer] = base + producer;
+        }
+        for (int consumer = 0; consumer < count; consumer = consumer + 1) {
+          this.records[deliberatelyNonSemanticName[consumer]] = consumer;
+        }
+        require(true);
+      }
+    }`, KERNEL);
+    const entry = artifact.abi.find((candidate) => candidate.name === 'apply');
+    expect(entry?.constructedKeyVectors).toEqual([{
+      version: 1,
+      vectorOrdinal: 0,
+      elementType: 'int256',
+      allocationLength: { kind: 'source', source: { kind: 'forward', paramIndex: 0 } },
+      producer: {
+        domain: {
+          kind: 'pre-test',
+          start: { kind: 'literal', type: 'bigint', value: '0' },
+          bound: { kind: 'source', source: { kind: 'forward', paramIndex: 0 } },
+          step: { kind: 'literal', type: 'bigint', value: '1' },
+          comparison: '<',
+        },
+        writes: [{
+          index: { kind: 'source', source: { kind: 'loopIndex' } },
+          value: {
+            kind: 'binary', operator: '+',
+            left: { kind: 'source', source: { kind: 'forward', paramIndex: 1 } },
+            right: { kind: 'source', source: { kind: 'loopIndex' } },
+          },
+        }],
+      },
+      consumer: {
+        index: { kind: 'source', source: { kind: 'loopIndex' } },
+        vectorElementComponent: 0,
+        keyComponentCount: 1,
+        fixedComponents: [],
+      },
+    }]);
+    expect(JSON.stringify(entry?.constructedKeyVectors)).not.toContain('deliberatelyNonSemanticName');
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'apply'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+  });
+
+  it('omits a descriptor rather than serializing a local alias as source provenance', () => {
+    const artifact = compileString(`contract Registry() {
+      mapping(int => int) records;
+      function apply(int count, int base) public {
+        int limit = count;
+        int[] memory keys = new int[](limit);
+        for (int producer = 0; producer < limit; producer = producer + 1) {
+          keys[producer] = base + producer;
+        }
+        for (int consumer = 0; consumer < limit; consumer = consumer + 1) {
+          this.records[keys[consumer]] = consumer;
+        }
+        require(true);
+      }
+    }`, KERNEL);
+    expect(artifact.abi.find((candidate) => candidate.name === 'apply')?.constructedKeyVectors).toBeUndefined();
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'apply'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+  });
+
   it('derives the exact key recipe for a canonical full-array helper fill', () => {
     const artifact = compileString(`contract Registry() {
       mapping(int => int) records;

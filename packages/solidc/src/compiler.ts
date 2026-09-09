@@ -127,7 +127,9 @@ import LowerVMapCounterLoops, {
   VMAP_RUNTIME_INPUT_COUNT_PREFIX,
   VMAP_RUNTIME_OUTPUT_COUNT_PREFIX,
 } from './semantic/LowerVMapCounterLoops.js';
-import { captureConstructedKeyVectorProvenance } from './semantic/CaptureConstructedKeyVectorProvenance.js';
+import {
+  captureConstructedKeyVectorProvenance, projectConstructedKeyVectorProvenance,
+} from './semantic/CaptureConstructedKeyVectorProvenance.js';
 import LowerLegacyVMapCounterLoops from './semantic/LowerLegacyVMapCounterLoops.js';
 import LowerInlineAssembly from './semantic/LowerInlineAssembly.js';
 import LowerMemoryModel from './semantic/LowerMemoryModel.js';
@@ -11555,6 +11557,12 @@ function compileResolvedAst(
   const fingerprint = computeBytecodeFingerprintWithConstructorArgs(optimisationResult.script, constructorParamLength);
 
   mark('optimise');
+  // Publish only the source snapshots which can be projected into the deliberately narrow, data-only replay ABI.
+  // This runs after all semantic validation but before artifact construction; route admission intentionally keeps
+  // every constructed-vector handler behind KERNEL_LAYOUT until the authenticated carrier protocol consumes it.
+  if (mergedCompilerOptions.messageBusKernel === true) {
+    projectConstructedKeyVectorProvenance(ast.contract.functions);
+  }
   const artifact = generateArtifact(
     ast, optimisationResult.script, code, debug, mergedCompilerOptions, functionBodies, fingerprint,
   );

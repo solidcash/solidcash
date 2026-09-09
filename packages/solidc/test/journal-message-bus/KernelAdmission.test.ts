@@ -663,6 +663,20 @@ describe('required kernel admission', () => {
     });
   });
 
+  it('proves a root signature through an exact pure identity return', () => {
+    const artifact = compileString(`contract C(pubkey admin) {
+      function identity(sig value) internal pure returns (sig) { return value; }
+      function migrate(sig proof) public upgrade {
+        require(checkSig(identity(proof), admin)); require(true);
+      }
+      function control() public { require(true); }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'migrate')).toMatchObject({
+      eligible: true, usesTransactionSignature: true,
+      transactionSignaturePolicy: { hashType: 'all', parameterIndices: [0] },
+    });
+  });
+
   it.each([
     ['an internal helper', 'internal'],
     ['a private helper', 'private'],

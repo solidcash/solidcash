@@ -108,9 +108,10 @@ describe('kernel transaction-bound upgrade signature', () => {
     const provider = createMessageBusCapstoneTestProvider();
     const currentArtifact = compileString(`contract Current(pubkey authority) {
       int marker;
+      function identity(sig value) internal pure returns (sig) { return value; }
       function verify(sig selected, pubkey key) internal { require(checkSig(selected, key)); }
       function replace(sig proof) public upgrade {
-        verify(proof, authority);
+        verify(identity(proof), authority);
         require(true);
       }
     }`, KERNEL);

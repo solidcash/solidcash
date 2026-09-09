@@ -3658,8 +3658,30 @@ function synthesizeMessageBusRoute(
     };
     const exactOrigin = (
       expression: ExpressionNode, fn: FunctionDefinitionNode, environment: OriginEnvironment,
-      resolving = new Set<string>(),
+      resolving = new Set<string>(), resolvingFunctions = new Set<FunctionDefinitionNode>(),
     ): number | undefined => {
+      // A pure identity/projection helper contributes no physical CHECKSIG body: the check remains in this
+      // caller, whose KTS1 covered bytecode already has a representation. Follow only an exact, single-return
+      // helper frame with one source parameter origin. This is flow/type based (not a helper-name convention),
+      // and leaves branching, multiple returns, mutable/effectful helpers and recursive call graphs fenced.
+      if (expression instanceof FunctionCallNode) {
+        const target = exactPreSemanticCallTarget(expression, fn);
+        if (!target || target.isFreeFunction || !target.modifiers.includes(FunctionModifier.PURE)
+          || resolvingFunctions.has(target) || target.returnTypes.length !== 1
+          || !target.body || (target.body.statements?.length ?? 0) !== 1) return undefined;
+        const [returned] = target.body.statements!;
+        if (!(returned instanceof ReturnNode) || returned.expressions.length !== 1) return undefined;
+        const helperEnvironment = new Map<string, number>();
+        for (const [index, parameter] of target.parameters.entries()) {
+          const argument = expression.parameters[index];
+          if (!argument) return undefined;
+          const origin = exactOrigin(argument, fn, environment, resolving, resolvingFunctions);
+          if (origin === undefined) return undefined;
+          helperEnvironment.set(parameter.name, origin);
+        }
+        return exactOrigin(returned.expressions[0], target, helperEnvironment, resolving,
+          new Set(resolvingFunctions).add(target));
+      }
       if (!(expression instanceof IdentifierNode)) return undefined;
       const parameter = parameterIndex(fn, expression);
       if (parameter >= 0) {
@@ -3672,7 +3694,8 @@ function synthesizeMessageBusRoute(
       });
       if (declarations.length !== 1 || !declarations[0].expression
         || !bindingImmutable(fn, expression.name) || resolving.has(expression.name)) return undefined;
-      return exactOrigin(declarations[0].expression, fn, environment, new Set(resolving).add(expression.name));
+      return exactOrigin(declarations[0].expression, fn, environment, new Set(resolving).add(expression.name),
+        resolvingFunctions);
     };
     const exactCheckedSignatureOrigin = (
       expression: ExpressionNode, fn: FunctionDefinitionNode, environment: OriginEnvironment,
@@ -11708,6 +11731,11 @@ function compileResolvedAst(
       // the direct handler and fail closed only for the route until that proof identity is represented.
       const hasConstructedKeyReplay = runtimeJournalAccesses
         .some((access) => access.constructedKeyReplay === true);
+      // The compiler can now publish a source-name-free local-vector producer descriptor, but this remains a
+      // metadata-only capability until the route verifies the SDK's reconstructed rank/key program. Keep every
+      // such stream out of the kernel dispatch even if an unsupported expression caused artifact serialization
+      // to omit the optional descriptor: the AST provenance is the authoritative admission signal.
+      const hasConstructedKeyVector = (fn.runtimeCounterLoopConstructedKeyVectors?.size ?? 0) > 0;
       const hasMultiArmConstructedKeyReplay = runtimeJournalAccesses
         .some((access) => access.multiArmConstructedKeyReplay === true);
       const hasCrossArrayKeyReplay = runtimeJournalAccesses
@@ -11763,6 +11791,7 @@ function compileResolvedAst(
         || hasUnauthenticatedSelectedReadGeometry
         || hasRuntimeLocalJournalValue
         || hasUnsupportedMultiMutationExecutionGroup
+        || hasConstructedKeyVector
         || hasConstructedKeyReplay
         || hasMultiArmConstructedKeyReplay
         || hasCrossArrayKeyReplay

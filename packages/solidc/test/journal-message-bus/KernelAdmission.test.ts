@@ -312,6 +312,10 @@ describe('required kernel admission', () => {
     ]));
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'runtimeCopy'))
       .toMatchObject({ eligible: true });
+    // The late compiler readiness result is intentionally private until its paired SDK materializer and GTT
+    // final-settlement cursor are released. An admitted, fully typed carrier handoff must not accidentally
+    // become a public input-ownership capability merely because it was recognized.
+    expect(artifact.messageBus?.kernelEntryJournal).toBeUndefined();
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'fixedCopy'))
       .toMatchObject({ eligible: true });
   });

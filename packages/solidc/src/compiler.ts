@@ -11613,6 +11613,12 @@ function compileResolvedAst(
   // the emitted descriptor also keeps admission and composition on one recipe language: no second AST evaluator,
   // source-name convention, or Solidity intrinsic heuristic is introduced here.
   if (mergedCompilerOptions.messageBus && mergedCompilerOptions.messageBusKernel === true) {
+    // This is deliberately an internal late-admission result, rather than an artifact capability. A selector
+    // reaches this set only after the completed ABI has proven the one read-to-set carrier handoff *and* has
+    // survived every remaining KERNEL_LAYOUT fence below. The future capability publisher must consume this
+    // exact set in the same change that enables the paired SDK/GTT physical protocol; kernel convention and a
+    // superficially similar read/write pair are not sufficient authority to omit an entry input.
+    const internalReadCarrierReadySelectors = new Set<string>();
     const sourceHandlers = [
       ...ast.contract.functions,
       ast.contract.fallbackDef,
@@ -11854,10 +11860,19 @@ function compileResolvedAst(
         (transfer.recipientRecipe === undefined && transfer.derivedRecipient === undefined)
         || transfer.amountRecipe === undefined
         || transfer.condition === null) === true;
-      if (!incomplete) continue;
+      if (!incomplete) {
+        if (hasSupportedReadToSetCarrierTransfer && selector !== undefined) {
+          internalReadCarrierReadySelectors.add(selector);
+        }
+        continue;
+      }
       fn.messageBusEligible = false;
       fn.messageBusRejectionReason = 'KERNEL_LAYOUT';
     }
+    // Keep the readiness result intentionally local until the capability, SDK input rewrite, and GTT final
+    // cursor reconciliation are released as one authenticated protocol. In particular, do not project this
+    // set into artifact.messageBus.kernelEntryJournal here.
+    void internalReadCarrierReadySelectors;
   }
   mark('artifact');
   profileLog('resolved', resolvedStarted, {

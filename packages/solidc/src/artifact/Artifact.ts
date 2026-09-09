@@ -1832,6 +1832,11 @@ function buildFunctionAbiMetadata(
     ...(func.graphEffectFrame && { graphEffectFrame: { ...func.graphEffectFrame } }),
     ...(func.requiredNftIndices !== undefined
       && { requiredNftIndices: func.requiredNftIndices }),
+    ...(func.messageBusConstructedKeyVectorDescriptors?.length && {
+      // Descriptors have already crossed the narrow typed proof-program boundary. Copy the outer list so later
+      // compiler lowering cannot mutate published metadata; no AST node or source-local identity escapes.
+      constructedKeyVectors: func.messageBusConstructedKeyVectorDescriptors.map((descriptor) => ({ ...descriptor })),
+    }),
     ...(func.entryAccesses && func.entryAccesses.some((ea) => !ea.inLoop) && {
       // Loop mapping writes (inLoop) are surfaced via entryLoopWrites, not as fixed entry slots; exclude them
       // here so the SDK's static-entry path does not allocate a slot / derive them positionally.

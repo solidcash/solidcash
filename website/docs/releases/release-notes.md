@@ -7,6 +7,8 @@ title: Release Notes
 #### solidc compiler
 - :sparkles: Allow custom `SolidCashErrorListener` to be passed to the compiler.
 - :bug: Fix missing location data in tuple assignment errors.
+- :sparkles: Default message-bus routes use the kernel row loop (`OP_DEFINE` handlers, one wrapper). Unsupported
+  handlers fail closed with `KERNEL_*`. This is an experimental profile; see the [message bus guide](/docs/guides/message-bus).
 
 #### SolidCash SDK
 - :sparkles: In the `MockNetworkProvider`, `addUtxo()` now returns the added UTXO.

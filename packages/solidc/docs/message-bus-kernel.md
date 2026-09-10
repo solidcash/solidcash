@@ -115,6 +115,13 @@ The finite stop procedure is:
 6. Cut the beta and move all remaining fenced shapes and newly proposed admission families to the post-beta
    backlog. Resume the release branch only for a blocker defined above.
 
+Post-beta work stays off this release branch. It includes: publishing the internal-read-carrier / dense
+final-flush protocol as one compiler+SDK+VM change; remaining `KERNEL_*` families (`split`/`merge`/
+`selfdestruct`, constructed-key replay, multi-row event+journal, runtime transfers beside mutation);
+collapsing `messageBusKernel` / `messageBusGraphContext` once legacy unroll has no callers; and extra
+hostile-witness pins that do not change the frozen catalog. `grok/message-bus-kernel` may continue those
+families. `grok/message-bus-kernel-beta` accepts only a blocker defined above.
+
 The conservative beta boundary currently keeps these shapes frozen:
 
 | Code | Frozen beta examples |

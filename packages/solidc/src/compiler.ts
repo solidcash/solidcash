@@ -241,6 +241,25 @@ function exactMessageBusHandlerReference(
   return { name: handler.name, selector: handler.selector };
 }
 
+function eligibleMessageBusHandlerReferences(
+  artifact: Artifact,
+): AbiFunctionReference[] {
+  return (artifact.messageBus?.handlers ?? [])
+    .filter((handler) => handler.eligible)
+    .map(exactMessageBusHandlerReference);
+}
+
+/** True when a late fence demoted a handler after its selector was already synthesized into the route. */
+function kernelRouteContainsIneligibleHandler(artifact: Artifact): boolean {
+  if (artifact.messageBus?.convention !== 'kernel-row-loop' || artifact.messageBus.routeInBytecode !== true) {
+    return false;
+  }
+  const body = artifact.functionBodies?.[MESSAGE_BUS_SELECTOR_HEX]?.toLowerCase();
+  if (!body) return false;
+  return artifact.messageBus.handlers.some((handler) => handler.eligible !== true
+    && !!handler.selector && body.includes(handler.selector.toLowerCase()));
+}
+
 function scanSourceImports(code: string): string[] {
   const specs: string[] = [];
   const importRe = /import\s+(?:(?:[\w*{}\s,]+)\s+from\s+)?["']([^"']+)["']/g;
@@ -1665,6 +1684,40 @@ function compileStringUnchecked(code: string, compilerOptions: CompileOptions = 
       restoreSpeculativeMessageBusRefusals(artifact.messageBus.handlers, speculativeHandlers);
     }
     if (artifact.compiler.options) delete artifact.compiler.options.__messageBusVerifierProgram;
+  }
+  // Late fences run after generateArtifact, so a bind that synthesized those names can still publish
+  // their dispatch arms beside eligible: false. Re-enter with the reduced set until the route bytecode
+  // matches the published catalog. Cheap admission is the usual source of the extra pass: stubbed bodies
+  // under-refuse, then the full bind observes the real ABI.
+  if (mergedCompilerOptions.messageBusKernel === true) {
+    let lateFenceRebinds = 0;
+    while (kernelRouteContainsIneligibleHandler(artifact) && lateFenceRebinds < 2) {
+      lateFenceRebinds += 1;
+      const remaining = eligibleMessageBusHandlerReferences(artifact);
+      const refusals = artifact.messageBus?.handlers ?? [];
+      const verifierProgram = remaining.length > 0 ? artifact.messageBus?.verifierProgram : undefined;
+      const lateOptions = normalizeCompilerOptions({
+        ...artifactCompilerOptions,
+        messageBusHandlers: remaining,
+        ...(verifierProgram && { __messageBusVerifierProgram: verifierProgram }),
+      });
+      delete lateOptions.__cheapAdmissionCodegen;
+      if (!verifierProgram) delete lateOptions.__messageBusVerifierProgram;
+      artifact = compileResolvedAst(
+        parseAndResolve(code, lateOptions, errorListener, primaryContractName),
+        code, lateOptions,
+      );
+      if (artifact.messageBus) {
+        if (verifierProgram) artifact.messageBus.verifierProgram = verifierProgram;
+        restoreSpeculativeMessageBusRefusals(artifact.messageBus.handlers, refusals);
+      }
+      if (artifact.compiler.options) delete artifact.compiler.options.__messageBusVerifierProgram;
+    }
+    if (kernelRouteContainsIneligibleHandler(artifact)) {
+      throw new Error(
+        'Message-bus kernel admission retained an ineligible handler in the published route',
+      );
+    }
   }
   // Cheap admission is only for the discarded speculative pass. The delegate variant recompiles from
   // these options (including its own binder), so leaving the flag set would skip user/graph bodies in

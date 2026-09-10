@@ -25,7 +25,14 @@ chai mappings.
 ## Experimental profiles
 
 - Composed external state mutation and custom delegate-forwarding shapes beyond the built-in proxy profile.
-- Layer-3/message-bus composition outside the frozen application and integrity matrices.
+- The message-bus **kernel** calling convention (`kernel-row-loop`, default when a composition route is
+  inferred). The on-wire envelope and journal protocol are unchanged; the kernel is how a handler is compiled
+  as an `OP_DEFINE` body behind one route wrapper. The advertised surface is the proof inventory in
+  `scripts/kernel-beta-manifest.json`. Unsupported handlers fail closed with `KERNEL_*` reasons and do not
+  silently unroll. `messageBusKernel: false` is a temporary bytecode-reproduction hatch, not a fallback.
+  Marketplace/Unicrow cold compiles are compatibility evidence, not deployability evidence, when they exceed
+  BCH's 10,000-byte per-input limit. Dormant read-carrier / dense final-cursor publication stays disabled.
+- Layer-3/message-bus composition outside that frozen kernel inventory and the application/integrity matrices.
 - Solidity source shapes outside the compatibility-manifest rows, even when the parser currently accepts them.
 
 Experimental behavior is not part of the stable compatibility promise. Construction must stop with a named

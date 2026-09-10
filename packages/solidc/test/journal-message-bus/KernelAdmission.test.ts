@@ -238,6 +238,35 @@ describe('required kernel admission', () => {
     );
   });
 
+  it('does not leave a late-fenced handler selector in the bound kernel route', () => {
+    const source = `contract C() {
+      struct Pair { int left; int right; }
+      mapping(int => Pair) pairs;
+      function update(int n) public {
+        for (int i=0; i<n; i=i+1) { Pair pair=pairs[i]; pair.left=pair.left+1; pairs[i]=pair; }
+        require(true);
+      }
+      function ping() public { require(true); }
+    }`;
+    for (const optimizeForCompilationSpeed of [undefined, true] as const) {
+      const artifact = compileString(source, { ...KERNEL, optimizeForCompilationSpeed });
+      const update = artifact.messageBus?.handlers.find((handler) => handler.name === 'update');
+      const ping = artifact.messageBus?.handlers.find((handler) => handler.name === 'ping');
+      expect(update, `speed=${String(optimizeForCompilationSpeed)}`).toMatchObject({
+        eligible: false, rejectionReason: 'KERNEL_LAYOUT',
+      });
+      expect(ping, `speed=${String(optimizeForCompilationSpeed)}`).toMatchObject({ eligible: true });
+      expect(artifact.messageBus).toMatchObject({
+        convention: 'kernel-row-loop', available: true, routeInBytecode: true,
+      });
+      const route = artifact.functionBodies?.['53434231']?.toLowerCase() ?? '';
+      expect(route.includes(update!.selector.toLowerCase()), `speed=${String(optimizeForCompilationSpeed)}`)
+        .toBe(false);
+      expect(route.includes(ping!.selector.toLowerCase()), `speed=${String(optimizeForCompilationSpeed)}`)
+        .toBe(true);
+    }
+  });
+
   it('fences a local old-value RMW whose value contains a nested aggregate', () => {
     const artifact = compileString(`contract C() {
       struct Inner { int value; }

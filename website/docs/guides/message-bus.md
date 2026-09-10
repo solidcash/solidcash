@@ -114,8 +114,8 @@ route wrapper (`selector` `53434231`) is the only layout owner. `artifact.messag
 are not compiled as historical per-row clones. Pass `messageBusKernel: false` only to reproduce that older
 unroll for compatibility tests.
 
-Kernel composition is an experimental 0.13.1 profile. The frozen proof inventory is
-`scripts/kernel-beta-manifest.json`. A successful compile of a large contract is not a deployability claim if
-the executable route exceeds Bitcoin Cash's 10,000-byte per-input limit.
+This convention is experimental in 0.13.1. Compose only `eligible` handlers from an `available` artifact. A
+successful compile is not a deployability claim if the executable route exceeds Bitcoin Cash's 10,000-byte
+per-input limit. The frozen proof inventory is `scripts/kernel-beta-manifest.json`.
 
 For local state semantics, see [How the State Journal Works](./state-journal.md).

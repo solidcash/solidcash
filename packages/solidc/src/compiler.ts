@@ -241,23 +241,11 @@ function exactMessageBusHandlerReference(
   return { name: handler.name, selector: handler.selector };
 }
 
-function eligibleMessageBusHandlerReferences(
-  artifact: Artifact,
-): AbiFunctionReference[] {
-  return (artifact.messageBus?.handlers ?? [])
-    .filter((handler) => handler.eligible)
-    .map(exactMessageBusHandlerReference);
-}
+/** Remaining eligible names when late fences demoted a handler already synthesized into the route. */
+const kernelRouteRebindRemaining = new WeakMap<Artifact, AbiFunctionReference[]>();
 
-/** True when a late fence demoted a handler after its selector was already synthesized into the route. */
-function kernelRouteContainsIneligibleHandler(artifact: Artifact): boolean {
-  if (artifact.messageBus?.convention !== 'kernel-row-loop' || artifact.messageBus.routeInBytecode !== true) {
-    return false;
-  }
-  const body = artifact.functionBodies?.[MESSAGE_BUS_SELECTOR_HEX]?.toLowerCase();
-  if (!body) return false;
-  return artifact.messageBus.handlers.some((handler) => handler.eligible !== true
-    && !!handler.selector && body.includes(handler.selector.toLowerCase()));
+function sourceMessageBusHandlerReference(fn: FunctionDefinitionNode): AbiFunctionReference {
+  return { name: fn.name, selector: sourceFunctionSelectorHex(fn) };
 }
 
 function scanSourceImports(code: string): string[] {
@@ -1685,15 +1673,16 @@ function compileStringUnchecked(code: string, compilerOptions: CompileOptions = 
     }
     if (artifact.compiler.options) delete artifact.compiler.options.__messageBusVerifierProgram;
   }
-  // Late fences run after generateArtifact, so a bind that synthesized those names can still publish
-  // their dispatch arms beside eligible: false. Re-enter with the reduced set until the route bytecode
-  // matches the published catalog. Cheap admission is the usual source of the extra pass: stubbed bodies
-  // under-refuse, then the full bind observes the real ABI.
+  // Late fences run after generateArtifact. A bind that synthesized those names can still emit their
+  // dispatch arms beside eligible: false. Re-enter with the reduced set recorded from the AST stamp, not
+  // from scanning route bytecode. Cheap admission is the usual extra pass: stubbed bodies under-refuse,
+  // then the full bind observes the real ABI.
   if (mergedCompilerOptions.messageBusKernel === true) {
     let lateFenceRebinds = 0;
-    while (kernelRouteContainsIneligibleHandler(artifact) && lateFenceRebinds < 2) {
+    while (kernelRouteRebindRemaining.has(artifact) && lateFenceRebinds < 2) {
       lateFenceRebinds += 1;
-      const remaining = eligibleMessageBusHandlerReferences(artifact);
+      const remaining = kernelRouteRebindRemaining.get(artifact) ?? [];
+      kernelRouteRebindRemaining.delete(artifact);
       const refusals = artifact.messageBus?.handlers ?? [];
       const verifierProgram = remaining.length > 0 ? artifact.messageBus?.verifierProgram : undefined;
       const lateOptions = normalizeCompilerOptions({
@@ -1713,7 +1702,8 @@ function compileStringUnchecked(code: string, compilerOptions: CompileOptions = 
       }
       if (artifact.compiler.options) delete artifact.compiler.options.__messageBusVerifierProgram;
     }
-    if (kernelRouteContainsIneligibleHandler(artifact)) {
+    if (kernelRouteRebindRemaining.has(artifact)) {
+      kernelRouteRebindRemaining.delete(artifact);
       throw new Error(
         'Message-bus kernel admission retained an ineligible handler in the published route',
       );
@@ -9551,6 +9541,9 @@ function synthesizeMessageBusRoute(
   route.messageBusRoute = true;
   route.messageBusUpgradeRoute = kernelUpgradeMode;
   route.messageBusDispatch = kernelLoopDispatch ? 'kernel-row-loop' : 'legacy-unroll';
+  if (kernelLoopDispatch) {
+    for (const fn of eligible) fn.messageBusDispatched = true;
+  }
   // Late route synthesis runs after the final automatic delegate-marking pass. Propagate the admitted surface's
   // execution context here so SymbolTableTraversal injects the proxy-master witness used by the route prologue
   // and unlocking-frame validator. Early synthesis reaches the same state through the later marking pass.
@@ -11936,6 +11929,15 @@ function compileResolvedAst(
       }
       fn.messageBusEligible = false;
       fn.messageBusRejectionReason = 'KERNEL_LAYOUT';
+    }
+    const dispatchedDemoted = sourceHandlers.some((fn) => (
+      fn.messageBusDispatched === true && fn.messageBusEligible !== true
+    ));
+    if (dispatchedDemoted) {
+      kernelRouteRebindRemaining.set(
+        artifact,
+        sourceHandlers.filter((fn) => fn.messageBusEligible === true).map(sourceMessageBusHandlerReference),
+      );
     }
     // Keep the readiness result intentionally local until the capability, SDK input rewrite, and GTT final
     // cursor reconciliation are released as one authenticated protocol. In particular, do not project this

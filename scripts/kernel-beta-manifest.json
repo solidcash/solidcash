@@ -12,6 +12,14 @@
   ],
   "requiredKernelProofs": [
     {
+      "id": "kernel-late-fence-route-binding",
+      "workspace": "solidc",
+      "file": "test/journal-message-bus/KernelLateFenceRouteBinding.test.ts",
+      "tests": [
+        "does not leave a late-fenced handler selector in the bound kernel route"
+      ]
+    },
+    {
       "id": "kernel-loop-route",
       "workspace": "solidc",
       "file": "test/journal-message-bus/KernelLoopRoute.test.ts",

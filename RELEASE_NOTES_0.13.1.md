@@ -25,18 +25,31 @@ chai mappings.
 ## Experimental profiles
 
 - Composed external state mutation and custom delegate-forwarding shapes beyond the built-in proxy profile.
-- The message-bus **kernel** calling convention (`kernel-row-loop`, default when a composition route is
-  inferred). The on-wire envelope and journal protocol are unchanged; the kernel is how a handler is compiled
-  as an `OP_DEFINE` body behind one route wrapper. The advertised surface is the proof inventory in
-  `scripts/kernel-beta-manifest.json`. Unsupported handlers fail closed with `KERNEL_*` reasons and do not
-  silently unroll. `messageBusKernel: false` is a temporary bytecode-reproduction hatch, not a fallback.
-  Marketplace/Unicrow cold compiles are compatibility evidence, not deployability evidence, when they exceed
-  BCH's 10,000-byte per-input limit. Dormant read-carrier / dense final-cursor publication stays disabled.
-- Layer-3/message-bus composition outside that frozen kernel inventory and the application/integrity matrices.
+- Message-bus **kernel** composition (see below). Shapes outside the frozen proof inventory, including dormant
+  read-carrier publication, stay fail-closed.
 - Solidity source shapes outside the compatibility-manifest rows, even when the parser currently accepts them.
 
 Experimental behavior is not part of the stable compatibility promise. Construction must stop with a named
 diagnostic when the required transaction shape cannot be produced.
+
+## Kernel beta (message-bus calling convention)
+
+This is a compiler convention, not a second protocol. The envelope (`L3C1` / `L3BUS1`) and journal rules are
+unchanged. Admitted handlers compile as `OP_DEFINE` bodies behind one row-loop wrapper (`selector` `53434231`,
+`artifact.messageBus.convention === 'kernel-row-loop'`). Direct single-spend calls stay direct.
+
+**In this beta you can** compose kernel-admitted handlers through `messageBus.compose` / `call.batch` when the
+artifact says `available: true` and each selected handler is `eligible`. The executable surface is exactly
+`scripts/kernel-beta-manifest.json` (required proofs plus the two cold compiles). `yarn test:kernel-beta` is the
+gate.
+
+**In this beta you cannot** treat a green compile as a deployable contract: MarketplaceV1's kernel route is
+12,102 bytes (over BCH's 10,000-byte per-input limit) and is compile-compatibility evidence only. UnicrowClaim's
+kernel route is 2,918 bytes. Dormant `0x11` read-carrier / dense final-flush publication is off. `split` /
+`merge` / `selfdestruct` / `unsafe(0|1)` / foreign `delegatecall` remain `KERNEL_*`. `messageBusKernel: false`
+reproduces legacy unroll for tests; it is not a fallback when kernel refuses a handler.
+
+Further admission widening belongs on `grok/message-bus-kernel`, not this freeze.
 
 ## Explicit first-release deferrals
 

@@ -23180,7 +23180,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   }
                 } else if (proxyCallee) {
                   try {
-                    value = await proxyCallee.forward(nested.functionName, nestedArgs).staticCall();
+                    const publicMethod = (proxyCallee as unknown as Record<string, unknown>)[nested.functionName];
+                    value = typeof publicMethod === 'function'
+                      ? await (publicMethod as (...args: FunctionArgument[]) => Promise<StateValue>)(...nestedArgs)
+                      : await proxyCallee.forward(nested.functionName, nestedArgs).staticCall();
                   } catch (error) {
                     // Some forwarded views require the complete parent transaction before their return slot is
                     // reachable. Leave them for the ordinary route trace rather than failing this optional
@@ -23227,7 +23230,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                       if (typeof mappingGetter === 'function') {
                         nextValue = await mappingGetter(...nextArgs);
                       } else if (proxyCallee) {
-                        nextValue = await proxyCallee.forward(nested.functionName, nextArgs).staticCall();
+                        const publicMethod = (proxyCallee as unknown as Record<string, unknown>)[nested.functionName];
+                        nextValue = typeof publicMethod === 'function'
+                          ? await (publicMethod as (...args: FunctionArgument[]) => Promise<StateValue>)(...nextArgs)
+                          : await proxyCallee.forward(nested.functionName, nextArgs).staticCall();
                       } else {
                         nextValue = await callee._deriveReturnValue(nested.functionName, nextArgs);
                       }

@@ -21,6 +21,7 @@ import {
   findDeploymentByAddress, registerDeployment, registeredPhysicalLockingBytecode,
 } from './deployment-registry.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
+import { proxySyntheticPaginationCollection } from './proxy-pagination.js';
 
 // OpenZeppelin-hardhat-upgrades-style `upgrades.deployProxy` for stateful contracts. Unlike EVM's generic proxy
 // bytecode, on BCH the proxy and implementation are separate on-chain contracts with a compatible state layout;
@@ -414,31 +415,28 @@ function wrapDispatch<TImpl extends Artifact>(handle: ProxyContract<TImpl>): Pro
         // enumerate mapping entry NFTs directly, so provide that conventional pagination surface when a compact
         // BCH port omits the otherwise redundant view function. A zero limit means "all remaining", matching the
         // prevalent Solidity implementation.
-        const paged = prop.match(/^get([A-Z].*)$/)?.[1];
-        if (paged) {
-          const collectionName = paged[0].toLowerCase() + paged.slice(1);
-          if (stateVars.has(collectionName)) {
-            return async (indexValue: bigint | number, limitValue: bigint | number) => {
-              const index = Number(indexValue);
-              const limit = Number(limitValue);
-              const entries = await target.proxy.getEntries(collectionName);
-              if (!Number.isSafeInteger(index) || index < 0 || index >= entries.length) {
-                throw new Error('index out of bounds');
+        const collectionName = proxySyntheticPaginationCollection(implArtifact, prop);
+        if (collectionName) {
+          return async (indexValue: bigint | number, limitValue: bigint | number) => {
+            const index = Number(indexValue);
+            const limit = Number(limitValue);
+            const entries = await target.proxy.getEntries(collectionName);
+            if (!Number.isSafeInteger(index) || index < 0 || index >= entries.length) {
+              throw new Error('index out of bounds');
+            }
+            const selected = entries.slice(index, limit === 0 ? undefined : index + limit);
+            const values = await Promise.all(selected.map(async (entry) => {
+              const value = entry.value;
+              if (value && typeof value === 'object' && stateVars.has('publicKeys')) {
+                const keys = entry.keys ?? (entry.key !== undefined ? [entry.key] : []);
+                const publicKey = await (target.proxy.state as any).publicKeys(...keys);
+                if (publicKey !== undefined) Object.assign(value as object, { publicKey });
               }
-              const selected = entries.slice(index, limit === 0 ? undefined : index + limit);
-              const values = await Promise.all(selected.map(async (entry) => {
-                const value = entry.value;
-                if (value && typeof value === 'object' && stateVars.has('publicKeys')) {
-                  const keys = entry.keys ?? (entry.key !== undefined ? [entry.key] : []);
-                  const publicKey = await (target.proxy.state as any).publicKeys(...keys);
-                  if (publicKey !== undefined) Object.assign(value as object, { publicKey });
-                }
-                return value;
-              }));
-              for (const value of values) attachDecodedAccessors(value);
-              return values;
-            };
-          }
+              return value;
+            }));
+            for (const value of values) attachDecodedAccessors(value);
+            return values;
+          };
         }
         if (stateVars.has(prop) || inheritedStateAlias.has(prop)) {
           const connected = target.runner instanceof Signer ? target.proxy.connect(target.runner) : target.proxy;

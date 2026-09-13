@@ -322,6 +322,27 @@ batching attempt changed `routeBytes` outright (40,019 → 35,260), i.e. it corr
 than merely mis-attributing. Reverted rather than shipped; the output-identity requirement is not
 negotiable for an optimisation advertised as behaviour-preserving.
 
+**Why replacing the array is not equivalent to splicing it.** `intern.bodyByScript` is a
+`WeakMap<Script, CachedBodyFingerprint>` keyed by *script identity* — `prepareCandidateCorpus` reads it with
+`bodyByScript.get(script)` and the rewrite invalidates it with `bodyByScript.delete(target.script)`. That
+delete only works while `target.script` is still the same array object the map was keyed on. Any change that
+replaces the array instead of mutating it leaves the stale fingerprint reachable under the old key while the
+new array is uncached, so the next round can reuse fingerprints for content that no longer exists. A correct
+consolidated rewrite must keep array identity (or re-key the intern map in the same step).
+
+**Rejected: `copyWithin` as a drop-in `splice` replacement.** A span of `spanLength` becomes exactly
+`id OP_INVOKE`, so the tail shift is one native `copyWithin` plus a length trim, which looks like an exact
+in-place equivalent. In this tree it proved unreliable to validate: the check run failed to finish within
+7 minutes on a compile that normally takes 20–40 s. The host was heavily contended at the time (multiple
+long-running node processes from other work; a second `tsc -b` had to be killed), and the compiler itself
+was verified healthy in the same window (78 ms for a small contract), so this is *unresolved*, not proven
+bad. It is recorded here as untried-but-suspicious rather than as a finding either way. The committed
+`in-place suffix scan` for anchors (section 14) is the version that is verified.
+
+**Re-verified after the revert.** With the committed state rebuilt (`--force`), the identity check
+reproduces `routeBytes 40019`, `fullBytes 115274`, `fullHash ed6cfff8760a3ca8`. `scripts/verify-id.mjs`
+makes this a one-command gate.
+
 **Rejected (as low value): persisting the winning admission rung.** Measured at 1,918 ms of 20,696 ms —
 9% of the compile, not the "1.34 s of a 7 s build" it once represented. Any cache keyed on source topology
 is also invalidated by exactly the edits such a cache exists to survive. Not worth the complexity now.

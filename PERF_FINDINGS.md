@@ -562,3 +562,48 @@ Remaining profile after this win: `resolved:codegen` 6,331 ms, `resolved:lowerin
 `resolved:semantic` 2,349 ms, `admission` 1,814 ms. Top self-time functions are now `walk`
 (in `GenerateTargetTraversal`) 2.49 s, `invalidateAssignments` / `containsReturn` (in `deploymentRecipes`,
 ~1.2 s combined) and GC ~0.98 s.
+
+## 21. Parallel-agent wave: three more wins (12.8 s -> 10.4 s)
+
+Three read-only analysis agents ran concurrently against the same workload, each told not to touch
+`packages/*/src` and to prove any candidate by rewriting `dist` in memory through a Node ESM loader. All
+three converged on the same hot subsystem, which is useful corroboration rather than wasted effort.
+
+**Shipped (commit `17aed821b`), all byte-identical, gate green:**
+
+1. **Skip `analyzeChildDeploymentRecipes` when the body has no instantiation.** The analysis returns a
+   `WeakMap<InstantiationNode, …>` read only by `prepareDeployEntryGeometry` and the deploy-target publish,
+   both treating a miss as "no recipe". `SymbolTableTraversal.visitInstantiation` sets
+   `hasContractInstantiation` for *every* contract instantiation, before any stateful branching, so a strictly
+   `false` flag proves the map can only be empty. It re-walked each body twice; the redundancy was
+   O(nodes × branch nesting depth).
+2. **Make `childDeploymentSites` lazy on the same flag.** Every reportable site needs an
+   `InstantiationNode`, so a strictly false flag returns an empty list without the analysis or the walk.
+3. **Memoise `functionContainsRuntimeLoopEvent` / `…Transfer`.** They answer a whole-function question but
+   `visitBranch` asks once per branch: one large route body was re-walked ~168 times, one function node
+   accounted for 78% of 1.7M visits, and the answer was `false` every time. Per-traversal `WeakMap`, summary
+   fast-path kept first.
+
+| | before | after |
+|---|---:|---:|
+| maintained compile | 12,811 ms | **10,419 ms** (~19%) |
+
+**Cross-checked and rejected by the agents (recorded so they are not retried):**
+
+- Removing `__cheapAdmissionCodegen`: 21.5 s *and* a different hash (`296fc8db…`). The cheap pass is what
+  makes failing admission rungs cheap and selects the winning route shape. Load-bearing, not removable.
+- `collectTransferIndices` memo: measured ~200 ms **slower** (set-copy overhead). Purity of
+  `transferIndex`/`valueTransferIndex` was not established either.
+- Allocation-free walk rewrite (`Object.entries` → `for..in` + module-level skip `Set`): noise (~−21 ms). The
+  cost is visit *count*, not per-visit allocation.
+- A cross-pass/global WeakMap: neutral.
+- `resolved:lowering` (2.1 s) and `resolved:symbol` (1.5 s) are long tails — the largest single function is
+  0.16 s. No safe micro-win; only "fewer traversals".
+
+**Remaining known frontier:** `subroutineUseProbe` — a throwaway second body emission whose results are only
+used to count subroutine sites before `OP_DEFINE`s are emitted. It was 2,039 ms, now ~1,120 ms, i.e. the
+largest single remaining item. Removing it needs a redesign of the lookahead, not a micro-optimisation.
+
+One agent also observed a pre-existing, unrelated crash: `if (cond) { to.transfer(x); }` inside a
+`for (… of enumerable mapping)` throws in `SymbolTableTraversal` (`IdentifierNode 'to.transfer'`). Not a
+performance matter, but it is a real defect worth a separate look.

@@ -436,3 +436,26 @@ All values produced by the gate's own `scripts/profile-marketplace-compile.mjs`,
 comparable to the pinned shape. Note the earlier `route 12102 / full 126967` pin also carries a different
 route hash (`f99e6e99…`) than either the pre-fix (`64eada97…`, 12,094) or post-fix state, so the route shape
 itself changed upstream of this branch.
+
+## 18. Why the outline budget cannot prune much (large-body path)
+
+Section 15 proposed making candidate selection budget-aware to skip work. Reading the caller shows why that
+has little headroom on the heavy declaration. In `GenerateTargetTraversal.outlineSharedFunctionBodies`:
+
+    const candidateGroupsPerRound = largeBodyOutline ? 12288 : 1024;
+
+`largeBodyOutline` is set when the emitted program exceeds `MAX_INPUT_BYTESIZE * 10`, and its window list is
+`[8]` with `bodyOrder: 'shortest'`. The observed heavy probe — 139 bodies, 702-body corpus, 12,314 groups,
+9,130 candidates — is therefore already running under the **12,288** budget, not 1,024. The group set is
+essentially the whole candidate set, so skipping "groups past the budget" saves nothing there; that is
+consistent with the earlier honest measurement that skipping them gained only ~1.5 s inside host noise.
+
+So the remaining `splice` cost is proportional to the number of applied edits at the widest configured
+search, and the levers are real algorithmic ones — cheaper span selection, or fewer edits needed to reach
+the same fixed point — not budget pruning or cheaper array primitives. Both would have to re-pin bytecode.
+
+**Where the objective stands relative to the ~1 s goal.** The stated target is met for unchanged source
+(23 ms, section 9). For changed source the floor is now dominated by branch structure the design deliberately
+chose: `bodyOrder: 'shortest'`, a fixed point over up to 6 rounds, and up to 12,288 candidate groups per
+round. Reducing that is a considered re-design with bytecode re-pinning, not a drive-by optimisation, and it
+should be a separate scoped task rather than an extension of this one.

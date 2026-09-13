@@ -1145,6 +1145,33 @@ describe('assignPhysicalReturnIndices', () => {
     expect(binToHex(selected[1]!.commitment)).toBe(binToHex(empty));
   });
 
+  it('keeps a multi-part tail anchored at its authenticated part-zero return index', () => {
+    const first = Uint8Array.of(0x11);
+    const second = Uint8Array.of(0x22);
+    const returnGroup = group({
+      categoryId: 'reader',
+      functionName: 'readEach',
+      logicalFunctionName: 'readEach',
+      returnOutputIndex: 12,
+      loopReturnCommitments: [first, second],
+      externalContract: {
+        inner: { artifact: { abi: [{ name: 'readEach', writesState: false }] } },
+      },
+    });
+    const groups = [returnGroup];
+
+    const materialized = selectMaterializedTailReturnEvents(groups, []);
+    expect(materialized.map(({ identity }) => identity)).toEqual([
+      'external-call:0:0', 'external-call:0:1',
+    ]);
+    const placements = packTailReturnPlacements(groups, () => -1, materialized, 'other');
+
+    expect(returnGroup.returnOutputIndex).toBe(12);
+    expect(placements.get('external-call:0:0')).toBe(12);
+    expect(placements.get('external-call:0:1')).toBe(13);
+    expect([...returnWitnessOutputIndices(groups)]).toEqual([12, 13]);
+  });
+
   it('refuses in-block ownership when a fused writer still carries multi-width meceTags returns', () => {
     // publishJobPost: meceTags(tags_[i]) seeds the MarketplaceData group, then publishJobEvent fuses onto
     // the same master and overwrites functionName. The rolled loop commitments must still force tail

@@ -247,6 +247,20 @@ export type MaterializedReturnEvent = {
   provisional?: boolean;
 };
 
+type ExternalCallReturnCoordinate = {
+  groupIndex: number;
+  part: number;
+};
+
+function parseExternalCallReturnCoordinate(identity: string): ExternalCallReturnCoordinate | undefined {
+  const match = /^external-call:(\d+)(?::(\d+))?$/.exec(identity);
+  if (!match) return undefined;
+  return {
+    groupIndex: Number(match[1]),
+    part: match[2] === undefined ? 0 : Number(match[2]),
+  };
+}
+
 type MaterializedReturnGroup = InBlockReturnGroup & {
   categoryId: string;
   precomputedReturnCommitment?: Uint8Array;
@@ -10261,8 +10275,8 @@ export class StatefulTransactionBuilder {
       while (outputIndex >= builder.outputs.length) {
         builder.addOutput({ to: Uint8Array.of(0x51), amount: 800n });
       }
-      const match = /^external-call:(\d+)/.exec(event.identity);
-      const groupIdx = match ? Number(match[1]) : -1;
+      const coordinate = parseExternalCallReturnCoordinate(event.identity);
+      const groupIdx = coordinate?.groupIndex ?? -1;
       const group = groupIdx >= 0 ? this.externalCallUtxoGroups[groupIdx] : undefined;
       const liveOpReturn = builder.outputs.findIndex((out) => (
         isOpReturnLockingBytecode(
@@ -10313,7 +10327,7 @@ export class StatefulTransactionBuilder {
       builder.outputs[outputIndex] = output;
       returnOutputRefs?.set(event.identity, output);
       this.builtReturnEventOutputIndices.set(event.identity, outputIndex);
-      if (group && groupIdx >= 0
+      if (group && groupIdx >= 0 && coordinate?.part === 0
         && !groupOwnsInBlockReturnEvent(this.externalCallUtxoGroups, groupIdx)) {
         group.returnOutputIndex = outputIndex;
       }
@@ -10737,8 +10751,8 @@ export class StatefulTransactionBuilder {
           placedIndex = builder.outputs.length;
           builder.addOutput({ to: Uint8Array.of(0x51), amount: 800n });
         }
-        const match = /^external-call:(\d+)/.exec(event.identity);
-        const groupIdx = match ? Number(match[1]) : -1;
+        const coordinate = parseExternalCallReturnCoordinate(event.identity);
+        const groupIdx = coordinate?.groupIndex ?? -1;
         const group = groupIdx >= 0 ? this.externalCallUtxoGroups[groupIdx] : undefined;
         // OP_RETURN is never a data carrier. Prefer the live separator index;
         // fall back to the reserved jobs-suffix slot when it is not materialized yet.
@@ -10798,14 +10812,15 @@ export class StatefulTransactionBuilder {
         builder.outputs[placedIndex] = output;
         returnOutputRefs?.set(event.identity, output);
         this.builtReturnEventOutputIndices.set(event.identity, placedIndex);
-        if (groupIdx >= 0 && commitment !== '' && commitment !== '0101'
+        if (groupIdx >= 0 && coordinate?.part === 0
+          && commitment !== '' && commitment !== '0101'
           && !isAllZeroCommitment(commitment)) {
           this.authenticatedViewReturnByGroup.set(groupIdx, {
             categoryId: event.categoryId,
             commitment,
           });
         }
-        if (group && groupIdx >= 0
+        if (group && groupIdx >= 0 && coordinate?.part === 0
           && !groupOwnsInBlockReturnEvent(this.externalCallUtxoGroups, groupIdx)) {
           group.returnOutputIndex = placedIndex;
         }
@@ -10909,11 +10924,11 @@ export class StatefulTransactionBuilder {
       byGroup.set(groupIdx, { ...cached, identity: `external-call:${groupIdx}` });
     }
     for (const event of this.tailReturnEventOutputs()) {
-      const match = /^external-call:(\d+)/.exec(event.identity);
-      if (!match) continue;
+      const coordinate = parseExternalCallReturnCoordinate(event.identity);
+      if (!coordinate || coordinate.part !== 0) continue;
       const raw = binToHex(event.commitment);
       if (raw === '' || isAllZeroCommitment(raw) || raw === '0101') continue;
-      byGroup.set(Number(match[1]), {
+      byGroup.set(coordinate.groupIndex, {
         categoryId: event.categoryId,
         commitment: raw,
         identity: event.identity,

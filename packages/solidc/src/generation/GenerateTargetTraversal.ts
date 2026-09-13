@@ -3156,7 +3156,20 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     return found;
   }
 
+  /**
+   * Cached result of `functionReferenceIds` per contract node. It is a whole-contract walk called twice on the
+   * same node during one emission (the indirect-dispatch prelude and `emitFunctionDefinesAndDispatch`), and a
+   * read-only call census measured it at ~70-80ms per compile. The walk reads only node classes and the
+   * `functionReference.functionId` marks that symbol resolution attaches before codegen.
+   *
+   * A module-level WeakMap cannot be used because codegen rewrites child pointers in place, so the cache is
+   * per traversal instance; callers only call `.has` on the returned set, so it is never mutated.
+   */
+  private functionReferenceIdsCache = new WeakMap<ContractNode, Set<number>>();
+
   private functionReferenceIds(node: ContractNode): Set<number> {
+    const cached = this.functionReferenceIdsCache.get(node);
+    if (cached !== undefined) return cached;
     const ids = new Set<number>();
     const visit = (current: Node, seen = new Set<Node>()): void => {
       if (seen.has(current)) return;
@@ -3173,6 +3186,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
     };
     visit(node);
+    this.functionReferenceIdsCache.set(node, ids);
     return ids;
   }
 

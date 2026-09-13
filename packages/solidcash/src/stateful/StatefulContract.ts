@@ -30781,7 +30781,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const resultArtifact = (abiFunction?.outputs?.length ?? 0) > 0
       ? this.inner.artifact : delegatedReturn?.artifact ?? this.inner.artifact;
     const resultStructs = resultArtifact.structs ?? resultArtifact.stateLayout?.structs;
-    let expandedLoopReturns = false;
     const directArrayReplacements: Array<{ start: number; end: number; encoded: Uint8Array }> = [];
     if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
       ?.SOLIDC_DEBUG_RETURN === '1') {
@@ -30827,7 +30826,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         ?? (group.precomputedReturnCommitment ? [group.precomputedReturnCommitment] : []);
       for (let occurrence = commitments.length; occurrence < reached; occurrence++) {
         commitments.push(await group.resolveLoopReturnCommitment(occurrence));
-        expandedLoopReturns = true;
       }
       if (commitments.length > 0) group.loopReturnCommitments = commitments;
       if (commitments.length === reached && group.resolveLoopReturnValue) {
@@ -30841,7 +30839,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         });
       }
     }
-    if (expandedLoopReturns) {
+    if (directArrayReplacements.length > 0) {
       // The compiler marker proves these arrays have no competing writes: each element is exactly the typed return
       // of its corresponding loop occurrence. Compose those individually authenticated values while retaining the
       // provisional parent's authenticated array width and every untouched output byte.

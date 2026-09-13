@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { compileString } from '../direct-compile.js';
 import { compileString as compileKernelString } from 'solidc';
 import { binToHex } from '@bitauth/libauth';
+import { encodePushdataValue } from '@solidcash/utils';
 import { Contract, StatefulContract } from '../../src/index.js';
 import { addressToLockScript } from '../../src/utils.js';
 import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
@@ -143,6 +144,58 @@ describe('StatefulFunctionCall.staticCall() - with arguments', () => {
     await sc.set(10n).send();
     expect(await sc.plus(5n).staticCall()).toBe(15n);
     expect(await sc.plus(0n).staticCall()).toBe(10n);
+  });
+});
+
+describe('StatefulFunctionCall.staticCall() - exact loop-array returns', () => {
+  it('replaces a preseeded one-row parent result with the resolved external value', async () => {
+    const options = { forceStateful: true, messageBus: true, messageBusKernel: true } as const;
+    const artifact = compileKernelString(`pragma solidcash >=0.8.0;
+      contract ArrayView() {
+        function rows() public pure returns (int[] memory) {
+          int[] memory result = new int[](1);
+          result[0] = 0;
+          return result;
+        }
+      }`, options);
+    const provider = createTestProvider();
+    const view = new StatefulContract('ab'.repeat(32), artifact, provider);
+    type ProbeBuilder = {
+      __derivedReturnBlob?: Uint8Array;
+      getExternalCallUtxoGroups: () => Array<{
+        loopResultArrayOutput: number;
+        loopMaximumOccurrences: number;
+        loopReturnCommitments: Uint8Array[];
+        resolveLoopReturnCommitment: (occurrence: number) => Promise<Uint8Array>;
+        resolveLoopReturnValue: (occurrence: number) => Promise<bigint>;
+      }>;
+    };
+    const provisional = encodePushdataValue([0n], 'int[]', artifact.structs);
+    const resolved = Uint8Array.of(41);
+    let commitmentResolutions = 0;
+    const builder: ProbeBuilder = {
+      __derivedReturnBlob: provisional,
+      getExternalCallUtxoGroups: () => [{
+        loopResultArrayOutput: 0,
+        loopMaximumOccurrences: 1,
+        loopReturnCommitments: [resolved],
+        resolveLoopReturnCommitment: async () => {
+          commitmentResolutions += 1;
+          return resolved;
+        },
+        resolveLoopReturnValue: async () => 41n,
+      }],
+    };
+    const internals = view as unknown as {
+      _createBuilder: (...args: unknown[]) => Promise<ProbeBuilder>;
+      _deriveReturnValue: (functionName: string, args: unknown[]) => Promise<unknown>;
+    };
+    internals._createBuilder = async () => builder;
+
+    expect(await internals._deriveReturnValue('rows', [])).toEqual([41n]);
+    // reached=1 and one commitment was already seeded: replacement must not depend on growing this array.
+    expect(builder.getExternalCallUtxoGroups()[0].loopReturnCommitments).toHaveLength(1);
+    expect(commitmentResolutions).toBe(0);
   });
 });
 

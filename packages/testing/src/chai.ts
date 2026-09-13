@@ -391,6 +391,25 @@ class EmitAssertion implements PromiseLike<void> {
           });
           if (!matched) {
             if (this.negate) return;
+            if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+              ?.SOLIDC_DEBUG_EMIT_MATCH === '1') {
+              console.error('emit-match-miss', {
+                event: this.event,
+                hitCount: hits.length,
+                hits: hits.map((hit, index) => ({
+                  index,
+                  args: hit.args && Object.fromEntries(
+                    Object.entries(hit.args).map(([key, value]) => {
+                      const plain = value && typeof value === 'object' && 'toObject' in (value as object)
+                        ? (value as { toObject: () => unknown }).toObject()
+                        : value;
+                      return [key, plain];
+                    }),
+                  ),
+                })),
+                mismatch: mismatch instanceof Error ? mismatch.message : String(mismatch),
+              });
+            }
             throw mismatch ?? new Error(`event '${this.event}' arguments did not match`);
           }
         }

@@ -1434,6 +1434,11 @@ const evaluateEveryInput = (
                 functionName: (input as unknown as {
                   unlocker?: { abiFunction?: { name?: string } };
                 }).unlocker?.abiFunction?.name,
+                unlockingHead: binToHex(
+                  (transaction.inputs[Math.max(0, inputIndex - 2) + offset]?.unlockingBytecode ?? new Uint8Array())
+                    .slice(0, 24),
+                ),
+                unlockingLen: transaction.inputs[Math.max(0, inputIndex - 2) + offset]?.unlockingBytecode.length,
               })),
             outputs: transaction.outputs.slice(Math.max(0, inputIndex - 2), inputIndex + 7)
               .map((output, offset) => ({
@@ -1699,12 +1704,24 @@ const evaluateEveryInput = (
         console.error('message-bus-large-equals', JSON.stringify(largeEqualVerifies));
         console.error('message-bus-failed-verifies', JSON.stringify(failedVerifyPoints));
         console.error('message-bus-output-commitment-reads', JSON.stringify(outputCommitmentReads));
-        console.error('message-bus-return-band', transaction.outputs.map((output, index) => ({
+        const allOutputs = transaction.outputs.map((output, index) => ({
           index,
           category: binToHex(output.token?.category ?? new Uint8Array()),
           commitment: binToHex(output.token?.nft?.commitment ?? new Uint8Array()),
           locking: binToHex(output.lockingBytecode),
-        })).slice(24, 34));
+        }));
+        // Compact inventory: every OUTPUTBYTECODE that matches a CashToken entry P2SH32 (aa20…87).
+        // Cardinality EQUALVERIFY failures (count vs expected) need the full set, not a mid-tx window.
+        console.error('message-bus-entry-lock-inventory', allOutputs
+          .filter((output) => /^aa20[0-9a-f]{64}87$/i.test(output.locking))
+          .map((output) => ({
+            index: output.index,
+            lock: output.locking.slice(0, 28),
+            cat: output.category.slice(0, 16),
+            commitLen: output.commitment.length,
+            commitHead: output.commitment.slice(0, 64),
+          })));
+        console.error('message-bus-return-band', allOutputs.slice(24, 34));
       }
       if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
         ?.SOLIDC_DEBUG_ROUTE_CONCISE === '1') {
@@ -1890,22 +1907,163 @@ const evaluateEveryInput = (
         && routeDebugInput === inputIndex) {
         let failedComparison: {
           ip: number; opcode?: number; instructionCount: number; left?: string; right?: string;
+          lastOutputCategoryIndex?: number;
+          lastOutputCategory?: string;
+          lastOutputBytecodeIndex?: number;
         } | undefined;
+        let lastOutputCategoryIndex: number | undefined;
+        let lastOutputCategory: string | undefined;
+        let lastOutputBytecodeIndex: number | undefined;
         createVirtualMachineBch2026ForProvider(builder.provider, {
           opcodes: new Set([
             Op.OP_VERIFY, Op.OP_EQUAL, Op.OP_EQUALVERIFY, Op.OP_NUMEQUAL, Op.OP_NUMEQUALVERIFY,
+            Op.OP_OUTPUTTOKENCATEGORY, Op.OP_PICK, Op.OP_DUP, Op.OP_UTXOTOKENCATEGORY,
+            Op.OP_OUTPUTBYTECODE, Op.OP_UTXOBYTECODE, Op.OP_ACTIVEBYTECODE,
           ]),
           beforeOperation: (unknownState) => {
             const state = unknownState as AuthenticationProgramStateCommon;
+            if (state.instructions.length > 8 && state.instructions.length < 200
+              && (state.instructions[state.ip]?.opcode === Op.OP_VERIFY
+                || state.instructions[state.ip]?.opcode === Op.OP_EQUALVERIFY)) {
+              console.error('preflight-mid-body', {
+                ip: state.ip,
+                opcode: state.instructions[state.ip]?.opcode,
+                instructionCount: state.instructions.length,
+                stack: state.stack.slice(-16).map((item, offset) => ({
+                  d: state.stack.length - 16 + offset < 0
+                    ? offset : state.stack.length - (state.stack.slice(-16).length) + offset,
+                  bytes: item.length,
+                  hex: binToHex(item).slice(0, 80),
+                })),
+                window: state.instructions.slice(Math.max(0, state.ip - 15), state.ip + 2).map((ins, offset) => ({
+                  ip: Math.max(0, state.ip - 15) + offset,
+                  opcode: ins.opcode,
+                })),
+              });
+            }
+            if (state.instructions.length <= 8) {
+              const fullStack = state.instructions.length === 5
+                && state.instructions[state.ip]?.opcode === Op.OP_PICK
+                ? state.stack.map((item, depthFromBottom) => ({
+                  i: depthFromBottom,
+                  d: state.stack.length - 1 - depthFromBottom,
+                  bytes: item.length,
+                  hex: binToHex(item).slice(0, 72),
+                }))
+                : undefined;
+              console.error('preflight-tiny-body', {
+                ip: state.ip,
+                opcode: state.instructions[state.ip]?.opcode,
+                instructionCount: state.instructions.length,
+                stack: state.stack.slice(-12).map((item) => ({
+                  bytes: item.length,
+                  hex: binToHex(item).slice(0, 72),
+                })),
+                ...(fullStack ? { fullStack } : {}),
+                alt: ('alternateStack' in state
+                  ? (state as { alternateStack: Uint8Array[] }).alternateStack
+                  : []).slice(-4).map((item) => binToHex(item).slice(0, 40)),
+              });
+            }
+            if (state.instructions[state.ip]?.opcode === Op.OP_OUTPUTBYTECODE) {
+              const indexBytes = state.stack.at(-1);
+              lastOutputBytecodeIndex = indexBytes === undefined ? undefined
+                : Number(vmNumberToBigInt(indexBytes));
+              if (state.instructions.length > 200) {
+                console.error('preflight-outbc-stack', {
+                  index: lastOutputBytecodeIndex,
+                  ip: state.ip,
+                  depth: state.stack.length,
+                  top: state.stack.slice(-16).map((item, offset) => ({
+                    d: 15 - offset,
+                    bytes: item.length,
+                    hex: binToHex(item).slice(0, 40),
+                  })),
+                });
+              }
+            }
+            if (state.instructions[state.ip]?.opcode === Op.OP_OUTPUTTOKENCATEGORY) {
+              const indexBytes = state.stack.at(-1);
+              lastOutputCategoryIndex = indexBytes === undefined ? undefined
+                : Number(vmNumberToBigInt(indexBytes));
+              lastOutputCategory = transaction.outputs[lastOutputCategoryIndex ?? -1]?.token
+                ? `${binToHex(transaction.outputs[lastOutputCategoryIndex!].token!.category)}:`
+                  + `${transaction.outputs[lastOutputCategoryIndex!].token!.nft?.capability ?? 'ft'}`
+                : 'none';
+            }
             failedComparison = {
               ip: state.ip,
               opcode: state.instructions[state.ip]?.opcode,
               instructionCount: state.instructions.length,
               left: state.stack.at(-2) && binToHex(state.stack.at(-2)!),
               right: state.stack.at(-1) && binToHex(state.stack.at(-1)!),
+              lastOutputCategoryIndex,
+              lastOutputCategory,
+              lastOutputBytecodeIndex,
             };
           },
         }).evaluate({ inputIndex, sourceOutputs, transaction });
+        const failUnlocker = (builder.inputs[inputIndex] as unknown as {
+          unlocker?: {
+            abiFunction?: { name?: string; inputs?: ReadonlyArray<{ name: string }> };
+            params?: readonly unknown[];
+          };
+        })?.unlocker;
+        if (failUnlocker?.abiFunction?.inputs && failUnlocker.params) {
+          console.error('preflight-unlocker-params', {
+            inputIndex,
+            name: failUnlocker.abiFunction.name,
+            params: failUnlocker.abiFunction.inputs.map((input, i) => {
+              const value = failUnlocker.params?.[i];
+              let rendered: unknown = value;
+              if (value instanceof Uint8Array) rendered = binToHex(value).slice(0, 72);
+              else if (typeof value === 'bigint') rendered = value.toString();
+              else if (Array.isArray(value)) rendered = `array(${value.length})`;
+              return { name: input.name, value: rendered };
+            }),
+          });
+        }
+        console.error('preflight-head-layout', {
+          inputIndex,
+          inputs: builder.inputs.slice(0, 20).map((input, index) => {
+            const unlocker = input && 'unlocker' in input ? input.unlocker as {
+              abiFunction?: { name?: string };
+              contract?: { artifact?: { contractName?: string }; name?: string };
+              generateLockingBytecode?: () => Uint8Array;
+            } | undefined : undefined;
+            return {
+              index,
+              name: unlocker?.abiFunction?.name
+                ?? unlocker?.contract?.artifact?.contractName
+                ?? unlocker?.contract?.name,
+              lock: unlocker?.generateLockingBytecode
+                ? binToHex(unlocker.generateLockingBytecode()).slice(0, 28) : '',
+              cap: input?.token?.nft?.capability ?? (input ? 'plain' : 'missing'),
+              cat: String(input?.token?.category ?? '').slice(0, 16),
+            };
+          }),
+          outputs: builder.outputs.slice(0, 20).map((output, index) => ({
+            index,
+            lock: (typeof output.to === 'string' ? output.to : binToHex(output.to as Uint8Array)).slice(0, 28),
+            cap: output?.token?.nft?.capability ?? (output ? 'plain' : 'missing'),
+            cat: String(output?.token?.category ?? '').slice(0, 16),
+            commit: String(output?.token?.nft?.commitment ?? '').slice(0, 24),
+          })),
+          sourceOuts: sourceOutputs.slice(0, 20).map((output, index) => ({
+            index,
+            lock: binToHex(output.lockingBytecode).slice(0, 28),
+            cap: output.token?.nft?.capability ?? (output.token ? 'ft' : 'plain'),
+            cat: output.token ? binToHex(output.token.category).slice(0, 16) : '',
+            commit: output.token?.nft ? binToHex(output.token.nft.commitment).slice(0, 40) : '',
+          })),
+          txOuts: transaction.outputs.slice(0, 20).map((output, index) => ({
+            index,
+            lock: binToHex(output.lockingBytecode).slice(0, 28),
+            cap: output.token?.nft?.capability ?? (output.token ? 'ft' : 'plain'),
+            cat: output.token ? binToHex(output.token.category).slice(0, 16) : '',
+            commit: output.token?.nft ? binToHex(output.token.nft.commitment).slice(0, 24) : '',
+          })),
+        });
         console.error('message-bus-preflight-failure', {
           inputIndex,
           ip: evaluated.ip,
@@ -2058,6 +2216,14 @@ export function mapMessageBusVmFailure(
         handler: input?.unlocker?.abiFunction?.name,
       },
     );
+  }
+  const unlockerParams = (builder.inputs[inputIndex] as { unlocker?: { params?: unknown[]; abiFunction?: { inputs?: Array<{ name: string }> } } })?.unlocker;
+  if (unlockerParams?.abiFunction?.inputs && unlockerParams.params) {
+    const idxParams = unlockerParams.abiFunction.inputs.flatMap((input, i) => (
+      /returnOutputIdx/i.test(input.name)
+        ? [{ name: input.name, value: String(unlockerParams.params?.[i]) }] : []
+    ));
+    if (idxParams.length > 0) console.error('preflight-return-idx', { inputIndex, idxParams, rawVmReason });
   }
   return new Error(`messageBus: BCH-2026 preflight failed at input ${inputIndex}: ${rawVmReason}`);
 }

@@ -80,14 +80,14 @@ interface CapacityReading {
 const EXPECTED_TWO_PARTY: Readonly<Record<'kernel' | 'legacy', CapacityReading>> = Object.freeze({
   kernel: {
     participants: 2, authenticatedParticipants: 2, slots: 6,
-    transactionBytes: 22_964, callManifestBytes: 294,
+    transactionBytes: 23_042, callManifestBytes: 294,
     worstOperationCost: 6_309_151, worstMaximumOperationCost: 7_234_400,
     worstRatio: 0.8721042519075528,
     inputOperationCosts: [
-      473_625, 437_513, 695, 6_309_151, 6_195_529, 27_321,
+      474_316, 438_204, 695, 6_309_151, 6_195_529, 27_321,
     ],
     inputMaximumOperationCosts: [
-      1_914_400, 1_449_600, 34_400, 7_234_400, 7_234_400, 112_800,
+      1_945_600, 1_480_800, 34_400, 7_234_400, 7_234_400, 112_800,
     ],
   },
   legacy: {

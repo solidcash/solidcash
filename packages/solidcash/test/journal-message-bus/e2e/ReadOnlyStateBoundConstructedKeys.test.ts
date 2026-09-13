@@ -75,5 +75,28 @@ describe('read-only state bounded constructed keys', () => {
     const contract = StatefulContract.withCategory(inner, categoryId);
     await expect(contract.batch([{ function: 'apply', args: [3n, 90n] }]).send())
       .rejects.toThrow();
+
+    const mutated = compileString(`contract MutatedBoundKeys() {
+      int limit;
+      mapping(int => int) records;
+      function fill(int[] memory keys, int base, int stop) internal pure {
+        for (int cursor = 0; cursor < stop; cursor = cursor + 1) {
+          keys[cursor] = base + cursor;
+        }
+      }
+      function apply(int count, int base, int next) public {
+        this.limit = next;
+        int[] memory keys = new int[](count);
+        fill(keys, base, this.limit);
+        for (int cursor = 0; cursor < count; cursor = cursor + 1) {
+          this.records[keys[cursor]] = cursor + 20;
+        }
+        require(true);
+      }
+    }`, {
+      forceStateful: true, messageBus: true, messageBusKernel: true, maximumInputBytes: 1_000_000,
+    });
+    expect(mutated.messageBus?.handlers.find((handler) => handler.name === 'apply'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_UNBOUNDED_KEY' });
   }, 180_000);
 });

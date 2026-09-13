@@ -1,4 +1,9 @@
-import { StatefulTransactionBuilder, StatefulTransactionOptions } from '../src/stateful/StatefulTransactionBuilder.js';
+import {
+  StatefulTransactionBuilder,
+  StatefulTransactionOptions,
+} from '../src/stateful/StatefulTransactionBuilder.js';
+// Exercise the shipped build helper (marketplace/solidhat also resolve dist).
+import { moveLateChunksBeforeReverseSuffixJobs } from '../dist/stateful/StatefulTransactionBuilder.js';
 import { UnlockableUtxo } from '../src/interfaces.js';
 import { StateLayout, EventDefinitionAbi } from '@solidcash/utils';
 import { createTestProvider } from './test-util.js';
@@ -193,6 +198,77 @@ describe('StatefulTransactionBuilder', () => {
       }
     });
 
+    it('places old jobs chunk inputs at INPUTINDEX+blockSize before nested LLC', () => {
+      const chunkLock = new Uint8Array([0xaa, 0x20, ...new Array(32).fill(0x66), 0x87]);
+      const nestedLock = new Uint8Array([0xaa, 0x20, ...new Array(32).fill(0x77), 0x87]);
+      const chunkInput: UnlockableUtxo = {
+        txid: '11'.repeat(32),
+        vout: 0,
+        satoshis: 1200n,
+        token: {
+          category: categoryId,
+          amount: 0n,
+          nft: { capability: 'mutable', commitment: '0000dead' },
+        },
+        unlocker: {
+          generateLockingBytecode: () => chunkLock,
+          generateUnlockingBytecode: () => new Uint8Array(),
+        },
+      };
+      const nestedMaster: UnlockableUtxo = {
+        txid: '22'.repeat(32),
+        vout: 0,
+        satoshis: 1000n,
+        token: {
+          category: 'ee'.repeat(32),
+          amount: 0n,
+          nft: { capability: 'minting', commitment: '' },
+        },
+        unlocker: {
+          generateLockingBytecode: () => nestedLock,
+          generateUnlockingBytecode: () => new Uint8Array(),
+          abiFunction: { name: 'publishJobEvent' },
+        } as UnlockableUtxo['unlocker'],
+      };
+      const funders: UnlockableUtxo[] = Array.from({ length: 12 }, (_, i) => ({
+        txid: '33'.repeat(30) + i.toString(16).padStart(4, '0'),
+        vout: 0,
+        satoshis: 2000n,
+        unlocker: makeDummyUnlocker(),
+      }));
+      const builder = new StatefulTransactionBuilder(makeBaseOptions({
+        allowImplicitNftBurn: true,
+        delegateDynamicChunksAtSuffix: true,
+        funderUtxos: funders,
+        dynamicChunkVars: [{ name: 'jobs', type: 'JobPost[]', lockingBytecode: chunkLock }],
+        dynamicChunkInputs: [chunkInput],
+        lowLevelCallUtxoGroups: [{
+          callMode: 'call',
+          functionName: 'publishJobEvent',
+          masterUtxo: nestedMaster,
+          dataNftUtxos: [],
+          externalContract: { inner: { artifact: { abi: [] } } },
+        } as never],
+        blockLayout: {
+          blockSize: 6,
+          slots: [
+            { kind: 'master', offset: 0 },
+            { kind: 'dataNft', offset: 1, nftIndex: 0 },
+            { kind: 'dataNft', offset: 2, nftIndex: 1 },
+            { kind: 'dataNft', offset: 3, nftIndex: 2 },
+            { kind: 'dataNft', offset: 4, nftIndex: 3 },
+            { kind: 'returnEvent', offset: 5 },
+          ],
+        },
+      }));
+      const inputs = (builder as unknown as { allInputs: UnlockableUtxo[] }).allInputs;
+      const masterIdx = inputs.findIndex((input) => input.txid === makeMasterUtxo().txid);
+      expect(masterIdx).toBeGreaterThanOrEqual(0);
+      expect(inputs[masterIdx + 6]?.txid).toBe(chunkInput.txid);
+      const nestedIdx = inputs.findIndex((input) => input.txid === nestedMaster.txid);
+      expect(nestedIdx).toBeGreaterThan(masterIdx + 6);
+    });
+
     it('keeps TXOUTPUTCOUNT-1-nNew on chunk 0 when a derivation remainder is inserted', () => {
       const chunkLock = new Uint8Array([0xaa, 0x20, ...new Array(32).fill(0x11), 0x87]);
       const builder = new StatefulTransactionBuilder(makeBaseOptions({
@@ -213,6 +289,113 @@ describe('StatefulTransactionBuilder', () => {
       expect(tx.outputs.slice(-4).map((o) => o.to)).toEqual([
         change, chunkLock, chunkLock, new Uint8Array([0x6a]),
       ]);
+    });
+
+    it('final-layout move+strip puts late chunks before reverse-suffix jobs without probe thrash', () => {
+      const jobsLock = new Uint8Array([0xaa, 0x20, ...new Array(32).fill(0x11), 0x87]);
+      const lateLock = new Uint8Array([0xaa, 0x20, ...new Array(32).fill(0x22), 0x87]);
+      // Probe/build order still appends jobs then late chunks (must not reorder during derivation).
+      const builder = new StatefulTransactionBuilder(makeBaseOptions({
+        allowImplicitNftBurn: true,
+        delegateDynamicChunksAtSuffix: true,
+        dynamicChunkVars: [{ name: 'jobs', type: 'JobPost[]', lockingBytecode: jobsLock }],
+      }));
+      builder.setChunkRawCommitments('jobs', ['aa01', 'aa02']);
+      builder.addLateValueChunkOutput({
+        to: lateLock,
+        amount: 1200n,
+        token: {
+          category: categoryId,
+          amount: 0n,
+          nft: { capability: 'mutable', commitment: 'bb00' },
+        },
+      });
+      // Probe builds append jobs then late chunks; build() reassert then pins jobs onto
+      // TXOUTPUTCOUNT-1-nNew (overwriting late occupants there). Final send() must lift the
+      // early jobs run and strip duplicates without doing that reorder during derivation.
+      const probeTx = builder.build();
+      expect(probeTx.outputs.at(-1)?.to).toEqual(new Uint8Array([0x6a]));
+      expect(probeTx.outputs.at(-3)?.to).toEqual(jobsLock);
+      expect(probeTx.outputs.at(-2)?.to).toEqual(jobsLock);
+
+      // Final-layout path: lift jobs against OP_RETURN, pin commitments, strip early copies.
+      const drifted = [
+        {
+          to: jobsLock,
+          amount: 1200n,
+          token: {
+            category: categoryId,
+            amount: 0n,
+            nft: { capability: 'mutable' as const, commitment: 'aa01' },
+          },
+        },
+        {
+          to: jobsLock,
+          amount: 1200n,
+          token: {
+            category: categoryId,
+            amount: 0n,
+            nft: { capability: 'mutable' as const, commitment: 'aa02' },
+          },
+        },
+        {
+          to: lateLock,
+          amount: 1200n,
+          token: {
+            category: categoryId,
+            amount: 0n,
+            nft: { capability: 'mutable' as const, commitment: 'bb00' },
+          },
+        },
+        {
+          to: lateLock,
+          amount: 1200n,
+          token: {
+            category: categoryId,
+            amount: 0n,
+            nft: { capability: 'mutable' as const, commitment: 'bb01' },
+          },
+        },
+        { to: new Uint8Array([0x6a]), amount: 0n },
+      ];
+      expect(moveLateChunksBeforeReverseSuffixJobs(drifted, jobsLock, 2)).toBe(2);
+      expect(drifted.map((output) => ({
+        lock: output.to instanceof Uint8Array ? [...output.to.slice(0, 3)] : output.to,
+        commit: output.token?.nft?.commitment ?? '',
+      }))).toEqual([
+        { lock: [0xaa, 0x20, 0x22], commit: 'bb00' },
+        { lock: [0xaa, 0x20, 0x22], commit: 'bb01' },
+        { lock: [0xaa, 0x20, 0x11], commit: 'aa01' },
+        { lock: [0xaa, 0x20, 0x11], commit: 'aa02' },
+        { lock: [0x6a], commit: '' },
+      ]);
+
+      // Extra early duplicate after a second append: stripSurplus demotes it.
+      drifted.splice(0, 0, {
+        to: jobsLock,
+        amount: 1200n,
+        token: {
+          category: categoryId,
+          amount: 0n,
+          nft: { capability: 'mutable' as const, commitment: 'stale' },
+        },
+      });
+      const internals = builder as unknown as {
+        _reassertReverseSuffixDynamicChunks: (
+          b: { outputs: typeof drifted },
+          options?: { stripSurplus?: boolean },
+        ) => number;
+      };
+      expect(internals._reassertReverseSuffixDynamicChunks(
+        { outputs: drifted },
+        { stripSurplus: true },
+      )).toBeGreaterThan(0);
+      expect(drifted[0]?.to).toEqual(new Uint8Array([0x51]));
+      expect(drifted.slice(-3).map((output) => output.to)).toEqual([
+        jobsLock, jobsLock, new Uint8Array([0x6a]),
+      ]);
+      expect(drifted.at(-3)?.token?.nft?.commitment).toBe('aa01');
+      expect(drifted.at(-2)?.token?.nft?.commitment).toBe('aa02');
     });
 
     it('rebinds absolute continuation witnesses when final change shifts the suffix', () => {

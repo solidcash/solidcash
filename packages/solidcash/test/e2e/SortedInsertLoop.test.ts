@@ -134,4 +134,126 @@ describe('vmap diff-key insert-in-loop (SDK progressive derivation)', () => {
     await fund(contract.address);
     expect((await contract.chk(20n, alicePub, sig).send()).txid).toBeDefined();
   });
+
+  it('expression key jobs.length-1 with simultaneous jobs push (publishJobPost whitelist shape)', async () => {
+    const NSRC = `contract C() {
+      int[] jobs;
+      mapping(int => mapping(bytes20 => bool)) w;
+      function publish(bytes20[] workers) {
+        this.jobs.push(1);
+        for (int i = 0; i < workers.length; i = i + 1) {
+          this.w[this.jobs.length - 1][workers[i]] = true;
+        }
+        require(true);
+      }
+      function chk(int jobId, bytes20 worker) {
+        require(this.w[jobId][worker]);
+      }
+    }`;
+    const art = compileString(NSRC, { forceStateful: true, messageBus: true, messageBusKernel: true });
+    const infos = art.abi.find((f) => f.name === 'publish')?.sortedUpsertLoopInfo ?? [];
+    expect(infos.some((info) => info.collection === 'w'
+      && info.fixedKeySources?.some((source) => source.kind === 'expression'
+        && source.expressionLabel === 'binop:-(unop:.length(state:jobs),lit:1)'))).toBe(true);
+    expect(art.abi.find((f) => f.name === 'publish')?.dynamicWrites).toEqual(['jobs']);
+
+    const f = { txid: uid(), vout: 0, satoshis: 400000n };
+    await provider.addUtxo(p2pkh.address, f);
+    const { contract } = await StatefulContract.deploy(art, [], {
+      provider, fundingUtxo: f, funder: p2pkh.unlock.spend(alicePub, sig), initialState: {}, changeAddress: p2pkh.address,
+    });
+    const worker = alicePkh;
+    await fund(contract.address);
+    expect((await contract.publish([worker]).send()).txid).toBeDefined();
+    await fund(contract.address);
+    expect((await contract.chk(0n, worker).send()).txid).toBeDefined();
+  });
+
+  it('jobs.push alone without whitelist upsert still works', async () => {
+    const NSRC = `contract C() {
+      int[] jobs;
+      function publish() {
+        this.jobs.push(1);
+        require(this.jobs.length == 1);
+      }
+    }`;
+    const art = compileString(NSRC, { forceStateful: true, messageBus: true, messageBusKernel: true });
+    const f = { txid: uid(), vout: 0, satoshis: 400000n };
+    await provider.addUtxo(p2pkh.address, f);
+    const { contract } = await StatefulContract.deploy(art, [], {
+      provider, fundingUtxo: f, funder: p2pkh.unlock.spend(alicePub, sig), initialState: {}, changeAddress: p2pkh.address,
+    });
+    await fund(contract.address);
+    expect((await contract.publish().send()).txid).toBeDefined();
+  });
+
+  it('nested whitelist with constant jobId plus jobs.push works', async () => {
+    const NSRC = `contract C() {
+      int[] jobs;
+      mapping(int => mapping(bytes20 => bool)) w;
+      function publish(bytes20[] workers) {
+        this.jobs.push(1);
+        for (int i = 0; i < workers.length; i = i + 1) {
+          this.w[0][workers[i]] = true;
+        }
+        require(true);
+      }
+      function chk(int jobId, bytes20 worker) {
+        require(this.w[jobId][worker]);
+      }
+    }`;
+    const art = compileString(NSRC, { forceStateful: true, messageBus: true, messageBusKernel: true });
+    const f = { txid: uid(), vout: 0, satoshis: 400000n };
+    await provider.addUtxo(p2pkh.address, f);
+    const { contract } = await StatefulContract.deploy(art, [], {
+      provider, fundingUtxo: f, funder: p2pkh.unlock.spend(alicePub, sig), initialState: {}, changeAddress: p2pkh.address,
+    });
+    await fund(contract.address);
+    expect((await contract.publish([alicePkh]).send()).txid).toBeDefined();
+    await fund(contract.address);
+    expect((await contract.chk(0n, alicePkh).send()).txid).toBeDefined();
+  });
+
+
+  it('expression key length-1 with fat struct[] push (JobPost-shaped) and whitelist', async () => {
+    const NSRC = `contract C() {
+      struct Fat { string title; bytes32 hash; bytes20 creator; int amount; }
+      Fat[] jobs;
+      mapping(int => mapping(bytes20 => bool)) w;
+      function publish(bytes20[] workers, string title, bytes32 hash, bytes20 creator, int amount) {
+        Fat memory job;
+        job.title = title;
+        job.hash = hash;
+        job.creator = creator;
+        job.amount = amount;
+        this.jobs.push(job);
+        for (int i = 0; i < workers.length; i = i + 1) {
+          this.w[this.jobs.length - 1][workers[i]] = true;
+        }
+        require(true);
+      }
+      function chk(int jobId, bytes20 worker) {
+        require(this.w[jobId][worker]);
+      }
+    }`;
+    const art = compileString(NSRC, { forceStateful: true, messageBus: true, messageBusKernel: true });
+    expect(art.abi.find((f) => f.name === 'publish')?.dynamicWrites).toEqual(['jobs']);
+    const f = { txid: uid(), vout: 0, satoshis: 400000n };
+    await provider.addUtxo(p2pkh.address, f);
+    const { contract } = await StatefulContract.deploy(art, [], {
+      provider, fundingUtxo: f, funder: p2pkh.unlock.spend(alicePub, sig), initialState: {}, changeAddress: p2pkh.address,
+    });
+    await fund(contract.address);
+    const hash = new Uint8Array(32); hash[0] = 0xa0;
+    expect((await contract.publish(
+      [alicePkh],
+      'Create a marketplace in solidity!',
+      hash,
+      alicePkh,
+      100n,
+    ).send()).txid).toBeDefined();
+    await fund(contract.address);
+    expect((await contract.chk(0n, alicePkh).send()).txid).toBeDefined();
+  });
+
 });

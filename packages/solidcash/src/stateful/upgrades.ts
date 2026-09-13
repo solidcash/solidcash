@@ -471,6 +471,20 @@ function wrapDispatch<TImpl extends Artifact>(handle: ProxyContract<TImpl>): Pro
         // forwarding the getter would build and send a delegate transaction instead of returning its value.
         if (implAbi.has(prop)) return (...args: FunctionArgument[]) => {
           const fn = (implArtifact.abi as readonly AbiFunction[]).find((entry) => entry.name === prop);
+          const visibleInputs = fn?.inputs.filter((input) => !input.name.startsWith('__internal__')) ?? [];
+          const directRead = fn?.directMappingReturn;
+          if (directRead && fn?.writesState === false) {
+            const keyArgs = directRead.keyParams.map((name) => {
+              const index = visibleInputs.findIndex((input) => input.name === name);
+              return index < 0 ? undefined : args[index];
+            });
+            const stateAccessor = (target.proxy.state as unknown as Record<
+              string, ((...values: FunctionArgument[]) => Promise<unknown>) | undefined
+            >)[directRead.collection];
+            if (keyArgs.every((value) => value !== undefined) && stateAccessor) {
+              return stateAccessor(...keyArgs as FunctionArgument[]);
+            }
+          }
           const call = target.forward(prop, args);
           const selector = fn?.selector;
           const requirements = selector
@@ -526,7 +540,7 @@ function wrapDispatch<TImpl extends Artifact>(handle: ProxyContract<TImpl>): Pro
             );
             return call;
           }
-          const visible = fn?.inputs.filter((input) => !input.name.startsWith('__internal__')) ?? [];
+          const visible = visibleInputs;
           const byName = new Map<string, FunctionArgument>();
           visible.forEach((input, index) => {
             byName.set(input.name, args[index]);

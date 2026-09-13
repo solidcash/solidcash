@@ -292,7 +292,7 @@ describe('required kernel admission', () => {
       .toMatchObject({ eligible: true });
   });
 
-  it('classifies one shared-permutation fixed-width read-to-set transfer but fences its unpublished carrier', () => {
+  it('admits one authenticated shared-permutation scalar read-to-set transfer', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) source;
       mapping(int => int) destination;
@@ -311,16 +311,15 @@ describe('required kernel admission', () => {
       expect.objectContaining({ collection: 'destination', op: 'set' }),
     ]));
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'runtimeCopy'))
-      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
-    // The late compiler readiness result is intentionally private until its paired SDK materializer and GTT
-    // final-settlement cursor are released. An admitted, fully typed carrier handoff must not accidentally
-    // become a public input-ownership capability merely because it was recognized.
-    expect(artifact.messageBus?.kernelEntryJournal).toBeUndefined();
+      .toMatchObject({ eligible: true });
+    expect(artifact.messageBus?.kernelEntryJournal?.capabilities).toContainEqual(expect.objectContaining({
+      kind: 'internal-read-carrier', version: 1,
+    }));
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'fixedCopy'))
       .toMatchObject({ eligible: true });
   });
 
-  it('classifies a fixed-width read carrier fan-out but fences its unpublished carrier', () => {
+  it('admits an authenticated scalar read carrier fan-out', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) source;
       mapping(int => int) left;
@@ -347,7 +346,7 @@ describe('required kernel admission', () => {
       expect.objectContaining({ collection: 'right', valueArrayParam: read.oldValuesWitnessParam }),
     ]));
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'fanout'))
-      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+      .toMatchObject({ eligible: true });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'shifted'))
       .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
   });
@@ -6386,7 +6385,7 @@ describe('required kernel admission', () => {
       .toMatchObject({ eligible: true });
   });
 
-  it('publishes canonical counter-loop read metadata but fences its unpublished carrier', () => {
+  it('publishes canonical counter-loop read metadata and its authenticated scalar carrier', () => {
     const statement = 'this.a[i] = this.b[i];';
     const artifact = compileString(`contract C() {
       mapping(int => int) a;
@@ -6400,7 +6399,7 @@ describe('required kernel admission', () => {
       function control() public { require(true); }
     }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied'))
-      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+      .toMatchObject({ eligible: true });
     const streams = artifact.abi.find((handler) => handler.name === 'denied')?.sortedUpsertLoopInfo ?? [];
     expect(streams)
       .toEqual(expect.arrayContaining([
@@ -6428,8 +6427,10 @@ describe('required kernel admission', () => {
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
   });
 
-  it.each(['bool', 'fixed128x18', 'bytes20', 'pubkey'])(
-    'publishes canonical counter-loop read metadata for %s but fences its unpublished carrier', (type) => {
+  it.each([
+    ['bool', true], ['fixed128x18', true], ['bytes20', false], ['pubkey', false],
+  ] as const)(
+    'publishes canonical counter-loop read metadata for %s with exact scalar settlement admission', (type, eligible) => {
       const artifact = compileString(`contract C() {
         mapping(int => ${type}) source;
         mapping(int => ${type}) destination;
@@ -6439,7 +6440,7 @@ describe('required kernel admission', () => {
         }
       }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
       expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'copy'))
-        .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+        .toMatchObject(eligible ? { eligible: true } : { eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
       const read = artifact.abi.find((handler) => handler.name === 'copy')?.sortedUpsertLoopInfo
         ?.find((info) => info.collection === 'source');
       expect(read).toMatchObject({ op: 'read' });

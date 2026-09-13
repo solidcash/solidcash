@@ -253,6 +253,13 @@ function exactMessageBusHandlerReference(
   return { name: handler.name, selector: handler.selector };
 }
 
+/** Remaining eligible names when late fences demoted a handler already synthesized into the route. */
+const kernelRouteRebindRemaining = new WeakMap<Artifact, AbiFunctionReference[]>();
+
+function sourceMessageBusHandlerReference(fn: FunctionDefinitionNode): AbiFunctionReference {
+  return { name: fn.name, selector: sourceFunctionSelectorHex(fn) };
+}
+
 function scanSourceImports(code: string): string[] {
   const specs: string[] = [];
   const importRe = /import\s+(?:(?:[\w*{}\s,]+)\s+from\s+)?["']([^"']+)["']/g;
@@ -1863,6 +1870,40 @@ function compileStringUnchecked(code: string, compilerOptions: CompileOptions = 
       readCarrierAuthorizationBox.expectedScopes = undefined;
       readCarrierAuthorizationBox.expectedKernelJournalDispositions = undefined;
       readCarrierAuthorizationBox.bindingToken = undefined;
+    }
+  }
+  if (mergedCompilerOptions.messageBusKernel === true) {
+    let lateFenceRebinds = 0;
+    while (kernelRouteRebindRemaining.has(artifact) && lateFenceRebinds < 2) {
+      lateFenceRebinds += 1;
+      const remaining = kernelRouteRebindRemaining.get(artifact) ?? [];
+      kernelRouteRebindRemaining.delete(artifact);
+      const refusals = artifact.messageBus?.handlers ?? [];
+      const verifierProgram = remaining.length > 0 ? artifact.messageBus?.verifierProgram : undefined;
+      const lateBox = (mergedCompilerOptions as InternalCompilerOptions).__kernelReadCarrierAuthorizationBox;
+      const lateOptions = normalizeCompilerOptions({
+        ...artifactCompilerOptions,
+        messageBusHandlers: remaining,
+        ...(verifierProgram && { __messageBusVerifierProgram: verifierProgram }),
+        ...(lateBox && { __kernelReadCarrierAuthorizationBox: lateBox }),
+      });
+      delete lateOptions.__cheapAdmissionCodegen;
+      if (!verifierProgram) delete lateOptions.__messageBusVerifierProgram;
+      artifact = compileResolvedAst(
+        parseAndResolve(code, lateOptions, errorListener, primaryContractName),
+        code, lateOptions,
+      );
+      if (artifact.messageBus) {
+        if (verifierProgram) artifact.messageBus.verifierProgram = verifierProgram;
+        restoreSpeculativeMessageBusRefusals(artifact.messageBus.handlers, refusals);
+      }
+      if (artifact.compiler.options) delete artifact.compiler.options.__messageBusVerifierProgram;
+    }
+    if (kernelRouteRebindRemaining.has(artifact)) {
+      kernelRouteRebindRemaining.delete(artifact);
+      throw new Error(
+        'Message-bus kernel admission retained an ineligible handler in the published route',
+      );
     }
   }
   // Cheap admission is only for the discarded speculative pass. The delegate variant recompiles from
@@ -9743,6 +9784,9 @@ function synthesizeMessageBusRoute(
   }
   route.messageBusUpgradeRoute = kernelUpgradeMode;
   route.messageBusDispatch = kernelLoopDispatch ? 'kernel-row-loop' : 'legacy-unroll';
+  if (kernelLoopDispatch) {
+    for (const fn of eligible) fn.messageBusDispatched = true;
+  }
   // Late route synthesis runs after the final automatic delegate-marking pass. Propagate the admitted surface's
   // execution context here so SymbolTableTraversal injects the proxy-master witness used by the route prologue
   // and unlocking-frame validator. Early synthesis reaches the same state through the later marking pass.
@@ -12231,6 +12275,15 @@ function compileResolvedAst(
     }
     if (completeDispositionManifest) {
       kernelJournalDispositionsByArtifact.set(artifact, completeDispositionManifest);
+    }
+    const dispatchedDemoted = sourceHandlers.some((fn) => (
+      fn.messageBusDispatched === true && fn.messageBusEligible !== true
+    ));
+    if (dispatchedDemoted) {
+      kernelRouteRebindRemaining.set(
+        artifact,
+        sourceHandlers.filter((fn) => fn.messageBusEligible === true).map(sourceMessageBusHandlerReference),
+      );
     }
   }
   mark('artifact');

@@ -577,7 +577,7 @@ export class Contract<
         if (Array.isArray(arg)) return arg.map(coerceArg);
         return arg;
       };
-      const encodedArgs = args.map((arg, i) => {
+      let encodedArgs = args.map((arg, i) => {
         try {
           return encodeFunctionArgument(coerceArg(arg) as never, argInputs[i].type, structs);
         } catch (error) {
@@ -601,6 +601,27 @@ export class Contract<
       );
       const cacheUnlockingBytecode = !hasSignatures && !needsBlockhashIndex;
       let cachedUnlockingBytecode: Uint8Array | undefined;
+      // Redeem push is stable across probe-local ReturnOutputIdx edits; keep it so arg-only
+      // rebuilds do not reserialize multi-megabyte Marketplace redeem scripts every probe.
+      let cachedRedeemPush: Uint8Array | undefined;
+
+      // Probe-local layout fixes may mutate `params` (same array as `args`) after construction.
+      // Re-encode changed slots and drop the unlocking-bytecode cache so OUTCOMMIT indices stay live.
+      const syncEncodedArgsFromParams = (onlyIndices?: readonly number[]): void => {
+        const indices = onlyIndices ?? args.map((_, index) => index);
+        for (const i of indices) {
+          try {
+            encodedArgs[i] = encodeFunctionArgument(coerceArg(args[i]) as never, argInputs[i].type, structs);
+          } catch (error) {
+            throw new Error(
+              `Could not encode argument '${argInputs[i].name}' at index ${i} as ${argInputs[i].type}: `
+              + `${error instanceof Error ? error.message : String(error)}`,
+              { cause: error },
+            );
+          }
+        }
+        cachedUnlockingBytecode = undefined;
+      };
 
       const generateUnlockingBytecode = (
         { transaction, sourceOutputs, inputIndex }: GenerateUnlockingBytecodeOptions,
@@ -636,14 +657,34 @@ export class Contract<
           ? [this.budgetPad(abiFunction, args), ...completeArgs, ...synthArgs]
           : [...completeArgs, ...synthArgs];
 
-        const unlockingBytecode = createUnlockingBytecode(this.addressType, bytecode, finalArgs, selector);
+        let unlockingBytecode: Uint8Array;
+        if (this.addressType === 'p2s') {
+          unlockingBytecode = createUnlockingBytecode(this.addressType, bytecode, finalArgs, selector);
+        } else {
+          const unlockScript = [...finalArgs].reverse();
+          if (selector !== undefined) unlockScript.unshift(selector);
+          const argsBytecode = scriptToBytecode(unlockScript);
+          if (cachedRedeemPush === undefined) {
+            cachedRedeemPush = scriptToBytecode([bytecode]);
+          }
+          unlockingBytecode = new Uint8Array(argsBytecode.length + cachedRedeemPush.length);
+          unlockingBytecode.set(argsBytecode, 0);
+          unlockingBytecode.set(cachedRedeemPush, argsBytecode.length);
+        }
         if (cacheUnlockingBytecode) cachedUnlockingBytecode = unlockingBytecode;
         return unlockingBytecode;
       };
 
       const generateLockingBytecode = (): Uint8Array => addressToLockScript(this.address);
 
-      return { generateUnlockingBytecode, generateLockingBytecode, contract: this, params: args, abiFunction };
+      return {
+        generateUnlockingBytecode,
+        generateLockingBytecode,
+        contract: this,
+        params: args,
+        abiFunction,
+        syncEncodedArgsFromParams,
+      };
     };
   }
 

@@ -1,4 +1,5 @@
 import { hexToBin } from '@bitauth/libauth';
+import { bytecodeToAsm } from '@solidcash/utils';
 import { compileString } from 'solidc';
 import { describe, expect, it } from 'vitest';
 import { Contract, StatefulContract } from '../../../src/index.js';
@@ -36,6 +37,8 @@ describe('kernel constructed-array partial fill', () => {
     const handler = artifact.abi.find((candidate) => candidate.name === 'apply')!;
     expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'apply'))
       .toMatchObject({ eligible: true });
+    expect(bytecodeToAsm(Buffer.from(artifact.functionBodies!['53434231'], 'hex')))
+      .toContain('OP_INVOKE');
 
     const inner = new Contract(artifact, [], { provider });
     const { categoryId } = await setupStatefulUtxos(

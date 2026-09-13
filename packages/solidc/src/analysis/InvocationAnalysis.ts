@@ -187,12 +187,13 @@ export function analyseFunctionFootprint(
         if (kind === 'StateAccessNode' && resourceName) directReads.add(`state:${resourceName}`);
         else if (bareReadName !== undefined && !locallyBound.has(bareReadName)) {
           directReads.add(collectionResourceName(bareReadName, undefined));
-        } else if (/^(MappingAccess|ArrayAccess|StateArrayAccess)/.test(kind) && collectionResource) {
+        } else if (/^(MappingAccess|ArrayAccess|StateArrayAccess)/.test(kind) && collectionResource
+          && resourceName && !locallyBound.has(resourceName)) {
           directReads.add(collectionResource);
         } else if (/^(StateAssign|DeleteState)/.test(kind) && resourceName) {
           directWrites.add(`state:${resourceName}`);
         } else if (/^(MappingAssign|MappingFieldAssign|MappingDelete|StateArray(Push|Pop|Assign|Delete))/
-          .test(kind) && collectionResource) {
+          .test(kind) && collectionResource && resourceName && !locallyBound.has(resourceName)) {
           directWrites.add(collectionResource);
         // X19: a BARE element write `m[k] = v` / `delete m[k]` is an ArrayAssign/ArrayDelete until symbol
         // resolution decides state-vs-local (only the `this.`-prefixed spelling is a MappingAssign from the

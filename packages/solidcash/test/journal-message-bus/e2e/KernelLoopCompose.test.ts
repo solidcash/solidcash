@@ -7247,19 +7247,19 @@ describe('kernel composite counter-key settlement', () => {
     }
   }, 180_000);
 
-  it('fences counter-keyed reads from another mapping beside a mutation stream', () => {
+  it('admits counter-keyed reads through the authenticated carrier protocol', () => {
     const artifact = compileString(COUNTER_MAPPING_READ_SOURCE, {
       ...KERNEL, maximumInputBytes: 1_000_000,
     });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'copy'))
-      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+      .toMatchObject({ eligible: true });
     expect(artifact.abi.find((handler) => handler.name === 'copy')?.sortedUpsertLoopInfo)
       .toEqual(expect.arrayContaining([
         expect.objectContaining({ collection: 'source', op: 'read' }),
         expect.objectContaining({ collection: 'destination', op: 'set' }),
       ]));
     expect(() => encodeMessageBatch(artifact, [{ function: 'copy', args: [4n] }]))
-      .toThrow(/not batch eligible: KERNEL_LAYOUT/);
+      .not.toThrow();
   });
 
   it('freezes parameter-array read/write journals combined with repeated effects', () => {

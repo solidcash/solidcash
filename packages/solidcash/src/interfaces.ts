@@ -53,6 +53,8 @@ export interface ContractUnlocker extends Unlocker {
   params: FunctionArgument[];
   abiFunction: AbiFunction;
   covenantUnlocker?: boolean;
+  /** Re-encode `params` into the unlocking-bytecode cache after in-place param edits. */
+  syncEncodedArgsFromParams?: (onlyIndices?: readonly number[]) => void;
 }
 
 export interface P2PKHUnlocker extends Unlocker {

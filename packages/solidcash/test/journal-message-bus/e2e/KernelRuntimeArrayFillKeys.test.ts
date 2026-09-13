@@ -1,4 +1,5 @@
 import { hexToBin } from '@bitauth/libauth';
+import { bytecodeToAsm } from '@solidcash/utils';
 import { compileString } from 'solidc';
 import { describe, expect, it } from 'vitest';
 import { Contract, StatefulContract } from '../../../src/index.js';
@@ -55,6 +56,8 @@ describe('runtime-sized full-array key fill BCH VM', () => {
     const permutationName = apply.sortedUpsertLoopInfo?.[0].varyingArrayParam;
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'apply'))
       .toMatchObject({ eligible: true });
+    expect(bytecodeToAsm(Buffer.from(artifact.functionBodies!['53434231'], 'hex')))
+      .toContain('OP_INVOKE');
     expect(permutationName).toMatch(/^__internal__vmapCounterPerm_/);
 
     const inner = new Contract(artifact, [], { provider });

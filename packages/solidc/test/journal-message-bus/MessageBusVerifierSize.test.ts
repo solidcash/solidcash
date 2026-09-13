@@ -23,8 +23,8 @@ describe('atomic verifier bytecode specialization', () => {
     // while the bounds retain deliberate headroom below BCH's deployment limit.
     expect({ direct, composed, frameworkTax: composed - direct }).toEqual({
       direct: 152,
-      composed: 1350,
-      frameworkTax: 1198,
+      composed: 1389,
+      frameworkTax: 1237,
     });
     expect(composed).toBeLessThanOrEqual(1400);
     expect(composed - direct).toBeLessThanOrEqual(1250);

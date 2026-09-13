@@ -75,6 +75,9 @@ import {
   KERNEL_ENTRY_JOURNAL_MAX_RECORDS,
   KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX,
   KERNEL_ENTRY_JOURNAL_RECORDS_PER_SEGMENT,
+  KERNEL_JOURNAL_DISPOSITION_COMMITMENT_TAG_HEX,
+  kernelJournalDispositionManifestDigest,
+  type AbiFunction,
 } from '@solidcash/utils';
 import {
   analyzeChildDeploymentRecipes, childDeploymentCollectionDefinitions, childDeploymentGenesisEntries,
@@ -85,6 +88,12 @@ import {
 } from './upsertKeySources.js';
 import { MAX_INPUT_BYTESIZE } from '../constants.js';
 import { hasEffectiveCallValue } from '../semantic/branchOps.js';
+import {
+  deriveKernelJournalDispositionHandlerScope, isKernelReadCarrierBindingToken,
+  kernelJournalDispositionScopeKey, refreshKernelReadCarrierAuthorization,
+  sameKernelJournalDispositions, type KernelJournalDispositionHandlerScope,
+  type KernelReadCarrierAuthorizationBox, type KernelReadCarrierFamilyScope,
+} from '../semantic/KernelReadCarrierAuthorization.js';
 import {
   KERNEL_JOURNAL_ACCESS_STREAMS,
   KERNEL_JOURNAL_RECORDS,
@@ -986,6 +995,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private static readonly KERNEL_JOURNAL_CURSOR_SUBROUTINE_ID = -13n;
   private static readonly KERNEL_JOURNAL_ORDINAL_ADVANCE_SUBROUTINE_ID = -14n;
   private static readonly KERNEL_JOURNAL_RECORD_SELECT_SUBROUTINE_ID = -15n;
+  private static readonly KERNEL_JOURNAL_CARRIER_TARGET_SLOT_SUBROUTINE_ID = -16n;
   /**
    * Captured subroutines that keep being extracted even when outlining could reach them - which is all of
    * them. DO NOT DEFER THESE TO OUTLINING; the experiment has been run, per subroutine, and it does not hold.
@@ -1005,7 +1015,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * A structural helper is a different case and IS deferred: see `capturedSubroutineIsProfitable`.
    */
   private static readonly EXTRACT_EVEN_IF_OUTLINABLE: readonly bigint[] = [
-    -1n, -2n, -3n, -4n, -5n, -6n, -7n, -8n, -9n, -10n, -11n, -12n, -13n, -14n, -15n,
+    -1n, -2n, -3n, -4n, -5n, -6n, -7n, -8n, -9n, -10n, -11n, -12n, -13n, -14n, -15n, -16n,
   ];
 
   private static readonly ALL_SUBROUTINE_IDS = [
@@ -1024,6 +1034,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     GenerateTargetTraversalWithLocation.KERNEL_JOURNAL_CURSOR_SUBROUTINE_ID,
     GenerateTargetTraversalWithLocation.KERNEL_JOURNAL_ORDINAL_ADVANCE_SUBROUTINE_ID,
     GenerateTargetTraversalWithLocation.KERNEL_JOURNAL_RECORD_SELECT_SUBROUTINE_ID,
+    GenerateTargetTraversalWithLocation.KERNEL_JOURNAL_CARRIER_TARGET_SLOT_SUBROUTINE_ID,
   ];
 
   private allocateCompactHelperId(): bigint {
@@ -1284,11 +1295,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   // reconciliation below behind this hard release gate until the SDK materializer and the artifact capability
   // are released together.  In particular, messageBusKernel is not that capability: it is only a codegen mode.
   //
-  // This deliberately remains false rather than becoming an undocumented compiler option.  A future activation
-  // must change this gate in the same review which publishes `kernelEntryJournal.internal-read-carrier` and proves
-  // the paired input/flag rewrite on BCH VM.  That prevents a caller from enabling an incomplete physical protocol
-  // merely by passing a compiler preference.
-  private static readonly KERNEL_JOURNAL_FINAL_OUTPUT_CURSOR_RECONCILIATION_RELEASED = false;
+  // Release remains subordinate to compiler-owned, pass-local handler and aggregate-route authorization. Merely
+  // selecting kernel codegen cannot reach this path: the pristine binder must supply exact completed-descriptor
+  // scopes, each handler must emit its matching stream path, and the aggregate route must own the same manifest.
+  private static readonly KERNEL_JOURNAL_FINAL_OUTPUT_CURSOR_RECONCILIATION_RELEASED = true;
   private runtimeLoopEntryOutputCountActive = false;
   private static readonly RUNTIME_LOOP_ENTRY_OUTPUT_COUNT = '__internal__runtimeLoopEntryOutputCount';
   // Counter-loop events are accumulated as framed (commitment, locking-bytecode) records while the source loop
@@ -1783,7 +1793,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /** Whether this physical invocation frame carries an authenticated participant-block owner. */
-  private hasMessageBusParticipantOwner(node?: FunctionDefinitionNode): boolean {
+  private hasMessageBusParticipantOwner(node: FunctionDefinitionNode = this.currentFunction): boolean {
     return node?.parameters?.some((parameter) =>
       parameter.name === '__internal__messageBusOwnerInput') === true;
   }
@@ -1797,9 +1807,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     return this.isCompilerMessageBusRoute(node) || this.hasMessageBusParticipantOwner(node);
   }
 
-  /** Legacy delegate entries place dynamic continuations at the transaction suffix; routed delegates do not. */
+  /**
+   * Delegate dynamic-array writes authenticate at TXOUTPUTCOUNT-1-nNew (immediately before the
+   * unique trailer). The SDK places Marketplace.jobs on that reverse-suffix window
+   * (`delegateDynamicChunksAtSuffix`). Previously, message-bus participant blocks forced the
+   * owner-relative trailing base instead; that base stops matching the SDK once nested outputs
+   * grow (post two jobs → capability EQUALVERIFY of mutable vs empty at a non-token outIdx).
+   */
   private usesDelegateTransactionSuffix(): boolean {
-    return this.currentFunctionIsDelegate && !this.ownsMessageBusParticipantBlock();
+    return this.currentFunctionIsDelegate;
   }
 
   /**
@@ -2873,12 +2889,25 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
     const KERNEL_TARGET = GenerateTargetTraversalWithLocation.KERNEL_JOURNAL_TARGET_SLOT_SUBROUTINE_ID;
     const emitKernelTarget = (t: GenerateTargetTraversalWithLocation): void => {
-      t.emitKernelJournalTargetSlotHelperInline(loc);
+      t.emitKernelJournalTargetSlotHelperInline(loc, false);
     };
     if (this.capturedSubroutineIsProfitable(KERNEL_TARGET, count(KERNEL_TARGET), emitKernelTarget)) {
       spans.push({
         id: KERNEL_TARGET,
         span: this.defineCapturedSubroutine(KERNEL_TARGET, emitKernelTarget, loc),
+      });
+    }
+    const KERNEL_CARRIER_TARGET = GenerateTargetTraversalWithLocation
+      .KERNEL_JOURNAL_CARRIER_TARGET_SLOT_SUBROUTINE_ID;
+    const emitKernelCarrierTarget = (t: GenerateTargetTraversalWithLocation): void => {
+      t.emitKernelJournalTargetSlotHelperInline(loc, true);
+    };
+    if (this.capturedSubroutineIsProfitable(
+      KERNEL_CARRIER_TARGET, count(KERNEL_CARRIER_TARGET), emitKernelCarrierTarget,
+    )) {
+      spans.push({
+        id: KERNEL_CARRIER_TARGET,
+        span: this.defineCapturedSubroutine(KERNEL_CARRIER_TARGET, emitKernelCarrierTarget, loc),
       });
     }
     const KERNEL_CURSOR = GenerateTargetTraversalWithLocation.KERNEL_JOURNAL_CURSOR_SUBROUTINE_ID;
@@ -4146,6 +4175,32 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private emitFunctionDefine(func: FunctionDefinitionNode, emitDefinition = true): void {
     const locationData = { location: func.location, positionHint: PositionHint.START };
 
+    // The dry-run above has populated this physical clone's completed journal descriptors. Re-authorize those
+    // exact descriptors before emitting its real OP_DEFINE body; a source handler's later ABI proof cannot
+    // authenticate a clone whose key/value/group metadata drifted during route lowering.
+    if (func.messageBusKernelReadCarrierSourceSelectorHex && this.expectedKernelReadCarrierScope(func)) {
+      refreshKernelReadCarrierAuthorization(func, {
+        name: func.name,
+        selector: func.messageBusKernelReadCarrierSourceSelectorHex,
+        inputs: func.parameters.map((parameter) => ({
+          name: parameter.name, type: abiTypeString(parameter.type),
+        })),
+        sortedUpsertLoopInfo: func.sortedUpsertLoopInfo?.map((info) => {
+          // Reproduce the completed public ABI boundary. The lowering-only counter object is authenticated
+          // separately from `runtimeCounterLoopCounters`; carrying it into the synthetic ABI would make the
+          // pristine clone fail the same unknown-field fence that protects published descriptors.
+          const completed = { ...info } as typeof info & { iterationCounter?: unknown };
+          delete completed.iterationCounter;
+          return completed;
+        }),
+        entryAccesses: func.entryAccesses,
+        entryLoopWrites: func.entryLoopWrites,
+        sortedInsertLoops: func.sortedInsertLoops,
+        sortedInsertLoopInfo: func.sortedInsertLoopInfo,
+        sortedBatchInfo: func.sortedBatchInfo,
+        collectionIterations: func.collectionIterations,
+      } as AbiFunction, this.collectionDefinitions, func.messageBusKernelReadCarrierSourceSelectorHex);
+    }
     if ((func.name === '__message_bus_verify_atomic'
       || func.name === '__message_bus_verify_atomic_program')
       && (this.outlinedComputeBlockBaseFunctionIds.has(func.functionId!)
@@ -4250,6 +4305,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.dynamicReadBases.push(...subTraversal.dynamicReadBases);
 
     if (this.isSubroutineUseProbe) return;
+    if (emitDefinition) this.recordKernelJournalDispositionEmission(func);
 
     // Serialize the function body to bytecode data.
     //
@@ -4599,6 +4655,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (!this.isSubroutineUseProbe) {
       for (let attempt = 0; attempt < 2 && this.dynamicReadBasisUnstable(subTraversal, func); attempt += 1) {
         subTraversal = compileBody();
+      }
+      // Public/external entry points are OP_DEFINE boundaries too. Disposition authorization follows the
+      // stable source selector, independently of whether route synthesis also needed an internal handler clone.
+      // Validate the final post-fixpoint body exactly where it becomes independently invokable.
+      if (!this.hasRecordedKernelJournalDispositionEmission(func)) {
+        this.recordKernelJournalDispositionEmission(func);
       }
     }
     this.currentContractRequiresTraceStableBodies ||= subTraversal.currentContractRequiresTraceStableBodies;
@@ -5248,11 +5310,96 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     return [...collector.names].filter((name) => this.stack.includes(name));
   }
 
+  /** Restore stable transfer ordinals on late graph clones which bypass the ordinary semantic pre-scan. */
+  private bindTransferOnlyRawCallOrdinals(fn: FunctionDefinitionNode): void {
+    let required = false;
+    const inspect = (value: unknown, seen = new WeakSet<object>()): void => {
+      if (!(value instanceof Node) || seen.has(value)) return;
+      seen.add(value);
+      if (value instanceof ExternalFunctionCallNode && value.rawValueTransferOnly
+        && value.valueTransferIndex < 0) required = true;
+      for (const [key, child] of Object.entries(value)) {
+        if (['location', 'type', 'resolvedFunction', 'functionReference', 'definition', 'symbolTable',
+          'referencedContract', 'stateVariable', 'collection'].includes(key)) continue;
+        if (child instanceof Node) inspect(child, seen);
+        else if (Array.isArray(child)) for (const item of child) inspect(item, seen);
+      }
+    };
+    inspect(fn.body);
+    if (!required) return;
+
+    const assign = (value: unknown, start: number, seen = new WeakSet<object>()): number => {
+      if (!(value instanceof Node) || seen.has(value)) return start;
+      seen.add(value);
+      if (value instanceof BranchNode) {
+        const afterCondition = assign(value.condition, start, seen);
+        return Math.max(
+          assign(value.ifBlock, afterCondition, seen),
+          value.elseBlock ? assign(value.elseBlock, afterCondition, seen) : afterCondition,
+        );
+      }
+      if (value instanceof SwitchNode) {
+        const afterExpression = assign(value.expression, start, seen);
+        const ends = value.cases.map((arm) => assign(arm.body, afterExpression, seen));
+        if (value.defaultCase) ends.push(assign(value.defaultCase, afterExpression, seen));
+        return Math.max(afterExpression, ...ends);
+      }
+      if (value instanceof TryCatchNode) {
+        return assign(value.tryBlock, assign(value.expression, start, seen), seen);
+      }
+      if (value instanceof TransferStatementNode || value instanceof AddressTransferStatementNode
+        || value instanceof AddressSendExpressionNode) {
+        value.transferIndex = start;
+        return start + 1;
+      }
+      if (value instanceof LowLevelCallStatementNode && hasEffectiveCallValue(value.callOptions?.value)) {
+        value.valueTransferIndex = start;
+        return start + 1;
+      }
+      if (value instanceof MethodCallStatementNode && hasEffectiveCallValue(value.call.callOptions?.value)) {
+        value.call.valueTransferIndex = start;
+        if (value.expression instanceof ExternalFunctionCallNode) value.expression.valueTransferIndex = start;
+        return start + 1;
+      }
+      if (value instanceof MethodCallNode && hasEffectiveCallValue(value.callOptions?.value)) {
+        value.valueTransferIndex = start;
+        return start + 1;
+      }
+      if (value instanceof ExternalFunctionCallNode && (value.rawValueTransferOnly
+        || hasEffectiveCallValue(value.callOptions?.value))) {
+        value.valueTransferIndex = start;
+        return start + 1;
+      }
+      if (value instanceof InstantiationNode && hasEffectiveCallValue(value.callOptions?.value)) {
+        value.transferIndex = start;
+        return start + 1;
+      }
+      let next = start;
+      for (const [key, child] of Object.entries(value)) {
+        if (['location', 'type', 'resolvedFunction', 'functionReference', 'definition', 'symbolTable',
+          'referencedContract', 'stateVariable', 'collection', 'callOptions'].includes(key)) continue;
+        if (child instanceof Node) next = assign(child, next, seen);
+        else if (Array.isArray(child)) for (const item of child) next = assign(item, next, seen);
+      }
+      return next;
+    };
+    const count = assign(fn.body, 0);
+    fn.transferInfos = Array.from({ length: count }, (_, transferIndex) => ({ transferIndex }));
+  }
+
   visitFunctionDefinition(node: FunctionDefinitionNode): Node {
     this.currentFunction = node;
+    this.bindTransferOnlyRawCallOrdinals(node);
     this.currentFunctionIsMessageBusRoute = node.messageBusRoute === true
       || (node.name.startsWith('__message_bus')
         && node.parameters?.some((parameter) => parameter.name === 'batchBlob') === true);
+    if (this.currentFunctionIsMessageBusRoute
+      && this.exactKernelJournalDispositionRouteManifest() !== undefined) {
+      const box = (this.compilerOptions as CompilerOptions & {
+        __kernelReadCarrierAuthorizationBox?: KernelReadCarrierAuthorizationBox;
+      }).__kernelReadCarrierAuthorizationBox;
+      if (box) box.codegenMatchedKernelJournalDispositionRoute = true;
+    }
     if ((node.dynamicWrites?.length ?? 0) > 0 && (node.entryAccesses?.length ?? 0) > 0) {
       this.currentContractRequiresTraceStableBodies = true;
     }
@@ -6031,8 +6178,21 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         if (!this.preAllocatedEmits.has(emitIndex)) this.preAllocateEmit(emitIndex, loc);
       }
     }
+    const dispositionManifest = this.exactKernelJournalDispositionRouteManifest();
+    const dispositionDigest = node.messageBusKernelJournalDispositionCommitmentDigest;
+    if (!this.isDefineSubTraversal && dispositionManifest && dispositionDigest
+      && dispositionDigest === kernelJournalDispositionManifestDigest({
+        version: 1, handlers: dispositionManifest,
+      })) {
+      const loc = { location: node.body.location, positionHint: PositionHint.START } as SingleLocationData;
+      this.emit(hexToBin(`${KERNEL_JOURNAL_DISPOSITION_COMMITMENT_TAG_HEX}${dispositionDigest}`), loc);
+      this.emit(Op.OP_DROP, loc);
+      const box = (this.compilerOptions as CompilerOptions & {
+        __kernelReadCarrierAuthorizationBox?: KernelReadCarrierAuthorizationBox;
+      }).__kernelReadCarrierAuthorizationBox;
+      if (box) box.codegenMatchedKernelJournalDispositionCommitment = dispositionDigest;
+    }
     node.body = this.visit(node.body) as BlockNode;
-
     // After Instantiation visits, deployTargets carries the true child dataNftCount (including oracle
     // fields packed after semantic Instantiation). Expand deployDataNft layout slots so vmap tails and
     // child genesis data NFTs no longer share the first post-blockSize index.
@@ -6327,7 +6487,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         }
       }
       // Dynamic-storage writes: verify trailing chunk outputs (and consume old chunk inputs).
-      if (!this.functionHasDelegatecall && this.pendingDynamicWrites.size > 0) {
+      // Local dynamic writes on a DELEGATE impl (Marketplace.jobs) must still verify even when the
+      // function also contains nested delegatecalls — otherwise only the SDK layout is constrained.
+      if (this.pendingDynamicWrites.size > 0
+        && (!this.functionHasDelegatecall || this.currentFunctionIsDelegate)) {
         this.emitDynamicWriteVerification(node);
       }
       if (!this.functionHasDelegatecall && (node.sortedBatchInfo?.length ?? 0) > 0) {
@@ -6861,7 +7024,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // AND executed, against the two counted loops' ~22k executed for 26 fixed bytes. The loops are a SIZE
     // optimization; their runtime cost is what dominates a message bus covenant's operation-density budget.
     // Retained below UNROLL_DEEP_REPLACE so reverting the trade is a one-line, byte-exact operation.
-    if (index >= 14 && !UNROLL_DEEP_REPLACE) {
+    // Relaxed-limit authenticated read-carrier compiles exceed BCH-2026 density with the counted loops.
+    // Gate on the binder pass's expected carrier scopes, not the current function: the density-critical
+    // OP_REPLACE sits in OP_DEFINE journal helpers as well as the route. Ordinary journal contracts have
+    // no expected scopes, so they keep the 26-byte loop and stay inside the 10,000-byte P2SH ceiling.
+    const readCarrierBox = (this.compilerOptions as CompilerOptions & {
+      __kernelReadCarrierAuthorizationBox?: KernelReadCarrierAuthorizationBox;
+    }).__kernelReadCarrierAuthorizationBox;
+    const unrollJournalDensity = (this.compilerOptions.maximumInputBytes ?? MAX_INPUT_BYTESIZE) > MAX_INPUT_BYTESIZE
+      && isKernelReadCarrierBindingToken(readCarrierBox?.bindingToken)
+      && (readCarrierBox?.expectedScopes?.length ?? 0) > 0;
+    if (index >= 14 && !UNROLL_DEEP_REPLACE && !unrollJournalDensity) {
       const count = BigInt(index - 1);
       this.emit(encodeInt(count), locationData);
       this.emit(Op.OP_DUP, locationData);
@@ -7606,6 +7779,205 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     return GenerateTargetTraversalWithLocation.KERNEL_JOURNAL_FINAL_OUTPUT_CURSOR_RECONCILIATION_RELEASED;
   }
 
+  /** Exact completed-ABI scope supplied only to the pristine binder/final pass. */
+  private expectedKernelReadCarrierScope(
+    fn: FunctionDefinitionNode = this.currentFunction,
+  ): KernelReadCarrierFamilyScope | undefined {
+    const box = (this.compilerOptions as CompilerOptions & {
+      __kernelReadCarrierAuthorizationBox?: KernelReadCarrierAuthorizationBox;
+    }).__kernelReadCarrierAuthorizationBox;
+    if (!isKernelReadCarrierBindingToken(box?.bindingToken)) return undefined;
+    const expected = box?.expectedScopes;
+    // Only compiler-generated participants consume a handler scope here. Source entry points intentionally stay
+    // on the eager path; the enclosing aggregate route has its own complete-manifest authorization below.
+    const selector = fn.messageBusKernelReadCarrierSourceSelectorHex;
+    if (!expected || !selector) return undefined;
+    const matches = expected.filter((scope) => scope.selectorHex === selector.toLowerCase());
+    if (matches.length !== 1) return undefined;
+    const scope = matches[0];
+    if (!/^[0-9a-f]{64}$/.test(scope.completedDescriptorDigest)
+      || scope.streamDescriptorDigests.length === 0
+      || scope.streamDescriptorDigests.some((digest) => !/^[0-9a-f]{64}$/.test(digest))) return undefined;
+    return scope;
+  }
+
+  private expectedKernelJournalDispositionScope(
+    fn: FunctionDefinitionNode = this.currentFunction,
+  ): KernelJournalDispositionHandlerScope | undefined {
+    const box = (this.compilerOptions as CompilerOptions & {
+      __kernelReadCarrierAuthorizationBox?: KernelReadCarrierAuthorizationBox;
+    }).__kernelReadCarrierAuthorizationBox;
+    if (!isKernelReadCarrierBindingToken(box?.bindingToken)) return undefined;
+    const selector = fn.messageBusKernelJournalDispositionSelectorHex?.toLowerCase();
+    const expected = box?.expectedKernelJournalDispositions;
+    if (!selector || !expected) return undefined;
+    const matches = expected.filter((scope) => scope.selectorHex === selector);
+    return matches.length === 1 ? matches[0] : undefined;
+  }
+
+  private exactKernelJournalDispositionRouteManifest():
+  readonly KernelJournalDispositionHandlerScope[] | undefined {
+    if (!this.isCompilerMessageBusRoute()) return undefined;
+    const box = (this.compilerOptions as CompilerOptions & {
+      __kernelReadCarrierAuthorizationBox?: KernelReadCarrierAuthorizationBox;
+    }).__kernelReadCarrierAuthorizationBox;
+    if (!isKernelReadCarrierBindingToken(box?.bindingToken)) return undefined;
+    const expected = box?.expectedKernelJournalDispositions;
+    const route = this.currentFunction.messageBusKernelJournalDispositions;
+    return expected && route && expected.length > 0 && sameKernelJournalDispositions(expected, route)
+      ? expected : undefined;
+  }
+
+  private completedKernelJournalAbi(fn: FunctionDefinitionNode): AbiFunction {
+    return {
+      name: fn.name,
+      selector: fn.messageBusKernelJournalDispositionSelectorHex,
+      inputs: fn.parameters.map((parameter) => ({
+        name: parameter.name, type: abiTypeString(parameter.type),
+      })),
+      outputs: fn.returnTypes.map((type) => ({ type: abiTypeString(type) })),
+      sortedUpsertLoopInfo: fn.sortedUpsertLoopInfo,
+    } as unknown as AbiFunction;
+  }
+
+  private recordKernelJournalDispositionEmission(fn: FunctionDefinitionNode): void {
+    const expected = this.expectedKernelJournalDispositionScope(fn);
+    if (!expected || expected.mode === 'neutral') return;
+    const box = (this.compilerOptions as CompilerOptions & {
+      __kernelReadCarrierAuthorizationBox?: KernelReadCarrierAuthorizationBox;
+    }).__kernelReadCarrierAuthorizationBox;
+    // A directly dispatched wrapper can own an eager stream through its exact internal-call closure while the
+    // concrete descriptor remains on the invoked leaf. The final compiler pass independently reproduces the
+    // wrapper's completed closure ABI; here, bind that result to the wrapper's actual OP_DEFINE boundary. An
+    // empty generated leaf with no invocation cannot claim the same exception.
+    if (expected.mode === 'eager-journal' && (fn.sortedUpsertLoopInfo?.length ?? 0) === 0
+      && fn.body && this.collectInvokedFunctionIds(fn.body).size > 0) {
+      box?.codegenMatchedKernelJournalDispositions?.push(kernelJournalDispositionScopeKey(expected));
+      return;
+    }
+    if (expected.mode === 'eager-journal') {
+      const infos = fn.sortedUpsertLoopInfo ?? [];
+      const exactPhysicalOwnership = infos.length === expected.streams.length
+        && infos.every((info, stream) => info.journalAccessStreamIndex === stream
+          && expected.streams[stream]?.journalAccessStreamIndex === stream
+          && expected.streams[stream]?.disposition === 'eager-journal'
+          && info.settlementIdentity?.accessStreamIndex === stream
+          && info.settlementIdentity.recordDispositionSource === (info.op === 'read'
+            ? 'authenticated-carrier' : 'mutation-settlement'));
+      if (exactPhysicalOwnership) {
+        // The completed final ABI and aggregate route have already reproduced the exact descriptor digest.
+        // This check binds that digest to the clone's concrete stream/settlement ownership without attempting
+        // to compare serialized ABI expressions with their equivalent pre-serialization AST representation.
+        box?.codegenMatchedKernelJournalDispositions?.push(kernelJournalDispositionScopeKey(expected));
+      }
+      return;
+    }
+    const carrier = expected.mode === 'carrier' && this.hasExactKernelReadCarrierAuthorization(fn)
+      ? this.expectedKernelReadCarrierScope(fn) : undefined;
+    const reproduced = deriveKernelJournalDispositionHandlerScope(this.completedKernelJournalAbi(fn), carrier);
+    if (!reproduced || !sameKernelJournalDispositions([expected], [reproduced])) return;
+    box?.codegenMatchedKernelJournalDispositions?.push(kernelJournalDispositionScopeKey(reproduced));
+  }
+
+  /** A generated route clone is emitted before independently callable entry-point bodies. */
+  private hasRecordedKernelJournalDispositionEmission(fn: FunctionDefinitionNode): boolean {
+    const expected = this.expectedKernelJournalDispositionScope(fn);
+    if (!expected || expected.mode === 'neutral') return false;
+    const box = (this.compilerOptions as CompilerOptions & {
+      __kernelReadCarrierAuthorizationBox?: KernelReadCarrierAuthorizationBox;
+    }).__kernelReadCarrierAuthorizationBox;
+    return box?.codegenMatchedKernelJournalDispositions
+      ?.includes(kernelJournalDispositionScopeKey(expected)) === true;
+  }
+
+  /** Require one completed-descriptor authorization for the complete function-local carrier family. */
+  private hasExactKernelReadCarrierAuthorization(
+    fn: FunctionDefinitionNode = this.currentFunction,
+  ): boolean {
+    // Captured-helper profitability probes intentionally have no current source function. Carrier authority is
+    // meaningful only in a compiler-owned handler frame, so such probes are ordinary non-carrier emission rather
+    // than an internal error while inspecting a helper that happens to share journal machinery.
+    if (!fn) return false;
+    const discovery = fn.messageBusKernelReadCarrierDiscovery;
+    const authorization = fn.messageBusKernelReadCarrierAuthorization;
+    const expected = this.expectedKernelReadCarrierScope(fn);
+    const selector = fn.messageBusKernelReadCarrierSourceSelectorHex;
+    // The physical participant clone is re-authorized from its completed dry-run descriptors immediately before
+    // OP_DEFINE emission. Source authorization alone is never evidence for a lowered clone.
+    if (!discovery || !expected || !selector
+      || expected.selectorHex !== selector.toLowerCase()
+      || expected.streamDescriptorDigests.length !== discovery.destinationCollectionOrdinals.length + 1
+      || authorization === undefined
+      || authorization.discoveryDigest !== discovery.digest
+        || authorization.selectorHex !== expected.selectorHex
+        || authorization.completedDescriptorDigest !== expected.completedDescriptorDigest
+        || authorization.streamDescriptorDigests.length !== expected.streamDescriptorDigests.length
+        || authorization.streamDescriptorDigests.some((digest, index) =>
+          digest !== expected.streamDescriptorDigests[index])
+      || discovery.destinationCollectionOrdinals.length === 0) return false;
+
+    const infos = fn.sortedUpsertLoopInfo ?? [];
+    if (infos.length !== discovery.destinationCollectionOrdinals.length + 1) return false;
+    const byStream = new Map<number, (typeof infos)[number]>();
+    for (const info of infos) {
+      const stream = info.journalAccessStreamIndex;
+      if (!Number.isSafeInteger(stream) || stream < 0 || stream >= infos.length || byStream.has(stream)) {
+        return false;
+      }
+      byStream.set(stream, info);
+    }
+    if (byStream.get(0)?.op !== 'read') return false;
+    for (let stream = 1; stream < infos.length; stream += 1) {
+      if (byStream.get(stream)?.op !== 'set') return false;
+    }
+    return true;
+  }
+
+  /** The aggregate route must own exactly the same immutable family manifest as its generated handlers. */
+  private exactKernelReadCarrierRouteScopes(): readonly KernelReadCarrierFamilyScope[] | undefined {
+    if (!this.isCompilerMessageBusRoute()) return undefined;
+    const box = (this.compilerOptions as CompilerOptions & {
+      __kernelReadCarrierAuthorizationBox?: KernelReadCarrierAuthorizationBox;
+    }).__kernelReadCarrierAuthorizationBox;
+    if (!isKernelReadCarrierBindingToken(box?.bindingToken)) return undefined;
+    const expected = box?.expectedScopes;
+    const route = this.currentFunction.messageBusKernelReadCarrierRouteScopes;
+    if (!expected || expected.length === 0 || !route || route.length !== expected.length) return undefined;
+    const exact = expected.every((scope, index) => {
+      const candidate = route[index];
+      return candidate?.selectorHex === scope.selectorHex
+        && candidate.completedDescriptorDigest === scope.completedDescriptorDigest
+        && candidate.streamDescriptorDigests.length === scope.streamDescriptorDigests.length
+        && candidate.streamDescriptorDigests.every((digest, stream) =>
+          digest === scope.streamDescriptorDigests[stream]);
+    });
+    return exact ? expected : undefined;
+  }
+
+  private recordKernelReadCarrierStreamEmission(): void {
+    const scope = this.expectedKernelReadCarrierScope();
+    const stream = this.sortedUpsertLoopJournalAccessStreamIndex;
+    const digest = stream === undefined ? undefined : scope?.streamDescriptorDigests[stream];
+    if (!scope || stream === undefined || digest === undefined) return;
+    const box = (this.compilerOptions as CompilerOptions & {
+      __kernelReadCarrierAuthorizationBox?: KernelReadCarrierAuthorizationBox;
+    }).__kernelReadCarrierAuthorizationBox;
+    box?.codegenMatchedStreams?.add(
+      `${scope.selectorHex}:${scope.completedDescriptorDigest}:${stream}:${digest}`,
+    );
+  }
+
+  private recordKernelReadCarrierRouteEmission(scopes: readonly KernelReadCarrierFamilyScope[]): void {
+    const box = (this.compilerOptions as CompilerOptions & {
+      __kernelReadCarrierAuthorizationBox?: KernelReadCarrierAuthorizationBox;
+    }).__kernelReadCarrierAuthorizationBox;
+    for (const scope of scopes) {
+      box?.codegenMatchedRouteScopes?.add(
+        `${scope.selectorHex}:${scope.completedDescriptorDigest}:${scope.streamDescriptorDigests.join(',')}`,
+      );
+    }
+  }
+
   /**
    * Whether this physical frame defers journal entry outputs to the route-final dense flush.
    *
@@ -7613,14 +7985,34 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * cardinality proves the exact physical entry count, while trailing effects use it as their output base.
    * A final journal flush still needs the former on every outlined row, but owns the latter exactly once at the
    * enclosing route. Do not infer this mode merely from a journal argument: direct/legacy entry points can
-   * carry ordinary journal context too. A future release has to publish the capability and run behind the
+   * carry ordinary journal context too. Activation requires the published capability and remains behind the
    * compiler-owned route/participant ABI.
    */
-  private kernelJournalFinalOutputCursorReconciliationActive(): boolean {
-    return this.kernelJournalFinalOutputCursorReconciliationReleased()
+  private kernelJournalFinalSettlementFrameActive(): boolean {
+    const exactAuthorization = this.isCompilerMessageBusRoute()
+      ? this.exactKernelReadCarrierRouteScopes() !== undefined
+      : this.hasExactKernelReadCarrierAuthorization();
+    const active = this.kernelJournalFinalOutputCursorReconciliationReleased()
+      && exactAuthorization
       && this.hasKernelJournalRecordCarrier()
       && this.getStackIndex(GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_OUTPUT_COUNT, true) >= 0
       && (this.isCompilerMessageBusRoute() || this.hasMessageBusParticipantOwner());
+    if (active
+      && this.getStackIndex(GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_INPUT_COUNT, true) < 0) {
+      throw new Error('Kernel final journal settlement requires a route-global physical input cursor');
+    }
+    return active;
+  }
+
+  private kernelJournalFinalOutputCursorReconciliationActive(): boolean {
+    if (!this.kernelJournalFinalSettlementFrameActive()
+      || this.getStackIndex(this.sortedUpsertLoopJournalCursorName, true) < 0) return false;
+    const stream = this.sortedUpsertLoopJournalAccessStreamIndex;
+    const info = this.currentFunction.sortedUpsertLoopInfo
+      ?.filter((candidate) => candidate.journalAccessStreamIndex === stream);
+    const expected = this.expectedKernelReadCarrierScope();
+    return stream !== undefined && info?.length === 1 && info[0].op === this.sortedUpsertLoopOp
+      && expected?.streamDescriptorDigests[stream] !== undefined;
   }
 
   private functionNeedsRuntimeLoopEventContext(node: FunctionDefinitionNode): boolean {
@@ -14084,6 +14476,40 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     return visitedValue;
   }
 
+  /** Queue a call-option transfer whose receiver is a computed expression rather than a named ABI value. */
+  private emitValueTransferToExpression(
+    valueTransferIndex: number,
+    valueExpr: ExpressionNode,
+    addressExpr: ExpressionNode,
+    locationData: SingleLocationData,
+    node: Node,
+  ): ExpressionNode {
+    this.visit(addressExpr);
+
+    if (this.preAllocatedTransfers.has(valueTransferIndex)) {
+      const lbName = `__internal__transfer_lb_${valueTransferIndex}`;
+      const amtName = `__internal__transfer_amt_${valueTransferIndex}`;
+      this.emitReplace(this.getStackIndex(lbName), node);
+      this.popFromStack();
+      const visitedValue = this.visit(valueExpr);
+      this.emitReplace(this.getStackIndex(amtName), node);
+      this.popFromStack();
+      return visitedValue;
+    }
+
+    const lbName = `__internal__transfer_lb_${valueTransferIndex}`;
+    const amtName = `__internal__transfer_amt_${valueTransferIndex}`;
+    this.stack[0] = lbName;
+    const visitedValue = this.visit(valueExpr);
+    this.stack[0] = amtName;
+    this.pendingTransfers.push({
+      transferIndex: valueTransferIndex,
+      lockingBytecodeStackName: lbName,
+      amountStackName: amtName,
+    });
+    return visitedValue;
+  }
+
   visitTokenContainerMethodStatement(node: TokenContainerMethodStatementNode): Node {
     this.emitGraphStaticDirty(node);
     if (node.runtimeLoopTransfer) {
@@ -17564,6 +17990,26 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     const locationData = { location: node.location, positionHint: PositionHint.START };
 
+    if (node.rawValueTransferOnly) {
+      const value = node.callOptions?.value;
+      const address = this.getAddressParamFromTarget(node.addressExpression);
+      if (!value || node.valueTransferIndex < 0) {
+        throw new Error('Transfer-only raw call lacks its compiler-indexed value');
+      }
+      node.callOptions!.value = address
+        ? this.emitValueTransfer(node.valueTransferIndex, value, address, locationData, node)
+        : this.emitValueTransferToExpression(
+          node.valueTransferIndex, value, node.addressExpression, locationData, node,
+        );
+      // The required transfer output is the operation: if it is absent the covenant aborts, so a reached
+      // expression has Solidity's successful empty-fallback result without an invented producer-result row.
+      this.emit(Op.OP_1, locationData);
+      this.emit(encodeInt(0n), locationData);
+      this.pushToStack('(success)');
+      this.pushToStack('(returnData)');
+      return node;
+    }
+
     const physicalSlot = node.callInfo
       ? this.externalCallSlots[node.callInfo.externalCallSlotIndex] : undefined;
     if (this.currentFunction.graphRuntimeEmissionHandler) {
@@ -17712,9 +18158,20 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
       // Read the return event UTXO commitment at per-slot _externalReturnOutputIdx
       const returningSlotCount = this.externalCallSlots.filter((s) => s.hasReturnValues).length;
+      // The physical slot is the final authenticated layout authority. A source call may be cloned after the
+      // semantic index-assignment walk (for example when an internal helper is materialized into a graph
+      // handler), so its local callInfo can legitimately lack this derived physical ordinal. Never infer an
+      // ordinal from visit order: project the exact slot selected by its stable externalCallSlotIndex instead.
+      const returnSlotIndex = physicalSlot.returnSlotIndex;
+      if (returningSlotCount > 1 && returnSlotIndex === undefined) {
+        throw new UnboundReturnCallError(
+          node, this.currentFunction.name, `${node.interfaceName}.${node.functionName}()`,
+          node.callInfo.externalCallSlotIndex, this.externalCallSlots.length,
+        );
+      }
       const returnParamName = returningSlotCount === 1
         ? '__internal__externalReturnOutputIdx'
-        : `__internal__externalReturnOutputIdx${node.callInfo.returnSlotIndex}`;
+        : `__internal__externalReturnOutputIdx${returnSlotIndex}`;
       const returnOutputIdxIdx = this.getStackIndex(returnParamName);
       this.emit(encodeInt(BigInt(returnOutputIdxIdx)), locationData);
       this.emit(Op.OP_PICK, locationData);
@@ -20020,9 +20477,20 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.updateSortedUpsertLoopContext(upsertContext);
         return emitted;
       }
-      // Constructed-key loops (`m[xs[i]]`) and loop-local identifier keys (`m[i]` with continue/break)
-      // have no kernel representation. Fail-close the write so sibling handlers still compile;
-      // admission names KERNEL_UNBOUNDED_KEY.
+      // Constructed-key and other unmatched sorted mutation loops have no sound representation. A direct source
+      // contract has no handler-admission boundary, so expose a source-positioned compile error instead of publishing
+      // a function which can only fail. A compiler-generated message-bus contract does have that boundary: retain an
+      // explicit dead arm there so the enclosing admission pass can refuse only the implicated handler and preserve
+      // its siblings. `currentContractHasMessageBus` distinguishes that generated context from detached/speculative
+      // passes whose options deliberately set `messageBus: false`.
+      const sourceDirectCodegen = (this.compilerOptions as CompilerOptions & {
+        __messageBusExplicitlyDisabled?: boolean;
+      }).__messageBusExplicitlyDisabled === true;
+      if (sourceDirectCodegen) {
+        throw new SortedMappingCodegenPendingError(node, node.collection.name,
+          `The verified-mapping write on '${node.collection.name}' in runtime loop `
+          + `'${this.currentFunction.name}' does not match a supported insert or update loop shape.`);
+      }
       const loc = { location: node.location, positionHint: PositionHint.END };
       this.emit(Op.OP_0, loc);
       this.emit(Op.OP_VERIFY, loc);
@@ -23666,7 +24134,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Materialize this operation stream's tuple payload as an independent cursor. Entry-input and output counters
     // are physical resource counters: deferred updates intentionally make them diverge from source operation order.
     // A cursor is therefore the only sound identity for consuming one journal access per executed mapping operation.
-    if ((this.isCompilerMessageBusRoute() || this.currentFunction.name.startsWith('__message_bus_'))
+    if ((this.isCompilerMessageBusRoute() || this.hasMessageBusParticipantOwner())
       && this.sortedUpsertLoopJournalAccessStreamIndex !== undefined
       && this.getStackIndex(KERNEL_JOURNAL_ACCESS_STREAMS, true) >= 0) {
       const vectorValue = new IdentifierNode(KERNEL_JOURNAL_ACCESS_STREAMS);
@@ -24226,7 +24694,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emitPushdataSkip(PrimitiveType.BIGINT, loc);
     this.emit(Op.OP_SWAP, loc);
     this.emitKernelJournalRecordExtract(loc);
-    this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_DROP, loc);
+    this.emit(Op.OP_NIP, loc);
   }
 
   /** [global ordinal, raw replacement] -> [], updating exactly one fixed compiler-owned segment slot. */
@@ -24444,7 +24912,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_IF, loc);
     this.emit(Op.OP_DROP, loc); this.emit(Op.OP_0, loc); this.emit(new Uint8Array([0x05, 0x03]), loc);
     this.emit(Op.OP_ELSE, loc);
-    if (this.kernelJournalFinalOutputCursorReconciliationReleased()) {
+    if (this.kernelJournalFinalOutputCursorReconciliationActive()) {
       this.emit(Op.OP_DUP, loc); this.emit(new Uint8Array([0x05, 0x11]), loc); this.emit(Op.OP_EQUAL, loc);
       this.emit(Op.OP_IF, loc);
       // `0x11` can only arise after this route authenticated `0x01`; retain that provenance while changing the
@@ -24454,7 +24922,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
     this.emit(new Uint8Array([0x05, 0x0a]), loc); this.emit(Op.OP_EQUALVERIFY, loc);
     this.emit(Op.OP_0, loc); this.emit(new Uint8Array([0x05, 0x0a]), loc);
-    if (this.kernelJournalFinalOutputCursorReconciliationReleased()) this.emit(Op.OP_ENDIF, loc);
+    if (this.kernelJournalFinalOutputCursorReconciliationActive()) this.emit(Op.OP_ENDIF, loc);
     this.emit(Op.OP_ENDIF, loc);
     this.emit(Op.OP_ENDIF, loc); // body, first
     this.emit(Op.OP_TOALTSTACK, loc); // replacement header
@@ -24481,13 +24949,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Authenticate exactly one physical entry input and reserve its one route-final output.
     const blockSize = this.currentFunction.blockLayout?.blockSize ?? 1;
     this.emitTrailingWriteInputBase(blockSize, loc, undefined, 3);
-    if (this.sortedUpsertGrouped) {
+    if (this.sortedUpsertGrouped && !this.kernelJournalFinalOutputCursorReconciliationActive()) {
       this.emit(encodeInt(BigInt(this.getStackIndex(this.sortedUpsertInputBaseName) + 4)), loc);
       this.emit(Op.OP_PICK, loc);
       this.emit(Op.OP_ADD, loc);
     }
-    this.emit(encodeInt(BigInt(this.getStackIndex(inCountName) + 4)), loc); this.emit(Op.OP_PICK, loc);
-    this.emit(Op.OP_ADD, loc); // slot,next,value,input index
+    if (!this.kernelJournalFinalOutputCursorReconciliationActive()) {
+      this.emit(encodeInt(BigInt(this.getStackIndex(inCountName) + 4)), loc); this.emit(Op.OP_PICK, loc);
+      this.emit(Op.OP_ADD, loc);
+    } // slot,next,value,input index
     this.emit(Op.OP_DUP, loc); this.emit(Op.OP_UTXOBYTECODE, loc);
     this.emit(encodeInt(BigInt(this.getStackIndex(this.sortedUpsertLoopAddrName) + 5)), loc);
     this.emit(Op.OP_PICK, loc); this.emit(Op.OP_EQUALVERIFY, loc);
@@ -24502,6 +24972,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     for (const counterName of [inCountName, outCountName]) {
       this.emit(encodeInt(BigInt(this.getStackIndex(counterName) + 3)), loc); this.emit(Op.OP_PICK, loc);
       this.emit(Op.OP_1ADD, loc); this.emitReplace(this.getStackIndex(counterName) + 4, node);
+    }
+    if (this.kernelJournalFinalOutputCursorReconciliationActive()) {
+      this.emitAdvanceRuntimeLoopEntryInputCursor(loc, 3);
     }
     this.scopeDepth -= 1;
     this.emit(Op.OP_ELSE, loc);
@@ -24639,7 +25112,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_DROP, loc); this.popFromStack();
   }
 
-  private emitKernelJournalRecordIdentitySelect(loc: SingleLocationData): void {
+  private emitKernelJournalRecordIdentitySelect(
+    loc: SingleLocationData,
+    allowAuthenticatedReadCarrier: boolean,
+  ): void {
     this.emitKernelJournalRecordExtract(loc);
     // A selected carrier is either authenticated pre-state (0x01), an internally-produced authenticated dirty
     // value (0x03), a live synthetic node created by an earlier row (0x0a), an internally-produced authenticated
@@ -24657,7 +25133,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_BOOLOR, loc);
     this.emit(Op.OP_OVER, loc); this.emit(encodeInt(10n), loc); this.emit(Op.OP_NUMEQUAL, loc);
     this.emit(Op.OP_BOOLOR, loc);
-    if (this.kernelJournalFinalOutputCursorReconciliationReleased()) {
+    if (allowAuthenticatedReadCarrier) {
       this.emit(Op.OP_OVER, loc); this.emit(encodeInt(17n), loc); this.emit(Op.OP_NUMEQUAL, loc);
       this.emit(Op.OP_BOOLOR, loc);
     }
@@ -24682,7 +25158,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(encodeInt(2n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_NIP, loc);
   }
 
-  private emitKernelJournalTargetSlotHelperInline(loc: SingleLocationData): void {
+  private emitKernelJournalTargetSlotHelperInline(
+    loc: SingleLocationData,
+    allowAuthenticatedReadCarrier: boolean,
+  ): void {
     this.emit(Op.OP_TOALTSTACK, loc); // loaded record count
     this.emit(Op.OP_TOALTSTACK, loc); // expected access flags
     this.emit(Op.OP_TOALTSTACK, loc); // physical commitment
@@ -24724,7 +25203,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_DUP, loc);
     this.emit(Op.OP_0, loc);
     // The variable-element scan fails closed if the untrusted record ordinal is out of range.
-    this.emitKernelJournalRecordIdentitySelect(loc);
+    this.emitKernelJournalRecordIdentitySelect(loc, allowAuthenticatedReadCarrier);
     this.emit(Op.OP_ROT, loc); // target carrier, identity, encoded records
     this.emit(Op.OP_FROMALTSTACK, loc); // target carrier, identity, encoded records, target slot
     this.emit(Op.OP_FROMALTSTACK, loc); // target carrier, identity, encoded records, target slot, header
@@ -24751,7 +25230,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_0NOTEQUAL, loc);
     this.emit(Op.OP_IF, loc);
     this.emit(Op.OP_1, loc);
-    this.emitKernelJournalRecordIdentitySelect(loc);
+    this.emitKernelJournalRecordIdentitySelect(loc, allowAuthenticatedReadCarrier);
     this.emit(Op.OP_FROMALTSTACK, loc); // predecessor carrier, identity, header
     this.emit(Op.OP_DUP, loc);
     this.emit(Op.OP_1, loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_NIP, loc);
@@ -24810,7 +25289,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   private emitKernelJournalTargetSlotHelper(loc: SingleLocationData): void {
-    const id = GenerateTargetTraversalWithLocation.KERNEL_JOURNAL_TARGET_SLOT_SUBROUTINE_ID;
+    // Captured helper bodies are compiled on an empty traversal, so route authority cannot be rediscovered from
+    // their local stack/function state. Select a distinct bytecode identity at the authenticated call site and
+    // bake that decision into the helper body; a public artifact field cannot turn a standard invocation into
+    // the carrier-capable variant.
+    const allowAuthenticatedReadCarrier = this.kernelJournalFinalSettlementFrameActive();
+    const id = allowAuthenticatedReadCarrier
+      ? GenerateTargetTraversalWithLocation.KERNEL_JOURNAL_CARRIER_TARGET_SLOT_SUBROUTINE_ID
+      : GenerateTargetTraversalWithLocation.KERNEL_JOURNAL_TARGET_SLOT_SUBROUTINE_ID;
     this.bumpSubroutineUse(id);
     if (this.subroutineDefined.get(id)) {
       this.emit(encodeInt(id), loc);
@@ -24818,7 +25304,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       return;
     }
     if (this.isSubroutineUseProbe && this.compilerOptions.optimizeForCompilationSpeed === true) return;
-    this.emitKernelJournalTargetSlotHelperInline(loc);
+    this.emitKernelJournalTargetSlotHelperInline(loc, allowAuthenticatedReadCarrier);
   }
 
   /**
@@ -24826,6 +25312,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * keeps this loop constant-size; only mutation replacement dispatches across fixed compiler-owned slots.
    */
   private emitKernelJournalFinalScalarFlush(node: FunctionDefinitionNode, loc: SingleLocationData): void {
+    const authorizedRouteScopes = this.exactKernelReadCarrierRouteScopes();
+    if (authorizedRouteScopes && this.kernelJournalFinalSettlementFrameActive()) {
+      this.recordKernelReadCarrierRouteEmission(authorizedRouteScopes);
+    }
     // The synthesized route has no loop-info of its own. Its entry-slot manifest is the stable compiler-owned
     // union of handler accesses, so derive the address allow-list from runtime-loop collection signatures there.
     const collectionHashes = [...new Set(this.entrySlots
@@ -24867,7 +25357,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_BOOLOR, loc);
     this.emit(Op.OP_OVER, loc); this.emit(new Uint8Array([0x05, 0x0a]), loc); this.emit(Op.OP_EQUAL, loc);
     this.emit(Op.OP_BOOLOR, loc);
-    if (this.kernelJournalFinalOutputCursorReconciliationReleased()) {
+    if (this.kernelJournalFinalSettlementFrameActive()) {
       this.emit(Op.OP_OVER, loc); this.emit(new Uint8Array([0x05, 0x11]), loc); this.emit(Op.OP_EQUAL, loc);
       this.emit(Op.OP_BOOLOR, loc);
     }
@@ -24965,9 +25455,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_DROP, loc); // aggregate'
     }
     this.emit(Op.OP_FROMALTSTACK, loc); // aggregate, finalOutputCursorDelta
-    if (!this.kernelJournalFinalOutputCursorReconciliationReleased()) {
-      // The dormant physical-settlement planner deliberately has no effect on existing route accounting.  Until
-      // its matching SDK capability is published, preserve the historical stack and bytecode exactly.
+    if (!this.kernelJournalFinalSettlementFrameActive()) {
+      // Unauthenticated frames have no physical-settlement authority; preserve their historical stack and
+      // bytecode exactly.
       this.emit(Op.OP_NUMEQUALVERIFY, loc);
       return;
     }
@@ -25015,11 +25505,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_DUP, loc);
     this.emit(Op.OP_TOALTSTACK, loc);
     this.emitKernelJournalRecordExtractGlobal(loc); // selected ordinal, raw record
-    this.emit(Op.OP_DUP, loc); this.emit(encodeInt(2n), loc); this.emit(Op.OP_SPLIT, loc);
-    this.emit(Op.OP_1, loc); this.emit(Op.OP_PICK, loc);
-    this.emit(new Uint8Array([0x05, 0x01]), loc); this.emit(Op.OP_EQUALVERIFY, loc);
-    this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_DROP, loc); // selected ordinal, raw record, body
-    this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_DROP, loc); // selected ordinal, body
+    this.emit(encodeInt(2n), loc); this.emit(Op.OP_SPLIT, loc);
+    this.emit(Op.OP_SWAP, loc);
+    this.emit(new Uint8Array([0x05, 0x01]), loc); this.emit(Op.OP_EQUALVERIFY, loc); // body
     this.emit(new Uint8Array([0x05, 0x11]), loc); this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_CAT, loc);
     this.emit(Op.OP_FROMALTSTACK, loc); this.emit(Op.OP_SWAP, loc);
     this.emitKernelJournalRecordReplaceGlobal(node, loc);
@@ -25084,7 +25572,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // the selected journal bank record, and its balanced altstack scratch leaves the caller's parked predecessor
     // intact. The target-slot helper below therefore observes the authoritative post-transition carrier without
     // a stale-depth cursor reparse after helper arguments have been introduced.
-    if (this.kernelJournalFinalOutputCursorReconciliationReleased()) {
+    if (this.kernelJournalFinalOutputCursorReconciliationActive()) {
       this.emitKernelJournalReadCarrierTransitionCheck(node, loc);
     }
 
@@ -25182,14 +25670,21 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emitTrailingWriteInputBase(blockSize, loc, undefined, u);
       }
       if (add !== 0) { this.emit(encodeInt(BigInt(add)), loc); this.emit(Op.OP_ADD, loc); }
-      if (this.sortedUpsertGrouped) {
+      // Final settlement follows the compiler-owned transaction schedule, which can interleave collections and
+      // streams. Its trailing-input helper already added the route-global cursor; per-stream bases/counters would
+      // select a different physical order. They remain active only as separately checked logical cardinalities.
+      const routeGlobalPhysicalInput = counterName === this.sortedUpsertLoopCounterName
+        && this.kernelJournalFinalOutputCursorReconciliationActive();
+      if (this.sortedUpsertGrouped && !routeGlobalPhysicalInput) {
         const baseName = counterName === this.sortedUpsertLoopOutCounterName
           ? this.sortedUpsertOutputBaseName : this.sortedUpsertInputBaseName;
         this.emit(encodeInt(BigInt(this.getStackIndex(baseName) + u + 1)), loc); this.emit(Op.OP_PICK, loc);
         this.emit(Op.OP_ADD, loc);
       }
-      this.emit(encodeInt(BigInt(this.getStackIndex(counterName) + u + 1)), loc); this.emit(Op.OP_PICK, loc);
-      this.emit(Op.OP_ADD, loc);
+      if (!routeGlobalPhysicalInput) {
+        this.emit(encodeInt(BigInt(this.getStackIndex(counterName) + u + 1)), loc); this.emit(Op.OP_PICK, loc);
+        this.emit(Op.OP_ADD, loc);
+      }
     };
 
     // 1. Hk = keyToSlot(k[i]) + 2. amount = v[i] - both tracked temps. The per-key value is the BinaryOp RHS (RMW)
@@ -25235,6 +25730,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
     this.emit(Op.OP_0, loc); this.pushToStack(physicalCommitment);
     const settleScalar = this.kernelJournalCanSettleScalar(node, isRawbytes, isChunkableVal);
+    const settleReadCarrier = op === 'read' && this.kernelJournalFinalOutputCursorReconciliationActive();
+    const deferJournalOutput = this.kernelJournalFinalOutputCursorReconciliationActive()
+      && (settleScalar || op === 'read');
+    if (deferJournalOutput) this.recordKernelReadCarrierStreamEmission();
     const useLegacyPending = this.sortedUpsertPendActive && !settleScalar;
     // tracked: [credit_amt(0), credit_hk(1), outCounter(2), iterCounter(3), addr(4), ..]
 
@@ -25318,6 +25817,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(encodeInt(1n), loc); this.emit(Op.OP_PICK, loc);            // coNext copy (U=4)
         this.emitReplace(this.getStackIndex(this.sortedUpsertPendNextName) + 4, node); // pu_next = coNext -> U=3
         this.emit(Op.OP_0, loc);                                             // delta = 0 (U=4)
+      } else if (deferJournalOutput) {
+        // Unified settlement reproduces this journal carrier once in the route-final dense flush.
+        // Reserve that output in the row cardinality without binding it to this collection-local output base.
+        this.emit(Op.OP_1, loc);                                             // delta = 1 (U=4)
       } else {
         // ---- UPDATE (debit/delete loops): mint output[..+outCounter] = coSlot|coNext|newValue immediately ----
         pushIdx(this.sortedUpsertLoopOutCounterName, 0, 3);                  // outIdx (U=4)
@@ -25358,8 +25861,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (op === 'read') {
         // The co-spent node is only an absence proof. Preserve its slot, successor, and value exactly, producing
         // one output and no mapping entry for Hk. This makes an absent mapping read observationally pure.
-        pushIdx(this.sortedUpsertLoopOutCounterName, 0, 3);
-        this.emitVerifySortedValueOutput(loc, addrIdx() + 4, 3, 2, 1, 4);
+        if (!settleReadCarrier) {
+          pushIdx(this.sortedUpsertLoopOutCounterName, 0, 3);
+          this.emitVerifySortedValueOutput(loc, addrIdx() + 4, 3, 2, 1, 4);
+        }
         this.emit(Op.OP_1, loc);
       } else if (!settleScalar) {
         pushIdx(this.sortedUpsertLoopOutCounterName, 0, 3);                  // P' outIdx (U=4)
@@ -25403,6 +25908,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // iterCounter += 1 (one trailing co-spend this iteration).
       this.emit(encodeInt(BigInt(iterIdx() + 3)), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_1ADD, loc);
       this.emitReplace(iterIdx() + 4, node);                                 // -> [.., coSlot, coNext, X] U=3
+      if (this.kernelJournalFinalOutputCursorReconciliationActive()) {
+        // The physical scheduler is transaction-wide, so advance its cursor at the exact authentication site.
+        // The local counter remains a logical per-stream cardinality proof only.
+        this.emitAdvanceRuntimeLoopEntryInputCursor(loc, 3);
+      }
     };
 
     // MSG.SENDER MERGE (or normal step): if the debit entry coexists (sortedUpsertMergeDebitSlot >= 0) and this NEW
@@ -25547,6 +26057,59 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       emitReadProofOrNormalDispatch();                                        // -> [x,x,x] U=3
       this.scopeDepth -= 1;
       this.emit(Op.OP_ENDIF, loc);                                            // [x,x,x] U=3
+    } else if (settleReadCarrier) {
+      // Authentication bits select the one physical-owner branch. A later clean consumer carries neither bit:
+      // it rehydrates the exact route-internal 0x11 body and advances no physical input/output counter.
+      this.emit(encodeInt(BigInt(this.getStackIndex(this.sortedUpsertLoopJournalCursorName))), loc);
+      this.emit(Op.OP_PICK, loc);
+      this.emit(encodeInt(21n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_NIP, loc);
+      this.emit(Op.OP_1, loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_DROP, loc);
+      this.emitKernelJournalCompactFlagMask(48, loc);
+      this.emit(Op.OP_IF, loc);
+      this.scopeDepth += 1;
+      emitReadProofOrNormalDispatch();
+      this.scopeDepth -= 1;
+      this.emit(Op.OP_ELSE, loc);
+      this.scopeDepth += 1;
+      this.emitKernelJournalSelectedReadOrdinal(loc);
+      this.emitKernelJournalRecordExtractGlobal(loc);
+      this.emit(encodeInt(2n), loc); this.emit(Op.OP_SPLIT, loc);
+      this.emit(Op.OP_SWAP, loc); this.emit(new Uint8Array([0x05, 0x11]), loc);
+      this.emit(Op.OP_EQUALVERIFY, loc);
+      this.emit(encodeInt(20n), loc); this.emit(Op.OP_SPLIT, loc);
+      this.emit(Op.OP_SWAP, loc);
+      this.emit(computeCollectionHash(this.entrySlots[node.entrySlotIndex]!.collectionSignature), loc);
+      this.emit(Op.OP_EQUALVERIFY, loc);
+      this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc);
+      this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); // coSlot, coNext, coValue
+      if (oldWitness) {
+        this.emit(Op.OP_DUP, loc);
+        this.emit(encodeInt(BigInt(this.getStackIndex('(credit_old)') + 4)), loc); this.emit(Op.OP_PICK, loc);
+        if (isRawbytes) this.emit(Op.OP_EQUALVERIFY, loc);
+        else {
+          this.emit(Op.OP_BIN2NUM, loc); this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_BIN2NUM, loc);
+          this.emit(Op.OP_NUMEQUALVERIFY, loc);
+        }
+      }
+      this.emit(Op.OP_DROP, loc); // value
+      // PRESENT_BEFORE chooses a target carrier and therefore no predecessor. An absent read selected the proven
+      // predecessor carrier, whose slot is the actual predecessor consumed by the shared topology verifier.
+      this.emit(encodeInt(BigInt(this.getStackIndex(this.sortedUpsertLoopJournalCursorName) + 2)), loc);
+      this.emit(Op.OP_PICK, loc);
+      this.emit(encodeInt(21n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_NIP, loc);
+      this.emit(Op.OP_1, loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_DROP, loc);
+      this.emitKernelJournalCompactFlagMask(1, loc);
+      this.emit(Op.OP_IF, loc);
+      this.emit(Op.OP_0, loc);
+      this.scopeDepth += 1;
+      this.scopeDepth -= 1;
+      this.emit(Op.OP_ELSE, loc);
+      this.emit(Op.OP_OVER, loc);
+      this.scopeDepth += 1;
+      this.scopeDepth -= 1;
+      this.emit(Op.OP_ENDIF, loc); // coSlot, coNext, actual predecessor
+      this.scopeDepth -= 1;
+      this.emit(Op.OP_ENDIF, loc);
     } else if (!settleScalar) {
       emitReadProofOrNormalDispatch();                                        // -> [coSlot,coNext,X] U=3
     } else {
@@ -25807,18 +26370,23 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       localScanAddress = true;
     }
     if (accumulate) {
-      this.emitAccumulateRuntimeLoopEntryInputs(this.sortedUpsertLoopCounterName, loc);
+      const finalJournalSettlementOwnsCursors = this.kernelJournalFinalOutputCursorReconciliationActive();
+      // Final settlement advances the physical cursor at each authenticated access. These local/group counters
+      // remain cardinality proofs; accumulating them here would count every physical input twice.
+      if (!finalJournalSettlementOwnsCursors) {
+        this.emitAccumulateRuntimeLoopEntryInputs(this.sortedUpsertLoopCounterName, loc);
+      }
       // A released dense journal flush owns one transaction-wide output delta.  Keep the exact per-collection
       // output cardinality checks above, but do not also advance the ordinary trailing-output cursor here: doing
       // both shifts every later event/transfer/dynamic output by the complete journal band a second time.
-      // Input accumulation remains source-order physical ownership and is deliberately unaffected.
-      const finalJournalFlushOwnsCursor = this.kernelJournalFinalOutputCursorReconciliationActive();
-      if (!finalJournalFlushOwnsCursor) {
+      if (!finalJournalSettlementOwnsCursors) {
         this.emitAccumulateRuntimeLoopEntryOutputs(this.sortedUpsertLoopOutCounterName, loc);
       }
       if (includeGroupedBase) {
-        this.emitAccumulateRuntimeLoopEntryInputs(this.sortedUpsertInputBaseName, loc);
-        if (!finalJournalFlushOwnsCursor) {
+        if (!finalJournalSettlementOwnsCursors) {
+          this.emitAccumulateRuntimeLoopEntryInputs(this.sortedUpsertInputBaseName, loc);
+        }
+        if (!finalJournalSettlementOwnsCursors) {
           this.emitAccumulateRuntimeLoopEntryOutputs(this.sortedUpsertOutputBaseName, loc);
         }
       }
@@ -25940,6 +26508,28 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.pushToStack('(runtime_loop_entry_input_total)');
     this.emitReplaceCompilerRouteFrameValue(
       GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_INPUT_COUNT, this.currentFunction,
+    );
+    this.popFromStack();
+  }
+
+  /** Advance the route-global physical input cursor after exactly one authenticated journal access. */
+  private emitAdvanceRuntimeLoopEntryInputCursor(
+    locationData: SingleLocationData, untrackedStackItems: number,
+  ): void {
+    if (!this.runtimeLoopEntryInputCountActive) {
+      throw new Error('Kernel journal physical authentication requires a runtime-loop input cursor');
+    }
+    this.emitPickCompilerRouteFrameValue(
+      GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_INPUT_COUNT,
+      locationData,
+      untrackedStackItems,
+    );
+    this.pushToStack('(runtime_loop_entry_input_next)');
+    this.emit(Op.OP_1ADD, locationData);
+    this.emitReplaceCompilerRouteFrameValue(
+      GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_INPUT_COUNT,
+      this.currentFunction,
+      untrackedStackItems,
     );
     this.popFromStack();
   }
@@ -31473,8 +32063,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   /**
    * Push the first runtime mapping-write OUTPUT index. Collection-iteration outputs and rewritten predecessors
-   * from a fixed sorted batch precede this family, but old dynamic chunks exist only in the INPUT run. Newly
-   * written dynamic chunks follow runtime mapping entries, so neither old nor new dynamic widths shift this base.
+   * from a fixed sorted batch precede this family. Read-only dynamic chunks that the SDK co-spends at
+   * impl+trailingBase are preserved 1:1 in that same band (updateJobWhitelist: jobs then whitelist P'/NEW),
+   * so their width must shift this base exactly as on the input path. Newly written dynamic chunks still
+   * follow runtime mapping entries at the suffix and do not shift this base.
    */
   private emitTrailingWriteOutputBase(
     blockSize: number, locationData: SingleLocationData, trailingBase?: number, extraStackOffset = 0,
@@ -31500,6 +32092,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
     }
     this.emitAddCollectionIterCounts(locationData, extraStackOffset);
+    // Read-only dynamic chunks preserved in the leading trailing band (SDK early-insert / jobs-before-upsert).
+    this.emitAddForeignReadOnlyChunkCounts(locationData, false, extraStackOffset);
     // A fixed-entry batch may insert an invariant entry beside this runtime loop. Its target occupies the fixed
     // entry slot, while each rewritten predecessor is emitted at the start of the trailing output band. The SDK
     // publishes that exact width; skipping it made the runtime loop compare the predecessor's collection covenant

@@ -768,6 +768,8 @@ export class FunctionDefinitionNode extends Node implements Named {
 
   messageBusEligible?: boolean;
   messageBusRejectionReason?: string;
+  /** This source handler was included in the synthesized route dispatch. Late fences may still demote it. */
+  messageBusDispatched?: boolean;
   // Release 4 collection rows bind source argument positions to hidden
   // physical-route key witnesses. The SDK derives these from canonical rows;
   // the route compares decoded row arguments before any handler executes.

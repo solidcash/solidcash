@@ -489,11 +489,19 @@ export function getCachedSortedList(
   utxos: readonly Utxo[],
 ): SortedList {
   const cacheKey = `${categoryId}:${address}`;
-  const hit = cache.get(cacheKey);
-  if (hit) return hit;
   const list = SortedList.fromUtxos(
     utxos.filter((utxo) => utxo.token?.category === categoryId),
   );
+  const hit = cache.get(cacheKey);
+  // A prior nested resolution can observe HEAD-only before a sibling write lands.
+  // Reuse the cache only when the live outpoint set still matches.
+  if (hit) {
+    const hitKeys = new Set(hit.all.map((entry) => `${entry.utxo.txid}:${entry.utxo.vout}`));
+    const liveKeys = new Set(list.all.map((entry) => `${entry.utxo.txid}:${entry.utxo.vout}`));
+    if (hitKeys.size === liveKeys.size && [...hitKeys].every((key) => liveKeys.has(key))) {
+      return hit;
+    }
+  }
   cache.set(cacheKey, list);
   return list;
 }

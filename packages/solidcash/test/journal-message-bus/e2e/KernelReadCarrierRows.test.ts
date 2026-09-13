@@ -42,13 +42,6 @@ function entryIndices(
   };
 }
 
-/**
- * Activation fixture for the compiler-published `internal-read-carrier` capability.
- *
- * Keep this test intentionally skipped until GTT publishes the capability and recognizes its internally-produced
- * 0x11 marker. Current bytecode cannot accept a second non-authenticated read, so enabling it early would turn a
- * meaningful protocol precondition into a misleading SDK failure.
- */
 describe('kernel repeated clean-read carriers', () => {
   it('shares each physical clean input across copy(2), copy(2) and settles a dense mixed final flush', async () => {
     const artifact = compileString(SOURCE, KERNEL);

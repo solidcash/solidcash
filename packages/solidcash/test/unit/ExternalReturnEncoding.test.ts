@@ -34,6 +34,18 @@ describe('encodeExternalReturnValue', () => {
     expect(encoded[31]).toBe(2);
   });
 
+  it('encodes Solidity ABI string returns so the kernel can take32 the offset word', () => {
+    const encoded = encodeExternalReturnValue('DIGITAL_VIDEO', 'string', structs, true);
+    expect(encoded.length).toBe(96);
+    expect(encoded[31]).toBe(32);
+    expect(encoded[63]).toBe(13);
+    expect(isCanonicalEvmReturnVector(encoded, ['string'])).toBe(true);
+    expect(decodeEvmReturnValue(encoded, 'string')).toBe('DIGITAL_VIDEO');
+    const compact = encodeExternalReturnValue('DIGITAL_VIDEO', 'string', structs, false);
+    expect(compact.length).toBeLessThan(32);
+    expect(isCanonicalEvmReturnVector(compact, ['string'])).toBe(false);
+  });
+
   it('encodes, validates, and decodes scaled fixed-point return words', () => {
     const positive = encodeExternalReturnValue(1_500_000_000_000_000_000n, 'ufixed128x18', structs, true);
     expect(isCanonicalEvmScalarReturnVector(positive, ['ufixed128x18'])).toBe(true);

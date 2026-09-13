@@ -188,10 +188,11 @@ export function groupOwnsInBlockReturnEvent(
   const physical = groups[physicalIdx];
   if (!physical?.returnEventInBlock) return false;
   if (!physical.blockLayout?.slots.some((slot) => slot.kind === 'returnEvent')) return false;
-  // A rolled view (`meceTags(tags_[i])`) needs consecutive base+i return slots. Those commitments often
-  // remain on the physical group after a later MarketplaceData writer fuses onto the same master; claiming
-  // the single in-block returnEvent then drops every occurrence after the first, so meceCount stays 0.
-  if ((child.loopReturnCommitments?.length ?? 0) > 1) return false;
+  // A rolled logical call needs consecutive return slots. Its commitments can live on a shared/fused callsite
+  // rather than the physical representative, so ownership must follow the stable logical owner metadata. A
+  // single physical returnEvent cannot represent a multi-part result family.
+  const logicalOwner = groups[child.fusedReturnGroupIndex ?? groupIdx] ?? child;
+  if ((logicalOwner.loopReturnCommitments?.length ?? 0) > 1) return false;
   const writesState = (group: InBlockReturnGroup): boolean => {
     // Prefer the logical Solidity function. `__forward` is a proxy dispatcher marked
     // writesState, but the first logical callsite on that master is often a view.

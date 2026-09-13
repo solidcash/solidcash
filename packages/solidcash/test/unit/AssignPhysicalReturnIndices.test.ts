@@ -1197,6 +1197,50 @@ describe('assignPhysicalReturnIndices', () => {
     expect(returnWitnessOutputIndices(groups)).toEqual(new Set([34, 35, 36]));
   });
 
+  it('refuses in-block ownership when the fused shared group carries a multi-part loop return', () => {
+    const layout = {
+      blockSize: 2,
+      slots: [
+        { kind: 'master' as const, offset: 0 },
+        { kind: 'returnEvent' as const, offset: 1 },
+      ],
+    };
+    const groups = [
+      group({
+        categoryId: 'shared',
+        functionName: 'mutate',
+        logicalFunctionName: 'mutate',
+        returnEventInBlock: true,
+        fusedReturnGroupIndex: 1,
+        blockLayout: layout,
+        externalContract: {
+          inner: { artifact: { abi: [{ name: 'mutate', writesState: true }] } },
+        },
+      }),
+      group({
+        categoryId: 'shared',
+        functionName: 'readEach',
+        logicalFunctionName: 'readEach',
+        sharedGroupIndex: 0,
+        returnOutputIndex: 8,
+        loopReturnCommitments: { length: 2 },
+        externalContract: {
+          inner: { artifact: { abi: [{ name: 'readEach', writesState: false }] } },
+        },
+      }),
+    ];
+
+    expect(groupOwnsInBlockReturnEvent(groups, 0)).toBe(false);
+    expect(groupOwnsInBlockReturnEvent(groups, 1)).toBe(false);
+    const placements = packTailReturnPlacements(groups, () => 0, [
+      { identity: 'external-call:1:0', categoryId: 'shared' },
+      { identity: 'external-call:1:1', categoryId: 'shared' },
+    ], 'other');
+    expect(placements.get('external-call:1:0')).toBe(8);
+    expect(placements.get('external-call:1:1')).toBe(9);
+    expect(returnWitnessOutputIndices(groups)).toEqual(new Set([8, 9]));
+  });
+
   it('reserves loop-return width so a second meceTags slot is not the next occupant', () => {
     const groups: PhysicalReturnGroup[] = [
       group({

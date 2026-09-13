@@ -116,6 +116,41 @@ const plan = (): messageBus.CompiledGraphPlan => ({
 });
 
 describe('atomic compiled invocation graph', () => {
+  it('interns content-identical artifact instances for distinct graph edges to one owner', () => {
+    const leafArtifact = compileString(`contract SharedOwner() {
+      event Touched(int value);
+      int stored;
+      function touchA() public { this.stored = 1; emit Touched(1); require(true); }
+      function touchB() public { this.stored = 2; emit Touched(2); require(true); }
+    }`, { forceStateful: true, messageBus: true, messageBusKernel: true });
+    const rootArtifact = compileString(`interface ISharedOwner {
+      function touchA() external;
+      function touchB() external;
+    }
+    contract DistinctCallsites() {
+      function run(address targetA, address targetB) public {
+        ISharedOwner(targetA).touchA();
+        ISharedOwner(targetB).touchB();
+        require(true);
+      }
+    }`, { forceStateful: true, messageBus: true, messageBusKernel: true });
+    const callsites = rootArtifact.abi.find((candidate) => candidate.name === 'run')?.externalCalls ?? [];
+    expect(callsites).toHaveLength(2);
+
+    const planned = messageBus.deriveCompiledGraphPlan({
+      root: { artifact: rootArtifact, lockingBytecode: '51' },
+      function: 'run',
+      args: [Uint8Array.of(0x52), Uint8Array.of(0x52)],
+      targets: {},
+      // Proxy implementation accessors may deserialize a fresh, content-identical publication for each edge.
+      target: () => ({ artifact: structuredClone(leafArtifact), lockingBytecode: '52' }),
+    });
+
+    expect(planned.participants).toHaveLength(2);
+    expect(planned.invocations.map((invocation) => invocation.consumerCallsiteId))
+      .toEqual([undefined, ...callsites.map((callsite) => callsite.callsiteId)]);
+  });
+
   it('fails closed for a resource-free lifecycle row until the advertised protocol can compose it', () => {
     const compiled = compileString(`contract LifecycleProtocolBoundary() {
       function divide(int count) public split(count) {

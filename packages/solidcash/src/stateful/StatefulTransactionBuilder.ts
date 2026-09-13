@@ -5680,12 +5680,18 @@ export interface ExternalCallUtxoGroup {
 }
 
 /** Rebind a continuation coordinate only on the concrete unlocker ABI which captured that hidden argument. */
+export function ownsCapturedValueChunkOutputBase(group: ExternalCallUtxoGroup): boolean {
+  const inputNames = group.internalArgNames
+    ?? group.compilerRoute?.abiFunction.inputs.map((input) => input.name);
+  return inputNames?.includes('__internal__valueChunkOutputBase') === true;
+}
+
 export function refreshCapturedValueChunkOutputBase(
   group: ExternalCallUtxoGroup,
   outputBase: number,
   options: { shiftPredOut?: boolean } = { shiftPredOut: false },
 ): boolean {
-  if (!group.internalArgNames?.includes('__internal__valueChunkOutputBase')) return false;
+  if (!ownsCapturedValueChunkOutputBase(group)) return false;
   group.valueChunkOutputBase = outputBase;
   group.internalArgs = {
     ...group.internalArgs,
@@ -12875,7 +12881,7 @@ export class StatefulTransactionBuilder {
       }
       for (const carrier of [...this.externalCallUtxoGroups, ...this.lowLevelCallUtxoGroups]) {
         if (carrier.valueChunkOutputBase !== oldBase) continue;
-        if (!carrier.internalArgNames?.includes('__internal__valueChunkOutputBase')) continue;
+        if (!ownsCapturedValueChunkOutputBase(carrier)) continue;
         carrier.valueChunkOutputBase = base;
         carrier.internalArgs = {
           ...carrier.internalArgs,
@@ -13423,7 +13429,7 @@ export class StatefulTransactionBuilder {
     for (const carrier of [...this.externalCallUtxoGroups, ...this.lowLevelCallUtxoGroups]) {
       const currentBase = carrier.valueChunkOutputBase;
       if (currentBase === undefined || currentBase < insertAt) continue;
-      if (!carrier.internalArgNames?.includes('__internal__valueChunkOutputBase')) continue;
+      if (!ownsCapturedValueChunkOutputBase(carrier)) continue;
       const nextBase = currentBase + 1;
       carrier.valueChunkOutputBase = nextBase;
       carrier.internalArgs = {
@@ -13576,8 +13582,7 @@ export class StatefulTransactionBuilder {
       // independent and will resolve against their own root lock.
       const aliases = (identity === undefined ? [carrier] : carriers.filter((candidate) => (
         candidate.valueChunkOutputBase === currentBase && runIdentity(candidate) === identity
-      ))).filter((candidate) => candidate.internalArgNames
-        ?.includes('__internal__valueChunkOutputBase') === true);
+      ))).filter(ownsCapturedValueChunkOutputBase);
       for (const alias of aliases) {
         alias.valueChunkOutputBase = materializedBase;
         alias.internalArgs = {
@@ -13779,7 +13784,7 @@ export class StatefulTransactionBuilder {
       // the implementation's collection descriptor. Update the complete alias set atomically.
       const physicalAliases = aliasGroups.filter(
         (alias): alias is ExternalCallUtxoGroup => alias !== undefined
-          && alias.internalArgNames?.includes('__internal__valueChunkOutputBase') === true,
+          && ownsCapturedValueChunkOutputBase(alias),
       );
       for (const alias of physicalAliases) {
         const encoded = alias.internalArgs?.__internal__valueChunkOutputBase;

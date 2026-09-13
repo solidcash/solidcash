@@ -121,6 +121,43 @@ export interface PreparedAtomicMessageBusCall {
   ) => readonly FunctionArgument[] | undefined;
 }
 
+export interface SemanticClaimObservation<T = unknown> {
+  previous: T;
+  observed: T;
+  apply: (observed: T) => void;
+}
+
+/** Apply every independently derived semantic class before deciding whether the graph needs another pass. */
+export function applySemanticClaimObservationPass(
+  observations: readonly SemanticClaimObservation[],
+): boolean {
+  let changed = false;
+  for (const observation of observations) {
+    if (semanticJson(observation.previous) === semanticJson(observation.observed)) continue;
+    observation.apply(observation.observed);
+    changed = true;
+  }
+  return changed;
+}
+
+/** Exact authority predicate for replacing a balanced dummy with a computed continuation output. */
+export function canSeedComputedValueChunkClaim(
+  input: Pick<UnlockableUtxo, 'satoshis' | 'token' | 'unlocker'> | undefined,
+  output: Pick<Output, 'amount' | 'token'> | undefined,
+  claim: Pick<ComputedValueChunkClaim, 'tokenCategory' | 'commitment'>,
+): boolean {
+  return input !== undefined
+    && input.token === undefined
+    && binToHex(input?.unlocker.generateLockingBytecode() ?? new Uint8Array())
+      === BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX
+    && input.satoshis === output?.amount
+    && output?.token?.category === claim.tokenCategory
+    && output.token.amount === 0n
+    && output.token.nft?.capability === 'mutable'
+    && valueChunkIndexFromCommitment(output.token.nft.commitment)
+      === valueChunkIndexFromCommitment(claim.commitment);
+}
+
 const recipeType = (
   recipe: ChildDeploymentValueRecipe,
   inputTypes: readonly string[],
@@ -3310,22 +3347,15 @@ export class AtomicMessageBusComposition {
           const absolute = finalized.layout.participantInputs[claim.participant] + claim.offset;
           const input = provisional.inputs[absolute];
           const output = provisional.outputs[absolute];
-          if (input?.token !== undefined
-            || binToHex(input?.unlocker.generateLockingBytecode() ?? new Uint8Array())
-              !== BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX
-            || input.satoshis !== output?.amount
-            || output?.token?.category !== claim.tokenCategory || output.token.amount !== 0n
-            || output.token.nft?.capability !== 'mutable'
-            || valueChunkIndexFromCommitment(output.token.nft.commitment)
-              !== valueChunkIndexFromCommitment(claim.commitment)) continue;
+          if (!canSeedComputedValueChunkClaim(input, output, claim)) continue;
           const lockingBytecode = hexToBin(claim.lockingBytecodeHex);
           const currentLockingBytecode = typeof output.to === 'string' ? addressToLockScript(output.to) : output.to;
           if (binToHex(currentLockingBytecode) !== claim.lockingBytecodeHex) {
             output.to = lockingBytecode;
             seededComputedValueChunk = true;
           }
-          if (output.token.nft.commitment !== claim.commitment) {
-            output.token.nft.commitment = claim.commitment;
+          if (output.token!.nft!.commitment !== claim.commitment) {
+            output.token!.nft!.commitment = claim.commitment;
             seededComputedValueChunk = true;
           }
         }
@@ -3341,7 +3371,7 @@ export class AtomicMessageBusComposition {
         // Independent semantic effects share one complete-graph observation pass. Record mutations monotonically,
         // but do not restart until fixed resource/value/token/sidecar/event observations have also been collected;
         // otherwise an earlier provisional class can permanently starve a later class which it needs to pass.
-        let semanticClaimsChanged = false;
+        const semanticObservations: SemanticClaimObservation[] = [];
         const derivedComputedValueChunks: ComputedValueChunkClaim[] = [];
         for (const absolute of valueChunkConvergence.ownedOutputs) {
           let participant = -1;
@@ -3365,10 +3395,11 @@ export class AtomicMessageBusComposition {
             commitment: output.token.nft.commitment,
           });
         }
-        if (semanticJson(derivedComputedValueChunks) !== semanticJson(claimedComputedValueChunks)) {
-          claimedComputedValueChunks = derivedComputedValueChunks;
-          semanticClaimsChanged = true;
-        }
+        semanticObservations.push({
+          previous: claimedComputedValueChunks,
+          observed: derivedComputedValueChunks,
+          apply: (observed) => { claimedComputedValueChunks = observed as ComputedValueChunkClaim[]; },
+        });
         const derivedResourceEffects: AtomicResourceSlotEffect[] = [];
         for (const slot of resourceSlots) {
           if (slot.offset >= finalized.callManifest.participants[slot.participant].actualSize) continue;
@@ -3483,10 +3514,11 @@ export class AtomicMessageBusComposition {
             outputCommitmentHex: outputMutable ? outputToken!.nft!.commitment : '',
           });
         }
-        if (semanticJson(derivedResourceEffects) !== semanticJson(claimedResourceEffects)) {
-          claimedResourceEffects = derivedResourceEffects;
-          semanticClaimsChanged = true;
-        }
+        semanticObservations.push({
+          previous: claimedResourceEffects,
+          observed: derivedResourceEffects,
+          apply: (observed) => { claimedResourceEffects = observed as AtomicResourceSlotEffect[]; },
+        });
         const derivedValueEffects: AtomicValueSlotEffect[] = [];
         for (const slot of valueSlots) {
           if (slot.offset >= finalized.callManifest.participants[slot.participant].actualSize) continue;
@@ -3503,10 +3535,11 @@ export class AtomicMessageBusComposition {
             ...slot, lockingBytecodeHex: binToHex(lockingBytecode), amount: output.amount,
           });
         }
-        if (semanticJson(derivedValueEffects) !== semanticJson(claimedValueEffects)) {
-          claimedValueEffects = derivedValueEffects;
-          semanticClaimsChanged = true;
-        }
+        semanticObservations.push({
+          previous: claimedValueEffects,
+          observed: derivedValueEffects,
+          apply: (observed) => { claimedValueEffects = observed as AtomicValueSlotEffect[]; },
+        });
         const derivedTokenEffects: AtomicTokenSlotEffect[] = [];
         for (const slot of tokenSlots) {
           if (slot.offset >= finalized.callManifest.participants[slot.participant].actualSize) continue;
@@ -3531,10 +3564,11 @@ export class AtomicMessageBusComposition {
             capability: output.token.nft?.capability ?? 'ft',
           });
         }
-        if (semanticJson(derivedTokenEffects) !== semanticJson(claimedTokenEffects)) {
-          claimedTokenEffects = derivedTokenEffects;
-          semanticClaimsChanged = true;
-        }
+        semanticObservations.push({
+          previous: claimedTokenEffects,
+          observed: derivedTokenEffects,
+          apply: (observed) => { claimedTokenEffects = observed as AtomicTokenSlotEffect[]; },
+        });
         const derivedSidecarEffects: AtomicSidecarSlotEffect[] = [];
         for (const slot of sidecarSlots) {
           if (slot.offset >= finalized.callManifest.participants[slot.participant].actualSize) continue;
@@ -3574,10 +3608,11 @@ export class AtomicMessageBusComposition {
             outputCommitmentHex: output.token.nft?.commitment ?? '', value: input.satoshis,
           });
         }
-        if (semanticJson(derivedSidecarEffects) !== semanticJson(claimedSidecarEffects)) {
-          claimedSidecarEffects = derivedSidecarEffects;
-          semanticClaimsChanged = true;
-        }
+        semanticObservations.push({
+          previous: claimedSidecarEffects,
+          observed: derivedSidecarEffects,
+          apply: (observed) => { claimedSidecarEffects = observed as AtomicSidecarSlotEffect[]; },
+        });
         const derivedEventEffects: AtomicEventSlotEffect[] = [];
         const eventProgram = provisional.buildLibauthProgram();
         const discoveredEvents = new Map<number, { commitment: string; lockingBytecode?: string }>();
@@ -3679,6 +3714,7 @@ export class AtomicMessageBusComposition {
             });
           }
         }
+        const semanticClaimsChanged = applySemanticClaimObservationPass(semanticObservations);
         let stable = !semanticClaimsChanged;
         if (JSON.stringify(derivedEventEffects) !== JSON.stringify(claimedEventEffects)) stable = false;
         if (stable) {

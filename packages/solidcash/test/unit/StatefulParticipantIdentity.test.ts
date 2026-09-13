@@ -66,14 +66,13 @@ function fn(name: string, collection: string, operations: Array<'read' | 'write'
 }
 
 describe('compiler-owned participant identity', () => {
-  it('rebases only the captured delegate value-chunk witness owner', () => {
+  it('binds a proxy/delegate alias only through the concrete route ABI witness owner', () => {
     const selector = new Uint8Array([0xa8, 0x26, 0xee, 0x9c]);
     const proxy = group('__forward', {
       name: '__forward', selector: '88b357fe',
       inputs: [{ name: 'input', type: 'bytes' }], outputs: [],
     } as AbiFunction);
     proxy.functionArgs = [selector];
-    proxy.internalArgNames = Object.freeze(['input']);
     let proxyRefreshes = 0;
     proxy.refreshInternalArgs = () => { proxyRefreshes += 1; };
 
@@ -86,9 +85,6 @@ describe('compiler-owned participant identity', () => {
       ],
       outputs: [], writesState: true,
     } as AbiFunction);
-    implementation.internalArgNames = Object.freeze(
-      implementation.compilerRoute!.abiFunction.inputs.map((input) => input.name),
-    );
     let implementationBase: bigint | undefined;
     implementation.refreshInternalArgs = (updates) => {
       implementationBase = updates.__internal__valueChunkOutputBase;

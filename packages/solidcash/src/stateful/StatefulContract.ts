@@ -222,6 +222,7 @@ import {
   type ValueChunkWriteDescriptor,
   valueChunkWriteResourceIdentity,
   sameDerivedChunkOutputObservation,
+  ownsCapturedValueChunkOutputBase,
 } from './StatefulTransactionBuilder.js';
 import {
   OnChainState, StateReader, type ParsedEvent, type EventFilter,
@@ -12283,7 +12284,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             const nestedImpl = valueChunkWitness.carrier.delegateCallGroupIndex;
             if (nestedImpl !== undefined) {
               const nestedOwner = stb.getLowLevelCallUtxoGroups()[nestedImpl];
-              if (nestedOwner?.internalArgNames?.includes('__internal__valueChunkOutputBase')) {
+              if (nestedOwner && ownsCapturedValueChunkOutputBase(nestedOwner)) {
                 nestedOwner.refreshInternalArgs?.({
                   __internal__valueChunkOutputBase: BigInt(outputBase),
                 });
@@ -14522,10 +14523,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                     const baseUpdate = {
                       __internal__valueChunkOutputBase: BigInt(chunkBase),
                     };
-                    if (llc.internalArgNames?.includes('__internal__valueChunkOutputBase')) {
+                    if (ownsCapturedValueChunkOutputBase(llc)) {
                       llc.refreshInternalArgs?.(baseUpdate, { shiftPredOut: false });
                     }
-                    if (proxyGroup?.internalArgNames?.includes('__internal__valueChunkOutputBase')) {
+                    if (proxyGroup && ownsCapturedValueChunkOutputBase(proxyGroup)) {
                       proxyGroup.refreshInternalArgs?.(baseUpdate, { shiftPredOut: false });
                     }
                   }
@@ -30840,9 +30841,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
    *
    * Isolated participant probes can stop before a graph handler reaches its event covenant because their graph
    * coordinates are intentionally final-transaction-relative. The atomic composer already has the authoritative
-   * transaction here, so read each event commitment and exact locking bytecode from that trace. A relaxed
-   * discovery trace may cross an
-   * earlier provisional output mismatch; the ordinary final preflight remains the authority for acceptance.
+   * transaction here, so read each event commitment and exact locking bytecode from that trace. If the compact
+   * faithful trace stops before all event pins, rerun the same VM semantics with complete tracing; neither pass
+   * suppresses verification, and the ordinary final preflight remains the authority for acceptance.
    */
   _messageBusEventCommitmentsFromTransaction(
     builder: TransactionBuilder, eventOutputIndices: readonly number[], inputIndex: number,
@@ -30856,7 +30857,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       // Event pins are emitted as `<event commitment> <physical output index>
       // OP_OUTPUTTOKENCOMMITMENT OP_EQUALVERIFY`. Inactive reserved slots instead execute
       // `OP_OUTPUTTOKENCOMMITMENT OP_SIZE`, so requiring the adjacent compiler instruction distinguishes a real
-      // emit even in a relaxed sparse trace. Do not seed this map from the generic pin extractor: its intentional
+      // emit even in a sparse trace. Do not seed this map from the generic pin extractor: its intentional
       // OP_INVOKE tolerance can associate an inactive introspection with a later, unrelated equality.
       const requested = new Set(eventOutputIndices);
       const found = new Map<number, string>();
@@ -30883,10 +30884,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     if (eventOutputIndices.every((outputIndex) => found.has(outputIndex)) || trace.at(-1)?.error === undefined) {
       return found;
     }
-    const relaxed = extract(evaluateProbeTrace(
+    const complete = extract(evaluateProbeTrace(
       this.inner.provider, { inputIndex, sourceOutputs, transaction }, true,
     ));
-    for (const [outputIndex, expectation] of relaxed) {
+    for (const [outputIndex, expectation] of complete) {
       const current = found.get(outputIndex);
       found.set(outputIndex, {
         commitment: expectation.commitment,

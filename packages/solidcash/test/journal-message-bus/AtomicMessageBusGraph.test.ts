@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { Artifact } from '@solidcash/utils';
+import { BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX, type Artifact } from '@solidcash/utils';
 import { compileString } from 'solidc';
 import { messageBus, SignatureTemplate } from '../../src/index.js';
 
@@ -116,6 +116,40 @@ const plan = (): messageBus.CompiledGraphPlan => ({
 });
 
 describe('atomic compiled invocation graph', () => {
+  it('does not authorize a computed chunk from a value-mismatched balanced dummy', () => {
+    const input = {
+      satoshis: 1200n,
+      unlocker: {
+        generateLockingBytecode: () => Uint8Array.from(Buffer.from(
+          BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX, 'hex',
+        )),
+      },
+    } as never;
+    const output = {
+      amount: 1199n,
+      token: {
+        category: 'aa'.repeat(32), amount: 0n,
+        nft: { capability: 'mutable' as const, commitment: '0000' },
+      },
+    };
+    expect(messageBus.canSeedComputedValueChunkClaim(input, output, {
+      tokenCategory: 'aa'.repeat(32), commitment: '0000',
+    })).toBe(false);
+    expect(messageBus.canSeedComputedValueChunkClaim(input, { ...output, amount: 1200n }, {
+      tokenCategory: 'aa'.repeat(32), commitment: '0000',
+    })).toBe(true);
+  });
+
+  it('applies every changed semantic class in one complete observation pass', () => {
+    const applied: string[] = [];
+    expect(messageBus.applySemanticClaimObservationPass([
+      { previous: [], observed: ['resource'], apply: () => applied.push('resource') },
+      { previous: [], observed: ['value'], apply: () => applied.push('value') },
+      { previous: [], observed: ['token'], apply: () => applied.push('token') },
+    ])).toBe(true);
+    expect(applied).toEqual(['resource', 'value', 'token']);
+  });
+
   it('interns content-identical artifact instances for distinct graph edges to one owner', () => {
     const leafArtifact = compileString(`contract SharedOwner() {
       event Touched(int value);

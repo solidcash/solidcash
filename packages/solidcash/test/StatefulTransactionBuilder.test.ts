@@ -426,6 +426,7 @@ describe('StatefulTransactionBuilder', () => {
       const carrier = {
         valueChunkOutputBase: originalBase,
         internalArgs: { __internal__valueChunkOutputBase: BigInt(originalBase) },
+        internalArgNames: ['__internal__valueChunkOutputBase'],
         refreshInternalArgs,
       };
       const internals = builder as unknown as {
@@ -579,6 +580,7 @@ describe('StatefulTransactionBuilder', () => {
         valueChunkOutputBase: provisionalBase,
         valueChunkOutputCount: 2,
         internalArgs: { __internal__valueChunkOutputBase: BigInt(provisionalBase) },
+        internalArgNames: ['__internal__valueChunkOutputBase'],
         refreshInternalArgs,
       };
       const internals = builder as unknown as {
@@ -621,6 +623,7 @@ describe('StatefulTransactionBuilder', () => {
         valueChunkOutputBase: provisionalBase,
         valueChunkOutputCount: 2,
         internalArgs: { __internal__valueChunkOutputBase: BigInt(provisionalBase) },
+        internalArgNames: ['__internal__valueChunkOutputBase'],
         refreshInternalArgs,
       };
       const proxy = { categoryId, delegateCallGroupIndex: 0 };

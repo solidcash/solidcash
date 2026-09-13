@@ -1418,8 +1418,33 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     node: InstantiationNode;
   }[] = [];
 
+  private preambleComputedFor?: ContractNode;
   private deployCounter: number = 0;
   private deploymentRecipeAnalysis = new WeakMap<InstantiationNode, ChildDeploymentRecipeAnalysis>();
+  /**
+   * Memo for the fallback body scans in `functionContainsRuntimeLoopEvent` / `...Transfer`. Those predicates
+   * answer a question about the whole function, but `visitBranch` asks once per branch, so a large route body
+   * was re-walked ~168 times (one function node accounted for 78% of 1.7M visits, and the answer was `false`
+   * every time). Per-instance and per-traversal only: the markers the scans read are written by semantic
+   * lowering before codegen, and every codegen entry builds a fresh traversal, so a cache cannot outlive an AST
+   * that gets re-lowered.
+   */
+  private readonly runtimeLoopScanCache = new WeakMap<FunctionDefinitionNode, {
+    event?: boolean; transfer?: boolean;
+  }>();
+
+  private rememberRuntimeLoopScan(
+    node: FunctionDefinitionNode,
+    existing: { event?: boolean; transfer?: boolean } | undefined,
+    kind: 'event' | 'transfer',
+    found: boolean,
+  ): void {
+    if (existing !== undefined) {
+      existing[kind] = found;
+      return;
+    }
+    this.runtimeLoopScanCache.set(node, { [kind]: found });
+  }
 
   // Inline (conditional) deploy verification. A `new C()` inside a branch cannot use the fixed block-layout
   // deploy slot the way the epilogue does: when the branch is NOT taken there is no genesis output, and the
@@ -3592,8 +3617,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   /** Emit OP_DEFINEs for all functions plus the dispatcher (or inline a single function). */
   private emitFunctionDefinesAndDispatch(node: ContractNode): void {
-    this.computeScalarJournalClosures(node);
-    this.computeRuntimeLoopEntryOutputCountFunctions(node);
+    if (this.preambleComputedFor !== node) {
+      this.computeScalarJournalClosures(node);
+      this.computeRuntimeLoopEntryOutputCountFunctions(node);
+      this.preambleComputedFor = node;
+    }
     this.outlinedDynamicReadBasisByFunctionId = new Map();
     this.outlinedDynamicReadThreadedFunctionIds = new Set();
     const indirect = this.functionReferenceIds(node);
@@ -4012,6 +4040,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       .filter((f): f is FunctionDefinitionNode => f !== undefined);
     const savedDeployTargets = allFns.map((f) => f.deployTargets);
     try {
+      this.computeScalarJournalClosures(node);
+      this.computeRuntimeLoopEntryOutputCountFunctions(node);
+      this.preambleComputedFor = node;
       const probe = new GenerateTargetTraversalWithLocation(this.compilerOptions);
       probe.isSubroutineUseProbe = true;
       probe.stack = [...this.stack];
@@ -4025,6 +4056,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       probe.userFunctionDefs = this.userFunctionDefs;
       probe.constantExpressions = new Map(this.constantExpressions);
       probe.contractUsesMsgData = this.contractUsesMsgData;
+      probe.journalWriterFunctionIds = this.journalWriterFunctionIds;
+      probe.journalSlotsByFunctionId = this.journalSlotsByFunctionId;
+      probe.runtimeLoopEntryInputCountFunctionIds = this.runtimeLoopEntryInputCountFunctionIds;
+      probe.runtimeLoopEntryOutputCountFunctionIds = this.runtimeLoopEntryOutputCountFunctionIds;
+      probe.runtimeLoopEventContextFunctionIds = this.runtimeLoopEventContextFunctionIds;
+      probe.preambleComputedFor = node;
       probe.contractUsesMsgValue = this.contractUsesMsgValue;
       probe.constructorParameterCount = this.constructorParameterCount;
       probe.compiledBytecodes = this.compiledBytecodes;
@@ -5481,7 +5518,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emitInfos = node.emitInfos ?? [];
     this.pendingDeploys = [];
     this.deployCounter = 0;
-    this.deploymentRecipeAnalysis = analyzeChildDeploymentRecipes(node);
+    // `analyzeChildDeploymentRecipes` produces a WeakMap keyed by InstantiationNode whose only readers are
+    // `prepareDeployEntryGeometry` and the deploy-target publish below; both look a node up and treat a miss as
+    // "no recipe". `hasContractInstantiation` is set by SymbolTableTraversal.visitInstantiation for EVERY
+    // contract instantiation, before any stateful branching, so a strictly `false` flag proves the body holds no
+    // InstantiationNode and the analysis can only produce an empty map. Running it anyway cost ~1.5s of this
+    // compile: it re-walks each function body twice (containsReturn / invalidateAssignments), and 95% of those
+    // visits were redundant re-walks of BranchNode subtrees at every nesting level. Codegen already trusts this
+    // same flag immediately below for `surveyFunctionDeploys`.
+    this.deploymentRecipeAnalysis = node.hasContractInstantiation === false
+      ? new WeakMap<InstantiationNode, ChildDeploymentRecipeAnalysis>()
+      : analyzeChildDeploymentRecipes(node);
     prepareDeployEntryGeometry(node.body, node.parameters, this.deploymentRecipeAnalysis);
     const deploySurvey = node.hasContractInstantiation === false
       ? {
@@ -7657,6 +7704,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * site is the codegen authority, so recover presence from the body when the summary was not copied. */
   private functionContainsRuntimeLoopEvent(node: FunctionDefinitionNode): boolean {
     if ((node.runtimeLoopEvents?.length ?? 0) > 0) return true;
+    // The summary fast-path above stays first, so the memo only ever replaces the fallback body scan.
+    const memo = this.runtimeLoopScanCache.get(node);
+    if (memo?.event !== undefined) return memo.event;
     const seen = new Set<Node>();
     const walk = (candidate: Node | undefined): boolean => {
       if (!candidate || seen.has(candidate)) return false;
@@ -7670,11 +7720,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
       return false;
     };
-    return walk(node.body);
+    const found = walk(node.body);
+    this.rememberRuntimeLoopScan(node, memo, 'event', found);
+    return found;
   }
 
   private functionContainsRuntimeLoopTransfer(node: FunctionDefinitionNode): boolean {
     if ((node.runtimeLoopTransfers?.length ?? 0) > 0) return true;
+    const memo = this.runtimeLoopScanCache.get(node);
+    if (memo?.transfer !== undefined) return memo.transfer;
     const seen = new Set<Node>();
     const walk = (candidate: Node | undefined): boolean => {
       if (!candidate || seen.has(candidate)) return false;
@@ -7689,7 +7743,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
       return false;
     };
-    return walk(node.body);
+    const found = walk(node.body);
+    this.rememberRuntimeLoopScan(node, memo, 'transfer', found);
+    return found;
   }
 
   private functionContainsRuntimeLoopBchTransfer(node: FunctionDefinitionNode): boolean {

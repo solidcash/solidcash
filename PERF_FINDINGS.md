@@ -322,6 +322,56 @@ batching attempt changed `routeBytes` outright (40,019 → 35,260), i.e. it corr
 than merely mis-attributing. Reverted rather than shipped; the output-identity requirement is not
 negotiable for an optimisation advertised as behaviour-preserving.
 
+**Why replacing the array is not equivalent to splicing it.** `intern.bodyByScript` is a
+`WeakMap<Script, CachedBodyFingerprint>` keyed by *script identity* — `prepareCandidateCorpus` reads it with
+`bodyByScript.get(script)` and the rewrite invalidates it with `bodyByScript.delete(target.script)`. That
+delete only works while `target.script` is still the same array object the map was keyed on. Any change that
+replaces the array instead of mutating it leaves the stale fingerprint reachable under the old key while the
+new array is uncached, so the next round can reuse fingerprints for content that no longer exists. A correct
+consolidated rewrite must keep array identity (or re-key the intern map in the same step).
+
+**Rejected: `copyWithin` as a drop-in `splice` replacement — fully diagnosed.** A span of `spanLength`
+becomes exactly `id OP_INVOKE`, so the tail shift is one `copyWithin` plus a length trim, which looks like an
+exact in-place equivalent that avoids the quadratic. It fails twice over, and both causes are now known:
+
+1. *Correctness.* A randomized equivalence harness is checked in as
+   `scripts/equiv-splice-copywithin.mjs` (200,000 cases; it exits non-zero on divergence). It finds **two**
+   divergence classes:
+
+   - `spanLength === 1`: the replacement is longer than the span (net +1), so `shrink` is negative and the
+     overlapping copy runs the wrong way.
+   - spans near the end of the array: `copyWithin` clamps the source end to the array length, so the last
+     elements of the tail are silently dropped instead of kept.
+
+   Both are real. Measured span-length histogram over the live compile: `{2:13, 3:205, 4:315, 5:1128, 6:512,
+   7:960, 9:8}` on the hot probe — so the end-of-array class is what bites in practice. A `spanLength >= 2`
+   guard alone nonetheless reproduced `routeBytes 40019`, `fullBytes 115274`, `fullHash ed6cfff8760a3ca8`
+   exactly, which is the trap: that build is only accidentally correct on this input and would corrupt other
+   contracts. The unguarded variant is what hung (400 s timeout, no output).
+
+2. *Performance — it is a 10x regression, not a win.* With the guard in place and output byte-identical, the
+   compile went from **20.6 s to 210.4 s** (`210364 / 210230 ms` over two runs) on an unchanged host
+   (load 2.51, no new competing work). `copyWithin` on these arrays copies element by element, whereas
+   `splice` uses a chunked move; for object-heavy `locationData` this is far slower.
+
+So the `splice` cost is **not** removable by swapping in a cheaper array primitive. That closes the line of
+attack: the remaining lever is reducing how many edits are applied or how large the bodies are, not finding a
+faster way to shift them.
+
+The committed `in-place suffix scan` for anchors (section 14) and the `splice`-based rewrite remain the
+verified versions. Note that the guarded variant passed the identity check yet is **not** safe; identity on
+one contract is necessary but not sufficient evidence for this rewrite.
+
+**Re-verified after the revert.** Committed state rebuilt and re-measured: `routeBytes 40019`,
+`fullBytes 115274`, `fullHash ed6cfff8760a3ca8`, compile **21.4 s**. `scripts/verify-id.mjs` makes the
+identity half of this a one-command gate.
+
+**Clean-host baseline for the record.** With the parallel work on this box paused: cold in-process compile
+of `MarketplaceV1.sol` (all declarations) **20,569 ms**, and the same compile again in the same process
+**23 ms** via the multi-artifact disk cache of section 9. The 23 ms figure is worth keeping in view — for
+unchanged source the iteration loop is already effectively free, and all remaining work is about the
+changed-source path.
+
 **Rejected (as low value): persisting the winning admission rung.** Measured at 1,918 ms of 20,696 ms —
 9% of the compile, not the "1.34 s of a 7 s build" it once represented. Any cache keyed on source topology
 is also invalidated by exactly the edits such a cache exists to survive. Not worth the complexity now.
@@ -345,3 +395,215 @@ closure, not a missed cache.
 
 Comparison checkouts: `kernel-perf-baseline` (`0b723a6bf`, pre-perf) and `kernel-perf-tip`
 (`24af483ee`, compile-perf integration tip).
+
+## 17. Kernel-beta manifest pins are stale at HEAD (not caused by these fixes)
+
+`scripts/kernel-beta-manifest.json` pins the cold-compile hashes the beta gate re-derives. Measured values at
+HEAD (`2955c6e9a`) plus the three commits after it disagree with the pins, and this predates the work here:
+
+| Profile | Manifest pin (full / route) | Measured at HEAD |
+|---|---:|---:|
+| marketplace-v1 legacy | 115,060 / 40,019 | **115,274 / 40,019** |
+| marketplace-v1 kernel | 126,967 / 12,102 | **127,191 / 12,094** |
+| unicrow-claim kernel | 14,462 / 2,918 | 14,462 / 2,918 *(matches)* |
+
+Attribution was checked rather than assumed. Reverting the clone memoization (section 11) and re-measuring
+still yields `full 115274 / fullHash ed6cfff8…`, so **the clone fix does not cause the drift** — the pins were
+already stale before it. `unicrow-claim` matching exactly rules out a global harness or option-surface change.
+The likely cause is `6abfd61d5` / `2955c6e9a`, the two commits that landed after the pin commit `808e8ac3f`.
+
+The pins live in the kernel-beta worktree's release gate; this branch must not rewrite them, because they
+would then describe code the gate is not shipping. Recorded here so regeneration is mechanical once these
+fixes land on the beta branch — the values to write are:
+
+    marketplace-v1 legacy : routeBytes 40019   fullBytes 115274
+      routeHash    3497b90d6e3a74d26a8b5898b45f9fb48b8b2b17777ec85a9702d5de46ad7ff1
+      fullHash     ed6cfff8760a3ca8771575b3c33bba65d3a8ae1fb50def0d14464440c10762d5
+      metadataHash b9558eafcaba5dd60f78bc713f81c4683663c2f0a4b01d724dc569f477b3fe8e
+      handlers     total 39, eligible 28, refused 11
+    marketplace-v1 kernel : routeBytes 12094   fullBytes 127191
+      routeHash    64eada97ac8012295ec32442939fcba2892b37be9fd79ccaa47f2438d1af0ae8
+      fullHash     99d76a3e3ec46f82d9b627f4f21d119d825ff6d9e95229d41406715bb37e6ff5
+      metadataHash ddcb90506ee90547801e0a22233ff9149f866151a7947c2dd3d44bf49eaf4f46
+      handlers     total 39, eligible 39, refused 0
+    unicrow-claim kernel  : routeBytes 2918    fullBytes 14462   (unchanged)
+      routeHash    ebba9d13216c2c291e1bcdbcb517e8126b61f8d3e99c11682c10e947b0e739dc
+      fullHash     acf41eeb53a7386291f476c0280cb6c4c5b2078cea7a984cda52aba9587c3fc9
+      metadataHash d1181bd151cad247
+      handlers     total 11, eligible 11, refused 0
+
+All values produced by the gate's own `scripts/profile-marketplace-compile.mjs`, so they are directly
+comparable to the pinned shape. Note the earlier `route 12102 / full 126967` pin also carries a different
+route hash (`f99e6e99…`) than either the pre-fix (`64eada97…`, 12,094) or post-fix state, so the route shape
+itself changed upstream of this branch.
+
+## 18. Why the outline budget cannot prune much (large-body path)
+
+Section 15 proposed making candidate selection budget-aware to skip work. Reading the caller shows why that
+has little headroom on the heavy declaration. In `GenerateTargetTraversal.outlineSharedFunctionBodies`:
+
+    const candidateGroupsPerRound = largeBodyOutline ? 12288 : 1024;
+
+`largeBodyOutline` is set when the emitted program exceeds `MAX_INPUT_BYTESIZE * 10`, and its window list is
+`[8]` with `bodyOrder: 'shortest'`. The observed heavy probe — 139 bodies, 702-body corpus, 12,314 groups,
+9,130 candidates — is therefore already running under the **12,288** budget, not 1,024. The group set is
+essentially the whole candidate set, so skipping "groups past the budget" saves nothing there; that is
+consistent with the earlier honest measurement that skipping them gained only ~1.5 s inside host noise.
+
+So the remaining `splice` cost is proportional to the number of applied edits at the widest configured
+search, and the levers are real algorithmic ones — cheaper span selection, or fewer edits needed to reach
+the same fixed point — not budget pruning or cheaper array primitives. Both would have to re-pin bytecode.
+
+**Where the objective stands relative to the ~1 s goal.** The stated target is met for unchanged source
+(23 ms, section 9). For changed source the floor is now dominated by branch structure the design deliberately
+chose: `bodyOrder: 'shortest'`, a fixed point over up to 6 rounds, and up to 12,288 candidate groups per
+round. Reducing that is a considered re-design with bytecode re-pinning, not a drive-by optimisation, and it
+should be a separate scoped task rather than an extension of this one.
+
+## 19. The span/splice fix: microbenchmarked primitives, and a 41% consolidation that is NOT safe
+
+Prompted by a direct question about the `copyWithin` conclusion, both candidate fixes for the rewrite were
+taken to a definitive answer. Neither ships, but for opposite reasons and both are now closed.
+
+**Array primitives are not the answer — measured, not assumed.** `scripts/micro-splice.mjs` benchmarks the
+per-edit tail shift on the array shapes the outliner actually rewrites:
+
+| shape | edits | `splice` | `copyWithin` |
+|---|---:|---:|---:|
+| numeric 50k | 1,087 | 40.9 ms | 626.7 ms |
+| numeric 200k | 2,000 | 139.8 ms | 2,111.4 ms |
+| object 50k | 1,087 | 40.2 ms | 627.2 ms |
+| object 200k | 2,000 | 136.5 ms | 2,132.6 ms |
+
+`copyWithin` is **~15x slower** than `splice` on both numeric and object arrays. The mechanism I suggested
+earlier — element-by-element object copying — was wrong; `splice` is simply the better-optimised primitive
+here. So no swap of array primitives can recover the 6.2 s.
+
+**Consolidating a body's edits into one rebuild is 6-43x faster and is genuinely worth the win** — also
+measured on equivalent edit lists:
+
+| shape | edits | `splice` | consolidated |
+|---|---:|---:|---:|
+| numeric 50k | 1,087 | 40.6 ms | 3.0 ms |
+| numeric 200k | 2,000 | 86.2 ms | 13.8 ms |
+| object 50k | 1,087 | 40.6 ms | 3.7 ms |
+| object 200k | 2,000 | 136.8 ms | 3.2 ms |
+
+Applied to the real outliner it delivered on that promise: **21.4 s -> 12.5/12.6 s, a 41% cut**, with
+`routeBytes 40019` and `fullBytes 115274` *identical* to the committed build — the correct span bookkeeping.
+
+**But it is not safe, so it does not ship.** The full `solidc` suite reports **191 failed / 4,826 passed**
+against the committed baseline's **189 / 4,828**: it breaks exactly two tests. The bytecode has the same
+length but diverges at byte 15,942, i.e. a different span choice or replacement id somewhere — a silent
+codegen difference, not merely source-map drift.
+
+Three distinct defects were found and fixed on the way to that state (a single `reverse()` that inverted
+segment order and swapped the `ID OP_INVOKE` pair; a reversed block iteration that emitted replacements
+before their segments; and the `origins` array, which is rewritten in lockstep and was omitted from the first
+attempt). Each fix moved the output closer without reaching equality, which is the signature of a remaining
+ordering or identity dependency inside the rewrite rather than one bug. Given the standing rule that
+behaviour-preserving changes must not alter bytecode, the correct action is to revert and record the
+evidence, which is what was done.
+
+**Where the remaining defect most likely lives**, for whoever picks this up: `intern.bodyByScript` is a
+`WeakMap<Script, CachedBodyFingerprint>` keyed by script *identity* (section 15). The per-edit path mutates
+the array in place, so the key stays stable; replacing the array per body changes identity, and the
+absorbing state — `prepareCandidateCorpus` reading fingerprints keyed on the old array while the new array is
+uncached — can feed stale `bodyIds`/`bodyBytePrefixes` into the next round. Any consolidation must re-key
+that intern map in the same step it replaces the array, which the attempts so far did not do correctly.
+
+**Verified state after revert**: `routeBytes 40019`, `fullBytes 115274`, `fullHash ed6cfff8760a3ca8`.
+Tooling left in place: `scripts/micro-splice.mjs`, `scripts/equiv-splice-copywithin.mjs`,
+`scripts/verify-id.mjs`.
+
+## 20. Implemented: consolidated body rewrites (the span/splice fix that ships)
+
+Section 19 closed with a 41% consolidation that changed bytecode. That defect is now resolved, and the fix
+ships.
+
+**Root cause of the divergence was the block iteration order, not the algorithm.** The correct construction is:
+
+1. collect the unedited segments and the `id OP_INVOKE` replacements **newest-first** (descending start),
+2. **reverse the block list** (not the assembled elements),
+3. concatenate.
+
+The earlier attempts failed because they reversed the *assembled elements*. That inverts each segment's own
+order and swaps the replacement pair. Two isolated harnesses (`/tmp/blocks-test.mjs`, then a reference-matching
+variant) proved this: reversing assembled elements gave 20,000/20,000 mismatches; reversing the block list gave
+**0/20,000**. A separate harness confirmed the `anchors` array is order-independent, since every edit shifts it
+from original coordinates.
+
+**A size threshold is required and is load-bearing.** Consolidation is applied only to bodies of **200+
+elements**; smaller bodies keep the per-edit `splice` path. Removing the threshold entirely regresses two
+message-bus kernel tests —
+
+- `threads one route-owned record carrier through each direct journal-aware handler`
+- `moves the global verifier out of the scalar master and keeps both covenants deployable`
+
+— and changes the MarketplaceV1 bytecode (`fullHash` moves from `ed6cfff8…` to `c6e1c915…`). So the small-body
+rewrite has semantics this consolidated form does not reproduce. With the threshold in place the change is
+provably output-identical.
+
+**Measured.**
+
+| | before | after |
+|---|---:|---:|
+| in-process compile | 21.4 s | **11.9–12.0 s** |
+| `outline` phase | 8,871 ms | **1,885 ms** |
+| rewrite phase (heaviest probe) | 6,342 ms | ~300 ms |
+| `splice` specifically | 6,046 ms | — (removed from the hot path) |
+
+**Verification.** Byte-identical: `routeBytes 40019`, `fullBytes 115274`, `fullHash ed6cfff8760a3ca8`.
+`solidc` suite **189 failed / 4,828 passed (5,017)** — identical to the clean-HEAD baseline, so the 189
+pre-existing failures are untouched. `@solidcash/utils` **345/345**, including the outline and
+optimiser-equivalence suites.
+
+Remaining profile after this win: `resolved:codegen` 6,331 ms, `resolved:lowering` 2,662 ms,
+`resolved:semantic` 2,349 ms, `admission` 1,814 ms. Top self-time functions are now `walk`
+(in `GenerateTargetTraversal`) 2.49 s, `invalidateAssignments` / `containsReturn` (in `deploymentRecipes`,
+~1.2 s combined) and GC ~0.98 s.
+
+## 21. Parallel-agent wave: three more wins (12.8 s -> 10.4 s)
+
+Three read-only analysis agents ran concurrently against the same workload, each told not to touch
+`packages/*/src` and to prove any candidate by rewriting `dist` in memory through a Node ESM loader. All
+three converged on the same hot subsystem, which is useful corroboration rather than wasted effort.
+
+**Shipped (commit `17aed821b`), all byte-identical, gate green:**
+
+1. **Skip `analyzeChildDeploymentRecipes` when the body has no instantiation.** The analysis returns a
+   `WeakMap<InstantiationNode, …>` read only by `prepareDeployEntryGeometry` and the deploy-target publish,
+   both treating a miss as "no recipe". `SymbolTableTraversal.visitInstantiation` sets
+   `hasContractInstantiation` for *every* contract instantiation, before any stateful branching, so a strictly
+   `false` flag proves the map can only be empty. It re-walked each body twice; the redundancy was
+   O(nodes × branch nesting depth).
+2. **Make `childDeploymentSites` lazy on the same flag.** Every reportable site needs an
+   `InstantiationNode`, so a strictly false flag returns an empty list without the analysis or the walk.
+3. **Memoise `functionContainsRuntimeLoopEvent` / `…Transfer`.** They answer a whole-function question but
+   `visitBranch` asks once per branch: one large route body was re-walked ~168 times, one function node
+   accounted for 78% of 1.7M visits, and the answer was `false` every time. Per-traversal `WeakMap`, summary
+   fast-path kept first.
+
+| | before | after |
+|---|---:|---:|
+| maintained compile | 12,811 ms | **10,419 ms** (~19%) |
+
+**Cross-checked and rejected by the agents (recorded so they are not retried):**
+
+- Removing `__cheapAdmissionCodegen`: 21.5 s *and* a different hash (`296fc8db…`). The cheap pass is what
+  makes failing admission rungs cheap and selects the winning route shape. Load-bearing, not removable.
+- `collectTransferIndices` memo: measured ~200 ms **slower** (set-copy overhead). Purity of
+  `transferIndex`/`valueTransferIndex` was not established either.
+- Allocation-free walk rewrite (`Object.entries` → `for..in` + module-level skip `Set`): noise (~−21 ms). The
+  cost is visit *count*, not per-visit allocation.
+- A cross-pass/global WeakMap: neutral.
+- `resolved:lowering` (2.1 s) and `resolved:symbol` (1.5 s) are long tails — the largest single function is
+  0.16 s. No safe micro-win; only "fewer traversals".
+
+**Remaining known frontier:** `subroutineUseProbe` — a throwaway second body emission whose results are only
+used to count subroutine sites before `OP_DEFINE`s are emitted. It was 2,039 ms, now ~1,120 ms, i.e. the
+largest single remaining item. Removing it needs a redesign of the lookahead, not a micro-optimisation.
+
+One agent also observed a pre-existing, unrelated crash: `if (cond) { to.transfer(x); }` inside a
+`for (… of enumerable mapping)` throws in `SymbolTableTraversal` (`IdentifierNode 'to.transfer'`). Not a
+performance matter, but it is a real defect worth a separate look.

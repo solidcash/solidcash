@@ -2351,7 +2351,40 @@ function extractMessageBusVerifierProgram(
   };
 }
 
+/**
+ * Memo for `compileDetachedMessageBusVerifier`. A multi-declaration compile hands the same generated verifier
+ * source to every declaration, and the emit is a pure function of that source plus the few options it reads, so
+ * the second and later emits were recomputing an identical program (~150ms per extra declaration here).
+ *
+ * Keyed on every input the emit reads: the source text, the lifecycle flag, and the two compiler options that
+ * reach the parse/codegen (`chunkedArrays` defaults to true, `rootFileId` forwards to the type checker).
+ * Entries are deep-cloned on the way out so a caller mutating a returned program cannot poison the memo.
+ * Bounded, because each entry retains a large source string.
+ */
+const detachedVerifierProgramCache = new Map<string, MessageBusVerifierProgram>();
+
 function compileDetachedMessageBusVerifier(
+  source: string, compilerOptions: CompilerOptions, lifecycle = false,
+): MessageBusVerifierProgram {
+  const memoKey = `${lifecycle ? 'L' : '-'}\x00${compilerOptions.chunkedArrays ?? true}\x00`
+    + `${compilerOptions.rootFileId ?? ''}\x00${source}`;
+  const memoized = detachedVerifierProgramCache.get(memoKey);
+  if (memoized !== undefined) {
+    // Refresh recency for the small bound below.
+    detachedVerifierProgramCache.delete(memoKey);
+    detachedVerifierProgramCache.set(memoKey, memoized);
+    return structuredClone(memoized);
+  }
+  const program = compileDetachedMessageBusVerifierUncached(source, compilerOptions, lifecycle);
+  if (detachedVerifierProgramCache.size >= 8) {
+    const oldest = detachedVerifierProgramCache.keys().next().value as string | undefined;
+    if (oldest !== undefined) detachedVerifierProgramCache.delete(oldest);
+  }
+  detachedVerifierProgramCache.set(memoKey, structuredClone(program));
+  return program;
+}
+
+function compileDetachedMessageBusVerifierUncached(
   source: string, compilerOptions: CompilerOptions, lifecycle = false,
 ): MessageBusVerifierProgram {
   const started = Date.now();
@@ -2830,6 +2863,11 @@ function childDeploymentSites(
   helperFunctions: readonly FunctionDefinitionNode[] = [],
 ): ChildDeploymentSiteAbi[] {
   const sites: ChildDeploymentSiteAbi[] = [];
+  // Every site this function can report requires an InstantiationNode in the body, and
+  // `hasContractInstantiation` is set for every contract instantiation the symbol pass sees. When the flag is
+  // strictly false there is nothing to report, so the recipe analysis plus the whole-body walk below are
+  // skipped. Only the returned array is consumed by the caller.
+  if (root.hasContractInstantiation === false) return sites;
   const visibleInputs = root.parameters.filter((parameter) => !parameter.name.startsWith('__internal__'));
   const inputIndex = new Map(visibleInputs.map((parameter, index) => [parameter.name, index]));
   const inputTypes = new Map(visibleInputs.map((parameter) => [parameter.name, abiTypeString(parameter.type)]));
@@ -11367,11 +11405,15 @@ function compileResolvedAst(
   if (needsExternalCallLowering) ast = ast.accept(new HoistNonLoopArrayElemExtcallTargets()) as Ast;
   // A contract/interface-typed external-call target LOCAL declared in a branch (e.g. a `restricted` modifier's
   // if-wrapper) is popped before the epilogue's co-spend verification -> capture it into a function-top local.
-  if (needsExternalCallLowering) ast = ast.accept(new CaptureBranchExternalCallTargets()) as Ast;
+  const branchTargetCapture = needsExternalCallLowering ? new CaptureBranchExternalCallTargets() : undefined;
+  if (branchTargetCapture) ast = ast.accept(branchTargetCapture) as Ast;
   // Capturing branch-local targets introduces compiler-owned `__extcap_` aliases after the first address
   // synthesis pass. Re-run the idempotent provenance pass so nested Address/SafeERC20 fallbacks trace those
-  // aliases back to the same body-top state/parameter target as their first conditional branch.
-  if (needsExternalCallLowering) ast = ast.accept(new SynthesizeExternalAddressLocals()) as Ast;
+  // aliases back to the same body-top state/parameter target as their first conditional branch. That re-run
+  // exists solely for those aliases, so when the capture above prepended nothing it is a strict no-op.
+  if (needsExternalCallLowering && branchTargetCapture?.capturedAny === true) {
+    ast = ast.accept(new SynthesizeExternalAddressLocals()) as Ast;
+  }
   // `L.f()` calls to a state-touching (delegate) library -> a delegatecall against the caller's state (with a
   // synthesized library-address constructor arg). See docs/library-contracts.md (3b sugar).
   if (ast.freeFunctions.length > 0) ast = ast.accept(new SynthesizeLibraryDelegateCalls()) as Ast;

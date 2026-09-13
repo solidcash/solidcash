@@ -11372,11 +11372,15 @@ function compileResolvedAst(
   if (needsExternalCallLowering) ast = ast.accept(new HoistNonLoopArrayElemExtcallTargets()) as Ast;
   // A contract/interface-typed external-call target LOCAL declared in a branch (e.g. a `restricted` modifier's
   // if-wrapper) is popped before the epilogue's co-spend verification -> capture it into a function-top local.
-  if (needsExternalCallLowering) ast = ast.accept(new CaptureBranchExternalCallTargets()) as Ast;
+  const branchTargetCapture = needsExternalCallLowering ? new CaptureBranchExternalCallTargets() : undefined;
+  if (branchTargetCapture) ast = ast.accept(branchTargetCapture) as Ast;
   // Capturing branch-local targets introduces compiler-owned `__extcap_` aliases after the first address
   // synthesis pass. Re-run the idempotent provenance pass so nested Address/SafeERC20 fallbacks trace those
-  // aliases back to the same body-top state/parameter target as their first conditional branch.
-  if (needsExternalCallLowering) ast = ast.accept(new SynthesizeExternalAddressLocals()) as Ast;
+  // aliases back to the same body-top state/parameter target as their first conditional branch. That re-run
+  // exists solely for those aliases, so when the capture above prepended nothing it is a strict no-op.
+  if (needsExternalCallLowering && branchTargetCapture?.capturedAny === true) {
+    ast = ast.accept(new SynthesizeExternalAddressLocals()) as Ast;
+  }
   // `L.f()` calls to a state-touching (delegate) library -> a delegatecall against the caller's state (with a
   // synthesized library-address constructor arg). See docs/library-contracts.md (3b sugar).
   if (ast.freeFunctions.length > 0) ast = ast.accept(new SynthesizeLibraryDelegateCalls()) as Ast;

@@ -45,6 +45,13 @@ export default class CaptureBranchExternalCallTargets extends AstTraversal {
   private typeNames: Set<string> = new Set();     // interface + contract names usable as a callee type
   private topDecls: VariableDefinitionNode[] = []; // function-top capture declarations to prepend
   private counter = 0;
+  /**
+   * Whether this traversal actually prepended a capture declaration. The compiler re-runs
+   * `SynthesizeExternalAddressLocals` immediately after this pass purely to trace the compiler-owned
+   * `__extcap_` aliases that the capture introduces, so a caller can skip that second run when nothing was
+   * captured.
+   */
+  capturedAny = false;
   private renames: Map<string, string> = new Map(); // captured local name -> function-top capture name (in scope)
   private loopDepth = 0;
   private inNestedBlock = false;                   // is the block currently being visited nested (not fn-top)?
@@ -76,6 +83,7 @@ export default class CaptureBranchExternalCallTargets extends AstTraversal {
     node.body = this.visit(node.body) as BlockNode;
     if (this.topDecls.length > 0) {
       node.body.statements = [...this.topDecls, ...(node.body.statements ?? [])];
+      this.capturedAny = true;
     }
     return node;
   }

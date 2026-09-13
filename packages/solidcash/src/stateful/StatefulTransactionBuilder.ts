@@ -27,6 +27,7 @@ import {
   Artifact,
   VALUE_HEAD_SIZE,
   VALUE_CHUNK_SIZE,
+  VALUE_CHUNK_MAX_COUNT,
   encodeChunkableValueTail,
   buildValueChunkCommitment,
   sha256 as sha256Sync,
@@ -645,6 +646,15 @@ export function materializedParticipantWidth(
   );
 }
 
+/** Whether a complete participant span intersects a half-open dynamic-output lane. */
+export function participantSpanOverlapsLane(
+  master: number,
+  width: number,
+  lane: { start: number; endExclusive: number },
+): boolean {
+  return master < lane.endExclusive && master + width > lane.start;
+}
+
 /** First independent participant whose physical block overlaps a dynamic-output band it does not own. */
 export function collidingParticipantGroupIndex(
   groups: ReadonlyArray<PhysicalReturnGroup>,
@@ -1171,9 +1181,39 @@ export interface ValueChunkWriteDescriptor {
   outputCount: number;
 }
 
-const valueChunkWriteIdentity = (write: ValueChunkWriteDescriptor): string => [
+export interface DerivedChunkOutputObservation {
+  commitment: string;
+  lockingBytecode: Uint8Array;
+  categoryId?: string;
+  fixedIndex?: boolean;
+  /** Stable compiler/planner resource identity; physical output index is only a projection. */
+  resourceIdentity?: string;
+  resourcePart?: string;
+}
+
+export interface LateValueSuffixInsertion {
+  /** Physical coordinate occupied only by the probe-local output. */
+  insertAt: number;
+  /** Whether the builder's absolute witness maps moved with the physical outputs. */
+  shiftedAbsoluteWitnesses: boolean;
+}
+
+export const sameDerivedChunkOutputObservation = (
+  left: DerivedChunkOutputObservation | undefined,
+  right: DerivedChunkOutputObservation | undefined,
+): boolean => left === right || (!!left && !!right
+  && left.commitment.toLowerCase() === right.commitment.toLowerCase()
+  && binToHex(left.lockingBytecode) === binToHex(right.lockingBytecode)
+  && left.categoryId?.toLowerCase() === right.categoryId?.toLowerCase()
+  && (left.fixedIndex === true) === (right.fixedIndex === true)
+  && left.resourceIdentity === right.resourceIdentity
+  && left.resourcePart === right.resourcePart);
+
+export const valueChunkWriteResourceIdentity = (write: ValueChunkWriteDescriptor): string => [
   write.categoryId.toLowerCase(), write.collectionHash.toLowerCase(), write.keySlot.toLowerCase(),
 ].join(':');
+
+const valueChunkWriteIdentity = valueChunkWriteResourceIdentity;
 
 function validValueChunkWriteIdentity(write: ValueChunkWriteDescriptor): boolean {
   if (!/^[0-9a-f]{64}$/i.test(write.categoryId) || !/^[0-9a-f]{64}$/i.test(write.keySlot)) return false;
@@ -1565,11 +1605,12 @@ export function selectHashedValueForChunkPin(
   const pinIsP2sh32 = !!pinLock
     && pinLock.length === 35 && pinLock[0] === 0xaa && pinLock[1] === 0x20 && pinLock[34] === 0x87;
   const pinDigest = pinIsP2sh32 ? binToHex(pinLock!.subarray(2, 34)) : undefined;
+  const maximumCandidateBytes = VALUE_HEAD_SIZE + VALUE_CHUNK_SIZE * VALUE_CHUNK_MAX_COUNT;
   if (pinDigest) {
     const seen = new Set<Uint8Array>();
     for (const stack of stacks) {
       for (const item of stack) {
-        if (item.length <= 60 || seen.has(item)) continue;
+        if (item.length <= 60 || item.length > maximumCandidateBytes || seen.has(item)) continue;
         seen.add(item);
         if (hexOf(digestOf(item)) === pinDigest) {
           return { value: item, lockingBytecode: pinLock! };
@@ -1612,7 +1653,7 @@ export function selectHashedValueForChunkPin(
     item: Uint8Array,
     stack?: ReadonlyArray<Uint8Array>,
   ): { value: Uint8Array; lockingBytecode: Uint8Array } | undefined => {
-    if (item.length <= 60) return undefined;
+    if (item.length <= 60 || item.length > maximumCandidateBytes) return undefined;
     if (minChunks > 0 && chunkCount(item) < minChunks) return undefined;
     const root = hexOf(digestOf(item));
     if (tailRoots.size > 0) {
@@ -1652,7 +1693,7 @@ export function selectHashedValueForChunkPin(
     const stackDigests = new Set(stack.filter((item) => item.length === 32).map(hexOf));
     const seen = new Set<Uint8Array>();
     for (const item of stack) {
-      if (item.length <= 60 || seen.has(item)) continue;
+      if (item.length <= 60 || item.length > maximumCandidateBytes || seen.has(item)) continue;
       seen.add(item);
       if (!stackDigests.has(hexOf(digestOf(item)))) continue;
       if (!value || item.length > value.length) value = item;
@@ -1669,7 +1710,7 @@ export function selectHashedValueForChunkPin(
     let widest: Uint8Array | undefined;
     for (const stack of stacks) {
       for (const item of stack) {
-        if (item.length <= 60) continue;
+        if (item.length <= 60 || item.length > maximumCandidateBytes) continue;
         if (chunkCount(item) < minChunks) continue;
         if (!widest || item.length > widest.length) widest = item;
       }
@@ -2719,54 +2760,56 @@ export function movePostOpReturnBeforeJobsSuffix<T extends {
 }
 
 /**
- * Final-layout repair: build() may append reverse-suffix jobs, then late value-chunks,
- * then OP_RETURN — so TXOUTPUTCOUNT-1-nNew lands on late chunks. Lift the early jobs run
- * to sit immediately before the trailer (late chunks then precede the reverse window).
+ * Final-layout repair: build() may append a reverse-indexed resource run, then late
+ * derived outputs, then OP_RETURN — so TXOUTPUTCOUNT-1-nNew lands on the late outputs.
+ * Lift the early resource run to sit immediately before the trailer.
  * Probe builds must not call this (late-before-jobs during derivation hung).
  */
-export function moveLateChunksBeforeReverseSuffixJobs<T extends {
+export function moveLateOutputsBeforeReverseSuffix<T extends {
   to?: Uint8Array | string;
   token?: { nft?: { capability?: string }; category?: string };
 }>(
   outputs: T[],
-  jobsLock: Uint8Array,
-  jobsCount: number,
+  suffixLock: Uint8Array,
+  suffixCount: number,
 ): number {
-  if (jobsCount <= 0 || jobsLock.length !== 35 || jobsLock[0] !== 0xaa) return 0;
-  if (outputs.length < jobsCount + 2) return 0;
+  if (suffixCount <= 0 || suffixLock.length !== 35 || suffixLock[0] !== 0xaa) return 0;
+  if (outputs.length < suffixCount + 2) return 0;
   const trailer = outputs.length - 1;
   // Reverse-index math needs a dedicated trailer; OP_RETURN is the marketplace separator.
   if (!isOpReturnLockingBytecode(outputs[trailer]?.to)) return 0;
-  const wanted = binToHex(jobsLock);
-  const windowStart = trailer - jobsCount;
+  const wanted = binToHex(suffixLock);
+  const windowStart = trailer - suffixCount;
   if (windowStart < 0) return 0;
-  const isJobs = (output: T | undefined): boolean => {
+  const isSuffixResource = (output: T | undefined): boolean => {
     const lock = output?.to instanceof Uint8Array ? output.to : undefined;
     return !!lock && lock.length === 35 && binToHex(lock) === wanted
       && output?.token?.nft?.capability === 'mutable';
   };
   // Already correct: reverse window is contiguous jobs.
-  if (Array.from({ length: jobsCount }, (_, offset) => isJobs(outputs[windowStart + offset]))
+  if (Array.from({ length: suffixCount }, (_, offset) => isSuffixResource(outputs[windowStart + offset]))
     .every(Boolean)) {
     return 0;
   }
-  // Find the jobs run that was appended before late chunks.
-  let earlyJobsStart = -1;
+  // Find the resource run that starts before the required reverse window. The run
+  // may already overlap the window by one or more slots; only a late foreign output
+  // prevents it from being the canonical contiguous suffix.
+  let earlyRunStart = -1;
   for (let index = 0; index < windowStart; index += 1) {
-    if (!isJobs(outputs[index])) continue;
+    if (!isSuffixResource(outputs[index])) continue;
     let run = 0;
-    while (index + run < windowStart && isJobs(outputs[index + run])) run += 1;
-    if (run >= jobsCount) {
-      earlyJobsStart = index;
+    while (index + run < trailer && isSuffixResource(outputs[index + run])) run += 1;
+    if (run >= suffixCount) {
+      earlyRunStart = index;
       break;
     }
     index += Math.max(0, run - 1);
   }
-  if (earlyJobsStart < 0) return 0;
-  const earlyJobs = outputs.splice(earlyJobsStart, jobsCount);
-  // Trailer shifted left; insert jobs immediately before it.
-  outputs.splice(outputs.length - 1, 0, ...earlyJobs);
-  return jobsCount;
+  if (earlyRunStart < 0) return 0;
+  const earlyRun = outputs.splice(earlyRunStart, suffixCount);
+  // Trailer shifted left; insert the resource run immediately before it.
+  outputs.splice(outputs.length - 1, 0, ...earlyRun);
+  return suffixCount;
 }
 
 /** Whether a mutable NFT output is duplicated exactly at another index. */
@@ -6111,15 +6154,12 @@ export class StatefulTransactionBuilder {
   // managed - the entry stores sha256(value) and the read verifies the reassembled witness, so these need no
   // on-chain pinning. Commitments are known exactly (buildChunkCommitment) so they never enter auto-derivation.
   private valueChunkOutputs: Array<{ to: string | Uint8Array; amount: bigint; token?: Utxo['token'] }> = [];
+  private valueChunkOutputsLock?: Uint8Array;
 
   /** Route value chunks the derivation recovered, keyed by ABSOLUTE output index. Builder-level, not per-group:
    * the covenant that pins them is probed as one group but addresses an output in ANOTHER group's block (its
    * base is the proxy master), so the placing group and the owning group are different. */
-  private derivedChunkOutputs = new Map<number, {
-    commitment: string; lockingBytecode: Uint8Array; categoryId?: string;
-    /** The compiler received this absolute output base explicitly; never fold it into a legacy shared band. */
-    fixedIndex?: boolean;
-  }>();
+  private derivedChunkOutputs = new Map<number, DerivedChunkOutputObservation>();
   /** Survives probe rebuilds that drop `derivedChunkOutputs` before send(). */
   private pendingJobEventsPredecessors: UnlockableUtxo[] = [];
   private persistedJobEventsChunks: Array<{
@@ -7962,14 +8002,19 @@ export class StatefulTransactionBuilder {
       && this.allInputs[start + tokenWidth]?.token?.nft) {
       tokenWidth += 1;
     }
+    const participantWidth = materializedParticipantWidth(tokenGroup, start, band);
     if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
       ?.SOLIDC_DEBUG_EXTERNAL_ARGS === '1') {
       console.error('minting-swap-band', {
-        chunkBase, jobEventsStart, bandEnd, start, tokenWidth, plannedWidth, nNew,
-        inBand: start < bandEnd && start + tokenWidth > jobEventsStart,
+        chunkBase, jobEventsStart, bandEnd, start, tokenWidth, participantWidth, plannedWidth, nNew,
+        inBand: participantSpanOverlapsLane(start, participantWidth, {
+          start: chunkBase, endExclusive: bandEnd,
+        }),
       });
     }
-    if (start >= bandEnd || start + tokenWidth <= jobEventsStart) {
+    if (!participantSpanOverlapsLane(start, participantWidth, {
+      start: chunkBase, endExclusive: bandEnd,
+    })) {
       // Probe builds reuse `allInputs`. Once the first pass rotates this token block, the next pass sees the
       // already-correct master and must retain the relocation metadata so output materialization still
       // places view tails. Exact `from+width` is too brittle: a later 2-wide shift (26→28) would drop
@@ -12102,9 +12147,7 @@ export class StatefulTransactionBuilder {
    * auto-derivation never sees them. Soundness is by the entry's stored sha256(value), verified on read.
    */
   setDerivedChunkOutput(
-    outputIndex: number, chunk: {
-      commitment: string; lockingBytecode: Uint8Array; categoryId?: string; fixedIndex?: boolean;
-    },
+    outputIndex: number, chunk: DerivedChunkOutputObservation,
   ): boolean {
     // Probe observations identify physical bytes, not the full collection
     // resource. Always reconcile their claimed category with the compiler's
@@ -12112,13 +12155,27 @@ export class StatefulTransactionBuilder {
     // their historical category/default selection in the resolver.
     // Fixed layout pins (entry NFT NEW slots) are not value-chunk resources. Do not let an
     // ambiguous/multi value-chunk selection fail-closed and drop the EntryNft lock.
+    const resourceSelection = this._valueChunkWriteCategorySelection();
     const resolvedCategoryId = chunk.fixedIndex && chunk.categoryId
       ? chunk.categoryId
       : resolveValueChunkWriteCategory(
-        this._valueChunkWriteCategorySelection(), chunk.categoryId, this.categoryId,
+        resourceSelection, chunk.categoryId, this.categoryId,
       );
     if (!resolvedCategoryId) return false;
-    const ownedChunk = { ...chunk, categoryId: resolvedCategoryId };
+    const describedResource = resourceSelection.status === 'exact'
+      && resourceSelection.categoryId.toLowerCase() === resolvedCategoryId.toLowerCase()
+      ? valueChunkWriteResourceIdentity(resourceSelection.write) : undefined;
+    const describedChunkIndex = valueChunkIndexFromCommitment(chunk.commitment);
+    const ownedChunk: DerivedChunkOutputObservation = {
+      ...chunk,
+      categoryId: resolvedCategoryId,
+      resourceIdentity: chunk.resourceIdentity ?? describedResource,
+      resourcePart: chunk.resourcePart ?? (describedResource
+        ? describedChunkIndex !== undefined
+          ? `chunk:${describedChunkIndex}`
+          : chunk.fixedIndex ? `fixed:${chunk.commitment.slice(0, 64).toLowerCase()}` : undefined
+        : undefined),
+    };
     const valueChunkPin = chunk.lockingBytecode.length === 35
       && chunk.lockingBytecode[0] === 0xaa && chunk.lockingBytecode[1] === 0x20
       && chunk.lockingBytecode[34] === 0x87
@@ -12136,14 +12193,11 @@ export class StatefulTransactionBuilder {
       }
     }
     const existing = this.derivedChunkOutputs.get(outputIndex);
-    if (existing?.commitment === ownedChunk.commitment
-      && binToHex(existing.lockingBytecode) === binToHex(ownedChunk.lockingBytecode)
-      && existing.categoryId === ownedChunk.categoryId
-      && existing.fixedIndex === ownedChunk.fixedIndex) return false;
+    if (sameDerivedChunkOutputObservation(existing, ownedChunk)) return false;
     // Sorted-entry pins (slot32||next32||value…) must accept a later valueTail fill-in.
     // Value-chunk pins also use fixedIndex at the publish band; a full 126-byte payload is
     // 256 hex chars and must NOT take the entry-pin path (uint16 index < 32).
-    const valueChunkIndex = valueChunkIndexFromCommitment(ownedChunk.commitment);
+    const valueChunkIndex = describedChunkIndex;
     const isValueChunkCommitment = valueChunkPin && valueChunkIndex !== undefined;
     const isEntryPin = ownedChunk.fixedIndex === true
       && !isValueChunkCommitment
@@ -12170,7 +12224,7 @@ export class StatefulTransactionBuilder {
       : existing);
     if (!ownedChunk.fixedIndex && valueChunkPin && ownedChunk.commitment.length >= 3
       && ownedChunk.commitment !== '00' && !isEmptyValueChunkCommitment(ownedChunk.commitment)) {
-      const categoryId = ownedChunk.categoryId;
+      const categoryId = resolvedCategoryId;
       this.rememberJobEventsChunks(categoryId, [
         ...this.derivedChunkOutputs.values(),
       ].filter((entry) => (entry.categoryId ?? this.categoryId) === categoryId
@@ -12181,9 +12235,7 @@ export class StatefulTransactionBuilder {
     return true;
   }
 
-  getDerivedChunkOutputs(): ReadonlyMap<number, {
-    commitment: string; lockingBytecode: Uint8Array; categoryId?: string; fixedIndex?: boolean;
-  }> {
+  getDerivedChunkOutputs(): ReadonlyMap<number, DerivedChunkOutputObservation> {
     return this.derivedChunkOutputs;
   }
 
@@ -12232,9 +12284,34 @@ export class StatefulTransactionBuilder {
     lockingBytecode: Uint8Array,
     outputs: Array<{ to: string | Uint8Array; amount: bigint; token?: Utxo['token'] }>,
   ): this {
+    const sameDestination = (left: string | Uint8Array, right: string | Uint8Array): boolean => (
+      typeof left === 'string' || typeof right === 'string'
+        ? typeof left === 'string' && typeof right === 'string' && left === right
+        : binToHex(left) === binToHex(right)
+    );
+    const sameToken = (left: Utxo['token'] | undefined, right: Utxo['token'] | undefined): boolean => (
+      left === right || (!!left && !!right
+        && left.category?.toLowerCase() === right.category?.toLowerCase()
+        && (left.amount ?? 0n) === (right.amount ?? 0n)
+        && left.nft?.capability === right.nft?.capability
+        && String(left.nft?.commitment ?? '').toLowerCase()
+          === String(right.nft?.commitment ?? '').toLowerCase())
+    );
+    const identical = this.valueChunkOutputsLock !== undefined
+      && binToHex(this.valueChunkOutputsLock) === binToHex(lockingBytecode)
+      && this.valueChunkOutputs.length === outputs.length
+      && outputs.every((output, index) => {
+        const existing = this.valueChunkOutputs[index];
+        return existing !== undefined
+          && sameDestination(existing.to, output.to)
+          && existing.amount === output.amount
+          && sameToken(existing.token, output.token);
+      });
+    if (identical) return this;
     // A valueWitness update changes sha256(value) and therefore the chunk P2SH32.
     // Drop every previously staged run so stale locks cannot dilute the identity scan.
     this.valueChunkOutputs = [...outputs];
+    this.valueChunkOutputsLock = Uint8Array.from(lockingBytecode);
     this.dynamicLayoutRevision += 1;
     return this;
   }
@@ -12485,7 +12562,7 @@ export class StatefulTransactionBuilder {
     const suffixVar = this.dynamicChunkVars.find((variable) => variable.delegateSuffix === true)
       ?? this.dynamicChunkVars[this.dynamicChunkVars.length - 1];
     if (!suffixVar) return 0;
-    let changed = moveLateChunksBeforeReverseSuffixJobs(
+    let changed = moveLateOutputsBeforeReverseSuffix(
       builder.outputs, suffixVar.lockingBytecode, jobsCount,
     );
     changed += this._reassertReverseSuffixDynamicChunks(builder, { stripSurplus: true });
@@ -12732,8 +12809,13 @@ export class StatefulTransactionBuilder {
     const groups = new Map<string, Array<{ index: number; chunkIndex: number; chunk: DerivedChunk }>>();
     for (const [index, chunk] of this.derivedChunkOutputs) {
       const chunkIndex = valueChunkIndexFromCommitment(chunk.commitment);
-      if (chunk.fixedIndex || chunkIndex === undefined || !isP2sh32LockScript(chunk.lockingBytecode)) continue;
-      const key = `${chunk.categoryId ?? this.categoryId}:${binToHex(chunk.lockingBytecode)}`;
+      // `fixedIndex` also marks probe-authenticated continuation pins. Stable resource ownership permits those
+      // pins to move atomically with their carrier; descriptor-free fixed entry/layout pins remain immovable.
+      if ((chunk.fixedIndex && !chunk.resourceIdentity)
+        || chunkIndex === undefined || !isP2sh32LockScript(chunk.lockingBytecode)) continue;
+      const key = chunk.resourceIdentity
+        ? `resource:${chunk.resourceIdentity}`
+        : `shape:${chunk.categoryId ?? this.categoryId}:${binToHex(chunk.lockingBytecode)}`;
       const group = groups.get(key) ?? [];
       group.push({ index, chunkIndex, chunk });
       groups.set(key, group);
@@ -13535,14 +13617,29 @@ export class StatefulTransactionBuilder {
       const outputCategoryId = carrier.callMode === 'delegatecall'
         ? delegatedProxy?.categoryId ?? this.categoryId
         : carrier.categoryId;
+      const externalIndex = carrierIndex < this.externalCallUtxoGroups.length ? carrierIndex : -1;
+      const aliasGroups = externalIndex >= 0
+        ? [carrier, ...(carrier.delegateCallGroupIndex === undefined
+          ? [] : [this.lowLevelCallUtxoGroups[carrier.delegateCallGroupIndex]])]
+        : [carrier, ...this.externalCallUtxoGroups.filter(
+          (group) => group.delegateCallGroupIndex === lowLevelIndex,
+        )];
+      const resourceIdentities = new Set(aliasGroups.flatMap((group) => (
+        group?.valueChunkWrites ?? []
+      )).map(valueChunkWriteResourceIdentity));
       let selectedStart = -1;
       const provisionalBase = carrier.valueChunkOutputBase;
       let preferredLocalBase = provisionalBase === undefined || provisionalBase < 0
         ? undefined
         : provisionalBase >= coordinateBase ? provisionalBase - coordinateBase : provisionalBase;
+      const exactResourceStarts = [...this.derivedChunkOutputs.entries()]
+        .filter(([, chunk]) => resourceIdentities.has(chunk.resourceIdentity ?? '')
+          && chunk.resourcePart === 'chunk:0')
+        .map(([start]) => start);
       let candidateStarts = [...this.derivedChunkOutputs.entries()]
-        .filter(([, chunk]) => (chunk.categoryId ?? this.categoryId) === outputCategoryId
-          && valueChunkIndexFromCommitment(chunk.commitment) === 0)
+        .filter(([start, chunk]) => (chunk.categoryId ?? this.categoryId) === outputCategoryId
+          && valueChunkIndexFromCommitment(chunk.commitment) === 0
+          && (exactResourceStarts.length === 0 || exactResourceStarts.includes(start)))
         .map(([start]) => start)
         .sort((left, right) => left - right);
       if (candidateStarts.length === 0) {
@@ -13609,17 +13706,23 @@ export class StatefulTransactionBuilder {
           }
         }
       }
-      const eligibleStarts = preferredLocalBase !== undefined
-        ? candidateStarts.filter((start) => start === preferredLocalBase)
-        : candidateStarts.length === 1 ? candidateStarts : [];
+      const eligibleStarts = exactResourceStarts.length > 0
+        ? (candidateStarts.length === 1 ? candidateStarts : [])
+        : preferredLocalBase !== undefined
+          ? candidateStarts.filter((start) => start === preferredLocalBase)
+          : candidateStarts.length === 1 ? candidateStarts : [];
       for (const start of eligibleStarts) {
         const firstExpected = this.derivedChunkOutputs.get(start)!;
+        const runResourceIdentity = firstExpected.resourceIdentity;
         const runLock = binToHex(firstExpected.lockingBytecode);
         let expectedWidth = 0;
         while (start + expectedWidth < builder.outputs.length) {
           const expected = this.derivedChunkOutputs.get(start + expectedWidth);
           if (!expected || (expected.categoryId ?? this.categoryId) !== outputCategoryId
             || binToHex(expected.lockingBytecode) !== runLock
+            || (runResourceIdentity !== undefined
+              && (expected.resourceIdentity !== runResourceIdentity
+                || expected.resourcePart !== `chunk:${expectedWidth}`))
             || valueChunkIndexFromCommitment(expected.commitment) !== expectedWidth) break;
           expectedWidth += 1;
         }
@@ -13670,12 +13773,13 @@ export class StatefulTransactionBuilder {
       /** Shift only return-output unlocker indices (probe-safe; no chunk-base compounding). */
       rebindReturnWitnessesOnly?: boolean;
     } = {},
-  ): void {
+  ): LateValueSuffixInsertion {
     const delegateDynamicCount = this.delegateDynamicChunksAtSuffix ? this._dynamicChunkOutputCount() : 0;
     const authenticatedSuffixCount = delegateDynamicCount + this.lateValueChunkOutputs.length;
     if (authenticatedSuffixCount === 0) {
+      const insertAt = builder.outputs.length;
       builder.addOutput(output);
-      return;
+      return { insertAt, shiftedAbsoluteWitnesses: false };
     }
     const insertAt = continuationOutputBaseBeforeSuffix(
       builder.outputs.length,
@@ -13709,8 +13813,10 @@ export class StatefulTransactionBuilder {
         },
       });
     }
+    let shiftedAbsoluteWitnesses = false;
     if (options.rebindAbsoluteWitnesses) {
       this._rebindLateValueSuffixAfterInsertion(builder, insertAt);
+      shiftedAbsoluteWitnesses = true;
     } else if (options.rebindReturnWitnessesOnly) {
       let maxReturnIdx = -1;
       for (const input of builder.inputs) {
@@ -13732,8 +13838,10 @@ export class StatefulTransactionBuilder {
       // Idx when the insert would otherwise park them on the dummy/separator.
       if (maxReturnIdx >= insertAt) {
         this._rebindReturnWitnessesAfterInsertion(builder, insertAt);
+        shiftedAbsoluteWitnesses = true;
       }
     }
+    return { insertAt, shiftedAbsoluteWitnesses };
   }
 
   /**
@@ -13821,10 +13929,52 @@ export class StatefulTransactionBuilder {
   restoreBuilderReturnOutputParams(
     builder: TransactionBuilder,
     snapshot: ReturnType<StatefulTransactionBuilder['snapshotBuilderReturnOutputParams']>,
+    insertion?: LateValueSuffixInsertion,
   ): void {
-    this.builtReturnEventOutputIndices = new Map(snapshot.built);
-    this.derivedChunkOutputs = new Map(snapshot.derivedChunkOutputs as Array<[number, never]>);
     const allGroups = [...this.externalCallUtxoGroups, ...this.lowLevelCallUtxoGroups];
+    const baseline = new Map(
+      snapshot.derivedChunkOutputs as Array<[number, DerivedChunkOutputObservation]>,
+    );
+    const probeBaseline = insertion?.shiftedAbsoluteWitnesses
+      ? new Map([...baseline].map(([index, observation]) => [
+        index >= insertion.insertAt ? index + 1 : index,
+        observation,
+      ] as const))
+      : baseline;
+    const learned = [...this.derivedChunkOutputs].filter(([index, observation]) => (
+      !sameDerivedChunkOutputObservation(probeBaseline.get(index), observation)
+    ));
+    this.builtReturnEventOutputIndices = new Map(snapshot.built);
+    this.derivedChunkOutputs = new Map(
+      snapshot.derivedChunkOutputs as Array<[number, DerivedChunkOutputObservation]>,
+    );
+    for (const [probeIndex, observation] of learned) {
+      // The inserted output is deliberately unauthenticated probe padding. Evidence naming it cannot be carried
+      // into the transaction which omits that output.
+      if (insertion && probeIndex === insertion.insertAt) continue;
+      // A probe-local splice changes semantic coordinates only when the corresponding absolute witnesses were
+      // rebound. If they stayed fixed, an observation at index N authenticates index N in the rebuilt transaction;
+      // projecting it back by one aliases adjacent resource parts (for example chunk 1 onto chunk 0).
+      const outputIndex = insertion?.shiftedAbsoluteWitnesses && probeIndex > insertion.insertAt
+        ? probeIndex - 1 : probeIndex;
+      if (sameDerivedChunkOutputObservation(this.derivedChunkOutputs.get(outputIndex), observation)) continue;
+      if (observation.resourceIdentity && observation.resourcePart) {
+        const prior = [...this.derivedChunkOutputs.entries()].find(([, candidate]) => (
+          candidate.resourceIdentity === observation.resourceIdentity
+          && candidate.resourcePart === observation.resourcePart
+        ));
+        if (prior && !sameDerivedChunkOutputObservation(prior[1], observation)) {
+          if (this.messageBusConvention === 'kernel-row-loop') {
+            throw new Error(
+              `Conflicting authenticated observation for value-chunk resource '${observation.resourceIdentity}'`,
+            );
+          }
+        } else if (prior && prior[0] !== outputIndex) {
+          this.derivedChunkOutputs.delete(prior[0]);
+        }
+      }
+      this.setDerivedChunkOutput(outputIndex, observation);
+    }
     for (const entry of snapshot.groupReturns) {
       const group = allGroups[entry.index];
       if (!group) continue;
@@ -21189,6 +21339,10 @@ export class StatefulTransactionBuilder {
       // grow TXOUTPUTCOUNT. Pin reverse-suffix jobs as the last layout write in this pass.
       this._finalizeReverseSuffixJobsLayout(finalBuilder);
       this._enforceDeclaredCollectionOutputCardinality(finalBuilder);
+      this._relocateCollidingDerivedValueChunkRuns(finalBuilder);
+      // Bind only after every final materializer has settled physical coordinates. Kernel ownership is selected
+      // by compiler resource identity; the provisional base is not allowed to override an authenticated run.
+      this.bindMaterializedValueChunkWitnesses(finalBuilder);
       debugBal12('after-reverseSuffix');
       this._syncBuilderUnlockers(finalBuilder);
     };

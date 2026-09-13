@@ -1,6 +1,7 @@
 import {
   StatefulTransactionBuilder,
   StatefulTransactionOptions,
+  sameDerivedChunkOutputObservation,
 } from '../src/stateful/StatefulTransactionBuilder.js';
 // Exercise the shipped build helper (marketplace/solidhat also resolve dist).
 import { moveLateChunksBeforeReverseSuffixJobs } from '../dist/stateful/StatefulTransactionBuilder.js';
@@ -90,6 +91,19 @@ function makeBaseOptions(overrides?: Partial<StatefulTransactionOptions>): State
 
 describe('StatefulTransactionBuilder', () => {
   describe('compiler-routed trailing resources', () => {
+    it('does not collapse physical equality across distinct resource ownership metadata', () => {
+      const lockingBytecode = new Uint8Array([0x51]);
+      const physical = { commitment: '0000aa', lockingBytecode, categoryId };
+      expect(sameDerivedChunkOutputObservation(physical, {
+        ...physical, resourceIdentity: 'resource-a', resourcePart: 'chunk:0',
+      })).toBe(false);
+      expect(sameDerivedChunkOutputObservation({
+        ...physical, resourceIdentity: 'resource-a', resourcePart: 'chunk:0',
+      }, {
+        ...physical, resourceIdentity: 'resource-a', resourcePart: 'chunk:1',
+      })).toBe(false);
+    });
+
     it('places routed loop entries before newly written dynamic chunks inside the participant frame', () => {
       const entryLock = new Uint8Array([0xaa, 0x20, ...new Array(32).fill(0x44), 0x87]);
       const chunkLock = new Uint8Array([0xaa, 0x20, ...new Array(32).fill(0x55), 0x87]);
@@ -445,6 +459,100 @@ describe('StatefulTransactionBuilder', () => {
       expect(tx.outputs.slice(-4).map((output) => output.to)).toEqual([
         change, chunkLock, chunkLock, new Uint8Array([0x6a]),
       ]);
+    });
+
+    it('keeps probe-learned chunk observations while undoing a temporary suffix insertion', () => {
+      const chunkLock = new Uint8Array([0xaa, 0x20, ...new Array(32).fill(0x2a), 0x87]);
+      const builder = new StatefulTransactionBuilder(makeBaseOptions({
+        allowImplicitNftBurn: true,
+        delegateDynamicChunksAtSuffix: true,
+        dynamicChunkVars: [{ name: 'records', type: 'bytes[]', lockingBytecode: chunkLock }],
+      }));
+      builder.setChunkRawCommitments('records', ['0001', '0102']);
+      const tx = builder.build();
+      const originalBase = tx.outputs.length - 3;
+      const internals = builder as unknown as {
+        derivedChunkOutputs: Map<number, {
+          commitment: string; lockingBytecode: Uint8Array; categoryId?: string; fixedIndex?: boolean;
+        }>;
+      };
+      internals.derivedChunkOutputs.set(originalBase, {
+        commitment: '0001', lockingBytecode: chunkLock, categoryId,
+      });
+      const snapshot = builder.snapshotBuilderReturnOutputParams(tx);
+      const insertion = builder.insertBeforeLateValueSuffix(
+        tx, { to: change, amount: 1000n }, { rebindAbsoluteWitnesses: true },
+      );
+      expect(insertion).toEqual({ insertAt: originalBase + 1, shiftedAbsoluteWitnesses: true });
+      internals.derivedChunkOutputs.set(insertion.insertAt, {
+        commitment: '0000dead', lockingBytecode: chunkLock, categoryId,
+      });
+      internals.derivedChunkOutputs.set(originalBase + 2, {
+        commitment: '0102', lockingBytecode: chunkLock, categoryId,
+      });
+
+      builder.restoreBuilderReturnOutputParams(tx, snapshot, insertion);
+
+      expect(internals.derivedChunkOutputs.get(originalBase)?.commitment).toBe('0001');
+      expect(internals.derivedChunkOutputs.get(originalBase + 1)?.commitment).toBe('0102');
+      expect([...internals.derivedChunkOutputs.values()].some(
+        (observation) => observation.commitment === '0000dead',
+      )).toBe(false);
+    });
+
+    it('keeps learned absolute indices fixed when a probe insertion did not shift witnesses', () => {
+      const chunkLock = new Uint8Array([0xaa, 0x20, ...new Array(32).fill(0x2c), 0x87]);
+      const builder = new StatefulTransactionBuilder(makeBaseOptions({
+        allowImplicitNftBurn: true,
+        delegateDynamicChunksAtSuffix: true,
+        dynamicChunkVars: [{ name: 'records', type: 'bytes[]', lockingBytecode: chunkLock }],
+      }));
+      builder.setChunkRawCommitments('records', ['0001', '0102']);
+      const tx = builder.build();
+      const originalBase = tx.outputs.length - 3;
+      const internals = builder as unknown as {
+        derivedChunkOutputs: Map<number, {
+          commitment: string; lockingBytecode: Uint8Array; categoryId?: string; fixedIndex?: boolean;
+        }>;
+      };
+      internals.derivedChunkOutputs.set(originalBase, {
+        commitment: '0001', lockingBytecode: chunkLock, categoryId,
+      });
+      const snapshot = builder.snapshotBuilderReturnOutputParams(tx);
+      const insertion = builder.insertBeforeLateValueSuffix(
+        tx, { to: change, amount: 1000n }, { rebindReturnWitnessesOnly: true },
+      );
+      expect(insertion.shiftedAbsoluteWitnesses).toBe(false);
+      internals.derivedChunkOutputs.set(insertion.insertAt + 1, {
+        commitment: '0102', lockingBytecode: chunkLock, categoryId,
+      });
+
+      builder.restoreBuilderReturnOutputParams(tx, snapshot, insertion);
+
+      expect(internals.derivedChunkOutputs.get(insertion.insertAt + 1)?.commitment).toBe('0102');
+      expect(internals.derivedChunkOutputs.get(insertion.insertAt)?.commitment).not.toBe('0102');
+    });
+
+    it('does not advance layout revision for an identical staged value-chunk run', () => {
+      const chunkLock = new Uint8Array([0xaa, 0x20, ...new Array(32).fill(0x2b), 0x87]);
+      const builder = new StatefulTransactionBuilder(makeBaseOptions({ allowImplicitNftBurn: true }));
+      const outputs = [{
+        to: chunkLock,
+        amount: 1200n,
+        token: {
+          category: categoryId,
+          amount: 0n,
+          nft: { capability: 'mutable' as const, commitment: '0000beef' },
+        },
+      }];
+      builder.stageValueChunkOutputs(chunkLock, outputs);
+      const revision = builder.getDynamicLayoutRevision();
+
+      builder.stageValueChunkOutputs(Uint8Array.from(chunkLock), [{
+        ...outputs[0], token: { ...outputs[0].token, nft: { ...outputs[0].token.nft } },
+      }]);
+
+      expect(builder.getDynamicLayoutRevision()).toBe(revision);
     });
 
     it('reconciles a continuation witness after a participant output occupies its provisional base', () => {

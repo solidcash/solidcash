@@ -1,6 +1,7 @@
 import { binToHex, bigIntToVmNumber, hexToBin, utf8ToBin, vmNumberToBigInt } from '@bitauth/libauth';
 import {
-  sha256 as sha256Sync, VALUE_HEAD_SIZE, VALUE_CHUNK_SIZE, type Artifact, type EntryAccessAbi,
+  sha256 as sha256Sync, VALUE_HEAD_SIZE, VALUE_CHUNK_SIZE, VALUE_CHUNK_MAX_COUNT,
+  type Artifact, type EntryAccessAbi,
 } from '@solidcash/utils';
 import { describe, expect, it } from 'vitest';
 import { vmapBatchWitnessFallback } from '../../src/stateful/StatefulContract.js';
@@ -26,6 +27,7 @@ import {
   collidingParticipantGroupIndex,
   physicalParticipantWidth,
   materializedParticipantWidth,
+  participantSpanOverlapsLane,
   gatherContiguousPlainFunders,
   groupLayoutBlockSize,
   groupLayoutTrailingBase,
@@ -107,7 +109,7 @@ import {
   writerBlockOccupancyEnd,
   relocateChangeAfterOccupancy,
   packJobsAgainstOpReturn,
-  moveLateChunksBeforeReverseSuffixJobs,
+  moveLateOutputsBeforeReverseSuffix,
   valueChunkIndexFromCommitment,
   isPersistValueChunkCommitment,
   persistValueChunkBase,
@@ -575,13 +577,15 @@ describe('generic persisted value-chunk write identity', () => {
     })).toThrow(/Ambiguous compiler-described value-chunk write identity/);
   });
 
-  it('fails closed on same-category resource ambiguity or malformed compiler identity', () => {
+  it('distinguishes multiple valid resources from malformed compiler identity', () => {
     const [renamed] = describeValueChunkWrites(makeGroup('appendNotice'));
     const [independent] = describeValueChunkWrites(makeGroup(
       'appendAudit', 'audit:mapping(int => Notice[])',
     ));
     expect(independent.categoryId).toBe(renamed.categoryId);
-    expect(selectValueChunkWriteCategory([renamed, independent])).toEqual({ status: 'ambiguous' });
+    expect(selectValueChunkWriteCategory([renamed, independent])).toEqual({
+      status: 'multi', writes: [renamed, independent],
+    });
     expect(selectValueChunkWriteCategory([
       { ...renamed, collectionHash: '00'.repeat(32) },
     ])).toEqual({ status: 'ambiguous' });
@@ -850,13 +854,15 @@ describe('generic persisted value-chunk write identity', () => {
     expect(isInitialValueChunkWrite({ status: 'absent' }, true)).toBe(true);
   });
 
-  it('fails closed when same-category descriptor views disagree by key or planned operation', () => {
+  it('distinguishes independent keys from conflicting views of one resource', () => {
     const [update] = describeValueChunkWrites(makeGroup('appendNotice'));
     const distinctKey = { ...update, keySlot: '09'.repeat(32) };
-    expect(selectValueChunkWriteCategory([update, distinctKey])).toEqual({ status: 'ambiguous' });
-    expect(() => isInitialValueChunkWrite(
+    expect(selectValueChunkWriteCategory([update, distinctKey])).toEqual({
+      status: 'multi', writes: [update, distinctKey],
+    });
+    expect(isInitialValueChunkWrite(
       selectValueChunkWriteCategory([update, distinctKey]), true,
-    )).toThrow(/Ambiguous compiler-described value-chunk write identity/);
+    )).toBe(false);
 
     expect(selectValueChunkWriteCategory([
       update, { ...update, operation: 'insert' },
@@ -1488,6 +1494,12 @@ describe('assignPhysicalReturnIndices', () => {
         slots: [{ kind: 'returnEvent', offset: 3 }],
       },
     }))).toBe(4);
+  });
+
+  it('detects a lane collision in output-only participant coordinates', () => {
+    expect(participantSpanOverlapsLane(18, 9, { start: 26, endExclusive: 28 })).toBe(true);
+    expect(participantSpanOverlapsLane(18, 5, { start: 26, endExclusive: 28 })).toBe(false);
+    expect(participantSpanOverlapsLane(28, 9, { start: 26, endExclusive: 28 })).toBe(false);
   });
 
   it('includes an in-block return slid past a dynamic output band in materialized width', () => {
@@ -2681,7 +2693,8 @@ describe('assignPhysicalReturnIndices', () => {
       amount: 1200n,
       token: { amount: 0n, category: 'ee64', nft: { capability: 'none', commitment: '005e1976a91447d9fe52d462' } },
     })).toBe(true);
-    expect(emitOutputs[21]?.token).toBeUndefined();
+    expect(emitOutputs[21]?.token?.nft?.commitment)
+      .toBe('005e1976a91447d9fe52d462741f418e9dd5efaa6ae7e7adb60088ac0000');
     const emptyDest = Array.from({ length: 22 }, () => ({ to: Uint8Array.of(0x51), amount: 1000n }));
     emptyDest[21] = {
       to: Uint8Array.from([0xaa, 0x20, 0x7b]),
@@ -2955,7 +2968,7 @@ describe('assignPhysicalReturnIndices', () => {
       { to: Uint8Array.of(0xaa, 0x20), token: { nft: { capability: 'mutable' as const, commitment: 'late' }, category: 'ff' } },
       { to: Uint8Array.of(0x6a), amount: 0n },
     ];
-    expect(moveLateChunksBeforeReverseSuffixJobs(lateAfterJobs, jobsLock, 2)).toBe(2);
+    expect(moveLateOutputsBeforeReverseSuffix(lateAfterJobs, jobsLock, 2)).toBe(2);
     expect(lateAfterJobs[1]?.token?.nft?.commitment).toBe('00aa');
     expect(lateAfterJobs[2]?.token?.nft?.commitment).toBe('01bb');
     expect(lateAfterJobs[3]?.to).toEqual(Uint8Array.of(0x6a));
@@ -3311,6 +3324,15 @@ describe('assignPhysicalReturnIndices', () => {
     expect(binToHex(expectedFromOtcEqualVerify(actual, expected, binToHex(actual)))).toBe('0500475522ee138ae5');
     const stamped = applyRedeemLockToChunks(chunks, redeemPin);
     expect(stamped.every((chunk) => binToHex(chunk.lockingBytecode) === binToHex(redeemPin))).toBe(true);
+  });
+
+  it('ignores oversized value-chunk extractor decoys before hashing or width selection', () => {
+    const oversized = new Uint8Array(
+      VALUE_HEAD_SIZE + VALUE_CHUNK_SIZE * VALUE_CHUNK_MAX_COUNT + 1,
+    ).fill(0x5a);
+    const pinLock = p2sh32LockFromValueRoot(sha256Sync(oversized));
+
+    expect(selectHashedValueForChunkPin([[oversized]], pinLock, 1)).toBeUndefined();
   });
 
   it('keeps an observed value-chunk run atomic when a staged run has the same commitments', () => {

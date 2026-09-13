@@ -21,7 +21,7 @@ import { TransactionBuilder } from '../TransactionBuilder.js';
 import { Contract } from '../Contract.js';
 import { addressToLockScript, scriptToLockingBytecode } from '../utils.js';
 import {
-  decodeEvmReturnValue, evalComputedKey, isCanonicalEvmScalarReturnVector,
+  decodeAuthenticatedProducerResultVector, evalComputedKey, isCanonicalEvmScalarReturnVector,
   StatefulContract, StatefulFunctionCall,
 } from '../stateful/StatefulContract.js';
 import { valueChunkIndexFromCommitment } from '../stateful/StatefulTransactionBuilder.js';
@@ -1722,22 +1722,23 @@ export class AtomicMessageBusComposition {
       for (const invocation of returning) {
         if (invocation.parent === null || invocation.consumerCallsiteId === undefined) continue;
         const resultHex = results[invocation.index];
-        if (resultHex === undefined || invocation.resultTypes.length !== 1) continue;
+        if (resultHex === undefined) continue;
         const artifact = plan.participants[invocation.callee].artifact;
-        let value: FunctionArgument | undefined;
-        if (artifactUsesSolidityAbi(artifact)) {
-          value = decodeEvmReturnValue(hexToBin(resultHex), invocation.resultTypes[0]);
-        } else {
-          try {
-            const bytes = hexToBin(resultHex);
-            const decoded = decodePushdataValue(bytes, 0, invocation.resultTypes[0], artifact.structs);
-            if (decoded.bytesConsumed === bytes.length) value = decoded.value as FunctionArgument;
-          } catch {
-            // Unsupported result shapes remain ordinary fixed-point claims; no argument is guessed.
-          }
-        }
+        const decoded = decodeAuthenticatedProducerResultVector(
+          hexToBin(resultHex), invocation.resultTypes,
+          artifact.structs ?? artifact.stateLayout?.structs,
+          artifactUsesSolidityAbi(artifact), artifact.enums,
+        );
+        const value = decoded === undefined
+          ? undefined
+          : (decoded.length === 1 ? decoded[0] : decoded) as FunctionArgument;
         if (value === undefined) continue;
         const siblings = resultsByParent.get(invocation.parent) ?? new Map<number, FunctionArgument>();
+        if (siblings.has(invocation.consumerCallsiteId)) {
+          throw new Error(
+            `Atomic graph has duplicate authenticated producer lane ${invocation.parent}:${invocation.consumerCallsiteId}.`,
+          );
+        }
         siblings.set(invocation.consumerCallsiteId, value);
         resultsByParent.set(invocation.parent, siblings);
       }

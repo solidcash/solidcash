@@ -89,7 +89,7 @@ import {
   runtimeLoopEventRepeatSource,
 } from './runtime-loop-event-domain.js';
 import { assertConstructedKeyVectorRouteBinding } from './ConstructedKeyVector.js';
-import { encodeEvmInvocationResult } from './evm-abi-result.js';
+import { decodeEvmInvocationResult, encodeEvmInvocationResult } from './evm-abi-result.js';
 import { buildKeccakComputeSidecar, extractKeccakPreimageFromTrace } from '../keccak/keccakComputeSidecar.js';
 import {
   buildEcrecoverComputePlaceholders, buildEcrecoverComputeSidecars, computeEcrecoverWitness, probeEcrecoverSplit,
@@ -221,6 +221,8 @@ import {
   selectValueChunkCommitmentObservations,
   type ValueChunkTraceObservation,
   type ValueChunkWriteDescriptor,
+  valueChunkWriteResourceIdentity,
+  sameDerivedChunkOutputObservation,
 } from './StatefulTransactionBuilder.js';
 import {
   OnChainState, StateReader, type ParsedEvent, type EventFilter,
@@ -1806,13 +1808,7 @@ function isValueChunkOutputPin(state: AuthenticationProgramStateCommon): boolean
 function extractRouteChunkPin(
   trace: AuthenticationProgramStateCommon[],
 ): { outputIndex: number; lockingBytecode: Uint8Array; commitment: string } | undefined {
-  const isChunkShaped = (instructions: AuthenticationProgramStateCommon['instructions']): boolean => {
-    const ops = instructions as Array<{ opcode: number; data?: Uint8Array }>;
-    return ops.some((instruction, at) => instruction.data?.length === 1
-      && instruction.data[0] === VALUE_CHUNK_SIZE && ops[at + 1]?.opcode === Op.OP_MUL
-      && ops[at + 2]?.data?.length === 1 && ops[at + 2]?.data?.[0] === VALUE_HEAD_SIZE
-      && ops[at + 3]?.opcode === Op.OP_ADD);
-  };
+  const isChunkShaped = isValueChunkProbeFrame;
   // Prefer the latest outlined address check. Earlier direct pins can remain in a longer trace after they have
   // already been satisfied; returning one of those first would hide the next failing outlined chunk.
   for (let i = trace.length - 1; i >= 0; i--) {
@@ -2073,11 +2069,54 @@ function extractAllRouteValueChunks(
   }));
 }
 
+export type RouteProbeObservation = {
+  identity: string;
+  fingerprint: string;
+};
+
+/**
+ * Record probe facts by their compiler-authenticated resource, independently of physical builder mutations.
+ * A kernel probe is deterministic: observing different materialization for the same resource in one convergence
+ * run is an SDK/compiler disagreement, not additional progress.
+ */
+export function recordRouteProbeObservation(
+  observations: Map<string, string>,
+  observation: RouteProbeObservation,
+  convention?: 'legacy-unroll' | 'kernel-row-loop',
+): 'new' | 'same' | 'changed' {
+  const previous = observations.get(observation.identity);
+  if (previous === undefined) {
+    observations.set(observation.identity, observation.fingerprint);
+    return 'new';
+  }
+  if (previous === observation.fingerprint) return 'same';
+  if (convention === 'kernel-row-loop') {
+    throw new Error(
+      `Kernel route probe produced unstable materialization for ${observation.identity}.`,
+    );
+  }
+  observations.set(observation.identity, observation.fingerprint);
+  return 'changed';
+}
+
+/** Static convergence budget: each dynamic resource may reveal one address and one complete value run. */
+export function progressiveRouteProbePassLimit(
+  entrySlotCount: number,
+  writes: readonly ValueChunkWriteDescriptor[],
+): number {
+  const resources = new Set(writes.map(valueChunkWriteResourceIdentity));
+  return Math.max(1, entrySlotCount + 2 * Math.max(1, resources.size) + 1);
+}
+
+type RouteValueChunkProgress = { changed: boolean; discovered: boolean };
+
 function deriveRouteValueChunks(
   group: ExternalCallUtxoGroup, bOutputBase: number, trace: AuthenticationProgramStateCommon[],
   stb: StatefulTransactionBuilder,
-): boolean {
-  if (!group.blockLayout) return false;
+  observations: Map<string, string>,
+  convention?: 'legacy-unroll' | 'kernel-row-loop',
+): RouteValueChunkProgress {
+  if (!group.blockLayout) return { changed: false, discovered: false };
   const sharedBand = stb.getPublishJobEventsBand();
   const explicitBase = group.valueChunkOutputBase;
   const witness = valueChunkOutputWitnessCarrier(stb, group);
@@ -2098,7 +2137,7 @@ function deriveRouteValueChunks(
     }
     : extractRouteChunkPin(trace)
       ?? extractFailingP2sh32OutputPin(trace, pinBand);
-  if (!pin) return false;
+  if (!pin) return { changed: false, discovered: false };
   if (usesSharedBand && isP2sh32LockingBytecode(pin.lockingBytecode)) {
     stb.setJobEventsRedeemLock(pin.lockingBytecode);
   }
@@ -2119,6 +2158,8 @@ function deriveRouteValueChunks(
   // participant's already-fixed input base. This also applies to ordinary nested handlers, not only compiler
   // routes and embedded delegates; they use the same chunk covenant and balanced block geometry.
   let progressed = false;
+  let discovered = false;
+  const writes = group.valueChunkWrites ?? describeValueChunkWrites(group);
   const allChunks = extractAllRouteValueChunks(
     trace, pin,
     continuationBase,
@@ -2126,7 +2167,7 @@ function deriveRouteValueChunks(
       ? sharedBand?.nNew ?? 0
       : group.valueChunkOutputCount ?? identityPin?.nNew ?? 0,
     usesSharedBand ? group.categoryId : undefined,
-    group.valueChunkWrites ?? describeValueChunkWrites(group),
+    writes,
   );
   if (witness && allChunks.length > 0) {
     for (const collection of chunkableValueWriteCollections(witness.carrier, witness.abiFunction)) {
@@ -2137,7 +2178,7 @@ function deriveRouteValueChunks(
   }
   if (usesSharedBand && group.categoryId && lastExtractedComputedValue) {
     const selection = selectValueChunkWriteCategory(
-      group.valueChunkWrites ?? describeValueChunkWrites(group),
+      writes,
     );
     if (selection.status === 'absent' && permitsLegacyNamedValueChunkFallback(
       [group], (physicalExternalCallFunction(group) as MessageBusRuntimeAbiFunction | undefined)
@@ -2166,7 +2207,30 @@ function deriveRouteValueChunks(
       fixedIndex: !usesSharedBand,
     }) || progressed;
   }
-  if (progressed) return true;
+  if (progressed) {
+    const selection = selectValueChunkWriteCategory(writes);
+    if (convention === 'kernel-row-loop'
+      && selection.status !== 'exact') {
+      throw new Error(
+        'Kernel route value-chunk derivation requires one exact compiler-published resource identity.',
+      );
+    }
+    const identity = selection.status === 'exact'
+      ? `value-run:${valueChunkWriteResourceIdentity(selection.write)}`
+      : `value-coordinate:${group.categoryId}:${pin.outputIndex}`;
+    const fingerprint = allChunks.length > 0
+      ? allChunks.map((chunk) => [
+        chunk.outputIndex, chunk.commitment, binToHex(chunk.lockingBytecode),
+      ].join(':')).join('|')
+      : [pin.outputIndex, pin.commitment, binToHex(pin.lockingBytecode)].join(':');
+    discovered = recordRouteProbeObservation(
+      observations, { identity, fingerprint }, convention,
+    ) !== 'same';
+    if (convention === 'kernel-row-loop' && !discovered) {
+      throw new Error(`Kernel route probe repeated a non-idempotent mutation for ${identity}.`);
+    }
+    return { changed: true, discovered };
+  }
 
   // After computed chunks converge, the route can reach an active fixed entry whose balanced input was a plain
   // funder (an absent sorted-batch target). Its outlined address helper fails before the commitment is visible.
@@ -2188,9 +2252,19 @@ function deriveRouteValueChunks(
     if (stb.setDerivedChunkOutput(outputIndex, {
       commitment: '00', lockingBytecode: expected, categoryId: group.categoryId,
       fixedIndex: explicitBase !== undefined && !usesSharedBand,
-    })) return true;
+    })) {
+      const identity = `entry-lock:${group.categoryId}:${outputIndex}`;
+      discovered = recordRouteProbeObservation(observations, {
+        identity,
+        fingerprint: binToHex(expected),
+      }, convention) !== 'same';
+      if (convention === 'kernel-row-loop' && !discovered) {
+        throw new Error(`Kernel route probe repeated a non-idempotent mutation for ${identity}.`);
+      }
+      return { changed: true, discovered };
+    }
   }
-  return false;
+  return { changed: false, discovered: false };
 }
 
 function valueChunkOutputWitnessCarrier(
@@ -2211,8 +2285,10 @@ function valueChunkOutputWitnessCarrier(
     ...((group.externalContract?.inner.artifact.abi as readonly AbiFunction[] | undefined) ?? []),
   ];
   const abiFunction = abiCandidates.find((candidate) => (
-    candidate?.name === carrierFunctionName
-      && candidate.inputs.some((input) => input.name === '__internal__valueChunkOutputBase')
+    candidate?.inputs.some((input) => input.name === '__internal__valueChunkOutputBase')
+      && (candidate === carrier.compilerRoute?.abiFunction
+        || candidate === group.compilerRoute?.abiFunction
+        || candidate.name === carrierFunctionName)
   ));
   // Several logical calls can share one delegated implementation input. The physical carrier's unlock bytecode,
   // rather than whichever logical call happens to represent the fused group, consumes this absolute witness.
@@ -2409,6 +2485,21 @@ function chunkableValueWriteCollections(
     return access.chunkableArrayValue === true || collection?.chunkableValue === true
       ? [access.collection] : [];
   })))];
+}
+
+/** Resolve the one authenticated storage resource addressable by the scalar continuation-base witness. */
+export function resolveKernelValueChunkResourceLane(
+  runs: readonly { collection: string; slot?: Uint8Array }[],
+): string {
+  const resourceLanes = new Set(runs.flatMap((run) => (
+    run.slot?.length === 32 ? [`${run.collection}:${binToHex(run.slot)}`] : []
+  )));
+  if (resourceLanes.size !== 1 || runs.some((run) => run.slot?.length !== 32)) {
+    throw new Error(
+      'Kernel chunkable-value output placement requires one exact compiler-published resource lane.',
+    );
+  }
+  return [...resourceLanes][0];
 }
 
 /**
@@ -3289,6 +3380,7 @@ export function decodeAuthenticatedProducerResultVector(
   types: readonly string[],
   structs: Artifact['structs'],
   solidityAbi: boolean,
+  enums?: Artifact['enums'],
 ): FunctionArgument[] | undefined {
   if (types.length === 0) return undefined;
   if (!solidityAbi) {
@@ -3307,40 +3399,7 @@ export function decodeAuthenticatedProducerResultVector(
     return offset === value.length ? decoded : undefined;
   }
 
-  if (!isCanonicalEvmReturnVector(value, types)) return undefined;
-  const decoded: FunctionArgument[] = [];
-  for (let index = 0; index < types.length; index += 1) {
-    const type = types[index];
-    const wordOffset = index * 32;
-    if (EVM_DYNAMIC_RETURN_TYPES.has(type)) {
-      const payloadOffset = decodeEvmReturnWord(value, wordOffset);
-      if (payloadOffset === undefined) return undefined;
-      const length = decodeEvmReturnWord(value, payloadOffset);
-      if (length === undefined) return undefined;
-      const payload = value.slice(payloadOffset + 32, payloadOffset + 32 + length);
-      if (type === 'bytes') decoded.push(payload);
-      else {
-        const stringValue = binToUtf8(payload);
-        if (binToHex(utf8ToBin(stringValue)) !== binToHex(payload)) return undefined;
-        decoded.push(stringValue);
-      }
-      continue;
-    }
-    const word = value.slice(wordOffset, wordOffset + 32);
-    const scalar = decodeEvmScalarReturn(word, type);
-    if (scalar !== undefined) {
-      decoded.push(scalar);
-      continue;
-    }
-    if (type === 'address' || type === 'address payable') {
-      decoded.push(word.slice(12));
-      continue;
-    }
-    const fixedBytes = /^bytes([1-9]|[12][0-9]|3[0-2])$/.exec(type);
-    if (!fixedBytes) return undefined;
-    decoded.push(word.slice(0, Number(fixedBytes[1])));
-  }
-  return decoded;
+  return decodeEvmInvocationResult(value, types, structs, enums) as FunctionArgument[] | undefined;
 }
 
 /** Bind compiler-identified returning call expressions to already authenticated invocation results. */
@@ -4230,6 +4289,185 @@ function reduceProbeTrace(
   }
   if (full.length > 0) filtered.push(full[full.length - 1]);
   return filtered;
+}
+
+/** The compiler's value-chunk loop computes `i * 72 + 28` in the frame which owns the pin. */
+function isValueChunkProbeFrame(
+  instructions: AuthenticationProgramStateCommon['instructions'],
+): boolean {
+  const ops = instructions as Array<{ opcode: number; data?: Uint8Array }>;
+  return ops.some((instruction, at) => instruction.data?.length === 1
+    && instruction.data[0] === VALUE_CHUNK_SIZE && ops[at + 1]?.opcode === Op.OP_MUL
+    && ops[at + 2]?.data?.length === 1 && ops[at + 2]?.data?.[0] === VALUE_HEAD_SIZE
+    && ops[at + 3]?.opcode === Op.OP_ADD);
+}
+
+/**
+ * Compact a faithful OP_INVOKE trace to the semantic observations consumed by route settlement. Byte-array
+ * values are immutable in libauth, so retained projections share them while releasing cloned stack containers.
+ */
+export function compactFaithfulProbeTrace(
+  full: AuthenticationProgramStateCommon[],
+): AuthenticationProgramStateCommon[] {
+  if (full.length === 0) return [];
+
+  const maximumCandidateBytes = VALUE_HEAD_SIZE + VALUE_CHUNK_SIZE * VALUE_CHUNK_MAX_COUNT;
+  const selected = new Set<number>();
+  let redeemAnchor = -1;
+  let longestInstructions = -1;
+  let redeemInstructions: AuthenticationProgramStateCommon['instructions'] | undefined;
+  const longItems = new Map<string, Uint8Array>();
+  const authItems = new Map<string, Uint8Array>();
+  const tailRootHexes = new Set<string>();
+  const lockDigestHexes = new Set<string>();
+  const sameStackAuthenticated = new Set<string>();
+  const digestCache = new WeakMap<Uint8Array, string>();
+  const digestOf = (value: Uint8Array): string => {
+    const cached = digestCache.get(value);
+    if (cached !== undefined) return cached;
+    const digest = binToHex(sha256Sync(value));
+    digestCache.set(value, digest);
+    return digest;
+  };
+  const stacksOf = (state: AuthenticationProgramStateCommon): readonly (readonly Uint8Array[])[] => [
+    state.stack, state.alternateStack ?? [],
+  ];
+  // Script stack limits bound the live candidates, but a malformed/debug-only trace must not turn distinct
+  // intermediate values into another unbounded retention path. Exceeding this limit is an internal settlement
+  // failure rather than permission to silently discard authenticated evidence.
+  const MAX_COMPACT_TRACE_VALUES = 4096;
+  const retainBounded = (values: Map<string, Uint8Array>, key: string, item: Uint8Array): void => {
+    if (values.has(key)) return;
+    if (values.size >= MAX_COMPACT_TRACE_VALUES) {
+      throw new Error('Faithful route probe produced too many distinct extractor values to compact safely.');
+    }
+    values.set(key, item);
+  };
+
+  for (let index = 0; index < full.length; index++) {
+    const state = full[index];
+    const opcode = state.instructions[state.ip]?.opcode;
+    if (state.ip === 0 && state.instructions.length > longestInstructions) {
+      longestInstructions = state.instructions.length;
+      redeemInstructions = state.instructions;
+    }
+    const identityCountPin = (opcode === Op.OP_EQUALVERIFY
+      && state.instructions[state.ip - 1]?.opcode === Op.OP_DROP
+      && state.instructions[state.ip + 1]?.opcode === Op.OP_2DROP)
+      || (opcode === Op.OP_2DROP
+        && state.instructions[state.ip - 1]?.opcode === Op.OP_EQUALVERIFY
+        && state.instructions[state.ip - 2]?.opcode === Op.OP_DROP);
+    if (opcode !== undefined && (PROBE_TRACE_OPCODES.has(opcode) || identityCountPin)) selected.add(index);
+    for (const stack of stacksOf(state)) {
+      const localDigests = new Set(stack.filter((item) => item.length === 32).map(binToHex));
+      for (const item of stack) {
+        if (item.length > 60 && item.length <= maximumCandidateBytes) {
+          // Hashing avoids allocating a multi-megabyte hex string for every cloned occurrence. The digest is
+          // also the authentication primitive used by the value-tail extractor, so content-equivalent clones
+          // collapse under the same key without weakening its selection rule.
+          const digest = digestOf(item);
+          const key = `${item.length}:${digest}`;
+          retainBounded(longItems, key, item);
+          if (localDigests.has(digest)) sameStackAuthenticated.add(key);
+        }
+        if (item.length === 64) {
+          const storedLength = item[0]! | (item[1]! << 8) | (item[2]! << 16) | (item[3]! << 24);
+          if (storedLength > 60) tailRootHexes.add(binToHex(item.subarray(4, 36)));
+        }
+        if (isP2sh32LockingBytecode(item)) lockDigestHexes.add(binToHex(item.subarray(2, 34)));
+        if ((item.length === 32 || item.length === 64 || isP2sh32LockingBytecode(item))
+        ) {
+          retainBounded(authItems, `${item.length}:${binToHex(item)}`, item);
+        }
+      }
+    }
+  }
+
+  if (redeemInstructions) {
+    for (let index = full.length - 1; index >= 0; index--) {
+      if (full[index].ip === 0 && full[index].instructions === redeemInstructions) {
+        redeemAnchor = index;
+        break;
+      }
+    }
+  }
+
+  // Outlining may leave the chunk-loop signature in the caller rather than the OUTPUTBYTECODE helper.
+  for (const index of [...selected]) {
+    const state = full[index];
+    if (state.instructions[state.ip]?.opcode !== Op.OP_OUTPUTBYTECODE) continue;
+    for (let prior = index - 1; prior >= Math.max(0, index - 96); prior--) {
+      if (full[prior].instructions === state.instructions) continue;
+      if (!isValueChunkProbeFrame(full[prior].instructions)) continue;
+      selected.add(prior);
+      break;
+    }
+  }
+  if (redeemAnchor >= 0) selected.add(redeemAnchor);
+  selected.add(full.length - 1);
+
+  const isIdentityCountPin = (state: AuthenticationProgramStateCommon): boolean => {
+    const opcode = state.instructions[state.ip]?.opcode;
+    return (opcode === Op.OP_EQUALVERIFY
+      && state.instructions[state.ip - 1]?.opcode === Op.OP_DROP
+      && state.instructions[state.ip + 1]?.opcode === Op.OP_2DROP)
+      || (opcode === Op.OP_2DROP
+        && state.instructions[state.ip - 1]?.opcode === Op.OP_EQUALVERIFY
+        && state.instructions[state.ip - 2]?.opcode === Op.OP_DROP);
+  };
+  const projectStack = (state: AuthenticationProgramStateCommon, terminal: boolean): Uint8Array[] => {
+    const opcode = state.instructions[state.ip]?.opcode;
+    const bounded = (items: Uint8Array[]): Uint8Array[] => items.filter(
+      (item) => item.length <= maximumCandidateBytes,
+    );
+    if (isIdentityCountPin(state)) {
+      return bounded(state.stack.filter((item, index) => index >= state.stack.length - 2
+        || (item.length > 60 && item.length <= maximumCandidateBytes)
+        || isP2sh32LockingBytecode(item)));
+    }
+    if (terminal) {
+      return bounded(state.stack.filter((item, index) => index >= state.stack.length - 16
+        || item.length <= 8 || item.length === 32 || item.length === 35
+        || (item.length >= 60 && item.length <= maximumCandidateBytes)));
+    }
+    if (opcode === Op.OP_INPUTBYTECODE) return bounded(state.stack.slice(-3));
+    if (opcode === Op.OP_EQUALVERIFY) return bounded(state.stack.slice(-2));
+    if (opcode !== undefined && PROBE_TRACE_OPCODES.has(opcode)) return bounded(state.stack.slice(-4));
+    return [];
+  };
+  const project = (state: AuthenticationProgramStateCommon, terminal = false): AuthenticationProgramStateCommon => ({
+    ...state,
+    stack: projectStack(state, terminal),
+    alternateStack: [],
+    controlStack: state.controlStack.filter((frame) => typeof frame === 'boolean'),
+  });
+  const compact = [...selected].sort((left, right) => left - right)
+    .map((index) => project(full[index], index === full.length - 1));
+
+  // Keep authenticated full-value candidates and the widest count-pin fallback. A synthetic non-instruction
+  // state makes these values visible to the existing stack extractor without interrupting output/equality pairs.
+  let widest: Uint8Array | undefined;
+  const candidates: Uint8Array[] = [];
+  for (const [key, item] of longItems) {
+    if (!widest || item.length >= widest.length) widest = item;
+    const digest = digestOf(item);
+    if (sameStackAuthenticated.has(key) || tailRootHexes.has(digest) || lockDigestHexes.has(digest)) {
+      candidates.push(item);
+    }
+  }
+  if (widest && !candidates.includes(widest)) candidates.push(widest);
+  if (candidates.length > 0 || authItems.size > 0) {
+    const terminal = full[full.length - 1];
+    compact.splice(Math.max(0, compact.length - 1), 0, {
+      ...terminal,
+      ip: -1,
+      instructions: [],
+      stack: [...candidates, ...authItems.values()],
+      alternateStack: [],
+      controlStack: [],
+    });
+  }
+  return compact;
 }
 
 /** Evaluate a probe without retaining millions of irrelevant VM states under relaxed private-network limits. */
@@ -12337,9 +12575,17 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             // trace can reveal only the first pending commitment. Feed each
             // newly revealed commitment back into the probe and continue
             // until every reachable fixed entry slot has been materialized.
-            // Each recovered value chunk costs one extra pass (the covenant only reveals chunk i+1 once i is
-            // satisfied), so the entry-slot budget alone runs out mid-value. Extend it as chunks land, capped.
-            let chunkPasses = 0;
+            // Probe progress is resource-based, not setter-based. A long value is recovered as one complete run;
+            // physical output replacement must never extend its own convergence budget.
+            const valueChunkWritesForProbe = group.valueChunkWrites ?? describeValueChunkWrites(group);
+            const routeConvention = (physicalExternalCallFunction(group) as MessageBusRuntimeAbiFunction | undefined)
+              ?.messageBusConvention
+              ?? group.logicalArtifact?.messageBus?.convention
+              ?? group.externalContract?.inner.artifact.messageBus?.convention;
+            const routeProbeObservations = new Map<string, string>();
+            const routeProbePassLimit = progressiveRouteProbePassLimit(
+              entrySlotCount, valueChunkWritesForProbe,
+            );
             // A direct call can write several mapping entries too (for example, allowance + two balances). Its
             // first faithful trace already reveals the first mismatch, so install that observation and rebuild
             // before entering the same progressive loop used by routed calls. Otherwise the accepted transaction
@@ -12362,8 +12608,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 });
               }
             }
-            for (let pass = 0; entrySlotCount > 0
-              && pass <= entrySlotCount + chunkPasses; pass++) {
+            for (let pass = 0; entrySlotCount > 0 && pass < routeProbePassLimit; pass++) {
               const revealed = extractCommitmentMapFromTrace(entryTrace,
                 { min: bOutputBase, max: bOutputBase + group.blockInputs.length }, true);
               if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
@@ -12409,11 +12654,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   progressed = true;
                 }
               }
-              if (deriveRouteValueChunks(group, bOutputBase, entryTrace, stb)) {
-                progressed = true;
-                if (chunkPasses < VALUE_CHUNK_MAX_COUNT) chunkPasses += 1;
-              }
-              if (!progressed || pass === entrySlotCount + chunkPasses) break;
+              const chunkProgress = deriveRouteValueChunks(
+                group, bOutputBase, entryTrace, stb, routeProbeObservations, routeConvention,
+              );
+              if (chunkProgress.changed
+                && (routeConvention !== 'kernel-row-loop' || chunkProgress.discovered)) progressed = true;
+              if (!progressed) break;
               const nextProbe = stb.build();
               entryTrace = evaluateProbeTrace(this.inner.provider, {
                 inputIndex: bMasterIdx,
@@ -13435,13 +13681,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             const trialParamSnap = delegatecallInputIndex !== undefined
               && trialBuilder.outputs.length > 30
               ? stb.snapshotBuilderReturnOutputParams(trialBuilder) : undefined;
-            if (delegatecallInputIndex !== undefined) {
-              stb.insertBeforeLateValueSuffix(trialBuilder, { to: dummyLbc, amount: 1000n }, {
+            const trialInsertion = delegatecallInputIndex !== undefined
+              ? stb.insertBeforeLateValueSuffix(trialBuilder, { to: dummyLbc, amount: 1000n }, {
                 rebindReturnWitnessesOnly: trialBuilder.outputs.length > 30,
-              });
-            }
+              }) : undefined;
             const { transaction: trialTransaction, sourceOutputs: trialSources } = trialBuilder.buildLibauthProgram();
-            if (trialParamSnap) stb.restoreBuilderReturnOutputParams(trialBuilder, trialParamSnap);
+            if (trialParamSnap) stb.restoreBuilderReturnOutputParams(trialBuilder, trialParamSnap, trialInsertion);
             const trialTrace = evaluateProbeTrace(this.inner.provider, {
               inputIndex: delegatecallInputIndex ?? 0,
               sourceOutputs: trialSources,
@@ -13471,12 +13716,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           const phase2ParamSnap = delegatecallInputIndex !== undefined
             && probeBuilder2.outputs.length > 30
             ? stb.snapshotBuilderReturnOutputParams(probeBuilder2) : undefined;
+          let phase2Insertion: ReturnType<typeof stb.insertBeforeLateValueSuffix> | undefined;
           try {
-          if (delegatecallInputIndex !== undefined) {
-            stb.insertBeforeLateValueSuffix(probeBuilder2, { to: dummyLbc, amount: 1000n }, {
+          phase2Insertion = delegatecallInputIndex !== undefined
+            ? stb.insertBeforeLateValueSuffix(probeBuilder2, { to: dummyLbc, amount: 1000n }, {
               rebindReturnWitnessesOnly: probeBuilder2.outputs.length > 30,
-            });
-          }
+            }) : undefined;
 	          const { transaction: transaction2, sourceOutputs: sourceOutputs2 } = probeBuilder2.buildLibauthProgram();
 	          const debugProgramBuiltAt = debugTargetsThisDerivation ? Date.now() : 0;
 	          if (debugTargetsThisDerivation) console.error('derive-phase2-program-built', {
@@ -13665,11 +13910,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             const nestedTraceStartedAt = debugTargetsThisDerivation ? Date.now() : 0;
             // Identity-scan value-chunk pins execute inside an OP_INVOKE helper. The sparse opcode
             // observer cannot see that frame, so nested delegate implementations need the faithful debug trace.
-            const nestedTrace = evaluateProbeTrace(this.inner.provider, {
+            const nestedTrace = compactFaithfulProbeTrace(evaluateProbeTrace(this.inner.provider, {
               inputIndex: implInputIndex,
               sourceOutputs: sourceOutputs2,
               transaction: transaction2,
-            }, false, true);
+            }, false, true));
             if (debugTargetsThisDerivation) console.error('derive-phase2-nested-evaluated', {
               iter, llcIndex, functionName: llc.functionName, implInputIndex,
               evaluateMs: Date.now() - nestedTraceStartedAt,
@@ -13745,6 +13990,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               ...(llc.valueChunkWrites ?? describeValueChunkWrites(llc)),
               ...(proxyGroup?.valueChunkWrites ?? (proxyGroup ? describeValueChunkWrites(proxyGroup) : [])),
             ];
+            // Delegate outputs use the proxy category, while the resource descriptor authenticates the state
+            // owner's category. Select by the complete descriptor identity, never by the projected output token.
+            const valueChunkWriteSelection = selectValueChunkWriteCategory(valueChunkWrites);
+            const valueChunkResourceIdentity = valueChunkWriteSelection.status === 'exact'
+              ? valueChunkWriteResourceIdentity(valueChunkWriteSelection.write) : undefined;
             // When the nested probe has a valueTail but not the full JobEventData[] blob,
             // reconstruct from publishJobEvent args (+ any staged leading pushes).
             const publishArgsCandidates: Uint8Array[] = [];
@@ -13947,6 +14197,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                     lockingBytecode: chunk.lockingBytecode,
                     categoryId: chunkCategory,
                     fixedIndex: true,
+                    ...(valueChunkResourceIdentity && {
+                      resourceIdentity: valueChunkResourceIdentity,
+                      resourcePart: `chunk:${offset}`,
+                    }),
                   })) {
                     commitmentProgress += 1;
                     nestedPinProgress += 1;
@@ -13966,6 +14220,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   commitment: chunk.commitment,
                   lockingBytecode: chunk.lockingBytecode,
                   categoryId: chunkCategory,
+                  ...(valueChunkResourceIdentity && {
+                    resourceIdentity: valueChunkResourceIdentity,
+                    resourcePart: `chunk:${valueChunkIndexFromCommitment(chunk.commitment) ?? 0}`,
+                  }),
                 })) {
                   commitmentProgress += 1;
                   nestedPinProgress += 1;
@@ -14199,13 +14457,17 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   }
                   for (const index of predIndices) {
                     if (index === newIndex) continue;
-                    stb.clearDerivedChunkOutput(index);
-                    if (stb.setDerivedChunkOutput(index, {
+                    const nextObservation = {
                       commitment: predCommitment,
                       lockingBytecode: entryLock,
                       categoryId: chunkCategory,
                       fixedIndex: true,
-                    })) placedEntry = true;
+                    };
+                    if (sameDerivedChunkOutputObservation(
+                      stb.getDerivedChunkOutputs().get(index), nextObservation,
+                    )) continue;
+                    stb.clearDerivedChunkOutput(index);
+                    if (stb.setDerivedChunkOutput(index, nextObservation)) placedEntry = true;
                   }
                 }
                 if (newCommitment && newCommitment.length >= 128) {
@@ -15687,7 +15949,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           seenConvergenceKeys.add(convergenceKey);
           prevConvergenceKey = convergenceKey;
           } finally {
-            if (phase2ParamSnap) stb.restoreBuilderReturnOutputParams(probeBuilder2, phase2ParamSnap);
+            if (phase2ParamSnap) {
+              stb.restoreBuilderReturnOutputParams(probeBuilder2, phase2ParamSnap, phase2Insertion);
+            }
           }
         }
         // P5b: drop any unresolved '00' value-chunk placeholder from the FINAL commitments. The seed at derivation
@@ -15716,12 +15980,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             const cleanedParamSnap = delegatecallInputIndex !== undefined
               && cleanedProbe.outputs.length > 30
               ? stb.snapshotBuilderReturnOutputParams(cleanedProbe) : undefined;
+            let cleanedInsertion: ReturnType<typeof stb.insertBeforeLateValueSuffix> | undefined;
             try {
-            if (delegatecallInputIndex !== undefined) {
-              stb.insertBeforeLateValueSuffix(cleanedProbe, { to: dummyLbc, amount: 1000n }, {
+            cleanedInsertion = delegatecallInputIndex !== undefined
+              ? stb.insertBeforeLateValueSuffix(cleanedProbe, { to: dummyLbc, amount: 1000n }, {
                 rebindReturnWitnessesOnly: cleanedProbe.outputs.length > 30,
-              });
-            }
+              }) : undefined;
             const { transaction, sourceOutputs } = cleanedProbe.buildLibauthProgram();
             const cleanedProgram = {
               inputIndex: delegatecallInputIndex ?? 0,
@@ -15829,7 +16093,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               iter, elapsedMs: Date.now() - cleanedStartedAt, changed,
             });
             } finally {
-              if (cleanedParamSnap) stb.restoreBuilderReturnOutputParams(cleanedProbe, cleanedParamSnap);
+              if (cleanedParamSnap) {
+                stb.restoreBuilderReturnOutputParams(cleanedProbe, cleanedParamSnap, cleanedInsertion);
+              }
             }
           }
         }
@@ -29861,8 +30127,26 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       // Only the finalized graph transaction uses the compiler-published absolute block coordinate.
       const graphOwnsValueChunkWitness = (entryAbiFunction as MessageBusRuntimeAbiFunction | undefined)
         ?.messageBusGraphExecution === true;
-      const valueChunkWitnessGroups = graphOwnsValueChunkWitness
-        ? [...builder.getExternalCallUtxoGroups(), ...builder.getLowLevelCallUtxoGroups()] : [];
+      const hasExactComputedValueChunkLane = computedValueChunkRuns.length > 0
+        && computedValueChunkRuns.every((run) => run.slot?.length === 32);
+      const valueChunkWitnessGroups = !graphOwnsValueChunkWitness || !hasExactComputedValueChunkLane ? [] : [
+        ...builder.getExternalCallUtxoGroups(), ...builder.getLowLevelCallUtxoGroups(),
+      ].filter((group) => {
+        const witness = valueChunkOutputWitnessCarrier(builder, group);
+        const convention = (witness?.abiFunction as MessageBusRuntimeAbiFunction | undefined)
+          ?.messageBusConvention
+          ?? witness?.carrier.logicalArtifact?.messageBus?.convention
+          ?? witness?.carrier.externalContract?.inner.artifact.messageBus?.convention;
+        return witness !== undefined
+          && convention === 'kernel-row-loop'
+          && writesChunkableValue(witness.carrier, witness.abiFunction);
+      });
+      if (valueChunkWitnessGroups.length > 0) {
+        // The route planner has already authenticated the computed storage key for every selected row. Collapse
+        // repeated callsites targeting the same resource, but never project the scalar output-base witness across
+        // distinct collections/keys: one coordinate cannot authenticate multiple continuation lanes.
+        resolveKernelValueChunkResourceLane(computedValueChunkRuns);
+      }
       const setGraphValueChunkOutputBase = (outputBase: number): boolean => {
         let refreshed = false;
         for (const group of valueChunkWitnessGroups) {
@@ -29935,9 +30219,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           });
         }
       }
-      setGraphValueChunkOutputBase(
-        (overrides?.blockBase ?? 0) + builder.getValueChunkOutputBase(),
-      );
+      setGraphValueChunkOutputBase(builder.getValueChunkOutputBase());
       if (graphOwnsValueChunkWitness && abiFunction) {
         const topLevelValueChunkBase = abiFunction.inputs.findIndex(
           (input) => input.name === '__internal__valueChunkOutputBase',
@@ -29947,9 +30229,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           // transaction geometry is known, publish the absolute coordinate on the executing input too. This is
           // required for standalone kernel rows as well as atomic graphs: runtime mapping entries precede their
           // computed value chunks, so the layout-relative base is no longer the materialized coordinate.
-          finalArgs[topLevelValueChunkBase] = BigInt(
-            (overrides?.blockBase ?? 0) + builder.getValueChunkOutputBase(),
-          );
+          finalArgs[topLevelValueChunkBase] = BigInt(builder.getValueChunkOutputBase());
           stateInputUnlocker = buildStateInputUnlocker();
           builder._setMasterUnlocker(stateInputUnlocker);
         }
@@ -30107,7 +30387,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         const returnTypes = (returnArtifact.abi as readonly AbiFunction[])
           .find((candidate) => candidate.name === node.functionName)?.outputs?.map((output) => output.type) ?? [];
         const canonicalSeed = artifactUsesSolidityAbi(returnArtifact)
-          ? returnTypes.length > 0 && isCanonicalEvmScalarReturnVector(event.commitment, returnTypes)
+          ? decodeEvmInvocationResult(
+            event.commitment,
+            returnTypes,
+            returnArtifact.structs ?? returnArtifact.stateLayout?.structs,
+            returnArtifact.enums,
+          ) !== undefined
           : (() => {
             try {
               let offset = 0;
@@ -30156,6 +30441,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               output.map((component) => component.type),
               artifact.structs ?? artifact.stateLayout?.structs,
               artifactUsesSolidityAbi(artifact),
+              artifact.enums,
             );
             if (!values) continue;
             const value = (values.length === 1 ? values[0] : values) as FunctionArgument;
@@ -30890,6 +31176,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             [producerOutputs[0].type],
             producerStructs,
             artifactUsesSolidityAbi(producerArtifact),
+            producerArtifact.enums,
           );
           if (!decoded || decoded.length !== 1) {
             throw new Error(

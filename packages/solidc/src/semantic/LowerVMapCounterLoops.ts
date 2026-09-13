@@ -116,6 +116,33 @@ export default class LowerVMapCounterLoops extends AstTraversal {
     condition: ExpressionNode;
   }>>();
 
+  /** True when replaying this subtree would repeat an observable operation rather than a total stack value. */
+  private hasObservableEffect(x: Node): boolean {
+    if (x instanceof FunctionCallNode) {
+      const overloads = this.functionsByName.get(x.identifier.name);
+      const pureContractCall = overloads !== undefined && overloads.length > 0
+        && overloads.every((fn) => fn.modifiers.includes(FunctionModifier.PURE));
+      // These builtins are total stack computations with no route-owned inputs or outputs. Calls to a
+      // contract function are admitted only when every same-name overload is explicitly pure; semantic
+      // analysis later enforces that declaration. Unknown, view, side-car and external calls remain fenced.
+      const pureBuiltin = overloads === undefined && PURE_COUNTER_VALUE_BUILTINS.has(x.identifier.name);
+      const pureStructConstructor = this.structTypeNames.has(x.identifier.name);
+      if (!pureContractCall && !pureBuiltin && !pureStructConstructor) return true;
+    } else if (x instanceof FunctionCallStatementNode
+      || x instanceof MethodCallNode || x instanceof MethodCallStatementNode
+      || x instanceof ExternalFunctionCallNode || x instanceof TransferStatementNode
+      || x instanceof AddressTransferStatementNode || x instanceof AddressSendExpressionNode
+      || x instanceof EmitStatementNode) return true;
+    for (const key of Object.keys(x)) {
+      if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type') continue;
+      const value = (x as unknown as Record<string, unknown>)[key];
+      if (value instanceof Node && this.hasObservableEffect(value)) return true;
+      if (Array.isArray(value)
+        && value.some((candidate) => candidate instanceof Node && this.hasObservableEffect(candidate))) return true;
+    }
+    return false;
+  }
+
   visitSourceFile(node: SourceFileNode): Node {
     this.externalTypeNames = new Set([
       ...node.interfaceDefinitions.map((definition) => definition.name),
@@ -1139,30 +1166,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       }
       return write.keys.findIndex((key) => containsIdentifier(key, logical));
     };
-    const hasObservableEffect = (x: Node): boolean => {
-      if (x instanceof FunctionCallNode) {
-        const overloads = this.functionsByName.get(x.identifier.name);
-        const pureContractCall = overloads !== undefined && overloads.length > 0
-          && overloads.every((fn) => fn.modifiers.includes(FunctionModifier.PURE));
-        // These builtins are total stack computations with no route-owned inputs or outputs. Calls to a
-        // contract function are admitted only when every same-name overload is explicitly pure; semantic
-        // analysis later enforces that declaration. Unknown, view, side-car and external calls remain fenced.
-        const pureBuiltin = overloads === undefined && PURE_COUNTER_VALUE_BUILTINS.has(x.identifier.name);
-        const pureStructConstructor = this.structTypeNames.has(x.identifier.name);
-        if (!pureContractCall && !pureBuiltin && !pureStructConstructor) return true;
-      } else if (x instanceof FunctionCallStatementNode
-        || x instanceof MethodCallNode || x instanceof MethodCallStatementNode
-        || x instanceof ExternalFunctionCallNode || x instanceof TransferStatementNode
-        || x instanceof AddressTransferStatementNode || x instanceof AddressSendExpressionNode
-        || x instanceof EmitStatementNode) return true;
-      for (const key of Object.keys(x)) {
-        if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type') continue;
-        const v = (x as unknown as Record<string, unknown>)[key];
-        if (v instanceof Node && hasObservableEffect(v)) return true;
-        if (Array.isArray(v) && v.some((e) => e instanceof Node && hasObservableEffect(e))) return true;
-      }
-      return false;
-    };
+    const hasObservableEffect = (x: Node): boolean => this.hasObservableEffect(x);
     // The message-bus effect frame has one fixed window per OUTER message row. Reaching the same emit/transfer
     // site N times in this inner runtime loop would therefore address one slot N times, while the SDK can only
     // materialize the statically declared site once. Typed external calls are different: their call manifest
@@ -6505,6 +6509,35 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       ...localNewArrayNames, ...localFixedArrayBounds.keys(),
     ]);
     if (localConstructedArrayNames.size === 0) return;
+    // This pass exists to derive mapping/state-array KEYS from a locally constructed vector. A result array
+    // which is merely populated and returned is not a key source. Tracking it would clone every value expression
+    // into the symbolic plan; an effectful value such as `result[i] = target.read(i)` would then represent one
+    // semantic graph edge with two executable ExternalFunctionCallNodes. Keep effect identity singular by never
+    // constructing a replay plan unless a collection key actually reads one of these local arrays.
+    const readsConstructedArray = (root: Node): boolean => {
+      let found = false;
+      walk(root, (candidate) => {
+        if ((candidate instanceof ArrayAccessNode
+          && candidate.array instanceof IdentifierNode
+          && localConstructedArrayNames.has(candidate.array.name))
+          || (candidate instanceof TupleIndexOpNode
+            && candidate.tuple instanceof IdentifierNode
+            && localConstructedArrayNames.has(candidate.tuple.name))) found = true;
+      });
+      return found;
+    };
+    let feedsCollectionKey = false;
+    walk(node.body, (candidate) => {
+      if (feedsCollectionKey) return;
+      if (candidate instanceof MappingAssignNode || candidate instanceof MappingFieldAssignNode
+        || candidate instanceof MappingDeleteNode) {
+        feedsCollectionKey = candidate.keys.some(readsConstructedArray);
+      } else if ((candidate instanceof ArrayAssignNode || candidate instanceof ArrayDeleteNode)
+        && !localConstructedArrayNames.has(candidate.name)) {
+        feedsCollectionKey = readsConstructedArray(candidate.index);
+      }
+    });
+    if (!feedsCollectionKey) return;
     const resizedLocalArrayNames = new Set<string>();
     walk(node.body, (candidate) => {
       if ((candidate instanceof ArrayPushNode || candidate instanceof ArrayPopNode)
@@ -10148,9 +10181,24 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           ? replaceArrayReads(replaceSnapshots(statement.value, snapshots), active, []) : undefined;
         const replayedArrayIndex = statement instanceof ArrayAssignNode
           ? replaceArrayReads(replaceSnapshots(statement.index, snapshots), active, []) : undefined;
+        const effectfulArrayValue = replayedArrayValue !== undefined
+          && (statement instanceof ArrayAssignNode || statement instanceof ArrayPushNode)
+          && active.has(statement.name)
+          && this.hasObservableEffect(replayedArrayValue);
+        if (effectfulArrayValue) {
+          // This constructed vector later feeds a collection key (otherwise the method returned before building
+          // plans). Its producer cannot be replayed without duplicating an effect, so refuse the kernel row
+          // shape through the existing unbounded-key admission channel while retaining the direct source call.
+          node.messageBusUnboundedConstructedArray = true;
+        }
         const keySnapshot = (statement instanceof ArrayAssignNode || statement instanceof ArrayPushNode)
           && active.has(statement.name)
-          && replayedArrayValue !== undefined && containsFutureReassignedName(replayedArrayValue)
+          && replayedArrayValue !== undefined
+          // A snapshot is an additional executable occurrence. It may copy a total value recipe, but must never
+          // clone a graph call, transfer, event, or unknown helper merely to model a later collection key. Such a
+          // key source remains unsupported until it can consume authenticated producer-result metadata.
+          && !effectfulArrayValue
+          && containsFutureReassignedName(replayedArrayValue)
           ? (() => {
             const name = `__internal__vmapKeySnapshot_${this.serial++}`;
             const definition = new VariableDefinitionNode(
@@ -10240,7 +10288,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           const aliasGroup = active.get(statement.name)!.fixedAliasGroup;
           if (aliasGroup !== undefined) {
             for (const [name, plan] of active) if (plan.fixedAliasGroup === aliasGroup) active.delete(name);
-          } else if (!replayedArrayIndex || !replayedArrayValue
+          } else if (!replayedArrayIndex || !replayedArrayValue || effectfulArrayValue
             || containsReassignedName(replayedArrayIndex) || containsReassignedName(replayedArrayValue)) {
             active.delete(statement.name);
           } else {
@@ -10272,6 +10320,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           });
         } else if (statement instanceof ArrayPushNode && active.has(statement.name)
           && replayedArrayValue !== undefined
+          && !effectfulArrayValue
           && (active.get(statement.name)!.recurrence !== undefined
             || !containsReassignedName(replayedArrayValue))) {
           const plan = active.get(statement.name)!;

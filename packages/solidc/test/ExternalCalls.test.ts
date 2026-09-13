@@ -51,6 +51,101 @@ describe('returned external-call loop metadata', () => {
     const mismatchedLength = makeBody(1n, false, 'otherCount');
     expect(resultArrayOutputOf(mismatchedLength.body, mismatchedLength.target)).toBeUndefined();
   });
+
+  it('publishes each semantic aggregate loop callsite exactly once', () => {
+    const source = `pragma solidity ^0.8.19;
+      struct Pair { uint left; address right; }
+
+      interface ISource {
+        function size() external view returns (uint);
+        function read(uint index) external view returns (Pair memory);
+      }
+
+      contract Collector {
+        ISource source;
+
+        constructor(ISource source_) {
+          source = source_;
+        }
+
+        function collect(uint offset) public view returns (Pair[] memory) {
+          uint length = source.size() - offset;
+          Pair[] memory output = new Pair[](length);
+          for (uint index = 0; index < length; index++) {
+            output[index] = source.read(index + offset);
+          }
+          return output;
+        }
+      }
+    `;
+    const compileAt = (messageBusKernel: boolean) => compileMessageBus(source, {
+      forceStateful: true,
+      solidityImportCompat: true,
+      messageBus: true,
+      messageBusKernel,
+      maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: false,
+      suppressWarnings: true,
+      __artifactCache: false,
+      __strictNoInternalRecovery: true,
+    });
+
+    const kernel = compileAt(true);
+    const legacy = compileAt(false);
+    expect(kernel.messageBus?.convention).toBe('kernel-row-loop');
+    expect(legacy.messageBus?.convention).toBe('legacy-unroll');
+
+    for (const artifact of [kernel, legacy]) {
+      const calls = artifact.abi.find((entry) => entry.name === 'collect')?.externalCalls ?? [];
+      expect(calls.map(({ callsiteId, functionName }) => ({ callsiteId, functionName }))).toEqual([
+        { callsiteId: 0, functionName: 'size' },
+        { callsiteId: 1, functionName: 'read' },
+      ]);
+      expect(new Set(calls.map(({ callsiteId }) => callsiteId)).size).toBe(calls.length);
+      expect(calls.filter(({ functionName }) => functionName === 'read')).toHaveLength(1);
+      expect(calls[1]).toMatchObject({ occurrence: 'loop', resultArrayOutput: 0 });
+    }
+  });
+
+  it('does not clone an effectful producer to derive a constructed collection key', () => {
+    const artifact = compileMessageBus(`
+      interface ISource { function keyAt(uint index) external view returns (uint); }
+      contract Registry(ISource source) {
+        mapping(uint => uint) records;
+
+        function apply(uint count) public {
+          uint[] memory keys = new uint[](count);
+          for (uint producer = 0; producer < count; producer++) {
+            keys[producer] = source.keyAt(producer);
+          }
+          for (uint consumer = 0; consumer < count; consumer++) {
+            this.records[keys[consumer]] = consumer;
+          }
+          require(true);
+        }
+
+        function control() public { require(true); }
+      }
+    `, {
+      forceStateful: true,
+      solidityImportCompat: true,
+      messageBus: true,
+      messageBusKernel: true,
+      maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: false,
+      suppressWarnings: true,
+      __artifactCache: false,
+      __strictNoInternalRecovery: true,
+    });
+    const calls = artifact.abi.find((entry) => entry.name === 'apply')?.externalCalls ?? [];
+    expect(calls.map(({ callsiteId, functionName }) => ({ callsiteId, functionName }))).toEqual([
+      { callsiteId: 0, functionName: 'keyAt' },
+    ]);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'apply')).toMatchObject({
+      eligible: false,
+      rejectionReason: 'KERNEL_UNBOUNDED_KEY',
+    });
+  });
 });
 
 // External and low-level calls: interface-typed targets, call{value}, transfer/send, and their receivers.

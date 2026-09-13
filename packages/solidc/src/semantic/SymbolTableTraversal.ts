@@ -2738,6 +2738,27 @@ export default class SymbolTableTraversal extends AstTraversal {
     } finally {
       this.activeBodySurvey = undefined;
     }
+    // Some expression visitors replace a source node with a resolved ExternalFunctionCallNode at their parent
+    // boundary. In particular, a returning interface call used directly as a local ArrayAssign RHS can be
+    // installed after the integrated survey has observed the child traversal. Recover only on the negative
+    // path, after resolution, so every executable call receives a stable slot before graph/layout metadata is
+    // frozen. This also prevents later lowering from relying on a speculative clone to make the call visible.
+    if (!bodySurvey.hasExternalFunctionCall) {
+      const seen = new WeakSet<object>();
+      const hasResolvedExternalCall = (value: unknown): boolean => {
+        if (!(value instanceof Node) || seen.has(value)) return false;
+        seen.add(value);
+        if (value instanceof ExternalFunctionCallNode && value.callInfo !== undefined
+          && !value.foldedIntoDeploy) return true;
+        return Object.entries(value).some(([key, child]) => {
+          if (CROSS_CONTRACT_BACKREF_KEYS.has(key)) return false;
+          return child instanceof Node
+            ? hasResolvedExternalCall(child)
+            : Array.isArray(child) && child.some((item) => hasResolvedExternalCall(item));
+        });
+      };
+      bodySurvey.hasExternalFunctionCall = hasResolvedExternalCall(node.body);
+    }
     // Late message-bus retries can revisit an already-lowered transfer-only raw call. Its call option is a
     // plain metadata object rather than an AST child, so the inherited visitor does not necessarily rediscover
     // the value effect. The lowering marker is compiler-authenticated and survives cloning; recover that fact
@@ -7924,6 +7945,18 @@ export default class SymbolTableTraversal extends AstTraversal {
     if ('expression' in node && (node as any).expression instanceof Node) {
       this.collectExternalCalls((node as any).expression, slots, enclosingConditions);
     }
+    // SliceNode stores its value and bounds outside `.expression`. LowerMemoryModel can place a returning
+    // external call in any of these fields while rewriting a local array update; traverse in the same
+    // element/end/start order used by this semantic pass and code generation.
+    if ('element' in node && (node as any).element instanceof Node) {
+      this.collectExternalCalls((node as any).element, slots, enclosingConditions);
+    }
+    if ('end' in node && (node as any).end instanceof Node) {
+      this.collectExternalCalls((node as any).end, slots, enclosingConditions);
+    }
+    if ('start' in node && (node as any).start instanceof Node) {
+      this.collectExternalCalls((node as any).start, slots, enclosingConditions);
+    }
     // NewArrayNode stores its runtime bound in `size`, not `expression`. A returning external call used as
     // `new T[](callee.length())` needs the same slot collection and return-output witness as every other
     // expression position.
@@ -8040,6 +8073,15 @@ export default class SymbolTableTraversal extends AstTraversal {
     }
     if ('expression' in node && (node as any).expression instanceof Node) {
       this.assignExternalCallSlotIndices((node as any).expression, slots, counter);
+    }
+    if ('element' in node && (node as any).element instanceof Node) {
+      this.assignExternalCallSlotIndices((node as any).element, slots, counter);
+    }
+    if ('end' in node && (node as any).end instanceof Node) {
+      this.assignExternalCallSlotIndices((node as any).end, slots, counter);
+    }
+    if ('start' in node && (node as any).start instanceof Node) {
+      this.assignExternalCallSlotIndices((node as any).start, slots, counter);
     }
     if ('size' in node && (node as any).size instanceof Node) {
       this.assignExternalCallSlotIndices((node as any).size, slots, counter);

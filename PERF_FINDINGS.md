@@ -515,3 +515,50 @@ that intern map in the same step it replaces the array, which the attempts so fa
 **Verified state after revert**: `routeBytes 40019`, `fullBytes 115274`, `fullHash ed6cfff8760a3ca8`.
 Tooling left in place: `scripts/micro-splice.mjs`, `scripts/equiv-splice-copywithin.mjs`,
 `scripts/verify-id.mjs`.
+
+## 20. Implemented: consolidated body rewrites (the span/splice fix that ships)
+
+Section 19 closed with a 41% consolidation that changed bytecode. That defect is now resolved, and the fix
+ships.
+
+**Root cause of the divergence was the block iteration order, not the algorithm.** The correct construction is:
+
+1. collect the unedited segments and the `id OP_INVOKE` replacements **newest-first** (descending start),
+2. **reverse the block list** (not the assembled elements),
+3. concatenate.
+
+The earlier attempts failed because they reversed the *assembled elements*. That inverts each segment's own
+order and swaps the replacement pair. Two isolated harnesses (`/tmp/blocks-test.mjs`, then a reference-matching
+variant) proved this: reversing assembled elements gave 20,000/20,000 mismatches; reversing the block list gave
+**0/20,000**. A separate harness confirmed the `anchors` array is order-independent, since every edit shifts it
+from original coordinates.
+
+**A size threshold is required and is load-bearing.** Consolidation is applied only to bodies of **200+
+elements**; smaller bodies keep the per-edit `splice` path. Removing the threshold entirely regresses two
+message-bus kernel tests —
+
+- `threads one route-owned record carrier through each direct journal-aware handler`
+- `moves the global verifier out of the scalar master and keeps both covenants deployable`
+
+— and changes the MarketplaceV1 bytecode (`fullHash` moves from `ed6cfff8…` to `c6e1c915…`). So the small-body
+rewrite has semantics this consolidated form does not reproduce. With the threshold in place the change is
+provably output-identical.
+
+**Measured.**
+
+| | before | after |
+|---|---:|---:|
+| in-process compile | 21.4 s | **11.9–12.0 s** |
+| `outline` phase | 8,871 ms | **1,885 ms** |
+| rewrite phase (heaviest probe) | 6,342 ms | ~300 ms |
+| `splice` specifically | 6,046 ms | — (removed from the hot path) |
+
+**Verification.** Byte-identical: `routeBytes 40019`, `fullBytes 115274`, `fullHash ed6cfff8760a3ca8`.
+`solidc` suite **189 failed / 4,828 passed (5,017)** — identical to the clean-HEAD baseline, so the 189
+pre-existing failures are untouched. `@solidcash/utils` **345/345**, including the outline and
+optimiser-equivalence suites.
+
+Remaining profile after this win: `resolved:codegen` 6,331 ms, `resolved:lowering` 2,662 ms,
+`resolved:semantic` 2,349 ms, `admission` 1,814 ms. Top self-time functions are now `walk`
+(in `GenerateTargetTraversal`) 2.49 s, `invalidateAssignments` / `containsReturn` (in `deploymentRecipes`,
+~1.2 s combined) and GC ~0.98 s.

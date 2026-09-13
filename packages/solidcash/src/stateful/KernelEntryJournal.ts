@@ -7,6 +7,12 @@ import {
   type Artifact,
   type JournalSettlementIdentityAbi,
   type KernelEntryJournalCapabilityScopeAbi,
+  type KernelJournalDispositionHandlerScopeAbi,
+  type KernelJournalDispositionStreamAbi,
+  type KernelJournalDispositionsAbi,
+  kernelJournalDispositionCommitmentMarker,
+  hasUniqueKernelJournalDispositionCommitment,
+  kernelJournalDispositionManifestDigest,
 } from '@solidcash/utils';
 export {
   KERNEL_ENTRY_JOURNAL_MAX_RECORDS,
@@ -374,6 +380,103 @@ export function kernelEntryJournalReadCarrierCapabilityFromArtifact(
   };
 }
 
+const hasExactKeys = (value: object, keys: readonly string[]): boolean => {
+  const actual = Object.keys(value).sort();
+  const expected = [...keys].sort();
+  return actual.length === expected.length && actual.every((key, index) => key === expected[index]);
+};
+
+/**
+ * Validate the compiler's complete, ordered journal-disposition projection.
+ *
+ * This metadata is not authority by itself. The returned manifest is available only beside the released carrier
+ * capability on an executable kernel route; the caller must additionally bind that artifact to its locally
+ * authenticated batch envelope before changing physical ownership.
+ */
+export function kernelJournalDispositionsFromArtifact(
+  artifact: Pick<Artifact, 'abi' | 'bytecode' | 'messageBus'>,
+): KernelJournalDispositionsAbi | undefined {
+  const route = artifact.messageBus;
+  const declaration = route?.kernelEntryJournal?.kernelJournalDispositions;
+  if (declaration === undefined) return undefined;
+  const capability = kernelEntryJournalReadCarrierCapabilityFromArtifact(artifact);
+  if (!capability) return undefined;
+  if (!declaration || typeof declaration !== 'object'
+    || !hasExactKeys(declaration, ['version', 'handlers']) || declaration.version !== 1
+    || !Array.isArray(declaration.handlers)) {
+    throw new Error('kernel journal disposition manifest has a non-canonical envelope');
+  }
+  const eligibleHandlers = route!.handlers.filter((handler) => handler.eligible);
+  if (declaration.handlers.length !== eligibleHandlers.length) {
+    throw new Error('kernel journal disposition manifest does not cover every eligible handler exactly once');
+  }
+  const carrierScopes: string[] = [];
+  const handlers = declaration.handlers.map((
+    scope: KernelJournalDispositionHandlerScopeAbi, handlerIndex: number,
+  ): KernelJournalDispositionHandlerScopeAbi => {
+    if (!scope || typeof scope !== 'object'
+      || !hasExactKeys(scope, ['selectorHex', 'completedDescriptorDigest', 'mode', 'streams'])
+      || !/^[0-9a-f]{8}$/.test(scope.selectorHex)
+      || !/^[0-9a-f]{64}$/.test(scope.completedDescriptorDigest)
+      || !['carrier', 'eager-journal', 'neutral'].includes(scope.mode)
+      || !Array.isArray(scope.streams)) {
+      throw new Error(`kernel journal disposition handler ${handlerIndex} is non-canonical`);
+    }
+    const publishedHandler = eligibleHandlers[handlerIndex];
+    const abiHandler = artifact.abi.find((handler) => handler.selector === scope.selectorHex);
+    if (publishedHandler?.selector !== scope.selectorHex || !abiHandler) {
+      throw new Error(`kernel journal disposition handler ${handlerIndex} is not the ordered eligible handler`);
+    }
+    const expectedOrdinals = (abiHandler.sortedUpsertLoopInfo ?? [])
+      .map((info) => info.journalAccessStreamIndex);
+    if (scope.streams.length !== expectedOrdinals.length) {
+      throw new Error(`kernel journal disposition handler ${scope.selectorHex} has incomplete stream coverage`);
+    }
+    const streams = scope.streams.map((stream: KernelJournalDispositionStreamAbi, streamIndex: number) => {
+      if (!stream || typeof stream !== 'object'
+        || !hasExactKeys(stream, ['journalAccessStreamIndex', 'descriptorDigest', 'disposition'])
+        || !Number.isSafeInteger(stream.journalAccessStreamIndex)
+        || stream.journalAccessStreamIndex !== expectedOrdinals[streamIndex]
+        || !/^[0-9a-f]{64}$/.test(stream.descriptorDigest)
+        || stream.disposition !== scope.mode
+        || stream.disposition === 'neutral') {
+        throw new Error(`kernel journal disposition handler ${scope.selectorHex} has a non-canonical stream`);
+      }
+      if (stream.disposition === 'carrier') {
+        carrierScopes.push(`${scope.selectorHex}:${stream.journalAccessStreamIndex}`);
+      }
+      return Object.freeze({ ...stream });
+    });
+    if ((scope.mode === 'neutral') !== (streams.length === 0)) {
+      throw new Error(`kernel journal disposition handler ${scope.selectorHex} has an incoherent mode`);
+    }
+    return Object.freeze({ ...scope, streams: Object.freeze(streams) });
+  });
+  if (new Set(handlers.map((scope) => scope.selectorHex)).size !== handlers.length) {
+    throw new Error('kernel journal disposition manifest repeats a handler selector');
+  }
+  const publishedCarrierScopes = capability.scopes!.map((scope) => (
+    `${scope.handlerSelector}:${scope.journalAccessStreamIndex}`
+  ));
+  if (carrierScopes.length !== publishedCarrierScopes.length
+    || carrierScopes.some((scope, index) => scope !== publishedCarrierScopes[index])) {
+    throw new Error('kernel journal disposition manifest disagrees with carrier capability scopes');
+  }
+  const manifest = Object.freeze({ version: 1, handlers: Object.freeze(handlers) }) as KernelJournalDispositionsAbi;
+  const commitment = route!.kernelEntryJournal!.kernelJournalDispositionCommitment;
+  const digest = kernelJournalDispositionManifestDigest(manifest);
+  const marker = kernelJournalDispositionCommitmentMarker(digest);
+  if (!commitment || typeof commitment !== 'object'
+    || !hasExactKeys(commitment, ['version', 'digest'])
+    || commitment.version !== 1 || commitment.digest !== digest || marker === undefined) {
+    throw new Error('kernel journal disposition manifest has no exact compiler commitment');
+  }
+  if (!hasUniqueKernelJournalDispositionCommitment(artifact.bytecode, digest)) {
+    throw new Error('kernel journal disposition manifest is not uniquely committed by route bytecode');
+  }
+  return manifest;
+}
+
 /** One source-ordered read access after collection-local ordinals have become route-global ordinals. */
 export interface KernelEntryJournalReadCarrierOccurrence {
   frameIndex: number;
@@ -703,6 +806,96 @@ export interface KernelEntryJournalSettlementOutputPlanEntry {
   outputOrdinal: number;
   collection: string;
   offset: number;
+}
+
+/**
+ * One output which is still materialized by the established per-handler journal path.
+ *
+ * `eagerOutputOrdinal` is transaction-wide within the eager journal prefix. It is explicit rather than inferred
+ * from collection order: collections may interleave in source execution order, and a later carrier settlement
+ * must not move or duplicate one of these already-owned outputs.
+ */
+export interface KernelEntryJournalEagerOutputPlanEntry {
+  eagerOutputOrdinal: number;
+  collection: string;
+  offset: number;
+}
+
+export type KernelEntryJournalOutputLayoutEntry = {
+  /** Dense coordinate within the complete journal output band. */
+  outputOrdinal: number;
+  collection: string;
+  offset: number;
+} & (
+  | { disposition: 'eager-journal'; eagerOutputOrdinal: number }
+  | { disposition: 'deferred-carrier'; recordOrdinal: number; deferredOutputOrdinal: number }
+);
+
+/** Explicit `E + D` layout: eager journal outputs first, then the dense route-final carrier band. */
+export interface KernelEntryJournalOutputLayoutPlan {
+  outputs: KernelEntryJournalOutputLayoutEntry[];
+  eagerOutputCount: number;
+  deferredOutputBase: number;
+  deferredOutputCount: number;
+  finalOutputCursorDelta: number;
+}
+
+/**
+ * Compose independently-authorized journal output families without allowing either family to infer the other's
+ * cursor. This is a pure layout boundary: it grants no carrier capability and cannot suppress input materialization.
+ *
+ * The eager family retains source/materialization order. The deferred family retains canonical global-record
+ * order. Their collection-local commitment locations must be globally disjoint, preventing an unchanged eager
+ * record from also being recreated by another row's final carrier flush.
+ */
+export function planKernelEntryJournalOutputLayout(
+  eager: readonly KernelEntryJournalEagerOutputPlanEntry[],
+  deferred: readonly KernelEntryJournalSettlementOutputPlanEntry[],
+): KernelEntryJournalOutputLayoutPlan {
+  const locations = new Set<string>();
+  const outputs: KernelEntryJournalOutputLayoutEntry[] = [];
+  const validateLocation = (collection: string, offset: number): void => {
+    if (!collection || !Number.isSafeInteger(offset) || offset < 0) {
+      throw new Error('kernel journal output layout has an invalid physical location');
+    }
+    const location = `${collection}\0${offset}`;
+    if (locations.has(location)) {
+      throw new Error(`kernel journal output layout repeats physical location ${collection}[${offset}]`);
+    }
+    locations.add(location);
+  };
+  for (const [index, entry] of eager.entries()) {
+    if (!Number.isSafeInteger(entry.eagerOutputOrdinal) || entry.eagerOutputOrdinal !== index) {
+      throw new Error('kernel journal eager output ordinals must be dense and ordered');
+    }
+    validateLocation(entry.collection, entry.offset);
+    outputs.push({
+      disposition: 'eager-journal', outputOrdinal: outputs.length,
+      eagerOutputOrdinal: entry.eagerOutputOrdinal, collection: entry.collection, offset: entry.offset,
+    });
+  }
+  let priorRecordOrdinal = -1;
+  for (const [index, entry] of deferred.entries()) {
+    if (!Number.isSafeInteger(entry.recordOrdinal) || entry.recordOrdinal < 0
+      || entry.recordOrdinal <= priorRecordOrdinal
+      || !Number.isSafeInteger(entry.outputOrdinal) || entry.outputOrdinal !== index) {
+      throw new Error('kernel journal deferred outputs must have ordered records and dense ordinals');
+    }
+    priorRecordOrdinal = entry.recordOrdinal;
+    validateLocation(entry.collection, entry.offset);
+    outputs.push({
+      disposition: 'deferred-carrier', outputOrdinal: outputs.length,
+      recordOrdinal: entry.recordOrdinal, deferredOutputOrdinal: entry.outputOrdinal,
+      collection: entry.collection, offset: entry.offset,
+    });
+  }
+  return {
+    outputs,
+    eagerOutputCount: eager.length,
+    deferredOutputBase: eager.length,
+    deferredOutputCount: deferred.length,
+    finalOutputCursorDelta: outputs.length,
+  };
 }
 
 /**

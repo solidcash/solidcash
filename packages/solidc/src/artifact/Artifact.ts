@@ -1342,9 +1342,10 @@ function buildFunctionAbiMetadata(
       expression: ExternalCallExpression,
       consumerCallsiteId: number,
       argument: number,
+      dominanceCallsiteId = consumerCallsiteId,
     ): ExternalCallExpression => {
       const rewrite = (child: ExternalCallExpression | undefined): ExternalCallExpression | undefined =>
-        child && canonicalize(child, consumerCallsiteId, argument);
+        child && canonicalize(child, consumerCallsiteId, argument, dominanceCallsiteId);
       const rewriteSource = (source: ExternalCallArgSource | undefined): ExternalCallArgSource | undefined =>
         source && {
           ...source,
@@ -1378,7 +1379,7 @@ function buildFunctionAbiMetadata(
       if (!producer || !producer.returnTypes || producer.returnTypes.length === 0) {
         throw new Error(`Result dependency in '${func.name}' references a non-returning producer callsite`);
       }
-      if (producerCallsiteId! >= consumerCallsiteId) {
+      if (producerCallsiteId! >= dominanceCallsiteId) {
         throw new Error(`Result dependency in '${func.name}' does not follow its producer callsite`);
       }
       const resultIndex = normalized.resultIndex
@@ -1397,19 +1398,31 @@ function buildFunctionAbiMetadata(
       };
     };
     const canonicalizeSources = (
-      sources: ExternalCallArgSource[] | undefined, consumerCallsiteId: number,
+      sources: ExternalCallArgSource[] | undefined,
+      consumerCallsiteId: number,
+      dominanceCallsiteId = consumerCallsiteId,
     ): void => {
       sources?.forEach((source, argument) => {
-        if (source.expression) source.expression = canonicalize(source.expression, consumerCallsiteId, argument);
+        if (source.expression) {
+          source.expression = canonicalize(
+            source.expression, consumerCallsiteId, argument, dominanceCallsiteId,
+          );
+        }
         if (source.stepExpression) {
-          source.stepExpression = canonicalize(source.stepExpression, consumerCallsiteId, argument);
+          source.stepExpression = canonicalize(
+            source.stepExpression, consumerCallsiteId, argument, dominanceCallsiteId,
+          );
         }
       });
     };
     for (const slot of slots) {
       canonicalizeSources(slot.argSources, slot.slotIndex);
       canonicalizeSources(slot.rawArgSources, slot.slotIndex);
-      for (const row of slot.batchInvocations ?? []) canonicalizeSources(row.argSources, slot.slotIndex);
+      for (const row of slot.batchInvocations ?? []) {
+        // A repeated-owner batch has one physical consumer lane, but each row retains its exact source position.
+        // Validate dominance against that source position while publishing the physical lane consumed by the SDK.
+        canonicalizeSources(row.argSources, slot.slotIndex, row.sourceCallsiteId);
+      }
     }
     return [...result.values()].sort((left, right) =>
       left.consumerCallsiteId - right.consumerCallsiteId

@@ -81,6 +81,7 @@ import {
   childStateLayoutDigest,
   validateChildDeploymentGenesisState,
   FixedBchTransferAbi,
+  KernelJournalDispositionsAbi,
 } from '@solidcash/utils';
 import {
   RUNTIME_LOOP_EVENT_ITERATION_LIMIT,
@@ -95,6 +96,7 @@ import {
 import {
   encodeMessageBatch, encodeMessageBusArguments, evaluateFixedEffectPredicate, inactiveMessageBusRouteWitness,
 } from '../message-bus/message-bus.js';
+import { hasCanonicalBatchBlobLineage } from '../message-bus/internal-batch-authority.js';
 export { inactiveMessageBusRouteWitness } from '../message-bus/message-bus.js';
 import type { PreparedAtomicMessageBusCall } from '../message-bus/compose.js';
 // X186. The covenant-annotating gate moved to `message-bus/preflight.ts` when `TransactionBuilder.send` became its
@@ -135,6 +137,7 @@ import {
   encodeKernelEntryJournalRecordSegment,
   kernelEntryJournalReadCarrierCapabilityFromArtifact,
   kernelEntryJournalReadCarrierCapabilityCovers,
+  kernelJournalDispositionsFromArtifact,
   planKernelEntryJournalAccessTopology,
   scheduleKernelEntryJournalOccurrences,
   planKernelEntryJournalPhysicalSettlement,
@@ -145,6 +148,7 @@ import {
   segmentKernelEntryJournalRecords,
   validateKernelEntryJournalRecordSegmentSlots,
   type KernelEntryJournalAccess,
+  type KernelEntryJournalReadCarrierCapability,
   type KernelEntryJournalSettlementOccurrence,
   type KernelEntryJournalSettlementReference,
   type KernelEntryJournalDirtyFinalBodyCandidate,
@@ -389,6 +393,147 @@ import { keccak_256 } from '@noble/hashes/sha3.js';
 const DUMMY_FUNDER_LOCKING_BYTECODE = hexToBin(BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX);
 const DUMMY_FUNDER_UNLOCKING_BYTECODE = new Uint8Array([0x01, 0x51]); // push 1-byte redeem script
 
+// Object-identity authority for a local message-bus route built from a canonically parsed batch blob. Artifact ABI
+// metadata is public and cloneable, so neither a boolean field nor `messageBusRowArguments` can grant this role.
+// The exact effective route object survives `_createBuilder`; spreads and caller substitutions intentionally do not.
+interface AuthenticatedKernelReadCarrierRouteSnapshot {
+  artifact: Artifact;
+  blob: Uint8Array;
+  selectors: readonly string[];
+  encodedArguments: readonly Uint8Array[];
+  journalAuthorityFingerprint: string;
+}
+
+const authenticatedKernelReadCarrierRoutes = new WeakMap<object, AuthenticatedKernelReadCarrierRouteSnapshot>();
+
+/**
+ * Bind physical journal ownership metadata to the authenticated route snapshot. Artifact JSON is not an
+ * independent trust root: capability publication remains compiler-owned, and this fingerprint only prevents
+ * substitution or in-place mutation after canonical route lineage has been established.
+ */
+function kernelJournalAuthorityFingerprint(artifact: Artifact): string {
+  const capability = kernelEntryJournalReadCarrierCapabilityFromArtifact(artifact);
+  const dispositions = capability ? kernelJournalDispositionsFromArtifact(artifact) : undefined;
+  return binToHex(sha256Sync(utf8ToBin(JSON.stringify({
+    capability: capability ?? null,
+    kernelJournalDispositions: dispositions ?? null,
+  }))));
+}
+
+function canonicalKernelCarrierEnvelopeRows(
+  artifact: Artifact,
+  blob: Uint8Array,
+  rows: readonly RouteExpressionKeyRow[],
+): { selectors: string[]; encodedArguments: Uint8Array[] } {
+  const capability = artifact.messageBus;
+  if (!capability || blob.length < 7 || binToHex(blob.slice(0, 4)) !== '53434231') {
+    throw new Error('Compiler internal-read-carrier authority requires a canonical message-bus envelope.');
+  }
+  const modeVersion = blob[4];
+  const valueFlag = blob[5];
+  const rowCount = blob[6];
+  const valueMode = capability.handlers.some((handler) => handler.eligible && handler.usesMsgValue);
+  if ((modeVersion !== 1 && modeVersion !== 2) || valueFlag !== (valueMode ? 1 : 0)
+    || rowCount !== rows.length || rowCount < (capability.minimumRows ?? 1)
+    || rowCount > capability.maximumRows || blob.length > capability.maximumBlobBytes) {
+    throw new Error('Compiler internal-read-carrier authority requires canonical batch framing.');
+  }
+  const selectors: string[] = [];
+  const encodedArguments: Uint8Array[] = [];
+  const structs = artifact.structs ?? artifact.stateLayout?.structs;
+  let cursor = 7;
+  for (let rowIndex = 0; rowIndex < rowCount; rowIndex += 1) {
+    const headerLength = 12 + (modeVersion === 2 ? 1 : 0) + (valueMode ? 9 : 0);
+    if (cursor + headerLength > blob.length) {
+      throw new Error('Compiler internal-read-carrier envelope ends inside a row header.');
+    }
+    const selector = binToHex(blob.slice(cursor, cursor + 4));
+    const encodedRowIndex = blob[cursor + 4]
+      | (blob[cursor + 5] << 8)
+      | (blob[cursor + 6] << 16)
+      | (blob[cursor + 7] << 24);
+    if (encodedRowIndex !== rowIndex || blob[cursor + 8] !== 0 || blob[cursor + 9] !== 0
+      || (modeVersion === 2 && blob[cursor + 12] !== 0 && blob[cursor + 12] !== 1)) {
+      throw new Error('Compiler internal-read-carrier envelope has non-canonical row framing.');
+    }
+    const argsLength = blob[cursor + 10] | (blob[cursor + 11] << 8);
+    const argsStart = cursor + headerLength;
+    const argsEnd = argsStart + argsLength;
+    if (argsEnd > blob.length) {
+      throw new Error('Compiler internal-read-carrier envelope ends inside an argument vector.');
+    }
+    const handler = artifact.abi.find((candidate) => candidate.selector?.toLowerCase() === selector);
+    const published = capability.handlers.find((candidate) => candidate.selector.toLowerCase() === selector);
+    const row = rows[rowIndex];
+    if (!handler || !published?.eligible || row.handler !== handler
+      || row.handler.selector?.toLowerCase() !== selector) {
+      throw new Error('Compiler internal-read-carrier envelope has no exact compiler-authored row metadata.');
+    }
+    const inputs = visibleHandlerInputs(handler.inputs);
+    if (row.args.length !== inputs.length) {
+      throw new Error('Compiler internal-read-carrier row arguments do not match the canonical handler ABI.');
+    }
+    const encoded = row.args.map((argument, index) =>
+      encodeFunctionArgument(argument, inputs[index].type, structs));
+    if (encoded.some((argument) => !(argument instanceof Uint8Array))) {
+      throw new Error('Compiler internal-read-carrier row contains a non-canonical signature argument.');
+    }
+    const canonicalArguments = encodeMessageBusArguments(
+      encoded as Uint8Array[], inputs.map((input) => input.type), structs,
+    );
+    if (!binsAreEqual(canonicalArguments, blob.slice(argsStart, argsEnd))) {
+      throw new Error('Compiler internal-read-carrier row arguments disagree with the authenticated envelope.');
+    }
+    selectors.push(selector);
+    encodedArguments.push(Uint8Array.from(canonicalArguments));
+    cursor = argsEnd;
+  }
+  if (cursor !== blob.length) {
+    throw new Error('Compiler internal-read-carrier envelope has an unauthenticated trailing suffix.');
+  }
+  return { selectors, encodedArguments };
+}
+
+function authenticateKernelReadCarrierRoute(
+  route: object,
+  artifact: Artifact,
+  blob: Uint8Array,
+  rows: readonly RouteExpressionKeyRow[],
+): void {
+  const canonical = canonicalKernelCarrierEnvelopeRows(artifact, blob, rows);
+  authenticatedKernelReadCarrierRoutes.set(route, Object.freeze({
+    artifact,
+    blob: Uint8Array.from(blob),
+    selectors: Object.freeze([...canonical.selectors]),
+    encodedArguments: Object.freeze(canonical.encodedArguments.map((value) => Uint8Array.from(value))),
+    journalAuthorityFingerprint: kernelJournalAuthorityFingerprint(artifact),
+  }));
+}
+
+function kernelReadCarrierRouteIsCurrent(
+  route: object,
+  artifact: Artifact,
+  blob: Uint8Array | undefined,
+  rows: readonly RouteExpressionKeyRow[],
+): boolean {
+  const snapshot = authenticatedKernelReadCarrierRoutes.get(route);
+  if (!snapshot) return false;
+  if (snapshot.artifact !== artifact || !blob || !binsAreEqual(snapshot.blob, blob)) {
+    throw new Error('Compiler internal-read-carrier route no longer matches its authenticated blob snapshot.');
+  }
+  if (kernelJournalAuthorityFingerprint(artifact) !== snapshot.journalAuthorityFingerprint) {
+    throw new Error('Compiler internal-read-carrier authority changed after route authentication.');
+  }
+  const current = canonicalKernelCarrierEnvelopeRows(artifact, blob, rows);
+  if (current.selectors.length !== snapshot.selectors.length
+    || current.selectors.some((selector, index) => selector !== snapshot.selectors[index])
+    || current.encodedArguments.some((argument, index) =>
+      !binsAreEqual(argument, snapshot.encodedArguments[index]))) {
+    throw new Error('Compiler internal-read-carrier route no longer matches its authenticated row snapshot.');
+  }
+  return true;
+}
+
 /**
  * Classify a route-observed event commitment using compiler ownership when it exists. An exact event slot and
  * signature make every non-empty typed encoding authoritative, including `00`. Only explicitly unowned legacy
@@ -579,6 +724,238 @@ export function kernelJournalAccessStreamPlaceholders(handler: Pick<AbiFunction,
       }
       return encodeKernelEntryJournalAccesses(hexToBin(info.collectionHash), []);
     });
+}
+
+export interface SelectedKernelJournalStream {
+  /** Stable ABI identity of the selected handler which owns this stream. */
+  handler: Pick<AbiFunction, 'selector' | 'inputs'>;
+  /** Compiler-owned ordinal within that handler's compact journal stream vector. */
+  journalAccessStreamIndex: number;
+}
+
+/**
+ * Whether duplicate physical proof discovery belongs to the authenticated carrier planner.
+ *
+ * Read occurrences may intentionally authenticate the same present entry or absence predecessor. Once the
+ * compiler route has transferred the complete journal batch to deferred materialization, the global physical
+ * planner owns that deduplication. Mutations and every legacy/direct path retain the established fail-closed
+ * duplicate-input checks.
+ */
+export function kernelReadCarrierOwnsDuplicateProof(
+  deferRuntimeJournalMaterialization: boolean,
+  operation: string,
+): boolean {
+  return deferRuntimeJournalMaterialization && operation === 'read';
+}
+
+export type SelectedKernelJournalHandler = Pick<AbiFunction,
+'selector' | 'inputs' | 'sortedUpsertLoopInfo' | 'entryAccesses' | 'entryLoopWrites'
+| 'sortedInsertLoops' | 'sortedInsertLoopInfo' | 'sortedBatchInfo' | 'collectionIterations'>;
+
+/**
+ * Decide physical read-carrier ownership once for a complete selected batch.
+ *
+ * A route-scoped capability may be present while the concrete envelope selects unrelated handlers. In that case
+ * the established legacy materializer remains authoritative. If the capability covers any selected stream, it
+ * must cover every selected stream and every covered handler must expose the compact stream carrier consumed by
+ * the route. This prevents a transaction from mixing legacy and dense physical ownership within one batch.
+ *
+ * Callers must run this preflight before discovering UTXOs or retaining materialization intents.
+ */
+export function shouldDeferKernelJournalMaterialization(
+  capability: KernelEntryJournalReadCarrierCapability | undefined,
+  selectedStreams: readonly SelectedKernelJournalStream[],
+): boolean {
+  if (!capability || selectedStreams.length === 0) return false;
+  const covered = selectedStreams.map(({ handler, journalAccessStreamIndex }) => (
+    kernelEntryJournalReadCarrierCapabilityCovers(
+      capability, handler.selector, journalAccessStreamIndex,
+    )
+  ));
+  const coveredCount = covered.filter(Boolean).length;
+  if (coveredCount === 0) return false;
+  if (coveredCount !== selectedStreams.length) {
+    throw new Error(
+      'Compiler internal-read-carrier capability covers only part of the selected runtime journal batch; '
+      + 'refusing mixed legacy and carrier materialization.',
+    );
+  }
+  for (const { handler } of selectedStreams) {
+    if (!handler.inputs.some((input) => input.name === KERNEL_JOURNAL_ACCESS_STREAMS)) {
+      throw new Error(
+        'Compiler internal-read-carrier capability selected a runtime loop without a compact journal access stream; '
+        + 'refusing mixed legacy and carrier materialization.',
+      );
+    }
+  }
+  return true;
+}
+
+/**
+ * Select one physical runtime-journal mode for a complete authenticated batch and refuse collection aliases
+ * which the current carrier protocol cannot isolate.
+ *
+ * Compact journal streams are transaction-wide: once any selected stream uses the route-owned carrier, every
+ * selected compact stream must use it. A handler without a compact journal is otherwise free to coexist, but its
+ * eager/fixed/classic collection effects must not touch a collection whose physical inputs and outputs have been
+ * transferred to the deferred final flush. There is no published eager/carrier isolation proof in protocol v1,
+ * so an exact collection-name collision fails closed.
+ */
+export function shouldDeferKernelJournalBatchMaterialization(
+  capability: KernelEntryJournalReadCarrierCapability | undefined,
+  selectedHandlers: readonly SelectedKernelJournalHandler[],
+): boolean {
+  const selectedStreams = selectedHandlers.flatMap((handler) => (
+    (handler.sortedUpsertLoopInfo ?? []).map((info) => ({
+      handler,
+      journalAccessStreamIndex: info.journalAccessStreamIndex,
+    }))
+  ));
+  const selectedSelectors = new Set(selectedHandlers.map((handler) => handler.selector));
+  const selectedCapabilityScopes = capability?.scopes?.filter((scope) => (
+    selectedSelectors.has(scope.handlerSelector)
+  )) ?? [];
+  if (selectedCapabilityScopes.length > 0) {
+    const selectedStreamKeys = new Set(selectedStreams.map(({ handler, journalAccessStreamIndex }) => (
+      `${handler.selector}:${journalAccessStreamIndex}`
+    )));
+    if (selectedCapabilityScopes.some((scope) => !selectedStreamKeys.has(
+      `${scope.handlerSelector}:${scope.journalAccessStreamIndex}`,
+    ))) {
+      throw new Error(
+        'Compiler internal-read-carrier capability selects a runtime journal stream absent from handler metadata.',
+      );
+    }
+  }
+  const deferred = shouldDeferKernelJournalMaterialization(capability, selectedStreams);
+  if (!deferred) return false;
+
+  const protectedCollections = new Set(selectedHandlers.flatMap((handler) => (
+    (handler.sortedUpsertLoopInfo ?? []).map((info) => info.collection)
+  )));
+  const eagerCollections = new Set(selectedHandlers.flatMap((handler) => [
+    ...(handler.entryAccesses ?? []).map((access) => access.collection),
+    ...(handler.entryLoopWrites ?? []),
+    ...(handler.sortedInsertLoops ?? []),
+    ...(handler.sortedInsertLoopInfo ?? []).map((info) => info.collection),
+    ...(handler.sortedBatchInfo ?? []).map((info) => info.collection),
+    ...(handler.collectionIterations ?? []).map((info) => info.collection),
+  ]));
+  const collisions = [...protectedCollections].filter((collection) => eagerCollections.has(collection));
+  if (collisions.length > 0) {
+    throw new Error(
+      'Compiler internal-read-carrier capability cannot share deferred collection(s) '
+      + `${collisions.sort().map((collection) => `'${collection}'`).join(', ')} with eager batch accesses; `
+      + 'protocol v1 publishes no exact physical-isolation proof.',
+    );
+  }
+  return true;
+}
+
+export interface KernelJournalEagerOutputOccurrence {
+  handlerSelector: string;
+  journalAccessStreamIndex: number;
+  collection: string;
+  offset: number;
+}
+
+export interface AuthenticatedKernelJournalDispositionPlan {
+  deferRuntimeJournalMaterialization: boolean;
+  eagerOutputPlan: Array<{ eagerOutputOrdinal: number; collection: string; offset: number }>;
+}
+
+/**
+ * Consume only explicit compiler dispositions for one selected handler chain.
+ *
+ * Collection metadata and runtime intent shape never select ownership here. They provide physical locations only
+ * after an authenticated `eager-journal` stream has selected them. Carrier and eager streams cannot coexist in
+ * one chain until the route publishes and verifies a cross-mode cursor/isolation protocol.
+ */
+export function planAuthenticatedKernelJournalDispositionChain(
+  manifest: KernelJournalDispositionsAbi,
+  selectedHandlers: readonly SelectedKernelJournalHandler[],
+  eagerOutputs: readonly KernelJournalEagerOutputOccurrence[],
+): AuthenticatedKernelJournalDispositionPlan {
+  const selectedScopes = selectedHandlers.map((handler, handlerIndex) => {
+    const selector = handler.selector;
+    if (!selector || !/^[0-9a-f]{8}$/.test(selector)) {
+      throw new Error(`kernel journal selected handler ${handlerIndex} has no canonical selector`);
+    }
+    const scope = manifest.handlers.find((candidate) => candidate.selectorHex === selector);
+    if (!scope) throw new Error(`kernel journal disposition manifest has no selected handler ${selector}`);
+    const ordinals = (handler.sortedUpsertLoopInfo ?? []).map((info) => info.journalAccessStreamIndex);
+    if (ordinals.length !== scope.streams.length
+      || ordinals.some((ordinal, index) => ordinal !== scope.streams[index]?.journalAccessStreamIndex)) {
+      throw new Error(`kernel journal disposition handler ${selector} disagrees with selected stream metadata`);
+    }
+    return scope;
+  });
+  const modes = new Set(selectedScopes.map((scope) => scope.mode));
+  if (modes.has('carrier') && modes.has('eager-journal')) {
+    throw new Error('kernel journal selected handler chain mixes carrier and eager-journal dispositions');
+  }
+  const selectedEagerStreams = new Set(selectedScopes.flatMap((scope) => scope.streams
+    .filter((stream) => stream.disposition === 'eager-journal')
+    .map((stream) => `${scope.selectorHex}:${stream.journalAccessStreamIndex}`)));
+  const locations = new Set<string>();
+  const eagerOutputPlan = eagerOutputs.map((output, eagerOutputOrdinal) => {
+    const stream = `${output.handlerSelector}:${output.journalAccessStreamIndex}`;
+    if (!selectedEagerStreams.has(stream)) {
+      throw new Error(`kernel journal eager output ${eagerOutputOrdinal} has no selected eager-journal stream`);
+    }
+    if (!output.collection || !Number.isSafeInteger(output.offset) || output.offset < 0) {
+      throw new Error(`kernel journal eager output ${eagerOutputOrdinal} has an invalid physical location`);
+    }
+    const location = `${output.collection}\0${output.offset}`;
+    if (locations.has(location)) {
+      throw new Error(`kernel journal eager output plan repeats physical location ${output.collection}[${output.offset}]`);
+    }
+    locations.add(location);
+    return { eagerOutputOrdinal, collection: output.collection, offset: output.offset };
+  });
+  if (!modes.has('eager-journal') && eagerOutputPlan.length > 0) {
+    throw new Error('kernel journal non-eager handler chain cannot publish eager outputs');
+  }
+  return { deferRuntimeJournalMaterialization: modes.has('carrier'), eagerOutputPlan };
+}
+
+/** Bind SDK-only row arguments to the selector sequence already authenticated by the batch envelope. */
+export function assertKernelReadCarrierAuthenticatedRows(
+  carrierMode: boolean,
+  authenticatedSelectors: readonly string[],
+  rows: readonly { handler: Pick<AbiFunction, 'selector'> }[] | undefined,
+): void {
+  if (!carrierMode) return;
+  if (!rows || rows.length !== authenticatedSelectors.length
+    || rows.some((row, index) => row.handler.selector !== authenticatedSelectors[index])) {
+    throw new Error(
+      'Compiler internal-read-carrier batch requires exact row metadata for every authenticated selector.',
+    );
+  }
+}
+
+/**
+ * A route-local carrier capability is authority only inside the compiler route whose authenticated rows selected
+ * it. The same artifact's ordinary public entry points keep their established eager materialization geometry.
+ */
+export function kernelReadCarrierCapabilityForSelectedRoute(
+  capability: KernelEntryJournalReadCarrierCapability | undefined,
+  compilerRoute: object | undefined,
+  selectedRows: readonly RouteExpressionKeyRow[],
+  localRoute?: object,
+  artifact?: Artifact,
+  blob?: Uint8Array,
+): KernelEntryJournalReadCarrierCapability | undefined {
+  if (!artifact || !blob) return undefined;
+  const publishedCapability = kernelEntryJournalReadCarrierCapabilityFromArtifact(artifact);
+  if (JSON.stringify(capability ?? null) !== JSON.stringify(publishedCapability ?? null)) {
+    throw new Error('Compiler internal-read-carrier capability differs from the authenticated artifact.');
+  }
+  const authenticatedRoute = compilerRoute !== undefined
+    ? kernelReadCarrierRouteIsCurrent(compilerRoute, artifact, blob, selectedRows)
+    : localRoute !== undefined
+      && kernelReadCarrierRouteIsCurrent(localRoute, artifact, blob, selectedRows);
+  return authenticatedRoute && selectedRows.length > 0 ? capability : undefined;
 }
 
 type GraphBlockhashSelection = {
@@ -5200,6 +5577,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const executionArtifact = delegateExecution?.artifact ?? this.inner.artifact;
     const capability = executionArtifact.messageBus;
     if (!capability) throw new Error('This artifact does not advertise a message-bus route');
+    const canonicalBlobLineage = hasCanonicalBatchBlobLineage(blob);
     const effectiveRowArguments = rowArguments?.map((row) => ({
       ...row,
       args: [...row.args],
@@ -5427,6 +5805,29 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       const argsLength = blob[argsLengthOffset] | (blob[argsLengthOffset + 1] << 8);
       cursor += header + argsLength;
     }
+    // Choose carrier ownership from the selectors authenticated by the canonical batch blob, not from mutable
+    // SDK row metadata. This is intentionally before builder creation and provider discovery: a hostile caller
+    // cannot make a covered row look unrelated (or hide an eager collision) by substituting `rowArguments`.
+    const readCarrierCapability = kernelEntryJournalReadCarrierCapabilityFromArtifact(executionArtifact);
+    if (readCarrierCapability && reachedHandlers.length !== rowCount) {
+      throw new Error(
+        'Compiler internal-read-carrier batch requires exact handler metadata for every authenticated row.',
+      );
+    }
+    const selectedHandlerAbis = reachedHandlers.map((handler) => executionArtifact.abi.find((candidate) =>
+      candidate.selector === handler.selector));
+    if (readCarrierCapability && selectedHandlerAbis.some((handler) => handler === undefined)) {
+      throw new Error('Compiler internal-read-carrier capability selected a handler without exact ABI metadata.');
+    }
+    const authenticatedCarrierMode = shouldDeferKernelJournalBatchMaterialization(
+      readCarrierCapability,
+      selectedHandlerAbis.filter((handler): handler is AbiFunction => handler !== undefined),
+    );
+    assertKernelReadCarrierAuthenticatedRows(
+      authenticatedCarrierMode,
+      reachedHandlers.map((handler) => handler.selector),
+      effectiveRowArguments,
+    );
     const activeRouteEntryKeys = new Set<string>();
     reachedHandlers.forEach((handler, rowIndex) => {
       for (const binding of handler.batchKeyWitnesses ?? []) {
@@ -5607,6 +6008,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     if (effectiveRowArguments !== undefined) {
       (effectiveRoute as MessageBusRuntimeAbiFunction).messageBusRowArguments = effectiveRowArguments;
     }
+    if (authenticatedCarrierMode && canonicalBlobLineage && effectiveRowArguments) {
+      authenticateKernelReadCarrierRoute(effectiveRoute, executionArtifact, blob, effectiveRowArguments);
+    }
     const graphBlockhashSelections = selectGraphBlockhashReads(executionArtifact, blob);
     if (graphBlockhashSelections.length > 0) {
       (effectiveRoute as MessageBusRuntimeAbiFunction)
@@ -5667,6 +6071,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         // omitting them makes the final ABI encoder receive `undefined`.
         internalArgs: resolvedInternalRouteWitnesses,
       };
+      if (authenticatedCarrierMode && canonicalBlobLineage && effectiveRowArguments) {
+        authenticateKernelReadCarrierRoute(route, executionArtifact, blob, effectiveRowArguments);
+      }
       return attachCompilerTransfers(new StatefulFunctionCall(
         this._createBuilder('__forward', [routeSelector], {
           blockBase, emitReturn, returnBlob, omitLocalFeeTail, logicalIdentity,
@@ -15495,6 +15902,56 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             : typeof arg),
       });
     }
+    // Carrier coverage changes physical input/output ownership. Resolve it as soon as the effective entry handler
+    // and selected route rows are known, before any journal provider lookup can mask a deterministic coverage
+    // failure. The resulting mode is batch-wide: unrelated selections stay legacy, complete coverage defers, and
+    // partial coverage fails closed.
+    const selectedRouteRows = (
+      (entryAbiFunction as MessageBusRuntimeAbiFunction | undefined)?.messageBusRowArguments
+      ?? entryCompilerRoute?.rowArguments
+      ?? []
+    );
+    const internalReadCarrierCapability = kernelReadCarrierCapabilityForSelectedRoute(
+      kernelEntryJournalReadCarrierCapabilityFromArtifact(entryArtifact),
+      entryCompilerRoute,
+      selectedRouteRows,
+      entryAbiFunction,
+      entryArtifact,
+      entryCompilerRoute?.blob ?? (() => {
+        const batchBlobIndex = entryAbiFunction?.inputs.findIndex((input) => input.name === 'batchBlob') ?? -1;
+        const candidate = batchBlobIndex < 0 ? undefined : entryArgs[batchBlobIndex];
+        return candidate instanceof Uint8Array ? candidate : undefined;
+      })(),
+    );
+    const selectedUpsertRows = selectedRouteRows
+      .filter((row) => (row.handler.sortedUpsertLoopInfo?.length ?? 0) > 0);
+    const plannedUpsertRows = selectedUpsertRows;
+    const upsertPlanningFrames = selectedUpsertRows.length > 0
+      ? plannedUpsertRows.map((row) => ({
+        abiFunction: row.handler,
+        args: row.args as FunctionArgument[],
+        routed: true,
+        row,
+      }))
+      : (entryAbiFunction?.sortedUpsertLoopInfo?.length ?? 0) > 0
+        ? [{ abiFunction: entryAbiFunction!, args: entryArgs, routed: false, row: undefined }]
+        : [];
+    const selectedJournalHandlers = internalReadCarrierCapability && selectedRouteRows.length > 0
+      ? selectedRouteRows.map((row) => row.handler)
+      : entryAbiFunction ? [entryAbiFunction] : [];
+    // The public manifest is usable only when the exact local route has authenticated the carrier capability.
+    // In its absence, preserve the established non-carrier behavior byte-for-byte.
+    const authenticatedKernelJournalDispositions = internalReadCarrierCapability
+      ? kernelJournalDispositionsFromArtifact(entryArtifact) : undefined;
+    const authenticatedDispositionSelection = authenticatedKernelJournalDispositions
+      ? planAuthenticatedKernelJournalDispositionChain(
+        authenticatedKernelJournalDispositions, selectedJournalHandlers, [],
+      ) : undefined;
+    const deferRuntimeJournalMaterialization = authenticatedDispositionSelection
+      ?.deferRuntimeJournalMaterialization
+      ?? shouldDeferKernelJournalBatchMaterialization(
+        internalReadCarrierCapability, selectedJournalHandlers,
+      );
     // A public constructed-vector descriptor proves only that the SDK can replay the source-local producer.
     // It does not yet prove that this route's journal stream consumed the same rank/key vector. Refuse before
     // any entry-input topology is derived if a future compiler accidentally marks such a route kernel-eligible.
@@ -16866,14 +17323,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     let kernelJournalSettlementOutputPlan: Array<{
       recordOrdinal: number; outputOrdinal: number; collection: string; offset: number;
     }> | undefined;
+    let kernelJournalEagerOutputPlan: Array<{
+      eagerOutputOrdinal: number; collection: string; offset: number;
+    }> | undefined;
     const runtimeJournalInputIds = new Set<string>();
-    // This is intentionally an exact compiler-published protocol boundary. A kernel preference is not enough to
-    // change physical input ownership: without the in-bytecode 0x11 producer/consumer protocol, deferring this
-    // materialization would merely create a transaction whose route still expects the old input geometry.
-    const internalReadCarrierCapability = kernelEntryJournalReadCarrierCapabilityFromArtifact(entryArtifact);
-    // Scope validation happens after the selected handler frames are known. Until then preserve the legacy
-    // materializer: a route-level capability must never be treated as permission for an unrelated stream.
-    let deferRuntimeJournalMaterialization = false;
     /**
      * A handler describes its physical journal effects while it is traversed.  The legacy materializer below
      * deliberately drains those descriptions at the end of that handler for now, preserving its established
@@ -16883,6 +17336,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     type RuntimeJournalMaterializationIntent =
       | { kind: 'input'; input: UnlockableUtxo; collection: string }
       | { kind: 'outputs'; collection: string; commitments: string[];
+        stream?: { handlerSelector: string; journalAccessStreamIndex: number };
+        materializedOffset?: number;
         /** Exact access/record-role producer for each commitment, retained in the same vector order. */
         producers?: KernelEntryJournalDirtyFinalBodyCandidate['producer'][] };
     const runtimeJournalMaterializationIntents: RuntimeJournalMaterializationIntent[] = [];
@@ -16908,11 +17363,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       collection: string,
       commitments: string[],
       producers?: KernelEntryJournalDirtyFinalBodyCandidate['producer'][],
+      stream?: { handlerSelector: string; journalAccessStreamIndex: number },
     ): void => {
       if (producers !== undefined && producers.length !== commitments.length) {
         throw new Error('Kernel journal output commitments and producer identities have different cardinality.');
       }
-      runtimeJournalMaterializationIntents.push({ kind: 'outputs', collection, commitments, producers });
+      runtimeJournalMaterializationIntents.push({ kind: 'outputs', collection, commitments, producers, stream });
     };
     const materializeLegacyRuntimeJournalIntents = (start: number): void => {
       if (deferRuntimeJournalMaterialization) return;
@@ -16923,6 +17379,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         }
         const prior = sortedLoopCommitments.get(intent.collection) ?? [];
         const offset = prior.length;
+        if (intent.materializedOffset !== undefined) {
+          throw new Error('Kernel journal eager output intent was materialized more than once.');
+        }
+        intent.materializedOffset = offset;
         const merged = [...prior, ...intent.commitments];
         sortedLoopCommitments.set(intent.collection, merged);
         for (const pending of runtimeJournalPendingScalar.values()) {
@@ -17014,11 +17474,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // at output[master+blockSize+i]. Both known EXACTLY off-chain (SortedList.find + arithmetic) - the covenant pins
     // them. A recipient with NO existing entry throws (insert-in-loop is a separate covenant); the shared v[] param
     // ties the credit total to the debit so supply is conserved.
-    const selectedUpsertRows = (
-      (entryAbiFunction as MessageBusRuntimeAbiFunction | undefined)?.messageBusRowArguments
-      ?? entryCompilerRoute?.rowArguments
-      ?? []
-    ).filter((row) => (row.handler.sortedUpsertLoopInfo?.length ?? 0) > 0);
     const routeRowIndex = (row: RouteExpressionKeyRow): number => {
       // A delegated root can carry both a proxy route and one or more implementation routes. The selected row
       // belongs to exactly one of those frames; preferring a defined-but-unrelated proxy array returns -1 and
@@ -17041,17 +17496,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       const index = inputs.findIndex((input) => input.name === name);
       return index < 0 ? undefined : row.args[index];
     };
-    const plannedUpsertRows = selectedUpsertRows;
-    const upsertPlanningFrames = selectedUpsertRows.length > 0
-      ? plannedUpsertRows.map((row) => ({
-        abiFunction: row.handler,
-        args: row.args as FunctionArgument[],
-        routed: true,
-        row,
-      }))
-      : (entryAbiFunction?.sortedUpsertLoopInfo?.length ?? 0) > 0
-        ? [{ abiFunction: entryAbiFunction!, args: entryArgs, routed: false, row: undefined }]
-        : [];
     const runtimeKernelJournalStreams: Array<{
       collection: string;
       collectionHash: Uint8Array;
@@ -17068,32 +17512,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       writes: Array<{ slot: Uint8Array; operation: KernelEntryJournalTopologyOperation }>;
       publish: (encoded: Uint8Array) => void;
     }> = [];
-    /**
-     * A capability changes physical ownership, so it must be checked against a concrete runtime stream rather than
-     * a speculative handler descriptor. At this point its selector/index and compact argument have survived row
-     * selection; the call site is deliberately before the first legacy intent drain for that stream.
-     */
-    const enableDeferredJournalMaterialization = (
-      abiFunction: AbiFunction,
-      journalAccessStreamIndex: number,
-    ): void => {
-      if (!internalReadCarrierCapability) return;
-      if (!abiFunction.inputs.some((input) => input.name === KERNEL_JOURNAL_ACCESS_STREAMS)) {
-        throw new Error(
-          'Compiler internal-read-carrier capability selected a runtime loop without a compact journal access stream; '
-          + 'refusing mixed legacy and carrier materialization.',
-        );
-      }
-      if (!kernelEntryJournalReadCarrierCapabilityCovers(
-        internalReadCarrierCapability, abiFunction.selector, journalAccessStreamIndex,
-      )) {
-        throw new Error(
-          'Compiler internal-read-carrier capability does not cover every selected runtime journal stream; '
-          + 'refusing mixed legacy and carrier materialization.',
-        );
-      }
-      deferRuntimeJournalMaterialization = true;
-    };
     const runtimeLoopsByCollection = new Map<string, Array<(typeof upsertPlanningFrames)[number]>>();
     for (const frame of upsertPlanningFrames) {
       for (const info of frame.abiFunction.sortedUpsertLoopInfo ?? []) {
@@ -18031,7 +18449,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             replaceLoopArgument(journalArgumentIndex, streams);
           },
         });
-        enableDeferredJournalMaterialization(loopAbiFunction, streamIndex);
       }
       if (info.valueRuntimeLocal) {
         const oldWitnesses: ConstructorArgument[] = [];
@@ -18317,6 +18734,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         const amt: bigint | Uint8Array = perKeyRawbytes ? encodeValueTail((valsArr as unknown[])[i])
           : isRawbytesVal ? 0n : isDelete ? 0n : scalarAmt !== undefined ? scalarAmt : toBig((valsArr as unknown[])[i]);
         if (seenSlots.has(slotHex)) {
+          // The compact access stream still retains this logical occurrence. In authenticated carrier mode the
+          // later transaction-wide physical planner collapses its shared proof to one input/output; do not reject
+          // it in this collection-local discovery pass.
+          if (kernelReadCarrierOwnsDuplicateProof(deferRuntimeJournalMaterialization, info.op)) continue;
           // DUPLICATE `+=` / `-=`: compiler-owned counter permutations preserve every source occurrence, while public
           // key arrays may have been pre-merged above. Accumulate this occurrence into the pending commitment exactly
           // as the covenant does, without attempting to co-spend the entry again.
@@ -18358,7 +18779,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           // UPDATE (existing recipient): co-spend the entry, mint the updated value ('delete' -> the type default 0).
           // Collection hash and resolved covenant address are compiler/owner identities; source-level names are not.
           const entry = originalEntry;
-          if (entry && cospent.has(uidOf(entry.utxo)) && !priorPending) {
+          if (entry && cospent.has(uidOf(entry.utxo)) && !priorPending
+            && !kernelReadCarrierOwnsDuplicateProof(deferRuntimeJournalMaterialization, info.op)) {
             throw new Error(
               `vmap upsert loop ${info.collection}: recipient ${i}'s entry is already co-spent this tx; `
                 + 'a read-your-writes transition is required',
@@ -18449,7 +18871,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               && (bytesToSlotValue(priorReadProof.nextKey) === 0n
                 || slotValue < bytesToSlotValue(priorReadProof.nextKey));
             if (reusesPriorProof) continue;
-            if (cospent.has(predecessorId)) {
+            if (cospent.has(predecessorId)
+              && !kernelReadCarrierOwnsDuplicateProof(deferRuntimeJournalMaterialization, info.op)) {
               throw new Error(`vmap read loop ${info.collection}: absent key ${i} shares an already co-spent `
                 + 'predecessor; a shared absence proof is required');
             }
@@ -18538,7 +18961,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       }
       if (commitments.length > 0) {
         const prior = sortedLoopCommitments.get(info.collection) ?? [];
-        captureRuntimeJournalOutputIntent(info.collection, commitments, commitmentProducers);
+        captureRuntimeJournalOutputIntent(info.collection, commitments, commitmentProducers, {
+          handlerSelector: loopAbiFunction.selector!,
+          journalAccessStreamIndex: info.journalAccessStreamIndex,
+        });
         materializeLegacyRuntimeJournalIntents(runtimeJournalIntentStart);
         // Deferred carrier materialization deliberately leaves the legacy collection-local output cache empty.
         // Keep using this handler's exact final commitments for its local bookkeeping; global settlement will bind
@@ -18722,6 +19148,28 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       }
     }
 
+    if (authenticatedKernelJournalDispositions && !deferRuntimeJournalMaterialization) {
+      const eagerOccurrences = runtimeJournalMaterializationIntents
+        .filter((intent): intent is Extract<RuntimeJournalMaterializationIntent, { kind: 'outputs' }> => (
+          intent.kind === 'outputs'
+        ))
+        .flatMap((intent) => {
+          if (!intent.stream || intent.materializedOffset === undefined) {
+            throw new Error('Authenticated eager journal output has no stable stream/location provenance.');
+          }
+          return intent.commitments.map((_commitment, index) => ({
+            ...intent.stream!, collection: intent.collection, offset: intent.materializedOffset! + index,
+          }));
+        });
+      const finalDispositionSelection = planAuthenticatedKernelJournalDispositionChain(
+        authenticatedKernelJournalDispositions, selectedJournalHandlers, eagerOccurrences,
+      );
+      if (finalDispositionSelection.deferRuntimeJournalMaterialization) {
+        throw new Error('Kernel journal disposition changed after runtime materialization.');
+      }
+      kernelJournalEagerOutputPlan = finalDispositionSelection.eagerOutputPlan;
+    }
+
     // Materialize record carriers in source execution order. Streams in one compiler-published execution group
     // are operations from the same row loop, so iteration N of each stream executes before iteration N+1. The
     // group and stream ordinals are opaque structural metadata; no contract, collection, or function names
@@ -18842,8 +19290,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       // Output records are dense in global ordinal order. Clean bodies are reconstructed from their authenticated
       // carrier. Dirty bodies are never inferred from the old per-handler commitment cache: after the planner has
       // assigned global record ordinals, bind one complete candidate commitment to each dirty final authority.
-      // This path remains behind the unpublished compiler capability, but is deliberately complete enough that a
-      // future publication cannot accidentally revive the legacy source-order cache.
+      // This path remains behind the compiler-authenticated capability so public artifact metadata cannot revive
+      // the legacy source-order cache.
       const finalRecords = kernelJournalRecords.map((encoded) => decodeKernelEntryJournalRecord(encoded));
       const streamForSettlementReference = (
         reference: KernelEntryJournalSettlementReference,
@@ -18861,6 +19309,35 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         }
         return { stream, access };
       };
+      // Replay authenticated target-presence transitions in source order before assigning final output owners.
+      // A synthetic target created by one insertion can be the predecessor owned by a later insertion, so its
+      // final owner alone does not describe the earlier tombstone-to-live transition.
+      for (const occurrence of physicalSettlementPlan.occurrences) {
+        const access = occurrence.access;
+        if (!access.mutates) continue;
+        const record = finalRecords[access.targetRecordOrdinal]!;
+        record.dirty = true;
+        record.tombstone = !access.presentAfter;
+        if (!access.presentBefore && access.presentAfter) {
+          const predecessorOrdinal = access.predecessorRecordOrdinal;
+          if (predecessorOrdinal === undefined) {
+            throw new Error('Kernel journal insertion has no predecessor record.');
+          }
+          const predecessor = finalRecords[predecessorOrdinal]!;
+          record.synthetic = true;
+          record.nextKey = new Uint8Array(predecessor.nextKey);
+          predecessor.nextKey = new Uint8Array(record.slot);
+          predecessor.dirty = true;
+        } else if (access.presentBefore && !access.presentAfter) {
+          const predecessorOrdinal = access.predecessorRecordOrdinal;
+          if (predecessorOrdinal === undefined) {
+            throw new Error('Kernel journal deletion has no predecessor record.');
+          }
+          const predecessor = finalRecords[predecessorOrdinal]!;
+          predecessor.nextKey = new Uint8Array(record.nextKey);
+          predecessor.dirty = true;
+        }
+      }
       for (const output of physicalSettlementPlan.outputs) {
         const { access } = streamForSettlementReference(output.finalOwner);
         if ((output.finalOwner.settlementRole === 'mutation-settlement') !== access.mutates) {
@@ -27017,6 +27494,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       ...(runtimeLoopTransferOutputs.length > 0 && { runtimeLoopTransferOutputs }),
       ...(runtimeLoopTrailingSegments.length > 0 && { runtimeLoopTrailingSegments }),
       ...(kernelJournalSettlementOutputPlan && { kernelJournalSettlementOutputPlan }),
+      ...(kernelJournalEagerOutputPlan && { kernelJournalEagerOutputPlan }),
       tokenContainers,
       tokenContainerLockingBytecodes,
       ...(satoshiContainerUtxo && { satoshiContainerUtxo, satoshiContainerLockingBytecode }),
@@ -30067,6 +30545,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         if (expression.operator === '*') return a * b;
         if (expression.operator === '/') return a / b;
         if (expression.operator === '%') return a % b;
+        if (expression.operator === '&') return a & b;
+        if (expression.operator === '|') return a | b;
+        if (expression.operator === '^') return a ^ b;
         if (expression.operator === '<') return a < b;
         if (expression.operator === '<=') return a <= b;
         if (expression.operator === '>') return a > b;

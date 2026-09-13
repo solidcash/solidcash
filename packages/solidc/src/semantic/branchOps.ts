@@ -8,7 +8,9 @@ import {
   AddressTransferStatementNode,
   AddressSendExpressionNode,
   LowLevelCallStatementNode,
+  MethodCallNode,
   MethodCallStatementNode,
+  ExternalFunctionCallNode,
   EmitStatementNode,
   TokenContainerMethodStatementNode,
   StateAssignNode,
@@ -30,6 +32,7 @@ import {
   ConstantDefinitionNode,
   CastNode,
   UnaryOpNode,
+  TupleAssignmentNode,
 } from '../ast/AST.js';
 import { UnaryOperator } from '../ast/Operator.js';
 
@@ -110,6 +113,9 @@ function isValueTransferNode(node: Node): boolean {
     || node instanceof AddressSendExpressionNode
     || (node instanceof LowLevelCallStatementNode && hasEffectiveCallValue(node.callOptions?.value))
     || (node instanceof MethodCallStatementNode && hasEffectiveCallValue(node.call.callOptions?.value))
+    || (node instanceof MethodCallNode && hasEffectiveCallValue(node.callOptions?.value))
+    || (node instanceof ExternalFunctionCallNode && (node.rawValueTransferOnly
+      || hasEffectiveCallValue(node.callOptions?.value)))
     // `new C{value: x}()` transfers x from the contract's satoshi container to the child - a value transfer.
     || (node instanceof InstantiationNode && hasEffectiveCallValue(node.callOptions?.value));
 }
@@ -153,6 +159,10 @@ export function countTransfersMinMax(
   if (anyNode.block) children.push(anyNode.block as Node);
   // A var-def / expression-statement initializer may BE a `new C{value:}()` (a value transfer).
   if (anyNode.expression instanceof Node) children.push(anyNode.expression);
+  if (node instanceof TupleAssignmentNode) {
+    if (node.tupleExpressions) children.push(...node.tupleExpressions);
+    else if (node.tuple instanceof Node) children.push(node.tuple);
+  }
   for (const child of children) {
     const c = countTransfersMinMax(child, isTransfer);
     min += c.min;
@@ -173,6 +183,13 @@ function countBranchOpsRecursive(node: Node, result: OpCounts): void {
     // Don't return - we still need to recurse into child nodes
   }
   if (node instanceof MethodCallStatementNode && hasEffectiveCallValue(node.call.callOptions?.value)) {
+    result.transfers++;
+  }
+  if (node instanceof MethodCallNode && hasEffectiveCallValue(node.callOptions?.value)) {
+    result.transfers++;
+  }
+  if (node instanceof ExternalFunctionCallNode && (node.rawValueTransferOnly
+    || hasEffectiveCallValue(node.callOptions?.value))) {
     result.transfers++;
   }
   // `new C{value: x}()` transfers x from the contract's satoshi container to the child.
@@ -243,6 +260,11 @@ function countBranchOpsRecursive(node: Node, result: OpCounts): void {
   // A var-def / expression-statement initializer may BE a `new C{value:}()` (a value transfer).
   if ('expression' in node && (node as any).expression instanceof Node) {
     countBranchOpsRecursive((node as any).expression, result);
+  }
+  if (node instanceof TupleAssignmentNode) {
+    if (node.tupleExpressions) {
+      for (const expression of node.tupleExpressions) countBranchOpsRecursive(expression, result);
+    } else if (node.tuple instanceof Node) countBranchOpsRecursive(node.tuple, result);
   }
 }
 

@@ -28,19 +28,19 @@ const KERNEL = {
 } as const;
 
 describe('kernel read-carrier capability boundary', () => {
-  it('rejects repeated clean reads before broadcast while the carrier protocol is unpublished', () => {
+  it('publishes repeated clean reads only with the authenticated carrier capability', () => {
     const artifact = compileString(SOURCE, KERNEL);
     expect(artifact.messageBus).toMatchObject({
       convention: 'kernel-row-loop',
       available: true,
     });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'copy'))
-      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+      .toMatchObject({ eligible: true });
     expect(artifact.messageBus?.kernelEntryJournal?.capabilities?.some(
       (capability) => capability.kind === 'internal-read-carrier',
-    ) ?? false).toBe(false);
+    ) ?? false).toBe(true);
 
     expect(() => encodeMessageBatch(artifact, [{ function: 'copy', args: [2n] }]))
-      .toThrow(/not batch eligible: KERNEL_LAYOUT/);
+      .not.toThrow();
   });
 });

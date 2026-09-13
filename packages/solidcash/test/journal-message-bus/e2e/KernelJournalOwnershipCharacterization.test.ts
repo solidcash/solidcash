@@ -93,9 +93,9 @@ describe('kernel journal ownership characterization', () => {
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'writeTwo'))
       .toMatchObject({ eligible: true });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'runtimeCopy'))
-      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+      .toMatchObject({ eligible: true });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'fanout'))
-      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+      .toMatchObject({ eligible: true });
     const runtime = artifact.abi.find((fn) => fn.name === 'runtimeCopy')!.sortedUpsertLoopInfo!;
     expect(runtime).toEqual(expect.arrayContaining([
       expect.objectContaining({ collection: 'source', op: 'read', journalAccessStreamIndex: expect.any(Number) }),
@@ -172,22 +172,24 @@ describe('kernel journal ownership characterization', () => {
       .toMatchObject({ eligible: false, rejectionReason: 'handler-route-generation-unsupported' });
   });
 
-  it('preserves direct-entry fallback semantics for a fenced same-key read-to-set transfer', async () => {
+  it('preserves authenticated route semantics for a same-key read-to-set transfer', async () => {
     const provider = createTestProvider();
     const artifact = compileString(SOURCE, { ...OPTIONS, messageBusKernel: true });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'runtimeCopy'))
-      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+      .toMatchObject({ eligible: true });
     const inner = new Contract(artifact, [], { provider });
     const { categoryId } = await setupStatefulUtxos(provider, inner, artifact.stateLayout!, {}, { saltContract: true });
     const contract = StatefulContract.withCategory(inner, categoryId);
     await contract.call.seed(0n).send();
     await contract.call.seed(1n).send();
-    const builder = await contract.call.runtimeCopy(2n).build();
+    const call = contract.batch([{ function: 'runtimeCopy', args: [2n] }]);
+    const builder = await call.build();
     expect(vmAccepts(builder)).toBe(true);
     const transaction = builder.buildLibauthTransaction();
     const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
     const ownerInput = builder.inputs.findIndex((input) => 'abiFunction' in input.unlocker
-      && input.unlocker.abiFunction.name === 'runtimeCopy');
+      && input.unlocker.abiFunction.name === artifact.messageBus!.route.name);
+    expect(ownerInput).toBeGreaterThanOrEqual(0);
     const vm = createVirtualMachineBch2026ForProvider(provider);
     for (const collection of ['source', 'destination']) {
       const address = binToHex(addressToLockScript(getEntryNftAddress(contract.inner, categoryId, collection)));
@@ -202,7 +204,7 @@ describe('kernel journal ownership characterization', () => {
   }, 180_000);
 
   // Post-beta: re-enable only with the physical carrier band and final-settlement cursor release.
-  it.skip('settles one read carrier into two same-row result collections in canonical order', async () => {
+  it('settles one read carrier into two same-row result collections in canonical order', async () => {
     const provider = createTestProvider();
     const artifact = compileString(SOURCE, { ...OPTIONS, messageBusKernel: true });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'fanout'))
@@ -217,13 +219,13 @@ describe('kernel journal ownership characterization', () => {
     // count=2 exercises the shared carrier/output plan independently of insertion order.
     await contract.call.seed(1n).send();
     await contract.call.seed(0n).send();
-    const call = contract.call.fanout(2n);
+    const call = contract.batch([{ function: 'fanout', args: [2n] }]);
     const builder = await call.build();
     expect(vmAccepts(builder)).toBe(true);
     const transaction = builder.buildLibauthTransaction();
     const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
     const routeInput = builder.inputs.findIndex((input) => 'abiFunction' in input.unlocker
-      && input.unlocker.abiFunction.name === 'fanout');
+      && input.unlocker.abiFunction.name === artifact.messageBus!.route.name);
     expect(routeInput).toBeGreaterThanOrEqual(0);
     const vm = createVirtualMachineBch2026ForProvider(provider);
     for (const collection of ['source', 'left', 'right']) {
@@ -242,9 +244,9 @@ describe('kernel journal ownership characterization', () => {
     const journalIndex = originalUnlocker.abiFunction.inputs.findIndex((input) =>
       input.name === '__internal__kernelJournalAccessStreams');
     expect(journalIndex).toBeGreaterThanOrEqual(0);
-    const hostileStreams = (originalUnlocker.params[journalIndex] as Uint8Array[])
-      .map((stream) => new Uint8Array(stream));
-    hostileStreams[0]![0] ^= 0x01;
+    const hostileStreams = (originalUnlocker.params[journalIndex] as Uint8Array[][])
+      .map((row) => row.map((stream) => new Uint8Array(stream)));
+    hostileStreams[0]![0]![0] ^= 0x01;
     const hostileParams = [...originalUnlocker.params];
     hostileParams[journalIndex] = hostileStreams;
     const routeSelector = artifact.messageBus!.route.selector;
@@ -262,7 +264,7 @@ describe('kernel journal ownership characterization', () => {
   }, 180_000);
 
   // Post-beta: this exercises the same unpublished carrier protocol for a cold destination entry.
-  it.skip('inserts destination entries from authenticated source-only carriers', async () => {
+  it('inserts destination entries from authenticated source-only carriers', async () => {
     const source = `contract ReadToSetCarrier() {
       mapping(int => int) source;
       mapping(int => int) destination;
@@ -282,13 +284,13 @@ describe('kernel journal ownership characterization', () => {
     const contract = StatefulContract.withCategory(inner, categoryId);
     await contract.call.seed(0n, 10n).send();
     await contract.call.seed(1n, 11n).send();
-    const call = contract.call.copy(2n);
+    const call = contract.batch([{ function: 'copy', args: [2n] }]);
     const builder = await call.build();
     expect(vmAccepts(builder)).toBe(true);
     // 0x11 is a reserved internal carrier header, never an ingress witness. Changing one authenticated input
     // record to that header must fail before the row loop can consume it.
     const routeInput = builder.inputs.findIndex((input) => 'abiFunction' in input.unlocker
-      && input.unlocker.abiFunction.name === 'copy');
+      && input.unlocker.abiFunction.name === artifact.messageBus!.route.name);
     expect(routeInput).toBeGreaterThanOrEqual(0);
     const routeBuilderInput = builder.inputs[routeInput]!;
     if (!('params' in routeBuilderInput.unlocker)) throw new Error('kernel route has no parameterized unlocker');

@@ -21,6 +21,8 @@ import {
   ChildDeploymentSiteAbi, SplitArtifactBundle, SplitStateFootprint, StructType, TupleType, Type,
   ValueType, BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX, isDynamicStorageType, isFixedWidthType,
   KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX,
+  hasUniqueKernelJournalDispositionCommitment, kernelJournalDispositionManifestDigest,
+  KernelJournalDispositionsAbi,
   messageBusVerifierLockingBytecode, childStateLayoutDigest, abiTypeString, implicitlyCastableSignature,
 } from '@solidcash/utils';
 import { generateArtifact, generateDeclarationArtifact, occurrenceInfoOf } from './artifact/Artifact.js';
@@ -66,6 +68,13 @@ import NamedReturnTransformation from './semantic/NamedReturnTransformation.js';
 import MarkLegacyCheckedMath from './semantic/MarkLegacyCheckedMath.js';
 import LowerTailRecursion from './semantic/LowerTailRecursion.js';
 import DesugarNestedBranchReturn from './semantic/DesugarNestedBranchReturn.js';
+import {
+  clearKernelReadCarrierBindingToken, createKernelReadCarrierBindingToken, discoverKernelReadCarrier,
+  deriveKernelJournalDispositionHandlerScope, freezeKernelJournalDispositions,
+  kernelJournalDispositionScopeKey, KernelJournalDispositionHandlerScope,
+  KernelReadCarrierAuthorizationBox,
+  KernelReadCarrierFamilyScope, refreshKernelReadCarrierAuthorization, sameKernelJournalDispositions,
+} from './semantic/KernelReadCarrierAuthorization.js';
 import SynthesizeExternalAddressLocals from './semantic/SynthesizeExternalAddressLocals.js';
 import HoistBranchLocalExtcallTargets from './semantic/HoistBranchLocalExtcallTargets.js';
 import HoistPointerTableBranchLocals from './semantic/HoistPointerTableBranchLocals.js';
@@ -200,6 +209,9 @@ export const DEFAULT_COMPILER_OPTIONS: CompilerOptions = {
   messageBusKernel: true,
 };
 
+/** Release gate for compiler-authenticated physical read-carrier publication and settlement. */
+const KERNEL_READ_CARRIER_PROTOCOL_RELEASED = true;
+
 function normalizeAbiSelector(selector: string): string | undefined {
   const normalized = selector.startsWith('0x') || selector.startsWith('0X') ? selector.slice(2) : selector;
   return /^[0-9a-fA-F]{8}$/.test(normalized) ? normalized.toLowerCase() : undefined;
@@ -239,13 +251,6 @@ function exactMessageBusHandlerReference(
   handler: NonNullable<Artifact['messageBus']>['handlers'][number],
 ): AbiFunctionReference {
   return { name: handler.name, selector: handler.selector };
-}
-
-/** Remaining eligible names when late fences demoted a handler already synthesized into the route. */
-const kernelRouteRebindRemaining = new WeakMap<Artifact, AbiFunctionReference[]>();
-
-function sourceMessageBusHandlerReference(fn: FunctionDefinitionNode): AbiFunctionReference {
-  return { name: fn.name, selector: sourceFunctionSelectorHex(fn) };
 }
 
 function scanSourceImports(code: string): string[] {
@@ -358,6 +363,82 @@ type InternalCompilerOptions = CompilerOptions & {
   __strictNoInternalRecovery?: boolean;
   /** Compiler-owned shared state propagated through binder/recovery recursion. */
   __internalAttemptFailureState?: InternalAttemptFailureState;
+  /** Compiler-private completed-ABI authority crossing only the pristine verifier-binding boundary. */
+  __kernelReadCarrierAuthorizationBox?: KernelReadCarrierAuthorizationBox;
+};
+
+const freezeKernelReadCarrierScopes = (
+  scopes: readonly KernelReadCarrierFamilyScope[],
+): readonly KernelReadCarrierFamilyScope[] => Object.freeze(scopes.map((scope) => Object.freeze({
+  selectorHex: scope.selectorHex,
+  completedDescriptorDigest: scope.completedDescriptorDigest,
+  streamDescriptorDigests: Object.freeze([...scope.streamDescriptorDigests]),
+})));
+
+const sameKernelReadCarrierScopes = (
+  left: readonly KernelReadCarrierFamilyScope[], right: readonly KernelReadCarrierFamilyScope[],
+): boolean => left.length === right.length && left.every((scope, index) => {
+  const other = right[index];
+  return other !== undefined && scope.selectorHex === other.selectorHex
+    && scope.completedDescriptorDigest === other.completedDescriptorDigest
+    && scope.streamDescriptorDigests.length === other.streamDescriptorDigests.length
+    && scope.streamDescriptorDigests.every((stream, streamIndex) =>
+      stream === other.streamDescriptorDigests[streamIndex]);
+});
+
+const kernelReadCarrierCodegenScopeKeys = (
+  scopes: readonly KernelReadCarrierFamilyScope[],
+): Set<string> => new Set(scopes.flatMap((scope) => scope.streamDescriptorDigests.map((digest, stream) =>
+  `${scope.selectorHex}:${scope.completedDescriptorDigest}:${stream}:${digest}`)));
+
+const hasExactKernelReadCarrierCodegenMatches = (
+  box: KernelReadCarrierAuthorizationBox,
+  scopes: readonly KernelReadCarrierFamilyScope[],
+): boolean => {
+  const expected = kernelReadCarrierCodegenScopeKeys(scopes);
+  const matched = box.codegenMatchedStreams;
+  return matched !== undefined && matched.size === expected.size
+    && [...expected].every((key) => matched.has(key));
+};
+
+const kernelReadCarrierRouteScopeKeys = (
+  scopes: readonly KernelReadCarrierFamilyScope[],
+): Set<string> => new Set(scopes.map((scope) =>
+  `${scope.selectorHex}:${scope.completedDescriptorDigest}:${scope.streamDescriptorDigests.join(',')}`));
+
+const hasExactKernelReadCarrierRouteMatches = (
+  box: KernelReadCarrierAuthorizationBox,
+  scopes: readonly KernelReadCarrierFamilyScope[],
+): boolean => {
+  const expected = kernelReadCarrierRouteScopeKeys(scopes);
+  const matched = box.codegenMatchedRouteScopes;
+  return matched !== undefined && matched.size === expected.size
+    && [...expected].every((key) => matched.has(key));
+};
+
+const assertKernelReadCarrierScopeMatch = (options: InternalCompilerOptions): void => {
+  if (options.__kernelReadCarrierAuthorizationBox?.mismatch === true) {
+    throw new Error('kernel read-carrier authorization changed during pristine verifier binding');
+  }
+};
+
+const hasExactKernelJournalDispositionMatches = (
+  box: KernelReadCarrierAuthorizationBox,
+  scopes: readonly KernelJournalDispositionHandlerScope[],
+): boolean => {
+  const matched = box.codegenMatchedKernelJournalDispositions;
+  // A neutral handler owns no physical journal stream and therefore has no per-handler settlement code path to
+  // consume. Its exact selector and empty stream vector are still authenticated by the aggregate route manifest
+  // and reproduced from the completed ABI below. Eager/carrier handlers must additionally consume one concrete
+  // OP_DEFINE disposition boundary in order.
+  const expected = scopes.filter((scope) => scope.mode !== 'neutral').map(kernelJournalDispositionScopeKey);
+  const matchedSet = new Set(matched);
+  // OP_DEFINE dependency ordering is independent of selector dispatch ordering. Authenticate the exact set here
+  // (including duplicate rejection); the aggregate route comparison above separately pins handler order.
+  return matched !== undefined && matched.length === expected.length
+    && matchedSet.size === matched.length
+    && expected.every((key) => matchedSet.has(key))
+    && box.codegenMatchedKernelJournalDispositionRoute === true;
 };
 
 function isInternalCodegenAttemptFailure(error: unknown): boolean {
@@ -747,6 +828,12 @@ export interface SplitCompileOptions extends CompileOptions {
 // When SOLIDC_COMPILE_CACHE_DIR is also set, hits/misses are shared across vitest workers via disk
 // (each worker has its own Map; the directory is the cross-process layer).
 const compileCache = new Map<string, Artifact>();
+/** Late carrier scopes are authority only for the exact Artifact object produced by that completed pass. */
+const kernelReadCarrierScopesByArtifact = new WeakMap<Artifact, readonly KernelReadCarrierFamilyScope[]>();
+/** Complete dormant journal ownership manifest tied to the exact winning Artifact object. */
+const kernelJournalDispositionsByArtifact = new WeakMap<
+Artifact, readonly KernelJournalDispositionHandlerScope[]
+>();
 const diagnosticConsoleLog = console.log;
 const diagnosticConsoleWarn = console.warn;
 let warningSuppressionDepth = 0;
@@ -813,7 +900,8 @@ function artifactCacheEnabled(
   const internal = options as InternalCompilerOptions;
   // Attempt auditing is meaningful only for a fresh pipeline. A cached artifact has no attempts to observe and
   // would let strict mode report a vacuous success after a prior non-strict compilation populated the cache.
-  if (internal.__attemptFailureBox || internal.__strictNoInternalRecovery) return false;
+  if (internal.__attemptFailureBox || internal.__strictNoInternalRecovery
+    || internal.__kernelReadCarrierAuthorizationBox) return false;
   const want = process.env.SOLIDC_COMPILE_CACHE === '1' || options.__artifactCache === true;
   return want
     && !errorListener
@@ -839,6 +927,7 @@ function cacheableCompilerOptions(options: CompilerOptions): Record<string, unkn
   delete keyOptions.__attemptFailureBox;
   delete keyOptions.__strictNoInternalRecovery;
   delete keyOptions.__internalAttemptFailureState;
+  delete keyOptions.__kernelReadCarrierAuthorizationBox;
   return keyOptions;
 }
 
@@ -1446,6 +1535,11 @@ function compileWithExternalAdmissionFallback(
 }
 
 function compileStringUnchecked(code: string, compilerOptions: CompileOptions = {}): Artifact {
+  // A binding identity authorizes exactly one compiler-owned code-generation pass. Sanitize it before even
+  // considering a cache return: cached artifacts execute no pass and must not leave caller-visible authority live.
+  clearKernelReadCarrierBindingToken(
+    (compilerOptions as InternalCompilerOptions).__kernelReadCarrierAuthorizationBox,
+  );
   const {
     errorListener, primaryContractName, suppressWarnings = false, ...artifactCompilerOptions
   } = compilerOptions;
@@ -1485,6 +1579,29 @@ function compileStringUnchecked(code: string, compilerOptions: CompileOptions = 
       return cloneArtifact(diskHit, suppressWarnings);
     }
   }
+  if ((internalOptions.messageBusKernel ?? DEFAULT_COMPILER_OPTIONS.messageBusKernel) === true
+    && !internalOptions.__kernelReadCarrierAuthorizationBox) {
+    internalOptions.__kernelReadCarrierAuthorizationBox = {};
+  }
+  const initialReadCarrierBox = internalOptions.__kernelReadCarrierAuthorizationBox;
+  if (initialReadCarrierBox) {
+    // Disposition authority is never caller-seedable. The outer compiler reconstructs it from the exact winning
+    // Artifact object immediately before minting a one-shot binder token.
+    initialReadCarrierBox.expectedKernelJournalDispositions = undefined;
+    initialReadCarrierBox.verifiedKernelJournalDispositions = undefined;
+    initialReadCarrierBox.codegenMatchedKernelJournalDispositions = [];
+    initialReadCarrierBox.codegenMatchedKernelJournalDispositionRoute = false;
+    initialReadCarrierBox.codegenMatchedKernelJournalDispositionCommitment = undefined;
+    initialReadCarrierBox.publishKernelJournalDispositionProtocol = KERNEL_READ_CARRIER_PROTOCOL_RELEASED;
+    initialReadCarrierBox.hasJournalDispositionSourceCandidate = undefined;
+  }
+  if (initialReadCarrierBox?.expectedScopes !== undefined) {
+    // Compiler-private callers may seed a scope for an isolated pristine-pass audit. Own an immutable copy just
+    // like the ordinary binder path; later mutation of the caller's arrays must never retarget code generation.
+    initialReadCarrierBox.expectedScopes = freezeKernelReadCarrierScopes(initialReadCarrierBox.expectedScopes);
+    initialReadCarrierBox.codegenMatchedStreams = new Set();
+    initialReadCarrierBox.codegenMatchedRouteScopes = new Set();
+  }
   const mergedCompilerOptions = normalizeCompilerOptions(artifactCompilerOptions);
   mergedCompilerOptions.__messageBusExplicitlyDisabled = artifactCompilerOptions.messageBus === false;
   if (parsedAst !== undefined) mergedCompilerOptions.__parsedAst = parsedAst;
@@ -1504,13 +1621,16 @@ function compileStringUnchecked(code: string, compilerOptions: CompileOptions = 
   let artifact = compileWithExternalAdmissionFallback(
     code, mergedCompilerOptions, errorListener, primaryContractName,
   );
+  assertKernelReadCarrierScopeMatch(mergedCompilerOptions);
   assertNoInternalAttemptRecovery(mergedCompilerOptions);
   profileLog('admission', admissionStarted, { primary: primaryContractName });
   if (mergedCompilerOptions.__messageBusMode === 'required' && !artifact.messageBus) {
     throw new Error('messageBus: required route generation did not produce a composable artifact');
   }
   if (mergedCompilerOptions.__cheapAdmissionCodegen && (!artifact.messageBus?.verifierProgram
-    || artifact.messageBus.handlers.some((handler) => handler.usesTransactionSignature))) {
+    || artifact.messageBus.handlers.some((handler) => handler.usesTransactionSignature)
+    || mergedCompilerOptions.__kernelReadCarrierAuthorizationBox?.hasSourceCandidate === true
+    || mergedCompilerOptions.__kernelReadCarrierAuthorizationBox?.hasJournalDispositionSourceCandidate === true)) {
     // Cheap (or search) admission produced a shippable artifact without a verifier continuation. Recompile
     // THAT winning shape once. Replaying the whole admission ladder as full compiles otherwise
     // spent ~8s retrying rungs the first pass already refused.
@@ -1560,23 +1680,63 @@ function compileStringUnchecked(code: string, compilerOptions: CompileOptions = 
       direct: winner?.direct === true,
       hasVerifier: !!artifact.messageBus?.verifierProgram,
     });
+    assertKernelReadCarrierScopeMatch(fullOptions);
     assertNoInternalAttemptRecovery(mergedCompilerOptions);
   }
   const alreadyVerifierBound = artifact.messageBus?.route?.inputs
     ?.some((input) => input.name === '__internal__activeVerifierIndex') === true;
+  const winningReadCarrierScopes = kernelReadCarrierScopesByArtifact.get(artifact) ?? [];
+  const winningKernelJournalDispositions = kernelJournalDispositionsByArtifact.get(artifact);
+  const needsReadCarrierBinding = KERNEL_READ_CARRIER_PROTOCOL_RELEASED
+    && winningReadCarrierScopes.length > 0;
+  if (process.env.SOLIDC_SKIP_MESSAGE_BUS_BINDER === '1' && needsReadCarrierBinding) {
+    throw new Error('kernel read-carrier authorization requires pristine message-bus binding');
+  }
   if (process.env.SOLIDC_SKIP_MESSAGE_BUS_BINDER !== '1'
-    && !alreadyVerifierBound
-    && !artifactCompilerOptions.__messageBusVerifierProgram && artifact.messageBus?.verifierProgram) {
-    let verifierProgram = artifact.messageBus.verifierProgram;
-    const signatureVerifierSource = messageBusSignatureVerifierSource.get(verifierProgram);
+    && (!alreadyVerifierBound || needsReadCarrierBinding)
+    && !artifactCompilerOptions.__messageBusVerifierProgram
+    && (artifact.messageBus?.verifierProgram || needsReadCarrierBinding)) {
+    let verifierProgram = artifact.messageBus?.verifierProgram;
+    const signatureVerifierSource = verifierProgram
+      ? messageBusSignatureVerifierSource.get(verifierProgram) : undefined;
     // The speculative pass may have attributed a generated-route gap to one external handler and retained its
     // valid siblings. Bind exactly that admitted route. Recompiling the caller's original handler selection can
     // resurrect a refused clone, and even when it compiles it no longer describes the verifier program being
     // embedded. Handler names are the route selector's existing public selection unit.
-    const speculativeHandlers = artifact.messageBus.handlers;
-    const admittedMessageBusHandlers = speculativeHandlers
+    const speculativeHandlers = artifact.messageBus!.handlers;
+    let admittedMessageBusHandlers = speculativeHandlers
       .filter((handler) => handler.eligible)
       .map(exactMessageBusHandlerReference);
+    const readCarrierAuthorizationBox = (mergedCompilerOptions as InternalCompilerOptions)
+      .__kernelReadCarrierAuthorizationBox;
+    let bindingToken: object | undefined;
+    if (readCarrierAuthorizationBox) {
+      const admittedSelectors = new Set(admittedMessageBusHandlers.map((handler) =>
+        normalizeAbiSelector(handler.selector)).filter((selector): selector is string => selector !== undefined));
+      readCarrierAuthorizationBox.expectedScopes = freezeKernelReadCarrierScopes(
+        winningReadCarrierScopes.filter((scope) =>
+          admittedSelectors.has(scope.selectorHex.toLowerCase())),
+      );
+      readCarrierAuthorizationBox.verifiedScopes = undefined;
+      readCarrierAuthorizationBox.codegenMatchedStreams = new Set();
+      readCarrierAuthorizationBox.codegenMatchedRouteScopes = new Set();
+      const dispositionsBySelector = new Map((winningKernelJournalDispositions ?? [])
+        .map((scope) => [scope.selectorHex, scope]));
+      const selectedDispositions = admittedMessageBusHandlers.map((handler) => {
+        const selected = normalizeAbiSelector(handler.selector);
+        return selected === undefined ? undefined : dispositionsBySelector.get(selected);
+      });
+      readCarrierAuthorizationBox.expectedKernelJournalDispositions = winningKernelJournalDispositions
+        && selectedDispositions.every((scope) => scope !== undefined)
+        ? freezeKernelJournalDispositions(selectedDispositions as KernelJournalDispositionHandlerScope[])
+        : undefined;
+      readCarrierAuthorizationBox.verifiedKernelJournalDispositions = undefined;
+      readCarrierAuthorizationBox.codegenMatchedKernelJournalDispositions = [];
+      readCarrierAuthorizationBox.codegenMatchedKernelJournalDispositionRoute = false;
+      readCarrierAuthorizationBox.codegenMatchedKernelJournalDispositionCommitment = undefined;
+      bindingToken = createKernelReadCarrierBindingToken();
+      readCarrierAuthorizationBox.bindingToken = bindingToken;
+    }
     // A post-codegen safety gate may demote the last transaction-signature handler when its exact CHECKSIG
     // provenance frame cannot be published. In that case, do not carry the speculative signature verifier into
     // the rebound unsigned route. If any signed handler survives, retain the existing disappearance/stability
@@ -1593,25 +1753,32 @@ function compileStringUnchecked(code: string, compilerOptions: CompileOptions = 
     const bindingOptions = normalizeCompilerOptions({
       ...artifactCompilerOptions,
       messageBusHandlers: admittedMessageBusHandlers,
-      __messageBusVerifierProgram: verifierProgram,
+      __kernelReadCarrierAuthorizationBox: readCarrierAuthorizationBox,
+      ...(verifierProgram && { __messageBusVerifierProgram: verifierProgram }),
       ...(admittedSignatureVerifierSource
         && { __messageBusSignatureVerifierSource: admittedSignatureVerifierSource }),
-    });
+    } as InternalCompilerOptions);
     const binderStarted = Date.now();
     // The box is the immutable retry seed, not a disposable lowering tree. Keep that ownership boundary even
     // though the ordinary successful binder clears it immediately afterward: if binding throws, recovery must
     // never observe compiler-generated route functions or semantic rewrites as source.
-    const binderAst = pristineAstBox.ast !== undefined
-      ? cloneAst(pristineAstBox.ast, 'binder')
-      : parseAndResolve(code, bindingOptions, errorListener, primaryContractName);
-    pristineAstBox.ast = undefined;
     try {
+      const binderAst = pristineAstBox.ast !== undefined
+        ? cloneAst(pristineAstBox.ast, 'binder')
+        : parseAndResolve(code, bindingOptions, errorListener, primaryContractName);
+      pristineAstBox.ast = undefined;
       artifact = compileResolvedAst(
         binderAst,
         code, bindingOptions,
       );
+      assertKernelReadCarrierScopeMatch(bindingOptions);
     } catch (binderError) {
       recordCaughtCompilerAttempt(bindingOptions, 'verifier-bind', binderError);
+      if (readCarrierAuthorizationBox) {
+        readCarrierAuthorizationBox.expectedScopes = undefined;
+        readCarrierAuthorizationBox.expectedKernelJournalDispositions = undefined;
+        readCarrierAuthorizationBox.bindingToken = undefined;
+      }
       // A cheap speculative artifact can carry a verifier program even though one of its stubbed handler bodies
       // fails only when the verifier-bound route is fully emitted. Restart once with cheap admission disabled so
       // the ordinary attribution ladder observes that body and can refuse just its selector before constructing
@@ -1632,6 +1799,8 @@ function compileStringUnchecked(code: string, compilerOptions: CompileOptions = 
         }
       }
       throw binderError;
+    } finally {
+      clearKernelReadCarrierBindingToken(readCarrierAuthorizationBox, bindingToken);
     }
     const reboundVerifierProgram = artifact.messageBus?.verifierProgram;
     if (admittedSignatureVerifierSource && !reboundVerifierProgram) {
@@ -1646,12 +1815,30 @@ function compileStringUnchecked(code: string, compilerOptions: CompileOptions = 
       const stableOptions = normalizeCompilerOptions({
         ...artifactCompilerOptions,
         messageBusHandlers: admittedMessageBusHandlers,
+        __kernelReadCarrierAuthorizationBox: readCarrierAuthorizationBox,
         __messageBusVerifierProgram: verifierProgram,
         __messageBusSignatureVerifierSource: admittedSignatureVerifierSource,
       } as InternalCompilerOptions);
-      artifact = compileResolvedAst(
-        parseAndResolve(code, stableOptions, errorListener, primaryContractName), code, stableOptions,
-      );
+      if (readCarrierAuthorizationBox) {
+        readCarrierAuthorizationBox.verifiedScopes = undefined;
+        readCarrierAuthorizationBox.codegenMatchedStreams = new Set();
+        readCarrierAuthorizationBox.codegenMatchedRouteScopes = new Set();
+        readCarrierAuthorizationBox.verifiedKernelJournalDispositions = undefined;
+        readCarrierAuthorizationBox.codegenMatchedKernelJournalDispositions = [];
+        readCarrierAuthorizationBox.codegenMatchedKernelJournalDispositionRoute = false;
+        readCarrierAuthorizationBox.codegenMatchedKernelJournalDispositionCommitment = undefined;
+      }
+      const stableBindingToken = readCarrierAuthorizationBox
+        ? createKernelReadCarrierBindingToken() : undefined;
+      if (readCarrierAuthorizationBox) readCarrierAuthorizationBox.bindingToken = stableBindingToken;
+      try {
+        artifact = compileResolvedAst(
+          parseAndResolve(code, stableOptions, errorListener, primaryContractName), code, stableOptions,
+        );
+        assertKernelReadCarrierScopeMatch(stableOptions);
+      } finally {
+        clearKernelReadCarrierBindingToken(readCarrierAuthorizationBox, stableBindingToken);
+      }
       const stableProgram = artifact.messageBus?.verifierProgram;
       if (!stableProgram) {
         throw new Error('message-bus transaction-signature verifier disappeared during stable body binding');
@@ -1665,48 +1852,17 @@ function compileStringUnchecked(code: string, compilerOptions: CompileOptions = 
       handlers: admittedMessageBusHandlers.length,
     });
     if (artifact.messageBus) {
-      artifact.messageBus.verifierProgram = verifierProgram;
+      if (verifierProgram) artifact.messageBus.verifierProgram = verifierProgram;
       // The verifier-bound pass intentionally synthesizes only the admitted handler set. Preserve the first
       // pass's named refusals for every other source entry point; replacing them with "not examined" hides the
       // actual safety boundary and makes two compilations of the same source publish different diagnostics.
       restoreSpeculativeMessageBusRefusals(artifact.messageBus.handlers, speculativeHandlers);
     }
     if (artifact.compiler.options) delete artifact.compiler.options.__messageBusVerifierProgram;
-  }
-  // Late fences run after generateArtifact. A bind that synthesized those names can still emit their
-  // dispatch arms beside eligible: false. Re-enter with the reduced set recorded from the AST stamp, not
-  // from scanning route bytecode. Cheap admission is the usual extra pass: stubbed bodies under-refuse,
-  // then the full bind observes the real ABI.
-  if (mergedCompilerOptions.messageBusKernel === true) {
-    let lateFenceRebinds = 0;
-    while (kernelRouteRebindRemaining.has(artifact) && lateFenceRebinds < 2) {
-      lateFenceRebinds += 1;
-      const remaining = kernelRouteRebindRemaining.get(artifact) ?? [];
-      kernelRouteRebindRemaining.delete(artifact);
-      const refusals = artifact.messageBus?.handlers ?? [];
-      const verifierProgram = remaining.length > 0 ? artifact.messageBus?.verifierProgram : undefined;
-      const lateOptions = normalizeCompilerOptions({
-        ...artifactCompilerOptions,
-        messageBusHandlers: remaining,
-        ...(verifierProgram && { __messageBusVerifierProgram: verifierProgram }),
-      });
-      delete lateOptions.__cheapAdmissionCodegen;
-      if (!verifierProgram) delete lateOptions.__messageBusVerifierProgram;
-      artifact = compileResolvedAst(
-        parseAndResolve(code, lateOptions, errorListener, primaryContractName),
-        code, lateOptions,
-      );
-      if (artifact.messageBus) {
-        if (verifierProgram) artifact.messageBus.verifierProgram = verifierProgram;
-        restoreSpeculativeMessageBusRefusals(artifact.messageBus.handlers, refusals);
-      }
-      if (artifact.compiler.options) delete artifact.compiler.options.__messageBusVerifierProgram;
-    }
-    if (kernelRouteRebindRemaining.has(artifact)) {
-      kernelRouteRebindRemaining.delete(artifact);
-      throw new Error(
-        'Message-bus kernel admission retained an ineligible handler in the published route',
-      );
+    if (readCarrierAuthorizationBox) {
+      readCarrierAuthorizationBox.expectedScopes = undefined;
+      readCarrierAuthorizationBox.expectedKernelJournalDispositions = undefined;
+      readCarrierAuthorizationBox.bindingToken = undefined;
     }
   }
   // Cheap admission is only for the discarded speculative pass. The delegate variant recompiles from
@@ -6375,6 +6531,27 @@ function synthesizeMessageBusRoute(
     resourceShapedHandler = undefined;
   }
   eligible = selection.survivors;
+  // Cheap admission deliberately skips the journal-lowering passes and stubs generated handler bodies. A
+  // disposition manifest derived from that representation cannot authorize a final body whose admitted call
+  // closure reads or writes a collection: lowering can introduce its physical access streams only in the full
+  // pass. Record that semantic footprint so the outer compiler completes the selected route before minting the
+  // one-shot manifest. This is deliberately independent of function names and of any particular application.
+  if (cheapAdmission && compilerOptions.messageBusKernel === true && eligible.some((fn) => {
+    const footprint = eligibleFootprint(fn);
+    return [...footprint.reads, ...footprint.writes]
+      .some((resource) => resource.startsWith('collection:'));
+  })) {
+    const box = (compilerOptions as InternalCompilerOptions).__kernelReadCarrierAuthorizationBox;
+    if (box) box.hasJournalDispositionSourceCandidate = true;
+  }
+  // Some kernel handlers execute through a generated physical clone, while a name-neutral helper chain can be
+  // dispatched directly behind OP_INVOKE. Give both representations the same stable selector identity so the
+  // pristine pass must consume exactly one disposition scope regardless of this code-layout choice.
+  if (compilerOptions.messageBusKernel === true) {
+    for (const fn of eligible) {
+      fn.messageBusKernelJournalDispositionSelectorHex = sourceFunctionSelectorHex(fn).toLowerCase();
+    }
+  }
   const {
     eventMode, resultMode, valueEffectMode, nestedCollectionMode, fixedArrayMode, tokenContainerMode,
   } = selection;
@@ -6803,6 +6980,13 @@ function synthesizeMessageBusRoute(
     handler.name = `__message_bus_${family}_${source.name}`
       + (overloadedHandlerNames.has(source.name) ? `_${selector(source)}` : '');
     (handler as MessageBusClone).messageBusCloneSourceKey = externalHandlerKey(source);
+    // Physical clone names are an implementation detail and declaration locations can be shared by several
+    // overload-derived helpers. Retain the source ABI selector explicitly so the pristine binder's immutable
+    // completed-descriptor scope can authorize this clone, and no sibling, during final code generation.
+    if (source.messageBusKernelReadCarrierDiscovery) {
+      handler.messageBusKernelReadCarrierSourceSelectorHex = selector(source).toLowerCase();
+    }
+    handler.messageBusKernelJournalDispositionSelectorHex = selector(source).toLowerCase();
   };
   const existingClone = (source: FunctionDefinitionNode): FunctionDefinitionNode | undefined => {
     const name = siblingHandlerInvokeNames.get(source);
@@ -9539,11 +9723,26 @@ function synthesizeMessageBusRoute(
     );
   }
   route.messageBusRoute = true;
+  const expectedReadCarrierScopes = (compilerOptions as InternalCompilerOptions)
+    .__kernelReadCarrierAuthorizationBox?.expectedScopes;
+  if (expectedReadCarrierScopes && expectedReadCarrierScopes.length > 0) {
+    route.messageBusKernelReadCarrierRouteScopes = freezeKernelReadCarrierScopes(expectedReadCarrierScopes);
+  }
+  const expectedKernelJournalDispositions = (compilerOptions as InternalCompilerOptions)
+    .__kernelReadCarrierAuthorizationBox?.expectedKernelJournalDispositions;
+  if (expectedKernelJournalDispositions && expectedKernelJournalDispositions.length > 0) {
+    route.messageBusKernelJournalDispositions = freezeKernelJournalDispositions(
+      expectedKernelJournalDispositions,
+    );
+    const box = (compilerOptions as InternalCompilerOptions).__kernelReadCarrierAuthorizationBox;
+    if (box?.publishKernelJournalDispositionProtocol === true) {
+      route.messageBusKernelJournalDispositionCommitmentDigest = kernelJournalDispositionManifestDigest({
+        version: 1, handlers: expectedKernelJournalDispositions,
+      });
+    }
+  }
   route.messageBusUpgradeRoute = kernelUpgradeMode;
   route.messageBusDispatch = kernelLoopDispatch ? 'kernel-row-loop' : 'legacy-unroll';
-  if (kernelLoopDispatch) {
-    for (const fn of eligible) fn.messageBusDispatched = true;
-  }
   // Late route synthesis runs after the final automatic delegate-marking pass. Propagate the admitted surface's
   // execution context here so SymbolTableTraversal injects the proxy-master witness used by the route prologue
   // and unlocking-frame validator. Early synthesis reaches the same state through the later marking pass.
@@ -10476,13 +10675,20 @@ function compileResolvedAst(
   // block-free facet before its route-only parameter lowering has been isolated on the facet clone.
   const earlyEntryFeatures = mergedCompilerOptions.messageBus ? surveyOptionalLowerings(ast) : undefined;
   if (mergedCompilerOptions.messageBusKernel === true) {
+    let hasSourceCandidate = false;
     for (const fn of ast.contract.functions) {
       walkInvocationAst(fn.body, (candidate) => {
         if (candidate instanceof WhileNode || candidate instanceof DoWhileNode) {
           candidate.sourceAuthoredLoop = true;
         }
       });
+      // First-pass authority is captured from the source-owned typed flow, before journal lowering can replace
+      // mapping reads with generated witness arrays. It remains compiler-private and cannot relax admission.
+      if (discoverKernelReadCarrier(fn, ast.contract.collections)) hasSourceCandidate = true;
     }
+    const authorizationBox = (mergedCompilerOptions as InternalCompilerOptions)
+      .__kernelReadCarrierAuthorizationBox;
+    if (authorizationBox) authorizationBox.hasSourceCandidate = hasSourceCandidate;
   }
 
   // Preserve a typed, source-owned proof program for bounded locally constructed mapping-key vectors before
@@ -11258,7 +11464,7 @@ function compileResolvedAst(
   // Semantic analysis
   const semanticStarted = Date.now();
   ast = ast.accept(new SymbolTableTraversal(mergedCompilerOptions, contractStatefulnessHint)) as Ast;
-  if (mergedCompilerOptions.messageBus && mergedCompilerOptions.messageBusKernel === true) {
+  if (mergedCompilerOptions.messageBus) {
     padMessageBusCloneCalls(ast);
   }
   profileLog('resolved:symbol', semanticStarted, { contract: contractName });
@@ -11623,6 +11829,8 @@ function compileResolvedAst(
   const artifact = generateArtifact(
     ast, optimisationResult.script, code, debug, mergedCompilerOptions, functionBodies, fingerprint,
   );
+  let verifiedKernelEntryJournal:
+  NonNullable<NonNullable<Artifact['messageBus']>['kernelEntryJournal']> | undefined;
   const signatureFrameHex = (fn: FunctionDefinitionNode): string | undefined => {
     const parameterIndices = fn.messageBusAllOutputSignatureParameters;
     const coveredKeys = fn.messageBusSignatureCoveredFunctionKeys;
@@ -11672,13 +11880,12 @@ function compileResolvedAst(
   if (mergedCompilerOptions.messageBus && mergedCompilerOptions.messageBusKernel === true) {
     // This is deliberately an internal late-admission result, rather than an artifact capability. A selector
     // reaches this set only after the completed ABI has proven the one read-to-set carrier handoff *and* has
-    // survived every remaining KERNEL_LAYOUT fence below. The future capability publisher must consume this
-    // exact set in the same change that enables the paired SDK/GTT physical protocol; kernel convention and a
-    // superficially similar read/write pair are not sufficient authority to omit an entry input.
-    // Keep candidate detection available for post-beta development, but do not let metadata-only readiness
-    // relax admission until codegen and SDK settlement are released as one authenticated protocol.
-    const internalReadCarrierProtocolReleased = false;
-    const internalReadCarrierReadySelectors = new Set<string>();
+    // survived every remaining KERNEL_LAYOUT fence below. The capability publisher consumes this exact set
+    // through the paired SDK/GTT physical protocol; kernel convention and a superficially similar read/write
+    // pair are not sufficient authority to omit an entry input.
+    const internalReadCarrierProtocolReleased = KERNEL_READ_CARRIER_PROTOCOL_RELEASED;
+    const internalReadCarrierCandidateSelectors = new Set<string>();
+    const completedReadCarrierScopes: KernelReadCarrierFamilyScope[] = [];
     const sourceHandlers = [
       ...ast.contract.functions,
       ast.contract.fallbackDef,
@@ -11725,48 +11932,34 @@ function compileResolvedAst(
       // dynamic/aggregate values.
       const journalDispositionSources = runtimeJournalAccesses
         .map((access) => access.settlementIdentity?.recordDispositionSource);
-      const sameJson = (left: unknown, right: unknown): boolean => JSON.stringify(left ?? null) === JSON.stringify(right ?? null);
-      const hasSupportedReadToSetCarrierTransfer = (() => {
-        if (!internalReadCarrierProtocolReleased) return false;
-        if (!hasRuntimeJournalMutation || !hasRuntimeJournalRead) return false;
-        const reads = runtimeJournalAccesses.filter((access) => access.op === 'read');
-        const mutations = runtimeJournalAccesses.filter((access) => access.op !== 'read');
-        if (reads.length !== 1 || mutations.length === 0) return false;
-        const [read] = reads;
-        if (!read || read.journalExecutionGroup === undefined || !read.varyingArrayParam
-          || !read.oldValuesWitnessParam || read.valueArrayParam !== read.oldValuesWitnessParam
-          || read.oldValuesWitnessDomain === 'selected-source') return false;
-        const readType = collectionByName.get(read.collection)?.innermostValueType;
-        if (readType === undefined || !isFixedWidthType(readType)
-          || readType instanceof ArrayType || readType instanceof StructType || readType instanceof TupleType) {
-          return false;
-        }
-        const distinctCollections = new Set([read.collectionHash, ...mutations.map((mutation) => mutation.collectionHash)]);
-        if (distinctCollections.size !== mutations.length + 1) return false;
-        return mutations.every((mutation) => {
-          const mutationType = collectionByName.get(mutation.collection)?.innermostValueType;
-          return mutation.op === 'set'
-          && mutation.journalExecutionGroup === read.journalExecutionGroup
-          && mutation.varyingArrayParam === read.varyingArrayParam
-          && mutation.valueArrayParam === read.oldValuesWitnessParam
-          && mutation.valueArrayIndexParam === read.varyingArrayParam
-          && mutation.valueRuntimeLocal === undefined && mutation.mutation === undefined
-          && mutation.valueRuntimeExpression !== true
-          && mutationType !== undefined && isFixedWidthType(mutationType)
-          && !(mutationType instanceof ArrayType || mutationType instanceof StructType || mutationType instanceof TupleType)
-          && readType.toString() === mutationType.toString()
-          && sameJson(read.fixedKeySources, mutation.fixedKeySources)
-          && sameJson(read.varyingKeyIndices, mutation.varyingKeyIndices)
-          && sameJson(read.varyingKeyExpressions, mutation.varyingKeyExpressions)
-          && sameJson(read.keyDecodeTupleIndex, mutation.keyDecodeTupleIndex)
-          && sameJson(read.keyDecodeTupleTypes, mutation.keyDecodeTupleTypes)
-          && sameJson(read.condition, mutation.condition)
-          && sameJson(read.iterationCondition, mutation.iterationCondition)
-          && sameJson(read.iterationBound, mutation.iterationBound)
-          && sameJson(read.iterationStep, mutation.iterationStep)
-          && sameJson(read.sourceOrderIndexParam, mutation.sourceOrderIndexParam);
+      const carrierAuthorization = refreshKernelReadCarrierAuthorization(
+        fn, abi, ast.contract.collections,
+      );
+      if (carrierAuthorization) {
+        completedReadCarrierScopes.push({
+          selectorHex: carrierAuthorization.selectorHex,
+          completedDescriptorDigest: carrierAuthorization.completedDescriptorDigest,
+          streamDescriptorDigests: carrierAuthorization.streamDescriptorDigests,
         });
-      })();
+      }
+      const authorizationBox = (mergedCompilerOptions as InternalCompilerOptions)
+        .__kernelReadCarrierAuthorizationBox;
+      const expectedScope = authorizationBox?.expectedScopes?.filter((scope) =>
+        scope.selectorHex === carrierAuthorization?.selectorHex);
+      const exactExpectedScope = expectedScope?.length === 1
+        && carrierAuthorization !== undefined
+        && sameKernelReadCarrierScopes(expectedScope, [{
+          selectorHex: carrierAuthorization.selectorHex,
+          completedDescriptorDigest: carrierAuthorization.completedDescriptorDigest,
+          streamDescriptorDigests: carrierAuthorization.streamDescriptorDigests,
+        }])
+        && hasExactKernelReadCarrierCodegenMatches(authorizationBox!, expectedScope);
+      // The first completed pass may identify a candidate only so the outer compiler can select and discard it.
+      // A pass carrying expected scopes is artifact-producing authority and must also prove that GTT consumed
+      // every ordered stream digest. Thus a malformed final pass is fenced before its handler can publish.
+      const hasSupportedReadToSetCarrierTransfer = internalReadCarrierProtocolReleased
+        && carrierAuthorization !== undefined
+        && (authorizationBox?.expectedScopes === undefined || exactExpectedScope);
       const hasIncompatibleJournalDispositionPhases = hasRuntimeJournalMutation && hasRuntimeJournalRead
         && (journalDispositionSources.some((source) => source === undefined)
           || (new Set(journalDispositionSources).size > 1 && !hasSupportedReadToSetCarrierTransfer));
@@ -11894,16 +12087,17 @@ function compileResolvedAst(
       }
       const hasScalarAndJournalEventSettlement = hasScalarStateMutation
         && hasCollectionMutation && hasEventEffect;
-      // A runtime read stream consumed by a mutation is currently promoted into pending settlement, but reads
-      // intentionally have no mutation output. Fixed-key reads do not enter this stream and remain admitted.
-      if ((hasRuntimeJournalMutation && hasRuntimeLoopTransfer)
+      const incomplete = abi?.transfers?.some((transfer) =>
+        (transfer.recipientRecipe === undefined && transfer.derivedRecipient === undefined)
+        || transfer.amountRecipe === undefined
+        || transfer.condition === null) === true;
+      const hasIndependentKernelLayoutFence = (hasRuntimeJournalMutation && hasRuntimeLoopTransfer)
         || (hasRuntimeJournalMutation && hasSelectedRuntimeEvent)
         || (hasRuntimeJournalMutation && hasTerminatedRuntimeJournalDomain
           && (abi?.runtimeLoopEvents?.length ?? 0) > 0)
         || hasChunkedValueArrayEventSettlement
         || hasDistinctEventMutationStreams
         || hasScalarAndJournalEventSettlement
-        || hasIncompatibleJournalDispositionPhases
         || hasUnauthenticatedSelectedReadGeometry
         || hasRuntimeLocalJournalValue
         || hasUnsupportedMultiMutationExecutionGroup
@@ -11912,37 +12106,132 @@ function compileResolvedAst(
         || hasMultiArmConstructedKeyReplay
         || hasCrossArrayKeyReplay
         || hasNestedHelperReturnReplay
-        || hasSameIterationMutableSelectionReplay) {
+        || hasSameIterationMutableSelectionReplay;
+      // Snapshot only handlers whose remaining fence is the carrier protocol itself. This is selection metadata
+      // for the forced binder, not authority: admission occurs only after exact final bytecode verification below.
+      if (carrierAuthorization && selector !== undefined
+        && !hasIndependentKernelLayoutFence && !incomplete) {
+        internalReadCarrierCandidateSelectors.add(selector);
+      }
+      // A runtime read stream consumed by a mutation is currently promoted into pending settlement, but reads
+      // intentionally have no mutation output. Fixed-key reads do not enter this stream and remain admitted.
+      if (hasIndependentKernelLayoutFence
+        || hasIncompatibleJournalDispositionPhases
+      ) {
         fn.messageBusEligible = false;
         fn.messageBusRejectionReason = 'KERNEL_LAYOUT';
         continue;
       }
-      const incomplete = abi?.transfers?.some((transfer) =>
-        (transfer.recipientRecipe === undefined && transfer.derivedRecipient === undefined)
-        || transfer.amountRecipe === undefined
-        || transfer.condition === null) === true;
       if (!incomplete) {
-        if (hasSupportedReadToSetCarrierTransfer && selector !== undefined) {
-          internalReadCarrierReadySelectors.add(selector);
-        }
         continue;
       }
       fn.messageBusEligible = false;
       fn.messageBusRejectionReason = 'KERNEL_LAYOUT';
     }
-    const dispatchedDemoted = sourceHandlers.some((fn) => (
-      fn.messageBusDispatched === true && fn.messageBusEligible !== true
-    ));
-    if (dispatchedDemoted) {
-      kernelRouteRebindRemaining.set(
-        artifact,
-        sourceHandlers.filter((fn) => fn.messageBusEligible === true).map(sourceMessageBusHandlerReference),
+    const carrierScopeBySelector = new Map(completedReadCarrierScopes.map((scope) => [
+      scope.selectorHex.toLowerCase(), scope,
+    ]));
+    const authorizationBox = (mergedCompilerOptions as InternalCompilerOptions)
+      .__kernelReadCarrierAuthorizationBox;
+    // Later lowering may deliberately fence the public source entry while still emitting its authenticated
+    // compiler-owned participant clone. Once a pristine pass has an expected manifest, reproduce exactly that
+    // selector set from completed ABIs; mutable source eligibility is no longer an authority boundary.
+    const expectedDispositionSelectors = authorizationBox?.expectedKernelJournalDispositions === undefined
+      ? undefined
+      : new Set(authorizationBox.expectedKernelJournalDispositions.map((scope) => scope.selectorHex));
+    const dispositionScopes = sourceHandlers.filter((fn) => {
+      const selector = fn.functionSelector ? binToHex(fn.functionSelector).toLowerCase() : undefined;
+      return selector !== undefined && (expectedDispositionSelectors?.has(selector)
+        ?? fn.messageBusEligible === true);
+    }).map((fn) => {
+      const selector = fn.functionSelector ? binToHex(fn.functionSelector).toLowerCase() : undefined;
+      const abi = selector === undefined ? undefined : artifact.abi.find((candidate) => candidate.selector === selector);
+      return deriveKernelJournalDispositionHandlerScope(
+        abi, selector === undefined ? undefined : carrierScopeBySelector.get(selector),
       );
+    });
+    const completeDispositionManifest = dispositionScopes.length > 0
+      && dispositionScopes.every((scope) => scope !== undefined)
+      ? freezeKernelJournalDispositions(dispositionScopes as KernelJournalDispositionHandlerScope[])
+      : undefined;
+    if (authorizationBox) {
+      const completedScopes = freezeKernelReadCarrierScopes(completedReadCarrierScopes);
+      const expectedScopes = authorizationBox.expectedScopes;
+      if (expectedScopes !== undefined && internalReadCarrierProtocolReleased) {
+        const expectedSelectors = new Set(expectedScopes.map((scope) => scope.selectorHex));
+        const reproducedScopes = freezeKernelReadCarrierScopes(completedScopes.filter((scope) =>
+          expectedSelectors.has(scope.selectorHex)));
+        if (!sameKernelReadCarrierScopes(expectedScopes, reproducedScopes)) {
+          authorizationBox.mismatch = true;
+          throw new Error('kernel read-carrier authorization changed during pristine verifier binding');
+        }
+        if (!hasExactKernelReadCarrierCodegenMatches(authorizationBox, expectedScopes)
+          || !hasExactKernelReadCarrierRouteMatches(authorizationBox, expectedScopes)) {
+          authorizationBox.mismatch = true;
+          throw new Error('kernel read-carrier authorization was not consumed by pristine code generation');
+        }
+        authorizationBox.verifiedScopes = reproducedScopes;
+      } else {
+        // Diagnostic discovery is write-once. Binder and retry passes may synthesize a narrower route, so their
+        // observations must not overwrite the source-candidate snapshot; artifact authority lives in the WeakMap.
+        if (completedScopes.length > 0) authorizationBox.observedScopes ??= completedScopes;
+      }
+      const expectedDispositions = authorizationBox.expectedKernelJournalDispositions;
+      if (expectedDispositions !== undefined) {
+        if (!completeDispositionManifest
+          || !sameKernelJournalDispositions(expectedDispositions, completeDispositionManifest)
+          || !hasExactKernelJournalDispositionMatches(authorizationBox, expectedDispositions)) {
+          authorizationBox.mismatch = true;
+          throw new Error('kernel journal disposition manifest was not consumed by pristine code generation');
+        }
+        authorizationBox.verifiedKernelJournalDispositions = completeDispositionManifest;
+      }
+      if (internalReadCarrierProtocolReleased && expectedDispositions !== undefined
+        && authorizationBox.verifiedScopes && authorizationBox.verifiedScopes.length > 0) {
+        const manifest: KernelJournalDispositionsAbi = {
+          version: 1, handlers: completeDispositionManifest!,
+        };
+        const digest = kernelJournalDispositionManifestDigest(manifest);
+        if (authorizationBox.codegenMatchedKernelJournalDispositionCommitment !== digest
+          || !hasUniqueKernelJournalDispositionCommitment(artifact.bytecode, digest)) {
+          authorizationBox.mismatch = true;
+          throw new Error('kernel journal disposition manifest has no unique authenticated route commitment');
+        }
+        verifiedKernelEntryJournal = {
+          version: 1,
+          kernelJournalDispositions: manifest,
+          kernelJournalDispositionCommitment: { version: 1, digest },
+          capabilities: [{
+            kind: 'internal-read-carrier', version: 1,
+            scopes: authorizationBox.verifiedScopes.flatMap((scope) => scope.streamDescriptorDigests
+              .map((_streamDigest, journalAccessStreamIndex) => ({
+                handlerSelector: scope.selectorHex, journalAccessStreamIndex,
+              }))),
+          }],
+        };
+        // The source entry remains deliberately fenced throughout lowering: only its compiler-owned route clone
+        // consumes the carrier protocol. Promote the public handler record only after the exact selector,
+        // descriptor streams, aggregate disposition manifest, emitted route sites, and unique bytecode commitment
+        // have all matched above. Artifact metadata is serialized from this verdict; it is never an input to it.
+        const verifiedCarrierSelectors = new Set(
+          authorizationBox.verifiedScopes.map((scope) => scope.selectorHex.toLowerCase()),
+        );
+        for (const fn of sourceHandlers) {
+          const selector = fn.functionSelector ? binToHex(fn.functionSelector).toLowerCase() : undefined;
+          if (selector === undefined || !verifiedCarrierSelectors.has(selector)) continue;
+          fn.messageBusEligible = true;
+          fn.messageBusRejectionReason = undefined;
+        }
+      }
+      // Tie selection to this exact completed artifact. Shared retry boxes are diagnostic transport only and may
+      // have been written by a discarded admission rung.
+      kernelReadCarrierScopesByArtifact.set(artifact, freezeKernelReadCarrierScopes(
+        completedScopes.filter((scope) => internalReadCarrierCandidateSelectors.has(scope.selectorHex)),
+      ));
     }
-    // Keep the readiness result intentionally local until the capability, SDK input rewrite, and GTT final
-    // cursor reconciliation are released as one authenticated protocol. In particular, do not project this
-    // set into artifact.messageBus.kernelEntryJournal here.
-    void internalReadCarrierReadySelectors;
+    if (completeDispositionManifest) {
+      kernelJournalDispositionsByArtifact.set(artifact, completeDispositionManifest);
+    }
   }
   mark('artifact');
   profileLog('resolved', resolvedStarted, {
@@ -12178,6 +12467,7 @@ function compileResolvedAst(
         maximumRows: ATOMIC_MESSAGE_BUS_MAX_ROWS,
       },
       ...(extractedVerifierProgram && { verifierProgram: extractedVerifierProgram }),
+      ...(verifiedKernelEntryJournal && { kernelEntryJournal: verifiedKernelEntryJournal }),
       route: messageBusRouteAbi!,
       handlers: [
         ...ast.contract.functions,
@@ -12688,6 +12978,11 @@ export function compileStringMulti(code: string, compilerOptions: CompileOptions
 }
 
 function compileStringMultiUnchecked(code: string, compilerOptions: CompileOptions): ArtifactMap {
+  // compileMultiCache has its own early return and therefore owns the same pass-token sanitation boundary as the
+  // single-artifact entry point. Per-contract compilation is never reached on a multi-artifact cache hit.
+  clearKernelReadCarrierBindingToken(
+    (compilerOptions as InternalCompilerOptions).__kernelReadCarrierAuthorizationBox,
+  );
   const { errorListener, compileDeclarations, suppressWarnings = false, ...artifactCompilerOptions } = compilerOptions;
   const mergedCompilerOptions = normalizeCompilerOptions(artifactCompilerOptions);
   mergedCompilerOptions.__messageBusExplicitlyDisabled = artifactCompilerOptions.messageBus === false;

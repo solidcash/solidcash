@@ -368,6 +368,54 @@ export interface KernelJournalStreamPlan {
   readonly edges: readonly KernelJournalStreamPlanEdge[];
 }
 
+/**
+ * Immutable, compiler-private proof that source control/data flow contains one exact read-to-set carrier family.
+ * Collection and parameter ordinals deliberately replace source spellings. The concrete class is frozen and is
+ * therefore shared (rather than structurally recopied) by `cloneNode`, keeping one authority across route clones.
+ */
+export class KernelReadCarrierDiscoveryPlan {
+  readonly version = 1 as const;
+
+  constructor(
+    readonly digest: string,
+    readonly sourceCollectionOrdinal: number,
+    readonly destinationCollectionOrdinals: readonly number[],
+    readonly valueType: string,
+    readonly keyArity: number,
+    readonly executionCoordinate: readonly number[],
+    /** Canonical JSON using parameter/counter roles, never identifiers. */
+    readonly loopShape: string,
+    /** Canonical JSON for the complete mapping-key tuple. */
+    readonly keyShape: string,
+  ) {
+    Object.freeze(destinationCollectionOrdinals);
+    Object.freeze(executionCoordinate);
+    Object.freeze(this);
+  }
+}
+
+/** Late, completed-ABI confirmation of a source-owned carrier discovery. Never serialized or used as capability. */
+export class KernelReadCarrierAuthorization {
+  readonly version = 1 as const;
+
+  constructor(
+    readonly digest: string,
+    readonly discoveryDigest: string,
+    readonly selectorHex: string,
+    /** One digest per journal stream, ordered by its authenticated access-stream index. */
+    readonly streamDescriptorDigests: readonly string[],
+    readonly completedDescriptorDigest: string,
+  ) {
+    Object.freeze(streamDescriptorDigests);
+    Object.freeze(this);
+  }
+}
+
+/** Compiler-owned meaning of a parameter introduced while lowering a read-carrier loop. */
+export type KernelReadCarrierSyntheticParameterRole =
+  | 'counter-permutation'
+  | 'old-values-witness';
+
 export class FunctionDefinitionNode extends Node implements Named {
   symbolTable?: SymbolTable;
   // Set by semantic analysis after visiting the body. Codegen can skip its more detailed deploy-site survey when
@@ -569,6 +617,8 @@ export class FunctionDefinitionNode extends Node implements Named {
   runtimeCounterLoopCounters?: Map<string, {
     name: string; initialValue: bigint; stepValue: bigint; stepExpression?: ExpressionNode;
     exactBound?: boolean;
+    /** Visible source-parameter ordinal supplying the canonical loop bound, when direct. */
+    boundParameterOrdinal?: number;
   }>;
 
   /** Physical stream widths keyed by the compiler-owned permutation parameter. */
@@ -590,6 +640,42 @@ export class FunctionDefinitionNode extends Node implements Named {
   messageBusConstructedKeyVectorProofPrograms?: Map<string, MessageBusConstructedKeyVectorProofProgram>;
   /** Internal pre-admission source-flow plan. Never serialized and never an admission capability. */
   messageBusKernelJournalStreamPlan?: KernelJournalStreamPlan;
+  /** Immutable first-pass read-carrier discovery; source names and locations never cross into this record. */
+  messageBusKernelReadCarrierDiscovery?: KernelReadCarrierDiscoveryPlan;
+  /** Exact source ABI arity captured before any physical/compiler-owned operands are appended. */
+  messageBusKernelReadCarrierSourceParameterCount?: number;
+  /** Explicit roles for carrier operands. Authorization never infers authority from reserved-name prefixes. */
+  messageBusKernelReadCarrierSyntheticParameterRoles?: Map<string, KernelReadCarrierSyntheticParameterRole>;
+  /** Completed-descriptor validation of the discovery. Still compiler-private while the release gate is false. */
+  messageBusKernelReadCarrierAuthorization?: KernelReadCarrierAuthorization;
+  /**
+   * Stable source selector carried by compiler-generated physical clones. This is compiler-private identity:
+   * clone names and locations are never authorization, and the value is useful only beside the binder's exact
+   * completed-descriptor scope.
+   */
+  messageBusKernelReadCarrierSourceSelectorHex?: string;
+  /** Stable selector carried by every generated kernel handler clone for disposition authorization. */
+  messageBusKernelJournalDispositionSelectorHex?: string;
+  /** Exact completed-descriptor families owned by this generated aggregate route. Compiler-private. */
+  messageBusKernelReadCarrierRouteScopes?: readonly {
+    selectorHex: string;
+    completedDescriptorDigest: string;
+    streamDescriptorDigests: readonly string[];
+  }[];
+  /** Ordered compiler-private disposition manifest owned by this generated aggregate route. */
+  messageBusKernelJournalDispositions?: readonly {
+    selectorHex: string;
+    completedDescriptorDigest: string;
+    mode: 'carrier' | 'eager-journal' | 'neutral';
+    streams: readonly {
+      journalAccessStreamIndex: number;
+      descriptorDigest: string;
+      disposition: 'carrier' | 'eager-journal' | 'neutral';
+    }[];
+  }[];
+  /** Digest emitted only by the authenticated aggregate route as the SCJD v1 bytecode marker. */
+  messageBusKernelJournalDispositionCommitmentDigest?: string;
+
   /** Names-free affine recursive mapping-frame proof; metadata only, never an admission capability. */
   messageBusAffineRecursiveFrameDescriptors?: readonly AffineRecursiveFrameV1Abi[];
   /** Idempotence marker for the pre-admission constructed-array replay normalization. */
@@ -682,8 +768,6 @@ export class FunctionDefinitionNode extends Node implements Named {
 
   messageBusEligible?: boolean;
   messageBusRejectionReason?: string;
-  /** This source handler was included in the synthesized route dispatch. Late fences may still demote it. */
-  messageBusDispatched?: boolean;
   // Release 4 collection rows bind source argument positions to hidden
   // physical-route key witnesses. The SDK derives these from canonical rows;
   // the route compares decoded row arguments before any handler executes.
@@ -2489,6 +2573,9 @@ export class ExternalFunctionCallNode extends ExpressionNode {
   // Statement-form `addr.call(payload);` authenticates the same opaque result frame so it can target either a
   // returning or void handler, but deliberately does not reconstruct `(success, data)` on the source stack.
   discardedOpaqueReturn?: boolean;
+  // An empty-calldata `{value:}` call is a BCH transfer effect, not a selector-bearing graph invocation. The
+  // compiler still reconstructs its Solidity `(success, data)` result, but excludes it from callsite metadata.
+  rawValueTransferOnly?: boolean;
   // Set for a same-address varying-method function pointer `f = cond ? c.a : c.b; f(args)`: the RUNTIME selector
   // expression (`cond ? c.a.selector : c.b.selector`). Codegen stashes it into a temp and the covenant asserts
   // the co-spent callee's selector == it (instead of the compile-time witness), binding the co-spent method to
@@ -2643,6 +2730,8 @@ export interface ExternalCallSlot {
     parameters: ExpressionNode[];
     parameterTypes: Type[];
     logicalIndex: number;
+    /** @internal Traversal-stable source callsite used to prove producer dominance before physical batching. */
+    sourceCallsiteId: number;
     argSources?: ExternalCallArgSource[];
     /** Runtime cardinality of this source callsite within the grouped physical route. */
     occurrence?: 'once' | 'conditional' | 'loop';

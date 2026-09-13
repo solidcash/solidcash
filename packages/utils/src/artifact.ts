@@ -662,6 +662,34 @@ export interface KernelEntryJournalCapabilityScopeAbi {
   journalAccessStreamIndex: number;
 }
 
+/** Physical ownership selected by completed compiler descriptors for one kernel journal family. */
+export type KernelJournalDispositionAbi = 'carrier' | 'eager-journal' | 'neutral';
+
+/** One compiler-owned compact journal stream in its stable handler-local ordinal space. */
+export interface KernelJournalDispositionStreamAbi {
+  journalAccessStreamIndex: number;
+  /** Digest of the exact completed stream descriptor used by final code generation. */
+  descriptorDigest: string;
+  disposition: KernelJournalDispositionAbi;
+}
+
+/** Completed-descriptor disposition for one external handler. */
+export interface KernelJournalDispositionHandlerScopeAbi {
+  /** Canonical four-byte external handler selector, lowercase hex without 0x. */
+  selectorHex: string;
+  /** Digest of the complete final-codegen descriptor family for this handler. */
+  completedDescriptorDigest: string;
+  mode: KernelJournalDispositionAbi;
+  /** Ordered exactly as the handler's compact journal stream vector. */
+  streams: readonly KernelJournalDispositionStreamAbi[];
+}
+
+/** Versioned, ordered projection of the compiler's final-codegen journal ownership decision. */
+export interface KernelJournalDispositionsAbi {
+  version: 1;
+  handlers: readonly KernelJournalDispositionHandlerScopeAbi[];
+}
+
 export interface CollectionIterationAbi {
   collection: string;
   mode: 'entries' | 'keys' | 'values';
@@ -1377,6 +1405,13 @@ export interface Artifact {
      */
     kernelEntryJournal?: {
       version: 1;
+      /**
+       * Exact completed-descriptor ownership for every admitted handler. Presence alone grants no SDK authority:
+       * carrier behavior additionally requires the released route capability and authenticated local route.
+       */
+      kernelJournalDispositions?: KernelJournalDispositionsAbi;
+      /** Digest committed by one tagged push/drop in the executable route bytecode. */
+      kernelJournalDispositionCommitment?: { version: 1; digest: string };
       capabilities?: readonly {
         /** The route creates and later consumes its reserved clean-read carrier marker (0x0511). */
         kind: 'internal-read-carrier';

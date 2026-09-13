@@ -8,6 +8,7 @@ import {
   type SignatureTemplateArgument,
 } from '../Argument.js';
 import { MessageBusDiagnosticError } from './diagnostics.js';
+import { markCanonicalBatchBlob } from './internal-batch-authority.js';
 
 export interface MessageBatchCall {
   function: string;
@@ -878,6 +879,7 @@ export function encodeMessageBatch(
       return inactiveMessageBusRouteWitness(input.type);
     });
 
+  markCanonicalBatchBlob(blob);
   return {
     blob,
     routeWitnesses: Object.freeze(routeWitnesses),

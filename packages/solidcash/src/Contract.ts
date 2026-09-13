@@ -29,9 +29,56 @@ import {
 } from './loop-call.js';
 import type { TransactionBuilder } from './TransactionBuilder.js';
 import semver from 'semver';
+import { ConsensusBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-consensus.js';
+import { decodeKernelEntryJournalAccesses } from './stateful/KernelEntryJournal.js';
 
-// Use the full BCH consensus stack-item allowance without changing the compiler route's semantic ABI.
-const KERNEL_ROUTE_DENSITY_RESERVE_BYTES = 520;
+const KERNEL_ROUTE_DENSITY_BASE_RESERVE_BYTES = 520;
+// Each target/predecessor selector scans exactly through its zero-based record ordinal. The emitted selector uses
+// at most 25 priced scan/decode operations per visited record at BCH's 100-unit base operation price. The fixed
+// header, identity, ordinal, and commitment checks fit in a conservative 17,000-unit envelope per access.
+const KERNEL_ROUTE_OPERATION_COST_PER_RECORD_SCAN = 25 * 100;
+const KERNEL_ROUTE_FIXED_OPERATION_COST_PER_ACCESS = 17_000;
+const KERNEL_ROUTE_DENSITY_MAX_RESERVE_BYTES = ConsensusBch2026.maximumStackItemLength;
+
+/**
+ * Size the existing discarded kernel-route reserve from the physical access program the composer supplied.
+ * Record selection cost grows with these fixed-width entries, while a constant 520-byte reserve does not. The
+ * route covenant still authenticates every stream and its declared count; malformed public arguments cannot gain
+ * authority by increasing this budget, and the result is capped at BCH-2026's stack-item limit.
+ */
+/** @internal Exported for exact boundary tests; not re-exported from the package API. */
+export function kernelRouteDensityReserveBytes(accessStreams: FunctionArgument | undefined): number {
+  if (!Array.isArray(accessStreams)) return KERNEL_ROUTE_DENSITY_BASE_RESERVE_BYTES;
+  let accessCount = 0;
+  let recordScanCount = 0;
+  const visit = (value: FunctionArgument): void => {
+    if (value instanceof Uint8Array) {
+      try {
+        const accesses = decodeKernelEntryJournalAccesses(value);
+        accessCount += accesses.length;
+        for (const access of accesses) {
+          recordScanCount += access.targetRecordOrdinal + 1;
+          if (access.predecessorRecordOrdinal !== undefined) {
+            recordScanCount += access.predecessorRecordOrdinal + 1;
+          }
+        }
+      } catch {
+        // Malformed public arguments have no authority and fail in the route covenant. They must not allocate
+        // density padding merely because their byte length resembles an access stream.
+      }
+      return;
+    }
+    if (Array.isArray(value)) value.forEach(visit);
+  };
+  accessStreams.forEach(visit);
+  const operationCost = accessCount * KERNEL_ROUTE_FIXED_OPERATION_COST_PER_ACCESS
+    + recordScanCount * KERNEL_ROUTE_OPERATION_COST_PER_RECORD_SCAN;
+  return Math.min(
+    KERNEL_ROUTE_DENSITY_MAX_RESERVE_BYTES,
+    KERNEL_ROUTE_DENSITY_BASE_RESERVE_BYTES
+      + Math.ceil(operationCost / ConsensusBch2026.operationCostBudgetPerByte),
+  );
+}
 
 // Large generated contracts can carry multi-megabyte ASM listings. Stateful deployment and proxy wiring create
 // several Contract instances from the exact same artifact (withCategory, logical-address attachment, delegates).
@@ -620,8 +667,13 @@ export class Contract<
       const kernelJournalRoute = abiFunction.inputs.some(
         (input) => input.name === '__internal__kernelJournalAccessStreams',
       );
+      const kernelJournalAccessIndex = abiFunction.inputs.findIndex(
+        (input) => input.name === '__internal__kernelJournalAccessStreams',
+      );
       const reservedPositionalPush = scriptToBytecode([
-        new Uint8Array(kernelJournalRoute ? KERNEL_ROUTE_DENSITY_RESERVE_BYTES : 0),
+        new Uint8Array(kernelJournalRoute
+          ? kernelRouteDensityReserveBytes(args[kernelJournalAccessIndex])
+          : 0),
       ]);
       let cachedOrdinary: Uint8Array | undefined;
       let cachedCompilerRoute: Uint8Array | undefined;

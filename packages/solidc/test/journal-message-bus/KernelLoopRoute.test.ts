@@ -85,6 +85,387 @@ const ROUTE_SCALING_FAMILIES = [
     `,
     options: { messageBusGraphContext: true },
   },
+  {
+    name: 'rank-dependent associative recurrence rows',
+    source: `
+      pragma solidcash ^0.13.0;
+      contract Product() {
+        event Observed(bigint value);
+        bigint product;
+        uint256 mask;
+        function multiply(int limit) public {
+          for (int cursor = 1; cursor < limit; cursor = cursor + 2) {
+            this.product = this.product * bigint(cursor + 1);
+            emit Observed(this.product);
+          }
+          require(limit >= 1 && limit <= 129);
+        }
+        function multiplyAffine(int limit, bigint factor) public {
+          for (int cursor = 1; cursor < limit; cursor = cursor + 2) {
+            factor = factor + 2;
+            this.product = this.product * factor;
+            emit Observed(this.product);
+          }
+          require(limit >= 1 && limit <= 129);
+        }
+        function fold(int limit) public {
+          for (int cursor = 1; cursor < limit; cursor = cursor + 2) {
+            this.mask = (this.mask ^ uint256(cursor + 1));
+            emit Observed(bigint(this.mask));
+          }
+          require(limit >= 1 && limit <= 129);
+        }
+      }
+    `,
+    options: {},
+  },
+  {
+    name: 'source-ordered non-associative recurrence rows',
+    source: `
+      pragma solidcash ^0.13.0;
+      contract Fold() {
+        event Number(bigint value);
+        event Mask(uint256 value);
+        bigint total;
+        uint256 mask;
+        function divide(int limit) public {
+          for (int cursor = 1; cursor < limit; cursor = cursor + 2) {
+            this.total = this.total / bigint(cursor + 1);
+            emit Number(this.total);
+          }
+          require(limit >= 1 && limit <= 129);
+        }
+        function mix(int limit) public {
+          for (int cursor = 1; cursor < limit; cursor = cursor + 2) {
+            this.mask = (this.mask ^ uint256(cursor + 1));
+            this.mask = (this.mask & uint256(cursor + 14));
+            this.mask = (this.mask | uint256(cursor));
+            emit Mask(this.mask);
+          }
+          require(limit >= 1 && limit <= 129);
+        }
+      }
+    `,
+    options: {},
+  },
+  {
+    name: 'literal-bound source-loop escape rows',
+    source: `
+      pragma solidcash ^0.13.0;
+      contract LiteralDomain() {
+        mapping(int => int) values;
+        function select(bool skip, bool stop) public {
+          int cursor = 0;
+          while (cursor < (2 + 3)) {
+            if (skip && cursor == 1) { cursor = cursor + 1; continue; }
+            this.values[cursor] = cursor + 10;
+            if (stop && cursor == 3) break;
+            cursor = cursor + 1;
+          }
+          require(true);
+        }
+      }
+    `,
+    options: {},
+  },
+  {
+    name: 'read-only state bounded constructed-key rows',
+    source: `
+      pragma solidcash ^0.13.0;
+      contract StableBound() {
+        int limit;
+        mapping(int => int) values;
+        function fill(int[] memory keys, int base, int stop) internal pure {
+          for (int cursor = 0; cursor < stop; cursor = cursor + 1) {
+            keys[cursor] = base + cursor;
+          }
+        }
+        function write(int count, int base) public {
+          int[] memory keys = new int[](count);
+          fill(keys, base, this.limit);
+          for (int cursor = 0; cursor < count; cursor = cursor + 1) {
+            this.values[keys[cursor]] = cursor;
+          }
+          require(true);
+        }
+      }
+    `,
+    options: {},
+  },
+  {
+    name: 'fixed-array-length bounded constructed-key rows',
+    source: `
+      pragma solidcash ^0.13.0;
+      contract FixedBound() {
+        mapping(int => int) values;
+        function fill(int[] memory keys, int base, int stop) internal pure {
+          for (int cursor = 0; cursor < stop; cursor = cursor + 1) {
+            keys[cursor] = base + cursor;
+          }
+        }
+        function write(int count, int base) public {
+          int[3] memory domain;
+          int[] memory keys = new int[](count);
+          fill(keys, base, domain.length);
+          for (int cursor = 0; cursor < count; cursor = cursor + 1) {
+            this.values[keys[cursor]] = cursor;
+          }
+          require(true);
+        }
+      }
+    `,
+    options: {},
+  },
+  {
+    name: 'exact fixed local key-vector rows',
+    source: `
+      pragma solidcash ^0.13.0;
+      contract FiniteKeys() {
+        mapping(int => int) values;
+        function write(int count, int base) public {
+          int[3] memory keys;
+          keys[0] = base;
+          keys[1] = base + 2;
+          keys[2] = base + 4;
+          for (int cursor = 0; cursor < count; cursor = cursor + 1) {
+            this.values[keys[cursor]] = cursor;
+          }
+          require(true);
+        }
+      }
+    `,
+    options: {},
+  },
+  {
+    name: 'immutable fixed key-vector alias rows',
+    source: `
+      pragma solidcash ^0.13.0;
+      contract AliasedKeys() {
+        mapping(int => int) values;
+        function write(int count, int base) public {
+          int[3] memory source;
+          source[0] = base;
+          source[1] = base + 2;
+          source[2] = base + 4;
+          int[3] memory keys = source;
+          for (int cursor = 0; cursor < count; cursor = cursor + 1) {
+            this.values[keys[cursor]] = cursor;
+          }
+          require(true);
+        }
+      }
+    `,
+    options: {},
+  },
+  {
+    name: 'pure fixed key-vector producer rows',
+    source: `
+      pragma solidcash ^0.13.0;
+      contract ProducedKeys() {
+        mapping(int => int) values;
+        function element(int base) internal pure returns (int) { return base + 2; }
+        function element(bigint base) internal pure returns (bigint) { return base + 100; }
+        function make(int base) internal pure returns (int[3] memory) {
+          int[3] memory result;
+          result[0] = base;
+          result[1] = element(base);
+          result[2] = base + 4;
+          return result;
+        }
+        function write(int count, int base) public {
+          int[3] memory keys = make(base);
+          for (int cursor = 0; cursor < count; cursor = cursor + 1) {
+            this.values[keys[cursor]] = cursor;
+          }
+          require(true);
+        }
+      }
+    `,
+    options: {},
+  },
+  {
+    name: 'conditional fixed key-vector rows',
+    source: `
+      pragma solidcash ^0.13.0;
+      contract ConditionalKeys() {
+        mapping(int => int) values;
+        function write(int count, int base, bool choose) public {
+          int[3] memory keys;
+          keys[0] = base;
+          if (choose) { keys[1] = base + 2; } else { keys[1] = base + 3; }
+          keys[2] = base + 4;
+          for (int cursor = 0; cursor < count; cursor = cursor + 1) {
+            this.values[keys[cursor]] = cursor;
+          }
+          require(true);
+        }
+      }
+    `,
+    options: {},
+  },
+  {
+    name: 'switch fixed key-vector rows',
+    source: `
+      pragma solidcash ^0.13.0;
+      contract SwitchedKeys() {
+        mapping(int => int) values;
+        function write(int count, int base, int mode) public {
+          int[3] memory keys;
+          keys[0] = base;
+          switch (mode) {
+            case 0: keys[1] = base + 2; break;
+            case 1: keys[1] = base + 3; break;
+            default: keys[1] = base + 5;
+          }
+          keys[2] = base + 6;
+          for (int cursor = 0; cursor < count; cursor = cursor + 1) {
+            this.values[keys[cursor]] = cursor;
+          }
+          require(true);
+        }
+      }
+    `,
+    options: {},
+  },
+  {
+    name: 'runtime allocation-length key rows',
+    source: `
+      pragma solidcash ^0.13.0;
+      contract AllocationLengthKeys() {
+        mapping(int => int) values;
+        function fill(int[] memory keys, int base, int stop) internal pure {
+          for (int cursor = 0; cursor < stop; cursor = cursor + 1) {
+            keys[cursor] = base + cursor;
+          }
+        }
+        function write(int count, int base, int allocationLength) public {
+          int[] memory domain = new int[](allocationLength);
+          int[] memory keys = new int[](count);
+          fill(keys, base, domain.length);
+          for (int cursor = 0; cursor < count; cursor = cursor + 1) {
+            this.values[keys[cursor]] = cursor;
+          }
+          require(true);
+        }
+      }
+    `,
+    options: {},
+  },
+  {
+    name: 'straight-line resized allocation-length rows',
+    source: `
+      pragma solidcash ^0.13.0;
+      contract ResizedAllocationLengthKeys() {
+        mapping(int => int) values;
+        function fill(int[] memory keys, int base, int stop) internal pure {
+          for (int cursor = 0; cursor < stop; cursor = cursor + 1) {
+            keys[cursor] = base + cursor;
+          }
+        }
+        function write(int count, int base, int allocationLength) public {
+          int[] memory domain = new int[](allocationLength);
+          domain.push(base + 20);
+          domain.push(base + 21);
+          domain.pop();
+          int[] memory keys = new int[](count);
+          fill(keys, base, domain.length);
+          for (int cursor = 0; cursor < count; cursor = cursor + 1) {
+            this.values[keys[cursor]] = cursor;
+          }
+          require(true);
+        }
+      }
+    `,
+    options: {},
+  },
+  {
+    name: 'exhaustive resize-join allocation-length rows',
+    source: `
+      pragma solidcash ^0.13.0;
+      contract ExhaustiveResizeJoinKeys() {
+        mapping(int => int) values;
+        function fill(int[] memory keys, int base, int stop) internal pure {
+          for (int cursor = 0; cursor < stop; cursor = cursor + 1) {
+            keys[cursor] = base + cursor;
+          }
+        }
+        function write(int count, int base, int allocationLength, bool choose) public {
+          int[] memory domain = new int[](allocationLength);
+          if (choose) {
+            domain.push(base + 20);
+          } else {
+            domain.push(base + 30);
+            domain.push(base + 31);
+          }
+          int[] memory keys = new int[](count);
+          fill(keys, base, domain.length);
+          for (int cursor = 0; cursor < count; cursor = cursor + 1) {
+            this.values[keys[cursor]] = cursor;
+          }
+          require(true);
+        }
+      }
+    `,
+    options: {},
+  },
+  {
+    name: 'exhaustive resize-switch allocation-length rows',
+    source: `
+      pragma solidcash ^0.13.0;
+      contract ExhaustiveResizeSwitchKeys() {
+        mapping(int => int) values;
+        function fill(int[] memory keys, int base, int stop) internal pure {
+          for (int cursor = 0; cursor < stop; cursor = cursor + 1) {
+            keys[cursor] = base + cursor;
+          }
+        }
+        function write(int count, int base, int allocationLength, int mode) public {
+          int[] memory domain = new int[](allocationLength);
+          switch (mode) {
+            case 0: domain.push(base + 20); break;
+            case 1: domain.push(base + 30); domain.push(base + 31); break;
+            default: domain.push(base + 40); domain.push(base + 41); domain.pop();
+          }
+          int[] memory keys = new int[](count);
+          fill(keys, base, domain.length);
+          for (int cursor = 0; cursor < count; cursor = cursor + 1) {
+            this.values[keys[cursor]] = cursor;
+          }
+          require(true);
+        }
+      }
+    `,
+    options: {},
+  },
+  {
+    name: 'fixed source-loop resized allocation-length rows',
+    source: `
+      pragma solidcash ^0.13.0;
+      contract FixedLoopResizeKeys() {
+        mapping(int => int) values;
+        function fill(int[] memory keys, int base, int stop) internal pure {
+          for (int cursor = 0; cursor < stop; cursor = cursor + 1) {
+            keys[cursor] = base + cursor;
+          }
+        }
+        function write(int count, int base, int allocationLength) public {
+          int[] memory domain = new int[](allocationLength);
+          for (int round = 0; round < 3; round = round + 1) {
+            domain.push(base + round);
+            domain.push(base + 10 + round);
+            domain.pop();
+          }
+          int[] memory keys = new int[](count);
+          fill(keys, base, domain.length);
+          for (int cursor = 0; cursor < count; cursor = cursor + 1) {
+            this.values[keys[cursor]] = cursor;
+          }
+          require(true);
+        }
+      }
+    `,
+    options: {},
+  },
 ] as const;
 
 const routeAsm = (artifact: ReturnType<typeof compileString>): string => {
@@ -442,10 +823,9 @@ contract Acc() {
         }
       }
     `, { ...OPTIONS, maximumInputBytes: 1_000_000 });
-    // The compiler still publishes stable read/write stream metadata, but no read-carrier route is advertised until
-    // the SDK publishes the matching physical journal band and the final-settlement cursor is released.
+    // The authenticated carrier route keeps first-touch record identity separate from dense output rank.
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'copy'))
-      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+      .toMatchObject({ eligible: true });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write')?.eligible).toBe(true);
 
     const asm = routeAsm(artifact);
@@ -456,9 +836,9 @@ contract Acc() {
       .map(({ bytecode }) => bytecodeToAsm(hexToBin(bytecode)))].join(' ');
     expect(emittedAsm).toContain('0501');
     expect(asm).toContain(
-      'OP_OVER 0503 OP_EQUAL OP_BOOLOR OP_OVER 050a OP_EQUAL OP_BOOLOR OP_IF',
+      'OP_OVER 0503 OP_EQUAL OP_BOOLOR OP_OVER 050a OP_EQUAL OP_BOOLOR '
+      + 'OP_OVER 0511 OP_EQUAL OP_BOOLOR OP_IF',
     );
-    expect(asm).not.toContain('OP_OVER 0511 OP_EQUAL OP_BOOLOR');
     expect(asm).toMatch(
       /OP_2DROP OP_2DROP OP_TOALTSTACK OP_1ADD OP_FROMALTSTACK OP_ELSE 050c OP_EQUALVERIFY OP_DROP OP_ENDIF/,
     );

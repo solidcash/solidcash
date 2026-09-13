@@ -391,7 +391,7 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
           + 'its journalled entry values are flushed only at the single function exit',
         );
       }
-      if (distinct.size > 1 || fn.forceCollectionJournalPool) {
+      if (distinct.size > 1 || fn.forceCollectionJournalPool || pooledTerminalResult) {
         this.multiCandidates.set(`${fn.name}/${fn.parameters.length}`, {
           fn, entries: [...distinct.values()], dynamicEntries,
           resultTypes: pooledTerminalResult ? [...fn.returnTypes] : [],

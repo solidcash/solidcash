@@ -1,7 +1,10 @@
 import { binToHex, hexToBin } from '@bitauth/libauth';
+import { decodePushdataValue, KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX } from '@solidcash/utils';
 import { compileString } from 'solidc';
 import { describe, expect, it } from 'vitest';
-import { Contract, StatefulContract, getEntryNftAddress } from '../../../src/index.js';
+import {
+  Contract, StatefulContract, encodeFunctionArgument, getEntryNftAddress,
+} from '../../../src/index.js';
 import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';
 import { decodeKernelEntryJournalAccesses } from '../../../src/stateful/KernelEntryJournal.js';
 import { addressToLockScript, generateLibauthSourceOutputs } from '../../../src/utils.js';
@@ -10,11 +13,8 @@ import { createTestProvider, setupStatefulUtxos } from '../../test-util.js';
 const SOURCE = `contract RepeatedRowCarrier() {
   mapping(int => int) source;
   mapping(int => int) result;
-  function seed(int key, int value) public {
-    this.source[key] = value;
-    this.result[key] = 0;
-    require(true);
-  }
+  function seedSource(int key, int value) public { this.source[key] = value; require(true); }
+  function seedResult(int key, int value) public { this.result[key] = value; require(true); }
   function copy(int count) public {
     for (int cursor = 0; cursor < count; cursor = cursor + 1) {
       this.result[cursor] = this.source[cursor];
@@ -29,12 +29,13 @@ const KERNEL = {
 } as const;
 
 function entryIndices(
-  transaction: { inputs: Array<{ lockingBytecode: Uint8Array }>; outputs: Array<{ lockingBytecode: Uint8Array }> },
+  sourceOutputs: Array<{ lockingBytecode: Uint8Array }>,
+  transaction: { outputs: Array<{ lockingBytecode: Uint8Array }> },
   address: string,
 ): { inputs: number[]; outputs: number[] } {
   const lockingBytecode = binToHex(addressToLockScript(address));
   return {
-    inputs: transaction.inputs.flatMap((input, index) =>
+    inputs: sourceOutputs.flatMap((input, index) =>
       binToHex(input.lockingBytecode) === lockingBytecode ? [index] : []),
     outputs: transaction.outputs.flatMap((output, index) =>
       binToHex(output.lockingBytecode) === lockingBytecode ? [index] : []),
@@ -49,7 +50,7 @@ function entryIndices(
  * meaningful protocol precondition into a misleading SDK failure.
  */
 describe('kernel repeated clean-read carriers', () => {
-  it.skip('shares each physical clean input across copy(2), copy(2) and settles a dense mixed final flush', async () => {
+  it('shares each physical clean input across copy(2), copy(2) and settles a dense mixed final flush', async () => {
     const artifact = compileString(SOURCE, KERNEL);
     expect(artifact.messageBus?.kernelEntryJournal?.capabilities).toContainEqual(expect.objectContaining({
       kind: 'internal-read-carrier', version: 1,
@@ -60,8 +61,10 @@ describe('kernel repeated clean-read carriers', () => {
     const { categoryId } = await setupStatefulUtxos(provider, inner, artifact.stateLayout!, {}, { saltContract: true });
     const contract = StatefulContract.withCategory(inner, categoryId);
     // Reverse insertion order proves source order and physical entry order are independently authenticated.
-    await contract.call.seed(1n, 11n).send();
-    await contract.call.seed(0n, 10n).send();
+    await contract.call.seedSource(1n, 11n).send();
+    await contract.call.seedSource(0n, 10n).send();
+    await contract.call.seedResult(1n, 0n).send();
+    await contract.call.seedResult(0n, 0n).send();
     const call = contract.batch([{ function: 'copy', args: [2n] }, { function: 'copy', args: [2n] }]);
     const builder = await call.build();
     const transaction = builder.buildLibauthTransaction();
@@ -71,8 +74,12 @@ describe('kernel repeated clean-read carriers', () => {
       expect(vm.stateSuccess(vm.evaluate({ inputIndex, sourceOutputs, transaction })), `input ${inputIndex}`).toBe(true);
     }
 
-    const sourceSlots = entryIndices(transaction, getEntryNftAddress(contract.inner, categoryId, 'source'));
-    const resultSlots = entryIndices(transaction, getEntryNftAddress(contract.inner, categoryId, 'result'));
+    const sourceSlots = entryIndices(
+      sourceOutputs, transaction, getEntryNftAddress(contract.inner, categoryId, 'source'),
+    );
+    const resultSlots = entryIndices(
+      sourceOutputs, transaction, getEntryNftAddress(contract.inner, categoryId, 'result'),
+    );
     // Four logical clean reads collapse to two physical source inputs. The two source carriers and two dirty
     // result slots each receive exactly one dense final output: 4 collection inputs and 4 collection outputs.
     expect(sourceSlots.inputs).toHaveLength(2);
@@ -157,31 +164,138 @@ describe('kernel repeated clean-read carriers', () => {
     expect(vm.stateSuccess(vm.evaluate({
       inputIndex: routeInput, sourceOutputs, transaction: forgedRecordTransaction,
     }))).not.toBe(true);
+
+    // The record vector is an authenticated description, not a caller-owned cache. Mutating an ordinary record
+    // body (independently of the reserved marker check above) must break its exact input/settlement binding.
+    const recordBodyParams = structuredClone(originalUnlocker.params);
+    const firstRecordSegment = originalUnlocker.abiFunction.inputs.findIndex((input) =>
+      input.name === `${KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX}0`);
+    expect(firstRecordSegment).toBeGreaterThanOrEqual(0);
+    const records = decodePushdataValue(
+      recordBodyParams[firstRecordSegment] as Uint8Array, 0, 'bytes[]',
+    ).value as Uint8Array[];
+    expect(records.length).toBeGreaterThan(0);
+    const alteredRecord = new Uint8Array(records[0]);
+    alteredRecord[alteredRecord.length - 1] ^= 1;
+    records[0] = alteredRecord;
+    recordBodyParams[firstRecordSegment] = encodeFunctionArgument(
+      records, 'bytes[]', artifact.stateLayout!.structs,
+    ) as Uint8Array;
+    routeBuilderInput.unlocker = originalUnlocker.contract.createCompilerRouteUnlocker(
+      originalUnlocker.abiFunction, hexToBin(selector),
+    )(...recordBodyParams);
+    const alteredRecordTransaction = builder.buildLibauthTransaction();
+    routeBuilderInput.unlocker = originalUnlocker;
+    expect(vm.stateSuccess(vm.evaluate({
+      inputIndex: routeInput, sourceOutputs, transaction: alteredRecordTransaction,
+    })), 'altered record body').not.toBe(true);
+
+    // Input identity is supplied by sourceOutputs to libauth. Change an authenticated entry commitment without
+    // changing the journal record and require the route itself to reject the forged pre-state carrier.
+    const alteredSourceOutputs = structuredClone(sourceOutputs);
+    const alteredSourceCommitment = new Uint8Array(
+      alteredSourceOutputs[sourceSlots.inputs[0]!]!.token!.nft!.commitment,
+    );
+    alteredSourceCommitment[alteredSourceCommitment.length - 1] ^= 1;
+    alteredSourceOutputs[sourceSlots.inputs[0]!]!.token!.nft!.commitment = alteredSourceCommitment;
+    expect(vm.stateSuccess(vm.evaluate({
+      inputIndex: routeInput, sourceOutputs: alteredSourceOutputs, transaction,
+    })), 'altered physical input commitment').not.toBe(true);
+
     const swapped = structuredClone(transaction);
     [swapped.outputs[sourceSlots.outputs[0]!]!.token, swapped.outputs[sourceSlots.outputs[1]!]!.token] = [
       swapped.outputs[sourceSlots.outputs[1]!]!.token, swapped.outputs[sourceSlots.outputs[0]!]!.token,
     ];
-    expect(vm.stateSuccess(vm.evaluate({ inputIndex: routeInput, sourceOutputs, transaction: swapped }))).not.toBe(true);
+    expect(vm.stateSuccess(vm.evaluate({
+      inputIndex: routeInput, sourceOutputs, transaction: swapped,
+    })), 'swapped physical outputs').not.toBe(true);
     await expect(call.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
     await expect(contract.call.check(0n, 10n).send()).resolves.toBeDefined();
     await expect(contract.call.check(1n, 11n).send()).resolves.toBeDefined();
 
-    // Legacy unrolling intentionally does not admit this runtime-mapping shape. Compare instead with the direct
-    // dispatcher, which is the independent observable-semantics baseline until legacy gains an equivalent route.
-    const legacy = compileString(SOURCE, { ...KERNEL, messageBusKernel: false });
-    expect(legacy.messageBus?.handlers.find((handler) => handler.name === 'copy')?.eligible).toBe(false);
-    const directArtifact = compileString(SOURCE, { forceStateful: true, messageBus: false });
-    const directProvider = createTestProvider();
-    const directInner = new Contract(directArtifact, [], { provider: directProvider });
-    const directState = await setupStatefulUtxos(
-      directProvider, directInner, directArtifact.stateLayout!, {}, { saltContract: true },
+    // The sent carrier route above is the observable-semantics gate: both final state reads must succeed. The
+    // direct dispatcher intentionally does not admit this runtime-mapping loop and therefore is not a runnable
+    // transaction baseline for this shape.
+  }, 180_000);
+
+  it.each([
+    {
+      label: 'two absent keys sharing the collection head predecessor',
+      sourceEntries: [] as Array<readonly [bigint, bigint]>,
+      expected: [0n, 0n] as const,
+      expectedKinds: [false, false] as const,
+      expectedPhysicalCarriers: 1,
+    },
+    {
+      label: 'a present target and collection-head predecessor reused across rows',
+      sourceEntries: [[0n, 10n]] as Array<readonly [bigint, bigint]>,
+      expected: [10n, 0n] as const,
+      // Access streams are canonically emitted in reverse loop-body order: key 1's absence consumes HEAD as its
+      // predecessor, then key 0 consumes its present record. The second row reuses both physical carriers.
+      expectedKinds: [false, true] as const,
+      expectedPhysicalCarriers: 2,
+    },
+  ])('authenticates each physical carrier once for $label', async ({
+    sourceEntries, expected, expectedKinds, expectedPhysicalCarriers,
+  }) => {
+    const artifact = compileString(SOURCE, KERNEL);
+    expect(artifact.messageBus?.kernelEntryJournal?.capabilities).toContainEqual(expect.objectContaining({
+      kind: 'internal-read-carrier', version: 1,
+    }));
+    const provider = createTestProvider();
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
     );
-    const direct = StatefulContract.withCategory(directInner, directState.categoryId);
-    await direct.call.seed(1n, 11n).send();
-    await direct.call.seed(0n, 10n).send();
-    await direct.call.copy(2n).send();
-    await direct.call.copy(2n).send();
-    await expect(direct.call.check(0n, 10n).send()).resolves.toBeDefined();
-    await expect(direct.call.check(1n, 11n).send()).resolves.toBeDefined();
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    for (const [key, value] of sourceEntries) await contract.call.seedSource(key, value).send();
+    await contract.call.seedResult(0n, 90n).send();
+    await contract.call.seedResult(1n, 91n).send();
+
+    const call = contract.batch([{ function: 'copy', args: [2n] }, { function: 'copy', args: [2n] }]);
+    const builder = await call.build();
+    const transaction = builder.buildLibauthTransaction();
+    const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+    const vm = createVirtualMachineBch2026ForProvider(provider);
+    const routeInput = builder.inputs.findIndex((input) => 'abiFunction' in input.unlocker
+      && input.unlocker.abiFunction.name === artifact.messageBus!.route.name);
+    expect(routeInput).toBeGreaterThanOrEqual(0);
+    const evaluated = vm.evaluate({ inputIndex: routeInput, sourceOutputs, transaction });
+    expect(vm.stateSuccess(evaluated)).toBe(true);
+
+    const sourceSlots = entryIndices(
+      sourceOutputs, transaction, getEntryNftAddress(contract.inner, categoryId, 'source'),
+    );
+    const resultSlots = entryIndices(
+      sourceOutputs, transaction, getEntryNftAddress(contract.inner, categoryId, 'result'),
+    );
+    // Every populated source collection also spends its authenticated HEAD. Each physical source record is then
+    // consumed by both repeated rows without another input; the destination remains two independent dirty records.
+    expect(sourceSlots.inputs).toHaveLength(sourceEntries.length + 1);
+    expect(sourceSlots.outputs).toHaveLength(sourceEntries.length + 1);
+    expect(resultSlots.inputs).toHaveLength(2);
+    expect(resultSlots.outputs).toHaveLength(2);
+
+    const routeUnlocker = builder.inputs[routeInput]!.unlocker;
+    if (!('params' in routeUnlocker)) throw new Error('kernel route has no parameterized unlocker');
+    const journalIndex = routeUnlocker.abiFunction.inputs.findIndex((input) =>
+      input.name === '__internal__kernelJournalAccessStreams');
+    const rowStreams = routeUnlocker.params[journalIndex] as Uint8Array[][];
+    const cleanReads = rowStreams.flatMap((streams) => streams.flatMap((stream) =>
+      decodeKernelEntryJournalAccesses(stream).filter((access) => !access.mutates)));
+    expect(cleanReads).toHaveLength(4);
+    expect(cleanReads.slice(0, 2).map((access) => access.presentBefore)).toEqual(expectedKinds);
+    expect(cleanReads.slice(2).map((access) => access.presentBefore)).toEqual(expectedKinds);
+    const physicalRecords = cleanReads.map((access) => access.presentBefore
+      ? access.targetRecordOrdinal : access.predecessorRecordOrdinal);
+    expect(physicalRecords.every((record) => record !== undefined)).toBe(true);
+    expect(new Set(physicalRecords).size).toBe(expectedPhysicalCarriers);
+    expect(physicalRecords.slice(2)).toEqual(physicalRecords.slice(0, 2));
+    expect(cleanReads.filter((access) => access.authenticatesTarget
+      || access.authenticatesPredecessor)).toHaveLength(expectedPhysicalCarriers);
+
+    await expect(call.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    await expect(contract.call.check(0n, expected[0]).send()).resolves.toBeDefined();
+    await expect(contract.call.check(1n, expected[1]).send()).resolves.toBeDefined();
   }, 180_000);
 });

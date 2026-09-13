@@ -5,6 +5,7 @@ import {
   Node,
   StatementNode,
   BlockNode,
+  ExpressionNode,
   BranchNode,
   WhileNode,
   DoWhileNode,
@@ -22,6 +23,7 @@ import {
   ArrayAssignNode,
   ArrayDeleteNode,
   MappingAccessNode,
+  ArrayAccessNode,
   MappingAssignNode,
   IdentifierNode,
   VariableDefinitionNode,
@@ -249,18 +251,51 @@ export default class CacheDynamicArrayInLoop extends AstTraversal {
   // which is a FieldAccess over the identifier) to the local `local`. State write nodes were already
   // converted to local ones above; their index/value sub-expressions are covered here.
   private renameReads(root: Node, name: string, local: string): void {
+    this.replaceIndexedReads(root, name, local);
     this.walk(root, (n) => {
       const named = n as unknown as { name?: unknown };
       if (typeof named.name !== 'string' || named.name !== name) return;
       // Rename name-resolved accesses (bare identifier / index read+write / push/pop/delete) to the local.
       // StateArray* writes were already converted to local Array* nodes above; FieldAccess.name is a field
       // (e.g. `.length`) not an array name, so it is left alone (its inner identifier is renamed instead).
-      if (n instanceof IdentifierNode || n instanceof MappingAccessNode || n instanceof MappingAssignNode
+      if (n instanceof IdentifierNode || n instanceof MappingAssignNode
         || n instanceof ArrayAssignNode || n instanceof ArrayPushNode || n instanceof ArrayPopNode
         || n instanceof ArrayDeleteNode) {
         named.name = local;
       }
     });
+  }
+
+  // The parser represents a state-array index as MappingAccessNode until semantic resolution. Once this pass
+  // redirects that state array to a local cache, retaining only the renamed node spelling is insufficient:
+  // SymbolTableTraversal correctly interprets MappingAccessNode as an entry-backed collection and rejects the
+  // compiler-owned local name. Rebuild the exact indexed expression as local ArrayAccess nodes while the source
+  // keys and locations are still available. This is structural and also covers nodes exposed by handler cloning.
+  private replaceIndexedReads(root: Node, name: string, local: string): void {
+    const replace = (node: Node): Node => {
+      for (const key of Object.keys(node)) {
+        if (key === 'type' || key === 'symbolTable' || key === 'location') continue;
+        const value = (node as unknown as Record<string, unknown>)[key];
+        if (value instanceof Node) {
+          (node as unknown as Record<string, unknown>)[key] = replace(value);
+        } else if (Array.isArray(value)) {
+          for (let index = 0; index < value.length; index += 1) {
+            if (value[index] instanceof Node) value[index] = replace(value[index]);
+          }
+        }
+      }
+      if (!(node instanceof MappingAccessNode) || node.name !== name || node.keys.length === 0) return node;
+      const identifier = new IdentifierNode(local);
+      identifier.location = node.location;
+      let expression: ExpressionNode = identifier;
+      for (const index of node.keys) {
+        const access = new ArrayAccessNode(expression, index);
+        access.location = node.location;
+        expression = access;
+      }
+      return expression;
+    };
+    replace(root);
   }
 
   // Pre-order walk over child Nodes (and Node arrays); skips Type/symbol-table fields.

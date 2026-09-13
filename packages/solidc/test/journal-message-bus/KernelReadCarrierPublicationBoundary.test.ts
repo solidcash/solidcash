@@ -30,7 +30,7 @@ const source = (
 }`;
 
 describe('kernel read-carrier publication boundary', () => {
-  it('does not turn late read-to-set recognition into route authority in any compile path', () => {
+  it('publishes compiler-authenticated read carriers in every compile path', () => {
     const variants = [
       { code: source('First', 'left', 'right', 'transferRows'), handler: 'transferRows' },
       { code: source('Second', 'before', 'after', 'apply'), handler: 'apply' },
@@ -50,9 +50,15 @@ describe('kernel read-carrier publication boundary', () => {
           available: true,
           routeInBytecode: true,
         });
-        expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === handler))
-          .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
-        expect(artifact.messageBus?.kernelEntryJournal).toBeUndefined();
+        const published = artifact.messageBus?.handlers.find((candidate) => candidate.name === handler);
+        expect(published).toMatchObject({ eligible: true, selector: expect.stringMatching(/^[0-9a-f]{8}$/) });
+        expect(artifact.messageBus?.kernelEntryJournal?.capabilities).toContainEqual({
+          kind: 'internal-read-carrier',
+          version: 1,
+          scopes: expect.arrayContaining([expect.objectContaining({
+            handlerSelector: published!.selector,
+          })]),
+        });
       }
     }
   }, 60_000);

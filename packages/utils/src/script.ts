@@ -580,7 +580,7 @@ type LocatedLocationData = SingleLocationData & {
 
 const getHighestEndLocation = (locations: SingleLocationData[]): LocatedLocationData | undefined => {
   const located = locations.filter(
-    (entry): entry is LocatedLocationData => entry.location !== undefined,
+    (entry): entry is LocatedLocationData => entry.location != null,
   );
   return located.reduce<LocatedLocationData | undefined>((highest, current) => {
     if (!highest || current.location.end.line > highest.location.end.line) {
@@ -599,7 +599,7 @@ const getHighestEndLocation = (locations: SingleLocationData[]): LocatedLocation
 
 const getLowestStartLocation = (locations: SingleLocationData[]): LocatedLocationData | undefined => {
   const located = locations.filter(
-    (entry): entry is LocatedLocationData => entry.location !== undefined,
+    (entry): entry is LocatedLocationData => entry.location != null,
   );
   return located.reduce<LocatedLocationData | undefined>((lowest, current) => {
     if (!lowest || current.location.start.line < lowest.location.start.line) {

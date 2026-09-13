@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { bytecodeToAsm } from '@solidcash/utils';
 import { compileString } from '../../src/compiler.js';
 
 const KERNEL = {
@@ -97,5 +98,64 @@ describe('mapping loops with source escapes', () => {
         i = i + 1;
       } while (i < n);`);
     expect(handler).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_UNBOUNDED_KEY' });
+  });
+
+  it('publishes literal-bound source while and do-while escape domains without speculative fallback', () => {
+    const attemptFailureBox = { failures: [] };
+    const artifact = compileString(`contract LiteralDomain() {
+      mapping(int => int) values;
+      function fromWhile(bool skip, bool stop) public {
+        int cursor = 0;
+        while (cursor < (2 + 3)) {
+          if (skip && cursor == 1) { cursor = cursor + 1; continue; }
+          this.values[cursor] = cursor + 10;
+          if (stop && cursor == 3) break;
+          cursor = cursor + 1;
+        }
+        require(true);
+      }
+      function fromDoWhile(bool stop) public {
+        int cursor = 1;
+        do {
+          this.values[cursor] = cursor + 20;
+          if (stop && cursor == 3) break;
+          cursor = cursor + 2;
+        } while (cursor < (1 + 6));
+        require(true);
+      }
+    }`, {
+      ...KERNEL,
+      __artifactCache: false,
+      __strictNoInternalRecovery: true,
+      __attemptFailureBox: attemptFailureBox,
+    } as Parameters<typeof compileString>[1]);
+    for (const name of ['fromWhile', 'fromDoWhile']) {
+      expect(artifact.messageBus?.handlers.find((handler) => handler.name === name))
+        .toMatchObject({ eligible: true });
+      const stream = artifact.abi.find((handler) => handler.name === name)?.sortedUpsertLoopInfo?.[0];
+      expect(stream?.iterationBreakCondition).toBeDefined();
+    }
+    expect(artifact.abi.find((handler) => handler.name === 'fromWhile')
+      ?.sortedUpsertLoopInfo?.[0].iterationCondition).toBeDefined();
+    expect(attemptFailureBox.failures).toEqual([]);
+    expect(artifact.messageBus?.convention).toBe('kernel-row-loop');
+    expect(bytecodeToAsm(Buffer.from(artifact.functionBodies!['53434231'], 'hex'))).toContain('OP_INVOKE');
+  });
+
+  it('does not mistake a literal bound for progress across a selected continue', () => {
+    const artifact = compileString(`contract LiteralDomain() {
+      mapping(int => int) values;
+      function write(bool skip) public {
+        int cursor = 0;
+        while (cursor < 4) {
+          if (skip) continue;
+          this.values[cursor] = cursor;
+          cursor = cursor + 1;
+        }
+        require(true);
+      }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_UNBOUNDED_KEY' });
   });
 });

@@ -1,0 +1,48 @@
+import { ConsensusBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-consensus.js';
+import { describe, expect, it } from 'vitest';
+import { kernelRouteDensityReserveBytes } from '../../src/Contract.js';
+import { encodeKernelEntryJournalAccesses } from '../../src/stateful/KernelEntryJournal.js';
+
+const stream = (ordinals: readonly number[]): Uint8Array => encodeKernelEntryJournalAccesses(
+  new Uint8Array(20),
+  ordinals.map((targetRecordOrdinal) => ({
+    targetRecordOrdinal,
+    presentBefore: true,
+    presentAfter: true,
+    mutates: true,
+  })),
+);
+
+describe('kernel route density reserve', () => {
+  it('grows monotonically with exact access and record-selector work', () => {
+    const empty = kernelRouteDensityReserveBytes([[stream([])]]);
+    const one = kernelRouteDensityReserveBytes([[stream([0])]]);
+    const fiveAcrossRows = kernelRouteDensityReserveBytes([[stream([0, 1])], [stream([2, 3, 4])]]);
+
+    expect(empty).toBe(520);
+    expect(one - empty).toBe(Math.ceil(
+      (17_000 + 2_500) / ConsensusBch2026.operationCostBudgetPerByte,
+    ));
+    expect(fiveAcrossRows - empty).toBe(Math.ceil(
+      (5 * 17_000 + 15 * 2_500) / ConsensusBch2026.operationCostBudgetPerByte,
+    ));
+    expect(empty).toBeLessThan(one);
+    expect(one).toBeLessThan(fiveAcrossRows);
+  });
+
+  it('caps caller-sized padding at the BCH-2026 stack-item boundary', () => {
+    const belowCap = kernelRouteDensityReserveBytes([[stream(Array.from({ length: 70 }, (_, index) => index))]]);
+    const atCap = kernelRouteDensityReserveBytes([[stream(Array.from({ length: 71 }, (_, index) => index))]]);
+    const farAboveCap = kernelRouteDensityReserveBytes([[stream(Array.from({ length: 99 }, (_, index) => index))]]);
+
+    expect(belowCap).toBeLessThan(ConsensusBch2026.maximumStackItemLength);
+    expect(atCap).toBe(ConsensusBch2026.maximumStackItemLength);
+    expect(farAboveCap).toBe(ConsensusBch2026.maximumStackItemLength);
+  });
+
+  it('does not count malformed public byte arrays as access records', () => {
+    expect(kernelRouteDensityReserveBytes([[new Uint8Array(21)]])).toBe(520);
+    expect(kernelRouteDensityReserveBytes([[new Uint8Array(24)]])).toBe(520);
+    expect(kernelRouteDensityReserveBytes(undefined)).toBe(520);
+  });
+});

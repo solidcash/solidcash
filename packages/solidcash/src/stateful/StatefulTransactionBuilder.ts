@@ -79,6 +79,12 @@ import {
 } from './computed-output-repair.js';
 import { isScidIdentityCommitment } from './logical-identity.js';
 import { encodeEntryCommitment, isEmptyValueEntryCommitment, keyToSlot } from './SortedList.js';
+import {
+  planKernelEntryJournalOutputLayout,
+  type KernelEntryJournalEagerOutputPlanEntry,
+  type KernelEntryJournalOutputLayoutPlan,
+  type KernelEntryJournalSettlementOutputPlanEntry,
+} from './KernelEntryJournal.js';
 import { artifactUsesSolidityAbi } from './solidityAbi.js';
 import {
   buildKeccakComputeSidecar, extractKeccakPreimageFromTrace,
@@ -4883,9 +4889,9 @@ export interface StatefulTransactionOptions extends TransactionBuilderOptions {
   | { kind: 'transfers'; offset: number; count: number }
   >;
   /** Canonical global-record to physical-entry ordering for a kernel carrier settlement. */
-  kernelJournalSettlementOutputPlan?: Array<{
-    recordOrdinal: number; outputOrdinal: number; collection: string; offset: number;
-  }>;
+  kernelJournalSettlementOutputPlan?: KernelEntryJournalSettlementOutputPlanEntry[];
+  /** Source/materialization-ordered outputs which precede the route-final carrier settlement band. */
+  kernelJournalEagerOutputPlan?: KernelEntryJournalEagerOutputPlanEntry[];
   eventDefinitions?: readonly EventDefinitionAbi[];
   eventNftLockingBytecodes?: Map<string, Uint8Array>; // eventSignature -> locking bytecode
   tokenContainers?: TokenContainerInfo[];
@@ -4900,7 +4906,7 @@ export interface StatefulTransactionOptions extends TransactionBuilderOptions {
   delegateEntriesAfterLowLevel?: boolean;
   /** Keep routed delegate dynamic chunks in the compiler's output-count-relative suffix without reordering inputs. */
   delegateDynamicChunksAtSuffix?: boolean;
-  /** Extra funder pads so nested callees start after a long publishJobEvent value-chunk band. */
+  /** Extra funder pads so nested callees start after a delegated dynamic-value chunk band. */
   delegatedValueChunkPad?: number;
   /**
    * X56. The delegate return-event output follows the implementation's own event outputs rather than its
@@ -5150,6 +5156,7 @@ export class StatefulTransactionBuilder {
   private runtimeLoopTransferOutputs: RuntimeLoopTransferOutput[] = [];
   private runtimeLoopTrailingSegments: NonNullable<StatefulTransactionOptions['runtimeLoopTrailingSegments']> = [];
   private kernelJournalSettlementOutputPlan: NonNullable<StatefulTransactionOptions['kernelJournalSettlementOutputPlan']> = [];
+  private kernelJournalEagerOutputPlan: NonNullable<StatefulTransactionOptions['kernelJournalEagerOutputPlan']> = [];
 
   // P5b: collections whose loop-entry (NEW) commitment is known EXACTLY (a chunkable-value insert) and must NOT be
   // re-derived from the trace - the value-chunk pin adds OP_OUTPUTTOKENCOMMITMENT calls that the loop-entry
@@ -5261,6 +5268,8 @@ export class StatefulTransactionBuilder {
     }));
     this.runtimeLoopTrailingSegments = options.runtimeLoopTrailingSegments?.map((segment) => ({ ...segment })) ?? [];
     this.kernelJournalSettlementOutputPlan = options.kernelJournalSettlementOutputPlan
+      ?.map((entry) => ({ ...entry })) ?? [];
+    this.kernelJournalEagerOutputPlan = options.kernelJournalEagerOutputPlan
       ?.map((entry) => ({ ...entry })) ?? [];
     this.eventDefinitions = options.eventDefinitions ?? [];
     this.eventNftLockingBytecodes = options.eventNftLockingBytecodes ?? new Map();
@@ -11349,6 +11358,9 @@ export class StatefulTransactionBuilder {
       return this.getChunkOutputBase() - this.runtimeLoopTransferOutputs.length
         - this.runtimeLoopEventOutputs.length + eventIndex;
     }
+    if (this.kernelJournalSettlementOutputPlan.length > 0 || this.kernelJournalEagerOutputPlan.length > 0) {
+      return this.getKernelJournalTrailingEffectOutputIndex('events', eventIndex);
+    }
     let physical = this.getChunkOutputBase()
       - this._trailingLoopEntryOutputCount() - this.runtimeLoopEventOutputs.length
       - this.runtimeLoopTransferOutputs.length + this._runtimeLoopUnsegmentedEntryPrefixCount();
@@ -11374,6 +11386,9 @@ export class StatefulTransactionBuilder {
     }
     if (this.runtimeLoopTrailingSegments.length === 0) {
       return this.getChunkOutputBase() - this.runtimeLoopTransferOutputs.length + transferIndex;
+    }
+    if (this.kernelJournalSettlementOutputPlan.length > 0 || this.kernelJournalEagerOutputPlan.length > 0) {
+      return this.getKernelJournalTrailingEffectOutputIndex('transfers', transferIndex);
     }
     let physical = this.getChunkOutputBase()
       - this._trailingLoopEntryOutputCount() - this.runtimeLoopEventOutputs.length
@@ -11469,9 +11484,9 @@ export class StatefulTransactionBuilder {
     if (!Number.isSafeInteger(commitmentIndex) || commitmentIndex < 0) {
       throw new Error(`Invalid loop entry commitment index ${commitmentIndex} for '${collection}'`);
     }
-    if (this.kernelJournalSettlementOutputPlan.length > 0) {
+    if (this.kernelJournalSettlementOutputPlan.length > 0 || this.kernelJournalEagerOutputPlan.length > 0) {
       this.validateKernelJournalSettlementOutputPlan();
-      const entry = this.kernelJournalSettlementOutputPlan.find((candidate) =>
+      const entry = this.kernelJournalOutputLayout().outputs.find((candidate) =>
         candidate.collection === collection && candidate.offset === commitmentIndex);
       if (!entry) {
         throw new Error(`Loop entry commitment ${collection}[${commitmentIndex}] is missing from settlement output plan`);
@@ -11601,25 +11616,39 @@ export class StatefulTransactionBuilder {
    * The route final flush independently authenticates each selected record against the resulting output.
    */
   private validateKernelJournalSettlementOutputPlan(): void {
-    const records = new Set<number>();
-    const outputs = new Set<number>();
-    const locations = new Set<string>();
-    let priorRecord = -1;
-    for (const [index, entry] of this.kernelJournalSettlementOutputPlan.entries()) {
-      if (!Number.isSafeInteger(entry.recordOrdinal) || entry.recordOrdinal < 0
-        || !Number.isSafeInteger(entry.outputOrdinal) || entry.outputOrdinal !== index
-        || !entry.collection || !Number.isSafeInteger(entry.offset) || entry.offset < 0) {
-        throw new Error('Kernel journal settlement output plan has an invalid coordinate');
+    this.kernelJournalOutputLayout();
+  }
+
+  /** Compose the explicit eager prefix and deferred dense band without deriving either from commitment order. */
+  private kernelJournalOutputLayout(): KernelEntryJournalOutputLayoutPlan {
+    return planKernelEntryJournalOutputLayout(
+      this.kernelJournalEagerOutputPlan,
+      this.kernelJournalSettlementOutputPlan,
+    );
+  }
+
+  /** Runtime effects retain source order, but always follow the complete `E + D` journal entry band. */
+  private getKernelJournalTrailingEffectOutputIndex(
+    kind: 'events' | 'transfers', effectIndex: number,
+  ): number {
+    const layout = this.kernelJournalOutputLayout();
+    let physical = this.getLoopEntryOutputBase() + layout.finalOutputCursorDelta;
+    let resolved: number | undefined;
+    for (const segment of this.runtimeLoopTrailingSegments) {
+      if (segment.kind === 'entries') continue;
+      if (segment.kind === kind
+        && effectIndex >= segment.offset && effectIndex < segment.offset + segment.count) {
+        if (resolved !== undefined) {
+          throw new Error(`Runtime loop ${kind} output ${effectIndex} has multiple output locations`);
+        }
+        resolved = physical + effectIndex - segment.offset;
       }
-      if (entry.recordOrdinal <= priorRecord || records.has(entry.recordOrdinal)
-        || outputs.has(entry.outputOrdinal) || locations.has(`${entry.collection}\0${entry.offset}`)) {
-        throw new Error('Kernel journal settlement output plan is not a one-to-one canonical mapping');
-      }
-      priorRecord = entry.recordOrdinal;
-      records.add(entry.recordOrdinal);
-      outputs.add(entry.outputOrdinal);
-      locations.add(`${entry.collection}\0${entry.offset}`);
+      physical += segment.count;
     }
+    if (resolved === undefined) {
+      throw new Error(`Runtime loop ${kind} output ${effectIndex} is missing from the trailing segment plan`);
+    }
+    return resolved;
   }
 
   /** Entry outputs preceding the source-ordered segment stream, including same-collection fixed prefixes. */
@@ -13906,7 +13935,8 @@ export class StatefulTransactionBuilder {
     };
     if (this.runtimeLoopTrailingSegments.length > 0) {
       const variables = new Map(this._trailingLoopEntryVars().map((variable) => [variable.collection, variable]));
-      const hasKernelSettlementOutputPlan = this.kernelJournalSettlementOutputPlan.length > 0;
+      const hasKernelSettlementOutputPlan = this.kernelJournalSettlementOutputPlan.length > 0
+        || this.kernelJournalEagerOutputPlan.length > 0;
       if (hasKernelSettlementOutputPlan) this.validateKernelJournalSettlementOutputPlan();
       // Fixed-batch predecessor rewrites occupy the leading trailing coordinates, before the source-ordered
       // runtime row stream. They share `loopEntryCommitments` with runtime mapping outputs but deliberately have
@@ -13957,7 +13987,14 @@ export class StatefulTransactionBuilder {
         }
       }
       if (hasKernelSettlementOutputPlan) {
-        for (const entry of this.kernelJournalSettlementOutputPlan) {
+        const layout = this.kernelJournalOutputLayout();
+        if (layout.finalOutputCursorDelta !== this._trailingLoopEntryOutputCount()) {
+          throw new Error(
+            `Kernel journal output layout covers ${layout.finalOutputCursorDelta} of `
+            + `${this._trailingLoopEntryOutputCount()} trailing entry commitments`,
+          );
+        }
+        for (const entry of layout.outputs) {
           const variable = variables.get(entry.collection);
           const commitment = this.loopEntryCommitments.get(entry.collection)?.[entry.offset];
           if (!variable || commitment === undefined) {

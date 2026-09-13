@@ -1397,9 +1397,14 @@ export default class SymbolTableTraversal extends AstTraversal {
         const overloads = this.functionDefinitions.get(ifaceFunc.name) ?? [];
         // At least one overload must match the signature...
         const hasMatch = overloads.some((func) => {
-          if (func.parameters.length !== ifaceFunc.parameters.length) return false;
-          for (let i = 0; i < func.parameters.length; i++) {
-            if (func.parameters[i].type.toString() !== ifaceFunc.parameters[i].type.toString()) return false;
+          // Admission and final codegen revisit a lowered AST whose entry points can carry journal/value
+          // witnesses. Those operands are authenticated compiler frame data, not additions to the source ABI or
+          // a reason for an otherwise exact interface implementation to disappear.
+          const sourceParameters = func.parameters.filter((parameter) =>
+            !parameter.name.startsWith('__internal__'));
+          if (sourceParameters.length !== ifaceFunc.parameters.length) return false;
+          for (let i = 0; i < sourceParameters.length; i++) {
+            if (sourceParameters[i].type.toString() !== ifaceFunc.parameters[i].type.toString()) return false;
           }
           if (func.returnTypes.length !== ifaceFunc.returnTypes.length) return false;
           for (let i = 0; i < func.returnTypes.length; i++) {
@@ -2733,6 +2738,26 @@ export default class SymbolTableTraversal extends AstTraversal {
     } finally {
       this.activeBodySurvey = undefined;
     }
+    // Late message-bus retries can revisit an already-lowered transfer-only raw call. Its call option is a
+    // plain metadata object rather than an AST child, so the inherited visitor does not necessarily rediscover
+    // the value effect. The lowering marker is compiler-authenticated and survives cloning; recover that fact
+    // before transfer ordinals and the block layout are allocated.
+    if (!bodySurvey.hasValueTransfer) {
+      const seen = new WeakSet<object>();
+      const hasTransferOnlyRaw = (value: unknown): boolean => {
+        if (!(value instanceof Node) || seen.has(value)) return false;
+        seen.add(value);
+        if (value instanceof ExternalFunctionCallNode && value.rawValueTransferOnly) return true;
+        return Object.entries(value).some(([key, child]) => {
+          if (['location', 'type', 'resolvedFunction', 'functionReference', 'definition', 'symbolTable',
+            'referencedContract', 'stateVariable', 'collection'].includes(key)) return false;
+          return child instanceof Node
+            ? hasTransferOnlyRaw(child)
+            : Array.isArray(child) && child.some((item) => hasTransferOnlyRaw(item));
+        });
+      };
+      bodySurvey.hasValueTransfer = hasTransferOnlyRaw(node.body);
+    }
     // General counter-loop RMW values are read by backend-generated code inside the physical upsert loop. That
     // loop is emitted around the resolved assignment rather than represented by an AST scope, so the ordinary
     // `scopeDepth > 0` protection cannot prevent the last syntactic array access from becoming OP_ROLL. Keep the
@@ -3313,6 +3338,7 @@ export default class SymbolTableTraversal extends AstTraversal {
                 parameterTypes: ifaceFunc?.parameters.map((parameter) => parameter.type)
                   ?? slot.sourceCallNode!.parameters.map((parameter) => parameter.type!),
                 logicalIndex,
+                sourceCallsiteId: slot.slotIndex,
                 argSources: slot.argSources,
                 occurrence,
                 ...(slot.condition && { condition: slot.condition }),
@@ -4150,7 +4176,8 @@ export default class SymbolTableTraversal extends AstTraversal {
       node.valueTransferIndex = transferInfos.length;
       transferInfos.push({ transferIndex: node.valueTransferIndex });
     }
-    if (node instanceof ExternalFunctionCallNode && hasEffectiveCallValue(node.callOptions?.value)) {
+    if (node instanceof ExternalFunctionCallNode && (node.rawValueTransferOnly
+      || hasEffectiveCallValue(node.callOptions?.value))) {
       node.valueTransferIndex = transferInfos.length;
       transferInfos.push({ transferIndex: node.valueTransferIndex });
     }
@@ -4295,6 +4322,15 @@ export default class SymbolTableTraversal extends AstTraversal {
       }
       return startIndex;
     }
+    if (node instanceof TupleAssignmentNode) {
+      if (node.tupleExpressions) {
+        for (const expression of node.tupleExpressions) {
+          startIndex = this.assignTransferIndices(expression, startIndex);
+        }
+        return startIndex;
+      }
+      return node.tuple instanceof Node ? this.assignTransferIndices(node.tuple, startIndex) : startIndex;
+    }
     if (node instanceof ReturnNode) {
       for (const expression of node.expressions) {
         startIndex = this.assignTransferIndices(expression, startIndex);
@@ -4313,6 +4349,15 @@ export default class SymbolTableTraversal extends AstTraversal {
     }
     if (node instanceof MethodCallStatementNode && hasEffectiveCallValue(node.call.callOptions?.value)) {
       node.call.valueTransferIndex = startIndex;
+      return startIndex + 1;
+    }
+    if (node instanceof MethodCallNode && hasEffectiveCallValue(node.callOptions?.value)) {
+      node.valueTransferIndex = startIndex;
+      return startIndex + 1;
+    }
+    if (node instanceof ExternalFunctionCallNode && (node.rawValueTransferOnly
+      || hasEffectiveCallValue(node.callOptions?.value))) {
+      node.valueTransferIndex = startIndex;
       return startIndex + 1;
     }
     if (node instanceof InstantiationNode && hasEffectiveCallValue(node.callOptions?.value)
@@ -5140,7 +5185,8 @@ export default class SymbolTableTraversal extends AstTraversal {
           || (current instanceof LowLevelCallStatementNode && hasEffectiveCallValue(current.callOptions?.value))
           || (current instanceof MethodCallStatementNode && hasEffectiveCallValue(current.call.callOptions?.value))
           || (current instanceof MethodCallNode && hasEffectiveCallValue(current.callOptions?.value))
-          || (current instanceof ExternalFunctionCallNode && hasEffectiveCallValue(current.callOptions?.value))
+          || (current instanceof ExternalFunctionCallNode && (current.rawValueTransferOnly
+            || hasEffectiveCallValue(current.callOptions?.value)))
           || (current instanceof InstantiationNode && hasEffectiveCallValue(current.callOptions?.value))) {
         result.hasValueTransfer = true;
       }
@@ -6621,6 +6667,10 @@ export default class SymbolTableTraversal extends AstTraversal {
     enclosingConditions: readonly { expression: ExpressionNode; negated: boolean }[] = [],
   ): void {
     if (node instanceof ExternalFunctionCallNode && node.callInfo && !node.foldedIntoDeploy) {
+      // `call{value: amount}("")` has no selector-bearing callee operation. Its independently indexed transfer
+      // output is the complete BCH effect, and a reached required output reconstructs `(true, bytes(""))`.
+      // Keeping it out of the call manifest avoids manufacturing an unauthenticated empty-selector callsite.
+      if (node.rawValueTransferOnly) return;
       // Nested returning calls in the receiver/arguments execute before this outer call. Collect them first so
       // each receives a real slot and the published callManifest order matches evaluation order. Returning here
       // without this descent left `outer(inner())`'s inner node at slot -1 even though code generation still
@@ -13655,6 +13705,8 @@ export default class SymbolTableTraversal extends AstTraversal {
             callNode.callOptions = node.callOptions;
             callNode.valueTransferIndex = node.valueTransferIndex;
             callNode.callOptions!.value = this.visit(callNode.callOptions!.value!) as ExpressionNode;
+            callNode.rawValueTransferOnly = hasEffectiveCallValue(callNode.callOptions?.value)
+              && data instanceof StringLiteralNode && data.value.length === 0;
           }
           callNode.type = new TupleType([PrimitiveType.BOOL, new BytesType()]);
           callNode.callInfo = {
@@ -14005,6 +14057,8 @@ export default class SymbolTableTraversal extends AstTraversal {
     };
     call.callOptions = node.callOptions;
     call.valueTransferIndex = node.valueTransferIndex;
+    call.rawValueTransferOnly = valueCall && hasEffectiveCallValue(call.callOptions?.value)
+      && node.data instanceof StringLiteralNode && node.data.value.length === 0;
     call.location = node.location;
     return call;
   }

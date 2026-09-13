@@ -330,24 +330,41 @@ replaces the array instead of mutating it leaves the stale fingerprint reachable
 new array is uncached, so the next round can reuse fingerprints for content that no longer exists. A correct
 consolidated rewrite must keep array identity (or re-key the intern map in the same step).
 
-**Rejected: `copyWithin` as a drop-in `splice` replacement.** A span of `spanLength` becomes exactly
-`id OP_INVOKE`, so the tail shift is one native `copyWithin` plus a length trim, which looks like an exact
-in-place equivalent and would avoid the quadratic tail memmove. It is not correct. Applied to `script`,
-`locationData` and `origins` together, with the same per-edit anchor handling as the committed version, the
-identity check **timed out at 400 s with no output at all** (exit 124) — on a host that had just been
-quietened, and against a committed build that completed the identical compile in 22.1 s minutes earlier and
-20.6 s afterwards. A first run of the same change had also failed to finish in 7 minutes.
+**Rejected: `copyWithin` as a drop-in `splice` replacement — fully diagnosed.** A span of `spanLength`
+becomes exactly `id OP_INVOKE`, so the tail shift is one `copyWithin` plus a length trim, which looks like an
+exact in-place equivalent that avoids the quadratic. It fails twice over, and both causes are now known:
 
-An earlier draft of this note recorded the result as "unresolved, host contended". That was too generous:
-the committed version was re-verified on the *same* host in the *same* window, so the only variable was the
-change itself. `copyWithin` on these arrays is broken, most likely because it does not reproduce `splice`'s
-length semantics the way the rewrite relies on. Recorded as a negative result so nobody re-tries it.
+1. *Correctness.* A randomized equivalence harness is checked in as
+   `scripts/equiv-splice-copywithin.mjs` (200,000 cases; it exits non-zero on divergence). It finds **two**
+   divergence classes:
 
-The committed `in-place suffix scan` for anchors (section 14) remains the verified version.
+   - `spanLength === 1`: the replacement is longer than the span (net +1), so `shrink` is negative and the
+     overlapping copy runs the wrong way.
+   - spans near the end of the array: `copyWithin` clamps the source end to the array length, so the last
+     elements of the tail are silently dropped instead of kept.
 
-**Re-verified after the revert.** With the committed state rebuilt, the identity check reproduces
-`routeBytes 40019`, `fullBytes 115274`, `fullHash ed6cfff8760a3ca8`. `scripts/verify-id.mjs` makes this a
-one-command gate.
+   Both are real. Measured span-length histogram over the live compile: `{2:13, 3:205, 4:315, 5:1128, 6:512,
+   7:960, 9:8}` on the hot probe — so the end-of-array class is what bites in practice. A `spanLength >= 2`
+   guard alone nonetheless reproduced `routeBytes 40019`, `fullBytes 115274`, `fullHash ed6cfff8760a3ca8`
+   exactly, which is the trap: that build is only accidentally correct on this input and would corrupt other
+   contracts. The unguarded variant is what hung (400 s timeout, no output).
+
+2. *Performance — it is a 10x regression, not a win.* With the guard in place and output byte-identical, the
+   compile went from **20.6 s to 210.4 s** (`210364 / 210230 ms` over two runs) on an unchanged host
+   (load 2.51, no new competing work). `copyWithin` on these arrays copies element by element, whereas
+   `splice` uses a chunked move; for object-heavy `locationData` this is far slower.
+
+So the `splice` cost is **not** removable by swapping in a cheaper array primitive. That closes the line of
+attack: the remaining lever is reducing how many edits are applied or how large the bodies are, not finding a
+faster way to shift them.
+
+The committed `in-place suffix scan` for anchors (section 14) and the `splice`-based rewrite remain the
+verified versions. Note that the guarded variant passed the identity check yet is **not** safe; identity on
+one contract is necessary but not sufficient evidence for this rewrite.
+
+**Re-verified after the revert.** Committed state rebuilt and re-measured: `routeBytes 40019`,
+`fullBytes 115274`, `fullHash ed6cfff8760a3ca8`, compile **21.4 s**. `scripts/verify-id.mjs` makes the
+identity half of this a one-command gate.
 
 **Clean-host baseline for the record.** With the parallel work on this box paused: cold in-process compile
 of `MarketplaceV1.sol` (all declarations) **20,569 ms**, and the same compile again in the same process

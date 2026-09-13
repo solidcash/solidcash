@@ -336,6 +336,13 @@ interface CandidateCorpus {
   scripts: Script[];
   intern?: OutlineIntern;
   bodyAnchorBounds: ({ minimum: number; maximum: number } | undefined)[];
+  /**
+   * Per-body anchor instruction indices in ascending order. Anchor collection runs once per candidate group and
+   * a large leftover corpus produces tens of thousands of groups, so the linear `for (const anchor of anchors)`
+   * scan dominated the search. A sorted index plus a lower-bound search visits only the anchors that actually
+   * fall inside a candidate's region.
+   */
+  bodySortedAnchors: (Int32Array | undefined)[];
   maximumBodyLength: number;
   windowHashes: Map<number, Int32Array[]>;
   constantGroups?: number[][];
@@ -393,6 +400,12 @@ function prepareCandidateCorpus(bodies: OutlineBody[], intern?: OutlineIntern): 
         if (anchors[index] > maximum) maximum = anchors[index];
       }
       return { minimum, maximum };
+    }),
+    // Sorted copies are built once here; the per-candidate loop then binary-searches instead of scanning.
+    bodySortedAnchors: bodies.map((body) => {
+      const anchors = body.anchors;
+      if (anchors === undefined || anchors.length === 0) return undefined;
+      return Int32Array.from([...anchors].sort((left, right) => left - right));
     }),
     maximumBodyLength,
     windowHashes: new Map(),
@@ -1080,7 +1093,7 @@ function findCandidates(
   candidateGroupsPerRound: number, prepared: CandidateCorpus = prepareCandidateCorpus(bodies),
   allowedNestedInvokeIds?: ReadonlySet<number>,
 ): Candidate[] {
-  const { bodyIds, bodyBytePrefixes, bodyAnchorBounds, maximumBodyLength } = prepared;
+  const { bodyIds, bodyBytePrefixes, bodyAnchorBounds, bodySortedAnchors, maximumBodyLength } = prepared;
   const commonPrefixLength = (leftBody: number, leftStart: number, rightBody: number, rightStart: number): number => {
     const left = bodyIds[leftBody];
     const right = bodyIds[rightBody];
@@ -1310,11 +1323,26 @@ function findCandidates(
       const start = group[occurrenceIndex + 1];
       const bounds = bodyAnchorBounds[body];
       if (bounds === undefined || bounds.maximum < start || bounds.minimum >= start + length) continue;
-      const anchors = bodies[body].anchors;
-      if (anchors === undefined) continue;
-      for (const anchor of anchors) {
-        const relative = anchor - start;
-        if (relative >= 0 && relative < length) {
+      const sorted = bodySortedAnchors[body];
+      if (sorted === undefined) continue;
+      // Lower bound for `start`, then walk only anchors that fall inside [start, start + length). The bounds
+      // guard above already proved at least one anchor is in range, so `low` is guaranteed to be within bounds.
+      let low = 0;
+      let high = sorted.length - 1;
+      let first = sorted.length;
+      while (low <= high) {
+        const middle = (low + high) >> 1;
+        if (sorted[middle] >= start) {
+          first = middle;
+          high = middle - 1;
+        } else {
+          low = middle + 1;
+        }
+      }
+      for (let index = first; index < sorted.length; index += 1) {
+        const relative = sorted[index] - start;
+        if (relative >= length) break;
+        if (relative >= 0) {
           anchoredIndices ??= new Uint8Array(length);
           anchoredIndices[relative] = 1;
         }
@@ -1365,9 +1393,6 @@ function findCandidates(
       saved,
     });
   }
-  // Ties broken toward the longer span. Claiming is first-come, and a short span applied first fragments every
-  // longer span that contains it: the longer one survives the next round only as a shorter, less profitable
-  // remainder. Preferring length on equal savings keeps the containing span whole.
   return sortCandidates(candidates, ranking);
 }
 

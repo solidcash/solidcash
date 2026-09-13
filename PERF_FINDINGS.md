@@ -395,3 +395,44 @@ closure, not a missed cache.
 
 Comparison checkouts: `kernel-perf-baseline` (`0b723a6bf`, pre-perf) and `kernel-perf-tip`
 (`24af483ee`, compile-perf integration tip).
+
+## 17. Kernel-beta manifest pins are stale at HEAD (not caused by these fixes)
+
+`scripts/kernel-beta-manifest.json` pins the cold-compile hashes the beta gate re-derives. Measured values at
+HEAD (`2955c6e9a`) plus the three commits after it disagree with the pins, and this predates the work here:
+
+| Profile | Manifest pin (full / route) | Measured at HEAD |
+|---|---:|---:|
+| marketplace-v1 legacy | 115,060 / 40,019 | **115,274 / 40,019** |
+| marketplace-v1 kernel | 126,967 / 12,102 | **127,191 / 12,094** |
+| unicrow-claim kernel | 14,462 / 2,918 | 14,462 / 2,918 *(matches)* |
+
+Attribution was checked rather than assumed. Reverting the clone memoization (section 11) and re-measuring
+still yields `full 115274 / fullHash ed6cfff8…`, so **the clone fix does not cause the drift** — the pins were
+already stale before it. `unicrow-claim` matching exactly rules out a global harness or option-surface change.
+The likely cause is `6abfd61d5` / `2955c6e9a`, the two commits that landed after the pin commit `808e8ac3f`.
+
+The pins live in the kernel-beta worktree's release gate; this branch must not rewrite them, because they
+would then describe code the gate is not shipping. Recorded here so regeneration is mechanical once these
+fixes land on the beta branch — the values to write are:
+
+    marketplace-v1 legacy : routeBytes 40019   fullBytes 115274
+      routeHash    3497b90d6e3a74d26a8b5898b45f9fb48b8b2b17777ec85a9702d5de46ad7ff1
+      fullHash     ed6cfff8760a3ca8771575b3c33bba65d3a8ae1fb50def0d14464440c10762d5
+      metadataHash b9558eafcaba5dd60f78bc713f81c4683663c2f0a4b01d724dc569f477b3fe8e
+      handlers     total 39, eligible 28, refused 11
+    marketplace-v1 kernel : routeBytes 12094   fullBytes 127191
+      routeHash    64eada97ac8012295ec32442939fcba2892b37be9fd79ccaa47f2438d1af0ae8
+      fullHash     99d76a3e3ec46f82d9b627f4f21d119d825ff6d9e95229d41406715bb37e6ff5
+      metadataHash ddcb90506ee90547801e0a22233ff9149f866151a7947c2dd3d44bf49eaf4f46
+      handlers     total 39, eligible 39, refused 0
+    unicrow-claim kernel  : routeBytes 2918    fullBytes 14462   (unchanged)
+      routeHash    ebba9d13216c2c291e1bcdbcb517e8126b61f8d3e99c11682c10e947b0e739dc
+      fullHash     acf41eeb53a7386291f476c0280cb6c4c5b2078cea7a984cda52aba9587c3fc9
+      metadataHash d1181bd151cad247
+      handlers     total 11, eligible 11, refused 0
+
+All values produced by the gate's own `scripts/profile-marketplace-compile.mjs`, so they are directly
+comparable to the pinned shape. Note the earlier `route 12102 / full 126967` pin also carries a different
+route hash (`f99e6e99…`) than either the pre-fix (`64eada97…`, 12,094) or post-fix state, so the route shape
+itself changed upstream of this branch.

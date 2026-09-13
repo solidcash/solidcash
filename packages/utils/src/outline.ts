@@ -1459,8 +1459,11 @@ export function outlineSharedSpans(
   const rounds = maximumRounds < 1 ? 1 : maximumRounds;
   const debugRounds = (globalThis as { process?: { env?: Record<string, string> } }).process
     ?.env?.SOLIDC_DEBUG_OUTLINE_TIMING === '1';
+  let __tFind = 0, __tApply = 0, __tRewrite = 0;
+  let __lastBuildMs = 0, __lastApplyMs = 0, __lastAnchorMs = 0;
   for (let round = 0; round < rounds; round += 1) {
     const roundStarted = debugRounds ? Date.now() : 0;
+    const __f0 = Date.now();
     // Outlined bodies join the corpus so a repeat that only becomes visible after sharing is still found.
     const corpus = [
       ...working,
@@ -1506,6 +1509,8 @@ export function outlineSharedSpans(
         candidates.map((candidate) => ({ ...candidate, span: [...candidate.span] })),
       );
     }
+    __tFind += Date.now() - __f0;
+    const __a0 = Date.now();
     if (candidates.length === 0) break;
 
     // Candidates were all measured against the same corpus, so apply only those whose sites are still intact:
@@ -1565,12 +1570,15 @@ export function outlineSharedSpans(
     }
     if (roundSaved <= 0) break;
 
+    __tApply += Date.now() - __a0;
+    const __r0 = Date.now();
     // Most strategy probes discover nothing worth applying. Allocate origin maps only once a rewrite will
     // actually need them; a no-op result can return the identity map directly below.
     for (const body of working) {
       body.origins ??= body.script.map((_element, index) => index);
     }
 
+    const __e0 = Date.now();
     // Rewrite every site back-to-front across the whole round so earlier indices stay valid within each body.
     const edits: { body: number; start: number; entry: typeof applied[number] }[] = [];
     for (const entry of applied) {
@@ -1584,6 +1592,8 @@ export function outlineSharedSpans(
     }
     edits.sort((left, right) =>
       right.body - left.body || right.start - left.start);
+    const __e1 = Date.now();
+    let __anchorMs = 0;
     for (const { body, start, entry } of edits) {
       const target = corpus[body];
       if (body < working.length && !working[body].owned) {
@@ -1602,14 +1612,26 @@ export function outlineSharedSpans(
       }
       if (target.anchors) {
         // Anchors never sit inside a relocated span, so they only need shifting by what the body lost.
+        // Every site after this one shifts by the same amount, and sites before it are untouched, so a single
+        // suffix scan updates the array in place. Rebuilding it with `.map()` per edit allocated a fresh array
+        // for every occurrence of every applied function, which dominated the rewrite on large leftovers.
+        const __an0 = Date.now();
+        const anchors = target.anchors;
+        const threshold = start + spanLength;
         const shrink = spanLength - 2;
-        target.anchors = target.anchors.map((index) =>
-          (index >= start + spanLength ? index - shrink : index));
+        for (let index = 0; index < anchors.length; index += 1) {
+          if (anchors[index] >= threshold) anchors[index] -= shrink;
+        }
+        __anchorMs += Date.now() - __an0;
       }
     }
 
+    __lastBuildMs = __e1 - __e0;
+    __lastApplyMs = Date.now() - __e1;
+    __lastAnchorMs = __anchorMs;
     for (const entry of applied) functions.push(entry.definition);
     savedBytes += roundSaved;
+    __tRewrite += Date.now() - __r0;
     if (debugRounds) {
       console.error('[outline-round]', JSON.stringify({
         round,
@@ -1622,6 +1644,13 @@ export function outlineSharedSpans(
         elapsedMs: Date.now() - roundStarted,
       }));
     }
+  }
+  if ((globalThis as any).process?.env?.SOLIDC_DEBUG_OUTLINE_SPLIT === '1') {
+    console.error('[outline-split]', JSON.stringify({
+      findMs: __tFind, applyClaimMs: __tApply, rewriteMs: __tRewrite,
+      bodies: bodies.length, functions: functions.length, savedBytes,
+      editsBuildMs: __lastBuildMs, editsApplyMs: __lastApplyMs, anchorMs: __lastAnchorMs,
+    }));
   }
 
   const rewritten: OutlinedBody[] = working.map((body, index) => {

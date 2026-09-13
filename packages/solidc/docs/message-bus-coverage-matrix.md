@@ -34,8 +34,9 @@ Status: stable acceptance matrix. Dated measurements and development chronology 
 | S11 | Fail closed | Unsupported semantic shapes receive named, positioned diagnostics. |
 | S12 | Capacity | Published compiler and SDK bounds match finalized VM measurements. |
 
-All rows have positive and hostile evidence in the dedicated test directories. The completed requirement-by-
-requirement audit and historical controller migration census are retained in
+Every admitted row in the maintained beta surface has positive and hostile evidence in the dedicated test
+directories. Explicitly frozen mixed-layout and lifecycle shapes are boundary evidence, not positive support.
+The completed requirement-by-requirement audit and historical controller migration census are retained in
 `archive/journal-message-bus/message-bus-implementation-record.md`.
 
 Dynamic trailing-span attacks use the stronger adversary model: the test rewrites the shared envelope in every

@@ -5151,6 +5151,34 @@ export function blockOutputOwnsFixedDataNft(
   return relative >= 1 && relative <= dataNftCount;
 }
 
+/** Resolve fixed data-NFT ownership across any structurally described participant blocks. */
+export function fixedDataNftOwnerInParticipantBlocks(
+  outputIndex: number,
+  categoryId: string,
+  participants: readonly {
+    categoryId: string;
+    blockBase: number;
+    blockLayout?: FunctionBlockLayout;
+    dataNftCount: number;
+    requiredDataNftIndices: readonly number[];
+  }[],
+): { participantIndex: number; nftIndex: number } | undefined {
+  const normalizedCategoryId = categoryId.toLowerCase();
+  for (const [participantIndex, participant] of participants.entries()) {
+    if (participant.categoryId.toLowerCase() !== normalizedCategoryId
+      || !blockOutputOwnsFixedDataNft(
+        outputIndex, participant.blockBase, participant.blockLayout, participant.dataNftCount,
+      )) continue;
+    const relative = outputIndex - participant.blockBase;
+    const declared = participant.blockLayout?.slots.filter((slot) => slot.kind === 'dataNft') ?? [];
+    const declaredSlot = declared.find((slot) => slot.offset === relative);
+    const ordinal = declared.length > 0 ? declared.indexOf(declaredSlot!) : relative - 1;
+    const nftIndex = declaredSlot?.nftIndex ?? participant.requiredDataNftIndices[ordinal];
+    if (nftIndex !== undefined) return { participantIndex, nftIndex };
+  }
+  return undefined;
+}
+
 /** Resolve the first trailing predecessor from the output slot the batch planner actually materializes. */
 export function materializedPredOutBase(group: {
   batchPredecessorOutputs?: Array<{ outputBlockSlot: number }>;
@@ -11618,28 +11646,43 @@ export class StatefulTransactionBuilder {
     return true;
   }
 
-  private _externalDataNftOwner(
+  private _participantDataNftOwner(
     outputIndex: number,
     categoryId: string,
-  ): { groupIndex: number; nftIndex: number } | undefined {
-    for (const [groupIndex, group] of this.externalCallUtxoGroups.entries()) {
-      if (group.sharedGroupIndex !== undefined || group.categoryId !== categoryId) continue;
-      const blockBase = this.getExternalCallOutputBase(groupIndex);
-      if (!blockOutputOwnsFixedDataNft(
-        outputIndex, blockBase, group.blockLayout, group.dataNftUtxos.length,
-      )) continue;
-      const relative = outputIndex - blockBase;
-      const declared = group.blockLayout?.slots.filter((slot) => slot.kind === 'dataNft') ?? [];
-      const declaredSlot = declared.find((slot) => slot.offset === relative);
-      const ordinal = declared.length > 0 ? declared.indexOf(declaredSlot!) : relative - 1;
-      const nftIndex = declaredSlot?.nftIndex ?? group.requiredDataNftIndices[ordinal];
-      if (nftIndex !== undefined) return { groupIndex, nftIndex };
-    }
+  ): { kind: 'external' | 'lowLevel'; groupIndex: number; nftIndex: number } | undefined {
+    const externalGroups = this.externalCallUtxoGroups.flatMap((group, groupIndex) => (
+      group.sharedGroupIndex === undefined ? [{ group, groupIndex }] : []
+    ));
+    const external = fixedDataNftOwnerInParticipantBlocks(outputIndex, categoryId, externalGroups.map(
+      ({ group, groupIndex }) => ({
+        categoryId: group.categoryId,
+        blockBase: this.getExternalCallOutputBase(groupIndex),
+        blockLayout: group.blockLayout,
+        dataNftCount: group.dataNftUtxos.length,
+        requiredDataNftIndices: group.requiredDataNftIndices,
+      }),
+    ));
+    if (external) return {
+      kind: 'external',
+      groupIndex: externalGroups[external.participantIndex].groupIndex,
+      nftIndex: external.nftIndex,
+    };
+    const lowLevel = fixedDataNftOwnerInParticipantBlocks(outputIndex, categoryId,
+      this.lowLevelCallUtxoGroups.map((group, groupIndex) => ({
+        categoryId: group.categoryId,
+        blockBase: this.getLowLevelCallMasterInputIndex(groupIndex),
+        blockLayout: group.blockLayout,
+        dataNftCount: group.dataNftUtxos.length,
+        requiredDataNftIndices: group.requiredDataNftIndices,
+      })));
+    if (lowLevel) return {
+      kind: 'lowLevel', groupIndex: lowLevel.participantIndex, nftIndex: lowLevel.nftIndex,
+    };
     return undefined;
   }
 
-  private _isFixedExternalDataNftOutput(outputIndex: number, categoryId: string): boolean {
-    return this._externalDataNftOwner(outputIndex, categoryId) !== undefined;
+  private _isFixedParticipantDataNftOutput(outputIndex: number, categoryId: string): boolean {
+    return this._participantDataNftOwner(outputIndex, categoryId) !== undefined;
   }
 
   private _rootStateNftIndexAt(outputIndex: number, categoryId: string): number | undefined {
@@ -11665,8 +11708,8 @@ export class StatefulTransactionBuilder {
     categoryId: string,
     commitmentHex: string,
   ): boolean {
-    const owner = this._externalDataNftOwner(outputIndex, categoryId);
-    if (!owner) return false;
+    const owner = this._participantDataNftOwner(outputIndex, categoryId);
+    if (!owner || owner.kind !== 'external') return false;
     let byNft = this.externalCallStateRawCommitments.get(categoryId);
     if (!byNft) {
       byNft = new Map();
@@ -11682,7 +11725,7 @@ export class StatefulTransactionBuilder {
 
   setExternalCallEntryOutputAt(outputIndex: number, categoryId: string, commitmentHex: string): boolean {
     if (commitmentHex.length < 128 || /^0+$/.test(commitmentHex)) return false;
-    if (this._isFixedExternalDataNftOutput(outputIndex, categoryId)) return false;
+    if (this._isFixedParticipantDataNftOutput(outputIndex, categoryId)) return false;
     // Refuse absolute pins before a known minting master (post two: FakeToken balances @12).
     const mintingMaster = this.findMintingInputIndex(categoryId);
     if (mintingMaster >= 0 && outputIndex < mintingMaster) return false;
@@ -11704,8 +11747,8 @@ export class StatefulTransactionBuilder {
       if (group.sharedGroupIndex !== undefined) continue;
       considerGroup(group, this.getExternalCallOutputBase(groupIndex));
     }
-    // Nested publishJobEvent lives in lowLevelCallUtxoGroups. Without this check, a stale
-    // absolute pin (e.g. dataNft+2) is accepted and later replayed over the funder slot.
+    // Nested delegated participants live in lowLevelCallUtxoGroups too. Without this check, a stale absolute pin
+    // can be accepted and later replayed over a fixed state slot.
     for (const [groupIndex, group] of this.lowLevelCallUtxoGroups.entries()) {
       const blockBase = this.getLowLevelCallMasterInputIndex(groupIndex);
       if (blockBase < 0) continue;
@@ -11715,13 +11758,6 @@ export class StatefulTransactionBuilder {
     // otherwise a later rebuild can replay an entry-shaped value over fixed participant state. Coordinates after
     // every fixed block remain valid: dynamic loop entries and INSERT nodes are intentionally trailing outputs.
     if (declaredSlot && !entryOwned) return false;
-    // Refuse publishJobEvent dataNft slots even when layout lookup missed (master index drift).
-    for (const [index, input] of this.allInputs.entries()) {
-      const name = (input as { unlocker?: { abiFunction?: { name?: string } } })
-        .unlocker?.abiFunction?.name;
-      if (name !== 'publishJobEvent') continue;
-      if (outputIndex === index + 1 || outputIndex === index + 2) return false;
-    }
     const previous = this.externalCallEntryOutputsByIndex.get(outputIndex);
     if (previous?.commitment === commitmentHex && previous.categoryId === categoryId) return false;
     // A later empty extract must not wipe a real entry node. Allow a shorter P'
@@ -11738,27 +11774,12 @@ export class StatefulTransactionBuilder {
   }
 
   private _applyDerivedEntryOutputs(builder: TransactionBuilder): void {
-    const publishJobEventMasters: number[] = [];
-    for (const [index, input] of this.allInputs.entries()) {
-      const name = (input as { unlocker?: { abiFunction?: { name?: string } } })
-        .unlocker?.abiFunction?.name;
-      if (name === 'publishJobEvent') publishJobEventMasters.push(index);
-    }
     for (const [outputIndex, placed] of [...this.externalCallEntryOutputsByIndex.entries()]) {
-      // Drop stale absolute pins that landed on publishJobEvent dataNft slots.
-      // Do not drop sorted-entry pins (P'/NEW are >= 128 hex); master+2 can be an
-      // entry when layout compaction shifts the band.
-      if (placed.commitment.length < 128 && publishJobEventMasters.some((master) => (
-        outputIndex === master + 1 || outputIndex === master + 2
-      ))) {
-        this.externalCallEntryOutputsByIndex.delete(outputIndex);
-        continue;
-      }
       const existing = builder.outputs[outputIndex];
       if (!existing?.token?.nft || existing.token.nft.capability !== 'mutable') continue;
       // Output geometry can change after a trace was cached. Re-check ownership
       // at replay time so an old dynamic coordinate cannot overwrite fixed state.
-      if (this._isFixedExternalDataNftOutput(
+      if (this._isFixedParticipantDataNftOutput(
         outputIndex, existing.token.category ?? placed.categoryId,
       )) {
         this.externalCallEntryOutputsByIndex.delete(outputIndex);
@@ -12607,12 +12628,6 @@ export class StatefulTransactionBuilder {
         protectedMasters.add(index);
       }
     }
-    const publishJobEventMasters: number[] = [];
-    for (const [index, input] of this.allInputs.entries()) {
-      const name = (input as { unlocker?: { abiFunction?: { name?: string } } })
-        .unlocker?.abiFunction?.name;
-      if (name === 'publishJobEvent') publishJobEventMasters.push(index);
-    }
     let changed = false;
     for (const outputIndex of [...this.derivedChunkOutputs.keys()].sort((left, right) => left - right)) {
       const chunk = this.derivedChunkOutputs.get(outputIndex);
@@ -12621,13 +12636,13 @@ export class StatefulTransactionBuilder {
       // to their writer category when learned, so an absent category can never silently become the caller.
       if (this.delegateDynamicChunksAtSuffix && chunk.categoryId === this.categoryId) continue;
       if (protectedMasters.has(outputIndex)) continue;
-      // Never materialise a fixed entry pin onto publishJobEvent dataNft slots (+1/+2).
+      // Never materialise a fixed entry pin onto a compiler-declared participant data-NFT slot.
       // Value-chunk commitments (uint16 index < 32) are not entry pins even at 256 hex chars.
       const derivedValueChunkIndex = valueChunkIndexFromCommitment(chunk.commitment);
       if (chunk.fixedIndex && derivedValueChunkIndex === undefined && chunk.commitment.length >= 128
-        && publishJobEventMasters.some((master) => (
-          outputIndex === master + 1 || outputIndex === master + 2
-        ))) {
+        && this._isFixedParticipantDataNftOutput(
+          outputIndex, chunk.categoryId ?? this.categoryId,
+        )) {
         continue;
       }
       const existing = builder.outputs[outputIndex];

@@ -2411,6 +2411,36 @@ function chunkableValueWriteCollections(
   })))];
 }
 
+/**
+ * Resolve the one collection whose entry covenant owns a chunkable-value write.
+ *
+ * Kernel routes must publish an unambiguous resource identity. A category alone
+ * is insufficient: two mappings on the same contract category have different
+ * entry covenants. Descriptor-free legacy artifacts may retain their historical
+ * fallback, but it is never reachable from a kernel route.
+ */
+export function resolveChunkableEntryCollection(parts: {
+  writes: readonly ValueChunkWriteDescriptor[];
+  categoryId: string;
+  publishedCollections: readonly string[];
+  convention?: 'legacy-unroll' | 'kernel-row-loop';
+  legacyFallback?: string;
+}): string | undefined {
+  const selection = selectValueChunkWriteCategory(parts.writes.filter((write) => (
+    write.categoryId.toLowerCase() === parts.categoryId.toLowerCase()
+  )));
+  if (selection.status === 'exact') return selection.write.collectionSignature;
+
+  const published = [...new Set(parts.publishedCollections)];
+  if (selection.status === 'absent' && published.length === 1) return published[0];
+  if (parts.convention === 'kernel-row-loop') {
+    throw new Error(
+      'Kernel chunkable-value entry placement requires one exact compiler-published collection identity.',
+    );
+  }
+  return selection.status === 'absent' ? parts.legacyFallback : undefined;
+}
+
 /** Map a physical output index to a vmap entry slot offset using proxy and/or implementation layouts. */
 function entrySlotOffsetForOutput(
   outputIndex: number,
@@ -13966,7 +13996,20 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               const entryCollections = nestedEntryAbi
                 ? chunkableValueWriteCollections(llc, nestedEntryAbi)
                 : [];
-              const entryCollection = entryCollections[0] ?? 'jobEvents';
+              const entryCollection = resolveChunkableEntryCollection({
+                writes: valueChunkWrites,
+                categoryId: chunkCategory,
+                publishedCollections: entryCollections,
+                // The enclosing dispatcher owns the convention. A legacy or descriptor-free child nested below
+                // a kernel route must not re-enable the compatibility fallback.
+                convention: this.inner.artifact.messageBus?.convention
+                  ?? (nestedEntryAbi as MessageBusRuntimeAbiFunction | undefined)
+                    ?.messageBusConvention
+                  ?? llc.logicalArtifact?.messageBus?.convention
+                  ?? llc.externalContract?.inner.artifact.messageBus?.convention,
+                // Compatibility for descriptor-free legacy artifacts only.
+                legacyFallback: 'jobEvents',
+              });
               const blockSize = nestedEntryAbi?.blockLayout?.blockSize
                 ?? llc.blockLayout?.blockSize
                 ?? 5;
@@ -13985,7 +14028,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 && !(stagedValueLock && binsAreEqual(entryPin.lockingBytecode, stagedValueLock))
                 ? entryPin.lockingBytecode
                 : undefined;
-              if (!entryLock && entryContract) {
+              if (!entryLock && entryContract && entryCollection) {
                 try {
                   entryLock = getEntryNftLockingBytecode(entryContract, chunkCategory, entryCollection);
                 } catch {

@@ -36,6 +36,7 @@ import {
   assignBalancedOutputAtOffset,
   blockOutputOwnsSlotKind,
   blockOutputOwnsFixedDataNft,
+  fixedDataNftOwnerInParticipantBlocks,
   groupOwnsInBlockReturnEvent,
   constrainOwnCategoryImmutableOutputs,
   inheritWriterBatchWitnesses,
@@ -183,7 +184,9 @@ import {
   type PhysicalReturnGroup,
 } from '../../src/stateful/StatefulTransactionBuilder.js';
 import { getValueChunkLockingBytecode } from '../../src/stateful/covenant-helpers.js';
-import { describeValueChunkWrites } from '../../src/stateful/StatefulContract.js';
+import {
+  describeValueChunkWrites, resolveChunkableEntryCollection,
+} from '../../src/stateful/StatefulContract.js';
 
 describe('external event probe input', () => {
   it('uses delegate geometry across alpha-renaming and ignores a decoy legacy name', () => {
@@ -466,6 +469,43 @@ describe('generic persisted value-chunk write identity', () => {
       status: 'exact', categoryId, write: { ...renamed },
     });
     expect(selectValueChunkWriteCategory([])).toEqual({ status: 'absent' });
+  });
+
+  it('resolves chunkable entry ownership from exact metadata and fails closed for kernel ambiguity', () => {
+    const [renamed] = describeValueChunkWrites(makeGroup('appendNotice'));
+    expect(resolveChunkableEntryCollection({
+      writes: [renamed],
+      categoryId,
+      publishedCollections: ['decoy'],
+      convention: 'kernel-row-loop',
+    })).toBe(signature);
+    expect(resolveChunkableEntryCollection({
+      writes: [],
+      categoryId,
+      publishedCollections: ['records'],
+      convention: 'kernel-row-loop',
+    })).toBe('records');
+    expect(() => resolveChunkableEntryCollection({
+      writes: [],
+      categoryId,
+      publishedCollections: ['records', 'audit'],
+      convention: 'kernel-row-loop',
+      legacyFallback: 'historical',
+    })).toThrow(/requires one exact compiler-published collection identity/);
+    expect(() => resolveChunkableEntryCollection({
+      writes: [],
+      categoryId,
+      publishedCollections: [],
+      convention: 'kernel-row-loop',
+      legacyFallback: 'historical',
+    })).toThrow(/requires one exact compiler-published collection identity/);
+    expect(resolveChunkableEntryCollection({
+      writes: [],
+      categoryId,
+      publishedCollections: [],
+      convention: 'legacy-unroll',
+      legacyFallback: 'historical',
+    })).toBe('historical');
   });
 
   it('treats several well-formed keys in one collection as a multi-resource seed, not persist-band ownership', () => {
@@ -988,6 +1028,20 @@ describe('assignPhysicalReturnIndices', () => {
     expect(blockOutputOwnsFixedDataNft(21, 20, undefined, 2)).toBe(true);
     expect(blockOutputOwnsFixedDataNft(22, 20, undefined, 2)).toBe(true);
     expect(blockOutputOwnsFixedDataNft(23, 20, undefined, 2)).toBe(false);
+
+    const participants = [{
+      categoryId: 'AaBb', blockBase: 10, blockLayout: sparse,
+      dataNftCount: 2, requiredDataNftIndices: [3, 7],
+    }, {
+      categoryId: 'delegated-owner', blockBase: 20, blockLayout: undefined,
+      dataNftCount: 2, requiredDataNftIndices: [4, 9],
+    }];
+    expect(fixedDataNftOwnerInParticipantBlocks(14, 'aAbB', participants))
+      .toEqual({ participantIndex: 0, nftIndex: 7 });
+    expect(fixedDataNftOwnerInParticipantBlocks(22, 'delegated-owner', participants))
+      .toEqual({ participantIndex: 1, nftIndex: 9 });
+    expect(fixedDataNftOwnerInParticipantBlocks(12, 'aabb', participants)).toBeUndefined();
+    expect(fixedDataNftOwnerInParticipantBlocks(14, 'other-owner', participants)).toBeUndefined();
   });
 
   it('reserves every output in assigned scalar and loop return witnesses', () => {

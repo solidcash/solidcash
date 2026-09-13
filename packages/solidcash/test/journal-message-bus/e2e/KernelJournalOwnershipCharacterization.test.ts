@@ -203,7 +203,7 @@ describe('kernel journal ownership characterization', () => {
     }
   }, 180_000);
 
-  // Post-beta: re-enable only with the physical carrier band and final-settlement cursor release.
+  // Released carrier protocol: keep the physical carrier band and final-settlement cursor covered together.
   it('settles one read carrier into two same-row result collections in canonical order', async () => {
     const provider = createTestProvider();
     const artifact = compileString(SOURCE, { ...OPTIONS, messageBusKernel: true });
@@ -263,7 +263,7 @@ describe('kernel journal ownership characterization', () => {
     await expect(contract.call.checkFanout(1n, 11n).send()).resolves.toBeDefined();
   }, 180_000);
 
-  // Post-beta: this exercises the same unpublished carrier protocol for a cold destination entry.
+  // The released carrier protocol must also authenticate a cold destination entry.
   it('inserts destination entries from authenticated source-only carriers', async () => {
     const source = `contract ReadToSetCarrier() {
       mapping(int => int) source;

@@ -3243,6 +3243,90 @@ function padMessageBusCloneCalls(ast: Ast): void {
   }
 }
 
+function collectFixedCollectionWrites(fn: FunctionDefinitionNode, collections: ReadonlySet<string>): Set<string> {
+  const writes = new Set<string>();
+  if (!fn.body || collections.size === 0) return writes;
+  const scan = (node: Node, inLoop: boolean): void => {
+    const nowLoop = inLoop || node instanceof WhileNode || node instanceof DoWhileNode;
+    const collection = node instanceof MappingAssignNode || node instanceof MappingFieldAssignNode
+      || node instanceof MappingDeleteNode || node instanceof ArrayAssignNode
+      || node instanceof ArrayPushNode || node instanceof ArrayPopNode ? node.name : undefined;
+    if (collection && collections.has(collection) && !nowLoop) writes.add(collection);
+    for (const [field, value] of Object.entries(node)) {
+      if (['location', 'resolvedFunction', 'functionReference', 'definition', 'collection', 'symbolTable',
+        'stateVariable', 'type'].includes(field)) continue;
+      if (value instanceof Node) scan(value, nowLoop);
+      else if (Array.isArray(value)) {
+        for (const item of value) if (item instanceof Node) scan(item, nowLoop);
+      }
+    }
+  };
+  scan(fn.body, false);
+  return writes;
+}
+
+function hasUntransportedChunkableWrite(
+  fn: FunctionDefinitionNode,
+  collections: ReadonlySet<string>,
+  functionsByName?: Map<string, FunctionDefinitionNode[]>,
+  footprintCache?: ReturnType<typeof createFootprintAnalysisCache>,
+): boolean {
+  if (!fn.body || collections.size === 0) return false;
+  let unsupported = false;
+  const scan = (node: Node, inLoop: boolean): void => {
+    if (unsupported) return;
+    const nowLoop = inLoop || node instanceof WhileNode || node instanceof DoWhileNode;
+    if (node instanceof FunctionCallNode && functionsByName && footprintCache) {
+      const helperWritesChunkable = (functionsByName.get(node.identifier.name) ?? []).some((helper) =>
+        [...analyseFunctionFootprint(helper, functionsByName, footprintCache).writes].some((resource) => (
+          resource.startsWith('collection:')
+          && collections.has(resource.slice('collection:'.length).split(':', 1)[0])
+        )));
+      if (helperWritesChunkable) {
+        unsupported = true;
+        return;
+      }
+    }
+    const collection = node instanceof MappingAssignNode || node instanceof MappingFieldAssignNode
+      || node instanceof MappingDeleteNode || node instanceof ArrayAssignNode
+      || node instanceof ArrayPushNode || node instanceof ArrayPopNode ? node.name : undefined;
+    if (collection && collections.has(collection)) {
+      // LowerVMapCounterLoops publishes this replay expression only after it has proven and transported the
+      // concrete counter-keyed array mutation. Loop position alone is not authority: an invariant-key write or
+      // an inlined fixed-key helper can share a function with an unrelated transported stream.
+      const transported = nowLoop && node instanceof MappingAssignNode
+        && node.messageBusJournalTransport?.collection === collection;
+      if (!transported) {
+        unsupported = true;
+        return;
+      }
+    }
+    for (const [field, value] of Object.entries(node)) {
+      if (['location', 'resolvedFunction', 'functionReference', 'definition', 'collection', 'symbolTable',
+        'stateVariable', 'type'].includes(field)) continue;
+      if (value instanceof Node) scan(value, nowLoop);
+      else if (Array.isArray(value)) {
+        for (const item of value) if (item instanceof Node) scan(item, nowLoop);
+      }
+    }
+  };
+  scan(fn.body, false);
+  return unsupported;
+}
+
+function collectJournalTransportedWrites(
+  fn: FunctionDefinitionNode,
+): Array<{ collection: string; varyingArrayParam: string }> {
+  const transports: Array<{ collection: string; varyingArrayParam: string }> = [];
+  if (!fn.body) return transports;
+  walkInvocationAst(fn.body, (node) => {
+    if (node instanceof MappingAssignNode && node.messageBusJournalTransport) {
+      transports.push(node.messageBusJournalTransport);
+    }
+  });
+  return transports;
+}
+
 function injectChunkableEntryWitnesses(ast: Ast): void {
   const sorted = new Set(
     ast.contract.collections.filter((collection) => collection.sorted).map((collection) => collection.name),
@@ -3283,24 +3367,7 @@ function injectChunkableEntryWitnesses(ast: Ast): void {
     // Mirror the essential batch classification here. A fixed sorted write always participates, including when
     // the same collection also owns a distinct runtime-loop stream: the fixed transition retains its ordinary
     // authenticated slot while the runtime entries occupy the bounded trailing region.
-    const fixedSortedWrites = new Set<string>();
-    const scanWrites = (node: Node, inLoop: boolean): void => {
-      const nowLoop = inLoop || node instanceof WhileNode || node instanceof DoWhileNode;
-      const collection = node instanceof MappingAssignNode || node instanceof MappingFieldAssignNode
-        || node instanceof MappingDeleteNode || node instanceof ArrayAssignNode ? node.name : undefined;
-      if (collection && sorted.has(collection)) {
-        if (!nowLoop) fixedSortedWrites.add(collection);
-      }
-      for (const [field, value] of Object.entries(node)) {
-        if (['location', 'resolvedFunction', 'functionReference', 'definition', 'collection', 'symbolTable',
-          'stateVariable', 'type'].includes(field)) continue;
-        if (value instanceof Node) scanWrites(value, nowLoop);
-        else if (Array.isArray(value)) {
-          for (const item of value) if (item instanceof Node) scanWrites(item, nowLoop);
-        }
-      }
-    };
-    if (sorted.size > 0) scanWrites(fn.body, false);
+    const fixedSortedWrites = collectFixedCollectionWrites(fn, sorted);
     const hasFixedSortedBatch = fixedSortedWrites.size > 0;
     if ((written.size > 0 || hasFixedSortedBatch)
       && !fn.parameters.some((parameter) => parameter.name === '__internal__vmapBatchTrailingCount')) {
@@ -4503,6 +4570,32 @@ function synthesizeMessageBusRoute(
       }
     }
     const footprint = analyseFunctionFootprint(fn, byName, footprintCache);
+    if (compilerOptions.messageBusKernel === true) {
+      const chunkableWrites = [...footprint.writes].some((resource) => {
+        if (!resource.startsWith('collection:')) return false;
+        const name = resource.slice('collection:'.length).split(':', 1)[0];
+        const valueType = collectionByName.get(name)?.innermostValueType;
+        return valueType instanceof ArrayType || valueType === PrimitiveType.STRING
+          || (valueType instanceof BytesType && valueType.bound === undefined);
+      });
+      const hasCounterJournalTransport = (fn.runtimeCounterLoopCounters?.size ?? 0) > 0
+        && fn.parameters.some((parameter) => parameter.name === KERNEL_JOURNAL_ACCESS_STREAMS);
+      const chunkableCollections = new Set(contract.collections.filter((collection) => {
+        const valueType = collection.innermostValueType;
+        return valueType instanceof ArrayType || valueType === PrimitiveType.STRING
+          || (valueType instanceof BytesType && valueType.bound === undefined);
+      }).map((collection) => collection.name));
+      const hasUntransportedWrite = hasUntransportedChunkableWrite(
+        fn, chunkableCollections, signatureClosureByName, footprintCache,
+      );
+      if (chunkableWrites && (!hasCounterJournalTransport || hasUntransportedWrite)) {
+        // A route may invoke this handler repeatedly. Until its completed entry descriptor is represented in the
+        // authenticated compact journal ABI, every row would independently pin a terminal continuation family.
+        fn.messageBusEligible = false;
+        fn.messageBusRejectionReason = 'KERNEL_LAYOUT';
+        continue;
+      }
+    }
     const kernelLifecycleKind = compilerOptions.messageBusKernel !== true ? undefined
       : fn.modifiers.includes(FunctionModifier.SPLIT) ? 'split' as const
         : fn.modifiers.includes(FunctionModifier.MERGE) ? 'merge' as const : undefined;
@@ -12119,6 +12212,38 @@ function compileResolvedAst(
       const hasUnauthenticatedSelectedReadGeometry = selectedRuntimeJournalReadCount > 1;
       const chunkableCollections = new Set((artifact.stateLayout?.collections ?? [])
         .filter((collection) => collection.chunkableValue === true).map((collection) => collection.name));
+      const completedFootprint = analyseFunctionFootprint(
+        fn, completedFunctionsByName, createFootprintAnalysisCache(),
+      );
+      const chunkableWriteCollections = new Set([...completedFootprint.writes].flatMap((resource) => {
+        if (!resource.startsWith('collection:')) return [];
+        const name = resource.slice('collection:'.length).split(':', 1)[0];
+        return chunkableCollections.has(name) ? [name] : [];
+      }));
+      const transportedChunkableWrites = collectJournalTransportedWrites(fn);
+      const exactTransportMatches = transportedChunkableWrites.map((transport) => runtimeJournalAccesses.filter(
+        (access) => access.collection === transport.collection
+          && access.varyingArrayParam === transport.varyingArrayParam
+          && access.op !== 'read'
+          && Number.isSafeInteger(access.journalAccessStreamIndex)
+          && access.settlementIdentity?.accessStreamIndex === access.journalAccessStreamIndex
+          && access.settlementIdentity.recordOrdinalScope === 'global-journal'
+          && access.settlementIdentity.accessOrdinalSource === 'access-program-order'
+          && access.settlementIdentity.settlementRole === 'mutation-settlement'
+          && access.settlementIdentity.settlementOwnership === 'last-mutating-access',
+      ));
+      const hasIncompleteChunkableTransport = [...chunkableWriteCollections].some((collection) => (
+        !transportedChunkableWrites.some((transport) => transport.collection === collection)
+      )) || exactTransportMatches.some((matches) => matches.length !== 1)
+        || runtimeJournalAccesses.some((access) => chunkableWriteCollections.has(access.collection)
+          && access.op !== 'read'
+          && !transportedChunkableWrites.some((transport) => transport.collection === access.collection
+            && transport.varyingArrayParam === access.varyingArrayParam));
+      if (hasIncompleteChunkableTransport) {
+        fn.messageBusEligible = false;
+        fn.messageBusRejectionReason = 'KERNEL_LAYOUT';
+        continue;
+      }
       // A row-local value carrier currently lacks an independently authenticated pending output identity.
       // Direct structural expressions and scalar/array recipes use other metadata and remain admitted.
       const hasRuntimeLocalJournalValue = runtimeJournalAccesses

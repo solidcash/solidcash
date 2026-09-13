@@ -16,6 +16,103 @@ ReturnType<typeof compileString>['messageBus']
 };
 
 describe('required kernel admission', () => {
+  it('fences a chunkable mapping producer without authenticated compact journal transport', () => {
+    const artifact = compileString(`contract C() {
+      mapping(uint => bytes32[]) values;
+      function appendEntry(uint key, bytes32 value) public {
+        this.values[key].push(value);
+        require(this.values[key].length > 0);
+      }
+    }`, KERNEL);
+    const abi = artifact.abi.find((candidate) => candidate.name === 'appendEntry');
+    expect(abi?.entryAccesses).toEqual([
+      expect.objectContaining({ collection: 'values', chunkableArrayValue: true }),
+    ]);
+    expect(abi?.inputs.some((input) => input.name === '__internal__kernelJournalAccessStreams')).toBe(false);
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'appendEntry'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+  });
+
+  it('retains chunkable mapping writes carried by authenticated compact journal transport', () => {
+    const artifact = compileString(`contract C() {
+      mapping(uint => bytes32[]) values;
+      function appendEntries(uint count, bytes32 value) public {
+        for (uint i = 0; i < count; i = i + 1) {
+          this.values[i].push(value);
+        }
+        require(true);
+      }
+    }`, KERNEL);
+    const abi = artifact.abi.find((candidate) => candidate.name === 'appendEntries');
+    expect(abi?.inputs).toContainEqual({
+      name: '__internal__kernelJournalAccessStreams', type: 'bytes[]',
+    });
+    expect(artifact.messageBus?.route.inputs).toContainEqual({
+      name: '__internal__kernelJournalAccessStreams', type: 'bytes[][]',
+    });
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'appendEntries'))
+      .toMatchObject({ eligible: true });
+  });
+
+  it('fences a fixed chunkable write mixed with an independently transported loop', () => {
+    const source = `contract C() {
+      mapping(uint => bytes32[]) values;
+      function mixed(uint count, uint fixedKey, bytes32 value) public {
+        for (uint i = 0; i < count; i = i + 1) {
+          this.values[i].push(value);
+        }
+        this.values[fixedKey].push(value);
+        require(true);
+      }
+    }`;
+    const kernel = compileString(source, KERNEL);
+    const abi = kernel.abi.find((candidate) => candidate.name === 'mixed');
+    expect(abi?.inputs).toContainEqual({
+      name: '__internal__kernelJournalAccessStreams', type: 'bytes[]',
+    });
+    expect(kernel.messageBus?.handlers.find((candidate) => candidate.name === 'mixed'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+
+    expect(() => compileString(source, { ...KERNEL, messageBusKernel: false })).not.toThrow();
+  });
+
+  it('fences an invariant-key chunkable write inside an independently transported loop', () => {
+    const artifact = compileString(`contract C() {
+      mapping(uint => bytes32[]) values;
+      function appendRepeated(uint count, uint fixedKey, bytes32 value) public {
+        for (uint i = 0; i < count; i = i + 1) {
+          this.values[i].push(value);
+        }
+        for (uint j = 0; j < count; j = j + 1) {
+          this.values[fixedKey].push(value);
+        }
+        require(true);
+      }
+    }`, KERNEL);
+    expect(artifact.abi.find((candidate) => candidate.name === 'appendRepeated')?.inputs)
+      .toContainEqual({ name: '__internal__kernelJournalAccessStreams', type: 'bytes[]' });
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'appendRepeated'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+  });
+
+  it('fences an untransported chunkable helper beside a transported loop', () => {
+    const artifact = compileString(`contract C() {
+      mapping(uint => bytes32[]) values;
+      function appendFixed(uint key, bytes32 value) internal {
+        this.values[key].push(value);
+      }
+      function mixedHelper(uint count, uint fixedKey, bytes32 value) public {
+        for (uint i = 0; i < count; i = i + 1) {
+          this.values[i].push(value);
+        }
+        appendFixed(fixedKey, value);
+        require(true);
+      }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'mixedHelper'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+  });
+
   it('does not advertise dormant internal read-carrier support from kernel convention alone', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) values;

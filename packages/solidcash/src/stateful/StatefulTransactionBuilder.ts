@@ -5577,6 +5577,8 @@ export interface ExternalCallUtxoGroup {
   };
   /** ABI-named hidden witnesses resolved while assembling this callee's physical block. */
   internalArgs?: Record<string, any>;
+  /** Immutable ABI names captured by the concrete physical unlocker owned by this group. */
+  internalArgNames?: readonly string[];
   /** Hidden return-output ABI witness -> logical external-call group supplying that return. */
   returnWitnessGroups?: Record<string, number>;
   /** Hidden minting-input ABI witness -> category whose final master coordinate it names. */
@@ -5675,6 +5677,24 @@ export interface ExternalCallUtxoGroup {
   dynamicChunkResources?: Array<{
     blockSlot: number; name: string; type: string; write: boolean;
   }>;
+}
+
+/** Rebind a continuation coordinate only on the concrete unlocker ABI which captured that hidden argument. */
+export function refreshCapturedValueChunkOutputBase(
+  group: ExternalCallUtxoGroup,
+  outputBase: number,
+  options: { shiftPredOut?: boolean } = { shiftPredOut: false },
+): boolean {
+  if (!group.internalArgNames?.includes('__internal__valueChunkOutputBase')) return false;
+  group.valueChunkOutputBase = outputBase;
+  group.internalArgs = {
+    ...group.internalArgs,
+    __internal__valueChunkOutputBase: BigInt(outputBase),
+  };
+  group.refreshInternalArgs?.(
+    { __internal__valueChunkOutputBase: BigInt(outputBase) }, options,
+  );
+  return true;
 }
 
 export type ProtectedLoopEntryCollectionSelection =
@@ -12855,6 +12875,7 @@ export class StatefulTransactionBuilder {
       }
       for (const carrier of [...this.externalCallUtxoGroups, ...this.lowLevelCallUtxoGroups]) {
         if (carrier.valueChunkOutputBase !== oldBase) continue;
+        if (!carrier.internalArgNames?.includes('__internal__valueChunkOutputBase')) continue;
         carrier.valueChunkOutputBase = base;
         carrier.internalArgs = {
           ...carrier.internalArgs,
@@ -13402,6 +13423,7 @@ export class StatefulTransactionBuilder {
     for (const carrier of [...this.externalCallUtxoGroups, ...this.lowLevelCallUtxoGroups]) {
       const currentBase = carrier.valueChunkOutputBase;
       if (currentBase === undefined || currentBase < insertAt) continue;
+      if (!carrier.internalArgNames?.includes('__internal__valueChunkOutputBase')) continue;
       const nextBase = currentBase + 1;
       carrier.valueChunkOutputBase = nextBase;
       carrier.internalArgs = {
@@ -13552,9 +13574,10 @@ export class StatefulTransactionBuilder {
       // Proxy and delegate records can carry the same physical witness. Rebind only aliases proven to describe
       // this exact authenticated run; unrelated writers that happened to share a provisional coordinate remain
       // independent and will resolve against their own root lock.
-      const aliases = identity === undefined ? [carrier] : carriers.filter((candidate) => (
+      const aliases = (identity === undefined ? [carrier] : carriers.filter((candidate) => (
         candidate.valueChunkOutputBase === currentBase && runIdentity(candidate) === identity
-      ));
+      ))).filter((candidate) => candidate.internalArgNames
+        ?.includes('__internal__valueChunkOutputBase') === true);
       for (const alias of aliases) {
         alias.valueChunkOutputBase = materializedBase;
         alias.internalArgs = {
@@ -13582,7 +13605,7 @@ export class StatefulTransactionBuilder {
   bindMaterializedValueChunkWitnesses(builder: TransactionBuilder, coordinateBase = 0): boolean {
     const carriers = [...this.externalCallUtxoGroups, ...this.lowLevelCallUtxoGroups];
     const changedCarriers = new Set<ExternalCallUtxoGroup>();
-    const occupiedBases = new Set<number>();
+    const occupiedBases = new Map<number, string>();
 
     for (const [carrierIndex, carrier] of carriers.entries()) {
       const abiFunction = carrier.compilerRoute?.abiFunction
@@ -13624,6 +13647,10 @@ export class StatefulTransactionBuilder {
         : [carrier, ...this.externalCallUtxoGroups.filter(
           (group) => group.delegateCallGroupIndex === lowLevelIndex,
         )];
+      const physicalOwnerId = externalIndex >= 0
+        ? carrier.delegateCallGroupIndex === undefined
+          ? `external:${externalIndex}` : `delegate:${carrier.delegateCallGroupIndex}`
+        : aliasGroups.length > 1 ? `delegate:${lowLevelIndex}` : `low-level:${lowLevelIndex}`;
       const resourceIdentities = new Set(aliasGroups.flatMap((group) => (
         group?.valueChunkWrites ?? []
       )).map(valueChunkWriteResourceIdentity));
@@ -13700,7 +13727,6 @@ export class StatefulTransactionBuilder {
                 ...chunk, categoryId: outputCategoryId, fixedIndex: true,
               });
             }
-            carrier.valueChunkOutputBase = base;
             preferredLocalBase = base;
             candidateStarts = [base];
           }
@@ -13742,22 +13768,33 @@ export class StatefulTransactionBuilder {
         }
         if (expectedWidth === 0 || width !== expectedWidth) continue;
         const absoluteStart = coordinateBase + start;
-        if (!occupiedBases.has(absoluteStart)) selectedStart = start;
+        const owner = occupiedBases.get(absoluteStart);
+        if (owner === undefined || owner === physicalOwnerId) selectedStart = start;
       }
       if (selectedStart < 0) continue;
       const absoluteStart = coordinateBase + selectedStart;
-      occupiedBases.add(absoluteStart);
-      if (carrier.valueChunkOutputBase === absoluteStart) continue;
-      carrier.valueChunkOutputBase = absoluteStart;
-      carrier.internalArgs = {
-        ...carrier.internalArgs,
-        __internal__valueChunkOutputBase: BigInt(absoluteStart),
-      };
-      carrier.refreshInternalArgs?.(
-        { __internal__valueChunkOutputBase: BigInt(absoluteStart) },
-        { shiftPredOut: false },
+      occupiedBases.set(absoluteStart, physicalOwnerId);
+      // `delegateCallGroupIndex` is the planner's stable physical-callsite identity. Every proxy record attached
+      // to that implementation input encodes the same continuation witness, even when one logical record omits
+      // the implementation's collection descriptor. Update the complete alias set atomically.
+      const physicalAliases = aliasGroups.filter(
+        (alias): alias is ExternalCallUtxoGroup => alias !== undefined
+          && alias.internalArgNames?.includes('__internal__valueChunkOutputBase') === true,
       );
-      changedCarriers.add(carrier);
+      for (const alias of physicalAliases) {
+        const encoded = alias.internalArgs?.__internal__valueChunkOutputBase;
+        if (alias.valueChunkOutputBase === absoluteStart && encoded === BigInt(absoluteStart)) continue;
+        alias.valueChunkOutputBase = absoluteStart;
+        alias.internalArgs = {
+          ...alias.internalArgs,
+          __internal__valueChunkOutputBase: BigInt(absoluteStart),
+        };
+        alias.refreshInternalArgs?.(
+          { __internal__valueChunkOutputBase: BigInt(absoluteStart) },
+          { shiftPredOut: false },
+        );
+        changedCarriers.add(alias);
+      }
     }
     if (changedCarriers.size === 0) return false;
     this._syncRefreshedCarrierMasters(builder, changedCarriers);
@@ -13864,7 +13901,8 @@ export class StatefulTransactionBuilder {
       }
       if (group.valueChunkOutputBase !== undefined && group.valueChunkOutputBase >= insertAt) {
         group.valueChunkOutputBase += 1;
-        if (group.internalArgs) {
+        if (group.internalArgs
+          && group.internalArgNames?.includes('__internal__valueChunkOutputBase')) {
           group.internalArgs = {
             ...group.internalArgs,
             __internal__valueChunkOutputBase: BigInt(group.valueChunkOutputBase),
@@ -14128,6 +14166,13 @@ export class StatefulTransactionBuilder {
     id: string; collection: string; lockingBytecode: Uint8Array; slot?: Uint8Array;
   }> {
     return [...this.valueChunkVars.entries()].map(([id, value]) => ({ id, ...value }));
+  }
+
+  /** Compiler-authored value-chunk resources carried by this concrete call graph. */
+  getValueChunkWriteDescriptors(): readonly ValueChunkWriteDescriptor[] {
+    return [...this.externalCallUtxoGroups, ...this.lowLevelCallUtxoGroups]
+      .flatMap((group) => group.valueChunkWrites ?? [])
+      .map((write) => ({ ...write }));
   }
 
   setValueChunkRawCommitments(id: string, commitments: string[]): this {

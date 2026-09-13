@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import type { AbiFunction, Artifact, StateLayout } from '@cashscript/utils';
-import type { ExternalCallUtxoGroup } from '../../src/stateful/StatefulTransactionBuilder.js';
+import {
+  refreshCapturedValueChunkOutputBase,
+  type ExternalCallUtxoGroup,
+} from '../../src/stateful/StatefulTransactionBuilder.js';
 import {
   chunkableWriterGroupIndex,
   computedStateWriterGroupIndex,
@@ -63,6 +66,41 @@ function fn(name: string, collection: string, operations: Array<'read' | 'write'
 }
 
 describe('compiler-owned participant identity', () => {
+  it('rebases only the captured delegate value-chunk witness owner', () => {
+    const selector = new Uint8Array([0xa8, 0x26, 0xee, 0x9c]);
+    const proxy = group('__forward', {
+      name: '__forward', selector: '88b357fe',
+      inputs: [{ name: 'input', type: 'bytes' }], outputs: [],
+    } as AbiFunction);
+    proxy.functionArgs = [selector];
+    proxy.internalArgNames = Object.freeze(['input']);
+    let proxyRefreshes = 0;
+    proxy.refreshInternalArgs = () => { proxyRefreshes += 1; };
+
+    const implementation = group('appendNotice', {
+      name: 'appendNotice', selector: 'a826ee9c',
+      inputs: [
+        { name: 'value', type: 'bytes32' },
+        { name: '__internal__valueChunkOutputBase', type: 'int' },
+        { name: '__internal__proxyMasterIndex', type: 'int' },
+      ],
+      outputs: [], writesState: true,
+    } as AbiFunction);
+    implementation.internalArgNames = Object.freeze(
+      implementation.compilerRoute!.abiFunction.inputs.map((input) => input.name),
+    );
+    let implementationBase: bigint | undefined;
+    implementation.refreshInternalArgs = (updates) => {
+      implementationBase = updates.__internal__valueChunkOutputBase;
+    };
+
+    expect(refreshCapturedValueChunkOutputBase(proxy, 10)).toBe(false);
+    expect(refreshCapturedValueChunkOutputBase(implementation, 10)).toBe(true);
+    expect(proxy.functionArgs[0]).toEqual(selector);
+    expect(proxyRefreshes).toBe(0);
+    expect(implementationBase).toBe(10n);
+  });
+
   it('selects a renamed computed writer and ignores a misleading ERC-named reader', () => {
     const decoy = group('transferFrom', fn('transferFrom', 'balances', ['read']));
     const renamed = group('applyLedgerDelta', fn('applyLedgerDelta', 'balances', ['write']));

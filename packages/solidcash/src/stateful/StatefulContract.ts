@@ -118,7 +118,6 @@ import {
   utf8ToBin,
   binToUtf8,
   lockingBytecodeToCashAddress,
-  AuthenticationErrorCommon,
 } from '@bitauth/libauth';
 import { createVirtualMachineBch2026ForProvider } from '../network/createVirtualMachine.js';
 import { Contract } from '../Contract.js';
@@ -2414,7 +2413,9 @@ function writesChunkableValue(
 }
 
 /** Build exact continuation identities from compiler entry metadata and the planner's authenticated entry input. */
-export function describeValueChunkWrites(group: ExternalCallUtxoGroup): ValueChunkWriteDescriptor[] {
+export function describeValueChunkWrites(
+  group: ExternalCallUtxoGroup,
+): ValueChunkWriteDescriptor[] {
   const artifact = group.externalContract?.inner?.artifact as Artifact | undefined;
   const abiFunction = group.compilerRoute?.abiFunction
     ?? artifact?.abi.find((candidate) => candidate.name === group.functionName);
@@ -2444,15 +2445,16 @@ export function describeValueChunkWrites(group: ExternalCallUtxoGroup): ValueChu
       const insert = group.plannedEntryInserts?.find((planned) => planned.blockSlot === blockSlot);
       const commitment = insert?.newCommitment
         ?? group.blockInputs?.[blockSlot]?.token?.nft?.commitment;
-      if (!commitment) continue;
+      if (commitment === undefined) continue;
       const bytes = typeof commitment === 'string' ? hexToBin(commitment) : commitment;
       if (bytes.length < 32) continue;
+      const keySlot = decodeEntryCommitment(bytes).slot;
       writes.push({
         categoryId: group.categoryId,
         collection: collection.name,
         collectionSignature: collection.signature,
         collectionHash: binToHex(computeCollectionHash(collection.signature)),
-        keySlot: binToHex(decodeEntryCommitment(bytes).slot),
+        keySlot: binToHex(keySlot),
         entryAccessSlot,
         routeSlot,
         operation: insert ? 'insert' : 'update',
@@ -4090,8 +4092,6 @@ const PROBE_TRACE_OPCODES = new Set<number>([
 interface CachedProbeVm {
   trace: AuthenticationProgramStateCommon[];
   awaitingVerification: boolean;
-  relaxNextVerification: boolean;
-  relaxationApplied: boolean;
   vm: ReturnType<typeof createVirtualMachineBch2026ForProvider>;
 }
 
@@ -4099,7 +4099,6 @@ interface CachedProbeVm {
 // libauth's complete BCH-2026 instruction set (then wrapping the observed opcode handlers) for every convergence
 // step is therefore pure overhead. Keep the VM and its observer closure, resetting only the small trace buffer.
 const probeVmCache = new WeakMap<NetworkProvider, CachedProbeVm>();
-const relaxedProbeVmCache = new WeakMap<NetworkProvider, CachedProbeVm>();
 const debugVmCache = new WeakMap<NetworkProvider, ReturnType<typeof createVirtualMachineBch2026ForProvider>>();
 
 function cachedDebugVm(provider: NetworkProvider): ReturnType<typeof createVirtualMachineBch2026ForProvider> {
@@ -4140,15 +4139,12 @@ export function fingerprintLibauthTransaction(
   return `${transaction.version}|${transaction.locktime}|${inputs.join(',')}|${outputs.join(',')}`;
 }
 
-function cachedProbeVm(provider: NetworkProvider, relaxOutputVerifications = false): CachedProbeVm {
-  const cache = relaxOutputVerifications ? relaxedProbeVmCache : probeVmCache;
-  const existing = cache.get(provider);
+function cachedProbeVm(provider: NetworkProvider): CachedProbeVm {
+  const existing = probeVmCache.get(provider);
   if (existing) return existing;
   const cached = {
     trace: [] as AuthenticationProgramStateCommon[],
     awaitingVerification: false,
-    relaxNextVerification: false,
-    relaxationApplied: false,
   } as CachedProbeVm;
   const debugTraceOperationMode = (globalThis as {
     process?: { env?: Record<string, string | undefined> };
@@ -4236,10 +4232,6 @@ function cachedProbeVm(provider: NetworkProvider, relaxOutputVerifications = fal
         alternateStack: state.alternateStack.slice(),
         controlStack: state.controlStack.slice(),
       });
-      // The relaxed VM may continue past speculative OUTPUT pins only. A deferred keccak probe deliberately
-      // fails the EQUALVERIFY following OP_INPUTBYTECODE so its runtime preimage can be learned; suppressing that
-      // bind would change execution semantics and could skip over the call the next iteration must resolve.
-      if (opcode !== Op.OP_EQUALVERIFY) cached.relaxNextVerification = opcode !== Op.OP_INPUTBYTECODE;
       // OP_INPUTBYTECODE is observed before execution because deferred compute discovery needs the argument and
       // input index which are already on the stack. Its following equality is intentionally faithful (never
       // relaxed), and retaining that pre-verification state can keep a fresh copy of a multi-megabyte unlocking
@@ -4247,23 +4239,8 @@ function cachedProbeVm(provider: NetworkProvider, relaxOutputVerifications = fal
       // only the compact pre-operation observation plus the eventual terminal state if this bind fails.
       cached.awaitingVerification = opcode !== Op.OP_EQUALVERIFY && opcode !== Op.OP_INPUTBYTECODE;
     },
-    ...(relaxOutputVerifications && {
-      operation: (opcode, unknownState, operation) => {
-        const shouldRelax = opcode === Op.OP_EQUALVERIFY && cached.relaxNextVerification;
-        if (opcode === Op.OP_EQUALVERIFY) cached.relaxNextVerification = false;
-        const next = operation(unknownState as never) as AuthenticationProgramStateCommon;
-        // This VM is used only to discover candidate output values. Continue past a failed output comparison so
-        // one pass can expose later independent pins. A transaction is accepted only on an iteration where this
-        // wrapper suppresses nothing, making that evaluation identical to the ordinary VM verdict.
-        if (shouldRelax && next.error === AuthenticationErrorCommon.failedVerify) {
-          delete next.error;
-          cached.relaxationApplied = true;
-        }
-        return next;
-      },
-    }),
   });
-  cache.set(provider, cached);
+  probeVmCache.set(provider, cached);
   return cached;
 }
 
@@ -4474,7 +4451,6 @@ export function compactFaithfulProbeTrace(
 function evaluateProbeTrace(
   provider: NetworkProvider,
   program: Parameters<ReturnType<typeof createVirtualMachineBch2026ForProvider>['evaluate']>[0],
-  relaxOutputVerifications = false,
   forceFullDebug = false,
 ): AuthenticationProgramStateCommon[] {
   const maxIn = provider.consensusLimits?.maximumInputBytes ?? 10_000;
@@ -4487,7 +4463,7 @@ function evaluateProbeTrace(
     || debugEnv?.SC_FORCE_FULL_PROBE_TRACE === '1'
     || debugEnv?.SOLIDC_DEBUG_ROUTE_CONCISE === '1'
     || debugEnv?.SOLIDC_DEBUG_ROUTE_FULL_OPS === '1';
-  if ((preferFullDebug || forceFullDebug) && !relaxOutputVerifications) {
+  if (preferFullDebug || forceFullDebug) {
     try {
       const full = cachedDebugVm(provider)
         .debug(program) as AuthenticationProgramStateCommon[];
@@ -4508,11 +4484,9 @@ function evaluateProbeTrace(
   // introspection and OP_EQUALVERIFY as breaking that pair. OP_INPUTBYTECODE is the one additional observation
   // required for deferred keccak; if it appears, it correctly breaks any pending output pair because the next
   // equality binds the side-car preimage rather than that earlier output.
-  const cached = cachedProbeVm(provider, relaxOutputVerifications);
+  const cached = cachedProbeVm(provider);
   cached.trace.length = 0;
   cached.awaitingVerification = false;
-  cached.relaxNextVerification = false;
-  cached.relaxationApplied = false;
   cached.trace.push(cached.vm.evaluate(program) as AuthenticationProgramStateCommon);
   // Rotate rather than copy: the observer closure resolves `cached.trace` at each operation, so the completed
   // trace can be handed to the caller while the next evaluation receives a fresh collector.
@@ -12308,9 +12282,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             });
             const nestedImpl = valueChunkWitness.carrier.delegateCallGroupIndex;
             if (nestedImpl !== undefined) {
-              stb.getLowLevelCallUtxoGroups()[nestedImpl]?.refreshInternalArgs?.({
-                __internal__valueChunkOutputBase: BigInt(outputBase),
-              });
+              const nestedOwner = stb.getLowLevelCallUtxoGroups()[nestedImpl];
+              if (nestedOwner?.internalArgNames?.includes('__internal__valueChunkOutputBase')) {
+                nestedOwner.refreshInternalArgs?.({
+                  __internal__valueChunkOutputBase: BigInt(outputBase),
+                });
+              }
             }
             stb._refreshInputs();
             probeBuilder = stb.build();
@@ -13783,24 +13760,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           // entry NFTs; without relaxation the VM stops at the first EQUALVERIFY and each insert needs its
           // own probe. Do not relax stateCount == 1, and do not relax fixed-size arrays (kind === 'array'):
           // those clobber the first valid pin with later stack garbage.
-          const mappingEntryCount = (entryAccesses ?? []).filter((access) => (
-            stateLayout.collections?.some((collection) => (
-              collection.name === access.collection && collection.kind === 'mapping'
-            ))
-          )).length;
           // The sparse observer cannot currently see introspection executed inside OP_INVOKE bodies. Runtime-loop
           // transfer values are verified there, so use the faithful reduced debug trace until those outputs have
           // converged. This remains bounded by the kernel's 64-iteration admission limit.
           const hasRuntimeLoopTransfers = stb.getRuntimeLoopTransferOutputs().length > 0;
-          const relaxDiscovery = !hasRuntimeLoopTransfers
-            && (stateCount > 1 || (stateCount === 0 && mappingEntryCount > 1));
           const fullTrace2 = evaluateProbeTrace(
-            this.inner.provider, probeProgram, relaxDiscovery, hasRuntimeLoopTransfers,
+            this.inner.provider, probeProgram, hasRuntimeLoopTransfers,
           );
-          const outputVerificationMismatchObserved = relaxDiscovery
-            && cachedProbeVm(this.inner.provider, true).relaxationApplied;
-          const faithfulProbeHadError = fullTrace2.some((state) => state.error !== undefined)
-            || outputVerificationMismatchObserved;
+          const faithfulProbeHadError = fullTrace2.some((state) => state.error !== undefined);
           if (debugTargetsThisDerivation) {
             const last = fullTrace2.at(-1);
             const instruction = last?.instructions[last.ip];
@@ -13914,7 +13881,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               inputIndex: implInputIndex,
               sourceOutputs: sourceOutputs2,
               transaction: transaction2,
-            }, false, true));
+            }, true));
             if (debugTargetsThisDerivation) console.error('derive-phase2-nested-evaluated', {
               iter, llcIndex, functionName: llc.functionName, implInputIndex,
               evaluateMs: Date.now() - nestedTraceStartedAt,
@@ -14555,8 +14522,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                     const baseUpdate = {
                       __internal__valueChunkOutputBase: BigInt(chunkBase),
                     };
-                    llc.refreshInternalArgs?.(baseUpdate, { shiftPredOut: false });
-                    proxyGroup?.refreshInternalArgs?.(baseUpdate, { shiftPredOut: false });
+                    if (llc.internalArgNames?.includes('__internal__valueChunkOutputBase')) {
+                      llc.refreshInternalArgs?.(baseUpdate, { shiftPredOut: false });
+                    }
+                    if (proxyGroup?.internalArgNames?.includes('__internal__valueChunkOutputBase')) {
+                      proxyGroup.refreshInternalArgs?.(baseUpdate, { shiftPredOut: false });
+                    }
                   }
                 }
                 if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
@@ -14825,12 +14796,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   && candidate.token.nft?.capability === 'mutable'));
           const stateOutputBase = delegateMasterOutputIndex >= 0 ? delegateMasterOutputIndex + 1 : 1;
           const stateOutputRange = { min: stateOutputBase, max: stateOutputBase + stateCount };
-          // Relaxed discovery continues past a failed EQUALVERIFY so later NFT pins still appear. Later
-          // equalities then run on a corrupted stack and can clobber the first valid pin for the same
-          // output. Keep that first write when relaxation actually suppressed a verify.
           const stateCommits = extractCommitmentsFromTrace(
             fullTrace2, stateCount, stateOutputRange, delegatecallInputIndex !== undefined,
-            outputVerificationMismatchObserved,
+            false,
           ) ?? [];
           commitmentProgress += stateCommits.length;
           let latestEntryCommits: string[] = [];
@@ -14864,7 +14832,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             const entryOutputRange = { min: entryOutputBase, max: entryOutputBase + entryCount };
             const commitMap = extractCommitmentMapFromTrace(
               fullTrace2, entryOutputRange, delegatecallInputIndex !== undefined,
-              outputVerificationMismatchObserved,
+              false,
             );
             const slotOrder = stb.getEntryOutputSlotOrder();
             const orderedCommits: string[] = [];
@@ -15844,7 +15812,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               hasDerivedState: derivedAState !== undefined,
               chunkVariableCount: chunkVars.length,
               loopEntryVariableCount: stb.getLoopEntryVars().length,
-              outputVerificationMismatchObserved,
+              outputVerificationMismatchObserved: false,
               totalRegionWidth: total,
               maximumRegionWidth: MAX_SPECULATIVE_CHUNK_OUTPUTS,
               allCommitmentsArePlaceholders: regions.every((region) =>
@@ -15893,8 +15861,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             elapsedMs: Date.now() - debugIterationStartedAt,
             traceStates: fullTrace2.length,
             probeError: fullTrace2.find((state) => state.error)?.error,
-            relaxationApplied: hasLoopOrChunkVars
-              ? cachedProbeVm(this.inner.provider, true).relaxationApplied : false,
             commitmentProgress,
             nestedPinProgress,
             nestedProbeHadError,
@@ -15992,18 +15958,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               sourceOutputs,
               transaction,
             };
-            // Same single-pass discovery as Phase 2: the relaxed VM is byte-for-byte the faithful
-            // verdict when it suppresses nothing, so do not evaluate the covenant twice.
-            const cleanedTrace = evaluateProbeTrace(this.inner.provider, cleanedProgram, true);
-            const outputVerificationMismatchObserved = cachedProbeVm(this.inner.provider, true)
-              .relaxationApplied;
-            const faithfulCleanedHadError = cleanedTrace.some((state) => state.error !== undefined)
-              || outputVerificationMismatchObserved;
+            const cleanedTrace = evaluateProbeTrace(this.inner.provider, cleanedProgram);
+            const faithfulCleanedHadError = cleanedTrace.some((state) => state.error !== undefined);
             if (debugTargetsThisDerivation) console.error('derive-cleaned-evaluated', {
               iter, evaluateMs: Date.now() - cleanedStartedAt,
               faithfulError: cleanedTrace.at(-1)?.error,
               states: cleanedTrace.length,
-              relaxationApplied: outputVerificationMismatchObserved,
             });
 	            lastTrace = retainDiagnosticTrace(cleanedTrace);
             if (faithfulCleanedHadError) {
@@ -22174,6 +22134,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         applyMasterUnlocker(bMasterUnlocker);
         const capturedUnlockerArgs = bFinalArgs;
         const capturedUnlockerInputs = bAbiInputs;
+        group.internalArgNames = Object.freeze(capturedUnlockerInputs.map((input) => input.name));
         group.refreshInternalArgs = (updates, options) => {
           group.internalArgs = { ...group.internalArgs, ...updates };
           const returnIdx = capturedUnlockerInputs.findIndex((input) => input.name === '__internal__returnOutputIdx');
@@ -26612,6 +26573,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           }
         }
         const capturedChildArgs = encoded;
+        child.internalArgNames = Object.freeze(childFn.inputs.map((input) => input.name));
         child.refreshInternalArgs = (updates, options) => {
           child.internalArgs = { ...child.internalArgs, ...updates };
           const returnIdx = childFn.inputs.findIndex((input) => input.name === '__internal__returnOutputIdx');
@@ -27338,6 +27300,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               })),
             });
           }
+          group.internalArgNames = Object.freeze(bFunc.inputs.map((input) => input.name));
           group.refreshInternalArgs = (updates) => {
             group.internalArgs = { ...group.internalArgs, ...updates };
             // Probe-learned witnesses must survive later geometry/anchor refreshes. Keeping them only in this
@@ -30147,6 +30110,27 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         // distinct collections/keys: one coordinate cannot authenticate multiple continuation lanes.
         resolveKernelValueChunkResourceLane(computedValueChunkRuns);
       }
+      const graphValueChunkArgumentIndex = graphOwnsValueChunkWitness && entryAbiFunction
+        ? entryAbiFunction.inputs.findIndex((input) => input.name === '__internal__valueChunkOutputBase')
+        : -1;
+      const graphValueChunkArgument = graphValueChunkArgumentIndex < 0
+        ? undefined : finalArgs[graphValueChunkArgumentIndex];
+      const publishedGraphBases = new Set([
+        graphValueChunkArgument,
+        ...valueChunkWitnessGroups.flatMap((group) => [
+          group.compilerRoute?.internalArgs?.__internal__valueChunkOutputBase,
+          group.internalArgs?.__internal__valueChunkOutputBase,
+        ]),
+      ].flatMap((candidate) => typeof candidate === 'bigint'
+        && candidate >= 0n && candidate <= BigInt(Number.MAX_SAFE_INTEGER)
+        ? [Number(candidate)] : []));
+      if (publishedGraphBases.size > 1) {
+        throw new Error(
+          'Kernel chunkable-value output placement published conflicting continuation coordinates.',
+        );
+      }
+      const graphPublishedValueChunkOutputBase = publishedGraphBases.size === 1
+        ? [...publishedGraphBases][0] : undefined;
       const setGraphValueChunkOutputBase = (outputBase: number): boolean => {
         let refreshed = false;
         for (const group of valueChunkWitnessGroups) {
@@ -30166,7 +30150,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         if (refreshed) builder._refreshInputs();
         return refreshed;
       };
-      setGraphValueChunkOutputBase(builder.getValueChunkOutputBase());
+      const resolvedGraphValueChunkOutputBase = (): number => (
+        graphPublishedValueChunkOutputBase ?? builder.getValueChunkOutputBase()
+      );
+      setGraphValueChunkOutputBase(resolvedGraphValueChunkOutputBase());
       if (applyMintingMasterFills()) builder._refreshInputs();
       timing('pre-derive-layout-ready');
       const describedPersistedWrites = [
@@ -30200,7 +30187,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         // needs one: caller indices and output witnesses from the narrower geometry are no longer authoritative.
         if (dynamicLayoutChanged || deriveResult.vmErrored || persistBeforeDerive === 0) {
           if (dynamicLayoutChanged) {
-            setGraphValueChunkOutputBase(builder.getValueChunkOutputBase());
+            setGraphValueChunkOutputBase(resolvedGraphValueChunkOutputBase());
             refreshNestedIdentityAnchorWitnesses();
             refreshTopLevelIdentityAnchorWitnesses();
             if (applyMintingMasterFills()) builder._refreshInputs();
@@ -30219,7 +30206,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           });
         }
       }
-      setGraphValueChunkOutputBase(builder.getValueChunkOutputBase());
+      setGraphValueChunkOutputBase(resolvedGraphValueChunkOutputBase());
       if (graphOwnsValueChunkWitness && abiFunction) {
         const topLevelValueChunkBase = abiFunction.inputs.findIndex(
           (input) => input.name === '__internal__valueChunkOutputBase',
@@ -30229,7 +30216,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           // transaction geometry is known, publish the absolute coordinate on the executing input too. This is
           // required for standalone kernel rows as well as atomic graphs: runtime mapping entries precede their
           // computed value chunks, so the layout-relative base is no longer the materialized coordinate.
-          finalArgs[topLevelValueChunkBase] = BigInt(builder.getValueChunkOutputBase());
+          finalArgs[topLevelValueChunkBase] = BigInt(resolvedGraphValueChunkOutputBase());
           stateInputUnlocker = buildStateInputUnlocker();
           builder._setMasterUnlocker(stateInputUnlocker);
         }
@@ -30685,35 +30672,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       && (commitment === undefined || (traceFailed && commitment === materializedReturnHex))) {
       commitment = schemaFallback;
     }
-    // A participant can compute its return only after checking several output/resource pins. Early semantic
-    // passes intentionally carry placeholders for those pins, so a faithful probe may stop before the return
-    // channel and a generic stack scan can merely rediscover the pre-seeded provisional commitment. Continue a
-    // discovery-only VM past failed OUTPUT equalities and prefer the later return it exposes. The candidate is
-    // only a graph claim: the converged transaction still passes the ordinary, non-relaxed BCH VM preflight.
-    let relaxedTrace: AuthenticationProgramStateCommon[] | undefined;
-    let relaxedCommitment: string | undefined;
-    if (traceFailed
-      && (commitment === undefined || commitment === materializedReturnHex)) {
-      relaxedTrace = evaluateProbeTrace(
-        this.inner.provider, { inputIndex, sourceOutputs, transaction }, true,
-      );
-      const relaxedCommitments = extractCommitmentsFromTrace(relaxedTrace, 1, {
-        min: returnOutputIndex, max: returnOutputIndex + 1,
-      });
-      relaxedCommitment = relaxedCommitments?.[0]
-        ?? extractPendingReturnCommitmentAtOutput(relaxedTrace, returnOutputIndex)
-        ?? extractSchemaFallback(relaxedTrace);
-      if (relaxedCommitment !== undefined && resultSchema?.solidityAbi
-        && !isCanonicalEvmReturnBlob(hexToBin(relaxedCommitment), resultSchema.resultTypeGroups)) {
-        relaxedCommitment = undefined;
-      }
-      const relaxedSchemaFallback = extractSchemaFallback(relaxedTrace);
-      if (relaxedSchemaFallback !== undefined
-        && (relaxedCommitment === undefined || relaxedCommitment === materializedReturnHex)) {
-        relaxedCommitment = relaxedSchemaFallback;
-      }
-      if (relaxedCommitment !== undefined) commitment = relaxedCommitment;
-    }
     const returnDebugEnv = (globalThis as { process?: { env?: Record<string, string> } }).process?.env;
     const returnDebugTarget = returnDebugEnv?.SOLIDC_DEBUG_RETURN_VECTOR_CONTRACT;
     const returnDebugInput = returnDebugEnv?.SOLIDC_DEBUG_RETURN_VECTOR_INPUT;
@@ -30725,7 +30683,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         abiFunction?: AbiFunction; params?: readonly unknown[];
       } | undefined;
       const failedOperandHex = new Set(
-        (relaxedTrace?.at(-1)?.stack.slice(-8) ?? []).map((item) => binToHex(item)),
+        (trace.at(-1)?.stack.slice(-8) ?? []).map((item) => binToHex(item)),
       );
       const matchingParams = debugUnlocker?.abiFunction?.inputs.flatMap((input, index) => {
         const value = debugUnlocker.params?.[index];
@@ -30760,25 +30718,20 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         inputIndex, returnOutputIndex,
         actual: transaction.outputs[returnOutputIndex]?.token?.nft?.commitment === undefined
           ? undefined : binToHex(transaction.outputs[returnOutputIndex].token!.nft!.commitment),
-        selected: commitments?.[0], relaxed: relaxedTrace && {
-          applied: cachedProbeVm(this.inner.provider, true).relaxationApplied,
-          error: relaxedTrace.at(-1)?.error,
-          commitment: relaxedCommitment,
-          failure: relaxedTrace.at(-1) && {
-            ip: relaxedTrace.at(-1)!.ip,
-            opcode: relaxedTrace.at(-1)!.instructions[relaxedTrace.at(-1)!.ip]?.opcode,
-            instructionCount: relaxedTrace.at(-1)!.instructions.length,
-            stack: relaxedTrace.at(-1)!.stack.slice(-6).map(binToHex),
-            alternateStack: relaxedTrace.at(-1)!.alternateStack.slice(-8).map(binToHex),
+        selected: commitments?.[0], failure: trace.at(-1) && {
+            ip: trace.at(-1)!.ip,
+            opcode: trace.at(-1)!.instructions[trace.at(-1)!.ip]?.opcode,
+            instructionCount: trace.at(-1)!.instructions.length,
+            stack: trace.at(-1)!.stack.slice(-6).map(binToHex),
+            alternateStack: trace.at(-1)!.alternateStack.slice(-8).map(binToHex),
             matchingParams,
-            instructions: relaxedTrace.at(-1)!.instructions.slice(
-              Math.max(0, relaxedTrace.at(-1)!.ip - 10), relaxedTrace.at(-1)!.ip + 2,
+            instructions: trace.at(-1)!.instructions.slice(
+              Math.max(0, trace.at(-1)!.ip - 10), trace.at(-1)!.ip + 2,
             ).map((instruction, offset) => ({
-              ip: Math.max(0, relaxedTrace.at(-1)!.ip - 10) + offset,
+              ip: Math.max(0, trace.at(-1)!.ip - 10) + offset,
               opcode: instruction.opcode,
               ...('data' in instruction && { data: binToHex(instruction.data) }),
             })),
-          },
         }, observations,
       }));
     }
@@ -33811,8 +33764,14 @@ export class StatefulFunctionCall {
     if (splitMergeBuilder) return splitMergeBuilder;
     const stb = await this._applyOverrides();
     const buildFinalized = (): TransactionBuilder => {
+      const valueChunkVariables = stb.getValueChunkVars();
+      for (const group of [...stb.getExternalCallUtxoGroups(), ...stb.getLowLevelCallUtxoGroups()]) {
+        const described = describeValueChunkWrites(group);
+        if (described.length > 0 || group.valueChunkWrites === undefined) group.valueChunkWrites = described;
+      }
       const built = stb.build();
       stb.bindMaterializedValueChunkWitnesses(built, this.compilerRoute?.blockBase ?? 0);
+      const compilerValueChunkWrites = stb.getValueChunkWriteDescriptors();
       const runtimeEvents = stb.getRuntimeLoopEventOutputs();
       if (runtimeEvents.length > 0) {
         Object.defineProperty(built, '__messageBusRuntimeLoopEvents', {
@@ -33823,6 +33782,72 @@ export class StatefulFunctionCall {
             rowIndex: event.rowIndex,
             offset: stb.getRuntimeLoopEventOutputIndex(eventIndex),
           }))),
+        });
+      }
+      const computedValueChunks: Array<{
+        offset: number;
+        commitment: string;
+        lockingBytecode: Uint8Array;
+        categoryId?: string;
+        fixedIndex?: boolean;
+        resourceIdentity?: string;
+        resourcePart?: string;
+      }> = [];
+      const writesByResource = new Map<string, ValueChunkWriteDescriptor>();
+      for (const write of compilerValueChunkWrites) {
+        const identity = valueChunkWriteResourceIdentity(write);
+        const prior = writesByResource.get(identity);
+        if (prior !== undefined && (prior.outputBase !== write.outputBase
+          || prior.outputCount !== write.outputCount || prior.operation !== write.operation
+          || prior.entryAccessSlot !== write.entryAccessSlot || prior.routeSlot !== write.routeSlot
+          || prior.collection !== write.collection || prior.collectionSignature !== write.collectionSignature
+          || prior.collectionHash !== write.collectionHash || prior.categoryId !== write.categoryId
+          || prior.keySlot !== write.keySlot)) {
+          throw new Error(
+            `Kernel chunkable-value resource '${identity}' has conflicting unauthenticated producer geometry.`,
+          );
+        }
+        if (prior === undefined) writesByResource.set(identity, write);
+      }
+      for (const [resourceIdentity, write] of writesByResource) {
+        const variables = valueChunkVariables.flatMap((variable) => (
+          variable.collection === write.collection && variable.slot
+            && binToHex(variable.slot) === write.keySlot.toLowerCase()
+            ? [variable] : []
+        ));
+        if (variables.length !== 1) continue;
+        const variable = variables[0];
+        const commitments = stb.getValueChunkRawCommitments(variable.id);
+        const outputCount = Math.max(1, write.outputCount, commitments.length);
+        for (let chunkIndex = 0; chunkIndex < outputCount; chunkIndex += 1) {
+          const offset = write.outputBase + chunkIndex;
+          computedValueChunks.push(Object.freeze({
+            offset,
+            commitment: commitments[chunkIndex] ?? '00',
+            lockingBytecode: variable.lockingBytecode.slice(),
+            categoryId: write.categoryId,
+            resourceIdentity,
+            resourcePart: `chunk:${chunkIndex}`,
+          }));
+        }
+      }
+      for (const [offset, chunk] of stb.getDerivedChunkOutputs()) {
+        if (computedValueChunks.some((candidate) => candidate.offset === offset)) continue;
+        computedValueChunks.push(Object.freeze({
+        offset,
+        commitment: chunk.commitment,
+        lockingBytecode: chunk.lockingBytecode.slice(),
+        categoryId: chunk.categoryId,
+        fixedIndex: chunk.fixedIndex,
+        resourceIdentity: chunk.resourceIdentity,
+        resourcePart: chunk.resourcePart,
+        }));
+      }
+      if (computedValueChunks.length > 0) {
+        Object.defineProperty(built, '__messageBusComputedValueChunks', {
+          configurable: false,
+          enumerable: false,
+          value: Object.freeze(computedValueChunks),
         });
       }
       return built;

@@ -6162,6 +6162,17 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         }
       }
       for (const collection of keyedCollections) runtimeCountCollections.add(collection);
+      if (apply) {
+        for (const write of keyed) {
+          const group = groupByWrite.get(write);
+          if (write instanceof MappingAssignNode && group) {
+            write.messageBusJournalTransport = {
+              collection: write.name,
+              varyingArrayParam: group.hidden,
+            };
+          }
+        }
+      }
       return true;
     };
     const counterWorkLoopSet = new Set(counterWorkLoops.map(([loop]) => loop));

@@ -1541,6 +1541,8 @@ export class MappingAssignNode extends StatementNode implements Named {
   messageBusRuntimeMutationValueExpression?: ExpressionNode;
   /** Source-order replay recipe for a counter-loop mapping-array element index. */
   messageBusRuntimeMutationIndexExpression?: ExpressionNode;
+  /** Set only after LowerVMapCounterLoops successfully publishes this write's authenticated journal stream. */
+  messageBusJournalTransport?: { collection: string; varyingArrayParam: string };
   /** Compiler-synthesized no-op transition authenticating a counter-keyed read from another mapping. */
   messageBusRuntimeReadOnly?: boolean;
   /** Hidden source-order value vector used when physical key sorting cannot replay a loop-carried local. */

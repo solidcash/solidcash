@@ -3313,8 +3313,8 @@ export class AtomicMessageBusComposition {
           if (input?.token !== undefined
             || binToHex(input?.unlocker.generateLockingBytecode() ?? new Uint8Array())
               !== BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX
-            || output?.token?.category !== claim.tokenCategory
-            || output.token.amount !== 0n
+            || input.satoshis !== output?.amount
+            || output?.token?.category !== claim.tokenCategory || output.token.amount !== 0n
             || output.token.nft?.capability !== 'mutable'
             || valueChunkIndexFromCommitment(output.token.nft.commitment)
               !== valueChunkIndexFromCommitment(claim.commitment)) continue;
@@ -3338,6 +3338,10 @@ export class AtomicMessageBusComposition {
           || resourceConvergence.repairs > 0 || valueChunkConvergence.repairs > 0) {
           rebalanceFeeTail(provisional, 'converged mutable resource outputs');
         }
+        // Independent semantic effects share one complete-graph observation pass. Record mutations monotonically,
+        // but do not restart until fixed resource/value/token/sidecar/event observations have also been collected;
+        // otherwise an earlier provisional class can permanently starve a later class which it needs to pass.
+        let semanticClaimsChanged = false;
         const derivedComputedValueChunks: ComputedValueChunkClaim[] = [];
         for (const absolute of valueChunkConvergence.ownedOutputs) {
           let participant = -1;
@@ -3363,7 +3367,7 @@ export class AtomicMessageBusComposition {
         }
         if (semanticJson(derivedComputedValueChunks) !== semanticJson(claimedComputedValueChunks)) {
           claimedComputedValueChunks = derivedComputedValueChunks;
-          continue;
+          semanticClaimsChanged = true;
         }
         const derivedResourceEffects: AtomicResourceSlotEffect[] = [];
         for (const slot of resourceSlots) {
@@ -3481,7 +3485,7 @@ export class AtomicMessageBusComposition {
         }
         if (semanticJson(derivedResourceEffects) !== semanticJson(claimedResourceEffects)) {
           claimedResourceEffects = derivedResourceEffects;
-          continue;
+          semanticClaimsChanged = true;
         }
         const derivedValueEffects: AtomicValueSlotEffect[] = [];
         for (const slot of valueSlots) {
@@ -3501,7 +3505,7 @@ export class AtomicMessageBusComposition {
         }
         if (semanticJson(derivedValueEffects) !== semanticJson(claimedValueEffects)) {
           claimedValueEffects = derivedValueEffects;
-          continue;
+          semanticClaimsChanged = true;
         }
         const derivedTokenEffects: AtomicTokenSlotEffect[] = [];
         for (const slot of tokenSlots) {
@@ -3529,7 +3533,7 @@ export class AtomicMessageBusComposition {
         }
         if (semanticJson(derivedTokenEffects) !== semanticJson(claimedTokenEffects)) {
           claimedTokenEffects = derivedTokenEffects;
-          continue;
+          semanticClaimsChanged = true;
         }
         const derivedSidecarEffects: AtomicSidecarSlotEffect[] = [];
         for (const slot of sidecarSlots) {
@@ -3572,7 +3576,7 @@ export class AtomicMessageBusComposition {
         }
         if (semanticJson(derivedSidecarEffects) !== semanticJson(claimedSidecarEffects)) {
           claimedSidecarEffects = derivedSidecarEffects;
-          continue;
+          semanticClaimsChanged = true;
         }
         const derivedEventEffects: AtomicEventSlotEffect[] = [];
         const eventProgram = provisional.buildLibauthProgram();
@@ -3675,7 +3679,7 @@ export class AtomicMessageBusComposition {
             });
           }
         }
-        let stable = true;
+        let stable = !semanticClaimsChanged;
         if (JSON.stringify(derivedEventEffects) !== JSON.stringify(claimedEventEffects)) stable = false;
         if (stable) {
           if (missingReturnParticipants.size > 0) {
@@ -3711,6 +3715,7 @@ export class AtomicMessageBusComposition {
         claimedResourceEffects = derivedResourceEffects;
         claimedValueEffects = derivedValueEffects;
         claimedTokenEffects = derivedTokenEffects;
+        claimedSidecarEffects = derivedSidecarEffects;
       }
       throw new Error(
         `messageBus: semantic derivation did not converge after ${maximumPasses} claim-bounded passes`,

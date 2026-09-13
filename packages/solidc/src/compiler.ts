@@ -2351,7 +2351,40 @@ function extractMessageBusVerifierProgram(
   };
 }
 
+/**
+ * Memo for `compileDetachedMessageBusVerifier`. A multi-declaration compile hands the same generated verifier
+ * source to every declaration, and the emit is a pure function of that source plus the few options it reads, so
+ * the second and later emits were recomputing an identical program (~150ms per extra declaration here).
+ *
+ * Keyed on every input the emit reads: the source text, the lifecycle flag, and the two compiler options that
+ * reach the parse/codegen (`chunkedArrays` defaults to true, `rootFileId` forwards to the type checker).
+ * Entries are deep-cloned on the way out so a caller mutating a returned program cannot poison the memo.
+ * Bounded, because each entry retains a large source string.
+ */
+const detachedVerifierProgramCache = new Map<string, MessageBusVerifierProgram>();
+
 function compileDetachedMessageBusVerifier(
+  source: string, compilerOptions: CompilerOptions, lifecycle = false,
+): MessageBusVerifierProgram {
+  const memoKey = `${lifecycle ? 'L' : '-'}\x00${compilerOptions.chunkedArrays ?? true}\x00`
+    + `${compilerOptions.rootFileId ?? ''}\x00${source}`;
+  const memoized = detachedVerifierProgramCache.get(memoKey);
+  if (memoized !== undefined) {
+    // Refresh recency for the small bound below.
+    detachedVerifierProgramCache.delete(memoKey);
+    detachedVerifierProgramCache.set(memoKey, memoized);
+    return structuredClone(memoized);
+  }
+  const program = compileDetachedMessageBusVerifierUncached(source, compilerOptions, lifecycle);
+  if (detachedVerifierProgramCache.size >= 8) {
+    const oldest = detachedVerifierProgramCache.keys().next().value as string | undefined;
+    if (oldest !== undefined) detachedVerifierProgramCache.delete(oldest);
+  }
+  detachedVerifierProgramCache.set(memoKey, structuredClone(program));
+  return program;
+}
+
+function compileDetachedMessageBusVerifierUncached(
   source: string, compilerOptions: CompilerOptions, lifecycle = false,
 ): MessageBusVerifierProgram {
   const started = Date.now();

@@ -5440,11 +5440,15 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       // An `address` state value is a full locking bytecode (e.g. a P2PKH `76a914..88ac`), returned VERBATIM -
       // never decoded/wrapped into a CashAddress or pubkey-hash. It equals `signer.getLockingBytecode()` and the
       // msg.sender / addressToLockScript(arg) forms byte-for-byte, so comparisons work on the raw locking bytecode.
-      this.state[variable.name] = async (...indices: Array<bigint | number>): Promise<any> => {
+      this.state[variable.name] = async (...indices: Array<bigint | number | string>): Promise<any> => {
         let value: unknown = (await this.getState())[variable.name];
         for (const rawIndex of indices) {
           if (!Array.isArray(value)) throw new Error(`State variable '${variable.name}' is not indexable at this depth.`);
-          const index = typeof rawIndex === 'bigint' ? Number(rawIndex) : rawIndex;
+          const index = typeof rawIndex === 'number'
+            ? rawIndex
+            : typeof rawIndex === 'bigint' || /^-?\d+$/.test(rawIndex)
+              ? Number(rawIndex)
+              : Number.NaN;
           if (!Number.isSafeInteger(index) || index < 0 || index >= value.length) {
             throw new Error(`Array index ${String(rawIndex)} is out of bounds for '${variable.name}'.`);
           }

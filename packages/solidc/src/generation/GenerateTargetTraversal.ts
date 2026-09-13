@@ -7529,7 +7529,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * or resolvedFunction/functionReference back-pointers (a return in a CALLED function is not this branch's, and
    * following those cycles on a recursive function). A visited guard backstops any residual cycle.
    */
+  /**
+   * Cached `blockContainsReturn` results per traversed node. The predicate is asked for the same blocks
+   * repeatedly (a read-only call census measured 6,118 calls over 3,116 distinct nodes, i.e. about half of all
+   * calls were repeats), and it reads only the statement containers along a fixed key list. Cached per traversal
+   * instance because codegen rewrites child pointers in place.
+   */
+  private blockContainsReturnCache = new WeakMap<Node, boolean>();
+
   private blockContainsReturn(node: Node | undefined): boolean {
+    if (node === undefined) return false;
+    const cached = this.blockContainsReturnCache.get(node);
+    if (cached !== undefined) return cached;
     const CONTAINER_KEYS = new Set([
       'statements', 'ifBlock', 'elseBlock', 'block', 'body', 'cases', 'defaultCase', 'call',
     ]);
@@ -7546,6 +7557,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
     };
     walk(node);
+    this.blockContainsReturnCache.set(node, found);
     return found;
   }
 

@@ -379,12 +379,21 @@ describe('message-bus compilation selection', () => {
     });
     const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'create');
     const abi = artifact.abi.find((candidate) => candidate.name === 'create');
+    const analysis = artifact.invocationAnalysis?.functions.find((candidate) =>
+      candidate.selector === abi?.selector);
     expect(handler).toMatchObject({ eligible: true });
     expect(handler?.batchKeyWitnesses).toBeUndefined();
     expect(handler?.physicalEntrySlots).toBeUndefined();
     expect(abi?.externalCalls?.find((call) => call.occurrence === 'loop')).toMatchObject({
       maximumOccurrences: 0xffff,
       occurrenceBoundSource: 'guard',
+    });
+    expect(analysis?.externalCalls).toEqual(abi?.externalCalls);
+    expect(analysis).toMatchObject({
+      bounded: true,
+      maximumDirectInvocations: abi!.externalCalls!.reduce(
+        (total, call) => total + (call.maximumOccurrences ?? 1), 0,
+      ),
     });
     expect(abi?.sortedUpsertLoopInfo).toEqual([
       expect.objectContaining({

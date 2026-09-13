@@ -12687,15 +12687,22 @@ function compileResolvedAst(
       })),
     };
     artifact.messageBus.available = artifact.messageBus.handlers.some((handler) => handler.eligible);
-    // An admitted runtime graph handler is also bounded by the compiler-owned atomic verifier: it accepts at
-    // most ATOMIC_MESSAGE_BUS_MAX_ROWS total rows, while code generation consumes one authenticated emission row
-    // at each reached typed callsite. Publish that route-only guard for typed loops which have no stronger source
-    // ceiling. Direct execution remains unchanged; raw/low-level loops never reach this admission path.
-    const routeHandlers = new Set(artifact.messageBus.handlers
-      .filter((handler) => handler.eligible)
+    // An admitted runtime graph handler is bounded by the compiler-owned atomic verifier: it accepts at most
+    // ATOMIC_MESSAGE_BUS_MAX_ROWS total rows, while code generation consumes one authenticated emission row at
+    // each reached typed callsite. Admission is only final once the published handler table exists, so finalize
+    // the ABI and invocation summary together here. Keeping both views sourced from the same call objects avoids
+    // a successful compile publishing an unbounded analysis beside a guarded ABI. Direct execution and raw calls
+    // remain unchanged.
+    const admittedSelectors = new Set(artifact.messageBus.handlers
+      .filter((handler) => handler.eligible && handler.selector)
+      .map((handler) => handler.selector));
+    const admittedSelectorlessNames = new Set(artifact.messageBus.handlers
+      .filter((handler) => handler.eligible && !handler.selector)
       .map((handler) => handler.name));
     artifact.abi = artifact.abi.map((fn) => {
-      if (!routeHandlers.has(fn.name) || !fn.externalCalls?.some((call) =>
+      const admitted = fn.selector !== undefined
+        ? admittedSelectors.has(fn.selector) : admittedSelectorlessNames.has(fn.name);
+      if (!admitted || !fn.externalCalls?.some((call) =>
         call.occurrence === 'loop' && call.maximumOccurrences === undefined
         && call.interfaceName !== '__raw__' && call.functionName !== '__raw__')) return fn;
       return {
@@ -12711,6 +12718,31 @@ function compileResolvedAst(
             : call),
       };
     });
+    if (artifact.invocationAnalysis) {
+      artifact.invocationAnalysis = {
+        ...artifact.invocationAnalysis,
+        functions: artifact.invocationAnalysis.functions.map((summary) => {
+          const abi = summary.selector !== undefined
+            ? artifact.abi.find((candidate) => candidate.selector === summary.selector)
+            : artifact.abi.find((candidate) => candidate.name === summary.name);
+          if (!abi?.externalCalls || !(summary.selector !== undefined
+            ? admittedSelectors.has(summary.selector) : admittedSelectorlessNames.has(summary.name))) return summary;
+          const bounded = !summary.unknown && abi.externalCalls.every((call) =>
+            call.occurrence === 'once' || call.maximumOccurrences !== undefined);
+          const { maximumDirectInvocations: _previousMaximum, ...stableSummary } = summary;
+          return {
+            ...stableSummary,
+            externalCalls: abi.externalCalls,
+            bounded,
+            ...(bounded && {
+              maximumDirectInvocations: abi.externalCalls.reduce(
+                (total, call) => total + (call.maximumOccurrences ?? 1), 0,
+              ),
+            }),
+          };
+        }),
+      };
+    }
   } else if (mergedCompilerOptions.messageBus) {
     // X15. Route synthesis names a rejection reason for every entry point, but the ONLY channel that publishes
     // those names is `messageBus.handlers` - which is not built when no entry point survives. A contract whose

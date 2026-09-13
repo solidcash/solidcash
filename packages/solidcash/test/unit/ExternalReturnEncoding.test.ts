@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { binToHex } from '@bitauth/libauth';
+import { binToHex, hash160, hexToBin } from '@bitauth/libauth';
+import { AbiCoder } from 'ethers';
 import { decodePushdataValue, encodePushdataValue, type StructDefinitionInfo } from '@solidcash/utils';
 import {
-  decodeEvmReturnValue, encodeExternalReturnValue, encodeLeadingRouteArrayPushes,
+  decodeEvmReturnValue, encodeExternalReturnValue, encodeExternalReturnValues, encodeLeadingRouteArrayPushes,
   isCanonicalEvmReturnBlob, isCanonicalEvmReturnSequence, isCanonicalEvmReturnVector,
   isCanonicalEvmScalarReturnBlob, isCanonicalEvmScalarReturnVector,
   selectEvmReturnCommitment, selectEvmScalarReturnCommitment,
@@ -44,6 +45,81 @@ describe('encodeExternalReturnValue', () => {
     const compact = encodeExternalReturnValue('DIGITAL_VIDEO', 'string', structs, false);
     expect(compact.length).toBeLessThan(32);
     expect(isCanonicalEvmReturnVector(compact, ['string'])).toBe(false);
+  });
+
+  it('encodes a dynamic nested struct exactly as one canonical Solidity result tuple', () => {
+    const aggregateStructs: StructDefinitionInfo[] = [
+      {
+        name: 'Roles',
+        fields: [
+          { name: 'creator', type: 'address' },
+          { name: 'reviewer', type: 'address' },
+        ],
+      },
+      {
+        name: 'Listing',
+        fields: [
+          { name: 'state', type: 'uint8' },
+          { name: 'active', type: 'bool' },
+          { name: 'roles', type: 'Roles' },
+          { name: 'title', type: 'string' },
+          { name: 'tags', type: 'string[]' },
+          { name: 'digest', type: 'bytes32' },
+        ],
+      },
+    ];
+    const creator = hexToBin('11'.repeat(20));
+    const reviewer = hexToBin('22'.repeat(20));
+    const digest = hexToBin('ab'.repeat(32));
+    const positional = [2n, true, [creator, reviewer], 'alpha', ['one', 'two'], digest];
+    const encoded = encodeExternalReturnValue(positional, 'Listing', aggregateStructs, true);
+    const expected = AbiCoder.defaultAbiCoder().encode(
+      ['tuple(uint8,bool,tuple(address,address),string,string[],bytes32)'],
+      [[
+        2n, true, [`0x${binToHex(creator)}`, `0x${binToHex(reviewer)}`], 'alpha', ['one', 'two'],
+        `0x${binToHex(digest)}`,
+      ]],
+    );
+    expect(binToHex(encoded)).toBe(expected.slice(2));
+
+    const named = encodeExternalReturnValue({
+      state: 2n,
+      active: true,
+      roles: { creator, reviewer },
+      title: 'alpha',
+      tags: ['one', 'two'],
+      digest,
+    }, 'Listing', aggregateStructs, true);
+    expect(named).toEqual(encoded);
+    expect(encoded).not.toEqual(encodePushdataValue(positional, 'Listing', aggregateStructs));
+  });
+
+  it('uses one shared head for a complete mixed-output invocation', () => {
+    const encoded = encodeExternalReturnValues(['alpha', true], ['string', 'bool'], structs, true);
+    const expected = AbiCoder.defaultAbiCoder().encode(['string', 'bool'], ['alpha', true]);
+    expect(binToHex(encoded)).toBe(expected.slice(2));
+    expect(encoded[31]).toBe(64);
+  });
+
+  it('canonicalizes the VM zero-address representation', () => {
+    const encoded = encodeExternalReturnValue(new Uint8Array(), 'address', structs, true);
+    expect(encoded).toEqual(new Uint8Array(32));
+  });
+
+  it('uses the established synthetic Solidity identity for P2SH32 addresses', () => {
+    const lockingBytecode = hexToBin(`aa20${'34'.repeat(32)}87`);
+    const encoded = encodeExternalReturnValue(lockingBytecode, 'address', structs, true);
+    expect(encoded.slice(0, 12)).toEqual(new Uint8Array(12));
+    expect(encoded.slice(12)).toEqual(hash160(lockingBytecode));
+  });
+
+  it('fails closed for malformed fixed aggregates and fixed bytes', () => {
+    expect(() => encodeExternalReturnValue([1n], 'uint256[2]', structs, true))
+      .toThrow('requires 2 elements');
+    expect(() => encodeExternalReturnValue(hexToBin('0102'), 'bytes4', structs, true))
+      .toThrow('requires 4 bytes');
+    expect(() => encodeExternalReturnValue(-1n, 'uint8', structs, true))
+      .toThrow('out of range');
   });
 
   it('encodes, validates, and decodes scaled fixed-point return words', () => {
@@ -134,7 +210,7 @@ describe('encodeExternalReturnValue', () => {
 });
 
 describe('selectMaterializedTailReturnEvents', () => {
-  const group = (overrides: Record<string, unknown> = {}) => ({
+  const group = (overrides: Record<string, unknown> = {}): never => ({
     categoryId: '11'.repeat(32),
     returnEventInBlock: false,
     blockLayout: { blockSize: 1, slots: [{ kind: 'master', offset: 0 }] },
@@ -171,7 +247,7 @@ describe('selectMaterializedTailReturnEvents', () => {
 
 describe('encodeLeadingRouteArrayPushes', () => {
   type RouteRow = Parameters<typeof encodeLeadingRouteArrayPushes>[0]['rowArguments'][number];
-  const row = (key: bigint, count: bigint) => ({
+  const row = (key: bigint, count: bigint): RouteRow => ({
     args: [key, [count, true]],
     handler: {
       inputs: [

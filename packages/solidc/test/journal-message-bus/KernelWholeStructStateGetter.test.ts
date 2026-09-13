@@ -1,5 +1,8 @@
 import { compileString } from '../../src/compiler.js';
+import { binToHex } from '@bitauth/libauth';
+import { scriptToBytecode } from '@solidcash/utils';
 import { describe, expect, it } from 'vitest';
+import { compileAddressToEvmIdentity } from '../../src/generation/utils.js';
 
 const OPTIONS = {
   forceStateful: true,
@@ -60,5 +63,15 @@ describe('kernel whole-struct state getters', () => {
     });
     expect(artifact.abi.find((entry) => entry.name === 'read')?.dynamicReads).toEqual(['record__marks']);
     expect(artifact.messageBus?.route.dynamicReads).toEqual(['record__marks']);
+  });
+
+  it('normalizes variable-width BCH addresses before encoding a Solidity struct result', () => {
+    const artifact = compileString(`pragma solidity ^0.8.0;
+      struct Record { address owner; string label; }
+      contract Source {
+        Record record;
+        function read() public view returns (Record memory) { return record; }
+      }`, OPTIONS);
+    expect(artifact.debug.bytecode).toContain(binToHex(scriptToBytecode(compileAddressToEvmIdentity())));
   });
 });

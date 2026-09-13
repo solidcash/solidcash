@@ -219,6 +219,7 @@ import { GlobalFunction, Class } from '../ast/Globals.js';
 import { BinaryOperator, NullaryOperator, UnaryOperator } from '../ast/Operator.js';
 import {
   compileBinaryOp,
+  compileAddressToEvmIdentity,
   compileCast,
   compileGlobalFunction,
   compileNullaryOp,
@@ -15195,6 +15196,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emitEvmWordFromUint(loc);
     } else if (type instanceof AddressType) {
       // EVM ABI addresses are right-aligned (12 zero bytes followed by the 20-byte address), unlike bytes20.
+      for (const operation of compileAddressToEvmIdentity()) this.emit(operation, loc);
       this.emit(new Uint8Array(12), loc);
       this.emit(Op.OP_SWAP, loc);
       this.emit(Op.OP_CAT, loc);

@@ -89,6 +89,7 @@ import {
   runtimeLoopEventRepeatSource,
 } from './runtime-loop-event-domain.js';
 import { assertConstructedKeyVectorRouteBinding } from './ConstructedKeyVector.js';
+import { encodeEvmInvocationResult } from './evm-abi-result.js';
 import { buildKeccakComputeSidecar, extractKeccakPreimageFromTrace } from '../keccak/keccakComputeSidecar.js';
 import {
   buildEcrecoverComputePlaceholders, buildEcrecoverComputeSidecars, computeEcrecoverWitness, probeEcrecoverSplit,
@@ -1601,7 +1602,7 @@ function concatenateEncodedArrays(left: Uint8Array, right: Uint8Array): Uint8Arr
   return out;
 }
 
-/** Encode a struct arg, stamping empty JobEventData.timestamp_ when `timestamp` is supplied. */
+/** Encode a struct argument, applying the explicitly selected legacy payload adapter when requested. */
 export function encodeStructArgument(
   value: FunctionArgument, typeName: string, structs: Artifact['structs'],
   timestamp?: bigint, legacyJobEventCompatibility = false,
@@ -1622,17 +1623,14 @@ export function encodeStructArgument(
     : decodedValue;
   if (canonicalValue && typeof canonicalValue === 'object' && !Array.isArray(canonicalValue)) {
     const record = { ...(canonicalValue as Record<string, unknown>) };
-    // publishJobEvent fills empty timestamp_ with block.timestamp before store. Stamp whenever the
-    // caller supplies a tip time so kernel-row-loop value witnesses match the covenant (legacy-unroll
-    // is not required for this — only address normalization stays behind the legacy flag).
-    if (
+    // This historical wire adapter is deliberately fenced by usesLegacyJobEventCompatibility. Ordinary kernel
+    // values are derived from compiler-authenticated flow and must never change because a field happens to have
+    // an application-associated spelling.
+    if (legacyJobEventCompatibility && (
       (record.timestamp_ === 0 || record.timestamp_ === 0n || record.timestamp_ === undefined)
-      && timestamp !== undefined && timestamp > 0n
-    ) {
-      record.timestamp_ = timestamp;
-    } else if (legacyJobEventCompatibility
-      && (record.timestamp_ === 0 || record.timestamp_ === 0n || record.timestamp_ === undefined)) {
-      record.timestamp_ = BigInt(Math.floor(Date.now() / 1000));
+    )) {
+      record.timestamp_ = timestamp !== undefined && timestamp > 0n
+        ? timestamp : BigInt(Math.floor(Date.now() / 1000));
     }
     if (legacyJobEventCompatibility) {
       normalizeJobEventAddresses(record, typeName, structs);
@@ -3150,54 +3148,34 @@ function extractEvmScalarReturnCommitment(
   return selectEvmScalarReturnCommitment(candidates, expectedTypes, allowRaw);
 }
 
-/** Encode the scalar Solidity ABI forms used by SDK-side return precomputation. */
-function encodeEvmScalarReturn(value: StateValue, type: string): Uint8Array | undefined {
-  if (type === 'bool') {
-    const out = new Uint8Array(32);
-    out[31] = value === true || value === 1n ? 1 : 0;
-    return out;
+/** Encode a complete external invocation result using the callee's declared ABI mode and named schemas. */
+export function encodeExternalReturnValues(
+  values: readonly StateValue[],
+  types: readonly string[],
+  structs: Artifact['structs'],
+  solidityAbi: boolean,
+  enums?: Artifact['enums'],
+): Uint8Array {
+  if (solidityAbi) return encodeEvmInvocationResult(values, types, structs, enums);
+  if (values.length !== types.length) {
+    throw new Error(`Native result has ${values.length} values for ${types.length} declared types`);
   }
-  if (type === 'int' || type === 'uint' || type === 'bigint'
-    || /^u?int\d+$/.test(type) || /^u?fixed\d+x\d+$/.test(type)) {
-    if (typeof value !== 'bigint' && typeof value !== 'number') return undefined;
-    let n = typeof value === 'bigint' ? value : BigInt(value);
-    if (n < 0n) n = (1n << 256n) + n;
-    const out = new Uint8Array(32);
-    for (let index = 31; index >= 0; index--) { out[index] = Number(n & 0xffn); n >>= 8n; }
-    return out;
-  }
-  return undefined;
-}
-
-/** Encode Solidity ABI `string` / `bytes` returns: offset word, length word, zero-padded payload. */
-function encodeEvmDynamicReturn(value: StateValue, type: string): Uint8Array | undefined {
-  if (!EVM_DYNAMIC_RETURN_TYPES.has(type)) return undefined;
-  const payload = typeof value === 'string' ? utf8ToBin(value)
-    : value instanceof Uint8Array ? value : undefined;
-  if (!payload) return undefined;
-  const paddedLength = Math.ceil(payload.length / 32) * 32;
-  const encoded = new Uint8Array(64 + paddedLength);
-  encoded[31] = 32;
-  let length = BigInt(payload.length);
-  for (let index = 63; index >= 32; index -= 1) {
-    encoded[index] = Number(length & 0xffn);
-    length >>= 8n;
-  }
-  encoded.set(payload, 64);
+  const parts = values.map((value, index) => encodePushdataValue(value, types[index], structs));
+  const encoded = new Uint8Array(parts.reduce((length, part) => length + part.length, 0));
+  let offset = 0;
+  for (const part of parts) { encoded.set(part, offset); offset += part.length; }
   return encoded;
 }
 
-/** Encode a precomputed external return using the caller's framing and the callee's named-type schema. */
+/** Encode a one-value external invocation result. */
 export function encodeExternalReturnValue(
   value: StateValue,
   type: string,
   structs: Artifact['structs'],
   solidityAbi: boolean,
+  enums?: Artifact['enums'],
 ): Uint8Array {
-  return (solidityAbi
-    ? (encodeEvmScalarReturn(value, type) ?? encodeEvmDynamicReturn(value, type))
-    : undefined)
-    ?? encodePushdataValue(value, type, structs);
+  return encodeExternalReturnValues([value], [type], structs, solidityAbi, enums);
 }
 
 /** Recover a source require message from an invoked-body probe failure. */
@@ -11731,6 +11709,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         abiFunction.outputs![0].type,
         artifact.structs ?? artifact.stateLayout?.structs,
         artifactUsesSolidityAbi(artifact),
+        artifact.enums,
       );
       group.precomputedReturnCommitment = commitment;
       if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
@@ -23084,6 +23063,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 : callee.inner.artifact;
               const returnStructs = effectiveReturnArtifact.structs
                 ?? effectiveReturnArtifact.stateLayout?.structs;
+              const returnEnums = effectiveReturnArtifact.enums;
               // A proxy's physical artifact does not describe the value emitted by its implementation. Frame
               // precomputed returns exactly as the logical callee emits them; this also preserves native
               // pushdata framing when a Solidity-compatible delegate calls a native SolidCash contract.
@@ -23107,12 +23087,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                       : await callee._deriveReturnValue(row.handler.name, row.args);
                     const outputs = row.handler.outputs ?? [];
                     const resultValues = outputs.length === 1 ? [values] : values as unknown as StateValue[];
-                    for (let index = 0; index < outputs.length; index++) {
-                      const returnType = outputs[index].type;
-                      encodedResults.push(encodeExternalReturnValue(
-                        resultValues[index], returnType, returnStructs, calleeUsesSolidityAbi,
-                      ));
-                    }
+                    encodedResults.push(encodeExternalReturnValues(
+                      resultValues, outputs.map((output) => output.type), returnStructs,
+                      calleeUsesSolidityAbi, returnEnums,
+                    ));
                   }
                   precomputedReturnCommitment = scriptToBytecode([
                     StatefulContract._concatBytes(...encodedResults),
@@ -23150,8 +23128,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   string, (...values: FunctionArgument[]) => Promise<StateValue>
                   >)[readAccess.collection]
                   : undefined;
-                const collectionValue = proxyCollectionStateAccessor && collectionReadArgs
-                  ? await (() => {
+                let collectionValue: StateValue | undefined;
+                if (proxyCollectionStateAccessor && collectionReadArgs) {
+                  try {
                     const argKey = collectionReadArgs.map((argument) => argument instanceof Uint8Array
                       ? `b:${binToHex(argument)}` : `${typeof argument}:${String(argument)}`).join('|');
                     const key = `${callee.categoryId}:${readAccess!.collection}:${argKey}`;
@@ -23160,9 +23139,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                       pending = proxyCollectionStateAccessor(...collectionReadArgs as FunctionArgument[]);
                       nestedProxyReadCache.set(key, pending);
                     }
-                    return pending;
-                  })()
-                  : undefined;
+                    collectionValue = await pending;
+                  } catch {
+                    // This lookup is an optional seed for fixed-point assembly, not execution. A preceding caller
+                    // guard can make the nested edge unreachable (for example, bounds-check before indexed read),
+                    // so a speculative getter failure must be deferred to the authenticated caller route.
+                    collectionValue = undefined;
+                  }
+                }
                 let value: StateValue | undefined;
                 if (proxyStateAccessor && !readAccess) {
                   value = await proxyStateAccessor(...nestedArgs);
@@ -23184,13 +23168,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                     value = typeof publicMethod === 'function'
                       ? await (publicMethod as (...args: FunctionArgument[]) => Promise<StateValue>)(...nestedArgs)
                       : await proxyCallee.forward(nested.functionName, nestedArgs).staticCall();
-                  } catch (error) {
-                    // Some forwarded views require the complete parent transaction before their return slot is
-                    // reachable. Leave them for the ordinary route trace rather than failing this optional
-                    // precomputation pass.
-                    if (!(error instanceof Error) || !error.message.includes('Could not derive the return value')) {
-                      throw error;
-                    }
+                  } catch {
+                    // A forwarded view can require the complete parent transaction, or be unreachable behind a
+                    // caller guard. This is optional precomputation; the final route remains the authority for
+                    // both the result and any source-level failure.
+                    value = undefined;
                   }
                 } else {
                   value = await callee._deriveReturnValue(childFunctionName, childFunctionArgs);
@@ -23198,14 +23180,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 if (value !== undefined) {
                   const returnType = effectiveReturnFn.outputs![0].type;
                   precomputedReturnCommitment = encodeExternalReturnValue(
-                    value, returnType, returnStructs, calleeUsesSolidityAbi,
+                    value, returnType, returnStructs, calleeUsesSolidityAbi, returnEnums,
                   );
                 }
               }
               if (nested.occurrence === 'loop' && nested.hasReturnValues) {
                 const returnType = effectiveReturnFn?.outputs?.[0]?.type ?? 'string';
                 const encodeReturn = (value: StateValue): Uint8Array => encodeExternalReturnValue(
-                  value, returnType, returnStructs, calleeUsesSolidityAbi,
+                  value, returnType, returnStructs, calleeUsesSolidityAbi, returnEnums,
                 );
                 resolveLoopReturnValue = async (index: number): Promise<StateValue> => {
                   const nextArgs = this._resolveExternalArgs(
@@ -25435,6 +25417,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               returnType,
               returnArtifact.structs ?? returnArtifact.stateLayout?.structs,
               artifactUsesSolidityAbi(returnArtifact),
+              returnArtifact.enums,
             );
           }
           const childGroupIndex = externalCallUtxoGroups.length;

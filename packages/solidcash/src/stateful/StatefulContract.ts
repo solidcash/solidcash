@@ -30828,10 +30828,30 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         commitments.push(await group.resolveLoopReturnCommitment(occurrence));
       }
       if (commitments.length > 0) group.loopReturnCommitments = commitments;
-      if (commitments.length === reached && group.resolveLoopReturnValue) {
-        const values = await Promise.all(Array.from(
-          { length: reached }, (_, occurrence) => group.resolveLoopReturnValue!(occurrence),
-        ));
+      if (commitments.length === reached) {
+        const producerArtifact = group.logicalArtifact ?? group.externalContract?.inner?.artifact;
+        const producerFunction = group.compilerRoute?.abiFunction
+          ?? producerArtifact?.abi.find((candidate: AbiFunction) => (
+            candidate.name === (group.logicalFunctionName ?? group.functionName)
+          ));
+        const producerOutputs = producerFunction?.outputs ?? [];
+        if (!producerArtifact || producerOutputs.length !== 1) continue;
+        const producerStructs = producerArtifact.structs ?? producerArtifact.stateLayout?.structs;
+        const values = commitments.map((commitment) => {
+          const decoded = decodeAuthenticatedProducerResultVector(
+            commitment,
+            [producerOutputs[0].type],
+            producerStructs,
+            artifactUsesSolidityAbi(producerArtifact),
+          );
+          if (!decoded || decoded.length !== 1) {
+            throw new Error(
+              `Authenticated loop result for '${producerFunction?.name ?? 'external call'}' `
+              + 'does not match its declared result schema.',
+            );
+          }
+          return decoded[0] as StateValue;
+        });
         directArrayReplacements.push({
           start: targetStart,
           end: targetEnd,

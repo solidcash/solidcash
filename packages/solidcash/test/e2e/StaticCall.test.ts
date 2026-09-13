@@ -158,6 +158,10 @@ describe('StatefulFunctionCall.staticCall() - exact loop-array returns', () => {
           return result;
         }
       }`, options);
+    const producerArtifact = compileKernelString(`pragma solidcash >=0.8.0;
+      contract ScalarProducer() {
+        function value() public pure returns (int) { return 0; }
+      }`, options);
     const provider = createTestProvider();
     const view = new StatefulContract('ab'.repeat(32), artifact, provider);
     type ProbeBuilder = {
@@ -166,12 +170,14 @@ describe('StatefulFunctionCall.staticCall() - exact loop-array returns', () => {
         loopResultArrayOutput: number;
         loopMaximumOccurrences: number;
         loopReturnCommitments: Uint8Array[];
+        logicalArtifact: typeof producerArtifact;
+        logicalFunctionName: string;
         resolveLoopReturnCommitment: (occurrence: number) => Promise<Uint8Array>;
         resolveLoopReturnValue: (occurrence: number) => Promise<bigint>;
       }>;
     };
     const provisional = encodePushdataValue([0n], 'int[]', artifact.structs);
-    const resolved = Uint8Array.of(41);
+    const resolved = encodePushdataValue(Uint8Array.of(41), 'int', producerArtifact.structs);
     let commitmentResolutions = 0;
     const builder: ProbeBuilder = {
       __derivedReturnBlob: provisional,
@@ -179,11 +185,14 @@ describe('StatefulFunctionCall.staticCall() - exact loop-array returns', () => {
         loopResultArrayOutput: 0,
         loopMaximumOccurrences: 1,
         loopReturnCommitments: [resolved],
+        logicalArtifact: producerArtifact,
+        logicalFunctionName: 'value',
         resolveLoopReturnCommitment: async () => {
           commitmentResolutions += 1;
           return resolved;
         },
-        resolveLoopReturnValue: async () => 41n,
+        // The parent must consume the authenticated commitment, never a separately re-evaluated value.
+        resolveLoopReturnValue: async () => 99n,
       }],
     };
     const internals = view as unknown as {

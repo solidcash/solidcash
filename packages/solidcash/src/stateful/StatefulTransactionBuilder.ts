@@ -14051,7 +14051,7 @@ export class StatefulTransactionBuilder {
     return this;
   }
 
-  /** Absolute output index for the active emitReturn / staticCall probe, when known. */
+  /** Builder-local output coordinate for the active emitReturn / staticCall materialization, when known. */
   private plannedReturnOutputIndex = -1;
 
   setPlannedReturnOutputIndex(index: number): this {
@@ -16801,8 +16801,11 @@ export class StatefulTransactionBuilder {
       placedPrimaryReturnIndices.add(absIndex);
     };
     const unlockerReturnIndices = (): number[] => {
+      // An explicit placement is authoritative for this builder. During atomic composition the unlocker already
+      // carries the final aggregate coordinate, while the isolated participant builder owns a local coordinate;
+      // scanning both would materialize a second empty return slot and pad the participant to the aggregate base.
+      if (this.plannedReturnOutputIndex >= 0) return [this.plannedReturnOutputIndex];
       const indices: number[] = [];
-      if (this.plannedReturnOutputIndex >= 0) indices.push(this.plannedReturnOutputIndex);
       for (const input of this.allInputs) {
         if (!('unlocker' in input) || !input.unlocker) continue;
         const unlocker = input.unlocker as {

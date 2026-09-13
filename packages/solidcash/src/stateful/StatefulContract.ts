@@ -16544,6 +16544,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // B8 return-value emit: -1 means "do not emit" (default). With .emitReturn(), point the covenant's
     // __internal__returnOutputIdx at the function's returnEvent output slot (a fixed block-layout offset).
     let returnEmitOutputIndex = -1;
+    let returnMaterializationOutputIndex = -1;
     const delegatedReturnFunction = overrides?.calls
       ?.filter((call): call is Extract<CallInfo, { type: 'stateful' }> => call.type === 'stateful')
       .map((call) => {
@@ -16563,6 +16564,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       }
       returnEmitBlockOffset = slot.offset;
       returnEmitOutputIndex = (overrides?.blockBase ?? 0) + returnEmitBlockOffset;
+      // Atomic composition builds each balanced participant in isolation before concatenating the blocks. Its
+      // route witness is already bound to the final absolute output, while this temporary builder must place and
+      // derive the return event at the participant-local offset. Keeping the coordinates distinct prevents a
+      // later participant from padding its local block up to its final aggregate base.
+      returnMaterializationOutputIndex = overrides?.omitLocalFeeTail
+        ? returnEmitBlockOffset : returnEmitOutputIndex;
       // X12/X56. A delegated call's return event is verified by the IMPLEMENTATION (emitReturnEventCovenant-
       // Verification is gated `!functionHasDelegatecall`), which resolves EVERY output-only slot
       // implementation-relative - its event and its own returnEvent alike. When the implementation also emits,
@@ -26429,6 +26436,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       if (delegateReturnEventOffset !== undefined && returnEmitOutputIndex >= 0) {
         returnEmitBlockOffset = delegateReturnEventOffset;
         returnEmitOutputIndex = (overrides?.blockBase ?? 0) + returnEmitBlockOffset;
+        returnMaterializationOutputIndex = overrides?.omitLocalFeeTail
+          ? returnEmitBlockOffset : returnEmitOutputIndex;
       }
       // Fix data NFT unlockers with correct master input index
       let currentBase = lowLevelCallInputBase;
@@ -29545,13 +29554,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         returnAbiFunction: returnAbiFunction?.name,
         returnOutputs: returnAbiFunction?.outputs,
         returnEmitOutputIndex,
+        returnMaterializationOutputIndex,
         returnEmitBlockOffset,
         delegateReturnEventOffset,
         suppliedReturnBlob: overrides.returnBlob && binToHex(overrides.returnBlob),
       }));
     }
     if (returnEmitOutputIndex >= 0) {
-      builder.setPlannedReturnOutputIndex(returnEmitOutputIndex);
+      builder.setPlannedReturnOutputIndex(returnMaterializationOutputIndex);
       builder.setReturnEventOutput(this.categoryId, new Uint8Array([0]));
     }
 
@@ -29929,7 +29939,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     if (returnEmitOutputIndex >= 0) {
       let blob = overrides?.returnBlob
         ?? (builder as any).__derivedReturnBlob as Uint8Array | undefined
-        ?? this._deriveReturnBlob(builder, returnEmitOutputIndex, delegatecallInputIndex ?? 0);
+        ?? this._deriveReturnBlob(builder, returnMaterializationOutputIndex, delegatecallInputIndex ?? 0);
       if (!blob) {
         throw new Error(
           `Could not derive the return value of '${functionName}' for .emitReturn(). `
@@ -30017,7 +30027,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           (builder as any).__derivedTokenContainerTransfers = result.derivedTokenContainerTransfers;
           (builder as any).__derivedTokenContainerTransferNfts = result.derivedTokenContainerTransferNfts;
         }
-        blob = this._deriveReturnBlob(builder, returnEmitOutputIndex, delegatecallInputIndex ?? 0);
+        blob = this._deriveReturnBlob(builder, returnMaterializationOutputIndex, delegatecallInputIndex ?? 0);
         if (!blob) {
           throw new Error(`Could not re-derive the expanded loop return value of '${functionName}'.`);
         }

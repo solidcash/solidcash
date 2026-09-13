@@ -1417,6 +1417,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     node: InstantiationNode;
   }[] = [];
 
+  private preambleComputedFor?: ContractNode;
   private deployCounter: number = 0;
   private deploymentRecipeAnalysis = new WeakMap<InstantiationNode, ChildDeploymentRecipeAnalysis>();
   /**
@@ -3615,8 +3616,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   /** Emit OP_DEFINEs for all functions plus the dispatcher (or inline a single function). */
   private emitFunctionDefinesAndDispatch(node: ContractNode): void {
-    this.computeScalarJournalClosures(node);
-    this.computeRuntimeLoopEntryOutputCountFunctions(node);
+    if (this.preambleComputedFor !== node) {
+      this.computeScalarJournalClosures(node);
+      this.computeRuntimeLoopEntryOutputCountFunctions(node);
+      this.preambleComputedFor = node;
+    }
     this.outlinedDynamicReadBasisByFunctionId = new Map();
     this.outlinedDynamicReadThreadedFunctionIds = new Set();
     const indirect = this.functionReferenceIds(node);
@@ -4035,6 +4039,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       .filter((f): f is FunctionDefinitionNode => f !== undefined);
     const savedDeployTargets = allFns.map((f) => f.deployTargets);
     try {
+      this.computeScalarJournalClosures(node);
+      this.computeRuntimeLoopEntryOutputCountFunctions(node);
+      this.preambleComputedFor = node;
       const probe = new GenerateTargetTraversalWithLocation(this.compilerOptions);
       probe.isSubroutineUseProbe = true;
       probe.stack = [...this.stack];
@@ -4048,6 +4055,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       probe.userFunctionDefs = this.userFunctionDefs;
       probe.constantExpressions = new Map(this.constantExpressions);
       probe.contractUsesMsgData = this.contractUsesMsgData;
+      probe.journalWriterFunctionIds = this.journalWriterFunctionIds;
+      probe.journalSlotsByFunctionId = this.journalSlotsByFunctionId;
+      probe.runtimeLoopEntryInputCountFunctionIds = this.runtimeLoopEntryInputCountFunctionIds;
+      probe.runtimeLoopEntryOutputCountFunctionIds = this.runtimeLoopEntryOutputCountFunctionIds;
+      probe.runtimeLoopEventContextFunctionIds = this.runtimeLoopEventContextFunctionIds;
+      probe.preambleComputedFor = node;
       probe.contractUsesMsgValue = this.contractUsesMsgValue;
       probe.constructorParameterCount = this.constructorParameterCount;
       probe.compiledBytecodes = this.compiledBytecodes;

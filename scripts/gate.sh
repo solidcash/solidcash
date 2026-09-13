@@ -13,8 +13,15 @@ EXPECTED='{"routeBytes":40019,"fullBytes":115274,"fullHash":"ed6cfff8760a3ca8"}'
 status=0
 
 echo "== build =="
-yarn tsc -b tsconfig.packages.json 2>&1 | grep -E 'error TS' && status=1
-grep -q 'error TS' /dev/null 2>/dev/null || true
+# Note: the `status=1` inside a pipeline runs in a subshell and would be lost, so capture the output first.
+build_output=$(yarn tsc -b tsconfig.packages.json 2>&1)
+if printf '%s' "$build_output" | grep -q 'error TS'; then
+  printf '%s\n' "$build_output" | grep -E 'error TS'
+  echo "   FAIL: build errors"
+  status=1
+else
+  echo "   ok"
+fi
 
 echo "== bytecode identity =="
 actual=$(node --max-old-space-size=8192 scripts/verify-id.mjs 2>/dev/null | tail -1)

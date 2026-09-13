@@ -332,16 +332,28 @@ consolidated rewrite must keep array identity (or re-key the intern map in the s
 
 **Rejected: `copyWithin` as a drop-in `splice` replacement.** A span of `spanLength` becomes exactly
 `id OP_INVOKE`, so the tail shift is one native `copyWithin` plus a length trim, which looks like an exact
-in-place equivalent. In this tree it proved unreliable to validate: the check run failed to finish within
-7 minutes on a compile that normally takes 20–40 s. The host was heavily contended at the time (multiple
-long-running node processes from other work; a second `tsc -b` had to be killed), and the compiler itself
-was verified healthy in the same window (78 ms for a small contract), so this is *unresolved*, not proven
-bad. It is recorded here as untried-but-suspicious rather than as a finding either way. The committed
-`in-place suffix scan` for anchors (section 14) is the version that is verified.
+in-place equivalent and would avoid the quadratic tail memmove. It is not correct. Applied to `script`,
+`locationData` and `origins` together, with the same per-edit anchor handling as the committed version, the
+identity check **timed out at 400 s with no output at all** (exit 124) — on a host that had just been
+quietened, and against a committed build that completed the identical compile in 22.1 s minutes earlier and
+20.6 s afterwards. A first run of the same change had also failed to finish in 7 minutes.
 
-**Re-verified after the revert.** With the committed state rebuilt (`--force`), the identity check
-reproduces `routeBytes 40019`, `fullBytes 115274`, `fullHash ed6cfff8760a3ca8`. `scripts/verify-id.mjs`
-makes this a one-command gate.
+An earlier draft of this note recorded the result as "unresolved, host contended". That was too generous:
+the committed version was re-verified on the *same* host in the *same* window, so the only variable was the
+change itself. `copyWithin` on these arrays is broken, most likely because it does not reproduce `splice`'s
+length semantics the way the rewrite relies on. Recorded as a negative result so nobody re-tries it.
+
+The committed `in-place suffix scan` for anchors (section 14) remains the verified version.
+
+**Re-verified after the revert.** With the committed state rebuilt, the identity check reproduces
+`routeBytes 40019`, `fullBytes 115274`, `fullHash ed6cfff8760a3ca8`. `scripts/verify-id.mjs` makes this a
+one-command gate.
+
+**Clean-host baseline for the record.** With the parallel work on this box paused: cold in-process compile
+of `MarketplaceV1.sol` (all declarations) **20,569 ms**, and the same compile again in the same process
+**23 ms** via the multi-artifact disk cache of section 9. The 23 ms figure is worth keeping in view — for
+unchanged source the iteration loop is already effectively free, and all remaining work is about the
+changed-source path.
 
 **Rejected (as low value): persisting the winning admission rung.** Measured at 1,918 ms of 20,696 ms —
 9% of the compile, not the "1.34 s of a 7 s build" it once represented. Any cache keyed on source topology

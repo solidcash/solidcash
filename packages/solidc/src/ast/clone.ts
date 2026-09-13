@@ -42,7 +42,6 @@ function cloneNodeWithMemo<T extends Node>(
     clone.isExternalSelfRef = node.isExternalSelfRef;
     clone.storagePointerOnly = node.storagePointerOnly;
     clone.fromModifier = node.fromModifier;
-    memo.delete(node);
     return clone as unknown as T;
   }
   if (node instanceof IntLiteralNode) {
@@ -51,7 +50,6 @@ function cloneNodeWithMemo<T extends Node>(
     clone.value = node.value;
     clone.location = node.location;
     clone.type = node.type;
-    memo.delete(node);
     return clone as unknown as T;
   }
   if (node instanceof BoolLiteralNode) {
@@ -60,7 +58,6 @@ function cloneNodeWithMemo<T extends Node>(
     clone.value = node.value;
     clone.location = node.location;
     clone.type = node.type;
-    memo.delete(node);
     return clone as unknown as T;
   }
   const clone = Object.create(Object.getPrototypeOf(node));
@@ -78,7 +75,6 @@ function cloneNodeWithMemo<T extends Node>(
   if (n.call instanceof Node && n.call === n.expression) {
     (clone as { expression?: unknown }).expression = (clone as { call?: unknown }).call;
   }
-  memo.delete(node);
   return clone;
 }
 
@@ -98,7 +94,6 @@ function cloneValue(
     const clone = Object.create(Object.getPrototypeOf(value)) as Record<string, unknown>;
     memo.set(value, clone);
     for (const [key, child] of Object.entries(value)) clone[key] = cloneValue(child, memo, replacer);
-    memo.delete(value);
     return clone;
   }
   if (Array.isArray(value)) {
@@ -107,7 +102,6 @@ function cloneValue(
     const clone: unknown[] = [];
     memo.set(value, clone);
     for (const child of value) clone.push(cloneValue(child, memo, replacer));
-    memo.delete(value);
     return clone;
   }
   if (value instanceof Map) return new Map(value);
@@ -121,7 +115,6 @@ function cloneValue(
     for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
       obj[k] = cloneValue(v, memo, replacer);
     }
-    memo.delete(value as object);
     return obj;
   }
   return value;

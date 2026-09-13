@@ -988,6 +988,21 @@ function diskCachePath(cacheKey: string): string | undefined {
   return join(dir, `${hash}.json`);
 }
 
+/**
+ * Multi-declaration disk entries live beside the single-artifact entries. The `multi-` prefix on the hashed key
+ * keeps the two namespaces apart, and the stored payload is tagged so a version skew cannot be misread as a
+ * single artifact.
+ */
+const MULTI_DISK_ENTRY_MARKER = 'solidc-multi-artifact-map';
+const MULTI_DISK_ENTRY_VERSION = 1;
+
+function diskMultiCachePath(cacheKey: string): string | undefined {
+  const dir = process.env.SOLIDC_COMPILE_CACHE_DIR;
+  if (!dir) return undefined;
+  const hash = createHash('sha256').update(`multi\x00${cacheKey}`).digest('hex');
+  return join(dir, `${hash}.json`);
+}
+
 function diskCacheGet(cacheKey: string): Artifact | undefined {
   const file = diskCachePath(cacheKey);
   if (!file || !existsSync(file)) return undefined;
@@ -995,6 +1010,53 @@ function diskCacheGet(cacheKey: string): Artifact | undefined {
     return JSON.parse(readFileSync(file, 'utf8')) as Artifact;
   } catch {
     return undefined;
+  }
+}
+
+/**
+ * Read a whole multi-declaration artifact map. A project compile asks for every declaration from a fresh
+ * process, so without this layer the multi cache could only ever serve within one process and every CLI
+ * invocation still paid the full `parseAndResolve` just to enumerate declarations.
+ */
+function diskMultiCacheGet(cacheKey: string): ArtifactMap | undefined {
+  const file = diskMultiCachePath(cacheKey);
+  if (!file || !existsSync(file)) return undefined;
+  try {
+    const parsed = JSON.parse(readFileSync(file, 'utf8')) as {
+      marker?: unknown; version?: unknown; artifacts?: unknown;
+    };
+    if (parsed?.marker !== MULTI_DISK_ENTRY_MARKER || parsed.version !== MULTI_DISK_ENTRY_VERSION) {
+      return undefined;
+    }
+    const artifacts = parsed.artifacts;
+    if (!artifacts || typeof artifacts !== 'object') return undefined;
+    const map: ArtifactMap = {};
+    for (const [name, artifact] of Object.entries(artifacts as Record<string, Artifact>)) {
+      if (artifact && typeof artifact === 'object') map[name] = artifact;
+    }
+    return Object.keys(map).length > 0 ? map : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function diskMultiCacheSet(cacheKey: string, map: ArtifactMap): void {
+  const file = diskMultiCachePath(cacheKey);
+  if (!file) return;
+  try {
+    const dir = process.env.SOLIDC_COMPILE_CACHE_DIR!;
+    mkdirSync(dir, { recursive: true });
+    // Lazy delegate variants are stripped for the same reason as the single-artifact entries: serializing them
+    // would force a second codegen pass per declaration. Re-attached on the read path instead.
+    const artifacts: Record<string, Artifact> = {};
+    for (const [name, artifact] of Object.entries(map)) {
+      artifacts[name] = artifactWithoutDelegate(artifact);
+    }
+    writeFileSync(file, JSON.stringify({
+      marker: MULTI_DISK_ENTRY_MARKER, version: MULTI_DISK_ENTRY_VERSION, artifacts,
+    }));
+  } catch {
+    // Cache is best-effort; a full disk or race must not fail the compile.
   }
 }
 
@@ -10412,8 +10474,7 @@ function compileResolvedAst(
   const resolvedStarted = Date.now();
   let phaseStarted = resolvedStarted;
   let currentPhase = 'start';
-  const contractName = ast.contract?.name;
-  const mark = (phase: string): void => {
+  const contractName = ast.contract?.name;  const mark = (phase: string): void => {
     profileLog(`resolved:${phase}`, phaseStarted, { contract: contractName });
     currentPhase = phase;
     phaseStarted = Date.now();
@@ -10940,8 +11001,7 @@ function compileResolvedAst(
       loweredFunctionPointerTables.add(selectorName);
       loweredFunctionPointerTables.add(selectorName.slice('__fnsel_'.length));
     }
-  }
-  mark('prefix');
+  }  mark('prefix');
   // Literal `new T[](N)` key loops (`new address[](1); xs[0]=w; for i<xs.length m[k][xs[i]]=v`) must unroll
   // before kernel route admission clones the body. Otherwise clones snapshot the runtime loop, skip key
   // binding, and fail closed looking up entry[0] on a clone with no block descriptor. The graph path keeps
@@ -13086,13 +13146,30 @@ function compileStringMultiUnchecked(code: string, compilerOptions: CompileOptio
       });
       return cloneArtifactMap(cached, suppressWarnings);
     }
+    const diskCached = diskMultiCacheGet(multiCacheKey);
+    if (diskCached) {
+      // Disk stores artifacts without their lazy `delegateArtifact` getter (JSON cannot preserve it). Re-attach
+      // per declaration so a cold worker matches a warm one, exactly as the single-artifact disk path does.
+      const diskOptions = normalizeCompilerOptions(artifactCompilerOptions);
+      diskOptions.__messageBusExplicitlyDisabled = artifactCompilerOptions.messageBus === false;
+      for (const [name, diskArtifact] of Object.entries(diskCached)) {
+        attachDelegateVariant(diskArtifact, code, diskOptions, errorListener, name, true);
+      }
+      // Promote into the process-local map so sibling declarations in this process skip the disk read.
+      compileMultiCache.set(multiCacheKey, diskCached);
+      recordArtifactCacheHit({
+        hit: 'disk',
+        multi: true,
+        artifacts: Object.keys(diskCached),
+      });
+      return cloneArtifactMap(diskCached, suppressWarnings);
+    }
   }
 
   // Enumerate the top-level contracts (after import resolution, so imported deps are included). The default
   // parse leaves the last as primary; the full set is [...importedContracts, contract].
   const probeStarted = Date.now();
-  const probe = parseAndResolve(code, mergedCompilerOptions, errorListener);
-  profileLog('multi-probe', probeStarted, {
+  const probe = parseAndResolve(code, mergedCompilerOptions, errorListener);  profileLog('multi-probe', probeStarted, {
     imported: probe.importedContracts.length,
     interfaces: (probe.interfaceDefinitions ?? []).length,
   });
@@ -13106,8 +13183,7 @@ function compileStringMultiUnchecked(code: string, compilerOptions: CompileOptio
   }
   for (const contract of allContracts) {
     if (!contract || seen.has(contract.name)) continue;
-    seen.add(contract.name);
-    // Before Solidity 0.7, an `internal` constructor was the way to mark a contract abstract. The parser
+    seen.add(contract.name);    // Before Solidity 0.7, an `internal` constructor was the way to mark a contract abstract. The parser
     // deliberately accepts that legacy spelling without rewriting `isAbstract` (single-contract compilation
     // still needs the declaration for inheritance), but solc's multi-artifact output must not expose it as a
     // deployable contract. In particular, compiling such a constructor as an entry point gives inherited
@@ -13143,7 +13219,10 @@ function compileStringMultiUnchecked(code: string, compilerOptions: CompileOptio
     });
   }
 
-  if (multiCacheKey) compileMultiCache.set(multiCacheKey, map);
+  if (multiCacheKey) {
+    compileMultiCache.set(multiCacheKey, map);
+    diskMultiCacheSet(multiCacheKey, map);
+  }
   return map;
 }
 

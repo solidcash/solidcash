@@ -294,12 +294,54 @@ the clone memoization in section 11, not to this change; both sides of this A/B 
 **Verification.** `@solidcash/utils` 345/345 passed (includes the outline and optimiser-equivalence suites
 that pin this behaviour). `solidc` suite **189 failed / 4,828 passed (5,017)** — identical baseline counts.
 
-## 14. Measurement tooling (untracked, in this worktree)
+## 14. Anchor updates in place (outliner rewrite)
+
+Splitting the rewrite phase showed where its cost sat:
+
+    findMs 267 | applyClaimMs 60 | rewriteMs 6931     (139 bodies, 562 functions)
+
+and inside the rewrite, `anchorMs 2062` of `editsApplyMs 8108`. The anchor array was rebuilt with `.map()`
+for every occurrence of every applied function — tens of thousands of fresh arrays on a large leftover.
+
+Every site after a relocated span shifts by the same amount and sites before it are untouched, so a single
+suffix scan updates the array in place. `anchorMs 2062 -> 290`. Byte-identical.
+
+## 15. Remaining bottlenecks and two rejected changes
+
+**Current shape of the 21 s compile** (`SOLIDC_PROFILE=1`): `codegen` 14.2 s (of which `outline` 9.5 s),
+`lowering` 2.8 s, `semantic` 2.4 s, `admission` 1.9 s. Inside the dominant outline probe, `splice` is now
+the single largest item: **6,233 ms of a 7,655 ms rewrite**, because `splice` memmoves the tail of a
+~200,000-element body and a heavy leftover applies tens of thousands of edits.
+
+**Rejected: consolidating the rewrite into one rebuild per body.** This is the obvious fix for the
+`splice` quadratic, and it is tempting because it should be byte-identical. It is not: a variant that
+rebuilds `script` and `locationData` but not `origins` produced the *same bytecode length* (115,274) with a
+**different hash** (`c6e1c915…` vs `ed6cfff8…`). `origins` is spliced in lockstep with `script` and drives
+source-map and instruction-pointer attribution, so any consolidated walk must remap it identically. A full
+batching attempt changed `routeBytes` outright (40,019 → 35,260), i.e. it corrupted span bookkeeping rather
+than merely mis-attributing. Reverted rather than shipped; the output-identity requirement is not
+negotiable for an optimisation advertised as behaviour-preserving.
+
+**Rejected (as low value): persisting the winning admission rung.** Measured at 1,918 ms of 20,696 ms —
+9% of the compile, not the "1.34 s of a 7 s build" it once represented. Any cache keyed on source topology
+is also invalidated by exactly the edits such a cache exists to survive. Not worth the complexity now.
+
+**Blocked: per-declaration cache invalidation.** `MarketplaceV1.sol` imports `MarketplaceDataV1.sol` *and*
+`MarketplaceDataV1.sol` imports `MarketplaceV1.sol` — a genuine import cycle. Each declaration's artifact
+is generated from the merged program of the whole closure, so neither can be reused while the other
+changes. Skipping "unchanged" declarations would be unsound here, not merely an optimisation. The edit path
+therefore recompiles 3 of 22 jobs (16.5 s); that is inherent to file-granular invalidation over a cyclic
+closure, not a missed cache.
+
+## 16. Measurement tooling
 
 - `scripts/perf-probe-marketplace.mjs` — cold cross-commit compile probe, frozen option surface
 - `scripts/perf-matrix-marketplace.mjs` — sequential median matrix over checkouts
 - `scripts/perf-derivation-probe.mjs` — derivation pass-count and per-stage timings
-- `phase-probe.mjs` / `ident.mjs` — in-process compile timing and bytecode hash identity checks
+- `scripts/perf-phase-probe.mjs` — in-process compile timing
+
+`SOLIDC_DEBUG_OUTLINE_SPLIT=1` additionally prints per-phase outline splits (`findMs`, `applyClaimMs`,
+`rewriteMs`, `deleteMs`, `spliceMs`, `anchorMs`).
 
 Comparison checkouts: `kernel-perf-baseline` (`0b723a6bf`, pre-perf) and `kernel-perf-tip`
 (`24af483ee`, compile-perf integration tip).

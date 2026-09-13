@@ -459,3 +459,59 @@ the same fixed point — not budget pruning or cheaper array primitives. Both wo
 chose: `bodyOrder: 'shortest'`, a fixed point over up to 6 rounds, and up to 12,288 candidate groups per
 round. Reducing that is a considered re-design with bytecode re-pinning, not a drive-by optimisation, and it
 should be a separate scoped task rather than an extension of this one.
+
+## 19. The span/splice fix: microbenchmarked primitives, and a 41% consolidation that is NOT safe
+
+Prompted by a direct question about the `copyWithin` conclusion, both candidate fixes for the rewrite were
+taken to a definitive answer. Neither ships, but for opposite reasons and both are now closed.
+
+**Array primitives are not the answer — measured, not assumed.** `scripts/micro-splice.mjs` benchmarks the
+per-edit tail shift on the array shapes the outliner actually rewrites:
+
+| shape | edits | `splice` | `copyWithin` |
+|---|---:|---:|---:|
+| numeric 50k | 1,087 | 40.9 ms | 626.7 ms |
+| numeric 200k | 2,000 | 139.8 ms | 2,111.4 ms |
+| object 50k | 1,087 | 40.2 ms | 627.2 ms |
+| object 200k | 2,000 | 136.5 ms | 2,132.6 ms |
+
+`copyWithin` is **~15x slower** than `splice` on both numeric and object arrays. The mechanism I suggested
+earlier — element-by-element object copying — was wrong; `splice` is simply the better-optimised primitive
+here. So no swap of array primitives can recover the 6.2 s.
+
+**Consolidating a body's edits into one rebuild is 6-43x faster and is genuinely worth the win** — also
+measured on equivalent edit lists:
+
+| shape | edits | `splice` | consolidated |
+|---|---:|---:|---:|
+| numeric 50k | 1,087 | 40.6 ms | 3.0 ms |
+| numeric 200k | 2,000 | 86.2 ms | 13.8 ms |
+| object 50k | 1,087 | 40.6 ms | 3.7 ms |
+| object 200k | 2,000 | 136.8 ms | 3.2 ms |
+
+Applied to the real outliner it delivered on that promise: **21.4 s -> 12.5/12.6 s, a 41% cut**, with
+`routeBytes 40019` and `fullBytes 115274` *identical* to the committed build — the correct span bookkeeping.
+
+**But it is not safe, so it does not ship.** The full `solidc` suite reports **191 failed / 4,826 passed**
+against the committed baseline's **189 / 4,828**: it breaks exactly two tests. The bytecode has the same
+length but diverges at byte 15,942, i.e. a different span choice or replacement id somewhere — a silent
+codegen difference, not merely source-map drift.
+
+Three distinct defects were found and fixed on the way to that state (a single `reverse()` that inverted
+segment order and swapped the `ID OP_INVOKE` pair; a reversed block iteration that emitted replacements
+before their segments; and the `origins` array, which is rewritten in lockstep and was omitted from the first
+attempt). Each fix moved the output closer without reaching equality, which is the signature of a remaining
+ordering or identity dependency inside the rewrite rather than one bug. Given the standing rule that
+behaviour-preserving changes must not alter bytecode, the correct action is to revert and record the
+evidence, which is what was done.
+
+**Where the remaining defect most likely lives**, for whoever picks this up: `intern.bodyByScript` is a
+`WeakMap<Script, CachedBodyFingerprint>` keyed by script *identity* (section 15). The per-edit path mutates
+the array in place, so the key stays stable; replacing the array per body changes identity, and the
+absorbing state — `prepareCandidateCorpus` reading fingerprints keyed on the old array while the new array is
+uncached — can feed stale `bodyIds`/`bodyBytePrefixes` into the next round. Any consolidation must re-key
+that intern map in the same step it replaces the array, which the attempts so far did not do correctly.
+
+**Verified state after revert**: `routeBytes 40019`, `fullBytes 115274`, `fullHash ed6cfff8760a3ca8`.
+Tooling left in place: `scripts/micro-splice.mjs`, `scripts/equiv-splice-copywithin.mjs`,
+`scripts/verify-id.mjs`.

@@ -2830,6 +2830,11 @@ function childDeploymentSites(
   helperFunctions: readonly FunctionDefinitionNode[] = [],
 ): ChildDeploymentSiteAbi[] {
   const sites: ChildDeploymentSiteAbi[] = [];
+  // Every site this function can report requires an InstantiationNode in the body, and
+  // `hasContractInstantiation` is set for every contract instantiation the symbol pass sees. When the flag is
+  // strictly false there is nothing to report, so the recipe analysis plus the whole-body walk below are
+  // skipped. Only the returned array is consumed by the caller.
+  if (root.hasContractInstantiation === false) return sites;
   const visibleInputs = root.parameters.filter((parameter) => !parameter.name.startsWith('__internal__'));
   const inputIndex = new Map(visibleInputs.map((parameter, index) => [parameter.name, index]));
   const inputTypes = new Map(visibleInputs.map((parameter) => [parameter.name, abiTypeString(parameter.type)]));

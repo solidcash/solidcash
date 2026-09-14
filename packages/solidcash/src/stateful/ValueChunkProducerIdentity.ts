@@ -36,6 +36,7 @@ export function canonicalValueChunkProducerPathContext(
     || !Array.isArray(context.sourcePath)) return undefined;
   const sourcePath: Array<[string, number, number | null, number, number]> = [];
   for (const site of context.sourcePath) {
+    if (!site || typeof site !== 'object') return undefined;
     const effectDomain = canonicalHex(site.sourceEffectDomainId, 32);
     if (!effectDomain || !safeOrdinal(site.sourceCallsiteId) || !safeOrdinal(site.occurrenceIndex)
       || !safeOrdinal(site.sourceEffectOrdinal)
@@ -217,23 +218,32 @@ export function bindValueChunkProducerClaimAliases(
   aliases: readonly ValueChunkProducerClaimCarrier[],
   claims: readonly ValueChunkProducerResourceClaim[],
 ): boolean {
-  if (aliases.length === 0) return false;
+  if (!Array.isArray(aliases) || aliases.length === 0 || !Array.isArray(claims)) return false;
   const canonicalClaims = claims.map((claim) => {
+    if (!claim || typeof claim !== 'object' || !claim.producer) return undefined;
     const producer = canonicalValueChunkProducerIdentity(claim.producer);
     const resource = canonicalValueChunkProducerResourceIdentity(claim.resourceIdentity);
     return producer && resource ? `${resource}\u0000${producer}` : undefined;
   });
   if (canonicalClaims.some((claim) => claim === undefined)) return false;
-  const ownerKeys = new Set(claims.map((claim) => canonicalValueChunkStateOwner(claim.producer.stateOwner)));
+  const ownerKeys = new Set(claims.map((claim) => (
+    claim && typeof claim === 'object' && claim.producer
+      ? canonicalValueChunkStateOwner(claim.producer.stateOwner)
+      : undefined
+  )));
   if (ownerKeys.has(undefined) || ownerKeys.size !== 1) return false;
   const expectedOwner = ownerKeys.values().next().value;
   if (!expectedOwner || aliases.some((alias) => (
-    canonicalValueChunkStateOwner(alias.valueChunkStateOwner) !== expectedOwner
+    !alias || typeof alias !== 'object'
+    || canonicalValueChunkStateOwner(alias.valueChunkStateOwner) !== expectedOwner
   ))) return false;
   const expected = [...canonicalClaims as string[]].sort().join('\u0001');
   for (const alias of aliases) {
     if (!alias.valueChunkProducerClaims) continue;
-    const actualClaims = alias.valueChunkProducerClaims.map((claim) => {
+    if (!Array.isArray(alias.valueChunkProducerClaims)) return false;
+    const transportedClaims: readonly ValueChunkProducerResourceClaim[] = alias.valueChunkProducerClaims;
+    const actualClaims = transportedClaims.map((claim) => {
+      if (!claim || typeof claim !== 'object' || !claim.producer) return undefined;
       const producer = canonicalValueChunkProducerIdentity(claim.producer);
       const resource = canonicalValueChunkProducerResourceIdentity(claim.resourceIdentity);
       return producer && resource ? `${resource}\u0000${producer}` : undefined;

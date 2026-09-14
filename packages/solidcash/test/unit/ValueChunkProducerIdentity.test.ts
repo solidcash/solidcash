@@ -49,7 +49,15 @@ const write: ValueChunkWriteDescriptor = {
 
 describe('hierarchical value-chunk producer identity', () => {
   it('derives a tagged effect domain from exact executable bytecode and selector', () => {
-    expect(valueChunkEffectDomainId('51', '01020304')).toMatch(/^[0-9a-f]{64}$/);
+    const baseline = valueChunkEffectDomainId('51', '01020304');
+    expect(baseline).toMatch(/^[0-9a-f]{64}$/);
+    expect(valueChunkEffectDomainId('52', '01020304')).not.toBe(baseline);
+    expect(valueChunkEffectDomainId('51', '01020305')).not.toBe(baseline);
+    const beforeUint16Boundary = valueChunkEffectDomainId('51'.repeat(65535), '01020304');
+    const atUint16Boundary = valueChunkEffectDomainId('51'.repeat(65536), '01020304');
+    expect(beforeUint16Boundary).toMatch(/^[0-9a-f]{64}$/);
+    expect(atUint16Boundary).toMatch(/^[0-9a-f]{64}$/);
+    expect(atUint16Boundary).not.toBe(beforeUint16Boundary);
     expect(valueChunkEffectDomainId('51', '010203')).toBeUndefined();
     expect(valueChunkEffectDomainId('xyz', '01020304')).toBeUndefined();
   });
@@ -240,5 +248,25 @@ describe('hierarchical value-chunk producer identity', () => {
     expect(() => selectSingletonValueChunkProducer(
       [null as never], resourceIdentity, producer().stateOwner,
     )).not.toThrow();
+    expect(selectSingletonValueChunkProducer(
+      [claim()], resourceIdentity,
+      { ...producer().stateOwner, lockingBytecode: 'aa20' + '52'.repeat(32) + '87' },
+    )).toEqual({ status: 'invalid' });
+    expect(() => canonicalValueChunkProducerIdentity({
+      ...producer(), sourcePath: [null as never],
+    })).not.toThrow();
+    expect(canonicalValueChunkProducerIdentity({
+      ...producer(), sourcePath: [null as never],
+    })).toBeUndefined();
+    expect(() => bindValueChunkProducerClaimAliases(
+      [null as never], [claim()],
+    )).not.toThrow();
+    expect(bindValueChunkProducerClaimAliases([null as never], [claim()])).toBe(false);
+    expect(() => bindValueChunkProducerClaimAliases(
+      [{ valueChunkStateOwner: producer().stateOwner }], [null as never],
+    )).not.toThrow();
+    expect(bindValueChunkProducerClaimAliases(
+      [{ valueChunkStateOwner: producer().stateOwner }], [null as never],
+    )).toBe(false);
   });
 });

@@ -249,6 +249,13 @@ regenerated through `recompile.sh` and the corpus re-baselined) or requires the 
 item 2. The measurements to reproduce that judgement are all in this file and in
 `scripts/perf-project-compile.mjs`.
 
+The one *large* compiler number available is a size/speed trade, recorded here so it is a decision rather
+than a discovery: `outlineSharedFunctionBodies` runs several strategy probes per emission and the
+follow-up probes on `MarketplaceV1` add 5,512 bytes of savings (117,877 vs 112,365) for ~240 ms. Skipping
+them under `optimizeForCompilationSpeed` would buy roughly 4 % compile time for a 4.4 % larger script
+(125,939 B → ~131 KB) on every root — and for kernel routes the route bytecode is the covenant's active
+bytecode, so that is not a free trade.
+
 Every compiler candidate must be measured with `scripts/perf-project-compile.mjs` (total **and** per-root
 hashes) before and after, then held to `yarn workspace solidc vitest run test/journal-message-bus` (the
 manifest's compiler gate) and the four passing marketplace titles.

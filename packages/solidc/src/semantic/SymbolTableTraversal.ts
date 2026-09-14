@@ -130,6 +130,7 @@ import {
   computeBranchOps, countBranchOps, countTransfersMinMax, hasEffectiveCallValue, isDirectOwnerTransferNode,
 } from './branchOps.js';
 import { describeFunctionLowLevelCallsites } from './LowLevelCallShapes.js';
+import { KERNEL_JOURNAL_ACCESS_STREAMS } from './LowerVMapCounterLoops.js';
 import {
   FunctionRedefinitionError,
   VariableRedefinitionError,
@@ -3455,6 +3456,61 @@ export default class SymbolTableTraversal extends AstTraversal {
           const byTarget = new Map<string, ExternalCallSlot[]>();
           const allByTarget = new Map<string, ExternalCallSlot[]>();
           const inferredSelectors = new Map<ExternalCallSlot, Uint8Array>();
+          // A batch group is advertised in the CALLER's bytecode, which then requires the callee's route to
+          // execute every row. A route refuses a handler that writes a variable-width collection until its
+          // completed entry descriptor is represented in the compact journal, so when this compilation also
+          // contains the callee's source do not advertise a batch the callee cannot serve: the callsites keep
+          // their individual slots and the ordinary composition path. A foreign callee (interface only) is
+          // unknown here and keeps the previous behavior.
+          const calleeRouteServesSlot = (slot: ExternalCallSlot): boolean => {
+            const callee = this.contractMap.get(slot.interfaceName);
+            const handler = callee?.functions.find((candidate) => candidate.name === slot.functionName);
+            if (!callee || !handler?.body) return true;
+            const chunkable = new Set(callee.collections
+              .filter((collection) => isChunkableValueType(collection.innermostValueType))
+              .map((collection) => collection.name));
+            if (chunkable.size === 0) return true;
+            if (handler.parameters.some((parameter) => parameter.name === KERNEL_JOURNAL_ACCESS_STREAMS)) {
+              return true;
+            }
+            const helpersByName = new Map<string, FunctionDefinitionNode[]>();
+            for (const candidate of callee.functions) {
+              const group = helpersByName.get(candidate.name) ?? [];
+              group.push(candidate);
+              helpersByName.set(candidate.name, group);
+            }
+            let unsupported = false;
+            const visit = (node: Node, seen: Set<Node>): void => {
+              if (unsupported || seen.has(node)) return;
+              seen.add(node);
+              const name = (node as unknown as { name?: unknown }).name;
+              if (typeof name === 'string' && chunkable.has(name)
+                && (node instanceof MappingAssignNode || node instanceof MappingFieldAssignNode
+                  || node instanceof MappingDeleteNode || node instanceof ArrayAssignNode
+                  || node instanceof ArrayPushNode || node instanceof ArrayPopNode
+                  || node instanceof ArrayDeleteNode || node instanceof StateArrayAssignNode
+                  || node instanceof StateArrayPushNode || node instanceof StateArrayPopNode
+                  || node instanceof StateArrayDeleteNode || node instanceof StateAssignNode
+                  || node instanceof DeleteStateNode)) {
+                unsupported = true;
+                return;
+              }
+              if (node instanceof FunctionCallNode && node.identifier instanceof IdentifierNode) {
+                for (const helper of helpersByName.get(node.identifier.name) ?? []) {
+                  if (helper.body) visit(helper.body, seen);
+                  if (unsupported) return;
+                }
+              }
+              for (const value of Object.values(node)) {
+                if (value instanceof Node) visit(value, seen);
+                else if (Array.isArray(value)) {
+                  for (const item of value) if (item instanceof Node) visit(item, seen);
+                }
+              }
+            };
+            visit(handler.body, new Set<Node>());
+            return !unsupported;
+          };
           for (const slot of logicalCallSlots) {
             // Single-method interfaces normally omit selector verification, so
             // their slots have no baked selector yet. message-bus batch rows always carry
@@ -3490,7 +3546,8 @@ export default class SymbolTableTraversal extends AstTraversal {
               // A loop with no array-derived cardinality remains with the full graph planner.
               && (!loopOccurrence || (slot.argSources ?? []).some(
                 (source) => hasRuntimeArrayOccurrence(source),
-              ));
+              ))
+              && (this.compilerOptions.messageBusKernel !== true || calleeRouteServesSlot(slot));
             if (!eligible) continue;
             const key = `${identity}|${slot.interfaceName}|${slot.requiredDataNftIndices.join(',')}`;
             const group = byTarget.get(key) ?? [];

@@ -4,6 +4,7 @@ import {
   compileStringMulti,
   compileStringSplit,
 } from '../../src/compiler.js';
+import { createMapResolver } from '../../src/createMapResolver.js';
 import { sourceEffectOrderForArtifact } from '../../src/artifact/Artifact.js';
 
 describe('inferred message-bus batching for repeated external callees', () => {
@@ -368,5 +369,62 @@ describe('inferred message-bus batching for repeated external callees', () => {
       .toThrow(/MESSAGE_BUS_REQUIRED.*cannot be built with `messageBus: false`/);
     expect(() => compileStringSplit(SOURCE, { forceStateful: true, messageBus: false }))
       .toThrow(/MESSAGE_BUS_REQUIRED.*cannot be built with `messageBus: false`/);
+  });
+
+  // A batch is advertised in the caller's own bytecode, which then requires the callee's route to execute every
+  // row. A route refuses a handler that writes a variable-width collection until its completed entry descriptor
+  // is represented in the compact journal, so a repeated call to such a callee must keep its individual slots
+  // rather than publish a batch the callee can never serve.
+  const CALLEE_WITH_CHUNKED_WRITE = `
+    contract Data {
+      mapping(int => int[]) events;
+      function append(int id, int value) external {
+        events[id].push(value);
+        require(value >= 0);
+      }
+    }
+  `;
+  const CALLEE_WITH_SCALAR_WRITE = `
+    contract Data {
+      mapping(int => int) counts;
+      function bump(int id) external {
+        counts[id] = counts[id] + 1;
+        require(id >= 0);
+      }
+    }
+  `;
+  const repeatedCaller = (callee: string, handler: string): ReturnType<typeof compileString> =>
+    compileString(`
+      import "./Data.scash";
+      contract BatchCaller(address data) {
+        function run(int first, int second) public {
+          Data(data).${handler}(0, first);
+          Data(data).${handler}(0, second);
+          require(first >= 0);
+          require(second >= 0);
+        }
+      }
+    `, {
+      forceStateful: true,
+      messageBus: true,
+      messageBusKernel: true,
+      solidityImportCompat: true,
+      suppressWarnings: true,
+      rootFileId: '/BatchCaller.scash',
+      importResolver: createMapResolver({ '/Data.scash': callee }),
+    });
+
+  it('keeps repeated calls ungrouped when the callee handler writes a variable-width collection', () => {
+    const artifact = repeatedCaller(CALLEE_WITH_CHUNKED_WRITE, 'append');
+    const run = artifact.abi.find((fn) => fn.name === 'run');
+    expect(run?.externalCalls).toHaveLength(2);
+    expect(run?.externalCalls?.every((call) => call.batchInvocations === undefined)).toBe(true);
+  });
+
+  it('still groups repeated calls when the callee route admits the handler', () => {
+    const artifact = repeatedCaller(CALLEE_WITH_SCALAR_WRITE, 'bump');
+    const run = artifact.abi.find((fn) => fn.name === 'run');
+    expect(run?.externalCalls).toHaveLength(1);
+    expect(run?.externalCalls?.[0].batchInvocations).toHaveLength(2);
   });
 });

@@ -41,10 +41,14 @@ const options = {
   __attemptFailureBox: { failures: [] },
   __strictNoInternalRecovery: true,
 };
+if (process.argv.includes('--no-cheap-admission')) options.__cheapAdmissionCodegen = false;
 
 const sha256 = (value) => createHash('sha256').update(value ?? '').digest('hex').slice(0, 16);
 const bodyBytes = (body) => (typeof body === 'string' ? body.length / 2 : 0);
 
+// `--no-cheap-admission` measures the ladder's cost without its cheap search pass. It is NOT an optimisation:
+// measured on the marketplace corpus it is slower in total (32.8 s vs 19.7 s) AND changes the emitted bytecode
+// for most roots, because the ladder then retries rungs with full codegen and lands on a different winner.
 const started = performance.now();
 const rows = [];
 for (const relative of roots) {

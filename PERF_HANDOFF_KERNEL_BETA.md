@@ -135,14 +135,18 @@ symbol table 9.3 %; largest single function `outlineSharedSpans` 4.0 %), so ther
 fix. The large items are structural:
 
 * **The source is compiled twice per root** (a discarded cheap admission at 29 %, then the shipping
-  compile at 55 %). The only ≥20 % win is to make the winning admission's lowered AST reusable by the
-  final compile, or to make the cheap admission cheaper still. Deep and correctness-adjacent; the cheap
-  pass must still synthesize the route and emit its own verifier program because the "is this artifact
-  shippable" decision reads `artifact.messageBus.verifierProgram`.
-* **`subroutineUseProbe` dry-runs the whole emission** (416 ms per root) purely to count subroutine
-  sites. It cannot simply skip byte appends: `emitWithSpan`, `sub.output.length` checks and the
-  dead-DEFINE splice all read the emitted length while probing. The self-contained target is a direct
-  census over the lowered AST, or memoizing the census on a stable contract identity.
+  compile at 55 %). This looks like free money and is not: `--no-cheap-admission` on
+  `scripts/perf-project-compile.mjs` (which sets `__cheapAdmissionCodegen: false`, i.e. one ladder with
+  full codegen instead of a cheap search followed by a full recompile of the winner) measured **32,848 ms
+  vs 19,699 ms** and **changed the emitted bytecode for most roots** (`MarketplaceV1` route
+  `9e14bab0…`/full `229fdc7e…` instead of the shipped `554bc928…`; `MarketplaceDataV1` route 12,169 B
+  instead of 12,130 B). The cheap pass is what lets the ladder pick a winning shape without replaying
+  rungs as full compiles, and it lands on a different (smaller) winner than the naive ladder. Do not
+  revisit this without reading `compileWithExternalAdmissionFallback` end to end.
+* **`subroutineUseProbe` dry-runs the whole emission** (416 ms per root, ~8 % of a compile) purely to
+  count subroutine sites. It cannot simply skip byte appends: `emitWithSpan`, `sub.output.length` checks
+  and the dead-DEFINE splice all read the emitted length while probing. The self-contained target is a
+  direct census over the lowered AST, or memoizing the census on a stable contract identity.
 * **The detached verifier is emitted 24 times for 10 roots** (2.4 per root, 13 %) with *different*
   generated sources per attempt (measured: 46,098 / 46,098 / 46,298 bytes, three distinct hashes for one
   root), so the existing memo legitimately misses. Only reusing the winning attempt's verifier source
@@ -189,22 +193,24 @@ Two traps for whoever measures next:
 ## 5. What the next round should do about the compiler
 
 The SDK side of the objective is met and measured. The compiler side is profiled but not yet moved, and
-the evidence above says the remaining wins are concentrated in the **discarded cheap admission compile
-(29 % of a project compile)** and the **shipping compile's codegen (30 %)** — not in parsing (10 %) and
-not in any single hot function. Ranked, with the guardrails that make each safe:
+the evidence above says the remaining wins are concentrated in the **shipping compile's codegen (30 %)**
+and the **cheap admission search (29 %)**, not in parsing (10 %) and not in any single hot function.
+Ranked, with the guardrails that make each safe:
 
-1. **Reuse the admission winner's lowered AST** (target: 20-30 % of the project compile). The cheap pass
-   currently stubs bodies, so the final compile re-runs lowering, symbols and semantics. Removing the
-   stubbing would make the admission expensive, so the change has to keep the cheap decision cheap while
-   giving the final compile a valid prefix to resume from. Validate with the per-root bytecode hashes in
-   `scripts/perf-project-compile.mjs` plus `yarn workspace solidc vitest run test/journal-message-bus`
-   (the manifest's compiler gate) and the marketplace titles.
-2. **Replace `subroutineUseProbe` with a direct census** (target: ~8 % of a compile, 416 ms per root).
+1. **Replace `subroutineUseProbe` with a direct census** (target: ~8 % of a compile, 416 ms per root).
    Self-contained, but the probe's emission decisions read the emitted length, so the census has to be
    proven to produce the same `subroutineUseCount` and the same id assignments before it can replace the
    dry run. The double-entry cache pattern already used by `functionReferenceIds`/`invokedFunctionIds` is
-   the precedent to follow.
+   the precedent to follow. Gate: per-root bytecode hashes unchanged, then the compiler suites.
+2. **Cut the cheap admission search without changing the winner** (target: up to 29 % of a project
+   compile). One idea is already measured and rejected: `__cheapAdmissionCodegen: false` is slower AND
+   changes the bytecode (see §2). Any further attempt must first show *identical* per-root hashes and a
+   lower total, then read `compileWithExternalAdmissionFallback` end to end before it is landable.
 3. **Leave the verifier emits and the parse path alone** unless a measurement says otherwise: the verifier
    sources differ per attempt (memo misses are legitimate and the per-emit cost falls to ~75 ms warm),
    and cross-root parsing is ~10 % with a ~5 % ceiling for a real AST-sharing change.
+
+Every compiler candidate must be measured with `scripts/perf-project-compile.mjs` (total **and** per-root
+hashes) before and after, then held to `yarn workspace solidc vitest run test/journal-message-bus` (the
+manifest's compiler gate) and the four passing marketplace titles.
 

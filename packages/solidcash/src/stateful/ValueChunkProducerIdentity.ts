@@ -29,6 +29,31 @@ export interface ValueChunkProducerPathContext {
   sourcePath: readonly ValueChunkProducerSourceSite[];
 }
 
+export type ValueChunkProducerPathDisposition =
+  | { status: 'complete'; context: ValueChunkProducerPathContext }
+  | { status: 'unavailable' };
+
+export function appendValueChunkProducerSourceSite(
+  context: ValueChunkProducerPathContext,
+  site: ValueChunkProducerSourceSite,
+): ValueChunkProducerPathContext | undefined {
+  if (!canonicalValueChunkProducerPathContext(context)) return undefined;
+  const next: ValueChunkProducerPathContext = { version: 1, sourcePath: [...context.sourcePath, site] };
+  if (!canonicalValueChunkProducerPathContext(next)) return undefined;
+  return Object.freeze({
+    version: 1,
+    sourcePath: Object.freeze(next.sourcePath.map((candidate) => Object.freeze({
+      sourceEffectDomainId: candidate.sourceEffectDomainId.toLowerCase(),
+      sourceCallsiteId: candidate.sourceCallsiteId,
+      ...(candidate.sourceLogicalIndex !== undefined && {
+        sourceLogicalIndex: candidate.sourceLogicalIndex,
+      }),
+      occurrenceIndex: candidate.occurrenceIndex,
+      sourceEffectOrdinal: candidate.sourceEffectOrdinal,
+    }))),
+  });
+}
+
 export function canonicalValueChunkProducerPathContext(
   context: ValueChunkProducerPathContext,
 ): string | undefined {

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX, type Artifact } from '@solidcash/utils';
 import { compileString } from 'solidc';
 import { messageBus, SignatureTemplate } from '../../src/index.js';
+import { valueChunkEffectDomainId } from '../../src/stateful/index.js';
 
 const artifact = (selector: string, inputType = 'int'): Artifact => ({
   contractName: 'Participant',
@@ -103,12 +104,14 @@ const plan = (): messageBus.CompiledGraphPlan => ({
       index: 0, parent: null, caller: null, callee: 0, subtreeEnd: 1, localRow: 0, depth: 0,
       function: 'run', selectorHex: '11111111', callMode: 'call', callOptions: 0,
       argsHex: '01', resultTypes: [], resultDependencies: [],
+      producerPath: { status: 'complete', context: { version: 1, sourcePath: [] } },
       targetLockingBytecode: '51'.repeat(64), targetIdentityOffset: 0,
     },
     {
       index: 1, parent: 0, caller: 0, callee: 1, subtreeEnd: 1, localRow: 0, depth: 1,
       function: 'run', selectorHex: '22222222', callMode: 'staticcall', callOptions: 1,
       argsHex: '02', resultTypes: ['int'], consumerCallsiteId: 7, resultDependencies: [],
+      producerPath: { status: 'unavailable' },
       targetLockingBytecode: '52'.repeat(64), targetIdentityOffset: 0,
     },
   ],
@@ -225,6 +228,71 @@ describe('atomic compiled invocation graph', () => {
     expect(planned.participants).toHaveLength(2);
     expect(planned.invocations.map((invocation) => invocation.consumerCallsiteId))
       .toEqual([undefined, ...callsites.map((callsite) => callsite.callsiteId)]);
+    expect(planned.invocations[0].producerPath).toEqual({
+      status: 'complete', context: { version: 1, sourcePath: [] },
+    });
+    for (const [index, callsite] of callsites.entries()) {
+      const path = planned.invocations[index + 1].producerPath;
+      expect(path.status).toBe('complete');
+      if (path.status !== 'complete') continue;
+      expect(path.context.sourcePath).toEqual([{
+        sourceEffectDomainId: valueChunkEffectDomainId(
+          '51', rootArtifact.abi.find((candidate) => candidate.name === 'run')!.selector!,
+        ),
+        sourceCallsiteId: callsite.sourceCallsiteId ?? callsite.callsiteId,
+        occurrenceIndex: 0,
+        sourceEffectOrdinal: callsite.sourceEffectOrdinal,
+      }]);
+    }
+    expect(planned.invocations[1].producerPath).not.toEqual(planned.invocations[2].producerPath);
+  });
+
+  it('builds hierarchical producer paths and marks incomplete compiler provenance unavailable', () => {
+    const leaf = compileString(`contract PathLeaf() {
+      function touch() public { require(true); }
+    }`, { forceStateful: true, messageBus: true, messageBusKernel: true });
+    const middle = compileString(`interface IPathLeaf { function touch() external; }
+    contract PathMiddle() {
+      function descend(address leaf) public { IPathLeaf(leaf).touch(); require(true); }
+    }`, { forceStateful: true, messageBus: true, messageBusKernel: true });
+    const root = compileString(`interface IPathMiddle { function descend(address leaf) external; }
+    contract PathRoot() {
+      function run(address middle, address leaf) public {
+        IPathMiddle(middle).descend(leaf); require(true);
+      }
+    }`, { forceStateful: true, messageBus: true, messageBusKernel: true });
+    const planned = messageBus.deriveCompiledGraphPlan({
+      root: { artifact: root, lockingBytecode: '51' },
+      function: 'run', args: [Uint8Array.of(0x52), Uint8Array.of(0x53)],
+      targets: {
+        IPathMiddle: { artifact: middle, lockingBytecode: '52' },
+        IPathLeaf: { artifact: leaf, lockingBytecode: '53' },
+      },
+    });
+    expect(planned.invocations).toHaveLength(3);
+    expect(planned.invocations.map((invocation) => invocation.producerPath.status))
+      .toEqual(['complete', 'complete', 'complete']);
+    const child = planned.invocations[1].producerPath;
+    const grandchild = planned.invocations[2].producerPath;
+    expect(child.status === 'complete' && child.context.sourcePath).toHaveLength(1);
+    expect(grandchild.status === 'complete' && grandchild.context.sourcePath).toHaveLength(2);
+    if (child.status === 'complete' && grandchild.status === 'complete') {
+      expect(grandchild.context.sourcePath[0]).toEqual(child.context.sourcePath[0]);
+    }
+
+    const incomplete = structuredClone(root);
+    const run = incomplete.abi.find((candidate) => candidate.selector
+      === root.abi.find((candidate) => candidate.name === 'run')?.selector)!;
+    delete run.externalCalls?.[0].sourceEffectOrdinal;
+    const fenced = messageBus.deriveCompiledGraphPlan({
+      root: { artifact: incomplete, lockingBytecode: '51' },
+      function: 'run', args: [Uint8Array.of(0x52), Uint8Array.of(0x53)],
+      targets: {
+        IPathMiddle: { artifact: middle, lockingBytecode: '52' },
+        IPathLeaf: { artifact: leaf, lockingBytecode: '53' },
+      },
+    });
+    expect(fenced.invocations[1].producerPath).toEqual({ status: 'unavailable' });
   });
 
   it('fails closed for a resource-free lifecycle row until the advertised protocol can compose it', () => {

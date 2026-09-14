@@ -13,6 +13,12 @@ import {
   encodeAtomicMessageBusCallManifest, encodeAtomicMessageEnvelope, atomicMessageBusPhysicalLayout,
   type AtomicMessageBusCallManifest, type AtomicParticipantLifecycle, type AtomicPhysicalLayout,
 } from './atomic.js';
+import {
+  appendValueChunkProducerSourceSite,
+  valueChunkEffectDomainId,
+  type ValueChunkProducerPathContext,
+  type ValueChunkProducerPathDisposition,
+} from '../stateful/ValueChunkProducerIdentity.js';
 
 export interface CompiledGraphParticipant {
   artifact: Artifact;
@@ -125,6 +131,8 @@ export interface PlannedGraphInvocation {
   sourceEffectOrdinal?: number;
   /** Whether source identity was published by the compiler or normalized from a legacy batch row. */
   sourceCallsiteProvenance?: 'compiler' | 'legacy-logical';
+  /** Complete only when every root-to-invocation edge has compiler-authenticated source coordinates. */
+  producerPath: ValueChunkProducerPathDisposition;
   /** Exact source-level call target and the participant-local input which authenticates it. */
   targetLockingBytecode: string;
   targetIdentityOffset: number;
@@ -2442,10 +2450,38 @@ export function planCompiledGraph(
     // list within the existing graph/row maxima.
   }
   assertResolvableResultDependencies(invocations.length, resultDependencies);
+  const producerPaths: ValueChunkProducerPathDisposition[] = invocations.map(() => ({ status: 'unavailable' }));
+  const rootProducerContext: ValueChunkProducerPathContext = Object.freeze({
+    version: 1, sourcePath: Object.freeze([]),
+  });
+  producerPaths[0] = Object.freeze({ status: 'complete', context: rootProducerContext });
+  for (let index = 1; index < invocations.length; index += 1) {
+    const invocation = invocations[index];
+    const source = sourceOccurrences[index];
+    const parentDisposition = producerPaths[invocation.parent!];
+    if (!source || source.sourceCallsiteProvenance !== 'compiler'
+      || source.sourceEffectOrdinal === undefined || parentDisposition.status !== 'complete') continue;
+    const parentExecution = executions[invocations[invocation.parent!].callee];
+    const executionLockingBytecode = parentExecution.executionKind === 1
+      ? parentExecution.executorLockingBytecode : parentExecution.lockingBytecode;
+    const sourceEffectDomainId = valueChunkEffectDomainId(
+      executionLockingBytecode, plannedBase[invocation.parent!].selectorHex,
+    );
+    if (!sourceEffectDomainId) continue;
+    const context = appendValueChunkProducerSourceSite(parentDisposition.context, {
+      sourceEffectDomainId,
+      sourceCallsiteId: source.sourceCallsiteId,
+      ...(source.sourceLogicalIndex !== undefined && { sourceLogicalIndex: source.sourceLogicalIndex }),
+      occurrenceIndex: source.occurrenceIndex,
+      sourceEffectOrdinal: source.sourceEffectOrdinal,
+    });
+    if (context) producerPaths[index] = Object.freeze({ status: 'complete', context });
+  }
   const planned = plannedBase.map((invocation, index) => Object.freeze({
     ...invocation,
     ...(consumerCallsites[index] !== undefined && { consumerCallsiteId: consumerCallsites[index] }),
     ...(sourceOccurrences[index] !== undefined && sourceOccurrences[index]),
+    producerPath: producerPaths[index],
     resultDependencies: Object.freeze(resultDependencies[index]),
   }));
   const rootLogicalCaller = invocations[0].logicalCaller;

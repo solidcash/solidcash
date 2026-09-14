@@ -63,6 +63,7 @@ export {
 export {
   canonicalValueChunkProducerIdentity,
   canonicalValueChunkProducerPathContext,
+  appendValueChunkProducerSourceSite,
   canonicalValueChunkProducerResourceIdentity,
   canonicalValueChunkProducerResourceClaim,
   bindValueChunkProducerClaimAliases,
@@ -75,6 +76,7 @@ export {
   type ValueChunkProducerSourceSite,
   type ValueChunkProducerRouteRowCoordinates,
   type ValueChunkProducerPathContext,
+  type ValueChunkProducerPathDisposition,
   type SingletonValueChunkProducerSelection,
 } from './ValueChunkProducerIdentity.js';
 export {

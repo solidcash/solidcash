@@ -130,7 +130,40 @@ const persistedValueChunkWrites = new Map<string, {
   value: Uint8Array; lockingBytecode: Uint8Array; width: number;
   recipe: { slot: Uint8Array; root: Uint8Array; collection: string; categoryId: string };
 }>();
-const stagedValueChunkWrites = new Map<string, Uint8Array>();
+/** Mutable value-chunk candidates scoped to one transaction build. */
+export class ValueChunkWriteStagingSession {
+  private readonly writes = new Map<string, Uint8Array>();
+
+  stage(write: ValueChunkWriteDescriptor, value: Uint8Array): boolean {
+    if (!validValueChunkWriteIdentity(write)
+      || value.length <= 60 || value.length > MAX_PERSISTED_JOB_EVENTS_BYTES) return false;
+    this.writes.set(valueChunkWriteIdentity(write), value);
+    return true;
+  }
+
+  get(write: ValueChunkWriteDescriptor): Uint8Array | undefined {
+    if (!validValueChunkWriteIdentity(write)) return undefined;
+    return this.writes.get(valueChunkWriteIdentity(write));
+  }
+
+  delete(write: ValueChunkWriteDescriptor): void {
+    this.writes.delete(valueChunkWriteIdentity(write));
+  }
+
+  clear(categoryId?: string): void {
+    if (categoryId === undefined) {
+      this.writes.clear();
+      return;
+    }
+    const prefix = `${categoryId.toLowerCase()}:`;
+    for (const key of this.writes.keys()) {
+      if (key.startsWith(prefix)) this.writes.delete(key);
+    }
+  }
+}
+
+// Public helpers and directly constructed builders retain the historical shared staging scope.
+const defaultValueChunkWriteStagingSession = new ValueChunkWriteStagingSession();
 const readyValueChunkWrites = new Set<string>();
 const persistedValueChunkSpends = new Map<string, Array<{
   txid: string; vout: number; satoshis: bigint;
@@ -1225,16 +1258,19 @@ function validValueChunkWriteIdentity(write: ValueChunkWriteDescriptor): boolean
 }
 
 /** Stage one compiler-described chunkable value without sharing category-wide mutable state. */
-export function stageValueChunkWrite(write: ValueChunkWriteDescriptor, value: Uint8Array): boolean {
-  if (!validValueChunkWriteIdentity(write)
-    || value.length <= 60 || value.length > MAX_PERSISTED_JOB_EVENTS_BYTES) return false;
-  stagedValueChunkWrites.set(valueChunkWriteIdentity(write), value);
-  return true;
+export function stageValueChunkWrite(
+  write: ValueChunkWriteDescriptor,
+  value: Uint8Array,
+  session = defaultValueChunkWriteStagingSession,
+): boolean {
+  return session.stage(write, value);
 }
 
-export function stagedValueChunkWrite(write: ValueChunkWriteDescriptor): Uint8Array | undefined {
-  if (!validValueChunkWriteIdentity(write)) return undefined;
-  return stagedValueChunkWrites.get(valueChunkWriteIdentity(write));
+export function stagedValueChunkWrite(
+  write: ValueChunkWriteDescriptor,
+  session = defaultValueChunkWriteStagingSession,
+): Uint8Array | undefined {
+  return session.get(write);
 }
 
 export function isValueChunkWriteReady(write: ValueChunkWriteDescriptor): boolean {
@@ -1391,11 +1427,12 @@ export function rememberValueChunkUnlockRecipe(
 export function commitStagedValueChunkWrite(
   write: ValueChunkWriteDescriptor,
   lockingBytecode: Uint8Array,
+  session = defaultValueChunkWriteStagingSession,
 ): boolean {
-  const identity = valueChunkWriteIdentity(write);
-  const value = stagedValueChunkWrites.get(identity);
+  const value = session.get(write);
   if (!value || !rememberValueChunkUnlockRecipe(write, value, lockingBytecode)) return false;
-  stagedValueChunkWrites.delete(identity);
+  session.delete(write);
+  const identity = valueChunkWriteIdentity(write);
   readyValueChunkWrites.add(identity);
   return true;
 }
@@ -1425,13 +1462,14 @@ export function persistedValueChunkWriteState(
 export function selectPersistedValueChunkWrite(
   writes: ReadonlyArray<ValueChunkWriteDescriptor>,
   categoryId?: string,
+  session = defaultValueChunkWriteStagingSession,
 ): ValueChunkWriteDescriptor | undefined {
   // INSERT must be eligible: first publishJobEvent stages the JobEventData[] blob before
   // the nested probe has a full root-matching value on the stack.
   const candidates = writes.filter((write) => (
     (write.operation === 'update' || write.operation === 'insert')
     && (categoryId === undefined || write.categoryId === categoryId)
-    && (stagedValueChunkWrite(write) !== undefined || persistedValueChunkWriteState(write) !== undefined)
+    && (stagedValueChunkWrite(write, session) !== undefined || persistedValueChunkWriteState(write) !== undefined)
   ));
   const identities = new Map(candidates.map((write) => [valueChunkWriteIdentity(write), write]));
   return identities.size === 1 ? [...identities.values()][0] : undefined;
@@ -5941,6 +5979,8 @@ export interface StatefulTransactionOptions extends TransactionBuilderOptions {
   /** Convention of the ABI body currently driving this builder. Historical application-name fallbacks must
    * never run for a kernel-owned route, even if every nested group is legacy or descriptor-free. */
   messageBusConvention?: 'legacy-unroll' | 'kernel-row-loop';
+  /** Per-build mutable chunk candidates. Omitted by directly constructed legacy builders. */
+  valueChunkWriteStagingSession?: ValueChunkWriteStagingSession;
   funderUtxos?: UnlockableUtxo[];     // funder UTXOs for output-only slots
   /** Immutable SCID anchor co-spent outside every fixed participant block to authenticate a stable logical
    * call target. Runtime caller identity is always taken from the active covenant input instead. */
@@ -6108,6 +6148,7 @@ export class StatefulTransactionBuilder {
   private keccakLoopRecreates: Output[];
   private blockLayout?: FunctionBlockLayout;
   private messageBusConvention?: 'legacy-unroll' | 'kernel-row-loop';
+  readonly valueChunkWriteStagingSession: ValueChunkWriteStagingSession;
   private logicalIdentityUtxo?: UnlockableUtxo;
   private externalIdentityAnchorUtxos: UnlockableUtxo[] = [];
   private childDeploymentInputs = new Map<number, UnlockableUtxo>();
@@ -6231,6 +6272,8 @@ export class StatefulTransactionBuilder {
     this.masterUtxo = options.masterUtxo;
     this.dataNftUtxos = options.dataNftUtxos;
     this.categoryId = options.categoryId;
+    this.valueChunkWriteStagingSession = options.valueChunkWriteStagingSession
+      ?? defaultValueChunkWriteStagingSession;
     this.readOnlyDataNftUtxos = options.readOnlyDataNftUtxos ?? [];
     this.blockhashCoSpendUtxos = options.blockhashCoSpendUtxos ?? [];
     this.blockhashCoSpendSlotOrdinals = options.blockhashCoSpendSlotOrdinals;
@@ -7285,9 +7328,7 @@ export class StatefulTransactionBuilder {
       for (const key of persistedValueChunkWrites.keys()) {
         if (key.startsWith(`${categoryId.toLowerCase()}:`)) persistedValueChunkWrites.delete(key);
       }
-      for (const key of stagedValueChunkWrites.keys()) {
-        if (key.startsWith(`${categoryId.toLowerCase()}:`)) stagedValueChunkWrites.delete(key);
-      }
+      defaultValueChunkWriteStagingSession.clear(categoryId);
       for (const key of readyValueChunkWrites) {
         if (key.startsWith(`${categoryId.toLowerCase()}:`)) readyValueChunkWrites.delete(key);
       }
@@ -7309,7 +7350,7 @@ export class StatefulTransactionBuilder {
       persistedJobEventsSpends.clear();
       persistedJobEventsRecipes.clear();
       persistedValueChunkWrites.clear();
-      stagedValueChunkWrites.clear();
+      defaultValueChunkWriteStagingSession.clear();
       readyValueChunkWrites.clear();
       persistedValueChunkSpends.clear();
       observedValueChunkStatesByCategory.clear();
@@ -13344,12 +13385,14 @@ export class StatefulTransactionBuilder {
       if (spends.length > 0) {
         persistedValueChunkSpends.set(valueChunkWriteIdentity(selection.write), spends);
       }
-      const staged = stagedValueChunkWrite(selection.write);
+      const staged = stagedValueChunkWrite(selection.write, this.valueChunkWriteStagingSession);
       const authenticatedLock = redeemLock ?? chunks[0]?.lockingBytecode;
       if (staged && authenticatedLock) {
-        commitStagedValueChunkWrite(selection.write, authenticatedLock);
+        commitStagedValueChunkWrite(
+          selection.write, authenticatedLock, this.valueChunkWriteStagingSession,
+        );
       }
-      stagedValueChunkWrites.delete(valueChunkWriteIdentity(selection.write));
+      this.valueChunkWriteStagingSession.delete(selection.write);
     } else if (selection.status === 'absent' && !this._hasChunkableValueWriteMetadata()
       && this._permitsLegacyNamedValueChunkFallback()) {
       // Compatibility only for descriptor-free artifacts.
@@ -15039,7 +15082,9 @@ export class StatefulTransactionBuilder {
       .flatMap((group) => group.valueChunkWrites ?? [])
       .filter((write) => categoryId === undefined || write.categoryId === categoryId);
     if (writes.length === 0) return undefined;
-    return selectPersistedValueChunkWrite(writes, categoryId) ?? null;
+    return selectPersistedValueChunkWrite(
+      writes, categoryId, this.valueChunkWriteStagingSession,
+    ) ?? null;
   }
 
   /** Resolve an exact collection lock, retaining schema inference only for descriptor-free legacy plans. */
@@ -15061,7 +15106,7 @@ export class StatefulTransactionBuilder {
     if (selection.status === 'exact') {
       if (categoryId !== undefined
         && selection.write.categoryId.toLowerCase() !== categoryId.toLowerCase()) return undefined;
-      return stagedValueChunkWrite(selection.write);
+      return stagedValueChunkWrite(selection.write, this.valueChunkWriteStagingSession);
     }
     if (selection.status === 'ambiguous' || this._hasChunkableValueWriteMetadata()
       || !this._permitsLegacyNamedValueChunkFallback()) return undefined;

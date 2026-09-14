@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { getValueChunkLockingBytecode } from '../../src/stateful/covenant-helpers.js';
 import {
   StatefulTransactionBuilder,
+  ValueChunkWriteStagingSession,
   commitStagedValueChunkWrite,
   isPersistedJobEventsReady,
   isValueChunkWriteReady,
@@ -40,6 +41,22 @@ const descriptor = (
 
 describe('value-chunk descriptor authority', () => {
   afterEach(() => StatefulTransactionBuilder.clearPersistedJobEvents());
+
+  it('isolates mutable staged values between transaction build sessions', () => {
+    const firstSession = new ValueChunkWriteStagingSession();
+    const secondSession = new ValueChunkWriteStagingSession();
+    const firstValue = new Uint8Array(96).fill(0x31);
+    const secondValue = new Uint8Array(96).fill(0x32);
+
+    expect(stageValueChunkWrite(descriptor('records', 1), firstValue, firstSession)).toBe(true);
+    expect(stageValueChunkWrite(descriptor('records', 1), secondValue, secondSession)).toBe(true);
+    expect(stagedValueChunkWrite(descriptor('records', 1), firstSession)).toEqual(firstValue);
+    expect(stagedValueChunkWrite(descriptor('records', 1), secondSession)).toEqual(secondValue);
+
+    firstSession.clear(categoryId);
+    expect(stagedValueChunkWrite(descriptor('records', 1), firstSession)).toBeUndefined();
+    expect(stagedValueChunkWrite(descriptor('records', 1), secondSession)).toEqual(secondValue);
+  });
 
   it('retains independent values and locks for resources sharing one category', () => {
     const first = descriptor('records', 1);

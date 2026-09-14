@@ -220,6 +220,7 @@ import {
   selectValueChunkCommitmentObservations,
   type ValueChunkTraceObservation,
   type ValueChunkWriteDescriptor,
+  ValueChunkWriteStagingSession,
   valueChunkWriteResourceIdentity,
   sameDerivedChunkOutputObservation,
   ownsCapturedValueChunkOutputBase,
@@ -1997,6 +1998,7 @@ function extractAllRouteValueChunks(
   categoryId?: string,
   valueChunkWrites?: ReadonlyArray<ValueChunkWriteDescriptor>,
   candidateValues: ReadonlyArray<Uint8Array> = [],
+  stagingSession?: ValueChunkWriteStagingSession,
 ): Array<{ outputIndex: number; lockingBytecode: Uint8Array; commitment: string }> {
   lastExtractedComputedValue = undefined;
   let minChunks = plannedWidth;
@@ -2016,7 +2018,7 @@ function extractAllRouteValueChunks(
   const stagedCandidates: Uint8Array[] = [];
   if (valueChunkWrites) {
     for (const write of valueChunkWrites) {
-      const staged = stagedValueChunkWrite(write);
+      const staged = stagedValueChunkWrite(write, stagingSession);
       if (staged && staged.length > VALUE_HEAD_SIZE) stagedCandidates.push(staged);
     }
   }
@@ -2032,13 +2034,14 @@ function extractAllRouteValueChunks(
     allCandidates,
   );
   const persistedWrite = valueChunkWrites === undefined
-    ? undefined : selectPersistedValueChunkWrite(valueChunkWrites, categoryId);
+    ? undefined : selectPersistedValueChunkWrite(valueChunkWrites, categoryId, stagingSession);
   // Compatibility-only callers without compiler descriptors may still use the historical category cache.
   // Descriptor-aware kernel calls must authenticate collection signature + key slot before borrowing state.
   const persisted = valueChunkWrites === undefined
     ? (categoryId ? persistedJobEventsValue(categoryId) : undefined)
     : (persistedWrite
-      ? (stagedValueChunkWrite(persistedWrite) ?? persistedValueChunkWriteState(persistedWrite)?.value)
+      ? (stagedValueChunkWrite(persistedWrite, stagingSession)
+        ?? persistedValueChunkWriteState(persistedWrite)?.value)
       : undefined);
   const persistWideEnough = persisted
     && Math.ceil((persisted.length - VALUE_HEAD_SIZE) / VALUE_CHUNK_SIZE) >= Math.max(1, minChunks);
@@ -2198,6 +2201,8 @@ function deriveRouteValueChunks(
       : group.valueChunkOutputCount ?? identityPin?.nNew ?? 0,
     usesSharedBand ? group.categoryId : undefined,
     writes,
+    [],
+    stb.valueChunkWriteStagingSession,
   );
   if (witness && allChunks.length > 0) {
     for (const collection of chunkableValueWriteCollections(witness.carrier, witness.abiFunction)) {
@@ -12059,7 +12064,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       group.valueChunkWrites = describeValueChunkWrites(group);
       return group.valueChunkWrites;
     });
-    const selectedPersistedChunkWrite = selectPersistedValueChunkWrite(valueChunkWrites);
+    const selectedPersistedChunkWrite = selectPersistedValueChunkWrite(
+      valueChunkWrites, undefined, stb.valueChunkWriteStagingSession,
+    );
     const persistedChunkWrite = selectedPersistedChunkWrite
       && isValueChunkWriteReady(selectedPersistedChunkWrite) ? selectedPersistedChunkWrite : undefined;
     const persistWidthAtEntry = persistedChunkWrite
@@ -14069,6 +14076,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               chunkCategory,
               valueChunkWrites,
               publishArgsCandidates,
+              stb.valueChunkWriteStagingSession,
             );
             // The extracted value is the derived post-handler value: it owns continuation
             // outputs and persistence only. `__internal__valueWitness_N` authenticates the
@@ -16582,6 +16590,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       omitLocalFeeTail?: boolean;
     },
   ): Promise<StatefulTransactionBuilder> {
+    const valueChunkWriteStagingSession = new ValueChunkWriteStagingSession();
     const timingEnabled = (globalThis as { process?: { env?: Record<string, string> } }).process?.env
       ?.SOLIDC_DEBUG_BUILDER_TIMING === '1';
     const startedAt = Date.now();
@@ -21686,7 +21695,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         const directGroup = externalCallUtxoGroups[externalCallUtxoGroups.length - 1];
         directGroup.valueChunkWrites = describeValueChunkWrites(directGroup);
         if (bDirectChunkValue && directGroup.valueChunkWrites.length === 1) {
-          stageValueChunkWrite(directGroup.valueChunkWrites[0], bDirectChunkValue);
+          stageValueChunkWrite(
+            directGroup.valueChunkWrites[0], bDirectChunkValue, valueChunkWriteStagingSession,
+          );
         }
       }
 
@@ -24310,7 +24321,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                               outputCount: 0,
                             } : undefined;
                           if (exactWrite) {
-                            stageValueChunkWrite(exactWrite, nextValue);
+                            stageValueChunkWrite(
+                              exactWrite, nextValue, valueChunkWriteStagingSession,
+                            );
                           } else if (permitsLegacyNamedValueChunkFallback(
                             [{
                               logicalArtifact: sharedLogicalArtifact,
@@ -28778,6 +28791,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         ? BigInt(this.inner.provider.consensusLimits?.maximumTransactionBytes ?? 10_000_000)
         : 50000n,
       checkMinRelayFee: true,
+      valueChunkWriteStagingSession,
       masterUtxo: unlockableMaster,
       dataNftUtxos: unlockableDataNfts,
       stateLayout,
@@ -30221,7 +30235,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       const describedPersistedWrites = [
         ...builder.getExternalCallUtxoGroups(), ...builder.getLowLevelCallUtxoGroups(),
       ].flatMap((group) => group.valueChunkWrites ?? describeValueChunkWrites(group));
-      const describedPersistedWrite = selectPersistedValueChunkWrite(describedPersistedWrites);
+      const describedPersistedWrite = selectPersistedValueChunkWrite(
+        describedPersistedWrites, undefined, valueChunkWriteStagingSession,
+      );
       const persistBeforeDerive = describedPersistedWrite && isValueChunkWriteReady(describedPersistedWrite)
         ? (persistedValueChunkWriteState(describedPersistedWrite)?.width ?? 0)
         : (describedPersistedWrites.length === 0 && permitsLegacyNamedValueChunkFallback(

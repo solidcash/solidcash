@@ -607,3 +607,44 @@ largest single remaining item. Removing it needs a redesign of the lookahead, no
 One agent also observed a pre-existing, unrelated crash: `if (cond) { to.transfer(x); }` inside a
 `for (… of enumerable mapping)` throws in `SymbolTableTraversal` (`IdentifierNode 'to.transfer'`). Not a
 performance matter, but it is a real defect worth a separate look.
+
+## 22. Grind session: five iterations (10.5 s -> ~9.4 s)
+
+Five bounded iterations, each landed only when the full gate passed (byte-identical output and `solidc`
+189 failed / 4828 passed of 5017). Targets came from an earlier read-only call census that measured, per
+compile, 3,675 functions and ~49M calls, with per-walker call/entry/distinct-input counts.
+
+| # | Change | Result |
+|---|---|---|
+| 1 | Answer the mapping-key invariance checks from one body walk (`CacheMappingEntryInLoop`) | **shipped**, 10.5 s -> 9.4 s |
+| 2 | Per-body census of `StateArrayPushNode` counts (`SymbolTableTraversal.countPushes`) | **reverted** |
+| 3 | Memoise the flattened transfer-index walk per block (`collectTransferIndices`) | **shipped** |
+| 4 | Memoise `functionReferenceIds` per contract per traversal | **shipped** |
+| 5 | Memoise `blockContainsReturn` per traversed block | **shipped** |
+
+**Iteration 2 is the instructive failure.** `countPushes` was a strong-looking candidate: 404,376 recursive
+calls over 249 top-level entries that all shared a **single** distinct body (99.6% repeats). Replacing the
+per-name walk with one census of all `StateArrayPushNode` names reproduced the identity hash but pushed the
+suite to **191 failed / 4826 passed** — two tests more than baseline, beyond the known one-test flake. It was
+reverted rather than debugged, because the prize was ~50 ms and the failure mode was a real behavioural
+change. The two candidates that *did* pass had something iteration 2 lacked: they were verified pure by an
+independent agent (which enumerated the marker writers and the mutation points) rather than by inspection.
+
+**Cross-instance memoisation is the recurring theme.** The repeats these iterations removed are mostly
+*between* `GenerateTargetTraversal` instances (~184 per compile), not within one — a per-instance `WeakMap`
+is inert for that pattern, which is why the existing per-instance `runtimeLoopScanCache` had limited effect.
+Where the memo had to be visible across the codegen phase (`collectTransferIndices`) it was made a
+module-level `WeakMap` with an explicit invalidation at `bindTransferOnlyRawCallOrdinals`, the one
+codegen-time writer of `transferIndex` ordinals.
+
+**Two measurement lessons, both earned the hard way.**
+
+- The `solidc` suite is **flaky**: back-to-back runs of one identical commit gave 190/4827 and then 189/4828,
+  and a JSON run gave 189 with a failure set identical to clean HEAD. Compare failing **test names**, not
+  counts, or a good change will be discarded and a bad one accepted.
+- `scripts/gate.sh` initially reported `status: 0` even on a failed build, because
+  `yarn ... | grep && status=1` runs the assignment in a pipeline subshell. Fixed and verified by breaking the
+  build deliberately and confirming exit 1. Before that fix the identity check was the only real guard.
+
+Final state: **~9.4 s** for the maintained MarketplaceV1 compile (from 42.8 s at the start of this work, 4.5x),
+byte-identical throughout, 24 commits on `perf/marketplace-speedup-investigation`.

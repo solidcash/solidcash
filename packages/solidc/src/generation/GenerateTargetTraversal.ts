@@ -247,6 +247,26 @@ import { substituteInExpression } from '../semantic/InheritanceExpansionTransfor
 // array maps to transaction inputs/outputs, so it cannot exceed the tx input/output count (~3119 minimal outputs
 // in a standard 100000-byte BCH tx). 10000 sits above that (rejects no real array) and matches the array
 // safe-decode limit in @solidcash/utils (state.ts); an astronomical bound is refused rather than exhausting memory.
+/**
+ * Flattened `transferIndex` sets per block, keyed by node identity, plus the invalidation hook for them.
+ *
+ * `collectTransferIndices` walks a block and every callee body it reaches. Each codegen pass builds its own
+ * traversal instance, so the same blocks were re-walked once per instance: a read-only call census measured
+ * 2,485,158 recursive calls over 6,265 entries covering only 3,205 distinct blocks. The walk reads node classes
+ * and the `transferIndex` / `valueTransferIndex` / `runtimeLoopTransfer` markers, which semantic lowering writes
+ * before codegen, so the flattened set is a pure function of the block.
+ *
+ * Only the default (empty `seenCallees`) call is memoized; a non-empty `seenCallees` prunes callee bodies and
+ * would need its own key. The memo is replaced whenever codegen assigns fresh ordinals
+ * (`bindTransferOnlyRawCallOrdinals`), the one codegen-time writer of those markers.
+ */
+let transferIndexMemo = new WeakMap<Node, ReadonlySet<number>>();
+
+/** Drop the memo above; call before mutating `transferIndex`/`valueTransferIndex` on reachable nodes. */
+function clearTransferIndexMemo(): void {
+  transferIndexMemo = new WeakMap<Node, ReadonlySet<number>>();
+}
+
 const MAX_MATERIALIZED_ARRAY_ELEMENTS = 10000;
 // The "invalid" internal function-pointer value (Solidity's zero fn-ptr). functionIds are small sequential ints
 // (from 0), so this large sentinel is never a defined id and OP_INVOKE hard-fails on it -> calling a deleted or
@@ -3137,7 +3157,20 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     return found;
   }
 
+  /**
+   * Cached result of `functionReferenceIds` per contract node. It is a whole-contract walk called twice on the
+   * same node during one emission (the indirect-dispatch prelude and `emitFunctionDefinesAndDispatch`), and a
+   * read-only call census measured it at ~70-80ms per compile. The walk reads only node classes and the
+   * `functionReference.functionId` marks that symbol resolution attaches before codegen.
+   *
+   * A module-level WeakMap cannot be used because codegen rewrites child pointers in place, so the cache is
+   * per traversal instance; callers only call `.has` on the returned set, so it is never mutated.
+   */
+  private functionReferenceIdsCache = new WeakMap<ContractNode, Set<number>>();
+
   private functionReferenceIds(node: ContractNode): Set<number> {
+    const cached = this.functionReferenceIdsCache.get(node);
+    if (cached !== undefined) return cached;
     const ids = new Set<number>();
     const visit = (current: Node, seen = new Set<Node>()): void => {
       if (seen.has(current)) return;
@@ -3154,6 +3187,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
     };
     visit(node);
+    this.functionReferenceIdsCache.set(node, ids);
     return ids;
   }
 
@@ -5366,6 +5400,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     inspect(fn.body);
     if (!required) return;
 
+    // Fresh ordinals are about to be written onto reachable nodes, so any memoized flattening is stale.
+    clearTransferIndexMemo();
     const assign = (value: unknown, start: number, seen = new WeakSet<object>()): number => {
       if (!(value instanceof Node) || seen.has(value)) return start;
       seen.add(value);
@@ -7494,7 +7530,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * or resolvedFunction/functionReference back-pointers (a return in a CALLED function is not this branch's, and
    * following those cycles on a recursive function). A visited guard backstops any residual cycle.
    */
+  /**
+   * Cached `blockContainsReturn` results per traversed node. The predicate is asked for the same blocks
+   * repeatedly (a read-only call census measured 6,118 calls over 3,116 distinct nodes, i.e. about half of all
+   * calls were repeats), and it reads only the statement containers along a fixed key list. Cached per traversal
+   * instance because codegen rewrites child pointers in place.
+   */
+  private blockContainsReturnCache = new WeakMap<Node, boolean>();
+
   private blockContainsReturn(node: Node | undefined): boolean {
+    if (node === undefined) return false;
+    const cached = this.blockContainsReturnCache.get(node);
+    if (cached !== undefined) return cached;
     const CONTAINER_KEYS = new Set([
       'statements', 'ifBlock', 'elseBlock', 'block', 'body', 'cases', 'defaultCase', 'call',
     ]);
@@ -7511,6 +7558,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
     };
     walk(node);
+    this.blockContainsReturnCache.set(node, found);
     return found;
   }
 
@@ -8083,19 +8131,31 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private collectTransferIndices(
     block: Node, indices: Set<number>, seenCallees: Set<FunctionDefinitionNode> = new Set(),
   ): void {
+    const memoizable = seenCallees.size === 0;
+    if (memoizable) {
+      const memoized = transferIndexMemo.get(block);
+      if (memoized !== undefined) {
+        for (const index of memoized) indices.add(index);
+        return;
+      }
+    }
+    // With an empty `seenCallees` the walk is a pure function of the block, so it is accumulated separately and
+    // memoized; otherwise the pruned result is written straight into the caller's set as before.
+    const collected = new Set<number>();
+    const target = memoizable ? collected : indices;
     const seenNodes = new Set<Node>();
     const walk = (node: Node): void => {
       if (seenNodes.has(node)) return;
       seenNodes.add(node);
       if (node instanceof TransferStatementNode || node instanceof AddressTransferStatementNode) {
         if (node instanceof TransferStatementNode && node.runtimeLoopTransfer) return;
-        indices.add(node.transferIndex);
+        target.add(node.transferIndex);
       }
       const valueCall = node as Node & {
         valueTransferIndex?: number; callOptions?: { value?: ExpressionNode };
       };
       if (valueCall.callOptions?.value && (valueCall.valueTransferIndex ?? -1) >= 0) {
-        indices.add(valueCall.valueTransferIndex!);
+        target.add(valueCall.valueTransferIndex!);
       }
       if (node instanceof FunctionCallNode) {
         const callee = node.resolvedFunction;
@@ -8115,6 +8175,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
     };
     walk(block);
+    if (memoizable) {
+      transferIndexMemo.set(block, collected);
+      for (const index of collected) indices.add(index);
+    }
   }
 
   /**

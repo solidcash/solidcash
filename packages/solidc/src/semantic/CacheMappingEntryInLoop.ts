@@ -465,9 +465,10 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
       if (e.bad || !(e.inLoop || e.count >= 2 || e.readAfterWrite
         || (e.written && this.structMappings.has(e.mapping)))) continue;
       // key must be invariant across the function: an identifier must not be reassigned; nullary keys always are.
+      const scope = this.nameScope(body);
       if (e.keys.some((key) => key.kind === 'id'
         && !key.name.startsWith(VMAP_KEY_SNAPSHOT_PREFIX)
-        && (this.assignsName(body, key.name) || this.declaresNameInsideLoop(body, key.name)))) continue;
+        && (scope.assigned.has(key.name) || scope.declaredInLoop.has(key.name)))) continue;
       const expressionKeys = e.keys.filter((key): key is Extract<KeyKind, { kind: 'expression' }> =>
         key.kind === 'expression');
       if (expressionKeys.length > 0) {
@@ -495,6 +496,62 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
    * scope (Kashi cook's `(share, address to, ...) = abi.decode(datas[i], ...)` became a function-top
    * `userCollateralShare[to]` read and failed as an undefined reference).
    */
+  /**
+   * Names the body assigns (`AssignNode` target or any `VariableDefinitionNode`) and names it declares inside a
+   * loop, collected in ONE traversal per body.
+   *
+   * Both predicates were previously invoked per candidate key name over the same body, so a body with N
+   * identifier keys was walked 2N times by `assignsName`/`declaresNameInsideLoop`. A read-only call census
+   * measured 531,664 + 532,018 recursive calls across 26/27 top-level entries over only 8/9 distinct bodies.
+   * The two predicates are pure and read only node classes and names, so answering them from a name set
+   * computed once is exact.
+   */
+  private nameScopeCache = new WeakMap<Node, { assigned: Set<string>; declaredInLoop: Set<string> }>();
+
+  private nameScope(root: Node): { assigned: Set<string>; declaredInLoop: Set<string> } {
+    const cached = this.nameScopeCache.get(root);
+    if (cached !== undefined) return cached;
+    const assigned = new Set<string>();
+    const declaredInLoop = new Set<string>();
+    // Mirrors `assignsName`: it matches an `AssignNode` target or a `VariableDefinitionNode` anywhere in the
+    // body, and it skips no loop context, so every such name is recorded.
+    const scanAssigned = (n: Node): void => {
+      if (n instanceof AssignNode && n.identifier instanceof IdentifierNode) assigned.add(n.identifier.name);
+      else if (n instanceof VariableDefinitionNode) assigned.add(n.name);
+      for (const key of Object.keys(n)) {
+        if (['location', 'resolvedFunction', 'functionReference', 'definition',
+          'collection', 'symbolTable', 'stateVariable'].includes(key)) continue;
+        const v = (n as unknown as Record<string, unknown>)[key];
+        if (v instanceof Node) scanAssigned(v);
+        else if (Array.isArray(v)) for (const e of v) if (e instanceof Node) scanAssigned(e);
+      }
+    };
+    // Mirrors `declaresNameInsideLoop`, which only counts declarations that are already inside a loop.
+    const scanDeclaredInLoop = (n: Node, inLoop: boolean): void => {
+      const nowLoop = inLoop || n instanceof WhileNode || n instanceof DoWhileNode;
+      if (nowLoop && n instanceof VariableDefinitionNode) declaredInLoop.add(n.name);
+      else if (nowLoop && n instanceof TupleAssignmentNode) {
+        for (const element of n.elements) {
+          if (!element.skip && !element.existing && element.name) declaredInLoop.add(element.name);
+        }
+      }
+      for (const key of Object.keys(n)) {
+        if (['location', 'resolvedFunction', 'functionReference', 'definition',
+          'collection', 'symbolTable', 'stateVariable'].includes(key)) continue;
+        const child = (n as unknown as Record<string, unknown>)[key];
+        if (child instanceof Node) scanDeclaredInLoop(child, nowLoop);
+        else if (Array.isArray(child)) for (const item of child) if (item instanceof Node) scanDeclaredInLoop(item, nowLoop);
+      }
+    };
+    // `assignsName` also counts a `VariableDefinitionNode` OUTSIDE a loop, and `declaresNameInsideLoop` counts
+    // one INSIDE it; running both walks covers each predicate's own reach exactly.
+    scanAssigned(root);
+    scanDeclaredInLoop(root, false);
+    const scope = { assigned, declaredInLoop };
+    this.nameScopeCache.set(root, scope);
+    return scope;
+  }
+
   private declaresNameInsideLoop(root: Node, name: string): boolean {
     let found = false;
     const walk = (node: Node, inLoop: boolean): void => {

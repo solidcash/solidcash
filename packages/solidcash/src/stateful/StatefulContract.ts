@@ -123,7 +123,7 @@ import {
   binToUtf8,
   lockingBytecodeToCashAddress,
 } from '@bitauth/libauth';
-import { createVirtualMachineBch2026ForProvider } from '../network/createVirtualMachine.js';
+import { createFaithfulTraceVmForProvider, createVirtualMachineBch2026ForProvider } from '../network/createVirtualMachine.js';
 import { Contract } from '../Contract.js';
 import {
   SortedList, getCachedSortedList, keyToSlot, keyToSlotMulti, bytesToSlotValue, headSentinelCommitment,
@@ -3027,7 +3027,10 @@ function extractPendingReturnCommitment(
       traceIndex >= Math.max(0, fullTrace.length - 32); traceIndex -= 1) {
       const stack = fullTrace[traceIndex].stack;
       for (let stackIndex = stack.length - 1; stackIndex >= 0; stackIndex -= 1) {
-        const candidate = Uint8Array.from(stack[stackIndex]);
+        const candidate = stack[stackIndex];
+        // Same cheap whole-buffer push test as `selectEvmScalarReturnCommitment`: only a candidate that is one
+        // complete push can be the framed route return, and everything else must not pay for a decode attempt.
+        if (peekPushdataEncodedLength(candidate) !== candidate.length) continue;
         try {
           const outer = decodePushdataValue(candidate, 0, 'bytes');
           if (outer.value instanceof Uint8Array && outer.bytesConsumed === candidate.length
@@ -3042,7 +3045,7 @@ function extractPendingReturnCommitment(
     traceIndex >= Math.max(0, fullTrace.length - 32); traceIndex -= 1) {
     const stack = fullTrace[traceIndex].stack;
     for (let stackIndex = stack.length - 1; stackIndex >= 0; stackIndex -= 1) {
-      const candidate = Uint8Array.from(stack[stackIndex]);
+      const candidate = stack[stackIndex];
       if (!matchesExpectedPushes(candidate)) continue;
       return asRouteReturn(candidate);
     }
@@ -3057,7 +3060,7 @@ function extractPendingReturnCommitment(
     for (let traceIndex = fullTrace.length - 1;
       traceIndex >= Math.max(0, fullTrace.length - 32); traceIndex -= 1) {
       for (const raw of fullTrace[traceIndex].stack) {
-        const candidate = Uint8Array.from(raw);
+        const candidate = raw;
         const opcodes = canonicalPushOpcodes(candidate);
         if (!opcodes || opcodes.length === 0 || opcodes.length >= expectedPushes) continue;
         if (expectedTypes.slice(0, opcodes.length).some((type, index) => type === 'bool'
@@ -3084,8 +3087,7 @@ function extractPendingReturnCommitment(
     const strings = new Map<string, Uint8Array>();
     for (let traceIndex = fullTrace.length - 1;
       traceIndex >= Math.max(0, fullTrace.length - 32); traceIndex -= 1) {
-      for (const raw of fullTrace[traceIndex].stack) {
-        const candidate = Uint8Array.from(raw);
+      for (const candidate of fullTrace[traceIndex].stack) {
         if (candidate.length < 2 || candidate.length > 1_024) continue;
         const decoded = binToUtf8(candidate);
         if (binToHex(utf8ToBin(decoded)) !== binToHex(candidate)) continue;
@@ -3112,7 +3114,7 @@ function extractPendingReturnCommitment(
       traceIndex >= Math.max(0, fullTrace.length - 32); traceIndex -= 1) {
       const stack = fullTrace[traceIndex].stack;
       for (let stackIndex = stack.length - 1; stackIndex >= 0; stackIndex -= 1) {
-        const candidate = Uint8Array.from(stack[stackIndex]);
+        const candidate = stack[stackIndex];
         if (candidate.length < 2 || candidate.length > 1_024) continue;
         const decoded = binToUtf8(candidate);
         if (binToHex(utf8ToBin(decoded)) !== binToHex(candidate)) continue;
@@ -3158,6 +3160,36 @@ export function isCanonicalEvmScalarReturnVector(
   });
 }
 
+/**
+ * Encoded length of the pushdata operation at `offset`, resolved from its length prefix alone.
+ *
+ * Mirrors `decodePushdataValue`'s acceptance exactly (including the one-byte constant opcodes, which decode to a
+ * one-byte value) without reading the payload. Return-frame candidates are overwhelmingly raw stack items rather
+ * than framed pushes, and `decodePushdataValue` rejects those by throwing: for a multi-megabyte covenant frame
+ * the captured stack traces dominate the probe. Resolving the length first turns each ordinary rejection into a
+ * byte comparison; a candidate the decoder would reject outright can never be a complete outer frame.
+ */
+function peekPushdataEncodedLength(data: Uint8Array, offset = 0): number | undefined {
+  if (offset < 0 || offset >= data.length) return undefined;
+  const firstByte = data[offset];
+  // OP_0 pushes an empty item; OP_1NEGATE / OP_1-OP_16 push one byte.
+  if (firstByte === 0x00 || firstByte === 0x4f) return 1;
+  if (firstByte >= 0x51 && firstByte <= 0x60) return 1;
+  if (firstByte === 0x4c) {
+    if (offset + 2 > data.length) return undefined;
+    const length = data[offset + 1];
+    return offset + 2 + length <= data.length ? 2 + length : undefined;
+  }
+  if (firstByte === 0x4d) {
+    if (offset + 3 > data.length) return undefined;
+    const length = data[offset + 1] | (data[offset + 2] << 8);
+    return offset + 3 + length <= data.length ? 3 + length : undefined;
+  }
+  // Any other byte is either a direct length (1-75) or not a push at all (OP_PUSHDATA_4 and ordinary opcodes).
+  if (firstByte > 75) return undefined;
+  return offset + 1 + firstByte <= data.length ? 1 + firstByte : undefined;
+}
+
 /** Select a complete Solidity return from strongest-to-weakest live stack candidates. */
 export function selectEvmScalarReturnCommitment(
   candidates: readonly Uint8Array[], expectedTypes: readonly string[], allowRaw = true,
@@ -3169,6 +3201,10 @@ export function selectEvmScalarReturnCommitment(
   // none of them is a complete framed return. A progressive probe can stop after the frame is assembled and
   // before its output comparison, so this is also the strongest result available in that state.
   for (const candidate of candidates) {
+    // A complete outer bytes field is exactly one push. Resolving that from the length prefix rejects the
+    // ordinary route-frame item (a raw state value, hash, or script) without slicing it and without the
+    // exception `decodePushdataValue` would raise and capture a stack trace for.
+    if (peekPushdataEncodedLength(candidate) !== candidate.length) continue;
     try {
       const outer = decodePushdataValue(candidate, 0, 'bytes');
       if (!(outer.value instanceof Uint8Array) || outer.bytesConsumed !== candidate.length) continue;
@@ -3198,6 +3234,7 @@ export function selectEvmScalarReturnCommitment(
 export function isCanonicalEvmScalarReturnBlob(
   candidate: Uint8Array, expectedTypes: readonly string[],
 ): boolean {
+  if (peekPushdataEncodedLength(candidate) !== candidate.length) return false;
   try {
     const outer = decodePushdataValue(candidate, 0, 'bytes');
     return outer.value instanceof Uint8Array
@@ -3291,6 +3328,7 @@ export function selectEvmReturnCommitment(
   candidates: readonly Uint8Array[], expectedTypeGroups: readonly (readonly string[])[], allowRaw = true,
 ): string | undefined {
   for (const candidate of candidates) {
+    if (peekPushdataEncodedLength(candidate) !== candidate.length) continue;
     try {
       const outer = decodePushdataValue(candidate, 0, 'bytes');
       if (!(outer.value instanceof Uint8Array) || outer.bytesConsumed !== candidate.length) continue;
@@ -3314,7 +3352,7 @@ function extractEvmReturnCommitment(
   for (let traceIndex = fullTrace.length - 1; traceIndex >= Math.max(0, fullTrace.length - 96); traceIndex--) {
     const stack = fullTrace[traceIndex].stack;
     for (let stackIndex = stack.length - 1; stackIndex >= 0; stackIndex--) {
-      candidates.push(Uint8Array.from(stack[stackIndex]));
+      candidates.push(stack[stackIndex]);
     }
   }
   return selectEvmReturnCommitment(candidates, expectedTypeGroups, allowRaw);
@@ -3334,7 +3372,7 @@ function extractEvmScalarReturnCommitment(
   for (let traceIndex = fullTrace.length - 1; traceIndex >= Math.max(0, fullTrace.length - 96); traceIndex--) {
     const stack = fullTrace[traceIndex].stack;
     for (let stackIndex = stack.length - 1; stackIndex >= 0; stackIndex--) {
-      candidates.push(Uint8Array.from(stack[stackIndex]));
+      candidates.push(stack[stackIndex]);
     }
   }
   return selectEvmScalarReturnCommitment(candidates, expectedTypes, allowRaw);
@@ -4202,11 +4240,19 @@ interface CachedProbeVm {
   vm: ReturnType<typeof createVirtualMachineBch2026ForProvider>;
 }
 
+interface CachedFaithfulTraceVm {
+  trace: AuthenticationProgramStateCommon[];
+  /** Phase exits reported by the cached P2SH evaluator during the current evaluation. */
+  phaseExits: number;
+  vm: ReturnType<typeof createVirtualMachineBch2026ForProvider>;
+}
+
 // Probe evaluation is synchronous, and a provider's consensus limits are immutable for its lifetime. Rebuilding
 // libauth's complete BCH-2026 instruction set (then wrapping the observed opcode handlers) for every convergence
 // step is therefore pure overhead. Keep the VM and its observer closure, resetting only the small trace buffer.
 const probeVmCache = new WeakMap<NetworkProvider, CachedProbeVm>();
 const debugVmCache = new WeakMap<NetworkProvider, ReturnType<typeof createVirtualMachineBch2026ForProvider>>();
+const faithfulTraceVmCache = new WeakMap<NetworkProvider, CachedFaithfulTraceVm>();
 
 function cachedDebugVm(provider: NetworkProvider): ReturnType<typeof createVirtualMachineBch2026ForProvider> {
   const existing = debugVmCache.get(provider);
@@ -4214,6 +4260,124 @@ function cachedDebugVm(provider: NetworkProvider): ReturnType<typeof createVirtu
   const vm = createVirtualMachineBch2026ForProvider(provider);
   debugVmCache.set(provider, vm);
   return vm;
+}
+
+/** Keys libauth's `partiallyCloneProgramState` shallow-clones; every other key is deep-cloned there. */
+const TRACE_SHALLOW_ARRAY_KEYS = new Set(['alternateStack', 'controlStack', 'signedMessages', 'stack']);
+
+/**
+ * Snapshot one program state for a faithful trace, mirroring libauth's `partiallyCloneProgramState`.
+ *
+ * The one deliberate difference is `functionTable`. libauth deep-clones it - the complete OP_DEFINE'd body table,
+ * tens of kilobytes for an outlined contract - on every operation, which is what made a 6,132-state probe spend
+ * 2.4 s almost entirely inside `structuredClone`. Sharing it is observationally equivalent: a repeated function
+ * identifier is a VM error, so the table only ever grows, and no consumer reads it from a historical trace.
+ * Everything else (including `metrics`) is copied exactly as libauth copies it, so an inactive-branch or
+ * mutated-item difference cannot hide behind this change.
+ */
+function snapshotProgramState(state: AuthenticationProgramStateCommon): AuthenticationProgramStateCommon {
+  return Object.fromEntries(Object.entries(state).map(([key, value]) => {
+    if (key === 'instructions' || key === 'program' || key === 'functionTable') return [key, value];
+    if (TRACE_SHALLOW_ARRAY_KEYS.has(key)) return [key, (value as unknown[]).slice()];
+    return [key, structuredClone(value)];
+  })) as AuthenticationProgramStateCommon;
+}
+
+function cachedFaithfulTraceVm(provider: NetworkProvider): CachedFaithfulTraceVm {
+  const existing = faithfulTraceVmCache.get(provider);
+  if (existing) return existing;
+  const cached = {
+    trace: [] as AuthenticationProgramStateCommon[],
+    phaseExits: 0,
+  } as CachedFaithfulTraceVm;
+  cached.vm = createFaithfulTraceVmForProvider(provider, (unknownState) => {
+    cached.trace.push(snapshotProgramState(unknownState as AuthenticationProgramStateCommon));
+  }, (unknownState) => {
+    cached.phaseExits += 1;
+    cached.trace.push(snapshotProgramState(unknownState as AuthenticationProgramStateCommon));
+  });
+  faithfulTraceVmCache.set(provider, cached);
+  return cached;
+}
+
+/**
+ * Evaluate `program` while recording a faithful trace, in the exact shape `vm.debug()` returns: each evaluation
+ * phase's entry state, the state after every operation of that phase, the state the phase ends with, and finally
+ * the evaluation result itself. The observer records the state *before* each operation (the entry state for the
+ * first one), the phase hook records each exit, and the result is appended last, so the sequence matches the
+ * reference state for state - including the duplicate of the final state that `debug()` appends as `finalResult`.
+ */
+function evaluateFaithfulProbeTrace(
+  provider: NetworkProvider,
+  program: Parameters<ReturnType<typeof createVirtualMachineBch2026ForProvider>['evaluate']>[0],
+): AuthenticationProgramStateCommon[] {
+  const cached = cachedFaithfulTraceVm(provider);
+  cached.trace.length = 0;
+  cached.phaseExits = 0;
+  const finalState = cached.vm.evaluate(program) as AuthenticationProgramStateCommon;
+  cached.trace.push(snapshotProgramState(finalState));
+  const completed = cached.trace;
+  cached.trace = [];
+  return completed;
+}
+
+/**
+ * Compare the faithful recorder's trace with libauth's `debug()` reference and report the first divergence.
+ *
+ * Diagnostic only, enabled by `SOLIDC_DEBUG_TRACE_PARITY=1`: it is how the shallow recorder is held to the
+ * reference on a real probe, where a mutation-in-place or inactive-branch difference would otherwise be silent.
+ */
+function logProbeTraceParity(
+  reference: AuthenticationProgramStateCommon[],
+  candidate: AuthenticationProgramStateCommon[],
+): void {
+  const stackOf = (state: AuthenticationProgramStateCommon): string[] =>
+    state.stack.map((item) => binToHex(item));
+  const describe = (state: AuthenticationProgramStateCommon): Record<string, unknown> => ({
+    ip: state.ip,
+    instructions: state.instructions.length,
+    error: state.error,
+    stack: stackOf(state),
+    alternateStack: state.alternateStack.map((item) => binToHex(item)),
+    controlDepth: state.controlStack.length,
+  });
+  if (reference.length !== candidate.length) {
+    const boundaries = (trace: AuthenticationProgramStateCommon[]): number[] => {
+      const found: number[] = [];
+      let previous: unknown;
+      trace.forEach((state, index) => {
+        if (state.instructions !== previous) {
+          previous = state.instructions;
+          found.push(index);
+        }
+      });
+      return found;
+    };
+    console.error('probe-trace-parity', {
+      equal: false,
+      reason: 'length',
+      referenceStates: reference.length,
+      candidateStates: candidate.length,
+      referenceBoundaries: boundaries(reference),
+      candidateBoundaries: boundaries(candidate),
+    });
+    return;
+  }
+  for (let index = 0; index < reference.length; index += 1) {
+    const left = JSON.stringify(describe(reference[index]));
+    const right = JSON.stringify(describe(candidate[index]));
+    if (left !== right) {
+      console.error('probe-trace-parity', {
+        equal: false,
+        reason: 'state',
+        index,
+        reference: left.slice(0, 2000),
+        candidate: right.slice(0, 2000),
+      });
+      return;
+    }
+  }
+  console.error('probe-trace-parity', { equal: true, states: reference.length });
 }
 
 function fingerprintBytecode(bytes: Uint8Array, cache: WeakMap<Uint8Array, string>): string {
@@ -4570,10 +4734,41 @@ function evaluateProbeTrace(
     || debugEnv?.SC_FORCE_FULL_PROBE_TRACE === '1'
     || debugEnv?.SOLIDC_DEBUG_ROUTE_CONCISE === '1'
     || debugEnv?.SOLIDC_DEBUG_ROUTE_FULL_OPS === '1';
+  const probeTraceTiming = debugEnv?.SOLIDC_DEBUG_PROBE_TRACE_TIMING === '1';
+  // Above ordinary capacity `debug()` is not merely slow, it deep-clones the whole OP_DEFINE'd body table at
+  // every instruction. Prefer the faithful shallow recorder there; `debug()` remains the reference for ordinary
+  // capacity (where it is bounded) and for the explicit diagnostic overrides.
+  const useFaithfulRecorder = forceFullDebug && !preferFullDebug;
+  if (debugEnv?.SOLIDC_DEBUG_TRACE_PARITY === '1' && useFaithfulRecorder) {
+    const reference = cachedDebugVm(provider).debug(program) as AuthenticationProgramStateCommon[];
+    const candidate = evaluateFaithfulProbeTrace(provider, program);
+    logProbeTraceParity(reference, candidate);
+  }
   if (preferFullDebug || forceFullDebug) {
+    const debugStartedAt = probeTraceTiming ? Date.now() : 0;
+    if (useFaithfulRecorder) {
+      const faithful = evaluateFaithfulProbeTrace(provider, program);
+      if (probeTraceTiming) console.error('probe-trace-faithful', {
+        ms: Date.now() - debugStartedAt,
+        states: faithful.length,
+        maxIn,
+        inputs: program.transaction.inputs.length,
+        outputs: program.transaction.outputs.length,
+      });
+      return faithful;
+    }
     try {
       const full = cachedDebugVm(provider)
         .debug(program) as AuthenticationProgramStateCommon[];
+      if (probeTraceTiming) console.error('probe-trace-debug', {
+        ms: Date.now() - debugStartedAt,
+        states: full.length,
+        forced: forceFullDebug,
+        preferFullDebug,
+        maxIn,
+        inputs: program.transaction.inputs.length,
+        outputs: program.transaction.outputs.length,
+      });
       // Live-network pairing fix (solidcash_v0.13.1): `extractCommitmentMapFromTrace` pairs a commitment
       // read with the OP_EQUALVERIFY that FOLLOWS it and resets on any other opcode, which only holds for
       // a trace containing just the probe opcodes. A raw debug trace makes every pair look interrupted.

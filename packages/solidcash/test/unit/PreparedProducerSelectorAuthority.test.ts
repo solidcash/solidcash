@@ -95,6 +95,18 @@ describe('prepared producer selector authority', () => {
       expect(resolvePreparedProducerEntry([overloadedCallee()], 'pick', '99999999')).toBeUndefined();
     });
 
+    it('refuses an unadvertised published selector rather than answering with another entry', () => {
+      // 'keep' is unambiguous at 33333333, but the caller published 11111111 for it. Falling back to the name
+      // would authorize the wrong dispatch target, so a published selector is authoritative or nothing.
+      expect(resolvePreparedProducerEntry([overloadedCallee()], 'keep', ONE_ARG_SELECTOR)).toBeUndefined();
+    });
+
+    it('scans the delegate executor before the forwarder for a published selector', () => {
+      expect(resolvePreparedProducerEntry(
+        [overloadedCallee(), foreignCallee()], 'pick', '44444444',
+      )?.selector).toBe('44444444');
+    });
+
     it('resolves a unique name and refuses a name the callee does not declare', () => {
       expect(resolvePreparedProducerEntry([overloadedCallee()], 'keep')?.selector).toBe('33333333');
       expect(resolvePreparedProducerEntry([overloadedCallee()], 'absent')).toBeUndefined();

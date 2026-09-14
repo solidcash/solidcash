@@ -1620,14 +1620,17 @@ export class AtomicMessageBusComposition {
       );
     }
     if (this.options.requirePreparedIdentity === true) {
-      plan.invocations.forEach((invocation, index) => {
-        // A hand-written prepared call - the public `messageBus.compose({ preparedCalls })` API - carries no
-        // compiler identity at all, so there is nothing for it to agree with. The SDK transport publishes a
-        // producer path on every descriptor it builds (`__preparedAtomicCalls` sets it unconditionally), which
-        // is what makes the identity contract applicable and keeps it enforced on that path.
-        if (descriptors[index].producerPath === undefined) return;
-        assertPreparedInvocationIdentity(descriptors[index], invocation, index);
-      });
+      // The SDK transport tags every descriptor it builds, starting with the root (`__preparedAtomicCalls` sets
+      // `producerPath` unconditionally), while a hand-written prepared call - the public
+      // `messageBus.compose({ preparedCalls })` API - carries no compiler identity at all and has nothing to
+      // agree with. Keying on the whole set rather than per descriptor keeps a transported descriptor that lost
+      // its path a refusal here instead of a silent skip.
+      const transported = descriptors.some((descriptor) => descriptor.producerPath !== undefined);
+      if (transported) {
+        plan.invocations.forEach((invocation, index) => {
+          assertPreparedInvocationIdentity(descriptors[index], invocation, index);
+        });
+      }
     }
     const suppliedSplits = this.options.lifecycleSplits ?? [];
     const splitByParticipant = new Map<number, {

@@ -1694,6 +1694,16 @@ export function selectHashedValueForChunkPin(
   pinLock?: Uint8Array,
   minChunks = 0,
   candidateValues: ReadonlyArray<Uint8Array> = [],
+  /**
+   * Continuation value derived for one exact resource by the compiler-described write it belongs to.
+   *
+   * A handler that appends to a chunkable array computes the post-value from the authenticated pre-value plus
+   * its own mutation and writes the chunks without ever leaving that post-value's `len4||root||head28` tail on
+   * the stack. The read carrier's tail still authenticates the PRE-value, so tail-anchored selection pins the
+   * stale pre-state. The exact resource identity (owner category, collection hash, key slot) is this
+   * candidate's authentication; the pre-value stays admissible only through its own tail.
+   */
+  authoritativeValue?: Uint8Array,
 ): { value: Uint8Array; lockingBytecode: Uint8Array } | undefined {
   // Sparse probe states share immutable stack-item byte arrays. Large routed scripts can remain on the stack for
   // hundreds of observed operations; hashing each repeated reference turned one logical candidate into gigabytes
@@ -1760,6 +1770,13 @@ export function selectHashedValueForChunkPin(
         rootLengths.set(root, storedLen);
       }
     }
+  }
+  // An exact staged write's continuation value is authenticated by the resource identity it was derived under,
+  // not by a valueTail: a write can compute its chunks without leaving the post-value's tail on the stack.
+  if (authoritativeValue && authoritativeValue.length > 60
+    && authoritativeValue.length <= maximumCandidateBytes
+    && (minChunks <= 0 || chunkCount(authoritativeValue) >= minChunks)) {
+    return { value: authoritativeValue, lockingBytecode: lockFor(authoritativeValue) };
   }
   const considerCandidate = (
     item: Uint8Array,

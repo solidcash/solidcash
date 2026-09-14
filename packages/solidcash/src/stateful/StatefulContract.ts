@@ -2019,6 +2019,10 @@ function extractAllRouteValueChunks(
   });
   // Staged INSERT/UPDATE blobs (from publishJobEvent args / leading pushes) are
   // authoritative candidates when the VM stack no longer holds the full value.
+  // A staged write is the derived continuation value for its exact resource, so it outranks every
+  // reconstructed candidate: the pre-value witness authenticates the entry BEFORE this handler and must
+  // never win while a post-value for the same resource is available. The historical category-global cache
+  // is compatibility state, so it stays behind both.
   const stagedCandidates: Uint8Array[] = [];
   if (valueChunkWrites) {
     for (const write of valueChunkWrites) {
@@ -2026,16 +2030,29 @@ function extractAllRouteValueChunks(
       if (staged && staged.length > VALUE_HEAD_SIZE) stagedCandidates.push(staged);
     }
   }
-  if (categoryId) {
-    const staged = persistedJobEventsValue(categoryId);
-    if (staged && staged.length > VALUE_HEAD_SIZE) stagedCandidates.push(staged);
-  }
-  const allCandidates = [...candidateValues, ...stagedCandidates];
+  const historicalCandidate = categoryId ? persistedJobEventsValue(categoryId) : undefined;
+  // The exact write this extraction belongs to owns the continuation value: a single compiler-described resource
+  // whose staged blob was derived from the authenticated pre-value plus the handler's mutation. That value is
+  // authenticated by the resource identity itself, while the pre-value in `candidateValues` is only ever
+  // admissible through its own valueTail.
+  const exactStagedCandidate = (() => {
+    if (!valueChunkWrites?.length) return undefined;
+    const selection = selectValueChunkWriteCategory(valueChunkWrites);
+    if (selection.status !== 'exact') return undefined;
+    const staged = stagedValueChunkWrite(selection.write, stagingSession);
+    return staged && staged.length > VALUE_HEAD_SIZE ? staged : undefined;
+  })();
+  const allCandidates = [
+    ...stagedCandidates,
+    ...candidateValues,
+    ...(historicalCandidate && historicalCandidate.length > VALUE_HEAD_SIZE ? [historicalCandidate] : []),
+  ];
   let selected = selectHashedValueForChunkPin(
     stacks,
     pin?.lockingBytecode,
     minChunks,
     allCandidates,
+    exactStagedCandidate,
   );
   const persistedWrite = valueChunkWrites === undefined
     ? undefined : selectPersistedValueChunkWrite(valueChunkWrites, categoryId, stagingSession);
@@ -2455,6 +2472,13 @@ function writesChunkableValue(
 /** Build exact continuation identities from compiler entry metadata and the planner's authenticated entry input. */
 export function describeValueChunkWrites(
   group: ExternalCallUtxoGroup,
+  /**
+   * Category of the physical state owner this group's writes land in. A delegate executes the implementation's
+   * code against the proxy's state, so the entry NFT and its value chunks live under the proxy's category while
+   * `group.categoryId` names the executor's own deployment. Staging and retrieval key the same resource by this
+   * category, so they must agree on the owner's, never the executor's.
+   */
+  stateOwnerCategoryId?: string,
 ): ValueChunkWriteDescriptor[] {
   const artifact = group.externalContract?.inner?.artifact as Artifact | undefined;
   const abiFunction = group.compilerRoute?.abiFunction
@@ -2490,7 +2514,7 @@ export function describeValueChunkWrites(
       if (bytes.length < 32) continue;
       const keySlot = decodeEntryCommitment(bytes).slot;
       writes.push({
-        categoryId: group.categoryId,
+        categoryId: stateOwnerCategoryId ?? group.categoryId,
         collection: collection.name,
         collectionSignature: collection.signature,
         collectionHash: binToHex(computeCollectionHash(collection.signature)),
@@ -5078,24 +5102,27 @@ function canonicalPreparedSelector(selector: string): string | undefined {
  *    the compiled graph resolves it, or
  * 2. a name whose matching entries all agree on one selector, which makes the name itself exact.
  *
- * Anything else - an unpublished selector, a selector absent from the callee, or two distinct overload
- * selectors under one name - yields `undefined`, leaving the caller without authority rather than guessing.
- * The legacy name-based selection still sizes layouts and returns; only this identity is withheld.
+ * A published selector is authoritative when present, so a malformed one, or one no artifact advertises,
+ * yields `undefined` rather than falling back to a name: the planner would refuse that pair, and answering it
+ * with a different entry would transport authority for the wrong dispatch target. Anything else - no published
+ * selector with two distinct overload selectors under one name, or an undeclared name - also yields
+ * `undefined`, leaving the caller without authority rather than guessing. The legacy name-based selection still
+ * sizes layouts and returns; only this identity is withheld.
  */
 export function resolvePreparedProducerEntry(
   artifacts: readonly Artifact[],
   name: string,
   compilerSelector?: string,
 ): AbiFunction | undefined {
-  const normalized = compilerSelector === undefined
-    ? undefined : canonicalPreparedSelector(compilerSelector);
-  if (compilerSelector !== undefined && normalized === undefined) return undefined;
-  if (normalized !== undefined) {
+  if (compilerSelector !== undefined) {
+    const normalized = canonicalPreparedSelector(compilerSelector);
+    if (normalized === undefined) return undefined;
     for (const artifact of artifacts) {
       const exact = artifact.abi.find((candidate) => candidate.name === name
         && candidate.selector?.toLowerCase() === normalized);
       if (exact) return exact;
     }
+    return undefined;
   }
   for (const artifact of artifacts) {
     const candidates = artifact.abi.filter((candidate) => candidate.name === name);
@@ -12107,10 +12134,23 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       }>;
   }> {
     const stateLayout = this.inner.stateLayout!;
+    // One physical owner may execute as a delegate, so the executor group's writes belong to the linked proxy
+    // group's category. Both lists are described here, which is the only place the linkage is visible.
+    const externalGroups = stb.getExternalCallUtxoGroups();
+    const lowLevelGroups = stb.getLowLevelCallUtxoGroups();
+    const delegateStateOwnerCategories = new Map<number, string>();
+    for (const group of externalGroups) {
+      if (group.delegateCallGroupIndex === undefined
+        || delegateStateOwnerCategories.has(group.delegateCallGroupIndex)) continue;
+      delegateStateOwnerCategories.set(group.delegateCallGroupIndex, group.categoryId);
+    }
     const valueChunkWrites = [
-      ...stb.getExternalCallUtxoGroups(), ...stb.getLowLevelCallUtxoGroups(),
+      ...externalGroups, ...lowLevelGroups,
     ].flatMap((group) => {
-      group.valueChunkWrites = describeValueChunkWrites(group);
+      const stateOwnerCategoryId = lowLevelGroups.includes(group)
+        ? delegateStateOwnerCategories.get(lowLevelGroups.indexOf(group))
+        : undefined;
+      group.valueChunkWrites = describeValueChunkWrites(group, stateOwnerCategoryId);
       return group.valueChunkWrites;
     });
     const selectedPersistedChunkWrite = selectPersistedValueChunkWrite(
@@ -14071,6 +14111,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               ? valueChunkWriteResourceIdentity(valueChunkWriteSelection.write) : undefined;
             // When the nested probe has a valueTail but not the full JobEventData[] blob,
             // reconstruct from publishJobEvent args (+ any staged leading pushes).
+            // The reconstructed continuation value is offered before the pre-handler witness: this band carries
+            // the derived post-state, and the witness exists to authenticate the proof entry before the handler.
+            // The witness stays as the last candidate so an encoding the local reconstruction cannot reproduce
+            // (timestamp / legacy mismatch) still falls back to the authenticated blob instead of giving up.
             const publishArgsCandidates: Uint8Array[] = [];
             const publishName = llc.functionName ?? llc.logicalFunctionName
               ?? llc.compilerRoute?.abiFunction?.name;
@@ -14084,9 +14128,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 ?? proxyGroup?.internalArgs?.__internal__leadingPushValue_0) as Uint8Array | undefined;
               const witness = (llc.internalArgs?.__internal__valueWitness_0
                 ?? proxyGroup?.internalArgs?.__internal__valueWitness_0) as Uint8Array | undefined;
-              if (witness instanceof Uint8Array && witness.length > VALUE_HEAD_SIZE) {
-                publishArgsCandidates.push(witness);
-              }
               if (structs && args && args.length >= 2) {
                 try {
                   const providerTime = Number(
@@ -14116,6 +14157,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                     publishArgsCandidates.push(built);
                   }
                 } catch { /* fall through to stack/staged selection */ }
+              }
+              if (witness instanceof Uint8Array && witness.length > VALUE_HEAD_SIZE) {
+                publishArgsCandidates.push(witness);
               }
             }
             const allChunks = extractAllRouteValueChunks(

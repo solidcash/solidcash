@@ -143,6 +143,32 @@ describe('kernel delegate forwarding binding prerequisite', () => {
     expect(resolved.commitment).toHaveLength(32);
   });
 
+  it('binds selector-only forwarding to the implementation row arguments', () => {
+    const payload = bytes('01020304');
+    const resolved = resolveKernelDelegatePromotion({
+      forwarding: metadata(),
+      proxyParameters: [payload],
+      proxyConstructorArgs: [bytes('bb20')],
+      proxyLockingBytecode: 'aa20',
+      stateCategory: '11'.repeat(32),
+      implementation: { artifact: implementationArtifact(), lockingBytecode: 'bb20' },
+      requestedFunctionName: 'apply',
+      requestedArgs: [bytes('07')],
+    });
+    expect(resolved).toMatchObject({ functionName: 'apply', selector: '01020304', args: [bytes('07')] });
+    expect(binToHex(resolved.transcript).startsWith('4b444632')).toBe(true);
+    expect(() => resolveKernelDelegatePromotion({
+      forwarding: metadata(),
+      proxyParameters: [payload],
+      proxyConstructorArgs: [bytes('bb20')],
+      proxyLockingBytecode: 'aa20',
+      stateCategory: '11'.repeat(32),
+      implementation: { artifact: implementationArtifact(), lockingBytecode: 'bb20' },
+      requestedFunctionName: 'apply',
+      requestedArgs: [],
+    })).toThrow(/canonical implementation arguments|out of bounds/);
+  });
+
   it('rejects decoy code metadata, ineligible rows, and non-canonical payloads', () => {
     const payload = implementationPayload(7);
     const physical = frame();

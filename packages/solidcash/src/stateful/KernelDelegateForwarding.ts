@@ -217,6 +217,7 @@ export function resolveKernelDelegateExecution(
   constructorArgs: readonly FunctionArgument[],
   frame: KernelDelegateForwardingFrame,
   implementation: KernelDelegateExecutionTarget,
+  detachedArguments?: readonly FunctionArgument[],
 ): ResolvedKernelDelegateExecution {
   const binding = planKernelDelegateForwarding(forwarding, parameters, constructorArgs, frame);
   if (canonicalHex(implementation.lockingBytecode, 'delegate implementation identity')
@@ -244,13 +245,28 @@ export function resolveKernelDelegateExecution(
   const visibleInputs = fn.inputs.filter((input) => !input.name.startsWith('__internal__'));
   const structs = artifact.structs ?? artifact.stateLayout?.structs;
   const args: FunctionArgument[] = [];
-  let cursor = 4;
+  const selectorOnly = payload.length === 4;
+  if (selectorOnly && detachedArguments === undefined) {
+    throw new Error('delegate forwarding payload omits canonical implementation arguments');
+  }
+  const encodedDetached = selectorOnly
+    ? detachedArguments!.map((argument, index) => (
+      index < visibleInputs.length ? encodeFunctionArgument(argument, visibleInputs[index]!.type, structs) : argument
+    ))
+    : undefined;
+  if (encodedDetached?.some((argument) => !(argument instanceof Uint8Array))) {
+    throw new Error('delegate forwarding payload cannot carry a detached transaction signature');
+  }
+  const argumentPayload = selectorOnly
+    ? scriptToBytecode(encodedDetached as Uint8Array[])
+    : payload.slice(4);
+  let cursor = 0;
   for (const input of visibleInputs) {
-    const decoded = decodePushdataValue(payload, cursor, input.type, structs);
+    const decoded = decodePushdataValue(argumentPayload, cursor, input.type, structs);
     args.push(decoded.value as FunctionArgument);
     cursor += decoded.bytesConsumed;
   }
-  if (cursor !== payload.length) {
+  if (cursor !== argumentPayload.length || args.length !== visibleInputs.length) {
     throw new Error('delegate forwarding payload has trailing or non-canonical implementation arguments');
   }
   const encoded = args.map((argument, index) =>
@@ -258,17 +274,20 @@ export function resolveKernelDelegateExecution(
   if (encoded.some((argument) => !(argument instanceof Uint8Array))) {
     throw new Error('delegate forwarding payload cannot carry a detached transaction signature');
   }
-  const canonicalPayload = concat(hexToBin(selector), scriptToBytecode(encoded as Uint8Array[]));
-  if (!sameBytes(canonicalPayload, payload)) {
+  const canonicalArguments = scriptToBytecode(encoded as Uint8Array[]);
+  const canonicalPayload = concat(hexToBin(selector), canonicalArguments);
+  if (!sameBytes(canonicalArguments, argumentPayload)
+    || (!selectorOnly && !sameBytes(canonicalPayload, payload))) {
     throw new Error('delegate forwarding payload is not the canonical implementation ABI encoding');
   }
 
   const transcript = concat(
-    hexToBin('4b444631'), // `KDF1`
+    hexToBin(selectorOnly ? '4b444632' : '4b444631'), // `KDF2` binds separately-carried row args; `KDF1` is unchanged.
     uint16(binding.participantInputIndex), uint16(binding.participantOutputIndex),
     uint16(binding.executorInputIndex),
     framed(hexToBin(binding.ownerLockingBytecode)), hexToBin(binding.stateCategory),
     framed(hexToBin(binding.executorLockingBytecode)), hexToBin(selector), framed(payload),
+    ...(selectorOnly ? [framed(canonicalArguments)] : []),
   );
   return Object.freeze({
     ...binding,
@@ -320,6 +339,7 @@ export function resolveKernelDelegatePromotion(
       forwardedCalldata,
     },
     input.implementation,
+    input.requestedArgs,
   );
   if (resolved.functionName !== input.requestedFunctionName) {
     throw new Error('delegate forwarding payload selects a different implementation function');
@@ -337,7 +357,7 @@ export function resolveKernelDelegatePromotion(
     throw new Error('delegate forwarding request cannot carry a detached transaction signature');
   }
   const requestedPayload = concat(hexToBin(resolved.selector), scriptToBytecode(encoded as Uint8Array[]));
-  if (!sameBytes(requestedPayload, forwardedCalldata)) {
+  if (forwardedCalldata.length !== 4 && !sameBytes(requestedPayload, forwardedCalldata)) {
     throw new Error('delegate forwarding request does not match the proxy payload');
   }
   return resolved;

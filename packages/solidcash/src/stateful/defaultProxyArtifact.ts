@@ -35,6 +35,7 @@ export const defaultProxyArtifact: Artifact = {
       "requiredNftIndices": [
         0
       ],
+      "sourceEffectOrder": "linear",
       "lowLevelCalls": [
         {
           "callMode": "delegatecall",
@@ -46,6 +47,27 @@ export const defaultProxyArtifact: Artifact = {
           }
         }
       ],
+      "delegateForwarding": {
+        "version": 1,
+        "callIndex": 0,
+        "payloadInput": 0,
+        "target": {
+          "kind": "constructorArg",
+          "name": "implementation"
+        },
+        "targetBinding": {
+          "kind": "constructorArg",
+          "input": 0,
+          "name": "implementation"
+        },
+        "frame": {
+          "stateOwner": "participant",
+          "executor": "target-input",
+          "calldata": "payload-input",
+          "outputOwner": "participant"
+        },
+        "terminalRequire": true
+      },
       "blockLayout": {
         "blockSize": 3,
         "slots": [

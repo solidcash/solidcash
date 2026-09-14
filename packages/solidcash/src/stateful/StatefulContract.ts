@@ -636,6 +636,32 @@ function defaultInternalFunctionArg(input: { name: string; type?: string }): Fun
   return 0n;
 }
 
+/** Materialize one compiler-owned ABI argument without shifting already-populated trailing witnesses. */
+export function materializeInternalFunctionArgument(
+  args: readonly FunctionArgument[],
+  inputs: readonly { name: string; type?: string }[],
+  name: string,
+  value: FunctionArgument,
+): FunctionArgument[] {
+  const position = inputs.findIndex((input) => input.name === name);
+  if (position < 0) return [...args];
+  if (!inputs[position].name.startsWith('__internal__')) {
+    throw new Error(`Cannot materialize non-internal ABI argument '${name}'.`);
+  }
+  const materialized = [...args];
+  while (materialized.length <= position) {
+    const pending = inputs[materialized.length];
+    if (!pending?.name.startsWith('__internal__')) {
+      throw new Error(
+        `Cannot materialize '${name}' before missing visible ABI argument '${pending?.name ?? materialized.length}'.`,
+      );
+    }
+    materialized.push(defaultInternalFunctionArg(pending));
+  }
+  materialized[position] = value;
+  return materialized;
+}
+
 export interface KernelJournalRecordSegmentWitnesses {
   /** Stable compiler-owned slot names in global segment-index order, including trailing empty capacity. */
   slots: ReadonlyArray<{ name: string; inputIndex: number; carrier: Uint8Array }>;
@@ -27829,14 +27855,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // B8: a returning entry function takes a hidden __internal__returnOutputIdx. Default it to -1 (the
     // covenant computes the return value but does not emit it on-chain); opt-in emit sets a real index.
     if (abiFunction) {
-      const returnIdxPos = abiFunction.inputs.findIndex((inp) => inp.name === '__internal__returnOutputIdx');
-      if (returnIdxPos >= 0 && finalArgs.length < abiFunction.inputs.length) {
-        finalArgs = [
-          ...finalArgs.slice(0, returnIdxPos),
-          BigInt(returnEmitOutputIndex),
-          ...finalArgs.slice(returnIdxPos),
-        ];
-      }
+      finalArgs = materializeInternalFunctionArgument(
+        finalArgs, abiFunction.inputs, '__internal__returnOutputIdx', BigInt(returnEmitOutputIndex),
+      );
     }
 
     // C1/piece-3: a pinned delegatecall proxy takes a hidden __internal__delegateInputIndex - the input index of
@@ -30836,27 +30857,31 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       visit(0);
 
       const callerSets = new Map<string, Set<string>>();
-      const writeCounts = new Map<string, number>();
+      const ownerInvocationCounts = new Map<string, number>();
       for (const node of orderedNodes) {
         const artifact = node.executionArtifact ?? node.contract.inner.artifact;
         const abiFunction = (artifact.abi as readonly AbiFunction[])
-          .find((candidate) => candidate.name === node.functionName);
+          .find((candidate) => node.selector !== undefined
+            && candidate.selector?.toLowerCase() === node.selector.toLowerCase());
+        const owner = `${node.contract.categoryId.toLowerCase()}:${node.contract.inner.lockingBytecode.toLowerCase()}`;
+        ownerInvocationCounts.set(owner, (ownerInvocationCounts.get(owner) ?? 0) + 1);
         if (abiFunction?.writesState !== true) continue;
-        const owner = node.contract.inner.lockingBytecode.toLowerCase();
         const caller = node.parent === null
           ? '__tx_origin__'
-          : preparedAtomicNodes[node.parent].contract.inner.lockingBytecode.toLowerCase();
+          : `${preparedAtomicNodes[node.parent].contract.categoryId.toLowerCase()}:`
+            + preparedAtomicNodes[node.parent].contract.inner.lockingBytecode.toLowerCase();
         const callers = callerSets.get(owner) ?? new Set<string>();
         callers.add(caller);
         callerSets.set(owner, callers);
-        writeCounts.set(owner, (writeCounts.get(owner) ?? 0) + 1);
       }
-      const requiresAtomicPromotion = [...writeCounts.values()].some((count) => count > 1);
+      const requiresAtomicPromotion = [...ownerInvocationCounts.values()].some((count) => count > 1);
       const allRoutesEligible = orderedNodes.length === preparedAtomicNodes.filter((node) => node.active).length
         && orderedNodes.every((node) => {
           const artifact = node.executionArtifact ?? node.contract.inner.artifact;
+          if (node.selector === undefined) return false;
+          const selector = node.selector.toLowerCase();
           return artifact.messageBus?.handlers.some((handler) =>
-            handler.name === node.functionName && handler.eligible) === true;
+            handler.selector.toLowerCase() === selector && handler.eligible) === true;
         });
       if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
         ?.SOLIDC_DEBUG_ATOMIC_PROMOTION === '1') {
@@ -30882,7 +30907,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             )?.eligible,
           })),
           callerSets: [...callerSets].map(([owner, callers]) => [owner, [...callers]]),
-          writeCounts: [...writeCounts],
+          ownerInvocationCounts: [...ownerInvocationCounts],
         }));
       }
       if (requiresAtomicPromotion && allRoutesEligible) {

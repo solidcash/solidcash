@@ -1462,10 +1462,27 @@ function buildFunctionAbiMetadata(
     if (statements.length !== 2) return undefined;
     const [call, terminal] = statements;
     if (!(call instanceof LowLevelCallStatementNode) || call.callMode !== ExternalCallMode.DELEGATECALL
-      || !(terminal instanceof RequireNode) || !(terminal.expression instanceof BoolLiteralNode)
-      || terminal.expression.value !== true) return undefined;
+      || !(terminal instanceof RequireNode)) return undefined;
     const metadata = func.lowLevelCalls?.[call.callIndex];
     if (metadata?.occurrence !== 'once' || metadata.dataParamIndex === undefined) return undefined;
+    const visibleParameters = func.parameters.filter((parameter) => !parameter.name.startsWith('__internal__'));
+    const payloadParameter = visibleParameters[metadata.dataParamIndex];
+    const terminalIsTrue = terminal.expression instanceof BoolLiteralNode
+      && terminal.expression.value === true;
+    // The shipped proxy retains a non-empty calldata guard after the terminal delegatecall. Promotion already
+    // decodes the same payload to one exact implementation selector, so this check is implied by the promoted
+    // frame and has no state/effect of its own. Keep every other terminal expression fail-closed.
+    const terminalIsDecodedPayloadGuard = terminal.expression instanceof BinaryOpNode
+      && terminal.expression.operator === BinaryOperator.GT
+      && terminal.expression.left instanceof UnaryOpNode
+      && terminal.expression.left.operator === UnaryOperator.SIZE
+      && terminal.expression.left.expression instanceof IdentifierNode
+      && terminal.expression.left.expression.name === payloadParameter?.name
+      && terminal.expression.left.expression.definition?.definition === payloadParameter
+      && payloadParameter.type?.toString() === 'bytes'
+      && terminal.expression.right instanceof LiteralNode
+      && terminal.expression.right.value === 0n;
+    if (!terminalIsTrue && !terminalIsDecodedPayloadGuard) return undefined;
     const target = callTargets[call.callIndex] ?? COMPUTED_PROVENANCE;
     if (target.kind !== 'constructorArg' && target.kind !== 'literal') return undefined;
     const literalTarget = (

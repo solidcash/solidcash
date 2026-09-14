@@ -2938,10 +2938,29 @@ describe('required kernel admission', () => {
     });
   });
 
+  it('publishes terminal forwarding metadata for a decoded non-empty payload guard', () => {
+    const artifact = compileString(`contract C(address impl) {
+      function relay(bytes payload) public {
+        impl.delegatecall(payload);
+        require(payload.length > 0);
+      }
+    }`, KERNEL);
+    expect(artifact.abi.find((fn) => fn.name === 'relay')?.delegateForwarding).toMatchObject({
+      version: 1,
+      callIndex: 0,
+      payloadInput: 0,
+      targetBinding: { kind: 'constructorArg', input: 0, name: 'impl' },
+      terminalRequire: true,
+    });
+  });
+
   it.each([
     ['state-resolved target', 'address stored; function denied(bytes input) public { address(this.stored).delegatecall(input); require(true); }'],
     ['computed payload', 'function denied(bytes input) public { impl.delegatecall(bytes.concat(input, hex"00")); require(true); }'],
     ['proxy-side statement', 'function denied(bytes input) public { require(input.length > 0); impl.delegatecall(input); require(true); }'],
+    ['different guarded parameter', 'function denied(bytes input, bytes other) public { impl.delegatecall(input); require(other.length > 0); }'],
+    ['stronger payload bound', 'function denied(bytes input) public { impl.delegatecall(input); require(input.length > 1); }'],
+    ['reversed payload comparison', 'function denied(bytes input) public { impl.delegatecall(input); require(0 < input.length); }'],
     ['conditional frame', 'function denied(bytes input, bool active) public { if (active) { impl.delegatecall(input); } require(true); }'],
   ])('does not publish a collapsible delegate frame for %s', (_label, body) => {
     const artifact = compileString(`contract C(address impl) {

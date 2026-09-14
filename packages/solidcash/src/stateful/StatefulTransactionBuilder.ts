@@ -6893,11 +6893,6 @@ export class StatefulTransactionBuilder {
               expanded.push(asTokenPad(funder));
             }
           }
-          console.error('nested-llc-expand', {
-            nestedIn: nestedLlcAfterInsertBand.length,
-            expanded: expanded.length,
-            applied: expanded.length >= nestedLlcAfterInsertBand.length,
-          });
           if (expanded.length >= nestedLlcAfterInsertBand.length) {
             nestedLlcWithBlockPads = expanded;
           }

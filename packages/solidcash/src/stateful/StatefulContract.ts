@@ -1604,6 +1604,36 @@ function concatenateEncodedArrays(left: Uint8Array, right: Uint8Array): Uint8Arr
   return out;
 }
 
+/**
+ * Keep a chunkable array access's authenticated inputs separate from its derived result.
+ *
+ * The value witness is the exact proof-entry value before the handler. A leading mutation
+ * represents earlier selected rows, while `postValue` is used only for persistence and
+ * continuation outputs. In particular, deriving `postValue` must never replace the witness.
+ */
+export function deriveChunkableArrayValueChannels({
+  preValueWitness,
+  storedPreValue,
+  leadingMutation,
+  currentElement,
+}: {
+  preValueWitness?: Uint8Array;
+  storedPreValue: Uint8Array;
+  leadingMutation?: Uint8Array;
+  currentElement?: Uint8Array;
+}): {
+  preValueWitness?: Uint8Array;
+  leadingMutation?: Uint8Array;
+  postValue: Uint8Array;
+} {
+  let postValue = storedPreValue;
+  if (leadingMutation && leadingMutation.length > 0) {
+    postValue = concatenateEncodedArrays(postValue, leadingMutation);
+  }
+  if (currentElement) postValue = appendEncodedArrayElement(postValue, currentElement);
+  return { preValueWitness, leadingMutation, postValue };
+}
+
 /** Encode a struct argument, applying the explicitly selected legacy payload adapter when requested. */
 export function encodeStructArgument(
   value: FunctionArgument, typeName: string, structs: Artifact['structs'],
@@ -14020,22 +14050,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               valueChunkWrites,
               publishArgsCandidates,
             );
-            // Keep unlocker valueWitness + staged persist identical to the bytes that
-            // produced the chunk commitments (valueTail root authentication).
+            // The extracted value is the derived post-handler value: it owns continuation
+            // outputs and persistence only. `__internal__valueWitness_N` authenticates the
+            // exact proof-entry value before this handler; replacing it here would make a
+            // long-value read authenticate the post-state digest against the pre-state entry.
             if (lastExtractedComputedValue && lastExtractedComputedValue.length > VALUE_HEAD_SIZE) {
               const selectedValue = lastExtractedComputedValue;
               if (chunkCategory) stageJobEventsValue(chunkCategory, selectedValue);
-              const stampWitness = (
-                target?: { internalArgs?: Record<string, FunctionArgument> },
-              ): void => {
-                if (!target) return;
-                target.internalArgs = {
-                  ...(target.internalArgs ?? {}),
-                  __internal__valueWitness_0: selectedValue,
-                };
-              };
-              stampWitness(llc);
-              stampWitness(proxyGroup);
             }
             if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
               ?.SOLIDC_DEBUG_VALUE_CHUNKS === '1') {
@@ -24218,28 +24239,30 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                             ? inheritedLeading : undefined);
                         if (leadingPush && leadingPush.length > 0) internalArgs[leadingName] = leadingPush;
                         const emptyArray = encodePushdataValue([], collection.valueType, structs);
-                        let nextValue = childStoredValues.get(routeSlot) ?? emptyArray;
-                        if (leadingPush instanceof Uint8Array && leadingPush.length > 0) {
-                          nextValue = concatenateEncodedArrays(nextValue, leadingPush);
-                        }
+                        const storedPreValue = childStoredValues.get(routeSlot) ?? emptyArray;
                         const elementType = collection.valueType.slice(0, -2);
                         const elementIndex = visibleInputs.findIndex((input) => input.type === elementType);
+                        let currentElement: Uint8Array | undefined;
                         if (elementIndex >= 0) {
-                          const element = encodeStructArgument(
+                          currentElement = encodeStructArgument(
                             finalVisibleArgs[elementIndex], elementType, structs, oracleTimestamp,
                             usesLegacyJobEventCompatibility(sharedLogicalArtifact, elementType, structs),
                           );
-                          nextValue = appendEncodedArrayElement(nextValue, element);
-                          payloadBytes = nextValue.length;
-                        } else {
-                          payloadBytes = nextValue.length + fallbackPayloadBytes + VALUE_CHUNK_SIZE;
                         }
-                        // Nested publishJobEvent needs the full JobEventData[] as its value
-                        // witness — the probe stack often keeps only the valueTail.
-                        if (nextValue.length > VALUE_HEAD_SIZE) {
-                          internalArgs[`__internal__valueWitness_${routeSlot}`] = nextValue;
-                          childValueWitnesses.set(routeSlot, nextValue);
-                        }
+                        const channels = deriveChunkableArrayValueChannels({
+                          preValueWitness: childValueWitnesses.get(routeSlot),
+                          storedPreValue,
+                          leadingMutation: leadingPush,
+                          currentElement,
+                        });
+                        const nextValue = channels.postValue;
+                        payloadBytes = currentElement
+                          ? nextValue.length
+                          : nextValue.length + fallbackPayloadBytes + VALUE_CHUNK_SIZE;
+                        // Keep the three authenticated channels distinct. The proof-entry
+                        // fetch above owns `__internal__valueWitness_N` (pre-handler bytes),
+                        // `leadingPushValue_N` carries prior selected-row mutations, and this
+                        // derived `nextValue` owns only continuation output/persistence data.
                         const previousValue = childStoredValues.get(routeSlot);
                         if (previousValue && previousValue.length > VALUE_HEAD_SIZE
                           && nextValue.length > VALUE_HEAD_SIZE) {

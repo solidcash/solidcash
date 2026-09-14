@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { AbiFunction, Artifact, StateLayout } from '@cashscript/utils';
+import { encodePushdataValue, type AbiFunction, type Artifact, type StateLayout } from '@solidcash/utils';
 import {
   refreshCapturedValueChunkOutputBase,
   type ExternalCallUtxoGroup,
@@ -7,6 +7,7 @@ import {
 import {
   chunkableWriterGroupIndex,
   computedStateWriterGroupIndex,
+  deriveChunkableArrayValueChannels,
 } from '../../src/stateful/StatefulContract.js';
 
 const layout: StateLayout = {
@@ -66,6 +67,27 @@ function fn(name: string, collection: string, operations: Array<'read' | 'write'
 }
 
 describe('compiler-owned participant identity', () => {
+  it('keeps authenticated pre-value, leading mutation, and derived post-value distinct', () => {
+    const item = (byte: number): Uint8Array => new Uint8Array(32).fill(byte);
+    const pre = encodePushdataValue([item(0xa0), item(0xa1)], 'bytes32[]');
+    const leading = encodePushdataValue([item(0xb0)], 'bytes32[]');
+    const current = item(0xc0);
+
+    const channels = deriveChunkableArrayValueChannels({
+      preValueWitness: pre,
+      storedPreValue: pre,
+      leadingMutation: leading,
+      currentElement: current,
+    });
+
+    expect(channels.preValueWitness).toEqual(pre);
+    expect(channels.leadingMutation).toEqual(leading);
+    expect(channels.postValue).toEqual(encodePushdataValue([
+      item(0xa0), item(0xa1), item(0xb0), item(0xc0),
+    ], 'bytes32[]'));
+    expect(channels.postValue).not.toEqual(channels.preValueWitness);
+  });
+
   it('binds a proxy/delegate alias only through the concrete route ABI witness owner', () => {
     const selector = new Uint8Array([0xa8, 0x26, 0xee, 0x9c]);
     const proxy = group('__forward', {

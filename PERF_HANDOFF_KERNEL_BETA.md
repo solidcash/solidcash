@@ -9,6 +9,10 @@ Landed (SDK only, both verified against a baseline build of this worktree):
 * `4c3485f1c perf(sdk): resolve probe traces without deep-cloning the program`
 * `f1783198e perf(sdk): probe return construction faithfully without cloning the program`
 
+Compiler status: profiled end to end, seven optimisation candidates measured, all rejected — see §2 and
+§5. No byte-identical compiler win is currently available; the one remaining lever (§5 item 2) is a ~10 %
+admission refactor that changes the parking design.
+
 ## 1. SDK transaction building — landed, measured
 
 Target workload: the passing marketplace title `job posting > post job 1`, which builds the routed
@@ -218,18 +222,32 @@ Two operational facts for whoever picks this up:
 
 Ranked, with the guardrails that make each safe:
 
-1. **`subroutineUseProbe` census** — the only remaining item with a double-digit ceiling that does not
-   change what is emitted if it is proven equivalent. It needs a verified mapping from emission sites to
-   `subroutineUseCount` (the probe's own guards show which work is already skipped), then per-root bytecode
-   hashes must be identical and both compiler suites must hold. Start by logging the probe's count map and
-   the id assignments for one root and diffing them against a census implementation.
-2. **Admission-shape reuse** (up to 29 %) — the cheap pass stubs bodies, so the shipping pass re-lowers,
-   re-symbolises and re-analyses the whole contract. Making the *non-stubbed* part of the cheap pass's
-   lowered AST resumable is the only ≥20 % lever, and it requires reading
-   `compileWithExternalAdmissionFallback` + `compileResolvedAst` end to end and running the whole compiler
-   suite, not a subset.
-3. **Nothing else is worth the risk**: parse caching is ≤3.5 % net, the verifier emits are necessary, and
+1. **`subroutineUseProbe` census — CLOSED, the census already exists.** `emit()` returns immediately when
+   `isSubroutineUseProbe` is set (`GenerateTargetTraversal.ts:1689-1693`: "The usage probe only needs
+   helper-site counts and compact-id allocation. Appending discarded opcodes and location records
+   dominated throwaway body generation on large contracts."), so the probe emits nothing today. Its
+   416 ms per root is the *decision traversal*: `emitFunctionDefinesAndDispatch` → `compileBody` /
+   `emitFunctionDefine` visit every body, and it is those visitor call sites
+   (`invokeSubroutineIfDefined` → `bumpSubroutineUse`, and the id-allocation helpers such as struct-field
+   extract / array element / state decode) that produce `subroutineUseCount` and the id maps. A "direct
+   census" would have to reimplement that visitor's allocation and profitability decisions — an
+   unverifiable duplicate of codegen, not a cheaper counter. The 47 probe runs in a project compile are
+   2-3 per contract (one per compile attempt), not repeats of the same work.
+2. **Admission-shape reuse — ceiling ≈10 %, not 29 %.** The cheap pass is cheap because it *parks* the
+   functions it does not emit (`stubCheapAdmissionBodies` + `parkCheapAdmissionUnkeptMessageBusFunctions`
+   skip memory / fn-ptr / assembly / extcall lowering for them). Lowering everything in the admission to
+   make its AST reusable would move that work into the admission rather than remove it, so the only
+   recoverable part is the overlap (prefix + synthesis + semantic, ~1 s). That is a deep refactor of the
+   parking design with a ~10 % payoff.
+3. **Nothing else is worth the risk**: parse caching is ≤3.5 % net, the verifier emits are necessary
+   (one generic host emit + one signature-policy-specialized emit per root, both route-specific), and
    every remaining self-time entry is a long tail (largest single function 4 %).
+
+**Round-2 conclusion: no compiler optimisation has been found that is both byte-identical and worth
+landing.** Anything further changes emitted bytecode (a size/speed trade that needs the fixture
+regenerated through `recompile.sh` and the corpus re-baselined) or requires the admission refactor in
+item 2. The measurements to reproduce that judgement are all in this file and in
+`scripts/perf-project-compile.mjs`.
 
 Every compiler candidate must be measured with `scripts/perf-project-compile.mjs` (total **and** per-root
 hashes) before and after, then held to `yarn workspace solidc vitest run test/journal-message-bus` (the

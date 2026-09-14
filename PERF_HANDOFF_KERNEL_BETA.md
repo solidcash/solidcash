@@ -9,41 +9,46 @@ Landed:
 * SDK (both verified against a baseline build of this worktree):
   * `4c3485f1c perf(sdk): resolve probe traces without deep-cloning the program`
   * `f1783198e perf(sdk): probe return construction faithfully without cloning the program`
-* Compiler (bytecode budget ±5 %, authorised by the user):
+* Compiler:
   * `e531d63a0 perf(solidc): cache imported parses and add a size-bounded outline mode`
+  * `ae41b056b revert(solidc): drop the size-bounded outline mode, keep the parse cache`
 
-Compiler status: two changes landed with measurements; the earlier seven candidates were
-measured and rejected (see §2 and §5). Remaining upside is in the admission search.
+Compiler status: only the byte-identical parse cache is landed; the outline mode needed a new flag
+and is reverted (§0). Nine candidates in total have been measured, all rejected except the cache.
 
 ## 0. Compiler work landed in round 4
 
-`e531d63a0` carries two independent changes, both measured with
-`scripts/perf-project-compile.mjs` (ten roots, per-root route/full hashes) and `SOLIDC_PROFILE`:
+**Landed and kept: the cross-root parse cache** (`e531d63a0`, `parseImportedFileCached` in
+`compiler.ts`, used by `ImportResolver`). A project compile resolved the same import graph once per
+root; the cache keeps a bounded LRU of pristine parse trees and returns an independent clone on a
+hit - the same clone-on-hit trade the multi-declaration compiler already makes with
+`cloneAst(probe, 'multi-primary')`. No new option; **byte-identical**: all ten per-root route/full
+hashes match the pre-change run. Measured: `parseAndResolve` 2,091 → 1,728 ms and `parseCode:file`
+261 → 136 calls on the ten-root project compile. The full `solidc` suite differs from a baseline
+build of this branch by exactly one 60 s timeout under full parallel load (that test passes in
+isolation with the cache, twice); the compiler journal gate is unchanged.
 
-1. **Cross-root parse cache** (`parseImportedFileCached`, `ImportResolver`). A project compile
-   resolved the same import graph once per root; the cache keeps a bounded LRU of pristine parse
-   trees and returns an independent clone on a hit - the same clone-on-hit trade the
-   multi-declaration compiler already makes with `cloneAst(probe, 'multi-primary')`.
-   **Byte-identical:** all ten per-root route/full hashes match the pre-change run.
-   Measured: `parseAndResolve` 2,091 → 1,728 ms, `parseCode:file` 261 → 136 calls.
-2. **`outlineThoroughness: 'speed'`** (default `'thorough'`; only the marketplace config opts in).
-   Drops the two lowest-yield outlining behaviours: the window-12 follow-up rounds (rounds 2-5:
-   335 ms for 11.3 KB, 34 B/ms) and the nested compiler-helper pass (417 ms for 14.6 KB, 36 B/ms),
-   against 500+ B/ms for the main rounds. Outlining is a pure span-sharing rewrite, so semantics
-   are unchanged and only size moves. Measured: `outline` −1.02 s, `codegen:emitBodies` −1.10 s,
-   end-to-end 21,312/21,947 → 20,359/20,422 ms over two paired runs.
+**Reverted: the size-bounded outline mode** (`ae41b056b`). It worked and was measured - dropping the
+window-12 follow-up rounds (rounds 2-5 cost 335 ms for 11.3 KB, 34 B/ms) and the nested
+compiler-helper pass (417 ms for 14.6 KB, 36 B/ms) gave `outline` −1.02 s, `codegen:emitBodies`
+−1.10 s and 21,312/21,947 → 20,359/20,422 ms end to end, with per-root full-bytecode deltas between
+−0.20 % and **+4.99 %** - but it required a new public option (`outlineThoroughness`), and the
+instruction is not to add flags.
 
-   Per-root full-bytecode deltas: −0.20 / +0.50 / +0.50 / **+4.99** / +2.63 / +0.34 / +0.36 /
-   +1.07 / +0.71 / +0.97 % (MarketplaceV1-V3, DataV1, EACCToken, TreasurySplit, FakeToken,
-   Dispute, Arbitrator, Claim); route deltas are smaller except DataV1 at +4.01 %.
-   MarketplaceDataV1 is the one root close to the ±5 % budget - re-measure it before widening
-   this mode.
+**Do not retry the obvious substitute.** Keying that behaviour on the existing
+`optimizeForCompilationSpeed` looks equivalent and is not: `compileResolvedAst` forces
+`optimizeForCompilationSpeed: true` into the codegen traversal for *every* kernel compile
+(`messageBusKernel` defaults to true in `normalizeCompilerOptions`) precisely so that "bytecode size
+does not depend on the front-end compilation-speed preference" (`compiler.ts:12037-12045`). Keying
+on it therefore changes bytecode for every compile regardless of what the caller passed, and it
+breaks `test/VMapBytecodeOptimizations.test.ts > nests only compiler-authored helpers while sharing
+composite array traversal` (4 of that file's 8 tests fail in isolation), which pins the nested pass
+and never sets the flag. So the outline speed-up is only reachable through a new flag - which is
+exactly why it is not landed.
 
-   Verification: `yarn build` clean; `solidc` journal-message-bus gate unchanged at
-   6 failed / 1,442 passed; the full `solidc` suite differs from a baseline build by exactly one
-   60 s timeout under full parallel load (that test passes in isolation with the cache, twice);
-   the fixture was regenerated through the per-source iteration path and the four passing
-   marketplace titles stay green (13.0 / 16.1 / 15.2 / 17.8 s test time).
+The marketplace fixture is restored to the artifacts this compiler produces (verified: per-root
+route/full bytes match the compile exactly) and the four passing titles are green at
+12.0 / 14.6 / 12.0 / 13.2 s of test time.
 
 ### Incident to know about (no harm done)
 

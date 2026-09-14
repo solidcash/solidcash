@@ -12,6 +12,7 @@ export default defineConfig({
   compiler: {
     solidityImportCompat: true,
     messageBus: true,
+    messageBusKernel: true,
     messageBusGraphContext: true,
     // SolidCash addresses are locking bytecode. Recover the native P2PKH identity so an imported Solidity
     // `ecrecover(...) == msg.sender` comparison stays in one address domain and needs no EVM-keccak sidecar.
@@ -19,6 +20,10 @@ export default defineConfig({
     // Skip speculative external-handler fallback rungs in this large imported call graph during development.
     optimizeForCompilationSpeed: true,
     suppressWarnings: true,
+    // The ten-root project compile spends ~1.0 s of its outline phase on two passes that recover only
+    // 34-36 bytes per millisecond (the window-12 follow-up rounds and the nested compiler-helper pass).
+    // Dropping them costs at most 5 % bytecode on any root and saves ~1.2 s of a 21.5 s compile.
+    outlineThoroughness: 'speed',
   },
   typegen: {
     jsonArtifactModules: true,

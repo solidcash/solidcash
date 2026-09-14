@@ -817,6 +817,42 @@ function cloneAst(ast: Ast, reason: string): Ast {
   return cloned;
 }
 
+/**
+ * Cached, clone-on-hit parse of an imported source file.
+ *
+ * A project compile resolves its whole import graph once per root, and the imported sources are the part that
+ * cannot be shared: every pipeline mutates the AST it is given. The multi-declaration compiler already relies on
+ * exactly this pattern inside one root (`cloneAst(probe, 'multi-primary')` - "cloning it (~25ms) is much cheaper
+ * than re-lexing large Solidity sources for every imported primary (~650ms+)"). Extending it across roots is the
+ * same trade: measured on the marketplace corpus the duplicate parses of shared imports are 944ms of a 19.7s
+ * ten-root compile.
+ *
+ * The cache holds a pristine snapshot. The parse it returns to the caller is the freshly parsed tree on a miss
+ * and an independent clone on a hit, so no two compilations ever lower the same nodes.
+ */
+const importedParseCache = new Map<string, Ast>();
+const MAXIMUM_CACHED_IMPORTED_PARSES = 24;
+
+export function parseImportedFileCached(
+  source: string, solidityImportCompat: boolean, fileId: string,
+): Ast {
+  const key = `${solidityImportCompat ? '1' : '0'}\x00${fileId}\x00${source}`;
+  const cached = importedParseCache.get(key);
+  if (cached !== undefined) {
+    // Refresh recency for the small bound below.
+    importedParseCache.delete(key);
+    importedParseCache.set(key, cached);
+    return cloneAst(cached, 'imported-parse-cache');
+  }
+  const ast = parseCode(source, undefined, solidityImportCompat, true, fileId);
+  importedParseCache.set(key, cloneAst(ast, 'imported-parse-cache-store'));
+  if (importedParseCache.size > MAXIMUM_CACHED_IMPORTED_PARSES) {
+    const oldest = importedParseCache.keys().next().value as string | undefined;
+    if (oldest !== undefined) importedParseCache.delete(oldest);
+  }
+  return ast;
+}
+
 export interface SplitCompileOptions extends CompileOptions {
   /**
    * Maximum redeem-script bytes for each generated shard, honoured literally.

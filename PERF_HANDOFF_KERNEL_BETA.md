@@ -182,6 +182,19 @@ Two traps for whoever measures next:
 
 ## 4. State of this tree
 
+Every command in `scripts/kernel-beta-manifest.json`'s `testCommands` was run on this branch with the two
+SDK commits in place:
+
+| gate command | result |
+|---|---|
+| `yarn build` | clean (run repeatedly, including after the last code commit) |
+| `yarn workspace testing-suite vitest run test/artifact-freshness.test.ts` | 2 passed |
+| `yarn workspace @solidcash/utils vitest run test/script.test.ts` | 26 passed |
+| `yarn workspace solidc vitest run test/journal-message-bus` | 6 failed / 1,442 passed (pre-existing) |
+| `yarn workspace solidcash vitest run test/journal-message-bus` + `sdk-regressions` | 10 failed / 818 passed, identical to a baseline build of this worktree (diffed by test name) |
+| `yarn workspace solidcash test:fast` | 6 failed / 1,136 passed, identical to baseline (diffed by `FAIL` lines) |
+| four passing marketplace titles | all pass: 17.4 s / 18.4 s / 19.7 s / 21.5 s (baseline 27-31 s) |
+
 * `4c3485f1c` — fast pushdata rejection + faithful shallow trace recorder
   (`stateful/StatefulContract.ts`, `network/createVirtualMachine.ts`).
 * `f1783198e` — the two `debug()` return-probe fallbacks use the faithful recorder

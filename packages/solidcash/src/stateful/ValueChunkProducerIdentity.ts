@@ -4,11 +4,11 @@ const EFFECT_DOMAIN_TAG = new TextEncoder().encode('SolidCash/value-chunk-effect
 
 export interface ValueChunkProducerSourceSite {
   /** Compiler-authenticated global function/effect-domain digest. */
-  sourceEffectDomainId: string;
-  sourceCallsiteId: number;
-  sourceLogicalIndex?: number;
-  occurrenceIndex: number;
-  sourceEffectOrdinal: number;
+  readonly sourceEffectDomainId: string;
+  readonly sourceCallsiteId: number;
+  readonly sourceLogicalIndex?: number;
+  readonly occurrenceIndex: number;
+  readonly sourceEffectOrdinal: number;
 }
 
 export interface ValueChunkProducerIdentity {
@@ -24,14 +24,14 @@ export interface ValueChunkProducerIdentity {
 }
 
 export interface ValueChunkProducerPathContext {
-  version: 1;
+  readonly version: 1;
   /** Empty only for a direct/root handler mutation. Nested producers append one site per call edge. */
   sourcePath: readonly ValueChunkProducerSourceSite[];
 }
 
 export type ValueChunkProducerPathDisposition =
-  | { status: 'complete'; context: ValueChunkProducerPathContext }
-  | { status: 'unavailable' };
+  | { readonly status: 'complete'; readonly context: ValueChunkProducerPathContext }
+  | { readonly status: 'unavailable' };
 
 export function appendValueChunkProducerSourceSite(
   context: ValueChunkProducerPathContext,

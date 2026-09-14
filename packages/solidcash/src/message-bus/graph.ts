@@ -132,7 +132,7 @@ export interface PlannedGraphInvocation {
   /** Whether source identity was published by the compiler or normalized from a legacy batch row. */
   sourceCallsiteProvenance?: 'compiler' | 'legacy-logical';
   /** Complete only when every root-to-invocation edge has compiler-authenticated source coordinates. */
-  producerPath: ValueChunkProducerPathDisposition;
+  readonly producerPath: ValueChunkProducerPathDisposition;
   /** Exact source-level call target and the participant-local input which authenticates it. */
   targetLockingBytecode: string;
   targetIdentityOffset: number;
@@ -2450,7 +2450,8 @@ export function planCompiledGraph(
     // list within the existing graph/row maxima.
   }
   assertResolvableResultDependencies(invocations.length, resultDependencies);
-  const producerPaths: ValueChunkProducerPathDisposition[] = invocations.map(() => ({ status: 'unavailable' }));
+  const unavailableProducerPath: ValueChunkProducerPathDisposition = Object.freeze({ status: 'unavailable' });
+  const producerPaths: ValueChunkProducerPathDisposition[] = invocations.map(() => unavailableProducerPath);
   const rootProducerContext: ValueChunkProducerPathContext = Object.freeze({
     version: 1, sourcePath: Object.freeze([]),
   });

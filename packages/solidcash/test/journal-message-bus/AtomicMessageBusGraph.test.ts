@@ -231,6 +231,7 @@ describe('atomic compiled invocation graph', () => {
     expect(planned.invocations[0].producerPath).toEqual({
       status: 'complete', context: { version: 1, sourcePath: [] },
     });
+    expect(Object.isFrozen(planned.invocations[0].producerPath)).toBe(true);
     for (const [index, callsite] of callsites.entries()) {
       const path = planned.invocations[index + 1].producerPath;
       expect(path.status).toBe('complete');
@@ -293,6 +294,9 @@ describe('atomic compiled invocation graph', () => {
       },
     });
     expect(fenced.invocations[1].producerPath).toEqual({ status: 'unavailable' });
+    expect(fenced.invocations[2].producerPath).toEqual({ status: 'unavailable' });
+    expect(Object.isFrozen(fenced.invocations[1].producerPath)).toBe(true);
+    expect(fenced.invocations[1].producerPath).toBe(fenced.invocations[2].producerPath);
   });
 
   it('fails closed for a resource-free lifecycle row until the advertised protocol can compose it', () => {

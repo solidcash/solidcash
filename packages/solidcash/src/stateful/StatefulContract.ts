@@ -2030,7 +2030,12 @@ function extractAllRouteValueChunks(
       if (staged && staged.length > VALUE_HEAD_SIZE) stagedCandidates.push(staged);
     }
   }
-  const historicalCandidate = categoryId ? persistedJobEventsValue(categoryId) : undefined;
+  // The historical category-global cache is compatibility state for descriptor-free callers. A compiler-described
+  // call authenticates its collection signature and key slot, and borrowing from a category-wide cache lets an
+  // array written for a different job - or a different collection - shadow this resource. It is never a
+  // candidate when descriptors exist.
+  const historicalCandidate = valueChunkWrites === undefined && categoryId
+    ? persistedJobEventsValue(categoryId) : undefined;
   // The exact write this extraction belongs to owns the continuation value: a single compiler-described resource
   // whose staged blob was derived from the authenticated pre-value plus the handler's mutation. That value is
   // authenticated by the resource identity itself, while the pre-value in `candidateValues` is only ever

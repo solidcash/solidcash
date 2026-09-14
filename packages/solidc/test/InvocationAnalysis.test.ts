@@ -323,4 +323,83 @@ describe('Release 0 shared invocation analysis', () => {
       },
     });
   });
+
+  // A partially written state-array entry is rebuilt as `T(.., thisField, ..)`: the front end reuses the read
+  // node as the rebuilt field's argument, and a later rebuild of another field restates the entry with that same
+  // argument. The published argument must be the value the handler wrote, never the read folded back on itself.
+  it('publishes a state-array entry field written before a later whole-entry rebuild', () => {
+    const artifact = compileString(`pragma solidcash >=0.8.0;
+      interface IData { function publish(uint256 id, bool flag, uint256 amount) external; }
+      contract FieldProvenance() {
+        struct Inner { uint8 state; bool flag; uint256 amount; }
+        Inner[] jobs;
+        IData data;
+        function post(uint256 n) public {
+          jobs.push();
+          uint256 id = jobs.length - 1;
+          Inner storage job = jobs[id];
+          job.flag = n > 0;
+          job.amount = n + 1;
+          data.publish(id, job.flag, job.amount);
+          require(n > 0);
+        }
+      }`, { forceStateful: true, messageBus: true, suppressWarnings: true });
+    const fn = artifact.abi.find((candidate) => candidate.name === 'post')!;
+    const sources = fn.externalCalls!.find((call) => call.functionName === 'publish')!.argSources!;
+    expect(sources[1]).toMatchObject({
+      kind: 'expression',
+      expression: {
+        kind: 'binary',
+        operator: '>',
+        left: { kind: 'source', source: { kind: 'forward', paramIndex: 0 } },
+      },
+    });
+    expect(sources[2]).toMatchObject({
+      kind: 'expression',
+      expression: {
+        kind: 'binary',
+        operator: '+',
+        left: { kind: 'source', source: { kind: 'forward', paramIndex: 0 } },
+      },
+    });
+    expect(JSON.stringify(sources)).not.toContain('"reference"');
+  });
+
+  // Conditional writes are tracked per field: a branch that cannot change the observed field must not discard an
+  // unconditional write to it, and a field the handler never wrote stays the entry read rather than a rebuild.
+  it('keeps state-array field provenance across a conditional write to a sibling field', () => {
+    const artifact = compileString(`pragma solidcash >=0.8.0;
+      interface IData { function publish(uint256 id, bool flag, uint8 state) external; }
+      contract FieldProvenanceConditional() {
+        struct Inner { uint8 state; bool flag; uint256 amount; }
+        Inner[] jobs;
+        IData data;
+        function post(uint256 n) public {
+          jobs.push();
+          uint256 id = jobs.length - 1;
+          if (n > 1) { jobs[id].amount = n; }
+          jobs[id].flag = n > 0;
+          data.publish(id, jobs[id].flag, jobs[id].state);
+          require(n > 0);
+        }
+      }`, { forceStateful: true, messageBus: true, suppressWarnings: true });
+    const fn = artifact.abi.find((candidate) => candidate.name === 'post')!;
+    const sources = fn.externalCalls!.find((call) => call.functionName === 'publish')!.argSources!;
+    expect(sources[1]).toMatchObject({
+      kind: 'expression',
+      expression: {
+        kind: 'binary',
+        operator: '>',
+        left: { kind: 'source', source: { kind: 'forward', paramIndex: 0 } },
+      },
+    });
+    expect(sources[2]).toMatchObject({
+      kind: 'expression',
+      expression: { kind: 'field', name: 'state' },
+    });
+    // The field the handler never wrote stays a read of the entry (`jobs`), whichever spelling the array cache
+    // local left behind, so the SDK can evaluate it against chain state.
+    expect(JSON.stringify(sources[2])).toContain('"jobs"');
+    expect(JSON.stringify(sources)).not.toContain('"reference"');
+  });
 });

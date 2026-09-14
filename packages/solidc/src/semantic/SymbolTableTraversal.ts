@@ -7736,6 +7736,38 @@ export default class SymbolTableTraversal extends AstTraversal {
             if (resolved === expression.expression) return inner;
             return serializeExpression(resolved, new Set()) ?? inner;
           })();
+          // The front end forwards a read of an entry field to the whole-entry value the handler wrote for it: a
+          // partially written entry is rebuilt as `T(.., thisField, ..)`, where an argument that references the
+          // rebuild itself (a self-referential "unchanged" placeholder) denotes the entry's value BEFORE that
+          // statement. `observedStruct` is the struct this read names - the read's own annotation when present,
+          // otherwise the struct type of the value it reads from, never an application name.
+          const observedStruct: StructType | undefined = expression.structType
+            ?? (expression.expression.type instanceof StructType ? expression.expression.type : undefined);
+          const isStructRebuild = (
+            value: ExpressionNode,
+          ): value is FunctionCallNode & { identifier: IdentifierNode } => {
+            if (!(value instanceof FunctionCallNode) || !(value.identifier instanceof IdentifierNode)) return false;
+            const struct = this.structMap.get(value.identifier.name);
+            if (!struct || !struct.fields.some((field) => field.name === expression.name)) return false;
+            return observedStruct === undefined || observedStruct.name === struct.name;
+          };
+          const rebuiltFieldValue = (value: ExpressionNode): ExpressionNode | undefined => {
+            if (!isStructRebuild(value)) return undefined;
+            const struct = this.structMap.get(value.identifier.name)!;
+            const index = struct.fields.findIndex((field) => field.name === expression.name);
+            if (index < 0 || index >= value.parameters.length) return undefined;
+            const argument = value.parameters[index];
+            // Three arguments name no value of this write: a reference back to the rebuild itself (the front end's
+            // "unchanged" placeholder), the very read being serialized (the front end reuses that read node as the
+            // rebuilt field's argument), and a read of this field from the entry being rebuilt. All denote the
+            // value the field already had, so an earlier write for it - or the entry read - stands.
+            if (containsNode(argument, value) || containsNode(argument, expression)) return undefined;
+            if (argument instanceof FieldAccessNode && argument.name === expression.name) {
+              const base = serializeExpression(argument.expression, new Set());
+              if (base !== undefined && JSON.stringify(base) === JSON.stringify(aliasInner)) return undefined;
+            }
+            return argument;
+          };
           const sameTarget = (
             candidate: MappingFieldAssignNode | MappingAssignNode | MappingDeleteNode,
           ): boolean => {
@@ -7746,17 +7778,64 @@ export default class SymbolTableTraversal extends AstTraversal {
             return keys.every((key): key is ExternalCallExpression => key !== undefined)
               && JSON.stringify(keys) === JSON.stringify(aliasInner.args);
           };
+          // The state array this read selects from. A conditional (or repeated) write to a dynamic state array
+          // makes the compiler cache it in a local (`__dlcache_x = x`), so the read's base is that local's index
+          // access rather than the collection itself; both spellings name the same entry.
+          const observedCollection = aliasInner?.kind === 'stateAccess' && aliasInner.name
+            ? aliasInner.name
+            : aliasInner?.kind === 'arrayAccess' && aliasInner.left?.kind === 'state' && aliasInner.left.name
+              ? aliasInner.left.name : undefined;
+          const observedIndex = aliasInner?.kind === 'stateAccess'
+            ? aliasInner.args?.[0]
+            : aliasInner?.kind === 'arrayAccess' ? aliasInner.right : undefined;
+          // The state collection a bare name denotes, resolving the array cache local through the same
+          // local-initializer chain the read uses. A name that does not resolve to a state collection is a plain
+          // local array and names no entry of this read.
+          const stateCollectionNameOf = (raw: string): string | undefined => {
+            if (raw === observedCollection) return raw;
+            const identifier = new IdentifierNode(raw);
+            identifier.location = expression.location;
+            const initializer = resolveInitializer(identifier);
+            if (initializer === identifier) return undefined;
+            const serialized = serializeExpression(initializer, new Set());
+            if (serialized?.kind === 'state') return serialized.name;
+            const source = serialized?.kind === 'source' ? serialized.source : undefined;
+            // A state name may reach the argument classifier as a source instead of a bare `state` expression.
+            return (source as { kind?: string; name?: string } | undefined)?.kind === 'state'
+              ? (source as { name?: string }).name : undefined;
+          };
           const sameArrayTarget = (
-            candidate: StateArrayAssignNode | StateArrayDeleteNode,
+            candidate: StateArrayAssignNode | StateArrayDeleteNode | ArrayAssignNode | ArrayDeleteNode,
           ): boolean => {
-            if (aliasInner?.kind !== 'stateAccess' || aliasInner.name !== candidate.name
-              || aliasInner.args?.length !== 1) return false;
+            if (observedCollection === undefined || observedIndex === undefined) return false;
+            if (stateCollectionNameOf(candidate.name) !== observedCollection) return false;
             const index = serializeExpression(candidate.index, new Set());
-            return index !== undefined && JSON.stringify(index) === JSON.stringify(aliasInner.args[0]);
+            return index !== undefined && JSON.stringify(index) === JSON.stringify(observedIndex);
           };
           let assignedField: ExpressionNode | undefined;
           let assignedWhole: ExpressionNode | undefined;
           let fieldWriteAmbiguous = false;
+          // A whole-entry struct rebuild `T(f0, f1, ..)` restates every field, so the argument at this field's
+          // own position is the value this read observes. A rebuild which leaves the field at its previous value
+          // does not change what the read observes, so an earlier write for the field (or the entry read) stands.
+          const observeWholeEntryWrite = (value: ExpressionNode, conditional: boolean): void => {
+            if (isStructRebuild(value)) {
+              const rebuilt = rebuiltFieldValue(value);
+              if (!rebuilt) return;
+              if (conditional) {
+                fieldWriteAmbiguous = true;
+                return;
+              }
+              assignedField = rebuilt;
+              assignedWhole = undefined;
+              return;
+            }
+            if (conditional) fieldWriteAmbiguous = true;
+            else {
+              assignedField = undefined;
+              assignedWhole = value;
+            }
+          };
           const observePrior = (statement: Node, conditional = false): void => {
             if (statement instanceof MappingFieldAssignNode
               && statement.fieldName === expression.name && sameTarget(statement)) {
@@ -7769,11 +7848,7 @@ export default class SymbolTableTraversal extends AstTraversal {
               return;
             }
             if (statement instanceof MappingAssignNode && sameTarget(statement)) {
-              if (conditional) fieldWriteAmbiguous = true;
-              else {
-                assignedField = undefined;
-                assignedWhole = statement.expression;
-              }
+              observeWholeEntryWrite(statement.expression, conditional);
               return;
             }
             if (statement instanceof MappingDeleteNode && sameTarget(statement)) {
@@ -7783,14 +7858,22 @@ export default class SymbolTableTraversal extends AstTraversal {
               return;
             }
             if (statement instanceof StateArrayAssignNode && sameArrayTarget(statement)) {
-              if (conditional) fieldWriteAmbiguous = true;
-              else {
-                assignedField = undefined;
-                assignedWhole = statement.value;
-              }
+              observeWholeEntryWrite(statement.value, conditional);
+              return;
+            }
+            // The same write through the compiler's dynamic-array cache local (`__dlcache_x[i] = v`): the cache
+            // holds the collection's value and is flushed back, so it is the write this read observes.
+            if (statement instanceof ArrayAssignNode && sameArrayTarget(statement)) {
+              observeWholeEntryWrite(statement.value, conditional);
               return;
             }
             if (statement instanceof StateArrayDeleteNode && sameArrayTarget(statement)) {
+              assignedField = undefined;
+              assignedWhole = undefined;
+              fieldWriteAmbiguous = true;
+              return;
+            }
+            if (statement instanceof ArrayDeleteNode && sameArrayTarget(statement)) {
               assignedField = undefined;
               assignedWhole = undefined;
               fieldWriteAmbiguous = true;
@@ -7846,6 +7929,16 @@ export default class SymbolTableTraversal extends AstTraversal {
               ? { ...assigned, type: fieldType.toString() } : assigned;
           }
           if (!fieldWriteAmbiguous && assignedWhole) {
+            // A rebuild that leaves this field at its previous value names no value for it, so publish the entry
+            // read the field access itself observes instead of serializing the self-referential rebuild.
+            if (isStructRebuild(assignedWhole) && !rebuiltFieldValue(assignedWhole)) {
+              return inner && {
+                kind: 'field',
+                name: expression.name,
+                expression: inner,
+                ...(fieldType && { type: fieldType.toString() }),
+              };
+            }
             const assigned = serializeExpression(assignedWhole, seen);
             if (assigned) {
               const assignedStruct = assigned.kind === 'call' && assigned.name

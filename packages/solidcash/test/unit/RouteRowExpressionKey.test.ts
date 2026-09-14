@@ -3,6 +3,7 @@ import { binToHex } from '@bitauth/libauth';
 import { encodeFunctionArgument } from '../../src/Argument.js';
 import {
   canShareIdempotentCounterLoopSettlement,
+  evalComputedKey,
   matchingRouteRowsForExpressionKey,
   parseRowArgsDecodeLabel,
   resolveRouteRowExpressionKey,
@@ -212,5 +213,31 @@ describe('resolveRouteRowExpressionKey', () => {
       routePlanningArgs: [],
       routeVisibleInputs: [],
     })).toBeUndefined();
+  });
+});
+
+describe('evalComputedKey map: state-array labels', () => {
+  const lockA = Uint8Array.from([0xaa, 0x20, ...new Uint8Array(32).fill(0x11), 0x87]);
+  const lockB = Uint8Array.from([0xaa, 0x20, ...new Uint8Array(32).fill(0x22), 0x87]);
+
+  it('indexes a decoded dynamic state array by a parameter index', () => {
+    const encoded = evalComputedKey(
+      'map:items(id:index_)', [1n], [{ name: 'index_', type: 'uint256' }], { items: [lockA, lockB] },
+    );
+    expect(encoded).toBeDefined();
+    expect(binToHex(encoded!)).toBe(binToHex(lockB));
+  });
+
+  it('encodes a numeric element as its VM number', () => {
+    const encoded = evalComputedKey('map:nums(lit:0)', [], [], { nums: [7n, 9n] });
+    expect(encoded).toBeDefined();
+    expect(binToHex(encoded!)).toBe(encodedUint(7n));
+  });
+
+  it('stays undefined for an absent, non-array, or out-of-range state slot', () => {
+    expect(evalComputedKey('map:items(lit:0)', [], [], {})).toBeUndefined();
+    expect(evalComputedKey('map:items(lit:0)', [], [], { items: 5n })).toBeUndefined();
+    expect(evalComputedKey('map:items(lit:2)', [], [], { items: [lockA, lockB] })).toBeUndefined();
+    expect(evalComputedKey('map:items(id:missing)', [], [], { items: [lockA] })).toBeUndefined();
   });
 });

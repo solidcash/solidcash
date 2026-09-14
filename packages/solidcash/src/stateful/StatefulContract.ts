@@ -3876,6 +3876,26 @@ export function evalComputedKey(
       const object = evalValue(m[2]);
       return object && typeof object === 'object' ? (object as Record<string, unknown>)[m[1]] : undefined;
     }
+    m = s.match(/^map:([^()]+)\((.*)\)$/);
+    if (m) {
+      // Indexed collection access: `map:<stateArray>(<index>)`. The compiler publishes this label for an entry key
+      // that reads a dynamic state array (a read route's `arbitrators[addresses[i + index_]]`). The array is a state
+      // variable, so it must be supplied by the caller; an unavailable array or index keeps the label unresolved and
+      // the caller's existing placeholder path applies unchanged.
+      const values = state?.[m[1]];
+      const index = evalValue(m[2]);
+      const n = typeof index === 'bigint' ? Number(index)
+        : typeof index === 'number' ? index : NaN;
+      if (!Array.isArray(values) || !Number.isSafeInteger(n) || n < 0 || n >= values.length) {
+        return undefined;
+      }
+      const element = values[n];
+      if (element instanceof Uint8Array) return element;
+      if (typeof element === 'bigint') return bigIntToVmNumber(element);
+      if (typeof element === 'boolean') return bigIntToVmNumber(element ? 1n : 0n);
+      if (typeof element === 'string' && element.includes(':')) return addressToLockScript(element);
+      return undefined;
+    }
     m = s.match(/^binop:([^()]+)\((.*)\)$/);
     if (m) {
       const pair = splitTopLevel(m[2]);

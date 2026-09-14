@@ -49,6 +49,7 @@ export {
 
 export {
   StatefulTransactionBuilder,
+  ValueChunkWriteStagingSession,
   type EntryNftInfo,
   type TransferData,
   type EventEmitData,
@@ -57,10 +58,12 @@ export {
   type TokenContainerTransferNftData,
   type ExternalCallUtxoGroup,
   type StatefulTransactionOptions,
+  type ValueChunkWriteDescriptor,
 } from './StatefulTransactionBuilder.js';
 export {
   canonicalValueChunkProducerIdentity,
   canonicalValueChunkProducerResourceIdentity,
+  canonicalValueChunkProducerResourceClaim,
   bindValueChunkProducerClaimAliases,
   selectSingletonValueChunkProducer,
   valueChunkProducerClaimFromRouteRow,

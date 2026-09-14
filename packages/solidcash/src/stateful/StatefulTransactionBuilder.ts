@@ -41,7 +41,7 @@ import {
 import { getDustThreshold } from '@mem-cash/validation';
 import {
   canonicalValueChunkProducerIdentity,
-  canonicalValueChunkProducerResourceIdentity,
+  canonicalValueChunkProducerResourceClaim,
   type ValueChunkProducerResourceClaim,
 } from './ValueChunkProducerIdentity.js';
 import {
@@ -139,11 +139,19 @@ const persistedValueChunkWrites = new Map<string, {
 export class ValueChunkWriteStagingSession {
   private readonly writes = new Map<string, Uint8Array>();
   private readonly ownedWrites = new Map<string, { producer: string; value: Uint8Array }>();
+  private readonly ambiguousWrites = new Set<string>();
 
   stage(write: ValueChunkWriteDescriptor, value: Uint8Array): boolean {
     if (!validValueChunkWriteIdentity(write)
       || value.length <= 60 || value.length > MAX_PERSISTED_JOB_EVENTS_BYTES) return false;
-    this.writes.set(valueChunkWriteIdentity(write), value);
+    const identity = valueChunkWriteIdentity(write);
+    if (this.ambiguousWrites.has(identity) || this.ownedWrites.has(identity)) {
+      this.ambiguousWrites.add(identity);
+      this.writes.delete(identity);
+      this.ownedWrites.delete(identity);
+      return false;
+    }
+    this.writes.set(identity, value);
     return true;
   }
 
@@ -159,13 +167,24 @@ export class ValueChunkWriteStagingSession {
     value: Uint8Array,
   ): boolean {
     const resourceIdentity = valueChunkWriteIdentity(write);
-    const producer = canonicalValueChunkProducerIdentity(claim.producer);
-    if (canonicalValueChunkProducerResourceIdentity(claim.resourceIdentity) !== resourceIdentity || !producer
+    const canonicalClaim = canonicalValueChunkProducerResourceClaim(claim);
+    const producer = canonicalClaim && canonicalValueChunkProducerIdentity(canonicalClaim.producer);
+    if (canonicalClaim?.resourceIdentity !== resourceIdentity || !producer
       || !validValueChunkWriteIdentity(write)
       || value.length <= 60 || value.length > MAX_PERSISTED_JOB_EVENTS_BYTES) return false;
+    if (this.ambiguousWrites.has(resourceIdentity) || this.writes.has(resourceIdentity)) {
+      this.ambiguousWrites.add(resourceIdentity);
+      this.writes.delete(resourceIdentity);
+      this.ownedWrites.delete(resourceIdentity);
+      return false;
+    }
     const existing = this.ownedWrites.get(resourceIdentity);
     if (existing && (existing.producer !== producer
-      || binToHex(existing.value) !== binToHex(value))) return false;
+      || binToHex(existing.value) !== binToHex(value))) {
+      this.ambiguousWrites.add(resourceIdentity);
+      this.ownedWrites.delete(resourceIdentity);
+      return false;
+    }
     this.ownedWrites.set(resourceIdentity, { producer, value: value.slice() });
     return true;
   }
@@ -175,22 +194,26 @@ export class ValueChunkWriteStagingSession {
     claim: ValueChunkProducerResourceClaim,
   ): Uint8Array | undefined {
     const resourceIdentity = valueChunkWriteIdentity(write);
-    const producer = canonicalValueChunkProducerIdentity(claim.producer);
+    const canonicalClaim = canonicalValueChunkProducerResourceClaim(claim);
+    const producer = canonicalClaim && canonicalValueChunkProducerIdentity(canonicalClaim.producer);
     if (!producer
-      || canonicalValueChunkProducerResourceIdentity(claim.resourceIdentity) !== resourceIdentity) return undefined;
+      || canonicalClaim?.resourceIdentity !== resourceIdentity) return undefined;
     const existing = this.ownedWrites.get(resourceIdentity);
     return existing?.producer === producer ? existing.value.slice() : undefined;
   }
 
   delete(write: ValueChunkWriteDescriptor): void {
-    this.writes.delete(valueChunkWriteIdentity(write));
-    this.ownedWrites.delete(valueChunkWriteIdentity(write));
+    const identity = valueChunkWriteIdentity(write);
+    this.writes.delete(identity);
+    this.ownedWrites.delete(identity);
+    this.ambiguousWrites.delete(identity);
   }
 
   clear(categoryId?: string): void {
     if (categoryId === undefined) {
       this.writes.clear();
       this.ownedWrites.clear();
+      this.ambiguousWrites.clear();
       return;
     }
     const prefix = `${categoryId.toLowerCase()}:`;
@@ -199,6 +222,9 @@ export class ValueChunkWriteStagingSession {
     }
     for (const key of this.ownedWrites.keys()) {
       if (key.startsWith(prefix)) this.ownedWrites.delete(key);
+    }
+    for (const key of this.ambiguousWrites) {
+      if (key.startsWith(prefix)) this.ambiguousWrites.delete(key);
     }
   }
 }

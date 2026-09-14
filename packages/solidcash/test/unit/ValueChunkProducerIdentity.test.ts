@@ -4,29 +4,30 @@ import { describe, expect, it } from 'vitest';
 import {
   StatefulTransactionBuilder,
   ValueChunkWriteStagingSession,
-  type ValueChunkWriteDescriptor,
-} from '../../src/stateful/StatefulTransactionBuilder.js';
-import {
   bindValueChunkProducerClaimAliases,
   canonicalValueChunkProducerIdentity,
   selectSingletonValueChunkProducer,
   valueChunkProducerClaimFromRouteRow,
+  type ValueChunkWriteDescriptor,
   type ValueChunkProducerIdentity,
   type ValueChunkProducerResourceClaim,
-} from '../../src/stateful/ValueChunkProducerIdentity.js';
+} from '../../src/stateful/index.js';
 
 const categoryId = '31'.repeat(32);
+const effectDomainId = '91'.repeat(32);
 const collectionSignature = 'records:mapping(uint256 => bytes32[])';
 const resourceIdentity = `${categoryId}:${binToHex(computeCollectionHash(collectionSignature))}:${'42'.repeat(32)}`;
 const producer = (occurrenceIndex = 0): ValueChunkProducerIdentity => ({
   version: 1,
   stateOwner: { categoryId, lockingBytecode: 'aa20' + '51'.repeat(32) + '87' },
   sourcePath: [{
+    sourceEffectDomainId: effectDomainId,
     sourceCallsiteId: 3,
     sourceLogicalIndex: 1,
     occurrenceIndex,
     sourceEffectOrdinal: 4,
   }],
+  mutationEffectDomainId: effectDomainId,
   mutationSourceEffectOrdinal: 7,
 });
 const claim = (occurrenceIndex = 0): ValueChunkProducerResourceClaim => ({
@@ -52,8 +53,14 @@ describe('hierarchical value-chunk producer identity', () => {
       canonicalValueChunkProducerIdentity(aliases[1].producer),
     );
     expect(selectSingletonValueChunkProducer(aliases, resourceIdentity)).toMatchObject({ status: 'exact' });
-    const physical: { valueChunkProducerClaims?: readonly ValueChunkProducerResourceClaim[] } = {};
-    const logical: { valueChunkProducerClaims?: readonly ValueChunkProducerResourceClaim[] } = {};
+    const physical = {
+      valueChunkStateOwner: producer().stateOwner,
+      valueChunkProducerClaims: undefined as readonly ValueChunkProducerResourceClaim[] | undefined,
+    };
+    const logical = {
+      valueChunkStateOwner: producer().stateOwner,
+      valueChunkProducerClaims: undefined as readonly ValueChunkProducerResourceClaim[] | undefined,
+    };
     expect(bindValueChunkProducerClaimAliases([physical, logical], aliases)).toBe(true);
     expect(physical.valueChunkProducerClaims).toBe(logical.valueChunkProducerClaims);
     aliases[0].producer.stateOwner.lockingBytecode = '00';
@@ -66,21 +73,27 @@ describe('hierarchical value-chunk producer identity', () => {
     const enclosing = producer().sourcePath[0];
     const derived = valueChunkProducerClaimFromRouteRow({
       row: {
+        sourceEffectDomainId: effectDomainId,
         sourceCallsiteId: 8, sourceLogicalIndex: 2, occurrenceIndex: 3, sourceEffectOrdinal: 5,
       },
       enclosingSourcePath: [enclosing],
       mutationSourceEffectOrdinal: 9,
+      mutationEffectDomainId: effectDomainId,
       stateOwnerCategoryId: categoryId,
       stateOwnerLockingBytecode: producer().stateOwner.lockingBytecode,
       resourceIdentity,
     });
     expect(derived?.producer.sourcePath).toEqual([
       enclosing,
-      { sourceCallsiteId: 8, sourceLogicalIndex: 2, occurrenceIndex: 3, sourceEffectOrdinal: 5 },
+      {
+        sourceEffectDomainId: effectDomainId,
+        sourceCallsiteId: 8, sourceLogicalIndex: 2, occurrenceIndex: 3, sourceEffectOrdinal: 5,
+      },
     ]);
     expect(valueChunkProducerClaimFromRouteRow({
-      row: { sourceCallsiteId: 8, sourceEffectOrdinal: 5 },
+      row: { sourceEffectDomainId: effectDomainId, sourceCallsiteId: 8, sourceEffectOrdinal: 5 },
       mutationSourceEffectOrdinal: 9,
+      mutationEffectDomainId: effectDomainId,
       stateOwnerCategoryId: categoryId,
       stateOwnerLockingBytecode: producer().stateOwner.lockingBytecode,
       resourceIdentity,
@@ -109,17 +122,25 @@ describe('hierarchical value-chunk producer identity', () => {
 
   it('treats distinct enclosing parent occurrences as distinct producers', () => {
     const first = valueChunkProducerClaimFromRouteRow({
-      row: { sourceCallsiteId: 8, occurrenceIndex: 0, sourceEffectOrdinal: 5 },
+      row: {
+        sourceEffectDomainId: effectDomainId,
+        sourceCallsiteId: 8, occurrenceIndex: 0, sourceEffectOrdinal: 5,
+      },
       enclosingSourcePath: [producer(0).sourcePath[0]],
       mutationSourceEffectOrdinal: 9,
+      mutationEffectDomainId: effectDomainId,
       stateOwnerCategoryId: categoryId,
       stateOwnerLockingBytecode: producer().stateOwner.lockingBytecode,
       resourceIdentity,
     })!;
     const second = valueChunkProducerClaimFromRouteRow({
-      row: { sourceCallsiteId: 8, occurrenceIndex: 0, sourceEffectOrdinal: 5 },
+      row: {
+        sourceEffectDomainId: effectDomainId,
+        sourceCallsiteId: 8, occurrenceIndex: 0, sourceEffectOrdinal: 5,
+      },
       enclosingSourcePath: [producer(1).sourcePath[0]],
       mutationSourceEffectOrdinal: 9,
+      mutationEffectDomainId: effectDomainId,
       stateOwnerCategoryId: categoryId,
       stateOwnerLockingBytecode: producer().stateOwner.lockingBytecode,
       resourceIdentity,
@@ -135,12 +156,30 @@ describe('hierarchical value-chunk producer identity', () => {
     const value = new Uint8Array(96).fill(0x61);
     expect(session.stageOwned(write, claim(), value)).toBe(true);
     value[0] = 0xff;
-    expect(session.stageOwned(write, claim(1), value)).toBe(false);
     expect(session.getOwned(write, claim())?.[0]).toBe(0x61);
     const retrieved = session.getOwned(write, claim())!;
     retrieved[0] = 0xee;
     expect(session.getOwned(write, claim())?.[0]).toBe(0x61);
+    expect(session.stageOwned(write, claim(1), value)).toBe(false);
+    expect(session.getOwned(write, claim())).toBeUndefined();
     expect(session.getOwned(write, claim(1))).toBeUndefined();
+    session.clear(categoryId);
+    expect(session.stageOwned(write, claim(), new Uint8Array(96).fill(0x62))).toBe(true);
+  });
+
+  it('tombstones legacy/producer staging collisions for the build session', () => {
+    const legacyFirst = new ValueChunkWriteStagingSession();
+    expect(legacyFirst.stage(write, new Uint8Array(96).fill(1))).toBe(true);
+    expect(legacyFirst.stageOwned(write, claim(), new Uint8Array(96).fill(2))).toBe(false);
+    expect(legacyFirst.get(write)).toBeUndefined();
+    expect(legacyFirst.stage(write, new Uint8Array(96).fill(3))).toBe(false);
+    legacyFirst.delete(write);
+    expect(legacyFirst.stage(write, new Uint8Array(96).fill(4))).toBe(true);
+
+    const ownedFirst = new ValueChunkWriteStagingSession();
+    expect(ownedFirst.stageOwned(write, claim(), new Uint8Array(96).fill(1))).toBe(true);
+    expect(ownedFirst.stage(write, new Uint8Array(96).fill(2))).toBe(false);
+    expect(ownedFirst.getOwned(write, claim())).toBeUndefined();
   });
 
   it('rejects incomplete source paths and resource mismatches', () => {
@@ -160,5 +199,12 @@ describe('hierarchical value-chunk producer identity', () => {
     const session = new ValueChunkWriteStagingSession();
     expect(session.stageOwned(write, { ...claim(), resourceIdentity: `${resourceIdentity}:other` }, new Uint8Array(96)))
       .toBe(false);
+    expect(session.stageOwned(write, {
+      ...claim(),
+      producer: {
+        ...claim().producer,
+        stateOwner: { ...claim().producer.stateOwner, categoryId: '99'.repeat(32) },
+      },
+    }, new Uint8Array(96))).toBe(false);
   });
 });

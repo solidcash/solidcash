@@ -50,6 +50,31 @@ The marketplace fixture is restored to the artifacts this compiler produces (ver
 route/full bytes match the compile exactly) and the four passing titles are green at
 12.0 / 14.6 / 12.0 / 13.2 s of test time.
 
+### Round 5: the walk sweep (what pays and what does not)
+
+A CPU profile of the ten-root project compile is a long tail of reflective AST walks. Three rewrites were
+tried; only one is kept (`4473add0d`):
+
+| change | measured | kept |
+|---|---|---|
+| `isExternalCallSlotLoopNested`: one loop-context walk per body instead of one per slot | walk self 219 ms → below the top-walk threshold (~200 ms) | **yes** |
+| `findExistingSerials`: `for...in` + `Object.hasOwn` instead of `Object.values` + `forEach` | **38 % slower** (minimum 213 → 295 ms over two runs) | no |
+| runtime-loop effect walk: hoisted excluded-key `Set` instead of a per-node array literal | 132 → 126 ms, inside noise | no |
+
+The lesson for whoever continues: the wins in this code are **algorithmic** (one walk answering N
+queries), not enumeration micro-tuning — V8 handles `Object.entries`/`Object.values` better than a
+guarded `for...in` on these node objects. Do not sweep the ~24 remaining `Object.entries` sites in
+`GenerateTargetTraversal.ts` expecting a gain.
+
+Remaining measured items after this round (project compile ≈ 21 s of CPU):
+
+| item | size | note |
+|---|---|---|
+| `findCandidates` (`utils/outline.ts`) | 978 ms self, all inside one function | outline's candidate discovery; a rewrite is byte-verifiable against the per-root hashes but it is the most tuned code in the repo |
+| `walkInvocationAst` | 849 ms | already allocation-free (`for...in` + chained comparisons); cost is the traversal itself, run once per AST clone (2 per root) |
+| `findTupleInit` + `findLocalInit` | 193 + 120 ms | per-(body, name) searches; memoizing is only sound if the pass's in-place rewrites cannot invalidate entries |
+| transfer-index walk, `walkNodes`, `inspect`, `claim` | 100-165 ms each | long tail |
+
 ### Incident to know about (no harm done)
 
 `.marketplace/iteration/recompile.sh` has **hard-coded paths to the candidate worktree**

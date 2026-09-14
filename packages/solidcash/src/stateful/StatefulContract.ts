@@ -4960,6 +4960,8 @@ export interface RouteExpressionKeyRow {
   sourceCallsiteId?: number;
   /** Source loop occurrence represented by this physical route row. */
   occurrenceIndex?: number;
+  /** Compiler-authored program point shared by source entry mutations and graph calls. */
+  sourceEffectOrdinal?: number;
   handler: AbiFunction;
 }
 
@@ -24839,6 +24841,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                       sourceCallsiteId: row.sourceCallsiteId ?? nested.callsiteId,
                       sourceLogicalIndex: row.sourceLogicalIndex,
                       occurrenceIndex: row.occurrenceIndex,
+                      sourceEffectOrdinal: row.sourceEffectOrdinal,
                       batchLogicalIndex: row.sourceLogicalIndex,
                       batchOccurrenceIndex: row.occurrenceIndex,
                       // Mutually-exclusive SafeERC20 fallback writers share one physical owner. The ordinary
@@ -24861,6 +24864,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                     }),
                     parent: 0,
                     ...(nested.callsiteId !== undefined && { callsiteId: nested.callsiteId }),
+                    ...(nested.sourceEffectOrdinal !== undefined && {
+                      sourceEffectOrdinal: nested.sourceEffectOrdinal,
+                    }),
                     ...(nested.callsiteId !== undefined && {
                       sourceCallsiteId: nested.callsiteId,
                       ...((nested.occurrence ?? 'once') !== 'loop' && { occurrenceIndex: 0 }),
@@ -25800,6 +25806,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 }),
                 parent: parentAtomicNode,
                 ...(nested.callsiteId !== undefined && { callsiteId: nested.callsiteId }),
+                ...(nested.sourceEffectOrdinal !== undefined && {
+                  sourceEffectOrdinal: nested.sourceEffectOrdinal,
+                }),
                 ...(nested.callsiteId !== undefined && {
                   sourceCallsiteId: nested.callsiteId,
                   ...((nested.occurrence ?? 'once') !== 'loop' && { occurrenceIndex: 0 }),
@@ -30596,6 +30605,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           ...(node.sourceCallsiteId !== undefined && { sourceCallsiteId: node.sourceCallsiteId }),
           ...(node.sourceLogicalIndex !== undefined && { sourceLogicalIndex: node.sourceLogicalIndex }),
           ...(node.occurrenceIndex !== undefined && { occurrenceIndex: node.occurrenceIndex }),
+          ...(node.sourceEffectOrdinal !== undefined && {
+            sourceEffectOrdinal: node.sourceEffectOrdinal,
+          }),
           ...(node.batchLogicalIndex !== undefined && { batchLogicalIndex: node.batchLogicalIndex }),
           ...(node.batchOccurrenceIndex !== undefined && {
             batchOccurrenceIndex: node.batchOccurrenceIndex,
@@ -32236,6 +32248,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         sourceCallsiteId?: number;
         sourceLogicalIndex: number;
         occurrenceIndex: number;
+        sourceEffectOrdinal?: number;
       }>;
       eventSignaturesBySlot?: Array<string | undefined>;
     } | undefined {
@@ -32284,6 +32297,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       logicalIndex: number;
       sourceLogicalIndex: number;
       occurrenceIndex: number;
+      sourceEffectOrdinal?: number;
       argSources?: (typeof publishedRows)[number]['argSources'];
     }> = [];
     for (const published of publishedRows) {
@@ -32368,6 +32382,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       sourceCallsiteId?: number;
       sourceLogicalIndex: number;
       occurrenceIndex: number;
+      sourceEffectOrdinal?: number;
     }> = [];
     const encodedRows = rows.map((row, rowIndex) => {
       if (row.logicalIndex !== rowIndex) {
@@ -32401,6 +32416,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         sourceCallsiteId: row.sourceCallsiteId,
         sourceLogicalIndex: row.sourceLogicalIndex,
         occurrenceIndex: row.occurrenceIndex,
+        sourceEffectOrdinal: row.sourceEffectOrdinal,
       });
       const encoded = args.map((arg, index) =>
         encodeFunctionArgument(arg, row.inputs[index].type, structs));

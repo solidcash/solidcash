@@ -495,6 +495,8 @@ export interface AbiFunction {
     deployInputOffset?: number;
   };
   entryAccesses?: readonly EntryAccessAbi[];
+  /** Compiler proof that source-effect ordinals form one straight-line order. */
+  sourceEffectOrder?: 'linear' | 'unsupported-flow';
   /** Compiler proof that the complete function body is exactly `return mapping[keys...]`, with each key a
    * direct visible parameter. SDKs may use this to answer the read without executing a derivation transaction. */
   directMappingReturn?: {
@@ -950,6 +952,8 @@ export interface EntryAccessAbi {
   keyParams: string[];
   keySources?: readonly KeySourceAbi[];  // optional for backward compat with old artifacts
   operations: readonly string[];
+  /** Compiler-authored mutation identities; not a control-flow reachability or terminality proof. */
+  mutationEffectOrdinals?: readonly number[];
   /** Compiler proof that this entry stores a dynamic-array value in authenticated continuation chunks. */
   chunkableArrayValue?: true;
   // A write slot gated off when its key aliases the delete slot at this index (swap-remove of the last key).
@@ -1089,6 +1093,8 @@ export interface ExternalCallStatement {
 export interface ExternalCallAbi {
   /** Stable compiler-assigned physical callsite/slot identifier within the containing function. */
   callsiteId?: number;
+  /** Compiler-authored function-local program point of this call effect. */
+  sourceEffectOrdinal?: number;
   /** Source start of the call expression, retained for deterministic SDK derivation diagnostics. */
   sourceLocation?: { line: number; column: number };
   /** Source reachability class; loop/conditional rows require runtime occurrence proof. */
@@ -1144,6 +1150,8 @@ export interface ExternalCallAbi {
     selector: string;
     /** Compiler-stable callsite before repeated-owner rows are collapsed into one physical callsite. */
     sourceCallsiteId?: number;
+    /** Compiler-authored program point of the source row before physical batching. */
+    sourceEffectOrdinal?: number;
     logicalIndex: number;
     inputs: readonly AbiInput[];
     argSources?: readonly ArgSource[];

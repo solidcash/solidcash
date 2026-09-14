@@ -393,6 +393,7 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
       sourceCallsiteId: number;
       sourceLogicalIndex?: number;
       occurrenceIndex: number;
+      sourceEffectOrdinal?: number;
     },
   ): void => {
     if (invocations.length >= maximum) {
@@ -576,6 +577,9 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
             {
               sourceCallsiteId: call.callsiteId!,
               occurrenceIndex: reached,
+              ...(call.sourceEffectOrdinal !== undefined && {
+                sourceEffectOrdinal: call.sourceEffectOrdinal,
+              }),
             },
           );
         }
@@ -702,6 +706,9 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
                 sourceCallsiteId: row.sourceCallsiteId ?? call.callsiteId!,
                 sourceLogicalIndex: row.logicalIndex,
                 occurrenceIndex: occurrence,
+                ...(row.sourceEffectOrdinal !== undefined && {
+                  sourceEffectOrdinal: row.sourceEffectOrdinal,
+                }),
               },
             );
           });
@@ -776,6 +783,9 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
             {
               sourceCallsiteId: call.callsiteId!,
               occurrenceIndex: reached,
+              ...(call.sourceEffectOrdinal !== undefined && {
+                sourceEffectOrdinal: call.sourceEffectOrdinal,
+              }),
             },
           );
         }
@@ -801,6 +811,9 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
           {
             sourceCallsiteId: call.callsiteId!,
             occurrenceIndex: reached,
+            ...(call.sourceEffectOrdinal !== undefined && {
+              sourceEffectOrdinal: call.sourceEffectOrdinal,
+            }),
           },
         );
       }

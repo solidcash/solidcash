@@ -20,6 +20,7 @@ import {
   ExternalCallStatement, EmitStatementNode, TernaryOpNode, TokenContainerMethodStatementNode,
   UnaryOpNode, BranchNode, BoolLiteralNode,
   SwitchNode, TryCatchNode, InstantiationNode,
+  EntryAccessInfo,
 } from '../ast/AST.js';
 import { BinaryOperator, UnaryOperator } from '../ast/Operator.js';
 import { containsStatefulOperation } from '../semantic/EnsureFinalRequireTraversal.js';
@@ -45,6 +46,27 @@ const STATE_WRITING_MODIFIERS = [
 /** Multiply two reached-count factors, where undefined means "not proven" and poisons the product. */
 const composeCount = (outer: number | undefined, inner: number | undefined): number | undefined =>
   outer === undefined || inner === undefined ? undefined : outer * inner;
+
+const safeSourceEffectOrdinal = (value: number | undefined): value is number =>
+  typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+
+/** Fail-closed artifact publication gate for compiler-owned source-effect identities. */
+export const sourceEffectOrderForArtifact = (
+  declared: FunctionDefinitionNode['sourceEffectOrder'],
+  externalCalls: readonly { sourceEffectOrdinal?: number; batchInvocations?: readonly {
+    sourceEffectOrdinal?: number;
+  }[] }[],
+  entryAccesses: readonly Pick<EntryAccessInfo, 'operations' | 'mutationEffectOrdinals'>[],
+): FunctionDefinitionNode['sourceEffectOrder'] => {
+  const complete = externalCalls.every((call) => safeSourceEffectOrdinal(call.sourceEffectOrdinal)
+    && (!call.batchInvocations || call.batchInvocations.every(
+      (row) => safeSourceEffectOrdinal(row.sourceEffectOrdinal),
+    ))) && entryAccesses.filter((access) =>
+    access.operations.includes('write') || access.operations.includes('delete'))
+    .every((access) => access.mutationEffectOrdinals?.length
+      && access.mutationEffectOrdinals.every(safeSourceEffectOrdinal));
+  return declared === 'linear' && !complete ? undefined : declared;
+};
 
 /**
  * Link a rolled external-call loop to the ABI array it directly fills. This is deliberately structural: the SDK
@@ -1840,6 +1862,11 @@ function buildFunctionAbiMetadata(
     }
     return keyParams.length > 0 ? { collection: returned[0].name, keyParams } : undefined;
   })();
+  // Late semantic rewrites may introduce graph calls or entry mutations after the source program-point pass.
+  // Never advertise a linear authority domain unless every emitted effect retained its compiler-owned identity.
+  const publishedSourceEffectOrder = sourceEffectOrderForArtifact(
+    func.sourceEffectOrder, func.externalCalls ?? [], func.entryAccesses ?? [],
+  );
   return {
     ...(isStateful && { writesState: computeWritesState(func) }),
     ...(func.scalarJournalRecursive && { recursiveStateHandler: true }),
@@ -1882,6 +1909,9 @@ function buildFunctionAbiMetadata(
           }),
         }),
         operations: ea.operations,
+        ...(ea.mutationEffectOrdinals?.length && {
+          mutationEffectOrdinals: [...ea.mutationEffectOrdinals],
+        }),
         ...(ea.chunkableArrayValue && { chunkableArrayValue: true }),
         ...(ea.aliasCondDeleteSlot !== undefined && { aliasCondDeleteSlot: ea.aliasCondDeleteSlot }),
         ...(ea.runtimeAliasPriorSlots?.length
@@ -1890,6 +1920,7 @@ function buildFunctionAbiMetadata(
         ...(ea.valueSource !== undefined && { valueSource: ea.valueSource }),
       })),
     }),
+    ...(publishedSourceEffectOrder !== undefined && { sourceEffectOrder: publishedSourceEffectOrder }),
     ...(directMappingReturn && { directMappingReturn }),
     ...(func.emitInfos && func.emitInfos.length > 0 && {
       emits: func.emitInfos.map((ei) => ({
@@ -1940,6 +1971,7 @@ function buildFunctionAbiMetadata(
           ? resultArrayOutputOf(func.body, ec.sourceCallNode) : undefined;
         return {
           callsiteId: ec.slotIndex,
+          ...(ec.sourceEffectOrdinal !== undefined && { sourceEffectOrdinal: ec.sourceEffectOrdinal }),
           ...(ec.sourceCallNode && {
             sourceLocation: {
               line: ec.sourceCallNode.location.start.line,
@@ -1984,6 +2016,7 @@ function buildFunctionAbiMetadata(
             batchInvocations: ec.batchInvocations.map((row) => ({
               selector: binToHex(row.selector),
               sourceCallsiteId: row.sourceCallsiteId,
+              sourceEffectOrdinal: row.sourceEffectOrdinal,
               logicalIndex: row.logicalIndex,
               inputs: row.parameterTypes.map((type, index) => ({
                 name: `arg${index}`, type: abiTypeString(type),

@@ -4,6 +4,7 @@ import {
   compileStringMulti,
   compileStringSplit,
 } from '../../src/compiler.js';
+import { sourceEffectOrderForArtifact } from '../../src/artifact/Artifact.js';
 
 describe('inferred message-bus batching for repeated external callees', () => {
   const SOURCE = `
@@ -12,7 +13,8 @@ describe('inferred message-bus batching for repeated external callees', () => {
       function run(int first, int second) public {
         ICounter(counter).add(first);
         ICounter(counter).add(second);
-        require(first >= 0 && second >= 0);
+        require(first >= 0);
+        require(second >= 0);
       }
     }
   `;
@@ -62,6 +64,110 @@ describe('inferred message-bus batching for repeated external callees', () => {
         { sourceCallsiteId: 1, logicalIndex: 1 },
       ],
     }]);
+  });
+
+  it('publishes one shared source-effect order for entry writes and graph calls', () => {
+    const artifact = compileString(`
+      interface ISink { function put(int value) external; }
+      contract Ordered(address sink) {
+        mapping(int => int) public values;
+        function writeBefore(int key) public {
+          values[key] = 1;
+          ISink(sink).put(1);
+          require(key >= 0);
+        }
+        function writeAfter(int key) public {
+          ISink(sink).put(1);
+          values[key] = 1;
+          require(key >= 0);
+        }
+      }
+    `, { forceStateful: true });
+    const before = artifact.abi.find((fn) => fn.name === 'writeBefore')!;
+    const after = artifact.abi.find((fn) => fn.name === 'writeAfter')!;
+    const beforeWrite = before.entryAccesses?.[0].mutationEffectOrdinals?.[0];
+    const beforeCall = before.externalCalls?.[0].sourceEffectOrdinal;
+    const afterWrite = after.entryAccesses?.[0].mutationEffectOrdinals?.[0];
+    const afterCall = after.externalCalls?.[0].sourceEffectOrdinal;
+    expect(beforeWrite).toBeLessThan(beforeCall!);
+    expect(afterCall).toBeLessThan(afterWrite!);
+  });
+
+  it('retains source-effect identity when repeated calls collapse into one physical slot', () => {
+    const rows = compileString(SOURCE).abi.find((fn) => fn.name === 'run')
+      ?.externalCalls?.[0].batchInvocations;
+    const identities = rows?.map((row) => ({
+      sourceCallsiteId: row.sourceCallsiteId,
+      logicalIndex: row.logicalIndex,
+      sourceEffectOrdinal: row.sourceEffectOrdinal,
+    }));
+    expect(identities?.map(({ sourceCallsiteId, logicalIndex }) => ({
+      sourceCallsiteId, logicalIndex,
+    }))).toEqual([
+      { sourceCallsiteId: 0, logicalIndex: 0 },
+      { sourceCallsiteId: 1, logicalIndex: 1 },
+    ]);
+    expect(identities?.every(({ sourceEffectOrdinal }) => Number.isSafeInteger(sourceEffectOrdinal)))
+      .toBe(true);
+    expect(identities![0].sourceEffectOrdinal).toBeLessThan(identities![1].sourceEffectOrdinal!);
+  });
+
+  it('reserves source-effect program points for presemantic function calls', () => {
+    const artifact = compileString(`
+      interface ISink { function put(int value) external; }
+      contract Ordered(address sink) {
+        function helper() internal { require(true); }
+        function run() public {
+          helper();
+          ISink(sink).put(1);
+          require(true);
+        }
+      }
+    `, { forceStateful: true });
+    expect(artifact.abi.find((fn) => fn.name === 'run')?.externalCalls?.[0].sourceEffectOrdinal)
+      .toBeGreaterThan(0);
+  });
+
+  it('marks ternary and short-circuit effect domains as unsupported flow', () => {
+    const artifact = compileString(`
+      interface ISink { function put(int value) external; }
+      contract Ordered(address sink) {
+        mapping(int => int) public values;
+        function ternary(bool choose, int key) public {
+          int value = choose ? 1 : 2;
+          values[key] = value;
+          ISink(sink).put(value);
+          require(key >= 0);
+        }
+        function shortCircuit(bool enabled, int key) public {
+          bool allowed = enabled && key >= 0;
+          values[key] = 1;
+          ISink(sink).put(1);
+          require(allowed || !enabled);
+        }
+      }
+    `, { forceStateful: true });
+    for (const name of ['ternary', 'shortCircuit']) {
+      const fn = artifact.abi.find((candidate) => candidate.name === name)!;
+      expect(fn.sourceEffectOrder).toBe('unsupported-flow');
+      expect(fn.entryAccesses?.[0].mutationEffectOrdinals).toBeUndefined();
+      expect(fn.externalCalls?.[0].sourceEffectOrdinal).toBeUndefined();
+    }
+  });
+
+  it('does not advertise incomplete late-rewritten graph effects as linear', () => {
+    expect(sourceEffectOrderForArtifact('linear', [{}], []))
+      .toBeUndefined();
+    expect(sourceEffectOrderForArtifact('linear', [{
+      sourceEffectOrdinal: 0,
+      batchInvocations: [{ sourceEffectOrdinal: 0 }, {}],
+    }], []))
+      .toBeUndefined();
+    expect(sourceEffectOrderForArtifact('linear', [], [{ operations: ['write'] }]))
+      .toBeUndefined();
+    expect(sourceEffectOrderForArtifact('linear', [{ sourceEffectOrdinal: 0 }], [{
+      operations: ['write'], mutationEffectOrdinals: [1],
+    }])).toBe('linear');
   });
 
   it('publishes runtime loop cardinality for repeated calls to one owner', () => {

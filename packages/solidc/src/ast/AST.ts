@@ -252,6 +252,11 @@ export interface EntryAccessInfo {
   keyParams: string[];          // kept for backward compat
   keySources: KeySourceInfo[];  // detailed source info per key
   operations: ('read' | 'write' | 'delete')[];
+  /**
+   * Shared function-local source-effect identities of mutations collapsed into this physical entry access.
+   * This is not a reachability or terminality proof: conditional/loop occurrences require a separate schedule.
+   */
+  mutationEffectOrdinals?: number[];
   /** The collection stores a dynamic-array value in authenticated continuation chunks. */
   chunkableArrayValue?: true;
   slotIndex: number;
@@ -432,6 +437,8 @@ export class FunctionDefinitionNode extends Node implements Named {
   selfExternalFunctionAliases?: Record<string, string>;
   requiredNftIndices?: number[];
   entryAccesses?: EntryAccessInfo[];
+  /** Whether shared source-effect ordinals are complete for this straight-line handler. */
+  sourceEffectOrder?: 'linear' | 'unsupported-flow';
   /** Compiler-owned message-bus handler mapping from its function-local entry
    * slot ordinals to the enclosing route's physical participant slots. */
   messageBusPhysicalEntrySlots?: number[];
@@ -1531,6 +1538,8 @@ export class MappingAssignNode extends StatementNode implements Named {
   noArg?: boolean;     // Set for `map[k].push()`: `expression` is a placeholder, replaced with the element default
   fromModifier?: string; // see StateAssignNode.fromModifier (inlined-helper origin for the private-collection check)
   keySources?: KeySourceInfo[]; // canonical sources retained for runtime-loop ABI planning
+  /** Function-local program point shared with external-call effects. */
+  sourceEffectOrdinal?: number;
   // A counter-loop general RMW (`m[i] = f(m[i], ...)`) replaces the same-entry read in `expression` with this
   // SDK-supplied value. The sorted-entry loop authenticates it against the co-spent entry (or the absent default)
   // before accepting the computed output commitment.
@@ -1574,6 +1583,8 @@ export class MappingFieldAssignNode extends StatementNode implements Named {
   // Deeper member names after `fieldName` for an imported-struct field write whose struct was unknown at parse
   // (`x[i].a.b = v` -> fieldName 'a', trailingMembers ['b']); the redesugar pass reconstructs the nested rebuild.
   trailingMembers?: string[];
+  /** Function-local program point shared with external-call effects. */
+  sourceEffectOrdinal?: number;
 
   constructor(
     public name: string,
@@ -1621,6 +1632,8 @@ export class MappingDeleteNode extends StatementNode implements Named {
   entrySlotIndex: number = -1;
   fromModifier?: string; // see StateAssignNode.fromModifier (inlined-helper origin for the private-collection check)
   keySources?: KeySourceInfo[]; // canonical sources retained for runtime-loop ABI planning
+  /** Function-local program point shared with external-call effects. */
+  sourceEffectOrdinal?: number;
 
   constructor(
     public name: string,
@@ -1655,6 +1668,8 @@ export class CastNode extends ExpressionNode implements Typed {
 }
 
 export class FunctionCallNode extends ExpressionNode {
+  /** Pre-semantic source program point copied if this call lowers to an external graph edge. */
+  sourceEffectOrdinal?: number;
   resolvedFunction?: FunctionDefinitionNode;
   /** A raw address transfer/send call cloned from an inline library helper. */
   inlinedLibraryEffect?: boolean;
@@ -1952,6 +1967,8 @@ export class ArrayPopNode extends StatementNode implements Named {
 }
 
 export class ArrayAssignNode extends StatementNode implements Named {
+  /** Pre-semantic source program point copied if this lowers to a mapping mutation. */
+  sourceEffectOrdinal?: number;
   arrayType?: ArrayType;
   fromModifier?: string; // see StateAssignNode.fromModifier (inlined-helper origin for the private-collection check)
   messageBusRuntimeOldValueWitness?: ArrayAccessNode;
@@ -1970,6 +1987,8 @@ export class ArrayAssignNode extends StatementNode implements Named {
 }
 
 export class ArrayDeleteNode extends StatementNode implements Named {
+  /** Pre-semantic source program point copied if this lowers to a mapping mutation. */
+  sourceEffectOrdinal?: number;
   arrayType?: ArrayType;
 
   constructor(
@@ -2565,6 +2584,8 @@ export class ExternalFunctionCallNode extends ExpressionNode {
   callInfo?: ExternalFunctionCallInfo;
   /** Ordered row identity within one inferred repeated-callee message-bus batch. */
   externalBatchLogicalIndex?: number;
+  /** Function-local program point shared with mapping-write effects. */
+  sourceEffectOrdinal?: number;
   callMode?: ExternalCallMode;
   callOptions?: CallOptions;
   valueTransferIndex: number = -1;
@@ -2686,6 +2707,8 @@ export interface ExternalCallSlot {
   addressIsMsgSender?: boolean;
   addressSource?: ExternalCallArgSource;
   slotIndex: number;
+  /** Function-local program point of this source call before any physical batching. */
+  sourceEffectOrdinal?: number;
   requiredDataNftIndices: number[];
   hasReturnValues?: boolean;
   returnTypes?: Type[];
@@ -2736,6 +2759,8 @@ export interface ExternalCallSlot {
     logicalIndex: number;
     /** @internal Traversal-stable source callsite used to prove producer dominance before physical batching. */
     sourceCallsiteId: number;
+    /** Function-local program point retained independently of physical batch order. */
+    sourceEffectOrdinal?: number;
     argSources?: ExternalCallArgSource[];
     /** Runtime cardinality of this source callsite within the grouped physical route. */
     occurrence?: 'once' | 'conditional' | 'loop';
@@ -2803,6 +2828,8 @@ export interface ExternalOutStateSlot {
 }
 
 export class MethodCallNode extends ExpressionNode {
+  /** Pre-semantic source program point copied if this lowers to an external graph call. */
+  sourceEffectOrdinal?: number;
   callOptions?: CallOptions;
   valueTransferIndex: number = -1; // temporary carrier for pre-scan before transformation
   fieldNames?: string[]; // set for named-arg calls obj.f({a: x}); reordered against the callee's params
@@ -3215,6 +3242,8 @@ export class PlaceholderStatementNode extends StatementNode {
 }
 
 export class LowLevelCallNode extends ExpressionNode {
+  /** Pre-semantic source program point copied if this lowers to an external graph call. */
+  sourceEffectOrdinal?: number;
   callIndex: number = 0;  // assigned during pre-scan
   callOptions?: CallOptions;
   valueTransferIndex: number = -1;
@@ -3238,6 +3267,8 @@ export class LowLevelCallNode extends ExpressionNode {
 }
 
 export class LowLevelCallStatementNode extends StatementNode {
+  /** Pre-semantic source program point copied if this lowers to an external graph call. */
+  sourceEffectOrdinal?: number;
   callIndex: number = 0;
   callOptions?: CallOptions;
   valueTransferIndex: number = -1;

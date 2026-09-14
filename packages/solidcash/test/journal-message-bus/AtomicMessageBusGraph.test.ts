@@ -692,10 +692,11 @@ describe('atomic compiled invocation graph', () => {
             interfaceName: 'ISink',
             functionName: 'ping',
             batchInvocations: [{
-              selector: '01020304', sourceCallsiteId: 40, logicalIndex: 0, inputs: pingInputs,
+              selector: '01020304', sourceCallsiteId: 40, sourceEffectOrdinal: 2,
+              logicalIndex: 0, inputs: pingInputs,
               argSources: [{ kind: 'literal' as const, type: 'int', value: '1' }],
             }, {
-              selector: '01020304', sourceCallsiteId: 41, logicalIndex: 1,
+              selector: '01020304', sourceCallsiteId: 41, sourceEffectOrdinal: 5, logicalIndex: 1,
               inputs: pingInputs, occurrence: 'loop' as const,
               argSources: [{ kind: 'arrayElement' as const, paramIndex: 0, indexValue: 0 }],
             }],
@@ -730,12 +731,13 @@ describe('atomic compiled invocation graph', () => {
       source: invocation.sourceCallsiteId,
       logical: invocation.sourceLogicalIndex,
       occurrence: invocation.occurrenceIndex,
+      effect: invocation.sourceEffectOrdinal,
     }))).toEqual([
-      { physical: undefined, source: undefined, logical: undefined, occurrence: undefined },
-      { physical: 4, source: 40, logical: 0, occurrence: 0 },
-      { physical: 4, source: 41, logical: 1, occurrence: 0 },
-      { physical: 4, source: 41, logical: 1, occurrence: 1 },
-      { physical: 4, source: 41, logical: 1, occurrence: 2 },
+      { physical: undefined, source: undefined, logical: undefined, occurrence: undefined, effect: undefined },
+      { physical: 4, source: 40, logical: 0, occurrence: 0, effect: 2 },
+      { physical: 4, source: 41, logical: 1, occurrence: 0, effect: 5 },
+      { physical: 4, source: 41, logical: 1, occurrence: 1, effect: 5 },
+      { physical: 4, source: 41, logical: 1, occurrence: 2, effect: 5 },
     ]);
     expect(three.targets).toEqual([
       { batchLogicalIndex: 0, occurrence: 0 },
@@ -761,6 +763,9 @@ describe('atomic compiled invocation graph', () => {
       ...(invocation.occurrenceIndex !== undefined && {
         occurrenceIndex: invocation.occurrenceIndex,
       }),
+      ...(invocation.sourceEffectOrdinal !== undefined && {
+        sourceEffectOrdinal: invocation.sourceEffectOrdinal,
+      }),
       ...(invocation.parent !== null && { targetLockingBytecode: invocation.targetLockingBytecode }),
       callMode: invocation.callMode,
     }));
@@ -785,11 +790,29 @@ describe('atomic compiled invocation graph', () => {
       })),
       missingSource,
     )).toThrow(/omits compiler source callsite/);
+    const wrongEffect = compiled.map((invocation, index) => index === 1
+      ? { ...invocation, sourceEffectOrdinal: 5 } : invocation);
+    expect(() => messageBus.planCompiledGraph(
+      three.planned.participants.map((participant) => ({
+        artifact: participant.artifact,
+        lockingBytecode: participant.lockingBytecode,
+      })),
+      wrongEffect,
+    )).toThrow(/source-effect ordinal disagrees/);
+    const mixedEffectRoot = structuredClone(root) as typeof root;
+    delete (mixedEffectRoot.artifact.abi[0].externalCalls![0].batchInvocations![1] as {
+      sourceEffectOrdinal?: number;
+    }).sourceEffectOrdinal;
+    expect(() => messageBus.deriveCompiledGraphPlan({
+      root: mixedEffectRoot, function: 'run', args: [[2n]], targets: {}, target: () => sink,
+      expressionArgument: ({ occurrence }) => BigInt(occurrence + 2),
+    })).toThrow(/mixes source-effect provenance/);
     const substituted = compiled.map((invocation, index) => index === 1 ? {
       ...invocation,
       sourceCallsiteId: 41,
       sourceLogicalIndex: 1,
       occurrenceIndex: 0,
+      sourceEffectOrdinal: 5,
     } : index > 1 ? { ...invocation, occurrenceIndex: index - 1 } : invocation);
     expect(() => messageBus.planCompiledGraph(
       three.planned.participants.map((participant) => ({

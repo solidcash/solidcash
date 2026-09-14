@@ -56,6 +56,7 @@ import GenerateTargetTraversal from './generation/GenerateTargetTraversal.js';
 import SolidCashLexer from './grammar/SolidCashLexer.js';
 import SolidCashParser from './grammar/SolidCashParser.js';
 import SymbolTableTraversal, {
+  assignFunctionSourceEffectOrdinals,
   getMaxPushdataEncodedSizeForType,
 } from './semantic/SymbolTableTraversal.js';
 import TypeCheckTraversal from './semantic/TypeCheckTraversal.js';
@@ -11168,6 +11169,11 @@ function compileResolvedAst(
         }
       });
     }
+  }
+  // Capture logical source effects before either early or late route synthesis can rearrange physical journal
+  // settlement around them. Pre-semantic call nodes retain this scalar identity through typed-call lowering.
+  for (const fn of [...ast.contract.functions, ...ast.freeFunctions]) {
+    assignFunctionSourceEffectOrdinals(fn);
   }
   const synthesizeBatchBeforeLowering = !!mergedCompilerOptions.messageBus
     && supportsAtomicMessageBus(ast, mergedCompilerOptions)

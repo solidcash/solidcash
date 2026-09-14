@@ -103,6 +103,8 @@ export interface PreparedAtomicMessageBusCall {
   sourceLogicalIndex?: number;
   /** @internal Reached runtime occurrence of the source callsite or source row. */
   occurrenceIndex?: number;
+  /** @internal Compiler-authored program point shared with entry mutations in the parent handler. */
+  sourceEffectOrdinal?: number;
   /** @internal Source-template identity for one runtime row of a collapsed repeated-call batch. */
   batchLogicalIndex?: number;
   /** @internal Source loop occurrence represented by this runtime batch row. */
@@ -162,6 +164,9 @@ export function assertPreparedInvocationIdentity(
   }
   if (occurrenceIndex !== invocation.occurrenceIndex) {
     throw new Error(`messageBus: prepared invocation ${index} source occurrence disagrees with the compiled graph`);
+  }
+  if (descriptor.sourceEffectOrdinal !== invocation.sourceEffectOrdinal) {
+    throw new Error(`messageBus: prepared invocation ${index} source-effect ordinal disagrees with the graph`);
   }
 }
 
@@ -2365,13 +2370,21 @@ export class AtomicMessageBusComposition {
           descriptor.executor ? { artifact: descriptor.artifact, executor: descriptor.executor } : undefined,
           participant.invocations.map((invocationIndex) => {
             const invocation = descriptors[invocationIndex];
+            const plannedInvocation = plan.invocations[invocationIndex];
             const handler = participant.artifact.abi.find((candidate) =>
               candidate.name === invocation.functionName
-              && candidate.selector?.toLowerCase() === plan.invocations[invocationIndex].selectorHex.toLowerCase());
+              && candidate.selector?.toLowerCase() === plannedInvocation.selectorHex.toLowerCase());
             if (!handler) {
               throw new Error(`messageBus: handler ABI '${invocation.functionName}' is missing`);
             }
-            return { args: invocation.args, handler };
+            return {
+              args: invocation.args,
+              handler,
+              sourceCallsiteId: plannedInvocation.sourceCallsiteId,
+              sourceLogicalIndex: plannedInvocation.sourceLogicalIndex,
+              occurrenceIndex: plannedInvocation.occurrenceIndex,
+              sourceEffectOrdinal: plannedInvocation.sourceEffectOrdinal,
+            };
           }),
           logicalIdentities.get(participant.participant),
         );

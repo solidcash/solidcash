@@ -68,6 +68,8 @@ export interface CompiledGraphInvocation {
   sourceLogicalIndex?: number;
   /** Reached runtime occurrence of this source callsite or batch row. */
   occurrenceIndex?: number;
+  /** Compiler-authored program point of the source call in its parent's shared effect domain. */
+  sourceEffectOrdinal?: number;
   /**
    * Exact locking bytecode evaluated by the parent call expression. It may be the participant's physical
    * owner or an authenticated public identity; settlement still belongs to `callee` in both cases.
@@ -119,6 +121,8 @@ export interface PlannedGraphInvocation {
   sourceLogicalIndex?: number;
   /** Reached runtime occurrence of the source producer. */
   occurrenceIndex?: number;
+  /** Compiler-authored program point of the parent call in its shared write/call effect domain. */
+  sourceEffectOrdinal?: number;
   /** Whether source identity was published by the compiler or normalized from a legacy batch row. */
   sourceCallsiteProvenance?: 'compiler' | 'legacy-logical';
   /** Exact source-level call target and the participant-local input which authenticates it. */
@@ -2165,6 +2169,7 @@ export function planCompiledGraph(
     sourceCallsiteId: number;
     sourceLogicalIndex?: number;
     occurrenceIndex: number;
+    sourceEffectOrdinal?: number;
     sourceCallsiteProvenance: 'compiler' | 'legacy-logical';
   } | undefined)[] = invocations.map(() => undefined);
   const resultDependencies: number[][] = invocations.map(() => []);
@@ -2232,6 +2237,7 @@ export function planCompiledGraph(
         let sourceCallsiteId = invocation.sourceCallsiteId;
         let sourceLogicalIndex = invocation.sourceLogicalIndex;
         let occurrenceIndex = invocation.occurrenceIndex;
+        let sourceEffectOrdinal: number | undefined;
         let sourceCallsiteProvenance: 'compiler' | 'legacy-logical' = 'compiler';
         if (callsite.batchInvocations !== undefined) {
           if (sourceLogicalIndex === undefined) {
@@ -2271,6 +2277,7 @@ export function planCompiledGraph(
               );
             }
           }
+          sourceEffectOrdinal = row.sourceEffectOrdinal;
           if (!Number.isSafeInteger(sourceCallsiteId) || sourceCallsiteId < 0) {
             throw new Error(`messageBus: invocation ${child} has an invalid batched source callsite`);
           }
@@ -2312,6 +2319,7 @@ export function planCompiledGraph(
             );
           }
           sourceCallsiteId = callsite.callsiteId;
+          sourceEffectOrdinal = callsite.sourceEffectOrdinal;
           if ((callsite.occurrence ?? 'once') !== 'loop'
             && occurrenceIndex !== undefined && occurrenceIndex !== 0) {
             throw new Error(
@@ -2319,6 +2327,16 @@ export function planCompiledGraph(
               + `${callsite.occurrence ?? 'once'} callsite`,
             );
           }
+        }
+        if (sourceEffectOrdinal !== undefined
+          && (!Number.isSafeInteger(sourceEffectOrdinal) || sourceEffectOrdinal < 0)) {
+          throw new Error(`messageBus: invocation ${child} has an invalid compiler source-effect ordinal`);
+        }
+        if (invocation.sourceEffectOrdinal !== undefined
+          && invocation.sourceEffectOrdinal !== sourceEffectOrdinal) {
+          throw new Error(
+            `messageBus: invocation ${child} source-effect ordinal disagrees with its compiler callsite`,
+          );
         }
         const sourceKey = `${sourceCallsiteId}:${sourceLogicalIndex ?? -1}`;
         const expectedOccurrence = inferredOccurrence.get(sourceKey) ?? 0;
@@ -2347,6 +2365,7 @@ export function planCompiledGraph(
           sourceCallsiteId,
           ...(sourceLogicalIndex !== undefined && { sourceLogicalIndex }),
           occurrenceIndex,
+          ...(sourceEffectOrdinal !== undefined && { sourceEffectOrdinal }),
           sourceCallsiteProvenance,
         };
       }
@@ -2373,8 +2392,12 @@ export function planCompiledGraph(
       if (callsite.callsiteId === undefined || callsite.batchInvocations === undefined) continue;
       const rows = callsite.batchInvocations;
       const publishedSourceCount = rows.filter((row) => row.sourceCallsiteId !== undefined).length;
+      const publishedEffectCount = rows.filter((row) => row.sourceEffectOrdinal !== undefined).length;
       if (publishedSourceCount !== 0 && publishedSourceCount !== rows.length) {
         throw new Error(`messageBus: batched callsite ${callsite.callsiteId} mixes legacy and source-aware rows`);
+      }
+      if (publishedEffectCount !== 0 && publishedEffectCount !== rows.length) {
+        throw new Error(`messageBus: batched callsite ${callsite.callsiteId} mixes source-effect provenance`);
       }
       if (rows.some((row, logicalIndex) => row.logicalIndex !== logicalIndex
         || (row.sourceCallsiteId !== undefined
@@ -2385,6 +2408,11 @@ export function planCompiledGraph(
         ? [] : [row.sourceCallsiteId]));
       if (publishedSourceCount > 0 && sourceIds.size !== rows.length) {
         throw new Error(`messageBus: batched callsite ${callsite.callsiteId} has duplicate source callsites`);
+      }
+      const effectOrdinals = new Set(rows.flatMap((row) => row.sourceEffectOrdinal === undefined
+        ? [] : [row.sourceEffectOrdinal]));
+      if (publishedEffectCount > 0 && effectOrdinals.size !== rows.length) {
+        throw new Error(`messageBus: batched callsite ${callsite.callsiteId} repeats a source-effect identity`);
       }
       for (const row of rows) {
         const count = children.filter((child) => {

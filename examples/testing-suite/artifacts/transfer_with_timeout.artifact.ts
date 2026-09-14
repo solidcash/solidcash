@@ -24,6 +24,7 @@ export default {
           type: 'sig',
         },
       ],
+      sourceEffectOrder: 'linear',
       signatureGuard: {
         key: {
           kind: 'constructorArg',
@@ -40,6 +41,7 @@ export default {
           type: 'sig',
         },
       ],
+      sourceEffectOrder: 'linear',
       signatureGuard: {
         key: {
           kind: 'constructorArg',
@@ -99,7 +101,7 @@ export default {
       messageBus: false,
     },
   },
-  updatedAt: '2026-08-18T13:08:04.833Z',
+  updatedAt: '2026-09-14T01:55:11.558Z',
   invocationAnalysis: {
     version: 1,
     protocolVersions: [

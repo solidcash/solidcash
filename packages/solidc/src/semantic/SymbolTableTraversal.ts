@@ -238,6 +238,177 @@ import { walkInvocationAst } from '../analysis/InvocationAnalysis.js';
 // layout declares one and otherwise appends the chunk run past the block, misaligning every later participant.
 const BALANCED_TRAILING_CAPACITY = 64;
 
+/** Deterministic evaluation-order numbering shared by entry writes and external graph calls. */
+class SourceEffectOrderTraversal extends AstTraversal {
+  constructor(
+    private next: number,
+    private readonly overwrite = false,
+    private readonly assignMissing = true,
+  ) { super(); }
+
+  override visitMappingAssign(node: MappingAssignNode): Node {
+    super.visitMappingAssign(node);
+    if (this.overwrite || (this.assignMissing && node.sourceEffectOrdinal === undefined)) {
+      node.sourceEffectOrdinal = this.next++;
+    }
+    else if (node.sourceEffectOrdinal !== undefined) {
+      this.next = Math.max(this.next, node.sourceEffectOrdinal + 1);
+    }
+    return node;
+  }
+
+  override visitArrayAssign(node: ArrayAssignNode): Node {
+    super.visitArrayAssign(node);
+    if (this.overwrite || (this.assignMissing && node.sourceEffectOrdinal === undefined)) {
+      node.sourceEffectOrdinal = this.next++;
+    }
+    return node;
+  }
+
+  override visitArrayDelete(node: ArrayDeleteNode): Node {
+    super.visitArrayDelete(node);
+    if (this.overwrite || (this.assignMissing && node.sourceEffectOrdinal === undefined)) {
+      node.sourceEffectOrdinal = this.next++;
+    }
+    return node;
+  }
+
+  override visitMappingFieldAssign(node: MappingFieldAssignNode): Node {
+    super.visitMappingFieldAssign(node);
+    if (this.overwrite || (this.assignMissing && node.sourceEffectOrdinal === undefined)) {
+      node.sourceEffectOrdinal = this.next++;
+    }
+    else if (node.sourceEffectOrdinal !== undefined) {
+      this.next = Math.max(this.next, node.sourceEffectOrdinal + 1);
+    }
+    return node;
+  }
+
+  override visitMappingDelete(node: MappingDeleteNode): Node {
+    super.visitMappingDelete(node);
+    if (this.overwrite || (this.assignMissing && node.sourceEffectOrdinal === undefined)) {
+      node.sourceEffectOrdinal = this.next++;
+    }
+    else if (node.sourceEffectOrdinal !== undefined) {
+      this.next = Math.max(this.next, node.sourceEffectOrdinal + 1);
+    }
+    return node;
+  }
+
+  override visitExternalFunctionCall(node: ExternalFunctionCallNode): Node {
+    node.addressExpression = this.visit(node.addressExpression) as ExpressionNode;
+    node.parameters = [...node.parameters].reverse().map((parameter) => this.visit(parameter) as ExpressionNode)
+      .reverse();
+    if (node.callOptions?.value) node.callOptions.value = this.visit(node.callOptions.value) as ExpressionNode;
+    if (node.callOptions?.gas) node.callOptions.gas = this.visit(node.callOptions.gas) as ExpressionNode;
+    if (node.callInfo && !node.foldedIntoDeploy && !node.rawValueTransferOnly) {
+      if (this.overwrite || (this.assignMissing && node.sourceEffectOrdinal === undefined)) {
+        node.sourceEffectOrdinal = this.next++;
+      }
+      else if (node.sourceEffectOrdinal !== undefined) {
+        this.next = Math.max(this.next, node.sourceEffectOrdinal + 1);
+      }
+    }
+    return node;
+  }
+
+  // Transformation traversal visits a do-while condition first. Runtime evaluation executes its body first;
+  // metadata follows runtime order even though later terminal replay must still prove loop occurrences.
+  override visitDoWhile(node: DoWhileNode): Node {
+    node.block = this.visit(node.block) as BlockNode;
+    node.condition = this.visit(node.condition) as ExpressionNode;
+    return node;
+  }
+
+  override visitFunctionCall(node: FunctionCallNode): Node {
+    node.parameters = [...node.parameters].reverse().map((parameter) => this.visit(parameter) as ExpressionNode)
+      .reverse();
+    node.identifier = this.visit(node.identifier) as IdentifierNode;
+    if (node.callOptions?.value) node.callOptions.value = this.visit(node.callOptions.value) as ExpressionNode;
+    if (node.callOptions?.gas) node.callOptions.gas = this.visit(node.callOptions.gas) as ExpressionNode;
+    if (node.callOptions?.salt) node.callOptions.salt = this.visit(node.callOptions.salt) as ExpressionNode;
+    if (this.overwrite || (this.assignMissing && node.sourceEffectOrdinal === undefined)) {
+      node.sourceEffectOrdinal = this.next++;
+    }
+    return node;
+  }
+
+  override visitMethodCall(node: MethodCallNode): Node {
+    node.parameters = [...node.parameters].reverse().map((parameter) => this.visit(parameter) as ExpressionNode)
+      .reverse();
+    node.object = this.visit(node.object) as ExpressionNode;
+    if (node.callOptions?.value) node.callOptions.value = this.visit(node.callOptions.value) as ExpressionNode;
+    if (node.callOptions?.gas) node.callOptions.gas = this.visit(node.callOptions.gas) as ExpressionNode;
+    if (this.overwrite || (this.assignMissing && node.sourceEffectOrdinal === undefined)) {
+      node.sourceEffectOrdinal = this.next++;
+    }
+    return node;
+  }
+
+  override visitLowLevelCall(node: LowLevelCallNode): Node {
+    node.data = this.visit(node.data) as ExpressionNode;
+    node.targetExpression = this.visit(node.targetExpression) as ExpressionNode;
+    if (node.callOptions?.value) node.callOptions.value = this.visit(node.callOptions.value) as ExpressionNode;
+    if (node.callOptions?.gas) node.callOptions.gas = this.visit(node.callOptions.gas) as ExpressionNode;
+    if (this.overwrite || (this.assignMissing && node.sourceEffectOrdinal === undefined)) {
+      node.sourceEffectOrdinal = this.next++;
+    }
+    return node;
+  }
+
+  override visitLowLevelCallStatement(node: LowLevelCallStatementNode): Node {
+    node.data = this.visit(node.data) as ExpressionNode;
+    node.targetExpression = this.visit(node.targetExpression) as ExpressionNode;
+    if (node.callOptions?.value) node.callOptions.value = this.visit(node.callOptions.value) as ExpressionNode;
+    if (node.callOptions?.gas) node.callOptions.gas = this.visit(node.callOptions.gas) as ExpressionNode;
+    if (this.overwrite || (this.assignMissing && node.sourceEffectOrdinal === undefined)) {
+      node.sourceEffectOrdinal = this.next++;
+    }
+    return node;
+  }
+
+  override visitIndirectCall(node: IndirectCallNode): Node {
+    node.parameters = [...node.parameters].reverse().map((parameter) => this.visit(parameter) as ExpressionNode)
+      .reverse();
+    node.callee = this.visit(node.callee) as ExpressionNode;
+    return node;
+  }
+
+  override visitSlice(node: SliceNode): Node {
+    node.element = this.visit(node.element) as ExpressionNode;
+    node.end = this.visit(node.end) as ExpressionNode;
+    node.start = this.visit(node.start) as ExpressionNode;
+    return node;
+  }
+
+  override visitTryCatch(node: TryCatchNode): Node {
+    node.expression = this.visit(node.expression) as ExpressionNode;
+    node.tryBlock = this.visit(node.tryBlock) as BlockNode;
+    // BCH emits only the try path. Catch AST remains metadata, never part of the executable effect order.
+    return node;
+  }
+}
+
+/** Capture source program points before graph-route synthesis can rearrange physical settlement code. */
+export function assignFunctionSourceEffectOrdinals(node: FunctionDefinitionNode): void {
+  let unsupportedFlow = false;
+  walkInvocationAst(node.body, (candidate) => {
+    if (candidate instanceof BranchNode || candidate instanceof WhileNode || candidate instanceof DoWhileNode
+      || candidate instanceof TryCatchNode || candidate instanceof SwitchNode
+      || candidate instanceof CollectionIterationNode || candidate instanceof TernaryOpNode
+      || (candidate instanceof BinaryOpNode
+        && (candidate.operator === BinaryOperator.AND || candidate.operator === BinaryOperator.OR))) {
+      unsupportedFlow = true;
+    }
+  });
+  if (unsupportedFlow) {
+    node.sourceEffectOrder = 'unsupported-flow';
+    return;
+  }
+  node.sourceEffectOrder = 'linear';
+  new SourceEffectOrderTraversal(0, true).visit(node.body);
+}
+
 // Counts identifier occurrences in an expression subtree (structural children only, no definition backrefs).
 class IdentifierNameCounter extends AstTraversal {
   counts: Map<string, number> = new Map();
@@ -2898,6 +3069,9 @@ export default class SymbolTableTraversal extends AstTraversal {
       }
     }
 
+    // Assign one common source-effect domain before entry accesses and graph callsites are collected separately.
+    // The ordinal describes evaluation order, not physical slot order; later batching must retain each source row's
+    // own value. It is metadata only and does not authorize control-flow reachability.
     // Entry slot pre-scan: collect unique (collection, keyParam) pairs and assign slot indices
     if (this.collectionMap.size > 0) {
       this.collectLocalKeyDefs(node.body);
@@ -3342,6 +3516,9 @@ export default class SymbolTableTraversal extends AstTraversal {
           // V1 permits exactly one repeated callee group in a root invocation.
           if (repeated.length === 1) {
             const group = repeated[0];
+            const hasCompleteSourceEffectOrder = group.every(
+              (slot) => slot.sourceEffectOrdinal !== undefined,
+            );
             const representative = group[0];
             representative.batchInvocations = group.map((slot, logicalIndex) => {
               slot.sourceCallNode!.externalBatchLogicalIndex = logicalIndex;
@@ -3360,6 +3537,9 @@ export default class SymbolTableTraversal extends AstTraversal {
                   ?? slot.sourceCallNode!.parameters.map((parameter) => parameter.type!),
                 logicalIndex,
                 sourceCallsiteId: slot.slotIndex,
+                ...(hasCompleteSourceEffectOrder
+                  ? { sourceEffectOrdinal: slot.sourceEffectOrdinal! }
+                  : {}),
                 argSources: slot.argSources,
                 occurrence,
                 ...(slot.condition && { condition: slot.condition }),
@@ -5450,6 +5630,10 @@ export default class SymbolTableTraversal extends AstTraversal {
         if (valueParam && existing.valueParam === undefined) existing.valueParam = valueParam;
         if (alreadyWrote) existing.valueSource = valueSource;
         else if (valueSource && existing.valueSource === undefined) existing.valueSource = valueSource;
+        if (node.sourceEffectOrdinal !== undefined
+          && !existing.mutationEffectOrdinals?.includes(node.sourceEffectOrdinal)) {
+          (existing.mutationEffectOrdinals ??= []).push(node.sourceEffectOrdinal);
+        }
       } else {
         const collSig = computeCollectionSignature(node.collection.name, node.collection.type.toString());
         map.set(slotKey, {
@@ -5458,6 +5642,9 @@ export default class SymbolTableTraversal extends AstTraversal {
           ...(chunkableArrayValue && { chunkableArrayValue: true }),
           ...(valueParam !== undefined && { valueParam }),
           ...(valueSource !== undefined && { valueSource }),
+          ...(node.sourceEffectOrdinal !== undefined && {
+            mutationEffectOrdinals: [node.sourceEffectOrdinal],
+          }),
         });
       }
       // Recurse into the value expression (may contain nested mapping accesses)
@@ -5472,11 +5659,18 @@ export default class SymbolTableTraversal extends AstTraversal {
       if (existing) {
         if (!existing.operations.includes('read')) existing.operations.push('read');
         if (!existing.operations.includes('write')) existing.operations.push('write');
+        if (node.sourceEffectOrdinal !== undefined
+          && !existing.mutationEffectOrdinals?.includes(node.sourceEffectOrdinal)) {
+          (existing.mutationEffectOrdinals ??= []).push(node.sourceEffectOrdinal);
+        }
       } else {
         const collSig = computeCollectionSignature(node.collection.name, node.collection.type.toString());
         map.set(slotKey, {
           collection: node.collection.name, collectionSignature: collSig,
           keyParams, keySources, operations: ['read', 'write'], slotIndex: -1,
+          ...(node.sourceEffectOrdinal !== undefined && {
+            mutationEffectOrdinals: [node.sourceEffectOrdinal],
+          }),
         });
       }
       this.collectEntryAccesses(node.expression, map);
@@ -5497,11 +5691,18 @@ export default class SymbolTableTraversal extends AstTraversal {
       const op: 'delete' | 'write' = node.collection.sorted && isSortedValue ? 'write' : 'delete';
       if (existing) {
         if (!existing.operations.includes(op)) existing.operations.push(op);
+        if (node.sourceEffectOrdinal !== undefined
+          && !existing.mutationEffectOrdinals?.includes(node.sourceEffectOrdinal)) {
+          (existing.mutationEffectOrdinals ??= []).push(node.sourceEffectOrdinal);
+        }
       } else {
         const collSig = computeCollectionSignature(node.collection.name, node.collection.type.toString());
         map.set(slotKey, {
           collection: node.collection.name, collectionSignature: collSig,
           keyParams, keySources, operations: [op], slotIndex: -1,
+          ...(node.sourceEffectOrdinal !== undefined && {
+            mutationEffectOrdinals: [node.sourceEffectOrdinal],
+          }),
         });
       }
       return; // MappingDeleteNode has no children to recurse into
@@ -7895,6 +8096,9 @@ export default class SymbolTableTraversal extends AstTraversal {
       slots.push({
         interfaceName: node.callInfo.interfaceName,
         functionName: node.callInfo.functionName,
+        ...(node.sourceEffectOrdinal !== undefined && {
+          sourceEffectOrdinal: node.sourceEffectOrdinal,
+        }),
         addressParam,
         addressStateVar,
         loopArrayVar,
@@ -9782,6 +9986,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       // Carry the inlined-helper origin so the private-collection visibility check sees the defining contract
       // (an inlined vmap-write helper's `m[k]=v` was tagged in tagModifierStateAccess before this rewrite).
       if (stateNode instanceof MappingAssignNode) {
+        stateNode.sourceEffectOrdinal = node.sourceEffectOrdinal;
         stateNode.fromModifier = node.fromModifier;
         stateNode.messageBusRuntimeOldValueWitness = node.messageBusRuntimeOldValueWitness;
       }
@@ -10383,6 +10588,7 @@ export default class SymbolTableTraversal extends AstTraversal {
           if (varType instanceof AddressType) {
             const payloadExpr = this.visit(node.parameters[0]) as ExpressionNode;
             const callNode = new ExternalFunctionCallNode('__raw__', addressExpr, '__raw__', [payloadExpr]);
+            callNode.sourceEffectOrdinal = node.sourceEffectOrdinal;
             callNode.opaqueReturn = true;
             callNode.type = new TupleType([PrimitiveType.BOOL, new BytesType()]);
             callNode.callInfo = {
@@ -10408,6 +10614,7 @@ export default class SymbolTableTraversal extends AstTraversal {
           const visitedAddr = this.visit(addrIdentifier) as ExpressionNode;
           const data = this.visit(node.parameters[0]) as ExpressionNode;
           const callNode = new LowLevelCallNode(visitedAddr, data, methodName);
+          callNode.sourceEffectOrdinal = node.sourceEffectOrdinal;
           callNode.location = node.location;
           return callNode;
         }
@@ -10456,6 +10663,7 @@ export default class SymbolTableTraversal extends AstTraversal {
                 }
                 // Folded into the deploy genesis: an inert external-call node (skipped by collection + codegen).
                 const inert = new ExternalFunctionCallNode(calleeName, visitedVar, methodName, parameters);
+                inert.sourceEffectOrdinal = node.sourceEffectOrdinal;
                 inert.callInfo = { interfaceName: calleeName, functionName: methodName, externalCallSlotIndex: -1 };
                 inert.foldedIntoDeploy = true;
                 inert.location = node.location;
@@ -10464,6 +10672,7 @@ export default class SymbolTableTraversal extends AstTraversal {
               // `foo.bar(args)` parses as a namespaced function call, which carries no `{value:}` call
               // options (those arrive via the MethodCall path), so none are threaded here.
               const callNode = new ExternalFunctionCallNode(calleeName, visitedVar, methodName, parameters);
+              callNode.sourceEffectOrdinal = node.sourceEffectOrdinal;
               callNode.callInfo = {
                 interfaceName: calleeName,
                 functionName: methodName,
@@ -13538,6 +13747,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         const callNode = new ExternalFunctionCallNode(
           iface.name, addressExpr, functionName, parameters,
         );
+        callNode.sourceEffectOrdinal = node.sourceEffectOrdinal;
         callNode.callMode = callMode;
         callNode.callOptions = node.callOptions;
         callNode.valueTransferIndex = node.valueTransferIndex;
@@ -13578,6 +13788,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       const data = node.parameters.length === 1
         ? this.visit(node.parameters[0]) as ExpressionNode : node.parameters[0];
       const callNode = new LowLevelCallNode(node.object, data, node.methodName);
+      callNode.sourceEffectOrdinal = node.sourceEffectOrdinal;
       callNode.callOptions = node.callOptions;
       callNode.valueTransferIndex = node.valueTransferIndex;
       if (callNode.callOptions?.value) callNode.callOptions.value = this.visit(callNode.callOptions.value) as ExpressionNode;
@@ -13656,6 +13867,7 @@ export default class SymbolTableTraversal extends AstTraversal {
             );
           }
           const inert = new ExternalFunctionCallNode(iface.name, addressExpr, node.methodName, parameters);
+          inert.sourceEffectOrdinal = node.sourceEffectOrdinal;
           inert.callInfo = { interfaceName: iface.name, functionName: node.methodName, externalCallSlotIndex: -1 };
           inert.foldedIntoDeploy = true;
           inert.type = ifaceFunc.returnTypes.length === 1
@@ -13669,6 +13881,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         const callNode = new ExternalFunctionCallNode(
           iface.name, addressExpr, node.methodName, parameters,
         );
+        callNode.sourceEffectOrdinal = node.sourceEffectOrdinal;
         callNode.callOptions = node.callOptions;
         callNode.valueTransferIndex = node.valueTransferIndex;
         // Same-address varying-method pointer (`f = cond ? IC(a).x : IC(a).y; v = f(args)`): carry the runtime
@@ -13742,6 +13955,7 @@ export default class SymbolTableTraversal extends AstTraversal {
           && (!node.callOptions || graphRawValueCall)) {
           const mode = node.methodName === 'staticcall' ? ExternalCallMode.STATICCALL : ExternalCallMode.REGULAR;
           const callNode = new ExternalFunctionCallNode('__raw__', node.object as ExpressionNode, '__raw__', [data]);
+          callNode.sourceEffectOrdinal = node.sourceEffectOrdinal;
           callNode.opaqueReturn = true;
           if (graphRawValueCall) {
             callNode.callOptions = node.callOptions;
@@ -13764,6 +13978,7 @@ export default class SymbolTableTraversal extends AstTraversal {
           return callNode;
         }
         const callNode = new LowLevelCallNode(node.object, data, node.methodName);
+        callNode.sourceEffectOrdinal = node.sourceEffectOrdinal;
         callNode.callOptions = node.callOptions;
         callNode.valueTransferIndex = node.valueTransferIndex;
         if (callNode.callOptions?.value) {
@@ -13808,6 +14023,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         }
         const parameters = this.visitList(node.parameters) as ExpressionNode[];
         const callNode = new ExternalFunctionCallNode(calleeName, visitedVar, node.methodName, parameters);
+        callNode.sourceEffectOrdinal = node.sourceEffectOrdinal;
         callNode.callOptions = node.callOptions;
         callNode.valueTransferIndex = node.valueTransferIndex;
         // Same-address varying-method pointer: carry + resolve the runtime selector (`cond ? a.selector :
@@ -13866,6 +14082,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         const addressExpr = this.visit(node.object) as ExpressionNode;
         const parameters = this.visitList(node.parameters) as ExpressionNode[];
         const callNode = new ExternalFunctionCallNode(calleeName, addressExpr, node.methodName, parameters);
+        callNode.sourceEffectOrdinal = node.sourceEffectOrdinal;
         callNode.callOptions = node.callOptions;
         callNode.valueTransferIndex = node.valueTransferIndex;
         if (callNode.callOptions?.value) {
@@ -14038,6 +14255,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (!(receiverType instanceof AddressType)) return undefined;
 
     const callNode = new ExternalFunctionCallNode('__raw__', receiver, '__raw__', [node.data]);
+    callNode.sourceEffectOrdinal = node.sourceEffectOrdinal;
     callNode.opaqueReturn = true;
     callNode.discardedOpaqueReturn = true;
     callNode.callInfo = {
@@ -14085,6 +14303,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (node.callOptions && !valueCall) return undefined;
 
     const call = new ExternalFunctionCallNode('__raw__', node.targetExpression, '__raw__', [node.data]);
+    call.sourceEffectOrdinal = node.sourceEffectOrdinal;
     call.opaqueReturn = true;
     call.type = new TupleType([PrimitiveType.BOOL, new BytesType()]);
     call.callInfo = {

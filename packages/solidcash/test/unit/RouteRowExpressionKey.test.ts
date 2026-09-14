@@ -241,3 +241,61 @@ describe('evalComputedKey map: state-array labels', () => {
     expect(evalComputedKey('map:items(id:missing)', [], [], { items: [lockA] })).toBeUndefined();
   });
 });
+
+describe('resolveRouteRowExpressionKey route-array labels', () => {
+  const locker = Uint8Array.from([0x76, 0xa9, 0x14, ...new Uint8Array(20).fill(0x33), 0x88, 0xac]);
+  const arrayRow = (occurrenceIndex?: number): RouteExpressionKeyRow => ({
+    args: [0n],
+    occurrenceIndex,
+    handler: {
+      inputs: [{ name: 'index_', type: 'uint256' }],
+      entryAccesses: [{ collection: 'arbitrators' }],
+    },
+  });
+
+  it('binds a source-loop local to the single selected row occurrence and indexes the state array', () => {
+    const encoded = resolveRouteRowExpressionKey({
+      expressionLabel: 'map:arbitratorAddresses(binop:+(id:i,id:index_))',
+      collection: 'arbitrators',
+      rowArguments: [arrayRow(0)],
+      routePlanningArgs: [0n],
+      routeVisibleInputs: [{ name: 'index_', type: 'uint256' }],
+      state: { arbitratorAddresses: [locker] },
+    });
+    expect(encoded).toBeDefined();
+    expect(binToHex(encoded!)).toBe(binToHex(locker));
+  });
+
+  it('uses the row occurrence, not zero, when the selected row is a later occurrence', () => {
+    const second = Uint8Array.from([...locker.slice(0, 23), ...locker.slice(23)].map((b, i) => (i === 3 ? 0x44 : b)));
+    const encoded = resolveRouteRowExpressionKey({
+      expressionLabel: 'map:arbitratorAddresses(binop:+(id:i,id:index_))',
+      collection: 'arbitrators',
+      rowArguments: [arrayRow(1)],
+      routePlanningArgs: [0n],
+      routeVisibleInputs: [{ name: 'index_', type: 'uint256' }],
+      state: { arbitratorAddresses: [locker, second] },
+    });
+    expect(encoded).toBeDefined();
+    expect(binToHex(encoded!)).toBe(binToHex(second));
+  });
+
+  it('stays unresolved when the array is absent or more than one row could own the counter', () => {
+    expect(resolveRouteRowExpressionKey({
+      expressionLabel: 'map:arbitratorAddresses(binop:+(id:i,id:index_))',
+      collection: 'arbitrators',
+      rowArguments: [arrayRow(0)],
+      routePlanningArgs: [0n],
+      routeVisibleInputs: [{ name: 'index_', type: 'uint256' }],
+      state: {},
+    })).toBeUndefined();
+    expect(resolveRouteRowExpressionKey({
+      expressionLabel: 'map:arbitratorAddresses(binop:+(id:i,id:index_))',
+      collection: 'arbitrators',
+      rowArguments: [arrayRow(0), arrayRow(1)],
+      routePlanningArgs: [0n],
+      routeVisibleInputs: [{ name: 'index_', type: 'uint256' }],
+      state: { arbitratorAddresses: [locker, locker] },
+    })).toBeUndefined();
+  });
+});

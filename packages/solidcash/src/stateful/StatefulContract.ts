@@ -5372,12 +5372,51 @@ export function resolveRouteRowExpressionKey(params: {
     }
     return undefined;
   }
+  // A composed `map:<stateArray>(...)` label indexes a decoded dynamic state array by a route loop counter
+  // (`map:items(binop:+(id:i,id:index_))`). The counter is a source-loop local: it is not an ABI input, so the
+  // planning ABI cannot resolve it. With exactly one selected row that row's occurrence IS the counter, and the
+  // label becomes evaluable against that row. More than one candidate row stays unresolved rather than guessing.
+  const loopLocal = params.expressionLabel?.startsWith('map:') && params.rowArguments?.length === 1
+    ? unresolvableLabelLocals(params.expressionLabel, params.routeVisibleInputs)
+    : [];
+  if (loopLocal.length > 0) {
+    const occurrence = params.rowArguments![0].occurrenceIndex ?? 0;
+    let rewritten = params.expressionLabel!;
+    for (const name of loopLocal) {
+      // Whole-token replacement only: `id:i` must not rewrite the `id:index_` operand that merely starts with it.
+      rewritten = rewritten.replace(
+        new RegExp(`id:${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\w$])`, 'g'),
+        `lit:${occurrence}`,
+      );
+    }
+    const bound = evalComputedKey(
+      rewritten,
+      params.routePlanningArgs as FunctionArgument[],
+      params.routeVisibleInputs,
+      params.state,
+    );
+    if (bound) return bound;
+  }
   return evalComputedKey(
     params.expressionLabel,
     params.routePlanningArgs as FunctionArgument[],
     params.routeVisibleInputs,
     params.state,
   );
+}
+
+/** `id:<name>` operands of a label that no visible route input can supply (source-loop locals, row arguments). */
+function unresolvableLabelLocals(
+  label: string,
+  visibleInputs: readonly { name: string; type?: string }[],
+): string[] {
+  const names: string[] = [];
+  for (const match of label.matchAll(/id:([A-Za-z_$][\w$]*)/g)) {
+    const name = match[1];
+    if (visibleInputs.some((input) => input.name === name)) continue;
+    if (!names.includes(name)) names.push(name);
+  }
+  return names;
 }
 
 export class StatefulContract<TArtifact extends Artifact = Artifact> {
@@ -17377,6 +17416,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               // Auto-derive a direct computed key (hash160(pk), sha256(x), ...) from its canonical label.
               const auto = evalComputedKey(source.expressionLabel, entryArgs, entryAbiFunction!.inputs);
               if (auto) return auto;
+              // `map:<stateArray>(...)` names an entry key read out of a dynamic state array, which only the
+              // selected route rows can supply (the array itself plus that row's loop occurrence). Scoped to that
+              // label form and to a routed call, so an ordinary computed key keeps its established fallbacks.
               const ov = overrides?.entryKeyOverrides?.get(slotIndex);
               if (ov !== undefined) {
                 return ov instanceof Uint8Array ? ov

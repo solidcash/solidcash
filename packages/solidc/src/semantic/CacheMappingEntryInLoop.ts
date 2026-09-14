@@ -18,6 +18,7 @@ import {
   MappingFieldAssignNode,
   ArrayAccessNode,
   ArrayAssignNode,
+  StateArrayAssignNode,
   ArrayPushNode,
   ArrayPopNode,
   IdentifierNode,
@@ -27,7 +28,9 @@ import {
   FieldAccessNode,
   FunctionCallNode,
   LiteralNode,
+  IntLiteralNode,
   TupleAssignmentNode,
+  TupleIndexOpNode,
   BoolLiteralNode,
   ExpressionNode,
   CastNode,
@@ -134,6 +137,16 @@ function canonKeyOf(k: Node, allowExpression = false): { canon: string; key: Key
     };
   }
   return null;
+}
+
+/** Canonical form of one key, spelled exactly as `canonKeyOf` spells it (the form `EntryInfo.keys` keeps). */
+function keyCanon(key: KeyKind): string {
+  switch (key.kind) {
+    case 'id': return `id:${key.name}`;
+    case 'nullary': return `nullary:${key.op}`;
+    case 'literal': return `literal:${key.canon}`;
+    default: return `expression:${key.canon}`;
+  }
 }
 
 function buildKeyNode(key: KeyKind, loc: Node['location']): Node {
@@ -278,14 +291,42 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
   }
 
   private transformFunction(fn: FunctionDefinitionNode): void {
-    for (const e of this.collectCacheableEntries(fn.body)) {
-      if (this.routeSnapshotKeysOnly && e.keys.length === 1
-        && !e.keys.some((key) => key.kind === 'expression'
-          || (key.kind === 'id' && key.name.startsWith(VMAP_KEY_SNAPSHOT_PREFIX)))
-        && !e.inLoop) continue;
+    const selected = this.collectCacheableEntries(fn.body).filter((e) => !(this.routeSnapshotKeysOnly
+      && e.keys.length === 1
+      // An anchored entry carries a body-local key, so its cache read happens inside the handler at the entry's
+      // first use. Route synthesis clones this already-cached body, so that form is stable under cloning and is
+      // what lets a clone's reads observe the handler's own write. Only the hoisted form is restricted here: a
+      // parameter key needs no cache, and a function-entry read would change the ABI for no benefit.
+      && e.anchorIndex === undefined
+      && !e.keys.some((key) => key.kind === 'expression'
+        || (key.kind === 'id' && key.name.startsWith(VMAP_KEY_SNAPSHOT_PREFIX)))
+      && !e.inLoop));
+    // Every redirect runs before any declaration is inserted: a redirect replaces the node it rewrites (a write
+    // becomes a dirty-marking block), so an anchored cache resolves its insertion point by statement position
+    // afterwards instead of holding a node that is no longer in the body.
+    const prepared = selected.map((e) => {
       const local = `${PREFIX}${e.mapping}_${this.counter++}`;
       const dirty = `${local}_dirty`;
       new EntryRedirect(e.mapping, e.keys, local, dirty, e.valueType).visit(fn.body);
+      return { e, local, dirty };
+    });
+    // Resolve every anchor before any flush statement is inserted: an insertion shifts the statement list, and the
+    // anchor is a position in the body as it stands after the redirects.
+    const anchors = new Map<(typeof prepared)[number], StatementNode>();
+    for (const item of prepared) {
+      if (item.e.anchorIndex === undefined) continue;
+      const anchor = (fn.body.statements ?? [])[item.e.anchorIndex];
+      if (anchor === undefined) {
+        throw new Error(
+          `CacheMappingEntryInLoop: the cache anchor for '${item.e.mapping}' in '${fn.name}' is missing; the entry `
+          + 'cannot be read after its key declaration.',
+        );
+      }
+      anchors.set(item, anchor);
+    }
+    const anchoredDeclarations = new Map<StatementNode, StatementNode[]>();
+    for (const item of prepared) {
+      const { e, local, dirty } = item;
       const cacheRead = new MappingAccessNode(
         e.mapping,
         e.keys.map((key) => buildKeyNode(key, fn.body.location) as ExpressionNode),
@@ -302,17 +343,34 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
       if (stmts.length === 0 || !(stmts[stmts.length - 1] instanceof ReturnNode)) {
         stmts = [...stmts, this.makeFlush(e.mapping, e.keys, local, dirty, fn.body.location, e.fromModifier)];
       }
-      // Point-in-time key snapshots must execute before the cache read which consumes them. They are emitted as
-      // a contiguous compiler-owned prefix by LowerVMapCounterLoops; retain that prefix even when several cache
-      // entries are installed one after another.
-      let snapshotPrefixLength = 0;
-      while (stmts[snapshotPrefixLength] instanceof VariableDefinitionNode
-        && (stmts[snapshotPrefixLength] as VariableDefinitionNode).name.startsWith(VMAP_KEY_SNAPSHOT_PREFIX)) {
-        snapshotPrefixLength += 1;
+      const anchor = anchors.get(item);
+      if (anchor !== undefined) {
+        // The key is a body local, so the cache read cannot hoist above its declaration: reading the entry at the
+        // first use of this entry gives the value every later read must observe once the writes are redirected.
+        anchoredDeclarations.set(anchor, [...(anchoredDeclarations.get(anchor) ?? []), cache, dirtyLocal]);
+      } else {
+        // Point-in-time key snapshots must execute before the cache read which consumes them. They are emitted as
+        // a contiguous compiler-owned prefix by LowerVMapCounterLoops; retain that prefix even when several cache
+        // entries are installed one after another.
+        let snapshotPrefixLength = 0;
+        while (stmts[snapshotPrefixLength] instanceof VariableDefinitionNode
+          && (stmts[snapshotPrefixLength] as VariableDefinitionNode).name.startsWith(VMAP_KEY_SNAPSHOT_PREFIX)) {
+          snapshotPrefixLength += 1;
+        }
+        stmts = [
+          ...stmts.slice(0, snapshotPrefixLength), cache, dirtyLocal, ...stmts.slice(snapshotPrefixLength),
+        ];
       }
-      fn.body.statements = [
-        ...stmts.slice(0, snapshotPrefixLength), cache, dirtyLocal, ...stmts.slice(snapshotPrefixLength),
-      ];
+      fn.body.statements = stmts;
+    }
+    if (anchoredDeclarations.size > 0) {
+      const inserted: StatementNode[] = [];
+      for (const statement of fn.body.statements ?? []) {
+        const pending = anchoredDeclarations.get(statement);
+        if (pending) inserted.push(...pending);
+        inserted.push(statement);
+      }
+      fn.body.statements = inserted;
     }
   }
 
@@ -321,7 +379,10 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
   // read-once/mutate-local/write-once.
   private collectCacheableEntries(
     body: Node,
-  ): Array<{ mapping: string; keys: KeyKind[]; valueType: Type; inLoop: boolean; fromModifier?: string }> {
+  ): Array<{
+    mapping: string; keys: KeyKind[]; valueType: Type; inLoop: boolean; fromModifier?: string;
+    anchorIndex?: number;
+  }> {
     const info = new Map<string, EntryInfo>();
     const get = (mapping: string, rawKeys: Node | Node[], allowExpression = false): EntryInfo | null => {
       const keys = Array.isArray(rawKeys) ? rawKeys : [rawKeys];
@@ -365,6 +426,34 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
         && n.keys.length === this.scalarMappings.get(n.name)!.depth) {
         const e = get(n.name, n.keys, true);
         if (e?.written) e.readAfterWrite = true;
+      }
+      // `m[<numeric literal>]` is still a tuple index before symbol resolution lowers it to a mapping access: the
+      // grammar builds `expression '[' NumberLiteral ']'` as a TupleIndexOpNode, so a read written that way stayed
+      // invisible here and its entry was never recognised as read-after-write.
+      if (n instanceof TupleIndexOpNode && n.tuple instanceof IdentifierNode
+        && (this.scalarMappings.has(n.tuple.name) || this.structMappings.has(n.tuple.name))) {
+        const literal = new IntLiteralNode(BigInt(n.index));
+        literal.location = n.location;
+        const e = get(n.tuple.name, [literal], true);
+        if (e?.written) e.readAfterWrite = true;
+      }
+      // A struct entry read through an index expression (`m[k]` feeding a field access) is the same read as the
+      // scalar form; without this arm only the write marked the entry and no read-after-write was recorded.
+      if (n instanceof ArrayAccessNode && n.array instanceof IdentifierNode
+        && (this.structMappings.has(n.array.name) || this.scalarMappings.has(n.array.name))) {
+        const e = get(n.array.name, n.index, true);
+        if (e?.written) e.readAfterWrite = true;
+      }
+      // A whole-entry `m[k] = Struct(...)` write: Solidity-facing lowering coalesces `m[k].field = v` into this
+      // form before this pass runs, so it is the only write shape a struct entry is seen with here.
+      if (n instanceof StateArrayAssignNode
+        && (this.structMappings.has(n.name) || this.scalarMappings.has(n.name))) {
+        const e = get(n.name, n.index, true);
+        if (e) {
+          e.count += 1;
+          e.written = true;
+          if (inLoop) e.inLoop = true;
+        }
       }
       if (n instanceof MappingAssignNode && this.arrayMappings.has(n.name)) {
         const k0 = n.keys[0];
@@ -465,10 +554,23 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
       if (e.bad || !(e.inLoop || e.count >= 2 || e.readAfterWrite
         || (e.written && this.structMappings.has(e.mapping)))) continue;
       // key must be invariant across the function: an identifier must not be reassigned; nullary keys always are.
+      // A key declared by one top-level statement is invariant too, but it is not in scope at the function entry,
+      // so its cache read is anchored at the entry's first use instead of hoisted (`anchorIndex` below).
       const scope = this.nameScope(body);
-      if (e.keys.some((key) => key.kind === 'id'
-        && !key.name.startsWith(VMAP_KEY_SNAPSHOT_PREFIX)
-        && (scope.assigned.has(key.name) || scope.declaredInLoop.has(key.name)))) continue;
+      let anchorIndex: number | undefined;
+      let keyUsable = true;
+      for (const key of e.keys) {
+        if (key.kind !== 'id' || key.name.startsWith(VMAP_KEY_SNAPSHOT_PREFIX)) continue;
+        if (scope.declaredInLoop.has(key.name) || scope.reassigned.has(key.name)) { keyUsable = false; break; }
+        if (!scope.assigned.has(key.name)) continue;
+        const declaration = scope.declaredTopLevel.get(key.name);
+        const statements = body instanceof BlockNode ? body.statements ?? [] : [];
+        const anchor = this.firstUseStatement(body, e);
+        if (declaration === undefined || anchor === undefined
+          || statements.indexOf(declaration) > anchor) { keyUsable = false; break; }
+        anchorIndex = anchor;
+      }
+      if (!keyUsable) continue;
       const expressionKeys = e.keys.filter((key): key is Extract<KeyKind, { kind: 'expression' }> =>
         key.kind === 'expression');
       if (expressionKeys.length > 0) {
@@ -485,9 +587,56 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
         valueType: (this.arrayMappings.get(e.mapping) ?? this.scalarMappings.get(e.mapping)?.valueType
           ?? this.structMappings.get(e.mapping))!,
         fromModifier: e.fromModifier,
+        ...(anchorIndex !== undefined && { anchorIndex }),
       });
     }
     return out;
+  }
+
+  /**
+   * Index of the first top-level statement that touches one entry: the anchor for a cache read whose key is a body
+   * local. Reading the entry there yields the value every later read must observe once the entry's writes are
+   * redirected to the cache local, and the key is in scope because its own declaration precedes this statement.
+   */
+  private firstUseStatement(body: Node, entry: EntryInfo): number | undefined {
+    if (!(body instanceof BlockNode)) return undefined;
+    const keyCanons = entry.keys.map(keyCanon);
+    let found = false;
+    const matches = (name: string | undefined, keys: Node[]): boolean => {
+      if (name !== entry.mapping || keys.length < keyCanons.length) return false;
+      return keyCanons.every((canon, index) => {
+        const canonical = canonKeyOf(keys[index], true);
+        return canonical !== null && canonical.canon === canon;
+      });
+    };
+    const walk = (node: Node): void => {
+      if (found) return;
+      if (node instanceof ArrayAccessNode && node.array instanceof IdentifierNode
+        && matches(node.array.name, [node.index])) { found = true; return; }
+      if (node instanceof ArrayAssignNode && matches(node.name, [node.index])) { found = true; return; }
+      if (node instanceof StateArrayAssignNode && matches(node.name, [node.index])) { found = true; return; }
+      if (node instanceof MappingAccessNode && matches(node.name, node.keys)) { found = true; return; }
+      if (node instanceof MappingAssignNode && matches(node.name, node.keys)) { found = true; return; }
+      if (node instanceof MappingFieldAssignNode && matches(node.name, node.keys)) { found = true; return; }
+      if (node instanceof TupleIndexOpNode && node.tuple instanceof IdentifierNode) {
+        const literal = new IntLiteralNode(BigInt(node.index));
+        literal.location = node.location;
+        if (matches(node.tuple.name, [literal])) { found = true; return; }
+      }
+      for (const key of Object.keys(node)) {
+        if (found || ['location', 'resolvedFunction', 'functionReference', 'definition',
+          'collection', 'symbolTable', 'stateVariable'].includes(key)) continue;
+        const child = (node as unknown as Record<string, unknown>)[key];
+        if (child instanceof Node) walk(child);
+        else if (Array.isArray(child)) for (const item of child) if (item instanceof Node) walk(item);
+      }
+    };
+    const statements = body.statements ?? [];
+    for (const [index, statement] of statements.entries()) {
+      walk(statement);
+      if (found) return index;
+    }
+    return undefined;
   }
 
   /**
@@ -506,18 +655,39 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
    * The two predicates are pure and read only node classes and names, so answering them from a name set
    * computed once is exact.
    */
-  private nameScopeCache = new WeakMap<Node, { assigned: Set<string>; declaredInLoop: Set<string> }>();
+  private nameScopeCache = new WeakMap<Node, {
+    assigned: Set<string>;
+    declaredInLoop: Set<string>;
+    declaredTopLevel: Map<string, StatementNode>;
+    reassigned: Set<string>;
+  }>();
 
-  private nameScope(root: Node): { assigned: Set<string>; declaredInLoop: Set<string> } {
+  private nameScope(root: Node): {
+    assigned: Set<string>;
+    declaredInLoop: Set<string>;
+    declaredTopLevel: Map<string, StatementNode>;
+    reassigned: Set<string>;
+  } {
     const cached = this.nameScopeCache.get(root);
     if (cached !== undefined) return cached;
     const assigned = new Set<string>();
     const declaredInLoop = new Set<string>();
+    // A key that is a body local is invariant when one top-level statement declares it and nothing assigns it
+    // again: its value cannot change between the first write and the later reads the cache serves.
+    const declaredTopLevel = new Map<string, StatementNode>();
+    const reassigned = new Set<string>();
+    if (root instanceof BlockNode) {
+      for (const statement of root.statements ?? []) {
+        if (statement instanceof VariableDefinitionNode) declaredTopLevel.set(statement.name, statement);
+      }
+    }
     // Mirrors `assignsName`: it matches an `AssignNode` target or a `VariableDefinitionNode` anywhere in the
     // body, and it skips no loop context, so every such name is recorded.
     const scanAssigned = (n: Node): void => {
-      if (n instanceof AssignNode && n.identifier instanceof IdentifierNode) assigned.add(n.identifier.name);
-      else if (n instanceof VariableDefinitionNode) assigned.add(n.name);
+      if (n instanceof AssignNode && n.identifier instanceof IdentifierNode) {
+        assigned.add(n.identifier.name);
+        reassigned.add(n.identifier.name);
+      } else if (n instanceof VariableDefinitionNode) assigned.add(n.name);
       for (const key of Object.keys(n)) {
         if (['location', 'resolvedFunction', 'functionReference', 'definition',
           'collection', 'symbolTable', 'stateVariable'].includes(key)) continue;
@@ -547,7 +717,7 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
     // one INSIDE it; running both walks covers each predicate's own reach exactly.
     scanAssigned(root);
     scanDeclaredInLoop(root, false);
-    const scope = { assigned, declaredInLoop };
+    const scope = { assigned, declaredInLoop, declaredTopLevel, reassigned };
     this.nameScopeCache.set(root, scope);
     return scope;
   }
@@ -690,6 +860,37 @@ class EntryRedirect extends AstTraversal {
       const id = new IdentifierNode(this.local);
       id.location = visited.location;
       return id;
+    }
+    return visited;
+  }
+
+  // `m[<numeric literal>]` (read) is a TupleIndexOpNode before symbol resolution: collapse it to the cache local
+  // exactly like the ArrayAccessNode form, so the value written through this cache is what the read observes.
+  visitTupleIndexOp(node: TupleIndexOpNode): Node {
+    const visited = super.visitTupleIndexOp(node) as TupleIndexOpNode;
+    if (this.keys.length === 1 && visited instanceof TupleIndexOpNode
+      && visited.tuple instanceof IdentifierNode
+      && (visited.tuple as IdentifierNode).name === this.mapping) {
+      const literal = new IntLiteralNode(BigInt(visited.index));
+      literal.location = visited.location;
+      if (keyNodeMatches(literal, this.keys[0])) {
+        const id = new IdentifierNode(this.local);
+        id.location = visited.location;
+        return id;
+      }
+    }
+    return visited;
+  }
+
+  visitStateArrayAssign(node: StateArrayAssignNode): Node {
+    const visited = super.visitStateArrayAssign(node) as StateArrayAssignNode;
+    if (visited instanceof StateArrayAssignNode && this.keys.length === 1
+      && visited.name === this.mapping && keyNodeMatches(visited.index, this.keys[0])) {
+      const id = new IdentifierNode(this.local);
+      id.location = visited.location;
+      const asgn = new AssignNode(id, visited.value);
+      asgn.location = visited.location;
+      return this.withDirty(asgn, visited.location);
     }
     return visited;
   }

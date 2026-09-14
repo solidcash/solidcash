@@ -40,6 +40,11 @@ import {
 } from '@bitauth/libauth';
 import { getDustThreshold } from '@mem-cash/validation';
 import {
+  canonicalValueChunkProducerIdentity,
+  canonicalValueChunkProducerResourceIdentity,
+  type ValueChunkProducerResourceClaim,
+} from './ValueChunkProducerIdentity.js';
+import {
   buildEventNftCovenantScript, computeEventNameHash, buildSidecarRedeem,
   sidecarLockingBytecode, scriptToBytecode,
 } from '@solidcash/utils';
@@ -133,6 +138,7 @@ const persistedValueChunkWrites = new Map<string, {
 /** Mutable value-chunk candidates scoped to one transaction build. */
 export class ValueChunkWriteStagingSession {
   private readonly writes = new Map<string, Uint8Array>();
+  private readonly ownedWrites = new Map<string, { producer: string; value: Uint8Array }>();
 
   stage(write: ValueChunkWriteDescriptor, value: Uint8Array): boolean {
     if (!validValueChunkWriteIdentity(write)
@@ -146,18 +152,53 @@ export class ValueChunkWriteStagingSession {
     return this.writes.get(valueChunkWriteIdentity(write));
   }
 
+  /** Stage metadata for one exact producer/resource without selecting it for legacy materialization. */
+  stageOwned(
+    write: ValueChunkWriteDescriptor,
+    claim: ValueChunkProducerResourceClaim,
+    value: Uint8Array,
+  ): boolean {
+    const resourceIdentity = valueChunkWriteIdentity(write);
+    const producer = canonicalValueChunkProducerIdentity(claim.producer);
+    if (canonicalValueChunkProducerResourceIdentity(claim.resourceIdentity) !== resourceIdentity || !producer
+      || !validValueChunkWriteIdentity(write)
+      || value.length <= 60 || value.length > MAX_PERSISTED_JOB_EVENTS_BYTES) return false;
+    const existing = this.ownedWrites.get(resourceIdentity);
+    if (existing && (existing.producer !== producer
+      || binToHex(existing.value) !== binToHex(value))) return false;
+    this.ownedWrites.set(resourceIdentity, { producer, value: value.slice() });
+    return true;
+  }
+
+  getOwned(
+    write: ValueChunkWriteDescriptor,
+    claim: ValueChunkProducerResourceClaim,
+  ): Uint8Array | undefined {
+    const resourceIdentity = valueChunkWriteIdentity(write);
+    const producer = canonicalValueChunkProducerIdentity(claim.producer);
+    if (!producer
+      || canonicalValueChunkProducerResourceIdentity(claim.resourceIdentity) !== resourceIdentity) return undefined;
+    const existing = this.ownedWrites.get(resourceIdentity);
+    return existing?.producer === producer ? existing.value.slice() : undefined;
+  }
+
   delete(write: ValueChunkWriteDescriptor): void {
     this.writes.delete(valueChunkWriteIdentity(write));
+    this.ownedWrites.delete(valueChunkWriteIdentity(write));
   }
 
   clear(categoryId?: string): void {
     if (categoryId === undefined) {
       this.writes.clear();
+      this.ownedWrites.clear();
       return;
     }
     const prefix = `${categoryId.toLowerCase()}:`;
     for (const key of this.writes.keys()) {
       if (key.startsWith(prefix)) this.writes.delete(key);
+    }
+    for (const key of this.ownedWrites.keys()) {
+      if (key.startsWith(prefix)) this.ownedWrites.delete(key);
     }
   }
 }
@@ -5570,6 +5611,8 @@ export interface ExternalCallUtxoGroup {
   logicalFunctionArgs?: any[];
   logicalContract?: any; // StatefulContract - kept as any to avoid circular import
   logicalArtifact?: Artifact;
+  /** Compiler-authenticated producer/resource occurrences represented by this physical or logical alias. */
+  valueChunkProducerClaims?: readonly ValueChunkProducerResourceClaim[];
   callMode?: 'call' | 'staticcall' | 'delegatecall';
   /** If this external callee is itself a proxy, execute/derive its state transition at this delegate group. */
   delegateCallGroupIndex?: number;
@@ -5609,6 +5652,10 @@ export interface ExternalCallUtxoGroup {
       args: any[];
       handler: AbiFunction;
       internalArgs?: Readonly<Record<string, any>>;
+      sourceLogicalIndex?: number;
+      sourceCallsiteId?: number;
+      occurrenceIndex?: number;
+      sourceEffectOrdinal?: number;
     }>;
     internalArgs?: Record<string, any>;
     eventSignaturesBySlot?: Array<string | undefined>;
@@ -5635,6 +5682,10 @@ export interface ExternalCallUtxoGroup {
       args: any[];
       handler: AbiFunction;
       internalArgs?: Readonly<Record<string, any>>;
+      sourceLogicalIndex?: number;
+      sourceCallsiteId?: number;
+      occurrenceIndex?: number;
+      sourceEffectOrdinal?: number;
     }[] | undefined,
     finalVisibleArgs: readonly any[],
   ) => { internalArgs: Record<string, any>; payloadBytes: number };

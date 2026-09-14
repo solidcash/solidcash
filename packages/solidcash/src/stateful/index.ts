@@ -59,6 +59,19 @@ export {
   type StatefulTransactionOptions,
 } from './StatefulTransactionBuilder.js';
 export {
+  canonicalValueChunkProducerIdentity,
+  canonicalValueChunkProducerResourceIdentity,
+  bindValueChunkProducerClaimAliases,
+  selectSingletonValueChunkProducer,
+  valueChunkProducerClaimFromRouteRow,
+  type ValueChunkProducerIdentity,
+  type ValueChunkProducerClaimCarrier,
+  type ValueChunkProducerResourceClaim,
+  type ValueChunkProducerSourceSite,
+  type ValueChunkProducerRouteRowCoordinates,
+  type SingletonValueChunkProducerSelection,
+} from './ValueChunkProducerIdentity.js';
+export {
   ContractBundle, resolveCategoryFromAddress, resolveCategoryFromLockingBytecode, type ContractBundleOptions,
 } from './ContractBundle.js';
 export {

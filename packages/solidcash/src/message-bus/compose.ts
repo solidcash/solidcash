@@ -42,6 +42,7 @@ import {
   finalizeAtomicInvocationGraph, graphInvocationCallerIdentity, selectedGraphEventOffsets,
   type AtomicDeploymentSlotEffect, type AtomicEventSlotEffect, type AtomicResourceSlotEffect,
   type AtomicSidecarSlotEffect, type AtomicTokenSlotEffect, type AtomicValueSlotEffect,
+  type PlannedGraphInvocation,
 } from './graph.js';
 import {
   encodeMessageBatch, resolveMessageBusAbiFunction, resolveMessageBusHandler,
@@ -62,6 +63,8 @@ export interface ComposeAtomicMessageBusOptions {
   calls?: readonly StatefulFunctionCall[];
   /** @internal Resolved calls used by transparent SDK graph promotion. */
   preparedCalls?: readonly PreparedAtomicMessageBusCall[];
+  /** @internal Prepared calls came from compiler graph discovery and must carry an exact source tuple. */
+  requirePreparedIdentity?: boolean;
   /** The one ordinary fee input. Its unlocker signs only after the messageEnvelope and all blocks are final. */
   funder: AtomicMessageBusFunder | UnlockableUtxo;
   changeAddress: string | Uint8Array;
@@ -94,6 +97,12 @@ export interface PreparedAtomicMessageBusCall {
   args: readonly FunctionArgument[];
   /** @internal Compiler-stable identity of this invocation in its parent function. */
   callsiteId?: number;
+  /** @internal Source callsite before physical repeated-owner collapsing. */
+  sourceCallsiteId?: number;
+  /** @internal Source-ordered row within a collapsed repeated-owner callsite. */
+  sourceLogicalIndex?: number;
+  /** @internal Reached runtime occurrence of the source callsite or source row. */
+  occurrenceIndex?: number;
   /** @internal Source-template identity for one runtime row of a collapsed repeated-call batch. */
   batchLogicalIndex?: number;
   /** @internal Source loop occurrence represented by this runtime batch row. */
@@ -119,6 +128,56 @@ export interface PreparedAtomicMessageBusCall {
   resolveArgsFromResults?: (
     results: ReadonlyMap<number, FunctionArgument>,
   ) => readonly FunctionArgument[] | undefined;
+}
+
+/** Validate one prepared compiler edge against the planner's canonical producer occurrence. */
+export function assertPreparedInvocationIdentity(
+  descriptor: PreparedAtomicMessageBusCall,
+  invocation: PlannedGraphInvocation,
+  index: number,
+): void {
+  if (index === 0) return;
+  if (descriptor.callsiteId === undefined) {
+    throw new Error(`messageBus: prepared invocation ${index} omits its physical callsite identity`);
+  }
+  if (descriptor.sourceLogicalIndex !== undefined && descriptor.batchLogicalIndex !== undefined
+    && descriptor.sourceLogicalIndex !== descriptor.batchLogicalIndex) {
+    throw new Error(`messageBus: prepared invocation ${index} has conflicting logical row identities`);
+  }
+  if (descriptor.occurrenceIndex !== undefined && descriptor.batchOccurrenceIndex !== undefined
+    && descriptor.occurrenceIndex !== descriptor.batchOccurrenceIndex) {
+    throw new Error(`messageBus: prepared invocation ${index} has conflicting occurrence identities`);
+  }
+  const sourceCallsiteId = descriptor.sourceCallsiteId ?? descriptor.callsiteId;
+  const sourceLogicalIndex = descriptor.sourceLogicalIndex ?? descriptor.batchLogicalIndex;
+  const occurrenceIndex = descriptor.occurrenceIndex ?? descriptor.batchOccurrenceIndex ?? 0;
+  if (descriptor.callsiteId !== invocation.consumerCallsiteId) {
+    throw new Error(`messageBus: prepared invocation ${index} physical callsite disagrees with the compiled graph`);
+  }
+  if (sourceCallsiteId !== invocation.sourceCallsiteId) {
+    throw new Error(`messageBus: prepared invocation ${index} source callsite disagrees with the compiled graph`);
+  }
+  if (sourceLogicalIndex !== invocation.sourceLogicalIndex) {
+    throw new Error(`messageBus: prepared invocation ${index} source logical row disagrees with the compiled graph`);
+  }
+  if (occurrenceIndex !== invocation.occurrenceIndex) {
+    throw new Error(`messageBus: prepared invocation ${index} source occurrence disagrees with the compiled graph`);
+  }
+}
+
+/** Rebuild a prepared call after authenticated producer results change its arguments, retaining edge identity. */
+export function rebuildPreparedInvocation(
+  descriptor: PreparedAtomicMessageBusCall,
+  args: readonly FunctionArgument[],
+  provisionalResultHex?: string,
+): PreparedAtomicMessageBusCall {
+  return {
+    ...descriptor,
+    args,
+    ...(provisionalResultHex !== undefined && {
+      provisionalResultCommitment: hexToBin(provisionalResultHex),
+    }),
+  };
 }
 
 export interface SemanticClaimObservation<T = unknown> {
@@ -1531,6 +1590,11 @@ export class AtomicMessageBusComposition {
         + `${plan.invocations.length}`,
       );
     }
+    if (this.options.requirePreparedIdentity === true) {
+      plan.invocations.forEach((invocation, index) => {
+        assertPreparedInvocationIdentity(descriptors[index], invocation, index);
+      });
+    }
     const suppliedSplits = this.options.lifecycleSplits ?? [];
     const splitByParticipant = new Map<number, {
       invocationIndex: number; funders: readonly UnlockableUtxo[]; createdValues: readonly bigint[];
@@ -1802,27 +1866,7 @@ export class AtomicMessageBusComposition {
           propagated = true;
           args = resolved;
         }
-        return {
-          contract: descriptor.contract,
-          functionName: descriptor.functionName,
-          ...(descriptor.selector !== undefined && { selector: descriptor.selector }),
-          args,
-          ...(descriptor.callsiteId !== undefined && { callsiteId: descriptor.callsiteId }),
-          ...(descriptor.targetLockingBytecode !== undefined && {
-            targetLockingBytecode: descriptor.targetLockingBytecode,
-          }),
-          ...(descriptor.executionArtifact && { executionArtifact: descriptor.executionArtifact }),
-          ...(descriptor.executor && { executor: descriptor.executor }),
-          ...(descriptor.upgradeTarget && { upgradeTarget: descriptor.upgradeTarget }),
-          ...(results[index] !== undefined
-            ? { provisionalResultCommitment: hexToBin(results[index]) }
-            : descriptor.provisionalResultCommitment && {
-              provisionalResultCommitment: descriptor.provisionalResultCommitment,
-            }),
-          ...(descriptor.resolveArgsFromResults && {
-            resolveArgsFromResults: descriptor.resolveArgsFromResults,
-          }),
-        };
+        return rebuildPreparedInvocation(descriptor, args, results[index]);
       });
       return { propagated, calls };
     };
@@ -3813,6 +3857,7 @@ export function compose(options: ComposeAtomicMessageBusOptions): AtomicMessageB
   const { calls: _calls, preparedCalls: _preparedCalls, ...rest } = options;
   return new AtomicMessageBusComposition(Object.freeze({
     ...snapshotCompositionValue(rest),
+    requirePreparedIdentity: options.preparedCalls !== undefined,
     preparedCalls: Object.freeze(preparedCalls.map(snapshotPreparedCall)),
   }));
 }

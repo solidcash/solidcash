@@ -389,6 +389,11 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
     boundedRecursiveEdge = false,
     consumerCallsiteId?: number,
     targetLockingBytecode?: string,
+    sourceOccurrence?: {
+      sourceCallsiteId: number;
+      sourceLogicalIndex?: number;
+      occurrenceIndex: number;
+    },
   ): void => {
     if (invocations.length >= maximum) {
       throw new MessageBusDiagnosticError(
@@ -414,6 +419,7 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
       parent, callee: owner, function: functionName, args,
       ...(selector !== undefined && { selector }), ...(callMode && { callMode }),
       ...(consumerCallsiteId !== undefined && { consumerCallsiteId }),
+      ...(sourceOccurrence !== undefined && sourceOccurrence),
       ...(parent !== null && {
         targetLockingBytecode: targetLockingBytecode
           ?? participant.logicalLockingBytecode
@@ -567,6 +573,10 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
             false,
             call.callsiteId,
             provedTarget ?? resolved.targetLockingBytecode,
+            {
+              sourceCallsiteId: call.callsiteId!,
+              occurrenceIndex: reached,
+            },
           );
         }
         continue;
@@ -688,6 +698,11 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
               false,
               call.callsiteId,
               resolvedTarget.targetLockingBytecode,
+              {
+                sourceCallsiteId: row.sourceCallsiteId ?? call.callsiteId!,
+                sourceLogicalIndex: row.logicalIndex,
+                occurrenceIndex: occurrence,
+              },
             );
           });
         });
@@ -758,6 +773,10 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
             occurrenceKind !== 'once' && occurrenceBoundOf(call).maximum !== undefined,
             call.callsiteId,
             resolved.targetLockingBytecode,
+            {
+              sourceCallsiteId: call.callsiteId!,
+              occurrenceIndex: reached,
+            },
           );
         }
         continue;
@@ -779,6 +798,10 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
           occurrenceKind !== 'once' && occurrenceBoundOf(call).maximum !== undefined,
           call.callsiteId,
           provedTarget ?? resolvedTarget.targetLockingBytecode,
+          {
+            sourceCallsiteId: call.callsiteId!,
+            occurrenceIndex: reached,
+          },
         );
       }
     }

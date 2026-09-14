@@ -4956,6 +4956,8 @@ export interface RouteExpressionKeyRow {
   internalArgs?: Readonly<Record<string, FunctionArgument>>;
   /** Source row template before runtime loop/conditional expansion. */
   sourceLogicalIndex?: number;
+  /** Compiler-stable source callsite before repeated-owner collapsing. */
+  sourceCallsiteId?: number;
   /** Source loop occurrence represented by this physical route row. */
   occurrenceIndex?: number;
   handler: AbiFunction;
@@ -24834,6 +24836,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                       }),
                       parent: 0,
                       ...(nested.callsiteId !== undefined && { callsiteId: nested.callsiteId }),
+                      sourceCallsiteId: row.sourceCallsiteId ?? nested.callsiteId,
+                      sourceLogicalIndex: row.sourceLogicalIndex,
+                      occurrenceIndex: row.occurrenceIndex,
                       batchLogicalIndex: row.sourceLogicalIndex,
                       batchOccurrenceIndex: row.occurrenceIndex,
                       // Mutually-exclusive SafeERC20 fallback writers share one physical owner. The ordinary
@@ -24856,6 +24861,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                     }),
                     parent: 0,
                     ...(nested.callsiteId !== undefined && { callsiteId: nested.callsiteId }),
+                    ...(nested.callsiteId !== undefined && {
+                      sourceCallsiteId: nested.callsiteId,
+                      ...((nested.occurrence ?? 'once') !== 'loop' && { occurrenceIndex: 0 }),
+                    }),
                     ...(resolveGraphNestedArgs && { resolveArgsFromResults: resolveGraphNestedArgs }),
                     active: !preserveFirstConditionalWriter,
                   });
@@ -25791,6 +25800,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 }),
                 parent: parentAtomicNode,
                 ...(nested.callsiteId !== undefined && { callsiteId: nested.callsiteId }),
+                ...(nested.callsiteId !== undefined && {
+                  sourceCallsiteId: nested.callsiteId,
+                  ...((nested.occurrence ?? 'once') !== 'loop' && { occurrenceIndex: 0 }),
+                }),
                 ...(resolveGraphChildArgs && { resolveArgsFromResults: resolveGraphChildArgs }),
                 active: true,
               });
@@ -30580,6 +30593,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           functionName: node.functionName,
           args: Object.freeze([...node.args]),
           ...(node.callsiteId !== undefined && { callsiteId: node.callsiteId }),
+          ...(node.sourceCallsiteId !== undefined && { sourceCallsiteId: node.sourceCallsiteId }),
+          ...(node.sourceLogicalIndex !== undefined && { sourceLogicalIndex: node.sourceLogicalIndex }),
+          ...(node.occurrenceIndex !== undefined && { occurrenceIndex: node.occurrenceIndex }),
           ...(node.batchLogicalIndex !== undefined && { batchLogicalIndex: node.batchLogicalIndex }),
           ...(node.batchOccurrenceIndex !== undefined && {
             batchOccurrenceIndex: node.batchOccurrenceIndex,
@@ -32217,6 +32233,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         selector: string;
         args: FunctionArgument[];
         handler: AbiFunction;
+        sourceCallsiteId?: number;
         sourceLogicalIndex: number;
         occurrenceIndex: number;
       }>;
@@ -32339,18 +32356,16 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // X199. Intersect with eligibility: the compiler's logical value mode is computed over the FINAL
     // survivors, so a published-but-refused payable handler must not size the admitted route's rows.
     const valueMode = capability.handlers.some((handler) => handler.eligible && handler.usesMsgValue);
-    const resolvedCallerInputs = callerInputs ?? callerArtifact.abi.find((fn) => (
-      fn.externalCalls?.some((candidate) => (
-        candidate === externalCall
-        || (candidate.interfaceName === externalCall.interfaceName
-          && candidate.batchInvocations?.length === publishedRows.length
-          && candidate.batchInvocations.every((row, index) => row.selector === publishedRows[index].selector))
-      ))
-    ))?.inputs;
+    const resolvedCallerInputs = callerInputs ?? callerArtifact.abi.find((fn) =>
+      fn.externalCalls?.some((candidate) => candidate === externalCall))?.inputs;
+    if (!resolvedCallerInputs) {
+      throw new Error('Repeated external message-bus batch has no exact enclosing ABI identity');
+    }
     const rowArguments: Array<{
       selector: string;
       args: FunctionArgument[];
       handler: AbiFunction;
+      sourceCallsiteId?: number;
       sourceLogicalIndex: number;
       occurrenceIndex: number;
     }> = [];
@@ -32383,6 +32398,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         selector: row.selector,
         args,
         handler: handlerAbi,
+        sourceCallsiteId: row.sourceCallsiteId,
         sourceLogicalIndex: row.sourceLogicalIndex,
         occurrenceIndex: row.occurrenceIndex,
       });

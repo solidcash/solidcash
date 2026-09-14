@@ -1142,6 +1142,8 @@ export interface ExternalCallAbi {
   rawArgSources?: readonly ArgSource[];
   batchInvocations?: readonly {
     selector: string;
+    /** Compiler-stable callsite before repeated-owner rows are collapsed into one physical callsite. */
+    sourceCallsiteId?: number;
     logicalIndex: number;
     inputs: readonly AbiInput[];
     argSources?: readonly ArgSource[];

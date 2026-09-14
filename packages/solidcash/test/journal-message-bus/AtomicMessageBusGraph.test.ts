@@ -116,6 +116,48 @@ const plan = (): messageBus.CompiledGraphPlan => ({
 });
 
 describe('atomic compiled invocation graph', () => {
+  it('requires exact prepared producer identity and preserves it across result-dependent rebuilds', () => {
+    const invocation = {
+      ...plan().invocations[1],
+      sourceCallsiteId: 11,
+      sourceLogicalIndex: 2,
+      occurrenceIndex: 3,
+      sourceCallsiteProvenance: 'compiler' as const,
+    };
+    const base = {
+      contract: {} as never,
+      functionName: 'run',
+      args: [0n],
+    };
+    expect(() => messageBus.assertPreparedInvocationIdentity(base, invocation, 1))
+      .toThrow(/omits its physical callsite identity/);
+    const descriptor = {
+      ...base,
+      callsiteId: 7,
+      sourceCallsiteId: 11,
+      sourceLogicalIndex: 2,
+      occurrenceIndex: 3,
+      batchLogicalIndex: 2,
+      batchOccurrenceIndex: 3,
+    };
+    expect(() => messageBus.assertPreparedInvocationIdentity(descriptor, invocation, 1)).not.toThrow();
+    expect(() => messageBus.assertPreparedInvocationIdentity({
+      ...descriptor,
+      batchOccurrenceIndex: 4,
+    }, invocation, 1)).toThrow(/conflicting occurrence identities/);
+    const rebuilt = messageBus.rebuildPreparedInvocation(descriptor, [1n], '01');
+    expect(rebuilt).toMatchObject({
+      callsiteId: 7,
+      sourceCallsiteId: 11,
+      sourceLogicalIndex: 2,
+      occurrenceIndex: 3,
+      batchLogicalIndex: 2,
+      batchOccurrenceIndex: 3,
+      args: [1n],
+      provisionalResultCommitment: Uint8Array.of(1),
+    });
+  });
+
   it('does not authorize a computed chunk from a value-mismatched balanced dummy', () => {
     const input = {
       satoshis: 1200n,
@@ -650,10 +692,11 @@ describe('atomic compiled invocation graph', () => {
             interfaceName: 'ISink',
             functionName: 'ping',
             batchInvocations: [{
-              selector: '01020304', logicalIndex: 0, inputs: pingInputs,
+              selector: '01020304', sourceCallsiteId: 40, logicalIndex: 0, inputs: pingInputs,
               argSources: [{ kind: 'literal' as const, type: 'int', value: '1' }],
             }, {
-              selector: '01020304', logicalIndex: 1, inputs: pingInputs, occurrence: 'loop' as const,
+              selector: '01020304', sourceCallsiteId: 41, logicalIndex: 1,
+              inputs: pingInputs, occurrence: 'loop' as const,
               argSources: [{ kind: 'arrayElement' as const, paramIndex: 0, indexValue: 0 }],
             }],
           }],
@@ -682,11 +725,154 @@ describe('atomic compiled invocation graph', () => {
     const three = derive([2n, 3n, 4n]);
     expect(three.planned.invocations.map((invocation) => invocation.function))
       .toEqual(['run', 'ping', 'ping', 'ping', 'ping']);
+    expect(three.planned.invocations.map((invocation) => ({
+      physical: invocation.consumerCallsiteId,
+      source: invocation.sourceCallsiteId,
+      logical: invocation.sourceLogicalIndex,
+      occurrence: invocation.occurrenceIndex,
+    }))).toEqual([
+      { physical: undefined, source: undefined, logical: undefined, occurrence: undefined },
+      { physical: 4, source: 40, logical: 0, occurrence: 0 },
+      { physical: 4, source: 41, logical: 1, occurrence: 0 },
+      { physical: 4, source: 41, logical: 1, occurrence: 1 },
+      { physical: 4, source: 41, logical: 1, occurrence: 2 },
+    ]);
     expect(three.targets).toEqual([
       { batchLogicalIndex: 0, occurrence: 0 },
       { batchLogicalIndex: 1, occurrence: 0 },
       { batchLogicalIndex: 1, occurrence: 1 },
       { batchLogicalIndex: 1, occurrence: 2 },
+    ]);
+    const compiled = three.planned.invocations.map((invocation, index) => ({
+      parent: invocation.parent,
+      callee: invocation.callee,
+      function: invocation.function,
+      selector: invocation.selectorHex,
+      args: index === 0 ? [[2n, 3n, 4n]] : [BigInt(index === 1 ? 1 : index)],
+      ...(invocation.consumerCallsiteId !== undefined && {
+        consumerCallsiteId: invocation.consumerCallsiteId,
+      }),
+      ...(invocation.sourceCallsiteId !== undefined && {
+        sourceCallsiteId: invocation.sourceCallsiteId,
+      }),
+      ...(invocation.sourceLogicalIndex !== undefined && {
+        sourceLogicalIndex: invocation.sourceLogicalIndex,
+      }),
+      ...(invocation.occurrenceIndex !== undefined && {
+        occurrenceIndex: invocation.occurrenceIndex,
+      }),
+      ...(invocation.parent !== null && { targetLockingBytecode: invocation.targetLockingBytecode }),
+      callMode: invocation.callMode,
+    }));
+    const duplicate = compiled.map((invocation, index) => index === 3
+      ? { ...invocation, occurrenceIndex: 0 } : invocation);
+    expect(() => messageBus.planCompiledGraph(
+      three.planned.participants.map((participant) => ({
+        artifact: participant.artifact,
+        lockingBytecode: participant.lockingBytecode,
+      })),
+      duplicate,
+    )).toThrow(/canonical next occurrence/);
+    const missingSource = compiled.map((invocation, index) => {
+      if (index !== 1) return invocation;
+      const { sourceCallsiteId: _sourceCallsiteId, ...withoutSource } = invocation;
+      return withoutSource;
+    });
+    expect(() => messageBus.planCompiledGraph(
+      three.planned.participants.map((participant) => ({
+        artifact: participant.artifact,
+        lockingBytecode: participant.lockingBytecode,
+      })),
+      missingSource,
+    )).toThrow(/omits compiler source callsite/);
+    const substituted = compiled.map((invocation, index) => index === 1 ? {
+      ...invocation,
+      sourceCallsiteId: 41,
+      sourceLogicalIndex: 1,
+      occurrenceIndex: 0,
+    } : index > 1 ? { ...invocation, occurrenceIndex: index - 1 } : invocation);
+    expect(() => messageBus.planCompiledGraph(
+      three.planned.participants.map((participant) => ({
+        artifact: participant.artifact,
+        lockingBytecode: participant.lockingBytecode,
+      })),
+      substituted,
+    )).toThrow(/source row 0 must be represented exactly once/);
+
+    const legacyRoot = structuredClone(root) as typeof root;
+    for (const row of legacyRoot.artifact.abi[0].externalCalls![0].batchInvocations!) {
+      delete (row as { sourceCallsiteId?: number }).sourceCallsiteId;
+    }
+    const legacy = messageBus.deriveCompiledGraphPlan({
+      root: legacyRoot, function: 'run', args: [[2n, 3n]], targets: {},
+      target: () => sink,
+      expressionArgument: ({ occurrence }) => BigInt(occurrence + 2),
+    });
+    expect(legacy.invocations.slice(1).map((invocation) => ({
+      physical: invocation.consumerCallsiteId,
+      source: invocation.sourceCallsiteId,
+      logical: invocation.sourceLogicalIndex,
+      provenance: invocation.sourceCallsiteProvenance,
+    }))).toEqual([
+      { physical: 4, source: 4, logical: 0, provenance: 'legacy-logical' },
+      { physical: 4, source: 4, logical: 1, provenance: 'legacy-logical' },
+      { physical: 4, source: 4, logical: 1, provenance: 'legacy-logical' },
+    ]);
+  });
+
+  it('assigns canonical occurrences to a non-batched runtime callsite', () => {
+    const inputs = [{ name: 'value', type: 'int' }];
+    const capability = (
+      name: string, selector: string, handlerInputs: readonly { name: string; type: string }[] = inputs,
+    ) => ({
+      version: 1 as const,
+      selector: '53434231' as const,
+      maximumRows: 4,
+      maximumBlobBytes: 256,
+      route: {
+        name: '__message_bus1', selector: '53434231', inputs: [], outputs: [],
+        blockLayout: { blockSize: 1, slots: [{ kind: 'master' as const, offset: 0 }] },
+      },
+      handlers: [{ name, selector, inputs: handlerInputs, outputs: [], eligible: true }],
+    });
+    const sink = {
+      artifact: {
+        contractName: 'OccurrenceSink',
+        abi: [{ name: 'ping', selector: '01020304', inputs, outputs: [] }],
+        messageBus: capability('ping', '01020304'),
+        invocationAnalysis: { version: 1, protocolVersions: [1], functions: [], components: [] },
+      } as unknown as Artifact,
+      lockingBytecode: '51',
+    };
+    const root = {
+      artifact: {
+        contractName: 'OccurrenceRoot',
+        abi: [{
+          name: 'run', selector: '11111111', inputs: [{ name: 'values', type: 'int[]' }], outputs: [],
+          externalCalls: [{
+            callsiteId: 7, occurrence: 'loop' as const, maximumOccurrences: 3,
+            interfaceName: 'ISink', functionName: 'ping',
+            argSources: [{ kind: 'arrayElement' as const, paramIndex: 0, indexValue: 0 }],
+          }],
+        }],
+        messageBus: capability('run', '11111111', [{ name: 'values', type: 'int[]' }]),
+        invocationAnalysis: { version: 1, protocolVersions: [1], functions: [], components: [] },
+      } as unknown as Artifact,
+      lockingBytecode: '52',
+    };
+    const planned = messageBus.deriveCompiledGraphPlan({
+      root, function: 'run', args: [[1n, 2n, 3n]], targets: { ISink: sink },
+      occurrence: () => 3,
+      expressionArgument: ({ occurrence }) => BigInt(occurrence + 1),
+    });
+    expect(planned.invocations.slice(1).map((invocation) => ({
+      physical: invocation.consumerCallsiteId,
+      source: invocation.sourceCallsiteId,
+      occurrence: invocation.occurrenceIndex,
+    }))).toEqual([
+      { physical: 7, source: 7, occurrence: 0 },
+      { physical: 7, source: 7, occurrence: 1 },
+      { physical: 7, source: 7, occurrence: 2 },
     ]);
   });
 

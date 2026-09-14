@@ -60,6 +60,15 @@ export interface CompiledGraphInvocation {
   /** Compiler-stable identity of the parent callsite reached by this invocation. */
   consumerCallsiteId?: number;
   /**
+   * Source callsite represented by this invocation. For an ordinary call this equals
+   * `consumerCallsiteId`; a collapsed batch retains the pre-collapse source callsite here.
+   */
+  sourceCallsiteId?: number;
+  /** Source-ordered row within a collapsed repeated-owner callsite. */
+  sourceLogicalIndex?: number;
+  /** Reached runtime occurrence of this source callsite or batch row. */
+  occurrenceIndex?: number;
+  /**
    * Exact locking bytecode evaluated by the parent call expression. It may be the participant's physical
    * owner or an authenticated public identity; settlement still belongs to `callee` in both cases.
    */
@@ -104,6 +113,14 @@ export interface PlannedGraphInvocation {
    * for parents whose artifact publishes no matching callsite.
    */
   consumerCallsiteId?: number;
+  /** Stable source producer identity, distinct from the physical callsite for collapsed batches. */
+  sourceCallsiteId?: number;
+  /** Source-ordered row within a collapsed repeated-owner callsite. */
+  sourceLogicalIndex?: number;
+  /** Reached runtime occurrence of the source producer. */
+  occurrenceIndex?: number;
+  /** Whether source identity was published by the compiler or normalized from a legacy batch row. */
+  sourceCallsiteProvenance?: 'compiler' | 'legacy-logical';
   /** Exact source-level call target and the participant-local input which authenticates it. */
   targetLockingBytecode: string;
   targetIdentityOffset: number;
@@ -2144,6 +2161,12 @@ export function planCompiledGraph(
     childrenOf[invocations[child].parent!].push(child);
   }
   const consumerCallsites: (number | undefined)[] = invocations.map(() => undefined);
+  const sourceOccurrences: ({
+    sourceCallsiteId: number;
+    sourceLogicalIndex?: number;
+    occurrenceIndex: number;
+    sourceCallsiteProvenance: 'compiler' | 'legacy-logical';
+  } | undefined)[] = invocations.map(() => undefined);
   const resultDependencies: number[][] = invocations.map(() => []);
   for (let parent = 0; parent < invocations.length; parent += 1) {
     const children = childrenOf[parent];
@@ -2177,7 +2200,8 @@ export function planCompiledGraph(
         }
         const reachedFunction = invocations[children[position]].function;
         const expectedFunction = callsite.rawFunctionName ?? callsite.functionName;
-        if (!isRuntimeResolvedCallsite(callsite) && expectedFunction !== reachedFunction) {
+        if (callsite.batchInvocations === undefined
+          && !isRuntimeResolvedCallsite(callsite) && expectedFunction !== reachedFunction) {
           throw new Error(
             `messageBus: invocation ${parent} binds callsite ${callsiteId} to '${reachedFunction}', `
             + `but the compiler publishes '${expectedFunction}'`,
@@ -2198,9 +2222,134 @@ export function planCompiledGraph(
         assertPlannedOccurrenceCount(callsite, count);
       }
     }
+    const seenSourceOccurrences = new Set<string>();
+    const inferredOccurrence = new Map<string, number>();
     children.forEach((child, position) => {
       const callsite = bindings[position];
       consumerCallsites[child] = callsite?.callsiteId;
+      if (callsite?.callsiteId !== undefined) {
+        const invocation = invocations[child];
+        let sourceCallsiteId = invocation.sourceCallsiteId;
+        let sourceLogicalIndex = invocation.sourceLogicalIndex;
+        let occurrenceIndex = invocation.occurrenceIndex;
+        let sourceCallsiteProvenance: 'compiler' | 'legacy-logical' = 'compiler';
+        if (callsite.batchInvocations !== undefined) {
+          if (sourceLogicalIndex === undefined) {
+            throw new Error(
+              `messageBus: invocation ${child} omits source identity for batched callsite ${callsite.callsiteId}`,
+            );
+          }
+          if (!Number.isSafeInteger(sourceLogicalIndex) || sourceLogicalIndex < 0) {
+            throw new Error(`messageBus: invocation ${child} has an invalid batched source identity`);
+          }
+          const row = callsite.batchInvocations.find((candidate) => candidate.logicalIndex === sourceLogicalIndex);
+          if (!row) {
+            throw new Error(
+              `messageBus: invocation ${child} names absent source row `
+              + `${sourceCallsiteId}:${sourceLogicalIndex} at batched callsite ${callsite.callsiteId}`,
+            );
+          }
+          if (row.sourceCallsiteId === undefined) {
+            sourceCallsiteProvenance = 'legacy-logical';
+            if (sourceCallsiteId !== undefined && sourceCallsiteId !== callsite.callsiteId) {
+              throw new Error(
+                `messageBus: invocation ${child} assigns an unauthenticated source callsite to a legacy batch row`,
+              );
+            }
+            sourceCallsiteId = callsite.callsiteId;
+          } else {
+            if (sourceCallsiteId === undefined) {
+              throw new Error(
+                `messageBus: invocation ${child} omits compiler source callsite for batched callsite `
+                + `${callsite.callsiteId}`,
+              );
+            }
+            if (sourceCallsiteId !== row.sourceCallsiteId) {
+              throw new Error(
+                `messageBus: invocation ${child} source callsite ${sourceCallsiteId} disagrees with `
+                + `compiler row ${row.sourceCallsiteId}`,
+              );
+            }
+          }
+          if (!Number.isSafeInteger(sourceCallsiteId) || sourceCallsiteId < 0) {
+            throw new Error(`messageBus: invocation ${child} has an invalid batched source callsite`);
+          }
+          if (row.selector.toLowerCase() !== plannedBase[child].selectorHex.toLowerCase()) {
+            throw new Error(
+              `messageBus: invocation ${child} source row selector disagrees with its planned target`,
+            );
+          }
+          const targetFunction = resolveGraphAbiFunction(
+            participants[invocations[child].callee].artifact,
+            invocations[child].function,
+            invocations[child].selector,
+          );
+          const visibleTargetInputs = targetFunction?.inputs.filter((input) =>
+            !input.name.startsWith('__internal__'));
+          if (!visibleTargetInputs || row.inputs.length !== visibleTargetInputs.length
+            || row.inputs.some((input, inputIndex) => input.type !== visibleTargetInputs[inputIndex].type)) {
+            throw new Error(
+              `messageBus: invocation ${child} source row schema disagrees with its planned target`,
+            );
+          }
+          if ((row.occurrence ?? 'once') !== 'loop' && occurrenceIndex !== undefined && occurrenceIndex !== 0) {
+            throw new Error(
+              `messageBus: invocation ${child} assigns occurrence ${occurrenceIndex} to a `
+              + `${row.occurrence ?? 'once'} source row`,
+            );
+          }
+        } else {
+          if (sourceCallsiteId !== undefined && sourceCallsiteId !== callsite.callsiteId) {
+            throw new Error(
+              `messageBus: invocation ${child} source callsite ${sourceCallsiteId} disagrees with `
+              + `physical callsite ${callsite.callsiteId}`,
+            );
+          }
+          if (sourceLogicalIndex !== undefined) {
+            throw new Error(
+              `messageBus: invocation ${child} assigns a batch logical index to non-batched callsite `
+              + `${callsite.callsiteId}`,
+            );
+          }
+          sourceCallsiteId = callsite.callsiteId;
+          if ((callsite.occurrence ?? 'once') !== 'loop'
+            && occurrenceIndex !== undefined && occurrenceIndex !== 0) {
+            throw new Error(
+              `messageBus: invocation ${child} assigns occurrence ${occurrenceIndex} to a `
+              + `${callsite.occurrence ?? 'once'} callsite`,
+            );
+          }
+        }
+        const sourceKey = `${sourceCallsiteId}:${sourceLogicalIndex ?? -1}`;
+        const expectedOccurrence = inferredOccurrence.get(sourceKey) ?? 0;
+        if (occurrenceIndex === undefined) {
+          occurrenceIndex = expectedOccurrence;
+        }
+        if (!Number.isSafeInteger(occurrenceIndex) || occurrenceIndex < 0) {
+          throw new Error(`messageBus: invocation ${child} has an invalid source occurrence index`);
+        }
+        if (occurrenceIndex !== expectedOccurrence) {
+          throw new Error(
+            `messageBus: invocation ${child} source occurrence ${sourceKey}:${occurrenceIndex} is not `
+            + `the canonical next occurrence ${expectedOccurrence}`,
+          );
+        }
+        inferredOccurrence.set(sourceKey, expectedOccurrence + 1);
+        const identity = `${sourceKey}:${occurrenceIndex}`;
+        if (seenSourceOccurrences.has(identity)) {
+          throw new Error(
+            `messageBus: invocation ${parent} repeats source occurrence ${identity} at physical callsite `
+            + `${callsite.callsiteId}`,
+          );
+        }
+        seenSourceOccurrences.add(identity);
+        sourceOccurrences[child] = {
+          sourceCallsiteId,
+          ...(sourceLogicalIndex !== undefined && { sourceLogicalIndex }),
+          occurrenceIndex,
+          sourceCallsiteProvenance,
+        };
+      }
       if (!callsite?.hasReturnValues) return;
       const produced = plannedBase[child].resultTypes;
       if (produced.length === 0) {
@@ -2220,6 +2369,45 @@ export function planCompiledGraph(
       }
       resultDependencies[parent].push(child);
     });
+    for (const callsite of publishedCallsites) {
+      if (callsite.callsiteId === undefined || callsite.batchInvocations === undefined) continue;
+      const rows = callsite.batchInvocations;
+      const publishedSourceCount = rows.filter((row) => row.sourceCallsiteId !== undefined).length;
+      if (publishedSourceCount !== 0 && publishedSourceCount !== rows.length) {
+        throw new Error(`messageBus: batched callsite ${callsite.callsiteId} mixes legacy and source-aware rows`);
+      }
+      if (rows.some((row, logicalIndex) => row.logicalIndex !== logicalIndex
+        || (row.sourceCallsiteId !== undefined
+          && (!Number.isSafeInteger(row.sourceCallsiteId) || row.sourceCallsiteId < 0)))) {
+        throw new Error(`messageBus: batched callsite ${callsite.callsiteId} has non-canonical logical indices`);
+      }
+      const sourceIds = new Set(rows.flatMap((row) => row.sourceCallsiteId === undefined
+        ? [] : [row.sourceCallsiteId]));
+      if (publishedSourceCount > 0 && sourceIds.size !== rows.length) {
+        throw new Error(`messageBus: batched callsite ${callsite.callsiteId} has duplicate source callsites`);
+      }
+      for (const row of rows) {
+        const count = children.filter((child) => {
+          const source = sourceOccurrences[child];
+          return consumerCallsites[child] === callsite.callsiteId
+            && source?.sourceCallsiteId === (row.sourceCallsiteId ?? callsite.callsiteId)
+            && source?.sourceLogicalIndex === row.logicalIndex;
+        }).length;
+        const kind = row.occurrence ?? 'once';
+        if (kind === 'once' && count !== 1) {
+          throw new Error(
+            `messageBus: batched callsite ${callsite.callsiteId} source row ${row.logicalIndex} `
+            + `must be represented exactly once, but ${count} occurrences were planned`,
+          );
+        }
+        if (kind === 'conditional' && count > 1) {
+          throw new Error(
+            `messageBus: batched callsite ${callsite.callsiteId} conditional source row ${row.logicalIndex} `
+            + `was represented ${count} times`,
+          );
+        }
+      }
+    }
     // Fixed-row graph handlers authenticate and consume each child result in
     // source order. Runtime raw loops do the same with their bounded
     // occurrence cursor. Both forms therefore admit any acyclic dependency
@@ -2229,6 +2417,7 @@ export function planCompiledGraph(
   const planned = plannedBase.map((invocation, index) => Object.freeze({
     ...invocation,
     ...(consumerCallsites[index] !== undefined && { consumerCallsiteId: consumerCallsites[index] }),
+    ...(sourceOccurrences[index] !== undefined && sourceOccurrences[index]),
     resultDependencies: Object.freeze(resultDependencies[index]),
   }));
   const rootLogicalCaller = invocations[0].logicalCaller;

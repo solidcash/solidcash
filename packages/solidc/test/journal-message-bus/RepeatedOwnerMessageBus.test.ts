@@ -27,11 +27,13 @@ describe('inferred message-bus batching for repeated external callees', () => {
       needsSelectorVerification: true,
       batchInvocations: [
         {
+          sourceCallsiteId: 0,
           logicalIndex: 0,
           inputs: [{ name: 'arg0', type: 'int256' }],
           argSources: [{ kind: 'forward', paramIndex: 0 }],
         },
         {
+          sourceCallsiteId: 1,
           logicalIndex: 1,
           inputs: [{ name: 'arg0', type: 'int256' }],
           argSources: [{ kind: 'forward', paramIndex: 1 }],
@@ -39,6 +41,27 @@ describe('inferred message-bus batching for repeated external callees', () => {
       ],
     });
     expect(run?.externalCalls?.[0].batchInvocations?.every((row) => row.selector.length === 8)).toBe(true);
+  });
+
+  it('publishes deterministic pre-collapse source callsites for every batch row', () => {
+    const projection = () => compileString(SOURCE).abi.find((fn) => fn.name === 'run')
+      ?.externalCalls?.map((call) => ({
+        physicalCallsiteId: call.callsiteId,
+        rows: call.batchInvocations?.map((row) => ({
+          sourceCallsiteId: row.sourceCallsiteId,
+          logicalIndex: row.logicalIndex,
+        })),
+      }));
+    const first = projection();
+    const second = projection();
+    expect(first).toEqual(second);
+    expect(first).toEqual([{
+      physicalCallsiteId: 0,
+      rows: [
+        { sourceCallsiteId: 0, logicalIndex: 0 },
+        { sourceCallsiteId: 1, logicalIndex: 1 },
+      ],
+    }]);
   });
 
   it('publishes runtime loop cardinality for repeated calls to one owner', () => {

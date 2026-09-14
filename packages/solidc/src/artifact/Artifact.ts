@@ -1983,6 +1983,7 @@ function buildFunctionAbiMetadata(
           ...(ec.batchInvocations && {
             batchInvocations: ec.batchInvocations.map((row) => ({
               selector: binToHex(row.selector),
+              sourceCallsiteId: row.sourceCallsiteId,
               logicalIndex: row.logicalIndex,
               inputs: row.parameterTypes.map((type, index) => ({
                 name: `arg${index}`, type: abiTypeString(type),

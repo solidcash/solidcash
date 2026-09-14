@@ -4,14 +4,56 @@ Worktree `/Code/cashscript/.worktrees/kernel-beta-perf`, branch `grok/message-bu
 (forked from `grok/message-bus-kernel-beta` at `46d682882`). This worktree exists because the
 candidate worktree is shared with another active session; nothing here touches that tree.
 
-Landed (SDK only, both verified against a baseline build of this worktree):
+Landed:
 
-* `4c3485f1c perf(sdk): resolve probe traces without deep-cloning the program`
-* `f1783198e perf(sdk): probe return construction faithfully without cloning the program`
+* SDK (both verified against a baseline build of this worktree):
+  * `4c3485f1c perf(sdk): resolve probe traces without deep-cloning the program`
+  * `f1783198e perf(sdk): probe return construction faithfully without cloning the program`
+* Compiler (bytecode budget ±5 %, authorised by the user):
+  * `e531d63a0 perf(solidc): cache imported parses and add a size-bounded outline mode`
 
-Compiler status: profiled end to end, seven optimisation candidates measured, all rejected — see §2 and
-§5. No byte-identical compiler win is currently available; the one remaining lever (§5 item 2) is a ~10 %
-admission refactor that changes the parking design.
+Compiler status: two changes landed with measurements; the earlier seven candidates were
+measured and rejected (see §2 and §5). Remaining upside is in the admission search.
+
+## 0. Compiler work landed in round 4
+
+`e531d63a0` carries two independent changes, both measured with
+`scripts/perf-project-compile.mjs` (ten roots, per-root route/full hashes) and `SOLIDC_PROFILE`:
+
+1. **Cross-root parse cache** (`parseImportedFileCached`, `ImportResolver`). A project compile
+   resolved the same import graph once per root; the cache keeps a bounded LRU of pristine parse
+   trees and returns an independent clone on a hit - the same clone-on-hit trade the
+   multi-declaration compiler already makes with `cloneAst(probe, 'multi-primary')`.
+   **Byte-identical:** all ten per-root route/full hashes match the pre-change run.
+   Measured: `parseAndResolve` 2,091 → 1,728 ms, `parseCode:file` 261 → 136 calls.
+2. **`outlineThoroughness: 'speed'`** (default `'thorough'`; only the marketplace config opts in).
+   Drops the two lowest-yield outlining behaviours: the window-12 follow-up rounds (rounds 2-5:
+   335 ms for 11.3 KB, 34 B/ms) and the nested compiler-helper pass (417 ms for 14.6 KB, 36 B/ms),
+   against 500+ B/ms for the main rounds. Outlining is a pure span-sharing rewrite, so semantics
+   are unchanged and only size moves. Measured: `outline` −1.02 s, `codegen:emitBodies` −1.10 s,
+   end-to-end 21,312/21,947 → 20,359/20,422 ms over two paired runs.
+
+   Per-root full-bytecode deltas: −0.20 / +0.50 / +0.50 / **+4.99** / +2.63 / +0.34 / +0.36 /
+   +1.07 / +0.71 / +0.97 % (MarketplaceV1-V3, DataV1, EACCToken, TreasurySplit, FakeToken,
+   Dispute, Arbitrator, Claim); route deltas are smaller except DataV1 at +4.01 %.
+   MarketplaceDataV1 is the one root close to the ±5 % budget - re-measure it before widening
+   this mode.
+
+   Verification: `yarn build` clean; `solidc` journal-message-bus gate unchanged at
+   6 failed / 1,442 passed; the full `solidc` suite differs from a baseline build by exactly one
+   60 s timeout under full parallel load (that test passes in isolation with the cache, twice);
+   the fixture was regenerated through the per-source iteration path and the four passing
+   marketplace titles stay green (13.0 / 16.1 / 15.2 / 17.8 s test time).
+
+### Incident to know about (no harm done)
+
+`.marketplace/iteration/recompile.sh` has **hard-coded paths to the candidate worktree**
+(`/Code/cashscript/.worktrees/kernel-beta-candidate/...`), so running it from this fork
+regenerates the *other* session's fixture with the *other* session's compiler. That happened once
+here. The rebuilt files differ from the pre-run snapshot only in `updatedAt` (bytecode,
+fingerprints and all other keys identical), so nothing functional changed in that tree - but use a
+local script for regeneration instead of that file.
+
 
 ## 1. SDK transaction building — landed, measured
 

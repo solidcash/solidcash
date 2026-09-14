@@ -220,18 +220,27 @@ exceeds its upside. Round 2 added these results (all on the ten-root project com
 | cross-root parse cache | duplicate parses total **944 ms** (4.8 %, ANTLR 649 ms) before ~48 clone costs (est. 250-600 ms) → **net 2-3.5 %** | not worth an AST-sharing change |
 | verifier emit memo | per root one generic host emit + one signature-policy-specialized emit, both route-specific; the specialization runs after codegen while the placeholder binding runs before it | no waste to remove |
 | `analyseContractInvocations` reuse across AST clones | ~265 ms per root self, two clones per root | ≤3 % for a cache-keying change |
-| `subroutineUseProbe` → direct census | still the largest single self-contained item (~416 ms per root) but the census must reproduce id assignment decisions that read the emitted byte length | open, high effort |
+| `subroutineUseProbe` → direct census | already a census: `emit()` returns immediately in probe mode, so the probe's 416 ms is the decision traversal that *produces* the counts and id maps | infeasible |
+| admission-shape reuse | the cheap pass parks unemitted functions; lowering them there moves work instead of removing it, so only the ~300 ms overlap is recoverable | ~6 %, deep refactor |
+| compile ordering (JIT warm-up) | big-first 22,420/22,189 ms vs alphabetical 21,290/22,857 ms over two repetitions | no effect, noise |
 
 Two operational facts for whoever picks this up:
 
-* **The normal project compile cannot run in this worktree at all.** `node packages/testing/dist/cli.js
-  compile` fails on `MockSablierLockup.sol` (`Cannot resolve import '@sablier/lockup/src/types/DataTypes.sol'`)
-  and the task discards its temporary output transactionally, so the marketplace fixture can only be
-  regenerated through `.marketplace/iteration/recompile.sh` (per-source `--iteration`). Any compiler change
-  that alters bytecode therefore cannot be validated by the ordinary compile path here.
+* **The normal project compile cannot run in this worktree at all — for two independent reasons.**
+  `node packages/testing/dist/cli.js compile` fails on `MockSablierLockup.sol`
+  (`Cannot resolve import '@sablier/lockup/src/types/DataTypes.sol'`); with that source moved aside it then
+  fails on `unicrow/Unicrow.sol` with `Maximum call stack size exceeded` (the compiler crashes on that
+  source both inside the project compile and in the single-source probe). The task discards its temporary
+  output transactionally, so the marketplace fixture can only be regenerated through
+  `.marketplace/iteration/recompile.sh` (per-source `--iteration`). Any compiler change that alters
+  bytecode therefore cannot be validated by the ordinary compile path here.
 * **Compiler gate baseline on this branch:** `yarn workspace solidc vitest run test/journal-message-bus`
   → 6 failed / 1,442 passed (3 failed files of 74). Pre-existing: this branch has no compiler changes, and
   the SDK commits cannot affect `solidc` tests.
+* **Compile ordering is not a lever** (round 3). The project compile's root order looked worth ~25 % in
+  single runs (big-first 19.7 s vs alphabetical 26.2 s), but two repetitions each gave big-first
+  22,420 / 22,189 ms and alphabetical 21,290 / 22,857 ms — machine noise, not ordering. `--smallest-first`
+  is kept in the probe with that annotation so the experiment is not repeated.
 
 Ranked, with the guardrails that make each safe:
 

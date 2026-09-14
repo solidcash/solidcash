@@ -192,23 +192,44 @@ Two traps for whoever measures next:
 
 ## 5. What the next round should do about the compiler
 
-The SDK side of the objective is met and measured. The compiler side is profiled but not yet moved, and
-the evidence above says the remaining wins are concentrated in the **shipping compile's codegen (30 %)**
-and the **cheap admission search (29 %)**, not in parsing (10 %) and not in any single hot function.
+The SDK side of the objective is met and measured. The compiler side is profiled but not moved: every
+candidate measured so far is either rejected by its own numbers or needs a refactor whose validation cost
+exceeds its upside. Round 2 added these results (all on the ten-root project compile, 19,699 ms baseline):
+
+| candidate | measured | verdict |
+|---|---|---|
+| `__cheapAdmissionCodegen: false` | 32,848 ms, bytecode differs for most roots | rejected |
+| widest rung full + `__synthesizeBoundRoutePlaceholder` | 18,792 ms (−4.6 %) but `EACCToken` fails (`single-pass bind: missing __message_bus_verify_atomic`) and `TreasurySplit` output changes | rejected |
+| cross-root parse cache | duplicate parses total **944 ms** (4.8 %, ANTLR 649 ms) before ~48 clone costs (est. 250-600 ms) → **net 2-3.5 %** | not worth an AST-sharing change |
+| verifier emit memo | per root one generic host emit + one signature-policy-specialized emit, both route-specific; the specialization runs after codegen while the placeholder binding runs before it | no waste to remove |
+| `analyseContractInvocations` reuse across AST clones | ~265 ms per root self, two clones per root | ≤3 % for a cache-keying change |
+| `subroutineUseProbe` → direct census | still the largest single self-contained item (~416 ms per root) but the census must reproduce id assignment decisions that read the emitted byte length | open, high effort |
+
+Two operational facts for whoever picks this up:
+
+* **The normal project compile cannot run in this worktree at all.** `node packages/testing/dist/cli.js
+  compile` fails on `MockSablierLockup.sol` (`Cannot resolve import '@sablier/lockup/src/types/DataTypes.sol'`)
+  and the task discards its temporary output transactionally, so the marketplace fixture can only be
+  regenerated through `.marketplace/iteration/recompile.sh` (per-source `--iteration`). Any compiler change
+  that alters bytecode therefore cannot be validated by the ordinary compile path here.
+* **Compiler gate baseline on this branch:** `yarn workspace solidc vitest run test/journal-message-bus`
+  → 6 failed / 1,442 passed (3 failed files of 74). Pre-existing: this branch has no compiler changes, and
+  the SDK commits cannot affect `solidc` tests.
+
 Ranked, with the guardrails that make each safe:
 
-1. **Replace `subroutineUseProbe` with a direct census** (target: ~8 % of a compile, 416 ms per root).
-   Self-contained, but the probe's emission decisions read the emitted length, so the census has to be
-   proven to produce the same `subroutineUseCount` and the same id assignments before it can replace the
-   dry run. The double-entry cache pattern already used by `functionReferenceIds`/`invokedFunctionIds` is
-   the precedent to follow. Gate: per-root bytecode hashes unchanged, then the compiler suites.
-2. **Cut the cheap admission search without changing the winner** (target: up to 29 % of a project
-   compile). One idea is already measured and rejected: `__cheapAdmissionCodegen: false` is slower AND
-   changes the bytecode (see §2). Any further attempt must first show *identical* per-root hashes and a
-   lower total, then read `compileWithExternalAdmissionFallback` end to end before it is landable.
-3. **Leave the verifier emits and the parse path alone** unless a measurement says otherwise: the verifier
-   sources differ per attempt (memo misses are legitimate and the per-emit cost falls to ~75 ms warm),
-   and cross-root parsing is ~10 % with a ~5 % ceiling for a real AST-sharing change.
+1. **`subroutineUseProbe` census** — the only remaining item with a double-digit ceiling that does not
+   change what is emitted if it is proven equivalent. It needs a verified mapping from emission sites to
+   `subroutineUseCount` (the probe's own guards show which work is already skipped), then per-root bytecode
+   hashes must be identical and both compiler suites must hold. Start by logging the probe's count map and
+   the id assignments for one root and diffing them against a census implementation.
+2. **Admission-shape reuse** (up to 29 %) — the cheap pass stubs bodies, so the shipping pass re-lowers,
+   re-symbolises and re-analyses the whole contract. Making the *non-stubbed* part of the cheap pass's
+   lowered AST resumable is the only ≥20 % lever, and it requires reading
+   `compileWithExternalAdmissionFallback` + `compileResolvedAst` end to end and running the whole compiler
+   suite, not a subset.
+3. **Nothing else is worth the risk**: parse caching is ≤3.5 % net, the verifier emits are necessary, and
+   every remaining self-time entry is a long tail (largest single function 4 %).
 
 Every compiler candidate must be measured with `scripts/perf-project-compile.mjs` (total **and** per-root
 hashes) before and after, then held to `yarn workspace solidc vitest run test/journal-message-bus` (the

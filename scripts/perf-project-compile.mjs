@@ -42,13 +42,22 @@ const options = {
   __strictNoInternalRecovery: true,
 };
 if (process.argv.includes('--no-cheap-admission')) options.__cheapAdmissionCodegen = false;
+if (process.argv.includes('--placeholder-full')) {
+  options.__cheapAdmissionCodegen = false;
+  options.__synthesizeBoundRoutePlaceholder = true;
+}
 
 const sha256 = (value) => createHash('sha256').update(value ?? '').digest('hex').slice(0, 16);
 const bodyBytes = (body) => (typeof body === 'string' ? body.length / 2 : 0);
 
-// `--no-cheap-admission` measures the ladder's cost without its cheap search pass. It is NOT an optimisation:
-// measured on the marketplace corpus it is slower in total (32.8 s vs 19.7 s) AND changes the emitted bytecode
-// for most roots, because the ladder then retries rungs with full codegen and lands on a different winner.
+// Two comparison modes, both measured and rejected as optimisations on the marketplace corpus:
+//
+// `--no-cheap-admission` (32.8 s vs 19.7 s, bytecode differs for most roots): the ladder then retries rungs with
+// full codegen and lands on a different winner, so the cheap pass is not redundant work.
+//
+// `--placeholder-full` (18.8 s, but NOT equivalent): forcing `__synthesizeBoundRoutePlaceholder` onto the widest
+// rung fails `EACCToken` with "single-pass bind: missing __message_bus_verify_atomic" and changes
+// `TreasurySplit`'s output. Keep it as a probe for that code path, not as a speed option.
 const started = performance.now();
 const rows = [];
 for (const relative of roots) {

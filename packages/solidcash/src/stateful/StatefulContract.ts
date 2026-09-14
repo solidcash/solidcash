@@ -14398,8 +14398,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 ?? (llc.externalContract?.inner.artifact.messageBus?.handlers?.find(
                   (handler: { name?: string }) => handler.name === llc.functionName,
                 ) as { physicalEntrySlots?: number[] } | undefined)?.physicalEntrySlots?.[0];
+              // The covenant addresses its entry output as INPUTINDEX + the published block-slot offset of that
+              // entry (see emitEntryOutputIndex). `blockSize` is the coordinate just PAST the block, so using it
+              // as an offset names a trailing slice instead of the entry slot whenever the block carries any slot
+              // after the entry (for example an event). Prefer the layout's own entry offset.
+              const publishedEntrySlotOffset = (nestedEntryAbi?.blockLayout ?? llc.blockLayout)?.slots
+                .find((slot: { kind: string }) => slot.kind === 'entry')?.offset;
               const layoutEntryIndex = implInputIndex + (
-                physicalEntrySlot !== undefined ? physicalEntrySlot : blockSize
+                physicalEntrySlot ?? publishedEntrySlotOffset ?? blockSize
               );
               let entryLock = entryPin
                 && !(stagedValueLock && binsAreEqual(entryPin.lockingBytecode, stagedValueLock))

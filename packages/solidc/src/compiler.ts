@@ -3321,7 +3321,8 @@ function collectJournalTransportedWrites(
   const transports: Array<{ collection: string; varyingArrayParam: string }> = [];
   if (!fn.body) return transports;
   walkInvocationAst(fn.body, (node) => {
-    if (node instanceof MappingAssignNode && node.messageBusJournalTransport) {
+    if (node instanceof MappingAssignNode && !node.messageBusRuntimeReadOnly
+      && node.messageBusJournalTransport) {
       transports.push(node.messageBusJournalTransport);
     }
   });
@@ -12226,7 +12227,9 @@ function compileResolvedAst(
         const name = resource.slice('collection:'.length).split(':', 1)[0];
         return chunkableCollections.has(name) ? [name] : [];
       }));
-      const transportedChunkableWrites = collectJournalTransportedWrites(fn);
+      const transportedChunkableWrites = collectJournalTransportedWrites(fn).filter((transport) => (
+        chunkableWriteCollections.has(transport.collection)
+      ));
       const exactTransportMatches = transportedChunkableWrites.map((transport) => runtimeJournalAccesses.filter(
         (access) => access.collection === transport.collection
           && access.varyingArrayParam === transport.varyingArrayParam

@@ -6165,7 +6165,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       if (apply) {
         for (const write of keyed) {
           const group = groupByWrite.get(write);
-          if (write instanceof MappingAssignNode && group) {
+          if (write instanceof MappingAssignNode && !write.messageBusRuntimeReadOnly && group) {
             write.messageBusJournalTransport = {
               collection: write.name,
               varyingArrayParam: group.hidden,

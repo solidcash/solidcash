@@ -4322,6 +4322,29 @@ function evaluateFaithfulProbeTrace(
 }
 
 /**
+ * Evaluate a probe program faithfully: the shallow recorder on a private/mock provider, libauth's `debug()`
+ * everywhere else.
+ *
+ * The recorder is equivalent to `debug()` only while the cached P2SH evaluator supplies the phase exits, and
+ * that evaluator is installed exactly when `maximumInputBytes > 10_000`. Below that the reference is kept, so a
+ * live network sees no change at all. Callers that need a full faithful trace (rather than the sparse observer's
+ * reduced one) use this instead of calling `debug()` directly.
+ */
+function evaluateFaithfulOrDebugTrace(
+  provider: NetworkProvider,
+  program: Parameters<ReturnType<typeof createVirtualMachineBch2026ForProvider>['evaluate']>[0],
+): AuthenticationProgramStateCommon[] {
+  const maxIn = provider.consensusLimits?.maximumInputBytes ?? 10_000;
+  if (maxIn <= 10_000) return cachedDebugVm(provider).debug(program) as AuthenticationProgramStateCommon[];
+  const faithful = evaluateFaithfulProbeTrace(provider, program);
+  if ((globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env
+    ?.SOLIDC_DEBUG_TRACE_PARITY === '1') {
+    logProbeTraceParity(cachedDebugVm(provider).debug(program) as AuthenticationProgramStateCommon[], faithful);
+  }
+  return faithful;
+}
+
+/**
  * Compare the faithful recorder's trace with libauth's `debug()` reference and report the first divergence.
  *
  * Diagnostic only, enabled by `SOLIDC_DEBUG_TRACE_PARITY=1`: it is how the shallow recorder is held to the
@@ -13281,8 +13304,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               || group.externalContract.inner.artifact.compiler?.options?.evmCompat)
               ? extractEvmScalarReturnCommitment(fullTraceRet, calleeReturnTypes, false) : undefined;
             if (!returnCommitments?.length && !evmScalar) {
-              fullTraceRet = createVirtualMachineBch2026ForProvider(this.inner.provider)
-                .debug(returnProgram) as AuthenticationProgramStateCommon[];
+              fullTraceRet = evaluateFaithfulOrDebugTrace(this.inner.provider, returnProgram);
               returnCommitments = extractCommitmentsFromTrace(fullTraceRet, 1, returnOutputRange, true);
               aggregatePending = routeReturnPushes > 1
                 ? extractPendingReturnCommitment(fullTraceRet, routeReturnPushes, routeReturnTypes) : undefined;
@@ -13758,9 +13780,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               transaction: returnProbe.buildLibauthTransaction(),
             };
             // Most routed returns expose the final OUTPUTTOKENCOMMITMENT/EQUALVERIFY pair directly. Use the
-            // sparse observer first: a full libauth debug trace clones every intermediate VM state and costs
-            // seconds for multi-megabyte routed inputs. Keep the faithful trace as a compatibility fallback for
-            // return construction that can only be recovered from an intermediate stack state.
+            // sparse observer first, then the faithful recorder as a compatibility fallback for return
+            // construction that can only be recovered from an intermediate stack state.
             let returnTrace = evaluateProbeTrace(this.inner.provider, returnProgram);
             const returnOutputIndex = group.returnOutputIndex
               ?? stb.getExternalCallReturnEventOutputIndex(groupIdx);
@@ -13774,8 +13795,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             let aggregatePending = routeReturnPushes > 1
               ? extractPendingReturnCommitment(returnTrace, routeReturnPushes, routeReturnTypes) : undefined;
             if (!returnCommitments?.length && !aggregatePending) {
-              returnTrace = createVirtualMachineBch2026ForProvider(this.inner.provider)
-                .debug(returnProgram) as AuthenticationProgramStateCommon[];
+              returnTrace = evaluateFaithfulOrDebugTrace(this.inner.provider, returnProgram);
               returnCommitments = extractCommitmentsFromTrace(
                 returnTrace, 1, { min: returnOutputIndex, max: returnOutputIndex + 1 }, true,
               );

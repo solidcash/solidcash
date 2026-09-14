@@ -293,11 +293,6 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
   private transformFunction(fn: FunctionDefinitionNode): void {
     const selected = this.collectCacheableEntries(fn.body).filter((e) => !(this.routeSnapshotKeysOnly
       && e.keys.length === 1
-      // An anchored entry carries a body-local key, so its cache read happens inside the handler at the entry's
-      // first use. Route synthesis clones this already-cached body, so that form is stable under cloning and is
-      // what lets a clone's reads observe the handler's own write. Only the hoisted form is restricted here: a
-      // parameter key needs no cache, and a function-entry read would change the ABI for no benefit.
-      && e.anchorIndex === undefined
       && !e.keys.some((key) => key.kind === 'expression'
         || (key.kind === 'id' && key.name.startsWith(VMAP_KEY_SNAPSHOT_PREFIX)))
       && !e.inLoop));
@@ -563,6 +558,11 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
         if (key.kind !== 'id' || key.name.startsWith(VMAP_KEY_SNAPSHOT_PREFIX)) continue;
         if (scope.declaredInLoop.has(key.name) || scope.reassigned.has(key.name)) { keyUsable = false; break; }
         if (!scope.assigned.has(key.name)) continue;
+        // The route-snapshot instance runs before kernel route synthesis, where a handler's collection accesses are
+        // the ones the message-bus covenant and the SDK's argument derivation both read by name. An anchored local
+        // there changes that shape, so the anchored form stays with the ordinary pipeline; kernel handlers keep
+        // their established snapshot-key caching.
+        if (this.routeSnapshotKeysOnly) { keyUsable = false; break; }
         const declaration = scope.declaredTopLevel.get(key.name);
         const statements = body instanceof BlockNode ? body.statements ?? [] : [];
         const anchor = this.firstUseStatement(body, e);

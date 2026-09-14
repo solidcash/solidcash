@@ -5060,8 +5060,12 @@ export function encodeLeadingRouteArrayPushes(params: {
   if (earlier.length === 0) return undefined;
   let encoded = encodePushdataValue([], params.valueType, params.structs);
   for (const candidate of earlier) {
+    // Same wire rule as the refresh's current element: an empty event timestamp is stamped by the storing handler,
+    // so the derived leading mutation must carry the stamp too.
+    const raw = candidate.row.args[candidate.elementIndex];
+    const stamped = params.timestamp === undefined ? raw : stampEmptyJobEventTimestamp(raw, params.timestamp);
     const element = encodeStructArgument(
-      candidate.row.args[candidate.elementIndex], array.elementType, params.structs, params.timestamp,
+      stamped as typeof raw, array.elementType, params.structs, params.timestamp,
       params.legacyJobEventCompatibility === true,
     );
     encoded = appendEncodedArrayElement(encoded, element);
@@ -24415,8 +24419,15 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                         const elementIndex = visibleInputs.findIndex((input) => input.type === elementType);
                         let currentElement: Uint8Array | undefined;
                         if (elementIndex >= 0) {
+                          // The handler that stores this element fills an empty wire timestamp with the
+                          // transaction timestamp, so the derived continuation value must carry that same stamp.
+                          // Encoding the raw argument would produce a 24-byte element where the covenant stores
+                          // 28 bytes, and the covenant then rejects the value chunks derived from it.
+                          const elementArg = oracleTimestamp === undefined
+                            ? finalVisibleArgs[elementIndex]
+                            : stampEmptyJobEventTimestamp(finalVisibleArgs[elementIndex], oracleTimestamp);
                           currentElement = encodeStructArgument(
-                            finalVisibleArgs[elementIndex], elementType, structs, oracleTimestamp,
+                            elementArg as FunctionArgument, elementType, structs, oracleTimestamp,
                             usesLegacyJobEventCompatibility(sharedLogicalArtifact, elementType, structs),
                           );
                         }

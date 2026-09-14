@@ -155,6 +155,13 @@ export function assertPreparedInvocationIdentity(
   if (preparedPathKey === undefined || preparedPathKey !== plannedPathKey) {
     throw new Error(`messageBus: prepared invocation ${index} producer path disagrees with the compiled graph`);
   }
+  // A transported selector authorizes a producer effect domain, so it must be the graph's own dispatch target.
+  // The prepared side may legitimately withhold a selector (runtime-dispatched edges carry none), but a
+  // selector it does transport can never be a name-derived guess at a different overload.
+  if (descriptor.selector !== undefined
+    && descriptor.selector.toLowerCase() !== invocation.selectorHex.toLowerCase()) {
+    throw new Error(`messageBus: prepared invocation ${index} selector disagrees with the compiled graph`);
+  }
   if (index === 0) return;
   if (descriptor.callsiteId === undefined) {
     throw new Error(`messageBus: prepared invocation ${index} omits its physical callsite identity`);
@@ -1614,6 +1621,11 @@ export class AtomicMessageBusComposition {
     }
     if (this.options.requirePreparedIdentity === true) {
       plan.invocations.forEach((invocation, index) => {
+        // A hand-written prepared call - the public `messageBus.compose({ preparedCalls })` API - carries no
+        // compiler identity at all, so there is nothing for it to agree with. The SDK transport publishes a
+        // producer path on every descriptor it builds (`__preparedAtomicCalls` sets it unconditionally), which
+        // is what makes the identity contract applicable and keeps it enforced on that path.
+        if (descriptors[index].producerPath === undefined) return;
         assertPreparedInvocationIdentity(descriptors[index], invocation, index);
       });
     }

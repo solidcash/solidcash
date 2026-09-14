@@ -5061,6 +5061,51 @@ function canonicalAbiFunctionSignature(fn: AbiFunction): string {
   return `${fn.name}(${visibleHandlerInputs(fn.inputs).map((input) => input.type).join(',')})`;
 }
 
+/** Canonical eight-character form of a four-byte function selector, or `undefined` for anything else. */
+function canonicalPreparedSelector(selector: string): string | undefined {
+  const normalized = selector.replace(/^0x/i, '').toLowerCase();
+  return /^[0-9a-f]{8}$/.test(normalized) ? normalized : undefined;
+}
+
+/**
+ * Resolve the exact ABI entry point one prepared child invocation executes.
+ *
+ * Overloads share a name, so the first ABI entry matching a name can name a different dispatch target than the
+ * caller meant while still yielding a plausible four-byte selector. Prepared producer identity must never come
+ * from a name alone, so authority is taken only from:
+ *
+ * 1. the selector the compiler published for this callsite, matched together with the function name exactly as
+ *    the compiled graph resolves it, or
+ * 2. a name whose matching entries all agree on one selector, which makes the name itself exact.
+ *
+ * Anything else - an unpublished selector, a selector absent from the callee, or two distinct overload
+ * selectors under one name - yields `undefined`, leaving the caller without authority rather than guessing.
+ * The legacy name-based selection still sizes layouts and returns; only this identity is withheld.
+ */
+export function resolvePreparedProducerEntry(
+  artifacts: readonly Artifact[],
+  name: string,
+  compilerSelector?: string,
+): AbiFunction | undefined {
+  const normalized = compilerSelector === undefined
+    ? undefined : canonicalPreparedSelector(compilerSelector);
+  if (compilerSelector !== undefined && normalized === undefined) return undefined;
+  if (normalized !== undefined) {
+    for (const artifact of artifacts) {
+      const exact = artifact.abi.find((candidate) => candidate.name === name
+        && candidate.selector?.toLowerCase() === normalized);
+      if (exact) return exact;
+    }
+  }
+  for (const artifact of artifacts) {
+    const candidates = artifact.abi.filter((candidate) => candidate.name === name);
+    if (candidates.length === 0) continue;
+    const selectors = new Set(candidates.map((candidate) => candidate.selector?.toLowerCase() ?? ''));
+    if (selectors.size === 1) return candidates[0];
+  }
+  return undefined;
+}
+
 function resolveStatefulAbiFunction(
   artifact: Artifact,
   identifier: string,
@@ -23365,6 +23410,18 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 ?? proxyTargetFn
                 ?? (callee.inner.artifact.abi as readonly AbiFunction[])
                   .find((fn) => fn.name === childFunctionName);
+              // Producer identity is only as exact as the entry point behind it. `selectedFn` above is a legacy
+              // name match kept for layout and return typing; under an overloaded callee it can name a different
+              // dispatch target than this callsite, so it never authorizes a value-chunk producer path. An
+              // ordinary interface edge publishes no per-callsite selector, so an overloaded name fails closed
+              // here until the compiler publishes the selector it already resolves and bakes into the covenant.
+              const producerSelector = resolvePreparedProducerEntry(
+                proxyCallee
+                  ? [proxyCallee.implementation.inner.artifact, callee.inner.artifact]
+                  : [callee.inner.artifact],
+                selectedFn?.name ?? resolvedRawFunctionName ?? nested.functionName,
+                nested.rawSelector,
+              )?.selector;
               if (!proxyCallee && selectedFn?.blockLayout) {
                 // The caller records requirements against the source interface. A concrete deployment can have
                 // additional fixed state which its generated epilogue authenticates even when that interface
@@ -24908,7 +24965,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   preparedAtomicNodes.push({
                     contract: callee,
                     functionName: resolvedRawFunctionName ?? nested.functionName,
-                    ...(selectedFn?.selector !== undefined && { selector: selectedFn.selector }),
+                    ...(producerSelector !== undefined && { selector: producerSelector }),
                     args: graphNestedArgs,
                     ...(resolvedTargetLockingBytecode && {
                       targetLockingBytecode: binToHex(resolvedTargetLockingBytecode),
@@ -25423,6 +25480,16 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           const selectedFn = (selectedContract.inner.artifact.abi as readonly AbiFunction[])
             .find((candidate) => candidate.name === (rawFunctionName ?? nested.functionName));
           if (!selectedFn) continue;
+          // As in direct expansion: the name match above drives layout, while producer identity is taken only
+          // from the compiler-published selector for this edge, or from a name that resolves to one selector.
+          // A late transitive edge publishes no selector of its own, so an overloaded name fails closed here.
+          const producerSelector = resolvePreparedProducerEntry(
+            proxyCallee
+              ? [selectedContract.inner.artifact, callee.inner.artifact]
+              : [selectedContract.inner.artifact],
+            rawFunctionName ?? nested.functionName,
+            nested.rawSelector,
+          )?.selector;
           const childState = await nestedFullState(callee);
           if (!childState.masterUtxo) continue;
           const requiredDataNftIndices = [...new Set(
@@ -25856,7 +25923,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               preparedAtomicNodes.push({
                 contract: callee,
                 functionName: rawFunctionName ?? nested.functionName,
-                ...(selectedFn.selector !== undefined && { selector: selectedFn.selector }),
+                ...(producerSelector !== undefined && { selector: producerSelector }),
                 args: graphChildArgs,
                 ...(resolvedTargetLockingBytecode && {
                   targetLockingBytecode: binToHex(resolvedTargetLockingBytecode),

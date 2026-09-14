@@ -3818,7 +3818,16 @@ export function evalComputedKey(
     let m = s.match(/^id:(.+)$/);
     if (m) {
       const idx = inputs.findIndex((i) => i.name === m![1]);
-      if (idx >= 0) return args[idx];
+      if (idx >= 0) {
+        const bound = args[idx];
+        // Route frames hand numeric parameters over as JS numbers (and some label paths as decimal strings), while the
+        // expression grammar below is numeric: `binop:+` accepts bigints only. Without this normalization an
+        // otherwise evaluable key - a dynamic state array indexed by `index_` - silently stays unresolved, and the
+        // entry is proven at an empty key instead of the real one.
+        if (typeof bound === 'number') return BigInt(bound);
+        if (typeof bound === 'string' && /^-?[0-9][0-9_]*$/.test(bound)) return BigInt(bound.replace(/_/g, ''));
+        return bound;
+      }
       // Uniswap createPair names its sorted locals token0/token1 in vmap expressions. Reconstruct them from the
       // first two visible address arguments; those locals are not ABI parameters and therefore have no direct
       // argument index.
@@ -17416,6 +17425,24 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               // Auto-derive a direct computed key (hash160(pk), sha256(x), ...) from its canonical label.
               const auto = evalComputedKey(source.expressionLabel, entryArgs, entryAbiFunction!.inputs);
               if (auto) return auto;
+              // `map:<stateArray>(...)` keys an entry by an element of a dynamic state array, which no ABI input can
+              // express: the label indexes by a source-loop local. The entry access's own frame is the row that
+              // executes, so resolve it with that row context and the decoded state before falling back to a
+              // placeholder key (an empty one for an address key, i.e. a proof of an absent slot).
+              if (source.expressionLabel?.startsWith('map:') && entryAbiFunction) {
+                const routed = resolveRouteRowExpressionKey({
+                  expressionLabel: source.expressionLabel,
+                  collection: access.collection,
+                  rowArguments: selectedRouteRows.length > 0
+                    ? selectedRouteRows
+                    : [{ args: entryArgs, occurrenceIndex: 0, handler: entryAbiFunction }],
+                  routePlanningArgs: entryArgs,
+                  routeVisibleInputs: entryAbiFunction.inputs,
+                  structs: stateLayout.structs,
+                  state: onChainState.state,
+                });
+                if (routed) return routed;
+              }
               // `map:<stateArray>(...)` names an entry key read out of a dynamic state array, which only the
               // selected route rows can supply (the array itself plus that row's loop occurrence). Scoped to that
               // label form and to a routed call, so an ordinary computed key keeps its established fallbacks.

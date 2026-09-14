@@ -228,6 +228,14 @@ describe('evalComputedKey map: state-array labels', () => {
     expect(binToHex(encoded!)).toBe(binToHex(lockB));
   });
 
+  it('binds a numeric parameter handed over as a JS number', () => {
+    const encoded = evalComputedKey(
+      'map:items(binop:+(id:index_,lit:0))', [1], [{ name: 'index_', type: 'uint256' }], { items: [lockA, lockB] },
+    );
+    expect(encoded).toBeDefined();
+    expect(binToHex(encoded!)).toBe(binToHex(lockB));
+  });
+
   it('encodes a numeric element as its VM number', () => {
     const encoded = evalComputedKey('map:nums(lit:0)', [], [], { nums: [7n, 9n] });
     expect(encoded).toBeDefined();

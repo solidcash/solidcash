@@ -7669,23 +7669,33 @@ export default class SymbolTableTraversal extends AstTraversal {
           // value from application names. Conditional/repeated writes conservatively invalidate this shortcut.
           const directBase = expression.expression instanceof IdentifierNode
             ? expression.expression.name : undefined;
+          // A struct entry read through a local alias (`Job storage j = jobs[id]; j.field`) serializes its base as
+          // that identifier, so the assignment target (`jobs[id].field`) never matched and the recorded argument kept
+          // the pre-write state read. Resolve the alias to the access it names for the target comparison only; the
+          // published expression keeps its established spelling.
+          const aliasInner = (() => {
+            if (!(expression.expression instanceof IdentifierNode)) return inner;
+            const resolved = resolveInitializer(expression.expression);
+            if (resolved === expression.expression) return inner;
+            return serializeExpression(resolved, new Set()) ?? inner;
+          })();
           const sameTarget = (
             candidate: MappingFieldAssignNode | MappingAssignNode | MappingDeleteNode,
           ): boolean => {
             if (candidate.name === directBase && candidate.keys.length === 0) return true;
-            if (inner?.kind !== 'stateAccess' || inner.name !== candidate.name
-              || inner.args?.length !== candidate.keys.length) return false;
+            if (aliasInner?.kind !== 'stateAccess' || aliasInner.name !== candidate.name
+              || aliasInner.args?.length !== candidate.keys.length) return false;
             const keys = candidate.keys.map((key) => serializeExpression(key, new Set()));
             return keys.every((key): key is ExternalCallExpression => key !== undefined)
-              && JSON.stringify(keys) === JSON.stringify(inner.args);
+              && JSON.stringify(keys) === JSON.stringify(aliasInner.args);
           };
           const sameArrayTarget = (
             candidate: StateArrayAssignNode | StateArrayDeleteNode,
           ): boolean => {
-            if (inner?.kind !== 'stateAccess' || inner.name !== candidate.name
-              || inner.args?.length !== 1) return false;
+            if (aliasInner?.kind !== 'stateAccess' || aliasInner.name !== candidate.name
+              || aliasInner.args?.length !== 1) return false;
             const index = serializeExpression(candidate.index, new Set());
-            return index !== undefined && JSON.stringify(index) === JSON.stringify(inner.args[0]);
+            return index !== undefined && JSON.stringify(index) === JSON.stringify(aliasInner.args[0]);
           };
           let assignedField: ExpressionNode | undefined;
           let assignedWhole: ExpressionNode | undefined;

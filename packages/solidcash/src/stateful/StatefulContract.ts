@@ -3630,6 +3630,15 @@ export function selectAuthenticatedCollectionValue(
   return authenticatedCollectionValueSelector(valueType, structs)(items, roots, preferredRoots);
 }
 
+/** Select a pre-handler witness only when its full bytes match an authenticated stored-entry root. */
+export function selectAuthenticatedPreValueWitness(
+  items: readonly Uint8Array[], storedRoots: ReadonlySet<string>,
+  valueType: string | undefined, structs: StateLayout['structs'],
+): Uint8Array | undefined {
+  if (storedRoots.size === 0) return undefined;
+  return authenticatedCollectionValueSelector(valueType, structs)(items, storedRoots, storedRoots);
+}
+
 /** Every distinct long value whose complete bytes and authenticating root both occur in a probe trace. */
 function authenticatedCollectionValues(
   items: readonly Uint8Array[], roots: ReadonlySet<string>,
@@ -12442,13 +12451,16 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             const storedRoots = storedChunkableValueRoots(
               delegateGroup?.blockInputs ?? group.blockInputs,
             );
-            const selectLearnedValue = authenticatedCollectionValueSelector(
-              witnessValueType, witnessLayout?.structs,
-            );
-            for (let stateIndex = fullTrace.length - 1; stateIndex >= 0 && !learnedValue; stateIndex--) {
+            // A pre-value witness must be rooted in the authenticated proof-entry input.
+            // With no stored root, trace roots may describe a derived prior/current-row result;
+            // that value belongs in leading/post channels, never in valueWitness.
+            for (let stateIndex = fullTrace.length - 1;
+              storedRoots.size > 0 && stateIndex >= 0 && !learnedValue;
+              stateIndex--) {
               const stack = fullTrace[stateIndex].stack;
-              const roots = new Set(stack.filter((item) => item.length === 32).map(binToHex));
-              learnedValue = selectLearnedValue(stack, roots, storedRoots);
+              learnedValue = selectAuthenticatedPreValueWitness(
+                stack, storedRoots, witnessValueType, witnessLayout?.structs,
+              );
             }
             const currentWitness = witnessInputs.length === 1
               ? delegateGroup?.internalArgs?.[witnessInputs[0].name]
@@ -12699,12 +12711,16 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               const storedRoots = storedChunkableValueRoots(
                 delegateGroup?.blockInputs ?? group.blockInputs,
               );
-              let learnedValue = selectAuthenticatedCollectionValue(
-                traceItems, traceRoots, storedRoots, witnessValueType, witnessLayout?.structs,
-              );
-              learnedValue ??= recoverAuthenticatedArrayValue(
-                traceItems, traceRoots, witnessValueType, witnessLayout?.structs, storedRoots,
-              );
+              let learnedValue = storedRoots.size > 0
+                ? selectAuthenticatedPreValueWitness(
+                  traceItems, storedRoots, witnessValueType, witnessLayout?.structs,
+                )
+                : undefined;
+              if (storedRoots.size > 0) {
+                learnedValue ??= recoverAuthenticatedArrayValue(
+                  traceItems, storedRoots, witnessValueType, witnessLayout?.structs, storedRoots,
+                );
+              }
               if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
                 ?.SOLIDC_DEBUG_CHUNK_SCAN === '1') console.error('route-learned-witness', {
                 witnessValueType, length: learnedValue?.length,
@@ -12736,7 +12752,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                     headCandidate.slice(0, VALUE_HEAD_SIZE), candidates, headCandidate.length,
                   );
                   const digest = binToHex(sha256Sync(joined));
-                  if (storedRoots.has(digest) || (storedRoots.size === 0 && traceRoots.has(digest))) {
+                  if (storedRoots.has(digest)) {
                     learnedValue = joined;
                     break;
                   }

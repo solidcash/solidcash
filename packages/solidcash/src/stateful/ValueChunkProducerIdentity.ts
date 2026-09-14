@@ -54,6 +54,38 @@ export function appendValueChunkProducerSourceSite(
   });
 }
 
+/** Derive one child path from an exact executable parent entry point and compiler source occurrence. */
+export function deriveValueChunkProducerChildPath(options: {
+  parent: ValueChunkProducerPathDisposition;
+  parentExecutionLockingBytecode: string;
+  parentSelector?: string;
+  sourceCallsiteId?: number;
+  sourceLogicalIndex?: number;
+  occurrenceIndex?: number;
+  sourceEffectOrdinal?: number;
+}): ValueChunkProducerPathDisposition {
+  if (options.parent.status !== 'complete' || options.parentSelector === undefined
+    || !safeOrdinal(options.sourceCallsiteId) || !safeOrdinal(options.occurrenceIndex)
+    || !safeOrdinal(options.sourceEffectOrdinal)
+    || (options.sourceLogicalIndex !== undefined && !safeOrdinal(options.sourceLogicalIndex))) {
+    return Object.freeze({ status: 'unavailable' });
+  }
+  const sourceEffectDomainId = valueChunkEffectDomainId(
+    options.parentExecutionLockingBytecode, options.parentSelector,
+  );
+  if (!sourceEffectDomainId) return Object.freeze({ status: 'unavailable' });
+  const context = appendValueChunkProducerSourceSite(options.parent.context, {
+    sourceEffectDomainId,
+    sourceCallsiteId: options.sourceCallsiteId,
+    ...(options.sourceLogicalIndex !== undefined && { sourceLogicalIndex: options.sourceLogicalIndex }),
+    occurrenceIndex: options.occurrenceIndex,
+    sourceEffectOrdinal: options.sourceEffectOrdinal,
+  });
+  return context === undefined
+    ? Object.freeze({ status: 'unavailable' })
+    : Object.freeze({ status: 'complete', context });
+}
+
 export function canonicalValueChunkProducerPathContext(
   context: ValueChunkProducerPathContext,
 ): string | undefined {

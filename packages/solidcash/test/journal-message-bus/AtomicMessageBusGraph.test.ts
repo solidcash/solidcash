@@ -131,6 +131,7 @@ describe('atomic compiled invocation graph', () => {
       contract: {} as never,
       functionName: 'run',
       args: [0n],
+      producerPath: { status: 'unavailable' as const },
     };
     expect(() => messageBus.assertPreparedInvocationIdentity(base, invocation, 1))
       .toThrow(/omits its physical callsite identity/);
@@ -158,7 +159,18 @@ describe('atomic compiled invocation graph', () => {
       batchOccurrenceIndex: 3,
       args: [1n],
       provisionalResultCommitment: Uint8Array.of(1),
+      producerPath: { status: 'unavailable' },
     });
+    expect(() => messageBus.assertPreparedInvocationIdentity({
+      ...descriptor,
+      producerPath: { status: 'complete', context: { version: 1, sourcePath: [] } },
+    }, invocation, 1)).toThrow(/producer path disagrees/);
+    expect(() => messageBus.assertPreparedInvocationIdentity({
+      ...base,
+      producerPath: { status: 'complete', context: { version: 1, sourcePath: [] } },
+    }, plan().invocations[0], 0)).not.toThrow();
+    expect(() => messageBus.assertPreparedInvocationIdentity(base, plan().invocations[0], 0))
+      .toThrow(/producer path disagrees/);
   });
 
   it('does not authorize a computed chunk from a value-mismatched balanced dummy', () => {

@@ -52,6 +52,10 @@ import {
 } from './preflight.js';
 import { convergeMessageBusComputedValueChunkOutputs } from './computed-value-chunks.js';
 import { deriveCompiledGraphPlan, type WorklistParticipant } from './worklist.js';
+import {
+  canonicalValueChunkProducerPathContext,
+  type ValueChunkProducerPathDisposition,
+} from '../stateful/ValueChunkProducerIdentity.js';
 
 export interface AtomicMessageBusFunder {
   utxo: Utxo;
@@ -105,6 +109,8 @@ export interface PreparedAtomicMessageBusCall {
   occurrenceIndex?: number;
   /** @internal Compiler-authored program point shared with entry mutations in the parent handler. */
   sourceEffectOrdinal?: number;
+  /** @internal Independently derived root-to-invocation compiler source path. */
+  producerPath?: ValueChunkProducerPathDisposition;
   /** @internal Source-template identity for one runtime row of a collapsed repeated-call batch. */
   batchLogicalIndex?: number;
   /** @internal Source loop occurrence represented by this runtime batch row. */
@@ -138,6 +144,17 @@ export function assertPreparedInvocationIdentity(
   invocation: PlannedGraphInvocation,
   index: number,
 ): void {
+  const preparedPath = descriptor.producerPath;
+  const plannedPath = invocation.producerPath;
+  const preparedPathKey = preparedPath?.status === 'complete'
+    ? canonicalValueChunkProducerPathContext(preparedPath.context)
+    : preparedPath?.status === 'unavailable' ? 'unavailable' : undefined;
+  const plannedPathKey = plannedPath.status === 'complete'
+    ? canonicalValueChunkProducerPathContext(plannedPath.context)
+    : 'unavailable';
+  if (preparedPathKey === undefined || preparedPathKey !== plannedPathKey) {
+    throw new Error(`messageBus: prepared invocation ${index} producer path disagrees with the compiled graph`);
+  }
   if (index === 0) return;
   if (descriptor.callsiteId === undefined) {
     throw new Error(`messageBus: prepared invocation ${index} omits its physical callsite identity`);

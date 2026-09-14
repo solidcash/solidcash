@@ -6,6 +6,7 @@ import {
   bindValueChunkProducerClaimAliases,
   canonicalValueChunkProducerResourceClaim,
   canonicalValueChunkProducerIdentity,
+  deriveValueChunkProducerChildPath,
   selectSingletonValueChunkProducer,
   valueChunkProducerClaimFromRouteRow,
   valueChunkEffectDomainId,
@@ -60,6 +61,32 @@ describe('hierarchical value-chunk producer identity', () => {
     expect(atUint16Boundary).not.toBe(beforeUint16Boundary);
     expect(valueChunkEffectDomainId('51', '010203')).toBeUndefined();
     expect(valueChunkEffectDomainId('xyz', '01020304')).toBeUndefined();
+  });
+
+  it('derives child paths only from an exact parent selector and complete compiler coordinates', () => {
+    const parent = { status: 'complete' as const, context: { version: 1 as const, sourcePath: [] } };
+    const derived = deriveValueChunkProducerChildPath({
+      parent,
+      parentExecutionLockingBytecode: '51',
+      parentSelector: '01020304',
+      sourceCallsiteId: 2,
+      occurrenceIndex: 0,
+      sourceEffectOrdinal: 3,
+    });
+    expect(derived.status).toBe('complete');
+    if (derived.status === 'complete') {
+      expect(derived.context.sourcePath).toHaveLength(1);
+      expect(derived.context.sourcePath[0].sourceEffectDomainId).toBe(
+        valueChunkEffectDomainId('51', '01020304'),
+      );
+    }
+    expect(deriveValueChunkProducerChildPath({
+      parent,
+      parentExecutionLockingBytecode: '51',
+      sourceCallsiteId: 2,
+      occurrenceIndex: 0,
+      sourceEffectOrdinal: 3,
+    })).toEqual({ status: 'unavailable' });
   });
 
   it('canonicalizes physical and logical aliases of one source occurrence', () => {

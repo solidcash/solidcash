@@ -14,8 +14,7 @@ import {
   type AtomicMessageBusCallManifest, type AtomicParticipantLifecycle, type AtomicPhysicalLayout,
 } from './atomic.js';
 import {
-  appendValueChunkProducerSourceSite,
-  valueChunkEffectDomainId,
+  deriveValueChunkProducerChildPath,
   type ValueChunkProducerPathContext,
   type ValueChunkProducerPathDisposition,
 } from '../stateful/ValueChunkProducerIdentity.js';
@@ -2463,20 +2462,16 @@ export function planCompiledGraph(
     if (!source || source.sourceCallsiteProvenance !== 'compiler'
       || source.sourceEffectOrdinal === undefined || parentDisposition.status !== 'complete') continue;
     const parentExecution = executions[invocations[invocation.parent!].callee];
-    const executionLockingBytecode = parentExecution.executionKind === 1
-      ? parentExecution.executorLockingBytecode : parentExecution.lockingBytecode;
-    const sourceEffectDomainId = valueChunkEffectDomainId(
-      executionLockingBytecode, plannedBase[invocation.parent!].selectorHex,
-    );
-    if (!sourceEffectDomainId) continue;
-    const context = appendValueChunkProducerSourceSite(parentDisposition.context, {
-      sourceEffectDomainId,
+    producerPaths[index] = deriveValueChunkProducerChildPath({
+      parent: parentDisposition,
+      parentExecutionLockingBytecode: parentExecution.executionKind === 1
+        ? parentExecution.executorLockingBytecode : parentExecution.lockingBytecode,
+      parentSelector: plannedBase[invocation.parent!].selectorHex,
       sourceCallsiteId: source.sourceCallsiteId,
       ...(source.sourceLogicalIndex !== undefined && { sourceLogicalIndex: source.sourceLogicalIndex }),
       occurrenceIndex: source.occurrenceIndex,
       sourceEffectOrdinal: source.sourceEffectOrdinal,
     });
-    if (context) producerPaths[index] = Object.freeze({ status: 'complete', context });
   }
   const planned = plannedBase.map((invocation, index) => Object.freeze({
     ...invocation,

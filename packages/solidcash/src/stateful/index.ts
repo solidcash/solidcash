@@ -64,6 +64,7 @@ export {
   canonicalValueChunkProducerIdentity,
   canonicalValueChunkProducerPathContext,
   appendValueChunkProducerSourceSite,
+  deriveValueChunkProducerChildPath,
   canonicalValueChunkProducerResourceIdentity,
   canonicalValueChunkProducerResourceClaim,
   bindValueChunkProducerClaimAliases,

@@ -49,7 +49,6 @@ const options = {
   __strictNoInternalRecovery: true,
 };
 if (process.argv.includes('--no-cheap-admission')) options.__cheapAdmissionCodegen = false;
-if (process.argv.includes('--speed-outline')) options.outlineThoroughness = 'speed';
 if (process.argv.includes('--placeholder-full')) {
   options.__cheapAdmissionCodegen = false;
   options.__synthesizeBoundRoutePlaceholder = true;

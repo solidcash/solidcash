@@ -164,12 +164,16 @@ export class ValueChunkWriteStagingSession {
   stageOwned(
     write: ValueChunkWriteDescriptor,
     claim: ValueChunkProducerResourceClaim,
+    expectedStateOwner: { categoryId: string; lockingBytecode: string },
     value: Uint8Array,
   ): boolean {
     const resourceIdentity = valueChunkWriteIdentity(write);
     const canonicalClaim = canonicalValueChunkProducerResourceClaim(claim);
     const producer = canonicalClaim && canonicalValueChunkProducerIdentity(canonicalClaim.producer);
     if (canonicalClaim?.resourceIdentity !== resourceIdentity || !producer
+      || canonicalValueChunkProducerIdentity({
+        ...canonicalClaim.producer, stateOwner: expectedStateOwner,
+      }) !== producer
       || !validValueChunkWriteIdentity(write)
       || value.length <= 60 || value.length > MAX_PERSISTED_JOB_EVENTS_BYTES) return false;
     if (this.ambiguousWrites.has(resourceIdentity) || this.writes.has(resourceIdentity)) {
@@ -192,11 +196,15 @@ export class ValueChunkWriteStagingSession {
   getOwned(
     write: ValueChunkWriteDescriptor,
     claim: ValueChunkProducerResourceClaim,
+    expectedStateOwner: { categoryId: string; lockingBytecode: string },
   ): Uint8Array | undefined {
     const resourceIdentity = valueChunkWriteIdentity(write);
     const canonicalClaim = canonicalValueChunkProducerResourceClaim(claim);
     const producer = canonicalClaim && canonicalValueChunkProducerIdentity(canonicalClaim.producer);
     if (!producer
+      || canonicalValueChunkProducerIdentity({
+        ...canonicalClaim!.producer, stateOwner: expectedStateOwner,
+      }) !== producer
       || canonicalClaim?.resourceIdentity !== resourceIdentity) return undefined;
     const existing = this.ownedWrites.get(resourceIdentity);
     return existing?.producer === producer ? existing.value.slice() : undefined;
@@ -206,7 +214,6 @@ export class ValueChunkWriteStagingSession {
     const identity = valueChunkWriteIdentity(write);
     this.writes.delete(identity);
     this.ownedWrites.delete(identity);
-    this.ambiguousWrites.delete(identity);
   }
 
   clear(categoryId?: string): void {

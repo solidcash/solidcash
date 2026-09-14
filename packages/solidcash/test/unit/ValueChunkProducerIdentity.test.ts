@@ -2,12 +2,13 @@ import { binToHex } from '@bitauth/libauth';
 import { computeCollectionHash } from '@solidcash/utils';
 import { describe, expect, it } from 'vitest';
 import {
-  StatefulTransactionBuilder,
   ValueChunkWriteStagingSession,
   bindValueChunkProducerClaimAliases,
+  canonicalValueChunkProducerResourceClaim,
   canonicalValueChunkProducerIdentity,
   selectSingletonValueChunkProducer,
   valueChunkProducerClaimFromRouteRow,
+  valueChunkEffectDomainId,
   type ValueChunkWriteDescriptor,
   type ValueChunkProducerIdentity,
   type ValueChunkProducerResourceClaim,
@@ -47,12 +48,20 @@ const write: ValueChunkWriteDescriptor = {
 };
 
 describe('hierarchical value-chunk producer identity', () => {
+  it('derives a tagged effect domain from exact executable bytecode and selector', () => {
+    expect(valueChunkEffectDomainId('51', '01020304')).toMatch(/^[0-9a-f]{64}$/);
+    expect(valueChunkEffectDomainId('51', '010203')).toBeUndefined();
+    expect(valueChunkEffectDomainId('xyz', '01020304')).toBeUndefined();
+  });
+
   it('canonicalizes physical and logical aliases of one source occurrence', () => {
     const aliases = [claim(), { ...claim(), producer: { ...producer(), sourcePath: [...producer().sourcePath] } }];
     expect(canonicalValueChunkProducerIdentity(aliases[0].producer)).toBe(
       canonicalValueChunkProducerIdentity(aliases[1].producer),
     );
-    expect(selectSingletonValueChunkProducer(aliases, resourceIdentity)).toMatchObject({ status: 'exact' });
+    expect(selectSingletonValueChunkProducer(
+      aliases, resourceIdentity, producer().stateOwner,
+    )).toMatchObject({ status: 'exact' });
     const physical = {
       valueChunkStateOwner: producer().stateOwner,
       valueChunkProducerClaims: undefined as readonly ValueChunkProducerResourceClaim[] | undefined,
@@ -67,6 +76,10 @@ describe('hierarchical value-chunk producer identity', () => {
     expect(physical.valueChunkProducerClaims?.[0].producer.stateOwner.lockingBytecode).toBe(
       producer().stateOwner.lockingBytecode,
     );
+    expect(bindValueChunkProducerClaimAliases([], aliases)).toBe(false);
+    expect(bindValueChunkProducerClaimAliases([{
+      valueChunkStateOwner: { ...producer().stateOwner, lockingBytecode: '51' },
+    }], aliases)).toBe(false);
   });
 
   it('builds a hierarchical claim only from complete effective-row coordinates', () => {
@@ -101,7 +114,9 @@ describe('hierarchical value-chunk producer identity', () => {
   });
 
   it('refuses to select between distinct occurrences writing one resource', () => {
-    expect(selectSingletonValueChunkProducer([claim(0), claim(1)], resourceIdentity)).toMatchObject({
+    expect(selectSingletonValueChunkProducer(
+      [claim(0), claim(1)], resourceIdentity, producer().stateOwner,
+    )).toMatchObject({
       status: 'multiple',
     });
   });
@@ -145,41 +160,48 @@ describe('hierarchical value-chunk producer identity', () => {
       stateOwnerLockingBytecode: producer().stateOwner.lockingBytecode,
       resourceIdentity,
     })!;
-    expect(selectSingletonValueChunkProducer([first, second], resourceIdentity)).toMatchObject({
+    expect(selectSingletonValueChunkProducer(
+      [first, second], resourceIdentity, producer().stateOwner,
+    )).toMatchObject({
       status: 'multiple',
     });
   });
 
   it('keeps producer-owned staging exact and rejects an authority collision', () => {
-    StatefulTransactionBuilder.clearPersistedJobEvents();
     const session = new ValueChunkWriteStagingSession();
     const value = new Uint8Array(96).fill(0x61);
-    expect(session.stageOwned(write, claim(), value)).toBe(true);
+    expect(session.stageOwned(write, claim(), producer().stateOwner, value)).toBe(true);
     value[0] = 0xff;
-    expect(session.getOwned(write, claim())?.[0]).toBe(0x61);
-    const retrieved = session.getOwned(write, claim())!;
+    expect(session.getOwned(write, claim(), producer().stateOwner)?.[0]).toBe(0x61);
+    const retrieved = session.getOwned(write, claim(), producer().stateOwner)!;
     retrieved[0] = 0xee;
-    expect(session.getOwned(write, claim())?.[0]).toBe(0x61);
-    expect(session.stageOwned(write, claim(1), value)).toBe(false);
-    expect(session.getOwned(write, claim())).toBeUndefined();
-    expect(session.getOwned(write, claim(1))).toBeUndefined();
+    expect(session.getOwned(write, claim(), producer().stateOwner)?.[0]).toBe(0x61);
+    expect(session.stageOwned(write, claim(1), producer().stateOwner, value)).toBe(false);
+    expect(session.getOwned(write, claim(), producer().stateOwner)).toBeUndefined();
+    expect(session.getOwned(write, claim(1), producer().stateOwner)).toBeUndefined();
     session.clear(categoryId);
-    expect(session.stageOwned(write, claim(), new Uint8Array(96).fill(0x62))).toBe(true);
+    expect(session.stageOwned(
+      write, claim(), producer().stateOwner, new Uint8Array(96).fill(0x62),
+    )).toBe(true);
   });
 
   it('tombstones legacy/producer staging collisions for the build session', () => {
     const legacyFirst = new ValueChunkWriteStagingSession();
     expect(legacyFirst.stage(write, new Uint8Array(96).fill(1))).toBe(true);
-    expect(legacyFirst.stageOwned(write, claim(), new Uint8Array(96).fill(2))).toBe(false);
+    expect(legacyFirst.stageOwned(
+      write, claim(), producer().stateOwner, new Uint8Array(96).fill(2),
+    )).toBe(false);
     expect(legacyFirst.get(write)).toBeUndefined();
     expect(legacyFirst.stage(write, new Uint8Array(96).fill(3))).toBe(false);
     legacyFirst.delete(write);
-    expect(legacyFirst.stage(write, new Uint8Array(96).fill(4))).toBe(true);
+    expect(legacyFirst.stage(write, new Uint8Array(96).fill(4))).toBe(false);
 
     const ownedFirst = new ValueChunkWriteStagingSession();
-    expect(ownedFirst.stageOwned(write, claim(), new Uint8Array(96).fill(1))).toBe(true);
+    expect(ownedFirst.stageOwned(
+      write, claim(), producer().stateOwner, new Uint8Array(96).fill(1),
+    )).toBe(true);
     expect(ownedFirst.stage(write, new Uint8Array(96).fill(2))).toBe(false);
-    expect(ownedFirst.getOwned(write, claim())).toBeUndefined();
+    expect(ownedFirst.getOwned(write, claim(), producer().stateOwner)).toBeUndefined();
   });
 
   it('rejects incomplete source paths and resource mismatches', () => {
@@ -189,15 +211,22 @@ describe('hierarchical value-chunk producer identity', () => {
       sourcePath: [{ ...invalid.producer.sourcePath[0], sourceEffectOrdinal: -1 }],
     };
     expect(canonicalValueChunkProducerIdentity(invalid.producer)).toBeUndefined();
-    expect(selectSingletonValueChunkProducer([invalid], resourceIdentity)).toEqual({ status: 'invalid' });
+    expect(selectSingletonValueChunkProducer(
+      [invalid], resourceIdentity, producer().stateOwner,
+    )).toEqual({ status: 'invalid' });
     expect(canonicalValueChunkProducerIdentity({
       ...producer(), stateOwner: { ...producer().stateOwner, lockingBytecode: 'xyz' },
     })).toBeUndefined();
-    expect(selectSingletonValueChunkProducer([claim()], `${resourceIdentity}:extra`)).toEqual({
+    expect(selectSingletonValueChunkProducer(
+      [claim()], `${resourceIdentity}:extra`, producer().stateOwner,
+    )).toEqual({
       status: 'invalid',
     });
     const session = new ValueChunkWriteStagingSession();
-    expect(session.stageOwned(write, { ...claim(), resourceIdentity: `${resourceIdentity}:other` }, new Uint8Array(96)))
+    expect(session.stageOwned(
+      write, { ...claim(), resourceIdentity: `${resourceIdentity}:other` }, producer().stateOwner,
+      new Uint8Array(96),
+    ))
       .toBe(false);
     expect(session.stageOwned(write, {
       ...claim(),
@@ -205,6 +234,11 @@ describe('hierarchical value-chunk producer identity', () => {
         ...claim().producer,
         stateOwner: { ...claim().producer.stateOwner, categoryId: '99'.repeat(32) },
       },
-    }, new Uint8Array(96))).toBe(false);
+    }, producer().stateOwner, new Uint8Array(96))).toBe(false);
+    expect(() => canonicalValueChunkProducerResourceClaim(null as never)).not.toThrow();
+    expect(canonicalValueChunkProducerResourceClaim(null as never)).toBeUndefined();
+    expect(() => selectSingletonValueChunkProducer(
+      [null as never], resourceIdentity, producer().stateOwner,
+    )).not.toThrow();
   });
 });

@@ -62,16 +62,19 @@ export {
 } from './StatefulTransactionBuilder.js';
 export {
   canonicalValueChunkProducerIdentity,
+  canonicalValueChunkProducerPathContext,
   canonicalValueChunkProducerResourceIdentity,
   canonicalValueChunkProducerResourceClaim,
   bindValueChunkProducerClaimAliases,
   selectSingletonValueChunkProducer,
   valueChunkProducerClaimFromRouteRow,
+  valueChunkEffectDomainId,
   type ValueChunkProducerIdentity,
   type ValueChunkProducerClaimCarrier,
   type ValueChunkProducerResourceClaim,
   type ValueChunkProducerSourceSite,
   type ValueChunkProducerRouteRowCoordinates,
+  type ValueChunkProducerPathContext,
   type SingletonValueChunkProducerSelection,
 } from './ValueChunkProducerIdentity.js';
 export {

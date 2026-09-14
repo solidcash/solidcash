@@ -1,3 +1,7 @@
+import { binToHex, hexToBin, sha256 } from '@bitauth/libauth';
+
+const EFFECT_DOMAIN_TAG = new TextEncoder().encode('SolidCash/value-chunk-effect-domain/v1\0');
+
 export interface ValueChunkProducerSourceSite {
   /** Compiler-authenticated global function/effect-domain digest. */
   sourceEffectDomainId: string;
@@ -19,6 +23,31 @@ export interface ValueChunkProducerIdentity {
   mutationSourceEffectOrdinal: number;
 }
 
+export interface ValueChunkProducerPathContext {
+  version: 1;
+  /** Empty only for a direct/root handler mutation. Nested producers append one site per call edge. */
+  sourcePath: readonly ValueChunkProducerSourceSite[];
+}
+
+export function canonicalValueChunkProducerPathContext(
+  context: ValueChunkProducerPathContext,
+): string | undefined {
+  if (!context || typeof context !== 'object' || context.version !== 1
+    || !Array.isArray(context.sourcePath)) return undefined;
+  const sourcePath: Array<[string, number, number | null, number, number]> = [];
+  for (const site of context.sourcePath) {
+    const effectDomain = canonicalHex(site.sourceEffectDomainId, 32);
+    if (!effectDomain || !safeOrdinal(site.sourceCallsiteId) || !safeOrdinal(site.occurrenceIndex)
+      || !safeOrdinal(site.sourceEffectOrdinal)
+      || (site.sourceLogicalIndex !== undefined && !safeOrdinal(site.sourceLogicalIndex))) return undefined;
+    sourcePath.push([
+      effectDomain, site.sourceCallsiteId, site.sourceLogicalIndex ?? null,
+      site.occurrenceIndex, site.sourceEffectOrdinal,
+    ]);
+  }
+  return JSON.stringify([1, sourcePath]);
+}
+
 export interface ValueChunkProducerResourceClaim {
   producer: ValueChunkProducerIdentity;
   /** Exact category + collection hash + key slot identity. */
@@ -37,13 +66,37 @@ const safeOrdinal = (value: number | undefined): value is number => (
   Number.isSafeInteger(value) && value !== undefined && value >= 0
 );
 
-const canonicalHex = (value: string, bytes?: number): string | undefined => {
+/** Globally scope a function-local effect ordinal to one exact executable entry point. */
+export function valueChunkEffectDomainId(
+  executionLockingBytecode: string,
+  selector: string,
+): string | undefined {
+  const lockingBytecode = canonicalHex(executionLockingBytecode);
+  const canonicalSelector = canonicalHex(selector, 4);
+  if (!lockingBytecode || !canonicalSelector) return undefined;
+  const lock = hexToBin(lockingBytecode);
+  if (lock.length > 0xffffffff) return undefined;
+  // uint32le length keeps the tagged preimage unambiguous for full 2026 VM bytecode without truncation.
+  const length = Uint8Array.from([
+    lock.length % 0x100,
+    Math.floor(lock.length / 0x100) % 0x100,
+    Math.floor(lock.length / 0x10000) % 0x100,
+    Math.floor(lock.length / 0x1000000) % 0x100,
+  ]);
+  return binToHex(sha256.hash(Uint8Array.from([
+    ...EFFECT_DOMAIN_TAG, ...length, ...lock, ...hexToBin(canonicalSelector),
+  ])));
+}
+
+const canonicalHex = (value: unknown, bytes?: number): string | undefined => {
+  if (typeof value !== 'string') return undefined;
   const normalized = value.toLowerCase();
   if (!/^(?:[0-9a-f]{2})+$/.test(normalized)) return undefined;
   return bytes === undefined || normalized.length === bytes * 2 ? normalized : undefined;
 };
 
 export function canonicalValueChunkProducerResourceIdentity(value: string): string | undefined {
+  if (typeof value !== 'string') return undefined;
   const [categoryId, collectionHash, keySlot, ...extra] = value.split(':');
   if (extra.length > 0) return undefined;
   const canonicalCategory = canonicalHex(categoryId, 32);
@@ -56,6 +109,7 @@ export function canonicalValueChunkProducerResourceIdentity(value: string): stri
 function canonicalValueChunkStateOwner(owner: {
   categoryId: string; lockingBytecode: string;
 }): string | undefined {
+  if (!owner || typeof owner !== 'object') return undefined;
   const categoryId = canonicalHex(owner.categoryId, 32);
   const lockingBytecode = canonicalHex(owner.lockingBytecode);
   return categoryId && lockingBytecode ? `${categoryId}:${lockingBytecode}` : undefined;
@@ -64,24 +118,16 @@ function canonicalValueChunkStateOwner(owner: {
 export function canonicalValueChunkProducerIdentity(
   identity: ValueChunkProducerIdentity,
 ): string | undefined {
+  if (!identity || typeof identity !== 'object' || !identity.stateOwner) return undefined;
   const categoryId = canonicalHex(identity.stateOwner.categoryId, 32);
   const lockingBytecode = canonicalHex(identity.stateOwner.lockingBytecode);
   if (identity.version !== 1 || !categoryId || !lockingBytecode
     || !canonicalHex(identity.mutationEffectDomainId, 32)
     || !safeOrdinal(identity.mutationSourceEffectOrdinal)) return undefined;
-  const sourcePath: Array<[string, number, number | null, number, number]> = [];
-  for (const site of identity.sourcePath) {
-    const effectDomain = canonicalHex(site.sourceEffectDomainId, 32);
-    if (!effectDomain || !safeOrdinal(site.sourceCallsiteId) || !safeOrdinal(site.occurrenceIndex)
-      || !safeOrdinal(site.sourceEffectOrdinal)
-      || (site.sourceLogicalIndex !== undefined && !safeOrdinal(site.sourceLogicalIndex))) return undefined;
-    sourcePath.push([
-      effectDomain, site.sourceCallsiteId, site.sourceLogicalIndex ?? null,
-      site.occurrenceIndex, site.sourceEffectOrdinal,
-    ]);
-  }
+  const path = canonicalValueChunkProducerPathContext({ version: 1, sourcePath: identity.sourcePath });
+  if (!path) return undefined;
   return JSON.stringify([
-    1, categoryId, lockingBytecode, sourcePath,
+    1, categoryId, lockingBytecode, JSON.parse(path)[1],
     identity.mutationEffectDomainId.toLowerCase(), identity.mutationSourceEffectOrdinal,
   ]);
 }
@@ -140,16 +186,29 @@ export interface ValueChunkProducerClaimCarrier {
 export function canonicalValueChunkProducerResourceClaim(
   claim: ValueChunkProducerResourceClaim,
 ): ValueChunkProducerResourceClaim | undefined {
+  if (!claim || typeof claim !== 'object' || !claim.producer) return undefined;
   if (!canonicalValueChunkProducerIdentity(claim.producer)) return undefined;
   const resourceIdentity = canonicalValueChunkProducerResourceIdentity(claim.resourceIdentity);
   const owner = canonicalValueChunkStateOwner(claim.producer.stateOwner);
   if (!resourceIdentity || !owner || resourceIdentity.split(':')[0] !== owner.split(':')[0]) return undefined;
-  const sourcePath = Object.freeze(claim.producer.sourcePath.map((site) => Object.freeze({ ...site })));
+  const sourcePath = Object.freeze(claim.producer.sourcePath.map((site) => Object.freeze({
+    sourceEffectDomainId: site.sourceEffectDomainId.toLowerCase(),
+    sourceCallsiteId: site.sourceCallsiteId,
+    ...(site.sourceLogicalIndex !== undefined && { sourceLogicalIndex: site.sourceLogicalIndex }),
+    occurrenceIndex: site.occurrenceIndex,
+    sourceEffectOrdinal: site.sourceEffectOrdinal,
+  })));
   const stateOwner = Object.freeze({
     categoryId: claim.producer.stateOwner.categoryId.toLowerCase(),
     lockingBytecode: claim.producer.stateOwner.lockingBytecode.toLowerCase(),
   });
-  const producer = Object.freeze({ ...claim.producer, stateOwner, sourcePath });
+  const producer = Object.freeze({
+    version: 1 as const,
+    stateOwner,
+    sourcePath,
+    mutationEffectDomainId: claim.producer.mutationEffectDomainId.toLowerCase(),
+    mutationSourceEffectOrdinal: claim.producer.mutationSourceEffectOrdinal,
+  });
   return Object.freeze({ producer, resourceIdentity });
 }
 
@@ -158,6 +217,7 @@ export function bindValueChunkProducerClaimAliases(
   aliases: readonly ValueChunkProducerClaimCarrier[],
   claims: readonly ValueChunkProducerResourceClaim[],
 ): boolean {
+  if (aliases.length === 0) return false;
   const canonicalClaims = claims.map((claim) => {
     const producer = canonicalValueChunkProducerIdentity(claim.producer);
     const resource = canonicalValueChunkProducerResourceIdentity(claim.resourceIdentity);
@@ -192,11 +252,13 @@ export function bindValueChunkProducerClaimAliases(
 export function selectSingletonValueChunkProducer(
   claims: readonly ValueChunkProducerResourceClaim[],
   resourceIdentity: string,
+  expectedStateOwner: { categoryId: string; lockingBytecode: string },
 ): SingletonValueChunkProducerSelection {
   const normalized = claims.map((claim) => canonicalValueChunkProducerResourceClaim(claim));
   if (normalized.some((claim) => claim === undefined)) return { status: 'invalid' };
   const resource = canonicalValueChunkProducerResourceIdentity(resourceIdentity);
-  if (!resource) return { status: 'invalid' };
+  const expectedOwner = canonicalValueChunkStateOwner(expectedStateOwner);
+  if (!resource || !expectedOwner) return { status: 'invalid' };
   const matching = (normalized as ValueChunkProducerResourceClaim[]).filter((claim) => (
     canonicalValueChunkProducerResourceIdentity(claim.resourceIdentity) === resource
   ));
@@ -205,6 +267,9 @@ export function selectSingletonValueChunkProducer(
   for (const claim of matching) {
     const key = canonicalValueChunkProducerIdentity(claim.producer);
     if (!key || !canonicalValueChunkProducerResourceIdentity(claim.resourceIdentity)) {
+      return { status: 'invalid' };
+    }
+    if (canonicalValueChunkStateOwner(claim.producer.stateOwner) !== expectedOwner) {
       return { status: 'invalid' };
     }
     canonical.set(key, claim);

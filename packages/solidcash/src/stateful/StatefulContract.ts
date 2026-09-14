@@ -100,6 +100,10 @@ import {
 import { hasCanonicalBatchBlobLineage } from '../message-bus/internal-batch-authority.js';
 export { inactiveMessageBusRouteWitness } from '../message-bus/message-bus.js';
 import type { PreparedAtomicMessageBusCall } from '../message-bus/compose.js';
+import {
+  deriveValueChunkProducerChildPath,
+  type ValueChunkProducerPathDisposition,
+} from './ValueChunkProducerIdentity.js';
 // X186. The covenant-annotating gate moved to `message-bus/preflight.ts` when `TransactionBuilder.send` became its
 // second caller. The four lifecycle-admin sites below route through it; none calls the bare gate.
 import {
@@ -22723,6 +22727,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       parent: number | null;
       callsiteId?: number;
       active: boolean;
+      producerPath: ValueChunkProducerPathDisposition;
       /** Re-evaluate complete argument expressions after sibling return commitments are authenticated. */
       resolveArgsFromResults?: (
         results: ReadonlyMap<number, FunctionArgument>,
@@ -22734,6 +22739,34 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     };
     let preparedAtomicNodes: PreparedAtomicNode[] | undefined;
     const preparedAtomicNodeByExternalGroup = new Map<number, number>();
+    const rootProducerPath: ValueChunkProducerPathDisposition = Object.freeze({
+      status: 'complete',
+      context: Object.freeze({ version: 1, sourcePath: Object.freeze([]) }),
+    });
+    const preparedChildProducerPath = (
+      parentIndex: number,
+      source: {
+        sourceCallsiteId?: number;
+        sourceLogicalIndex?: number;
+        occurrenceIndex?: number;
+        sourceEffectOrdinal?: number;
+      },
+    ): ValueChunkProducerPathDisposition => {
+      const parent = preparedAtomicNodes?.[parentIndex];
+      if (!parent) return Object.freeze({ status: 'unavailable' });
+      return deriveValueChunkProducerChildPath({
+        parent: parent.producerPath,
+        parentExecutionLockingBytecode: parent.executor?.inner.lockingBytecode
+          ?? parent.contract.inner.lockingBytecode,
+        parentSelector: parent.selector,
+        sourceCallsiteId: source.sourceCallsiteId,
+        ...(source.sourceLogicalIndex !== undefined && {
+          sourceLogicalIndex: source.sourceLogicalIndex,
+        }),
+        occurrenceIndex: source.occurrenceIndex,
+        sourceEffectOrdinal: source.sourceEffectOrdinal,
+      });
+    };
     let nestedFunderIndex = 0;
 
     if (lowLevelCalls && lowLevelCalls.length > 0) {
@@ -22835,6 +22868,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                     executionArtifact: callInfo.contract.inner.artifact,
                     executor: callInfo.contract,
                     parent: null,
+                    producerPath: rootProducerPath,
                     active: true,
                   }];
                 }
@@ -24841,6 +24875,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                     preparedAtomicNodes.push({
                       contract: callee,
                       functionName: row.handler.name,
+                      selector: row.selector,
                       args: [...row.args],
                       ...(resolvedTargetLockingBytecode && {
                         targetLockingBytecode: binToHex(resolvedTargetLockingBytecode),
@@ -24855,6 +24890,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                       sourceLogicalIndex: row.sourceLogicalIndex,
                       occurrenceIndex: row.occurrenceIndex,
                       sourceEffectOrdinal: row.sourceEffectOrdinal,
+                      producerPath: preparedChildProducerPath(0, {
+                        sourceCallsiteId: row.sourceCallsiteId,
+                        sourceLogicalIndex: row.sourceLogicalIndex,
+                        occurrenceIndex: row.occurrenceIndex,
+                        sourceEffectOrdinal: row.sourceEffectOrdinal,
+                      }),
                       batchLogicalIndex: row.sourceLogicalIndex,
                       batchOccurrenceIndex: row.occurrenceIndex,
                       // Mutually-exclusive SafeERC20 fallback writers share one physical owner. The ordinary
@@ -24867,6 +24908,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   preparedAtomicNodes.push({
                     contract: callee,
                     functionName: resolvedRawFunctionName ?? nested.functionName,
+                    ...(selectedFn?.selector !== undefined && { selector: selectedFn.selector }),
                     args: graphNestedArgs,
                     ...(resolvedTargetLockingBytecode && {
                       targetLockingBytecode: binToHex(resolvedTargetLockingBytecode),
@@ -24883,6 +24925,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                     ...(nested.callsiteId !== undefined && {
                       sourceCallsiteId: nested.callsiteId,
                       ...((nested.occurrence ?? 'once') !== 'loop' && { occurrenceIndex: 0 }),
+                    }),
+                    producerPath: preparedChildProducerPath(0, {
+                      sourceCallsiteId: nested.callsiteId,
+                      ...((nested.occurrence ?? 'once') !== 'loop' && { occurrenceIndex: 0 }),
+                      sourceEffectOrdinal: nested.sourceEffectOrdinal,
                     }),
                     ...(resolveGraphNestedArgs && { resolveArgsFromResults: resolveGraphNestedArgs }),
                     active: !preserveFirstConditionalWriter,
@@ -25809,6 +25856,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               preparedAtomicNodes.push({
                 contract: callee,
                 functionName: rawFunctionName ?? nested.functionName,
+                ...(selectedFn.selector !== undefined && { selector: selectedFn.selector }),
                 args: graphChildArgs,
                 ...(resolvedTargetLockingBytecode && {
                   targetLockingBytecode: binToHex(resolvedTargetLockingBytecode),
@@ -25825,6 +25873,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 ...(nested.callsiteId !== undefined && {
                   sourceCallsiteId: nested.callsiteId,
                   ...((nested.occurrence ?? 'once') !== 'loop' && { occurrenceIndex: 0 }),
+                }),
+                producerPath: preparedChildProducerPath(parentAtomicNode, {
+                  sourceCallsiteId: nested.callsiteId,
+                  ...((nested.occurrence ?? 'once') !== 'loop' && { occurrenceIndex: 0 }),
+                  sourceEffectOrdinal: nested.sourceEffectOrdinal,
                 }),
                 ...(resolveGraphChildArgs && { resolveArgsFromResults: resolveGraphChildArgs }),
                 active: true,
@@ -30616,6 +30669,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         }).__preparedAtomicCalls = Object.freeze(orderedNodes.map((node) => Object.freeze({
           contract: node.contract,
           functionName: node.functionName,
+          ...(node.selector !== undefined && { selector: node.selector }),
           args: Object.freeze([...node.args]),
           ...(node.callsiteId !== undefined && { callsiteId: node.callsiteId }),
           ...(node.sourceCallsiteId !== undefined && { sourceCallsiteId: node.sourceCallsiteId }),
@@ -30624,6 +30678,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           ...(node.sourceEffectOrdinal !== undefined && {
             sourceEffectOrdinal: node.sourceEffectOrdinal,
           }),
+          producerPath: node.producerPath,
           ...(node.batchLogicalIndex !== undefined && { batchLogicalIndex: node.batchLogicalIndex }),
           ...(node.batchOccurrenceIndex !== undefined && {
             batchOccurrenceIndex: node.batchOccurrenceIndex,

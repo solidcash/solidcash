@@ -2334,7 +2334,12 @@ function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {
 function bindPlaceholderVerifierLock(
   ast: Ast, verifierProgram: MessageBusVerifierProgram, compilerOptions: CompilerOptions,
 ): void {
-  const lock = messageBusVerifierLockingBytecode(verifierProgram, compilerOptions.maximumInputBytes);
+  patchPlaceholderVerifierLock(
+    ast, messageBusVerifierLockingBytecode(verifierProgram, compilerOptions.maximumInputBytes),
+  );
+}
+
+function patchPlaceholderVerifierLock(ast: Ast, lock: Uint8Array): void {
   if (lock.length !== MESSAGE_BUS_PLACEHOLDER_LOCK.length) {
     throw new Error(
       `single-pass bind: offloaded lock is ${lock.length} bytes, placeholder is `
@@ -2352,6 +2357,32 @@ function bindPlaceholderVerifierLock(
   if (patched !== 1) {
     throw new Error(`single-pass bind: expected 1 placeholder lock literal, found ${patched}`);
   }
+}
+
+/**
+ * Verifier covenant locks, keyed by everything that can change the covenant script.
+ *
+ * The pre-codegen verifier compile exists to produce this lock and nothing else: a kernel pass replaces its
+ * program with the post-codegen specialized one, and the published program carries only ids, names and
+ * bytecode. The lock itself is not root-file dependent - two marketplace roots with different root files and
+ * different verifier sources already produced the same lock - so the same route shape recompiled in another
+ * root would otherwise repeat a ~0.3s mini-compile for a value it can be handed.
+ */
+const detachedVerifierLockCache = new Map<string, Uint8Array>();
+
+function detachedVerifierLockKey(source: string, options: CompilerOptions, lifecycle: boolean): string {
+  return [
+    lifecycle ? 'L' : '-',
+    options.chunkedArrays ?? true,
+    options.maximumInputBytes ?? '',
+    options.commitmentLimit ?? '',
+    options.ecrecover ?? '',
+    options.chainId ?? '',
+    options.messageBusKernel ?? '',
+    options.enforceFinalRequire ?? '',
+    options.allowUnsafeOperations ?? '',
+    source,
+  ].join('\u0000');
 }
 
 function extractMessageBusVerifierProgram(
@@ -12076,18 +12107,39 @@ function compileResolvedAst(
   if ((mergedCompilerOptions as InternalCompilerOptions).__synthesizeBoundRoutePlaceholder === true
     && !mergedCompilerOptions.__messageBusVerifierProgram
     && singlePassVerifierSource) {
-    try {
-      singlePassVerifierProgram = compileDetachedMessageBusVerifier(
-        singlePassVerifierSource, mergedCompilerOptions,
-        messageBusVerifierLifecycleSources.has(singlePassVerifierSource),
-      );
-    } catch (error) {
-      throwProfile(error);
+    const verifierLifecycle = messageBusVerifierLifecycleSources.has(singlePassVerifierSource);
+    // A kernel pass replaces this program with the post-codegen specialized one below, so the only product
+    // that survives is the covenant lock patched into the route. Reuse that lock when another root has already
+    // compiled this exact verifier source; non-kernel callers publish this program, so they always compile.
+    const lockKey = mergedCompilerOptions.messageBusKernel === true
+      ? detachedVerifierLockKey(singlePassVerifierSource, mergedCompilerOptions, verifierLifecycle)
+      : undefined;
+    const cachedLock = lockKey === undefined ? undefined : detachedVerifierLockCache.get(lockKey);
+    if (cachedLock !== undefined) {
+      patchPlaceholderVerifierLock(ast, cachedLock);
+    } else {
+      try {
+        singlePassVerifierProgram = compileDetachedMessageBusVerifier(
+          singlePassVerifierSource, mergedCompilerOptions, verifierLifecycle,
+        );
+      } catch (error) {
+        throwProfile(error);
+      }
+      if (!singlePassVerifierProgram) {
+        throw new Error('single-pass bind: detached verifier emit did not produce verifierProgram');
+      }
+      bindPlaceholderVerifierLock(ast, singlePassVerifierProgram, mergedCompilerOptions);
+      if (lockKey !== undefined) {
+        if (detachedVerifierLockCache.size >= 16) {
+          const oldest = detachedVerifierLockCache.keys().next().value as string | undefined;
+          if (oldest !== undefined) detachedVerifierLockCache.delete(oldest);
+        }
+        detachedVerifierLockCache.set(
+          lockKey,
+          messageBusVerifierLockingBytecode(singlePassVerifierProgram, mergedCompilerOptions.maximumInputBytes),
+        );
+      }
     }
-    if (!singlePassVerifierProgram) {
-      throw new Error('single-pass bind: detached verifier emit did not produce verifierProgram');
-    }
-    bindPlaceholderVerifierLock(ast, singlePassVerifierProgram, mergedCompilerOptions);
     delete (mergedCompilerOptions as InternalCompilerOptions).__singlePassVerifierSource;
   }
   // Code generation

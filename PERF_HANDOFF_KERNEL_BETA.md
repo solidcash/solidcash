@@ -341,6 +341,34 @@ number in this document was therefore measured on the *only* path these contract
 compile speed** - which is what the kernel work exists to move. Do not spend compile-time effort on the split
 path until the contracts fit.
 
+### Round 14: what the marketplace harness actually spends (measured)
+
+`DEBUG=vite:transform` on `post job 1` reports **381 transform events totalling 999 ms** - not the 4.4 s the
+vitest summary calls "transform". The rest of that phase is resolution and plugin work, including the
+`eaSrcRedirectPlugin`'s `existsSync` probing (`internalModuleStat` ~0.11 s + `getPackageScopeConfig` ~0.15 s
+in the worker profile). The real transform time localises to:
+
+| group | ms |
+|---|---|
+| `typechain-types/index.ts` barrel **and its transitive factories** | ~398 |
+| `packages/solidcash` (`StatefulContract` 31, `StatefulTransactionBuilder` 18, rest) | ~131 |
+| `@solidcash/testing` + the test file + `solidc/utils` | ~57 |
+
+So the harness cost is not "a big module graph" in the abstract: it is one **barrel file** - the generated
+`typechain-types/index.ts` re-export that drags every factory in - plus Vite resolution overhead. Two
+consequences for whoever picks this up:
+
+* The barrel lives in the *project's* test file (`.marketplace/project/test/marketplace.test.ts` imports it),
+  so shrinking it means changing the imported suite, not this repository. Any real project using typechain
+  barrels pays the same ~0.4 s per test file.
+* The resolution overhead is addressable locally: memoising `existingSource`/`redirectEffectiveAccelerationSrc`
+  in `vitest.marketplace.config.ts`'s plugin removes repeated `existsSync` probing per import. Estimated
+  0.2-0.3 s of a 19 s run, i.e. ~1 % - measured cost of the change is one vitest run.
+
+Also closed here: per-worker signer derivation is **not** a lazy-derivation win. The 0.44 s is a single
+BIP-39 PBKDF2-HMAC-SHA512 (2048 iterations) producing the seed that the first signer already needs; caching it
+across workers would mean writing a seed to disk, which is not an acceptable trade for 2 % of a test run.
+
 ### Incident to know about (round 11, caught before it shipped)
 
 `scripts/perf-ab.sh` originally produced its baseline half with `git checkout <commit> -- <path>`, which

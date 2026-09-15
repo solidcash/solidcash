@@ -165,14 +165,18 @@ deployments plus many negative calls. Do one full 600-second run before classify
 Commit `cf87d4ad9` removed the nested-call function-name/argument-position trigger: arbitrary function names now
 adapt only under exact legacy-unroll JobEvent ABI metadata, while kernel and renamed schemas remain untouched.
 
+Commit `38df98059` removed the two live `publishJobEvent` full-block gates. Fixed LLC blocks are now selected by
+exact master/companion outpoints and a dense compiler layout, input repair is an idempotent multiset-preserving
+permutation, and generic delegate mirroring admits only data/entry/event slot kinds with an unambiguous proxy owner.
+Specialized transfer/return/compute/deploy/container layouts fail closed into their dedicated materializers.
+
 The SDK still has live, unfenced application-shape logic. Audit and replace or fence at least these areas before the
 beta checkpoint:
 
 - `StatefulContract.ts`: the `publishJobEvent`/`JobEventData` reconstruction and broad positional timestamp paths
   around the former lines 5613, 14794, and 25336 (the nested-call path formerly around 24057 is now fenced);
-- `StatefulTransactionBuilder.ts`: `publishJobEvent` input/output layout handling, `_ensureDistinctJobEventNfts`,
-  and `transferFrom`/`balances` repair or surplus-stripping paths around the former lines 4098, 7397, 9111, 10114,
-  16313, and 19468.
+- `StatefulTransactionBuilder.ts`: `_ensureDistinctJobEventNfts`, the dead transfer-event synthesizer, and
+  `transferFrom`/`balances` repair or surplus-stripping paths around the former lines 4098, 9111, 10114, and 19468.
 
 Replace live name-based behavior with compiler-authenticated mutation, event-instance, resource-identity, and
 physical-layout metadata. Add a genuinely alpha-renamed chunkable-array/nested-delegate/multi-emit regression;

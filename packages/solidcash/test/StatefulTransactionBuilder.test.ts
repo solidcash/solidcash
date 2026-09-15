@@ -311,6 +311,74 @@ describe('StatefulTransactionBuilder', () => {
       expect(builder.getLoopEntryOutputBase()).toBe(57);
       expect(builder.getChunkOutputBase()).toBe(58);
       expect(builder.getChunkOutputBase()).toBeLessThan(121);
+      const built = builder.build();
+      expect(binToHex(built.outputs[57]!.to as Uint8Array)).toBe(binToHex(entryLock));
+      expect(binToHex(built.outputs[58]!.to as Uint8Array)).toBe(binToHex(chunkLock));
+    });
+
+    it('materializes compiler-routed delegated predecessors before runtime effects', () => {
+      const entryLock = new Uint8Array([0xaa, 0x20, ...new Array(32).fill(0x44), 0x87]);
+      const eventLock = new Uint8Array([0xaa, 0x20, ...new Array(32).fill(0x66), 0x87]);
+      const builder = new StatefulTransactionBuilder(makeBaseOptions({
+        allowImplicitNftBurn: true,
+        compilerRouteDelegateBlock: true,
+        loopEntriesBeforeDynamicChunks: true,
+        blockLayout: {
+          blockSize: 5,
+          trailingBase: 3,
+          trailingCapacity: 2,
+          slots: [
+            { kind: 'master', offset: 0 },
+            { kind: 'dataNft', offset: 1, slotIndex: 0 },
+            { kind: 'trailing', offset: 3, slotIndex: 0, conditional: true },
+            { kind: 'trailing', offset: 4, slotIndex: 1, conditional: true },
+          ],
+        },
+        loopEntryVars: [{
+          collection: 'entries', lockingBytecode: entryLock, categoryId, delegate: true,
+        }],
+        runtimeLoopEventOutputs: [{
+          eventSignature: 'Signal(int)', lockingBytecode: eventLock, categoryId,
+          commitment: '01', rowIndex: 0,
+        }],
+      }));
+      builder.setLoopEntryCommitments('entries', ['00']);
+
+      const transaction = builder.build();
+
+      expect(transaction.outputs[3]?.to).toEqual(entryLock);
+      expect(transaction.outputs[4]?.to).toEqual(eventLock);
+    });
+
+    it('places trailing loop entries after preserved dynamic chunks without a source-order override', () => {
+      const entryLock = new Uint8Array([0xaa, 0x20, ...new Array(32).fill(0x44), 0x87]);
+      const chunkLock = new Uint8Array([0xaa, 0x20, ...new Array(32).fill(0x55), 0x87]);
+      const builder = new StatefulTransactionBuilder(makeBaseOptions({
+        allowImplicitNftBurn: true,
+        compilerRouteDelegateBlock: true,
+        blockLayout: {
+          blockSize: 121,
+          trailingBase: 57,
+          trailingCapacity: 64,
+          slots: [
+            { kind: 'master', offset: 0 },
+            { kind: 'trailing', offset: 57, slotIndex: 0, conditional: true },
+          ],
+        },
+        loopEntryVars: [{
+          collection: 'entries', lockingBytecode: entryLock, categoryId, delegate: true,
+        }],
+        dynamicChunkVars: [{ name: 'records', type: 'Record[]', lockingBytecode: chunkLock, delegate: true }],
+      }));
+      builder.setLoopEntryCommitments('entries', ['00']);
+      builder.setChunkRawCommitments('records', ['00']);
+
+      expect(builder.getChunkOutputBase()).toBe(57);
+      expect(builder.getLoopEntryOutputBase()).toBe(58);
+      expect(builder.getLoopEntryOutputBase()).toBeLessThan(121);
+      const built = builder.build();
+      expect(binToHex(built.outputs[57]!.to as Uint8Array)).toBe(binToHex(chunkLock));
+      expect(binToHex(built.outputs[58]!.to as Uint8Array)).toBe(binToHex(entryLock));
     });
 
     it('preserves an exact runtime-loop width while commitments converge', () => {

@@ -18365,11 +18365,12 @@ export class StatefulTransactionBuilder {
       }
     } else {
       if (this.loopEntriesBeforeDynamicChunks || this.delegateEntriesAfterLowLevel) {
-        // Delegate upsert collections (MarketplaceV1 whitelistWorkers via proxy __forward) are restored at
-        // compiler-owned absolute coordinates by `_reassertDelegateLoopEntries`. Appending them again here
-        // also parks copies on the jobEvents/value-chunk base (loopEntryBase === chunkBase) and shifts the
-        // indexed P'/NEW off INPUTINDEX+blockSize.
-        const delegateCollections = new Set(this._delegateLoopEntryVars().map((variable) => variable.collection));
+        // Legacy delegated upsert collections are restored at transaction-suffix coordinates by
+        // `_reassertDelegateLoopEntries`. Appending them here as well would duplicate their outputs and shift
+        // the indexed P'/NEW lane. Compiler-routed delegates instead own these entries inside their authenticated
+        // participant frame, so they must be emitted here exactly once.
+        const delegateCollections = new Set((this.compilerRouteDelegateBlock
+          ? [] : this._delegateLoopEntryVars()).map((variable) => variable.collection));
         for (const lv of this._trailingLoopEntryVars()) {
           if (delegateCollections.has(lv.collection)) continue;
           for (const commitment of this.loopEntryCommitments.get(lv.collection) ?? []) {

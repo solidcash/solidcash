@@ -857,6 +857,42 @@ function cloneAst(ast: Ast, reason: string): Ast {
   return cloned;
 }
 
+/**
+ * Cached, clone-on-hit parse of an imported source file.
+ *
+ * A project compile resolves its whole import graph once per root, and the imported sources are the part that
+ * cannot be shared: every pipeline mutates the AST it is given. The multi-declaration compiler already relies on
+ * exactly this pattern inside one root (`cloneAst(probe, 'multi-primary')` - "cloning it (~25ms) is much cheaper
+ * than re-lexing large Solidity sources for every imported primary (~650ms+)"). Extending it across roots is the
+ * same trade: measured on the marketplace corpus the duplicate parses of shared imports are 944ms of a 19.7s
+ * ten-root compile.
+ *
+ * The cache holds a pristine snapshot. The parse it returns to the caller is the freshly parsed tree on a miss
+ * and an independent clone on a hit, so no two compilations ever lower the same nodes.
+ */
+const importedParseCache = new Map<string, Ast>();
+const MAXIMUM_CACHED_IMPORTED_PARSES = 24;
+
+export function parseImportedFileCached(
+  source: string, solidityImportCompat: boolean, fileId: string,
+): Ast {
+  const key = `${solidityImportCompat ? '1' : '0'}\x00${fileId}\x00${source}`;
+  const cached = importedParseCache.get(key);
+  if (cached !== undefined) {
+    // Refresh recency for the small bound below.
+    importedParseCache.delete(key);
+    importedParseCache.set(key, cached);
+    return cloneAst(cached, 'imported-parse-cache');
+  }
+  const ast = parseCode(source, undefined, solidityImportCompat, true, fileId);
+  importedParseCache.set(key, cloneAst(ast, 'imported-parse-cache-store'));
+  if (importedParseCache.size > MAXIMUM_CACHED_IMPORTED_PARSES) {
+    const oldest = importedParseCache.keys().next().value as string | undefined;
+    if (oldest !== undefined) importedParseCache.delete(oldest);
+  }
+  return ast;
+}
+
 export interface SplitCompileOptions extends CompileOptions {
   /**
    * Maximum redeem-script bytes for each generated shard, honoured literally.
@@ -1770,7 +1806,63 @@ function compileStringUnchecked(code: string, compilerOptions: CompileOptions = 
     mergedCompilerOptions.__cheapAdmissionCodegen = true;
   }
   const admissionStarted = Date.now();
-  let artifact = compileWithExternalAdmissionFallback(
+  // Route admission otherwise runs the ladder twice: a cheap pass whose stubbed bodies only have to reveal which
+  // rung compiles, then a full compile of that winning shape. The shape it recompiles to is reachable in one pass,
+  // because `__synthesizeBoundRoutePlaceholder` binds the detached verifier inline - and a route that is bound in
+  // the pass that synthesized it needs no verifier-binder recompile at all. So compile the ladder's first rung in
+  // its shipping shape up front and skip both the stubbed search and the winner recompile. The first rung is the
+  // widest external route when the bus is explicitly requested, and the first public-only route rung when
+  // selection is automatic. Everything this pass refuses - including a source that synthesizes no route at all -
+  // still falls through to `compileWithExternalAdmissionFallback`, which keeps ownership of attribution,
+  // per-handler quarantine retries, and the narrower rungs.
+  let artifact: Artifact | undefined;
+  let admittedFullBodies = false;
+  if (mergedCompilerOptions.__cheapAdmissionCodegen && mergedCompilerOptions.messageBus) {
+    const incomingAst = (mergedCompilerOptions as InternalCompilerOptions).__parsedAst;
+    let rungAst: Ast;
+    if (incomingAst !== undefined) {
+      rungAst = incomingAst;
+    } else if (pristineAstBox.ast !== undefined) {
+      rungAst = cloneAst(pristineAstBox.ast, 'admission-first-rung');
+    } else {
+      rungAst = parseAndResolve(code, mergedCompilerOptions, errorListener, primaryContractName);
+    }
+    // This pass lowers the tree it is handed. The ladder below and the verifier-binder pass both restart from the
+    // pristine snapshot, so take it before the attempt consumes the caller's resolved tree.
+    if (pristineAstBox.ast === undefined) {
+      pristineAstBox.ast = cloneAst(rungAst, 'admission-pristine');
+    }
+    const firstRungOptions: InternalCompilerOptions = { ...mergedCompilerOptions };
+    delete firstRungOptions.__cheapAdmissionCodegen;
+    delete firstRungOptions.__admissionWinnerBox;
+    delete firstRungOptions.__parsedAst;
+    firstRungOptions.__synthesizeBoundRoutePlaceholder = true;
+    const widestFirst = firstRungOptions.__messageBusMode === 'enabled'
+      || firstRungOptions.__messageBusMode === 'required';
+    try {
+      // The cheap widest rung refuses an uncovered returning free helper before inlining, so a source that reaches
+      // the ladder falls through to its public-only rungs instead of admitting an external handler that roots the
+      // uncovered arm. This pass replaces that rung, so it has to apply the same source-level refusal; when it
+      // fires, the ordinary ladder below still decides the narrower rungs exactly as before.
+      if (widestFirst) rejectFreeFunctionMissingReturns(rungAst);
+      const firstRung = compileResolvedAst(
+        rungAst, code, firstRungOptions, false,
+        widestFirst, true, true, true, true,
+      );
+      // A direct (route-less) build is not the shape this pass exists to produce: the ladder still owns the
+      // fallback to a direct artifact, its diagnostics, and the winner recompile that shape requires.
+      if (firstRung.messageBus) {
+        artifact = firstRung;
+        admittedFullBodies = true;
+        profileLog('admission-first-rung', admissionStarted, {
+          primary: primaryContractName, widest: widestFirst,
+        });
+      }
+    } catch (firstRungError) {
+      recordCaughtCompilerAttempt(mergedCompilerOptions, 'admission', firstRungError);
+    }
+  }
+  artifact ??= compileWithExternalAdmissionFallback(
     code, mergedCompilerOptions, errorListener, primaryContractName,
   );
   assertKernelReadCarrierScopeMatch(mergedCompilerOptions);
@@ -1779,7 +1871,8 @@ function compileStringUnchecked(code: string, compilerOptions: CompileOptions = 
   if (mergedCompilerOptions.__messageBusMode === 'required' && !artifact.messageBus) {
     throw new Error('messageBus: required route generation did not produce a composable artifact');
   }
-  if (mergedCompilerOptions.__cheapAdmissionCodegen && (!artifact.messageBus?.verifierProgram
+  if (!admittedFullBodies
+    && mergedCompilerOptions.__cheapAdmissionCodegen && (!artifact.messageBus?.verifierProgram
     || artifact.messageBus.handlers.some((handler) => handler.usesTransactionSignature)
     || mergedCompilerOptions.__kernelReadCarrierAuthorizationBox?.hasSourceCandidate === true
     || mergedCompilerOptions.__kernelReadCarrierAuthorizationBox?.hasJournalDispositionSourceCandidate === true)) {

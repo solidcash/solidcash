@@ -128,7 +128,7 @@ import {
   binToUtf8,
   lockingBytecodeToCashAddress,
 } from '@bitauth/libauth';
-import { createVirtualMachineBch2026ForProvider } from '../network/createVirtualMachine.js';
+import { createFaithfulTraceVmForProvider, createVirtualMachineBch2026ForProvider } from '../network/createVirtualMachine.js';
 import { Contract } from '../Contract.js';
 import {
   SortedList, getCachedSortedList, keyToSlot, keyToSlotMulti, bytesToSlotValue, headSentinelCommitment,
@@ -3642,6 +3642,36 @@ export function isCanonicalEvmScalarReturnVector(
   });
 }
 
+/**
+ * Encoded length of the pushdata operation at `offset`, resolved from its length prefix alone.
+ *
+ * Mirrors `decodePushdataValue`'s acceptance exactly (including the one-byte constant opcodes, which decode to a
+ * one-byte value) without reading the payload. Return-frame candidates are overwhelmingly raw stack items rather
+ * than framed pushes, and `decodePushdataValue` rejects those by throwing: for a multi-megabyte covenant frame
+ * the captured stack traces dominate the probe. Resolving the length first turns each ordinary rejection into a
+ * byte comparison; a candidate the decoder would reject outright can never be a complete outer frame.
+ */
+function peekPushdataEncodedLength(data: Uint8Array, offset = 0): number | undefined {
+  if (offset < 0 || offset >= data.length) return undefined;
+  const firstByte = data[offset];
+  // OP_0 pushes an empty item; OP_1NEGATE / OP_1-OP_16 push one byte.
+  if (firstByte === 0x00 || firstByte === 0x4f) return 1;
+  if (firstByte >= 0x51 && firstByte <= 0x60) return 1;
+  if (firstByte === 0x4c) {
+    if (offset + 2 > data.length) return undefined;
+    const length = data[offset + 1];
+    return offset + 2 + length <= data.length ? 2 + length : undefined;
+  }
+  if (firstByte === 0x4d) {
+    if (offset + 3 > data.length) return undefined;
+    const length = data[offset + 1] | (data[offset + 2] << 8);
+    return offset + 3 + length <= data.length ? 3 + length : undefined;
+  }
+  // Any other byte is either a direct length (1-75) or not a push at all (OP_PUSHDATA_4 and ordinary opcodes).
+  if (firstByte > 75) return undefined;
+  return offset + 1 + firstByte <= data.length ? 1 + firstByte : undefined;
+}
+
 /** Select a complete Solidity return from strongest-to-weakest live stack candidates. */
 export function selectEvmScalarReturnCommitment(
   candidates: readonly Uint8Array[], expectedTypes: readonly string[], allowRaw = true,
@@ -4706,11 +4736,19 @@ interface CachedProbeVm {
   vm: ReturnType<typeof createVirtualMachineBch2026ForProvider>;
 }
 
+interface CachedFaithfulTraceVm {
+  trace: AuthenticationProgramStateCommon[];
+  /** Phase exits reported by the cached P2SH evaluator during the current evaluation. */
+  phaseExits: number;
+  vm: ReturnType<typeof createVirtualMachineBch2026ForProvider>;
+}
+
 // Probe evaluation is synchronous, and a provider's consensus limits are immutable for its lifetime. Rebuilding
 // libauth's complete BCH-2026 instruction set (then wrapping the observed opcode handlers) for every convergence
 // step is therefore pure overhead. Keep the VM and its observer closure, resetting only the small trace buffer.
 const probeVmCache = new WeakMap<NetworkProvider, CachedProbeVm>();
 const debugVmCache = new WeakMap<NetworkProvider, ReturnType<typeof createVirtualMachineBch2026ForProvider>>();
+const faithfulTraceVmCache = new WeakMap<NetworkProvider, CachedFaithfulTraceVm>();
 
 function cachedDebugVm(provider: NetworkProvider): ReturnType<typeof createVirtualMachineBch2026ForProvider> {
   const existing = debugVmCache.get(provider);
@@ -4718,6 +4756,147 @@ function cachedDebugVm(provider: NetworkProvider): ReturnType<typeof createVirtu
   const vm = createVirtualMachineBch2026ForProvider(provider);
   debugVmCache.set(provider, vm);
   return vm;
+}
+
+/** Keys libauth's `partiallyCloneProgramState` shallow-clones; every other key is deep-cloned there. */
+const TRACE_SHALLOW_ARRAY_KEYS = new Set(['alternateStack', 'controlStack', 'signedMessages', 'stack']);
+
+/**
+ * Snapshot one program state for a faithful trace, mirroring libauth's `partiallyCloneProgramState`.
+ *
+ * The one deliberate difference is `functionTable`. libauth deep-clones it - the complete OP_DEFINE'd body table,
+ * tens of kilobytes for an outlined contract - on every operation, which is what made a 6,132-state probe spend
+ * 2.4 s almost entirely inside `structuredClone`. Sharing it is observationally equivalent: a repeated function
+ * identifier is a VM error, so the table only ever grows, and no consumer reads it from a historical trace.
+ * Everything else (including `metrics`) is copied exactly as libauth copies it, so an inactive-branch or
+ * mutated-item difference cannot hide behind this change.
+ */
+function snapshotProgramState(state: AuthenticationProgramStateCommon): AuthenticationProgramStateCommon {
+  return Object.fromEntries(Object.entries(state).map(([key, value]) => {
+    if (key === 'instructions' || key === 'program' || key === 'functionTable') return [key, value];
+    if (TRACE_SHALLOW_ARRAY_KEYS.has(key)) return [key, (value as unknown[]).slice()];
+    return [key, structuredClone(value)];
+  })) as AuthenticationProgramStateCommon;
+}
+
+function cachedFaithfulTraceVm(provider: NetworkProvider): CachedFaithfulTraceVm {
+  const existing = faithfulTraceVmCache.get(provider);
+  if (existing) return existing;
+  const cached = {
+    trace: [] as AuthenticationProgramStateCommon[],
+    phaseExits: 0,
+  } as CachedFaithfulTraceVm;
+  cached.vm = createFaithfulTraceVmForProvider(provider, (unknownState) => {
+    cached.trace.push(snapshotProgramState(unknownState as AuthenticationProgramStateCommon));
+  }, (unknownState) => {
+    cached.phaseExits += 1;
+    cached.trace.push(snapshotProgramState(unknownState as AuthenticationProgramStateCommon));
+  });
+  faithfulTraceVmCache.set(provider, cached);
+  return cached;
+}
+
+/**
+ * Evaluate `program` while recording a faithful trace, in the exact shape `vm.debug()` returns: each evaluation
+ * phase's entry state, the state after every operation of that phase, the state the phase ends with, and finally
+ * the evaluation result itself. The observer records the state *before* each operation (the entry state for the
+ * first one), the phase hook records each exit, and the result is appended last, so the sequence matches the
+ * reference state for state - including the duplicate of the final state that `debug()` appends as `finalResult`.
+ */
+function evaluateFaithfulProbeTrace(
+  provider: NetworkProvider,
+  program: Parameters<ReturnType<typeof createVirtualMachineBch2026ForProvider>['evaluate']>[0],
+): AuthenticationProgramStateCommon[] {
+  const cached = cachedFaithfulTraceVm(provider);
+  cached.trace.length = 0;
+  cached.phaseExits = 0;
+  const finalState = cached.vm.evaluate(program) as AuthenticationProgramStateCommon;
+  cached.trace.push(snapshotProgramState(finalState));
+  const completed = cached.trace;
+  cached.trace = [];
+  return completed;
+}
+
+/**
+ * Evaluate a probe program faithfully: the shallow recorder on a private/mock provider, libauth's `debug()`
+ * everywhere else.
+ *
+ * The recorder is equivalent to `debug()` only while the cached P2SH evaluator supplies the phase exits, and
+ * that evaluator is installed exactly when `maximumInputBytes > 10_000`. Below that the reference is kept, so a
+ * live network sees no change at all. Callers that need a full faithful trace (rather than the sparse observer's
+ * reduced one) use this instead of calling `debug()` directly.
+ */
+function evaluateFaithfulOrDebugTrace(
+  provider: NetworkProvider,
+  program: Parameters<ReturnType<typeof createVirtualMachineBch2026ForProvider>['evaluate']>[0],
+): AuthenticationProgramStateCommon[] {
+  const maxIn = provider.consensusLimits?.maximumInputBytes ?? 10_000;
+  if (maxIn <= 10_000) return cachedDebugVm(provider).debug(program) as AuthenticationProgramStateCommon[];
+  const faithful = evaluateFaithfulProbeTrace(provider, program);
+  if ((globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env
+    ?.SOLIDC_DEBUG_TRACE_PARITY === '1') {
+    logProbeTraceParity(cachedDebugVm(provider).debug(program) as AuthenticationProgramStateCommon[], faithful);
+  }
+  return faithful;
+}
+
+/**
+ * Compare the faithful recorder's trace with libauth's `debug()` reference and report the first divergence.
+ *
+ * Diagnostic only, enabled by `SOLIDC_DEBUG_TRACE_PARITY=1`: it is how the shallow recorder is held to the
+ * reference on a real probe, where a mutation-in-place or inactive-branch difference would otherwise be silent.
+ */
+function logProbeTraceParity(
+  reference: AuthenticationProgramStateCommon[],
+  candidate: AuthenticationProgramStateCommon[],
+): void {
+  const stackOf = (state: AuthenticationProgramStateCommon): string[] =>
+    state.stack.map((item) => binToHex(item));
+  const describe = (state: AuthenticationProgramStateCommon): Record<string, unknown> => ({
+    ip: state.ip,
+    instructions: state.instructions.length,
+    error: state.error,
+    stack: stackOf(state),
+    alternateStack: state.alternateStack.map((item) => binToHex(item)),
+    controlDepth: state.controlStack.length,
+  });
+  if (reference.length !== candidate.length) {
+    const boundaries = (trace: AuthenticationProgramStateCommon[]): number[] => {
+      const found: number[] = [];
+      let previous: unknown;
+      trace.forEach((state, index) => {
+        if (state.instructions !== previous) {
+          previous = state.instructions;
+          found.push(index);
+        }
+      });
+      return found;
+    };
+    console.error('probe-trace-parity', {
+      equal: false,
+      reason: 'length',
+      referenceStates: reference.length,
+      candidateStates: candidate.length,
+      referenceBoundaries: boundaries(reference),
+      candidateBoundaries: boundaries(candidate),
+    });
+    return;
+  }
+  for (let index = 0; index < reference.length; index += 1) {
+    const left = JSON.stringify(describe(reference[index]));
+    const right = JSON.stringify(describe(candidate[index]));
+    if (left !== right) {
+      console.error('probe-trace-parity', {
+        equal: false,
+        reason: 'state',
+        index,
+        reference: left.slice(0, 2000),
+        candidate: right.slice(0, 2000),
+      });
+      return;
+    }
+  }
+  console.error('probe-trace-parity', { equal: true, states: reference.length });
 }
 
 function fingerprintBytecode(bytes: Uint8Array, cache: WeakMap<Uint8Array, string>): string {
@@ -5062,10 +5241,41 @@ function evaluateProbeTrace(
     || debugEnv?.SC_FORCE_FULL_PROBE_TRACE === '1'
     || debugEnv?.SOLIDC_DEBUG_ROUTE_CONCISE === '1'
     || debugEnv?.SOLIDC_DEBUG_ROUTE_FULL_OPS === '1';
+  const probeTraceTiming = debugEnv?.SOLIDC_DEBUG_PROBE_TRACE_TIMING === '1';
+  // Above ordinary capacity `debug()` is not merely slow, it deep-clones the whole OP_DEFINE'd body table at
+  // every instruction. Prefer the faithful shallow recorder there; `debug()` remains the reference for ordinary
+  // capacity (where it is bounded) and for the explicit diagnostic overrides.
+  const useFaithfulRecorder = forceFullDebug && !preferFullDebug;
+  if (debugEnv?.SOLIDC_DEBUG_TRACE_PARITY === '1' && useFaithfulRecorder) {
+    const reference = cachedDebugVm(provider).debug(program) as AuthenticationProgramStateCommon[];
+    const candidate = evaluateFaithfulProbeTrace(provider, program);
+    logProbeTraceParity(reference, candidate);
+  }
   if (preferFullDebug || forceFullDebug) {
+    const debugStartedAt = probeTraceTiming ? Date.now() : 0;
+    if (useFaithfulRecorder) {
+      const faithful = evaluateFaithfulProbeTrace(provider, program);
+      if (probeTraceTiming) console.error('probe-trace-faithful', {
+        ms: Date.now() - debugStartedAt,
+        states: faithful.length,
+        maxIn,
+        inputs: program.transaction.inputs.length,
+        outputs: program.transaction.outputs.length,
+      });
+      return faithful;
+    }
     try {
       const full = cachedDebugVm(provider)
         .debug(program) as AuthenticationProgramStateCommon[];
+      if (probeTraceTiming) console.error('probe-trace-debug', {
+        ms: Date.now() - debugStartedAt,
+        states: full.length,
+        forced: forceFullDebug,
+        preferFullDebug,
+        maxIn,
+        inputs: program.transaction.inputs.length,
+        outputs: program.transaction.outputs.length,
+      });
       // Live-network pairing fix (solidcash_v0.13.1): `extractCommitmentMapFromTrace` pairs a commitment
       // read with the OP_EQUALVERIFY that FOLLOWS it and resets on any other opcode, which only holds for
       // a trace containing just the probe opcodes. A raw debug trace makes every pair look interrupted.
@@ -13731,8 +13941,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             let evmScalar = calleeReturnEncoding === 'evm-abi-v1'
               ? extractEvmScalarReturnCommitment(fullTraceRet, calleeReturnTypes, false) : undefined;
             if (!returnCommitments?.length && !evmScalar) {
-              fullTraceRet = createVirtualMachineBch2026ForProvider(this.inner.provider)
-                .debug(returnProgram) as AuthenticationProgramStateCommon[];
+              fullTraceRet = evaluateFaithfulOrDebugTrace(this.inner.provider, returnProgram);
               returnCommitments = extractCommitmentsFromTrace(fullTraceRet, 1, returnOutputRange, true);
               aggregatePending = routeReturnPushes > 1
                 ? extractPendingReturnCommitment(fullTraceRet, routeReturnPushes, routeReturnTypes) : undefined;
@@ -14207,9 +14416,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               transaction: returnProbe.buildLibauthTransaction(),
             };
             // Most routed returns expose the final OUTPUTTOKENCOMMITMENT/EQUALVERIFY pair directly. Use the
-            // sparse observer first: a full libauth debug trace clones every intermediate VM state and costs
-            // seconds for multi-megabyte routed inputs. Keep the faithful trace as a compatibility fallback for
-            // return construction that can only be recovered from an intermediate stack state.
+            // sparse observer first, then the faithful recorder as a compatibility fallback for return
+            // construction that can only be recovered from an intermediate stack state.
             let returnTrace = evaluateProbeTrace(this.inner.provider, returnProgram);
             const returnOutputIndex = group.returnOutputIndex
               ?? stb.getExternalCallReturnEventOutputIndex(groupIdx);
@@ -14223,8 +14431,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             let aggregatePending = routeReturnPushes > 1
               ? extractPendingReturnCommitment(returnTrace, routeReturnPushes, routeReturnTypes) : undefined;
             if (!returnCommitments?.length && !aggregatePending) {
-              returnTrace = createVirtualMachineBch2026ForProvider(this.inner.provider)
-                .debug(returnProgram) as AuthenticationProgramStateCommon[];
+              returnTrace = evaluateFaithfulOrDebugTrace(this.inner.provider, returnProgram);
               returnCommitments = extractCommitmentsFromTrace(
                 returnTrace, 1, { min: returnOutputIndex, max: returnOutputIndex + 1 }, true,
               );

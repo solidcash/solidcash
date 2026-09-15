@@ -97,6 +97,7 @@ function installCachedP2shEvaluator(
   instructionSet: ReturnType<typeof createInstructionSetBch2026>,
   provider: NetworkProvider,
   maximumBytecodeLength: number,
+  onPhaseComplete?: (state: unknown) => void,
 ): void {
   type State = Parameters<(typeof instructionSet.operations)[number]>[0];
   instructionSet.evaluate = (program, { stateEvaluate, stateInitialize, stateOverride }) => {
@@ -157,6 +158,9 @@ function installCachedP2shEvaluator(
       );
     }
     const unlockingResult = stateEvaluate(initialState);
+    // A faithful trace records each evaluation phase's exit state: `debug()` appends the state every phase ends
+    // with, and the observed operations alone cannot express a phase boundary.
+    onPhaseComplete?.(unlockingResult);
     if (unlockingResult.error !== undefined) return unlockingResult;
     if (unlockingResult.controlStack.length !== 0) {
       return applyError(
@@ -173,6 +177,7 @@ function installCachedP2shEvaluator(
       program,
       stack: unlockingResult.stack,
     } as State);
+    onPhaseComplete?.(lockingResult);
     if (lockingResult.error !== undefined) return lockingResult;
     if (lockingResult.controlStack.length !== 0) {
       return applyError(
@@ -219,6 +224,7 @@ function installCachedP2shEvaluator(
         program,
         stack: p2shStack,
       } as State);
+    onPhaseComplete?.(p2shResult);
     if (p2shResult.controlStack.length !== 0) {
       return applyError(
         p2shResult,
@@ -376,7 +382,51 @@ type ProviderVmObserver = {
   operation?: (
     opcode: number, state: unknown, operation: (state: never) => unknown,
   ) => unknown;
+  /**
+   * Record inactive conditional branches instead of jumping over them.
+   *
+   * The sparse probe deliberately skips them: it keeps only the six inspected opcodes, so an inactive branch
+   * cannot contribute an observation, and skipping keeps its instruction cost in the metrics. A faithful trace
+   * must not skip: `extractCommitmentMapFromTrace` reads adjacency, and `debug()` steps through every inactive
+   * instruction, so a jumped-over region would silently change which introspections pair with which equality.
+   */
+  recordInactiveBranches?: boolean;
+  /**
+   * Called with the state each top-level evaluation phase (unlocking, locking, redeem) ends with.
+   *
+   * `debug()` appends that state to its trace; an operation observer alone cannot see it, so a faithful trace
+   * built from observations needs this to reproduce the reference sequence exactly.
+   */
+  onPhaseComplete?: (state: unknown) => void;
 };
+
+/** Every opcode of the BCH-2026 instruction set: the faithful tracer observes the whole execution, not a subset. */
+const ALL_OPCODES: ReadonlySet<number> = new Set(Array.from({ length: 256 }, (_unused, opcode) => opcode));
+
+/**
+ * Build a VM that records a faithful, `debug()`-equivalent trace without deep-cloning each program state.
+ *
+ * libauth's `debug()` runs `partiallyCloneProgramState` before every operation, which `structuredClone`s every
+ * state key outside `instructions`/`program` and the four shallow-cloned arrays. On BCH-2026 the state also
+ * carries `functionTable` - the whole OP_DEFINE'd body table, tens of kilobytes for an outlined contract - so
+ * each step pays a deep copy of the entire program: a 6,132-state probe measured 2.4 s, of which the state
+ * copies are ~99%. Sharing the table here is observationally equivalent: identifiers can never be redefined
+ * (a repeated identifier is a VM error), so the table only grows, and no trace consumer reads it from a
+ * historical state.
+ */
+export function createFaithfulTraceVmForProvider(
+  provider: NetworkProvider,
+  beforeOperation: (state: unknown) => void,
+  onPhaseComplete?: (state: unknown) => void,
+): ReturnType<typeof createVirtualMachineBch2026> {
+  return buildVirtualMachineBch2026ForProvider(provider, {
+    opcodes: ALL_OPCODES,
+    beforeOperation,
+    recordInactiveBranches: true,
+    onPhaseComplete,
+  }, true);
+}
+
 
 export function createVirtualMachineBch2026ForProvider(
   provider?: NetworkProvider,
@@ -429,9 +479,13 @@ function buildVirtualMachineBch2026ForProvider(
     consensus, ripemd160, secp256k1, sha1, sha256,
   } as never);
   if (limits !== undefined && limits.maximumInputBytes > 10_000) {
-    installCachedP2shEvaluator(instructionSet, provider!, limits.maximumInputBytes);
+    installCachedP2shEvaluator(
+      instructionSet, provider!, limits.maximumInputBytes, observer?.onPhaseComplete,
+    );
     installCachedInvokeEvaluator(instructionSet);
-    if (observer !== undefined) installSparseProbeBranchSkips(instructionSet);
+    if (observer !== undefined && observer.recordInactiveBranches !== true) {
+      installSparseProbeBranchSkips(instructionSet);
+    }
   }
   type State = Parameters<(typeof instructionSet.operations)[number]>[0];
   if (limits !== undefined) {

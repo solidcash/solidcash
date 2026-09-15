@@ -270,6 +270,12 @@ function clearTransferIndexMemo(): void {
   transferIndexMemo = new WeakMap<Node, ReadonlySet<number>>();
 }
 
+/** Back-reference keys no AST walk may follow; shared so no walk allocates its own list per node. */
+const EXTERNAL_CALL_LOOP_WALK_EXCLUDED_KEYS = new Set([
+  'resolvedFunction', 'functionReference', 'definition', 'symbolTable',
+  'referencedContract', 'stateVariable', 'collection', 'sourceCallNode',
+]);
+
 const MAX_MATERIALIZED_ARRAY_ELEMENTS = 10000;
 // The "invalid" internal function-pointer value (Solidity's zero fn-ptr). functionIds are small sequential ints
 // (from 0), so this large sentinel is never a defined id and OP_INVOKE hard-fails on it -> calling a deleted or
@@ -1609,6 +1615,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   // Delegatecall tracking
   private functionHasDelegatecall: boolean = false;
+  /** Per-body loop-context maps for `isExternalCallSlotLoopNested`; the AST is stable within one emission. */
+  private readonly loopNestingByBody = new WeakMap<Node, WeakMap<Node, boolean>>();
+
   private currentFunctionIsDelegate: boolean = false;
 
   private currentFunctionIsMessageBusRoute: boolean = false;
@@ -4956,7 +4965,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           minimumWindowElements,
           candidateGroupsPerRound,
           undefined,
-          largeBodyOutline ? 1 : 6,
+          // Two rounds reach the useful fixed point: measured on the marketplace corpus rounds 2-5 recover
+          // 11.3 KB at 34 B/ms against 500+ B/ms for round 0.
+          largeBodyOutline ? 1 : 2,
         );
         if ((globalThis as any).process?.env?.SOLIDC_DEBUG_OUTLINE_TIMING === '1') {
           console.error('[outline-timing]', JSON.stringify({
@@ -27169,26 +27180,36 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (slot.loopArrayVar || slot.inlineLoopDispatch) return true;
     const target = slot.sourceCallNode;
     if (!target || !this.currentFunction?.body) return false;
-    const seen = new Set<object>();
-    const walk = (value: unknown, inLoop: boolean): boolean => {
-      if (!(value instanceof Node) || seen.has(value)) return false;
+    // Every slot in one emitted function asked the same question and walked the whole body for it. The walk is
+    // deterministic and shares one visited set per query, so the first-encounter loop context of every node is
+    // the answer for every question: one walk per body answers all of them. The context recorded for a node is
+    // the one the per-slot walk would have returned, because both traverse in the same order from the same root
+    // and prune re-visits identically.
+    return this.loopNestingWithin(this.currentFunction.body).get(target) === true;
+  }
+
+  /** Node -> whether the first traversal step reaching it was inside a While/DoWhile of `body`. */
+  private loopNestingWithin(body: Node): WeakMap<Node, boolean> {
+    const cached = this.loopNestingByBody.get(body);
+    if (cached !== undefined) return cached;
+    const nesting = new WeakMap<Node, boolean>();
+    const seen = new Set<Node>();
+    const walk = (value: unknown, inLoop: boolean): void => {
+      if (!(value instanceof Node) || seen.has(value)) return;
       seen.add(value);
-      if (value === target) return inLoop;
+      nesting.set(value, inLoop);
       const nextLoop = inLoop || value instanceof WhileNode || value instanceof DoWhileNode;
       for (const [key, child] of Object.entries(value)) {
-        if (['resolvedFunction', 'functionReference', 'definition', 'symbolTable',
-          'referencedContract', 'stateVariable', 'collection', 'sourceCallNode'].includes(key)) continue;
-        if (child instanceof Node) {
-          if (walk(child, nextLoop)) return true;
-        } else if (Array.isArray(child)) {
-          for (const item of child) {
-            if (walk(item, nextLoop)) return true;
-          }
+        if (EXTERNAL_CALL_LOOP_WALK_EXCLUDED_KEYS.has(key)) continue;
+        if (child instanceof Node) walk(child, nextLoop);
+        else if (Array.isArray(child)) {
+          for (const item of child) walk(item, nextLoop);
         }
       }
-      return false;
     };
-    return walk(this.currentFunction.body, false);
+    walk(body, false);
+    this.loopNestingByBody.set(body, nesting);
+    return nesting;
   }
 
   private emitDynamicWriteVerification(node: FunctionDefinitionNode): void {

@@ -2639,6 +2639,27 @@ export class AtomicMessageBusComposition {
             valueChunkProductions.set(identity, production);
           }
         }
+        // One storage resource written by several batched rows of the same route accumulates a chain of
+        // productions: the first row's claim is the value after row 1, the next row's claim the value after
+        // row 2, and so on. Only the terminal write persists, so keep the highest mutation ordinal per resource
+        // and drop the intermediate lanes: the routed builder accepts exactly one terminal claim per resource
+        // (selectSingletonValueChunkProducer), and a superseded lane's value would never be observable.
+        const terminalProducerByResource = new Map<string, string>();
+        const terminalOrdinalByResource = new Map<string, number>();
+        for (const production of valueChunkProductions.values()) {
+          const resource = valueChunkWriteResourceIdentity(production.write);
+          const ordinal = production.claim.producer.mutationSourceEffectOrdinal;
+          const producer = canonicalValueChunkProducerIdentity(production.claim.producer);
+          if (producer === undefined) continue;
+          if ((terminalOrdinalByResource.get(resource) ?? -1) > ordinal) continue;
+          terminalOrdinalByResource.set(resource, ordinal);
+          terminalProducerByResource.set(resource, producer);
+        }
+        for (const [identity, production] of [...valueChunkProductions]) {
+          const resource = valueChunkWriteResourceIdentity(production.write);
+          const producer = canonicalValueChunkProducerIdentity(production.claim.producer);
+          if (terminalProducerByResource.get(resource) !== producer) valueChunkProductions.delete(identity);
+        }
         if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
           ?.SOLIDC_DEBUG_ATOMIC_GRAPH === '1' && valueChunkProductions.size > 0) {
           console.error('atomic-transported-value-productions', {
@@ -2675,6 +2696,10 @@ export class AtomicMessageBusComposition {
             + `slots but publishes ${valueChunkSlots.length}`,
           );
         }
+        // After the terminal selection above, each storage resource contributes exactly one lane. The routed
+        // builder's `selectSingletonValueChunkProducer` accepts one terminal claim per resource, and
+        // `carrier.valueChunkStateOwner` is a single owner, so a participant may still not publish lanes for
+        // several distinct resources.
         if (transportedValueChunks.length > 1) {
           throw new Error('messageBus: one routed participant cannot publish multiple continuation resource lanes');
         }

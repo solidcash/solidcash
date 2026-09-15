@@ -285,15 +285,32 @@ lost the change's marker before timing it, alternates the halves, reports paired
 and says whether bytecode differs between halves. It immediately caught a bad invocation (`0a9e1a973` used
 as its own baseline) that the old ad-hoc loop would have silently reported as a result.
 
-**Correction to the round-9 plan: the probe's cost cannot be memoised away.** The plan's fallback for
-`subroutineUseProbe` was to cache the expensive per-body predicates the second pass repeats. Reading the code
-kills that idea: `hasChunkableMappingWrite` is a closure used once per visit, `hasRuntimeLoopEntryWrite`
-already carries a `seen` set, and the predicates visible in the probe subtree
-(`hasRuntimeLoopEntryWrite` 21 ms, `scan` 21 ms, `hasChunkableMappingWrite` 13 ms, `collectMappingSlots`
-13 ms) total ~50 ms of the probe's 415 ms of self time. **The probe's cost is the emission traversal itself**
-- `walk` alone is 112 ms - so the only version of this win that exists is the full emit-once-and-patch
-redesign (emit with provisional ids, rehome, then rewrite every `<id push> OP_INVOKE`). That is a codegen
-restructuring, not a cache, and it stays the highest-risk item on the list.
+**The probe is a required pre-pass, not removable redundancy (round 12 - item closed).** Two rounds of
+planning assumed `subroutineUseProbe` could be folded into emission: first by memoising the per-body
+predicates it repeats, then by emitting once with provisional ids and patching every `<id push> OP_INVOKE`
+after rehoming. Both are wrong, and the second is wrong for a structural reason:
+
+* The tally is not only an id input. `capturedSubroutineIsProfitable(id, uses, inlineEmit)` starts with
+  `if (uses < 2) return false;` and its callers then **inline the helper body instead of emitting an
+  `OP_DEFINE` plus an invoke** (`GenerateTargetTraversal.ts:3970`, called from the `intEncode`/frame/`MSP`/
+  `MUNIQ` captures around 2681-2762). Use counts therefore decide the *shape* of the emitted script, not a
+  value inside it. No byte-level patch can turn an inlined body into a shared subroutine, so "emit once and
+  patch ids" cannot reproduce today's output.
+* Its size was also over-stated by the phase label. The probe sets `this.preambleComputedFor = node` after
+  calling `computeScalarJournalClosures` and `computeRuntimeLoopEntryOutputCountFunctions`, and
+  `emitFunctionDefinesAndDispatch` skips both when that marker matches
+  (`GenerateTargetTraversal.ts:3662-3666`). Those two analyses are 0.170 s + 0.110 s of the 1.395 s the probe
+  subtree costs across ten roots - work the real emission needs regardless, merely performed earlier. The dry
+  run's own cost is ~1.1 s per corpus (~110 ms/root, ~2.5 % of a root), and the `codegen:probe` phase label
+  attributes the shared prerequisite work to it, which is where the earlier "10 %" came from.
+* The memoisation alternative has no target either: `walk` self time is spread over a dozen call sites in
+  `GenerateTargetTraversal` at 44 ms or less each, and the predicates visible inside the probe subtree total
+  ~50 ms of its 415 ms of self time.
+
+Remaining option, deliberately not taken: have the dry run also emit bytes and reuse them when
+`rehomeHotHelperIds` relocates nothing. That saves the second traversal only for contracts where no helper is
+relocated to the cheap pool - and it requires the count-driven `OP_DEFINE`-vs-inline decisions to be made
+during the *same* pass, which is exactly what makes it a redesign of `visitContract`, not a saving.
 
 ### Incident to know about (round 11, caught before it shipped)
 
@@ -321,13 +338,10 @@ One root's compile, by phase (`MarketplaceV1`, `SOLIDC_PROFILE=1`, total 4,247 m
 Every remaining double-digit item is blocked by something concrete, and the blockers were measured, not
 assumed:
 
-* **`subroutineUseProbe` (10 % of a root) - blocked by emission, not by the probe.** The probe is a full
-  dry run of `emitFunctionDefinesAndDispatch` whose byte appends are skipped; its products are the use counts
-  (which decide which helpers are captured and in which order ids are rehomed) and the structural-helper id
-  maps the real emission then reuses. Removing it needs the emission and the census to become one pass, i.e.
-  emitting with provisional ids and patching every `<id push> OP_INVOKE` after rehoming - a codegen redesign,
-  not a probe rewrite. The alternative "count the sites from the AST instead" has to reproduce the emission's
-  own helper-capture decisions to stay equivalent.
+* **`subroutineUseProbe` - closed in round 12 (see the correction above).** It is a required pre-pass: its
+  tally decides `OP_DEFINE`-vs-inline per helper, so it cannot be folded into emission by patching ids, and
+  its own cost is ~2.5 % of a root once the prerequisite analyses it memoises for the real emission are
+  discounted. Do not re-open this without a plan that addresses the count-driven capture decision.
 * **The detached verifier (15 %) - both compiles are required, proven by experiment (round 9).** See the round-8
   entry below: skipping the pre-codegen compile leaks the placeholder lock into the shipped script.
 * **The outline width sweep (16 %) - required for bytecode size.** Both `[12, 10]` widths run only for

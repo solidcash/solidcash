@@ -18,6 +18,7 @@ import type { TransactionBuilder } from '../TransactionBuilder.js';
 import { assertGraphTrailingCapacity, type GraphTrailingRegion } from './graph.js';
 import { ATOMIC_MESSAGE_ENVELOPE_MIN_BYTES, decodeAtomicMessageEnvelope } from './atomic.js';
 import { MessageBusDiagnosticError } from './diagnostics.js';
+import { inputMayExecuteOutputTokenCommitment } from './executable-opcode-eligibility.js';
 
 /**
  * Measure each participant's ACTUAL runtime-resource run off the unsigned builder, and refuse a run the
@@ -206,6 +207,11 @@ const convergeMessageBusMutableResourceOutputs = (
 
   const changedOutputs = new Set<number>();
   const seenStates = new Set<string>();
+  const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+  // Input programs are authenticated by immutable source outputs. Cache only proofs of opcode absence; uncertain
+  // or malformed spends stay eligible. Output repairs may rebuild arguments, but cannot change the authenticated
+  // direct program or P2SH redeem script without making the spend invalid.
+  const observerEligibility = new Map<number, boolean>();
   let repairs = 0;
   const maximumRounds = candidateCount * 2 + 1;
   for (let round = 1; round <= maximumRounds; round += 1) {
@@ -218,7 +224,6 @@ const convergeMessageBusMutableResourceOutputs = (
     seenStates.add(stateKey);
 
     const transaction = builder.buildLibauthTransaction();
-    const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
     const proposals = new Map<number, { commitment: Uint8Array; inputIndex: number; ip: number }>();
     const observed = new Map<number, { commitment: Uint8Array; ip: number }>();
     let owned = new Set<number>();
@@ -252,6 +257,15 @@ const convergeMessageBusMutableResourceOutputs = (
       for (let inputIndex = block.base;
         inputIndex < block.base + block.blockLayout.blockSize;
         inputIndex += 1) {
+        let eligible = observerEligibility.get(inputIndex);
+        if (eligible === undefined) {
+          const source = sourceOutputs[inputIndex];
+          const input = transaction.inputs[inputIndex];
+          eligible = source === undefined || input === undefined
+            || inputMayExecuteOutputTokenCommitment(source.lockingBytecode, input.unlockingBytecode);
+          observerEligibility.set(inputIndex, eligible);
+        }
+        if (!eligible) continue;
         observed.clear();
         const evaluated = vm.evaluate({ inputIndex, sourceOutputs, transaction });
         if (vm.stateSuccess(evaluated) === true) continue;

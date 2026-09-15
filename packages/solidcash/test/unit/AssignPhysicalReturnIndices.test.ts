@@ -4,7 +4,10 @@ import {
   type Artifact, type EntryAccessAbi,
 } from '@solidcash/utils';
 import { describe, expect, it } from 'vitest';
-import { vmapBatchWitnessFallback } from '../../src/stateful/StatefulContract.js';
+import {
+  adaptLegacyNestedJobEventArguments,
+  vmapBatchWitnessFallback,
+} from '../../src/stateful/StatefulContract.js';
 import { encodeEntryCommitment } from '../../src/stateful/SortedList.js';
 import {
   assignPhysicalReturnIndices,
@@ -3391,6 +3394,49 @@ describe('assignPhysicalReturnIndices', () => {
     expect(hex!.length).toBeGreaterThan(10);
     const viaStruct = encodeJobEventEmitCommitment(0, stamped);
     expect(viaStruct === hex || (viaStruct?.startsWith('0060') && viaStruct !== '0060000000')).toBe(true);
+  });
+
+  it('quarantines nested timestamp adaptation to the exact legacy ABI schema', () => {
+    const artifact = (convention: 'legacy-unroll' | 'kernel-row-loop', renamed = false) => ({
+      contractName: 'Archive',
+      abi: [{
+        name: 'appendNotice',
+        inputs: [
+          { name: 'item', type: renamed ? 'Notice' : 'JobEventData' },
+          { name: 'id', type: 'uint256' },
+        ],
+      }],
+      structs: [{
+        name: renamed ? 'Notice' : 'JobEventData',
+        fields: renamed
+          ? [
+            { name: 'kind', type: 'uint8' },
+            { name: 'recipient', type: 'bytes' },
+            { name: 'payload', type: 'bytes' },
+            { name: 'observedAt', type: 'uint32' },
+          ]
+          : [
+            { name: 'type_', type: 'uint8' },
+            { name: 'address_', type: 'bytes' },
+            { name: 'data_', type: 'bytes' },
+            { name: 'timestamp_', type: 'uint32' },
+          ],
+      }],
+      messageBus: { convention },
+    }) as unknown as Artifact;
+    const original = [16, '', '', 0] as const;
+    const timestamp = 0x65574ce0n;
+
+    // Function spelling and argument position provide no authority; only the explicitly legacy schema adapts.
+    expect(adaptLegacyNestedJobEventArguments(
+      artifact('legacy-unroll'), 'appendNotice', [original, 7n], timestamp,
+    )[0]).toEqual([16, '', '', timestamp]);
+    expect(adaptLegacyNestedJobEventArguments(
+      artifact('kernel-row-loop'), 'appendNotice', [original, 7n], timestamp,
+    )[0]).toBe(original);
+    expect(adaptLegacyNestedJobEventArguments(
+      artifact('legacy-unroll', true), 'appendNotice', [original, 7n], timestamp,
+    )[0]).toBe(original);
   });
 
   it('selects the post-append value whose sha256 is the chunk pin, not the Created witness', () => {

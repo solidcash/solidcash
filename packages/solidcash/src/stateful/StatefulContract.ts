@@ -2100,6 +2100,34 @@ export function usesLegacyJobEventCompatibility(
 }
 
 /**
+ * Apply the historical JobEvent timestamp wire adapter to a nested legacy-unroll call.
+ *
+ * This compatibility behavior is selected by the callee artifact convention and the exact legacy ABI type,
+ * never by a function name or a positional argument assumption. Kernel artifacts must preserve user arguments:
+ * their state transition is derived by executing the compiler-authenticated handler body.
+ */
+export function adaptLegacyNestedJobEventArguments(
+  artifact: Artifact,
+  functionName: string,
+  args: readonly FunctionArgument[],
+  timestamp: bigint,
+): FunctionArgument[] {
+  const functions = (artifact.abi as readonly AbiFunction[])
+    .filter((candidate) => candidate.name === functionName);
+  if (functions.length !== 1) return [...args];
+  const fn = functions[0];
+  if (fn.inputs.length !== args.length) return [...args];
+  const compatibleInputs = fn.inputs.flatMap((input, index) => (
+    usesLegacyJobEventCompatibility(artifact, input.type, artifact.structs) ? [index] : []
+  ));
+  if (compatibleInputs.length !== 1) return [...args];
+  const adapted = [...args];
+  const inputIndex = compatibleInputs[0];
+  adapted[inputIndex] = stampEmptyJobEventTimestamp(adapted[inputIndex], timestamp) as FunctionArgument;
+  return adapted;
+}
+
+/**
  * Opt into the historical event-payload trace exclusion only when artifact metadata identifies the exact legacy
  * wire schema. Modern/kernel artifacts and descriptor-free general contracts must classify trace commitments by
  * compiler-owned slot/range authority, never by bytes which happen to resemble an application payload.
@@ -24031,7 +24059,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   graphPlanningResults,
                 )
                 : undefined;
-              const nestedArgs = nestedExpressionReturns
+              let nestedArgs = nestedExpressionReturns
                 ? this._resolveExternalArgs(
                   nestedSources,
                   delegateVisibleArgs,
@@ -24054,11 +24082,16 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   + 'that cannot yet be resolved by the SDK.',
                 );
               }
-              // Nested publishJobEvent fills empty timestamp_ with block.timestamp before store.
-              // Stamp logical args so unlocker encodings are 28B (stamped) not 24B (timestamp_=0).
-              // First insert keeps tip (post job 1 / whitelist green); appends use tip-1 (= nLocktime).
-              if ((resolvedRawFunctionName ?? nested.functionName) === 'publishJobEvent'
-                && nestedArgs.length >= 2) {
+              // Historical legacy-unroll artifacts encoded their JobEvent payload after implicitly filling the
+              // timestamp. Keep that wire adapter quarantined to its exact ABI schema. Kernel calls retain their
+              // source arguments and derive mutations by executing the authenticated handler behind OP_INVOKE.
+              const nestedFunctionName = resolvedRawFunctionName ?? nested.functionName;
+              const hasLegacyJobEventInput = (callee.inner.artifact.abi as readonly AbiFunction[])
+                .filter((candidate) => candidate.name === nestedFunctionName)
+                .some((candidate) => candidate.inputs.some((input) => usesLegacyJobEventCompatibility(
+                  callee.inner.artifact, input.type, callee.inner.artifact.structs,
+                )));
+              if (hasLegacyJobEventInput) {
                 const tip = Number(
                   (this.inner.provider as { getBlockTime?: () => number }).getBlockTime?.() ?? 0,
                 );
@@ -24071,7 +24104,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 const now = BigInt(
                   locktime ?? (tip > 0 ? tip : Math.floor(Date.now() / 1000)),
                 );
-                nestedArgs[1] = stampEmptyJobEventTimestamp(nestedArgs[1], now) as FunctionArgument;
+                nestedArgs = adaptLegacyNestedJobEventArguments(
+                  callee.inner.artifact, nestedFunctionName, nestedArgs, now,
+                );
               }
               const graphExpressionReturns = preparedAtomicNodes && needsExpressionReturns
                 ? await this._resolveExternalExpressionReturns(

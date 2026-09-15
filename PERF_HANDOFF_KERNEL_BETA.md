@@ -312,6 +312,35 @@ Remaining option, deliberately not taken: have the dry run also emit bytes and r
 relocated to the cheap pool - and it requires the count-driven `OP_DEFINE`-vs-inline decisions to be made
 during the *same* pass, which is exactly what makes it a redesign of `visitContract`, not a saving.
 
+### Round 13: the two unprofiled areas, measured
+
+**Parallel root compilation pays, but sub-linearly and at a large CPU cost.** Measured by running the ten-root
+corpus as N independent probe processes at once (each process is a real compile with its own startup and its
+own caches, so this is the achievable number, not an idealised one):
+
+| processes | group walls | wall | summed CPU |
+|---|---|---|---|
+| 1 | 16-19 s total | 16-19 s | 32,134 ms |
+| 2 | 9,671 / 13,015 ms | ~13.0 s | 40,430 ms (**+26 %**) |
+| 4 | 6,926 / 10,064 / 9,905 / 6,062 ms | ~10.1 s | 56,793 ms (**+77 %**) |
+
+So four workers buy roughly **1.7x wall for 1.8x the CPU**. The shrinkage is per-process ESM startup, repeated
+JIT warm-up, memory-bandwidth/GC contention, and - the one that matters for this branch - the loss of every
+cross-root cache this session added (import parse cache, verifier program memo, the round-10 lock cache), all
+of which are per-process. On a smaller CI box the CPU multiplier would bite before the wall win. If this is
+built, it should be an opt-in `--parallel` (or `--jobs N`) on the compile task, not a default, and the job
+cache means it only ever helps a cold full build.
+
+**The split path is not a hidden cost multiplier here - it is a capacity wall.** Compiling the marketplace
+roots against the real 10,000-byte input limit does not shard them; it refuses:
+`SPLIT_CLOSURE_CAPACITY: Cannot split 'MarketplaceV2': indivisible closure 'approveResult' is 20,624 bytes
+(limit 10,000)` and `Cannot split 'UnicrowClaim': indivisible closure 'claim' is 15,035 bytes (limit 10,000)`.
+The route closures are 1.5-2x the limit as single units, so no facet packing can help. Every performance
+number in this document was therefore measured on the *only* path these contracts have (the mock network's
+10 MB ceiling), and the binding constraint for deploying them at consensus size is **bytecode size, not
+compile speed** - which is what the kernel work exists to move. Do not spend compile-time effort on the split
+path until the contracts fit.
+
 ### Incident to know about (round 11, caught before it shipped)
 
 `scripts/perf-ab.sh` originally produced its baseline half with `git checkout <commit> -- <path>`, which

@@ -500,6 +500,64 @@ Round 15 leaves these open, in the order they are worth doing:
    and the unused `source` read in the split loop). Neither is caused by this branch's work, and both are cheap
    to fix in a change which is allowed to touch that package's fixtures.
 
+### Round 16: the vitest harness is latency-bound, not compute-bound
+
+Rounds 14-15 closed the two harness items that were visible from the transform side (the resolver plugin at 1.16 ms,
+the typechain barrel at ~0.4 s). What was left was the phase summary itself: `transform 4.4 s, setup 4.2 s,
+import 2.2 s, tests 12.4 s` on a 19 s title. Profiling all three processes (worker via `test.execArgv`, main via
+`NODE_OPTIONS=--cpu-prof`) explains it, and the explanation says the remaining levers are small.
+
+**The decomposition that makes the rest measurable.** A filter matching no test still transforms the file, runs
+the setup files and imports the graph, so it prices the harness on its own:
+
+| run | vitest duration | bash wall | CPU (user+sys) | transform | setup | import | tests |
+|---|---|---|---|---|---|---|---|
+| `-t 'no-such-test'` (66 skipped) | 5.84 s | 6.72 s | 7.79 s | 3.79 | 3.77 | 1.86 | 0 |
+| `-t 'post job 1$'` | 17.94 s | 18.51 s | 12.46 s | 3.71 | 3.56 | 1.88 | **12.31** |
+
+So the harness floor is **~6 s wall of an ~18 s run** (and it is CPU-bound: 7.8 s of CPU over 6.7 s of wall,
+because the main process and the worker overlap), while the test phase is **12.3 s wall for ~4.7 s of CPU**.
+The test's own cost is therefore ~62 % waiting.
+
+**Where the CPU actually is** (sampled self time; idle in brackets):
+
+| process | sampled | own work | notable |
+|---|---|---|---|
+| main | 18.2 s (82 % idle) | 3.2 s | vite 1.34 (`visit`, `traceMappings`, `decode` - sourcemap machinery), gc 0.43, node 0.37, vitest 0.12, rollup 0.09; `getPackageScopeConfig` 194 ms + `internalModuleStat` 161 ms |
+| worker | 18.6 s (69 % idle) | 5.7 s | libauth 1.94 (contract VM - real execution), SDK 0.69, structuredClone 0.40, module evaluation ~0.5, vite 0.09, gc 0.28 |
+| npm wrapper | 18.5 s (98 % idle) | ~0.3 s | - |
+
+The timelines are the interesting part: the **main** process is busy only in seconds 0-6.5 (vite transform) and
+idle from 7 to 18; the **worker** is busy in 0-7 (module evaluation and fixture deployment) and 15-18 (the test's
+final transactions), and runs at ~50 ms of JS per second through 8-14. Both processes are idle at the same time
+for roughly 6 s. Nothing in the test, the SDK or the shims sleeps (no `setTimeout`, no `await new Promise(delay)`),
+so that window is waiting on something outside the two JS stacks.
+
+**One concrete trace of it:** the vitest processes write **~4-7 MB/s in two bursts, ~23 MB per run**, and it is not
+the Vite cache (`.marketplace/vite-cache-marketplace` is 4 KB of `results.json`) and not the repo (nothing new
+under `.marketplace/` or `examples/effectiveacceleration/` survives the run), so it is temp files that are deleted
+again. Locating that writer is the top remaining harness item: run with `TMPDIR` pointed at a directory that is
+polled during the run, or sample `/proc/<worker>/fd` for regular-file descriptors.
+
+**Levers tested, none landed:**
+
+| lever | result |
+|---|---|
+| `pool: 'threads'` | 19.83 s wall / 12.55 s CPU against the fork pool's 18.51 / 12.47 - no win, and the threads pool rejects `execArgv: ['--max-old-space-size=8192']` outright (`ERR_WORKER_INVALID_EXEC_ARGV`), so it would force that flag into `NODE_OPTIONS` for every run |
+| `esbuild.sourcemap: false` + `build.sourcemap: false` | inconclusive: the run took 23.8 s wall with 8.2 s of system time, i.e. the host was doing heavy I/O; the profiled sourcemap work is inside Vite's SSR transform, which the esbuild knob does not necessarily reach. Worth one clean repeat before believing either way |
+| resolver-plugin memoisation | 1.16 ms (round 15) - closed |
+
+**Ceiling, so the next session does not re-open this:** the entire pre-test harness is ~6 s, and its largest piece
+(Vite transform, 3.7 s wall) is only ~1.9 s of CPU across two processes - it is round-trip latency, not
+computation. Removing *all* of the main process's sourcemap and resolution work would save about 1 s of wall. The
+12.3 s test phase is the fixture deployment plus one test body, whose 4.7 s of CPU is mostly libauth VM execution
+(real contract evaluation) and the SDK; the rest is the wait for whatever the ~23 MB of writes belong to. There is
+no longer a large lever in the vitest configuration itself.
+
+Judge future work with the two-run decomposition above (floor vs full, CPU and delta) rather than with the phase
+labels, which overlap: their sum is ~22 s on an 18 s run, and round 14 already showed most of "transform" is not
+transform.
+
 ### Incident to know about (round 11, caught before it shipped)
 
 `scripts/perf-ab.sh` originally produced its baseline half with `git checkout <commit> -- <path>`, which

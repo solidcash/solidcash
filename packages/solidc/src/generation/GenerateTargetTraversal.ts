@@ -240,7 +240,7 @@ import {
 import { analyzeInlineAssembly } from '../semantic/InlineAssemblyDiagnostics.js';
 import { isKernelSafeNativeAssembly } from '../semantic/NativeAssemblyKernelSafety.js';
 import {
-  isEvmAbiWordType, isEvmExternalResultSchemaDecodable,
+  externalResultEncoding, isEvmAbiWordType, isEvmExternalResultSchemaDecodable,
 } from '../semantic/ExternalResultEncoding.js';
 import { analyseContractInvocations, walkInvocationAst } from '../analysis/InvocationAnalysis.js';
 import { cloneNode, cloneNodeReplacing } from '../ast/clone.js';
@@ -11594,6 +11594,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // External return data has one schema-wide representation. The consumer makes this same decision before
     // decoding, so mixing EVM words for some fields with compact pushdata for others is never sound.
     const evmEntrypointReturn = publishesEntrypointReturn
+      && !this.currentFunctionIsMessageBusRoute
       && (this.compilerOptions.evmCompat || this.compilerOptions.solidityImportCompat)
       && isEvmExternalResultSchemaDecodable(returnTypes);
 
@@ -16477,11 +16478,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   visitAbiEncode(node: AbiEncodeNode): Node {
     const locationData = { location: node.location, positionHint: PositionHint.START };
 
-    // Solidity-source compatibility must preserve Solidity's ABI at compiler-generated boundaries too. The
-    // message-bus route uses abi.encode to publish authenticated child results; compact SolidCash framing here
-    // turns `true` into `0151`, which is neither the callee's EVM-compatible return commitment nor decodable by
-    // callers such as OpenZeppelin SafeERC20.
-    if (this.compilerOptions.evmCompat || this.compilerOptions.solidityImportCompat) {
+    // User-authored abi.encode always retains Solidity ABI semantics in compatibility mode, including the
+    // explicit unsupported-schema error. A compiler-generated message-bus route is different: it aggregates
+    // each child row using that row's published external-result encoding, so a non-EVM schema must use the
+    // canonical compact tuple encoder without changing the source-language builtin.
+    const compatibilityAbi = this.compilerOptions.evmCompat || this.compilerOptions.solidityImportCompat;
+    const routeResultEncoding = this.currentFunction.messageBusRoute
+      ? externalResultEncoding(node.parameters.map((parameter) => parameter.type!), this.compilerOptions)
+      : undefined;
+    if (compatibilityAbi && routeResultEncoding !== 'compact-pushdata-v1') {
       this.emitEvmAbiEncode(node.parameters, locationData);
       return node;
     }

@@ -242,8 +242,7 @@ describe('messageBus.encodeMessageBatch', () => {
 
   it('decodes mixed EVM ABI and compact result rows using each authenticated row encoding', () => {
     const returning = compileString(RETURN_SOURCE, {
-      forceStateful: true,
-      messageBus: true,
+      forceStateful: true, messageBus: true, solidityImportCompat: true,
     });
     const encoded = messageBus.encodeMessageBatch(returning, [
       { function: 'twice', args: [3n] },
@@ -251,8 +250,8 @@ describe('messageBus.encodeMessageBatch', () => {
       { function: 'pair', args: [4n] },
     ]);
     // Keep the compiler-produced batch framing and row order, but exercise the decoder with an authenticated
-    // mixed schema. The artifact itself is native, proving result framing is selected per row rather than from
-    // the artifact-wide compatibility mode.
+    // mixed schema. The compatibility route's compiler-owned outer bytes carrier remains compact, while the
+    // inner rows still select their own encodings independently.
     const mixedPlan = {
       ...encoded,
       results: [
@@ -266,6 +265,8 @@ describe('messageBus.encodeMessageBatch', () => {
     const last = encodeEvmInvocationResult([5n, true], ['int256', 'bool']);
     const packed = Uint8Array.from([...first, ...compact, ...last]);
     const commitment = scriptToBytecode([packed]);
+
+    expect(returning.messageBus!.route.resultEncoding).toBe('compact-pushdata-v1');
 
     expect(messageBus.decodeMessageBusResults(returning, mixedPlan, commitment)).toEqual([
       { row: 0, type: 'int256', value: 6n },

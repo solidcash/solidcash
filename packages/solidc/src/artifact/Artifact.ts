@@ -2427,7 +2427,10 @@ export function generateArtifact(
     })),
     ...(func.returnTypes.length > 0 && {
       outputs: func.returnTypes.map((type) => ({ type: abiTypeString(type) })),
-      resultEncoding: externalResultEncoding(func.returnTypes, compilerOptions),
+      // The compiler-generated route always carries its aggregate vector in one compact outer bytes field.
+      // Individual handler rows independently publish EVM or compact result encodings inside that carrier.
+      resultEncoding: func.messageBusRoute
+        ? 'compact-pushdata-v1' : externalResultEncoding(func.returnTypes, compilerOptions),
     }),
     ...(func.modifiers.length > 0 && {
       modifiers: func.modifiers.map((m) => m.toString()),

@@ -1056,6 +1056,16 @@ describe('abi.encodePacked supported source types', () => {
   });
 });
 
+describe('abi.encode compatibility schema boundary', () => {
+  it('does not silently compact-encode unsupported user-authored fixed bytes', () => {
+    expect(() => compileString(
+      'contract C { function f(bytes39 value) public pure returns (bytes memory) {'
+      + ' return abi.encode(value); } }',
+      { solidityImportCompat: true },
+    )).toThrow(/evmCompat abi\.encode: unsupported type 'bytes39'/);
+  });
+});
+
 describe('soft-keyword method names', () => {
   it('accepts leave as an interface method name and call', () => {
     expect(compileString(

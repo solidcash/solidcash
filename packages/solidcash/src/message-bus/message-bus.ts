@@ -930,7 +930,7 @@ export function encodeMessageBatch(
  */
 export function decodeMessageBusResults(
   artifact: Artifact,
-  plan: EncodedMessageBatch,
+  plan: Pick<EncodedMessageBatch, 'results'>,
   commitment: Uint8Array,
 ): readonly DecodedMessageBusResult[] {
   const capability = artifact.messageBus;
@@ -939,13 +939,30 @@ export function decodeMessageBusResults(
     if (commitment.length !== 0) throw new Error('Non-returning message-bus batch plan has an unexpected result commitment');
     return [];
   }
-  // `__message_bus1` returns one `bytes`, so the ordinary return-event ABI wraps the route's packed per-row result
-  // vector in one outer bytes push. Authenticate/consume that outer field before interpreting the inner vector.
-  const outer = decodePushdataValue(commitment, 0, 'bytes');
-  if (outer.bytesConsumed !== commitment.length || !(outer.value instanceof Uint8Array)) {
-    throw new Error('message-bus batch result commitment is not one canonical bytes field');
+  // `__message_bus1` returns one `bytes`. Its outer carrier follows the published route ABI independently of
+  // each child row's result encoding. Current compiler-generated routes use compact framing; the EVM leg keeps
+  // older/external artifacts explicit rather than inferring the carrier from artifact-wide compatibility mode.
+  const carrierTypes = (capability.route.outputs ?? []).map((output) => output.type);
+  if (carrierTypes.length !== 1 || carrierTypes[0] !== 'bytes') {
+    throw new Error('message-bus batch route must publish exactly one bytes result carrier');
   }
-  const packed = outer.value;
+  const carrierEncoding = resolveExternalResultEncoding(
+    capability.route.resultEncoding, artifact, carrierTypes, 'message-bus route result carrier',
+  );
+  let packed: Uint8Array;
+  if (carrierEncoding === 'evm-abi-v1') {
+    const outer = decodeEvmInvocationResultPrefix(commitment, carrierTypes, artifact.structs, artifact.enums);
+    if (!outer || outer.bytesConsumed !== commitment.length || !(outer.values[0] instanceof Uint8Array)) {
+      throw new Error('message-bus batch result commitment is not one canonical EVM bytes field');
+    }
+    packed = outer.values[0];
+  } else {
+    const outer = decodePushdataValue(commitment, 0, 'bytes');
+    if (outer.bytesConsumed !== commitment.length || !(outer.value instanceof Uint8Array)) {
+      throw new Error('message-bus batch result commitment is not one canonical bytes field');
+    }
+    packed = outer.value;
+  }
   const structs = artifact.structs ?? artifact.stateLayout?.structs;
   let offset = 0;
   const decodedRows = plan.results.map((result) => {

@@ -25166,7 +25166,17 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 resolveLoopReturnValue = async (index: number): Promise<StateValue> => {
                   const nextArgs = this._resolveExternalArgs(
                     (nested.argSources ?? []).map((source) => (
-                      source.kind === 'arrayElement' ? { ...source, indexValue: index } : source
+                      source.kind === 'arrayElement' ? {
+                        ...source,
+                        // Bind this reached occurrence into the element index. A published step selects
+                        // `indexValue + indexStepValue * occurrence`; without one the artifact predates the
+                        // step and expands the bare index in array order, where the ordinal IS the index.
+                        indexValue: source.indexStepValue === undefined
+                          ? index
+                          : (source.indexValue ?? 0) + source.indexStepValue * index,
+                        // The step is already applied, so clear it: this resolution is also given `index`.
+                        indexStepValue: undefined,
+                      } : source
                     )),
                     delegateVisibleArgs, callInfo.contract.inner.artifact, onChainState.state,
                     delegateVisibleInputs,
@@ -33799,7 +33809,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           if (source.paramIndex === undefined || source.paramIndex >= functionArgs.length) return undefined;
           const array = functionArgs[source.paramIndex];
           if (!Array.isArray(array)) return undefined;
-          let index = source.indexValue ?? 0;
+          // `indexValue` is the element index at occurrence zero; `indexStepValue` is its per-occurrence delta
+          // for a loop induction variable index. Advancing the index is what keeps a runtime loop's later
+          // occurrences on the element the generated loop body selected - the covenant evaluates that element
+          // for every row, so a frozen index makes every row after the first disagree with its own call.
+          let index = (source.indexValue ?? 0) + (source.indexStepValue ?? 0) * occurrenceIndex;
           if (source.indexParamIndex !== undefined) {
             const rawIndex = functionArgs[source.indexParamIndex];
             if (typeof rawIndex !== 'bigint' && typeof rawIndex !== 'number') return undefined;
@@ -34662,7 +34676,16 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       for (const [key, child] of Object.entries(source)) {
         result[key] = rewriteOccurrenceIndex(child, occurrenceIndex, seen);
       }
-      if (source.kind === 'arrayElement') result.indexValue = occurrenceIndex;
+      if (source.kind === 'arrayElement') {
+        const step = typeof source.indexStepValue === 'number' ? source.indexStepValue : undefined;
+        const initial = typeof source.indexValue === 'number' ? source.indexValue : 0;
+        // Bind this reached occurrence into the element index. A published step selects
+        // `indexValue + indexStepValue * occurrence`; without one the artifact predates the step and expands
+        // the bare index in array order, where the ordinal IS the index.
+        result.indexValue = step === undefined ? occurrenceIndex : initial + step * occurrenceIndex;
+        // The step is already applied, so clear it: this row's resolution is given occurrence zero.
+        result.indexStepValue = undefined;
+      }
       return result as T;
     };
     const arrayParameterIndices = (value: unknown, indices = new Set<number>(), seen = new Set<object>()): Set<number> => {

@@ -2,22 +2,17 @@
 
 Updated: 2026-09-15 (Europe/Berlin)
 
-## Resume point
+## Goal and boundaries
 
 Work in `/Code/cashscript/.worktrees/kernel-beta-candidate` on branch
-`grok/message-bus-kernel-beta`. The latest implementation checkpoint is:
-
-```text
-699287803 fix(sdk): decode dynamic EVM view returns
-```
-
-The active goal is to make all 66 unchanged titles in
+`grok/message-bus-kernel-beta`. Make all 66 unchanged titles in
 `examples/effectiveacceleration/test/marketplace.test.ts` green on mock BCH-2026 while preserving
-`artifact.messageBus.convention === 'kernel-row-loop'` and the graph handler `OP_INVOKE` boundary.
+`artifact.messageBus.convention === 'kernel-row-loop'` and the graph-handler `OP_INVOKE` boundary.
 
-Commit coherent, verified slices periodically. The tree contains hundreds of generated untracked `.js`, `.d.ts`,
-`.js.map`, and build metadata files. Never use `git add -A`; stage only explicitly reviewed source, tests, and this
-handoff.
+Do not edit Marketplace/Unicrow Solidity or the Marketplace suite. Do not use chipnet, Hardhat, a 10k-P2SH
+escape hatch, beta-manifest widening, or cherry-picking. `OP_RETURN` is separator-only. Implement support from
+type/effect/flow/layout properties and authenticated metadata, never source names or application shapes. Keep one
+compiler/SDK writer and work one Marketplace title at a time. Commit coherent, verified slices periodically.
 
 Planning context:
 
@@ -26,149 +21,134 @@ Planning context:
 /tmp/grok-goal-e3920f329cc4/implementer/beta-reach-extension-inventory.md
 ```
 
-## Latest verified result
+The worktree has many generated untracked files. Never use `git add -A`; stage only reviewed source, tests, and
+this handoff.
 
-The unchanged Marketplace `read mece tag` title is green in 10.25 seconds.
+## Current checkpoint
 
-The failure was not persistence, mapping selection, or compiler repeated-read stack lifetime. The SDK extracted
-the correct canonical 96-byte EVM ABI string blob, but `_deriveReturnValue` used the scalar-only decoder. When
-that returned `undefined`, the native compact-pushdata fallback interpreted the ABI's leading zero as an empty
-string. Commit `699287803` uses the existing schema-validating `decodeEvmReturnValue` instead.
-
-The neutral regression is
-`packages/solidcash/test/e2e/RepeatedMappingReadDelegate.test.ts`. It covers a proxy/delegate contract with
-`mapping(string => string)`, an initialized inline value, a guard read followed by a repeated return read, and an
-`OP_INVOKE` body.
-
-Verified for that commit:
+Current implementation HEAD is `5f1b20dab`:
 
 ```text
-solidcash TypeScript build: PASS
-ExternalReturnEncoding.test.ts: 22/22 PASS
-RepeatedMappingReadDelegate.test.ts: 1/1 PASS
-unchanged Marketplace `read mece tag`: PASS (10.25s)
-git diff --check: PASS
+5f1b20dab fix(message-bus): recognize split event equality pins
+78547780d fix(solidcash): rebase routed delegate input witnesses
+e32b48366 fix(solidc): anchor routed delegate chunks to owner blocks
+b8ad10ec9 fix(graph): preserve conditional call activation through helpers
+20ab57efd feat(graph): authenticate producer-result condition lanes
+92dc3a7d0 fix(solidc): distinguish control predicates from arms
+5ed4c6c69 fix(solidc): preserve graph participant owner frames
+e50ffd892 Merge branch 'grok/message-bus-kernel-beta-perf' into grok/message-bus-kernel-beta
 ```
 
-Full-file ESLint on `StatefulContract.ts` remains baseline-red with thousands of pre-existing findings; the diff
-check was clean.
-
-## Recent performance checkpoints
+Tracked state was clean before this handoff update. Root `yarn build` passed. Focused neutral checks passed:
 
 ```text
-2e141a09a perf(sdk): skip non-observing convergence inputs
-4dfd49bbd feat(sdk): add partial covenant validation receipts
-96d76caa6 perf(sdk): prefilter commitment introspection inputs
-1046e954b perf(sdk): bound convergence history memory
+packages/solidcash/test/unit/DelegateInputIndexCoordinates.test.ts       1/1
+packages/solidcash/test/unit/MessageBusEventIdentity.test.ts             1/1
+packages/solidc/test/DelegateInference.test.ts dynamic route selection   PASS
 ```
 
-These moved the MarketplaceData initializer from more than 15 minutes and 15.4 GiB RSS to a complete focused read
-title in seconds:
+`78547780d` rebases isolated graph-participant delegate witness coordinates by participant owner/block base. It
+moved the unchanged `post job 1` failure from proxy input 129 to the correct implementation input 214.
 
-- convergence history retains fixed-width transaction hashes rather than serialized transactions;
-- immutable authenticated input programs are inspected once and cached;
-- inputs that cannot execute `OP_OUTPUTTOKENCOMMITMENT` are excluded from mutable-resource convergence;
-- pushed bytes are ignored, `OP_DEFINE` bodies reached by `OP_INVOKE` are inspected, P2SH20/P2SH32 redeem hashes
-  are authenticated, and malformed/uncertain programs remain conservatively eligible;
-- a separate exact, one-use, tx/source-bound partial-validation receipt API exists, but preflight does not yet
-  consume it.
+`5f1b20dab` recognizes both adjacent `OP_EQUALVERIFY` and split `OP_EQUAL OP_VERIFY` event pins. It exposes, but
+does not yet solve, the current event materialization problem.
 
-Focused eligibility plus computed-output tests pass 34/34, and the SolidCash build passes.
+## Exact current blocker
 
-## Current blocker
-
-`post job 1` has a later large-graph scaling problem. After the fast initializer completed, a bounded diagnostic
-run reached about 5.6 GiB RSS in 75 seconds and was stopped. Do not simply rerun it without a bound or increase its
-timeout.
-
-Resume by localizing the phase with a bounded, low-volume timing run, for example:
+Freshly compile the separately emitted imported implementation before testing; rebuilding only
+`MarketplaceV1.sol` does not refresh `MarketplaceDataV1.json`:
 
 ```bash
-timeout 60s env SOLIDC_DEBUG_BUILDER_TIMING=1 \
-  yarn vitest run --config vitest.marketplace.config.ts \
-  -t 'post job 1' --reporter=dot --no-file-parallelism \
-  > /tmp/kernel-post-job-1-timing.log 2>&1
+cd /Code/cashscript/.worktrees/kernel-beta-candidate/.marketplace/iteration
+yarn build
+./recompile.sh MarketplaceDataV1.sol
 ```
 
-Identify the first repeating convergence/layout state before editing. Keep one SDK/compiler writer. Parallel agents
-may perform read-only audits of independent suspected phases.
+The unchanged focused title still fails:
 
-After a general fix, rerun `post job 1` first, then continue the Tier 1 ladder one unchanged Marketplace title at
-a time. Do not weaken verification, add title-specific harness branches, or edit the suite/contracts.
+```bash
+cd /Code/cashscript/.worktrees/kernel-beta-candidate
+yarn vitest run --config vitest.marketplace.config.ts -t 'post job 1$'
+```
 
-## Genericity checkpoint — beta blocking
+Exact trace:
 
-A read-only audit found kernel-reachable application-shaped behavior that must be replaced, not renamed:
+```bash
+SOLIDC_DEBUG_ONLY_PREFLIGHT_INPUT=214 \
+SOLIDC_TRACE_INPUT=214 \
+SOLIDC_DEBUG_FAILURE_POINT=1 \
+SOLIDC_DEBUG_FAILURE_RING=1 \
+SOLIDC_DEBUG_ROUTE_INPUT_INDEX=214 \
+yarn vitest run --config vitest.marketplace.config.ts -t 'post job 1$' \
+  > /tmp/post1-fresh214.log 2>&1
+```
 
-- `packages/solidcash/src/stateful/StatefulContract.ts` around the historical
-  `publishJobEvent`/`JobEventData` paths reconstructs values and entry keys from names and positional arguments;
-- `packages/solidcash/src/stateful/StatefulTransactionBuilder.ts` contains `_ensureDistinctJobEventNfts` and a
-  larger JobEvents persistence subsystem with literal event schema, enum, timestamp, and payload-byte knowledge.
+Evidence from `/tmp/post1-fresh214.log`:
 
-The general replacement should use existing compiler metadata:
+- input 214 is the implementation executor for participant owner input 129;
+- handler id 55 reaches `OP_OUTPUTTOKENCOMMITMENT` at ip150 and fails `OP_EQUALVERIFY` at ip151;
+- its index helper is `OP_7 OP_PICK; OP_12 OP_ADD; OP_7 OP_PICK; OP_ADD`;
+- the computed output is 143: owner 129 + fixed event offset 12 + selected site 2;
+- expected is the 180-byte event commitment `0000147178...045cfb5565`;
+- actual output 143 is still neutral and has an empty commitment.
 
-- `EntryAccessAbi.storedElementSource`;
-- `ValueChunkWriteDescriptor`;
-- authenticated `ValueChunkProducerIdentity`;
-- exact resource identity `{categoryId, collectionHash, keySlot}`;
-- stable producer path/effect ordinal and, for events, a stable event-producer identity.
+The latest SDK audit localized the causal loop:
 
-Derive entry coordinates from the published `keySlot`, never `args[0]`. Kernel paths must fail closed when the
-recipe is absent or ambiguous. If legacy schema compatibility must remain, fence it explicitly to
-`legacy-unroll`; it must not influence kernel authority.
+1. `_messageBusEventCommitmentsFromTransaction` discovers the expected commitment for output 143 from the
+   failing comparison.
+2. Execution stops at that equality, so it cannot discover the output locking bytecode from later introspection.
+3. The target filter in `packages/solidcash/src/message-bus/compose.ts` around line 3908 currently requires both a
+   nonempty commitment and `expectation.lockingBytecode !== undefined`.
+4. Therefore it refuses to materialize output 143 and convergence repeats the same failure.
+5. `eventLockingBytecodeForCommitment(participant, commitment)` can already parse the commitment against the
+   selected handler artifact schemas and return a unique covenant lock.
 
-Before each commit, audit additions with:
+The general candidate fix is to admit an event target when either trace-authenticated locking bytecode exists or
+the selected handler schemas decode the commitment to exactly one unique event lock. Fail closed for zero or
+ambiguous schema matches. Add a neutral regression for a commitment comparison that fails before locking-bytecode
+introspection. Do not encode event/function/contract names.
+
+One read-only compiler audit also noticed that DEFINE setup skips both `__internal__returnOutputIdx` and
+`__internal__msgSenderCategory`, whereas the caller says the latter is consumed. Treat this as a separate latent
+frame-risk to reduce and test; the current fresh runtime trace nevertheless computes the correct output 143, so it
+is not evidence for changing the already-correct current owner/event coordinate.
+
+## Continuation order
+
+After the generic event materialization fix:
+
+1. Run its neutral regression and relevant message-bus unit/e2e file.
+2. Run root `yarn build`.
+3. Explicitly recompile `MarketplaceDataV1.sol`.
+4. Re-run unchanged `post job 1$`.
+5. Re-run unchanged `post two jobs` and confirm distinct event/resource slots.
+6. Continue Tier 1 (`invalid mece`, then the remaining inventory ladder) one title at a time.
+7. Run all 66 only after focused titles are stable.
+
+Do not hide compiler exceptions behind fallback compilation. A successful fresh compile must have no speculative
+stack/codegen failure.
+
+## Architectural checkpoint and pause rule
+
+Enforce these invariants:
+
+1. Every graph call has exactly one stable callsite identity.
+2. Later calls consume authenticated producer-result IDs, never cloned call AST nodes.
+3. Graph handlers stay behind one consistent `OP_INVOKE` boundary.
+4. Fresh successful compilation has no hidden speculative errors.
+5. Support is expressed by type/effect/flow/layout properties, never names or application shapes.
+6. Differential tests compare kernel/legacy observable semantics; route-size tests separately prove kernel size is
+   proportional to row logic rather than maximum unrolled rows.
+
+The preferred beta stop is 66/66, two deterministic clean beta-gate runs, one-shot `yarn build`, and a recorded
+same-machine cold compile/contract-size comparison against legacy. If an edge-case frontier prevents 66/66, pause
+only at a coherent slice: neutral regression and earlier ladder titles green, deterministic fresh compile, explicit
+kernel refusal for unsupported shapes, no application-name authority, and one reduced reproducer or bounded stable
+invariant for the remaining blocker. Do not claim full Marketplace compatibility before 66/66.
+
+Before committing production changes, audit additions:
 
 ```bash
 git diff -U0 -- packages/solidc/src packages/solidcash/src | \
   rg '^\+.*(Marketplace|jobs\b|publishJobPost|publishJobEvent|JobEvent|Unicrow|FakeToken)'
-```
-
-## Architectural invariants
-
-1. Every graph call is represented exactly once by stable callsite metadata.
-2. Later calls consume authenticated producer-result IDs, never cloned `ExternalFunctionCallNode`s.
-3. Graph handlers remain behind the same `OP_INVOKE` boundary.
-4. A successful fresh compile produces no hidden speculative stack/codegen errors.
-5. Support is expressed by type/effect/flow/layout properties, never source names or application shapes.
-6. Differential tests compare kernel and legacy observable semantics; proportional kernel route size is tested
-   separately from the maximum unrolled row count.
-7. `OP_RETURN` is separator-only.
-
-Do not edit Marketplace/Unicrow Solidity sources or the Marketplace suite. Do not use chipnet, Hardhat, a 10k
-P2SH escape hatch, beta-manifest widening, or cherry-picking.
-
-## Meaningful pause rule
-
-Do not grind an unlimited edge-case frontier for beta. A sound pause point is a coherent architectural slice where:
-
-- its alpha-neutral regression and relevant existing suites pass;
-- its corresponding unchanged Marketplace title and all earlier ladder titles are rechecked;
-- fresh compilation is deterministic and has no caught speculative error;
-- unsupported shapes are explicitly rejected with a published kernel reason;
-- no application-name behavior is introduced or left as kernel authority;
-- kernel/legacy observable parity is covered separately from route-size scaling;
-- the remaining blocker has one reduced reproducer or one stable, bounded failing invariant.
-
-The preferred final stop remains 66/66, two deterministic clean beta-gate runs, a full one-shot `yarn build`, and
-recorded same-machine cold compile/size comparison. If 66/66 is not reached, do not claim full Marketplace
-compatibility; use the bounded architectural pause rule above.
-
-## Recent commit chain
-
-```text
-699287803 fix(sdk): decode dynamic EVM view returns
-f6f8ae23d docs: refresh kernel beta handoff
-2e141a09a perf(sdk): skip non-observing convergence inputs
-4dfd49bbd feat(sdk): add partial covenant validation receipts
-96d76caa6 perf(sdk): prefilter commitment introspection inputs
-1046e954b perf(sdk): bound convergence history memory
-ebbb51a90 test(kernel): verify emitted verifier lock
-3f87729f9 fix(kernel): bind published verifier identity
-0cd0ec43d fix(sdk): gate dynamic placeholders by selected rows
-1ac4d30ca fix(sdk): authenticate route entry coordinates
-32c4a3c55 fix(sdk): decode aggregate delegate payload arguments
-08031a54e fix(sdk): preserve atomic graph discovery boundaries
-990189cbe docs: hand off kernel allowance resource frontier
-10520b381 feat(kernel): authenticate fixed collection tuple alternatives
 ```

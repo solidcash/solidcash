@@ -3718,6 +3718,12 @@ function synthesizeMessageBusRoute(
   }
   const routeKeyWitnesses = new Map<string, { name: string; type: Type }[]>();
   const crossHandlerPerRowWitnesses = new Set<string>();
+  // Keep structural coordinates beside generated witness names. Kernel tuple promotion must move every nested
+  // mapping component together; recovering this relationship by parsing a state-variable name out of a string
+  // would make source spelling part of protocol semantics.
+  const routeKeyWitnessCoordinates = new Map<string, {
+    collection: string; keyIndex: number; alternativeIndex: number;
+  }>();
   const fixedIterationCollections = new Set<string>();
   const fixedArrayRouteHandlers = new Set<FunctionDefinitionNode>();
   const runtimeLoopCollectionsByHandler = new Map<FunctionDefinitionNode, Set<string>>();
@@ -5197,6 +5203,9 @@ function synthesizeMessageBusRoute(
       source?: 'argument' | 'msgSender' | 'expression';
       expressionLabel?: string;
       perRow?: boolean;
+      entryTupleGroup?: number;
+      keyComponentIndex?: number;
+      alternateRouteInput?: string;
     }[] = [];
     // X89. A collection ITERATION - `for (k, v of this.m.entries)`, `for (k in this.m)` - reads every entry of
     // `m`, but `CollectionIterationNode` carries `collectionName` where the footprint walker reads `name`, so
@@ -5602,6 +5611,9 @@ function synthesizeMessageBusRoute(
                 routeKeyWitnesses.set(routeInput, [{
                   name: routeInput, type: collection.allKeyTypes[keyIndex],
                 }]);
+                routeKeyWitnessCoordinates.set(routeInput, {
+                  collection: collectionName, keyIndex, alternativeIndex,
+                });
                 if (keyWitnesses.some((binding) =>
                   binding.routeInput === routeInput && binding.inputIndex === inputIndex)) return;
                 keyWitnesses.push({
@@ -5645,6 +5657,9 @@ function synthesizeMessageBusRoute(
             type,
           }));
           for (const witness of witnesses) routeKeyWitnesses.set(witness.name, [witness]);
+          witnesses.forEach((witness, keyIndex) => routeKeyWitnessCoordinates.set(witness.name, {
+            collection: collectionName, keyIndex, alternativeIndex: 0,
+          }));
           // Synchronous iteration; `reason` is the intended accumulator for this surrounding route loop.
           // eslint-disable-next-line @typescript-eslint/no-loop-func
           alternatives[0].forEach((inputIndex, keyIndex) => {
@@ -7037,21 +7052,69 @@ function synthesizeMessageBusRoute(
     return;
   }
   // A witness name identifies one physical collection/key position, but different handlers can source that
-  // position from different ABI arguments (ERC20 approve(owner=msg.sender) beside transferFrom(owner=from)).
-  // Such a value is row-local even when each handler individually has only one key spelling. Promoting the
-  // shared name preserves one physical identity per row and prevents the SDK from being asked to choose one
-  // contradictory global value for the whole batch.
-  //
-  // Kernel dispatch does not emit `_rN`: msg.sender is one shared published witness and getter/argument keys
-  // are decoded from the live row. Promoting those identities would force the legacy unroll (and demote
-  // scalar siblings). Leave them unpromoted; a mixed batch that actually disagrees fails the row require.
+  // position from different ABI arguments (one row's msg.sender/argument tuple beside another row's
+  // argument/msg.sender tuple). Legacy gives such values one witness per unrolled row. Kernel instead publishes
+  // one fixed alternate ENTRY tuple: the envelope assigns the at-most-two concrete identities to those lanes,
+  // and the live row selects a complete tuple before invoking the journal helper. This grows with row logic and
+  // key width, never with maximumRows.
   const bindingsByRouteInput = new Map<string, Array<{ inputIndex: number; source?: string }>>();
   for (const fn of eligible) for (const binding of fn.messageBusKeyWitnesses ?? []) {
     const bindings = bindingsByRouteInput.get(binding.routeInput) ?? [];
     bindings.push({ inputIndex: binding.inputIndex, source: binding.source });
     bindingsByRouteInput.set(binding.routeInput, bindings);
   }
-  if (compilerOptions.messageBusKernel !== true) {
+  if (compilerOptions.messageBusKernel === true) {
+    let tupleGroup = 0;
+    const primaryByCollection = new Map<string, Array<{ routeInput: string; keyIndex: number }>>();
+    for (const [routeInput, coordinate] of routeKeyWitnessCoordinates) {
+      if (coordinate.alternativeIndex !== 0) continue;
+      const entries = primaryByCollection.get(coordinate.collection) ?? [];
+      entries.push({ routeInput, keyIndex: coordinate.keyIndex });
+      primaryByCollection.set(coordinate.collection, entries);
+    }
+    for (const [collection, coordinates] of primaryByCollection) {
+      // A collection which already has a second within-handler entry uses the established complete
+      // shared/`_row` orientation (including its swapped clone). Adding another independent orientation to its
+      // primary component would split that pair and create a three-lane product, so it is not this shape.
+      if ([...routeKeyWitnessCoordinates.values()].some((coordinate) =>
+        coordinate.collection === collection && coordinate.alternativeIndex > 0)) continue;
+      coordinates.sort((left, right) => left.keyIndex - right.keyIndex);
+      const width = collectionByName.get(collection)?.allKeyTypes.length ?? 0;
+      if (coordinates.length !== width || width === 0) continue;
+      const handlerTuples = eligible.flatMap((fn) => {
+        const bindings = coordinates.map(({ routeInput }) =>
+          fn.messageBusKeyWitnesses?.find((candidate) => candidate.routeInput === routeInput));
+        if (bindings.some((binding) => binding === undefined)) return [];
+        const complete = bindings as NonNullable<FunctionDefinitionNode['messageBusKeyWitnesses']>;
+        // State/computed expressions need a compiler-authenticated row evaluator before they can share this
+        // dynamic orientation. Keep the existing fail-closed global witness for that shape.
+        if (complete.some((binding) => binding.source !== 'argument' && binding.source !== 'msgSender')) return [];
+        const signature = complete.map((binding) =>
+          `${binding.source}:${binding.inputIndex}:${binding.expressionLabel ?? ''}`).join('|');
+        return [{ fn, bindings: complete, signature }];
+      });
+      if (new Set(handlerTuples.map(({ signature }) => signature)).size <= 1) continue;
+      // One independently-oriented tuple keeps dispatch and cache selection linear. A second collection would
+      // require either a product of branch orientations or a general indexed cache selector; leave it on the
+      // existing deterministic resource-conflict fence until that representation exists.
+      if (tupleGroup > 0) continue;
+      const group = tupleGroup++;
+      for (const { bindings } of handlerTuples) {
+        bindings.forEach((binding, keyComponentIndex) => {
+          const alternateRouteInput = `${binding.routeInput}_alt`;
+          binding.entryTupleGroup = group;
+          binding.keyComponentIndex = keyComponentIndex;
+          binding.alternateRouteInput = alternateRouteInput;
+          const witness = routeKeyWitnesses.get(binding.routeInput)?.[0];
+          if (!witness) throw new Error(`Kernel tuple witness '${binding.routeInput}' is missing`);
+          routeKeyWitnesses.set(alternateRouteInput, [{ ...witness, name: alternateRouteInput }]);
+          routeKeyWitnessCoordinates.set(alternateRouteInput, {
+            collection, keyIndex: keyComponentIndex, alternativeIndex: 1,
+          });
+        });
+      }
+    }
+  } else {
     for (const [routeInput, bindings] of bindingsByRouteInput) {
       const identities = new Set(bindings.map((binding) => `${binding.source ?? 'argument'}:${binding.inputIndex}`));
       if (identities.size <= 1) continue;
@@ -7289,6 +7352,12 @@ function synthesizeMessageBusRoute(
   const bindEntryKeyParameters = (
     handler: FunctionDefinitionNode, source: FunctionDefinitionNode,
   ): void => {
+    // The route calls this same helper once with the primary tuple and once with the fixed alternate tuple.
+    // Runtime alias selection is what makes equality reuse the earlier pending cache (rather than merely
+    // deduplicating the proof input and losing sequential read-after-write semantics).
+    if (source.messageBusKeyWitnesses?.some((binding) => binding.entryTupleGroup !== undefined)) {
+      handler.collectionJournalRuntimeAliases = true;
+    }
     const runtimeLoopCollections = runtimeLoopCollectionsByHandler.get(source) ?? new Set<string>();
     normalizeBareEntryAccesses(handler);
     const runtimeLoopEntry = (node: MappingAccessNode | MappingAssignNode | MappingDeleteNode
@@ -8369,11 +8438,29 @@ function synthesizeMessageBusRoute(
         });
       });
       const logicalCaller = graphExecutionContext ? '__message_bus_graph_caller' : 'msg.sender';
+      const tupleGroups = new Map<number, NonNullable<FunctionDefinitionNode['messageBusKeyWitnesses']>>();
+      for (const binding of fn.messageBusKeyWitnesses ?? []) {
+        if (binding.entryTupleGroup === undefined || binding.alternateRouteInput === undefined
+          || binding.keyComponentIndex === undefined) continue;
+        const group = tupleGroups.get(binding.entryTupleGroup) ?? [];
+        group.push(binding);
+        tupleGroups.set(binding.entryTupleGroup, group);
+      }
+      for (const bindings of tupleGroups.values()) {
+        bindings.sort((left, right) => left.keyComponentIndex! - right.keyComponentIndex!);
+      }
+      const tupleSource = (binding: NonNullable<FunctionDefinitionNode['messageBusKeyWitnesses']>[number]): string =>
+        binding.source === 'msgSender' ? logicalCaller : decodedName(binding.inputIndex);
+      const tupleMatches = (
+        bindings: NonNullable<FunctionDefinitionNode['messageBusKeyWitnesses']>, alternate: boolean,
+      ): string => bindings.map((binding) => `${tupleSource(binding)} == ${alternate
+        ? binding.alternateRouteInput : witnessName(binding)}`).join(' && ');
       const swappableBindings = (fn.messageBusKeyWitnesses ?? []).filter((binding) => binding.swappable);
       const swappableShared = swappableBindings.find((binding) => !binding.routeInput.endsWith('_row'));
       const swappableVarying = swappableShared && swappableBindings.find((binding) =>
         binding.routeInput === `${swappableShared.routeInput}_row`);
-      const ordinaryKeyChecks = (fn.messageBusKeyWitnesses ?? []).filter((binding) => !binding.swappable).map((binding) =>
+      const ordinaryKeyChecks = (fn.messageBusKeyWitnesses ?? []).filter((binding) =>
+        !binding.swappable && binding.entryTupleGroup === undefined).map((binding) =>
         binding.source === 'msgSender'
           ? `require(${witnessName(binding)} == ${logicalCaller});`
           : binding.source === 'expression' ? ''
@@ -8384,7 +8471,9 @@ function synthesizeMessageBusRoute(
           + `${decodedName(swappableVarying.inputIndex)} == ${witnessName(swappableShared)} && `
           + `${decodedName(swappableShared.inputIndex)} == ${witnessName(swappableVarying)}));`
         : '';
-      const keyChecks = `${ordinaryKeyChecks}\n${swappableKeyCheck}`;
+      const tupleKeyChecks = [...tupleGroups.values()].map((bindings) =>
+        `require((${tupleMatches(bindings, false)}) || (${tupleMatches(bindings, true)}));`).join('\n');
+      const keyChecks = `${ordinaryKeyChecks}\n${swappableKeyCheck}\n${tupleKeyChecks}`;
       // Declared arguments come from the row; entry keys come from the canonical witnesses this row already
       // checked, so the journal sees one identity per physical entry however the handler names its parameters.
       //
@@ -8521,6 +8610,17 @@ function synthesizeMessageBusRoute(
         return dispatch;
       };
       let dispatch = dispatchFor(physicalEntryArgs);
+      const fixedTupleGroup = [...tupleGroups.values()][0];
+      if (fixedTupleGroup) {
+        const alternateByBase = new Map(fixedTupleGroup.map((binding) =>
+          [binding.routeInput, binding.alternateRouteInput!] as const));
+        const alternateEntryArgs = physicalEntryArgs.map((argument) => alternateByBase.get(argument) ?? argument);
+        // keyChecks has already authenticated that the source tuple is exactly one of these two complete lanes.
+        // Select every component together; choosing coordinates independently could authorize a nested key that
+        // no source row requested.
+        dispatch = `if (${tupleMatches(fixedTupleGroup, false)}) { ${dispatch} } else { `
+          + `${dispatchFor(alternateEntryArgs)} }`;
+      }
       if (rowIndex !== undefined && rowIndex > 0 && entryShape) {
         // A route row can write a collection entry which a later, different handler reads (ERC-20 approve ->
         // transferFrom is the canonical shape). Cross-handler witness analysis already marks every key component
@@ -12114,6 +12214,34 @@ function compileResolvedAst(
     for (const [source, clone] of graphCloneBySource) {
       source.messageBusPhysicalEntrySlots = clone.messageBusPhysicalEntrySlots;
     }
+    const routeKeyName = (name: string): string => {
+      const bare = name.startsWith('id:') ? name.slice(3) : name;
+      return bare.startsWith('__message_bus_ek_')
+        ? bare.slice('__message_bus_ek_'.length) : bare;
+    };
+    for (const source of ast.contract.functions.filter((fn) =>
+      fn.messageBusEligible && fn.messageBusPhysicalEntrySlots?.length
+      && fn.messageBusKeyWitnesses?.some((binding) => binding.entryTupleGroup !== undefined))) {
+      const alternatives = source.messageBusPhysicalEntrySlots!.map((primarySlot) => {
+        const primary = messageBusRoute.entryAccesses?.find((entry) => entry.slotIndex === primarySlot);
+        if (!primary) return [primarySlot];
+        const bindings = primary.keyParams.map((key) => source.messageBusKeyWitnesses?.find((binding) =>
+          binding.routeInput === routeKeyName(key)));
+        if (bindings.some((binding) => binding?.alternateRouteInput === undefined)) return [primarySlot];
+        const group = bindings[0]?.entryTupleGroup;
+        if (group === undefined || bindings.some((binding) => binding?.entryTupleGroup !== group)) {
+          return [primarySlot];
+        }
+        const alternateKeys = bindings.map((binding) => binding!.alternateRouteInput!);
+        const alternate = messageBusRoute.entryAccesses?.find((entry) =>
+          entry.collection === primary.collection && entry.keyParams.length === alternateKeys.length
+          && entry.keyParams.every((key, index) => routeKeyName(key) === alternateKeys[index]));
+        return alternate?.slotIndex === undefined ? [primarySlot] : [primarySlot, alternate.slotIndex];
+      });
+      if (alternatives.some((slots) => slots.length > 1)) {
+        source.messageBusPhysicalEntrySlotAlternatives = alternatives;
+      }
+    }
     messageBusRoute.messageBusHandlerManagedEntrySlots = [...handlerManagedEntrySlots];
   }
   // The bounded resource route canonicalizes a row-local mapping identity to the first equal earlier identity.
@@ -13345,6 +13473,8 @@ function compileResolvedAst(
         ...(fn.messageBusKeyWitnesses && { batchKeyWitnesses: fn.messageBusKeyWitnesses }),
         ...(fn.messageBusPhysicalEntrySlots?.length
           && { physicalEntrySlots: fn.messageBusPhysicalEntrySlots }),
+        ...(fn.messageBusPhysicalEntrySlotAlternatives?.some((slots) => slots.length > 1)
+          && { physicalEntrySlotAlternatives: fn.messageBusPhysicalEntrySlotAlternatives }),
       })),
     };
     artifact.messageBus.available = artifact.messageBus.handlers.some((handler) => handler.eligible);

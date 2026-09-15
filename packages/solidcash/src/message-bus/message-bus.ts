@@ -567,6 +567,7 @@ export function encodeMessageBatch(
   const valueMode = capability.handlers.some((handler) => handler.eligible && handler.usesMsgValue);
   const modeVersion = invocations.some((invocation) => invocation.callMode !== undefined);
   const keyWitnessValues = new Map<string, { value: FunctionArgument; encoded: Uint8Array }>();
+  const fixedTupleValues = new Map<number, { primary: string; alternate: string }>();
   const swappableGlobals = new Map<string, { value: FunctionArgument; encoded: Uint8Array; rowBase: string }>();
   // A resource route has one shared entry and one row-local alternative. The compiler can advertise the two as
   // swappable, allowing the batch to choose the value common to every relevant row rather than assuming the
@@ -716,7 +717,70 @@ export function encodeMessageBatch(
         }
       });
     });
+    const tupleGroups = new Map<number, NonNullable<typeof handler.batchKeyWitnesses>>();
     for (const binding of handler.batchKeyWitnesses ?? []) {
+      if (binding.entryTupleGroup === undefined) continue;
+      const group = tupleGroups.get(binding.entryTupleGroup) ?? [];
+      group.push(binding);
+      tupleGroups.set(binding.entryTupleGroup, group);
+    }
+    for (const [groupId, bindings] of tupleGroups) {
+      bindings.sort((left, right) => (left.keyComponentIndex ?? -1) - (right.keyComponentIndex ?? -1));
+      if (bindings.length === 0 || bindings.some((binding, index) =>
+        binding.keyComponentIndex !== index || binding.alternateRouteInput === undefined
+        || binding.perRow || binding.swappable
+        || (binding.source !== 'argument' && binding.source !== 'msgSender'))) {
+        throw new MessageBusDiagnosticError(
+          'L3_RESOURCE_UNRESOLVED',
+          `message-bus fixed collection tuple group ${groupId} is incomplete`,
+          { handler: handler.name, invocationIds: [rowIndex] },
+        );
+      }
+      const components = bindings.map((binding) => {
+        const value = binding.source === 'msgSender' ? invocation.logicalCaller : args[binding.inputIndex];
+        if (value === undefined) {
+          throw new MessageBusDiagnosticError(
+            'L3_RESOURCE_UNRESOLVED',
+            `message-bus fixed collection tuple group ${groupId} requires an authenticated active caller`,
+            { handler: handler.name, invocationIds: [rowIndex] },
+          );
+        }
+        const encodedValue = binding.source === 'msgSender'
+          ? encodeFunctionArgument(value, 'address', structs)
+          : encoded[binding.inputIndex];
+        if (!(encodedValue instanceof Uint8Array)) {
+          throw new MessageBusDiagnosticError(
+            'L3_RESOURCE_UNRESOLVED',
+            `message-bus fixed collection tuple group ${groupId} is not byte-encodable`,
+            { handler: handler.name, invocationIds: [rowIndex] },
+          );
+        }
+        return { binding, value, encoded: encodedValue };
+      });
+      const identity = components.map(({ encoded: component }) => binToHex(component)).join(':');
+      const prior = fixedTupleValues.get(groupId);
+      const lane = prior === undefined || prior.primary === identity
+        ? 'primary' : prior.alternate === prior.primary || prior.alternate === identity
+          ? 'alternate' : undefined;
+      if (lane === undefined) {
+        throw new MessageBusDiagnosticError(
+          'L3_RESOURCE_UNRESOLVED',
+          `message-bus fixed collection tuple group ${groupId} exceeds two physical entries`,
+          { handler: handler.name, invocationIds: [rowIndex] },
+        );
+      }
+      if (!prior) fixedTupleValues.set(groupId, { primary: identity, alternate: identity });
+      else if (lane === 'alternate') fixedTupleValues.set(groupId, { ...prior, alternate: identity });
+      for (const { binding, value, encoded: component } of components) {
+        const routeInput = lane === 'primary' ? binding.routeInput : binding.alternateRouteInput!;
+        keyWitnessValues.set(routeInput, { value, encoded: component });
+        // Until a second distinct tuple is reached, alias the alternate lane to the primary. The compiler and
+        // SDK then collapse equal targets through runtimeAliasPriorSlots instead of funding a fictitious key.
+        if (!prior) keyWitnessValues.set(binding.alternateRouteInput!, { value, encoded: component });
+      }
+    }
+    for (const binding of handler.batchKeyWitnesses ?? []) {
+      if (binding.entryTupleGroup !== undefined) continue;
       if (binding.swappable) {
         if (binding.perRow || binding.routeInput.endsWith('_row')) continue;
         const global = swappableGlobals.get(binding.routeInput);

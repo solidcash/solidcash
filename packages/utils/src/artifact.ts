@@ -1581,10 +1581,18 @@ export interface Artifact {
         perRow?: boolean;
         /** This key and its `_row` sibling may exchange the shared/row-local physical entry for this invocation. */
         swappable?: boolean;
+        /** Opaque compiler identity shared by every component of one fixed collection-key tuple. */
+        entryTupleGroup?: number;
+        /** Component ordinal within the complete tuple. */
+        keyComponentIndex?: number;
+        /** Corresponding component in the fixed alternate physical tuple lane. */
+        alternateRouteInput?: string;
       }[];
       /** Route entry-slot ordinals which can be consumed by this selected handler. Used by composers to leave
        * every other union-route entry coordinate as an inactive balanced slot. */
       physicalEntrySlots?: readonly number[];
+      /** Fixed physical route-slot choices aligned one-to-one with the handler's direct entry accesses. */
+      physicalEntrySlotAlternatives?: readonly (readonly number[])[];
     }[];
   };
   diagnostics?: readonly {

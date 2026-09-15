@@ -455,6 +455,9 @@ export class FunctionDefinitionNode extends Node implements Named {
   /** Compiler-owned message-bus handler mapping from its function-local entry
    * slot ordinals to the enclosing route's physical participant slots. */
   messageBusPhysicalEntrySlots?: number[];
+  /** Fixed route-slot choices for each function-local entry. The first slot is messageBusPhysicalEntrySlots[i];
+   * later slots are compiler-authenticated tuple alternatives, never maximum-row copies. */
+  messageBusPhysicalEntrySlotAlternatives?: number[][];
   /** Kernel route whose selected upgrade rows may replace the participant master locking bytecode. */
   messageBusUpgradeRoute?: boolean;
   /** The exact named-call closure can execute CHECKSIG/CHECKMULTISIG (excluding data signatures). */
@@ -811,6 +814,12 @@ export class FunctionDefinitionNode extends Node implements Named {
     perRow?: boolean;
     /** This key and its `_row` sibling may exchange the shared/row-local physical entry for this invocation. */
     swappable?: boolean;
+    /** Opaque compiler identity shared by every component of one fixed collection-key tuple. */
+    entryTupleGroup?: number;
+    /** Component ordinal within entryTupleGroup; prevents independently mixing nested-mapping coordinates. */
+    keyComponentIndex?: number;
+    /** The same tuple component in the route's one fixed alternate physical lane. */
+    alternateRouteInput?: string;
   }[];
 
   /** Canonical Solidity `batch(bytes[],bool)` executed through BCH's ordered local message-bus journal. */

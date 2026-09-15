@@ -6946,6 +6946,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     reachedHandlers.forEach((handler, rowIndex) => {
       for (const binding of handler.batchKeyWitnesses ?? []) {
         activeRouteEntryKeys.add(binding.perRow ? `${binding.routeInput}_r${rowIndex}` : binding.routeInput);
+        if (binding.alternateRouteInput) activeRouteEntryKeys.add(binding.alternateRouteInput);
       }
     });
     const routeKeyName = (name: string): string => {
@@ -6967,22 +6968,27 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         candidate.selector === handler.selector || candidate.name === handler.name);
       handler.physicalEntrySlots?.forEach((physicalSlot, directIndex) => {
         const directAccess = selected?.entryAccesses?.[directIndex];
-        const canonicalAccess = entryAccessAt(capability.route, physicalSlot);
-        if (!directAccess || !canonicalAccess) return;
-        const selectedKeys = canonicalAccess.keyParams.map((key) =>
-          routeKeyName(key).replace(/_r\d+$/, `_r${rowIndex}`));
-        const selectedAccess = capability.route.entryAccesses?.find((candidate) =>
-          candidate.collection === directAccess.collection
-          && candidate.keyParams.length === selectedKeys.length
-          && candidate.keyParams.every((key, keyIndex) => routeKeyName(key) === selectedKeys[keyIndex]));
-        if (!selectedAccess) return;
-        const selectedSlot = selectedAccess.slotIndex
-          ?? capability.route.entryAccesses!.indexOf(selectedAccess);
-        const prior = activeRouteEntryOperations.get(selectedSlot) ?? [];
-        activeRouteEntryOperations.set(
-          selectedSlot,
-          [...new Set([...prior, ...directAccess.operations])],
-        );
+        if (!directAccess) return;
+        const physicalAlternatives = handler.physicalEntrySlotAlternatives?.[directIndex]
+          ?? [physicalSlot];
+        for (const alternativeSlot of physicalAlternatives) {
+          const canonicalAccess = entryAccessAt(capability.route, alternativeSlot);
+          if (!canonicalAccess) continue;
+          const selectedKeys = canonicalAccess.keyParams.map((key) =>
+            routeKeyName(key).replace(/_r\d+$/, `_r${rowIndex}`));
+          const selectedAccess = capability.route.entryAccesses?.find((candidate) =>
+            candidate.collection === directAccess.collection
+            && candidate.keyParams.length === selectedKeys.length
+            && candidate.keyParams.every((key, keyIndex) => routeKeyName(key) === selectedKeys[keyIndex]));
+          if (!selectedAccess) continue;
+          const selectedSlot = selectedAccess.slotIndex
+            ?? capability.route.entryAccesses!.indexOf(selectedAccess);
+          const prior = activeRouteEntryOperations.get(selectedSlot) ?? [];
+          activeRouteEntryOperations.set(
+            selectedSlot,
+            [...new Set([...prior, ...directAccess.operations])],
+          );
+        }
       });
     });
     if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env

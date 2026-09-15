@@ -50,6 +50,21 @@ contract RoutedCollectionEncoding() {
   }
 }`;
 
+const FIXED_TUPLE_COLLECTION_SOURCE = `pragma solidity ^0.8.0;
+contract FixedTupleCollectionEncoding {
+  mapping(address => mapping(address => uint)) credits;
+  function grant(address spender, uint amount) public {
+    credits[msg.sender][spender] = amount;
+    require(true);
+  }
+  function consume(address owner, uint amount) public {
+    uint available = credits[owner][msg.sender];
+    require(available >= amount);
+    credits[owner][msg.sender] = available - amount;
+    require(true);
+  }
+}`;
+
 const SHARED_LITERAL_COLLECTION_SOURCE = `pragma solidcash ^0.13.0;
 contract SharedLiteralCollectionEncoding() {
   mapping(int => int) source;
@@ -346,6 +361,46 @@ describe('messageBus.encodeMessageBatch', () => {
       messageBus.inactiveMessageBusRouteWitness('address'),
     );
     expect(witness('__message_bus_key_balances_0_row_r1')).toEqual(destination);
+  });
+
+  it('assigns nested collection keys to two complete fixed tuple lanes', () => {
+    const routed = compileString(FIXED_TUPLE_COLLECTION_SOURCE, {
+      forceStateful: true, messageBus: true, messageBusKernel: true,
+      solidityImportCompat: true, optimizeForCompilationSpeed: true,
+      maximumInputBytes: 1_000_000, suppressWarnings: true,
+    });
+    const caller = new Uint8Array(25).fill(0x11);
+    const spender = new Uint8Array(25).fill(0x22);
+    const owner = new Uint8Array(25).fill(0x33);
+    const encoded = messageBus.encodeMessageBatch(routed, [
+      { function: 'grant', args: [spender, 80n], logicalCaller: caller },
+      { function: 'consume', args: [owner, 30n], logicalCaller: caller },
+      { function: 'grant', args: [spender, 10n], logicalCaller: caller },
+    ]);
+    const visible = routed.messageBus!.route.inputs
+      .filter((input) => input.name !== 'batchBlob' && !input.name.startsWith('__internal__'));
+    const witness = (name: string): unknown => encoded.routeWitnesses[visible
+      .findIndex((input) => input.name === name)];
+    expect([
+      witness('__message_bus_key_credits_0'),
+      witness('__message_bus_key_credits_1'),
+      witness('__message_bus_key_credits_0_alt'),
+      witness('__message_bus_key_credits_1_alt'),
+    ]).toEqual([caller, spender, owner, caller]);
+
+    const only = messageBus.encodeMessageBatch(routed, [
+      { function: 'grant', args: [spender, 1n], logicalCaller: caller },
+    ]);
+    expect(only.routeWitnesses[visible.findIndex((input) =>
+      input.name === '__message_bus_key_credits_0_alt')]).toEqual(caller);
+    expect(only.routeWitnesses[visible.findIndex((input) =>
+      input.name === '__message_bus_key_credits_1_alt')]).toEqual(spender);
+
+    expect(() => messageBus.encodeMessageBatch(routed, [
+      { function: 'grant', args: [spender, 80n], logicalCaller: caller },
+      { function: 'consume', args: [owner, 30n], logicalCaller: caller },
+      { function: 'consume', args: [new Uint8Array(25).fill(0x44), 1n], logicalCaller: caller },
+    ])).toThrow(/exceeds two physical entries/);
   });
 
   it('derives a literal witness when another handler owns the shared physical entry slot', () => {

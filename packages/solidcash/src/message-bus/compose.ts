@@ -1556,6 +1556,7 @@ export class AtomicMessageBusComposition {
       const activeRouteKeys = ownerActiveRouteKeys.get(owner) ?? new Set<string>();
       for (const binding of handler?.batchKeyWitnesses ?? []) {
         activeRouteKeys.add(binding.perRow ? `${binding.routeInput}_r${row}` : binding.routeInput);
+        if (binding.alternateRouteInput) activeRouteKeys.add(binding.alternateRouteInput);
       }
       ownerActiveRouteKeys.set(owner, activeRouteKeys);
       for (const binding of handler?.batchKeyWitnesses?.filter((candidate) =>

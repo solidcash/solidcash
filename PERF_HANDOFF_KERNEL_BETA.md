@@ -347,9 +347,18 @@ assumed:
 * **The outline width sweep (16 %) - required for bytecode size.** Both `[12, 10]` widths run only for
   kernel message-bus contracts whose estimated size is within ±512 bytes of the 10,000-byte input limit;
   dropping the second width changes published bytecode.
-* **The lowering pipeline (26 %) - merging saves dispatch only.** The passes are each below 1.5 % and are
-  deliberately order-sensitive; fusing them would still visit every node once per pass's semantics and save
-  only the ~3 % visitor-dispatch floor. Not worth the risk.
+* **The lowering pipeline - closed in round 12.** Measured per module on the largest root: the whole
+  lowering family is **15.0 %** of the sampled compile spread over ~35 passes, and the largest single pass is
+  **1.2 %** (`LowerVMapCounterLoops`, 73 ms of 6.08 s sampled). Fusing passes would still visit every node once
+  per pass's semantics and could only recover the dispatch between them, so the ceiling is well under 1 % of a
+  compile - against the most deliberately order-sensitive code in the repository. Not worth the risk.
+* **Generated-source round trips - mostly already cached.** The exploration's item 1 is real but smaller than
+  it reads: `parseMessageBusHelpers` and `parseGeneratedHostFunction` are both clone-on-hit caches keyed by the
+  generated text, `compileDetachedMessageBusVerifier` has a program memo, and round 10 added the lock cache. The
+  `messageBus:parseHelpers` 32 ms / `messageBus:parseRoute` 105 ms a first root shows are cache *misses* for a
+  new route shape; later roots with the same shape hit. What remains is genuine first-parse work per distinct
+  shape plus the per-root specialized verifier source, so an AST-direct rewrite of that generation would now
+  buy well under the ~5 % it looked like.
 
 The marketplace title itself is now **harness-dominated**, which caps what compiler and SDK work can buy
 there. CPU profile of `post job 1` (`--cpu-prof` in the marketplace config's `test.execArgv`; 1 file, 1 test):

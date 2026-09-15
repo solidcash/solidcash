@@ -4849,6 +4849,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const largeBodyOutline = emittedBytesBeforeOutline > MAX_INPUT_BYTESIZE * 10
       && (this.compilerOptions.optimizeForCompilationSpeed === true
         || (this.currentContractHasMessageBus && this.compilerOptions.messageBusKernel === true));
+    // `outlineThoroughness: 'speed'` drops the two lowest-yield outlining behaviours; see CompilerOptions.
+    const speedOutline = this.compilerOptions.outlineThoroughness === 'speed';
     if (!this.isSubroutineUseProbe) this.releaseUnusedSingleByteIdsForOutlining();
     const bodies = this.definedBodyRecords.map((record) => {
       // Pin every require/console.log site. The SDK attributes a failing evaluation by matching the VM's
@@ -4926,7 +4928,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           minimumWindowElements,
           candidateGroupsPerRound,
           undefined,
-          largeBodyOutline ? 1 : 6,
+          largeBodyOutline ? 1 : speedOutline ? 2 : 6,
         );
         if ((globalThis as any).process?.env?.SOLIDC_DEBUG_OUTLINE_TIMING === '1') {
           console.error('[outline-timing]', JSON.stringify({
@@ -4965,7 +4967,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.definedBodyRecords.flatMap((record) =>
         record.compilerHelperId === undefined ? [] : [record.compilerHelperId]),
     );
-    if (result !== undefined && nestedCompilerHelperIds.size > 0) {
+    if (!speedOutline && result !== undefined && nestedCompilerHelperIds.size > 0) {
       const nestedStarted = Date.now();
       const nestedPool = this.snapshotCompactHelperIds();
       const nested = outlineSharedSpans(

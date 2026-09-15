@@ -18,6 +18,16 @@ export interface CompilerOptions {
   /** Skip speculative message-bus admission rungs and compile the conservative route directly. */
   optimizeForCompilationSpeed?: boolean;
   /**
+   * Trade outlining completeness for compile time.
+   *
+   * `thorough` (default) runs every outlining pass and round. `speed` stops the narrow follow-up rounds of the
+   * ordinary (window-12) search and the nested compiler-helper pass. Measured on the ten-root marketplace
+   * corpus those two recover 34 and 36 bytes per millisecond against 500+ for the main rounds, and together
+   * they cost 752 ms of a 21.5 s compile for ~26 KB of bytecode. Every pass is a pure span-sharing rewrite, so
+   * the emitted program keeps its semantics; only its size changes.
+   */
+  outlineThoroughness?: 'thorough' | 'speed';
+  /**
    * Emit bytecode source maps on the artifact (`debug.sourceMap` and per-body maps). Default true.
    * Set false to skip encoding maps at compile time and skip decoding them when attributing VM failures.
    * Require/log instruction pointers and source line numbers are still recorded; BitAuth source comments

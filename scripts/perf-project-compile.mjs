@@ -49,6 +49,9 @@ const options = {
   __strictNoInternalRecovery: true,
 };
 if (process.argv.includes('--no-cheap-admission')) options.__cheapAdmissionCodegen = false;
+// The probe builds its own options, so it mirrors the compiler default (thorough) unless asked; the
+// marketplace project config sets `outlineThoroughness: 'speed'`, which this flag reproduces.
+if (process.argv.includes('--speed-outline')) options.outlineThoroughness = 'speed';
 if (process.argv.includes('--placeholder-full')) {
   options.__cheapAdmissionCodegen = false;
   options.__synthesizeBoundRoutePlaceholder = true;

@@ -70,22 +70,32 @@ const bodyBytes = (body) => (typeof body === 'string' ? body.length / 2 : 0);
 // rung fails `EACCToken` with "single-pass bind: missing __message_bus_verify_atomic" and changes
 // `TreasurySplit`'s output. Keep it as a probe for that code path, not as a speed option.
 const started = performance.now();
+const startedCpu = process.cpuUsage();
 const rows = [];
 for (const relative of roots) {
   const source = path.join(root, '.marketplace/contracts', relative);
   const contract = path.basename(relative).replace(/\.sol$/, '');
   const rootStarted = performance.now();
+  const rootCpuStarted = process.cpuUsage();
+  const cpuMs = () => {
+    const delta = process.cpuUsage(rootCpuStarted);
+    return (delta.user + delta.system) / 1000;
+  };
   let artifacts;
   try {
     artifacts = compileFileMulti(source, { ...options, compileDeclarations: [contract] });
   } catch (error) {
-    rows.push({ root: relative, ms: performance.now() - rootStarted, error: String(error.message).slice(0, 200) });
+    rows.push({
+      root: relative, ms: performance.now() - rootStarted, cpuMs: cpuMs(),
+      error: String(error.message).slice(0, 200),
+    });
     continue;
   }
   const artifact = artifacts[contract];
   rows.push({
     root: relative,
     ms: performance.now() - rootStarted,
+    cpuMs: cpuMs(),
     routeBytes: bodyBytes(artifact?.functionBodies?.[artifact?.messageBus?.selector ?? '']),
     fullBytes: bodyBytes(artifact?.debug?.bytecode),
     routeHash: sha256(artifact?.functionBodies?.[artifact?.messageBus?.selector ?? '']),
@@ -94,8 +104,13 @@ for (const relative of roots) {
 }
 
 const totalMs = performance.now() - started;
+const totalCpu = process.cpuUsage(startedCpu);
 console.log(`[project-compile] ${JSON.stringify({
   roots: rows.length,
   totalMs: Math.round(totalMs),
-  perRoot: rows.map((row) => ({ ...row, ms: Math.round(row.ms) })),
+  // CPU time is the load-independent half of the measurement: the machine is shared, so wall-clock deltas
+  // between two runs minutes apart routinely exceed the effect being measured. User+system time per root still
+  // tracks the work the compiler actually did.
+  totalCpuMs: Math.round((totalCpu.user + totalCpu.system) / 1000),
+  perRoot: rows.map((row) => ({ ...row, ms: Math.round(row.ms), cpuMs: Math.round(row.cpuMs) })),
 })}`);

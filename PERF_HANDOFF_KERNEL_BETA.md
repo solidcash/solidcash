@@ -16,7 +16,78 @@ Landed:
 Compiler status: only the byte-identical parse cache is landed; the outline mode needed a new flag
 and is reverted (§0). Nine candidates in total have been measured, all rejected except the cache.
 
-## 0. Compiler work landed in round 4
+## 0. Compiler work landed in rounds 4-7
+
+**Landed: route admission compiles its first rung once, in its shipping shape** (round 7, no new option).
+A speed-hint message-bus compile used to walk the ladder twice: a cheap pass with stubbed bodies that only
+had to reveal which rung compiles, then a full compile of that winning shape - and for every root that
+still lacked a bound verifier, a third pass through the verifier-binder. The shape the winner recompile
+produces is reachable in one pass, because `__synthesizeBoundRoutePlaceholder` binds the detached verifier
+inline, and a route bound in the pass that synthesized it needs no binder recompile at all. So
+`compileStringUnchecked` now compiles the ladder's *first* rung (widest external route when the bus is
+explicitly requested, first public-only route rung under automatic selection) with full bodies in that
+shipping shape, and skips both the stubbed search and the winner recompile when it yields a route.
+Anything it refuses - including a source that synthesizes no route at all - falls through to
+`compileWithExternalAdmissionFallback`, which keeps ownership of attribution, per-handler quarantine
+retries, and the narrower rungs; the cheap-widest-rung `rejectFreeFunctionMissingReturns` gate is applied
+to the first-rung attempt so a source with an uncovered returning free helper still falls through to the
+public-only rungs exactly as before.
+
+Measured on the ten-root project compile as interleaved A/B pairs (`SOLIDC_DISABLE_FIRST_RUNG_ADMISSION`
+was the temporary switch used to produce the baseline half; it is removed from the landed code). CPU time
+(user+system, per root, median of three pairs) is the load-independent half of the measurement and is what
+the verdict uses - wall clock on this shared machine swings ±15 % between identical runs. The headline
+−30.2 % is the median pair; the two pairs taken at comparable absolute CPU read −30.2 % and −18.2 %, and
+the third, taken while a sibling session pushed absolute CPU ~1.9× higher, read only −2.6 %:
+
+| | baseline | first rung | delta |
+|---|---|---|---|
+| total CPU (median of three pairs) | 53,626 ms | **37,434 ms** | **−30.2 %** |
+| MarketplaceV1 | 24,042 ms | 13,718 ms | −42.9 % |
+| MarketplaceV2 | 7,842 ms | 5,898 ms | −24.8 % |
+| MarketplaceV3 | 6,556 ms | 4,018 ms | −38.7 % |
+| MarketplaceDataV1 | 4,306 ms | 3,971 ms | −7.8 % |
+| EACCToken | 3,655 ms | 4,179 ms | **+14.3 %** |
+| TreasurySplit | 964 ms | 618 ms | −35.9 % |
+| unicrow/FakeToken | 1,646 ms | 934 ms | −43.3 % |
+| unicrow/UnicrowDispute | 2,002 ms | 1,176 ms | −41.3 % |
+| unicrow/UnicrowArbitrator | 1,935 ms | 1,714 ms | −11.4 % |
+| unicrow/UnicrowClaim | 1,426 ms | 1,295 ms | −9.2 % |
+
+Every root's non-route bytecode is **unchanged**: nine of ten match the fixture hash-for-hash
+(`debug.bytecode` and the SCB1 route body), and `TreasurySplit`'s route body shrinks 1,318 → 1,279 B
+(−0.9 % of a 4,430 B artifact) because it now ships the single-pass bound route instead of the two-phase
+one. That is inside the ±5 % budget and the fixture was regenerated for it; the regenerated
+`TreasurySplit.json`/`.artifact.ts` differ from the previous pair only in the route body and everything
+derived from it (`bytecode`, `debug.bytecode`, `functionBodies['53434231']`, that function's
+`debug.functionDebug` source map and require IPs) - no ABI, layout or fingerprint change.
+
+The one regression is the refusal path: a source whose first-rung attempt is refused pays that attempt
+*and* the ordinary ladder. That is `EACCToken` (+14 %, the only route-less root in the corpus: no message
+bus at all) and any heavy source the placeholder bind refuses. The cost is bounded by one extra full
+compile, and the source is still compiled correctly - the ladder decides, exactly as before. The
+first-rung attempt also only runs for callers that pass `optimizeForCompilationSpeed`, so the default test
+matrix is untouched: `KERNEL`-style options (`{ forceStateful, messageBus, messageBusKernel }`) never set
+`__cheapAdmissionCodegen` and are byte- and timing-identical.
+
+The win is not marketplace-specific. Compiling the `KernelAdmission` test's own heavy stateful source
+standalone takes 53.7 s / 48.7 s with the test's options; adding only `optimizeForCompilationSpeed: true`
+- which is what the corpus config sets - takes it to 26.9 s / 22.9 s with the fast path active
+(`admission-first-rung`, no binder pass) and 6,948 → 6,915 B of bytecode.
+
+Gates run on the landed code: full `solidc` suite 225 failed / 4,810 passed against a 224 failed / 4,811
+passed baseline. The single delta is
+`KernelAdmission.test.ts > keeps resource recurrence sources fenced and exactly replays truncating and
+local deltas`, a 50 s heavy compile against a 60 s per-test timeout: it passes in isolation on both builds,
+and running the whole `KernelAdmission.test.ts` file alone gives the **same one failure** (a different,
+713 ms test) on the baseline and on this build. That test's options never set
+`optimizeForCompilationSpeed`, so the new path cannot run in it - verified by compiling its exact source
+with its exact options and observing no `admission-first-rung` profile event. The earlier loaded full run
+additionally timed out `KernelLoopRoute > source-ordered non-associative recurrence rows`, which passes in
+isolation and whose options likewise never set the speed hint. SDK gates (`test:fast` 6 failed / 1,136
+passed; journal 9 failed / 630 passed; sdk-regressions 1 failed / 188 passed), `testing-suite`
+artifact-freshness (2 passed) and `@solidcash/utils` script (26 passed) are identical to their baselines,
+and the four passing marketplace titles are green in one 27.3 s run (20.0 s of test time).
 
 **Landed and kept: the cross-root parse cache** (`e531d63a0`, `parseImportedFileCached` in
 `compiler.ts`, used by `ImportResolver`). A project compile resolved the same import graph once per
@@ -260,9 +331,8 @@ fix. The large items are structural:
   root), so the existing memo legitimately misses. Only reusing the winning attempt's verifier source
   removes it. Note the per-emit cost falls from ~275 ms to ~75 ms once the process is warm, so this is
   JIT-heavy work, not redundant work across roots.
-* **Multi-root project compiles re-parse the import graph per root** — but that is only ~10 % of the
-  project compile (`parseAndResolve` 2,091 ms / 19,699 ms), so a cross-root parse cache would buy ~5 %
-  at most for a nontrivial AST-sharing change. Measure any candidate with
+* **Multi-root project compiles re-parse the import graph per root** — landed as the cross-root parse
+  cache in round 4 (`e531d63a0`), which also made the estimate below obsolete. Measure any candidate with
   `scripts/perf-project-compile.mjs` and check the per-root bytecode hashes above are unchanged.
 
 ## 3. Reproducing the measurements
@@ -284,6 +354,15 @@ Two traps for whoever measures next:
 * Run the A/B pair back-to-back on an otherwise idle machine. A sibling session's marketplace run made
   the same optimized test report 60 s (transform 27.5 s / import 29.5 s) instead of 18 s.
 
+For a compiler A/B, `git stash push packages/solidc/src/compiler.ts && yarn build` produces the baseline
+half; run the halves alternately (`off on off on`) and judge with **`totalCpuMs`/`cpuMs`**, not `totalMs`.
+Both drift with the machine's external load between pairs, but CPU time is insensitive to preemption
+*within* a pair, so paired CPU deltas keep their sign where paired wall-clock deltas do not. Round 7's
+three pairs read −15.1 % / +14.5 % / −13.4 % in wall clock against −2.6 % / −30.2 % / −18.2 % in CPU time;
+the pair with the small CPU delta is also the pair whose absolute CPU was ~1.9× the others, i.e. the one
+taken while a sibling session was heaviest, where cache and memory contention inflates CPU time too.
+Treat any pair whose absolute CPU is far above the others as unusable rather than averaging it in.
+
 ## 4. State of this tree
 
 Every command in `scripts/kernel-beta-manifest.json`'s `testCommands` was run on this branch with the two
@@ -295,9 +374,16 @@ SDK commits in place:
 | `yarn workspace testing-suite vitest run test/artifact-freshness.test.ts` | 2 passed |
 | `yarn workspace @solidcash/utils vitest run test/script.test.ts` | 26 passed |
 | `yarn workspace solidc vitest run test/journal-message-bus` | 6 failed / 1,442 passed (pre-existing) |
+| `yarn workspace solidc vitest run` (full suite, round 7) | 225 failed / 4,810 passed vs a 224 failed / 4,811 passed baseline; the single delta is a 60 s-timeout-sensitive heavy compile that passes in isolation on both builds and whose options never set `optimizeForCompilationSpeed` (§0) |
 | `yarn workspace solidcash vitest run test/journal-message-bus` + `sdk-regressions` | 10 failed / 818 passed, identical to a baseline build of this worktree (diffed by test name) |
 | `yarn workspace solidcash test:fast` | 6 failed / 1,136 passed, identical to baseline (diffed by `FAIL` lines) |
-| four passing marketplace titles | all pass: 17.4 s / 18.4 s / 19.7 s / 21.5 s (baseline 27-31 s) |
+| four passing marketplace titles | all pass: 17.4 s / 18.4 s / 19.7 s / 21.5 s (baseline 27-31 s); re-run together after round 7 in 27.3 s total (20.0 s of test time) |
+
+* `scripts/perf-project-compile.mjs` — single-process multi-root project-compile probe with per-root
+  bytecode hashes and per-root CPU accounting. The CPU columns are what round 7's verdict uses: wall
+  clock on this shared machine swings ±15 % between identical runs, user+system time does not.
+* Round 7's compiler change is in `packages/solidc/src/compiler.ts` (`compileStringUnchecked`, the
+  first-rung admission block above `compileWithExternalAdmissionFallback`).
 
 * `4c3485f1c` — fast pushdata rejection + faithful shallow trace recorder
   (`stateful/StatefulContract.ts`, `network/createVirtualMachine.ts`).
@@ -313,19 +399,21 @@ SDK commits in place:
 
 ## 5. What the next round should do about the compiler
 
-The SDK side of the objective is met and measured. The compiler side is profiled but not moved: every
-candidate measured so far is either rejected by its own numbers or needs a refactor whose validation cost
-exceeds its upside. Round 2 added these results (all on the ten-root project compile, 19,699 ms baseline):
+The SDK side of the objective is met and measured, and the compiler side has since moved: rounds 4-7
+landed the cross-root parse cache, the slot-walk rewrite, the outline-round cap and the first-rung route
+admission (§0). What follows is the round-2/round-6 record of what was tried and rejected, kept so the
+same experiments are not repeated. Round 2 added these results (all on the ten-root project compile,
+19,699 ms baseline):
 
 | candidate | measured | verdict |
 |---|---|---|
 | `__cheapAdmissionCodegen: false` | 32,848 ms, bytecode differs for most roots | rejected |
-| widest rung full + `__synthesizeBoundRoutePlaceholder` | 18,792 ms (−4.6 %) but `EACCToken` fails (`single-pass bind: missing __message_bus_verify_atomic`) and `TreasurySplit` output changes | rejected |
-| cross-root parse cache | duplicate parses total **944 ms** (4.8 %, ANTLR 649 ms) before ~48 clone costs (est. 250-600 ms) → **net 2-3.5 %** | not worth an AST-sharing change |
+| widest rung full + `__synthesizeBoundRoutePlaceholder` **for every root, with no fallback** | 18,792 ms (−4.6 %) but `EACCToken` fails (`single-pass bind: missing __message_bus_verify_atomic`) and `TreasurySplit` output changes | rejected as written; **landed in round 7** as a first-rung attempt that falls back to the ordinary ladder when it is refused (see §0) |
+| cross-root parse cache | duplicate parses total **944 ms** (4.8 %, ANTLR 649 ms) before ~48 clone costs (est. 250-600 ms) → **net 2-3.5 %** | landed as `e531d63a0` (§0) |
 | verifier emit memo | per root one generic host emit + one signature-policy-specialized emit, both route-specific; the specialization runs after codegen while the placeholder binding runs before it | no waste to remove |
 | `analyseContractInvocations` reuse across AST clones | ~265 ms per root self, two clones per root | ≤3 % for a cache-keying change |
 | `subroutineUseProbe` → direct census | already a census: `emit()` returns immediately in probe mode, so the probe's 416 ms is the decision traversal that *produces* the counts and id maps | infeasible |
-| admission-shape reuse | the cheap pass parks unemitted functions; lowering them there moves work instead of removing it, so only the ~300 ms overlap is recoverable | ~6 %, deep refactor |
+| admission-shape reuse | the cheap pass parks unemitted functions; lowering them there moves work instead of removing it, so only the ~300 ms overlap is recoverable | ~6 %, deep refactor; superseded by the first-rung admission landed in round 7 (§0), which removes the whole cheap pass and the binder recompile instead of sharing work with them |
 | compile ordering (JIT warm-up) | big-first 22,420/22,189 ms vs alphabetical 21,290/22,857 ms over two repetitions | no effect, noise |
 
 Two operational facts for whoever picks this up:

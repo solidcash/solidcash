@@ -101,6 +101,38 @@ const concat = (...parts: readonly Uint8Array[]): Uint8Array => {
   return result;
 };
 
+/** Decode one argument from the outer unlocking-script frame. Arrays and structs are serialized as one value
+ * blob and then pushed as one ABI argument, so their inner decoder must run on the pushed bytes rather than on
+ * the outer PUSHDATA opcode. Scalar encodings already are their own canonical script item. */
+const decodeForwardedArgument = (
+  payload: Uint8Array,
+  cursor: number,
+  type: string,
+  structs: Artifact['structs'],
+): { value: FunctionArgument; bytesConsumed: number } => {
+  const aggregate = type.endsWith(']') || structs?.some((candidate) => candidate.name === type) === true;
+  if (!aggregate) {
+    const decoded = decodePushdataValue(payload, cursor, type, structs);
+    return { value: decoded.value as FunctionArgument, bytesConsumed: decoded.bytesConsumed };
+  }
+  const outer = decodePushdataValue(payload, cursor, 'bytes');
+  if (!(outer.value instanceof Uint8Array)) {
+    throw new Error('delegate forwarding aggregate argument is not one canonical pushed value');
+  }
+  // A top-level empty dynamic array deliberately uses push1(0) for its inner count. OP_0 would collapse to an
+  // empty stack item when the complete argument is pushed by an unlocking template, losing the count field.
+  // This is the one canonical exception documented by encodeFunctionArgument's array encoding.
+  if (type.endsWith('[]') && outer.value.length === 2
+    && outer.value[0] === 0x01 && outer.value[1] === 0x00) {
+    return { value: [], bytesConsumed: outer.bytesConsumed };
+  }
+  const decoded = decodePushdataValue(outer.value, 0, type, structs);
+  if (decoded.bytesConsumed !== outer.value.length) {
+    throw new Error('delegate forwarding aggregate argument has trailing inner bytes');
+  }
+  return { value: decoded.value as FunctionArgument, bytesConsumed: outer.bytesConsumed };
+};
+
 const uint16 = (value: number): Uint8Array => Uint8Array.of(value & 0xff, (value >>> 8) & 0xff);
 const framed = (value: Uint8Array): Uint8Array => concat(uint16(value.length), value);
 
@@ -321,8 +353,16 @@ export function resolveKernelDelegateExecution(
     : payload.slice(4);
   let cursor = 0;
   for (const input of visibleInputs) {
-    const decoded = decodePushdataValue(argumentPayload, cursor, input.type, structs);
-    args.push(decoded.value as FunctionArgument);
+    let decoded: ReturnType<typeof decodeForwardedArgument>;
+    try {
+      decoded = decodeForwardedArgument(argumentPayload, cursor, input.type, structs);
+    } catch (error) {
+      throw new Error(
+        `delegate forwarding argument '${input.name}' (${input.type}) is not canonical: `
+        + (error instanceof Error ? error.message : String(error)),
+      );
+    }
+    args.push(decoded.value);
     cursor += decoded.bytesConsumed;
   }
   if (cursor !== argumentPayload.length || args.length !== visibleInputs.length) {

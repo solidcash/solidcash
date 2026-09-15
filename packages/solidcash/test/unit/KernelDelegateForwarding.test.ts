@@ -347,6 +347,45 @@ describe('kernel delegate forwarding binding prerequisite', () => {
     })).toThrow(/not the singular version-1 frame/);
   });
 
+  it('decodes a forwarded aggregate from its outer ABI push boundary', () => {
+    const artifact = implementationArtifact();
+    const inputs = [{ name: 'values', type: 'uint256[]' }];
+    artifact.abi[0]!.inputs = inputs;
+    artifact.messageBus!.handlers[0]!.inputs = inputs;
+    const values = [1n, 2n, 3n];
+    const encoded = encodeFunctionArgument(values, 'uint256[]');
+    if (!(encoded instanceof Uint8Array)) throw new Error('test array did not encode to bytes');
+    const payload = new Uint8Array([...hexToBin('01020304'), ...scriptToBytecode([encoded])]);
+
+    expect(resolveKernelDelegatePromotion({
+      forwarding: metadata(),
+      proxyParameters: [payload],
+      proxyConstructorArgs: [bytes('bb20')],
+      proxyLockingBytecode: 'aa20',
+      stateCategory: '11'.repeat(32),
+      implementation: { artifact, lockingBytecode: 'bb20' },
+      requestedFunctionName: 'apply',
+      requestedArgs: [values],
+    }).args).toEqual([values]);
+  });
+
+  it('preserves the explicit zero count of a forwarded empty dynamic array', () => {
+    const artifact = implementationArtifact();
+    const inputs = [{ name: 'recipients', type: 'address[]' }];
+    artifact.abi[0]!.inputs = inputs;
+    artifact.messageBus!.handlers[0]!.inputs = inputs;
+    const encoded = encodeFunctionArgument([], 'address[]');
+    if (!(encoded instanceof Uint8Array)) throw new Error('test array did not encode to bytes');
+    const payload = new Uint8Array([...hexToBin('01020304'), ...scriptToBytecode([encoded])]);
+
+    expect(resolveKernelDelegatePromotion({
+      forwarding: metadata(), proxyParameters: [payload], proxyConstructorArgs: [bytes('bb20')],
+      proxyLockingBytecode: 'aa20', stateCategory: '11'.repeat(32),
+      implementation: { artifact, lockingBytecode: 'bb20' },
+      requestedFunctionName: 'apply', requestedArgs: [[]],
+    }).args).toEqual([[]]);
+  });
+
   it('binds nested resolution to the selector-authenticated promoted owner frame', () => {
     const logical = {
       name: 'apply', selector: '01020304', inputs: [

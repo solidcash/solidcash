@@ -20,6 +20,9 @@ import {
   continuationOutputBaseBeforeSuffix,
   selectValueChunkOutputBase,
   selectExternalEventProbeInput,
+  hasMaterializedLowLevelCallBlock,
+  materializedLowLevelCallBlockAtMaster,
+  repairMaterializedLowLevelCallBlocks,
   findDisposableValueChunkOutputBase,
   mintingSwapShift,
   chooseMintingSwapShift,
@@ -220,6 +223,103 @@ describe('external event probe input', () => {
 
     expect(selectExternalEventProbeInput(renamedDelegate, 17, 9)).toBe(17);
     expect(selectExternalEventProbeInput(legacyNamedOrdinary, -1, 9)).toBe(9);
+  });
+});
+
+describe('materialized low-level-call block identity', () => {
+  const makeGroup = (functionName: string, txid: string, vout = 0) => ({
+    categoryId: 'ab'.repeat(32),
+    functionName,
+    masterUtxo: { txid, vout },
+    blockInputs: [
+      { txid, vout },
+      { txid: `${txid.slice(0, -2)}01`, vout: 1 },
+      { txid: `${txid.slice(0, -2)}02`, vout: 2 },
+    ],
+    blockLayout: {
+      blockSize: 3,
+      slots: [
+        { kind: 'master', offset: 0 },
+        { kind: 'entry', offset: 1, slotIndex: 0 },
+        { kind: 'event', offset: 2, slotIndex: 0 },
+      ],
+    },
+  }) as unknown as import('../../src/stateful/StatefulTransactionBuilder.js').ExternalCallUtxoGroup;
+
+  it('selects contiguous block repair by layout and master outpoint across alpha-renaming', () => {
+    const historicalName = makeGroup('publishJobEvent', 'aa'.repeat(32));
+    const renamed = makeGroup('appendNotice', 'bb'.repeat(32), 4);
+    expect(hasMaterializedLowLevelCallBlock(historicalName)).toBe(true);
+    expect(hasMaterializedLowLevelCallBlock(renamed)).toBe(true);
+    expect(materializedLowLevelCallBlockAtMaster(
+      [historicalName, renamed], { txid: 'BB'.repeat(32), vout: 4 },
+    )).toBe(renamed);
+  });
+
+  it('does not grant layout authority from a historical function name or ambiguous outpoint', () => {
+    const nameOnly = {
+      ...makeGroup('publishJobEvent', 'cc'.repeat(32)), blockInputs: undefined,
+    } as unknown as import('../../src/stateful/StatefulTransactionBuilder.js').ExternalCallUtxoGroup;
+    expect(hasMaterializedLowLevelCallBlock(nameOnly)).toBe(false);
+    const first = makeGroup('appendNotice', 'dd'.repeat(32));
+    const duplicate = makeGroup('appendAudit', 'dd'.repeat(32));
+    expect(materializedLowLevelCallBlockAtMaster(
+      [first, duplicate], { txid: 'dd'.repeat(32), vout: 0 },
+    )).toBeUndefined();
+  });
+
+  it('repairs a renamed dense block by permutation without changing the input multiset', () => {
+    const renamed = makeGroup('appendNotice', 'ee'.repeat(32), 5);
+    const [master, entry, event] = renamed.blockInputs!;
+    const unrelated = { txid: 'ff'.repeat(32), vout: 9 };
+    const inputs = [master, unrelated, event, entry] as Array<{ txid: string; vout: number }>;
+    const before = inputs.map((input) => `${input.txid.toLowerCase()}:${input.vout}`).sort();
+    expect(repairMaterializedLowLevelCallBlocks(inputs as never, [renamed])).toBe(1);
+    expect(inputs.slice(0, 3)).toEqual([master, entry, event]);
+    expect(inputs.map((input) => `${input.txid.toLowerCase()}:${input.vout}`).sort()).toEqual(before);
+    expect(inputs).toHaveLength(4);
+    expect(repairMaterializedLowLevelCallBlocks(inputs as never, [renamed])).toBe(0);
+  });
+
+  it('refuses sparse and specialized blocks handled by other materializers', () => {
+    const sparse = makeGroup('appendNotice', '12'.repeat(32));
+    sparse.blockInputs = sparse.blockInputs!.slice(0, 2);
+    expect(hasMaterializedLowLevelCallBlock(sparse)).toBe(false);
+    const transfer = makeGroup('publishJobEvent', '34'.repeat(32));
+    transfer.blockLayout = {
+      blockSize: 3,
+      slots: [
+        { kind: 'master', offset: 0 },
+        { kind: 'transfer', offset: 1, slotIndex: 0 },
+        { kind: 'event', offset: 2, slotIndex: 0 },
+      ],
+    };
+    expect(hasMaterializedLowLevelCallBlock(transfer)).toBe(false);
+  });
+
+  it('skips shared companion claims without changing order', () => {
+    const first = makeGroup('appendNotice', '56'.repeat(32));
+    const second = makeGroup('appendAudit', '78'.repeat(32));
+    second.blockInputs![1] = first.blockInputs![1];
+    const inputs = [
+      first.blockInputs![0], second.blockInputs![2], first.blockInputs![2], first.blockInputs![1],
+      second.blockInputs![0], second.blockInputs![1],
+    ] as Array<{ txid: string; vout: number }>;
+    const before = [...inputs];
+    expect(repairMaterializedLowLevelCallBlocks(inputs as never, [first, second])).toBe(0);
+    expect(inputs).toEqual(before);
+  });
+
+  it('skips overlapping destination ranges owned by two otherwise disjoint blocks', () => {
+    const first = makeGroup('appendNotice', '9a'.repeat(32));
+    const second = makeGroup('appendAudit', 'bc'.repeat(32));
+    const inputs = [
+      first.blockInputs![0], second.blockInputs![0], first.blockInputs![1],
+      second.blockInputs![1], first.blockInputs![2], second.blockInputs![2],
+    ] as Array<{ txid: string; vout: number }>;
+    const before = [...inputs];
+    expect(repairMaterializedLowLevelCallBlocks(inputs as never, [first, second])).toBe(0);
+    expect(inputs).toEqual(before);
   });
 });
 

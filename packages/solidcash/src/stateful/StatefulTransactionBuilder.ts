@@ -5896,6 +5896,125 @@ export function flattenLlcGroupInputs(group: ExternalCallUtxoGroup): UnlockableU
   return [...withUnlocker(master), ...group.dataNftUtxos];
 }
 
+function sameOutpoint(
+  left: Pick<Utxo, 'txid' | 'vout'> | undefined,
+  right: Pick<Utxo, 'txid' | 'vout'> | undefined,
+): boolean {
+  return left !== undefined && right !== undefined
+    && left.txid.toLowerCase() === right.txid.toLowerCase()
+    && left.vout === right.vout;
+}
+
+/** Resolve the compiler-owned physical block layout for a low-level call group. */
+export function lowLevelCallBlockLayout(group: ExternalCallUtxoGroup): AbiFunction['blockLayout'] {
+  return group.blockLayout
+    ?? group.compilerRoute?.abiFunction.blockLayout
+    ?? (group.externalContract.inner.artifact.abi as readonly AbiFunction[])
+      .find((candidate) => candidate.name === group.functionName)?.blockLayout;
+}
+
+/**
+ * A materialized low-level-call block is identified entirely by physical evidence: its first block input is the
+ * group's master outpoint and the compiler published a layout for the companions. Source-level names never grant
+ * permission to splice or mirror transaction inputs/outputs.
+ */
+export function hasMaterializedLowLevelCallBlock(group: ExternalCallUtxoGroup): boolean {
+  const layout = lowLevelCallBlockLayout(group);
+  if (!group.blockInputs || !layout || layout.blockSize <= 1
+    || group.blockInputs.length !== layout.blockSize
+    || !sameOutpoint(group.blockInputs[0], group.masterUtxo)) return false;
+  // This path knows how to preserve data slots and derive entry/event slots. Every other semantic slot has its
+  // own materializer (transfers, token transfers, returns, compute sidecars, deploys, containers, lifecycle and
+  // nested calls); admitting one here would silently clone or pad a value that must instead be derived.
+  const supported = new Set(['master', 'dataNft', 'readOnlyDataNft', 'entry', 'event']);
+  const offsets = new Set<number>();
+  for (const slot of layout.slots) {
+    if (!supported.has(slot.kind) || !Number.isSafeInteger(slot.offset)
+      || slot.offset < 0 || slot.offset >= layout.blockSize || offsets.has(slot.offset)) return false;
+    if (slot.kind === 'event' && (!Number.isSafeInteger(slot.slotIndex) || slot.slotIndex! < 0)) return false;
+    offsets.add(slot.offset);
+  }
+  const masters = layout.slots.filter((slot) => slot.kind === 'master');
+  return masters.length === 1 && masters[0].offset === 0;
+}
+
+/** Select one unambiguous materialized LLC block whose master occupies this physical input. */
+export function materializedLowLevelCallBlockAtMaster(
+  groups: readonly ExternalCallUtxoGroup[],
+  master: Pick<Utxo, 'txid' | 'vout'> | undefined,
+): ExternalCallUtxoGroup | undefined {
+  const matches = groups.filter((group) => (
+    hasMaterializedLowLevelCallBlock(group) && sameOutpoint(group.masterUtxo, master)
+  ));
+  return matches.length === 1 ? matches[0] : undefined;
+}
+
+const outpointIdentity = (utxo: Pick<Utxo, 'txid' | 'vout'>): string =>
+  `${utxo.txid.toLowerCase()}:${utxo.vout}`;
+
+/**
+ * Restore compiler-described LLC companion adjacency using swaps only. The input multiset and length are
+ * invariant: missing, duplicate, shared, or overlapping physical claims fail closed for that block.
+ */
+export function repairMaterializedLowLevelCallBlocks(
+  inputs: UnlockableUtxo[], groups: readonly ExternalCallUtxoGroup[],
+): number {
+  let repaired = 0;
+  const eligible = groups.filter(hasMaterializedLowLevelCallBlock);
+  const originalInputs = [...inputs];
+  const claimed = new Map<string, number>();
+  for (const group of eligible) {
+    for (const input of group.blockInputs!) {
+      const identity = outpointIdentity(input);
+      claimed.set(identity, (claimed.get(identity) ?? 0) + 1);
+    }
+  }
+  // Freeze every admissible ownership range before swapping. Inspecting the live array after an earlier repair
+  // could hide that a later destination originally held the earlier group's companion, allowing the later swap
+  // to break an already-repaired block.
+  const plans = eligible.flatMap((group) => {
+    const blockInputs = group.blockInputs!;
+    if (blockInputs.some((input) => claimed.get(outpointIdentity(input)) !== 1)) return [];
+    const positions = blockInputs.map((wanted) => originalInputs.flatMap((input, index) => (
+      sameOutpoint(input, wanted) ? [index] : []
+    )));
+    if (positions.some((matches) => matches.length !== 1)) return [];
+    const masterIndex = positions[0][0];
+    if (masterIndex + blockInputs.length > originalInputs.length) return [];
+    const ownClaims = new Set(blockInputs.map(outpointIdentity));
+    const foreignClaimDestination = originalInputs
+      .slice(masterIndex + 1, masterIndex + blockInputs.length)
+      .some((occupant) => {
+        const identity = outpointIdentity(occupant);
+        return claimed.has(identity) && !ownClaims.has(identity);
+      });
+    if (foreignClaimDestination) return [];
+    return [{ blockInputs, masterIndex }];
+  });
+  for (const { blockInputs, masterIndex } of plans) {
+    const intersectsAnotherPlan = plans.some((candidate) => {
+      if (candidate.blockInputs === blockInputs) return false;
+      const leftEnd = masterIndex + blockInputs.length;
+      const rightEnd = candidate.masterIndex + candidate.blockInputs.length;
+      return masterIndex < rightEnd && candidate.masterIndex < leftEnd;
+    });
+    if (intersectsAnotherPlan) continue;
+    let changed = false;
+    for (let offset = 1; offset < blockInputs.length; offset += 1) {
+      const destination = masterIndex + offset;
+      const source = inputs.findIndex((input) => sameOutpoint(input, blockInputs[offset]));
+      if (source < 0) { changed = false; break; }
+      if (source === destination) continue;
+      [inputs[destination], inputs[source]] = [inputs[source], inputs[destination]];
+      changed = true;
+    }
+    if (blockInputs.every((wanted, offset) => sameOutpoint(inputs[masterIndex + offset], wanted))) {
+      if (changed) repaired += 1;
+    }
+  }
+  return repaired;
+}
+
 export interface ExternalCallUtxoGroup {
   categoryId: string;
   stateLayout: StateLayout;
@@ -7394,45 +7513,11 @@ export class StatefulTransactionBuilder {
         ...postBlockParticipants,
         ...funderPool,
       ];
-      // Ensure each nested publishJobEvent master keeps its ABI blockSize contiguous band.
-      // Prefer the group's real blockInputs (data/funders + entry + event) — never OP_TRUE
-      // pads: UTXOBYTECODE(INPUTINDEX+entry) must equal the jobEvents collection lock.
+      // Ensure each nested materialized LLC master keeps its compiler-described contiguous band. Prefer the
+      // group's real blockInputs over synthetic pads: UTXOBYTECODE(INPUTINDEX+slot) must inspect the resource
+      // assigned to that physical slot, independent of the handler or application spelling.
       if (earlyInsertPredecessors.length > 0 && jobsBand.length > 0) {
-        for (let i = 0; i < assembled.length; i += 1) {
-          const unlocker = assembled[i] && 'unlocker' in assembled[i]
-            ? (assembled[i] as { unlocker?: { abiFunction?: { name?: string; blockLayout?: { blockSize?: number } } } }).unlocker
-            : undefined;
-          if (unlocker?.abiFunction?.name !== 'publishJobEvent') continue;
-          const master = assembled[i];
-          const group = this.lowLevelCallUtxoGroups.find((candidate) => {
-            const name = candidate.compilerRoute?.abiFunction?.name ?? candidate.functionName;
-            if (name === 'publishJobEvent') {
-              const groupMaster = candidate.masterUtxo;
-              return !groupMaster
-                || (groupMaster.txid.toLowerCase() === master.txid.toLowerCase()
-                  && groupMaster.vout === master.vout);
-            }
-            return false;
-          });
-          const companions = group ? flattenLlcGroupInputs(group).slice(1) : [];
-          if (companions.length === 0) continue;
-          const alreadyPlaced = companions.every((companion, offset) => {
-            const next = assembled[i + 1 + offset];
-            return next !== undefined
-              && next.txid.toLowerCase() === companion.txid.toLowerCase()
-              && next.vout === companion.vout;
-          });
-          if (alreadyPlaced) {
-            i += companions.length;
-            continue;
-          }
-          // Drop any prior synthetic pads that occupied the band, then insert real companions.
-          const blockSize = unlocker.abiFunction.blockLayout?.blockSize
-            ?? (1 + companions.length);
-          const removeCount = Math.max(0, Math.min(blockSize - 1, assembled.length - i - 1));
-          assembled.splice(i + 1, removeCount, ...companions);
-          i += companions.length;
-        }
+        repairMaterializedLowLevelCallBlocks(assembled, this.lowLevelCallUtxoGroups);
       }
       return assembled;
     }
@@ -16309,19 +16394,20 @@ export class StatefulTransactionBuilder {
       const delegateFn = group.compilerRoute?.abiFunction
         ?? (group.externalContract.inner.artifact.abi as readonly AbiFunction[])
           .find((candidate) => candidate.name === group.functionName);
-      const layout = group.blockLayout ?? delegateFn?.blockLayout;
-      const llcName = group.functionName ?? group.logicalFunctionName
-        ?? group.compilerRoute?.abiFunction?.name;
+      const layout = lowLevelCallBlockLayout(group) ?? delegateFn?.blockLayout;
       const expectedMasterAbs = this.getLowLevelCallMasterInputIndex(groupIndex);
+      const proxyOwners = this.externalCallUtxoGroups.filter(
+        (candidate) => candidate.delegateCallGroupIndex === groupIndex,
+      );
       // When flattenLlc spends full blockInputs, mirror entry/event here if the cursor is on this master.
-      if (llcName === 'publishJobEvent'
-        && group.blockInputs && group.blockInputs.length > 1 && layout
+      if (hasMaterializedLowLevelCallBlock(group) && group.blockInputs && layout
+        && proxyOwners.length === 1
         && expectedMasterAbs >= 0 && builder.outputs.length === expectedMasterAbs) {
         const masterAbs = builder.outputs.length;
-        let eventIdx = 0;
         for (let offset = 0; offset < group.blockInputs.length; offset += 1) {
-          const slot = layout.slots.find((candidate) => candidate.offset === offset)
-            ?? layout.slots[offset];
+          // An unlisted offset is a compiler-balanced physical cell. It is safe to preserve from the exact dense
+          // input band; never reinterpret another array-position slot as owning this offset.
+          const slot = layout.slots.find((candidate) => candidate.offset === offset);
           const input = group.blockInputs[offset];
           if (offset === 0) {
             builder.addOutput({
@@ -16363,10 +16449,8 @@ export class StatefulTransactionBuilder {
             continue;
           }
           if (slot?.kind === 'event') {
-            const eo = group.eventOutputs?.[eventIdx++];
-            const proxyOwner = this.externalCallUtxoGroups.find(
-              (candidate) => candidate.delegateCallGroupIndex === groupIndex,
-            );
+            const eo = group.eventOutputs?.[slot.slotIndex!];
+            const proxyOwner = proxyOwners[0];
             if (eo && eo.commitment !== '' && !/^0+$/.test(eo.commitment)) {
               builder.addOutput({
                 to: eo.lockingBytecode,

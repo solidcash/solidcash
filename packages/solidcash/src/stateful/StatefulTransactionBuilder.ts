@@ -6913,6 +6913,7 @@ export class StatefulTransactionBuilder {
 
   private entryRawCommitments: Map<number, string> = new Map(); // slotIndex -> hex commitment (from auto-derivation)
   private pinnedEntrySlots: Set<number> = new Set(); // slots whose commitment is known exactly (never re-derive)
+  private requiredEntryOutputSlots: Set<number> = new Set(); // slots the spending route reads at a fixed coordinate
   private dynamicChunkVars: Array<{
     name: string; type: string; lockingBytecode: Uint8Array; delegate?: boolean; delegateSuffix?: boolean;
   }> = [];
@@ -15292,6 +15293,25 @@ export class StatefulTransactionBuilder {
 
   /** Whether slot's commitment was pinned via pinEntrySlot (auto-derivation should skip it). */
   isEntrySlotPinned(slotIndex: number): boolean { return this.pinnedEntrySlots.has(slotIndex); }
+
+  /**
+   * Mark an entry slot whose output the spending route reads at a fixed block coordinate, so derivation must
+   * never delete it. A sorted-batch lane is verified positionally against its own block offset, and the lane's
+   * published batch witness - not the trace - says whether the lane is active: an active lane whose commitment
+   * the probe never observed still owes the covenant its entry output.
+   */
+  requireEntryOutputSlot(slotIndex: number): this {
+    if (!Number.isInteger(slotIndex) || slotIndex < 0) {
+      throw new Error(`Invalid slot index ${slotIndex}: must be a non-negative integer`);
+    }
+    this.requiredEntryOutputSlots.add(slotIndex);
+    return this;
+  }
+
+  /** Whether the spending route reads this entry slot's output at a fixed block coordinate. */
+  isEntryOutputSlotRequired(slotIndex: number): boolean {
+    return this.requiredEntryOutputSlots.has(slotIndex);
+  }
 
   /**
    * Set the ordered chunk commitments for a dynamic-storage var (from auto-derivation). The number of

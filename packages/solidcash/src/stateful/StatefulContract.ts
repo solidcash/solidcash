@@ -16219,7 +16219,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             const conditionalSlots = new Set(slotOrder.filter((slotIndex): slotIndex is number =>
               slotIndex !== undefined && stb.isEntrySlotConditional(slotIndex)));
             for (const slotIndex of conditionalSlots) {
-              if (observedSlots.has(slotIndex) || stb.isEntrySlotPinned(slotIndex)) continue;
+              // A sorted-batch lane keeps its output: the batch covenant reads that lane's fixed block
+              // coordinate for every bounded lane and compares the entry covenant lock it finds there, so
+              // deleting an active lane leaves a bare funder where the entry belongs. Which lanes are
+              // inactive is already settled by the batch witnesses and the inactive-slot deletion.
+              if (observedSlots.has(slotIndex) || stb.isEntrySlotPinned(slotIndex)
+                || stb.isEntryOutputSlotRequired(slotIndex)) continue;
               const commitment = stb.getExistingEntryCommitment(slotIndex);
               if (commitment) {
                 stb.setEntryRawCommitment(slotIndex, commitment);
@@ -30875,6 +30880,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       .filter((slotIndex): slotIndex is number => slotIndex !== undefined));
     for (const [slotIndex, commitment] of batchTargetPlaceholders) {
       builder.setEntryRawCommitment(slotIndex, commitment);
+      // A placeholder only exists for a lane the batch publishes as active (inactive and alias-skipped lanes
+      // never reach it), so the route reads this slot's output at its fixed block coordinate.
+      builder.requireEntryOutputSlot(slotIndex);
       // A cache flush's target is exact only on its dirty arm. Leave a conditional target probe-derivable so
       // the no-op arm can be recognized by the absence of its covenant output pin. Linear sorted batches seed
       // every reached key unconditionally; pin those known nodes even when the layout slot is conditional.

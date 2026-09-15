@@ -1,304 +1,174 @@
 # Kernel beta candidate — next-agent handoff
 
-Updated: 2026-09-15 11:40 (Europe/Berlin)
+Updated: 2026-09-15 (Europe/Berlin)
 
-## Current continuation — read this first
+## Resume point
 
-HEAD is `2e141a09a`. The latest checkpoints, newest first, are:
+Work in `/Code/cashscript/.worktrees/kernel-beta-candidate` on branch
+`grok/message-bus-kernel-beta`. The latest implementation checkpoint is:
+
+```text
+699287803 fix(sdk): decode dynamic EVM view returns
+```
+
+The active goal is to make all 66 unchanged titles in
+`examples/effectiveacceleration/test/marketplace.test.ts` green on mock BCH-2026 while preserving
+`artifact.messageBus.convention === 'kernel-row-loop'` and the graph handler `OP_INVOKE` boundary.
+
+Commit coherent, verified slices periodically. The tree contains hundreds of generated untracked `.js`, `.d.ts`,
+`.js.map`, and build metadata files. Never use `git add -A`; stage only explicitly reviewed source, tests, and this
+handoff.
+
+Planning context:
+
+```text
+/root/.grok/sessions/%2FCode%2Fcashscript/01a08719-2af7-7972-a026-bee8bc1bf3b3/goal/plan.md
+/tmp/grok-goal-e3920f329cc4/implementer/beta-reach-extension-inventory.md
+```
+
+## Latest verified result
+
+The unchanged Marketplace `read mece tag` title is green in 10.25 seconds.
+
+The failure was not persistence, mapping selection, or compiler repeated-read stack lifetime. The SDK extracted
+the correct canonical 96-byte EVM ABI string blob, but `_deriveReturnValue` used the scalar-only decoder. When
+that returned `undefined`, the native compact-pushdata fallback interpreted the ABI's leading zero as an empty
+string. Commit `699287803` uses the existing schema-validating `decodeEvmReturnValue` instead.
+
+The neutral regression is
+`packages/solidcash/test/e2e/RepeatedMappingReadDelegate.test.ts`. It covers a proxy/delegate contract with
+`mapping(string => string)`, an initialized inline value, a guard read followed by a repeated return read, and an
+`OP_INVOKE` body.
+
+Verified for that commit:
+
+```text
+solidcash TypeScript build: PASS
+ExternalReturnEncoding.test.ts: 22/22 PASS
+RepeatedMappingReadDelegate.test.ts: 1/1 PASS
+unchanged Marketplace `read mece tag`: PASS (10.25s)
+git diff --check: PASS
+```
+
+Full-file ESLint on `StatefulContract.ts` remains baseline-red with thousands of pre-existing findings; the diff
+check was clean.
+
+## Recent performance checkpoints
 
 ```text
 2e141a09a perf(sdk): skip non-observing convergence inputs
 4dfd49bbd feat(sdk): add partial covenant validation receipts
 96d76caa6 perf(sdk): prefilter commitment introspection inputs
 1046e954b perf(sdk): bound convergence history memory
-ebbb51a90 test(kernel): verify emitted verifier lock
-3f87729f9 fix(kernel): bind published verifier identity
 ```
 
-The verifier identity bug is fixed and fresh Marketplace/FakeToken/MarketplaceData kernel artifacts embed the
-published verifier lock. `MessageBusSelection.test.ts` is 24/24 and `yarn workspace solidc build` passes.
+These moved the MarketplaceData initializer from more than 15 minutes and 15.4 GiB RSS to a complete focused read
+title in seconds:
 
-The MarketplaceData proxy initializer performance wall moved from more than 15 minutes and 15.4 GiB RSS to a
-complete unchanged `read mece tag` run in 17.4 seconds. Convergence now retains fixed-width transaction hashes and
-evaluates only inputs whose authenticated executable may contain `OP_OUTPUTTOKENCOMMITMENT`; malformed or uncertain
-programs remain eligible. The opcode eligibility and computed-output unit suites pass 34/34, and the SolidCash build
-passes. A separate, exact partial-validation receipt API is implemented and tested but is not yet consumed by
-preflight.
+- convergence history retains fixed-width transaction hashes rather than serialized transactions;
+- immutable authenticated input programs are inspected once and cached;
+- inputs that cannot execute `OP_OUTPUTTOKENCOMMITMENT` are excluded from mutable-resource convergence;
+- pushed bytes are ignored, `OP_DEFINE` bodies reached by `OP_INVOKE` are inspected, P2SH20/P2SH32 redeem hashes
+  are authenticated, and malformed/uncertain programs remain conservatively eligible;
+- a separate exact, one-use, tx/source-bound partial-validation receipt API exists, but preflight does not yet
+  consume it.
 
-The current small functional blocker is now precisely localized. `read mece tag` returns `''` for `DV`, despite the
-deployed proxy category containing the correct entry NFT (slot `3df6…`, value `DIGITAL_VIDEO`). The handler reads
-the same `mapping(string => string)` entry twice: once in a guard and once for the return. The first read succeeds,
-but the second produces the canonical empty value. Fix the general `GenerateTargetTraversal` repeated mapping-read
-key/value lifetime for one deduplicated entry slot behind a delegate `OP_INVOKE`; add an alpha-neutral reduced proxy
-regression with guard-read then return-read. Do not add an SDK mapping-name workaround.
+Focused eligibility plus computed-output tests pass 34/34, and the SolidCash build passes.
 
-`post job 1` still has a separate large-graph memory problem: after 75 seconds it reached 5.6 GiB RSS and was
-stopped before exhausting swap. The initializer phase now completes quickly, so localize the later publish graph
-with low-volume timing before changing it. Do not re-run the title unbounded.
+## Current blocker
 
-The genericity audit also found beta-blocking kernel-reachable application semantics:
+`post job 1` has a later large-graph scaling problem. After the fast initializer completed, a bounded diagnostic
+run reached about 5.6 GiB RSS in 75 seconds and was stopped. Do not simply rerun it without a bound or increase its
+timeout.
 
-- `StatefulContract.ts` around 14848/15160 reconstructs `publishJobEvent`/`JobEventData` values and entry keys from
-  source names and positional arguments.
-- `StatefulTransactionBuilder.ts` around 10318 reconstructs event NFTs by the same schema/name assumptions.
-- the global JobEvents persistence subsystem near the top of `StatefulTransactionBuilder.ts` embeds literal schema,
-  enum, and payload-byte knowledge.
-
-The smallest safe replacement uses existing `EntryAccessAbi.storedElementSource`, `ValueChunkWriteDescriptor`, and
-authenticated `ValueChunkProducerIdentity` metadata. Derive entry coordinates from exact `keySlot`, then move event
-receipts to stable event producer identities. Kernel paths must refuse missing/ambiguous recipes; retain any old
-schema adapter only behind explicit `legacy-unroll` fencing.
-
-## Workspace and goal
-
-Work in `/Code/cashscript/.worktrees/kernel-beta-candidate` on branch
-`grok/message-bus-kernel-beta`.
-
-Long-term acceptance target: all 66 unchanged titles in
-`examples/effectiveacceleration/test/marketplace.test.ts` pass on mock BCH-2026 with
-`messageBus.convention === 'kernel-row-loop'` and graph handlers behind `OP_INVOKE`.
-
-For the bounded beta checkpoint, do not make 66/66 a release gate. Freeze the manifest proof matrix, close the
-live application-name-dependent SDK paths listed below, add and stabilize the proposed Marketplace smoke slice,
-and cut the RC after two clean deterministic gate runs. The remaining Marketplace ladder is post-beta unless the
-release claims full Marketplace compatibility.
-
-The tree contains many generated `.js`, `.js.map`, `.d.ts`, and `.tsbuildinfo` files. Never use `git add -A`;
-stage reviewed source, tests, and handoffs explicitly.
-
-## Resume point (latest)
-
-HEAD is `08031a54e` after two new checkpoints:
-
-```text
-32c4a3c55 fix(sdk): decode aggregate delegate payload arguments
-08031a54e fix(sdk): preserve atomic graph discovery boundaries
-```
-
-Run the single current title with:
+Resume by localizing the phase with a bounded, low-volume timing run, for example:
 
 ```bash
-yarn vitest run --config vitest.marketplace.config.ts -t 'post job 1'
+timeout 60s env SOLIDC_DEBUG_BUILDER_TIMING=1 \
+  yarn vitest run --config vitest.marketplace.config.ts \
+  -t 'post job 1' --reporter=dot --no-file-parallelism \
+  > /tmp/kernel-post-job-1-timing.log 2>&1
 ```
 
-It reaches the authoritative atomic composer and now fails deterministically with:
+Identify the first repeating convergence/layout state before editing. Keep one SDK/compiler writer. Parallel agents
+may perform read-only audits of independent suspected phases.
 
-```text
-messageBus [L3_RESOURCE_UNRESOLVED]: message-bus batch collection witness
-'__message_bus_key__allowances_0' must identify one physical entry
-handler=transferFrom, local invocation row=4
+After a general fix, rerun `post job 1` first, then continue the Tier 1 ladder one unchanged Marketplace title at
+a time. Do not weaken verification, add title-specific harness branches, or edit the suite/contracts.
+
+## Genericity checkpoint — beta blocking
+
+A read-only audit found kernel-reachable application-shaped behavior that must be replaced, not renamed:
+
+- `packages/solidcash/src/stateful/StatefulContract.ts` around the historical
+  `publishJobEvent`/`JobEventData` paths reconstructs values and entry keys from names and positional arguments;
+- `packages/solidcash/src/stateful/StatefulTransactionBuilder.ts` contains `_ensureDistinctJobEventNfts` and a
+  larger JobEvents persistence subsystem with literal event schema, enum, timestamp, and payload-byte knowledge.
+
+The general replacement should use existing compiler metadata:
+
+- `EntryAccessAbi.storedElementSource`;
+- `ValueChunkWriteDescriptor`;
+- authenticated `ValueChunkProducerIdentity`;
+- exact resource identity `{categoryId, collectionHash, keySlot}`;
+- stable producer path/effect ordinal and, for events, a stable event-producer identity.
+
+Derive entry coordinates from the published `keySlot`, never `args[0]`. Kernel paths must fail closed when the
+recipe is absent or ambiguous. If legacy schema compatibility must remain, fence it explicitly to
+`legacy-unroll`; it must not influence kernel authority.
+
+Before each commit, audit additions with:
+
+```bash
+git diff -U0 -- packages/solidc/src packages/solidcash/src | \
+  rg '^\+.*(Marketplace|jobs\b|publishJobPost|publishJobEvent|JobEvent|Unicrow|FakeToken)'
 ```
 
-This is the meaningful architectural pause point, not another SDK layout-repair bug. The FakeToken participant
-has five reached rows: `balanceOf`, three conditional raw `approve` edges, and raw `transferFrom`. The allowance
-tuples are genuinely different:
+## Architectural invariants
 
-```text
-approve:      (authenticated Marketplace proxy caller, spender argument = Marketplace proxy)
-transferFrom: (from argument = user, authenticated caller = Marketplace proxy)
-```
-
-Caller and owner identities are correct. The compiler recognizes the cross-handler key-source mismatch around
-`packages/solidc/src/compiler.ts:7039`, but deliberately promotes it to row-local geometry only for legacy mode.
-The kernel route consequently publishes one global allowance tuple and one physical `_allowances` entry slot.
-`encodeMessageBatch` correctly refuses to collapse the two entries.
-
-The next implementation must be compiler-owned and general: represent cross-handler-distinct collection entries
-in kernel resource geometry as a fixed shared/alternate tuple (all components of a nested-mapping key move
-together), analogous to the existing balances shared/`_row` pair. Do not emit `_rN` maximum-row unrolling and do
-not key behavior to ERC20, approve, transferFrom, Marketplace, or field names. Extend runtime alias/settlement
-logic and add an alpha-renamed neutral regression before retrying Marketplace.
-
-Also preserve raw-call semantics. These SafeERC20 edges are published as `__raw__`/`opaqueReturn` while the target
-handler returns typed `bool`; do not silently reinterpret a low-level `(success, returndata)` result as that bool.
-Either retain the existing authenticated raw-call adapter or add compiler proof for typed lowering.
-
-The SDK singleton-route experiment was removed before commit. Final graph calls are routed by the atomic composer;
-the ordinary builder is only a discovery scaffold. `08031a54e` lets its speculative failures defer only when a
-complete prepared atomic call list exists, while the composer remains the final VM authority.
-
-Latest verification:
-
-```text
-solidcash TypeScript build: PASS
-GraphProducerResult.test.ts: 8/8 PASS
-AssignPhysicalReturnIndices.test.ts: 150/150 PASS
-KernelMultiResultGraphParity.test.ts: 1/1 PASS
-Marketplace post job 1: reaches the explicit allowance resource collision above
-```
-
-Before the next code change, add the neutral compiler regression for two handlers touching the same mapping with
-different argument/msg.sender key provenance. Assert kernel-row-loop, two fixed physical tuple identities, source
-order/read-after-write parity with legacy, and route size independent of `maximumRows`.
-
-## Architecture that must remain true
-
-- Every graph call has one stable compiler callsite identity.
-- Consumers use authenticated producer-result IDs, never cloned call nodes.
-- Repeated calls to one participant retain separate logical rows but share its physical state inputs.
-- Return wire encoding is compiler-owned and tuple-wide:
-  `evm-abi-v1 | compact-pushdata-v1`.
-- Result encoding is resolved per function/callsite/row, never from one artifact-wide Solidity flag.
-- Fresh kernel compilation must not hide speculative stack/codegen failures.
-- Support is based on type/effect/flow/layout properties, never application names or shapes.
-- Kernel/legacy differential semantics and kernel row-size scaling are separate gates.
-- `OP_RETURN` remains separator-only.
+1. Every graph call is represented exactly once by stable callsite metadata.
+2. Later calls consume authenticated producer-result IDs, never cloned `ExternalFunctionCallNode`s.
+3. Graph handlers remain behind the same `OP_INVOKE` boundary.
+4. A successful fresh compile produces no hidden speculative stack/codegen errors.
+5. Support is expressed by type/effect/flow/layout properties, never source names or application shapes.
+6. Differential tests compare kernel and legacy observable semantics; proportional kernel route size is tested
+   separately from the maximum unrolled row count.
+7. `OP_RETURN` is separator-only.
 
 Do not edit Marketplace/Unicrow Solidity sources or the Marketplace suite. Do not use chipnet, Hardhat, a 10k
-P2SH escape, beta-manifest widening, or cherry-picking.
+P2SH escape hatch, beta-manifest widening, or cherry-picking.
 
-## Verified current work
+## Meaningful pause rule
 
-### Vmap/outState scanner
+Do not grind an unlimited edge-case frontier for beta. A sound pause point is a coherent architectural slice where:
 
-The row-loop output scanner now uses the live scan index for commitment introspection (`OP_DUP`, not `OP_OVER`).
-It preserves an exact match if a later bracket is encountered. Full regression:
+- its alpha-neutral regression and relevant existing suites pass;
+- its corresponding unchanged Marketplace title and all earlier ladder titles are rechecked;
+- fresh compilation is deterministic and has no caught speculative error;
+- unsupported shapes are explicitly rejected with a published kernel reason;
+- no application-name behavior is introduced or left as kernel authority;
+- kernel/legacy observable parity is covered separately from route-size scaling;
+- the remaining blocker has one reduced reproducer or one stable, bounded failing invariant.
 
-```text
-OutStateAndReturns.test.ts: 39/39 PASS
-```
+The preferred final stop remains 66/66, two deterministic clean beta-gate runs, a full one-shot `yarn build`, and
+recorded same-machine cold compile/size comparison. If 66/66 is not reached, do not claim full Marketplace
+compatibility; use the bounded architectural pause rule above.
 
-### External result encodings
-
-The compiler now publishes one shared classifier result through:
-
-- `AbiFunction.resultEncoding`
-- typed `ExternalCallAbi.resultEncoding`
-- invocation-analysis result dependencies
-- returning message-bus handlers
-
-The SDK resolves old artifacts conservatively: native missing metadata means compact; Solidity missing metadata
-may infer EVM only for unambiguous one-word scalar tuples; ambiguous dynamic/composite schemas fail closed.
-
-Composition, graph planning, provisional/precomputed results, route traces, loop/static returns, writer defaults,
-and `decodeMessageBusResults` now use exact invocation/row encodings. Mixed result rows are decoded independently.
-
-Focused verification:
+## Recent commit chain
 
 ```text
-ExternalResultEncoding.test.ts:       1/1 PASS
-MessageBatchEncoding.test.ts:        12/12 PASS
-ExternalCallPredicate.test.ts:       27/27 PASS
-GraphProducerResult.test.ts:           8/8 PASS
-EvmAbiResult.test.ts:                  3/3 PASS
-SolidityAbiReturnFraming.test.ts:       5/5 PASS
-solidc build:                              PASS
-solidcash build:                           PASS
-```
-
-Commit `02deabb60` makes the compiler-generated route's outer `bytes` carrier explicitly compact while preserving
-each child row's published EVM/compact encoding. User-authored compatibility-mode `abi.encode` remains Solidity
-ABI and still fails closed for unsupported types such as `bytes39`.
-
-### Repeated calls to one participant
-
-Direct callsites now reuse an existing physical external-call group by exact live master outpoint. Aliases keep
-their own selector, arguments, callsite, and result metadata but add no duplicate master/block inputs. This is
-application-independent and has focused unit coverage.
-
-## Fenced frontier: returning calls to one repeated participant
-
-Regression:
-
-```bash
-cd packages/solidcash
-yarn vitest run --config vitest.e2e.config.ts test/e2e/CrossContractCallInfra.test.ts \
-  -t 'mixed result encodings'
-```
-
-The duplicate-state-input part is fixed, but compiler admission deliberately continues to reject repeated-owner
-grouping when a row returns values (`!slot.hasReturnValues`). A partial widening was explored and reverted before
-commit because it violated the graph invariants below. The focused mixed-result e2e is therefore an intentionally
-red future-support test, not an advertised beta proof.
-
-Full support requires one stable logical `resultOrdinal` per row, row-aware graph-handler prologue verification,
-row-specific graph result names, exact aggregate-row selection in the caller, and selected-row schema validation
-in SDK `graph.ts`. Do not widen admission until all of those land together. Do not duplicate the participant input,
-point multiple callsites at one result index, or authenticate a clone of the source call node.
-
-## Bounded beta stop rule
-
-Release blockers are limited to:
-
-- a clean `node scripts/kernel-beta-gate.mjs` run without `--allow-dirty`, repeated twice with identical fresh
-  compile hashes and no stderr or caught speculative compiler attempts;
-- regressions in the frozen manifest proof inventory, the proposed Marketplace smoke titles (post job 1, post two
-  jobs, whitelist post, invalid-MECE guards, whitelist-worker), legacy compilation, determinism, or the six
-  architectural invariants;
-- soundness/security failures, silent kernel-vs-legacy semantic mismatches, or executable production-name-based
-  SDK/compiler behavior;
-- loss of proportional route-size evidence. Record same-machine cold medians and keep kernel route bytes materially
-  below legacy; do not claim full artifact-size improvement or 10KB deployability.
-
-A newly discovered shape is not a beta blocker if admission deterministically rejects it with one of the published
-kernel reasons. Add a negative admission test and release-note entry, then defer it. New positive support must be
-described by type/effect/flow/layout metadata, have an alpha-renamed neutral test, and include kernel-vs-legacy
-observable parity.
-
-These are RC policy gates, not all automated by the current script. In particular the gate does not run the
-Marketplace smoke slice, compute timing medians, assert a relative kernel/legacy size ratio, count/hash the 66-test
-suite, or scan the two large SDK stateful files for pre-existing forbidden names. Add explicit checks or record and
-review this evidence manually before claiming the checkpoint.
-
-## Marketplace frontier
-
-The proposed five-title smoke slice is not currently part of `scripts/kernel-beta-manifest.json` or
-`scripts/kernel-beta-gate.mjs`; a clean gate can pass without it. Recorded evidence confirms the four posting
-titles, but `should whitelist worker` previously exceeded a 300-second wrapper and has not been proven green. Do
-not describe the five-title slice or Tier 1g as green until a fresh run establishes that result.
-
-The Marketplace config currently selects `.marketplace/project/test/marketplace.test.ts`, an ignored symlink to an
-external checkout, not the maintained repository test. Both currently contain 66 matching titles, but their bodies
-differ, and clean-tree checks cannot detect target changes. Before adding the smoke to the executable beta gate,
-either run the maintained in-repo suite with compatible imports or resolve and verify explicit source/config hashes.
-
-Exact proposed smoke command:
-
-```bash
-yarn vitest run --config vitest.marketplace.config.ts \
-  -t '^(Marketplace Unit Tests job posting (post job 1|post two jobs|post job with whitelist|post job with invalid mece tags)|Marketplace Unit Tests job worker whitelisting should whitelist worker)$' \
-  --reporter=dot --no-file-parallelism
-```
-
-The latest recorded full-suite baseline is 26 passing and 39 failing before timeout. The scratch inventory records
-Tier 1g's current blocker as `update job`; older prose claiming all Tier 1g titles were individually green is not
-evidence-backed. After the smoke slice, the next investigation title remains Tier 1f:
-
-```bash
-yarn vitest run --config vitest.marketplace.config.ts \
-  -t 'take job.*sanity checks$' --reporter=dot --no-file-parallelism
-```
-
-Earlier 120-second wrappers timed out, but the suite's real timeout is 600 seconds and the title performs several
-deployments plus many negative calls. Do one full 600-second run before classifying it as a convergence bug.
-
-## Generality debt before beta
-
-Commit `cf87d4ad9` removed the nested-call function-name/argument-position trigger: arbitrary function names now
-adapt only under exact legacy-unroll JobEvent ABI metadata, while kernel and renamed schemas remain untouched.
-
-Commit `38df98059` removed the two live `publishJobEvent` full-block gates. Fixed LLC blocks are now selected by
-exact master/companion outpoints and a dense compiler layout, input repair is an idempotent multiset-preserving
-permutation, and generic delegate mirroring admits only data/entry/event slot kinds with an unambiguous proxy owner.
-Specialized transfer/return/compute/deploy/container layouts fail closed into their dedicated materializers.
-
-The SDK still has live, unfenced application-shape logic. Audit and replace or fence at least these areas before the
-beta checkpoint:
-
-- `StatefulContract.ts`: the `publishJobEvent`/`JobEventData` reconstruction and broad positional timestamp paths
-  around the former lines 5613, 14794, and 25336 (the nested-call path formerly around 24057 is now fenced);
-- `StatefulTransactionBuilder.ts`: `_ensureDistinctJobEventNfts`, the dead transfer-event synthesizer, and
-  `transferFrom`/`balances` repair or surplus-stripping paths around the former lines 4098, 9111, 10114, and 19468.
-
-Replace live name-based behavior with compiler-authenticated mutation, event-instance, resource-identity, and
-physical-layout metadata. Add a genuinely alpha-renamed chunkable-array/nested-delegate/multi-emit regression;
-the existing schema-name isolation test is too weak.
-
-## Useful context
-
-```text
-HANDOFF_KERNEL_BETA_CURRENT.md
-HANDOFF_NEXT_SESSION.md
-/root/.grok/sessions/%2FCode%2Fcashscript/01a08719-2af7-7972-a026-bee8bc1bf3b3/goal/plan.md
-/tmp/grok-goal-e3920f329cc4/implementer/beta-reach-extension-inventory.md
+699287803 fix(sdk): decode dynamic EVM view returns
+f6f8ae23d docs: refresh kernel beta handoff
+2e141a09a perf(sdk): skip non-observing convergence inputs
+4dfd49bbd feat(sdk): add partial covenant validation receipts
+96d76caa6 perf(sdk): prefilter commitment introspection inputs
+1046e954b perf(sdk): bound convergence history memory
+ebbb51a90 test(kernel): verify emitted verifier lock
+3f87729f9 fix(kernel): bind published verifier identity
+0cd0ec43d fix(sdk): gate dynamic placeholders by selected rows
+1ac4d30ca fix(sdk): authenticate route entry coordinates
+32c4a3c55 fix(sdk): decode aggregate delegate payload arguments
+08031a54e fix(sdk): preserve atomic graph discovery boundaries
+990189cbe docs: hand off kernel allowance resource frontier
+10520b381 feat(kernel): authenticate fixed collection tuple alternatives
 ```

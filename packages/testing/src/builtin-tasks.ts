@@ -189,6 +189,8 @@ task('compile', 'Compile .scash and .sol contracts to artifacts (per-contract, H
     // source, the contents of the whole transitive import closure, the primary declaration and every published
     // option, so a hit is equivalent to recompiling; editing an imported file or rebuilding the compiler misses.
     // `SOLIDC_COMPILE_CACHE=0` forces a full compile.
+    // TODO(remove SOLIDC_COMPILE_CACHE): replace this environment check with a `--no-cache` flag once the
+    // variable is gone from the compiler (`packages/solidc/src/compiler.ts`, `artifactCacheEnabled`).
     const artifactCache = process.env.SOLIDC_COMPILE_CACHE !== '0';
     const compilerOptions = {
       ...hre.config.solc,

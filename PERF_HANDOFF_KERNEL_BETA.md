@@ -270,6 +270,15 @@ iteration compiles and job-cache misses now cost a lookup instead of a compile. 
 trees**, and the artifact-freshness gate still passes. `SOLIDC_COMPILE_CACHE=0` forces a full compile, and
 `__artifactCache` never reaches a published artifact because `compiler.options` is a whitelist.
 
+**Open follow-up: remove `SOLIDC_COMPILE_CACHE`.** With the compile task passing `__artifactCache` by default,
+the variable is only a legacy switch plus the test harness's way in. Marked with a `TODO(remove
+SOLIDC_COMPILE_CACHE)` at both read sites (`packages/solidc/src/compiler.ts` `artifactCacheEnabled`, and the
+`!== '0'` escape in `packages/testing/src/builtin-tasks.ts`). To finish it: migrate
+`packages/solidcash/vitest.setup.ts` (`??= '1'`), `solidc/test/DelegateInference.test.ts` and
+`solidc/test/CompileCacheDisk.test.ts` (toggle it) and `solidc/test/journal-message-bus/KernelGraphResultDependency.test.ts`
+(disables it with `'0'`) to `__artifactCache`, add a `--no-cache` task flag for the escape hatch, then delete
+the boolean read. `SOLIDC_COMPILE_CACHE_DIR`, `_MAX_ENTRIES` and `_BUILD_ID` are separate knobs and stay.
+
 **Landed: `scripts/perf-ab.sh`** (`addd5a265`) - the A/B harness this branch should have had all along.
 It takes a **named** baseline commit, asserts that each half's emitted `dist/compiler.js` actually gained or
 lost the change's marker before timing it, alternates the halves, reports paired CPU/wall medians per root,

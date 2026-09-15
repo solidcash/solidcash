@@ -257,6 +257,45 @@ journal gate is identical to baseline (6 failed / 1,442 passed, same six names).
 number of roots that share a route shape, so a project compile with many participants gains more than this
 ten-root corpus shows.
 
+### Round 11: what landed, and one plan correction
+
+**Landed: the compile task reuses cached artifacts by default** (`07e80994b`). The compiler's artifact cache
+(memory + disk, keyed by compiler build id, root source, the whole transitive import closure, the primary
+declaration and every published option) was reachable only via `SOLIDC_COMPILE_CACHE=1` or an internal
+option, so `solidcash compile` recompiled every `.scash` source on every invocation. The task now enables it
+and points the disk layer at the project cache directory. `.sol` projects barely change - 
+`compileSolidityProject` already keeps its own content-addressed per-root job cache - but `.scash` projects,
+iteration compiles and job-cache misses now cost a lookup instead of a compile. Verified end to end on
+`examples/testing-suite`: a cold compile and a warm (6 cache hits) compile produce **byte-identical artifact
+trees**, and the artifact-freshness gate still passes. `SOLIDC_COMPILE_CACHE=0` forces a full compile, and
+`__artifactCache` never reaches a published artifact because `compiler.options` is a whitelist.
+
+**Landed: `scripts/perf-ab.sh`** (`addd5a265`) - the A/B harness this branch should have had all along.
+It takes a **named** baseline commit, asserts that each half's emitted `dist/compiler.js` actually gained or
+lost the change's marker before timing it, alternates the halves, reports paired CPU/wall medians per root,
+and says whether bytecode differs between halves. It immediately caught a bad invocation (`0a9e1a973` used
+as its own baseline) that the old ad-hoc loop would have silently reported as a result.
+
+**Correction to the round-9 plan: the probe's cost cannot be memoised away.** The plan's fallback for
+`subroutineUseProbe` was to cache the expensive per-body predicates the second pass repeats. Reading the code
+kills that idea: `hasChunkableMappingWrite` is a closure used once per visit, `hasRuntimeLoopEntryWrite`
+already carries a `seen` set, and the predicates visible in the probe subtree
+(`hasRuntimeLoopEntryWrite` 21 ms, `scan` 21 ms, `hasChunkableMappingWrite` 13 ms, `collectMappingSlots`
+13 ms) total ~50 ms of the probe's 415 ms of self time. **The probe's cost is the emission traversal itself**
+- `walk` alone is 112 ms - so the only version of this win that exists is the full emit-once-and-patch
+redesign (emit with provisional ids, rehome, then rewrite every `<id push> OP_INVOKE`). That is a codegen
+restructuring, not a cache, and it stays the highest-risk item on the list.
+
+### Incident to know about (round 11, caught before it shipped)
+
+`scripts/perf-ab.sh` originally produced its baseline half with `git checkout <commit> -- <path>`, which
+updates the **index** as well as the worktree. The next `git commit` (which commits the whole index, not just
+the paths passed to `git add`) therefore reverted `compiler.ts` to the baseline inside the commit. Caught by
+`git show HEAD:packages/solidc/src/compiler.ts | grep -c <marker>` returning 0, and fixed by amending. The
+harness now writes the baseline with `git show <commit>:<path> > <path>`, which never touches the index. Any
+script that switches revisions in a dirty tree should be checked for this: assert the *committed* state, not
+just the working tree.
+
 ### Round 9: the structural map (what is left, and what blocks it)
 
 One root's compile, by phase (`MarketplaceV1`, `SOLIDC_PROFILE=1`, total 4,247 ms; phases nest):

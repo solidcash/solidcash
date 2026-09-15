@@ -518,7 +518,14 @@ function wrapDispatch<TImpl extends Artifact>(handle: ProxyContract<TImpl>): Pro
             if (declared.length === 1) {
               return result.catch((error: unknown) => {
                 const message = error instanceof Error ? error.message : String(error);
-                if (/could not derive the return value/i.test(message)) throw new Error(declared[0]);
+                if (/could not derive the return value/i.test(message)) {
+                  // Keep the declared revert reason as the message PREFIX (callers assert on it) but carry the
+                  // probe diagnostic through: it is the only thing that says WHICH predicate refused, and
+                  // dropping it here re-hides exactly the information that makes these reads debuggable.
+                  const detail = message.slice(message.indexOf(' Probe detail:'));
+                  throw new Error(detail.startsWith(' Probe detail:')
+                    ? `${declared[0]}${detail}` : declared[0]);
+                }
                 throw error;
               });
             }

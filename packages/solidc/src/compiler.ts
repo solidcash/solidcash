@@ -12744,6 +12744,21 @@ function compileResolvedAst(
       const hasDistinctEventMutationStreams = (abi?.runtimeLoopEvents?.length ?? 0) > 0
         && new Set(runtimeJournalAccesses.filter((access) => access.op !== 'read')
           .map((access) => access.journalAccessStreamIndex)).size > 1;
+      let hasScalarStateMutationInClosure = false;
+      for (const name of collectNamedFunctionClosure(fn, completedFunctionsByName)) {
+        for (const candidate of completedFunctionsByName.get(name) ?? []) {
+          walkInvocationAst(candidate.body, (nested) => {
+            if (nested instanceof StateAssignNode || nested instanceof DeleteStateNode) {
+              hasScalarStateMutationInClosure = true;
+            }
+          });
+        }
+      }
+      // Runtime mapping settlement and repeated event settlement each have a loop-domain identity, but scalar
+      // state currently has only a transaction-final identity. Combining all three would silently conflate those
+      // domains, including when the scalar write lives in an inlined helper and is absent from the event value.
+      const hasScalarRuntimeJournalEventSettlement = hasRuntimeJournalMutation
+        && (abi?.runtimeLoopEvents?.length ?? 0) > 0 && hasScalarStateMutationInClosure;
       const incomplete = abi?.transfers?.some((transfer) =>
         (transfer.recipientRecipe === undefined && transfer.derivedRecipient === undefined)
         || transfer.amountRecipe === undefined
@@ -12754,6 +12769,7 @@ function compileResolvedAst(
           && (abi?.runtimeLoopEvents?.length ?? 0) > 0)
         || hasChunkedValueArrayEventSettlement
         || hasDistinctEventMutationStreams
+        || hasScalarRuntimeJournalEventSettlement
         || hasUnauthenticatedSelectedReadGeometry
         || hasRuntimeLocalJournalValue
         || hasUnsupportedMultiMutationExecutionGroup

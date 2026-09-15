@@ -20912,6 +20912,22 @@ export class StatefulTransactionBuilder {
       ?.SOLIDC_DEBUG_PREFLIGHT_TIMING === '1';
     const failFastOnCycle = (globalThis as { process?: { env?: Record<string, string> } }).process?.env
       ?.SOLIDC_DEBUG_REPAIR_FAIL_FAST === '1';
+    // Retained as a diagnostic, not a lever: it attributes the convergence cost to the rebuild, the covenant
+    // preflight and the computed-output repairs separately, so a slow call site can be told apart from a
+    // redundant sweep. Silent (and free) unless the variable is set.
+    const debugConvergenceRounds = (globalThis as { process?: { env?: Record<string, string> } }).process?.env
+      ?.SOLIDC_DEBUG_CONVERGENCE_ROUNDS === '1';
+    const convergenceStartedAt = debugConvergenceRounds ? Date.now() : 0;
+    const convergenceRounds = {
+      sweeps: 0, builds: 0, validations: 0, rejected: 0, repairs: 0, feeCalls: 0,
+      buildMs: 0, validateMs: 0, repairMs: 0, feeMs: 0,
+    };
+    const reportConvergenceRounds = (outcome: 'converged' | 'failed'): void => {
+      if (!debugConvergenceRounds) return;
+      console.error('convergence-rounds', {
+        outcome, ...convergenceRounds, totalMs: Date.now() - convergenceStartedAt,
+      });
+    };
     const previousRepairs = new Map<string, {
       inputIndex: number;
       previous: string;
@@ -20959,8 +20975,22 @@ export class StatefulTransactionBuilder {
     };
     let cycleDetected = false;
     for (let sweep = 0; sweep <= 32; sweep++) {
+      convergenceRounds.sweeps += 1;
+      const buildStartedAt = debugConvergenceRounds ? Date.now() : 0;
       const transaction = builder.buildLibauthTransaction(true);
-      if (beforeValidation?.(transaction)) continue;
+      if (debugConvergenceRounds) {
+        convergenceRounds.builds += 1;
+        convergenceRounds.buildMs += Date.now() - buildStartedAt;
+      }
+      if (beforeValidation) {
+        const feeStartedAt = debugConvergenceRounds ? Date.now() : 0;
+        const adjusted = beforeValidation(transaction);
+        if (debugConvergenceRounds) {
+          convergenceRounds.feeCalls += 1;
+          convergenceRounds.feeMs += Date.now() - feeStartedAt;
+        }
+        if (adjusted) continue;
+      }
       try {
         if ((globalThis as { process?: { env?: Record<string, string> } }).process
           ?.env?.SOLIDC_DEBUG_ENTRY_COUNTS === '1' && sweep === 0) {
@@ -21021,7 +21051,22 @@ export class StatefulTransactionBuilder {
             }));
           }
         }
-        assertFinalizedTransactionCovenants(builder, transaction);
+        const validateStartedAt = debugConvergenceRounds ? Date.now() : 0;
+        // Time every preflight attempt, not only the one which passes: a repair round is entered because an
+        // attempt refused, and leaving those out of the accounting attributes their cost to nothing at all.
+        let validationFailure: { error: unknown } | undefined;
+        try {
+          assertFinalizedTransactionCovenants(builder, transaction);
+        } catch (error) {
+          validationFailure = { error };
+        }
+        if (debugConvergenceRounds) {
+          convergenceRounds.validations += 1;
+          convergenceRounds.validateMs += Date.now() - validateStartedAt;
+          if (validationFailure !== undefined) convergenceRounds.rejected += 1;
+        }
+        if (validationFailure !== undefined) throw validationFailure.error;
+        reportConvergenceRounds('converged');
         return transaction;
       } catch (error) {
         lastError = error;
@@ -21031,8 +21076,12 @@ export class StatefulTransactionBuilder {
         const inputIndex = Number(failedInput);
         let changed = false;
         while (repairsRemaining > 0) {
-          const repairStartedAt = debugPreflightTiming ? Date.now() : 0;
+          const repairStartedAt = debugPreflightTiming || debugConvergenceRounds ? Date.now() : 0;
           const result = this._repairComputedChunkOutput(builder, inputIndex);
+          if (debugConvergenceRounds) {
+            convergenceRounds.repairs += 1;
+            convergenceRounds.repairMs += Date.now() - repairStartedAt;
+          }
           const reportConvergenceTiming = (stage: string): void => {
             if (debugPreflightTiming) console.error('repair-convergence-timing', {
               sweep, inputIndex, stage, ms: Date.now() - repairStartedAt,
@@ -21136,6 +21185,7 @@ export class StatefulTransactionBuilder {
         builder, lastError instanceof Error ? lastError.message : String(lastError),
       );
     }
+    reportConvergenceRounds('failed');
     throw lastError;
   }
 

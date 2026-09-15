@@ -29252,7 +29252,23 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // entry covenant address. Only written vars (dynamicWrites) get old chunks consumed + new ones created;
     timing('events-complete');
     // read-only or untouched vars must be left alone, else their chunks would be wrongly destroyed.
+    const selectedEntryDynamicRows = (entryAbiFunction as MessageBusRuntimeAbiFunction | undefined)
+      ?.messageBusRowArguments;
+    const selectedDelegateDynamicRows = lowLevelCallUtxoGroups.flatMap((group) =>
+      group.callMode === 'delegatecall' && group.compilerRoute?.rowArguments
+        ? [...group.compilerRoute.rowArguments] : []);
+    const selectedDynamicRows = [
+      ...(selectedEntryDynamicRows ?? []),
+      ...selectedDelegateDynamicRows,
+    ];
+    // A compiler route's dynamic layout is the union of every dispatchable handler and determines the ordering
+    // of all trailing read/write runs. Preserve that geometry, but separately authenticate which variables this
+    // concrete envelope can mutate; only those may receive speculative output placeholders.
     const dynamicWrites = [...(abiFunction?.dynamicWrites ?? [])];
+    const hasSelectedDynamicRows = selectedDynamicRows.length > 0;
+    const activeDynamicWrites = new Set(hasSelectedDynamicRows
+      ? selectedDynamicRows.flatMap((row) => row.handler.dynamicWrites ?? [])
+      : dynamicWrites);
     const delegateDynamicWrites = new Set<string>();
     for (const g of lowLevelCallUtxoGroups) {
       if (g.callMode !== 'delegatecall') continue;
@@ -29268,7 +29284,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           writes: gFn?.dynamicWrites,
         });
       }
-      for (const name of gFn?.dynamicWrites ?? []) {
+      const routeWrites = [...(gFn?.dynamicWrites ?? [])];
+      const selectedWrites = g.compilerRoute?.rowArguments
+        ? [...new Set(g.compilerRoute.rowArguments.flatMap((row) => row.handler.dynamicWrites ?? []))]
+        : routeWrites;
+      for (const name of selectedWrites) activeDynamicWrites.add(name);
+      for (const name of routeWrites) {
         delegateDynamicWrites.add(name);
         if (!dynamicWrites.includes(name)) dynamicWrites.push(name);
       }
@@ -30286,6 +30307,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // checks. Derivation replaces it with the exact count/commitments (or removes it for an empty final value).
     if (sortedInserts.length > 0 || usesComposedDelegateDynamicTail || computedValueChunkRuns.length > 0) {
       for (const dv of builder.getDynamicChunkVars()) {
+        // The route-wide layout can contain an inactive sibling's dynamic write. Its empty pre-state is already
+        // the exact zero-width run; a speculative chunk could never be pinned because no authenticated row
+        // executes that write, and would leave semantic convergence stuck at an unresolved `00` commitment.
+        if (!activeDynamicWrites.has(dv.name)) continue;
         if (builder.getChunkRawCommitments(dv.name).length === 0) {
           // closeJob / in-place jobs writes keep the on-chain chunk count. A single
           // '00' placeholder makes TXOUTPUTCOUNT-1-nNew miss the covenant's nNew=2 pin

@@ -5856,7 +5856,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // return, no return event) and would otherwise leave the declared params at the wrong stack offsets.
       // Do NOT mutate node.parameters: the entry-point define shares this node and needs the full list.
       for (const p of node.parameters) {
-        if (p.name === '__internal__returnOutputIdx' || p.name === '__internal__msgSenderCategory') continue;
+        if (p.name === '__internal__returnOutputIdx') continue;
         this.visit(p);
       }
       for (const param of this.constructorCaptures(node)) this.pushToStack(param.name, true);

@@ -96,4 +96,67 @@ describe('kernel nested return-slot coordinates', () => {
         .toBe(true);
     }
   }, 120_000);
+
+  it('binds a nested route dynamic-read union to its physical chunk inputs', async () => {
+    const provider = createMessageBusCapstoneTestProvider();
+    const storeArtifact = compileString(`pragma solidity ^0.8.0;
+      contract Store {
+        string label;
+        uint256 counter;
+        function setLabel(string memory value) public { label = value; require(true); }
+        function bump() public { counter += 1; require(true); }
+        function readLabel() public view returns (string memory) { return label; }
+      }`, KERNEL);
+    const storeBase = new Contract(storeArtifact, [], { provider });
+    const storeSetup = await setupStatefulUtxos(
+      provider, storeBase, storeArtifact.stateLayout!, {}, { saltContract: true },
+    );
+    const store = StatefulContract.withCategory(
+      storeBase.withCategory(hexToBin(storeSetup.categoryId)), storeSetup.categoryId,
+    );
+    await store.call.setLabel('alpha').send();
+
+    const callerArtifact = compileString(`pragma solidity ^0.8.0;
+      interface StoreApi { function bump() external; }
+      contract Caller(address store) {
+        function execute() public { StoreApi(store).bump(); require(true); }
+      }`, KERNEL);
+    const callerBase = new Contract(callerArtifact, [store.inner.lockingBytecode], { provider });
+    const callerSetup = await setupStatefulUtxos(
+      provider, callerBase, callerArtifact.stateLayout!, {}, { saltContract: true },
+    );
+    const caller = StatefulContract.withCategory(
+      callerBase.withCategory(hexToBin(callerSetup.categoryId)), callerSetup.categoryId,
+    );
+    const callsiteId = callerArtifact.abi.find((entry) => entry.name === 'execute')!
+      .externalCalls!.find((call) => call.functionName === 'bump')!.callsiteId!;
+    const funder = await createBareP2pkhFeeFunder(provider, 500_000n);
+    const builder = await messageBus.compose({
+      preparedCalls: [
+        { contract: caller, functionName: 'execute', args: [] },
+        { contract: store, functionName: 'bump', args: [], callsiteId },
+      ],
+      funder,
+      changeAddress: funder.unlocker.generateLockingBytecode(),
+    }).build();
+
+    const routeInputIndex = builder.inputs.findIndex((input) => 'contract' in input.unlocker
+      && input.unlocker.contract.artifact.contractName === 'Store'
+      && input.unlocker.abiFunction.name === storeArtifact.messageBus!.route.name);
+    expect(routeInputIndex).toBeGreaterThanOrEqual(0);
+    const routeUnlocker = builder.inputs[routeInputIndex].unlocker;
+    if (!('params' in routeUnlocker)) throw new Error('message-bus route input has no parameters');
+    const dynamicBasePosition = storeArtifact.messageBus!.route.inputs.findIndex(
+      (input) => input.name === '__internal__dynamicChunkInputBase',
+    );
+    expect(dynamicBasePosition).toBeGreaterThanOrEqual(0);
+    expect(typeof routeUnlocker.params[dynamicBasePosition]).toBe('bigint');
+    const dynamicBase = Number(routeUnlocker.params[dynamicBasePosition] as bigint);
+    expect(dynamicBase).toBeGreaterThanOrEqual(0);
+    const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+    expect(sourceOutputs[dynamicBase]?.token).toMatchObject({
+      category: hexToBin(storeSetup.categoryId),
+      nft: { capability: 'mutable' },
+    });
+  }, 120_000);
 });

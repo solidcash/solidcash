@@ -19309,6 +19309,9 @@ export class StatefulTransactionBuilder {
     this._applyDerivedValueChunks(builder);
     this._reassertStagedValueChunkOutputs(builder);
     this._stripEmptyDuplicateEntryLocks(builder);
+    // The final output passes above can relocate the balanced input twins which carry dynamic storage chunks.
+    // Rebuild the master unlocker against that settled physical input order even when no other witness changed.
+    this._syncBuilderUnlockers(builder);
     debugAtomicOutputStage('final');
     if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
       ?.SOLIDC_DEBUG_ATOMIC_GRAPH === '1' && (this.blockLayout?.blockSize ?? 0) > 100) {
@@ -19494,9 +19497,14 @@ export class StatefulTransactionBuilder {
 
   /** Copy refreshed unlockers onto an already-materialized TransactionBuilder. */
   private _syncBuilderUnlockers(builder: TransactionBuilder): void {
-    this._refreshMasterUnlocker(builder);
     const next = syncBuilderInputsFromAllInputs(builder.inputs, this.allInputs);
     builder.inputs.splice(0, builder.inputs.length, ...next);
+    // Hidden physical-coordinate arguments must inspect the finalized input ordering, not the materialized
+    // builder's previous ordering. Refresh the master only after synchronizing that ordering, then copy the
+    // rebuilt master unlocker back into the materialized input list.
+    this._refreshMasterUnlocker(builder);
+    const refreshed = syncBuilderInputsFromAllInputs(builder.inputs, this.allInputs);
+    builder.inputs.splice(0, builder.inputs.length, ...refreshed);
   }
 
   /** Mirror refreshed carrier masters into both the flattened and materialized input lists. */

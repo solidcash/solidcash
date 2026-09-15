@@ -1522,16 +1522,15 @@ export class AutoDerivationError extends Error {
 
 /**
  * Convert a participant-local dynamic-storage chunk coordinate to the physical transaction coordinate expected
- * by the covenant. A materialized builder already reports an absolute input index; only an unmaterialized nested
- * participant index is relative to its enclosing block.
+ * by the covenant. A participant builder remains block-local after materialization; its enclosing block base is
+ * therefore always part of the aggregate coordinate.
  */
 export function resolveDynamicChunkInputBase(
   inputIndex: number,
   blockBase: number,
-  materialized: boolean,
 ): bigint {
   if (inputIndex < 0) return -1n;
-  return BigInt(materialized ? inputIndex : blockBase + inputIndex);
+  return BigInt(blockBase + inputIndex);
 }
 
 export type ReturnAbiCandidate<T> = {
@@ -30766,7 +30765,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           throw new Error('Selected root dynamic-storage chunk input is absent from the finalized transaction');
         }
         finalArgs[topLevelDynamicChunkArgumentIndex] = resolveDynamicChunkInputBase(
-          localIndex, overrides?.blockBase ?? 0, materialized !== undefined,
+          localIndex, overrides?.blockBase ?? 0,
         );
       };
     if (refreshPhysicalDelegateInputIndex || refreshTopLevelDynamicChunkInputBase) {

@@ -1,6 +1,53 @@
 # Kernel beta candidate — next-agent handoff
 
-Updated: 2026-09-15 09:35 (Europe/Berlin)
+Updated: 2026-09-15 11:40 (Europe/Berlin)
+
+## Current continuation — read this first
+
+HEAD is `2e141a09a`. The latest checkpoints, newest first, are:
+
+```text
+2e141a09a perf(sdk): skip non-observing convergence inputs
+4dfd49bbd feat(sdk): add partial covenant validation receipts
+96d76caa6 perf(sdk): prefilter commitment introspection inputs
+1046e954b perf(sdk): bound convergence history memory
+ebbb51a90 test(kernel): verify emitted verifier lock
+3f87729f9 fix(kernel): bind published verifier identity
+```
+
+The verifier identity bug is fixed and fresh Marketplace/FakeToken/MarketplaceData kernel artifacts embed the
+published verifier lock. `MessageBusSelection.test.ts` is 24/24 and `yarn workspace solidc build` passes.
+
+The MarketplaceData proxy initializer performance wall moved from more than 15 minutes and 15.4 GiB RSS to a
+complete unchanged `read mece tag` run in 17.4 seconds. Convergence now retains fixed-width transaction hashes and
+evaluates only inputs whose authenticated executable may contain `OP_OUTPUTTOKENCOMMITMENT`; malformed or uncertain
+programs remain eligible. The opcode eligibility and computed-output unit suites pass 34/34, and the SolidCash build
+passes. A separate, exact partial-validation receipt API is implemented and tested but is not yet consumed by
+preflight.
+
+The current small functional blocker is now precisely localized. `read mece tag` returns `''` for `DV`, despite the
+deployed proxy category containing the correct entry NFT (slot `3df6…`, value `DIGITAL_VIDEO`). The handler reads
+the same `mapping(string => string)` entry twice: once in a guard and once for the return. The first read succeeds,
+but the second produces the canonical empty value. Fix the general `GenerateTargetTraversal` repeated mapping-read
+key/value lifetime for one deduplicated entry slot behind a delegate `OP_INVOKE`; add an alpha-neutral reduced proxy
+regression with guard-read then return-read. Do not add an SDK mapping-name workaround.
+
+`post job 1` still has a separate large-graph memory problem: after 75 seconds it reached 5.6 GiB RSS and was
+stopped before exhausting swap. The initializer phase now completes quickly, so localize the later publish graph
+with low-volume timing before changing it. Do not re-run the title unbounded.
+
+The genericity audit also found beta-blocking kernel-reachable application semantics:
+
+- `StatefulContract.ts` around 14848/15160 reconstructs `publishJobEvent`/`JobEventData` values and entry keys from
+  source names and positional arguments.
+- `StatefulTransactionBuilder.ts` around 10318 reconstructs event NFTs by the same schema/name assumptions.
+- the global JobEvents persistence subsystem near the top of `StatefulTransactionBuilder.ts` embeds literal schema,
+  enum, and payload-byte knowledge.
+
+The smallest safe replacement uses existing `EntryAccessAbi.storedElementSource`, `ValueChunkWriteDescriptor`, and
+authenticated `ValueChunkProducerIdentity` metadata. Derive entry coordinates from exact `keySlot`, then move event
+receipts to stable event producer identities. Kernel paths must refuse missing/ambiguous recipes; retain any old
+schema adapter only behind explicit `legacy-unroll` fencing.
 
 ## Workspace and goal
 

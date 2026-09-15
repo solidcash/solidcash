@@ -3910,10 +3910,16 @@ export class AtomicMessageBusComposition {
           // for proxy/delegate routes, where the logical handler artifact need not publish the physical event lock.
           const targets = indices.filter((index) => {
             const expectation = discoveredEvents.get(index);
+            const schemaLock = expectation === undefined ? undefined
+              : eventLockingBytecodeForCommitment(participant, expectation.commitment);
             return (selectedEventOffsets === undefined
               || selectedEventOffsets.has(index - participantBase))
               && (expectation?.commitment.length ?? 0) > 0
-              && expectation?.lockingBytecode !== undefined;
+              // A commitment mismatch stops the faithful VM trace before the handler can execute its following
+              // output-bytecode pin. The emitted commitment still carries the compiler-published event schema;
+              // when that schema identifies exactly one selected-handler covenant, it is an equally exact output
+              // template for the next fixed-point pass. Ambiguous or unknown schemas remain trace-only.
+              && (expectation?.lockingBytecode !== undefined || schemaLock !== undefined);
           });
           const inactive = indices.map((index) => provisional.outputs[index]).find((output) => !output.token);
           if (!inactive && targets.some((target) => !active.includes(target))) {

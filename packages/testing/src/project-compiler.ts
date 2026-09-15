@@ -164,17 +164,12 @@ export function compileSolidityProject(
   if (cache) fs.mkdirSync(path.join(cache.directory, 'jobs'), { recursive: true });
 
   for (const source of ordered) {
-    const stem = path.basename(source.path).replace(/\.(sol|scash)$/i, '');
-    const isCanonicalDeclaringFile = source.declarations.includes(stem);
-    // An importing root can fill MarketplaceDataV1 from MarketplaceV3.sol first. The
-    // declaring file must still compile so its own bytecode (event pin, delegate bodies)
-    // replaces that import copy.
-    if (!isCanonicalDeclaringFile
-      && source.declarations.length > 0 && source.declarations.every((name) => artifacts[name])) continue;
     const jobId = hash(stableStringify({
       artifactCacheVersion: 3,
       compilerVersion: cache?.compilerVersion ?? '',
       options: artifactCompilerOptions(options),
+      root: source.path,
+      declarations: source.declarations,
       sources: dependencyHashes(source, allSources),
     }));
     const jobFile = cache && path.join(cache.directory, 'jobs', `${jobId}.bin`);

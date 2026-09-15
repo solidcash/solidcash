@@ -52,6 +52,56 @@ describe('compileSolidityProject', () => {
     expect(result.artifacts.Root).toEqual({ from: 'root' });
   });
 
+  it('compiles every selected declaration owner when filenames differ from declaration names', () => {
+    const files = project({
+      'Implementation.sol': 'contract Base {}',
+      'Feature.sol': 'import "./Implementation.sol"; contract Feature {}',
+      'Root.sol': 'import "./Feature.sol"; contract Root {}',
+    });
+    const calls: string[] = [];
+    const compile = (file: string): any => {
+      const name = path.basename(file);
+      calls.push(name);
+      if (name === 'Root.sol') return { Root: { from: name }, Feature: { from: name }, Base: { from: name } };
+      if (name === 'Feature.sol') return { Feature: { from: name }, Base: { from: name } };
+      return { Base: { from: name } };
+    };
+
+    const result = compileSolidityProject(files, { solidityImportCompat: true }, compile);
+
+    expect(calls).toEqual(['Root.sol', 'Implementation.sol', 'Feature.sol']);
+    expect(result.artifacts).toEqual({
+      Root: { from: 'Root.sol' },
+      Base: { from: 'Implementation.sol' },
+      Feature: { from: 'Feature.sol' },
+    });
+  });
+
+  it('uses distinct persistent jobs for declaration owners in an import cycle', () => {
+    const files = project({
+      'Left.sol': 'import "./Right.sol"; contract Left {}',
+      'Right.sol': 'import "./Left.sol"; contract Right {}',
+    });
+    const cache = { directory: path.join(path.dirname(files[0]), 'cache'), compilerVersion: 'test' };
+    const calls: string[] = [];
+    const compile = (file: string): any => {
+      const name = path.basename(file);
+      calls.push(name);
+      return name === 'Left.sol'
+        ? { Left: { from: name }, Right: { from: name } }
+        : { Left: { from: name }, Right: { from: name } };
+    };
+
+    const result = compileSolidityProject(files, {}, compile, cache);
+
+    expect(calls).toEqual(['Left.sol', 'Right.sol']);
+    expect(result.cacheHits).toEqual([]);
+    expect(result.artifacts).toEqual({
+      Left: { from: 'Left.sol' },
+      Right: { from: 'Right.sol' },
+    });
+  });
+
   it('publishes only declarations owned by a focused source', () => {
     const [root] = project({
       'Root.sol': 'import "./Leaf.sol"; contract Root {}',

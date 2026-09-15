@@ -3,7 +3,7 @@ import {
   computeCollectionSignature, computeFunctionSelectorHex, ExternalInterfaceInfo, MappingType, Type,
   EnumType, StructType, ExternalLibraryAbi, BUILTIN_LIBRARIES, resolveLibraries, sidecarCodeRange, isChunkableValueType,
   ValueProvenance, ValueProvenanceKind,
-  abiTypeString, ChildDeploymentValueRecipe, FixedBchTransferAbi,
+  abiTypeString, ChildDeploymentValueRecipe, FixedBchTransferAbi, ExternalResultConsumerAbi,
 } from '@solidcash/utils';
 import { binToHex } from '@bitauth/libauth';
 import { version } from '../index.js';
@@ -1110,9 +1110,7 @@ function buildFunctionAbiMetadata(
       })
       .sort((left, right) => left.selector.localeCompare(right.selector));
   };
-  const resultConsumers = (): readonly {
-    consumerCallsiteId: number; argument: number; producerCallsiteId: number; resultIndex: number;
-  }[] => {
+  const resultConsumers = (): readonly ExternalResultConsumerAbi[] => {
     const slots = func.externalCalls ?? [];
     const slotByCall = new Map<Node, number>(slots
       .filter((slot) => !!slot.sourceCallNode)
@@ -1362,17 +1360,15 @@ function buildFunctionAbiMetadata(
     // `externalCall` spelling only after stable physical callsite assignment, then derive and validate the edge
     // set from the exact producerResult components which code generation and the SDK evaluate.
     const producerByCallsite = new Map(slots.map((slot) => [slot.slotIndex, slot] as const));
-    const result = new Map<string, {
-      consumerCallsiteId: number; argument: number; producerCallsiteId: number; resultIndex: number;
-    }>();
+    const result = new Map<string, ExternalResultConsumerAbi>();
     const canonicalize = (
       expression: ExternalCallExpression,
       consumerCallsiteId: number,
-      argument: number,
+      lane: number | 'condition',
       dominanceCallsiteId = consumerCallsiteId,
     ): ExternalCallExpression => {
       const rewrite = (child: ExternalCallExpression | undefined): ExternalCallExpression | undefined =>
-        child && canonicalize(child, consumerCallsiteId, argument, dominanceCallsiteId);
+        child && canonicalize(child, consumerCallsiteId, lane, dominanceCallsiteId);
       const rewriteSource = (source: ExternalCallArgSource | undefined): ExternalCallArgSource | undefined =>
         source && {
           ...source,
@@ -1415,8 +1411,13 @@ function buildFunctionAbiMetadata(
         || resultIndex < 0 || resultIndex >= producer.returnTypes.length) {
         throw new Error(`Result dependency in '${func.name}' selects an invalid producer result`);
       }
-      const key = `${consumerCallsiteId}:${argument}:${producerCallsiteId}:${resultIndex}`;
-      result.set(key, { consumerCallsiteId, argument, producerCallsiteId: producerCallsiteId!, resultIndex });
+      const key = `${consumerCallsiteId}:${lane}:${producerCallsiteId}:${resultIndex}`;
+      result.set(key, {
+        consumerCallsiteId,
+        ...(lane === 'condition' ? { condition: true as const } : { argument: lane }),
+        producerCallsiteId: producerCallsiteId!,
+        resultIndex,
+      });
       return {
         kind: 'producerResult',
         callsiteId: producerCallsiteId,
@@ -1445,17 +1446,25 @@ function buildFunctionAbiMetadata(
     for (const slot of slots) {
       canonicalizeSources(slot.argSources, slot.slotIndex);
       canonicalizeSources(slot.rawArgSources, slot.slotIndex);
+      if (slot.condition) {
+        slot.condition = canonicalize(slot.condition, slot.slotIndex, 'condition');
+      }
       for (const row of slot.batchInvocations ?? []) {
         // A repeated-owner batch has one physical consumer lane, but each row retains its exact source position.
         // Validate dominance against that source position while publishing the physical lane consumed by the SDK.
         canonicalizeSources(row.argSources, slot.slotIndex, row.sourceCallsiteId);
+        if (row.condition) {
+          row.condition = canonicalize(
+            row.condition, slot.slotIndex, 'condition', row.sourceCallsiteId,
+          );
+        }
       }
     }
     return [...result.values()].sort((left, right) =>
       left.consumerCallsiteId - right.consumerCallsiteId
-      || left.argument - right.argument
+      || (left.argument ?? Number.MAX_SAFE_INTEGER) - (right.argument ?? Number.MAX_SAFE_INTEGER)
       || left.producerCallsiteId - right.producerCallsiteId
-      || left.resultIndex - right.resultIndex);
+      || (left.resultIndex ?? 0) - (right.resultIndex ?? 0));
   };
   const consumers = resultConsumers();
   // X37. Both walks are paid for only by a function that has the construct they describe: a body with no

@@ -8,6 +8,7 @@ import {
   ExternalCallExpression,
   ExternalCallStatement,
   ExternalCallAbi,
+  ExternalResultConsumerAbi,
   ExternalResultEncoding,
   TokenContainerTransferSiteAbi,
   SortedUpsertLoopAbi,
@@ -3970,12 +3971,7 @@ export function externalReturnsForCallsites(
   producerCalls: readonly ExternalCallAbi[],
   consumer?: {
     callsiteId: number;
-    resultConsumers?: readonly {
-      consumerCallsiteId: number;
-      argument: number;
-      producerCallsiteId: number;
-      resultIndex?: number;
-    }[];
+    resultConsumers?: readonly ExternalResultConsumerAbi[];
   },
 ): Map<string, FunctionArgument> {
   const resolved = new Map<string, FunctionArgument>();
@@ -3993,7 +3989,8 @@ export function externalReturnsForCallsites(
     const lanes = new Set<string>();
     for (const lane of consumer.resultConsumers) {
       if (!Number.isInteger(lane.consumerCallsiteId) || lane.consumerCallsiteId < 0
-        || !Number.isInteger(lane.argument) || lane.argument < 0
+        || ('argument' in lane && (!Number.isInteger(lane.argument) || lane.argument! < 0))
+        || (!('argument' in lane) && lane.condition !== true)
         || !Number.isInteger(lane.producerCallsiteId) || lane.producerCallsiteId < 0) {
         throw new Error('Graph result-consumer metadata requires nonnegative integer callsite and argument lanes.');
       }
@@ -24306,6 +24303,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 publishedNestedExternalCalls,
                 false,
                 graphPlanningResults,
+                {
+                  callsiteId: nested.callsiteId,
+                  resultConsumers: delegateFn?.resultConsumers,
+                  lane: 'condition',
+                },
               );
               const active = this._evaluateExternalExpression(
                 nested.condition,
@@ -33189,6 +33191,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     producerCalls?: readonly ExternalCallAbi[],
     allowProvisional = false,
     planningContext: GraphPlanningProducerResultContext = createGraphPlanningProducerResultContext(),
+    consumer?: {
+      callsiteId?: number;
+      resultConsumers?: readonly ExternalResultConsumerAbi[];
+      lane: 'condition';
+    },
   ): Promise<Map<string, FunctionArgument>> {
     const resolved = new Map<string, FunctionArgument>();
     const producerByCallsite = new Map<number, ExternalCallAbi>();
@@ -33314,6 +33321,19 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           throw new Error(
             `Graph producerResult ${expression.callsiteId}:${String(resultIndex)} does not identify one published result.`,
           );
+        }
+        if (consumer?.resultConsumers && consumer.callsiteId !== undefined) {
+          const lanes = consumer.resultConsumers.filter((candidate) =>
+            candidate.consumerCallsiteId === consumer.callsiteId
+            && candidate.condition === true
+            && candidate.producerCallsiteId === expression.callsiteId
+            && (candidate.resultIndex === undefined || candidate.resultIndex === resultIndex));
+          if (lanes.length !== 1) {
+            throw new Error(
+              `Graph producerResult ${expression.callsiteId}:${resultIndex} does not identify exactly one `
+              + `published consumer condition lane ${consumer.callsiteId}.`,
+            );
+          }
         }
         const result = await resolveProducer(producer);
         const selected = (producer.returnTypes?.length ?? 0) === 1

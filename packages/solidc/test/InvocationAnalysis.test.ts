@@ -341,6 +341,39 @@ describe('Release 0 shared invocation analysis', () => {
     });
   });
 
+  it('links a produced result to each conditionally reached callsite', () => {
+    const artifact = compileString(`pragma solidcash >=0.8.0;
+      interface IProbe { function ready(bigint n) returns (bool); }
+      interface IAction { function run(bigint n); }
+      contract ConditionalResultFlow() {
+        function dispatch(address probe, address action, bigint n) public {
+          bool ready = IProbe(probe).ready(n);
+          if (!ready) {
+            IAction(action).run(0);
+            IAction(action).run(n);
+          }
+          require(n >= 0);
+        }
+      }`, { forceStateful: true, messageBus: true, suppressWarnings: true });
+    const fn = artifact.invocationAnalysis!.functions.find((candidate) => candidate.name === 'dispatch')!;
+    expect(fn.externalCalls?.map((call) => call.occurrence)).toEqual([
+      'once', 'conditional', 'conditional',
+    ]);
+    for (const call of fn.externalCalls!.slice(1)) {
+      expect(call.condition).toMatchObject({
+        kind: 'unary',
+        operator: '!',
+        expression: { kind: 'producerResult', callsiteId: 0, resultIndex: 0 },
+      });
+    }
+    expect(fn.resultConsumers).toEqual([
+      { consumerCallsiteId: 1, condition: true, producerCallsiteId: 0, resultIndex: 0 },
+      { consumerCallsiteId: 2, condition: true, producerCallsiteId: 0, resultIndex: 0 },
+    ]);
+    expect(artifact.abi.find((candidate) => candidate.name === 'dispatch')!.resultConsumers)
+      .toEqual(fn.resultConsumers);
+  });
+
   // A partially written state-array entry is rebuilt as `T(.., thisField, ..)`: the front end reuses the read
   // node as the rebuilt field's argument, and a later rebuild of another field restates the entry with that same
   // argument. The published argument must be the value the handler wrote, never the read folded back on itself.

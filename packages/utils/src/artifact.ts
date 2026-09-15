@@ -511,13 +511,7 @@ export interface AbiFunction {
   externalReads?: readonly ExternalReadAbi[];
   externalCalls?: readonly ExternalCallAbi[];
   /** Local call-result values forwarded as arguments into later external callsites. */
-  resultConsumers?: readonly {
-    consumerCallsiteId: number;
-    argument: number;
-    producerCallsiteId: number;
-    /** Exact component selected from the producer's canonical return tuple. */
-    resultIndex?: number;
-  }[];
+  resultConsumers?: readonly ExternalResultConsumerAbi[];
   externalOutStateReads?: readonly ExternalOutStateAbi[];
   emits?: readonly EmitAbi[];
   runtimeLoopEvents?: readonly RuntimeLoopEventAbi[];
@@ -1031,6 +1025,17 @@ export interface ExternalCallExpression {
   statements?: readonly ExternalCallStatement[];
 }
 
+/** One authenticated use of an earlier graph call's result. */
+export type ExternalResultConsumerAbi = {
+  consumerCallsiteId: number;
+  producerCallsiteId: number;
+  /** Exact component selected from the producer's canonical return tuple. */
+  resultIndex?: number;
+} & (
+  | { argument: number; condition?: never }
+  | { condition: true; argument?: never }
+);
+
 /**
  * A compiler-authored, finite proof program for a locally constructed mapping-key vector.
  *
@@ -1281,13 +1286,7 @@ export interface InvocationAnalysisFunction {
     resultEncoding?: ExternalResultEncoding;
     opaque: boolean;
   }[];
-  resultConsumers?: readonly {
-    consumerCallsiteId: number;
-    argument: number;
-    producerCallsiteId: number;
-    /** Exact component selected from the producer's canonical return tuple. */
-    resultIndex?: number;
-  }[];
+  resultConsumers?: readonly ExternalResultConsumerAbi[];
   /**
    * True only when every external-call occurrence is statically singular. Conditional and loop callsites
    * require a runtime occurrence proof and therefore remain explicitly unbounded in this summary.

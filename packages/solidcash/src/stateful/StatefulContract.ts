@@ -3086,7 +3086,7 @@ export function resolvePublishedEntryBlockOffset(
 }
 
 /** Map a physical output index to a vmap entry slot offset using proxy and/or implementation layouts. */
-function entrySlotOffsetForOutput(
+export function routeProbeEntrySlotOffsetForOutput(
   outputIndex: number,
   layouts: Array<{ base: number; slots?: Array<{ kind: string; offset?: number }> }>,
 ): number | undefined {
@@ -13454,7 +13454,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 // whether the next transaction changes. String length is not a completeness test: a canonical
                 // zero-valued sorted node is exactly 64 bytes.
                 if (previous !== commitment) bEntryMap.set(outputIndex, commitment);
-                const blockSlot = entrySlotOffsetForOutput(outputIndex, [
+                const blockSlot = routeProbeEntrySlotOffsetForOutput(outputIndex, [
                   { base: bOutputBase, slots: group.blockLayout.slots },
                   { base: delegateImplIndex, slots: delegateImplFn?.blockLayout?.slots },
                 ]);
@@ -13462,11 +13462,15 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   progressed = stb.setExternalCallEntryOutput(
                     group.categoryId, blockSlot, commitment,
                   ) || progressed;
-                }
-                // The covenant names the physical output index. Block-slot walk can drift by a
-                // proxy/impl spacer; still publish the revealed 64-byte pred at that index.
-                if (stb.setExternalCallEntryOutputAt(outputIndex, group.categoryId, commitment)) {
-                  progressed = true;
+                  // The covenant names the physical output index too. Cache that coordinate only after a
+                  // compiler-published block layout proves it is an entry. The trace window also contains data,
+                  // event, value-chunk and continuation outputs whose commitments can be entry-sized; accepting
+                  // those as speculative entries reports progress even when suffix materialization overwrites
+                  // them. Runtime-loop entries and INSERT nodes are installed by their explicit journal metadata
+                  // paths, not inferred from this fixed-entry probe.
+                  if (stb.setExternalCallEntryOutputAt(
+                    outputIndex, group.categoryId, commitment,
+                  )) progressed = true;
                 }
               }
               const chunkProgress = deriveRouteValueChunks(

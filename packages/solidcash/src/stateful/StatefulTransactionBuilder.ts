@@ -12449,6 +12449,7 @@ export class StatefulTransactionBuilder {
 
   setExternalCallEntryOutputAt(outputIndex: number, categoryId: string, commitmentHex: string): boolean {
     if (commitmentHex.length < 128 || /^0+$/.test(commitmentHex)) return false;
+    if (this._rootStateNftIndexAt(outputIndex, categoryId) !== undefined) return false;
     if (this._isFixedParticipantDataNftOutput(outputIndex, categoryId)) return false;
     // Refuse absolute pins before a known minting master (post two: FakeToken balances @12).
     const mintingMaster = this.findMintingInputIndex(categoryId);
@@ -12501,6 +12502,13 @@ export class StatefulTransactionBuilder {
     for (const [outputIndex, placed] of [...this.externalCallEntryOutputsByIndex.entries()]) {
       const existing = builder.outputs[outputIndex];
       if (!existing?.token?.nft || existing.token.nft.capability !== 'mutable') continue;
+      // Absolute entry observations are owned by one exact state category. Geometry can move between probes;
+      // never replay an old participant's entry-shaped commitment over another participant's mutable output.
+      if (existing.token.category !== undefined
+        && existing.token.category.toLowerCase() !== placed.categoryId.toLowerCase()) {
+        this.externalCallEntryOutputsByIndex.delete(outputIndex);
+        continue;
+      }
       // Output geometry can change after a trace was cached. Re-check ownership
       // at replay time so an old dynamic coordinate cannot overwrite fixed state.
       if (this._isFixedParticipantDataNftOutput(

@@ -5,6 +5,7 @@ import {
   progressiveRouteProbePassLimit,
   permitsRouteValueChunkDerivation,
   recordRouteProbeObservation,
+  routeProbeEntrySlotOffsetForOutput,
   routeProbeRepairableEntryCoordinateCount,
   routeValueRunFingerprint,
 } from '../../src/stateful/StatefulContract.js';
@@ -54,6 +55,25 @@ describe('progressive route probe progress', () => {
     expect(routeProbeRepairableEntryCoordinateCount(current)).not.toBe(
       routeProbeRepairableEntryCoordinateCount(current, unrelated),
     );
+  });
+
+  it('authorizes only compiler-declared entry coordinates in a broad trace window', () => {
+    const layouts = [{
+      base: 15,
+      slots: [
+        { kind: 'master', offset: 0 },
+        { kind: 'dataNft', offset: 1 },
+        { kind: 'dataNft', offset: 2 },
+        { kind: 'entry', offset: 3 },
+        { kind: 'event', offset: 4 },
+      ],
+    }];
+
+    expect(routeProbeEntrySlotOffsetForOutput(18, layouts)).toBe(3);
+    expect(routeProbeEntrySlotOffsetForOutput(16, layouts)).toBeUndefined();
+    expect(routeProbeEntrySlotOffsetForOutput(19, layouts)).toBeUndefined();
+    // A trailing commitment may be 64 bytes, but its shape and position do not grant entry ownership.
+    expect(routeProbeEntrySlotOffsetForOutput(23, layouts)).toBeUndefined();
   });
 
   it('requires compiler-authored writes before a kernel carrier is treated as a value writer', () => {

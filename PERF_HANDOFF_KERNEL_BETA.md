@@ -238,6 +238,60 @@ process CPU; the difference is background GC/JIT threads) has this inclusive sha
   so a census would have to reproduce the emission's own helper-capture decisions to be equivalent. Measured,
   understood, and left alone.
 
+### Round 9: the structural map (what is left, and what blocks it)
+
+One root's compile, by phase (`MarketplaceV1`, `SOLIDC_PROFILE=1`, total 4,247 ms; phases nest):
+
+| phase | ms | share | note |
+|---|---|---|---|
+| codegen | 1,747 | 41 % | `emitBodies` 773, `outline` 489, `subroutineUseProbe` 427 |
+| lowering pipeline | 1,098 | 26 % | ~40 ordered passes, none above 1.5 % on its own |
+| parse + import resolve | 852 | 20 % | 21 files; root file plus its import graph |
+| semantic (symbol + typecheck) | 700 | 16 % | |
+| detached verifier | 624 | 15 % | two compiles: 426 pre-codegen + 198 specialized |
+| route synthesis | 391 | 9 % | |
+
+Every remaining double-digit item is blocked by something concrete, and the blockers were measured, not
+assumed:
+
+* **`subroutineUseProbe` (10 % of a root) - blocked by emission, not by the probe.** The probe is a full
+  dry run of `emitFunctionDefinesAndDispatch` whose byte appends are skipped; its products are the use counts
+  (which decide which helpers are captured and in which order ids are rehomed) and the structural-helper id
+  maps the real emission then reuses. Removing it needs the emission and the census to become one pass, i.e.
+  emitting with provisional ids and patching every `<id push> OP_INVOKE` after rehoming - a codegen redesign,
+  not a probe rewrite. The alternative "count the sites from the AST instead" has to reproduce the emission's
+  own helper-capture decisions to stay equivalent.
+* **The detached verifier (15 %) - both compiles are required, proven by experiment (round 9).** See the round-8
+  entry below: skipping the pre-codegen compile leaks the placeholder lock into the shipped script.
+* **The outline width sweep (16 %) - required for bytecode size.** Both `[12, 10]` widths run only for
+  kernel message-bus contracts whose estimated size is within ±512 bytes of the 10,000-byte input limit;
+  dropping the second width changes published bytecode.
+* **The lowering pipeline (26 %) - merging saves dispatch only.** The passes are each below 1.5 % and are
+  deliberately order-sensitive; fusing them would still visit every node once per pass's semantics and save
+  only the ~3 % visitor-dispatch floor. Not worth the risk.
+
+The marketplace title itself is now **harness-dominated**, which caps what compiler and SDK work can buy
+there. CPU profile of `post job 1` (`--cpu-prof` in the marketplace config's `test.execArgv`; 1 file, 1 test):
+duration 19.0 s = transform 4.4 s + setup 4.2 s + import 2.2 s + tests 12.4 s, and the forked worker is
+**idle for 13.0 s of its 19.0 s** - it waits while the main process transforms the module graph. Of the ~6 s
+of JS the worker does run, the SDK items are all legitimate work, not waste:
+
+| item | inclusive | what it is |
+|---|---|---|
+| `_sendWithoutLogicalNonce` | 0.77 s | the whole send path |
+| `_deriveFullTransactionState` | 0.70 s | state derivation for the 26-input / 36-output forward |
+| `_assertConvergedFinalTransaction` | 0.65 s | builds and VM-validates the exact transaction that is serialized, repairing until it converges |
+| `_createBuilder` | 0.49 s | input/output construction |
+| `deriveSeedFromBip39Mnemonic` | 0.44 s | PBKDF2 for the 20 test signers, once per worker |
+| `evaluateEveryInput` | 0.36 s | preflight VM run |
+| faithful probe traces | 0.47 s | nested delegate evaluations the sparse observer cannot see |
+
+The one harness-side item that is clearly redundant is `blockOracleUpdater`'s `structuredClone` of the whole
+mock memory storage on every deployment sync (0.32 s per title, `snapshot[memoryStorage.js]`); the resolver
+plugin's per-import `existsSync` probing (`internalModuleStat` 0.11 s + `getPackageScopeConfig` 0.15 s) is the
+next-largest. Both live in `packages/testing`, not in the compiler or SDK, and neither is reachable by a
+compiler or SDK change.
+
 ### Incident to know about (round 7, no harm done)
 
 A round-7 A/B script used `git stash push packages/solidc/src/compiler.ts` to produce its baseline half

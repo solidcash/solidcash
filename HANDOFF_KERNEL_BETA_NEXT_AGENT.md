@@ -12,9 +12,9 @@ Long-term acceptance target: all 66 unchanged titles in
 `messageBus.convention === 'kernel-row-loop'` and graph handlers behind `OP_INVOKE`.
 
 For the bounded beta checkpoint, do not make 66/66 a release gate. Freeze the manifest proof matrix, close the
-live application-name-dependent SDK paths listed below, retain the fixed Marketplace smoke slice, and cut the RC
-after two clean deterministic gate runs. The remaining Marketplace ladder is post-beta unless the release claims
-full Marketplace compatibility.
+live application-name-dependent SDK paths listed below, add and stabilize the proposed Marketplace smoke slice,
+and cut the RC after two clean deterministic gate runs. The remaining Marketplace ladder is post-beta unless the
+release claims full Marketplace compatibility.
 
 The tree contains many generated `.js`, `.js.map`, `.d.ts`, and `.tsbuildinfo` files. Never use `git add -A`;
 stage reviewed source, tests, and handoffs explicitly.
@@ -110,8 +110,8 @@ Release blockers are limited to:
 
 - a clean `node scripts/kernel-beta-gate.mjs` run without `--allow-dirty`, repeated twice with identical fresh
   compile hashes and no stderr or caught speculative compiler attempts;
-- regressions in the frozen manifest proof inventory, the five fixed Marketplace smoke titles (post one job, post
-  two jobs, whitelist post, invalid-MECE rejection, whitelist-worker), legacy compilation, determinism, or the six
+- regressions in the frozen manifest proof inventory, the proposed Marketplace smoke titles (post job 1, post two
+  jobs, whitelist post, invalid-MECE guards, whitelist-worker), legacy compilation, determinism, or the six
   architectural invariants;
 - soundness/security failures, silent kernel-vs-legacy semantic mismatches, or executable production-name-based
   SDK/compiler behavior;
@@ -125,8 +125,22 @@ observable parity.
 
 ## Marketplace frontier
 
-Tier 1e and 1g titles were individually green, including post one/two jobs, update-job variants, close/reopen, and
-withdraw collateral. The next title is Tier 1f:
+The proposed five-title smoke slice is not currently part of `scripts/kernel-beta-manifest.json` or
+`scripts/kernel-beta-gate.mjs`; a clean gate can pass without it. Recorded evidence confirms the four posting
+titles, but `should whitelist worker` previously exceeded a 300-second wrapper and has not been proven green. Do
+not describe the five-title slice or Tier 1g as green until a fresh run establishes that result.
+
+Exact proposed smoke command:
+
+```bash
+yarn vitest run --config vitest.marketplace.config.ts \
+  -t '^(Marketplace Unit Tests job posting (post job 1|post two jobs|post job with whitelist|post job with invalid mece tags)|Marketplace Unit Tests job worker whitelisting should whitelist worker)$' \
+  --reporter=dot --no-file-parallelism
+```
+
+The latest recorded full-suite baseline is 26 passing and 39 failing before timeout. The scratch inventory records
+Tier 1g's current blocker as `update job`; older prose claiming all Tier 1g titles were individually green is not
+evidence-backed. After the smoke slice, the next investigation title remains Tier 1f:
 
 ```bash
 yarn vitest run --config vitest.marketplace.config.ts \

@@ -20,9 +20,6 @@ export default defineConfig({
     // Skip speculative external-handler fallback rungs in this large imported call graph during development.
     optimizeForCompilationSpeed: true,
     suppressWarnings: true,
-    // Outlining's two lowest-yield passes (window-12 follow-up rounds and the nested compiler-helper pass)
-    // cost ~1.0 s of this project's compile for ~26 KB of bytecode; the corpus stays inside +/-5 %.
-    outlineThoroughness: 'speed',
   },
   typegen: {
     jsonArtifactModules: true,

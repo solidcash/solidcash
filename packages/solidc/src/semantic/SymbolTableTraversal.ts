@@ -8413,6 +8413,10 @@ export default class SymbolTableTraversal extends AstTraversal {
         if (expression instanceof FunctionCallNode) {
           const values = serializeArgs(expression.parameters);
           const helper = expression.resolvedFunction;
+          const declaredStruct = helper === undefined
+            ? this.structMap.get(expression.identifier.name) : undefined;
+          const declaredStructType = declaredStruct?.fields.length === expression.parameters.length
+            ? declaredStruct.name : undefined;
           let parameters: string[] | undefined;
           let statements: ExternalCallStatement[] | undefined;
           if (helper?.modifiers.includes(FunctionModifier.PURE)
@@ -8494,7 +8498,8 @@ export default class SymbolTableTraversal extends AstTraversal {
             name: expression.identifier.name,
             args: values,
             ...(expression.fieldNames && { fields: expression.fieldNames }),
-            ...(expression.type && { type: expression.type.toString() }),
+            ...(expression.type || declaredStructType
+              ? { type: expression.type?.toString() ?? declaredStructType } : {}),
             ...(parameters && statements && { parameters, statements }),
           };
         }

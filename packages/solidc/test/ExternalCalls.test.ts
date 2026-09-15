@@ -206,6 +206,25 @@ describe('Low-level call options + tuple-slot modifiers + value units', () => {
 
 describe('state-backed external-call expected address', () => {
   const IFACE = 'interface IData { function ping() external; }';
+  it('publishes the declared type for an imported-style struct constructor argument', () => {
+    const artifact = compileString(`pragma solidity ^0.8.0;
+      struct Packet { uint256 code; bytes payload; }
+      interface IData { function put(Packet value) external; }
+      contract C {
+        IData data;
+        function forward(uint256 code, bytes payload) public {
+          data.put(Packet(code, payload));
+          require(true);
+        }
+      }
+    `, { solidityImportCompat: true, forceStateful: true });
+    expect(artifact.abi.find((candidate) => candidate.name === 'forward')
+      ?.externalCalls?.[0]?.argSources?.[0]).toMatchObject({
+      kind: 'expression',
+      expression: { kind: 'call', name: 'Packet', type: 'Packet' },
+    });
+  });
+
   it('publishes an explicit empty argument-source list for zero-argument calls', () => {
     const artifact = compileString(`${IFACE}
       contract C(IData data) {

@@ -18363,7 +18363,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       assertConstructedKeyVectorRouteBinding(entryAbiFunction.constructedKeyVectors, undefined);
     }
     let entryNfts: EntryNftInfo[] = [];
-    let entryValueWitnesses: Array<Uint8Array | Uint8Array[]> = [];
+    // Value witnesses are keyed by the entry-slot ordinal their own ABI name spells, never by their position in
+    // this collection order: an aggregate route publishes one position per union entry slot (a slot whose
+    // collection carries no chunkable value still holds a position), so a positional list would hand each later
+    // value to the parameter of the slot before it.
+    let entryValueWitnesses = new Map<number, Uint8Array | Uint8Array[]>();
     let entryBatchWitnesses = new Map<string, unknown>();
     // vmap sorted-set inserts to inject after the builder is created: P' (the predecessor's new commitment at its
     // entry slot) and NEW (the new node minted at the trailing loop-entry output).
@@ -18443,10 +18447,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
       // P5b value witnesses (__internal__valueWitness_N), collected in entryAccesses (slotIndex) order to match
       // the SymbolTable param injection; appended to finalArgs after this loop (between blockhash and iteration).
-      // Keep this list dense in hidden-ABI order. The numeric suffix is the physical entry-slot identity, but
-      // later delegate plumbing consumes the witnesses in ABI order. Inactive message-bus slots therefore need
-      // an explicit empty witness; omitting them shifts every later active value onto the wrong ABI parameter.
-      const chunkableValueWitnesses: Array<Uint8Array | Uint8Array[]> = [];
+      // Each witness is recorded under its entry-slot ordinal, which is the physical route slot for an aggregate
+      // route and the handler-local slot for a plain delegate. Both consumers read that ordinal out of the ABI name
+      // they are filling, so a slot carrying no chunkable value leaves its own position empty instead of shifting
+      // every later value onto the parameter of the slot before it.
+      const valueWitnessBySlot = new Map<number, Uint8Array | Uint8Array[]>();
 
       for (let accessIndex = 0; accessIndex < entryAccesses.length; accessIndex++) {
         const access = entryAccesses[accessIndex];
@@ -18472,7 +18477,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             keyValue: 0n,
             exists: false,
           });
-          if (hasChunkableValueWitness) chunkableValueWitnesses.push(new Uint8Array());
+          if (hasChunkableValueWitness) valueWitnessBySlot.set(slotIndex, new Uint8Array());
           continue;
         }
         const collectionEntries = await collectionEntriesFor(collection.signature);
@@ -18795,7 +18800,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 witnessHead: binToHex(witness).slice(0, 120),
               });
             }
-            chunkableValueWitnesses.push(witness);
+            valueWitnessBySlot.set(slotIndex, witness);
           }
 
           // P5b: a sorted chunkable-value WRITE persists the full value as chunks; the covenant PINS them to the
@@ -19141,6 +19146,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           aliasSkipped: batchAliasSkips.has(entry.slotIndex),
         })));
       }
+
       const batchGuardSlot = entryAbiFunction?.blockLayout?.slots.find(
         (slot) => slot.kind === 'entry' && slot.softDelete,
       )?.slotIndex;
@@ -19541,17 +19547,19 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       // When entry accesses come from a delegated facet, the witnesses belong to the facet ABI and are injected
       // while constructing its unlocker below; the split root ABI intentionally has no such hidden parameters.
       if (abiFunction?.inputs.some((input) => input.name.startsWith('__internal__valueWitness_'))) {
-        const positions = abiFunction.inputs.flatMap((input, index) =>
-          input.name.startsWith('__internal__valueWitness_') ? [index] : []);
-        const orderedValueWitnesses = chunkableValueWitnesses;
-        if (orderedValueWitnesses.length > positions.length) {
+        const positions = abiFunction.inputs.flatMap((input, index) => {
+          const match = /^__internal__valueWitness_(\d+)$/.exec(input.name);
+          return match ? [{ ordinal: Number(match[1]), index }] : [];
+        });
+        const unresolved = [...valueWitnessBySlot.keys()].filter((ordinal) =>
+          !positions.some((position) => position.ordinal === ordinal));
+        if (unresolved.length > 0) {
           throw new Error(
-            `Internal error: function '${abiFunction.name}' derived ${orderedValueWitnesses.length} value witnesses `
-            + `for ${positions.length} published ABI positions.`,
+            `Internal error: function '${abiFunction.name}' resolved value witnesses for entry slot(s) `
+            + `${unresolved.join(', ')} which it publishes no ABI position for.`,
           );
         }
-        for (let index = 0; index < orderedValueWitnesses.length; index += 1) {
-          const position = positions[index];
+        for (const { ordinal, index: position } of positions) {
           while (finalArgs.length <= position) {
             const input = abiFunction.inputs[finalArgs.length];
             if (!input?.name.startsWith('__internal__')) {
@@ -19562,10 +19570,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             }
             finalArgs.push(defaultInternalFunctionArg(input));
           }
-          finalArgs[position] = orderedValueWitnesses[index];
+          finalArgs[position] = valueWitnessBySlot.get(ordinal) ?? new Uint8Array();
         }
       }
-      entryValueWitnesses = chunkableValueWitnesses;
+      entryValueWitnesses = valueWitnessBySlot;
     }
 
     // Alias-conditional writes (swap-remove of the LAST key): a write slot whose runtime key equals the aliasing
@@ -28641,7 +28649,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               ? group.functionArgs
               : group.compilerRoute?.args) ?? [];
           let visibleIndex = 0;
-          let valueWitnessIndex = 0;
           let delegateReturnWitnessIndex = 0;
           let delegateCallInputWitnessIndex = 0;
           const tokenCallInputPositions: number[] = [];
@@ -29025,9 +29032,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             }
             const witness = inp.name.match(/^__internal__valueWitness_(\d+)$/);
             if (witness) {
-              // The numeric suffix is the entry-slot identity, not an index into `entryValueWitnesses`.
-              // That list is dense (only chunkable reads) and is built in the same ABI order as these fields.
-              const valueWitness = entryValueWitnesses[valueWitnessIndex++] ?? new Uint8Array();
+              // The numeric suffix is the entry-slot identity the witness was recorded under, so read the map by
+              // that ordinal. A positional list would slide every value onto the parameter of the slot before it
+              // whenever a preceding slot publishes no chunkable value.
+              const valueWitness = entryValueWitnesses.get(Number(witness[1])) ?? new Uint8Array();
               // A route reads the CALLEE's collections, so its chunkable-value witnesses are the callee's, not
               // this caller's. The block composition resolves them from the callee's chunk UTXOs and publishes
               // them on the route's internalArgs; `entryValueWitnesses` stays the fallback for an ordinary

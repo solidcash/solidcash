@@ -259,6 +259,12 @@ function exactMessageBusHandlerReference(
 
 /** Remaining eligible names when late fences demoted a handler already synthesized into the route. */
 const kernelRouteRebindRemaining = new WeakMap<Artifact, AbiFunctionReference[]>();
+/** Exact detached verifier program whose locking bytecode was embedded in a returned participant route. */
+const boundVerifierProgramIdentityByArtifact = new WeakMap<Artifact, string>();
+
+const verifierProgramIdentity = (
+  program: NonNullable<NonNullable<Artifact['messageBus']>['verifierProgram']>,
+): string => JSON.stringify(program);
 
 function sourceMessageBusHandlerReference(fn: FunctionDefinitionNode): AbiFunctionReference {
   return { name: fn.name, selector: sourceFunctionSelectorHex(fn) };
@@ -1798,8 +1804,12 @@ function compileStringUnchecked(code: string, compilerOptions: CompileOptions = 
     assertKernelReadCarrierScopeMatch(fullOptions);
     assertNoInternalAttemptRecovery(mergedCompilerOptions);
   }
+  const publishedVerifierProgram = artifact.messageBus?.verifierProgram;
   const alreadyVerifierBound = artifact.messageBus?.route?.inputs
-    ?.some((input) => input.name === '__internal__activeVerifierIndex') === true;
+    ?.some((input) => input.name === '__internal__activeVerifierIndex') === true
+    && publishedVerifierProgram !== undefined
+    && boundVerifierProgramIdentityByArtifact.get(artifact)
+      === verifierProgramIdentity(publishedVerifierProgram);
   const winningReadCarrierScopes = kernelReadCarrierScopesByArtifact.get(artifact) ?? [];
   const winningKernelJournalDispositions = kernelJournalDispositionsByArtifact.get(artifact);
   const needsReadCarrierBinding = KERNEL_READ_CARRIER_PROTOCOL_RELEASED
@@ -1918,21 +1928,24 @@ function compileStringUnchecked(code: string, compilerOptions: CompileOptions = 
       clearKernelReadCarrierBindingToken(readCarrierAuthorizationBox, bindingToken);
     }
     const reboundVerifierProgram = artifact.messageBus?.verifierProgram;
-    if (admittedSignatureVerifierSource && !reboundVerifierProgram) {
-      throw new Error('message-bus transaction-signature verifier disappeared during body binding');
+    const reboundVerifierBound = artifact.messageBus?.route.inputs.some((input) =>
+      input.name === '__internal__activeVerifierIndex') === true;
+    if (verifierProgram && reboundVerifierBound && !reboundVerifierProgram) {
+      throw new Error('message-bus verifier disappeared during exact body binding');
     }
-    if (admittedSignatureVerifierSource && reboundVerifierProgram
+    if (reboundVerifierBound && reboundVerifierProgram
       && JSON.stringify(reboundVerifierProgram) !== JSON.stringify(verifierProgram)) {
-      // Binding the detached verifier changes the participant route's helper-id allocation. Re-specialize KTS1
-      // against those final OP_INVOKE bodies, then bind that stable program once more. A third distinct program
-      // would mean the policy is self-referential and must never be published beside the wrong verifier lock.
+      // Binding can change the participant route's helper-id allocation or finalize a post-codegen verifier
+      // policy. Bind that exact returned program once more. A third distinct program would make the verifier
+      // identity self-referential and must never be published beside a different embedded locking bytecode.
       verifierProgram = reboundVerifierProgram;
       const stableOptions = normalizeCompilerOptions({
         ...artifactCompilerOptions,
         messageBusHandlers: admittedMessageBusHandlers,
         __kernelReadCarrierAuthorizationBox: readCarrierAuthorizationBox,
         __messageBusVerifierProgram: verifierProgram,
-        __messageBusSignatureVerifierSource: admittedSignatureVerifierSource,
+        ...(admittedSignatureVerifierSource
+          && { __messageBusSignatureVerifierSource: admittedSignatureVerifierSource }),
       } as InternalCompilerOptions);
       if (readCarrierAuthorizationBox) {
         readCarrierAuthorizationBox.verifiedScopes = undefined;
@@ -1956,10 +1969,10 @@ function compileStringUnchecked(code: string, compilerOptions: CompileOptions = 
       }
       const stableProgram = artifact.messageBus?.verifierProgram;
       if (!stableProgram) {
-        throw new Error('message-bus transaction-signature verifier disappeared during stable body binding');
+        throw new Error('message-bus verifier disappeared during stable body binding');
       }
       if (JSON.stringify(stableProgram) !== JSON.stringify(verifierProgram)) {
-        throw new Error('message-bus transaction-signature verifier did not reach a stable body binding');
+        throw new Error('message-bus verifier did not reach a stable body binding');
       }
     }
     profileLog('binder', binderStarted, {
@@ -1967,7 +1980,10 @@ function compileStringUnchecked(code: string, compilerOptions: CompileOptions = 
       handlers: admittedMessageBusHandlers.length,
     });
     if (artifact.messageBus) {
-      if (verifierProgram) artifact.messageBus.verifierProgram = verifierProgram;
+      if (verifierProgram && artifact.messageBus.route.inputs.some((input) =>
+        input.name === '__internal__activeVerifierIndex')) {
+        artifact.messageBus.verifierProgram = verifierProgram;
+      }
       // The verifier-bound pass intentionally synthesizes only the admitted handler set. Preserve the first
       // pass's named refusals for every other source entry point; replacing them with "not examined" hides the
       // actual safety boundary and makes two compilations of the same source publish different diagnostics.
@@ -2019,6 +2035,14 @@ function compileStringUnchecked(code: string, compilerOptions: CompileOptions = 
   // the shipped proxy artifact.
   delete mergedCompilerOptions.__cheapAdmissionCodegen;
   assertNoInternalAttemptRecovery(mergedCompilerOptions);
+  const finalVerifierProgram = artifact.messageBus?.verifierProgram;
+  const finalVerifierBound = artifact.messageBus?.route.inputs.some((input) =>
+    input.name === '__internal__activeVerifierIndex') === true;
+  if (finalVerifierBound && (!finalVerifierProgram
+    || boundVerifierProgramIdentityByArtifact.get(artifact)
+      !== verifierProgramIdentity(finalVerifierProgram))) {
+    throw new Error('message-bus route verifier lock does not match the published verifier program');
+  }
   attachDelegateVariant(
     artifact, code, mergedCompilerOptions, errorListener, primaryContractName,
     cacheable || !suppressWarnings,
@@ -13074,7 +13098,9 @@ function compileResolvedAst(
   };
   let detachedVerifierProgram = mergedCompilerOptions.messageBus
     && ast.contract.functions.some((fn) => fn.messageBusRoute)
-    ? singlePassVerifierProgram ?? extractMessageBusVerifierProgram(ast, traversal, optimisationResult.script)
+    ? mergedCompilerOptions.__messageBusVerifierProgram
+      ?? singlePassVerifierProgram
+      ?? extractMessageBusVerifierProgram(ast, traversal, optimisationResult.script)
     : undefined;
   if (detachedVerifierProgram && mergedCompilerOptions.messageBusKernel === true
     && singlePassVerifierSource) {
@@ -13603,6 +13629,11 @@ function compileResolvedAst(
   }
   // Marker for the off-chain keeper: this contract reads blockhash(n) -> maintain the (n->hash) oracle.
   if (blockOracle.usesBlockhash) artifact.usesBlockhash = true;
+  const boundVerifierProgram = mergedCompilerOptions.__messageBusVerifierProgram ?? singlePassVerifierProgram;
+  if (boundVerifierProgram && artifact.messageBus?.route.inputs.some((input) =>
+    input.name === '__internal__activeVerifierIndex')) {
+    boundVerifierProgramIdentityByArtifact.set(artifact, verifierProgramIdentity(boundVerifierProgram));
+  }
   return artifact;
 }
 

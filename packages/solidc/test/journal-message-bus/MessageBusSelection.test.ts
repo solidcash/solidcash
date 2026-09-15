@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { bytecodeToAsm } from '@solidcash/utils';
+import { decodeAuthenticationInstructions, hexToBin } from '@bitauth/libauth';
+import { bytecodeToAsm, messageBusVerifierLockingBytecode } from '@solidcash/utils';
 import { compileString, compileStringMulti } from '../../src/compiler.js';
 
 describe('message-bus compilation selection', () => {
@@ -45,6 +46,45 @@ describe('message-bus compilation selection', () => {
     expect(delegate?.messageBus?.verifierProgram).toBeDefined();
     expect(delegate?.messageBus?.route.inputs.map((input) => input.name))
       .toContain('__internal__activeVerifierIndex');
+  });
+
+  it('embeds the published verifier lock in a fresh graph delegate route', () => {
+    const artifact = compileString(`interface ISink {
+        function note(int value) external;
+      }
+      contract GraphWriter(address sink) {
+        int stored;
+        function forward(int value) public {
+          this.stored = value;
+          ISink(sink).note(value);
+          require(true);
+        }
+      }`, {
+      forceStateful: true,
+      messageBus: true,
+      messageBusKernel: true,
+      messageBusGraphContext: true,
+      maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true,
+      suppressWarnings: true,
+    });
+    const delegate = artifact.delegateArtifact;
+    expect(delegate?.messageBus?.route.modifiers).toContain('delegate');
+    expect(delegate?.abi.find((fn) => fn.name === 'forward')?.externalCalls).toHaveLength(1);
+    const verifierProgram = delegate?.messageBus?.verifierProgram;
+    expect(verifierProgram).toBeDefined();
+    const expectedLock = messageBusVerifierLockingBytecode(verifierProgram!, 1_000_000);
+    const verifierBody = Object.values(delegate?.debug.invokeDebug ?? {})
+      .find((entry) => entry.name === '__message_bus_verify_atomic');
+    expect(verifierBody).toBeDefined();
+    const embeddedVerifierLocks = decodeAuthenticationInstructions(hexToBin(verifierBody!.bytecode))
+      .flatMap((instruction) => instruction.data?.length === expectedLock.length
+        && instruction.data[0] === 0xaa
+        && instruction.data[1] === 0x20
+        && instruction.data[instruction.data.length - 1] === 0x87
+        ? [instruction.data]
+        : []);
+    expect(embeddedVerifierLocks).toEqual([expectedLock]);
   });
 
   // Explicit message-bus selection keeps the capability observable even when no handler can participate. The

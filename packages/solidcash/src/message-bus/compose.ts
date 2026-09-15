@@ -25,7 +25,10 @@ import {
   decodeAuthenticatedProducerResultVector, evalComputedKey, isCanonicalEvmScalarReturnVector,
   StatefulContract, StatefulFunctionCall,
 } from '../stateful/StatefulContract.js';
-import { valueChunkIndexFromCommitment } from '../stateful/StatefulTransactionBuilder.js';
+import {
+  chunksFromValue, persistValueChunkLock, valueChunkIndexFromCommitment,
+  valueChunkWriteResourceIdentity, type ValueChunkWriteDescriptor,
+} from '../stateful/StatefulTransactionBuilder.js';
 import { artifactUsesSolidityAbi, resolveExternalResultEncoding } from '../stateful/solidityAbi.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
 import {
@@ -54,8 +57,10 @@ import {
 import { convergeMessageBusComputedValueChunkOutputs } from './computed-value-chunks.js';
 import { deriveCompiledGraphPlan, type WorklistParticipant } from './worklist.js';
 import {
-  canonicalValueChunkProducerPathContext, canonicalValueChunkProducerResourceIdentity,
-  type ValueChunkProducerPathDisposition,
+  canonicalValueChunkProducerIdentity, canonicalValueChunkProducerPathContext,
+  canonicalValueChunkProducerResourceClaim,
+  canonicalValueChunkProducerResourceIdentity, canonicalValueChunkStateOwner,
+  type ValueChunkProducerPathDisposition, type ValueChunkProducerResourceClaim,
 } from '../stateful/ValueChunkProducerIdentity.js';
 
 export interface AtomicMessageBusFunder {
@@ -112,6 +117,17 @@ export interface PreparedAtomicMessageBusCall {
   sourceEffectOrdinal?: number;
   /** @internal Independently derived root-to-invocation compiler source path. */
   producerPath?: ValueChunkProducerPathDisposition;
+  /** @internal Exact terminal post-values authenticated while discovering this compiler call edge. */
+  valueChunkProductions?: readonly {
+    write: ValueChunkWriteDescriptor;
+    claim: ValueChunkProducerResourceClaim;
+    stateOwner: { categoryId: string; lockingBytecode: string };
+    value: Uint8Array;
+  }[];
+  /** @internal Recompute terminal productions after authenticated sibling results change this call's arguments. */
+  resolveValueChunkProductionsFromArgs?: (
+    args: readonly FunctionArgument[],
+  ) => NonNullable<PreparedAtomicMessageBusCall['valueChunkProductions']>;
   /** @internal Source-template identity for one runtime row of a collapsed repeated-call batch. */
   batchLogicalIndex?: number;
   /** @internal Source loop occurrence represented by this runtime batch row. */
@@ -163,6 +179,18 @@ export function assertPreparedInvocationIdentity(
     && descriptor.selector.toLowerCase() !== invocation.selectorHex.toLowerCase()) {
     throw new Error(`messageBus: prepared invocation ${index} selector disagrees with the compiled graph`);
   }
+  for (const production of descriptor.valueChunkProductions ?? []) {
+    const claim = canonicalValueChunkProducerResourceClaim(production.claim);
+    const claimPath = claim && canonicalValueChunkProducerPathContext({
+      version: 1, sourcePath: claim.producer.sourcePath,
+    });
+    if (!claim || preparedPathKey === undefined || preparedPathKey === 'unavailable'
+      || claimPath !== preparedPathKey) {
+      throw new Error(
+        `messageBus: prepared invocation ${index} value production disagrees with its producer path`,
+      );
+    }
+  }
   if (index === 0) return;
   if (descriptor.callsiteId === undefined) {
     throw new Error(`messageBus: prepared invocation ${index} omits its physical callsite identity`);
@@ -201,9 +229,18 @@ export function rebuildPreparedInvocation(
   args: readonly FunctionArgument[],
   provisionalResultHex?: string,
 ): PreparedAtomicMessageBusCall {
+  const argsChanged = semanticJson(args) !== semanticJson(descriptor.args);
+  if (argsChanged && descriptor.valueChunkProductions?.length
+    && !descriptor.resolveValueChunkProductionsFromArgs) {
+    throw new Error('messageBus: changed producer arguments have no value-production refresher');
+  }
+  const valueChunkProductions = argsChanged
+    ? descriptor.resolveValueChunkProductionsFromArgs?.(args)
+    : descriptor.valueChunkProductions;
   return {
     ...descriptor,
     args,
+    valueChunkProductions,
     ...(provisionalResultHex !== undefined && {
       provisionalResultCommitment: hexToBin(provisionalResultHex),
     }),
@@ -2518,10 +2555,109 @@ export class AtomicMessageBusComposition {
         const blockSize = participant.lifecycle?.balancedSpan ?? participant.blockLayout!.blockSize;
         const returnBlob = participantReturnBlob(participant.participant, results);
         const returnCommitment = participantReturnCommitment(returnBlob);
+        const valueChunkProductions = new Map<
+          string, NonNullable<PreparedAtomicMessageBusCall['valueChunkProductions']>[number]
+        >();
+        for (const invocationIndex of participant.invocations) {
+          for (const production of descriptors[invocationIndex].valueChunkProductions ?? []) {
+            const claim = canonicalValueChunkProducerResourceClaim(production.claim);
+            const resourceIdentity = claim?.resourceIdentity;
+            const writeResourceIdentity = canonicalValueChunkProducerResourceIdentity(
+              valueChunkWriteResourceIdentity(production.write),
+            );
+            const producerIdentity = claim && canonicalValueChunkProducerIdentity(claim.producer);
+            const stateOwner = canonicalValueChunkStateOwner(production.stateOwner);
+            const producerStateOwner = claim && canonicalValueChunkStateOwner(claim.producer.stateOwner);
+            if (!resourceIdentity || resourceIdentity !== writeResourceIdentity
+              || !producerIdentity || !stateOwner || stateOwner !== producerStateOwner) {
+              throw new Error(
+                `messageBus: invocation ${invocationIndex} carries an invalid value-chunk production identity`,
+              );
+            }
+            const identity = JSON.stringify([resourceIdentity, producerIdentity]);
+            const shape = JSON.stringify([
+              production.write.categoryId.toLowerCase(), production.write.collection,
+              production.write.collectionSignature, production.write.collectionHash.toLowerCase(),
+              production.write.keySlot.toLowerCase(), production.write.entryAccessSlot,
+              production.write.routeSlot, production.write.operation, production.write.outputBase,
+              production.write.outputCount, stateOwner, binToHex(production.value),
+            ]);
+            const prior = valueChunkProductions.get(identity);
+            if (prior) {
+              const priorShape = JSON.stringify([
+                prior.write.categoryId.toLowerCase(), prior.write.collection,
+                prior.write.collectionSignature, prior.write.collectionHash.toLowerCase(),
+                prior.write.keySlot.toLowerCase(), prior.write.entryAccessSlot, prior.write.routeSlot,
+                prior.write.operation, prior.write.outputBase, prior.write.outputCount,
+                canonicalValueChunkStateOwner(prior.stateOwner), binToHex(prior.value),
+              ]);
+              if (priorShape !== shape) {
+                throw new Error(
+                  `messageBus: conflicting value-chunk productions for invocation ${invocationIndex}`,
+                );
+              }
+              continue;
+            }
+            valueChunkProductions.set(identity, production);
+          }
+        }
+        if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+          ?.SOLIDC_DEBUG_ATOMIC_GRAPH === '1' && valueChunkProductions.size > 0) {
+          console.error('atomic-transported-value-productions', {
+            participant: participant.participant,
+            count: valueChunkProductions.size,
+            resources: [...valueChunkProductions.values()].map((production) => (
+              valueChunkWriteResourceIdentity(production.write)
+            )),
+          });
+        }
+        const valueChunkSlots = participant.blockLayout!.slots
+          .filter((slot) => slot.kind === 'trailing')
+          .sort((left, right) => left.offset - right.offset);
+        const transportedValueChunks = [...valueChunkProductions.values()].map((production) => {
+          const lockingBytecode = persistValueChunkLock(
+            production.stateOwner.categoryId, production.value, production.write,
+          );
+          if (!lockingBytecode) {
+            throw new Error('messageBus: transported value production has no continuation covenant');
+          }
+          return {
+            production,
+            chunks: chunksFromValue(production.value, {
+              lockingBytecode, write: production.write, categoryId: production.stateOwner.categoryId,
+            }),
+          };
+        });
+        const transportedChunkCount = transportedValueChunks.reduce(
+          (count, candidate) => count + candidate.chunks.length, 0,
+        );
+        if (transportedChunkCount > valueChunkSlots.length) {
+          throw new Error(
+            `messageBus: participant ${participant.participant} needs ${transportedChunkCount} continuation `
+            + `slots but publishes ${valueChunkSlots.length}`,
+          );
+        }
+        if (transportedValueChunks.length > 1) {
+          throw new Error('messageBus: one routed participant cannot publish multiple continuation resource lanes');
+        }
+        const selectedValueChunkSlots = transportedChunkCount === 0
+          ? [] : valueChunkSlots.slice(-transportedChunkCount);
+        if (selectedValueChunkSlots.some((slot, index) => index > 0
+          && slot.offset !== selectedValueChunkSlots[index - 1]!.offset + 1)) {
+          throw new Error('messageBus: transported continuation slots are not one consecutive trailing run');
+        }
+        const internalRouteWitnesses = {
+          ...graphRouteContext(graph, participant.participant, upgradeStateSuffixes),
+          ...(transportedChunkCount > 0 && {
+            __internal__valueChunkOutputBase: BigInt(
+              graph.layout.participantInputs[participant.participant] + selectedValueChunkSlots[0]!.offset,
+            ),
+          }),
+        };
         const localCall = contract._batchRaw(
           participant.batch.blob,
           participant.batch.routeWitnesses as FunctionArgument[],
-          graphRouteContext(graph, participant.participant, upgradeStateSuffixes),
+          internalRouteWitnesses,
           graph.layout.participantInputs[participant.participant],
           returnBlob !== undefined,
           returnCommitment,
@@ -2547,6 +2683,7 @@ export class AtomicMessageBusComposition {
             };
           }),
           logicalIdentities.get(participant.participant),
+          Object.freeze([...valueChunkProductions.values()]),
         );
         for (const deployment of materializedDeployments) {
           if (deployment.participant !== participant.participant || !deployment.active
@@ -2628,6 +2765,28 @@ export class AtomicMessageBusComposition {
             + `failed to build its balanced block: ${error instanceof Error ? error.message : String(error)}`,
             { cause: error },
           );
+        }
+        let transportedChunkIndex = 0;
+        for (const candidate of transportedValueChunks) {
+          for (const chunk of candidate.chunks) {
+            const slot = selectedValueChunkSlots[transportedChunkIndex++];
+            if (!slot) throw new Error('messageBus: transported continuation slot allocation overflowed');
+            const input = local.inputs[slot.offset];
+            if (!input || input.token !== undefined
+              || binToHex(input.unlocker.generateLockingBytecode())
+                !== BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX) {
+              throw new Error('messageBus: transported continuation output does not own a balanced trailing slot');
+            }
+            local.outputs[slot.offset] = {
+              to: chunk.lockingBytecode,
+              amount: input.satoshis,
+              token: {
+                category: chunk.categoryId ?? candidate.production.stateOwner.categoryId,
+                amount: 0n,
+                nft: { capability: 'mutable', commitment: chunk.commitment },
+              },
+            };
+          }
         }
         const split = splitByParticipant.get(participant.participant);
         if (split) {
@@ -2912,7 +3071,9 @@ export class AtomicMessageBusComposition {
             + `slots, expected balanced block size ${blockSize}`,
           );
         }
-        const fixedSize = participant.blockLayout!.fixedSuffix
+        const fixedSize = transportedChunkCount > 0
+          ? participant.blockLayout!.trailingBase ?? blockSize
+          : participant.blockLayout!.fixedSuffix
           ? blockSize : participant.blockLayout!.trailingBase ?? blockSize;
         const computedValueChunkMetadata = local as TransactionBuilder & {
           __messageBusComputedValueChunkSpanClaims?: readonly ComputedValueChunkSpanClaim[];
@@ -2922,13 +3083,15 @@ export class AtomicMessageBusComposition {
           ...(computedValueChunkMetadata.__messageBusComputedValueChunkSpanClaims ?? []),
           ...(computedValueChunkMetadata.__messageBusComputedValueChunks ?? []),
         ];
-        const minimumActualSize = minimumActualSizeForComputedValueChunkClaims(
+        const computedMinimumActualSize = minimumActualSizeForComputedValueChunkClaims(
           participant.participant,
           graph.layout.participantInputs[participant.participant],
           fixedSize,
           blockSize,
           computedValueChunkClaims,
         );
+        const minimumActualSize = participant.blockLayout!.fixedSuffix
+          ? blockSize : computedMinimumActualSize;
         if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
           ?.SOLIDC_DEBUG_ATOMIC_GRAPH === '1'
           && (computedValueChunkClaims.length > 0 || participant.routeInputs.some(

@@ -6156,6 +6156,8 @@ export interface ExternalCallUtxoGroup {
   logicalArtifact?: Artifact;
   /** Compiler-authenticated producer/resource occurrences represented by this physical or logical alias. */
   valueChunkProducerClaims?: readonly ValueChunkProducerResourceClaim[];
+  /** Claims and exact post-values were transported from a prepared atomic invocation into this final carrier. */
+  transportedValueChunkProductions?: boolean;
   /** Exact physical state owner against which producer claims are authenticated. */
   valueChunkStateOwner?: { categoryId: string; lockingBytecode: string };
   callMode?: 'call' | 'staticcall' | 'delegatecall';

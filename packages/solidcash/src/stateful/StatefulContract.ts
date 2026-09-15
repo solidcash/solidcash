@@ -104,6 +104,7 @@ import { hasCanonicalBatchBlobLineage } from '../message-bus/internal-batch-auth
 export { inactiveMessageBusRouteWitness } from '../message-bus/message-bus.js';
 import type { PreparedAtomicMessageBusCall } from '../message-bus/compose.js';
 import {
+  canonicalValueChunkProducerPathContext,
   deriveValueChunkProducerChildPath,
   selectSingletonValueChunkProducer,
   terminalValueChunkProducerClaim,
@@ -7031,6 +7032,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     delegateExecution?: { artifact: Artifact; executor: StatefulContract },
     rowArguments?: readonly RouteExpressionKeyRow[],
     logicalIdentity?: ResolvedLogicalIdentity,
+    valueChunkProductions?: NonNullable<PreparedAtomicMessageBusCall['valueChunkProductions']>,
   ): StatefulFunctionCall {
     const executionArtifact = delegateExecution?.artifact ?? this.inner.artifact;
     const capability = executionArtifact.messageBus;
@@ -7546,12 +7548,15 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       }
       return attachCompilerTransfers(new StatefulFunctionCall(
         this._createBuilder('__forward', [routeSelector], {
-          blockBase, emitReturn, returnBlob, omitLocalFeeTail, logicalIdentity,
+          blockBase, emitReturn, returnBlob, omitLocalFeeTail, logicalIdentity, valueChunkProductions,
         }),
         this as unknown as StatefulContract, '__forward', [routeSelector],
         // `routeSelector` is calldata for the co-spent implementation, not a selector for the single-entry
         // proxy. Keep the physical proxy unlocker selector-free when `_applyOverrides` rebuilds this call.
-        { abiFunction: proxyForward, blockBase, emitReturn, returnBlob, omitLocalFeeTail, logicalIdentity },
+        {
+          abiFunction: proxyForward, blockBase, emitReturn, returnBlob, omitLocalFeeTail, logicalIdentity,
+          valueChunkProductions,
+        },
       )._withCompilerRouteDelegatecall(delegateExecution.executor, route));
     }
     return attachCompilerTransfers(new StatefulFunctionCall(
@@ -7563,11 +7568,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         returnBlob,
         omitLocalFeeTail,
         logicalIdentity,
+        valueChunkProductions,
       }),
       this as unknown as StatefulContract, '__message_bus1', routeArgs,
       {
         abiFunction: effectiveRoute, selector: routeSelector, blockBase, emitReturn, returnBlob,
-        omitLocalFeeTail, logicalIdentity,
+        omitLocalFeeTail, logicalIdentity, valueChunkProductions,
       },
     ));
   }
@@ -13142,19 +13148,28 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       const lowLevelIndex = lowLevelGroups.indexOf(group);
       const stateOwnerGroup = lowLevelIndex >= 0
         ? delegateStateOwners.get(lowLevelIndex) : group;
-      const stateOwnerCategoryId = stateOwnerGroup?.categoryId ?? group.categoryId;
-      const stateOwnerLockingBytecode = stateOwnerGroup?.externalContract?.inner?.lockingBytecode
+      const stateOwnerCategoryId = group.valueChunkStateOwner?.categoryId
+        ?? stateOwnerGroup?.categoryId ?? group.categoryId;
+      const stateOwnerLockingBytecode = group.valueChunkStateOwner?.lockingBytecode
+        ?? stateOwnerGroup?.externalContract?.inner?.lockingBytecode
         ?? group.externalContract?.inner?.lockingBytecode;
-      group.valueChunkWrites = describeValueChunkWrites(group, stateOwnerCategoryId);
+      const describedValueChunkWrites = describeValueChunkWrites(group, stateOwnerCategoryId);
+      // A routed delegate may carry no independently addressable entry input until its proxy block is
+      // materialized. In that case retain only compiler-authenticated transported descriptors; ordinary
+      // descriptor-free groups continue to accept the locally described set (including an empty set).
+      if (describedValueChunkWrites.length > 0 || !group.valueChunkProducerClaims?.length) {
+        group.valueChunkWrites = describedValueChunkWrites;
+      }
+      const effectiveValueChunkWrites = group.valueChunkWrites ?? [];
       if (!group.valueChunkStateOwner && stateOwnerLockingBytecode !== undefined) {
         group.valueChunkStateOwner = {
           categoryId: stateOwnerCategoryId,
           lockingBytecode: stateOwnerLockingBytecode,
         };
       }
-      const resource = selectValueChunkResource(group.valueChunkWrites);
+      const resource = selectValueChunkResource(effectiveValueChunkWrites);
       if (resource.status === 'exact' && group.valueChunkStateOwner) {
-        const write = group.valueChunkWrites.find((candidate) => (
+        const write = effectiveValueChunkWrites.find((candidate) => (
           valueChunkWriteResourceIdentity(candidate) === resource.identity
         ));
         const claim = group.valueChunkProducerClaims?.length ? undefined : write
@@ -13169,6 +13184,30 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           resourceIdentity: resource.identity,
         });
         if (claim) group.valueChunkProducerClaims = Object.freeze([claim]);
+        for (const transportedClaim of group.transportedValueChunkProductions
+          ? group.valueChunkProducerClaims ?? [] : []) {
+          const matchingWrites = effectiveValueChunkWrites.filter((candidate) => (
+            valueChunkWriteResourceIdentity(candidate) === transportedClaim.resourceIdentity
+          ));
+          const derived = matchingWrites.length === 1 && terminalValueChunkProducerClaim({
+            rows: group.compilerRoute?.rowArguments ?? [],
+            collectionIdentities: [matchingWrites[0]!.collection, matchingWrites[0]!.collectionSignature],
+            fixedChunkableWriteSelectors:
+              group.externalContract?.inner?.artifact.messageBus?.fixedChunkableWritePolicy?.selectors,
+            executionLockingBytecode: group.externalContract?.inner?.lockingBytecode ?? '',
+            stateOwnerCategoryId: group.valueChunkStateOwner.categoryId,
+            stateOwnerLockingBytecode: group.valueChunkStateOwner.lockingBytecode,
+            resourceIdentity: transportedClaim.resourceIdentity,
+          });
+          const selection = derived ? selectSingletonValueChunkProducer(
+            [transportedClaim, derived], transportedClaim.resourceIdentity, group.valueChunkStateOwner,
+          ) : undefined;
+          if (matchingWrites.length !== 1 || selection?.status !== 'exact') {
+            throw new Error(
+              'Transported value production does not match one final compiler-routed write.',
+            );
+          }
+        }
         if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
           ?.SOLIDC_DEBUG_VALUE_CHUNKS === '1') {
           console.error('value-chunk-producer-bind', JSON.stringify({
@@ -13188,7 +13227,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           }));
         }
       }
-      return group.valueChunkWrites;
+      return effectiveValueChunkWrites;
     });
     const selectedPersistedChunkWrite = selectPersistedValueChunkWrite(
       valueChunkWrites, undefined, stb.valueChunkWriteStagingSession,
@@ -17810,6 +17849,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       blockBase?: number;
       /** A atomic composition supplies one global fee tail after all participant blocks. */
       omitLocalFeeTail?: boolean;
+      /** Compiler-authenticated terminal value productions transported through atomic graph promotion. */
+      valueChunkProductions?: NonNullable<PreparedAtomicMessageBusCall['valueChunkProductions']>;
     },
   ): Promise<StatefulTransactionBuilder> {
     const physicalAbiFunction = this.inner.artifact.abi.find((f) => f.name === functionName);
@@ -17818,6 +17859,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // bytesN reports its ABI error rather than an incidental PUSHDATA limit reached by that derived blob.
     if (abiFunction) args = this._validateAbiFrame(abiFunction, args);
     const valueChunkWriteStagingSession = new ValueChunkWriteStagingSession();
+    for (const production of overrides?.valueChunkProductions ?? []) {
+      if (!valueChunkWriteStagingSession.stageOwned(
+        production.write, production.claim, production.stateOwner, production.value,
+      )) {
+        throw new Error('Compiler-authenticated value production could not be staged for its exact resource.');
+      }
+    }
     const timingEnabled = (globalThis as { process?: { env?: Record<string, string> } }).process?.env
       ?.SOLIDC_DEBUG_BUILDER_TIMING === '1';
     const startedAt = Date.now();
@@ -25222,6 +25270,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               let latestRouteValueChunkProducerBinding: {
                 claims: readonly ValueChunkProducerResourceClaim[];
                 stateOwner: { categoryId: string; lockingBytecode: string };
+                productions: NonNullable<PreparedAtomicMessageBusCall['valueChunkProductions']>;
               } | undefined;
               const publishRouteValueChunkProducerBinding = (
                 binding: typeof latestRouteValueChunkProducerBinding,
@@ -25235,6 +25284,18 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   alias.valueChunkProducerClaims = binding?.claims;
                   alias.valueChunkStateOwner = binding?.stateOwner;
                 }
+              };
+              const valueChunkProductionsForPath = (
+                producerPath: ValueChunkProducerPathDisposition | undefined,
+              ): NonNullable<PreparedAtomicMessageBusCall['valueChunkProductions']> => {
+                const producerPathKey = producerPath?.status === 'complete'
+                  ? canonicalValueChunkProducerPathContext(producerPath.context) : undefined;
+                if (!producerPathKey) return [];
+                return latestRouteValueChunkProducerBinding?.productions.filter(
+                  (production) => canonicalValueChunkProducerPathContext({
+                    version: 1, sourcePath: production.claim.producer.sourcePath,
+                  }) === producerPathKey,
+                ) ?? [];
               };
               let refreshChunkableRouteWitnesses: ((
                 rowArguments: readonly RouteExpressionKeyRow[] | undefined,
@@ -25794,6 +25855,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   refreshChunkableRouteWitnesses = (rowArguments, finalVisibleArgs) => {
                     const internalArgs: Record<string, FunctionArgument> = {};
                     const producerClaims: ValueChunkProducerResourceClaim[] = [];
+                    const productions: Array<NonNullable<
+                      PreparedAtomicMessageBusCall['valueChunkProductions']
+                    >[number]> = [];
                     let producerStateOwner: { categoryId: string; lockingBytecode: string } | undefined;
                     const effectiveRowArguments = rowArguments ?? discoveredProducerRows?.map((row, index, rows) => (
                       index === rows.length - 1 ? { ...row, args: finalVisibleArgs } : row
@@ -25883,9 +25947,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                         // fetch above owns `__internal__valueWitness_N` (pre-handler bytes),
                         // `leadingPushValue_N` carries prior selected-row mutations, and this
                         // derived `nextValue` owns only continuation output/persistence data.
-                        const previousValue = childStoredValues.get(routeSlot);
-                        if (previousValue && previousValue.length > VALUE_HEAD_SIZE
-                          && nextValue.length > VALUE_HEAD_SIZE) {
+                        if (nextValue.length > VALUE_HEAD_SIZE) {
                           const physicalRouteSlot = access.slotIndex ?? routeSlot;
                           const blockSlot = selectedLayout.slots.find((slot) =>
                             slot.kind === 'entry' && slot.slotIndex === physicalRouteSlot)?.offset;
@@ -25956,8 +26018,19 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                                   stagedOwned,
                                 }));
                               }
+                              if (!stagedOwned) {
+                                throw new Error(
+                                  'Compiler-authenticated value production conflicts with its staged resource.',
+                                );
+                              }
                               producerClaims.push(producerClaim);
                               producerStateOwner = stateOwner;
+                              productions.push({
+                                write: exactWrite,
+                                claim: producerClaim,
+                                stateOwner,
+                                value: nextValue.slice(),
+                              });
                             } else {
                               stageValueChunkWrite(
                                 exactWrite, nextValue, valueChunkWriteStagingSession,
@@ -25980,6 +26053,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                       producerStateOwner && producerClaims.length > 0 ? {
                         claims: Object.freeze([...producerClaims]),
                         stateOwner: Object.freeze({ ...producerStateOwner }),
+                        productions: Object.freeze([...productions]),
                       } : undefined,
                     );
                     return { internalArgs, payloadBytes: encodedPayloadBytes };
@@ -26499,6 +26573,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 const runtimeRows = childCompilerRoute?.rowArguments ?? directInvocationRows;
                 if (runtimeRows?.length) {
                   for (const row of runtimeRows) {
+                    const producerPath = row.producerPath ?? preparedChildProducerPath(0, {
+                      sourceCallsiteId: row.sourceCallsiteId ?? nested.callsiteId,
+                      sourceLogicalIndex: row.sourceLogicalIndex,
+                      occurrenceIndex: row.occurrenceIndex,
+                      sourceEffectOrdinal: row.sourceEffectOrdinal,
+                    });
+                    const rowValueChunkProductions = valueChunkProductionsForPath(producerPath);
                     preparedAtomicNodes.push({
                       contract: callee,
                       functionName: row.handler.name,
@@ -26517,11 +26598,20 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                       sourceLogicalIndex: row.sourceLogicalIndex,
                       occurrenceIndex: row.occurrenceIndex,
                       sourceEffectOrdinal: row.sourceEffectOrdinal,
-                      producerPath: row.producerPath ?? preparedChildProducerPath(0, {
-                        sourceCallsiteId: row.sourceCallsiteId ?? nested.callsiteId,
-                        sourceLogicalIndex: row.sourceLogicalIndex,
-                        occurrenceIndex: row.occurrenceIndex,
-                        sourceEffectOrdinal: row.sourceEffectOrdinal,
+                      producerPath,
+                      ...(rowValueChunkProductions?.length && {
+                        valueChunkProductions: rowValueChunkProductions,
+                      }),
+                      ...(refreshChunkableRouteWitnesses && {
+                        resolveValueChunkProductionsFromArgs: (nextArgs) => {
+                          const refreshedRows = runtimeRows.map((candidate) => (
+                            candidate === row ? { ...candidate, args: [...nextArgs] } : candidate
+                          ));
+                          refreshChunkableRouteWitnesses!(
+                            refreshedRows, refreshedRows[refreshedRows.length - 1]!.args,
+                          );
+                          return valueChunkProductionsForPath(producerPath);
+                        },
                       }),
                       ...(childCompilerRoute && {
                         batchLogicalIndex: row.sourceLogicalIndex,
@@ -26534,6 +26624,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                     });
                   }
                 } else {
+                  const producerPath = preparedChildProducerPath(0, {
+                    sourceCallsiteId: nested.callsiteId,
+                    ...((nested.occurrence ?? 'once') !== 'loop' && { occurrenceIndex: 0 }),
+                    sourceEffectOrdinal: nested.sourceEffectOrdinal,
+                  });
+                  const nodeValueChunkProductions = valueChunkProductionsForPath(producerPath);
                   preparedAtomicNodes.push({
                     contract: callee,
                     functionName: resolvedRawFunctionName ?? nested.functionName,
@@ -26555,10 +26651,15 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                       sourceCallsiteId: nested.callsiteId,
                       ...((nested.occurrence ?? 'once') !== 'loop' && { occurrenceIndex: 0 }),
                     }),
-                    producerPath: preparedChildProducerPath(0, {
-                      sourceCallsiteId: nested.callsiteId,
-                      ...((nested.occurrence ?? 'once') !== 'loop' && { occurrenceIndex: 0 }),
-                      sourceEffectOrdinal: nested.sourceEffectOrdinal,
+                    producerPath,
+                    ...(nodeValueChunkProductions?.length && {
+                      valueChunkProductions: nodeValueChunkProductions,
+                    }),
+                    ...(refreshChunkableRouteWitnesses && {
+                      resolveValueChunkProductionsFromArgs: (nextArgs) => {
+                        refreshChunkableRouteWitnesses!(undefined, nextArgs);
+                        return valueChunkProductionsForPath(producerPath);
+                      },
                     }),
                     ...(resolveGraphNestedArgs && { resolveArgsFromResults: resolveGraphNestedArgs }),
                     // Reachability was resolved before this node was constructed. Keep semantic activation tied
@@ -30470,6 +30571,65 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       disposalInputs: trailingDisposalInputs.length,
       heapMb: Math.round((((globalThis as any).process?.memoryUsage?.().heapUsed ?? 0) / 1048576)),
     });
+    const transportedProductions = overrides?.valueChunkProductions ?? [];
+    if (transportedProductions.length > 0) {
+      const carrier = activeDelegateGroupIndex === undefined
+        ? undefined : lowLevelCallUtxoGroups[activeDelegateGroupIndex];
+      const rows = carrier?.compilerRoute?.rowArguments;
+      if (!carrier || !rows?.length) {
+        throw new Error('Compiler-authenticated value production has no routed execution carrier.');
+      }
+      const ownerKeys = new Set(transportedProductions.map((production) => (
+        `${production.stateOwner.categoryId.toLowerCase()}:`
+        + production.stateOwner.lockingBytecode.toLowerCase()
+      )));
+      if (ownerKeys.size !== 1) {
+        throw new Error('One routed execution carrier cannot own value productions from multiple state owners.');
+      }
+      const provisionalWrites = new Map<string, ValueChunkWriteDescriptor>();
+      for (const write of carrier.valueChunkWrites ?? []) {
+        provisionalWrites.set(valueChunkWriteResourceIdentity(write), write);
+      }
+      for (const production of transportedProductions) {
+        const resourceIdentity = valueChunkWriteResourceIdentity(production.write);
+        const existingWrite = provisionalWrites.get(resourceIdentity);
+        if (existingWrite && (existingWrite.collection !== production.write.collection
+          || existingWrite.collectionSignature !== production.write.collectionSignature
+          || existingWrite.entryAccessSlot !== production.write.entryAccessSlot
+          || existingWrite.routeSlot !== production.write.routeSlot
+          || existingWrite.operation !== production.write.operation)) {
+          throw new Error('Transported value production disagrees with its final routed write shape.');
+        }
+        provisionalWrites.set(resourceIdentity, existingWrite ?? { ...production.write });
+        const derived = terminalValueChunkProducerClaim({
+          rows,
+          collectionIdentities: [production.write.collection, production.write.collectionSignature],
+          fixedChunkableWriteSelectors:
+            carrier.externalContract.inner.artifact.messageBus?.fixedChunkableWritePolicy?.selectors,
+          executionLockingBytecode: carrier.externalContract.inner.lockingBytecode,
+          stateOwnerCategoryId: production.stateOwner.categoryId,
+          stateOwnerLockingBytecode: production.stateOwner.lockingBytecode,
+          resourceIdentity,
+        });
+        const selection = derived && selectSingletonValueChunkProducer(
+          [production.claim, derived],
+          resourceIdentity,
+          production.stateOwner,
+        );
+        if (selection?.status !== 'exact') {
+          throw new Error('Transported value production disagrees with its routed terminal producer.');
+        }
+      }
+      carrier.valueChunkWrites = [...provisionalWrites.values()];
+      carrier.valueChunkOutputCount = transportedProductions.reduce((count, production) => (
+        count + Math.ceil((production.value.length - VALUE_HEAD_SIZE) / VALUE_CHUNK_SIZE)
+      ), 0);
+      carrier.valueChunkProducerClaims = Object.freeze(
+        transportedProductions.map((production) => production.claim),
+      );
+      carrier.transportedValueChunkProductions = true;
+      carrier.valueChunkStateOwner = Object.freeze({ ...transportedProductions[0]!.stateOwner });
+    }
     const builder = new StatefulTransactionBuilder({
       provider: this.inner.provider,
       // A relaxed mock may intentionally execute very large scripts/transactions. At the normal 1 sat/byte
@@ -31979,6 +32139,17 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           if (!witness || !writesChunkableValue(witness.carrier, witness.abiFunction)) continue;
           group.valueChunkOutputBase = outputBase;
           witness.carrier.valueChunkOutputBase = outputBase;
+          const outputCount = witness.carrier.valueChunkOutputCount ?? group.valueChunkOutputCount ?? 0;
+          if (outputCount > 0) {
+            const refreshWrites = (target: ExternalCallUtxoGroup): void => {
+              if (!target.valueChunkWrites?.length) return;
+              target.valueChunkWrites = target.valueChunkWrites.map((write) => ({
+                ...write, outputBase, outputCount,
+              }));
+            };
+            refreshWrites(group);
+            refreshWrites(witness.carrier);
+          }
           witness.carrier.internalArgs = {
             ...witness.carrier.internalArgs,
             __internal__valueChunkOutputBase: BigInt(outputBase),
@@ -32384,6 +32555,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               : Array.isArray(value) ? `array:${value.length}` : String(value)),
             provisionalResult: node.provisionalResultCommitment
               ? binToHex(node.provisionalResultCommitment) : undefined,
+            valueChunkProductionCount: node.valueChunkProductions?.length ?? 0,
             route: (node.executionArtifact ?? node.contract.inner.artifact).messageBus?.handlers.find(
               (handler) => handler.name === node.functionName,
             )?.eligible,
@@ -32408,6 +32580,17 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             sourceEffectOrdinal: node.sourceEffectOrdinal,
           }),
           producerPath: node.producerPath,
+          ...(node.valueChunkProductions?.length && {
+            valueChunkProductions: Object.freeze(node.valueChunkProductions.map((production) => Object.freeze({
+              write: Object.freeze({ ...production.write }),
+              claim: production.claim,
+              stateOwner: Object.freeze({ ...production.stateOwner }),
+              value: production.value.slice(),
+            }))),
+          }),
+          ...(node.resolveValueChunkProductionsFromArgs && {
+            resolveValueChunkProductionsFromArgs: node.resolveValueChunkProductionsFromArgs,
+          }),
           ...(node.batchLogicalIndex !== undefined && { batchLogicalIndex: node.batchLogicalIndex }),
           ...(node.batchOccurrenceIndex !== undefined && {
             batchOccurrenceIndex: node.batchOccurrenceIndex,
@@ -35295,6 +35478,7 @@ export class StatefulFunctionCall {
     abiFunction: AbiFunction; selector?: Uint8Array; blockBase?: number;
     emitReturn?: boolean; returnBlob?: Uint8Array; omitLocalFeeTail?: boolean;
     logicalIdentity?: ResolvedLogicalIdentity;
+    valueChunkProductions?: NonNullable<PreparedAtomicMessageBusCall['valueChunkProductions']>;
   };
 
   private splitFundingConfig?: {
@@ -35322,6 +35506,7 @@ export class StatefulFunctionCall {
       abiFunction: AbiFunction; selector?: Uint8Array; blockBase?: number;
       emitReturn?: boolean; returnBlob?: Uint8Array; omitLocalFeeTail?: boolean;
       logicalIdentity?: ResolvedLogicalIdentity;
+      valueChunkProductions?: NonNullable<PreparedAtomicMessageBusCall['valueChunkProductions']>;
     },
     private readonly functionSelector?: string,
   ) {
@@ -37661,6 +37846,7 @@ export class StatefulFunctionCall {
             returnBlob: this.compilerRoute.returnBlob,
             omitLocalFeeTail: this.compilerRoute.omitLocalFeeTail,
             logicalIdentity: this.compilerRoute.logicalIdentity,
+            valueChunkProductions: this.compilerRoute.valueChunkProductions,
           }),
         },
       );

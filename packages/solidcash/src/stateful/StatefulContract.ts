@@ -22723,8 +22723,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                             const predOutName = `__internal__vmapBatchPredOut_${routeSlot}`;
                             bCompilerInternalArgs[`__internal__vmapBatchSlot_${routeSlot}`] = bSlot;
                             bCompilerInternalArgs[`__internal__vmapBatchProof_${routeSlot}`] = BigInt(blockOffset);
+                            // The batch `Next` witness is the PREDECESSOR's post-splice next link - the slot being
+                            // inserted - because the covenant verifies the P' output as `predSlot || Next ||
+                            // predValue`. Reading the NEW node's nextKey publishes the predecessor's OLD next
+                            // instead, which only coincidentally equals the new key's slot when the predecessor
+                            // was already adjacent to it.
                             bCompilerInternalArgs[`__internal__vmapBatchNext_${routeSlot}`] =
-                              decodeEntryCommitment(plan.newNodeCommitment).nextKey;
+                              decodeEntryCommitment(plan.predNewCommitment).nextKey;
                             bCompilerInternalArgs[predOutName] = BigInt(bBlockLayout.blockSize);
                             bRelativeOutputInternalArgs.add(predOutName);
                             bPlannedEntryInserts.push({

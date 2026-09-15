@@ -307,8 +307,8 @@ describe('delegate inference', () => {
         .find((candidate) => candidate.name?.startsWith('__message_bus_')
           && candidate.name.endsWith('_apply'));
       expect(routedHandler).toBeDefined();
-      const handler = decodeAuthenticationInstructions(hexToBin(routedHandler!.bytecode));
-      const readNumber = (instruction: { opcode: number; data?: Uint8Array }): bigint | undefined => {
+      const readNumber = (instruction?: { opcode: number; data?: Uint8Array }): bigint | undefined => {
+        if (instruction === undefined) return undefined;
         if (instruction.opcode === OpcodesBCH.OP_0) return 0n;
         if (instruction.opcode >= OpcodesBCH.OP_1 && instruction.opcode <= OpcodesBCH.OP_16) {
           return BigInt(instruction.opcode - OpcodesBCH.OP_1 + 1);
@@ -343,20 +343,20 @@ describe('delegate inference', () => {
         && route[index + 3]?.opcode === OpcodesBCH.OP_UTXOTOKENCATEGORY)).toBe(false);
       // A legacy delegate owns the transaction suffix, but a compiler route owns a balanced participant block.
       // Reject the legacy `TXOUTPUTCOUNT - 1 - ceil(size/120)` dynamic-write anchor in that routed body.
-      const suffixAnchoredWrite = route.some((instruction, index) =>
+      const suffixAnchoredWrite = routePrograms.some((program) => program.some((instruction, index) =>
         instruction.opcode === OpcodesBCH.OP_TXOUTPUTCOUNT
-        && route[index + 1]?.opcode === OpcodesBCH.OP_1SUB
-        && route.slice(index + 2, index + 7).some((candidate, offset) =>
+        && program[index + 1]?.opcode === OpcodesBCH.OP_1SUB
+        && program.slice(index + 2, index + 7).some((candidate, offset) =>
           candidate.opcode === OpcodesBCH.OP_PICK
-          && route[index + 3 + offset]?.opcode === OpcodesBCH.OP_SIZE));
+          && program[index + 3 + offset]?.opcode === OpcodesBCH.OP_SIZE)));
       expect(suffixAnchoredWrite).toBe(false);
       // An explicit trailingBase retains the reserved return slot as padding even when the selected row emits no
       // return event. The compiler-owned balanced layout, rather than an inferred compact suffix, is authoritative.
       expect(artifact.messageBus!.route!.blockLayout!.trailingBase).toBeDefined();
       // address(this) remains the exact active executing input bytecode, independently of the state owner.
-      expect(handler.some((instruction, index) =>
+      expect(routePrograms.some((program) => program.some((instruction, index) =>
         instruction.opcode === OpcodesBCH.OP_INPUTINDEX
-        && handler[index + 1]?.opcode === OpcodesBCH.OP_UTXOBYTECODE)).toBe(true);
+        && program[index + 1]?.opcode === OpcodesBCH.OP_UTXOBYTECODE))).toBe(true);
     } finally {
       warn.mockRestore();
       log.mockRestore();

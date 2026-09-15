@@ -1871,14 +1871,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * Delegate dynamic-array writes authenticate at TXOUTPUTCOUNT-1-nNew (immediately before the
-   * unique trailer). The SDK places Marketplace.jobs on that reverse-suffix window
-   * (`delegateDynamicChunksAtSuffix`). Previously, message-bus participant blocks forced the
-   * owner-relative trailing base instead; that base stops matching the SDK once nested outputs
-   * grow (post two jobs → capability EQUALVERIFY of mutable vs empty at a non-token outIdx).
+   * Legacy delegate entries place dynamic continuations immediately before the transaction trailer. A routed
+   * delegate instead owns an authenticated participant block, so its dynamic outputs stay at that block's
+   * published trailing base even when later participants and verifier outputs extend the transaction suffix.
    */
   private usesDelegateTransactionSuffix(): boolean {
-    return this.currentFunctionIsDelegate;
+    return this.currentFunctionIsDelegate && !this.ownsMessageBusParticipantBlock();
   }
 
   /**

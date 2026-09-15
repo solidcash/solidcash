@@ -1,6 +1,7 @@
 import { encodeInt, Op, sha256 as sha256Sync, VALUE_CHUNK_SIZE, VALUE_HEAD_SIZE } from '@solidcash/utils';
 import { describe, expect, it } from 'vitest';
 import {
+  BoundedProbeTraceCollector,
   compactFaithfulProbeTrace,
   isValueChunkIdentityCountPin,
 } from '../../src/stateful/StatefulContract.js';
@@ -124,5 +125,69 @@ describe('faithful OP_INVOKE probe trace compaction', () => {
       return state(noise, 0, [value]);
     }) as never;
     expect(() => compactFaithfulProbeTrace(trace)).toThrow(/too many distinct extractor values/);
+  });
+
+  it('projects a high-width sparse route without retaining every live stack container', () => {
+    const collector = new BoundedProbeTraceCollector();
+    const instructions = [{ opcode: Op.OP_OUTPUTTOKENCOMMITMENT }];
+    const shared = Array.from({ length: 512 }, (_, index) => encodeInt(BigInt(index + 1)));
+    for (let index = 0; index < 600; index++) {
+      collector.observe(state(instructions, 0, shared) as never);
+    }
+    const terminal = state([{ opcode: Op.OP_VERIFY }], 0, [Uint8Array.of(1)], { error: 'terminal' });
+    const projected = collector.finish(terminal as never);
+    const stats = collector.stats();
+
+    expect(stats.observations).toBe(600);
+    expect(stats.recentStackItems).toBe(96 * shared.length);
+    expect(projected[0].stack).toEqual(shared.slice(-4));
+    expect(projected.at(-2)?.stack).toEqual(shared);
+    expect(projected.at(-1)?.error).toBe('terminal');
+  });
+
+  it('preserves OP_INVOKE frame identity and authenticated evidence used by existing extractors', () => {
+    const value = new Uint8Array(180).fill(0x53);
+    const digest = sha256Sync(value);
+    const length = new Uint8Array(4);
+    new DataView(length.buffer).setUint32(0, value.length, true);
+    const tail = Uint8Array.from([...length, ...digest, ...value.slice(0, VALUE_HEAD_SIZE)]);
+    const caller = [{ opcode: Op.OP_OUTPUTTOKENCOMMITMENT }, { opcode: Op.OP_INVOKE }];
+    const identity = [
+      { opcode: Op.OP_DROP },
+      { opcode: Op.OP_EQUALVERIFY },
+      { opcode: Op.OP_2DROP },
+    ];
+    const lock = p2sh32(sha256Sync(Uint8Array.of(8)));
+    const terminal = state([{ opcode: Op.OP_VERIFY }], 0, [Uint8Array.of(1)], { error: 'terminal' });
+    const observations = [
+      state(caller, 0, [Uint8Array.of(7)]),
+      state(identity, 1, [value, digest, tail, lock, encodeInt(3n), encodeInt(1n)]),
+    ];
+    const collector = new BoundedProbeTraceCollector();
+    for (const observation of observations) collector.observe(observation as never);
+    const projected = collector.finish(terminal as never);
+    const compact = compactFaithfulProbeTrace([...observations, terminal] as never);
+    const projectedStacks = projected.flatMap((item) => [item.stack, item.alternateStack]);
+    const compactStacks = compact.flatMap((item) => [item.stack, item.alternateStack]);
+
+    expect(projected.some((item) => item.instructions === caller)).toBe(true);
+    expect(projected.some((item) => item.instructions === identity)).toBe(true);
+    expect(extractIdentityScanValueChunkPin(projected))
+      .toEqual(extractIdentityScanValueChunkPin(compact));
+    expect(selectHashedValueForChunkPin(projectedStacks, undefined, 2)?.value)
+      .toEqual(selectHashedValueForChunkPin(compactStacks, undefined, 2)?.value);
+    expect(projected.at(-1)?.error).toBe(compact.at(-1)?.error);
+  });
+
+  it('fails closed when sparse observations exceed the evidence cardinality bound', () => {
+    const collector = new BoundedProbeTraceCollector();
+    const instructions = [{ opcode: Op.OP_OUTPUTTOKENCOMMITMENT }];
+    expect(() => {
+      for (let index = 0; index < 4097; index++) {
+        const value = new Uint8Array(61);
+        new DataView(value.buffer).setUint32(0, index, true);
+        collector.observe(state(instructions, 0, [value]) as never);
+      }
+    }).toThrow(/too much distinct extractor evidence/);
   });
 });

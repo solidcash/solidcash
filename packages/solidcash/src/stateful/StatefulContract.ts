@@ -4701,8 +4701,7 @@ export function isValueChunkIdentityCountPin(
 }
 
 interface CachedProbeVm {
-  trace: AuthenticationProgramStateCommon[];
-  awaitingVerification: boolean;
+  collector: BoundedProbeTraceCollector;
   vm: ReturnType<typeof createVirtualMachineBch2026ForProvider>;
 }
 
@@ -4899,12 +4898,208 @@ export function fingerprintLibauthTransaction(
   return `${transaction.version}|${transaction.locktime}|${inputs.join(',')}|${outputs.join(',')}`;
 }
 
+const MAX_PROJECTED_PROBE_STATES = 262_144;
+const MAX_PROJECTED_PROBE_VALUES = 4_096;
+const MAX_PROJECTED_PROBE_VALUE_BYTES = 64 * 1024 * 1024;
+const PROJECTED_PROBE_FULL_STACK_WINDOW = 96;
+const MAX_PROJECTED_PROBE_WINDOW_ITEMS = 1_048_576;
+
+type ProjectedProbeState = {
+  ordinal: number;
+  state: AuthenticationProgramStateCommon;
+  stackItems: number;
+};
+
+/**
+ * Bounded online projection of the sparse VM observations consumed by state derivation.
+ *
+ * Output-pin extractors need only opcode-local operands, while return fallback needs the complete stacks from
+ * the last 96 sparse observations. Chunked collection recovery additionally needs distinct long values and the
+ * hashes/tails/locks which authenticate them. Keeping those three forms separately avoids retaining every live
+ * stack container while preserving the existing extractor-facing trace representation.
+ */
+export class BoundedProbeTraceCollector {
+  private awaitingVerification = false;
+  private ordinal = 0;
+  private projected: ProjectedProbeState[] = [];
+  private recent: ProjectedProbeState[] = [];
+  private recentStackItems = 0;
+  private evidence = new Map<string, Uint8Array>();
+  private evidenceBytes = 0;
+  private longItems = new Map<string, Uint8Array>();
+  private authItems = new Map<string, Uint8Array>();
+  private tailRootHexes = new Set<string>();
+  private lockDigestHexes = new Set<string>();
+  private sameStackAuthenticated = new Set<string>();
+  private digestCache = new WeakMap<Uint8Array, string>();
+
+  reset(): void {
+    this.awaitingVerification = false;
+    this.ordinal = 0;
+    this.projected = [];
+    this.recent = [];
+    this.recentStackItems = 0;
+    this.evidence = new Map();
+    this.evidenceBytes = 0;
+    this.longItems = new Map();
+    this.authItems = new Map();
+    this.tailRootHexes = new Set();
+    this.lockDigestHexes = new Set();
+    this.sameStackAuthenticated = new Set();
+    this.digestCache = new WeakMap();
+  }
+
+  private digestOf(value: Uint8Array): string {
+    const cached = this.digestCache.get(value);
+    if (cached !== undefined) return cached;
+    const digest = binToHex(sha256Sync(value));
+    this.digestCache.set(value, digest);
+    return digest;
+  }
+
+  private retainEvidence(key: string, value: Uint8Array): void {
+    if (this.evidence.has(key)) return;
+    if (this.evidence.size >= MAX_PROJECTED_PROBE_VALUES
+      || this.evidenceBytes + value.byteLength > MAX_PROJECTED_PROBE_VALUE_BYTES) {
+      throw new Error('Sparse route probe produced too much distinct extractor evidence to retain safely.');
+    }
+    this.evidence.set(key, value);
+    this.evidenceBytes += value.byteLength;
+  }
+
+  private scanEvidence(state: AuthenticationProgramStateCommon): void {
+    const maximumCandidateBytes = VALUE_HEAD_SIZE + VALUE_CHUNK_SIZE * VALUE_CHUNK_MAX_COUNT;
+    for (const stack of [state.stack, state.alternateStack ?? []]) {
+      const localDigests = new Set(stack.filter((item) => item.length === 32).map(binToHex));
+      for (const item of stack) {
+        if (item.length > 60 && item.length <= maximumCandidateBytes) {
+          const digest = this.digestOf(item);
+          const key = `${item.length}:${digest}`;
+          this.retainEvidence(key, item);
+          this.longItems.set(key, item);
+          if (localDigests.has(digest)) this.sameStackAuthenticated.add(key);
+        }
+        if (item.length === 64) {
+          const storedLength = item[0]! | (item[1]! << 8) | (item[2]! << 16) | (item[3]! << 24);
+          if (storedLength > 60) this.tailRootHexes.add(binToHex(item.subarray(4, 36)));
+        }
+        if (isP2sh32LockingBytecode(item)) this.lockDigestHexes.add(binToHex(item.subarray(2, 34)));
+        if (item.length === 32 || item.length === 64 || isP2sh32LockingBytecode(item)) {
+          const key = `${item.length}:${binToHex(item)}`;
+          this.retainEvidence(key, item);
+          this.authItems.set(key, item);
+        }
+      }
+    }
+  }
+
+  private projectState(
+    state: AuthenticationProgramStateCommon, terminal = false,
+  ): AuthenticationProgramStateCommon {
+    const maximumCandidateBytes = VALUE_HEAD_SIZE + VALUE_CHUNK_SIZE * VALUE_CHUNK_MAX_COUNT;
+    const bounded = (items: Uint8Array[]): Uint8Array[] => items.filter(
+      (item) => item.length <= maximumCandidateBytes,
+    );
+    const opcode = state.instructions[state.ip]?.opcode;
+    let stack: Uint8Array[];
+    if (isValueChunkIdentityCountPin(state.instructions, state.ip)) {
+      stack = bounded(state.stack.filter((item, index) => index >= state.stack.length - 2
+        || (item.length > 60 && item.length <= maximumCandidateBytes)
+        || isP2sh32LockingBytecode(item)));
+    } else if (terminal) {
+      stack = bounded(state.stack.filter((item, index) => index >= state.stack.length - 16
+        || item.length <= 8 || item.length === 32 || item.length === 35
+        || (item.length >= 60 && item.length <= maximumCandidateBytes)));
+    } else if (opcode === Op.OP_INPUTBYTECODE) {
+      stack = bounded(state.stack.slice(-3));
+    } else if (opcode === Op.OP_EQUALVERIFY) {
+      stack = bounded(state.stack.slice(-2));
+    } else {
+      stack = bounded(state.stack.slice(-4));
+    }
+    return {
+      ...state,
+      stack,
+      alternateStack: [],
+      // Object frames retain caller stacks. Instruction-array identity on each observation preserves the
+      // OP_INVOKE boundary used by the extractors without retaining those caller stack containers.
+      controlStack: state.controlStack.filter((frame) => typeof frame === 'boolean'),
+    };
+  }
+
+  observe(state: AuthenticationProgramStateCommon): void {
+    const opcode = state.instructions[state.ip]?.opcode;
+    const identityCountPin = isValueChunkIdentityCountPin(state.instructions, state.ip);
+    if (opcode === Op.OP_EQUALVERIFY && !this.awaitingVerification && !identityCountPin) return;
+    if (this.projected.length >= MAX_PROJECTED_PROBE_STATES) {
+      throw new Error('Sparse route probe produced too many semantic observations to retain safely.');
+    }
+
+    this.scanEvidence(state);
+    const ordinal = this.ordinal++;
+    this.projected.push({ ordinal, state: this.projectState(state), stackItems: 0 });
+
+    const full = {
+      ...state,
+      stack: state.stack.slice(),
+      alternateStack: state.alternateStack.slice(),
+      controlStack: state.controlStack.filter((frame) => typeof frame === 'boolean'),
+    };
+    const stackItems = full.stack.length + full.alternateStack.length;
+    this.recent.push({ ordinal, state: full, stackItems });
+    this.recentStackItems += stackItems;
+    if (this.recent.length > PROJECTED_PROBE_FULL_STACK_WINDOW) {
+      this.recentStackItems -= this.recent.shift()!.stackItems;
+    }
+    if (this.recentStackItems > MAX_PROJECTED_PROBE_WINDOW_ITEMS) {
+      throw new Error('Sparse route probe return window is too large to retain safely.');
+    }
+    this.awaitingVerification = opcode !== Op.OP_EQUALVERIFY && opcode !== Op.OP_INPUTBYTECODE;
+  }
+
+  finish(finalState: AuthenticationProgramStateCommon): AuthenticationProgramStateCommon[] {
+    this.scanEvidence(finalState);
+    const recent = new Map(this.recent.map((entry) => [entry.ordinal, entry.state]));
+    const trace = this.projected.map((entry) => recent.get(entry.ordinal) ?? entry.state);
+
+    let widest: Uint8Array | undefined;
+    const candidates: Uint8Array[] = [];
+    for (const [key, item] of this.longItems) {
+      if (!widest || item.length >= widest.length) widest = item;
+      const digest = this.digestOf(item);
+      if (this.sameStackAuthenticated.has(key) || this.tailRootHexes.has(digest)
+        || this.lockDigestHexes.has(digest)) candidates.push(item);
+    }
+    if (widest && !candidates.includes(widest)) candidates.push(widest);
+    if (candidates.length > 0 || this.authItems.size > 0) {
+      trace.push({
+        ...finalState,
+        ip: -1,
+        instructions: [],
+        stack: [...candidates, ...this.authItems.values()],
+        alternateStack: [],
+        controlStack: [],
+      });
+    }
+    trace.push(this.projectState(finalState, true));
+    return trace;
+  }
+
+  stats(): { observations: number; retainedValues: number; retainedValueBytes: number; recentStackItems: number } {
+    return {
+      observations: this.projected.length,
+      retainedValues: this.evidence.size,
+      retainedValueBytes: this.evidenceBytes,
+      recentStackItems: this.recentStackItems,
+    };
+  }
+}
+
 function cachedProbeVm(provider: NetworkProvider): CachedProbeVm {
   const existing = probeVmCache.get(provider);
   if (existing) return existing;
   const cached = {
-    trace: [] as AuthenticationProgramStateCommon[],
-    awaitingVerification: false,
+    collector: new BoundedProbeTraceCollector(),
   } as CachedProbeVm;
   const debugTraceOperationMode = (globalThis as {
     process?: { env?: Record<string, string | undefined> };
@@ -4981,24 +5176,7 @@ function cachedProbeVm(provider: NetworkProvider): CachedProbeVm {
       // In particular, retaining OP_EQUAL/OP_VERIFY here breaks otherwise-adjacent introspection/EQUALVERIFY
       // pairs and can make enabling diagnostics change transaction construction.
       if (debugTraceOperations && !PROBE_TRACE_OPCODES.has(opcode as Op)) return;
-      const identityCountPin = isValueChunkIdentityCountPin(state.instructions, state.ip);
-      if (opcode === Op.OP_EQUALVERIFY && !cached.awaitingVerification && !identityCountPin) return;
-      // libauth mutates the stack containers between operations, but stack items are immutable values: opcodes
-      // replace Uint8Arrays rather than editing them in place. Snapshot the containers while sharing their byte
-      // arrays. Deep-copying every item here repeatedly copied multi-megabyte routed scripts at each observed
-      // covenant opcode, making otherwise sparse probes spend seconds moving identical bytes.
-      cached.trace.push({
-        ...state,
-        stack: state.stack.slice(),
-        alternateStack: state.alternateStack.slice(),
-        controlStack: state.controlStack.slice(),
-      });
-      // OP_INPUTBYTECODE is observed before execution because deferred compute discovery needs the argument and
-      // input index which are already on the stack. Its following equality is intentionally faithful (never
-      // relaxed), and retaining that pre-verification state can keep a fresh copy of a multi-megabyte unlocking
-      // bytecode alive for every routed read. It is not an output-pin pair, so break the pairing here and retain
-      // only the compact pre-operation observation plus the eventual terminal state if this bind fails.
-      cached.awaitingVerification = opcode !== Op.OP_EQUALVERIFY && opcode !== Op.OP_INPUTBYTECODE;
+      cached.collector.observe(state);
     },
   });
   probeVmCache.set(provider, cached);
@@ -5264,14 +5442,9 @@ function evaluateProbeTrace(
   // required for deferred keccak; if it appears, it correctly breaks any pending output pair because the next
   // equality binds the side-car preimage rather than that earlier output.
   const cached = cachedProbeVm(provider);
-  cached.trace.length = 0;
-  cached.awaitingVerification = false;
-  cached.trace.push(cached.vm.evaluate(program) as AuthenticationProgramStateCommon);
-  // Rotate rather than copy: the observer closure resolves `cached.trace` at each operation, so the completed
-  // trace can be handed to the caller while the next evaluation receives a fresh collector.
-  const completed = cached.trace;
-  cached.trace = [];
-  return completed;
+  cached.collector.reset();
+  const finalState = cached.vm.evaluate(program) as AuthenticationProgramStateCommon;
+  return cached.collector.finish(finalState);
 }
 
 /**

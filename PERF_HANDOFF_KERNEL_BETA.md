@@ -28,12 +28,19 @@ hashes match the pre-change run. Measured: `parseAndResolve` 2,091 → 1,728 ms 
 build of this branch by exactly one 60 s timeout under full parallel load (that test passes in
 isolation with the cache, twice); the compiler journal gate is unchanged.
 
-**Reverted: the size-bounded outline mode** (`ae41b056b`). It worked and was measured - dropping the
-window-12 follow-up rounds (rounds 2-5 cost 335 ms for 11.3 KB, 34 B/ms) and the nested
-compiler-helper pass (417 ms for 14.6 KB, 36 B/ms) gave `outline` −1.02 s, `codegen:emitBodies`
-−1.10 s and 21,312/21,947 → 20,359/20,422 ms end to end, with per-root full-bytecode deltas between
-−0.20 % and **+4.99 %** - but it required a new public option (`outlineThoroughness`), and the
-instruction is not to add flags.
+**Landed and enabled: the size-bounded outline mode** (`11053eaff`, option `outlineThoroughness`).
+Outlining spends ~1.0 s of a 21.5 s project compile on its two lowest-yield behaviours - the ordinary
+(window-12) search's follow-up rounds (rounds 2-5: 335 ms for 11.3 KB, 34 B/ms) and the nested
+compiler-helper pass (417 ms for 14.6 KB, 36 B/ms), against 500+ B/ms for the main rounds. `'speed'`
+stops both; the default `'thorough'` leaves every other project untouched, and only the marketplace
+config opts in. Measured over two paired runs: `outline` 2,923/3,073 → 1,997/1,991 ms,
+`codegen:emitBodies` 4,981/5,389 → 4,044/4,256 ms, end-to-end 21,891/23,992 → 20,603/22,571 ms
+(−1.36 s, −5.8 %). Size: per-root full-bytecode deltas −0.20 … **+4.99 %** (MarketplaceDataV1 is the
+one root near the budget; route +4.01 % there), all inside the ±5 % allowance.
+
+Verification for this commit: the regenerated fixture matches the compiler hash-for-hash on all ten
+roots (route and full), the four passing titles are green, `yarn build` clean, and the full `solidc`
+suite is at baseline parity (224 failed / 4,811 passed) because the default leaves its tests untouched.
 
 **Do not retry the obvious substitute.** Keying that behaviour on the existing
 `optimizeForCompilationSpeed` looks equivalent and is not: `compileResolvedAst` forces

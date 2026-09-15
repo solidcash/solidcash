@@ -325,10 +325,14 @@ export async function compileSolidityProject(
   const jobs: CompilerJob[] = ordered.map((source) => {
     const stem = path.basename(source.path).replace(/\.(sol|scash)$/i, '');
     const jobId = hash(stableStringify({
-      artifactCacheVersion: 3,
+      // `artifactCacheVersion` 4 adds `declarations`: the transitive closure alone is ambiguous for two files in
+      // an import cycle, which share every member of it. Two such files then shared one job file, so the warm run
+      // read whichever payload was written last and silently dropped the other file's artifact.
+      artifactCacheVersion: 4,
       compilerVersion: cache?.compilerVersion ?? '',
       options: artifactCompilerOptions(options),
       sources: dependencyHashes(source, allSources),
+      declarations: source.declarations,
     }));
     return {
       source,

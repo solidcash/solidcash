@@ -130,6 +130,30 @@ describe('compileSolidityProject', () => {
     expect(calls).toBe(4);
   });
 
+  it('keeps one job per file when two files import each other', async () => {
+    // An import cycle makes both files' transitive closures identical, so a key built from the closures alone is
+    // ambiguous: the two sources then share one job file, and the warm run reads whichever payload was written
+    // last - dropping the other file's artifact from the published set.
+    const files = project({
+      'Alpha.sol': 'import "./Beta.sol"; contract Alpha {}',
+      'Beta.sol': 'import "./Alpha.sol"; contract Beta {}',
+    });
+    const cache = { directory: path.join(path.dirname(files[0]), 'cache'), compilerVersion: 'test' };
+    const compile = (file: string, options: Record<string, unknown>): any => Object.fromEntries(
+      ((options.compileDeclarations ?? []) as string[]).map((name) => [name, { via: path.basename(file) }]),
+    );
+
+    const cold = await compileSolidityProject(files, {}, compile, cache);
+    const warm = await compileSolidityProject(files, {}, compile, cache);
+
+    expect(cold.compiledRoots).toHaveLength(2);
+    expect(Object.keys(cold.artifacts).sort()).toEqual(['Alpha', 'Beta']);
+    expect(warm.cacheHits).toHaveLength(2);
+    expect(Object.keys(warm.artifacts).sort()).toEqual(['Alpha', 'Beta']);
+    expect(warm.artifacts).toEqual(cold.artifacts);
+    expect(fs.readdirSync(path.join(cache.directory, 'jobs'))).toHaveLength(2);
+  });
+
   it('re-hashes a touched file but reuses the job when its contents are unchanged', async () => {
     const [file] = project({ 'Root.sol': 'contract Root {}' });
     const cache = { directory: path.join(path.dirname(file), 'cache'), compilerVersion: 'test' };

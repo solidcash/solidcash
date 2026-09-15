@@ -7,9 +7,14 @@ Updated: 2026-09-15 (Europe/Berlin)
 Work in `/Code/cashscript/.worktrees/kernel-beta-candidate` on branch
 `grok/message-bus-kernel-beta`.
 
-Primary acceptance target: all 66 unchanged titles in
+Long-term acceptance target: all 66 unchanged titles in
 `examples/effectiveacceleration/test/marketplace.test.ts` pass on mock BCH-2026 with
 `messageBus.convention === 'kernel-row-loop'` and graph handlers behind `OP_INVOKE`.
+
+For the bounded beta checkpoint, do not make 66/66 a release gate. Freeze the manifest proof matrix, close the
+live application-name-dependent SDK paths listed below, retain the fixed Marketplace smoke slice, and cut the RC
+after two clean deterministic gate runs. The remaining Marketplace ladder is post-beta unless the release claims
+full Marketplace compatibility.
 
 The tree contains many generated `.js`, `.js.map`, `.d.ts`, and `.tsbuildinfo` files. Never use `git add -A`;
 stage reviewed source, tests, and handoffs explicitly.
@@ -69,13 +74,17 @@ solidc build:                              PASS
 solidcash build:                           PASS
 ```
 
+Commit `02deabb60` makes the compiler-generated route's outer `bytes` carrier explicitly compact while preserving
+each child row's published EVM/compact encoding. User-authored compatibility-mode `abi.encode` remains Solidity
+ABI and still fails closed for unsupported types such as `bytes39`.
+
 ### Repeated calls to one participant
 
 Direct callsites now reuse an existing physical external-call group by exact live master outpoint. Aliases keep
 their own selector, arguments, callsite, and result metadata but add no duplicate master/block inputs. This is
 application-independent and has focused unit coverage.
 
-## Active blocker: mixed encodings from one repeated participant
+## Fenced frontier: returning calls to one repeated participant
 
 Regression:
 
@@ -85,22 +94,34 @@ yarn vitest run --config vitest.e2e.config.ts test/e2e/CrossContractCallInfra.te
   -t 'mixed result encodings'
 ```
 
-The test first exposed duplicate stateful inputs; that is fixed. It now reaches BCH-2026 preflight and fails at
-caller input 0:
+The duplicate-state-input part is fixed, but compiler admission deliberately continues to reject repeated-owner
+grouping when a row returns values (`!slot.hasReturnValues`). A partial widening was explored and reverted before
+commit because it violated the graph invariants below. The focused mixed-result e2e is therefore an intentionally
+red future-support test, not an advertised beta proof.
 
-```text
-OP_SPLIT with stack item length 0, requested split index 1
-```
+Full support requires one stable logical `resultOrdinal` per row, row-aware graph-handler prologue verification,
+row-specific graph result names, exact aggregate-row selection in the caller, and selected-row schema validation
+in SDK `graph.ts`. Do not widen admission until all of those land together. Do not duplicate the participant input,
+point multiple callsites at one result index, or authenticate a clone of the source call node.
 
-Exact trace: caller `B.use`, input 0, IP82 reads output 4's empty placeholder commitment and executes
-`OP_SPLIT(1)`. Output 3 contains `echo`'s valid EVM result; `wide` was never executed. The compiler publishes two
-stable callsites and two result modes, but repeated-owner admission currently excludes returning calls. The SDK's
-new physical participant aliasing therefore executes only the first row while still allocating two result channels.
+## Bounded beta stop rule
 
-The next general step is to admit repeated-owner returning calls as one participant batch, execute every logical
-row, and make each caller callsite select its own authenticated row from the participant's aggregate result vector.
-Do not merely duplicate the participant input again, point both callsites at the same result index, revert the
-regression, or restore artifact-wide encoding inference.
+Release blockers are limited to:
+
+- a clean `node scripts/kernel-beta-gate.mjs` run without `--allow-dirty`, repeated twice with identical fresh
+  compile hashes and no stderr or caught speculative compiler attempts;
+- regressions in the frozen manifest proof inventory, the five fixed Marketplace smoke titles (post one job, post
+  two jobs, whitelist post, invalid-MECE rejection, whitelist-worker), legacy compilation, determinism, or the six
+  architectural invariants;
+- soundness/security failures, silent kernel-vs-legacy semantic mismatches, or executable production-name-based
+  SDK/compiler behavior;
+- loss of proportional route-size evidence. Record same-machine cold medians and keep kernel route bytes materially
+  below legacy; do not claim full artifact-size improvement or 10KB deployability.
+
+A newly discovered shape is not a beta blocker if admission deterministically rejects it with one of the published
+kernel reasons. Add a negative admission test and release-note entry, then defer it. New positive support must be
+described by type/effect/flow/layout metadata, have an alpha-renamed neutral test, and include kernel-vs-legacy
+observable parity.
 
 ## Marketplace frontier
 
@@ -117,10 +138,18 @@ deployments plus many negative calls. Do one full 600-second run before classify
 
 ## Generality debt before beta
 
-`StatefulTransactionBuilder.ts` still contains historical application-specific comments and, more importantly,
-live names such as a `publishJobPost` parsed field and function-name comparisons around physical layout logic.
-Replace live name-based behavior with compiler-published effect/layout metadata and alpha-renamed neutral tests;
-comments should describe the invariant rather than an application.
+The SDK still has live, unfenced application-shape logic. Audit and replace or fence at least these areas before the
+beta checkpoint:
+
+- `StatefulContract.ts`: the `publishJobEvent`/`JobEventData` reconstruction and positional timestamp paths around
+  the former lines 5613, 14794, 24057, and 25336;
+- `StatefulTransactionBuilder.ts`: `publishJobEvent` input/output layout handling, `_ensureDistinctJobEventNfts`,
+  and `transferFrom`/`balances` repair or surplus-stripping paths around the former lines 4098, 7397, 9111, 10114,
+  16313, and 19468.
+
+Replace live name-based behavior with compiler-authenticated mutation, event-instance, resource-identity, and
+physical-layout metadata. Add a genuinely alpha-renamed chunkable-array/nested-delegate/multi-emit regression;
+the existing schema-name isolation test is too weak.
 
 ## Useful context
 

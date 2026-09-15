@@ -26,9 +26,10 @@ this handoff.
 
 ## Current checkpoint
 
-Current implementation HEAD is `5f1b20dab`:
+Current implementation HEAD is `f99a1a68b`:
 
 ```text
+f99a1a68b fix(sdk): recover event lock from selected schema
 5f1b20dab fix(message-bus): recognize split event equality pins
 78547780d fix(solidcash): rebase routed delegate input witnesses
 e32b48366 fix(solidc): anchor routed delegate chunks to owner blocks
@@ -43,17 +44,21 @@ Tracked state was clean before this handoff update. Root `yarn build` passed. Fo
 
 ```text
 packages/solidcash/test/unit/DelegateInputIndexCoordinates.test.ts       1/1
-packages/solidcash/test/unit/MessageBusEventIdentity.test.ts             1/1
+packages/solidcash/test/journal-message-bus/e2e/MessageBusEventIdentity.test.ts  1/1
 packages/solidc/test/DelegateInference.test.ts dynamic route selection   PASS
 ```
 
 `78547780d` rebases isolated graph-participant delegate witness coordinates by participant owner/block base. It
 moved the unchanged `post job 1` failure from proxy input 129 to the correct implementation input 214.
 
-`5f1b20dab` recognizes both adjacent `OP_EQUALVERIFY` and split `OP_EQUAL OP_VERIFY` event pins. It exposes, but
-does not yet solve, the current event materialization problem.
+`5f1b20dab` recognizes both adjacent `OP_EQUALVERIFY` and split `OP_EQUAL OP_VERIFY` event pins.
 
-## Exact current blocker
+`f99a1a68b` fixes the resulting event relocation deadlock: when a commitment mismatch stops execution before the
+following locking-bytecode pin, composition may recover the lock only when the selected handlers' published event
+schemas decode that commitment to exactly one covenant lock. Ambiguous and unknown schemas remain fail-closed.
+Its neutral regression removes the trace lock and verifies successful shared-slot event composition.
+
+## Resolved event-slot blocker
 
 Freshly compile the separately emitted imported implementation before testing; rebuilding only
 `MarketplaceV1.sol` does not refresh `MarketplaceDataV1.json`:
@@ -64,7 +69,7 @@ yarn build
 ./recompile.sh MarketplaceDataV1.sol
 ```
 
-The unchanged focused title still fails:
+Before `f99a1a68b`, the unchanged focused title failed at implementation input 214:
 
 ```bash
 cd /Code/cashscript/.worktrees/kernel-beta-candidate
@@ -92,7 +97,7 @@ Evidence from `/tmp/post1-fresh214.log`:
 - expected is the 180-byte event commitment `0000147178...045cfb5565`;
 - actual output 143 is still neutral and has an empty commitment.
 
-The latest SDK audit localized the causal loop:
+The SDK audit localized the causal loop:
 
 1. `_messageBusEventCommitmentsFromTransaction` discovers the expected commitment for output 143 from the
    failing comparison.
@@ -103,19 +108,44 @@ The latest SDK audit localized the causal loop:
 5. `eventLockingBytecodeForCommitment(participant, commitment)` can already parse the commitment against the
    selected handler artifact schemas and return a unique covenant lock.
 
-The general candidate fix is to admit an event target when either trace-authenticated locking bytecode exists or
-the selected handler schemas decode the commitment to exactly one unique event lock. Fail closed for zero or
-ambiguous schema matches. Add a neutral regression for a commitment comparison that fails before locking-bytecode
-introspection. Do not encode event/function/contract names.
+That general fix and its neutral regression are committed in `f99a1a68b`. Validation passed:
+
+```text
+packages/solidcash/test/journal-message-bus/e2e/MessageBusEventIdentity.test.ts  1/1
+root yarn build                                                                 PASS
+git diff --check                                                                PASS
+```
 
 One read-only compiler audit also noticed that DEFINE setup skips both `__internal__returnOutputIdx` and
 `__internal__msgSenderCategory`, whereas the caller says the latter is consumed. Treat this as a separate latent
 frame-risk to reduce and test; the current fresh runtime trace nevertheless computes the correct output 143, so it
 is not evidence for changing the already-correct current owner/event coordinate.
 
+## Exact current blocker
+
+After `f99a1a68b`, `post job 1` passes the output-143 event commitment and locking-bytecode checks, then fails in
+the outer route. The diagnostic log is `/tmp/post1-schema-lock-trace-agent.log`.
+
+The failing outer opcode is ip14721 `OP_EQUALVERIFY` followed by ip14722 `OP_2DROP`. This is not an event mask or
+event identity check. It is `emitValueChunkWrite`'s final `matches == expected count` assertion in
+`GenerateTargetTraversal.ts` around lines 20380–20383:
+
+```text
+actual matching outputs:   2
+expected chunk count:      0
+last scanned output index: 307
+```
+
+The next generic investigation is resource/dynamic-value cleanup and final-layout reassertion: two outputs matching
+the computed value-chunk address survive even though the selected write's new encoding needs zero external chunks.
+Trace which descriptor/producer identity owns those outputs, whether they are stale provisional chunks or duplicate
+materialization, and which convergence phase recreates them. Do not infer identity from argument position or names.
+Add a neutral regression for a graph-selected value replacement that transitions from external chunks to an inline
+zero-chunk encoding and rejects/scrubs surplus matching outputs.
+
 ## Continuation order
 
-After the generic event materialization fix:
+After the generic surplus value-chunk fix:
 
 1. Run its neutral regression and relevant message-bus unit/e2e file.
 2. Run root `yarn build`.

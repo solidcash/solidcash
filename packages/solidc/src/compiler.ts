@@ -109,7 +109,9 @@ import HoistInlineDeployCalls from './semantic/HoistInlineDeployCalls.js';
 import HoistChainedContractCalls from './semantic/HoistChainedContractCalls.js';
 import InlineMappingReturnFunctions from './semantic/InlineMappingReturnFunctions.js';
 import LowerMappingStorageAlias from './semantic/LowerMappingStorageAlias.js';
-import InlineReturningStateHelpers from './semantic/InlineReturningStateHelpers.js';
+import InlineReturningStateHelpers, {
+  captureCallsiteActivations,
+} from './semantic/InlineReturningStateHelpers.js';
 import LowerCollectionJournalHelpers from './semantic/LowerCollectionJournalHelpers.js';
 import LowerDynamicStateJournalHelpers from './semantic/LowerDynamicStateJournalHelpers.js';
 import DesugarPostfixExpressions from './semantic/DesugarPostfixExpressions.js';
@@ -11582,6 +11584,9 @@ function compileResolvedAst(
   }
 
   if (mergedCompilerOptions.messageBus) {
+    // Preserve lexical activation before either helper inliner can turn a callee postcondition into ancestry
+    // for the caller's straight-line continuation. Later graph metadata consumes these stable source predicates.
+    captureCallsiteActivations(ast);
     if (mergedCompilerOptions.messageBusKernel === true) {
       markConstructorCapturedHelperGraphEffects(ast);
     }

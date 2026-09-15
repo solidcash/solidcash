@@ -33291,6 +33291,18 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             0, false, executionSelfAddress,
           )?.[0]
           : undefined;
+        const rawTarget = producer.interfaceName === '__raw__'
+          ? registeredTarget(producer.interfaceName, target) : undefined;
+        const rawExecutionTarget = rawTarget && typeof rawTarget === 'object' && 'proxy' in rawTarget
+          ? (rawTarget as unknown as { implementation: StatefulContract }).implementation
+          : rawTarget instanceof StatefulContract ? rawTarget : undefined;
+        const rawFunction = rawExecutionTarget
+          ? (rawExecutionTarget.inner.artifact.abi as readonly AbiFunction[]).find((candidate) =>
+            producer.rawFunctionName !== undefined
+              ? candidate.name === producer.rawFunctionName
+              : producer.rawSelector !== undefined && candidate.selector === producer.rawSelector)
+          : undefined;
+        if (producer.interfaceName === '__raw__' && !rawFunction) return undefined;
         return await memoizeGraphPlanningProducerResult(
           planningContext,
           callsiteId,
@@ -33299,9 +33311,29 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           // authenticates its target expression; arguments and provisional quality distinguish runtime seeds.
           undefined,
           allowProvisional,
-          () => derive(
-            producer.interfaceName, producer.functionName, values, target, producer.returnTypes,
-          ),
+          async () => {
+            if (!rawFunction || !rawExecutionTarget) {
+              return derive(
+                producer.interfaceName, producer.functionName, values, target, producer.returnTypes,
+              );
+            }
+            const returnTypes = (rawFunction.outputs ?? []).map((output) => output.type);
+            if (returnTypes.length === 0) return new Uint8Array();
+            const value = await derive(
+              producer.interfaceName, rawFunction.name, values, target, returnTypes,
+            );
+            if (value === undefined) return undefined;
+            const components = returnTypes.length === 1 ? [value]
+              : Array.isArray(value) ? value : undefined;
+            if (!components || components.length !== returnTypes.length) return undefined;
+            return encodeExternalReturnValues(
+              components as StateValue[],
+              returnTypes,
+              rawExecutionTarget.inner.artifact.structs ?? rawExecutionTarget.inner.artifact.stateLayout?.structs,
+              artifactUsesSolidityAbi(rawExecutionTarget.inner.artifact),
+              rawExecutionTarget.inner.artifact.enums,
+            );
+          },
         );
       } finally {
         resolvingProducers.delete(callsiteId);
@@ -33950,6 +33982,29 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         return -BigInt(value);
       }
       return undefined;
+    }
+    if (expression.kind === 'addressCodeLength' && expression.expression) {
+      const value = evaluate(expression.expression);
+      const bytes = value instanceof Uint8Array ? value
+        : typeof value === 'string' && /^(?:0x)?[0-9a-f]+$/iu.test(value)
+          ? hexToBin(value.replace(/^0x/iu, '')) : undefined;
+      if (!bytes) return undefined;
+      // Match graph codegen's authenticated contract-address predicate: P2SH20/P2SH32 are code-bearing,
+      // while P2PKH and the zero address are not. Only zero/nonzero is observable from this recipe.
+      return bytes.length === 23 || bytes.length === 35 ? 1n : 0n;
+    }
+    if (expression.kind === 'abiDecode' && expression.expression && expression.fields?.length) {
+      const value = evaluate(expression.expression);
+      if (!(value instanceof Uint8Array)) return undefined;
+      const decoded = decodeAuthenticatedProducerResultVector(
+        value,
+        expression.fields,
+        artifact.structs ?? artifact.stateLayout?.structs,
+        artifactUsesSolidityAbi(artifact),
+        artifact.enums,
+      );
+      if (!decoded) return undefined;
+      return decoded.length === 1 ? decoded[0] : decoded as unknown as FunctionArgument;
     }
     if (expression.kind === 'binary' && expression.left && expression.right) {
       const left = evaluate(expression.left);

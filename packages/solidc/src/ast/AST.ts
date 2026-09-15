@@ -1713,6 +1713,8 @@ export class CastNode extends ExpressionNode implements Typed {
 export class FunctionCallNode extends ExpressionNode {
   /** Pre-semantic source program point copied if this call lowers to an external graph edge. */
   sourceEffectOrdinal?: number;
+  /** Lexical predicates captured before helper/control-flow lowering. */
+  sourceActivationConditions?: readonly { expression: ExpressionNode; negated: boolean }[];
   resolvedFunction?: FunctionDefinitionNode;
   /** A raw address transfer/send call cloned from an inline library helper. */
   inlinedLibraryEffect?: boolean;
@@ -2632,6 +2634,8 @@ export class ExternalFunctionCallNode extends ExpressionNode {
   externalBatchLogicalIndex?: number;
   /** Function-local program point shared with mapping-write effects. */
   sourceEffectOrdinal?: number;
+  /** Lexical predicates which must hold before this callsite is reached, captured before helper flattening. */
+  sourceActivationConditions?: readonly { expression: ExpressionNode; negated: boolean }[];
   callMode?: ExternalCallMode;
   callOptions?: CallOptions;
   valueTransferIndex: number = -1;
@@ -2876,6 +2880,8 @@ export interface ExternalOutStateSlot {
 export class MethodCallNode extends ExpressionNode {
   /** Pre-semantic source program point copied if this lowers to an external graph call. */
   sourceEffectOrdinal?: number;
+  /** Lexical predicates captured before helper/control-flow lowering. */
+  sourceActivationConditions?: readonly { expression: ExpressionNode; negated: boolean }[];
   callOptions?: CallOptions;
   valueTransferIndex: number = -1; // temporary carrier for pre-scan before transformation
   fieldNames?: string[]; // set for named-arg calls obj.f({a: x}); reordered against the callee's params
@@ -3290,6 +3296,8 @@ export class PlaceholderStatementNode extends StatementNode {
 export class LowLevelCallNode extends ExpressionNode {
   /** Pre-semantic source program point copied if this lowers to an external graph call. */
   sourceEffectOrdinal?: number;
+  /** Lexical predicates which must hold before this callsite is reached, captured before helper flattening. */
+  sourceActivationConditions?: readonly { expression: ExpressionNode; negated: boolean }[];
   callIndex: number = 0;  // assigned during pre-scan
   callOptions?: CallOptions;
   valueTransferIndex: number = -1;
@@ -3315,6 +3323,8 @@ export class LowLevelCallNode extends ExpressionNode {
 export class LowLevelCallStatementNode extends StatementNode {
   /** Pre-semantic source program point copied if this lowers to an external graph call. */
   sourceEffectOrdinal?: number;
+  /** Lexical predicates which must hold before this callsite is reached, captured before helper flattening. */
+  sourceActivationConditions?: readonly { expression: ExpressionNode; negated: boolean }[];
   callIndex: number = 0;
   callOptions?: CallOptions;
   valueTransferIndex: number = -1;

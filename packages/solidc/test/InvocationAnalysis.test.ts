@@ -374,6 +374,37 @@ describe('Release 0 shared invocation analysis', () => {
       .toEqual(fn.resultConsumers);
   });
 
+  it('preserves sibling call activation across inlined helper postconditions', () => {
+    const artifact = compileString(`pragma solidity >=0.8.0;
+      interface ITarget { function act(bigint n) external returns (bool); }
+      contract InlinedConditionalResultFlow() {
+        function optional(address target, bigint n) private returns (bool) {
+          bool success, bytes result = target.call(abi.encodeCall(ITarget.act, (n)));
+          return success && (result.length == 0 || abi.decode(result, (bool)));
+        }
+        function checked(address target, bigint n) private {
+          bool success, bytes result = target.call(abi.encodeCall(ITarget.act, (n)));
+          require(success && (result.length == 0 || abi.decode(result, (bool))));
+        }
+        function dispatch(address target, bigint n) public {
+          if (!optional(target, n)) {
+            checked(target, 0);
+            checked(target, n);
+          }
+          require(n >= 0);
+        }
+      }`, {
+      forceStateful: true, messageBus: true, suppressWarnings: true, solidityImportCompat: true,
+    });
+    const fn = artifact.invocationAnalysis!.functions.find((candidate) => candidate.name === 'dispatch')!;
+    expect(fn.externalCalls?.map((call) => call.occurrence)).toEqual([
+      'once', 'conditional', 'conditional',
+    ]);
+    expect(fn.externalCalls?.[1].condition).toBeDefined();
+    expect(fn.externalCalls?.[1].condition).toEqual(fn.externalCalls?.[2].condition);
+    expect(JSON.stringify(fn.externalCalls?.[2].condition)).not.toContain('"callsiteId":1');
+  });
+
   // A partially written state-array entry is rebuilt as `T(.., thisField, ..)`: the front end reuses the read
   // node as the rebuilt field's argument, and a later rebuild of another field restates the entry with that same
   // argument. The published argument must be the value the handler wrote, never the read folded back on itself.

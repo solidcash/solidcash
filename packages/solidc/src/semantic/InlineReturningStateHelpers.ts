@@ -93,6 +93,62 @@ import { tagModifierStateAccess } from './ModifierExpansionTransformation.js';
  */
 const PREFIX = '__rh';
 
+const captureCallsiteActivationInNode = (
+  value: Node,
+  conditions: readonly { expression: ExpressionNode; negated: boolean }[],
+  seen = new Set<Node>(),
+): void => {
+  if (seen.has(value)) return;
+  seen.add(value);
+  if (value instanceof FunctionCallNode || value instanceof MethodCallNode
+    || value instanceof LowLevelCallNode || value instanceof LowLevelCallStatementNode) {
+    if (value.sourceActivationConditions === undefined) {
+      value.sourceActivationConditions = conditions.map(({ expression, negated }) => ({
+        expression: cloneNode(expression) as ExpressionNode,
+        negated,
+      }));
+    }
+  }
+  if (value instanceof BranchNode) {
+    captureCallsiteActivationInNode(value.condition, conditions, seen);
+    captureCallsiteActivationInNode(value.ifBlock, [
+      ...conditions, { expression: value.condition, negated: false },
+    ], seen);
+    if (value.elseBlock) captureCallsiteActivationInNode(value.elseBlock, [
+      ...conditions, { expression: value.condition, negated: true },
+    ], seen);
+    return;
+  }
+  if (value instanceof TernaryOpNode) {
+    captureCallsiteActivationInNode(value.condition, conditions, seen);
+    captureCallsiteActivationInNode(value.ifTrue, [
+      ...conditions, { expression: value.condition, negated: false },
+    ], seen);
+    captureCallsiteActivationInNode(value.ifFalse, [
+      ...conditions, { expression: value.condition, negated: true },
+    ], seen);
+    return;
+  }
+  for (const [key, child] of Object.entries(value)) {
+    if (['location', 'resolvedFunction', 'functionReference', 'definition', 'symbolTable',
+      'referencedContract', 'stateVariable', 'collection', 'sourceCallNode',
+      'sourceActivationConditions'].includes(key)) continue;
+    if (child instanceof Node) captureCallsiteActivationInNode(child, conditions, seen);
+    else if (Array.isArray(child)) {
+      for (const item of child) if (item instanceof Node) {
+        captureCallsiteActivationInNode(item, conditions, seen);
+      }
+    }
+  }
+};
+
+/** Capture source lexical callsite activation before helper/control-flow normalization. */
+export function captureCallsiteActivations(source: SourceFileNode): void {
+  for (const fn of [...source.contract.functions, ...(source.freeFunctions ?? [])]) {
+    if (fn.body) captureCallsiteActivationInNode(fn.body, []);
+  }
+}
+
 export default class InlineReturningStateHelpers extends AstTraversal {
   private funcByName: Map<string, FunctionDefinitionNode> = new Map();
   private funcByKey: Map<string, FunctionDefinitionNode> = new Map(); // keyed by inlineKey(name, arity) for overloads
@@ -287,7 +343,50 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     return false;
   }
 
+  /** Snapshot lexical call activation before returning-helper rewrites nest straight-line continuations. */
+  private captureSourceActivations(
+    value: Node,
+    conditions: readonly { expression: ExpressionNode; negated: boolean }[],
+    seen = new Set<Node>(),
+  ): void {
+    captureCallsiteActivationInNode(value, conditions, seen);
+  }
+
+  /** Add the caller arm to every call cloned from a returning helper. */
+  private prependSourceActivations(
+    value: Node,
+    callerConditions: readonly { expression: ExpressionNode; negated: boolean }[],
+    seen = new Set<Node>(),
+  ): void {
+    if (seen.has(value)) return;
+    seen.add(value);
+    if (value instanceof FunctionCallNode || value instanceof MethodCallNode
+      || value instanceof LowLevelCallNode || value instanceof LowLevelCallStatementNode) {
+      value.sourceActivationConditions = [
+        ...callerConditions,
+        ...(value.sourceActivationConditions ?? []),
+      ].map(({ expression, negated }) => ({
+        expression: cloneNode(expression) as ExpressionNode,
+        negated,
+      }));
+    }
+    for (const [key, child] of Object.entries(value)) {
+      if (['location', 'resolvedFunction', 'functionReference', 'definition', 'symbolTable',
+        'referencedContract', 'stateVariable', 'collection', 'sourceCallNode',
+        'sourceActivationConditions'].includes(key)) continue;
+      if (child instanceof Node) this.prependSourceActivations(child, callerConditions, seen);
+      else if (Array.isArray(child)) {
+        for (const item of child) if (item instanceof Node) {
+          this.prependSourceActivations(item, callerConditions, seen);
+        }
+      }
+    }
+  }
+
   visitContract(node: ContractNode): Node {
+    for (const fn of [...node.functions, ...this.freeFns]) {
+      if (fn.body) this.captureSourceActivations(fn.body, []);
+    }
     this.funcByName = new Map();
     this.funcByKey = new Map();
     this.overloadsByKey = new Map();
@@ -1235,7 +1334,9 @@ export default class InlineReturningStateHelpers extends AstTraversal {
       }
       // A scalar helper inlines at an expression position, replaced by its single return temp. A multi-value
       // helper can't (one temp can't carry >1 value) - it is inlined only at a statement position, below.
-      const result = this.inlineCall(callee, node.parameters as ExpressionNode[])[0];
+      const result = this.inlineCall(
+        callee, node.parameters as ExpressionNode[], node.sourceActivationConditions,
+      )[0];
       if (node.fromThisCall) result.fromExternalSelfCall = true;
       return result;
     }
@@ -1309,7 +1410,7 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     if (!callee || !this.inlinedFns.has(name) || this.stack.includes(inlineKey(name, arity))
       || arity !== callee.parameters.length || callee.returnTypes.length < 2) return undefined;
     expr.parameters = this.visitList(expr.parameters) as ExpressionNode[]; // inline nested scalar calls in args
-    return this.inlineCall(callee, expr.parameters as ExpressionNode[]);
+    return this.inlineCall(callee, expr.parameters as ExpressionNode[], expr.sourceActivationConditions);
   }
 
   // Suppress hoisting where the call is only conditionally evaluated; hoisting it unconditionally would
@@ -1387,9 +1488,13 @@ export default class InlineReturningStateHelpers extends AstTraversal {
 
   // Expand one returning-helper call: push [param bindings, body-minus-return, per-value return-temp defs] to
   // this.hoists, return an identifier per return value (one for a scalar helper, N for a multi-value helper).
-  private inlineCall(callee: FunctionDefinitionNode, args: ExpressionNode[]): IdentifierNode[] {
+  private inlineCall(
+    callee: FunctionDefinitionNode, args: ExpressionNode[],
+    callerConditions: readonly { expression: ExpressionNode; negated: boolean }[] = [],
+  ): IdentifierNode[] {
     const n = this.counter++;
     const cloned = cloneNode(callee) as FunctionDefinitionNode;
+    this.prependSourceActivations(cloned.body, callerConditions);
     if (this.operatorFns.has(callee.name)) {
       this.walk(cloned.body, (node) => {
         if (node instanceof MethodCallNode && node.object instanceof FunctionCallNode) {

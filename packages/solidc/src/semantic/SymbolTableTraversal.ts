@@ -8027,6 +8027,12 @@ export default class SymbolTableTraversal extends AstTraversal {
           return inner && { kind: 'cast', type: expression.type.toString(), expression: inner };
         }
         if (expression instanceof UnaryOpNode) {
+          if (expression.operator === UnaryOperator.SIZE
+            && expression.expression instanceof FieldAccessNode
+            && expression.expression.name === 'code') {
+            const address = serializeExpression(expression.expression.expression, seen);
+            return address && { kind: 'addressCodeLength', expression: address, type: 'bigint' };
+          }
           const inner = serializeExpression(expression.expression, seen);
           let stateLengthDelta = 0;
           if (expression.operator === UnaryOperator.SIZE
@@ -8350,6 +8356,24 @@ export default class SymbolTableTraversal extends AstTraversal {
           return array && index && { kind: 'arrayAccess', left: array, right: index };
         }
         if (expression instanceof TupleIndexOpNode) {
+          // An admitted atomic raw call cannot expose a catchable failure: a failing callee aborts the graph.
+          // Its source-level `(success, returndata)` view is therefore `(true, authenticatedReturndata)`, while
+          // the published producer schema intentionally contains only that returndata value.
+          const opaqueRawSlot = expression.tuple instanceof ExternalFunctionCallNode
+            && expression.tuple.opaqueReturn
+            && expression.tuple.callInfo?.externalCallSlotIndex !== undefined
+            && expression.tuple.callInfo.externalCallSlotIndex >= 0
+            ? expression.tuple.callInfo.externalCallSlotIndex : undefined;
+          if (opaqueRawSlot !== undefined) {
+            if (expression.index === 0) return { kind: 'literal', type: 'bool', value: true };
+            if (expression.index === 1) return {
+              kind: 'producerResult',
+              callsiteId: opaqueRawSlot,
+              resultIndex: 0,
+              type: 'bytes',
+            };
+            return undefined;
+          }
           // Consumers reference the authenticated producer result by stable identity. Re-serializing the
           // producer call here would both duplicate the callsite and erase which tuple component was selected.
           if (expression.tuple instanceof ExternalFunctionCallNode
@@ -8397,6 +8421,15 @@ export default class SymbolTableTraversal extends AstTraversal {
                 : expression instanceof AbiEncodePackedNode ? 'abiEncodePacked' : 'abiEncode',
             args: values,
             fields: expression.parameters.map((parameter) => parameter.type?.toString() ?? ''),
+          };
+        }
+        if (expression instanceof AbiDecodeNode) {
+          const data = serializeExpression(expression.data, seen);
+          return data && {
+            kind: 'abiDecode',
+            expression: data,
+            fields: expression.schema.map((type) => type.toString()),
+            ...(expression.type && { type: expression.type.toString() }),
           };
         }
         if (expression instanceof ExternalFunctionCallNode) {
@@ -8579,11 +8612,20 @@ export default class SymbolTableTraversal extends AstTraversal {
         : undefined;
       // Inlined helper calls retain their original source node, but their cloned statement can be flattened away
       // from the caller's branch. Recover that source path when the direct traversal did not carry a predicate.
-      const sourceConditions = enclosingConditions.length > 0
+      const loweredConditions = enclosingConditions.length > 0
         ? enclosingConditions
         : this.currentFunction?.body
           ? this.enclosingBranchConditions(this.currentFunction.body, node)
           : undefined;
+      // The source snapshot owns activation CARDINALITY; the lowered path owns the rewritten predicate values.
+      // Returning-helper normalization may nest a straight-line continuation under a callee postcondition, so
+      // discard any lowered suffix beyond the source depth. Conversely, retain the source expressions only when
+      // lowering no longer exposes enough corresponding predicates to serialize.
+      const sourceConditions = node.sourceActivationConditions === undefined
+        ? loweredConditions
+        : loweredConditions && loweredConditions.length >= node.sourceActivationConditions.length
+          ? loweredConditions.slice(0, node.sourceActivationConditions.length)
+          : node.sourceActivationConditions;
       const serializedConditions = (sourceConditions ?? []).map(({ expression, negated }) => {
         const serialized = serializeExpression(expression) ?? {
           kind: 'missing', name: expression.constructor.name,
@@ -11131,6 +11173,7 @@ export default class SymbolTableTraversal extends AstTraversal {
             const payloadExpr = this.visit(node.parameters[0]) as ExpressionNode;
             const callNode = new ExternalFunctionCallNode('__raw__', addressExpr, '__raw__', [payloadExpr]);
             callNode.sourceEffectOrdinal = node.sourceEffectOrdinal;
+            callNode.sourceActivationConditions = node.sourceActivationConditions;
             callNode.opaqueReturn = true;
             callNode.type = new TupleType([PrimitiveType.BOOL, new BytesType()]);
             callNode.callInfo = {
@@ -11157,6 +11200,7 @@ export default class SymbolTableTraversal extends AstTraversal {
           const data = this.visit(node.parameters[0]) as ExpressionNode;
           const callNode = new LowLevelCallNode(visitedAddr, data, methodName);
           callNode.sourceEffectOrdinal = node.sourceEffectOrdinal;
+          callNode.sourceActivationConditions = node.sourceActivationConditions;
           callNode.location = node.location;
           return callNode;
         }
@@ -14498,6 +14542,7 @@ export default class SymbolTableTraversal extends AstTraversal {
           const mode = node.methodName === 'staticcall' ? ExternalCallMode.STATICCALL : ExternalCallMode.REGULAR;
           const callNode = new ExternalFunctionCallNode('__raw__', node.object as ExpressionNode, '__raw__', [data]);
           callNode.sourceEffectOrdinal = node.sourceEffectOrdinal;
+          callNode.sourceActivationConditions = node.sourceActivationConditions;
           callNode.opaqueReturn = true;
           if (graphRawValueCall) {
             callNode.callOptions = node.callOptions;
@@ -14521,6 +14566,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         }
         const callNode = new LowLevelCallNode(node.object, data, node.methodName);
         callNode.sourceEffectOrdinal = node.sourceEffectOrdinal;
+        callNode.sourceActivationConditions = node.sourceActivationConditions;
         callNode.callOptions = node.callOptions;
         callNode.valueTransferIndex = node.valueTransferIndex;
         if (callNode.callOptions?.value) {
@@ -14798,6 +14844,7 @@ export default class SymbolTableTraversal extends AstTraversal {
 
     const callNode = new ExternalFunctionCallNode('__raw__', receiver, '__raw__', [node.data]);
     callNode.sourceEffectOrdinal = node.sourceEffectOrdinal;
+    callNode.sourceActivationConditions = node.sourceActivationConditions;
     callNode.opaqueReturn = true;
     callNode.discardedOpaqueReturn = true;
     callNode.callInfo = {
@@ -14846,6 +14893,7 @@ export default class SymbolTableTraversal extends AstTraversal {
 
     const call = new ExternalFunctionCallNode('__raw__', node.targetExpression, '__raw__', [node.data]);
     call.sourceEffectOrdinal = node.sourceEffectOrdinal;
+    call.sourceActivationConditions = node.sourceActivationConditions;
     call.opaqueReturn = true;
     call.type = new TupleType([PrimitiveType.BOOL, new BytesType()]);
     call.callInfo = {

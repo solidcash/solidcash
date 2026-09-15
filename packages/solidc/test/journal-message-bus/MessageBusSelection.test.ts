@@ -48,15 +48,21 @@ describe('message-bus compilation selection', () => {
       .toContain('__internal__activeVerifierIndex');
   });
 
-  it('embeds the published verifier lock in a fresh graph delegate route', () => {
+  it('embeds the published verifier lock after specializing a signed graph delegate route', () => {
     const artifact = compileString(`interface ISink {
         function note(int value) external;
       }
-      contract GraphWriter(address sink) {
-        int stored;
-        function forward(int value) public {
-          this.stored = value;
+      contract SignedGraphWriter(pubkey authority, address sink) {
+        mapping(int => int) values;
+        event Changed(int key, int value);
+        function forward(int value) public delegate {
           ISink(sink).note(value);
+          require(true);
+        }
+        function authorize(int key, int value, sig proof) public delegate {
+          require(checkSig(proof, authority));
+          this.values[key] = value;
+          emit Changed(key, value);
           require(true);
         }
       }`, {
@@ -68,13 +74,18 @@ describe('message-bus compilation selection', () => {
       optimizeForCompilationSpeed: true,
       suppressWarnings: true,
     });
-    const delegate = artifact.delegateArtifact;
-    expect(delegate?.messageBus?.route.modifiers).toContain('delegate');
-    expect(delegate?.abi.find((fn) => fn.name === 'forward')?.externalCalls).toHaveLength(1);
-    const verifierProgram = delegate?.messageBus?.verifierProgram;
+    expect(artifact.messageBus?.route.modifiers).toContain('delegate');
+    expect(artifact.abi.find((fn) => fn.name === 'forward')?.externalCalls).toHaveLength(1);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'authorize'))
+      .toMatchObject({
+        eligible: true,
+        usesTransactionSignature: true,
+        transactionSignaturePolicy: { hashType: 'all', parameterIndices: [2] },
+      });
+    const verifierProgram = artifact.messageBus?.verifierProgram;
     expect(verifierProgram).toBeDefined();
     const expectedLock = messageBusVerifierLockingBytecode(verifierProgram!, 1_000_000);
-    const verifierBody = Object.values(delegate?.debug.invokeDebug ?? {})
+    const verifierBody = Object.values(artifact.debug.invokeDebug ?? {})
       .find((entry) => entry.name === '__message_bus_verify_atomic');
     expect(verifierBody).toBeDefined();
     const embeddedVerifierLocks = decodeAuthenticationInstructions(hexToBin(verifierBody!.bytecode))

@@ -266,6 +266,37 @@ const verifierProgramIdentity = (
   program: NonNullable<NonNullable<Artifact['messageBus']>['verifierProgram']>,
 ): string => JSON.stringify(program);
 
+function assertPublishedVerifierBinding(artifact: Artifact, maximumInputBytes?: number): void {
+  const verifierBound = artifact.messageBus?.route.inputs.some((input) =>
+    input.name === '__internal__activeVerifierIndex') === true;
+  if (!verifierBound) return;
+  const verifierProgram = artifact.messageBus?.verifierProgram;
+  if (!verifierProgram) throw new Error('message-bus bound route has no published verifier program');
+  const expectedLock = binToHex(messageBusVerifierLockingBytecode(verifierProgram, maximumInputBytes));
+  // Optimisation can inline the binder, retain it as a named helper, or fold it into another OP_INVOKE body.
+  // Search every executable bytecode region rather than trusting debug names. Checking emitted bytes here
+  // prevents intended-program metadata from self-attesting a different literal produced by an earlier pass.
+  const executableBytecodes = new Set([
+    ...(artifact.debug?.bytecode ? [artifact.debug.bytecode] : []),
+    ...Object.values(artifact.debug?.invokeDebug ?? {}).map((entry) => entry.bytecode),
+    ...Object.values(artifact.functionBodies ?? {}),
+  ]);
+  const expectedPush = `23${expectedLock}`;
+  const occurrences = [...executableBytecodes]
+    .reduce((count, bytecode) => count + bytecode.split(expectedPush).length - 1, 0);
+  const embeddedLocks = [...executableBytecodes]
+    .flatMap((bytecode) => bytecode.match(/aa20[0-9a-f]{64}87/g) ?? []);
+  // Some leaf routes authenticate verifier membership without a literal P2SH32 comparison. The program-
+  // provenance invariant above covers those. If codegen does emit a verifier lock, however, it must be this
+  // exact published program rather than a preliminary specialization.
+  if (embeddedLocks.length > 0 && occurrences < 1) {
+    throw new Error(
+      `message-bus route verifier lock does not match the published verifier program `
+      + `(expected ${expectedLock}, found ${embeddedLocks.join(', ') || 'none'})`,
+    );
+  }
+}
+
 function sourceMessageBusHandlerReference(fn: FunctionDefinitionNode): AbiFunctionReference {
   return { name: fn.name, selector: sourceFunctionSelectorHex(fn) };
 }
@@ -2043,6 +2074,7 @@ function compileStringUnchecked(code: string, compilerOptions: CompileOptions = 
       !== verifierProgramIdentity(finalVerifierProgram))) {
     throw new Error('message-bus route verifier lock does not match the published verifier program');
   }
+  assertPublishedVerifierBinding(artifact, mergedCompilerOptions.maximumInputBytes);
   attachDelegateVariant(
     artifact, code, mergedCompilerOptions, errorListener, primaryContractName,
     cacheable || !suppressWarnings,
@@ -2184,6 +2216,7 @@ function attachDelegateVariant(
         if (variant.compiler.options) delete variant.compiler.options.__messageBusVerifierProgram;
       }
       if (out.delegateFunctionsMarked > 0) {
+        assertPublishedVerifierBinding(variant, variantOptions.maximumInputBytes);
         built = variant;
       }
     } catch (e) {

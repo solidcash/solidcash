@@ -120,6 +120,20 @@ export interface ValueChunkProducerRouteRowCoordinates {
   sourceEffectOrdinal?: number;
 }
 
+export interface ValueChunkProducerMutationRow {
+  readonly selector?: string;
+  readonly producerPath?: ValueChunkProducerPathDisposition;
+  readonly handler: {
+    readonly selector?: string;
+    readonly sourceEffectOrder?: 'linear' | 'unsupported-flow';
+    readonly entryAccesses?: readonly {
+      readonly collection: string;
+      readonly operations: readonly string[];
+      readonly mutationEffectOrdinals?: readonly number[];
+    }[];
+  };
+}
+
 const safeOrdinal = (value: number | undefined): value is number => (
   Number.isSafeInteger(value) && value !== undefined && value >= 0
 );
@@ -164,13 +178,24 @@ export function canonicalValueChunkProducerResourceIdentity(value: string): stri
     ? `${canonicalCategory}:${canonicalCollection}:${canonicalSlot}` : undefined;
 }
 
-function canonicalValueChunkStateOwner(owner: {
+export function canonicalValueChunkStateOwner(owner: {
   categoryId: string; lockingBytecode: string;
 }): string | undefined {
   if (!owner || typeof owner !== 'object') return undefined;
   const categoryId = canonicalHex(owner.categoryId, 32);
   const lockingBytecode = canonicalHex(owner.lockingBytecode);
   return categoryId && lockingBytecode ? `${categoryId}:${lockingBytecode}` : undefined;
+}
+
+/** Canonical identity for one storage resource under one exact physical state owner. */
+export function canonicalValueChunkResourceOwnerIdentity(
+  resourceIdentity: string,
+  owner: { categoryId: string; lockingBytecode: string },
+): string | undefined {
+  const resource = canonicalValueChunkProducerResourceIdentity(resourceIdentity);
+  const stateOwner = canonicalValueChunkStateOwner(owner);
+  if (!resource || !stateOwner || resource.split(':')[0] !== stateOwner.split(':')[0]) return undefined;
+  return JSON.stringify([1, resource, stateOwner]);
 }
 
 export function canonicalValueChunkProducerIdentity(
@@ -228,6 +253,64 @@ export function valueChunkProducerClaimFromRouteRow(options: {
     },
   };
   return canonicalValueChunkProducerResourceClaim(claim);
+}
+
+/**
+ * Select the terminal reached mutation of one exact storage resource.
+ *
+ * Row order is executable source order only when every matching handler publishes
+ * a complete linear effect order. The invocation path identifies the exact graph
+ * occurrence; the terminal mutation ordinal identifies the write within it.
+ */
+export function terminalValueChunkProducerClaim(options: {
+  rows: readonly ValueChunkProducerMutationRow[];
+  collectionIdentities: readonly string[];
+  /** Selector family whose route covenant proves at most one unconditional fixed-chunkable mutation row. */
+  fixedChunkableWriteSelectors?: readonly string[];
+  executionLockingBytecode: string;
+  stateOwnerCategoryId: string;
+  stateOwnerLockingBytecode: string;
+  resourceIdentity: string;
+}): ValueChunkProducerResourceClaim | undefined {
+  const collections = new Set(options.collectionIdentities);
+  const matching = options.rows.flatMap((row, rowIndex) => {
+    const accesses = (row.handler.entryAccesses ?? []).filter((access) => (
+      collections.has(access.collection) && access.operations.includes('write')
+    ));
+    return accesses.length === 0 ? [] : [{ row, rowIndex, accesses }];
+  });
+  if (matching.length === 0) return undefined;
+  const terminal = matching[matching.length - 1];
+  const mutationOrdinals = terminal.accesses.flatMap((access) => (
+    access.mutationEffectOrdinals ?? []
+  ));
+  if (mutationOrdinals.length === 0 || mutationOrdinals.some((ordinal) => !safeOrdinal(ordinal))) {
+    return undefined;
+  }
+  const selector = terminal.row.selector ?? terminal.row.handler.selector;
+  const canonicalSelector = selector === undefined ? undefined : canonicalHex(selector, 4);
+  const fixedChunkableOccurrence = canonicalSelector !== undefined
+    && terminal.accesses.length === 1 && mutationOrdinals.length === 1
+    && (options.fixedChunkableWriteSelectors ?? [])
+      .some((candidate) => canonicalHex(candidate, 4) === canonicalSelector);
+  if ((terminal.row.handler.sourceEffectOrder !== 'linear' && !fixedChunkableOccurrence)
+    || terminal.row.producerPath?.status !== 'complete') return undefined;
+  const mutationEffectDomainId = selector === undefined ? undefined
+    : valueChunkEffectDomainId(options.executionLockingBytecode, selector);
+  if (!mutationEffectDomainId) return undefined;
+  return canonicalValueChunkProducerResourceClaim({
+    resourceIdentity: options.resourceIdentity,
+    producer: {
+      version: 1,
+      stateOwner: {
+        categoryId: options.stateOwnerCategoryId,
+        lockingBytecode: options.stateOwnerLockingBytecode,
+      },
+      sourcePath: terminal.row.producerPath.context.sourcePath,
+      mutationEffectDomainId,
+      mutationSourceEffectOrdinal: Math.max(...mutationOrdinals),
+    },
+  });
 }
 
 export type SingletonValueChunkProducerSelection =

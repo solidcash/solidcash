@@ -8,9 +8,12 @@ import {
   commitStagedValueChunkWrite,
   isPersistedJobEventsReady,
   isValueChunkWriteReady,
+  materializedValueChunkAbsoluteStart,
   persistedValueChunkWriteState,
+  permitsHeuristicValueChunkRunRelocation,
   rememberJobEventsLock,
   rememberJobEventsValue,
+  selectValueChunkResource,
   selectValueChunkCommitmentObservations,
   stageJobEventsValue,
   stagedValueChunkWrite,
@@ -41,6 +44,33 @@ const descriptor = (
 
 describe('value-chunk descriptor authority', () => {
   afterEach(() => StatefulTransactionBuilder.clearPersistedJobEvents());
+
+  it('keeps compiler-described physical runs out of descriptor-free relocation', () => {
+    expect(permitsHeuristicValueChunkRunRelocation(
+      `${categoryId}:${descriptor('records', 1).collectionHash}:${'01'.repeat(32)}`,
+    )).toBe(false);
+    expect(permitsHeuristicValueChunkRunRelocation()).toBe(true);
+  });
+
+  it('keeps sequential operations on one storage identity under one resource owner', () => {
+    const insert = { ...descriptor('records', 1), operation: 'insert' as const, routeSlot: 2 };
+    const update = { ...descriptor('records', 1), operation: 'update' as const, routeSlot: 8 };
+
+    expect(selectValueChunkResource([insert, update])).toEqual({
+      status: 'exact',
+      identity: `${categoryId}:${insert.collectionHash}:${insert.keySlot}`,
+      categoryId,
+    });
+    expect(selectValueChunkResource([insert, descriptor('records', 2)])).toMatchObject({
+      status: 'multi',
+    });
+  });
+
+  it('does not rebase VM-authenticated physical runs by a composition block base', () => {
+    const resourceIdentity = `${categoryId}:${descriptor('records', 1).collectionHash}:${'01'.repeat(32)}`;
+    expect(materializedValueChunkAbsoluteStart(63, 4, resourceIdentity)).toBe(63);
+    expect(materializedValueChunkAbsoluteStart(63, 4)).toBe(67);
+  });
 
   it('isolates mutable staged values between transaction build sessions', () => {
     const firstSession = new ValueChunkWriteStagingSession();
@@ -149,4 +179,5 @@ describe('value-chunk descriptor authority', () => {
 
     expect(selected).toEqual(new Map([[12, payload]]));
   });
+
 });

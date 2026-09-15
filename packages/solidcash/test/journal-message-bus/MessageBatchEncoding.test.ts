@@ -5,6 +5,7 @@ import { compileString } from 'solidc';
 import { messageBus, SignatureTemplate } from '../../src/index.js';
 import { encodeFunctionArgument } from '../../src/Argument.js';
 import { provisionalInvocationResult } from '../../src/message-bus/compose.js';
+import { encodeEvmInvocationResult } from '../../src/stateful/evm-abi-result.js';
 
 const SOURCE = `pragma solidcash >=0.8.0;
 contract MessageBatchEncoding() {
@@ -110,6 +111,38 @@ describe('messageBus.encodeMessageBatch', () => {
     expect(hex).toContain(`${clear.selector}0100000000000000`);
   });
 
+  it('enforces an aggregate fixed chunkable-write occurrence policy before encoding', () => {
+    const add = artifact.messageBus!.handlers.find((handler) => handler.name === 'add')!;
+    const bounded = {
+      ...artifact,
+      messageBus: {
+        ...artifact.messageBus!,
+        fixedChunkableWritePolicy: {
+          version: 1 as const, maximumRows: 1 as const, selectors: [add.selector],
+        },
+      },
+    };
+    expect(() => messageBus.encodeMessageBatch(bounded, [{ function: 'add', args: [1n] }])).not.toThrow();
+    expect(() => messageBus.encodeMessageBatch(bounded, [
+      { function: 'add', args: [1n] },
+      { function: 'clear' },
+      { function: 'add', args: [2n] },
+    ])).toThrow(/selects 2 direct chunkable-write rows/);
+
+    const malformed = {
+      ...bounded,
+      messageBus: {
+        ...bounded.messageBus,
+        fixedChunkableWritePolicy: {
+          version: 1 as const, maximumRows: 1 as const, selectors: [add.selector, add.selector],
+        },
+      },
+    };
+    expect(() => messageBus.encodeMessageBatch(malformed, [{ function: 'clear' }])).toThrow(
+      expect.objectContaining({ code: 'L3_PROTOCOL_METADATA_MALFORMED' }),
+    );
+  });
+
   it('derives direct and composite KTS1 provenance from compiler policy without embedding signatures', () => {
     const selector = 'a1b2c3d4';
     const inputs = [{ name: 'direct', type: 'sig' }, { name: 'authorization', type: 'Authorization' }];
@@ -187,9 +220,9 @@ describe('messageBus.encodeMessageBatch', () => {
       { function: 'pair', args: [4n] },
     ]);
     expect(encoded.results).toEqual([
-      { row: 0, types: ['int256'] },
-      { row: 1, types: ['bool'] },
-      { row: 2, types: ['int256', 'bool'] },
+      { row: 0, types: ['int256'], resultEncoding: 'compact-pushdata-v1' },
+      { row: 1, types: ['bool'], resultEncoding: 'compact-pushdata-v1' },
+      { row: 2, types: ['int256', 'bool'], resultEncoding: 'compact-pushdata-v1' },
     ]);
     expect(returning.messageBus!.route.outputs).toEqual([{ type: 'bytes' }]);
 
@@ -207,6 +240,40 @@ describe('messageBus.encodeMessageBatch', () => {
     )).toThrow(/unchecked suffix/);
   });
 
+  it('decodes mixed EVM ABI and compact result rows using each authenticated row encoding', () => {
+    const returning = compileString(RETURN_SOURCE, {
+      forceStateful: true,
+      messageBus: true,
+    });
+    const encoded = messageBus.encodeMessageBatch(returning, [
+      { function: 'twice', args: [3n] },
+      { function: 'positive', args: [8n] },
+      { function: 'pair', args: [4n] },
+    ]);
+    // Keep the compiler-produced batch framing and row order, but exercise the decoder with an authenticated
+    // mixed schema. The artifact itself is native, proving result framing is selected per row rather than from
+    // the artifact-wide compatibility mode.
+    const mixedPlan = {
+      ...encoded,
+      results: [
+        { row: 0, types: ['int256'], resultEncoding: 'evm-abi-v1' as const },
+        { row: 1, types: ['bool'], resultEncoding: 'compact-pushdata-v1' as const },
+        { row: 2, types: ['int256', 'bool'], resultEncoding: 'evm-abi-v1' as const },
+      ],
+    };
+    const first = encodeEvmInvocationResult([6n], ['int256']);
+    const compact = scriptToBytecode([Uint8Array.of(1)]);
+    const last = encodeEvmInvocationResult([5n, true], ['int256', 'bool']);
+    const packed = Uint8Array.from([...first, ...compact, ...last]);
+    const commitment = scriptToBytecode([packed]);
+
+    expect(messageBus.decodeMessageBusResults(returning, mixedPlan, commitment)).toEqual([
+      { row: 0, type: 'int256', value: 6n },
+      { row: 1, type: 'bool', value: true },
+      { row: 2, type: '(int256,bool)', value: [5n, true] },
+    ]);
+  });
+
   it('encodes and decodes a data-only sig as compact bytes without a signing witness', () => {
     const signatureData = compileString(SIGNATURE_DATA_SOURCE, {
       forceStateful: true,
@@ -220,7 +287,9 @@ describe('messageBus.encodeMessageBatch', () => {
 
     expect(encoded.routeWitnesses).toEqual([]);
     expect(encoded.rows[0].argsHex).toBe(binToHex(scriptToBytecode([value])));
-    expect(encoded.results).toEqual([{ row: 0, types: ['sig'] }]);
+    expect(encoded.results).toEqual([{
+      row: 0, types: ['sig'], resultEncoding: 'compact-pushdata-v1',
+    }]);
     expect(provisionalInvocationResult(signatureData, ['sig'])).toBe('00');
 
     const commitment = scriptToBytecode([scriptToBytecode([value])]);
@@ -269,7 +338,7 @@ describe('messageBus.encodeMessageBatch', () => {
     ]);
     const visibleRouteInputs = routed.messageBus!.route.inputs
       .filter((input) => input.name !== 'batchBlob' && !input.name.startsWith('__internal__'));
-    const witness = (name: string) => encoded.routeWitnesses[visibleRouteInputs
+    const witness = (name: string): unknown => encoded.routeWitnesses[visibleRouteInputs
       .findIndex((input) => input.name === name)];
 
     expect(witness('__message_bus_key_balances_0_row_r0')).toEqual(

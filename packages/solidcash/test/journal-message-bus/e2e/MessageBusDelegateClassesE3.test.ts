@@ -7,7 +7,7 @@ import {
 } from '@solidcash/utils';
 import {
   Contract, SignatureTemplate, StatefulTransactionBuilder, TransactionBuilder, messageBus,
-  getDataNftAddress, createDataNftUnlocker,
+  getDataNftAddress, createDataNftUnlocker, createReadOnlyDataNftUnlocker,
 } from '../../../src/index.js';
 import { ExternalCallUtxoGroup } from '../../../src/stateful/StatefulTransactionBuilder.js';
 import { DEFAULT_PROXY_SOURCE, defaultProxyArtifact } from '../../../src/stateful/defaultProxyArtifact.js';
@@ -308,6 +308,7 @@ describe('message bus delegate participant classes (E3, SEMANTIC)', () => {
       coSpentImplementation?: 'pinned' | 'foreign';
       proxyMasterIndexWitness?: bigint;
       settledCounter?: bigint;
+      relocateImplementation?: boolean;
     } = {}): Promise<{ send: Promise<any>; proxyCategory: string }> {
       const provider = createMessageBusSemanticTestProvider();
       const pinned = await deploy(provider, implArtifact, [], { counter: 0n });
@@ -318,19 +319,30 @@ describe('message bus delegate participant classes (E3, SEMANTIC)', () => {
       const useForeign = options.coSpentImplementation === 'foreign';
       const co = useForeign ? foreign : pinned;
       const coArtifact = useForeign ? foreignArtifact : implArtifact;
+      const implementationInputIndex = options.relocateImplementation ? 3 : 2;
       const send = new StatefulTransactionBuilder({
         provider,
         stateLayout: pinnedProxyArtifact.stateLayout!,
         categoryId: proxy.categoryId,
         masterUtxo: {
           ...proxy.master,
-          unlocker: (proxy.contract.unlock as any).up(selectorOf(implArtifact, 'increment'), 2n),
+          unlocker: (proxy.contract.unlock as any).up(
+            selectorOf(implArtifact, 'increment'), BigInt(implementationInputIndex),
+          ),
         },
         dataNftUtxos: proxy.dataNfts.map((nft) => ({
           ...nft, unlocker: createDataNftUnlocker(proxy.contract, 0, proxy.categoryId),
         })),
+        ...(options.relocateImplementation ? {
+          readOnlyDataNftUtxos: [{
+            ...foreign.dataNfts[0],
+            unlocker: createReadOnlyDataNftUnlocker(foreign.contract, foreign.categoryId),
+          }],
+        } : {}),
         externalCallUtxoGroups: [
-          delegateGroup(coArtifact, co, 'increment', [options.proxyMasterIndexWitness ?? 0n], 2),
+          delegateGroup(
+            coArtifact, co, 'increment', [options.proxyMasterIndexWitness ?? 0n], implementationInputIndex,
+          ),
         ],
       }).setState('counter', options.settledCounter ?? (useForeign ? 999n : 6n)).send();
       return { send, proxyCategory: proxy.categoryId };
@@ -369,6 +381,17 @@ describe('message bus delegate participant classes (E3, SEMANTIC)', () => {
         expectPreflightRefusal(message, 2, 'Program failed an OP_VERIFY operation.');
       }, 120_000,
     );
+
+    /**
+     * Attacks the delegate-to-owner adjacency relation without changing either identity witness. The proxy pins
+     * the honest implementation at its actual input index, while one independently self-preserving read-only NFT
+     * separates that implementation from the proxy block. The proxy therefore accepts its code-identity check;
+     * only the implementation's `_proxyMasterIndex == OP_INPUTINDEX - (1 + dataNftCount)` check can refuse.
+     */
+    it('rejects a relocated implementation even when the proxy pins its actual input index', async () => {
+      const message = await outcome((await build({ relocateImplementation: true })).send);
+      expectPreflightRefusal(message, 3, 'Program failed an OP_VERIFY operation.');
+    }, 120_000);
 
     /**
      * Attacks OUTPUT AUTHORITY, and nothing else: a proxy post-state the delegate covenant did not compute.

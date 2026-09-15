@@ -1,8 +1,8 @@
 import { binToHex } from '@bitauth/libauth';
 import { SplitStateFootprint } from '@solidcash/utils';
 import {
-  ContractNode, FunctionCallNode, FunctionCallStatementNode, FunctionDefinitionNode, IndirectCallNode, Node,
-  TupleAssignmentNode,
+  AssignNode, ContractNode, DeleteLocalNode, FunctionCallNode, FunctionCallStatementNode,
+  FunctionDefinitionNode, IdentifierNode, IndirectCallNode, Node, TupleAssignmentNode,
   TryCatchNode, VariableDefinitionNode,
 } from '../ast/AST.js';
 
@@ -114,10 +114,15 @@ export interface FootprintAnalysisCache {
   directCalls: WeakMap<FunctionDefinitionNode, Set<string>>;
   bodyNodes: WeakMap<FunctionDefinitionNode, { locallyBound: Set<string>; nodes: Node[] }>;
   directFootprints: WeakMap<FunctionDefinitionNode, SplitStateFootprint>;
+  /** Contract scalar-state namespace used while analysing pre-semantic Solidity-compatible bare identifiers. */
+  stateNames?: ReadonlySet<string>;
 }
 
-export function createFootprintAnalysisCache(): FootprintAnalysisCache {
-  return { directCalls: new WeakMap(), bodyNodes: new WeakMap(), directFootprints: new WeakMap() };
+export function createFootprintAnalysisCache(stateNames?: ReadonlySet<string>): FootprintAnalysisCache {
+  return {
+    directCalls: new WeakMap(), bodyNodes: new WeakMap(), directFootprints: new WeakMap(),
+    ...(stateNames && { stateNames: new Set(stateNames) }),
+  };
 }
 
 export function analyseFunctionFootprint(
@@ -185,6 +190,20 @@ export function analyseFunctionFootprint(
           : undefined;
         const bareReadName = bareRead?.constructor.name === 'IdentifierNode' ? bareRead.name : undefined;
         if (kind === 'StateAccessNode' && resourceName) directReads.add(`state:${resourceName}`);
+        // Before SymbolTableTraversal, Solidity-compatible `x` and `x = value` state syntax is represented as
+        // ordinary identifiers/assignments. Keep footprint admission representation-independent by recognizing
+        // names from the caller-supplied contract state namespace, with the same local-shadow guard used by bare
+        // collection analysis. Explicit `this.x` already arrives as StateAccess/StateAssign and needs no context.
+        else if (node instanceof AssignNode && node.identifier instanceof IdentifierNode
+          && cache?.stateNames?.has(node.identifier.name) && !locallyBound.has(node.identifier.name)) {
+          directWrites.add(`state:${node.identifier.name}`);
+        } else if (node instanceof DeleteLocalNode && cache?.stateNames?.has(node.identifier.name)
+          && !locallyBound.has(node.identifier.name)) {
+          directWrites.add(`state:${node.identifier.name}`);
+        } else if (node instanceof IdentifierNode && cache?.stateNames?.has(node.name)
+          && !locallyBound.has(node.name)) {
+          directReads.add(`state:${node.name}`);
+        }
         else if (bareReadName !== undefined && !locallyBound.has(bareReadName)) {
           directReads.add(collectionResourceName(bareReadName, undefined));
         } else if (/^(MappingAccess|ArrayAccess|StateArrayAccess)/.test(kind) && collectionResource

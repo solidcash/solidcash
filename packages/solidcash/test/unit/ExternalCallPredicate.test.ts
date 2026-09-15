@@ -7,12 +7,12 @@ import { compileString } from '../direct-compile.js';
 import { StatefulContract } from '../../src/index.js';
 import {
   anchorRoutedDynamicResourcesAtOwner,
-  canRefreshReachedCallFromPostState,
   externalCallTargetSourceLockingBytecodeHex,
   externalReturnParamSlot,
   groupIndexForExternalCallSlot,
   inactiveMessageBusRouteWitness,
   isSdkResolvedExternalCallTopologyWitness,
+  physicalExternalCallGroupIndexByMasterOutpoint,
   physicalExternalCallSelectorHex,
   rebaseRoutedBatchProofOffsets,
   selectedMessageBusResourceMetadata,
@@ -418,24 +418,6 @@ describe('conditional external-call topology', () => {
       .toBe(binToHex(physicalLock));
   });
 
-  it('retains a reached call when completed caller state invalidates its earlier guard', () => {
-    const guard: ExternalCallExpression = {
-      kind: 'binary',
-      operator: '>',
-      left: source(0),
-      right: { kind: 'state', name: 'amount' },
-    };
-    const initialReachability = evaluator._evaluateExternalExpression(
-      guard, [200n], artifact, { amount: 100n }, [{ type: 'uint256' }],
-    );
-    const postStateReachability = evaluator._evaluateExternalExpression(
-      guard, [200n], artifact, { amount: 200n }, [{ type: 'uint256' }],
-    );
-
-    expect(initialReachability).toBe(true);
-    expect(canRefreshReachedCallFromPostState(postStateReachability)).toBe(false);
-  });
-
   it('uses ABI-valid placeholders for inactive fixed route bands', () => {
     expect(inactiveMessageBusRouteWitness('string')).toBe('');
     expect(inactiveMessageBusRouteWitness('uint256')).toBe(0n);
@@ -486,6 +468,22 @@ describe('conditional external-call topology', () => {
     };
 
     expect(physicalExternalCallSelectorHex([proxy, sharedView], [delegate], 1)).toBe('53434231');
+  });
+
+  it('interns repeated callsites by the exact consumed master outpoint', () => {
+    const first = { masterUtxo: { txid: 'AA'.repeat(32), vout: 2 } };
+    const alias = { masterUtxo: { txid: 'aa'.repeat(32), vout: 2 }, sharedGroupIndex: 0 };
+    const groups = [first, alias];
+
+    expect(physicalExternalCallGroupIndexByMasterOutpoint(
+      groups, { txid: 'Aa'.repeat(32), vout: 2 },
+    )).toBe(0);
+    expect(physicalExternalCallGroupIndexByMasterOutpoint(
+      groups, { txid: 'aa'.repeat(32), vout: 3 },
+    )).toBe(-1);
+    expect(physicalExternalCallGroupIndexByMasterOutpoint(
+      groups, { txid: 'bb'.repeat(32), vout: 2 },
+    )).toBe(-1);
   });
 
   it('treats physical call bases and master indices as SDK-owned route witnesses', () => {

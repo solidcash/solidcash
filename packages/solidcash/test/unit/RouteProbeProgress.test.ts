@@ -3,7 +3,10 @@ import { computeCollectionHash } from '@solidcash/utils';
 import { describe, expect, it } from 'vitest';
 import {
   progressiveRouteProbePassLimit,
+  permitsRouteValueChunkDerivation,
   recordRouteProbeObservation,
+  routeProbeRepairableEntryCoordinateCount,
+  routeValueRunFingerprint,
 } from '../../src/stateful/StatefulContract.js';
 import {
   valueChunkWriteResourceIdentity,
@@ -31,28 +34,70 @@ const write = (
 };
 
 describe('progressive route probe progress', () => {
+  it('bounds a probe by only its reachable physical entry coordinates', () => {
+    const carrier = (txid: string, offsets: number[]) => ({
+      categoryId: '71'.repeat(32),
+      masterUtxo: { txid: txid.repeat(64), vout: 0 },
+      blockLayout: {
+        slots: [
+          { kind: 'master', offset: 0 },
+          ...offsets.map((offset) => ({ kind: 'entry', offset })),
+        ],
+      },
+    });
+    const current = carrier('1', [1, 2]);
+    const embedded = carrier('2', [1, 2, 3]);
+    const unrelated = carrier('3', [1, 2, 3, 4, 5]);
+
+    expect(routeProbeRepairableEntryCoordinateCount(current)).toBe(2);
+    expect(routeProbeRepairableEntryCoordinateCount(current, embedded)).toBe(5);
+    expect(routeProbeRepairableEntryCoordinateCount(current)).not.toBe(
+      routeProbeRepairableEntryCoordinateCount(current, unrelated),
+    );
+  });
+
+  it('requires compiler-authored writes before a kernel carrier is treated as a value writer', () => {
+    expect(permitsRouteValueChunkDerivation('kernel-row-loop', [])).toBe(false);
+    expect(permitsRouteValueChunkDerivation('kernel-row-loop', [write('records', 1, 8)])).toBe(true);
+    expect(permitsRouteValueChunkDerivation('legacy-unroll', [])).toBe(true);
+  });
+
   it('keys progress by stable storage resource rather than physical output geometry', () => {
     const first = write('records', 1, 8);
     const relocated = { ...first, outputBase: 24, outputCount: 3 };
 
     expect(valueChunkWriteResourceIdentity(relocated))
       .toBe(valueChunkWriteResourceIdentity(first));
-    expect(progressiveRouteProbePassLimit(2, [first, relocated])).toBe(5);
-    expect(progressiveRouteProbePassLimit(2, [first, write('receipts', 2, 30)])).toBe(7);
+    expect(progressiveRouteProbePassLimit(2, [first, relocated])).toBe(7);
+    expect(progressiveRouteProbePassLimit(2, [first, write('receipts', 2, 30)])).toBe(9);
   });
 
-  it('accepts each materialization once and rejects unstable kernel observations', () => {
+  it('treats relocation as the same resource materialization and rejects semantic changes', () => {
     const observations = new Map<string, string>();
-    const value = { identity: 'value-run:resource-a', fingerprint: '12:chunk:lock' };
+    const chunks = [
+      { outputIndex: 63, commitment: '0000aa', lockingBytecode: Uint8Array.of(0xaa) },
+      { outputIndex: 64, commitment: '0100bb', lockingBytecode: Uint8Array.of(0xaa) },
+    ];
+    const value = { identity: 'value-run:resource-a', fingerprint: routeValueRunFingerprint(chunks) };
     const address = { identity: 'entry-lock:category:12', fingerprint: 'lock' };
 
     expect(recordRouteProbeObservation(observations, address, 'kernel-row-loop')).toBe('new');
     expect(recordRouteProbeObservation(observations, value, 'kernel-row-loop')).toBe('new');
-    expect(recordRouteProbeObservation(observations, value, 'kernel-row-loop')).toBe('same');
+    expect(recordRouteProbeObservation(observations, {
+      ...value,
+      fingerprint: routeValueRunFingerprint(chunks.map((chunk) => ({
+        ...chunk, outputIndex: chunk.outputIndex + 4,
+      }))),
+    }, 'kernel-row-loop')).toBe('same');
     expect(() => recordRouteProbeObservation(observations, {
       ...value,
-      fingerprint: '13:different-chunk:lock',
+      fingerprint: routeValueRunFingerprint([
+        chunks[0], { ...chunks[1], commitment: '0100cc' },
+      ]),
     }, 'kernel-row-loop')).toThrow(/unstable materialization/);
+    expect(() => routeValueRunFingerprint([
+      chunks[0], { ...chunks[1], outputIndex: 65 },
+    ])).toThrow(/contiguous output band/);
   });
 
   it('keeps descriptor-free legacy coordinate changes finite and explicit', () => {

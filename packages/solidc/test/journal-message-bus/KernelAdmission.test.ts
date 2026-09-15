@@ -16,13 +16,133 @@ ReturnType<typeof compileString>['messageBus']
 };
 
 describe('required kernel admission', () => {
-  it('fences a chunkable mapping producer without authenticated compact journal transport', () => {
+  it('admits one unconditional chunkable replacement beside unrelated conditional effects', () => {
+    const artifact = compileString(`contract C() {
+      mapping(uint => bytes) values;
+      int calls;
+      event Stored(uint key);
+      function set(uint key, bytes value, bool count) public {
+        if (count) this.calls = this.calls + 1;
+        values[key] = value;
+        emit Stored(key);
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+    const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'set');
+    const abi = artifact.abi.find((candidate) => candidate.name === 'set');
+    expect(handler).toMatchObject({ eligible: true });
+    expect(artifact.messageBus?.fixedChunkableWritePolicy).toEqual({
+      version: 1, maximumRows: 1, selectors: [handler?.selector],
+    });
+    expect(abi?.sourceEffectOrder).toBe('unsupported-flow');
+    expect(abi?.entryAccesses).toEqual([
+      expect.objectContaining({
+        collection: 'values', operations: ['write'], mutationEffectOrdinals: [expect.any(Number)],
+      }),
+    ]);
+  });
+
+  it('refuses a chunkable replacement reached only through conditional control', () => {
+    const artifact = compileString(`contract C() {
+      mapping(uint => bytes) values;
+      function set(uint key, bytes value, bool take) public {
+        if (take) this.values[key] = value;
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'set'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+  });
+
+  it('refuses a top-level chunkable replacement bypassed by a successful early return', () => {
+    const artifact = compileString(`contract C() {
+      mapping(uint => bytes) values;
+      function set(uint key, bytes value, bool skip) public {
+        if (skip) return;
+        values[key] = value;
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'set'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+  });
+
+  it('retains exact occurrence metadata for a whole dynamic-struct replacement', () => {
+    const artifact = compileString(`contract C() {
+      struct Record { bytes data; int revision; }
+      mapping(uint => Record) records;
+      function replace(uint key, Record next) public {
+        records[key] = next;
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+    const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'replace');
+    const abi = artifact.abi.find((candidate) => candidate.name === 'replace');
+    expect(handler).toMatchObject({ eligible: true });
+    expect(artifact.messageBus?.fixedChunkableWritePolicy?.selectors).toContain(handler?.selector);
+    expect(abi?.entryAccesses).toEqual([expect.objectContaining({
+      collection: 'records', operations: ['write'], valueSource: 'id:next',
+      mutationEffectOrdinals: [expect.any(Number)],
+    })]);
+  });
+
+  it('admits one direct linear chunkable whole-entry transition behind an authenticated occurrence bound', () => {
+    const artifact = compileString(`pragma solidity ^0.8.0;
+      struct Record {
+        address owner;
+        uint16 fee;
+        bool seller;
+        bool buyer;
+        bool settled;
+      }
+      contract C {
+        mapping(uint256 => Record) records;
+        function setFields(uint256 id, address owner, uint16 fee) public {
+          records[id].owner = owner;
+          records[id].fee = fee;
+          records[id].seller = true;
+          records[id].buyer = true;
+        }
+        function control() public { require(true); }
+      }
+    `, { ...KERNEL, solidityImportCompat: true, maximumInputBytes: 1_000_000 });
+    const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'setFields');
+    const abi = artifact.abi.find((candidate) => candidate.name === 'setFields');
+    const collection = artifact.stateLayout?.collections?.find((candidate) => candidate.name === 'records');
+
+    expect(artifact.messageBus?.convention).toBe('kernel-row-loop');
+    expect(collection?.chunkableValue).toBe(true);
+    expect(handler).toMatchObject({ eligible: true });
+    expect(artifact.messageBus?.fixedChunkableWritePolicy).toEqual({
+      version: 1, maximumRows: 1, selectors: [handler?.selector],
+    });
+    expect(abi?.entryAccesses).toEqual([
+      expect.objectContaining({
+        collection: 'records', operations: ['read', 'write'],
+        mutationEffectOrdinals: [expect.any(Number)],
+      }),
+    ]);
+    expect(abi?.entryAccesses?.[0].valueSource).toContain('field:settled(');
+    expect(abi?.sourceEffectOrder).toBe('linear');
+    expect(abi?.inputs).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: '__internal__valueWitness_0' }),
+      expect.objectContaining({ name: '__internal__valueChunkOutputBase' }),
+    ]));
+    expect(abi?.inputs.some((input) => input.name === '__internal__kernelJournalAccessStreams')).toBe(false);
+  });
+
+  it('threads one unconditional direct chunkable mapping-array push through the typed route pool', () => {
     const artifact = compileString(`contract C() {
       mapping(uint => bytes32[]) values;
       function appendEntry(uint key, bytes32 value) public {
         this.values[key].push(value);
         require(this.values[key].length > 0);
       }
+      function control() public { require(true); }
     }`, KERNEL);
     const abi = artifact.abi.find((candidate) => candidate.name === 'appendEntry');
     expect(abi?.entryAccesses).toEqual([
@@ -30,7 +150,40 @@ describe('required kernel admission', () => {
     ]);
     expect(abi?.inputs.some((input) => input.name === '__internal__kernelJournalAccessStreams')).toBe(false);
     expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'appendEntry'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.messageBus?.convention).toBe('kernel-row-loop');
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'appendEntry')
+      ?.batchKeyWitnesses).toEqual([
+      expect.objectContaining({ inputIndex: 0, source: 'argument' }),
+    ]);
+  });
+
+  it.each([
+    ['a conditional push', 'if (take) this.values[key].push(value);', 'bool take'],
+    ['two pushes', 'this.values[key].push(value); this.values[key].push(value);', ''],
+    ['push and pop', 'this.values[key].push(value); this.values[key].pop();', ''],
+  ])('keeps %s outside the pooled direct-push capability', (_label, mutation, extraParameter) => {
+    const artifact = compileString(`contract C() {
+      mapping(uint => bytes32[]) values;
+      function mutate(uint key, bytes32 value${extraParameter ? `, ${extraParameter}` : ''}) public {
+        ${mutation}
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'mutate'))
       .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+  });
+
+  it('admits an exactly inlined direct-push helper through the same typed pool', () => {
+    const artifact = compileString(`contract C() {
+      mapping(uint => bytes32[]) values;
+      function append(uint key, bytes32 value) internal { this.values[key].push(value); }
+      function mutate(uint key, bytes32 value) public { append(key, value); require(true); }
+      function control() public { require(true); }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'mutate'))
+      .toMatchObject({ eligible: true });
   });
 
   it('retains chunkable mapping writes carried by authenticated compact journal transport', () => {
@@ -1565,6 +1718,24 @@ describe('required kernel admission', () => {
         require(true);
       }
       function control() public delegate { require(true); }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write')).toMatchObject({
+      eligible: true,
+    });
+  });
+
+  it('admits one row with scalar state, a fixed mapping write, and an event', () => {
+    const artifact = compileString(`contract C() {
+      int nonce;
+      mapping(int => int) values;
+      event Changed(int nonce, int key, int value);
+      function write(int key, int next) public {
+        this.nonce = this.nonce + 1;
+        this.values[key] = next;
+        emit Changed(this.nonce, key, next);
+        require(true);
+      }
+      function control() public { require(true); }
     }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write')).toMatchObject({
       eligible: true,

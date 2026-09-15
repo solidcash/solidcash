@@ -1,9 +1,13 @@
-import { encodeInt, Op, sha256 as sha256Sync, VALUE_CHUNK_SIZE, VALUE_HEAD_SIZE } from '@solidcash/utils';
+import {
+  computeCollectionHash, encodeInt, Op, sha256 as sha256Sync, VALUE_CHUNK_SIZE, VALUE_HEAD_SIZE,
+} from '@solidcash/utils';
+import { binToHex } from '@bitauth/libauth';
 import { describe, expect, it } from 'vitest';
 import {
   applyRedeemLockToChunks,
   chunksFromJobEventsValue as chunksFromEncodedValue,
   extractIdentityScanValueChunkPin,
+  persistValueChunkLock,
   resolveValueChunkWriteCategory,
   selectHashedValueForChunkPin,
   type ValueChunkWriteDescriptor,
@@ -34,6 +38,37 @@ const identityScanState = (stack: Uint8Array[]): {
 });
 
 describe('identity-scan value-chunk pin', () => {
+  it('authenticates a trace value against its exact compiler-described covenant pin', () => {
+    const categoryId = '31'.repeat(32);
+    const collectionSignature = 'history:mapping(uint256 => Change[])';
+    const value = new Uint8Array(180).fill(0x41);
+    const decoy = new Uint8Array(180).fill(0x52);
+    const write: ValueChunkWriteDescriptor = {
+      categoryId,
+      collection: 'history',
+      collectionSignature,
+      collectionHash: binToHex(computeCollectionHash(collectionSignature)),
+      keySlot: '42'.repeat(32),
+      entryAccessSlot: 0,
+      routeSlot: 0,
+      operation: 'update',
+      outputBase: 7,
+      outputCount: 2,
+    };
+    const pin = persistValueChunkLock(categoryId, value, write)!;
+
+    expect(pin).not.toEqual(p2sh32(sha256Sync(value)));
+    expect(selectHashedValueForChunkPin(
+      [[decoy], [value]], pin, 2, [], undefined, false, write,
+    )).toEqual({ value, lockingBytecode: pin });
+    expect(selectHashedValueForChunkPin(
+      [[decoy]], pin, 2, [], undefined, false, write,
+    )).toBeUndefined();
+    expect(selectHashedValueForChunkPin(
+      [[value]], pin, 2, [], undefined, false, { ...write, keySlot: '43'.repeat(32) },
+    )).toBeUndefined();
+  });
+
   it('recovers the redeem lock and nNew from matches==expected EQUALVERIFY', () => {
     const payload = new Uint8Array(180).fill(0x41);
     const digest = sha256Sync(payload);
@@ -107,6 +142,55 @@ describe('identity-scan value-chunk pin', () => {
     expect(selected?.value).toEqual(authentic);
     expect(selected!.value.length).toBe(180);
   });
+
+  it('preserves value-tail chronology when one resource has multiple authenticated epochs', () => {
+    const earlier = new Uint8Array(388).fill(0x41);
+    const later = new Uint8Array(388).fill(0x52);
+    const tailOf = (value: Uint8Array): Uint8Array => {
+      const length = new Uint8Array(4);
+      new DataView(length.buffer).setUint32(0, value.length, true);
+      return new Uint8Array([
+        ...length, ...sha256Sync(value), ...value.slice(0, VALUE_HEAD_SIZE),
+      ]);
+    };
+    const lock = p2sh32(sha256Sync(Uint8Array.of(0x67)));
+
+    for (const { stacks, expected } of [
+      { stacks: [[earlier, tailOf(earlier)], [later, tailOf(later)]], expected: later },
+      { stacks: [[later, tailOf(later)], [earlier, tailOf(earlier)]], expected: earlier },
+    ]) {
+      const selected = selectHashedValueForChunkPin(
+        stacks, lock, 3, [earlier, later], undefined, false,
+      );
+      expect(selected?.value).toBe(expected);
+      expect(selected?.lockingBytecode).toEqual(lock);
+    }
+  });
+
+  it('uses an exact producer value when the trace exposes only unauthenticated noise', () => {
+    const continuation = new Uint8Array(388).fill(0x41);
+    const unrelated = new Uint8Array(423).fill(0x52);
+    const lock = p2sh32(sha256Sync(Uint8Array.of(0x68)));
+
+    const selected = selectHashedValueForChunkPin(
+      [[Uint8Array.of(1, 2, 3)]],
+      lock,
+      3,
+      [unrelated],
+      continuation,
+      false,
+    );
+
+    expect(selected?.value).toBe(continuation);
+    expect(selected?.lockingBytecode).toEqual(lock);
+    expect(selectHashedValueForChunkPin(
+      [[Uint8Array.of(1, 2, 3)]], lock, 3, [unrelated], undefined, false,
+    )).toBeUndefined();
+    expect(selectHashedValueForChunkPin(
+      [[]], lock, 4, [], continuation, false,
+    )).toBeUndefined();
+  });
+
   it('recovers the pin when the VM reports the following OP_2DROP as the failure ip', () => {
     const value = new Uint8Array(180).fill(0x43);
     const lock = p2sh32(sha256Sync(Uint8Array.of(0x77)));

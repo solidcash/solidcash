@@ -32,6 +32,7 @@ import {
   groupLayoutBlockSize,
   groupLayoutTrailingBase,
   selectDelegateExecutionLayout,
+  physicalDelegateSlotOffset,
   pinExactSortedBatchEntry,
   skipCompilerOwnedInBlockCollectionStrip,
   groupOwnsLinearSortedBatch,
@@ -149,6 +150,7 @@ import {
   isInsertShapedJobEvent,
   shouldRematerializePersistUpdate,
   shouldStampPersistUpdateDigestLock,
+  shouldUseLegacyPersistDigestLockForValueChunks,
   rememberJobEventsLock,
   rememberJobEventsValue,
   rememberValueChunkUnlockRecipe,
@@ -166,10 +168,12 @@ import {
   isCompilerDescribedMintingBandWriter,
   StatefulTransactionBuilder,
   groupChunkableValueWriteCollection,
+  claimedChunkableValueWriteCollection,
   groupWritesSingleChunkableValueCollection,
   groupChunkableArrayWriteCollection,
   groupWritesSingleChunkableArrayCollection,
   selectChunkableValueWriteExecution,
+  valueChunkWriteResourceIdentity,
   legacyPlannedChunkableValueWriteCollection,
   permitsLegacyNamedValueChunkFallback,
   permitsLegacyValueChunkEventReconstruction,
@@ -189,6 +193,22 @@ import { getValueChunkLockingBytecode } from '../../src/stateful/covenant-helper
 import {
   describeValueChunkWrites, resolveChunkableEntryCollection,
 } from '../../src/stateful/StatefulContract.js';
+
+describe('delegate-only physical slot projection', () => {
+  const layout = {
+    blockSize: 3,
+    slots: [
+      { kind: 'master' as const, offset: 0 },
+      { kind: 'dataNft' as const, offset: 1 },
+      { kind: 'event' as const, offset: 2 },
+    ],
+  };
+
+  it('removes proxy-resident data slots only for delegate-only execution', () => {
+    expect(physicalDelegateSlotOffset(layout, 2, true)).toBe(1);
+    expect(physicalDelegateSlotOffset(layout, 2, false)).toBe(2);
+  });
+});
 
 describe('external event probe input', () => {
   it('uses delegate geometry across alpha-renaming and ignores a decoy legacy name', () => {
@@ -328,6 +348,83 @@ describe('generic persisted value-chunk write identity', () => {
     ])).toMatchObject({
       inputIndex: 17, collection: 'notices', abiFunction: { name: 'appendNotice' },
     });
+  });
+
+  it('selects a delegated writer from one authenticated resource before entry geometry materializes', () => {
+    const carrier = makeGroup('relayRecord');
+    const [write] = describeValueChunkWrites(carrier);
+    const owner = {
+      categoryId,
+      lockingBytecode: `aa20${'51'.repeat(32)}87`,
+    };
+    const claim = {
+      resourceIdentity: valueChunkWriteResourceIdentity(write),
+      producer: {
+        version: 1 as const,
+        stateOwner: owner,
+        sourcePath: [{
+          sourceEffectDomainId: '91'.repeat(32),
+          sourceCallsiteId: 4,
+          occurrenceIndex: 0,
+          sourceEffectOrdinal: 2,
+        }],
+        mutationEffectDomainId: '92'.repeat(32),
+        mutationSourceEffectOrdinal: 3,
+      },
+    };
+    const kernelArtifact = {
+      ...carrier.externalContract.inner.artifact,
+      abi: carrier.externalContract.inner.artifact.abi.map((fn: { name: string }) => ({
+        ...fn, name: 'applyRecord',
+      })),
+      messageBus: { convention: 'kernel-row-loop' as const },
+    };
+    const executor = {
+      ...carrier,
+      functionName: 'applyRecord',
+      logicalFunctionName: 'applyRecord',
+      logicalArtifact: kernelArtifact,
+      externalContract: { inner: { artifact: kernelArtifact } },
+      valueChunkWrites: [],
+      valueChunkProducerClaims: [claim],
+      valueChunkStateOwner: owner,
+      valueChunkOutputCount: undefined,
+      callMode: 'delegatecall' as const,
+    };
+
+    expect(claimedChunkableValueWriteCollection(executor)).toBe('notices');
+    expect(selectChunkableValueWriteExecution([
+      { group: executor, inputIndex: 11 },
+    ])).toMatchObject({
+      inputIndex: 11, collection: 'notices', abiFunction: { name: 'applyRecord' },
+    });
+
+    const otherOwner = { ...owner, lockingBytecode: `aa20${'52'.repeat(32)}87` };
+    const otherOwnerExecutor = {
+      ...executor,
+      valueChunkStateOwner: otherOwner,
+      valueChunkProducerClaims: [{
+        ...claim,
+        producer: { ...claim.producer, stateOwner: otherOwner },
+      }],
+    };
+    expect(claimedChunkableValueWriteCollection(otherOwnerExecutor)).toBe('notices');
+    expect(selectChunkableValueWriteExecution([
+      { group: executor, inputIndex: 11 },
+      { group: otherOwnerExecutor, inputIndex: 11 },
+    ])).toBeUndefined();
+
+    expect(claimedChunkableValueWriteCollection({
+      ...executor,
+      valueChunkProducerClaims: [{
+        ...claim,
+        resourceIdentity: `${categoryId}:${'00'.repeat(20)}:${'42'.repeat(32)}`,
+      }],
+    })).toBeUndefined();
+    expect(claimedChunkableValueWriteCollection({
+      ...executor,
+      valueChunkStateOwner: { ...owner, categoryId: '32'.repeat(32) },
+    })).toBeUndefined();
   });
 
   it('recovers an alpha-renamed legacy writer from exact planned continuation geometry', () => {
@@ -710,11 +807,11 @@ describe('generic persisted value-chunk write identity', () => {
   it('authenticates an alpha-renamed update and rejects a same-category decoy collection', () => {
     StatefulTransactionBuilder.clearPersistedJobEvents();
     const value = new Uint8Array(100).fill(9);
+    const [renamed] = describeValueChunkWrites(makeGroup('appendNotice'));
     rememberJobEventsValue(categoryId, value);
     rememberJobEventsLock(categoryId, getValueChunkLockingBytecode(
-      categoryId, signature, slot, sha256Sync(value),
+      categoryId, renamed.collection, slot, sha256Sync(value),
     ));
-    const [renamed] = describeValueChunkWrites(makeGroup('appendNotice'));
     expect(renamed).toMatchObject({
       collectionSignature: signature, keySlot: binToHex(slot), operation: 'update',
       outputBase: 4, outputCount: 3,
@@ -723,20 +820,20 @@ describe('generic persisted value-chunk write identity', () => {
     expect(exact?.width).toBeGreaterThan(0);
     expect(exact?.value).toEqual(value);
     expect(exact?.recipe).toMatchObject({
-      collection: signature, categoryId, slot, root: sha256Sync(value),
+      collection: renamed.collection, categoryId, slot, root: sha256Sync(value),
     });
     expect(binToHex(persistUpdateRedeemLock(categoryId, undefined, renamed)!))
-      .toBe(binToHex(getValueChunkLockingBytecode(categoryId, signature, slot, sha256Sync(value))));
+      .toBe(binToHex(getValueChunkLockingBytecode(categoryId, renamed.collection, slot, sha256Sync(value))));
     expect(rememberValueChunkUnlockRecipe(renamed, value, exact?.lockingBytecode)).toBe(true);
     expect(binToHex(persistValueChunkLock(categoryId, value, renamed)!)).toBe(
-      binToHex(getValueChunkLockingBytecode(categoryId, signature, slot, sha256Sync(value))),
+      binToHex(getValueChunkLockingBytecode(categoryId, renamed.collection, slot, sha256Sync(value))),
     );
     const digestLock = persistUpdateDigestLock(categoryId, [], renamed);
     expect(digestLock?.length).toBe(35);
     expect(binToHex(digestLock!)).not.toBe(binToHex(legacyJobEventsPersistUpdateDigestLock(categoryId)!));
     expect(persistUpdateDigestLock(categoryId)).toBeUndefined();
     const otherLock = getValueChunkLockingBytecode(
-      categoryId, 'other:mapping(int => Notice[])', slot, sha256Sync(value),
+      categoryId, 'other', slot, sha256Sync(value),
     );
     expect(binToHex(persistUpdateRedeemLock(categoryId, otherLock, renamed)!))
       .not.toBe(binToHex(otherLock));
@@ -767,10 +864,10 @@ describe('generic persisted value-chunk write identity', () => {
     const firstValue = new Uint8Array(100).fill(0x31);
     const secondValue = new Uint8Array(120).fill(0x52);
     const firstLock = getValueChunkLockingBytecode(
-      categoryId, first.collectionSignature, hexToBin(first.keySlot), sha256Sync(firstValue),
+      categoryId, first.collection, hexToBin(first.keySlot), sha256Sync(firstValue),
     );
     const secondLock = getValueChunkLockingBytecode(
-      categoryId, second.collectionSignature, hexToBin(second.keySlot), sha256Sync(secondValue),
+      categoryId, second.collection, hexToBin(second.keySlot), sha256Sync(secondValue),
     );
 
     rememberJobEventsValue(categoryId, firstValue);
@@ -894,7 +991,7 @@ describe('generic persisted value-chunk write identity', () => {
     const firstValue = new Uint8Array(100).fill(3);
     rememberJobEventsValue(first.categoryId, firstValue);
     rememberJobEventsLock(first.categoryId, getValueChunkLockingBytecode(
-      first.categoryId, first.collectionSignature, slot, sha256Sync(firstValue),
+      first.categoryId, first.collection, slot, sha256Sync(firstValue),
     ));
 
     const secondCategory = 'cd'.repeat(32);
@@ -902,7 +999,7 @@ describe('generic persisted value-chunk write identity', () => {
     const secondValue = new Uint8Array(100).fill(4);
     rememberJobEventsValue(secondCategory, secondValue);
     rememberJobEventsLock(secondCategory, getValueChunkLockingBytecode(
-      secondCategory, second.collectionSignature, slot, sha256Sync(secondValue),
+      secondCategory, second.collection, slot, sha256Sync(secondValue),
     ));
 
     expect(selectPersistedValueChunkWrite([first, second])).toBeUndefined();
@@ -3237,6 +3334,15 @@ describe('assignPhysicalReturnIndices', () => {
     })).toBe(false);
     expect(shouldStampPersistUpdateDigestLock({
       persistReady: true, persistWidth: 0, firstPublishInsert: false,
+    })).toBe(false);
+    expect(shouldUseLegacyPersistDigestLockForValueChunks({
+      hasWriteMetadata: false, permitsLegacyFallback: true, stampPersistUpdate: true,
+    })).toBe(true);
+    expect(shouldUseLegacyPersistDigestLockForValueChunks({
+      hasWriteMetadata: true, permitsLegacyFallback: true, stampPersistUpdate: true,
+    })).toBe(false);
+    expect(shouldUseLegacyPersistDigestLockForValueChunks({
+      hasWriteMetadata: false, permitsLegacyFallback: false, stampPersistUpdate: true,
     })).toBe(false);
     expect(persistUpdateDigestLock('missing-category')).toBeUndefined();
     expect(persistUpdateDigestLock(

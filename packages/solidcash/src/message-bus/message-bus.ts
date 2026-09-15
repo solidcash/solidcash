@@ -1,7 +1,7 @@
 import { binToHex, encodeLockingBytecodeP2pkh, hexToBin, sha256 } from '@bitauth/libauth';
 import {
   ArrayType, decodePushdataValue, parseArrayTypeString, parseType, type Artifact, type StateValue, scriptToBytecode,
-  type StructDefinitionInfo, type ExternalCallExpression,
+  type StructDefinitionInfo, type ExternalCallExpression, type ExternalResultEncoding,
 } from '@solidcash/utils';
 import {
   encodeFunctionArgument, isSignatureTemplateArgumentForType, type ConstructorArgument, type FunctionArgument,
@@ -9,6 +9,8 @@ import {
 } from '../Argument.js';
 import { MessageBusDiagnosticError } from './diagnostics.js';
 import { markCanonicalBatchBlob } from './internal-batch-authority.js';
+import { resolveExternalResultEncoding } from '../stateful/solidityAbi.js';
+import { decodeEvmInvocationResultPrefix } from '../stateful/evm-abi-result.js';
 
 export interface MessageBatchCall {
   function: string;
@@ -86,7 +88,7 @@ export interface EncodedMessageBatch {
    * canonical aggregate return blob to the return-event NFT; a graph consumer must authenticate that output
    * before decoding it.
    */
-  results: readonly { row: number; types: readonly string[] }[];
+  results: readonly { row: number; types: readonly string[]; resultEncoding: ExternalResultEncoding }[];
   /** Canonical row projection used by the graph callManifest. */
   rows: readonly {
     row: number;
@@ -487,6 +489,29 @@ export function encodeMessageBatch(
       `message-bus batch batch row count must be between ${minimumRows} and ${capability.maximumRows}`,
     );
   }
+  const fixedChunkablePolicy = capability.fixedChunkableWritePolicy;
+  if (fixedChunkablePolicy !== undefined) {
+    const selectors = fixedChunkablePolicy.selectors.map(normalizeFunctionSelector);
+    if (fixedChunkablePolicy.version !== 1 || fixedChunkablePolicy.maximumRows !== 1
+      || selectors.some((selector) => selector === undefined)
+      || new Set(selectors).size !== selectors.length) {
+      throw new MessageBusDiagnosticError(
+        'L3_PROTOCOL_METADATA_MALFORMED',
+        `artifact '${artifact.contractName}' publishes malformed fixed chunkable-write policy metadata`,
+        { metadataField: 'messageBus.fixedChunkableWritePolicy', ownerIdentity: artifact.contractName },
+      );
+    }
+    const selected = invocations.filter((invocation) => {
+      const handler = resolveMessageBusHandler(artifact, invocation.function, invocation.selector);
+      return handler !== undefined && selectors.includes(normalizeFunctionSelector(handler.selector));
+    }).length;
+    if (selected > fixedChunkablePolicy.maximumRows) {
+      throw new Error(
+        `message-bus batch selects ${selected} direct chunkable-write rows; `
+        + `the authenticated participant route permits at most ${fixedChunkablePolicy.maximumRows}`,
+      );
+    }
+  }
 
   const structs = artifact.structs ?? artifact.stateLayout?.structs;
   // A compiler-owned literal mapping key has no row argument to source it from. Recover it from the direct
@@ -599,7 +624,7 @@ export function encodeMessageBatch(
     swappableGlobals.set(base, { ...selected, rowBase });
   }
   const signatureWitnessValues = new Map<string, FunctionArgument>();
-  const results: { row: number; types: readonly string[] }[] = [];
+  const results: { row: number; types: readonly string[]; resultEncoding: ExternalResultEncoding }[] = [];
   const projectedRows: {
     row: number; function: string; selectorHex: string; argsHex: string; transactionSignatureFrameHex: string;
   }[] = [];
@@ -610,7 +635,14 @@ export function encodeMessageBatch(
       throw new Error(`Handler '${invocation.function}' is not batch eligible: ${handler.rejectionReason}`);
     }
     if ((handler.outputs?.length ?? 0) > 0) {
-      results.push({ row: rowIndex, types: Object.freeze(handler.outputs!.map((output) => output.type)) });
+      const types = Object.freeze(handler.outputs!.map((output) => output.type));
+      results.push({
+        row: rowIndex,
+        types,
+        resultEncoding: resolveExternalResultEncoding(
+          handler.resultEncoding, artifact, types, `message-bus handler '${handler.name}'`,
+        ),
+      });
     }
     const args = [...(invocation.args ?? [])];
     if (args.length !== handler.inputs.length) {
@@ -917,12 +949,24 @@ export function decodeMessageBusResults(
   const structs = artifact.structs ?? artifact.stateLayout?.structs;
   let offset = 0;
   const decodedRows = plan.results.map((result) => {
-    const values: StateValue[] = [];
-    for (const type of result.types) {
-      if (offset >= packed.length) throw new Error('message-bus batch result commitment ended before every result field');
-      const decoded = decodePushdataValue(packed, offset, type, structs);
-      values.push(decoded.value);
+    let values: StateValue[];
+    if (result.resultEncoding === 'evm-abi-v1') {
+      const decoded = decodeEvmInvocationResultPrefix(
+        packed.slice(offset), result.types, structs, artifact.enums,
+      );
+      if (!decoded) throw new Error('message-bus batch result commitment contains malformed EVM ABI result data');
+      values = decoded.values;
       offset += decoded.bytesConsumed;
+    } else {
+      values = [];
+      for (const type of result.types) {
+        if (offset >= packed.length) {
+          throw new Error('message-bus batch result commitment ended before every result field');
+        }
+        const decoded = decodePushdataValue(packed, offset, type, structs);
+        values.push(decoded.value);
+        offset += decoded.bytesConsumed;
+      }
     }
     return Object.freeze({
       row: result.row,

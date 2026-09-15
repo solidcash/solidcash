@@ -151,8 +151,10 @@ describe('inferred message-bus batching for repeated external callees', () => {
     for (const name of ['ternary', 'shortCircuit']) {
       const fn = artifact.abi.find((candidate) => candidate.name === name)!;
       expect(fn.sourceEffectOrder).toBe('unsupported-flow');
-      expect(fn.entryAccesses?.[0].mutationEffectOrdinals).toBeUndefined();
-      expect(fn.externalCalls?.[0].sourceEffectOrdinal).toBeUndefined();
+      expect(fn.entryAccesses?.[0].mutationEffectOrdinals).toEqual([expect.any(Number)]);
+      expect(fn.externalCalls?.[0].sourceEffectOrdinal).toEqual(expect.any(Number));
+      expect(fn.externalCalls?.[0].sourceEffectOrdinal)
+        .toBeGreaterThan(fn.entryAccesses?.[0].mutationEffectOrdinals?.[0] ?? Number.MAX_SAFE_INTEGER);
     }
   });
 

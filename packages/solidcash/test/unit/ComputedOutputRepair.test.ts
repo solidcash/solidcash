@@ -4,6 +4,7 @@ import { Op } from '@solidcash/utils';
 import {
   canMaterializeRepairedValueChunk,
   canApplyRepairedNftCommitment,
+  computedOutputRepairPassLimit,
   followsMutableNftOutputGuard,
   isActiveVmControlBranch,
   isFixedStateRepairSlot,
@@ -12,7 +13,49 @@ import {
   isOwnedStateRepairCoordinate,
   isRepairableNftOutput,
   isScidPlaceholderCommitment,
+  recordComputedOutputConvergenceState,
+  recordComputedOutputRepairTransition,
 } from '../../src/stateful/computed-output-repair.js';
+
+describe('computed-output repair convergence', () => {
+  it('scales its finite pass budget beyond 32 independently repaired coordinates', () => {
+    const limit = computedOutputRepairPassLimit(1, 40);
+    const claims = new Map<string, string>();
+    const states = new Set<string>();
+    for (let outputIndex = 0; outputIndex < 40; outputIndex++) {
+      recordComputedOutputConvergenceState(states, `state-${outputIndex}`);
+      recordComputedOutputRepairTransition(
+        claims, 0, `${outputIndex}:commitment`, `value-${outputIndex}`,
+      );
+    }
+    recordComputedOutputConvergenceState(states, 'valid-final-state');
+    expect(claims.size).toBe(40);
+    expect(states.size).toBe(41);
+    expect(limit).toBe(121);
+  });
+
+  it('rejects repeated writer-coordinate claims and coupled state cycles', () => {
+    const claims = new Map<string, string>();
+    recordComputedOutputRepairTransition(claims, 3, '12:commitment', 'b');
+    expect(() => recordComputedOutputRepairTransition(
+      claims, 3, '12:commitment', 'c',
+    )).toThrow(/conflicting value/);
+    expect(() => recordComputedOutputRepairTransition(
+      claims, 4, '12:commitment', 'b',
+    )).toThrow(/conflicting input/);
+
+    const states = new Set<string>();
+    recordComputedOutputConvergenceState(states, 'A');
+    recordComputedOutputConvergenceState(states, 'B');
+    expect(() => recordComputedOutputConvergenceState(states, 'A'))
+      .toThrow(/normalized transaction state/);
+  });
+
+  it('rejects unsafe convergence surface arithmetic', () => {
+    expect(() => computedOutputRepairPassLimit(1, Number.MAX_SAFE_INTEGER))
+      .toThrow(/safe integer range/);
+  });
+});
 
 describe('isActiveVmControlBranch', () => {
   it('rejects observer candidates from untaken branches', () => {

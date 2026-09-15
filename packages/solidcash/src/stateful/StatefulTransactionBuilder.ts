@@ -42,6 +42,10 @@ import { getDustThreshold } from '@mem-cash/validation';
 import {
   canonicalValueChunkProducerIdentity,
   canonicalValueChunkProducerResourceClaim,
+  canonicalValueChunkProducerResourceIdentity,
+  canonicalValueChunkResourceOwnerIdentity,
+  canonicalValueChunkStateOwner,
+  type ValueChunkProducerPathDisposition,
   type ValueChunkProducerResourceClaim,
 } from './ValueChunkProducerIdentity.js';
 import {
@@ -70,18 +74,21 @@ import {
 } from '../interfaces.js';
 import { BALANCED_SLOT_SATOSHIS } from './balancedBlocks.js';
 import {
-  createDataNftUnlocker, createRelocatedDataNftUnlocker, createValueChunkUnlocker,
+  createDataNftUnlocker, createEntryNftUnlocker, createRelocatedDataNftUnlocker, createValueChunkUnlocker,
   getValueChunkLockingBytecode,
 } from './covenant-helpers.js';
 import {
   canMaterializeRepairedValueChunk,
   canApplyRepairedNftCommitment,
+  computedOutputRepairPassLimit,
   followsMutableNftOutputGuard,
   isActiveVmControlBranch,
   isFixedStateRepairSlot,
   isForwardOutputOnlyRepairSlot,
   isOwnedStateRepairCoordinate,
   isRepairableNftOutput,
+  recordComputedOutputConvergenceState,
+  recordComputedOutputRepairTransition,
 } from './computed-output-repair.js';
 import { isScidIdentityCommitment } from './logical-identity.js';
 import {
@@ -93,7 +100,7 @@ import {
   type KernelEntryJournalOutputLayoutPlan,
   type KernelEntryJournalSettlementOutputPlanEntry,
 } from './KernelEntryJournal.js';
-import { artifactUsesSolidityAbi } from './solidityAbi.js';
+import { resolveExternalResultEncoding } from './solidityAbi.js';
 import {
   buildKeccakComputeSidecar, extractKeccakPreimageFromTrace,
 } from '../keccak/keccakComputeSidecar.js';
@@ -111,6 +118,24 @@ const decodeVmScriptNumber = (bytes: Uint8Array): bigint => {
 const cloneToken = <T extends Utxo['token']>(token: T): T => (token === undefined
   ? token
   : { ...token, nft: token.nft === undefined ? undefined : { ...token.nft } } as T);
+
+/** Resolve an SDK state-update key to the physical data-NFT variable which owns it. */
+export function stateVariableForUpdateKey(
+  layout: Pick<StateLayout, 'variables'>,
+  name: string,
+): StateLayout['variables'][number] | undefined {
+  return layout.variables.find((variable) => variable.name === name
+    || (variable.dynamic === true && `${variable.name}$len` === name));
+}
+
+export function stateUpdatesTouchNft(
+  layout: Pick<StateLayout, 'variables'>,
+  updates: ReadonlyMap<string, StateValue> | undefined,
+  nftIndex: number,
+): boolean {
+  return [...(updates?.keys() ?? [])].some((name) =>
+    stateVariableForUpdateKey(layout, name)?.nftIndex === nftIndex);
+}
 
 const persistedJobEventsByCategory = new Map<string, Array<{
   commitment: string; lockingBytecode: Uint8Array; categoryId?: string;
@@ -138,7 +163,8 @@ const persistedValueChunkWrites = new Map<string, {
 /** Mutable value-chunk candidates scoped to one transaction build. */
 export class ValueChunkWriteStagingSession {
   private readonly writes = new Map<string, Uint8Array>();
-  private readonly ownedWrites = new Map<string, { producer: string; value: Uint8Array }>();
+  /** Exact post-values are namespaced by both storage resource and compiler-authenticated producer. */
+  private readonly ownedWrites = new Map<string, Map<string, Uint8Array>>();
   private readonly ambiguousWrites = new Set<string>();
 
   stage(write: ValueChunkWriteDescriptor, value: Uint8Array): boolean {
@@ -166,6 +192,7 @@ export class ValueChunkWriteStagingSession {
     claim: ValueChunkProducerResourceClaim,
     expectedStateOwner: { categoryId: string; lockingBytecode: string },
     value: Uint8Array,
+    options: { supersedeUnowned?: boolean } = {},
   ): boolean {
     const resourceIdentity = valueChunkWriteIdentity(write);
     const canonicalClaim = canonicalValueChunkProducerResourceClaim(claim);
@@ -176,20 +203,27 @@ export class ValueChunkWriteStagingSession {
       }) !== producer
       || !validValueChunkWriteIdentity(write)
       || value.length <= 60 || value.length > MAX_PERSISTED_JOB_EVENTS_BYTES) return false;
-    if (this.ambiguousWrites.has(resourceIdentity) || this.writes.has(resourceIdentity)) {
+    if (this.ambiguousWrites.has(resourceIdentity)
+      || (this.writes.has(resourceIdentity) && options.supersedeUnowned !== true)) {
       this.ambiguousWrites.add(resourceIdentity);
       this.writes.delete(resourceIdentity);
       this.ownedWrites.delete(resourceIdentity);
       return false;
     }
-    const existing = this.ownedWrites.get(resourceIdentity);
-    if (existing && (existing.producer !== producer
-      || binToHex(existing.value) !== binToHex(value))) {
+    // A complete compiler producer claim is a stronger namespace than a raw
+    // resource-scoped seed. Explicit promotion is permitted only at the callsite
+    // which proved that terminal producer; ordinary stageOwned calls still fail
+    // closed on mixed authority.
+    if (options.supersedeUnowned === true) this.writes.delete(resourceIdentity);
+    const producers = this.ownedWrites.get(resourceIdentity) ?? new Map<string, Uint8Array>();
+    const existing = producers.get(producer);
+    if (existing && binToHex(existing) !== binToHex(value)) {
       this.ambiguousWrites.add(resourceIdentity);
       this.ownedWrites.delete(resourceIdentity);
       return false;
     }
-    this.ownedWrites.set(resourceIdentity, { producer, value: value.slice() });
+    producers.set(producer, value.slice());
+    this.ownedWrites.set(resourceIdentity, producers);
     return true;
   }
 
@@ -206,8 +240,8 @@ export class ValueChunkWriteStagingSession {
         ...canonicalClaim!.producer, stateOwner: expectedStateOwner,
       }) !== producer
       || canonicalClaim?.resourceIdentity !== resourceIdentity) return undefined;
-    const existing = this.ownedWrites.get(resourceIdentity);
-    return existing?.producer === producer ? existing.value.slice() : undefined;
+    const existing = this.ownedWrites.get(resourceIdentity)?.get(producer);
+    return existing?.slice();
   }
 
   delete(write: ValueChunkWriteDescriptor): void {
@@ -1179,14 +1213,11 @@ export function persistValueChunkLock(
   const root = sha256Sync(value);
   // Missing and ambiguous descriptors fail closed. Historical schema recovery is
   // available only through the explicitly named legacy adapter below.
-  if (!write) return undefined;
-  if (write.categoryId.toLowerCase() !== categoryId.toLowerCase()
-    || !/^[0-9a-f]{64}$/i.test(write.keySlot)) return undefined;
+  if (!write || !validValueChunkWriteIdentity(write)) return undefined;
+  if (write.categoryId.toLowerCase() !== categoryId.toLowerCase()) return undefined;
   try {
-    if (binToHex(computeCollectionHash(write.collectionSignature))
-      !== write.collectionHash.toLowerCase()) return undefined;
     return getValueChunkLockingBytecode(
-      categoryId, write.collectionSignature, hexToBin(write.keySlot), root,
+      categoryId, write.collection, hexToBin(write.keySlot), root,
     );
   } catch {
     return undefined;
@@ -1293,6 +1324,9 @@ export interface DerivedChunkOutputObservation {
   lockingBytecode: Uint8Array;
   categoryId?: string;
   fixedIndex?: boolean;
+  /** Semantic output family. Commitment prefixes are not sufficient: entry HEAD/P' begins with the same
+   * uint16 zero prefix as value chunk 0. */
+  semanticKind?: 'valueChunk' | 'entryPin';
   /** Stable compiler/planner resource identity; physical output index is only a projection. */
   resourceIdentity?: string;
   resourcePart?: string;
@@ -1305,6 +1339,18 @@ export interface LateValueSuffixInsertion {
   shiftedAbsoluteWitnesses: boolean;
 }
 
+/** Compiler-described resource coordinates are authoritative; only descriptor-free runs may be relocated. */
+export function permitsHeuristicValueChunkRunRelocation(resourceIdentity?: string): boolean {
+  return resourceIdentity === undefined;
+}
+
+/** VM-authenticated resource observations already name physical outputs; legacy local runs need block rebasing. */
+export function materializedValueChunkAbsoluteStart(
+  start: number, coordinateBase: number, resourceIdentity?: string,
+): number {
+  return resourceIdentity === undefined ? coordinateBase + start : start;
+}
+
 export const sameDerivedChunkOutputObservation = (
   left: DerivedChunkOutputObservation | undefined,
   right: DerivedChunkOutputObservation | undefined,
@@ -1313,6 +1359,7 @@ export const sameDerivedChunkOutputObservation = (
   && binToHex(left.lockingBytecode) === binToHex(right.lockingBytecode)
   && left.categoryId?.toLowerCase() === right.categoryId?.toLowerCase()
   && (left.fixedIndex === true) === (right.fixedIndex === true)
+  && left.semanticKind === right.semanticKind
   && left.resourceIdentity === right.resourceIdentity
   && left.resourcePart === right.resourcePart);
 
@@ -1323,7 +1370,9 @@ export const valueChunkWriteResourceIdentity = (write: ValueChunkWriteDescriptor
 const valueChunkWriteIdentity = valueChunkWriteResourceIdentity;
 
 function validValueChunkWriteIdentity(write: ValueChunkWriteDescriptor): boolean {
-  if (!/^[0-9a-f]{64}$/i.test(write.categoryId) || !/^[0-9a-f]{64}$/i.test(write.keySlot)) return false;
+  if (!/^[0-9a-f]{64}$/i.test(write.categoryId) || !/^[0-9a-f]{64}$/i.test(write.keySlot)
+    || write.collection.length === 0
+    || !write.collectionSignature.startsWith(`${write.collection}:`)) return false;
   try {
     return binToHex(computeCollectionHash(write.collectionSignature)) === write.collectionHash.toLowerCase();
   } catch {
@@ -1356,6 +1405,29 @@ export type ValueChunkWriteCategorySelection =
   | { status: 'exact'; categoryId: string; write: ValueChunkWriteDescriptor }
   | { status: 'multi'; writes: ValueChunkWriteDescriptor[] }
   | { status: 'ambiguous' };
+
+export type ValueChunkResourceSelection =
+  | { status: 'absent' }
+  | { status: 'exact'; identity: string; categoryId: string }
+  | { status: 'multi'; identities: string[] }
+  | { status: 'ambiguous' };
+
+/** Select storage-resource ownership independently of the operations applied to it. A graph may INSERT and then
+ * UPDATE the same resource in source order; differing operation/route ordinals do not create a second resource. */
+export function selectValueChunkResource(
+  writes: ReadonlyArray<ValueChunkWriteDescriptor>,
+): ValueChunkResourceSelection {
+  if (writes.length === 0) return { status: 'absent' };
+  const identities = new Map<string, string>();
+  for (const write of writes) {
+    if (!validValueChunkWriteIdentity(write)) return { status: 'ambiguous' };
+    identities.set(valueChunkWriteResourceIdentity(write), write.categoryId);
+  }
+  if (identities.size === 0) return { status: 'ambiguous' };
+  if (identities.size > 1) return { status: 'multi', identities: [...identities.keys()] };
+  const [identity, categoryId] = [...identities.entries()][0];
+  return { status: 'exact', identity, categoryId };
+}
 
 /** Select one compiler-described chunkable-value resource identity; duplicate route/logical views collapse. */
 export function selectValueChunkWriteCategory(
@@ -1470,19 +1542,16 @@ export function rememberValueChunkUnlockRecipe(
   value = stagedValueChunkWrite(write) ?? persistedJobEventsValues.get(write.categoryId),
   lockingBytecode = persistedJobEventsLocks.get(write.categoryId),
 ): boolean {
-  if (!value || !lockingBytecode || !/^[0-9a-f]{64}$/i.test(write.categoryId)
-    || !/^[0-9a-f]{64}$/i.test(write.keySlot)) return false;
+  if (!value || !lockingBytecode || !validValueChunkWriteIdentity(write)) return false;
   try {
-    const computedHash = binToHex(computeCollectionHash(write.collectionSignature));
-    if (computedHash !== write.collectionHash.toLowerCase()) return false;
     const slot = hexToBin(write.keySlot);
     const root = sha256Sync(value);
     const expected = getValueChunkLockingBytecode(
-      write.categoryId, write.collectionSignature, slot, root,
+      write.categoryId, write.collection, slot, root,
     );
     if (binToHex(expected) !== binToHex(lockingBytecode)) return false;
     const recipe = {
-      slot, root, collection: write.collectionSignature, categoryId: write.categoryId,
+      slot, root, collection: write.collection, categoryId: write.categoryId,
     };
     persistedJobEventsRecipes.set(write.categoryId, recipe);
     persistedValueChunkWrites.set(valueChunkWriteIdentity(write), {
@@ -1703,7 +1772,11 @@ export function selectHashedValueForChunkPin(
    * stale pre-state. The exact resource identity (owner category, collection hash, key slot) is this
    * candidate's authentication; the pre-value stays admissible only through its own tail.
    */
-  authoritativeValue?: Uint8Array,
+  producerAuthenticatedValue?: Uint8Array,
+  /** Descriptor-free compatibility may use the historical width-only recovery. */
+  allowUnauthenticatedFallback = true,
+  /** Exact compiler-described resource whose covenant locking bytecode is the observed pin. */
+  exactWrite?: ValueChunkWriteDescriptor,
 ): { value: Uint8Array; lockingBytecode: Uint8Array } | undefined {
   // Sparse probe states share immutable stack-item byte arrays. Large routed scripts can remain on the stack for
   // hundreds of observed operations; hashing each repeated reference turned one logical candidate into gigabytes
@@ -1728,10 +1801,39 @@ export function selectHashedValueForChunkPin(
     && pinLock.length === 35 && pinLock[0] === 0xaa && pinLock[1] === 0x20 && pinLock[34] === 0x87;
   const pinDigest = pinIsP2sh32 ? binToHex(pinLock!.subarray(2, 34)) : undefined;
   const maximumCandidateBytes = VALUE_HEAD_SIZE + VALUE_CHUNK_SIZE * VALUE_CHUNK_MAX_COUNT;
+  const chunkCount = (value: Uint8Array): number => (
+    value.length > VALUE_HEAD_SIZE
+      ? Math.ceil((value.length - VALUE_HEAD_SIZE) / VALUE_CHUNK_SIZE)
+      : 0
+  );
+  const exactPinLockFor = (value: Uint8Array): Uint8Array | undefined => {
+    if (!exactWrite || !pinIsP2sh32) return undefined;
+    const derived = persistValueChunkLock(exactWrite.categoryId, value, exactWrite);
+    return derived && binsAreEqual(derived, pinLock!) ? derived : undefined;
+  };
+  // A compiler-described value-chunk pin commits to the covenant script, not directly to sha256(value). The
+  // exact descriptor lets the trace authenticate the already-computed post-value without trusting planner or
+  // application reconstruction. Preserve latest-stack chronology when the same resource has several epochs.
+  if (exactWrite && pinIsP2sh32) {
+    const seen = new Set<Uint8Array>();
+    for (let stackIndex = stacks.length - 1; stackIndex >= 0; stackIndex -= 1) {
+      const stack = stacks[stackIndex];
+      for (let itemIndex = stack.length - 1; itemIndex >= 0; itemIndex -= 1) {
+        const item = stack[itemIndex];
+        if (item.length <= 60 || item.length > maximumCandidateBytes || seen.has(item)) continue;
+        seen.add(item);
+        if (minChunks > 0 && chunkCount(item) < minChunks) continue;
+        const exactLock = exactPinLockFor(item);
+        if (exactLock) return { value: item, lockingBytecode: exactLock };
+      }
+    }
+  }
   if (pinDigest) {
     const seen = new Set<Uint8Array>();
-    for (const stack of stacks) {
-      for (const item of stack) {
+    for (let stackIndex = stacks.length - 1; stackIndex >= 0; stackIndex -= 1) {
+      const stack = stacks[stackIndex];
+      for (let itemIndex = stack.length - 1; itemIndex >= 0; itemIndex -= 1) {
+        const item = stack[itemIndex];
         if (item.length <= 60 || item.length > maximumCandidateBytes || seen.has(item)) continue;
         seen.add(item);
         if (hexOf(digestOf(item)) === pinDigest) {
@@ -1740,11 +1842,6 @@ export function selectHashedValueForChunkPin(
       }
     }
   }
-  const chunkCount = (value: Uint8Array): number => (
-    value.length > VALUE_HEAD_SIZE
-      ? Math.ceil((value.length - VALUE_HEAD_SIZE) / VALUE_CHUNK_SIZE)
-      : 0
-  );
   const lockFor = (value: Uint8Array, stack?: ReadonlyArray<Uint8Array>): Uint8Array => {
     if (pinIsP2sh32) return pinLock!;
     const digest = digestOf(value);
@@ -1756,86 +1853,100 @@ export function selectHashedValueForChunkPin(
   };
   // Match full values to len4||root32||head28 tails still on the stack. The pin
   // address is p2sh32(redeem(root)), so sha256(value) rarely equals pinDigest.
-  const tailRoots = new Set<string>();
-  const rootLengths = new Map<string, number>();
-  const stackDigests = new Set<string>();
-  for (const stack of stacks) {
-    for (const item of stack) {
-      if (item.length === 32) stackDigests.add(hexOf(item));
+  type AuthenticationEvidence = { stackIndex: number; itemIndex: number; expectedLength?: number };
+  const tailEvidence = new Map<string, AuthenticationEvidence>();
+  const digestEvidence = new Map<string, AuthenticationEvidence>();
+  for (const [stackIndex, stack] of stacks.entries()) {
+    for (const [itemIndex, item] of stack.entries()) {
+      if (item.length === 32) digestEvidence.set(hexOf(item), { stackIndex, itemIndex });
       if (item.length !== 64) continue;
       const storedLen = item[0]! | (item[1]! << 8) | (item[2]! << 16) | (item[3]! << 24);
       if (storedLen > 60) {
         const root = hexOf(item.subarray(4, 36));
-        tailRoots.add(root);
-        rootLengths.set(root, storedLen);
+        tailEvidence.set(root, { stackIndex, itemIndex, expectedLength: storedLen });
       }
     }
   }
-  // An exact staged write's continuation value is authenticated by the resource identity it was derived under,
-  // not by a valueTail: a write can compute its chunks without leaving the post-value's tail on the stack.
-  if (authoritativeValue && authoritativeValue.length > 60
-    && authoritativeValue.length <= maximumCandidateBytes
-    && (minChunks <= 0 || chunkCount(authoritativeValue) >= minChunks)) {
-    return { value: authoritativeValue, lockingBytecode: lockFor(authoritativeValue) };
-  }
+  const authenticationFor = (item: Uint8Array): AuthenticationEvidence | undefined => {
+    const root = hexOf(digestOf(item));
+    const evidence = tailEvidence.size > 0 ? tailEvidence.get(root) : digestEvidence.get(root);
+    return evidence?.expectedLength !== undefined && evidence.expectedLength !== item.length
+      ? undefined : evidence;
+  };
   const considerCandidate = (
     item: Uint8Array,
     stack?: ReadonlyArray<Uint8Array>,
   ): { value: Uint8Array; lockingBytecode: Uint8Array } | undefined => {
     if (item.length <= 60 || item.length > maximumCandidateBytes) return undefined;
     if (minChunks > 0 && chunkCount(item) < minChunks) return undefined;
-    const root = hexOf(digestOf(item));
-    if (tailRoots.size > 0) {
-      if (!tailRoots.has(root)) return undefined;
-      const expectedLen = rootLengths.get(root);
-      if (expectedLen !== undefined && item.length !== expectedLen) return undefined;
-    } else if (stackDigests.size > 0 && !stackDigests.has(root)) {
+    const exactLock = exactPinLockFor(item);
+    if (exactWrite && !exactLock) return undefined;
+    if ((tailEvidence.size > 0 || digestEvidence.size > 0) && !authenticationFor(item)) {
       // Before a valueTail is pushed, the probe still exposes sha256(value) as a
       // bare 32-byte item. Reject planner/args blobs that do not authenticate.
       return undefined;
     }
-    return { value: item, lockingBytecode: lockFor(item, stack) };
+    return { value: item, lockingBytecode: exactLock ?? lockFor(item, stack) };
   };
-  // Planner/args-constructed candidates (JobEventData[] from publishJobEvent) win when
-  // they authenticate against a valueTail root — even if the full blob never sat on-stack.
+  // This value is bound to the exact graph occurrence and terminal mutation
+  // ordinal, so it is post-state authority even when the VM still exposes only
+  // that handler's authenticated pre-state tail.
+  if (producerAuthenticatedValue && producerAuthenticatedValue.length > 60
+    && producerAuthenticatedValue.length <= maximumCandidateBytes
+    && (minChunks <= 0 || chunkCount(producerAuthenticatedValue) >= minChunks)) {
+    const exactLock = exactPinLockFor(producerAuthenticatedValue);
+    if (!exactWrite || exactLock) {
+      return {
+        value: producerAuthenticatedValue,
+        lockingBytecode: exactLock ?? lockFor(producerAuthenticatedValue),
+      };
+    }
+  }
+  // Trace roots are mutation-epoch evidence, so preserve their latest observed
+  // position rather than collapsing them into an unordered membership set.
+  let authenticated: {
+    selected: { value: Uint8Array; lockingBytecode: Uint8Array };
+    evidence: AuthenticationEvidence;
+  } | undefined;
+  const considerAuthenticated = (item: Uint8Array, stack?: ReadonlyArray<Uint8Array>): void => {
+    const selected = considerCandidate(item, stack);
+    const evidence = selected && authenticationFor(item);
+    if (!selected || !evidence) return;
+    if (!authenticated || evidence.stackIndex > authenticated.evidence.stackIndex
+      || (evidence.stackIndex === authenticated.evidence.stackIndex
+        && evidence.itemIndex > authenticated.evidence.itemIndex)) {
+      authenticated = { selected, evidence };
+    }
+  };
+  candidateValues.forEach((candidate) => considerAuthenticated(candidate));
+  for (const stack of stacks) {
+    const seen = new Set<Uint8Array>();
+    for (const item of stack) {
+      if (seen.has(item)) continue;
+      seen.add(item);
+      considerAuthenticated(item, stack);
+    }
+  }
+  if (authenticated) return authenticated.selected;
+  if ((tailEvidence.size > 0 || digestEvidence.size > 0) && !allowUnauthenticatedFallback) {
+    return undefined;
+  }
+  if (tailEvidence.size === 0 && digestEvidence.size === 0 && !allowUnauthenticatedFallback) {
+    return undefined;
+  }
+  // Descriptor-free compatibility gives explicit candidates precedence when no
+  // authenticator is available.
   for (const candidate of candidateValues) {
     const matched = considerCandidate(candidate);
     if (matched) return matched;
   }
-  if (tailRoots.size > 0) {
-    let matched: { value: Uint8Array; lockingBytecode: Uint8Array } | undefined;
-    for (const stack of stacks) {
-      const seen = new Set<Uint8Array>();
-      for (const item of stack) {
-        if (seen.has(item)) continue;
-        seen.add(item);
-        const hit = considerCandidate(item, stack);
-        if (!hit) continue;
-        if (!matched || hit.value.length > matched.value.length) matched = hit;
-      }
-    }
-    if (matched) return matched;
-  }
   let best: { value: Uint8Array; lockingBytecode: Uint8Array } | undefined;
-  for (const stack of stacks) {
-    let value: Uint8Array | undefined;
-    const stackDigests = new Set(stack.filter((item) => item.length === 32).map(hexOf));
-    const seen = new Set<Uint8Array>();
-    for (const item of stack) {
-      if (item.length <= 60 || item.length > maximumCandidateBytes || seen.has(item)) continue;
-      seen.add(item);
-      if (!stackDigests.has(hexOf(digestOf(item)))) continue;
-      if (!value || item.length > value.length) value = item;
-    }
-    if (!value) continue;
-    if (best && value.length < best.value.length) continue;
-    best = { value, lockingBytecode: lockFor(value, stack) };
-  }
   // The pin address is p2sh32(redeem(root)), not aa20||sha256(v)||87, so the
   // digest path above often misses. A dummy sixth slot means the covenant
   // already computed nNew>=6: take the longest blob that splits that wide,
   // even if its root is no longer sitting next to it.
-  if (minChunks > 0 && (!best || chunkCount(best.value) < minChunks)) {
+  if (allowUnauthenticatedFallback
+    && minChunks > 0 && (!best || chunkCount(best.value) < minChunks)) {
     let widest: Uint8Array | undefined;
     for (const stack of stacks) {
       for (const item of stack) {
@@ -3410,6 +3521,7 @@ export function stripSurplusEmptyCollectionEntries(
  * Route rows are authoritative when present; a route-level active-write filter narrows union-shaped handlers.
  * Ambiguous metadata fails closed rather than selecting a collection by source-level name. */
 type ChunkableValueWriteGroup = {
+  categoryId?: string;
   functionName?: string;
   logicalFunctionName?: string;
   stateLayout?: StateLayout;
@@ -3421,6 +3533,11 @@ type ChunkableValueWriteGroup = {
     rowArguments?: readonly { handler: AbiFunction }[];
   };
   valueChunkWrites?: readonly ValueChunkWriteDescriptor[];
+  valueChunkProducerClaims?: readonly ValueChunkProducerResourceClaim[];
+  valueChunkStateOwner?: { categoryId: string; lockingBytecode: string };
+  delegateCallGroupIndex?: number;
+  sharedGroupIndex?: number;
+  callMode?: 'call' | 'staticcall' | 'delegatecall';
   /** Legacy planners can publish the concrete continuation region without publishing entry-effect metadata. */
   valueChunkOutputBase?: number;
   valueChunkOutputCount?: number;
@@ -3498,6 +3615,101 @@ export function groupChunkableValueWriteCollection(
   return matches.length === 1 ? matches[0] : undefined;
 }
 
+/** Resolve a compiler-described collection from an authenticated producer/resource claim before entry geometry
+ * is materialized. This is intentionally narrower than collection capability inference: one canonical resource,
+ * its exact state owner, and one matching compiler write collection must all agree. */
+export function claimedChunkableValueWriteCollection(
+  group: ChunkableValueWriteGroup,
+): string | undefined {
+  return claimedChunkableValueWriteResource(group)?.collection;
+}
+
+type ClaimedChunkableValueWriteResource = {
+  collection: string;
+  resourceIdentity: string;
+  resourceOwnerIdentity: string;
+};
+
+/** Resolve the exact authenticated storage resource represented by a pre-geometry carrier. */
+function claimedChunkableValueWriteResource(
+  group: ChunkableValueWriteGroup,
+): ClaimedChunkableValueWriteResource | undefined {
+  const claims = group.valueChunkProducerClaims;
+  const expectedOwner = group.valueChunkStateOwner;
+  if (!claims?.length || !expectedOwner) return undefined;
+  const stateOwnerIdentity = canonicalValueChunkStateOwner(expectedOwner);
+  if (!stateOwnerIdentity) return undefined;
+  const canonicalClaims = claims.map(canonicalValueChunkProducerResourceClaim);
+  if (canonicalClaims.some((claim) => claim === undefined)) return undefined;
+  const resources = new Set(canonicalClaims.map((claim) => claim!.resourceIdentity));
+  if (resources.size !== 1) return undefined;
+  const resourceIdentity = [...resources][0];
+  const [categoryId, collectionHash] = resourceIdentity.split(':');
+  if (categoryId !== expectedOwner.categoryId.toLowerCase()) return undefined;
+  const resourceOwnerIdentity = canonicalValueChunkResourceOwnerIdentity(resourceIdentity, expectedOwner);
+  if (!resourceOwnerIdentity) return undefined;
+  for (const claim of canonicalClaims) {
+    if (canonicalValueChunkStateOwner(claim!.producer.stateOwner) !== stateOwnerIdentity) return undefined;
+  }
+  const declared = groupChunkableValueWriteCollections(group);
+  const layouts = [group.stateLayout, group.logicalArtifact?.stateLayout,
+    group.externalContract?.inner?.artifact?.stateLayout]
+    .filter((layout): layout is StateLayout => layout !== undefined);
+  const matches = new Set<string>();
+  for (const name of declared) {
+    for (const layout of layouts) {
+      const collection = layout.collections?.find((candidate) => (
+        candidate.name === name || candidate.signature === name
+      ));
+      if (collection && binToHex(computeCollectionHash(collection.signature)) === collectionHash) {
+        matches.add(collection.name);
+      }
+    }
+  }
+  return matches.size === 1 ? {
+    collection: [...matches][0],
+    resourceIdentity,
+    resourceOwnerIdentity,
+  } : undefined;
+}
+
+type ChunkableValueWriteResource = {
+  collection: string;
+  resourceIdentity?: string;
+  resourceOwnerIdentity?: string;
+};
+
+function groupChunkableValueWriteResource(
+  group: ChunkableValueWriteGroup,
+): ChunkableValueWriteResource | undefined {
+  if ((group.valueChunkWrites?.length ?? 0) > 1) return undefined;
+  if (group.valueChunkWrites?.length === 1) {
+    const write = group.valueChunkWrites[0];
+    const resourceIdentity = canonicalValueChunkProducerResourceIdentity(
+      valueChunkWriteResourceIdentity(write),
+    );
+    if (!resourceIdentity) return undefined;
+    // A concrete descriptor is still sufficient for direct execution selection. Exact owner/resource matching
+    // across delegate aliases additionally requires a canonical transported claim below.
+    const claimed = claimedChunkableValueWriteResource(group);
+    if (claimed && claimed.resourceIdentity !== resourceIdentity) return undefined;
+    return {
+      collection: write.collection,
+      resourceIdentity: claimed?.resourceIdentity ?? resourceIdentity,
+      resourceOwnerIdentity: claimed?.resourceOwnerIdentity
+        ?? (group.valueChunkStateOwner
+          ? canonicalValueChunkResourceOwnerIdentity(resourceIdentity, group.valueChunkStateOwner) : undefined),
+    };
+  }
+  if (groupOwnsLinearSortedBatch(group)) return undefined;
+  const claimed = claimedChunkableValueWriteResource(group);
+  if (claimed) return claimed;
+  if (!permitsLegacyNamedValueChunkFallback([group])) return undefined;
+  const collection = groupChunkableValueWriteCollection(group)
+    ?? legacyPlannedChunkableValueWriteCollection(group);
+  return collection === undefined ? undefined : { collection };
+}
+
 export function groupWritesSingleChunkableValueCollection(group: Parameters<
   typeof groupChunkableValueWriteCollection
 >[0]): boolean {
@@ -3523,17 +3735,24 @@ export function groupOwnsLinearSortedBatch(group: ChunkableValueWriteGroup): boo
 }
 
 function groupChunkableValueWriteIdentity(group: ChunkableValueWriteGroup): string | undefined {
-  if ((group.valueChunkWrites?.length ?? 0) > 1) return undefined;
-  if (group.valueChunkWrites?.length === 1) return group.valueChunkWrites[0].collection;
-  // A linear sorted batch (initialize/meceTags) publishes every key as an in-block node plus trailing P'.
-  // collection.chunkableValue only means those values MAY be chunked; it must not collapse the batch into one
-  // jobEvents-style continuation whose surplus-lock strip converts sibling nodes into OP_TRUE.
-  if (groupOwnsLinearSortedBatch(group)) return undefined;
-  // Kernel artifacts describe continuation writes via valueChunkWrites. collection.chunkableValue only
-  // means values MAY be chunked (User structs, strings); it must not steal the INSERT NEW coordinate.
-  if (!permitsLegacyNamedValueChunkFallback([group])) return undefined;
-  return groupChunkableValueWriteCollection(group)
-    ?? legacyPlannedChunkableValueWriteCollection(group);
+  return groupChunkableValueWriteResource(group)?.collection;
+}
+
+function sameChunkableValueWriteResource(
+  expected: ChunkableValueWriteResource,
+  group: ChunkableValueWriteGroup,
+): boolean {
+  const actual = groupChunkableValueWriteResource(group);
+  if (!actual) return false;
+  if (expected.resourceOwnerIdentity !== undefined || actual.resourceOwnerIdentity !== undefined) {
+    return expected.resourceOwnerIdentity !== undefined
+      && expected.resourceOwnerIdentity === actual.resourceOwnerIdentity;
+  }
+  if (expected.resourceIdentity !== undefined || actual.resourceIdentity !== undefined) {
+    return expected.resourceIdentity !== undefined
+      && expected.resourceIdentity === actual.resourceIdentity;
+  }
+  return expected.collection === actual.collection;
 }
 
 /**
@@ -3587,19 +3806,26 @@ export function legacyPlannedChunkableValueWriteCollection(
 /** Resolve a single physical chunkable-value writer from compiler metadata, independent of ABI names. */
 export function selectChunkableValueWriteExecution(
   candidates: ReadonlyArray<{ group: ChunkableValueWriteGroup; inputIndex: number }>,
-): { inputIndex: number; abiFunction: AbiFunction; collection: string } | undefined {
+): {
+  inputIndex: number; abiFunction: AbiFunction; collection: string;
+  resourceIdentity?: string; resourceOwnerIdentity?: string;
+} | undefined {
   const executions = new Map<string, {
     inputIndex: number; abiFunction: AbiFunction; collection: string;
+    resourceIdentity?: string; resourceOwnerIdentity?: string;
   }>();
   for (const { group, inputIndex } of candidates) {
     if (inputIndex < 0) continue;
-    const collection = groupChunkableValueWriteIdentity(group);
-    if (collection === undefined) continue;
+    const resource = groupChunkableValueWriteResource(group);
+    if (resource === undefined) continue;
     const artifact = group.logicalArtifact ?? group.externalContract?.inner?.artifact;
     const logicalName = group.logicalFunctionName ?? group.functionName;
     const abiFunction = group.compilerRoute?.abiFunction
       ?? artifact?.abi.find((candidate: AbiFunction) => candidate.name === logicalName);
-    if (abiFunction) executions.set(`${inputIndex}:${collection}`, { inputIndex, abiFunction, collection });
+    if (abiFunction) executions.set(`${inputIndex}:${resource.resourceOwnerIdentity
+      ?? resource.resourceIdentity ?? resource.collection}`, {
+      inputIndex, abiFunction, ...resource,
+    });
   }
   if (executions.size !== 1) return undefined;
   return [...executions.values()][0];
@@ -4797,6 +5023,15 @@ export function shouldStampPersistUpdateDigestLock(parts: {
   return parts.persistReady && parts.persistWidth > 0 && !parts.firstPublishInsert;
 }
 
+/** Entry-covenant digest locks are a descriptor-free compatibility transport, never a value-chunk identity. */
+export function shouldUseLegacyPersistDigestLockForValueChunks(parts: {
+  hasWriteMetadata: boolean;
+  permitsLegacyFallback: boolean;
+  stampPersistUpdate: boolean;
+}): boolean {
+  return !parts.hasWriteMetadata && parts.permitsLegacyFallback && parts.stampPersistUpdate;
+}
+
 function isIntegerType(type: string): boolean {
   return /^(?:u?int(?:\d+)?|bigint)$/.test(type);
 }
@@ -5247,6 +5482,22 @@ export function selectDelegateExecutionLayout(
 }
 
 /**
+ * Translate an implementation-authored slot offset into the physical delegate frame. Delegate-only artifacts
+ * execute against proxy storage, so their declared data-NFT slots below the target are not co-spent beside the
+ * implementation and must not contribute to the physical offset.
+ */
+export function physicalDelegateSlotOffset(
+  layout: FunctionBlockLayout | undefined,
+  offset: number,
+  delegateOnly: boolean,
+): number {
+  if (!delegateOnly) return offset;
+  const proxyResidentDataSlots = (layout?.slots ?? [])
+    .filter((slot) => slot.kind === 'dataNft' && slot.offset < offset).length;
+  return offset - proxyResidentDataSlots;
+}
+
+/**
  * Exact in-block vmap nodes are known before the first probe. Layout-conditional slots stay unpinned only when
  * they are not part of a linear sorted batch, so a no-op cache-flush arm can still omit its pin.
  */
@@ -5654,15 +5905,21 @@ export interface ExternalCallUtxoGroup {
   functionName: string;
   functionArgs: any[];
   externalContract: any; // StatefulContract - kept as any to avoid circular import
+  /** Exact authenticated identity of the input which made this CALL/staticcall. Both fields are one authority:
+   * entry-key planning uses the bytecode and runtime msg.sender reconstruction uses the category. */
+  callerIdentity?: { categoryId: string; lockingBytecode: string };
   /** Source-level invocation represented by this physical group. Proxy/delegate groups execute a different
    * function and argument frame, but transitive graph expansion must resolve compiler argSources against the
-   * logical invocation. `address(this)` remains the physical active execution input. */
+   * logical invocation. Its effective `address(this)` is supplied by the authenticated expression context:
+   * the physical executor for local delegate execution, or the state owner for an outgoing CALL. */
   logicalFunctionName?: string;
   logicalFunctionArgs?: any[];
   logicalContract?: any; // StatefulContract - kept as any to avoid circular import
   logicalArtifact?: Artifact;
   /** Compiler-authenticated producer/resource occurrences represented by this physical or logical alias. */
   valueChunkProducerClaims?: readonly ValueChunkProducerResourceClaim[];
+  /** Exact physical state owner against which producer claims are authenticated. */
+  valueChunkStateOwner?: { categoryId: string; lockingBytecode: string };
   callMode?: 'call' | 'staticcall' | 'delegatecall';
   /** If this external callee is itself a proxy, execute/derive its state transition at this delegate group. */
   delegateCallGroupIndex?: number;
@@ -5706,6 +5963,7 @@ export interface ExternalCallUtxoGroup {
       sourceCallsiteId?: number;
       occurrenceIndex?: number;
       sourceEffectOrdinal?: number;
+      producerPath?: ValueChunkProducerPathDisposition;
     }>;
     internalArgs?: Record<string, any>;
     eventSignaturesBySlot?: Array<string | undefined>;
@@ -5736,16 +5994,12 @@ export interface ExternalCallUtxoGroup {
       sourceCallsiteId?: number;
       occurrenceIndex?: number;
       sourceEffectOrdinal?: number;
+      producerPath?: ValueChunkProducerPathDisposition;
     }[] | undefined,
     finalVisibleArgs: readonly any[],
   ) => { internalArgs: Record<string, any>; payloadBytes: number };
   /** The carrier master unlocker changed during the current dependency-convergence pass. */
   argumentsRefreshedDuringConvergence?: boolean;
-  /** Re-evaluate source-level arguments against a newer authenticated caller-state snapshot. */
-  refreshFromCallerState?: (
-    state: Readonly<Record<string, StateValue>>,
-    apply?: boolean,
-  ) => boolean;
   /** Active message-bus batch blockhash reads, retained until the group's absolute input base is known. */
   graphBlockhashSelections?: Array<{
     readKey: string; slotOrdinal: number; rowArgs: any[]; handler: AbiFunction;
@@ -6046,6 +6300,8 @@ export interface StatefulTransactionOptions extends TransactionBuilderOptions {
   externalOutStateUtxoGroups?: ExternalCallUtxoGroup[];
   externalCallUtxoGroups?: ExternalCallUtxoGroup[];
   lowLevelCallUtxoGroups?: ExternalCallUtxoGroup[];
+  /** Exact root delegate executor selected from compiler-authored forwarding metadata. */
+  activeDelegateGroupIndex?: number;
   lowLevelCallRawInputs?: UnlockableUtxo[];
   /** Delegate implementation master/data outputs precede grafted proxy-state entry slots. */
   delegateEntriesAfterLowLevel?: boolean;
@@ -6083,6 +6339,9 @@ export interface StatefulTransactionOptions extends TransactionBuilderOptions {
   /** Per-build mutable chunk candidates. Omitted by directly constructed legacy builders. */
   valueChunkWriteStagingSession?: ValueChunkWriteStagingSession;
   funderUtxos?: UnlockableUtxo[];     // funder UTXOs for output-only slots
+  /** Funding inputs already positioned inside composed participant blocks. These contribute value/change but
+   * must never be appended or repositioned by this builder's local block assembly. */
+  embeddedFunderUtxos?: UnlockableUtxo[];
   /** Immutable SCID anchor co-spent outside every fixed participant block to authenticate a stable logical
    * call target. Runtime caller identity is always taken from the active covenant input instead. */
   logicalIdentityUtxo?: UnlockableUtxo;
@@ -6161,6 +6420,7 @@ export class StatefulTransactionBuilder {
   private _maximumFeeSatoshis?: bigint;
   private strictVmPreflight = false;
   private resultDependentArgumentRefresher?: (builder: TransactionBuilder) => boolean;
+  private masterUnlockerRefresher?: (builder?: TransactionBuilder) => Unlocker;
   private allInputs: UnlockableUtxo[];
   // External-library side-car UTXO, co-spent as the LAST input so the covenant's library loader can read
   // it (via OP_INPUTBYTECODE) during both auto-derivation probes and the final tx. Set by _applyOverrides.
@@ -6229,6 +6489,7 @@ export class StatefulTransactionBuilder {
   private externalOutStateUtxoGroups: ExternalCallUtxoGroup[];
   private externalCallUtxoGroups: ExternalCallUtxoGroup[];
   private lowLevelCallUtxoGroups: ExternalCallUtxoGroup[];
+  private activeDelegateGroupIndex?: number;
   private lowLevelCallRawInputs: UnlockableUtxo[];
   private delegateEntriesAfterLowLevel: boolean;
   private delegateDynamicChunksAtSuffix: boolean;
@@ -6255,6 +6516,7 @@ export class StatefulTransactionBuilder {
   private childDeploymentInputs = new Map<number, UnlockableUtxo>();
   private childDeploymentOutputs = new Map<number, readonly Output[]>();
   funderUtxos: UnlockableUtxo[];
+  private embeddedFunderUtxos: UnlockableUtxo[];
   private relocationFunderUtxos: UnlockableUtxo[] = [];
   private funderChangeAddress?: Uint8Array;
 
@@ -6400,6 +6662,7 @@ export class StatefulTransactionBuilder {
     this.externalOutStateUtxoGroups = options.externalOutStateUtxoGroups ?? [];
     this.externalCallUtxoGroups = options.externalCallUtxoGroups ?? [];
     this.lowLevelCallUtxoGroups = options.lowLevelCallUtxoGroups ?? [];
+    this.activeDelegateGroupIndex = options.activeDelegateGroupIndex;
     this.lowLevelCallRawInputs = options.lowLevelCallRawInputs ?? [];
     this.delegateEntriesAfterLowLevel = options.delegateEntriesAfterLowLevel ?? false;
     this.delegateDynamicChunksAtSuffix = options.delegateDynamicChunksAtSuffix ?? false;
@@ -6444,6 +6707,7 @@ export class StatefulTransactionBuilder {
     this.blockLayout = options.blockLayout;
     this.messageBusConvention = options.messageBusConvention;
     this.funderUtxos = options.funderUtxos ?? [];
+    this.embeddedFunderUtxos = options.embeddedFunderUtxos ?? [];
     this.logicalIdentityUtxo = options.logicalIdentityUtxo;
     this.externalIdentityAnchorUtxos = options.externalIdentityAnchorUtxos ?? [];
 
@@ -6563,6 +6827,12 @@ export class StatefulTransactionBuilder {
     this.resultDependentArgumentRefresher = refresher;
   }
 
+  /** @internal Rebuild a root unlocker whose hidden witnesses depend on the final materialized input order. */
+  _setMasterUnlockerRefresher(refresher: (builder?: TransactionBuilder) => Unlocker): void {
+    this.masterUnlockerRefresher = refresher;
+    this._refreshInputs();
+  }
+
   /** @internal Replace the caller unlocker after tail identity-anchor indices become known. */
   _setMasterUnlocker(unlocker: Unlocker): void {
     this.masterUtxo = { ...this.masterUtxo, unlocker };
@@ -6621,10 +6891,11 @@ export class StatefulTransactionBuilder {
         ? Math.max(0, this._trailingLoopEntryOutputCount() - this.insertLoopPredecessorInputs.length)
         : 0;
       const loopAlignmentFunders = funderPool.splice(0, loopAlignmentCount);
-      // Delegate upsert predecessors (Marketplace whitelistWorkers via proxy __forward) must sit immediately
-      // after the implementation block (INPUTINDEX+blockSize), not after FakeToken/external participants.
-      // Leaving them in the far trailing run put HEAD at index 23 (jobEvents band) while NEW landed at 7.
+      // Legacy delegate upsert predecessors sit immediately after the implementation block. A compiler-routed
+      // delegate is different: its published trailing capacity already owns both the predecessor and the neutral
+      // input balancing any output-only expansion, so moving either beyond the block violates participant width.
       const earlyInsertPredecessors = this._delegateLoopEntryVars().length > 0
+        && !this.compilerRouteDelegateBlock
         ? this.insertLoopPredecessorInputs
         : [];
       const trailingInsertPredecessors = earlyInsertPredecessors.length > 0
@@ -6855,11 +7126,12 @@ export class StatefulTransactionBuilder {
       // includes an output-only returnEvent. INSERT also emits P'+NEW while consuming one predecessor,
       // so one surplus input must follow HEAD. Pads must not steal later participants' contiguous
       // blocks or NEW will overwrite their 1:1 self-preservation slots.
-      // Early-insert ordering must match the covenant + nestedMasterIndices planner:
-      //   proxy | delegatecall impl | jobs/dynamic chunks @ INPUTINDEX+blockSize | insert HEAD/NEW
-      //   | nested callees (MD / publishJobEvent)
-      // Putting nested LLC (publishJobEvent) or insert-band before the jobs band made
-      // UTXOBYTECODE(INPUTINDEX+blockSize) read the wrong lock while OP_PICK still expected jobs.
+      // Delegate ordering must match both the implementation covenant and the nested-master planner:
+      //   owner | active delegate executor block | dynamic chunks @ executor+blockSize
+      //   | optional insert band | nested participants/callees
+      // The executor covenant authenticates its owner by the fixed owner prefix, while delegated dynamic state is
+      // addressed from the executor's published trailing base. Delaying the active executor until after dynamic
+      // chunks or another participant makes both independently-authenticated coordinate systems disagree.
       const remainingLlc = this.compilerRouteDelegateBlock ? [] : lowLevelCallInputs.slice(llcIdx);
       const embeddedDelegateGroups = new Set(this.externalCallUtxoGroups.flatMap((group) => (
         group.delegateEmbeddedInBlock && group.delegateCallGroupIndex !== undefined
@@ -6867,7 +7139,9 @@ export class StatefulTransactionBuilder {
       )));
       const immediateDelegateLlc: UnlockableUtxo[] = [];
       const nestedLlcAfterInsertBand: UnlockableUtxo[] = [];
-      if (earlyInsertPredecessors.length > 0 && !this.compilerRouteDelegateBlock) {
+      const splitActiveDelegateBand = !this.compilerRouteDelegateBlock
+        && this.delegateEntriesAfterLowLevel;
+      if (splitActiveDelegateBand) {
         let consumed = 0;
         let pastConsumed = false;
         for (const [groupIndex, group] of this.lowLevelCallUtxoGroups.entries()) {
@@ -6881,7 +7155,10 @@ export class StatefulTransactionBuilder {
             }
             pastConsumed = true;
           }
-          if (group.callMode === 'delegatecall' && immediateDelegateLlc.length === 0) {
+          const isActiveDelegate = this.activeDelegateGroupIndex === undefined
+            ? group.callMode === 'delegatecall' && immediateDelegateLlc.length === 0
+            : groupIndex === this.activeDelegateGroupIndex;
+          if (isActiveDelegate) {
             immediateDelegateLlc.push(...items);
           } else {
             nestedLlcAfterInsertBand.push(...items);
@@ -6893,8 +7170,8 @@ export class StatefulTransactionBuilder {
           immediateDelegateLlc.push(...remainingLlc);
         }
       }
-      const llcBeforeJobs = earlyInsertPredecessors.length > 0 ? immediateDelegateLlc : [];
-      // Jobs / dynamic chunks must occupy INPUTINDEX+blockSize before insert-band and nested callees.
+      const llcBeforeJobs = splitActiveDelegateBand ? immediateDelegateLlc : [];
+      // Dynamic chunks must occupy INPUTINDEX+blockSize before an insert band and nested callees.
       // Always carve dynamic-array old-chunk inputs out of trailingOverflow (not only whitelist INSERT).
       // Otherwise nested LLC precedes chunks and post-two's emitDynamicReadLoop hits a non-chunk at
       // INPUTINDEX+blockSize (capability/chunkIndex EQUALVERIFY 01 vs empty). Iteration-entry
@@ -7045,7 +7322,7 @@ export class StatefulTransactionBuilder {
       const postBlockParticipants = [
         ...gapInputs.slice(gapIdx),
         ...deferredExternalCallInputs,
-        ...(earlyInsertPredecessors.length > 0 ? nestedLlcWithBlockPads : remainingLlc),
+        ...(splitActiveDelegateBand ? nestedLlcWithBlockPads : remainingLlc),
         ...this.lowLevelCallRawInputs,
         ...trailingRest,
         ...this.trailingDisposalInputs.slice(trailingDisposalIdx),
@@ -7216,8 +7493,10 @@ export class StatefulTransactionBuilder {
       // order previously appended every funder after dynamic chunks, placing an old chunk one index too low on the
       // second read-modify-write. Consume only the funders needed to complete the fixed implementation block here;
       // leave fee/change funders at the tail.
-      const routeDelegateIndex = this.lowLevelCallUtxoGroups.findIndex((group, index) =>
-        group.callMode === 'delegatecall' && !associatedDelegates.has(index));
+      const routeDelegateIndex = this.activeDelegateGroupIndex !== undefined
+        ? (associatedDelegates.has(this.activeDelegateGroupIndex) ? -1 : this.activeDelegateGroupIndex)
+        : this.lowLevelCallUtxoGroups.findIndex((group, index) =>
+          group.callMode === 'delegatecall' && !associatedDelegates.has(index));
       const routeDelegate = routeDelegateIndex >= 0 ? this.lowLevelCallUtxoGroups[routeDelegateIndex] : undefined;
       const routeDelegateInputIndex = routeDelegate?.masterUtxo
         ? prefix.findIndex((input) => input.txid.toLowerCase() === routeDelegate.masterUtxo!.txid.toLowerCase()
@@ -7363,10 +7642,25 @@ export class StatefulTransactionBuilder {
     this.funderChangeAddress = address;
   }
 
+  /** All explicit funding inputs, including those whose physical positions are owned by nested block layouts. */
+  private _accountingFunderUtxos(): UnlockableUtxo[] {
+    const unique = new Map<string, UnlockableUtxo>();
+    for (const funder of [...this.funderUtxos, ...this.embeddedFunderUtxos]) {
+      unique.set(`${funder.txid.toLowerCase()}:${funder.vout}`, funder);
+    }
+    return [...unique.values()];
+  }
+
   /** Absolute input index of the minting master for `categoryId`, or -1. */
   findMintingInputIndex(categoryId: string): number {
     return this.allInputs.findIndex((input) =>
       input.token?.category === categoryId && input.token?.nft?.capability === 'minting');
+  }
+
+  /** Absolute position of an already-selected input, matched only by immutable outpoint identity. */
+  findInputIndexByOutpoint(input: Pick<Utxo, 'txid' | 'vout'>): number {
+    return this.allInputs.findIndex((candidate) => candidate.txid.toLowerCase() === input.txid.toLowerCase()
+      && candidate.vout === input.vout);
   }
 
   getAssembledInputCount(): number {
@@ -7637,6 +7931,7 @@ export class StatefulTransactionBuilder {
   /** One physical executor for the active chunkable array write. Duplicate logical rows collapse by input. */
   private _chunkableValueWriteExecution(): {
     inputIndex: number; abiFunction: AbiFunction; collection: string;
+    resourceIdentity?: string; resourceOwnerIdentity?: string;
   } | undefined {
     return selectChunkableValueWriteExecution([
       ...this.lowLevelCallUtxoGroups.map((group, index) => ({
@@ -7666,32 +7961,56 @@ export class StatefulTransactionBuilder {
   /** Physical/logical group views of the one compiler-described chunkable-value writer. */
   private _chunkableValueWriteGroups(): {
     external?: ExternalCallUtxoGroup; externalIndex: number;
+    externalIndices: number[];
     lowLevel?: ExternalCallUtxoGroup; lowLevelIndex: number;
   } {
     const structural = this._chunkableValueWriteExecution();
     if (structural) {
       const lowLevelIndex = this.lowLevelCallUtxoGroups.findIndex((group, index) => (
         this.getLowLevelCallMasterInputIndex(index) === structural.inputIndex
-        && groupChunkableValueWriteIdentity(group) === structural.collection
+        && sameChunkableValueWriteResource(structural, group)
       ));
-      const externalIndex = this.externalCallUtxoGroups.findIndex((group, index) => (
-        group.delegateCallGroupIndex === undefined
-        && this.getExternalCallMasterInputIndex(index) === structural.inputIndex
-        && groupChunkableValueWriteIdentity(group) === structural.collection
+      const delegatedTopology = lowLevelIndex < 0 ? [] : this.externalCallUtxoGroups
+        .map((group, index) => ({ group, index }))
+        .filter(({ group }) => group.delegateCallGroupIndex === lowLevelIndex);
+      const delegatedCandidates = delegatedTopology.filter(({ group }) => (
+        group.valueChunkProducerClaims !== undefined
+        || group.valueChunkStateOwner !== undefined
+        || (group.valueChunkWrites?.length ?? 0) > 0
       ));
+      // Every compiler-described logical view of one physical delegate executor must authenticate the same
+      // resource under the same state owner. Silently dropping a disagreeing alias makes the selected width and
+      // ownership depend on enumeration order when two proxies share one implementation.
+      if (lowLevelIndex >= 0 && delegatedCandidates.some(({ group }) => (
+        !sameChunkableValueWriteResource(structural, group)
+      ))) {
+        return { externalIndex: -1, externalIndices: [], lowLevelIndex: -1 };
+      }
+      const externalIndices = this.externalCallUtxoGroups.flatMap((group, index) => {
+        if (!sameChunkableValueWriteResource(structural, group)) return [];
+        if (lowLevelIndex >= 0) {
+          return group.delegateCallGroupIndex === lowLevelIndex ? [index] : [];
+        }
+        return group.delegateCallGroupIndex === undefined
+          && this.getExternalCallMasterInputIndex(index) === structural.inputIndex ? [index] : [];
+      });
+      const externalIndex = externalIndices.find((index) => (
+        this.externalCallUtxoGroups[index].sharedGroupIndex === undefined
+      )) ?? externalIndices[0] ?? -1;
       return {
         external: externalIndex >= 0 ? this.externalCallUtxoGroups[externalIndex] : undefined,
         externalIndex,
+        externalIndices,
         lowLevel: lowLevelIndex >= 0 ? this.lowLevelCallUtxoGroups[lowLevelIndex] : undefined,
         lowLevelIndex,
       };
     }
     if (this._hasChunkableValueWriteMetadata()) {
-      return { externalIndex: -1, lowLevelIndex: -1 };
+      return { externalIndex: -1, externalIndices: [], lowLevelIndex: -1 };
     }
     // Compatibility only for plans predating compiler-authored valueChunkWrites.
     if (!this._permitsLegacyNamedValueChunkFallback()) {
-      return { externalIndex: -1, lowLevelIndex: -1 };
+      return { externalIndex: -1, externalIndices: [], lowLevelIndex: -1 };
     }
     const externalIndex = this.externalCallUtxoGroups.findIndex((group) =>
       (group.functionName ?? group.logicalFunctionName) === 'publishJobEvent');
@@ -7700,6 +8019,7 @@ export class StatefulTransactionBuilder {
     return {
       external: externalIndex >= 0 ? this.externalCallUtxoGroups[externalIndex] : undefined,
       externalIndex,
+      externalIndices: externalIndex >= 0 ? [externalIndex] : [],
       lowLevel: lowLevelIndex >= 0 ? this.lowLevelCallUtxoGroups[lowLevelIndex] : undefined,
       lowLevelIndex,
     };
@@ -7967,6 +8287,9 @@ export class StatefulTransactionBuilder {
       liveChunkWidthForGroup(
         this.externalCallUtxoGroups, publishExternalIndex, this.messageBusConvention,
       ),
+      ...selected.externalIndices.map((index) => liveChunkWidthForGroup(
+        this.externalCallUtxoGroups, index, this.messageBusConvention,
+      )),
       ...(publishLlcIndex >= 0
         ? [this.lowLevelCallUtxoGroups[publishLlcIndex].valueChunkOutputCount ?? 0]
         : []),
@@ -8070,16 +8393,10 @@ export class StatefulTransactionBuilder {
     if (nNew <= 0) return false;
     let changed = false;
     const structural = this._chunkableValueWriteExecution();
-    const structuralGroups = structural === undefined ? [] : [
-      ...this.externalCallUtxoGroups.filter((group, index) => (
-        group.delegateCallGroupIndex === undefined
-        && this.getExternalCallMasterInputIndex(index) === structural.inputIndex
-        && groupChunkableValueWriteIdentity(group) === structural.collection
-      )),
-      ...this.lowLevelCallUtxoGroups.filter((group, index) => (
-        this.getLowLevelCallMasterInputIndex(index) === structural.inputIndex
-        && groupChunkableValueWriteIdentity(group) === structural.collection
-      )),
+    const selected = structural === undefined ? undefined : this._chunkableValueWriteGroups();
+    const structuralGroups = selected === undefined ? [] : [
+      ...selected.externalIndices.map((index) => this.externalCallUtxoGroups[index]),
+      ...(selected.lowLevel ? [selected.lowLevel] : []),
     ];
     const groups = structuralGroups.length > 0
       ? structuralGroups
@@ -9476,8 +9793,6 @@ export class StatefulTransactionBuilder {
         Object.assign(currentState, parsePushdataCommitment(commitment, owner.stateLayout, nftIndex));
       }
       for (const [name, value] of owner.updates ?? []) currentState[name] = value;
-      const updatedNames = new Set(owner.updates?.keys() ?? []);
-
       for (const [ordinal, nftUtxo] of owner.dataNftUtxos.entries()) {
         const outpoint = `${nftUtxo.txid.toLowerCase()}:${nftUtxo.vout}`;
         if (seenOutpoints.has(outpoint)) continue;
@@ -9491,9 +9806,8 @@ export class StatefulTransactionBuilder {
         const nftIndex = owner.requiredDataNftIndices[ordinal];
         if (nftIndex === undefined) continue;
         const inputCommitment = input.token.nft.commitment;
-        const nftVariables = owner.stateLayout.variables.filter((variable) => variable.nftIndex === nftIndex);
-        const hasUpdate = nftVariables.some((variable) => updatedNames.has(variable.name));
-        const exactCommitment = owner.rawCommitments.get(nftIndex);
+        const hasUpdate = stateUpdatesTouchNft(owner.stateLayout, owner.updates, nftIndex);
+        const exactCommitment = hasUpdate ? undefined : owner.rawCommitments.get(nftIndex);
         const commitment = exactCommitment
           ?? (owner.preserveUntouched && !hasUpdate && inputCommitment
             ? inputCommitment
@@ -10225,8 +10539,13 @@ export class StatefulTransactionBuilder {
       ?? (group.externalContract.inner.artifact.abi as readonly AbiFunction[])
         .find((candidate) => candidate.name === group.functionName)
     );
-    const delegateGroupIndex = this.lowLevelCallUtxoGroups.findIndex((group) => group.callMode === 'delegatecall'
-      && (delegateFunction(group)?.sortedUpsertLoopInfo?.length ?? 0) > 0);
+    const activeDelegate = this.activeDelegateGroupIndex === undefined
+      ? undefined : this.lowLevelCallUtxoGroups[this.activeDelegateGroupIndex];
+    const delegateGroupIndex = this.activeDelegateGroupIndex !== undefined
+      ? (activeDelegate && (delegateFunction(activeDelegate)?.sortedUpsertLoopInfo?.length ?? 0) > 0
+        ? this.activeDelegateGroupIndex : -1)
+      : this.lowLevelCallUtxoGroups.findIndex((group) => group.callMode === 'delegatecall'
+        && (delegateFunction(group)?.sortedUpsertLoopInfo?.length ?? 0) > 0);
     const delegateGroup = delegateGroupIndex < 0 ? undefined : this.lowLevelCallUtxoGroups[delegateGroupIndex];
     const delegateAbiFunction = delegateGroup === undefined ? undefined : delegateFunction(delegateGroup);
     const delegateMaster = delegateGroup?.masterUtxo as UnlockableUtxo | undefined;
@@ -10603,13 +10922,22 @@ export class StatefulTransactionBuilder {
       const writerAbi = physical.compilerRoute?.abiFunction
         ?? (physical.externalContract?.inner?.artifact?.abi as AbiFunction[] | undefined)
           ?.find((fn) => fn.name === (physical.functionName ?? physical.logicalFunctionName));
+      const writerReturnsBool = writerAbi?.outputs?.length === 1 && writerAbi.outputs[0].type === 'bool';
+      const writerArtifact = physical.logicalArtifact ?? physical.externalContract?.inner?.artifact;
+      const evmBool = writerReturnsBool && writerArtifact !== undefined
+        && resolveExternalResultEncoding(
+          writerAbi.resultEncoding,
+          writerArtifact,
+          writerAbi.outputs!.map((output) => output.type),
+          `function '${writerAbi.name}' result`,
+        ) === 'evm-abi-v1';
       const commitment = canonicalWriterReturnCommitment({
         pendingHex: pending && pending.commitment.length > 0
           ? binToHex(pending.commitment)
           : String(occupant?.token?.nft?.commitment ?? ''),
         writesState: writerAbi?.writesState === true,
-        evmBool: artifactUsesSolidityAbi(physical.externalContract?.inner?.artifact ?? {}),
-        returnsBool: writerAbi?.outputs?.length === 1 && writerAbi.outputs[0].type === 'bool',
+        evmBool,
+        returnsBool: writerReturnsBool,
       });
       if (isViewReturnTailOutput({
         to: occupant?.to instanceof Uint8Array ? occupant.to : undefined,
@@ -11116,33 +11444,9 @@ export class StatefulTransactionBuilder {
       this._reassertInBlockWriterReturns(builder);
       return;
     }
-    const hole = builder.outputs[after];
-    if (hole?.token?.nft?.capability === 'none' && (hole.token.nft.commitment?.length ?? 0) > 2) {
-      this._restoreDeclaredMutableEntrySlots(builder);
-      this._reassertInBlockWriterReturns(builder);
-      return;
-    }
-    const suffixLen = (this.delegateDynamicChunksAtSuffix ? this._dynamicChunkOutputCount() : 0) + 1;
-    const last = builder.outputs.length - suffixLen;
-    const category = this._jobEventsPublishCategory()
-      ?? builder.outputs.slice(after + 1, last).find((output) =>
-        output.token?.nft?.capability === 'none'
-        && output.token.category !== swapCategoryId)?.token?.category;
-    if (!category) {
-      this._restoreDeclaredMutableEntrySlots(builder);
-      this._reassertInBlockWriterReturns(builder);
-      return;
-    }
-    builder.outputs[after] = {
-      to: Uint8Array.of(0x51),
-      amount: 800n,
-      token: {
-        amount: 0n,
-        category,
-        nft: { capability: 'none', commitment: '0101' },
-      },
-    };
-    this._vacateViewTailsFromJobEventsBand(builder);
+    // A physical return is materialized only for a selected producer-result identity. In particular, do not
+    // manufacture an anonymous placeholder at master+blockSize: that coordinate may be the one-to-one output of
+    // the next authenticated participant, and no consumer can soundly refer to an identity-free result anyway.
     this._restoreDeclaredMutableEntrySlots(builder);
     this._reassertInBlockWriterReturns(builder);
   }
@@ -11339,6 +11643,17 @@ export class StatefulTransactionBuilder {
    */
   _refreshInputs(): void {
     this.setFunderUtxos(this.funderUtxos);
+    this._refreshMasterUnlocker();
+  }
+
+  private _refreshMasterUnlocker(builder?: TransactionBuilder): void {
+    if (!this.masterUnlockerRefresher) return;
+    const prior = this.masterUtxo;
+    this.masterUtxo = { ...prior, unlocker: this.masterUnlockerRefresher(builder) };
+    const inputIndex = this.allInputs.findIndex((input) => (
+      input.txid.toLowerCase() === prior.txid.toLowerCase() && input.vout === prior.vout
+    ));
+    if (inputIndex >= 0) this.allInputs[inputIndex] = this.masterUtxo;
   }
 
   /** Replace one deferred keccak batch member and rebuild its ordinary compute side-car in place. */
@@ -11797,19 +12112,8 @@ export class StatefulTransactionBuilder {
     value: StateValue,
     explicitOverride = false,
   ): this {
-    const variable = this.stateLayout.variables.find((v) => v.name === name);
+    const variable = stateVariableForUpdateKey(this.stateLayout, name);
     if (!variable) {
-      // Allow a dynamic var's hidden length key "<name>$len" (the data-NFT register field).
-      if (name.endsWith('$len')) {
-        const base = name.slice(0, -4);
-        const dynamicVariable = this.stateLayout.variables.find((v) => v.name === base && v.dynamic);
-        if (dynamicVariable) {
-          if (explicitOverride) this.explicitStateOverrideNftIndices.add(dynamicVariable.nftIndex);
-          this.stateRawCommitments.delete(dynamicVariable.nftIndex);
-          this.stateUpdates.set(name, value);
-          return this;
-        }
-      }
       throw new Error(`Unknown state variable: ${name}`);
     }
     if (explicitOverride) this.explicitStateOverrideNftIndices.add(variable.nftIndex);
@@ -11840,7 +12144,7 @@ export class StatefulTransactionBuilder {
     // A caller changing an override after derivation invalidates the exact
     // commitment previously authenticated for that participant.
     const group = this.externalCallUtxoGroups.find((candidate) => candidate.categoryId === categoryId);
-    const nftIndex = group?.stateLayout.variables.find((variable) => variable.name === name)?.nftIndex;
+    const nftIndex = group && stateVariableForUpdateKey(group.stateLayout, name)?.nftIndex;
     if (nftIndex !== undefined) this.externalCallStateRawCommitments.get(categoryId)?.delete(nftIndex);
     return this;
   }
@@ -11918,6 +12222,15 @@ export class StatefulTransactionBuilder {
   ): boolean {
     const owner = this._participantDataNftOwner(outputIndex, categoryId);
     if (!owner || owner.kind !== 'external') return false;
+    const group = this.externalCallUtxoGroups[owner.groupIndex];
+    if (group && stateUpdatesTouchNft(
+      group.stateLayout,
+      this.externalCallStateUpdates.get(categoryId),
+      owner.nftIndex,
+    )) {
+      this.externalCallStateRawCommitments.get(categoryId)?.delete(owner.nftIndex);
+      return false;
+    }
     let byNft = this.externalCallStateRawCommitments.get(categoryId);
     if (!byNft) {
       byNft = new Map();
@@ -12011,8 +12324,8 @@ export class StatefulTransactionBuilder {
 
   /**
    * Rebind write-path entry NFT unlockers of `categoryId` to `masterInputIndex`.
-   * Nested publishJobEvent keeps jobEvents outside the proxy block (impl+3), so
-   * a blockInputs-only patch leaves that co-spend authorized against input 0.
+   * Entry inputs may live outside their owner's fixed participant block, so a
+   * blockInputs-only pass cannot update every co-spend after final relocation.
    */
   rebindCategoryEntryUnlockers(
     categoryId: string,
@@ -12021,9 +12334,6 @@ export class StatefulTransactionBuilder {
     const visit = (input: UnlockableUtxo | undefined): void => {
       if (!input?.token || input.token.category !== categoryId) return;
       if (input.token.nft?.capability !== 'mutable' || !input.unlocker) return;
-      const name = (input.unlocker as { contract?: { artifact?: { contractName?: string } } })
-        .contract?.artifact?.contractName;
-      if (!name?.startsWith('EntryNft_')) return;
       const next = rebind(input);
       if (next) input.unlocker = next;
     };
@@ -12325,13 +12635,21 @@ export class StatefulTransactionBuilder {
         resourceSelection, chunk.categoryId, this.categoryId,
       );
     if (!resolvedCategoryId) return false;
-    const describedResource = resourceSelection.status === 'exact'
+    const semanticKind = chunk.semanticKind
+      ?? (chunk.resourceIdentity !== undefined ? 'valueChunk' : undefined);
+    if (semanticKind === 'entryPin'
+      && (chunk.resourceIdentity !== undefined || chunk.resourcePart !== undefined)) {
+      throw new Error('An entry-output observation cannot claim value-chunk resource ownership.');
+    }
+    const describedResource = semanticKind === 'valueChunk' && resourceSelection.status === 'exact'
       && resourceSelection.categoryId.toLowerCase() === resolvedCategoryId.toLowerCase()
       ? valueChunkWriteResourceIdentity(resourceSelection.write) : undefined;
-    const describedChunkIndex = valueChunkIndexFromCommitment(chunk.commitment);
+    const describedChunkIndex = semanticKind === 'valueChunk'
+      ? valueChunkIndexFromCommitment(chunk.commitment) : undefined;
     const ownedChunk: DerivedChunkOutputObservation = {
       ...chunk,
       categoryId: resolvedCategoryId,
+      semanticKind,
       resourceIdentity: chunk.resourceIdentity ?? describedResource,
       resourcePart: chunk.resourcePart ?? (describedResource
         ? describedChunkIndex !== undefined
@@ -12356,7 +12674,30 @@ export class StatefulTransactionBuilder {
       }
     }
     const existing = this.derivedChunkOutputs.get(outputIndex);
-    if (sameDerivedChunkOutputObservation(existing, ownedChunk)) return false;
+    // A provisional entry repair must not consume a compiler-authenticated continuation coordinate. The exact
+    // value observation may replace an older entry-shaped placeholder once the covenant reveals ownership.
+    if (semanticKind === 'entryPin' && existing?.semanticKind === 'valueChunk') return false;
+    let relocated = false;
+    if (ownedChunk.resourceIdentity !== undefined && ownedChunk.resourcePart !== undefined) {
+      for (const [priorIndex, prior] of this.derivedChunkOutputs) {
+        if (priorIndex === outputIndex || prior.resourceIdentity !== ownedChunk.resourceIdentity
+          || prior.resourcePart !== ownedChunk.resourcePart) continue;
+        if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+          ?.SOLIDC_DEBUG_RESOURCE_PARTS === '1') {
+          console.error('derived-resource-part-relocated', {
+            resourceIdentity: ownedChunk.resourceIdentity,
+            resourcePart: ownedChunk.resourcePart,
+            from: priorIndex,
+            to: outputIndex,
+            commitment: ownedChunk.commitment.slice(0, 20),
+            semanticKind,
+          });
+        }
+        this.derivedChunkOutputs.delete(priorIndex);
+        relocated = true;
+      }
+    }
+    if (sameDerivedChunkOutputObservation(existing, ownedChunk)) return relocated;
     // Sorted-entry pins (slot32||next32||value…) must accept a later valueTail fill-in.
     // Value-chunk pins also use fixedIndex at the publish band; a full 126-byte payload is
     // 256 hex chars and must NOT take the entry-pin path (uint16 index < 32).
@@ -12388,12 +12729,14 @@ export class StatefulTransactionBuilder {
     if (!ownedChunk.fixedIndex && valueChunkPin && ownedChunk.commitment.length >= 3
       && ownedChunk.commitment !== '00' && !isEmptyValueChunkCommitment(ownedChunk.commitment)) {
       const categoryId = resolvedCategoryId;
-      this.rememberJobEventsChunks(categoryId, [
-        ...this.derivedChunkOutputs.values(),
-      ].filter((entry) => (entry.categoryId ?? this.categoryId) === categoryId
-        && entry.commitment.length >= 3
-        && entry.commitment !== '00'
-        && !isEmptyValueChunkCommitment(entry.commitment)));
+      if (this.messageBusConvention !== 'kernel-row-loop' || ownedChunk.resourceIdentity === undefined) {
+        this.rememberJobEventsChunks(categoryId, [
+          ...this.derivedChunkOutputs.values(),
+        ].filter((entry) => (entry.categoryId ?? this.categoryId) === categoryId
+          && entry.commitment.length >= 3
+          && entry.commitment !== '00'
+          && !isEmptyValueChunkCommitment(entry.commitment)));
+      }
     }
     return true;
   }
@@ -12404,6 +12747,18 @@ export class StatefulTransactionBuilder {
 
   /** Drop a stale fixed pin (e.g. prior probe entryIndex before layout settled). */
   clearDerivedChunkOutput(outputIndex: number): boolean {
+    if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+      ?.SOLIDC_DEBUG_RESOURCE_PARTS === '1') {
+      const observation = this.derivedChunkOutputs.get(outputIndex);
+      if (observation?.resourceIdentity !== undefined) {
+        console.error('derived-resource-part-cleared', {
+          outputIndex,
+          resourceIdentity: observation.resourceIdentity,
+          resourcePart: observation.resourcePart,
+          semanticKind: observation.semanticKind,
+        });
+      }
+    }
     return this.derivedChunkOutputs.delete(outputIndex);
   }
 
@@ -12426,7 +12781,10 @@ export class StatefulTransactionBuilder {
     if (this.bumpPublishJobEventsWidth(valueChunkCountFor(value))) this._refreshInputs();
     const live = this.getPublishJobEventsBand() ?? band;
     return seedChunksFromPersistedValue(
-      (outputIndex, chunk) => this.setDerivedChunkOutput(outputIndex, chunk),
+      (outputIndex, chunk) => this.setDerivedChunkOutput(outputIndex, {
+        ...chunk,
+        semanticKind: 'valueChunk',
+      }),
       live.start,
       value,
       lock,
@@ -12713,6 +13071,8 @@ export class StatefulTransactionBuilder {
           index,
           cat: (chunk.categoryId ?? '').slice(0, 8),
           commit: chunk.commitment.slice(0, 24),
+          semanticKind: chunk.semanticKind,
+          resourcePart: chunk.resourcePart,
         })),
         tail: builder.outputs.slice(-5).map((output, offset) => ({
           i: builder.outputs.length - 5 + offset,
@@ -12834,7 +13194,8 @@ export class StatefulTransactionBuilder {
     );
     const tokenWriterPresent = repairOwner.status !== 'absent'
       || this.mintingOutputSwap !== undefined;
-    if (band && !tokenWriterPresent && this.derivedChunkOutputs.size > 0) {
+    if (band && this.messageBusConvention !== 'kernel-row-loop'
+      && !tokenWriterPresent && this.derivedChunkOutputs.size > 0) {
       const keys = [...this.derivedChunkOutputs.entries()]
         .filter(([, chunk]) => !chunk.fixedIndex)
         .map(([index]) => index)
@@ -12956,9 +13317,7 @@ export class StatefulTransactionBuilder {
    * compiler-derived, self-describing runs, and only into token-free balanced slots; fixed pins remain immovable.
    */
   private _relocateCollidingDerivedValueChunkRuns(builder: TransactionBuilder): boolean {
-    type DerivedChunk = {
-      commitment: string; lockingBytecode: Uint8Array; categoryId?: string; fixedIndex?: boolean;
-    };
+    type DerivedChunk = DerivedChunkOutputObservation;
     const outputMatches = (index: number, chunk: DerivedChunk): boolean => {
       const output = builder.outputs[index];
       const lock = output?.to instanceof Uint8Array
@@ -12991,6 +13350,10 @@ export class StatefulTransactionBuilder {
     for (const group of groups.values()) {
       group.sort((left, right) => left.chunkIndex - right.chunkIndex);
       if (group.length === 0 || group.some((entry, offset) => entry.chunkIndex !== offset)) continue;
+      if (!permitsHeuristicValueChunkRunRelocation(group[0].chunk.resourceIdentity)) {
+        for (const entry of group) reserved.add(entry.index);
+        continue;
+      }
       const materialized = group.every((entry) => outputMatches(entry.index, entry.chunk));
       if (materialized) {
         for (const entry of group) reserved.add(entry.index);
@@ -13073,6 +13436,11 @@ export class StatefulTransactionBuilder {
    */
   private _materializeJobEventsBand(builder: TransactionBuilder): void {
     const band = this.getPublishJobEventsBand();
+    if (this.messageBusConvention === 'kernel-row-loop'
+      && [...this.derivedChunkOutputs.values()].some((chunk) => chunk.resourceIdentity !== undefined)) {
+      this._applyDerivedValueChunks(builder);
+      return;
+    }
     // Identity-scan chunks are already appended via stageValueChunkOutputs. Do not re-place them
     // onto a persist band that sits on another participant's minting master (FakeToken).
     if (!this._permitsLegacyNamedValueChunkFallback() && this.hasStagedValueChunkOutputs() && band) {
@@ -13280,7 +13648,11 @@ export class StatefulTransactionBuilder {
     const persistTokenCategory = derivedOwnerCategory
       ?? this._persistJobEventsTokenCategory()
       ?? categoryId;
-    const persistDigestLock = this._shouldStampPersistUpdateDigestLock()
+    const persistDigestLock = shouldUseLegacyPersistDigestLockForValueChunks({
+      hasWriteMetadata: this._hasChunkableValueWriteMetadata(),
+      permitsLegacyFallback: this._permitsLegacyNamedValueChunkFallback(),
+      stampPersistUpdate: this._shouldStampPersistUpdateDigestLock(),
+    })
       ? this._persistUpdateDigestLock(persistTokenCategory)
       : (this._shouldRematerializePersistUpdate()
         ? persistUpdateRedeemLock(
@@ -13707,7 +14079,20 @@ export class StatefulTransactionBuilder {
       const currentBase = carrier.valueChunkOutputBase;
       if (currentBase === undefined || isRun(carrier, currentBase)) continue;
       let materializedBase = -1;
-      for (let candidate = currentBase + 1; candidate < builder.outputs.length; candidate += 1) {
+      const provisionalResource = this.derivedChunkOutputs.get(currentBase)?.resourceIdentity;
+      const exactResourceStarts = provisionalResource === undefined ? [] : [...this.derivedChunkOutputs.entries()]
+        .filter(([, chunk]) => chunk.resourceIdentity === provisionalResource && chunk.resourcePart === 'chunk:0')
+        .map(([index]) => index);
+      // Descriptor-free compatibility runs may only move forward: an older same-shaped run is not authenticated
+      // as this write. An exact compiler-owned resource can move in either direction because chunk:0 names the
+      // unique physical start independently of a stale provisional coordinate.
+      const candidates = exactResourceStarts.length === 1
+        ? exactResourceStarts
+        : Array.from(
+          { length: Math.max(0, builder.outputs.length - currentBase - 1) },
+          (_, offset) => currentBase + offset + 1,
+        );
+      for (const candidate of candidates) {
         if (occupiedBases.has(candidate) || !isRun(carrier, candidate)) continue;
         materializedBase = candidate;
         break;
@@ -13911,12 +14296,17 @@ export class StatefulTransactionBuilder {
           width += 1;
         }
         if (expectedWidth === 0 || width !== expectedWidth) continue;
-        const absoluteStart = coordinateBase + start;
+        const absoluteStart = materializedValueChunkAbsoluteStart(
+          start, coordinateBase, runResourceIdentity,
+        );
         const owner = occupiedBases.get(absoluteStart);
         if (owner === undefined || owner === physicalOwnerId) selectedStart = start;
       }
       if (selectedStart < 0) continue;
-      const absoluteStart = coordinateBase + selectedStart;
+      const selectedResourceIdentity = this.derivedChunkOutputs.get(selectedStart)?.resourceIdentity;
+      const absoluteStart = materializedValueChunkAbsoluteStart(
+        selectedStart, coordinateBase, selectedResourceIdentity,
+      );
       occupiedBases.set(absoluteStart, physicalOwnerId);
       // `delegateCallGroupIndex` is the planner's stable physical-callsite identity. Every proxy record attached
       // to that implementation input encodes the same continuation witness, even when one logical record omits
@@ -14126,6 +14516,24 @@ export class StatefulTransactionBuilder {
     const learned = [...this.derivedChunkOutputs].filter(([index, observation]) => (
       !sameDerivedChunkOutputObservation(probeBaseline.get(index), observation)
     ));
+    if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+      ?.SOLIDC_DEBUG_RESOURCE_PARTS === '1'
+      && [...learned, ...baseline].some(([, observation]) => observation.resourceIdentity !== undefined)) {
+      const summarize = ([index, observation]: [number, DerivedChunkOutputObservation]) => ({
+        index,
+        categoryId: observation.categoryId?.slice(0, 8),
+        resourceIdentity: observation.resourceIdentity,
+        resourcePart: observation.resourcePart,
+        semanticKind: observation.semanticKind,
+        commitment: observation.commitment.slice(0, 20),
+      });
+      console.error('restore-derived-resource-parts', {
+        insertion,
+        baseline: [...baseline].filter(([, item]) => item.resourceIdentity !== undefined).map(summarize),
+        probeBaseline: [...probeBaseline].filter(([, item]) => item.resourceIdentity !== undefined).map(summarize),
+        learned: learned.filter(([, item]) => item.resourceIdentity !== undefined).map(summarize),
+      });
+    }
     this.builtReturnEventOutputIndices = new Map(snapshot.built);
     this.derivedChunkOutputs = new Map(
       snapshot.derivedChunkOutputs as Array<[number, DerivedChunkOutputObservation]>,
@@ -14133,7 +14541,8 @@ export class StatefulTransactionBuilder {
     for (const [probeIndex, observation] of learned) {
       // The inserted output is deliberately unauthenticated probe padding. Evidence naming it cannot be carried
       // into the transaction which omits that output.
-      if (insertion && probeIndex === insertion.insertAt) continue;
+      if (insertion && probeIndex === insertion.insertAt
+        && observation.resourceIdentity === undefined) continue;
       // A probe-local splice changes semantic coordinates only when the corresponding absolute witnesses were
       // rebound. If they stayed fixed, an observation at index N authenticates index N in the rebuilt transaction;
       // projecting it back by one aliases adjacent resource parts (for example chunk 1 onto chunk 0).
@@ -15830,8 +16239,10 @@ export class StatefulTransactionBuilder {
         const nftUtxo = group.dataNftUtxos[i];
         const nftVars = group.stateLayout.variables.filter((variable) => variable.nftIndex === nftIdx);
         const nftIsImmutable = nftVars.length > 0 && nftVars.every((variable) => variable.immutable);
+        const nftHasUpdate = stateUpdatesTouchNft(group.stateLayout, bStateUpdates, nftIdx);
         const inputCommitment = nftUtxo.token?.nft?.commitment;
-        const commitment = this.externalCallStateRawCommitments.get(group.categoryId)?.get(nftIdx)
+        const commitment = (nftHasUpdate ? undefined
+          : this.externalCallStateRawCommitments.get(group.categoryId)?.get(nftIdx))
           ?? (nftIsImmutable && inputCommitment
             ? inputCommitment
             : buildPushdataCommitment(
@@ -16053,8 +16464,13 @@ export class StatefulTransactionBuilder {
         ?? (group.externalContract.inner.artifact.abi as readonly AbiFunction[])
           .find((candidate) => candidate.name === group.functionName)
       );
-      const delegateGroupIndex = this.lowLevelCallUtxoGroups.findIndex((group) => group.callMode === 'delegatecall'
-        && (delegateFunction(group)?.sortedUpsertLoopInfo?.length ?? 0) > 0);
+      const activeDelegate = this.activeDelegateGroupIndex === undefined
+        ? undefined : this.lowLevelCallUtxoGroups[this.activeDelegateGroupIndex];
+      const delegateGroupIndex = this.activeDelegateGroupIndex !== undefined
+        ? (activeDelegate && (delegateFunction(activeDelegate)?.sortedUpsertLoopInfo?.length ?? 0) > 0
+          ? this.activeDelegateGroupIndex : -1)
+        : this.lowLevelCallUtxoGroups.findIndex((group) => group.callMode === 'delegatecall'
+          && (delegateFunction(group)?.sortedUpsertLoopInfo?.length ?? 0) > 0);
       const delegateGroup = delegateGroupIndex < 0 ? undefined : this.lowLevelCallUtxoGroups[delegateGroupIndex];
       const delegateAbiFunction = delegateGroup === undefined ? undefined : delegateFunction(delegateGroup);
       const delegateMaster = delegateGroup?.masterUtxo as UnlockableUtxo | undefined;
@@ -16278,7 +16694,6 @@ export class StatefulTransactionBuilder {
       }
 
       const displacedRouteStateOutputs: Output[] = [];
-      const updatedStateNames = new Set(bStateUpdates?.keys() ?? []);
       // Create B's data NFT outputs with updated commitments
       for (let i = 0; i < group.requiredDataNftIndices.length; i++) {
         const nftIdx = group.requiredDataNftIndices[i];
@@ -16289,16 +16704,17 @@ export class StatefulTransactionBuilder {
         // EQUALVERIFYs UTXO vs OUTPUT commitment.
         const nftVars = group.stateLayout.variables.filter((variable) => variable.nftIndex === nftIdx);
         const nftIsImmutable = nftVars.length > 0 && nftVars.every((variable) => variable.immutable);
-        const nftHasUpdate = !nftIsImmutable && nftVars.some((variable) => updatedStateNames.has(variable.name));
+        const nftHasUpdate = !nftIsImmutable
+          && stateUpdatesTouchNft(group.stateLayout, bStateUpdates, nftIdx);
         const inputCommitment = nftUtxo.token?.nft?.commitment;
-        const commitment = this.externalCallStateRawCommitments.get(group.categoryId)?.get(nftIdx)
+        const commitment = (nftHasUpdate ? undefined
+          : this.externalCallStateRawCommitments.get(group.categoryId)?.get(nftIdx))
           ?? (nftHasUpdate || !inputCommitment
             ? buildPushdataCommitment(
             group.stateLayout, bCurrentState, nftIdx,
             this.builderOptions.provider.consensusLimits?.maximumNftCommitmentBytes,
             )
             : inputCommitment);
-
         const stateOutput: Output = {
           to: nftUtxo.unlocker.generateLockingBytecode(),
           amount: nftUtxo.satoshis,
@@ -16606,7 +17022,14 @@ export class StatefulTransactionBuilder {
               ?? (group.externalContract?.inner?.artifact?.abi as AbiFunction[] | undefined)
                 ?.find((fn) => fn.name === group.functionName);
             const writerReturnsBool = writerAbi?.outputs?.length === 1 && writerAbi.outputs[0].type === 'bool';
-            const evmBool = artifactUsesSolidityAbi(group.externalContract?.inner?.artifact ?? {});
+            const writerArtifact = group.logicalArtifact ?? group.externalContract?.inner?.artifact;
+            const evmBool = writerReturnsBool && writerArtifact !== undefined
+              && resolveExternalResultEncoding(
+                writerAbi.resultEncoding,
+                writerArtifact,
+                writerAbi.outputs!.map((output) => output.type),
+                `function '${writerAbi.name}' result`,
+              ) === 'evm-abi-v1';
             // State-writing bools (transferFrom) default to success. Views (arbitratorRegistered)
             // default to false so a missing precompute cannot admit an unregistered party.
             // A fused zero seed is unset, not false — SafeERC20 abi.decode(00) fails VERIFY.
@@ -17343,8 +17766,10 @@ export class StatefulTransactionBuilder {
         const nftUtxo = group.dataNftUtxos[i];
         const nftVars = group.stateLayout.variables.filter((variable) => variable.nftIndex === nftIdx);
         const nftIsImmutable = nftVars.length > 0 && nftVars.every((variable) => variable.immutable);
+        const nftHasUpdate = stateUpdatesTouchNft(group.stateLayout, bStateUpdates, nftIdx);
         const inputCommitment = nftUtxo.token?.nft?.commitment;
-        const commitment = this.externalCallStateRawCommitments.get(group.categoryId)?.get(nftIdx)
+        const commitment = (nftHasUpdate ? undefined
+          : this.externalCallStateRawCommitments.get(group.categoryId)?.get(nftIdx))
           ?? (nftIsImmutable && inputCommitment
             ? inputCommitment
             : buildPushdataCommitment(
@@ -18016,9 +18441,17 @@ export class StatefulTransactionBuilder {
         ?? llc.externalContract?.inner?.addressType ?? 'p2sh32';
       for (let eventIndex = 0; eventIndex < eventSlots.length; eventIndex++) {
         const namedImpl = this._chunkableValueWriteInputIndex();
+        const physicalEventOffset = physicalDelegateSlotOffset(
+          fn?.blockLayout, eventSlots[eventIndex].offset,
+          llc.externalContract?.inner.artifact.delegateOnly === true,
+        );
         const outputIndex = namedImpl >= 0
-          ? chunkableWriterEventOutputIndex(namedImpl, eventSlots[eventIndex].offset)
-          : implIndex + eventSlots[eventIndex].offset;
+          ? chunkableWriterEventOutputIndex(namedImpl, physicalEventOffset)
+          : implIndex + physicalEventOffset;
+        // The ordinary balanced-frame event path is authoritative whenever the active layout already projects
+        // this implementation slot. Legacy repair is only for a genuinely out-of-frame delegate event; writing
+        // it again would create an unauthenticated duplicate immutable NFT at the unnormalised coordinate.
+        if (this.blockLayout?.slots.some((slot) => slot.kind === 'event' && slot.offset === outputIndex)) continue;
         const occupant = builder.outputs[outputIndex];
         const occupantNeedsEvent = isOverwritableEmitOccupant(occupant)
           || String(occupant?.token?.nft?.commitment ?? '').startsWith('53434944');
@@ -18399,6 +18832,8 @@ export class StatefulTransactionBuilder {
       console.error('derived-chunk-final', {
         pins: [...this.derivedChunkOutputs.entries()].map(([index, chunk]) => ({
           index, lock: binToHex(chunk.lockingBytecode).slice(0, 16), commit: chunk.commitment.slice(0, 16),
+          semanticKind: chunk.semanticKind, resourceIdentity: chunk.resourceIdentity,
+          resourcePart: chunk.resourcePart,
         })),
         outputs: [18, 19, 20, 21, 22, 23].map(dumpIndex),
       });
@@ -18721,6 +19156,7 @@ export class StatefulTransactionBuilder {
 
   /** Copy refreshed unlockers onto an already-materialized TransactionBuilder. */
   private _syncBuilderUnlockers(builder: TransactionBuilder): void {
+    this._refreshMasterUnlocker(builder);
     const next = syncBuilderInputsFromAllInputs(builder.inputs, this.allInputs);
     builder.inputs.splice(0, builder.inputs.length, ...next);
   }
@@ -18789,9 +19225,57 @@ export class StatefulTransactionBuilder {
     return changed;
   }
 
+  /** Rebind write-path entry covenants to their state owner's final physical minting-master input. */
+  private _reconcileMaterializedEntryNftUnlockers(builder: TransactionBuilder): boolean {
+    let changed = false;
+    const groups = [
+      ...this.externalCallUtxoGroups.filter((group) => group.sharedGroupIndex === undefined),
+      ...this.lowLevelCallUtxoGroups,
+    ];
+    const categories = new Set(groups.map((group) => group.categoryId).filter(Boolean));
+    for (const categoryId of categories) {
+      const masterInputIndex = this.findMintingInputIndex(categoryId);
+      if (masterInputIndex < 0) continue;
+      const descriptors = groups.flatMap((group) => {
+        if (group.categoryId !== categoryId) return [];
+        const delegateGroup = group.delegateCallGroupIndex === undefined
+          ? undefined : this.lowLevelCallUtxoGroups[group.delegateCallGroupIndex];
+        const entryContract = delegateGroup?.externalContract ?? group.externalContract;
+        if (!entryContract?.inner) return [];
+        return (group.stateLayout?.collections ?? []).flatMap((collection) => (
+          typeof collection.signature === 'string'
+            ? [{ entryContract, signature: collection.signature }]
+            : []
+        ));
+      });
+      if (descriptors.length === 0) continue;
+      this.rebindCategoryEntryUnlockers(categoryId, (input) => {
+        if (!isContractUnlocker(input.unlocker)) return undefined;
+        const flagIndex = input.unlocker.abiFunction.inputs.findIndex((candidate) => candidate.name === 'flag');
+        const masterIndex = input.unlocker.abiFunction.inputs
+          .findIndex((candidate) => candidate.name === 'masterInputIndex');
+        if (flagIndex < 0 || masterIndex < 0 || input.unlocker.params[flagIndex] !== 1n
+          || input.unlocker.params[masterIndex] === BigInt(masterInputIndex)) return undefined;
+        const lockingBytecode = input.unlocker.generateLockingBytecode();
+        for (const { entryContract, signature } of descriptors) {
+          const candidate = createEntryNftUnlocker(
+            entryContract.inner, masterInputIndex, categoryId, signature,
+          );
+          if (!binsAreEqual(candidate.generateLockingBytecode(), lockingBytecode)) continue;
+          changed = true;
+          return candidate;
+        }
+        return undefined;
+      });
+    }
+    if (changed) this._syncBuilderUnlockers(builder);
+    return changed;
+  }
+
   /** Rebind hidden callee-master arguments from the final physical input order. */
   private _reconcileMaterializedInputWitnesses(builder: TransactionBuilder): boolean {
     const dataNftsChanged = this._reconcileMaterializedDataNftUnlockers(builder);
+    const entryNftsChanged = this._reconcileMaterializedEntryNftUnlockers(builder);
     const changedCarriers = new Set<ExternalCallUtxoGroup>();
     for (const carrier of [...this.externalCallUtxoGroups, ...this.lowLevelCallUtxoGroups]) {
       if (!carrier.mintingInputWitnessCategories || !carrier.refreshInternalArgs) continue;
@@ -18806,7 +19290,7 @@ export class StatefulTransactionBuilder {
       carrier.internalArgs = { ...carrier.internalArgs, ...updates };
       changedCarriers.add(carrier);
     }
-    if (changedCarriers.size === 0) return dataNftsChanged;
+    if (changedCarriers.size === 0) return dataNftsChanged || entryNftsChanged;
     this._syncRefreshedCarrierMasters(builder, changedCarriers);
     return true;
   }
@@ -19897,7 +20381,7 @@ export class StatefulTransactionBuilder {
     ) + this.lowLevelCallRawInputs.length;
     const iterationEntryOutputCount = this.iterationEntryInputs.length;
     // Include potential funder change output (added last in build())
-    const changeOutputCount = (this.funderChangeAddress && this.funderUtxos.length > 0) ? 1 : 0;
+    const changeOutputCount = (this.funderChangeAddress && this._accountingFunderUtxos().length > 0) ? 1 : 0;
     // X13: in-block return events are already counted inside each callee's block output span.
     return this.getEventOutputBase() + eventOutputCount
       + this.tailReturnEventOutputs().length
@@ -20723,6 +21207,7 @@ export class StatefulTransactionBuilder {
           commitment: proposedHex,
           lockingBytecode: found.lockingBytecode,
           categoryId: found.categoryId,
+          semanticKind: 'valueChunk',
         });
         repairDetails.push({
           outputIndex: found.outputIndex,
@@ -20790,6 +21275,7 @@ export class StatefulTransactionBuilder {
                 commitment: proposedHex,
                 lockingBytecode: found.lockingBytecode,
                 categoryId: output.token.category,
+                semanticKind: 'valueChunk',
               });
             } else {
               this.setExternalCallEntryOutputAt(
@@ -20905,18 +21391,42 @@ export class StatefulTransactionBuilder {
     ) => boolean,
   ): ReturnType<TransactionBuilder['buildLibauthTransaction']> {
     let lastError: unknown;
-    let repairsRemaining = 32;
+    const fixedInputCount = builder.inputs.length;
+    let fixedOutputCount = builder.outputs.length;
+    let repairPassLimit = computedOutputRepairPassLimit(fixedInputCount, fixedOutputCount);
+    let repairsRemaining = repairPassLimit;
+    // Authenticated repairs can reveal an output-only resource whose compiler-owned final-layout callback then
+    // materializes a new slot. Permit that controlled fixed-point transition, but never permit input geometry to
+    // move and bound output-count revisions independently of field-repair passes.
+    let geometryChangesRemaining = fixedInputCount + fixedOutputCount + 1;
     const debugRepairs = (globalThis as { process?: { env?: Record<string, string> } }).process?.env
       ?.SOLIDC_DEBUG_REPAIR_CONVERGENCE === '1';
     const debugPreflightTiming = (globalThis as { process?: { env?: Record<string, string> } }).process?.env
       ?.SOLIDC_DEBUG_PREFLIGHT_TIMING === '1';
-    const failFastOnCycle = (globalThis as { process?: { env?: Record<string, string> } }).process?.env
-      ?.SOLIDC_DEBUG_REPAIR_FAIL_FAST === '1';
-    const previousRepairs = new Map<string, {
-      inputIndex: number;
-      previous: string;
-      proposed: string;
-    }>();
+    const repairHistory = new Map<string, string>();
+    const convergenceStates = new Set<string>();
+    const acceptControlledOutputGeometry = (): void => {
+      if (builder.inputs.length !== fixedInputCount) {
+        throw new Error(
+          'Computed-output repair changed finalized input geometry '
+          + `(${fixedInputCount}->${builder.inputs.length}).`,
+        );
+      }
+      if (builder.outputs.length === fixedOutputCount) return;
+      if (geometryChangesRemaining === 0) {
+        throw new Error('Computed-output repair output geometry did not converge.');
+      }
+      geometryChangesRemaining -= 1;
+      const nextPassLimit = computedOutputRepairPassLimit(fixedInputCount, builder.outputs.length);
+      if (nextPassLimit > repairPassLimit) {
+        repairsRemaining += nextPassLimit - repairPassLimit;
+        repairPassLimit = nextPassLimit;
+      }
+      fixedOutputCount = builder.outputs.length;
+      // An output insertion can move a prior numeric coordinate to a different semantic owner. Transaction-state
+      // fingerprints still detect whole-state cycles; reset only coordinate-local claims for the new geometry.
+      repairHistory.clear();
+    };
     const sameOutpoint = (left: Utxo | undefined, right: Utxo | undefined): boolean => (
       left !== undefined && right !== undefined
       && left.vout === right.vout && left.txid.toLowerCase() === right.txid.toLowerCase()
@@ -20957,10 +21467,23 @@ export class StatefulTransactionBuilder {
         owners,
       };
     };
-    let cycleDetected = false;
-    for (let sweep = 0; sweep <= 32; sweep++) {
+    let exhausted = true;
+    for (let sweep = 0; sweep < repairPassLimit; sweep++) {
       const transaction = builder.buildLibauthTransaction(true);
-      if (beforeValidation?.(transaction)) continue;
+      if (transaction.inputs.length !== fixedInputCount || transaction.outputs.length !== fixedOutputCount) {
+        throw new Error(
+          'Computed-output repair changed the finalized transaction geometry '
+          + `(inputs ${fixedInputCount}->${transaction.inputs.length}, `
+          + `outputs ${fixedOutputCount}->${transaction.outputs.length}).`,
+        );
+      }
+      recordComputedOutputConvergenceState(
+        convergenceStates, binToHex(encodeTransaction(transaction)),
+      );
+      if (beforeValidation?.(transaction)) {
+        acceptControlledOutputGeometry();
+        continue;
+      }
       try {
         if ((globalThis as { process?: { env?: Record<string, string> } }).process
           ?.env?.SOLIDC_DEBUG_ENTRY_COUNTS === '1' && sweep === 0) {
@@ -21027,8 +21550,16 @@ export class StatefulTransactionBuilder {
         lastError = error;
         const reason = error instanceof Error ? error.message : String(error);
         const failedInput = reason.match(/input(?: index)? (\d+)/)?.[1];
-        if (failedInput === undefined) break;
+        if (failedInput === undefined) {
+          exhausted = false;
+          break;
+        }
         const inputIndex = Number(failedInput);
+        if (repairsRemaining === 0) {
+          throw new Error(
+            `Computed-output repair convergence exhausted after ${repairPassLimit} passes.`,
+          );
+        }
         let changed = false;
         while (repairsRemaining > 0) {
           const repairStartedAt = debugPreflightTiming ? Date.now() : 0;
@@ -21065,28 +21596,10 @@ export class StatefulTransactionBuilder {
           }));
           for (const repair of result.repairDetails) {
             const coordinate = `${repair.outputIndex}:${repair.field}`;
-            const prior = previousRepairs.get(coordinate);
-            if (prior !== undefined
-              && prior.previous === repair.proposed && prior.proposed === repair.previous) {
-              if (debugRepairs) console.error('repair-cycle', {
-                coordinate,
-                first: { ...prior, input: describeInput(prior.inputIndex) },
-                second: {
-                  inputIndex,
-                  previous: repair.previous,
-                  proposed: repair.proposed,
-                  input: describeInput(inputIndex),
-                },
-              });
-              cycleDetected = true;
-            }
-            previousRepairs.set(coordinate, {
-              inputIndex,
-              previous: repair.previous,
-              proposed: repair.proposed,
-            });
+            recordComputedOutputRepairTransition(
+              repairHistory, inputIndex, coordinate, repair.proposed,
+            );
           }
-          if (cycleDetected && failFastOnCycle) break;
           if (!result.changed) break;
           changed = true;
           repairsRemaining -= 1;
@@ -21111,6 +21624,13 @@ export class StatefulTransactionBuilder {
           reportConvergenceTiming('delegate-collections-cleared');
           this._clearUnclaimedConditionalEventSlots(builder);
           reportConvergenceTiming('conditional-events-cleared');
+          if (builder.inputs.length !== fixedInputCount || builder.outputs.length !== fixedOutputCount) {
+            throw new Error(
+              'Computed-output repair changed the finalized transaction geometry '
+              + `(inputs ${fixedInputCount}->${builder.inputs.length}, `
+              + `outputs ${fixedOutputCount}->${builder.outputs.length}).`,
+            );
+          }
           if (result.passed) break;
         }
         if (changed) {
@@ -21126,10 +21646,16 @@ export class StatefulTransactionBuilder {
               carrier.argumentsRefreshedDuringConvergence = false;
             }
           }
+          acceptControlledOutputGeometry();
         }
-        if (cycleDetected && failFastOnCycle) break;
-        if (!changed) break;
+        if (!changed) {
+          exhausted = false;
+          break;
+        }
       }
+    }
+    if (exhausted) {
+      throw new Error(`Computed-output repair convergence exhausted after ${repairPassLimit} passes.`);
     }
     if (lastError !== undefined) {
       this._logCovenantFailureTrace(
@@ -21208,12 +21734,13 @@ export class StatefulTransactionBuilder {
     // For P2SH32 OP_TRUE: unlocking = 2 bytes -> input overhead = 32+4+1+2+4 = 43
     // For P2PKH sig: unlocking ~ 107 bytes -> input overhead = 32+4+1+107+4 = 148
     // Change output: 8 (value) + 1 (scriptLen varint) + scriptLen
-    const funderUnlockSize = this.funderUtxos.length > 0
+    const accountingFundersAtMeasurement = this._accountingFunderUtxos();
+    const funderUnlockSize = accountingFundersAtMeasurement.length > 0
       // A native P2PKH funder (msg.sender / tx.origin sender input) signs over the source outputs, which are not
       // assembled yet at this fee-estimation point, so use the fixed sig+pubkey size (~107 B) instead of signing.
-      ? (isP2PKHUnlocker(this.funderUtxos[0].unlocker)
+      ? (isP2PKHUnlocker(accountingFundersAtMeasurement[0].unlocker)
         ? 107
-        : this.funderUtxos[0].unlocker.generateUnlockingBytecode(
+        : accountingFundersAtMeasurement[0].unlocker.generateUnlockingBytecode(
           { transaction: covenantTx, sourceOutputs: [], inputIndex: 0 },
         ).length)
       : 2; // P2SH32 OP_TRUE default for mocknet
@@ -21313,21 +21840,33 @@ export class StatefulTransactionBuilder {
     this._reassertDelegateImplEvents(finalBuilder);
     this._restoreSwappedTokenFunderSlots(finalBuilder);
 
-    if (this.funderUtxos.length > 0) {
-      // Funders supplied at construction (auto-derivation) may lack an explicit change address;
-      // default change to the funder's own script so over-sized funders don't bloat the fee.
+    const accountingFunders = this._accountingFunderUtxos();
+    const accountingFunderByOutpoint = new Map<string, UnlockableUtxo>(accountingFunders.map((funder) => (
+      [`${funder.txid.toLowerCase()}:${funder.vout}`, funder] as const
+    )));
+    const serializedAccountingFunders = [...new Map(finalBuilder.inputs.flatMap((input) => {
+      const key = `${input.txid.toLowerCase()}:${input.vout}`;
+      const funder = accountingFunderByOutpoint.get(key);
+      return funder ? [[key, funder] as const] : [];
+    })).values()];
+    if (serializedAccountingFunders.length > 0) {
+      // A structural funder can already occupy a nested participant coordinate and therefore must not be
+      // re-added to the local placement pool. It still owns its contributed value; default change to the first
+      // exact funding claim when no explicit common destination was supplied.
       const changeTo = this.funderChangeAddress
-        ?? this.funderUtxos[0].unlocker.generateLockingBytecode();
-      const funderOutpoints = new Set(this.funderUtxos.map((f) => `${f.txid}:${f.vout}`));
-      const actualFunderInputs = this.allInputs.filter((input) => (
-        funderOutpoints.has(`${input.txid}:${input.vout}`)
+        ?? serializedAccountingFunders[0].unlocker.generateLockingBytecode();
+      const funderOutpoints = new Set(serializedAccountingFunders.map(
+        (funder) => `${funder.txid.toLowerCase()}:${funder.vout}`,
+      ));
+      const actualFunderInputs = finalBuilder.inputs.filter((input) => (
+        funderOutpoints.has(`${input.txid.toLowerCase()}:${input.vout}`)
       ));
       // A configured block-layout funder can be displaced by a covenant input at the same physical offset.
       // Only inputs that are actually serialized may contribute to change; counting the configured pool would
       // create value whenever a slot is occupied by a delegate/data input.
       const funderTotal = actualFunderInputs.reduce((sum, input) => sum + input.satoshis, 0n);
-      const covenantInputTotal = this.allInputs
-        .filter((input) => !funderOutpoints.has(`${input.txid}:${input.vout}`))
+      const covenantInputTotal = finalBuilder.inputs
+        .filter((input) => !funderOutpoints.has(`${input.txid.toLowerCase()}:${input.vout}`))
         .reduce((sum, input) => sum + input.satoshis, 0n);
       const covenantOutputTotal = finalBuilder.outputs.reduce((sum, o) => sum + o.amount, 0n);
       const available = funderTotal - (covenantOutputTotal - covenantInputTotal);
@@ -21420,13 +21959,13 @@ export class StatefulTransactionBuilder {
     // change. Running this after every repair makes fee balance part of the same
     // fixed-point loop as authenticated output convergence.
     const rebalanceFunderSurplus = (): void => {
-      if (this.funderUtxos.length === 0) return;
+      if (serializedAccountingFunders.length === 0) return;
       const inputSats = finalBuilder.inputs.reduce((sum, input) => sum + input.satoshis, 0n);
       const outputSats = finalBuilder.outputs.reduce((sum, output) => sum + output.amount, 0n);
       const surplus = inputSats - outputSats - neededFee;
       if (surplus < DUST_MINIMUM) return;
       const changeTo = this.funderChangeAddress
-        ?? this.funderUtxos[0].unlocker.generateLockingBytecode();
+        ?? serializedAccountingFunders[0].unlocker.generateLockingBytecode();
       const changeLock = binToHex(changeTo);
       const changeIndex = finalBuilder.outputs.findLastIndex((output) => (
         !output.token
@@ -21578,7 +22117,7 @@ export class StatefulTransactionBuilder {
     const totalInputSats = finalBuilder.inputs.reduce((sum, input) => sum + input.satoshis, 0n);
     const configuredChangeLocks = [
       this.funderChangeAddress,
-      ...this.funderUtxos.map((funder) => funder.unlocker.generateLockingBytecode()),
+      ...serializedAccountingFunders.map((funder) => funder.unlocker.generateLockingBytecode()),
     ].filter((lock): lock is Uint8Array => lock instanceof Uint8Array);
     const findChangeIndex = (requiredReduction: bigint): number | undefined => [...finalBuilder.outputs]
       .map((output, index) => ({ output, index }))
@@ -21651,6 +22190,33 @@ export class StatefulTransactionBuilder {
     const totalOutputSats = decodedTx.outputs.reduce((sum, output) => sum + output.valueSatoshis, 0n);
     const fee = totalInputSats - totalOutputSats;
     const txSize = BigInt(rawTxBin.byteLength);
+
+    if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+      ?.SOLIDC_DEBUG_FEE_LAYOUT === '1') {
+      const describeToken = (token: Output['token']): unknown => token && ({
+        category: token.category.slice(0, 16),
+        amount: String(token.amount),
+        capability: token.nft?.capability,
+        commitment: token.nft?.commitment,
+      });
+      console.error('final-fee-layout', JSON.stringify({
+        totalInputSats: String(totalInputSats),
+        totalOutputSats: String(totalOutputSats),
+        fee: String(fee),
+        neededFee: String(neededFee),
+        funderCount: this.funderUtxos.length,
+        embeddedFunderCount: this.embeddedFunderUtxos.length,
+        changeLock: this.funderChangeAddress && binToHex(this.funderChangeAddress).slice(0, 20),
+        inputs: finalBuilder.inputs.map((input, index) => ({
+          index, sats: String(input.satoshis), token: describeToken(input.token),
+          lock: binToHex(input.unlocker.generateLockingBytecode()).slice(0, 20),
+        })),
+        outputs: finalBuilder.outputs.map((output, index) => ({
+          index, sats: String(output.amount), token: describeToken(output.token),
+          lock: output.to instanceof Uint8Array ? binToHex(output.to).slice(0, 20) : String(output.to),
+        })),
+      }));
+    }
 
     if (this._maximumFeeSatoshis !== undefined && fee > this._maximumFeeSatoshis) {
       throw new Error(

@@ -2359,7 +2359,7 @@ export default class TypeCheckTraversal extends AstTraversal {
     const FORWARDABLE = new Set([
       '__internal__blockhashInputIndex', '__internal__proxyMasterOutputIndex',
       '__internal__proxyMasterIndex', '__internal__kernelJournalAccessStreams',
-      '__internal__kernelJournalRecords',
+      '__internal__kernelJournalRecords', '__internal__dynamicChunkInputBase',
     ]);
     const callerParams = new Map(this.currentFunction.parameters.map((p) => [p.name, p]));
     const canForwardByName = (p: ParameterNode): boolean => {

@@ -3,9 +3,14 @@ import { binToHex, hexToBin } from '@bitauth/libauth';
 import { scriptToBytecode, type Artifact } from '@solidcash/utils';
 import { encodeFunctionArgument } from '../../src/Argument.js';
 import {
-  planKernelDelegateForwarding, resolveKernelDelegateExecution, resolveKernelDelegatePromotion,
+  planKernelDelegateForwarding, resolveKernelDelegateExecution, resolveKernelDelegateForwardingTarget,
+  resolveKernelDelegatePromotion,
 } from '../../src/stateful/KernelDelegateForwarding.js';
-import { resolvePreparedKernelDelegateExecution } from '../../src/stateful/StatefulContract.js';
+import {
+  externalCallReachedOccurrenceIndices, resolvePreparedKernelDelegateExecution,
+  resolvePreparedKernelDelegateOwnerFrame,
+  resolvePublishedEntryBlockOffset, selectKernelDelegateForwardingGroupIndex,
+} from '../../src/stateful/StatefulContract.js';
 
 const bytes = (hex: string): Uint8Array => Uint8Array.from(
   hex.match(/../g)?.map((part) => Number.parseInt(part, 16)) ?? [],
@@ -60,6 +65,56 @@ const implementationPayload = (value: number): Uint8Array => {
   if (!(argument instanceof Uint8Array)) throw new Error('test byte did not encode to bytes');
   return new Uint8Array([...hexToBin('01020304'), ...scriptToBytecode([argument])]);
 };
+
+describe('kernel delegate entry coordinates', () => {
+  it('resolves an entry-access lane through the published block layout', () => {
+    const layout = {
+      slots: [
+        { kind: 'master', offset: 0 },
+        { kind: 'dataNft', offset: 1 },
+        { kind: 'dataNft', offset: 2 },
+        { kind: 'entry', offset: 3, slotIndex: 1 },
+        { kind: 'event', offset: 4 },
+      ],
+    };
+
+    expect(resolvePublishedEntryBlockOffset(layout, 1)).toBe(3);
+    expect(resolvePublishedEntryBlockOffset(layout)).toBe(3);
+  });
+
+  it('derives exact loop occurrences from every compiler array-element source', () => {
+    const call = {
+      occurrence: 'loop' as const,
+      minimumOccurrences: 0,
+      maximumOccurrences: 4,
+      argSources: [{
+        kind: 'expression',
+        left: { kind: 'arrayElement', paramIndex: 0 },
+        right: [{ kind: 'arrayElement', paramIndex: 1 }],
+      }],
+    };
+
+    expect(externalCallReachedOccurrenceIndices(call, [[], []])).toEqual([]);
+    expect(externalCallReachedOccurrenceIndices(call, [[1n], [2n]])).toEqual([0]);
+    expect(externalCallReachedOccurrenceIndices(call, [[1n, 2n], [3n, 4n]])).toEqual([0, 1]);
+  });
+
+  it('fails closed for missing, inconsistent, or out-of-bound loop cardinality', () => {
+    const source = { kind: 'arrayElement', paramIndex: 0 };
+    expect(externalCallReachedOccurrenceIndices(
+      { occurrence: 'loop', argSources: [] }, [[1n]],
+    )).toBeUndefined();
+    expect(externalCallReachedOccurrenceIndices(
+      { occurrence: 'loop', argSources: [source] }, [1n],
+    )).toBeUndefined();
+    expect(externalCallReachedOccurrenceIndices({
+      occurrence: 'loop', argSources: [source, { kind: 'arrayElement', paramIndex: 1 }],
+    }, [[1n], [2n, 3n]])).toBeUndefined();
+    expect(externalCallReachedOccurrenceIndices({
+      occurrence: 'loop', maximumOccurrences: 1, argSources: [source],
+    }, [[1n, 2n]])).toBeUndefined();
+  });
+});
 
 describe('kernel delegate forwarding binding prerequisite', () => {
   it('binds one exact owner, executor, payload, and output frame', () => {
@@ -120,6 +175,39 @@ describe('kernel delegate forwarding binding prerequisite', () => {
     expect(() => planKernelDelegateForwarding(
       widened, [bytes('01020304')], [bytes('bb20')], frame(),
     )).toThrow(/unsupported schema/);
+  });
+
+  it('resolves the exact forwarding target independently of a physical frame', () => {
+    expect(resolveKernelDelegateForwardingTarget(metadata(), [bytes('bb20')])).toEqual({
+      callIndex: 0,
+      lockingBytecode: 'bb20',
+    });
+    const literal = metadata();
+    literal.target = { kind: 'literal' } as never;
+    literal.targetBinding = { kind: 'literal', lockingBytecode: 'BB20' } as never;
+    expect(resolveKernelDelegateForwardingTarget(literal, [])).toEqual({
+      callIndex: 0,
+      lockingBytecode: 'bb20',
+    });
+  });
+
+  it('selects the authenticated delegate executor independently of group order', () => {
+    const group = (lockingBytecode: string, callMode = 'delegatecall') => ({
+      callMode,
+      externalContract: { inner: { lockingBytecode } },
+    });
+    const decoy = group('cc20');
+    const target = group('bb20');
+    const ordinary = group('bb20', 'call');
+    const select = (groups: ReturnType<typeof group>[]) => selectKernelDelegateForwardingGroupIndex({
+      forwarding: metadata(),
+      encodedProxyConstructorArgs: [bytes('bb20')],
+      groups,
+    });
+    expect(select([decoy, ordinary, target])).toBe(2);
+    expect(select([target, ordinary, decoy])).toBe(0);
+    expect(() => select([decoy])).toThrow(/not materialized/);
+    expect(() => select([target, target])).toThrow(/ambiguous/);
   });
 
   it('rejects an executor aliasing the participant owner coordinate', () => {
@@ -257,5 +345,46 @@ describe('kernel delegate forwarding binding prerequisite', () => {
         delegateForwarding: { ...metadata(), terminalRequire: false },
       },
     })).toThrow(/not the singular version-1 frame/);
+  });
+
+  it('binds nested resolution to the selector-authenticated promoted owner frame', () => {
+    const logical = {
+      name: 'apply', selector: '01020304', inputs: [
+        { name: 'key', type: 'uint256' },
+        { name: 'value', type: 'bytes32' },
+        { name: '__internal__valueWitness_0', type: 'bytes' },
+      ],
+    } as any;
+    const physicalRoute = {
+      name: '__message_bus1', selector: '05060708', inputs: [
+        { name: 'rows', type: 'bytes' },
+        { name: '__internal__valueWitness_0', type: 'bytes' },
+      ],
+    } as any;
+    const execution = {
+      functionName: 'apply', selector: '01020304', args: [5n, bytes('aa'.repeat(32))],
+    } as any;
+
+    const selected = resolvePreparedKernelDelegateOwnerFrame({
+      execution,
+      implementationAbi: [physicalRoute, logical],
+    });
+
+    expect(selected.abiFunction).toBe(logical);
+    expect(selected.args).toEqual(execution.args);
+    expect(selected.args).not.toBe(execution.args);
+  });
+
+  it('fails closed for an ambiguous promoted owner or mismatched decoded arity', () => {
+    const execution = { functionName: 'apply', selector: '01020304', args: [5n] } as any;
+    const exact = {
+      name: 'apply', selector: '01020304', inputs: [{ name: 'key', type: 'uint256' }],
+    } as any;
+    expect(() => resolvePreparedKernelDelegateOwnerFrame({
+      execution, implementationAbi: [exact, { ...exact }],
+    })).toThrow(/exactly one logical implementation handler/);
+    expect(() => resolvePreparedKernelDelegateOwnerFrame({
+      execution, implementationAbi: [{ ...exact, inputs: [] }],
+    })).toThrow(/declares 0/);
   });
 });

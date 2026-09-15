@@ -2,8 +2,10 @@ import { describe, expect, it } from 'vitest';
 import { encodePushdataValue, type ArgSource, type ExternalCallAbi } from '@solidcash/utils';
 import type { FunctionArgument } from '../src/Argument.js';
 import {
+  createGraphPlanningProducerResultContext,
   decodeAuthenticatedProducerResultVector,
   externalReturnsForCallsites,
+  memoizeGraphPlanningProducerResult,
 } from '../src/stateful/StatefulContract.js';
 
 const producer = (
@@ -46,6 +48,46 @@ const evmWord = (value: bigint): Uint8Array => {
 };
 
 describe('graph producer-result identities', () => {
+  it('evaluates one unchanged producer callsite once per planning epoch', async () => {
+    const context = createGraphPlanningProducerResultContext();
+    let evaluations = 0;
+    const evaluate = async (): Promise<FunctionArgument> => {
+      evaluations += 1;
+      return 41n;
+    };
+    const args = [7n, { payload: new Uint8Array([0xaa]) }] as unknown as FunctionArgument[];
+
+    expect(await memoizeGraphPlanningProducerResult(
+      context, 3, args, undefined, false, evaluate,
+    )).toBe(41n);
+    expect(await memoizeGraphPlanningProducerResult(
+      context, 3, [7n, { payload: new Uint8Array([0xaa]) }] as unknown as FunctionArgument[],
+      undefined, false, evaluate,
+    )).toBe(41n);
+    // An exact result is also a sound provisional seed for the same authenticated callsite invocation.
+    expect(await memoizeGraphPlanningProducerResult(
+      context, 3, args, undefined, true, evaluate,
+    )).toBe(41n);
+    expect(evaluations).toBe(1);
+
+    await memoizeGraphPlanningProducerResult(context, 3, [8n], undefined, false, evaluate);
+    expect(evaluations).toBe(2);
+  });
+
+  it('does not let a provisional fallback satisfy a later exact producer request', async () => {
+    const context = createGraphPlanningProducerResultContext();
+    let evaluations = 0;
+    const evaluate = async (): Promise<FunctionArgument> => BigInt(++evaluations);
+
+    expect(await memoizeGraphPlanningProducerResult(
+      context, 5, [1n], undefined, true, evaluate,
+    )).toBe(1n);
+    expect(await memoizeGraphPlanningProducerResult(
+      context, 5, [1n], undefined, false, evaluate,
+    )).toBe(2n);
+    expect(evaluations).toBe(2);
+  });
+
   it('selects distinct components from one authenticated multi-result callsite', () => {
     const sources = [source(3, 0), source(3, 1)];
     const results = externalReturnsForCallsites(

@@ -46,6 +46,12 @@ export interface KernelDelegateExecutionTarget {
   lockingBytecode: string;
 }
 
+/** Compiler-authored physical target for one singular delegate-forwarding edge. */
+export interface ResolvedKernelDelegateForwardingTarget {
+  callIndex: number;
+  lockingBytecode: string;
+}
+
 export interface KernelDelegatePromotionInput {
   forwarding: unknown;
   proxyParameters: readonly FunctionArgument[];
@@ -105,19 +111,15 @@ const coordinate = (value: unknown, label: string): number => {
   return value as number;
 };
 
-/**
- * Resolve the exact compiler-authored forwarding recipe against one physical frame.
- *
- * This is intentionally a prerequisite, not an admission switch. It rejects unknown or extended schemas and
- * binds the four values a covenant must compare: owner, state category, executor target, and calldata. State
- * commitment transitions remain the implementation route's responsibility.
- */
-export function planKernelDelegateForwarding(
+interface ValidatedKernelDelegateForwardingMetadata {
+  forwarding: UnknownRecord;
+  callIndex: number;
+  payloadInput: number;
+}
+
+const validateKernelDelegateForwardingMetadata = (
   forwarding: unknown,
-  parameters: readonly FunctionArgument[],
-  constructorArgs: readonly FunctionArgument[],
-  frame: KernelDelegateForwardingFrame,
-): ResolvedKernelDelegateForwarding {
+): ValidatedKernelDelegateForwardingMetadata => {
   if (!isRecord(forwarding)) throw new Error('delegate forwarding metadata must be an object');
   exactKeys(forwarding, [
     'version', 'callIndex', 'payloadInput', 'target', 'targetBinding', 'frame', 'terminalRequire',
@@ -139,38 +141,95 @@ export function planKernelDelegateForwarding(
   if (!isRecord(forwarding.target) || !isRecord(forwarding.targetBinding)) {
     throw new Error('delegate forwarding target metadata is incomplete');
   }
+  return {
+    forwarding,
+    callIndex: forwarding.callIndex as number,
+    payloadInput: forwarding.payloadInput as number,
+  };
+};
 
-  const payload = parameters[forwarding.payloadInput as number];
+const resolveValidatedKernelDelegateForwardingTarget = (
+  metadata: ValidatedKernelDelegateForwardingMetadata,
+  constructorArgs: readonly FunctionArgument[],
+): ResolvedKernelDelegateForwardingTarget => {
+  const { forwarding } = metadata;
+  let lockingBytecode: string;
+  if ((forwarding.targetBinding as UnknownRecord).kind === 'constructorArg') {
+    exactKeys(forwarding.target as UnknownRecord, ['kind', 'name'], 'delegate forwarding target');
+    exactKeys(
+      forwarding.targetBinding as UnknownRecord,
+      ['kind', 'input', 'name'],
+      'delegate forwarding target binding',
+    );
+    const target = forwarding.target as UnknownRecord;
+    const binding = forwarding.targetBinding as UnknownRecord;
+    if (target.kind !== 'constructorArg'
+      || typeof target.name !== 'string' || target.name.length === 0
+      || binding.name !== target.name
+      || !Number.isSafeInteger(binding.input)
+      || (binding.input as number) < 0) {
+      throw new Error('delegate forwarding constructor target binding is inconsistent');
+    }
+    lockingBytecode = canonicalHex(
+      constructorArgs[binding.input as number],
+      'delegate forwarding constructor target',
+    );
+  } else if ((forwarding.targetBinding as UnknownRecord).kind === 'literal') {
+    exactKeys(forwarding.target as UnknownRecord, ['kind'], 'delegate forwarding target');
+    exactKeys(
+      forwarding.targetBinding as UnknownRecord,
+      ['kind', 'lockingBytecode'],
+      'delegate forwarding target binding',
+    );
+    const target = forwarding.target as UnknownRecord;
+    const binding = forwarding.targetBinding as UnknownRecord;
+    if (target.kind !== 'literal') {
+      throw new Error('delegate forwarding literal target binding is inconsistent');
+    }
+    lockingBytecode = canonicalHex(binding.lockingBytecode, 'delegate forwarding literal target');
+  } else {
+    throw new Error('delegate forwarding target binding is unsupported');
+  }
+  return Object.freeze({ callIndex: metadata.callIndex, lockingBytecode });
+};
+
+/**
+ * Resolve only the compiler-committed executor identity for a forwarding edge.
+ *
+ * Constructor arguments should be their ABI-encoded values: an `address` may be supplied publicly as a
+ * CashAddress string, while its encoded value is the exact locking bytecode committed by the proxy covenant.
+ */
+export function resolveKernelDelegateForwardingTarget(
+  forwarding: unknown,
+  constructorArgs: readonly FunctionArgument[],
+): ResolvedKernelDelegateForwardingTarget {
+  return resolveValidatedKernelDelegateForwardingTarget(
+    validateKernelDelegateForwardingMetadata(forwarding), constructorArgs,
+  );
+}
+
+/**
+ * Resolve the exact compiler-authored forwarding recipe against one physical frame.
+ *
+ * This is intentionally a prerequisite, not an admission switch. It rejects unknown or extended schemas and
+ * binds the four values a covenant must compare: owner, state category, executor target, and calldata. State
+ * commitment transitions remain the implementation route's responsibility.
+ */
+export function planKernelDelegateForwarding(
+  forwarding: unknown,
+  parameters: readonly FunctionArgument[],
+  constructorArgs: readonly FunctionArgument[],
+  frame: KernelDelegateForwardingFrame,
+): ResolvedKernelDelegateForwarding {
+  const metadata = validateKernelDelegateForwardingMetadata(forwarding);
+
+  const payload = parameters[metadata.payloadInput];
   if (!(payload instanceof Uint8Array)) throw new Error('delegate forwarding payload must be bytes');
   if (!sameBytes(payload, frame.forwardedCalldata)) {
     throw new Error('delegate forwarding calldata does not match the selected payload input');
   }
 
-  let target: string;
-  if (forwarding.targetBinding.kind === 'constructorArg') {
-    exactKeys(forwarding.target, ['kind', 'name'], 'delegate forwarding target');
-    exactKeys(forwarding.targetBinding, ['kind', 'input', 'name'], 'delegate forwarding target binding');
-    if (forwarding.target.kind !== 'constructorArg'
-      || typeof forwarding.target.name !== 'string' || forwarding.target.name.length === 0
-      || forwarding.targetBinding.name !== forwarding.target.name
-      || !Number.isSafeInteger(forwarding.targetBinding.input)
-      || (forwarding.targetBinding.input as number) < 0) {
-      throw new Error('delegate forwarding constructor target binding is inconsistent');
-    }
-    target = canonicalHex(
-      constructorArgs[forwarding.targetBinding.input as number],
-      'delegate forwarding constructor target',
-    );
-  } else if (forwarding.targetBinding.kind === 'literal') {
-    exactKeys(forwarding.target, ['kind'], 'delegate forwarding target');
-    exactKeys(forwarding.targetBinding, ['kind', 'lockingBytecode'], 'delegate forwarding target binding');
-    if (forwarding.target.kind !== 'literal') {
-      throw new Error('delegate forwarding literal target binding is inconsistent');
-    }
-    target = canonicalHex(forwarding.targetBinding.lockingBytecode, 'delegate forwarding literal target');
-  } else {
-    throw new Error('delegate forwarding target binding is unsupported');
-  }
+  const target = resolveValidatedKernelDelegateForwardingTarget(metadata, constructorArgs).lockingBytecode;
 
   const ownerInput = canonicalHex(frame.participantInput.lockingBytecode, 'delegate participant input owner');
   const ownerOutput = canonicalHex(frame.participantOutput.lockingBytecode, 'delegate participant output owner');

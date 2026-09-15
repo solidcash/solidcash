@@ -27,6 +27,7 @@ import { containsStatefulOperation } from '../semantic/EnsureFinalRequireTravers
 import { fixedForMaximum } from '../semantic/FixedForLoop.js';
 import { parameterCommitmentSource } from '../semantic/SymbolTableTraversal.js';
 import { hasEffectiveCallValue } from '../semantic/branchOps.js';
+import { externalResultEncoding } from '../semantic/ExternalResultEncoding.js';
 import {
   analyzeChildDeploymentRecipes, analyzeFixedBchEffectRecipes, childDeploymentValueRecipe,
 } from '../deploymentRecipes.js';
@@ -1086,7 +1087,7 @@ const signatureGuardDominatesDelegatecalls = (fn: FunctionDefinitionNode): boole
 /** Build the common metadata fields for an ABI function entry. */
 function buildFunctionAbiMetadata(
   func: FunctionDefinitionNode, isStateful = false, contract?: ContractNode,
-  interfaces: readonly InterfaceNode[] = [],
+  interfaces: readonly InterfaceNode[] = [], compilerOptions: CompilerOptions = {},
 ): Partial<AbiFunction> {
   const dynamicWriteSources = dynamicWriteSourcesOf(func, contract);
   const possibleSelectorTargets = (
@@ -2018,6 +2019,7 @@ function buildFunctionAbiMetadata(
           ...(ec.hasReturnValues && { hasReturnValues: true }),
           ...(ec.returnTypes && ec.returnTypes.length > 0 && {
             returnTypes: ec.returnTypes.map((t) => t.toString()),
+            ...(!ec.opaqueReturn && { resultEncoding: externalResultEncoding(ec.returnTypes, compilerOptions) }),
           }),
           ...(ec.returnEventSignature && { returnEventSignature: ec.returnEventSignature }),
           ...(ec.computedOffset !== undefined && ec.computedOffset > 0 && { computedOffset: ec.computedOffset }),
@@ -2308,6 +2310,7 @@ function mappingNameFields(type: Type): Record<string, unknown> {
 export function generateDeclarationArtifact(
   ast: Ast,
   source: string,
+  compilerOptions: CompilerOptions = {},
 ): Artifact {
   const primary = ast.interfaceDefinitions.find((i) => i.name === ast.libraryName)
     ?? ast.interfaceDefinitions[0];
@@ -2320,7 +2323,10 @@ export function generateDeclarationArtifact(
   const abi: AbiFunction[] = declFunctions.map((fn) => ({
     name: fn.name,
     inputs: fn.parameters.map((p) => ({ name: p.name, type: abiTypeString(p.type) })),
-    ...(fn.returnTypes.length > 0 && { outputs: fn.returnTypes.map((t) => ({ type: abiTypeString(t) })) }),
+    ...(fn.returnTypes.length > 0 && {
+      outputs: fn.returnTypes.map((t) => ({ type: abiTypeString(t) })),
+      resultEncoding: externalResultEncoding(fn.returnTypes, compilerOptions),
+    }),
   }));
 
   const allEnums = [
@@ -2370,7 +2376,13 @@ export function generateDeclarationArtifact(
     ...(enums && { enums }),
     ...(events && { events }),
     ...(errors && { errors }),
-    compiler: { name: 'solidc', version },
+    compiler: {
+      name: 'solidc', version,
+      options: {
+        evmCompat: compilerOptions.evmCompat,
+        solidityImportCompat: compilerOptions.solidityImportCompat,
+      },
+    },
     updatedAt: new Date().toISOString(),
   };
 }
@@ -2415,12 +2427,13 @@ export function generateArtifact(
     })),
     ...(func.returnTypes.length > 0 && {
       outputs: func.returnTypes.map((type) => ({ type: abiTypeString(type) })),
+      resultEncoding: externalResultEncoding(func.returnTypes, compilerOptions),
     }),
     ...(func.modifiers.length > 0 && {
       modifiers: func.modifiers.map((m) => m.toString()),
     }),
     ...(func.nativeSelfBatchDispatcher && { nativeSelfBatchDispatcher: true }),
-    ...buildFunctionAbiMetadata(func, isStateful, contract, ast.interfaceDefinitions),
+    ...buildFunctionAbiMetadata(func, isStateful, contract, ast.interfaceDefinitions, compilerOptions),
     ...(func.splitCountParam && { splitCountParam: func.splitCountParam }),
     ...(func.mergeCountParam && { mergeCountParam: func.mergeCountParam }),
   }));
@@ -2439,7 +2452,7 @@ export function generateArtifact(
       ...(contract.constructorDef.modifiers.length > 0 && {
         modifiers: contract.constructorDef.modifiers.map((m) => m.toString()),
       }),
-      ...buildFunctionAbiMetadata(contract.constructorDef, false, contract, ast.interfaceDefinitions),
+      ...buildFunctionAbiMetadata(contract.constructorDef, false, contract, ast.interfaceDefinitions, compilerOptions),
     });
   }
 
@@ -2452,7 +2465,7 @@ export function generateArtifact(
       ...(contract.fallbackDef.modifiers.length > 0 && {
         modifiers: contract.fallbackDef.modifiers.map((m) => m.toString()),
       }),
-      ...buildFunctionAbiMetadata(contract.fallbackDef, false, contract, ast.interfaceDefinitions),
+      ...buildFunctionAbiMetadata(contract.fallbackDef, false, contract, ast.interfaceDefinitions, compilerOptions),
     });
   }
 
@@ -2463,7 +2476,7 @@ export function generateArtifact(
       inputs: [],
       isReceive: true,
       modifiers: ['payable'],
-      ...buildFunctionAbiMetadata(contract.receiveDef, false, contract, ast.interfaceDefinitions),
+      ...buildFunctionAbiMetadata(contract.receiveDef, false, contract, ast.interfaceDefinitions, compilerOptions),
     });
   }
 
@@ -2695,6 +2708,7 @@ export function generateArtifact(
       name: 'solidc',
       version,
       options: {
+        evmCompat: compilerOptions.evmCompat,
         enforceFunctionParameterTypes: compilerOptions.enforceFunctionParameterTypes,
         enforceLocktimeGuard: compilerOptions.enforceLocktimeGuard,
         enforceFinalRequire: compilerOptions.enforceFinalRequire,

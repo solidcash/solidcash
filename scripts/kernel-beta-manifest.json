@@ -97,7 +97,7 @@
       "file": "test/journal-message-bus/e2e/KernelJournalOwnershipCharacterization.test.ts",
       "tests": [
         "pins kernel and legacy bus boundaries while preserving exact stream topology",
-        "preserves direct-entry fallback semantics for a fenced same-key read-to-set transfer",
+        "preserves authenticated route semantics for a same-key read-to-set transfer",
         "preserves fixed-width bytes semantics through direct-entry fallback when its carrier is fenced",
         "proves legacy-compiled direct-entry semantics and rejects swapped settlement identities"
       ]
@@ -107,7 +107,182 @@
       "workspace": "solidcash",
       "file": "test/journal-message-bus/e2e/KernelReadCarrierBoundary.test.ts",
       "tests": [
-        "rejects repeated clean reads before broadcast while the carrier protocol is unpublished"
+        "publishes repeated clean reads only with the authenticated carrier capability"
+      ]
+    },
+    {
+      "id": "kernel-read-carrier-rows",
+      "workspace": "solidcash",
+      "file": "test/journal-message-bus/e2e/KernelReadCarrierRows.test.ts",
+      "tests": [
+        "shares each physical clean input across copy(2), copy(2) and settles a dense mixed final flush"
+      ]
+    },
+    {
+      "id": "kernel-fixed-local-key-vector",
+      "workspace": "solidcash",
+      "file": "test/journal-message-bus/e2e/FixedLocalArrayKeyVector.test.ts",
+      "tests": [
+        "matches legacy element order and preserves runtime index bounds"
+      ]
+    },
+    {
+      "id": "kernel-fixed-local-key-alias",
+      "workspace": "solidcash",
+      "file": "test/journal-message-bus/e2e/FixedLocalArrayKeyAlias.test.ts",
+      "tests": [
+        "matches legacy alias order and preserves runtime index bounds"
+      ]
+    },
+    {
+      "id": "kernel-conditional-fixed-key-vector",
+      "workspace": "solidcash",
+      "file": "test/journal-message-bus/e2e/ConditionalFixedKeyVector.test.ts",
+      "tests": [
+        "matches legacy branch choice and preserves runtime index bounds"
+      ]
+    },
+    {
+      "id": "kernel-switch-fixed-key-vector",
+      "workspace": "solidcash",
+      "file": "test/journal-message-bus/e2e/SwitchFixedKeyVector.test.ts",
+      "tests": [
+        "matches legacy case/default choice and preserves runtime index bounds"
+      ]
+    },
+    {
+      "id": "kernel-pure-fixed-key-vector-producer",
+      "workspace": "solidcash",
+      "file": "test/journal-message-bus/e2e/PureFixedKeyVectorProducer.test.ts",
+      "tests": [
+        "matches legacy producer results and preserves returned-array bounds"
+      ]
+    },
+    {
+      "id": "kernel-readonly-state-bound-keys",
+      "workspace": "solidcash",
+      "file": "test/journal-message-bus/e2e/ReadOnlyStateBoundConstructedKeys.test.ts",
+      "tests": [
+        "matches legacy partial-fill semantics and preserves source out-of-bounds failure"
+      ]
+    },
+    {
+      "id": "kernel-fixed-array-length-keys",
+      "workspace": "solidcash",
+      "file": "test/journal-message-bus/e2e/FixedArrayLengthConstructedKeys.test.ts",
+      "tests": [
+        "matches legacy semantics and preserves source allocation bounds"
+      ]
+    },
+    {
+      "id": "kernel-literal-bound-source-loop",
+      "workspace": "solidcash",
+      "file": "test/journal-message-bus/e2e/LiteralBoundSourceLoopEscapes.test.ts",
+      "tests": [
+        "executes while and do-while selected ranks through the kernel row loop"
+      ]
+    },
+    {
+      "id": "kernel-runtime-allocation-length-keys",
+      "workspace": "solidcash",
+      "file": "test/journal-message-bus/e2e/RuntimeAllocationLengthConstructedKeys.test.ts",
+      "tests": [
+        "matches legacy full and partial fills while preserving source bounds failures"
+      ]
+    },
+    {
+      "id": "kernel-straight-line-resized-allocation-length",
+      "workspace": "solidcash",
+      "file": "test/journal-message-bus/e2e/StraightLineResizedAllocationLength.test.ts",
+      "tests": [
+        "matches the exact legacy length and preserves source bounds failures"
+      ]
+    },
+    {
+      "id": "kernel-exhaustive-resize-join-allocation-length",
+      "workspace": "solidcash",
+      "file": "test/journal-message-bus/e2e/ExhaustiveResizeJoinAllocationLength.test.ts",
+      "tests": [
+        "matches legacy for either exact arm and preserves source bounds failures"
+      ]
+    },
+    {
+      "id": "kernel-exhaustive-resize-switch-allocation-length",
+      "workspace": "solidcash",
+      "file": "test/journal-message-bus/e2e/ExhaustiveResizeSwitchAllocationLength.test.ts",
+      "tests": [
+        "matches legacy for every selected arm and preserves source bounds failures"
+      ]
+    },
+    {
+      "id": "kernel-fixed-loop-resized-allocation-length",
+      "workspace": "solidcash",
+      "file": "test/journal-message-bus/e2e/FixedLoopResizeAllocationLength.test.ts",
+      "tests": [
+        "matches the exact legacy length and preserves source bounds failures"
+      ]
+    },
+    {
+      "id": "kernel-overloaded-pure-internal-call",
+      "workspace": "solidcash",
+      "file": "test/journal-message-bus/e2e/OverloadedPureInternalCall.test.ts",
+      "tests": [
+        "executes the exact semantic overload on the kernel batch path",
+        "keeps the exact overload through a fixed return on the kernel batch path"
+      ]
+    },
+    {
+      "id": "kernel-counter-dependent-bigint-recurrence",
+      "workspace": "solidcash",
+      "file": "test/journal-message-bus/e2e/CounterDependentBigintRecurrence.test.ts",
+      "tests": [
+        "executes the authenticated source-order product and enforces the 64-rank bound"
+      ]
+    },
+    {
+      "id": "kernel-exact-additive-recurrence",
+      "workspace": "solidcash",
+      "file": "test/journal-message-bus/e2e/ExactAdditiveRecurrenceSecurity.test.ts",
+      "tests": [
+        "authenticates scalar state, preserves checked source order, rejects tampering, and caps rank at 64"
+      ]
+    },
+    {
+      "id": "kernel-prestate-scalar-recurrence-coefficients",
+      "workspace": "solidcash",
+      "file": "test/journal-message-bus/e2e/PreStateScalarRecurrenceCoefficients.test.ts",
+      "tests": [
+        "settles the exact 64-iteration boundary and rejects a forged coefficient-derived event"
+      ]
+    },
+    {
+      "id": "kernel-constructed-array-partial-fill",
+      "workspace": "solidcash",
+      "file": "test/journal-message-bus/e2e/KernelConstructedArrayPartialFill.test.ts",
+      "tests": [
+        "preserves default keys, complete fills, source OOB failure, and the authenticated domain"
+      ]
+    },
+    {
+      "id": "kernel-runtime-array-fill-keys",
+      "workspace": "solidcash",
+      "file": "test/journal-message-bus/e2e/KernelRuntimeArrayFillKeys.test.ts",
+      "tests": [
+        "executes the exact derived domain and rejects missing or extra iterations"
+      ]
+    },
+    {
+      "id": "kernel-affine-void-recursive-events",
+      "workspace": "solidcash",
+      "file": "test/journal-message-bus/e2e/AffineVoidRecursiveEvents.test.ts",
+      "tests": [
+        "settles a guarded tail-call stream with an inert unwind suffix in recursive source order",
+        "reconstructs multiple affine parameters for a pre-only stream and enforces exact termination",
+        "reconstructs independent affine parameters during non-void unwind",
+        "settles every pre-recursion frame, rejects a forged event, and enforces the frame bound",
+        "settles mixed pre-order and post-descent events in recursive source order",
+        "reconstructs multiple affine parameters across descent and unwind",
+        "settles affine-counter progression in exact pre-order and unwind order at the 64-frame boundary"
       ]
     },
     {

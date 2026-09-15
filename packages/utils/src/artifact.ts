@@ -218,6 +218,9 @@ export interface AbiOutput {
   type: string;
 }
 
+/** Versioned tuple-wide wire representation for authenticated external-call results. */
+export type ExternalResultEncoding = 'evm-abi-v1' | 'compact-pushdata-v1';
+
 /** Kinds of slots in the 1:1 block layout. */
 export type BlockSlotKind =
   | 'master'
@@ -441,6 +444,8 @@ export interface AbiFunction {
   selector?: string;  // 4-byte hex selector (e.g. "a9059cbb")
   inputs: readonly AbiInput[];
   outputs?: readonly AbiOutput[];       // return types (omitted for void functions)
+  /** Tuple-wide wire representation used for typed external results. */
+  resultEncoding?: ExternalResultEncoding;
   modifiers?: readonly string[];        // function modifiers (omitted if default external)
   requiredNftIndices?: readonly number[];  // sorted NFT indices this function accesses (absent = all)
   /**
@@ -1138,6 +1143,8 @@ export interface ExternalCallAbi {
   requiredDataNftIndices: number[];
   hasReturnValues?: boolean;
   returnTypes?: readonly string[];
+  /** Tuple-wide result representation expected by this compiler-authored callsite. */
+  resultEncoding?: ExternalResultEncoding;
   returnEventSignature?: string;
   computedOffset?: number;
   callMode?: 'call' | 'staticcall' | 'delegatecall';
@@ -1262,6 +1269,7 @@ export interface InvocationAnalysisFunction {
   resultDependencies?: readonly {
     callsiteId: number;
     returnTypes: readonly string[];
+    resultEncoding?: ExternalResultEncoding;
     opaque: boolean;
   }[];
   resultConsumers?: readonly {
@@ -1393,6 +1401,14 @@ export interface Artifact {
     minimumRows?: number;
     maximumRows: number;
     maximumBlobBytes: number;
+    /** Direct chunkable whole-entry writes whose handler-local continuation pin is sound only when the complete
+     * participant route selects at most `maximumRows` rows from this selector family. The covenant enforces the
+     * aggregate bound; SDK encoders mirror it for deterministic preflight diagnostics. */
+    fixedChunkableWritePolicy?: {
+      version: 1;
+      maximumRows: 1;
+      selectors: readonly string[];
+    };
     /** Compiler-published admission and message-envelope contract for atomic composition. */
     atomicMessageBus?: {
       domain: typeof ATOMIC_MESSAGE_BUS_DOMAIN_HEX;
@@ -1452,6 +1468,8 @@ export interface Artifact {
       selector: string;
       inputs: AbiInput[];
       outputs?: AbiOutput[];
+      /** Tuple-wide result representation produced by this exact handler. */
+      resultEncoding?: ExternalResultEncoding;
       usesMsgValue?: boolean;
       emits?: readonly EmitAbi[];
       runtimeLoopEvents?: readonly RuntimeLoopEventAbi[];

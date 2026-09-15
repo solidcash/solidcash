@@ -777,6 +777,16 @@ export class FunctionDefinitionNode extends Node implements Named {
   messageBusRejectionReason?: string;
   /** This source handler was included in the synthesized route dispatch. Late fences may still demote it. */
   messageBusDispatched?: boolean;
+  /** This handler owns one direct, unconditional chunkable whole-entry transition. The generated participant route
+   * authenticates that at most one row from the complete marked selector family executes, so its body is the
+   * unique terminal continuation producer. This is an occurrence bound, not permission to chain mutations. */
+  messageBusFixedChunkableWriteMaxRows?: 1;
+  /** Exact mutation identity in the selector-scoped fixed-chunkable occurrence domain. */
+  messageBusFixedChunkableWriteEffectOrdinal?: number;
+  /** This handler owns one unconditional direct push into a chunkable sorted mapping-array entry. Kernel route
+   * lowering threads the typed pending array through every selected OP_INVOKE row and flushes it exactly once,
+   * so repeated same-key rows compose without intermediate continuation outputs. */
+  messageBusPooledChunkableArrayPush?: true;
   // Release 4 collection rows bind source argument positions to hidden
   // physical-route key witnesses. The SDK derives these from canonical rows;
   // the route compares decoded row arguments before any handler executes.
@@ -812,6 +822,9 @@ export class FunctionDefinitionNode extends Node implements Named {
   delegatecallIsConditional: boolean = false;
   /** Compiler-owned split-root forwarder whose mutating facet owns the published return-event output. */
   splitDelegateReturnForwarder: boolean = false;
+  /** Physical implementation-relative event offsets published by the selected split facet. Delegate-only data
+   * NFT slots are already removed, so the root's immutable-event pin and the facet covenant name one output. */
+  splitDelegateEventOffsets?: number[];
   /** Block-local delegate covenants reserved by an message-bus batch graph clone/route. */
   graphDelegateSlotCount?: number;
   isFallback: boolean = false;
@@ -833,6 +846,10 @@ export class FunctionDefinitionNode extends Node implements Named {
    * participant emission frame instead of performing ordinary physical-call settlement.
    */
   graphEmissionHandler?: boolean;
+  /** This function, or a named internal callee, reads chunk-backed dynamic state. Its first physical chunk input
+   * is supplied as an authenticated transaction coordinate because compact delegate layouts need not preserve
+   * the function's maximum block width. */
+  usesDynamicChunkInputBase?: boolean;
   /** Graph handler whose conditional/loop calls consume the authenticated emission vector at runtime. */
   graphRuntimeEmissionHandler?: boolean;
   /** Runtime emission vector is returned and threaded across this route's repeated local rows. */
@@ -867,6 +884,10 @@ export class FunctionDefinitionNode extends Node implements Named {
   ecrecoverArgParams?: ((string | null)[])[]; // per ecrecoverPubKey call (codegen emission order): the [hash,v,r,s]
   // param names feeding it (SDK transparent co-spend); null entry = not a direct param
   ecrecoverCallCount?: number;  // number of ecrecoverPubKey calls (stateless count-relative side-car indexing)
+  /** Exact number of formal recovery effects in this function's expanded named-call closure. Unlike the
+   * codegen-local ecrecoverArgParams length, repeated invocations of one helper each contribute their own
+   * concrete effect. Used to thread authenticated side-car coordinates through OP_INVOKE. */
+  recoveryEffectCount?: number;
   ecrecoverEvmCallCount?: number; // number of ecrecoverEvm calls; each ALSO co-spends a keccak side-car (over the
   // uncompressed key), appended after all recovery pairs (shifts recovery offsets by E)
   ecrecoverEvmFlags?: boolean[]; // per ecrecover call (emission order): is it the evm projection? (SDK keccak co-spend)
@@ -1697,6 +1718,9 @@ export class FunctionCallNode extends ExpressionNode {
   graphEffectSite?: number;
   // Kernel row loop: the dispatch-site ordinal is the runtime `row` iterator, not a compile-time copy count.
   graphEffectSiteFromRow?: boolean;
+  /** Stable first recovery-effect ordinal contributed by this source call within its defining function.
+   * A call to a helper contributes the helper's complete formal recovery sequence at this position. */
+  recoveryEffectOrdinal?: number;
 
   constructor(
     public identifier: IdentifierNode,

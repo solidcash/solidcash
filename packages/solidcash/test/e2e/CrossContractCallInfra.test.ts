@@ -88,6 +88,84 @@ describe('unbounded bytes return', () => {
       await bSc.use(hexToBin(aAddr), VAL).withExternalCall(aSc, 'echo', [VAL]).send();
       expect(Buffer.from((await bSc.getState()).last as Uint8Array).toString('hex')).toBe('11223344abcd');
     });
+
+    it('CROSS-CONTRACT: decodes a forwarded mixed dynamic return tuple', async () => {
+      const src = `
+        interface IA { function echo(bytes b, uint n) external returns (bytes, uint); }
+        contract A { bigint d;
+          function pair(bytes b, uint n) internal pure returns (bytes, uint) { return (b, n); }
+          function echo(bytes b, uint n) public returns (bytes, uint) { return pair(b, n); }
+        }
+        contract B { bytes32 digest; uint seen;
+          function use(address a, bytes b, uint n) public {
+            (bytes returned, uint value) = IA(a).echo(b, n);
+            this.digest = sha256(returned); this.seen = value;
+          }
+        }`;
+      const arts = compileStringMulti(src, { solidityImportCompat: true });
+      const a = new Contract(arts.A, [], { provider });
+      const { categoryId: ac } = await setupStatefulUtxos(
+        provider, a, arts.A.stateLayout!, { d: 0n }, { saltContract: true },
+      );
+      const aAddr = a.withCategory(hexToBin(ac)).lockingBytecode;
+      const b = new Contract(arts.B, [], { provider });
+      const { categoryId: bc } = await setupStatefulUtxos(
+        provider, b, arts.B.stateLayout!, { digest: new Uint8Array(32), seen: 0n }, { saltContract: true },
+      );
+      const aSc = StatefulContract.withCategory(a, ac); const bSc = StatefulContract.withCategory(b, bc);
+      await bSc.use(hexToBin(aAddr), VAL, 73n).withExternalCall(aSc, 'echo', [VAL, 73n]).send();
+      const state = await bSc.getState();
+      expect(binToHex(state.digest as Uint8Array)).toBe(
+        '8f33bbbe76e4f01dd1b24499fc6ab72e92f704f9444722cd3805ba8cc18fd2c6',
+      );
+      expect(state.seen).toBe(73n);
+    });
+
+    it('CROSS-CONTRACT: authenticates mixed result encodings per callsite in one participant', async () => {
+      const src = `
+        interface IA {
+          function echo(bytes b) external returns (bytes);
+          function wide(uint n, bytes39 value) external returns (uint, bytes39);
+        }
+        contract A { bigint marker;
+          function echo(bytes b) public returns (bytes) { return b; }
+          function pair(uint n, bytes39 value) internal pure returns (uint, bytes39) { return (n, value); }
+          function wide(uint n, bytes39 value) public returns (uint, bytes39) { return pair(n, value); }
+        }
+        contract B { bytes32 digest; bytes39 saved; uint seen;
+          function use(address a, bytes b, uint n, bytes39 wideValue) public {
+            this.digest = sha256(IA(a).echo(b));
+            (uint returned, bytes39 value) = IA(a).wide(n, wideValue);
+            this.seen = returned; this.saved = value;
+          }
+        }`;
+      const arts = compileStringMulti(src, { solidityImportCompat: true });
+      const a = new Contract(arts.A, [], { provider });
+      const { categoryId: ac } = await setupStatefulUtxos(
+        provider, a, arts.A.stateLayout!, { marker: 0n }, { saltContract: true },
+      );
+      const aAddr = a.withCategory(hexToBin(ac)).lockingBytecode;
+      const b = new Contract(arts.B, [], { provider });
+      const wide = hexToBin(`11223344aa20${'55'.repeat(32)}87`);
+      const { categoryId: bc } = await setupStatefulUtxos(
+        provider, b, arts.B.stateLayout!,
+        { digest: new Uint8Array(32), saved: new Uint8Array(39), seen: 0n },
+        { saltContract: true },
+      );
+      const aSc = StatefulContract.withCategory(a, ac);
+      const bSc = StatefulContract.withCategory(b, bc);
+      await bSc.use(hexToBin(aAddr), VAL, 73n, wide)
+        .withExternalCall(aSc, 'echo', [VAL])
+        .withExternalCall(aSc, 'wide', [73n, wide])
+        .send();
+      const state = await bSc.getState();
+      expect(binToHex(state.digest as Uint8Array)).toBe(
+        '8f33bbbe76e4f01dd1b24499fc6ab72e92f704f9444722cd3805ba8cc18fd2c6',
+      );
+      expect(state.seen).toBe(73n);
+      expect(binToHex(state.saved as Uint8Array)).toBe(binToHex(wide));
+    });
+
   });
 });
 

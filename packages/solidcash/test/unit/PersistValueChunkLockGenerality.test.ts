@@ -51,7 +51,7 @@ describe('persist value-chunk lock generality', () => {
       collectionHash: binToHex(computeCollectionHash(collectionSignature)),
     };
     const expected = getValueChunkLockingBytecode(
-      ownerCategory, collectionSignature, Uint8Array.from({ length: 32 }, () => 0x33), sha256Sync(value),
+      ownerCategory, write.collection, Uint8Array.from({ length: 32 }, () => 0x33), sha256Sync(value),
     );
 
     expect(persistValueChunkLock(candidateCategory, value, exact)).toBeUndefined();

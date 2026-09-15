@@ -73,8 +73,8 @@ describe('StatefulFunctionCall.staticCall() - value-returning reads', () => {
     const lockingBytecodeHex = binToHex(addressToLockScript(aliceAddress));
     const art = compileKernelString(`pragma solidcash >=0.8.0;
       contract ArgumentNames() {
-        struct Named { bytes address_; bigint timestamp_; }
-        struct Renamed { bytes payload; bigint observedAt; }
+        struct Named { address address_; bigint timestamp_; }
+        struct Renamed { address payload; bigint observedAt; }
         function named(Named value) view returns (bool) {
           return value.address_ == hex"${lockingBytecodeHex}" && value.timestamp_ == 0;
         }

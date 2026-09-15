@@ -197,6 +197,50 @@ describe('atomic compiled invocation graph', () => {
     })).toBe(true);
   });
 
+  it('keeps compiler-owned computed chunks inside the compact participant span', () => {
+    const resourceA = `${'11'.repeat(32)}:${'22'.repeat(20)}:${'33'.repeat(32)}`;
+    const resourceB = `${'44'.repeat(32)}:${'55'.repeat(20)}:${'66'.repeat(32)}`;
+    const claims = [
+      { offset: 18, resourceIdentity: resourceA, resourcePart: 'chunk:0' },
+      { offset: 19, resourceIdentity: resourceA, resourcePart: 'chunk:1' },
+    ];
+    const actualSize = messageBus.minimumActualSizeForComputedValueChunkClaims(1, 8, 8, 72, claims);
+    expect(actualSize).toBe(12);
+    expect(messageBus.atomicMessageBusPhysicalLayout([8, actualSize, 5])).toMatchObject({
+      participantInputs: [0, 8, 20],
+      verifierInputs: [25, 26, 27],
+      verifierInput: 27,
+      feeInput: 28,
+      totalSlots: 29,
+    });
+    expect(messageBus.minimumActualSizeForComputedValueChunkClaims(
+      1, 8, 8, 72, [{ offset: 79 }],
+    )).toBe(8);
+    expect(() => messageBus.minimumActualSizeForComputedValueChunkClaims(
+      1, 8, 8, 72, [{ offset: 15, resourceIdentity: resourceA, resourcePart: 'chunk:0' }],
+    )).toThrow(/outside its published trailing range/);
+    expect(() => messageBus.minimumActualSizeForComputedValueChunkClaims(
+      1, 8, 8, 72, [{ offset: 80, resourceIdentity: resourceA, resourcePart: 'chunk:0' }],
+    )).toThrow(/outside its published trailing range/);
+    expect(() => messageBus.minimumActualSizeForComputedValueChunkClaims(
+      1, 8, 8, 72, [{ offset: 18, resourceIdentity: resourceA, resourcePart: 'chunk:x' }],
+    )).toThrow(/non-canonical resource part/);
+    expect(() => messageBus.minimumActualSizeForComputedValueChunkClaims(1, 8, 8, 72, [
+      ...claims,
+      { offset: 20, resourceIdentity: resourceA, resourcePart: 'chunk:1' },
+    ])).toThrow(/moves chunk:1/);
+    expect(() => messageBus.minimumActualSizeForComputedValueChunkClaims(1, 8, 8, 72, [
+      claims[0],
+      { offset: 18, resourceIdentity: resourceB, resourcePart: 'chunk:0' },
+    ])).toThrow(/claimed by both/);
+    expect(() => messageBus.minimumActualSizeForComputedValueChunkClaims(
+      1, 8, 8, 72, [{ offset: 19, resourceIdentity: resourceA, resourcePart: 'chunk:1' }],
+    )).toThrow(/omits chunk:0/);
+    expect(() => messageBus.minimumActualSizeForComputedValueChunkClaims(
+      1, 8, 8, 72, [{ offset: 18, resourceIdentity: 'resource-a', resourcePart: 'chunk:0' }],
+    )).toThrow(/non-canonical computed value-chunk resource identity/);
+  });
+
   it('applies every changed semantic class in one complete observation pass', () => {
     const applied: string[] = [];
     expect(messageBus.applySemanticClaimObservationPass([
@@ -607,7 +651,7 @@ describe('atomic compiled invocation graph', () => {
     }])).toThrow(/does not identify ABI function 'apply'/);
   });
 
-  it('uses a runtime occurrence proof for a bounded conditional raw edge', () => {
+  it('uses one state-owner identity for a delegated outgoing raw edge', () => {
     const capability = (
       name: string,
       selector: string,
@@ -678,13 +722,20 @@ describe('atomic compiled invocation graph', () => {
       targets: {},
       occurrence: () => count,
       // The root owns state at 0x52 and publishes logical identity 0x54, while its handler executes at the
-      // authenticated delegate input 0x56. `address(this)` is that input's exact OP_UTXOBYTECODE result.
-      dynamicCall: () => ({ participant: target, function: 'approve', args: [Uint8Array.of(0x56)] }),
+      // authenticated delegate input 0x56. An outgoing CALL uses the state owner for both address(this) and the
+      // nested callee's msg.sender; the executor remains a separate code/resource identity.
+      dynamicCall: () => ({ participant: target, function: 'approve', args: [Uint8Array.of(0x52)] }),
     });
     expect(derive(0).invocations.map((invocation) => invocation.function)).toEqual(['run']);
     const reached = derive(1);
     expect(reached.invocations.map((invocation) => invocation.function)).toEqual(['run', 'approve']);
-    expect(reached.invocations[1].argsHex).toBe('0156');
+    expect(reached.invocations[1].argsHex).toBe('0152');
+    const nestedCaller = messageBus.graphInvocationCallerIdentity(
+      reached.participants, reached.invocations, reached.invocations[1],
+    );
+    expect(nestedCaller).toEqual({ lockingBytecode: '52', offset: 0 });
+    expect(reached.invocations[1].argsHex)
+      .toBe(`01${nestedCaller.lockingBytecode}`);
   });
 
   it('preserves exact identities for omitted conditional siblings calling the same method', () => {
@@ -1007,7 +1058,7 @@ describe('atomic compiled invocation graph', () => {
     expect(finalized.callManifest.rows[1].targetOffset).toBe(1);
   });
 
-  it('uses a delegate owner input as the nested high-level caller identity', () => {
+  it('uses the authenticated state owner as the nested high-level caller identity', () => {
     const delegatedCaller = plan();
     delegatedCaller.participants[0] = {
       ...delegatedCaller.participants[0],
@@ -1028,7 +1079,7 @@ describe('atomic compiled invocation graph', () => {
     expect(finalized.callManifest.rows[1]).toMatchObject({ subjectHex: '51'.repeat(64), sourceOffset: 0 });
   });
 
-  it('preserves the delegate owner as caller for a nested raw call', () => {
+  it('uses the authenticated state owner as caller for a nested raw call', () => {
     const delegatedCaller = plan();
     delegatedCaller.participants[0] = {
       ...delegatedCaller.participants[0],

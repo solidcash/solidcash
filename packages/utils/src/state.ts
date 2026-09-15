@@ -1039,6 +1039,37 @@ export function decodePushdataValue(
 }
 
 /**
+ * Encoded length of the pushdata operation at `offset`, resolved from its length prefix alone.
+ *
+ * Mirrors `decodeGenericPushdata`'s acceptance exactly (including the one-byte constant opcodes, which decode
+ * to a one-byte value) but never reads or copies the payload. A caller holding candidates that are usually not
+ * pushes can therefore reject one for the cost of a byte comparison instead of paying for a slice and, on the
+ * ordinary rejection path, an exception with a captured stack trace.
+ *
+ * Returns `undefined` when the bytes at `offset` are not a push or the declared payload runs past the buffer.
+ */
+export function peekPushdataEncodedLength(data: Uint8Array, offset = 0): number | undefined {
+  if (offset < 0 || offset >= data.length) return undefined;
+  const firstByte = data[offset];
+  // OP_0 pushes an empty item; OP_1NEGATE / OP_1-OP_16 push one byte.
+  if (firstByte === 0x00 || firstByte === 0x4f) return 1;
+  if (firstByte >= 0x51 && firstByte <= 0x60) return 1;
+  if (firstByte === 0x4c) {
+    if (offset + 2 > data.length) return undefined;
+    const length = data[offset + 1];
+    return offset + 2 + length <= data.length ? 2 + length : undefined;
+  }
+  if (firstByte === 0x4d) {
+    if (offset + 3 > data.length) return undefined;
+    const length = data[offset + 1] | (data[offset + 2] << 8);
+    return offset + 3 + length <= data.length ? 3 + length : undefined;
+  }
+  // Any other byte is either a direct length (1-75) or not a push at all (OP_PUSHDATA_4 and ordinary opcodes).
+  if (firstByte > 75) return undefined;
+  return offset + 1 + firstByte <= data.length ? 1 + firstByte : undefined;
+}
+
+/**
  * Generic pushdata decoder matching the compiler's emitGenericPushdataDecode.
  */
 function decodeGenericPushdata(

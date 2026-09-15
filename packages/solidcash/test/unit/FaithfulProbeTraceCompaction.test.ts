@@ -2,6 +2,7 @@ import { encodeInt, Op, sha256 as sha256Sync, VALUE_CHUNK_SIZE, VALUE_HEAD_SIZE 
 import { describe, expect, it } from 'vitest';
 import {
   compactFaithfulProbeTrace,
+  isValueChunkIdentityCountPin,
 } from '../../src/stateful/StatefulContract.js';
 import {
   extractIdentityScanValueChunkPin,
@@ -27,6 +28,17 @@ const p2sh32 = (digest: Uint8Array): Uint8Array => Uint8Array.from([
 ]);
 
 describe('faithful OP_INVOKE probe trace compaction', () => {
+  it('recognizes the identity-count equality without a preceding observed introspection', () => {
+    const instructions = [
+      { opcode: Op.OP_DROP },
+      { opcode: Op.OP_EQUALVERIFY },
+      { opcode: Op.OP_2DROP },
+    ];
+    expect(isValueChunkIdentityCountPin(instructions, 1)).toBe(true);
+    expect(isValueChunkIdentityCountPin(instructions, 2)).toBe(true);
+    expect(isValueChunkIdentityCountPin([{ opcode: Op.OP_EQUALVERIFY }], 0)).toBe(false);
+  });
+
   it('preserves identity-count pins while dropping irrelevant cloned states', () => {
     const payload = new Uint8Array(180).fill(0x41);
     const lock = p2sh32(sha256Sync(Uint8Array.of(7)));

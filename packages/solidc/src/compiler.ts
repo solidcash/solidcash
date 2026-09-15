@@ -18,8 +18,9 @@ import {
   optimiseBytecode, optimiseBytecodeOld, OPTIMISER_COMPAT_CHECK_MAX_OPS, PrimitiveType, scriptToAsm, scriptsEqual,
   scriptToBytecode, bytecodeToScript, decodeInt, Op, ATOMIC_MESSAGE_BUS_DOMAIN_HEX,
   ATOMIC_MESSAGE_BUS_MAX_PARTICIPANTS, ATOMIC_MESSAGE_BUS_MAX_ROWS,
-  ChildDeploymentSiteAbi, SplitArtifactBundle, SplitStateFootprint, StructType, TupleType, Type,
+  AbiFunction, ChildDeploymentSiteAbi, SplitArtifactBundle, SplitStateFootprint, StructType, TupleType, Type,
   ValueType, BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX, isDynamicStorageType, isFixedWidthType,
+  isChunkableValueType,
   KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX,
   hasUniqueKernelJournalDispositionCommitment, kernelJournalDispositionManifestDigest,
   KernelJournalDispositionsAbi,
@@ -53,6 +54,7 @@ import AstBuilder from './ast/AstBuilder.js';
 import { Class, GlobalFunction } from './ast/Globals.js';
 import { ThrowingErrorListener, SolidCashErrorListener, ForwardingErrorListener } from './ast/error-listeners.js';
 import GenerateTargetTraversal from './generation/GenerateTargetTraversal.js';
+import { canonicalizeUpsertKeyExpression } from './generation/upsertKeySources.js';
 import SolidCashLexer from './grammar/SolidCashLexer.js';
 import SolidCashParser from './grammar/SolidCashParser.js';
 import SymbolTableTraversal, {
@@ -92,6 +94,7 @@ import LowerForeignFunctionPointerStorage from './semantic/LowerForeignFunctionP
 import LowerReceivedFnPtrArray from './semantic/LowerReceivedFnPtrArray.js';
 import LowerBlobFunctionPointers from './semantic/LowerBlobFunctionPointers.js';
 import { isKernelSafeNativeAssembly } from './semantic/NativeAssemblyKernelSafety.js';
+import { externalResultEncoding } from './semantic/ExternalResultEncoding.js';
 import LowerForeignFunctionPointerStructFields from './semantic/LowerForeignFunctionPointerStructFields.js';
 import LowerForeignFunctionPointerArrayElements from './semantic/LowerForeignFunctionPointerArrayElements.js';
 import PromoteConstructorExternalReads from './semantic/PromoteConstructorExternalReads.js';
@@ -1128,6 +1131,48 @@ interface ExternalAdmissionAttribution {
 function externalHandlerKey(fn: FunctionDefinitionNode): string {
   const start = fn.location?.start;
   return `${fn.name}@${start ? `${start.line}:${start.column}` : '?'}`;
+}
+
+/**
+ * Preserve the requirement for an absolute dynamic-state input coordinate across journal lowering. Later
+ * transformations can replace state reads/writes with value-threaded locals, at which point a fresh footprint
+ * scan can no longer rediscover the physical chunk dependency. Source declaration identity and the explicit
+ * clone-source key remain stable across those transformations, so they—not generated names—carry the fact to
+ * logical entries, routes, and OP_INVOKE handlers.
+ */
+function markDynamicChunkInputBaseFunctions(
+  ast: Ast,
+  inheritedKeys: ReadonlySet<string> = new Set(),
+): Set<string> {
+  const keys = new Set(inheritedKeys);
+  const dynamicStateNames = new Set(ast.contract.stateVariables
+    .filter((state) => state.isDynamic || state.isPacked || isDynamicStorageType(state.type))
+    .map((state) => state.name));
+  if (dynamicStateNames.size === 0) return keys;
+
+  const functions = ast.contract.functions;
+  const byName = new Map<string, FunctionDefinitionNode[]>();
+  for (const fn of functions) {
+    const group = byName.get(fn.name) ?? [];
+    group.push(fn);
+    byName.set(fn.name, group);
+  }
+  const footprintCache = createFootprintAnalysisCache(dynamicStateNames);
+  for (const fn of functions) {
+    const sourceKey = externalHandlerKey(fn);
+    const cloneSourceKey = (fn as FunctionDefinitionNode & {
+      messageBusCloneSourceKey?: string;
+    }).messageBusCloneSourceKey;
+    const footprint = analyseFunctionFootprint(fn, byName, footprintCache);
+    const directlyRequiresBase = [...footprint.reads, ...footprint.writes].some((resource) =>
+      resource.startsWith('state:') && dynamicStateNames.has(resource.slice('state:'.length)));
+    if (directlyRequiresBase || keys.has(sourceKey)
+      || (cloneSourceKey !== undefined && keys.has(cloneSourceKey))) {
+      fn.usesDynamicChunkInputBase = true;
+      keys.add(sourceKey);
+    }
+  }
+  return keys;
 }
 
 /** Record `fn` as an entry point the route considered. Idempotent across ladder attempts. */
@@ -3315,6 +3360,171 @@ function hasUntransportedChunkableWrite(
   return unsupported;
 }
 
+/**
+ * Prove the narrow fixed-row continuation shape whose handler-local chunk pin is sound when the enclosing route
+ * admits at most one such row. The proof deliberately excludes push/pop/element mutation, control-flow effects,
+ * helper-hidden writes, and multiple resources. A route-level aggregate selector counter supplies the missing
+ * terminality fact; without that counter, even two individually linear handlers could create orphan continuations
+ * for the same physical entry.
+ */
+function fixedChunkableWriteWithSingleOccurrenceBound(
+  fn: FunctionDefinitionNode,
+  collections: ReadonlyMap<string, CollectionNode>,
+  functionsByName: Map<string, FunctionDefinitionNode[]>,
+  footprintCache: ReturnType<typeof createFootprintAnalysisCache>,
+): { collection: string; effectOrdinal: number } | undefined {
+  if (!fn.body) return undefined;
+  const chunkableNames = new Set([...collections].flatMap(([name, collection]) => (
+    collection.sorted && isChunkableValueType(collection.innermostValueType) ? [name] : []
+  )));
+  if (chunkableNames.size === 0) return undefined;
+  const footprintNames = new Set([...analyseFunctionFootprint(fn, functionsByName, footprintCache).writes]
+    .flatMap((resource) => {
+      if (!resource.startsWith('collection:')) return [];
+      const name = resource.slice('collection:'.length).split(':', 1)[0];
+      return chunkableNames.has(name) ? [name] : [];
+    }));
+  if (footprintNames.size !== 1) return undefined;
+  const [collection] = [...footprintNames];
+  const locallyBound = new Set(fn.parameters.map((parameter) => parameter.name));
+  walkInvocationAst(fn.body, (node) => {
+    if (node instanceof VariableDefinitionNode) locallyBound.add(node.name);
+  });
+  const direct: Array<MappingAssignNode | ArrayAssignNode> = [];
+  let unsupported = false;
+  const scan = (node: Node, conditional: boolean): void => {
+    if (unsupported) return;
+    const nestedConditional = conditional || node instanceof BranchNode || node instanceof WhileNode
+      || node instanceof DoWhileNode || node instanceof SwitchNode || node instanceof TryCatchNode
+      || node instanceof CollectionIterationNode || node instanceof TernaryOpNode
+      || (node instanceof BinaryOpNode
+        && (node.operator === BinaryOperator.AND || node.operator === BinaryOperator.OR));
+    if (node instanceof ReturnNode && direct.length === 0) {
+      // A successful early return can bypass a later top-level write even though the write itself has no
+      // conditional ancestor. Final or post-write returns remain compatible with the exactly-once proof.
+      unsupported = true;
+      return;
+    }
+    if (node instanceof MappingAssignNode && chunkableNames.has(node.name)) {
+      if (node.name !== collection || node.arrayIndex || node.arrayPush || node.arrayPop
+        || node.messageBusJournalTransport || nestedConditional) {
+        unsupported = true;
+      } else {
+        direct.push(node);
+      }
+    } else if (node instanceof ArrayAssignNode && node.name === collection && !locallyBound.has(node.name)) {
+      // Solidity-compatible imports can retain a bare `m[k] = value` as ArrayAssign until the route clone's
+      // collection normalization. It is the same whole mapping write because `collection` is compiler-resolved
+      // above; an actual state array cannot appear in this collection map.
+      if (nestedConditional) unsupported = true;
+      else direct.push(node);
+    }
+    if ((node instanceof MappingFieldAssignNode || node instanceof MappingDeleteNode)
+      && chunkableNames.has(node.name)) {
+      unsupported = true;
+      return;
+    }
+    if (node instanceof FunctionCallNode) {
+      const hiddenWrite = (functionsByName.get(node.identifier.name) ?? []).some((helper) =>
+        [...analyseFunctionFootprint(helper, functionsByName, footprintCache).writes].some((resource) => (
+          resource.startsWith('collection:')
+          && chunkableNames.has(resource.slice('collection:'.length).split(':', 1)[0])
+        )));
+      if (hiddenWrite) unsupported = true;
+    }
+    for (const [field, value] of Object.entries(node)) {
+      if (['location', 'resolvedFunction', 'functionReference', 'definition', 'collection', 'symbolTable',
+        'stateVariable', 'type'].includes(field)) continue;
+      if (value instanceof Node) scan(value, nestedConditional);
+      else if (Array.isArray(value)) {
+        for (const item of value) if (item instanceof Node) scan(item, nestedConditional);
+      }
+    }
+  };
+  scan(fn.body, false);
+  if (unsupported || direct.length !== 1) return undefined;
+  // Unsupported global flow deliberately has no general source-effect ordering. This exact capability has only
+  // one unconditional chunkable mutation, so ordinal zero is a stable selector-scoped occurrence identity. The
+  // completed ABI gate below requires the lowered access to retain this exact value.
+  const effectOrdinal = direct[0].sourceEffectOrdinal;
+  if (effectOrdinal === undefined) return undefined;
+  return { collection, effectOrdinal };
+}
+
+/**
+ * Prove the direct array-push shape which the kernel route's typed collection journal can compose across rows.
+ * The proof is intentionally about source flow and value shape, not a contract or member name. Each selected
+ * row executes its ordinary post-mutation element expression inside one OP_INVOKE; LowerCollectionJournalHelpers
+ * threads the pending whole array through those invokes and emits one final sorted-entry write. Consequently no
+ * SDK replay value is part of the authority for this capability.
+ */
+function pooledChunkableArrayPushCollection(
+  fn: FunctionDefinitionNode,
+  collections: ReadonlyMap<string, CollectionNode>,
+  functionsByName: Map<string, FunctionDefinitionNode[]>,
+  footprintCache: ReturnType<typeof createFootprintAnalysisCache>,
+): string | undefined {
+  if (!fn.body || fn.sourceEffectOrder !== 'linear') return undefined;
+  const chunkableArrays = new Set([...collections].flatMap(([name, collection]) => (
+    collection.sorted && collection.innermostValueType instanceof ArrayType
+      && isChunkableValueType(collection.innermostValueType) ? [name] : []
+  )));
+  const footprintNames = new Set([...analyseFunctionFootprint(fn, functionsByName, footprintCache).writes]
+    .flatMap((resource) => {
+      if (!resource.startsWith('collection:')) return [];
+      const name = resource.slice('collection:'.length).split(':', 1)[0];
+      return chunkableArrays.has(name) ? [name] : [];
+    }));
+  if (footprintNames.size !== 1) return undefined;
+  const [collection] = [...footprintNames];
+  const parameterNames = new Set(fn.parameters.map((parameter) => parameter.name));
+  const direct: MappingAssignNode[] = [];
+  let unsupported = false;
+  const scan = (node: Node, conditional: boolean): void => {
+    if (unsupported) return;
+    const nestedConditional = conditional || node instanceof BranchNode || node instanceof WhileNode
+      || node instanceof DoWhileNode || node instanceof SwitchNode || node instanceof TryCatchNode;
+    if (node instanceof MappingAssignNode && chunkableArrays.has(node.name)) {
+      if (node.name !== collection || !node.arrayPush || node.arrayPop || node.arrayIndex
+        || node.messageBusJournalTransport || node.sourceEffectOrdinal === undefined || nestedConditional
+        || node.keys.length !== 1 || node.keys.some((key) => (
+          !(key instanceof IdentifierNode) || !parameterNames.has(key.name)
+        ))) {
+        unsupported = true;
+      } else {
+        direct.push(node);
+      }
+      return;
+    }
+    if ((node instanceof MappingFieldAssignNode || node instanceof MappingDeleteNode)
+      && chunkableArrays.has(node.name)) {
+      unsupported = true;
+      return;
+    }
+    if (node instanceof FunctionCallNode) {
+      const hiddenWrite = (functionsByName.get(node.identifier.name) ?? []).some((helper) =>
+        [...analyseFunctionFootprint(helper, functionsByName, footprintCache).writes].some((resource) => (
+          resource.startsWith('collection:')
+          && chunkableArrays.has(resource.slice('collection:'.length).split(':', 1)[0])
+        )));
+      if (hiddenWrite) {
+        unsupported = true;
+        return;
+      }
+    }
+    for (const [field, value] of Object.entries(node)) {
+      if (['location', 'resolvedFunction', 'functionReference', 'definition', 'collection', 'symbolTable',
+        'stateVariable', 'type'].includes(field)) continue;
+      if (value instanceof Node) scan(value, nestedConditional);
+      else if (Array.isArray(value)) {
+        for (const item of value) if (item instanceof Node) scan(item, nestedConditional);
+      }
+    }
+  };
+  scan(fn.body, false);
+  return !unsupported && direct.length === 1 ? collection : undefined;
+}
+
 function collectJournalTransportedWrites(
   fn: FunctionDefinitionNode,
 ): Array<{ collection: string; varyingArrayParam: string }> {
@@ -3418,7 +3628,9 @@ function synthesizeMessageBusRoute(
     group.push(fn);
     signatureClosureByName.set(fn.name, group);
   }
-  const footprintCache = createFootprintAnalysisCache();
+  const footprintCache = createFootprintAnalysisCache(new Set(
+    contract.stateVariables.map((state) => state.name),
+  ));
   const dynamicState = new Set(contract.stateVariables.filter((state) => state.isDynamic
     || state.isPacked
     || state.type === PrimitiveType.STRING
@@ -3474,6 +3686,7 @@ function synthesizeMessageBusRoute(
   const kernelConditionalDeploymentSites = new Map<FunctionDefinitionNode, boolean[]>();
   const logicalMsgSenderHandlers = new Set<FunctionDefinitionNode>();
   const localEffectFrameHandlers = new Set<FunctionDefinitionNode>();
+  const fixedChunkableWriteCollectionByHandler = new Map<FunctionDefinitionNode, string>();
   let resourceShapedHandler: FunctionDefinitionNode | undefined;
   // A resource-shaped handler is lowered to a value-threaded collection journal. The journal's return tuple is
   // reserved for pending entry values, so a source ABI result cannot share that subroutine return frame. A
@@ -4572,25 +4785,43 @@ function synthesizeMessageBusRoute(
       }
     }
     const footprint = analyseFunctionFootprint(fn, byName, footprintCache);
+    if ([...footprint.reads, ...footprint.writes].some((resource) =>
+      resource.startsWith('state:') && dynamicState.has(resource.slice('state:'.length)))) {
+      fn.usesDynamicChunkInputBase = true;
+    }
+    const fixedChunkableWrite = compilerOptions.messageBusKernel === true
+      ? fixedChunkableWriteWithSingleOccurrenceBound(
+        fn, collectionByName, signatureClosureByName, footprintCache,
+      ) : undefined;
+    const fixedChunkableWriteCollection = fixedChunkableWrite?.collection;
+    const pooledChunkableArrayPush = compilerOptions.messageBusKernel === true
+      ? pooledChunkableArrayPushCollection(
+        fn, collectionByName, signatureClosureByName, footprintCache,
+      ) : undefined;
+    fn.messageBusFixedChunkableWriteMaxRows = fixedChunkableWriteCollection === undefined ? undefined : 1;
+    fn.messageBusFixedChunkableWriteEffectOrdinal = fixedChunkableWrite?.effectOrdinal;
+    fn.messageBusPooledChunkableArrayPush = pooledChunkableArrayPush === undefined ? undefined : true;
+    if (fixedChunkableWriteCollection !== undefined) {
+      fixedChunkableWriteCollectionByHandler.set(fn, fixedChunkableWriteCollection);
+    }
     if (compilerOptions.messageBusKernel === true) {
       const chunkableWrites = [...footprint.writes].some((resource) => {
         if (!resource.startsWith('collection:')) return false;
         const name = resource.slice('collection:'.length).split(':', 1)[0];
         const valueType = collectionByName.get(name)?.innermostValueType;
-        return valueType instanceof ArrayType || valueType === PrimitiveType.STRING
-          || (valueType instanceof BytesType && valueType.bound === undefined);
+        return valueType !== undefined && isChunkableValueType(valueType);
       });
       const hasCounterJournalTransport = (fn.runtimeCounterLoopCounters?.size ?? 0) > 0
         && fn.parameters.some((parameter) => parameter.name === KERNEL_JOURNAL_ACCESS_STREAMS);
       const chunkableCollections = new Set(contract.collections.filter((collection) => {
         const valueType = collection.innermostValueType;
-        return valueType instanceof ArrayType || valueType === PrimitiveType.STRING
-          || (valueType instanceof BytesType && valueType.bound === undefined);
+        return isChunkableValueType(valueType);
       }).map((collection) => collection.name));
       const hasUntransportedWrite = hasUntransportedChunkableWrite(
         fn, chunkableCollections, signatureClosureByName, footprintCache,
       );
-      if (chunkableWrites && (!hasCounterJournalTransport || hasUntransportedWrite)) {
+      if (chunkableWrites && fixedChunkableWriteCollection === undefined && pooledChunkableArrayPush === undefined
+        && (!hasCounterJournalTransport || hasUntransportedWrite)) {
         // A route may invoke this handler repeatedly. Until its completed entry descriptor is represented in the
         // authenticated compact journal ABI, every row would independently pin a terminal continuation family.
         fn.messageBusEligible = false;
@@ -6767,6 +6998,9 @@ function synthesizeMessageBusRoute(
     resourceShapedHandler = undefined;
   }
   eligible = selection.survivors;
+  const fixedChunkableWriteHandlers = new Set(eligible.filter((fn) =>
+    fn.messageBusFixedChunkableWriteMaxRows === 1
+    && fixedChunkableWriteCollectionByHandler.has(fn)));
   // Cheap admission deliberately skips the journal-lowering passes and stubs generated handler bodies. A
   // disposition manifest derived from that representation cannot authorize a final body whose admitted call
   // closure reads or writes a collection: lowering can introduce its physical access streams only in the full
@@ -7035,7 +7269,7 @@ function synthesizeMessageBusRoute(
           new MappingAssignNode(
             bare.name, [rewrite(node.index) as ExpressionNode], rewrite(node.value) as ExpressionNode,
           ),
-          { location: node.location },
+          { location: node.location, sourceEffectOrdinal: node.sourceEffectOrdinal },
         );
       }
       for (const [key, child] of Object.entries(node)) {
@@ -7948,6 +8182,9 @@ function synthesizeMessageBusRoute(
       const upgradeAuthorization = kernelUpgradeMode && fn.modifiers.includes(FunctionModifier.UPGRADE)
         ? `__message_bus_upgrade_count = __message_bus_upgrade_count + 1;
           __message_bus_upgrade_position = ${rowExpression};` : '';
+      const fixedChunkableWriteAuthorization = fixedChunkableWriteHandlers.has(fn)
+        ? `__message_bus_fixed_chunkable_write_count = __message_bus_fixed_chunkable_write_count + 1;
+          require(__message_bus_fixed_chunkable_write_count <= 1);` : '';
       const parameterSignatureLeaves = signatureLeavesByHandler.get(fn)!;
       const allOutputSignatureParameters = kernelAllOutputSignatureParameters.get(fn) ?? [];
       const signatureAuthorization = allOutputSignatureParameters.length > 0
@@ -8090,7 +8327,8 @@ function synthesizeMessageBusRoute(
         const senderChecks = (fn.messageBusKeyWitnesses ?? [])
           .filter((binding) => binding.source === 'msgSender')
           .map((binding) => `require(${witnessName(binding)} == ${logicalCaller});`).join(' ');
-        return `${condition} { ${upgradeAuthorization} ${signatureAuthorization} require(rowArgs.length == 0);
+        return `${condition} { ${upgradeAuthorization} ${fixedChunkableWriteAuthorization}
+          ${signatureAuthorization} require(rowArgs.length == 0);
           ${kernelLifecycleHandlers.size > 0 ? 'require(__message_bus_active_lifecycle_mode == 0);' : ''}
           ${senderChecks} ${invoke(entryOnly.join(', '))}
           require(rowArgs == rowArgs); }`;
@@ -8332,7 +8570,8 @@ function synthesizeMessageBusRoute(
       const wrappedDispatch = markDispatch
         ? `require(${MB_DISPATCH_SENTINEL}); ${effectiveDispatch} require(${MB_DISPATCH_SENTINEL});`
         : effectiveDispatch;
-      return `${condition} { ${upgradeAuthorization} ${signatureAuthorization} ${decode} ${keyChecks} ${outStateBoundaryChecks} ${lifecycleAuthorization} ${wrappedDispatch}
+      return `${condition} { ${upgradeAuthorization} ${fixedChunkableWriteAuthorization}
+        ${signatureAuthorization} ${decode} ${keyChecks} ${outStateBoundaryChecks} ${lifecycleAuthorization} ${wrappedDispatch}
         require(rowArgs == rowArgs); }`;
     }).join(' ');
   const declaredWitnessNames = new Set<string>();
@@ -8514,6 +8753,8 @@ function synthesizeMessageBusRoute(
         ${parseOneRow('__message_bus_row')}
       }`;
   const resultDeclarations = resultMode ? 'bytes __message_bus_results = hex\"\";' : '';
+  const fixedChunkableWriteDeclaration = fixedChunkableWriteHandlers.size > 0
+    ? 'bigint __message_bus_fixed_chunkable_write_count = 0;' : '';
   const returnDeclaration = resultMode
     ? ' returns (bytes)'
     : '';
@@ -9826,6 +10067,7 @@ function synthesizeMessageBusRoute(
         bigint cursor = 7;
         ${!graphExecutionContext ? '' : 'bigint __message_bus_graph_caller_cursor = 0;'}
         ${resultDeclarations}
+        ${fixedChunkableWriteDeclaration}
         require(__MB_ROWS__);
         require(cursor == batchBlob.length);
         ${kernelUpgradeMode
@@ -9959,6 +10201,7 @@ function synthesizeMessageBusRoute(
     );
   }
   route.messageBusRoute = true;
+  route.usesDynamicChunkInputBase = eligible.some((fn) => fn.usesDynamicChunkInputBase === true);
   const expectedReadCarrierScopes = (compilerOptions as InternalCompilerOptions)
     .__kernelReadCarrierAuthorizationBox?.expectedScopes;
   if (expectedReadCarrierScopes && expectedReadCarrierScopes.length > 0) {
@@ -10640,7 +10883,7 @@ function compileResolvedAst(
         )) as Ast;
       }
       // Emit a minimal ABI-only declaration artifact (like solc: ABI + empty bytecode) instead of erroring.
-      return generateDeclarationArtifact(ast, code);
+      return generateDeclarationArtifact(ast, code, mergedCompilerOptions);
     }
     ast.contract = ast.libraryContract;
     ast.isLibrary = false;
@@ -10722,7 +10965,7 @@ function compileResolvedAst(
     // Declaration artifacts still undergo source-level modifier validation. Expansion/code generation are
     // unnecessary, but an implemented modifier without `_` remains invalid Solidity.
     validateModifierDefinitions(ast);
-    return generateDeclarationArtifact(ast, code);
+    return generateDeclarationArtifact(ast, code, mergedCompilerOptions);
   }
 
   // Materialize one syntactic edge per element of a compiler-bounded function-pointer loop before the pointer
@@ -11110,7 +11353,9 @@ function compileResolvedAst(
     messageBusFunctionsByName.set(fn.name, group);
   }
   const collectionNames = new Set(ast.contract.collections.map((collection) => collection.name));
-  const prefixFootprintCache = createFootprintAnalysisCache();
+  const prefixFootprintCache = createFootprintAnalysisCache(new Set(
+    ast.contract.stateVariables.map((state) => state.name),
+  ));
   const loweredFunctionPointerTables = new Set<string>();
   for (const collection of ast.contract.collections) {
     if (collection.type instanceof ArrayType
@@ -11176,6 +11421,9 @@ function compileResolvedAst(
   for (const fn of [...ast.contract.functions, ...ast.freeFunctions]) {
     assignFunctionSourceEffectOrdinals(fn);
   }
+  // Dynamic-state syntax is still present here. Preserve its physical input-base requirement by stable source
+  // identity before collection/dynamic journal lowering value-threads those accesses through ordinary locals.
+  const dynamicChunkInputBaseFunctionKeys = markDynamicChunkInputBaseFunctions(ast);
   const synthesizeBatchBeforeLowering = !!mergedCompilerOptions.messageBus
     && supportsAtomicMessageBus(ast, mergedCompilerOptions)
     && ast.contract.functions.some((fn) => {
@@ -11586,6 +11834,10 @@ function compileResolvedAst(
       }
     }
   }
+
+  // Reapply the pre-lowering requirement to the final logical functions and compiler-owned handler clones, while
+  // also discovering any dynamic-state dependency synthesized after the first survey.
+  markDynamicChunkInputBaseFunctions(ast, dynamicChunkInputBaseFunctionKeys);
 
   // Recovery compute is funded by the physical entrypoint even when the builtin sits behind imported/library
   // helpers (e.g. ECDSA.recover -> two tryRecover overloads -> ecrecover). Symbol resolution happens in the next
@@ -12241,11 +12493,55 @@ function compileResolvedAst(
           && access.settlementIdentity.settlementRole === 'mutation-settlement'
           && access.settlementIdentity.settlementOwnership === 'last-mutating-access',
       ));
+      const fixedChunkableAccesses = (abi?.entryAccesses ?? []).filter((access) =>
+        access.operations.includes('write') && chunkableWriteCollections.has(access.collection));
+      const fixedChunkableWriteCollection = chunkableWriteCollections.size === 1
+        ? [...chunkableWriteCollections][0] : undefined;
+      const hasCompleteFixedChunkableOccurrenceTransport = fn.messageBusDispatched === true
+        && fn.messageBusFixedChunkableWriteMaxRows === 1
+        && fixedChunkableWriteCollection !== undefined
+        && fixedChunkableAccesses.length === 1
+        && fixedChunkableAccesses[0].collection === fixedChunkableWriteCollection
+        && fixedChunkableAccesses[0].mutationEffectOrdinals?.length === 1
+        && fixedChunkableAccesses[0].mutationEffectOrdinals[0]
+          === fn.messageBusFixedChunkableWriteEffectOrdinal
+        && runtimeJournalAccesses.every((access) => access.op === 'read'
+          || access.collection !== fixedChunkableWriteCollection);
+      // A direct linear mapping-array push uses the route's typed collection journal, not the compact runtime
+      // mutation stream and not an SDK-replayed byte value. Every row key is compared to one global argument
+      // witness before its OP_INVOKE; the returned whole-array cache is threaded into the next row and flushed
+      // once after the loop. Re-check the completed ABI here so an early candidate cannot survive a lowering
+      // which changed its resource, key geometry, or mutation cardinality.
+      const pooledChunkableArrayPushCollection = fn.messageBusPooledChunkableArrayPush === true
+        && chunkableWriteCollections.size === 1 ? [...chunkableWriteCollections][0] : undefined;
+      const pooledChunkableArrayPushAccesses = (abi?.entryAccesses ?? []).filter((access) =>
+        access.operations.includes('write') && access.collection === pooledChunkableArrayPushCollection);
+      const hasCompletePooledChunkableArrayPushTransport = fn.messageBusDispatched === true
+        && fn.messageBusPooledChunkableArrayPush === true
+        && abi?.sourceEffectOrder === 'linear'
+        && pooledChunkableArrayPushCollection !== undefined
+        && chunkableWriteCollections.size === 1
+        && pooledChunkableArrayPushAccesses.length === 1
+        && pooledChunkableArrayPushAccesses[0].operations.includes('read')
+        && pooledChunkableArrayPushAccesses[0].chunkableArrayValue === true
+        && pooledChunkableArrayPushAccesses[0].keyParams.length === 1
+        && (pooledChunkableArrayPushAccesses[0].keySources === undefined
+          || (pooledChunkableArrayPushAccesses[0].keySources?.length === 1
+            && pooledChunkableArrayPushAccesses[0].keySources?.[0].kind === 'param'))
+        && pooledChunkableArrayPushAccesses[0].mutationEffectOrdinals?.length === 1
+        && runtimeJournalAccesses.every((access) => access.op === 'read'
+          || access.collection !== pooledChunkableArrayPushCollection);
       const hasIncompleteChunkableTransport = [...chunkableWriteCollections].some((collection) => (
-        !transportedChunkableWrites.some((transport) => transport.collection === collection)
+        !(hasCompleteFixedChunkableOccurrenceTransport && collection === fixedChunkableWriteCollection)
+        && !(hasCompletePooledChunkableArrayPushTransport && collection === pooledChunkableArrayPushCollection)
+        && !transportedChunkableWrites.some((transport) => transport.collection === collection)
       )) || exactTransportMatches.some((matches) => matches.length !== 1)
         || runtimeJournalAccesses.some((access) => chunkableWriteCollections.has(access.collection)
           && access.op !== 'read'
+          && !(hasCompleteFixedChunkableOccurrenceTransport
+            && access.collection === fixedChunkableWriteCollection)
+          && !(hasCompletePooledChunkableArrayPushTransport
+            && access.collection === pooledChunkableArrayPushCollection)
           && !transportedChunkableWrites.some((transport) => transport.collection === access.collection
             && transport.varyingArrayParam === access.varyingArrayParam));
       if (hasIncompleteChunkableTransport) {
@@ -12350,23 +12646,6 @@ function compileResolvedAst(
       const hasDistinctEventMutationStreams = (abi?.runtimeLoopEvents?.length ?? 0) > 0
         && new Set(runtimeJournalAccesses.filter((access) => access.op !== 'read')
           .map((access) => access.journalAccessStreamIndex)).size > 1;
-      let hasScalarStateMutation = false;
-      let hasCollectionMutation = false;
-      let hasEventEffect = false;
-      for (const name of collectNamedFunctionClosure(fn, completedFunctionsByName)) {
-        for (const candidate of completedFunctionsByName.get(name) ?? []) {
-          walkInvocationAst(candidate.body, (nested) => {
-            if (nested instanceof StateAssignNode) hasScalarStateMutation = true;
-            if (nested instanceof MappingAssignNode || nested instanceof MappingFieldAssignNode
-              || nested instanceof MappingDeleteNode || nested instanceof StateArrayAssignNode
-              || nested instanceof StateArrayPushNode || nested instanceof StateArrayPopNode
-              || nested instanceof StateArrayDeleteNode) hasCollectionMutation = true;
-            if (nested instanceof EmitStatementNode) hasEventEffect = true;
-          });
-        }
-      }
-      const hasScalarAndJournalEventSettlement = hasScalarStateMutation
-        && hasCollectionMutation && hasEventEffect;
       const incomplete = abi?.transfers?.some((transfer) =>
         (transfer.recipientRecipe === undefined && transfer.derivedRecipient === undefined)
         || transfer.amountRecipe === undefined
@@ -12377,7 +12656,6 @@ function compileResolvedAst(
           && (abi?.runtimeLoopEvents?.length ?? 0) > 0)
         || hasChunkedValueArrayEventSettlement
         || hasDistinctEventMutationStreams
-        || hasScalarAndJournalEventSettlement
         || hasUnauthenticatedSelectedReadGeometry
         || hasRuntimeLocalJournalValue
         || hasUnsupportedMultiMutationExecutionGroup
@@ -12690,6 +12968,7 @@ function compileResolvedAst(
             .map((call) => ({
               callsiteId: call.callsiteId!,
               returnTypes: call.returnTypes ?? [],
+              ...(call.resultEncoding && { resultEncoding: call.resultEncoding }),
               opaque: !!call.opaqueReturn,
             })),
         }),
@@ -12732,6 +13011,14 @@ function compileResolvedAst(
     const messageBusRouteFn = ast.contract.functions.find((fn) => fn.messageBusRoute);
     const messageBusMaximumRows = messageBusRouteFn?.messageBusMaximumRows ?? MAX_MESSAGE_BUS_ROWS;
     const extractedVerifierProgram = detachedVerifierProgram;
+    const fixedChunkableWriteSelectors = [
+      ...ast.contract.functions,
+      ast.contract.fallbackDef,
+      ast.contract.receiveDef,
+    ].filter((fn): fn is FunctionDefinitionNode => !!fn && !fn.messageBusRoute
+      && fn.isEntryPoint && fn.messageBusEligible === true
+      && fn.messageBusFixedChunkableWriteMaxRows === 1 && fn.functionSelector !== undefined)
+      .map((fn) => binToHex(fn.functionSelector!)).sort();
     artifact.messageBus = {
       version: 1,
       selector: MESSAGE_BUS_SELECTOR_HEX,
@@ -12743,6 +13030,13 @@ function compileResolvedAst(
         && { minimumRows: RESOURCE_SHAPED_BATCH_ROWS }),
       maximumRows: messageBusMaximumRows,
       maximumBlobBytes: MAX_MESSAGE_BUS_BLOB_BYTES,
+      ...(fixedChunkableWriteSelectors.length > 0 && {
+        fixedChunkableWritePolicy: {
+          version: 1 as const,
+          maximumRows: 1 as const,
+          selectors: fixedChunkableWriteSelectors,
+        },
+      }),
       atomicMessageBus: {
         domain: ATOMIC_MESSAGE_BUS_DOMAIN_HEX,
         protocolVersions: mergedCompilerOptions.messageBusKernel === true && detachedVerifierProgram
@@ -12780,15 +13074,32 @@ function compileResolvedAst(
           // outer selector wrapper.
           signatureBytecode: binToHex(traversal.invokedFunctionBytecodes.get(fn.functionId)!),
         }),
-        ...(fn.returnTypes.length > 0 && {
-          outputs: fn.returnTypes.map((type, index) => ({
-            // The fixed self-pointer result is deliberately published as its physical data layout. A functionId
-            // is an immutable integer in this bytecode, not a portable external callable `(address, selector)`.
-            type: type instanceof FunctionType && type.isExternal
-              && (fn.returnedSelfFunctionTargetSets?.[index]?.length ?? 0) > 0
-              ? 'int256' : type.toString().replace(/address payable/g, 'address'),
-          })),
-        }),
+        ...(() => {
+          const selector = fn.functionSelector ? binToHex(fn.functionSelector) : undefined;
+          const sourceAbi = selector === undefined
+            ? artifact.abi.find((candidate) => candidate.name === fn.name)
+            : artifact.abi.find((candidate) => candidate.selector === selector);
+          const outputs = fn.returnTypes.length > 0
+            ? fn.returnTypes.map((type, index) => ({
+              // The fixed self-pointer result is deliberately published as its physical data layout. A functionId
+              // is an immutable integer in this bytecode, not a portable external callable `(address, selector)`.
+              type: type instanceof FunctionType && type.isExternal
+                && (fn.returnedSelfFunctionTargetSets?.[index]?.length ?? 0) > 0
+                ? 'int256' : type.toString().replace(/address payable/g, 'address'),
+            }))
+            : sourceAbi?.outputs === undefined ? undefined : [...sourceAbi.outputs];
+          if (!outputs?.length) return {};
+          const derived = fn.returnTypes.length > 0
+            ? externalResultEncoding(fn.returnTypes, mergedCompilerOptions)
+            : undefined;
+          if (sourceAbi?.resultEncoding && derived && sourceAbi.resultEncoding !== derived) {
+            throw new Error(`Message-bus handler result encoding disagrees with ABI for ${fn.name}`);
+          }
+          return {
+            outputs,
+            resultEncoding: sourceAbi?.resultEncoding ?? derived!,
+          };
+        })(),
         ...(fn.usesMsgValue && { usesMsgValue: true }),
         ...(fn.modifiers.includes(FunctionModifier.UPGRADE) && {
           lifecycle: { kind: 'upgrade' as const, layout: 'in-place-append-v1' as const },
@@ -13355,7 +13666,7 @@ function compileStringMultiUnchecked(code: string, compilerOptions: CompileOptio
   const map: ArtifactMap = {};
   const seen = new Set<string>();
   for (const iface of interfaces) {
-    map[iface.name] = generateInterfaceArtifact(probe, iface.name, code);
+    map[iface.name] = generateInterfaceArtifact(probe, iface.name, code, mergedCompilerOptions);
   }
   for (const contract of allContracts) {
     if (!contract || seen.has(contract.name)) continue;
@@ -13626,9 +13937,21 @@ function compileStringSplitUnchecked(
   // Candidate compilation is complete, so the prepared template can become the root directly rather than paying
   // for one final full-contract clone. Every facet was compiled from an isolated clone and restored the template.
   const rootAst = probe;
-  const routeByName = new Map<string, { facet: string; link: string }>();
+  const routeByName = new Map<string, {
+    facet: string; link: string; delegateEventOffsets?: number[];
+  }>();
   for (const facet of facetRecords) for (const plan of facet.plans) {
-    routeByName.set(plan.name, { facet: facet.name, link: facet.link });
+    const handler = (facet.artifact.abi as readonly AbiFunction[]).find((fn) => fn.name === plan.name);
+    const layout = handler?.blockLayout;
+    const dataOffsets = (layout?.slots ?? [])
+      .filter((slot) => slot.kind === 'dataNft').map((slot) => slot.offset);
+    const delegateEventOffsets = (layout?.slots ?? []).filter((slot) => slot.kind === 'event')
+      .map((slot) => slot.offset - dataOffsets.filter((offset) => offset < slot.offset).length);
+    routeByName.set(plan.name, {
+      facet: facet.name,
+      link: facet.link,
+      ...(delegateEventOffsets.length > 0 && { delegateEventOffsets }),
+    });
   }
   prepareSplitRoot(rootAst.contract, routeByName);
   // `rootAst` is also the already-flattened logical contract. Its second compiler pass must not interpret
@@ -14056,7 +14379,9 @@ function compileFacet(prepared: Ast, code: string, options: CompilerOptions,
   return artifact;
 }
 
-function prepareSplitRoot(contract: ContractNode, routes: Map<string, { facet: string; link: string }>): void {
+function prepareSplitRoot(contract: ContractNode, routes: Map<string, {
+  facet: string; link: string; delegateEventOffsets?: number[];
+}>): void {
   // Once moved entry bodies become forwarders, helpers reachable only from those entries belong exclusively to
   // facets. Leaving their OP_INVOKE bodies in the root defeats splitting and can keep an otherwise valid root over
   // the VM limit. Preserve helpers reachable from root-local entries and the constructor.
@@ -14076,6 +14401,7 @@ function prepareSplitRoot(contract: ContractNode, routes: Map<string, { facet: s
   }
   for (const fn of contract.functions) {
     const route = routes.get(fn.name); if (!route) continue;
+    fn.splitDelegateEventOffsets = route.delegateEventOffsets;
     const wasReadOnly = fn.modifiers.includes(FunctionModifier.VIEW)
       || fn.modifiers.includes(FunctionModifier.PURE);
     // A split delegate implementation is flattened into a directly state-holding root by deployProxy. Its root
@@ -14146,11 +14472,13 @@ function splitFailureMessage(name: string, artifact: Artifact, limit: number, fu
  * An ABI-only declaration artifact for a single interface, reusing generateDeclarationArtifact (which keys on
  * `ast.libraryName`). Carries the interface's functions + the file's shared enums/events/errors; no bytecode.
  */
-function generateInterfaceArtifact(ast: Ast, interfaceName: string, code: string): Artifact {
+function generateInterfaceArtifact(
+  ast: Ast, interfaceName: string, code: string, compilerOptions: CompilerOptions,
+): Artifact {
   const savedLibraryName = ast.libraryName;
   ast.libraryName = interfaceName;
   try {
-    return generateDeclarationArtifact(ast, code);
+    return generateDeclarationArtifact(ast, code, compilerOptions);
   } finally {
     ast.libraryName = savedLibraryName;
   }

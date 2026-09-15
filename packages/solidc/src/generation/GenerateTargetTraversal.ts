@@ -239,7 +239,10 @@ import {
 } from '../Errors.js';
 import { analyzeInlineAssembly } from '../semantic/InlineAssemblyDiagnostics.js';
 import { isKernelSafeNativeAssembly } from '../semantic/NativeAssemblyKernelSafety.js';
-import { analyseContractInvocations } from '../analysis/InvocationAnalysis.js';
+import {
+  isEvmAbiWordType, isEvmExternalResultSchemaDecodable,
+} from '../semantic/ExternalResultEncoding.js';
+import { analyseContractInvocations, walkInvocationAst } from '../analysis/InvocationAnalysis.js';
 import { cloneNode, cloneNodeReplacing } from '../ast/clone.js';
 import { substituteInExpression } from '../semantic/InheritanceExpansionTransformation.js';
 
@@ -1389,6 +1392,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   private static readonly OUTLINED_COMPUTE_BLOCK_BASE = '__internal__outlinedComputeBlockBase';
 
+  /** Named helpers with recovery effects receive the exact physical A coordinate of their first formal effect.
+   * Each call edge offsets that coordinate by its stable recoveryEffectOrdinal before OP_INVOKE. */
+  private outlinedRecoveryInputFunctionIds: Set<number> = new Set();
+
+  private static readonly OUTLINED_RECOVERY_A_INDEX = '__internal__outlinedRecoveryAIndex';
+
   private static readonly OUTLINED_TRAILING_BASE = '__internal__outlinedTrailingBase';
 
   // Dynamic-write RMW value stack names (`__internal__dynwrite_value_<name>`) that emitDynamicWriteVerification
@@ -2389,12 +2398,36 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // A/B slots rather than the stateless transaction tail. The proof is identical to the contract-helper path:
     // every reaching entrypoint must publish exactly one consecutive pair at identical offsets.
     this.ecrecoverSideCarBasisByFunctionId = new Map();
-    const allFunctions = [...node.contract.functions, ...node.freeFunctions,
+    const allFunctions: FunctionDefinitionNode[] = [...node.contract.functions, ...node.freeFunctions,
       ...[node.contract.constructorDef, node.contract.fallbackDef, node.contract.receiveDef]
         .filter((fn): fn is FunctionDefinitionNode => fn !== undefined)];
+    const allFunctionSet = new Set(allFunctions);
+    for (let functionIndex = 0; functionIndex < allFunctions.length; functionIndex += 1) {
+      walkInvocationAst(allFunctions[functionIndex].body, (candidate) => {
+        if (!(candidate instanceof FunctionCallNode) || !candidate.resolvedFunction
+          || allFunctionSet.has(candidate.resolvedFunction)) return;
+        allFunctionSet.add(candidate.resolvedFunction);
+        allFunctions.push(candidate.resolvedFunction);
+      });
+    }
+    this.outlinedRecoveryInputFunctionIds = new Set(allFunctions.flatMap((fn) => (
+      fn.functionId !== undefined && Math.max(fn.recoveryEffectCount ?? 0, fn.ecrecoverCallCount ?? 0) > 0
+        && fn.name !== '__message_bus_verify_atomic'
+        && fn.name !== '__message_bus_verify_atomic_program'
+        ? [fn.functionId] : []
+    )));
     const functionsById = new Map(allFunctions
       .filter((fn) => fn.functionId !== undefined).map((fn) => [fn.functionId!, fn]));
     const indirect = this.functionReferenceIds(node.contract);
+    const indirectRecovery = allFunctions.find((fn) => fn.functionId !== undefined
+      && indirect.has(fn.functionId)
+      && Math.max(fn.recoveryEffectCount ?? 0, fn.ecrecoverCallCount ?? 0) > 0);
+    if (indirectRecovery) {
+      throw new Error(
+        `Recovery-bearing function '${indirectRecovery.name}' cannot be invoked through a function value: `
+        + 'the indirect OP_INVOKE ABI has no authenticated recovery-sidecar coordinate',
+      );
+    }
     for (const [functionId, entries] of this.keccakEntryPointsReaching(node.contract, node.freeFunctions)) {
       const target = functionsById.get(functionId);
       if (!target || target.blockLayout || indirect.has(functionId) || entries.length === 0) continue;
@@ -4100,6 +4133,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       probe.constructorParameterCount = this.constructorParameterCount;
       probe.compiledBytecodes = this.compiledBytecodes;
       probe.compactHelperIds = this.compactHelperIds;
+      // The usage probe compiles the same OP_DEFINE call ABI as the shipping pass. Preserve the recovery-context
+      // widening or it can count a body with the old arity and silently select a different extraction plan.
+      probe.outlinedRecoveryInputFunctionIds = this.outlinedRecoveryInputFunctionIds;
       probe.emitFunctionDefinesAndDispatch(node);
       this.structSkipIds = new Map(probe.structSkipIds);
       this.structSkipTypes = new Map(probe.structSkipTypes);
@@ -4277,6 +4313,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       || func.name === '__message_bus_verify_atomic_program')
       && (this.outlinedComputeBlockBaseFunctionIds.has(func.functionId!)
         || this.outlinedDynamicReadThreadedFunctionIds.has(func.functionId!)
+        || Math.max(func.recoveryEffectCount ?? 0, func.ecrecoverCallCount ?? 0) > 0
         || this.constructorCaptures(func).length > 0)) {
       throw new Error('Detached message-bus verifier cannot require compiler-internal call-frame operands');
     }
@@ -4354,6 +4391,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     subTraversal.ecrecoverSideCarBasis = func.functionId === undefined
       ? undefined : this.ecrecoverSideCarBasisByFunctionId.get(func.functionId);
     subTraversal.outlinedComputeBlockBaseFunctionIds = this.outlinedComputeBlockBaseFunctionIds;
+    subTraversal.outlinedRecoveryInputFunctionIds = this.outlinedRecoveryInputFunctionIds;
     subTraversal.intDecodeIntSlot = this.intDecodeIntSlot;
     subTraversal.intEncodeSlot = this.intEncodeSlot;
     subTraversal.bytesNonEmptySlot = this.bytesNonEmptySlot;
@@ -4693,6 +4731,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // argument. Dropping this set here compiled direct calls with the old arity while the shared helper was
       // compiled with the widened frame, shifting its declared parameters by one stack item.
       subTraversal.outlinedComputeBlockBaseFunctionIds = this.outlinedComputeBlockBaseFunctionIds;
+      subTraversal.outlinedRecoveryInputFunctionIds = this.outlinedRecoveryInputFunctionIds;
       subTraversal.intDecodeIntSlot = this.intDecodeIntSlot;
       subTraversal.intEncodeSlot = this.intEncodeSlot;
       subTraversal.bytesNonEmptySlot = this.bytesNonEmptySlot;
@@ -5819,6 +5858,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (node.functionId !== undefined && this.outlinedComputeBlockBaseFunctionIds.has(node.functionId)) {
         this.pushToStack(GenerateTargetTraversalWithLocation.OUTLINED_COMPUTE_BLOCK_BASE, true);
       }
+      if (node.functionId !== undefined && this.outlinedRecoveryInputFunctionIds.has(node.functionId)) {
+        this.pushToStack(GenerateTargetTraversalWithLocation.OUTLINED_RECOVERY_A_INDEX, true);
+      }
     } else {
       node.parameters = this.visitList(node.parameters) as ParameterNode[];
     }
@@ -6718,7 +6760,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const proxyCanAdmitDelegateEvent = this.functionHasDelegatecall
         && (this.getStackIndex('__internal__callInputIndex', true) >= 0
           || this.getStackIndex('__internal__callInputIndex0', true) >= 0);
+      // A split root publishes the exact event offsets owned by its co-spent delegate-only facet. The facet pins
+      // those proxy-category immutable outputs itself; emitting the root census too would duplicate authority and
+      // make the earlier input, rather than the producing facet, decide the event family.
+      const splitDelegateOwnsImmutableEvents = node.splitDelegateEventOffsets !== undefined;
       if (node.name !== '__construct' && isStatefulContract
+        && !splitDelegateOwnsImmutableEvents
         && (declaresEvents || this.currentFunctionIsDelegate || proxyCanAdmitDelegateEvent)) {
         this.emitOwnCategoryImmutableNftOutputPin(node);
       }
@@ -9940,6 +9987,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const isEvm = node.identifier.name === GlobalFunction.ECRECOVER_EVM;
     const fn = this.currentFunction;
     const i = (fn.ecrecoverArgParams ??= []).length;
+    const effectOrdinal = node.recoveryEffectOrdinal ?? i;
     const capturedComputeBase = this.captureComputeSidecarBlockBase(
       loc, `(__ecrecover_compute_base_${i})`,
     );
@@ -9981,7 +10029,27 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     };
     const slotIdx = (role: 'A' | 'B', _isOutput = false): void => {
       if (loop) { emitLoopSideCarIndex(role === 'A' ? 1n : 2n); return; }
-      if (fn.blockLayout) { this.emitBlockSlotIndex('ecrecoverSideCar', role === 'A' ? 2 * i : 2 * i + 1, loc); return; }
+      const threadedA = this.getStackIndex(
+        GenerateTargetTraversalWithLocation.OUTLINED_RECOVERY_A_INDEX, true,
+      );
+      if (threadedA >= 0) {
+        // OP_INVOKE shares the caller's physical stack; the callee's hidden frame is above unrelated caller
+        // values and is therefore not transaction-bottom-relative. Its declared top depth is stable here.
+        this.emit(encodeInt(BigInt(threadedA)), loc);
+        this.emit(Op.OP_PICK, loc);
+        const relative = 2 * effectOrdinal + (role === 'B' ? 1 : 0);
+        if (relative > 0) {
+          this.emit(encodeInt(BigInt(relative)), loc);
+          this.emit(Op.OP_ADD, loc);
+        }
+        return;
+      }
+      if (fn.blockLayout) {
+        this.emitBlockSlotIndex(
+          'ecrecoverSideCar', role === 'A' ? 2 * effectOrdinal : 2 * effectOrdinal + 1, loc,
+        );
+        return;
+      }
       const basisSlot = basisSlots.find((slot) => slot.slotIndex === (role === 'A' ? 0 : 1));
       if (basisSlot) {
         this.emitComputeSidecarBlockBase(loc, capturedComputeBase);
@@ -11113,9 +11181,25 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.pushToStack(`(__graph_effect_site_${targetFunc.functionId})`);
       hiddenContextCount += 1;
     }
+    // Recovery resources have a finer identity than a block base: a shared helper can be called from a direct
+    // entry with one pair and from a row-loop handler whose pair is selected by the authenticated row/site.
+    // Map the callee's formal effect zero to this call edge's stable ordinal while the caller still owns the
+    // exact block-layout/graph-frame authority, then forward that absolute A coordinate unchanged.
+    if (targetFunc.functionId !== undefined
+      && this.outlinedRecoveryInputFunctionIds.has(targetFunc.functionId)) {
+      const ordinal = node.recoveryEffectOrdinal;
+      if (ordinal === undefined) {
+        throw new Error(`Missing stable recovery-effect identity at call to '${targetFunc.name}'`);
+      }
+      this.emitRecoveryAInputIndex(ordinal, locationData);
+      this.pushToStack(`(__outlined_recovery_a_${targetFunc.functionId})`);
+      hiddenContextCount += 1;
+    }
     // A side-car helper can be reached from both a direct delegate entry (resources beside the executor) and a
     // compiler-routed delegate entry (resources in the authenticated participant block). Pass the actual compute
-    // block base through the call frame; nested outlined helpers forward the value they received.
+    // block base through the call frame; nested outlined helpers forward the value they received. This is pushed
+    // after recovery A so the caller's top-first physical frame reverses into the callee declaration order
+    // dynamic, compute, recovery (hidden declarations are appended to the tracked bottom).
     if (targetFunc.functionId !== undefined
       && this.outlinedComputeBlockBaseFunctionIds.has(targetFunc.functionId)) {
       this.emitComputeSidecarBlockBase(locationData);
@@ -11503,6 +11587,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     for (const expression of node.expressions) returnIdentifiers.visit(expression);
     const preserveDeployDependency = graphDeployDependencies.some((name) => returnIdentifiers.names.has(name));
 
+    const publishesEntrypointReturn = this.currentFunction.isEntryPoint
+      && this.currentFunction.returnTypes.length > 0
+      && (!this.isDefineSubTraversal || this.functionHasReturnInLoop);
+    const returnTypes = this.currentFunction.returnTypes;
+    // External return data has one schema-wide representation. The consumer makes this same decision before
+    // decoding, so mixing EVM words for some fields with compact pushdata for others is never sound.
+    const evmEntrypointReturn = publishesEntrypointReturn
+      && (this.compilerOptions.evmCompat || this.compilerOptions.solidityImportCompat)
+      && isEvmExternalResultSchemaDecodable(returnTypes);
+
     // Evaluate return expressions - they will be left on the stack
     if (preserveDeployDependency) this.scopeDepth += 1;
     node.expressions = this.visitList(node.expressions) as ExpressionNode[];
@@ -11515,28 +11609,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // plain internal function, so an internal caller gets the return value (no return event is produced).
     // Exception: a `return` inside a loop isn't supported by the raw-return stack cleanup, so keep the
     // event-blob path for such functions (the internal-call subroutine is then unused/spliced).
-    if (this.currentFunction.isEntryPoint && this.currentFunction.returnTypes.length > 0
-      && (!this.isDefineSubTraversal || this.functionHasReturnInLoop)) {
-      const returnTypes = this.currentFunction.returnTypes;
-      for (let i = 0; i < returnTypes.length; i++) {
-        // In Solidity-compatible mode, return data has the same ABI representation as calldata. This is
-        // particularly important for a low-level call: its opaque `bytes returndata` is commonly passed straight
-        // to `abi.decode` (e.g. OpenZeppelin SafeERC20), so publishing SolidCash's compact pushdata framing here
-        // makes an otherwise successful `returns (bool)` look like malformed/false EVM returndata.
-        if ((this.compilerOptions.evmCompat || this.compilerOptions.solidityImportCompat)
-          && this.isEvmAbiWordType(returnTypes[i])) {
-          this.emitEvmEncodeValue(returnTypes[i], locationData);
-        } else {
-          this.emitPushdataEncode(returnTypes[i], locationData);
-        }
-        if (i > 0) {
-          // CAT with accumulated blob
-          // Stack: [..., blob_so_far, encoded_value]
-          this.emit(Op.OP_SWAP, locationData);
-          this.emit(Op.OP_CAT, locationData);
-          this.popFromStack(2);
-          this.pushToStack('(value)');
-        }
+    if (publishesEntrypointReturn) {
+      if (evmEntrypointReturn) {
+        this.emitEvmAbiEncodeStackValues(returnTypes, locationData);
+      } else {
+        this.emitCompactReturnTupleStackValues(returnTypes, locationData);
       }
       // Rename the top of stack to __returnBlob
       this.popFromStack();
@@ -15709,13 +15786,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     return false;
   }
 
-  /** Types represented by one EVM ABI word and supported by both word conversion helpers. */
-  private isEvmAbiWordType(t: Type): boolean {
-    return t === PrimitiveType.BOOL || t === PrimitiveType.BIGINT
-      || t instanceof IntType || t instanceof FixedType || t instanceof EnumType || t instanceof AddressType
-      || (t instanceof BytesType && t.bound !== undefined && t.bound <= 32);
-  }
-
   // ABI static (head) byte size of a STATIC type: a value type is one 32-byte word; a fixed-width struct is the
   // sum of its fields; a fixed-size array is N times its element. Used to size the head so dynamic offsets stay
   // correct when a static composite (struct/fixed-array) occupies more than one word in the head.
@@ -16063,6 +16133,65 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emitEvmHeadTailFromBlobs(params.map((p) => p.type!), loc);
   }
 
+  // ABI-encode a declared return tuple which is already present on the stack. One call expression may produce
+  // several physical values, so the expression must not be revisited. Return evaluation leaves the final
+  // declared value on top. Rolling the constant bottom depth brings values up in declaration order while the
+  // already encoded blobs accumulate underneath; after N rolls the blob order is exactly the order expected by
+  // emitEvmHeadTailFromBlobs. The rest of the surrounding function stack is untouched.
+  private emitEvmAbiEncodeStackValues(types: readonly Type[], loc: SingleLocationData): void {
+    const n = types.length;
+    for (let i = 0; i < n; i += 1) {
+      if (n > 1) {
+        this.emit(encodeInt(BigInt(n - 1)), loc);
+        this.emit(Op.OP_ROLL, loc);
+        const [value] = this.stack.splice(n - 1, 1);
+        this.stack.unshift(value);
+      }
+      this.emitEvmEncodeValue(types[i], loc);
+      this.popFromStack();
+      this.pushToStack(`__abiblob${i}`);
+    }
+    this.emitEvmHeadTailFromBlobs(types, loc);
+  }
+
+  // Compact-return counterpart of emitEvmAbiEncodeStackValues. Representation is selected for the complete
+  // schema, so an unsupported EVM composite falls back as one consistently pushdata-framed tuple rather than a
+  // mixture of EVM words and compact fields. First encode every physical value in declaration order, then join
+  // those named blobs in the same order without depending on their runtime widths.
+  private emitCompactReturnTupleStackValues(types: readonly Type[], loc: SingleLocationData): void {
+    const n = types.length;
+    for (let i = 0; i < n; i += 1) {
+      if (n > 1) {
+        this.emit(encodeInt(BigInt(n - 1)), loc);
+        this.emit(Op.OP_ROLL, loc);
+        const [value] = this.stack.splice(n - 1, 1);
+        this.stack.unshift(value);
+      }
+      this.emitPushdataEncode(types[i], loc);
+      this.popFromStack();
+      this.pushToStack(`__returnCompactBlob${i}`);
+    }
+    if (n <= 1) return;
+
+    let depth = this.getStackIndex('__returnCompactBlob0');
+    this.emit(encodeInt(BigInt(depth)), loc);
+    this.emit(Op.OP_ROLL, loc);
+    const [first] = this.stack.splice(depth, 1);
+    this.stack.unshift(first);
+    this.popFromStack();
+    this.pushToStack('__returnCompactAccumulator');
+    for (let i = 1; i < n; i += 1) {
+      depth = this.getStackIndex(`__returnCompactBlob${i}`);
+      this.emit(encodeInt(BigInt(depth)), loc);
+      this.emit(Op.OP_ROLL, loc);
+      const [next] = this.stack.splice(depth, 1);
+      this.stack.unshift(next);
+      this.emit(Op.OP_CAT, loc);
+      this.popFromStack(2);
+      this.pushToStack('__returnCompactAccumulator');
+    }
+  }
+
   // Head/tail assembly over N blobs already on the stack, tracked as __abiblob_0..N-1 (in order, bottom to top).
   // Builds the head (a static arg's blob inline, a dynamic arg's offset word = headSize + earlier dynamic tails),
   // appends the dynamic tails, drops the blob slots, and leaves the encoding. Shared by top-level abi.encode and
@@ -16136,60 +16265,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(Op.OP_SWAP, loc); // [value, remainder]
       }
     }
-  }
-
-  // External result channels need one representation decision shared by ordinary calls and kernel graph rows.
-  // This subset is recursive and type-directed: arbitrary static composites and dynamic arrays of static
-  // composites and dynamic struct elements are supported. Other dynamic composite elements remain fenced until
-  // their tail-span decoder can preserve the following element without trusting unauthenticated offsets.
-  private isEvmExternalResultDecodable(type: Type): boolean {
-    if (this.isEvmAbiWordType(type)) return true;
-    if (type === PrimitiveType.STRING || (type instanceof BytesType && type.bound === undefined)) return true;
-    if (type instanceof StructType) {
-      if (!this.isDynamicAbiType(type)) {
-        return type.fields.every((field) => this.isEvmExternalResultDecodable(field.type));
-      }
-      // The shared tuple decoder can follow dynamic leaves and scalar-array tails inside one struct. Dynamic
-      // members which themselves need a nested offset base (dynamic structs/fixed arrays, or arrays of composite
-      // elements) stay fenced until that recursive base/span can be preserved independently.
-      return type.fields.every((field) => {
-        const member = field.type;
-        if (member === PrimitiveType.STRING || (member instanceof BytesType && member.bound === undefined)) {
-          return true;
-        }
-        if (member instanceof ArrayType && member.bound === undefined) {
-          return this.isEvmExternalResultArrayElementDecodable(member.elementType);
-        }
-        if (member instanceof ArrayType && member.bound !== undefined && this.isDynamicAbiType(member)) {
-          return member.bound <= MAX_MATERIALIZED_ARRAY_ELEMENTS
-            && this.isEvmExternalResultDecodable(member.elementType);
-        }
-        if (member instanceof StructType && this.isDynamicAbiType(member)) {
-          return this.isEvmExternalResultDecodable(member);
-        }
-        return !this.isDynamicAbiType(member) && this.isEvmExternalResultDecodable(member);
-      });
-    }
-    if (type instanceof ArrayType) {
-      if (type.bound === undefined) {
-        return this.isEvmExternalResultArrayElementDecodable(type.elementType);
-      }
-      return type.bound <= MAX_MATERIALIZED_ARRAY_ELEMENTS
-        && this.isEvmExternalResultDecodable(type.elementType);
-    }
-    return false;
-  }
-
-  private isEvmExternalResultArrayElementDecodable(type: Type): boolean {
-    if (!this.isDynamicAbiType(type)) return this.isEvmExternalResultDecodable(type);
-    if (type === PrimitiveType.STRING || (type instanceof BytesType && type.bound === undefined)) return true;
-    if (type instanceof StructType) return this.isEvmExternalResultDecodable(type);
-    return type instanceof ArrayType && type.bound === undefined
-      && this.isEvmExternalResultArrayElementDecodable(type.elementType);
-  }
-
-  private isEvmExternalResultSchemaDecodable(schema: readonly Type[]): boolean {
-    return schema.every((type) => this.isEvmExternalResultDecodable(type));
   }
 
   // Decode an all-static result tuple. ABI head positions advance by each member's recursive static width, not by
@@ -16331,7 +16406,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         continue;
       }
       const recursivelyDecodedArray = t instanceof ArrayType && t.bound === undefined
-        && (!this.isEvmAbiWordType(t.elementType) || this.isDynamicAbiType(t.elementType));
+        && (!isEvmAbiWordType(t.elementType) || this.isDynamicAbiType(t.elementType));
       if (t instanceof StructType || (t instanceof ArrayType && t.bound !== undefined)
         || recursivelyDecodedArray) {
         // The composite's top-level head word is relative to the outer result tuple. Isolate its exact recursive
@@ -17971,9 +18046,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_PICK, loc);
     this.emit(Op.OP_EQUALVERIFY, loc);
 
-    // vmap commitment = slot32 || next32 || raw value.
-    this.emit(Op.OP_OVER, loc);
+    // Category verification consumes its temporary category and leaves the scan index on top. Duplicate that
+    // index for commitment introspection; OP_OVER would instead select the result accumulator below it and scan
+    // the same unrelated output on every iteration.
+    this.emit(Op.OP_DUP, loc);
     this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, loc);
+    // The same covenant/category can own inactive balanced entry slots whose commitment is empty. They are not
+    // sorted-map nodes and must not be split as slot||next. Keep scanning; only a complete 64-byte structural
+    // prefix can participate in either exact-value or authenticated-predecessor selection.
+    this.emit(Op.OP_SIZE, loc);
+    this.emit(encodeInt(64n), loc);
+    this.emit(Op.OP_GREATERTHANOREQUAL, loc);
+    this.emit(Op.OP_IF, loc);
     this.emit(encodeInt(32n), loc);
     this.emit(Op.OP_SPLIT, loc); // slot, remainder
     this.emit(Op.OP_OVER, loc);
@@ -18028,10 +18112,25 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_BOOLAND, loc);
     this.emit(Op.OP_IF, loc);
     this.emit(Op.OP_FROMALTSTACK, loc);
+    this.emit(Op.OP_FROMALTSTACK, loc);
+    // Once an exact entry has been found, later rows cannot turn that authenticated presence back into an
+    // absence proof. Keep scanning to detect a duplicate exact row, but count predecessor brackets only while
+    // exactCount is still zero. Restore the altstack as [exactCount, bracketCount] in either branch.
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_0, loc);
+    this.emit(Op.OP_NUMEQUAL, loc);
+    this.emit(Op.OP_IF, loc);
+    this.emit(Op.OP_SWAP, loc);
     this.emit(Op.OP_1ADD, loc);
+    this.emit(Op.OP_SWAP, loc);
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_TOALTSTACK, loc);
     this.emit(Op.OP_TOALTSTACK, loc);
     this.emit(Op.OP_ENDIF, loc);
     this.emit(Op.OP_DROP, loc); // candidate slot; duplicated output index remains for scoped cleanup
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_ELSE, loc);
+    this.emit(Op.OP_DROP, loc); // incomplete/inactive commitment
     this.emit(Op.OP_ENDIF, loc);
     this.emit(Op.OP_ENDIF, loc);
 
@@ -18321,7 +18420,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       } else {
         // Decode return values from blob
         if ((this.compilerOptions.evmCompat || this.compilerOptions.solidityImportCompat)
-          && this.isEvmExternalResultSchemaDecodable(returnTypes)) {
+          && isEvmExternalResultSchemaDecodable(returnTypes)) {
           this.pushToStack('(__external_result_blob)');
           this.emitEvmExternalResultDecode(returnTypes, locationData);
         } else {
@@ -18331,12 +18430,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
               this.emitPushdataDecodeLastField(returnTypes[i], locationData);
             } else {
               this.emitPushdataDecode(returnTypes[i], locationData);
-              // After decode, stack has: [decoded_value, remaining_blob]
-              // Swap so remaining_blob is on top for next iteration
-              this.emit(Op.OP_SWAP, locationData);
             }
-            this.pushToStack('(value)');
           }
+          // A non-final compact decoder already leaves the remainder on top, ready for the next field. Reconcile
+          // tracking only after the complete tuple has replaced the untracked commitment: declaration-order
+          // pushes leave the rightmost result on top, matching tuple assignment and internal-call returns.
+          for (let i = 0; i < returnTypes.length; i++) this.pushToStack('(value)');
         }
       }
     }
@@ -18895,7 +18994,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       return 1;
     }
     const evmGraphReturn = (this.compilerOptions.evmCompat || this.compilerOptions.solidityImportCompat)
-      && this.isEvmExternalResultSchemaDecodable(returnTypes);
+      && isEvmExternalResultSchemaDecodable(returnTypes);
     if (evmGraphReturn) {
       // The call manifest carries the producer's exact return-event bytes. Solidity-compatible producers publish
       // results as ABI tuples. Decoding that vector as SolidCash pushdata sees the first offset/zero-padding byte
@@ -18915,16 +19014,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     for (let i = 0; i < returnTypes.length; i++) {
       if (i === returnTypes.length - 1) {
         this.emitPushdataDecodeLastField(returnTypes[i], locationData);
-        this.pushToStack(`(__graph_result_value_${i})`);
       } else {
         this.emitPushdataDecode(returnTypes[i], locationData);
-        // Keep the remainder on top for the next decoder while the earlier result remains below it. Naming the
-        // decoded result after the swap matches visitExternalFunctionCall and visitTupleAssignment: subsequent
-        // results are pushed above earlier ones, leaving the rightmost tuple component on top.
-        this.emit(Op.OP_SWAP, locationData);
-        this.pushToStack(`(__graph_result_value_${i})`);
       }
     }
+    // Non-final decoders leave their remainder on top without a swap. Once the complete compact tuple is
+    // consumed, install its symbolic result frame in declaration order; the last component is therefore topmost.
+    for (let i = 0; i < returnTypes.length; i++) this.pushToStack(`(__graph_result_value_${i})`);
     return returnTypes.length;
   }
 
@@ -28073,7 +28169,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       outlined: this.isDefineSubTraversal,
       trailingBase: basisFunction.blockLayout?.trailingBase ?? blockSize,
       iterCount: basisFunction.collectionIterations?.length ?? 0,
-      threaded: this.getStackIndex(GenerateTargetTraversalWithLocation.OUTLINED_TRAILING_BASE, true) >= 0,
+      threaded: this.getStackIndex('__internal__dynamicChunkInputBase', true) >= 0
+        || this.getStackIndex(GenerateTargetTraversalWithLocation.OUTLINED_TRAILING_BASE, true) >= 0,
     });
     const priorNodes = priorNames.map((n) => this.stateVariables.find((v) => v.name === n)!);
     const fieldsInNft = this.stateVariables
@@ -28134,8 +28231,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const stackDepth = this.stack.length;
 
     // inputIdx = masterInputIndex + blockSize + sum(collection-iter counts) + sum(prior read counts) + i
+    const explicitBase = this.getStackIndex('__internal__dynamicChunkInputBase', true);
     const threadedBase = this.getStackIndex(GenerateTargetTraversalWithLocation.OUTLINED_TRAILING_BASE, true);
-    if (threadedBase >= 0) {
+    if (explicitBase >= 0) {
+      // No untracked value has been pushed in this branch yet: the absolute base is still at its tracked depth.
+      // Adding one here asks OP_PICK for exactly one item below the runtime stack when the witness is the oldest
+      // value in the frame (e.g. a compact direct delegate). The outlined branch below first pushes the master
+      // index, so its +1 remains required.
+      this.emit(encodeInt(BigInt(explicitBase)), loc);
+      this.emit(Op.OP_PICK, loc);
+    } else if (threadedBase >= 0) {
       this.emitMasterInputIndex(loc);
       this.emit(encodeInt(BigInt(threadedBase + 1)), loc);
       this.emit(Op.OP_PICK, loc);
@@ -32106,14 +32211,59 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     } else if (this.getStackIndex(
       GenerateTargetTraversalWithLocation.OUTLINED_COMPUTE_BLOCK_BASE, true,
     ) >= 0) {
-      const index = this.getStackIndex(GenerateTargetTraversalWithLocation.OUTLINED_COMPUTE_BLOCK_BASE);
-      this.emit(encodeInt(BigInt(index)), locationData);
-      this.emit(Op.OP_PICK, locationData);
+      // Compiler-threaded context is part of the outlined function's stable invocation frame. Nested helpers can
+      // leave runtime-only return operands above that frame which are deliberately absent from this traversal's
+      // static stack model; a top-relative PICK then mistakes one of those operands for the physical block base.
+      // Address it by its bottom ordinal, as for the aggregate route's authenticated owner witnesses.
+      this.emitPickTrackedFromBottom(
+        GenerateTargetTraversalWithLocation.OUTLINED_COMPUTE_BLOCK_BASE,
+        locationData,
+      );
     } else if (this.usesDelegateExecutorBlockBase()) {
       this.emit(Op.OP_INPUTINDEX, locationData);
     } else {
       this.emitMasterInputIndex(locationData);
     }
+  }
+
+  /** Push the exact A-sidecar input for one recovery effect in the current invocation context. */
+  private emitRecoveryAInputIndex(effectOrdinal: number, locationData: SingleLocationData): void {
+    const inherited = this.getStackIndex(
+      GenerateTargetTraversalWithLocation.OUTLINED_RECOVERY_A_INDEX, true,
+    );
+    if (inherited >= 0) {
+      this.emit(encodeInt(BigInt(inherited)), locationData);
+      this.emit(Op.OP_PICK, locationData);
+      if (effectOrdinal > 0) {
+        this.emit(encodeInt(BigInt(2 * effectOrdinal)), locationData);
+        this.emit(Op.OP_ADD, locationData);
+      }
+      return;
+    }
+    if (this.currentFunction.blockLayout) {
+      this.emitBlockSlotIndex('ecrecoverSideCar', 2 * effectOrdinal, locationData);
+      return;
+    }
+    // A stateless entry has no authenticated owner-relative block. Its recovery pairs remain the final fixed
+    // input family, so materialize the same exact coordinate the legacy local fallback would use and pass it to
+    // the helper. Repeated calls use the entry's expanded stable effect count, not the helper definition count.
+    const total = Math.max(
+      this.currentFunction.recoveryEffectCount ?? 0,
+      this.currentFunction.ecrecoverCallCount ?? 0,
+    );
+    const evm = this.currentFunction.ecrecoverClosureEvmFlags?.filter(Boolean).length
+      ?? this.currentFunction.ecrecoverEvmCallCount ?? 0;
+    if (total <= effectOrdinal) {
+      throw new Error(
+        `Recovery effect ${effectOrdinal} in '${this.currentFunction.name}'`
+        + `${this.currentFunction.functionId === undefined ? '' : `#${this.currentFunction.functionId}`}`
+        + ' has no physical side-car coordinate '
+        + `(expanded effect count: ${total})`,
+      );
+    }
+    this.emit(Op.OP_TXINPUTCOUNT, locationData);
+    this.emit(encodeInt(BigInt(2 * (total - effectOrdinal) + evm)), locationData);
+    this.emit(Op.OP_SUB, locationData);
   }
 
   /**
@@ -32125,8 +32275,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       GenerateTargetTraversalWithLocation.OUTLINED_COMPUTE_BLOCK_BASE, true,
     );
     if (inherited < 0) return undefined;
-    this.emit(encodeInt(BigInt(inherited)), locationData);
-    this.emit(Op.OP_PICK, locationData);
+    this.emitPickTrackedFromBottom(
+      GenerateTargetTraversalWithLocation.OUTLINED_COMPUTE_BLOCK_BASE,
+      locationData,
+    );
     this.pushToStack(name);
     return name;
   }
@@ -32853,17 +33005,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_NIP, loc);
     this.emit(Op.OP_0NOTEQUAL, loc);
     this.emit(Op.OP_BOOLAND, loc);                 // [cat, base, j, isEventCapableNft]
-    // Cross-call return witnesses are immutable own-category NFTs with
-    // non-empty commitments, but they are deliberately sent to OP_TRUE rather
-    // than an event covenant address. Event readers query the latter address,
-    // so an OP_TRUE return witness cannot masquerade as a serialized event.
-    // As above, j is one item below the predicate.
-    this.emit(Op.OP_OVER, loc);                    // [cat, base, j, isEventCapableNft, j]
-    this.emit(Op.OP_OUTPUTBYTECODE, loc);
-    this.emit(new Uint8Array([Op.OP_1]), loc);
-    this.emit(Op.OP_EQUAL, loc);
-    this.emit(Op.OP_NOT, loc);
-    this.emit(Op.OP_BOOLAND, loc);                 // [cat, base, j, isEventAddressCandidate]
+    // OP_TRUE return carriers are still mintable own-category immutable NFTs. Do not exempt that locking
+    // bytecode as a class: only the exact compiler-published return indices below are authorized. Otherwise an
+    // attacker can append an arbitrary third OP_TRUE immutable beside a valid event/return pair.
     // Logical contract identity anchors use the disjoint `SCID` commitment
     // envelope. They can be relocated by return/event outputs and are not
     // event records, so do not subject them to event-slot positioning.
@@ -32934,23 +33078,36 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       ? (this.getStackIndex('__internal__callInputIndex', true) >= 0
         ? '__internal__callInputIndex'
         : this.getStackIndex('__internal__callInputIndex0', true) >= 0
-          ? '__internal__callInputIndex0' : undefined)
+          ? '__internal__callInputIndex0'
+          : this.getStackIndex('__internal__delegateInputIndex', true) >= 0
+            ? '__internal__delegateInputIndex' : undefined)
       : undefined;
-    const delegateEventOffset = allowedOffsets.length > 0 ? Math.min(...allowedOffsets) : 4;
-    if (delegateCallIdx !== undefined) {
-      this.emit(Op.OP_OVER, loc);                    // [cat, base, j, allowed, j]
-      this.emitPickTrackedFromBottom(delegateCallIdx, loc);
-      this.emit(encodeInt(BigInt(delegateEventOffset)), loc);
-      this.emit(Op.OP_ADD, loc);
-      this.emit(Op.OP_NUMEQUAL, loc);
-      this.emit(Op.OP_BOOLOR, loc);                  // [cat, base, j, allowed']
+    const delegateCallFromBlockSlot = this.functionHasDelegatecall
+      && (node.blockLayout?.slots ?? []).some((slot) => slot.kind === 'lowLevelCall');
+    const delegateEventOffsets = node.splitDelegateEventOffsets?.length
+      ? node.splitDelegateEventOffsets : [allowedOffsets.length > 0 ? Math.min(...allowedOffsets) : 4];
+    if (delegateCallIdx !== undefined || delegateCallFromBlockSlot) {
+      for (const delegateEventOffset of delegateEventOffsets) {
+        this.emit(Op.OP_OVER, loc);                  // [cat, base, j, allowed, j]
+        if (delegateCallIdx !== undefined) this.emitPickTrackedFromBottom(delegateCallIdx, loc);
+        else this.emitBlockSlotIndex('lowLevelCall', 0, loc);
+        this.emit(encodeInt(BigInt(delegateEventOffset)), loc);
+        this.emit(Op.OP_ADD, loc);
+        this.emit(Op.OP_NUMEQUAL, loc);
+        this.emit(Op.OP_BOOLOR, loc);                // [cat, base, j, allowed']
+      }
     }
-    const returnIdx = hasReturnSlot ? this.getStackIndex('__internal__returnOutputIdx', true) : -1;
-    if (returnIdx >= 0) {
+    const returnWitnesses = [
+      ...(hasReturnSlot ? ['__internal__returnOutputIdx'] : []),
+      ...node.parameters.map((parameter) => parameter.name)
+        .filter((name) => /^__internal__externalReturnOutputIdx\d*$/.test(name)),
+    ].filter((name, index, all) => all.indexOf(name) === index
+      && this.getStackIndex(name, true) >= 0);
+    for (const returnWitness of returnWitnesses) {
       this.emit(Op.OP_OVER, loc);                  // [cat, base, j, allowed, j]
-      // Extracted/shared bodies can change the number of transient items above the ABI frame. Resolve this
+      // Extracted/shared bodies can change the number of transient items above the ABI frame. Resolve each
       // witness from its stable bottom ordinal instead of baking a top-relative PICK depth.
-      this.emitPickTrackedFromBottom('__internal__returnOutputIdx', loc);
+      this.emitPickTrackedFromBottom(returnWitness, loc);
       this.emit(Op.OP_NUMEQUAL, loc);              // [cat, base, j, allowed, isReturnOutput]
       this.emit(Op.OP_BOOLOR, loc);                // [cat, base, j, allowed']
     }

@@ -2,12 +2,18 @@ import {
   StatefulTransactionBuilder,
   StatefulTransactionOptions,
   sameDerivedChunkOutputObservation,
+  valueChunkWriteResourceIdentity,
+  type ValueChunkWriteDescriptor,
 } from '../src/stateful/StatefulTransactionBuilder.js';
 // Exercise the shipped build helper (marketplace/solidhat also resolve dist).
-import { moveLateChunksBeforeReverseSuffixJobs } from '../dist/stateful/StatefulTransactionBuilder.js';
+import { moveLateOutputsBeforeReverseSuffix } from '../dist/stateful/StatefulTransactionBuilder.js';
 import { UnlockableUtxo } from '../src/interfaces.js';
-import { StateLayout, EventDefinitionAbi } from '@solidcash/utils';
+import { StateLayout, EventDefinitionAbi, computeCollectionHash } from '@solidcash/utils';
+import { binToHex } from '@bitauth/libauth';
 import { createTestProvider } from './test-util.js';
+import {
+  createEntryNftUnlocker, createReadOnlyEntryNftUnlocker,
+} from '../src/stateful/covenant-helpers.js';
 
 // Minimal state layout for testing: single int variable on one data NFT
 const stateLayout: StateLayout = {
@@ -90,6 +96,116 @@ function makeBaseOptions(overrides?: Partial<StatefulTransactionOptions>): State
 }
 
 describe('StatefulTransactionBuilder', () => {
+  it('rebinds only exact write-entry witnesses to the final category master', () => {
+    const provider = createTestProvider();
+    const ownerCategory = 'ac'.repeat(32);
+    const declaredSignature = 'records:mapping(bytes32 => int)';
+    const foreignSignature = 'otherRecords:mapping(bytes32 => int)';
+    const ownerLayout: StateLayout = {
+      variables: [], dataNftCount: 0, commitmentLimit: 128,
+      collections: [{
+        name: 'records', signature: declaredSignature, kind: 'mapping',
+        keyType: 'bytes32', valueType: 'int',
+      }],
+    };
+    // Covenant factories require only the public Contract surface used to derive their scripts.
+    const ownerInner = {
+      provider, addressType: 'p2sh32', artifact: { stateLayout: ownerLayout },
+    } as never;
+    const staleExact = createEntryNftUnlocker(ownerInner, 19, ownerCategory, declaredSignature);
+    const staleForeign = createEntryNftUnlocker(ownerInner, 23, ownerCategory, foreignSignature);
+    const readOnly = createReadOnlyEntryNftUnlocker(ownerInner, ownerCategory, declaredSignature);
+    const entry = (
+      suffix: string, unlocker: UnlockableUtxo['unlocker'],
+    ): UnlockableUtxo => ({
+      txid: suffix.repeat(64), vout: 0, satoshis: 1200n,
+      token: {
+        category: ownerCategory, amount: 0n,
+        nft: { capability: 'mutable', commitment: '00' },
+      },
+      unlocker,
+    });
+    const finalMaster: UnlockableUtxo = {
+      txid: 'd'.repeat(64), vout: 0, satoshis: 1200n,
+      token: {
+        category: ownerCategory, amount: 0n,
+        nft: { capability: 'minting', commitment: '' },
+      },
+      unlocker: makeDummyUnlocker(),
+    };
+    const exactEntry = entry('e', staleExact);
+    const foreignEntry = entry('f', staleForeign);
+    const readEntry = entry('9', readOnly);
+    const materializedOnly: UnlockableUtxo = {
+      txid: '8'.repeat(64), vout: 0, satoshis: 1000n, unlocker: makeDummyUnlocker(),
+    };
+    const builder = new StatefulTransactionBuilder(makeBaseOptions({ allowImplicitNftBurn: true }));
+    const tx = builder.build();
+    const internals = builder as unknown as {
+      allInputs: UnlockableUtxo[];
+      externalCallUtxoGroups: Array<Record<string, unknown>>;
+      _reconcileMaterializedEntryNftUnlockers: (materialized: typeof tx) => boolean;
+    };
+    internals.allInputs.push(finalMaster, exactEntry, foreignEntry, readEntry);
+    const finalMasterIndex = internals.allInputs.length - 4;
+    // The first alias deliberately has no collection metadata. Reconciliation must aggregate
+    // all exact descriptors for a category rather than trusting whichever alias appears first.
+    internals.externalCallUtxoGroups = [{
+      categoryId: ownerCategory, stateLayout: { ...ownerLayout, collections: [] },
+      masterUtxo: finalMaster, externalContract: {},
+    }, {
+      categoryId: ownerCategory, stateLayout: ownerLayout, masterUtxo: finalMaster,
+      externalContract: { inner: ownerInner }, blockInputs: [finalMaster, exactEntry],
+    }];
+    tx.inputs.splice(0, tx.inputs.length,
+      ...internals.allInputs.map((input) => ({ ...input })), materializedOnly);
+
+    expect(internals._reconcileMaterializedEntryNftUnlockers(tx)).toBe(true);
+
+    const rebound = exactEntry.unlocker as typeof staleExact;
+    const masterParam = rebound.abiFunction.inputs.findIndex((input) => input.name === 'masterInputIndex');
+    expect(rebound).not.toBe(staleExact);
+    expect(rebound.params[masterParam]).toBe(BigInt(finalMasterIndex));
+    expect(foreignEntry.unlocker).toBe(staleForeign);
+    expect(readEntry.unlocker).toBe(readOnly);
+    const exactIndex = internals.allInputs.findIndex((input) => input.txid === exactEntry.txid);
+    expect(tx.inputs[exactIndex]?.unlocker).toBe(rebound);
+    expect(tx.inputs.at(-1)).toBe(materializedOnly);
+    expect(internals._reconcileMaterializedEntryNftUnlockers(tx)).toBe(false);
+  });
+
+  it('does not synthesize a return without a producer identity over the next participant', () => {
+    const builder = new StatefulTransactionBuilder(makeBaseOptions({ allowImplicitNftBurn: true }));
+    const tx = builder.build();
+    const participantCategory = 'cd'.repeat(32);
+    const participantLock = new Uint8Array([0xaa, 0x20, ...new Array(32).fill(0x5a), 0x87]);
+    const participantOutput = {
+      to: participantLock,
+      amount: 1200n,
+      token: {
+        category: participantCategory,
+        amount: 0n,
+        nft: { capability: 'minting' as const, commitment: '' },
+      },
+    };
+    while (tx.outputs.length < 8) {
+      tx.outputs.push({ to: Uint8Array.of(0x51), amount: 800n });
+    }
+    tx.outputs.push(participantOutput);
+
+    const internals = builder as unknown as {
+      mintingOutputSwap: { from: number; width: number; categoryId: string };
+      _placeTailReturnAfterSwappedTokenBlock: (materialized: typeof tx) => void;
+    };
+    // The root minting master is input zero, so a default eight-slot writer block ends exactly at the
+    // next participant. With no selected return identity, that coordinate is not a return destination.
+    internals.mintingOutputSwap = { from: 0, width: 8, categoryId };
+
+    internals._placeTailReturnAfterSwappedTokenBlock(tx);
+
+    expect(tx.outputs[8]).toBe(participantOutput);
+  });
+
   describe('compiler-routed trailing resources', () => {
     it('does not collapse physical equality across distinct resource ownership metadata', () => {
       const lockingBytecode = new Uint8Array([0x51]);
@@ -102,6 +218,70 @@ describe('StatefulTransactionBuilder', () => {
       }, {
         ...physical, resourceIdentity: 'resource-a', resourcePart: 'chunk:1',
       })).toBe(false);
+    });
+
+    it('does not let an entry HEAD prefix evict value chunk zero', () => {
+      const builder = new StatefulTransactionBuilder(makeBaseOptions({ allowImplicitNftBurn: true }));
+      const collectionSignature = 'records:mapping(uint256 => bytes[])';
+      const write: ValueChunkWriteDescriptor = {
+        categoryId,
+        collection: 'records',
+        collectionSignature,
+        collectionHash: binToHex(computeCollectionHash(collectionSignature)),
+        keySlot: '31'.repeat(32),
+        entryAccessSlot: 0,
+        routeSlot: 0,
+        operation: 'update',
+        outputBase: 65,
+        outputCount: 3,
+      };
+      const internals = builder as unknown as {
+        externalCallUtxoGroups: Array<{ valueChunkWrites: ValueChunkWriteDescriptor[] }>;
+      };
+      internals.externalCallUtxoGroups = [{ valueChunkWrites: [write] }];
+      const resourceIdentity = valueChunkWriteResourceIdentity(write);
+      const valueLock = new Uint8Array([0xaa, 0x20, ...new Array(32).fill(0x41), 0x87]);
+      const entryLock = new Uint8Array([0xaa, 0x20, ...new Array(32).fill(0x52), 0x87]);
+
+      for (let part = 0; part < 3; part += 1) {
+        expect(builder.setDerivedChunkOutput(65 + part, {
+          commitment: `${part.toString(16).padStart(2, '0')}00${'a0'.repeat(20)}`,
+          lockingBytecode: valueLock,
+          categoryId,
+          fixedIndex: true,
+          semanticKind: 'valueChunk',
+          resourceIdentity,
+          resourcePart: `chunk:${part}`,
+        })).toBe(true);
+      }
+
+      const predecessor = `${'00'.repeat(32)}${'11'.repeat(32)}${'22'.repeat(8)}`;
+      expect(builder.setDerivedChunkOutput(15, {
+        commitment: predecessor,
+        lockingBytecode: entryLock,
+        categoryId,
+        fixedIndex: true,
+        semanticKind: 'entryPin',
+      })).toBe(true);
+      expect(builder.getDerivedChunkOutputs().get(15)).toMatchObject({
+        semanticKind: 'entryPin',
+        resourceIdentity: undefined,
+        resourcePart: undefined,
+      });
+      expect(builder.getDerivedChunkOutputs().get(65)).toMatchObject({
+        semanticKind: 'valueChunk', resourceIdentity, resourcePart: 'chunk:0',
+      });
+
+      expect(builder.setDerivedChunkOutput(65, {
+        commitment: predecessor,
+        lockingBytecode: entryLock,
+        categoryId,
+        fixedIndex: true,
+        semanticKind: 'entryPin',
+      })).toBe(false);
+      expect(builder.getDerivedChunkOutputs().get(65)).toMatchObject({
+        semanticKind: 'valueChunk', resourceIdentity, resourcePart: 'chunk:0',
+      });
     });
 
     it('places routed loop entries before newly written dynamic chunks inside the participant frame', () => {
@@ -283,6 +463,74 @@ describe('StatefulTransactionBuilder', () => {
       expect(nestedIdx).toBeGreaterThan(masterIdx + 6);
     });
 
+    it('keeps the active delegate block between its owner prefix and dynamic resources', () => {
+      const makeInput = (
+        byte: string, vout: number, capability: 'minting' | 'mutable' = 'mutable',
+      ): UnlockableUtxo => ({
+        txid: byte.repeat(64),
+        vout,
+        satoshis: 1200n,
+        token: {
+          category: byte.repeat(64), amount: 0n,
+          nft: { capability, commitment: capability === 'minting' ? '' : '00' },
+        },
+        unlocker: makeDummyUnlocker(),
+      });
+      const executorMaster = makeInput('1', 0, 'minting');
+      const executorData = makeInput('2', 0);
+      const dynamicChunk = makeInput('3', 0);
+      const nestedOwner = makeInput('4', 0, 'minting');
+      const nestedCall = makeInput('5', 0, 'minting');
+      const funder: UnlockableUtxo = {
+        txid: '6'.repeat(64), vout: 0, satoshis: 2000n, unlocker: makeDummyUnlocker(),
+      };
+      const builder = new StatefulTransactionBuilder(makeBaseOptions({
+        allowImplicitNftBurn: true,
+        funderUtxos: [funder],
+        delegateEntriesAfterLowLevel: true,
+        activeDelegateGroupIndex: 0,
+        dynamicChunkVars: [{ name: 'records', type: 'bytes[]', lockingBytecode: dummyLockingBytecode }],
+        dynamicChunkInputs: [dynamicChunk],
+        externalCallUtxoGroups: [{
+          masterUtxo: nestedOwner,
+          dataNftUtxos: [],
+          blockInputs: [nestedOwner],
+          externalContract: { inner: { artifact: { abi: [] } } },
+        } as never],
+        lowLevelCallUtxoGroups: [{
+          callMode: 'delegatecall',
+          masterUtxo: executorMaster,
+          dataNftUtxos: [executorData],
+          blockInputs: [executorMaster, executorData],
+          externalContract: { inner: { artifact: { abi: [] } } },
+        }, {
+          callMode: 'call',
+          masterUtxo: nestedCall,
+          dataNftUtxos: [],
+          blockInputs: [nestedCall],
+          externalContract: { inner: { artifact: { abi: [] } } },
+        }] as never,
+        blockLayout: {
+          blockSize: 2,
+          slots: [
+            { kind: 'master', offset: 0 },
+            { kind: 'dataNft', offset: 1, nftIndex: 0 },
+          ],
+        },
+      }));
+
+      const inputs = (builder as unknown as { allInputs: UnlockableUtxo[] }).allInputs;
+      expect(inputs.slice(0, 7).map((input) => input.txid)).toEqual([
+        makeMasterUtxo().txid,
+        makeDataNftUtxo().txid,
+        executorMaster.txid,
+        executorData.txid,
+        dynamicChunk.txid,
+        nestedOwner.txid,
+        nestedCall.txid,
+      ]);
+    });
+
     it('keeps TXOUTPUTCOUNT-1-nNew on chunk 0 when a derivation remainder is inserted', () => {
       const chunkLock = new Uint8Array([0xaa, 0x20, ...new Array(32).fill(0x11), 0x87]);
       const builder = new StatefulTransactionBuilder(makeBaseOptions({
@@ -372,7 +620,7 @@ describe('StatefulTransactionBuilder', () => {
         },
         { to: new Uint8Array([0x6a]), amount: 0n },
       ];
-      expect(moveLateChunksBeforeReverseSuffixJobs(drifted, jobsLock, 2)).toBe(2);
+      expect(moveLateOutputsBeforeReverseSuffix(drifted, jobsLock, 2)).toBe(2);
       expect(drifted.map((output) => ({
         lock: output.to instanceof Uint8Array ? [...output.to.slice(0, 3)] : output.to,
         commit: output.token?.nft?.commitment ?? '',
@@ -534,6 +782,36 @@ describe('StatefulTransactionBuilder', () => {
       expect(internals.derivedChunkOutputs.get(insertion.insertAt)?.commitment).not.toBe('0102');
     });
 
+    it('retains an exact resource learned at an unshifted probe insertion coordinate', () => {
+      const chunkLock = new Uint8Array([0xaa, 0x20, ...new Array(32).fill(0x2d), 0x87]);
+      const builder = new StatefulTransactionBuilder(makeBaseOptions({
+        allowImplicitNftBurn: true,
+        delegateDynamicChunksAtSuffix: true,
+        dynamicChunkVars: [{ name: 'records', type: 'bytes[]', lockingBytecode: chunkLock }],
+      }));
+      builder.setChunkRawCommitments('records', ['0001', '0102']);
+      const tx = builder.build();
+      const snapshot = builder.snapshotBuilderReturnOutputParams(tx);
+      const insertion = builder.insertBeforeLateValueSuffix(
+        tx, { to: change, amount: 1000n }, { rebindReturnWitnessesOnly: true },
+      );
+      expect(insertion.shiftedAbsoluteWitnesses).toBe(false);
+      const exact = {
+        commitment: '0000dead',
+        lockingBytecode: chunkLock,
+        categoryId,
+        fixedIndex: true,
+        semanticKind: 'valueChunk' as const,
+        resourceIdentity: 'resource-a',
+        resourcePart: 'chunk:0',
+      };
+      builder.setDerivedChunkOutput(insertion.insertAt, exact);
+
+      builder.restoreBuilderReturnOutputParams(tx, snapshot, insertion);
+
+      expect(builder.getDerivedChunkOutputs().get(insertion.insertAt)).toEqual(exact);
+    });
+
     it('does not advance layout revision for an identical staged value-chunk run', () => {
       const chunkLock = new Uint8Array([0xaa, 0x20, ...new Array(32).fill(0x2b), 0x87]);
       const builder = new StatefulTransactionBuilder(makeBaseOptions({ allowImplicitNftBurn: true }));
@@ -596,6 +874,72 @@ describe('StatefulTransactionBuilder', () => {
         { __internal__valueChunkOutputBase: BigInt(provisionalBase + 1) },
         { shiftPredOut: false },
       );
+      expect(internals._reconcileMaterializedValueChunkWitnesses(tx)).toBe(false);
+    });
+
+    it('reconciles a descriptor-owned run when a one-slot rebind advances only its captured base', () => {
+      const chunkLock = new Uint8Array([0xaa, 0x20, ...new Array(32).fill(0x35), 0x87]);
+      const builder = new StatefulTransactionBuilder(makeBaseOptions({ allowImplicitNftBurn: true }));
+      const tx = builder.build();
+      const materializedBase = tx.outputs.length;
+      const collectionSignature = 'records:mapping(uint256 => bytes[])';
+      const write: ValueChunkWriteDescriptor = {
+        categoryId,
+        collection: 'records',
+        collectionSignature,
+        collectionHash: binToHex(computeCollectionHash(collectionSignature)),
+        keySlot: '35'.repeat(32),
+        entryAccessSlot: 0,
+        routeSlot: 0,
+        operation: 'update',
+        outputBase: materializedBase,
+        outputCount: 3,
+      };
+      const resourceIdentity = valueChunkWriteResourceIdentity(write);
+      const commitments = ['0000aa', '0100bb', '0200cc'];
+      for (const [index, commitment] of commitments.entries()) {
+        tx.outputs.push({
+          to: chunkLock,
+          amount: 1200n,
+          token: { category: categoryId, amount: 0n,
+            nft: { capability: 'mutable', commitment } },
+        });
+        builder.setDerivedChunkOutput(materializedBase + index, {
+          commitment,
+          lockingBytecode: chunkLock,
+          categoryId,
+          fixedIndex: true,
+          semanticKind: 'valueChunk',
+          resourceIdentity,
+          resourcePart: `chunk:${index}`,
+        });
+      }
+      const refreshInternalArgs = vi.fn();
+      const carrier = {
+        categoryId,
+        valueChunkWrites: [write],
+        valueChunkOutputBase: materializedBase + 1,
+        valueChunkOutputCount: commitments.length,
+        internalArgs: { __internal__valueChunkOutputBase: BigInt(materializedBase + 1) },
+        internalArgNames: ['__internal__valueChunkOutputBase'],
+        refreshInternalArgs,
+      };
+      const internals = builder as unknown as {
+        externalCallUtxoGroups: typeof carrier[];
+        _reconcileMaterializedValueChunkWitnesses: (b: typeof tx) => boolean;
+      };
+      internals.externalCallUtxoGroups = [carrier];
+
+      expect(internals._reconcileMaterializedValueChunkWitnesses(tx)).toBe(true);
+      expect(carrier.valueChunkOutputBase).toBe(materializedBase);
+      expect(carrier.internalArgs.__internal__valueChunkOutputBase).toBe(BigInt(materializedBase));
+      expect(refreshInternalArgs).toHaveBeenCalledWith(
+        { __internal__valueChunkOutputBase: BigInt(materializedBase) },
+        { shiftPredOut: false },
+      );
+      expect([...builder.getDerivedChunkOutputs().keys()]).toEqual([
+        materializedBase, materializedBase + 1, materializedBase + 2,
+      ]);
       expect(internals._reconcileMaterializedValueChunkWitnesses(tx)).toBe(false);
     });
 

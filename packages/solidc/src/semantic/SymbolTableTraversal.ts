@@ -404,9 +404,11 @@ export function assignFunctionSourceEffectOrdinals(node: FunctionDefinitionNode)
   });
   if (unsupportedFlow) {
     node.sourceEffectOrder = 'unsupported-flow';
-    return;
+  } else {
+    node.sourceEffectOrder = 'linear';
   }
-  node.sourceEffectOrder = 'linear';
+  // Unsupported flow prevents consumers from treating these identities as a total reached order; it does not
+  // make the syntactic call/write sites anonymous. Exact local proofs can safely authenticate one such site.
   new SourceEffectOrderTraversal(0, true).visit(node.body);
 }
 
@@ -1031,7 +1033,135 @@ export default class SymbolTableTraversal extends AstTraversal {
     }
 
     node.contract = this.visit(node.contract) as ContractNode;
+    this.assignRecoveryEffectOrdinals(node);
     return node;
+  }
+
+  /**
+   * Assign a stable formal recovery-effect domain after every named call has resolved. A helper definition owns
+   * one formal sequence, while each call edge maps that sequence into a distinct range in its caller. This is
+   * deliberately separate from codegen's ecrecoverArgParams array: codegen runs more than once and a repeated
+   * helper invocation must reserve two distinct physical pairs even though it reaches the same builtin node.
+   */
+  private assignRecoveryEffectOrdinals(source: SourceFileNode): void {
+    const functions: FunctionDefinitionNode[] = [
+      ...source.contract.functions,
+      ...source.freeFunctions,
+      ...[source.contract.constructorDef, source.contract.fallbackDef, source.contract.receiveDef]
+        .filter((fn): fn is FunctionDefinitionNode => fn !== undefined),
+    ];
+    const calls = new Map<FunctionDefinitionNode, FunctionCallNode[]>();
+    const recoveryKind = (call: FunctionCallNode): boolean => (
+      call.identifier.name === GlobalFunction.ECRECOVER_PUBKEY
+      || call.identifier.name === GlobalFunction.ECRECOVER_P2PKH
+      || call.identifier.name === GlobalFunction.ECRECOVER_EVM
+      || (call.identifier.name === 'ecrecover' && this.compilerOptions.ecrecover !== undefined)
+    );
+    // Imported/library overloads can be reachable through resolvedFunction without being members of the root
+    // SourceFile's contract/free-function lists. They still execute in the caller's physical block and therefore
+    // belong to the same formal effect graph. Close over those definitions before solving cardinalities.
+    const seenFunctions = new Set(functions);
+    for (let functionIndex = 0; functionIndex < functions.length; functionIndex += 1) {
+      const fn = functions[functionIndex];
+      const bodyCalls: FunctionCallNode[] = [];
+      walkInvocationAst(fn.body, (node) => {
+        if (node instanceof FunctionCallNode) bodyCalls.push(node);
+      });
+      bodyCalls.sort((left, right) => (
+        (left.sourceEffectOrdinal ?? Number.MAX_SAFE_INTEGER)
+        - (right.sourceEffectOrdinal ?? Number.MAX_SAFE_INTEGER)
+      ));
+      calls.set(fn, bodyCalls);
+      for (const call of bodyCalls) {
+        if (!call.resolvedFunction || seenFunctions.has(call.resolvedFunction)) continue;
+        seenFunctions.add(call.resolvedFunction);
+        functions.push(call.resolvedFunction);
+      }
+    }
+
+    const functionsByName = new Map<string, FunctionDefinitionNode[]>();
+    for (const fn of functions) {
+      const overloads = functionsByName.get(fn.name) ?? [];
+      overloads.push(fn);
+      functionsByName.set(fn.name, overloads);
+    }
+    const targetsOf = (call: FunctionCallNode): FunctionDefinitionNode[] => {
+      if (call.resolvedFunction && calls.has(call.resolvedFunction)) return [call.resolvedFunction];
+      // Function overload selection is finalized by TypeCheckTraversal, which runs after this layout pass.
+      // All same-name overloads share the call boundary here; reserve the widest matching closure and let the
+      // later resolved edge retain the exact stable ordinal. This is conservative without multiplying mutually
+      // exclusive overload bodies into one invocation.
+      return functionsByName.get(call.identifier.name) ?? [];
+    };
+    const contributionOf = (
+      call: FunctionCallNode, known: ReadonlyMap<FunctionDefinitionNode, number>,
+    ): number => targetsOf(call).reduce((maximum, target) => Math.max(maximum, known.get(target) ?? 0), 0);
+
+    const counts = new Map(functions.map((fn) => [fn, calls.get(fn)!.filter(recoveryKind).length]));
+    // Acyclic named-call graphs reach a fixed point in at most |V| rounds. A recovery-bearing recursive
+    // component has runtime-variable resource cardinality and therefore has no sound fixed A/B layout.
+    let stable = false;
+    for (let round = 0; round <= functions.length; round += 1) {
+      stable = true;
+      const next = new Map<FunctionDefinitionNode, number>();
+      for (const fn of functions) {
+        let count = 0;
+        for (const call of calls.get(fn)!) {
+          if (recoveryKind(call)) count += 1;
+          else count += contributionOf(call, counts);
+        }
+        next.set(fn, count);
+        if (count !== counts.get(fn)) stable = false;
+      }
+      for (const [fn, count] of next) counts.set(fn, count);
+      if (stable) break;
+    }
+    if (!stable) {
+      throw new Error('Recovery compute in a recursive named-call component has no bounded side-car layout');
+    }
+
+    const flagsCache = new Map<FunctionDefinitionNode, boolean[]>();
+    const flagsFor = (fn: FunctionDefinitionNode, active = new Set<FunctionDefinitionNode>()): boolean[] => {
+      const cached = flagsCache.get(fn);
+      if (cached) return cached;
+      if (active.has(fn)) return [];
+      const nested = new Set(active); nested.add(fn);
+      const flags: boolean[] = [];
+      for (const call of calls.get(fn)!) {
+        if (recoveryKind(call)) flags.push(call.identifier.name === GlobalFunction.ECRECOVER_EVM
+          || (call.identifier.name === 'ecrecover' && this.compilerOptions.ecrecover === 'evm'));
+        else {
+          const target = targetsOf(call)
+            .filter((candidate) => !nested.has(candidate))
+            .sort((left, right) => (counts.get(right) ?? 0) - (counts.get(left) ?? 0))[0];
+          if (target) flags.push(...flagsFor(target, nested));
+        }
+      }
+      flagsCache.set(fn, flags);
+      return flags;
+    };
+
+    for (const fn of functions) {
+      let ordinal = 0;
+      for (const call of calls.get(fn)!) {
+        call.recoveryEffectOrdinal = ordinal;
+        if (recoveryKind(call)) ordinal += 1;
+        else ordinal += contributionOf(call, counts);
+      }
+      // Earlier body/closure analysis also sees compatibility aliases and imported definitions represented by
+      // compiler-owned clones. Never erase a proven physical reservation when this identity pass cannot connect
+      // that clone back to the same resolvedFunction object; the stable expansion may only widen it.
+      fn.recoveryEffectCount = Math.max(counts.get(fn) ?? 0, fn.ecrecoverCallCount ?? 0);
+      if (fn.recoveryEffectCount > 0) {
+        fn.ecrecoverCallCount = fn.recoveryEffectCount;
+        fn.ecrecoverCompute = true;
+        const stableFlags = flagsFor(fn);
+        const priorFlags = fn.ecrecoverClosureEvmFlags ?? fn.ecrecoverEvmFlags ?? [];
+        fn.ecrecoverClosureEvmFlags = stableFlags.length >= priorFlags.length ? stableFlags : priorFlags;
+        fn.ecrecoverEvmCallCount = fn.ecrecoverClosureEvmFlags.filter(Boolean).length;
+        if (this.isStatefulContract && fn.isEntryPoint) fn.blockLayout = this.computeBlockLayout(fn);
+      }
+    }
   }
 
   visitContract(node: ContractNode): Node {
@@ -4309,6 +4439,21 @@ export default class SymbolTableTraversal extends AstTraversal {
       this.pushToStack(param);
     }
 
+    // Dynamic storage inputs are a runtime transaction band, not necessarily the suffix of the function's
+    // maximum block layout. Compact delegate and composed route layouts therefore supply the exact absolute first
+    // chunk coordinate. It is propagated over the named-call closure before this traversal, so internal helpers
+    // and generated OP_INVOKE handlers share one authenticated physical value.
+    if (node.usesDynamicChunkInputBase
+      && !node.parameters.some((parameter) => parameter.name === '__internal__dynamicChunkInputBase')) {
+      const param = new ParameterNode(PrimitiveType.BIGINT, '__internal__dynamicChunkInputBase');
+      param.location = node.location;
+      node.parameters.push(param);
+      this.symbolTables[0].set(Symbol.variable(param));
+      const sym = this.symbolTables[0].get('__internal__dynamicChunkInputBase');
+      if (sym) sym.references.push({ name: '__internal__dynamicChunkInputBase' } as IdentifierNode);
+      this.pushToStack(param);
+    }
+
     // Infer the `deploy` modifier for a create3 / deployFrom factory function. Reading a genesis input's outpoint
     // transaction hash (`tx.inputs[i].outpointTransactionHash`) as the deployed child's category IS participating in
     // the deploy, so - like `new C()` - the `deploy` keyword is optional. Runs before block layout so the deploy slot
@@ -6878,7 +7023,8 @@ export default class SymbolTableTraversal extends AstTraversal {
         return value;
       }
     }
-    for (const v of Object.values(node)) {
+    for (const [key, v] of Object.entries(node)) {
+      if (RESOLVED_BACKREF_KEYS.has(key)) continue;
       if (v instanceof Node) { const r = this.findTupleInit(v, name, seen); if (r) return r; } else if (Array.isArray(v)) {
         for (const e of v) if (e instanceof Node) { const r = this.findTupleInit(e, name, seen); if (r) return r; }
       }
@@ -7591,6 +7737,9 @@ export default class SymbolTableTraversal extends AstTraversal {
       };
       let serializedProgramLocals: ReadonlySet<string> | undefined;
       const serializingPureHelpers = new Set<FunctionDefinitionNode>();
+      // Shared across recursive serializeExpression calls. Array-cache aliases can form A -> B -> A provenance
+      // cycles through prior whole-value rebuilds; a call-local guard would be recreated at every edge.
+      const resolvingStateCollections = new Set<string>();
       const serializeExpression = (
         expression: ExpressionNode, seen = new Set<Node>(),
       ): ExternalCallExpression | undefined => {
@@ -7793,16 +7942,25 @@ export default class SymbolTableTraversal extends AstTraversal {
           // local array and names no entry of this read.
           const stateCollectionNameOf = (raw: string): string | undefined => {
             if (raw === observedCollection) return raw;
+            // Provenance reconstruction can revisit the same array-cache alias through a prior whole-value
+            // rebuild. That cycle is not an additional state identity; fail this metadata-only classification
+            // closed instead of recursively re-entering serializeExpression with a fresh ancestor set.
+            if (resolvingStateCollections.has(raw)) return undefined;
+            resolvingStateCollections.add(raw);
             const identifier = new IdentifierNode(raw);
             identifier.location = expression.location;
-            const initializer = resolveInitializer(identifier);
-            if (initializer === identifier) return undefined;
-            const serialized = serializeExpression(initializer, new Set());
-            if (serialized?.kind === 'state') return serialized.name;
-            const source = serialized?.kind === 'source' ? serialized.source : undefined;
-            // A state name may reach the argument classifier as a source instead of a bare `state` expression.
-            return (source as { kind?: string; name?: string } | undefined)?.kind === 'state'
-              ? (source as { name?: string }).name : undefined;
+            try {
+              const initializer = resolveInitializer(identifier);
+              if (initializer === identifier) return undefined;
+              const serialized = serializeExpression(initializer, new Set());
+              if (serialized?.kind === 'state') return serialized.name;
+              const source = serialized?.kind === 'source' ? serialized.source : undefined;
+              // A state name may reach the argument classifier as a source instead of a bare `state` expression.
+              return (source as { kind?: string; name?: string } | undefined)?.kind === 'state'
+                ? (source as { name?: string }).name : undefined;
+            } finally {
+              resolvingStateCollections.delete(raw);
+            }
           };
           const sameArrayTarget = (
             candidate: StateArrayAssignNode | StateArrayDeleteNode | ArrayAssignNode | ArrayDeleteNode,

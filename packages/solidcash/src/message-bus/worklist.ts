@@ -217,15 +217,14 @@ const resolveArguments = (
     }
   }
   if (source.kind === 'selfAddress') {
-    // `address(this)` is the exact OP_UTXOBYTECODE result for the input executing this handler. A direct owner
-    // executes at its master; a delegate participant executes the implementation route at its pinned executor
-    // input. Neither identity may be reconstructed from a category or substituted with the public proxy address.
-    const executionLockingBytecode = sourceParticipant.executionKind === 'delegate'
-      ? sourceParticipant.executorLockingBytecode : sourceParticipant.lockingBytecode;
-    if (!executionLockingBytecode) {
-      throw new Error('messageBus: delegate participant has no authenticated execution locking bytecode');
+    // This source is emitted on an outgoing CALL edge. The implementation input authenticates delegate execution,
+    // but the participant master is the Solidity-visible state owner and therefore the exact identity observed by
+    // the callee as `msg.sender`. Keeping the owner bytecode here also keeps address(this)-derived arguments and
+    // the finalized call-manifest caller subject identical.
+    if (!sourceParticipant.lockingBytecode) {
+      throw new Error('messageBus: participant has no authenticated state-owner locking bytecode');
     }
-    return hexToBin(executionLockingBytecode);
+    return hexToBin(sourceParticipant.lockingBytecode);
   }
   if (source.kind === 'expression' || source.kind === 'msgSender' || source.kind === 'arrayElement') {
     const value = expressionArgument?.({

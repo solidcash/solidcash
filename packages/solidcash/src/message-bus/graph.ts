@@ -1,6 +1,6 @@
 import { MAX_MESSAGE_BUS_BLOB_BYTES, occurrenceBoundOf, occurrenceCountViolation } from '@solidcash/utils';
 import type {
-  AbiFunction, Artifact, ExternalCallAbi, InvocationAnalysisFunction,
+  AbiFunction, Artifact, ExternalCallAbi, ExternalResultEncoding, InvocationAnalysisFunction,
 } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
 import {
@@ -9,6 +9,7 @@ import {
 } from './message-bus.js';
 import { MessageBusDiagnosticError } from './diagnostics.js';
 import { planKernelLifecycleTopology } from '../stateful/KernelLifecycleTopology.js';
+import { resolveExternalResultEncoding } from '../stateful/solidityAbi.js';
 import {
   encodeAtomicMessageBusCallManifest, encodeAtomicMessageEnvelope, atomicMessageBusPhysicalLayout,
   type AtomicMessageBusCallManifest, type AtomicParticipantLifecycle, type AtomicPhysicalLayout,
@@ -115,6 +116,8 @@ export interface PlannedGraphInvocation {
   callOptions: number;
   argsHex: string;
   resultTypes: readonly string[];
+  /** Authenticated tuple-wide wire representation for this producer's result. */
+  resultEncoding?: ExternalResultEncoding;
   /**
    * Compiler callsite identifier of the parent occurrence this invocation answers. Absent for the root and
    * for parents whose artifact publishes no matching callsite.
@@ -1262,7 +1265,8 @@ function bindConsumerCallsites(
       || callsite.functionName === functionName);
     if (candidates.length === 0) return undefined;
     const contract = (callsite: ExternalCallAbi): string =>
-      `${callsite.hasReturnValues === true}|${(callsite.returnTypes ?? []).join(',')}`;
+      `${callsite.hasReturnValues === true}|${(callsite.returnTypes ?? []).join(',')}|`
+      + `${callsite.resultEncoding ?? 'legacy'}`;
     if (new Set(candidates.map(contract)).size > 1) {
       throw new Error(
         `messageBus: invocation ${parent} cannot bind '${functionName}' to one callsite; its conditional or `
@@ -1644,9 +1648,9 @@ type GraphCallerInvocation = Pick<CompiledGraphInvocation,
 'parent' | 'callee' | 'function' | 'consumerCallsiteId'>;
 
 /**
- * Every CALL/staticcall edge is made by the authenticated state owner. A delegate executor remains the exact
- * source-level `address(this)` value, but choosing a low-level rather than interface call cannot change the
- * callee's `msg.sender`: both are encodings of the same outgoing call from the same contract instance.
+ * Every CALL/staticcall edge is made by the authenticated state owner. Delegate execution resources remain on
+ * the separately pinned implementation input, but the outgoing caller is the proxy/state-owner context. Call
+ * argument planning must use this same identity for source-level `address(this)` on the edge.
  */
 export function graphInvocationCallerIdentity(
   participants: readonly GraphCallerParticipant[],
@@ -2141,6 +2145,7 @@ export function planCompiledGraph(
       callOptions: (callMode === 'staticcall' ? CALL_OPTION_READ_ONLY : 0) | optionBits[index],
       argsHex: row.argsHex,
       resultTypes: Object.freeze([...(result?.types ?? [])]),
+      ...(result && { resultEncoding: result.resultEncoding }),
       targetLockingBytecode: targetIdentity.lockingBytecode,
       targetIdentityOffset: targetIdentity.offset,
     });
@@ -2183,8 +2188,9 @@ export function planCompiledGraph(
   for (let parent = 0; parent < invocations.length; parent += 1) {
     const children = childrenOf[parent];
     const parentInvocation = invocations[parent];
+    const parentArtifact = participants[parentInvocation.callee].artifact;
     const parentFunction = resolveGraphAbiFunction(
-      participants[parentInvocation.callee].artifact, parentInvocation.function, parentInvocation.selector,
+      parentArtifact, parentInvocation.function, parentInvocation.selector,
     );
     // X179: the floor, ordered before the ceiling and before the `children.length === 0` skip, because a
     // handler planned with NO children is exactly the shape it refuses - the skip is what let a dropped edge
@@ -2392,6 +2398,18 @@ export function planCompiledGraph(
           `messageBus: invocation ${parent} expects result schema (${expected.join(',')}) from invocation `
           + `${child}, which produces (${produced.join(',')})`,
         );
+      }
+      if (!callsite.opaqueReturn && !isRuntimeResolvedCallsite(callsite) && expected !== undefined) {
+        const expectedEncoding = resolveExternalResultEncoding(
+          callsite.resultEncoding, parentArtifact, expected,
+          `message-bus callsite ${callsite.callsiteId ?? '?'} in '${parentFunction?.name ?? '?'}'`,
+        );
+        if (plannedBase[child].resultEncoding !== expectedEncoding) {
+          throw new Error(
+            `messageBus: invocation ${parent} expects result encoding '${expectedEncoding}' from invocation `
+            + `${child}, which produces '${plannedBase[child].resultEncoding ?? 'none'}'`,
+          );
+        }
       }
       resultDependencies[parent].push(child);
     });

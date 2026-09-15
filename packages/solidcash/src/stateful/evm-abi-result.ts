@@ -418,6 +418,22 @@ const decodeEvmValue = (
   throw new Error(`EVM ABI result type '${type}' has no supported canonical decoding`);
 };
 
+/** Decode one canonical Solidity ABI invocation result tuple at the start of a concatenated vector. */
+export function decodeEvmInvocationResultPrefix(
+  value: Uint8Array,
+  types: readonly string[],
+  structs?: readonly StructDefinitionInfo[],
+  enums?: readonly EnumDefinitionAbi[],
+): { values: StateValue[]; bytesConsumed: number } | undefined {
+  if (types.length === 0) return undefined;
+  try {
+    const decoded = decodeEvmTuple(value, 0, types, structs, enums, new Set(), 0);
+    return { values: decoded.values, bytesConsumed: decoded.end };
+  } catch {
+    return undefined;
+  }
+}
+
 /** Decode one complete, canonical Solidity ABI invocation result tuple. */
 export function decodeEvmInvocationResult(
   value: Uint8Array,
@@ -425,11 +441,6 @@ export function decodeEvmInvocationResult(
   structs?: readonly StructDefinitionInfo[],
   enums?: readonly EnumDefinitionAbi[],
 ): StateValue[] | undefined {
-  if (types.length === 0) return undefined;
-  try {
-    const decoded = decodeEvmTuple(value, 0, types, structs, enums, new Set(), 0);
-    return decoded.end === value.length ? decoded.values : undefined;
-  } catch {
-    return undefined;
-  }
+  const decoded = decodeEvmInvocationResultPrefix(value, types, structs, enums);
+  return decoded?.bytesConsumed === value.length ? decoded.values : undefined;
 }

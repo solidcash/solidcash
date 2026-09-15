@@ -130,4 +130,54 @@ describe('encodeFunctionArgument: struct field-name independence', () => {
     }, 'JobEventData', structs));
     expect(event.address_).toBe(aliceAddress);
   });
+
+  it('normalizes address-typed leaves by type through objects and positional tuples', () => {
+    const structs = [
+      {
+        name: 'NamedAddress',
+        fields: [{ name: 'address_', type: 'address' }, { name: 'payload', type: 'bytes' }],
+      },
+      {
+        name: 'RenamedAddress',
+        fields: [{ name: 'recipient', type: 'address' }, { name: 'address_', type: 'bytes' }],
+      },
+    ];
+    const lockingBytecode = addressToLockScript(aliceAddress);
+    const opaqueAddressText = new TextEncoder().encode(aliceAddress);
+
+    expect(encodeFunctionArgument({
+      address_: aliceAddress,
+      payload: aliceAddress,
+    }, 'NamedAddress', structs)).toEqual(encodeFunctionArgument({
+      address_: lockingBytecode,
+      payload: opaqueAddressText,
+    }, 'NamedAddress', structs));
+    expect(encodeFunctionArgument([
+      aliceAddress,
+      aliceAddress,
+    ], 'RenamedAddress', structs)).toEqual(encodeFunctionArgument([
+      lockingBytecode,
+      opaqueAddressText,
+    ], 'RenamedAddress', structs));
+  });
+
+  it('normalizes address leaves recursively through arrays of structs', () => {
+    const structs = [{
+      name: 'Envelope',
+      fields: [{ name: 'recipient', type: 'address' }, { name: 'address_', type: 'bytes' }],
+    }];
+    const lockingBytecode = addressToLockScript(aliceAddress);
+    const opaqueAddressText = new TextEncoder().encode(aliceAddress);
+    const cashAddressValues = [[
+      { recipient: aliceAddress, address_: aliceAddress },
+      { recipient: aliceAddress, address_: aliceAddress },
+    ]];
+    const typedValues = [[
+      { recipient: lockingBytecode, address_: opaqueAddressText },
+      { recipient: lockingBytecode, address_: opaqueAddressText },
+    ]];
+
+    expect(encodeFunctionArgument(cashAddressValues, 'Envelope[][]', structs))
+      .toEqual(encodeFunctionArgument(typedValues, 'Envelope[][]', structs));
+  });
 });

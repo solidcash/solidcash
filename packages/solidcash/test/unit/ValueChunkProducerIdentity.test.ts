@@ -8,6 +8,7 @@ import {
   canonicalValueChunkProducerIdentity,
   deriveValueChunkProducerChildPath,
   selectSingletonValueChunkProducer,
+  terminalValueChunkProducerClaim,
   valueChunkProducerClaimFromRouteRow,
   valueChunkEffectDomainId,
   type ValueChunkWriteDescriptor,
@@ -148,6 +149,81 @@ describe('hierarchical value-chunk producer identity', () => {
     })).toBeUndefined();
   });
 
+  it('selects the terminal linear mutation using the exact reached producer path', () => {
+    const row = (occurrenceIndex: number, mutationEffectOrdinals: number[]) => ({
+      selector: '01020304',
+      producerPath: {
+        status: 'complete' as const,
+        context: {
+          version: 1 as const,
+          sourcePath: producer(occurrenceIndex).sourcePath,
+        },
+      },
+      handler: {
+        selector: '01020304',
+        sourceEffectOrder: 'linear' as const,
+        entryAccesses: [{
+          collection: collectionSignature,
+          operations: ['read', 'write'],
+          mutationEffectOrdinals,
+        }],
+      },
+    });
+    const selected = terminalValueChunkProducerClaim({
+      rows: [row(0, [2]), row(1, [2, 7])],
+      collectionIdentities: ['records', collectionSignature],
+      executionLockingBytecode: '51',
+      stateOwnerCategoryId: categoryId,
+      stateOwnerLockingBytecode: producer().stateOwner.lockingBytecode,
+      resourceIdentity,
+    });
+
+    expect(selected?.producer.sourcePath.at(-1)?.occurrenceIndex).toBe(1);
+    expect(selected?.producer.mutationSourceEffectOrdinal).toBe(7);
+    expect(selected?.producer.mutationEffectDomainId).toBe(
+      valueChunkEffectDomainId('51', '01020304'),
+    );
+    expect(terminalValueChunkProducerClaim({
+      rows: [{ ...row(1, [7]), handler: { ...row(1, [7]).handler, sourceEffectOrder: 'unsupported-flow' } }],
+      collectionIdentities: [collectionSignature],
+      executionLockingBytecode: '51',
+      stateOwnerCategoryId: categoryId,
+      stateOwnerLockingBytecode: producer().stateOwner.lockingBytecode,
+      resourceIdentity,
+    })).toBeUndefined();
+
+    const fixedFlowRow = {
+      ...row(1, [7]),
+      handler: { ...row(1, [7]).handler, sourceEffectOrder: 'unsupported-flow' as const },
+    };
+    expect(terminalValueChunkProducerClaim({
+      rows: [fixedFlowRow],
+      collectionIdentities: [collectionSignature],
+      fixedChunkableWriteSelectors: ['01020304'],
+      executionLockingBytecode: '51',
+      stateOwnerCategoryId: categoryId,
+      stateOwnerLockingBytecode: producer().stateOwner.lockingBytecode,
+      resourceIdentity,
+    })?.producer.mutationSourceEffectOrdinal).toBe(7);
+    expect(terminalValueChunkProducerClaim({
+      rows: [{
+        ...fixedFlowRow,
+        handler: {
+          ...fixedFlowRow.handler,
+          entryAccesses: [{
+            collection: collectionSignature, operations: ['write'], mutationEffectOrdinals: [3, 7],
+          }],
+        },
+      }],
+      collectionIdentities: [collectionSignature],
+      fixedChunkableWriteSelectors: ['01020304'],
+      executionLockingBytecode: '51',
+      stateOwnerCategoryId: categoryId,
+      stateOwnerLockingBytecode: producer().stateOwner.lockingBytecode,
+      resourceIdentity,
+    })).toBeUndefined();
+  });
+
   it('refuses to select between distinct occurrences writing one resource', () => {
     expect(selectSingletonValueChunkProducer(
       [claim(0), claim(1)], resourceIdentity, producer().stateOwner,
@@ -202,16 +278,22 @@ describe('hierarchical value-chunk producer identity', () => {
     });
   });
 
-  it('keeps producer-owned staging exact and rejects an authority collision', () => {
+  it('keeps multiple sequential producers exact within one resource', () => {
     const session = new ValueChunkWriteStagingSession();
     const value = new Uint8Array(96).fill(0x61);
+    const later = new Uint8Array(96).fill(0x72);
     expect(session.stageOwned(write, claim(), producer().stateOwner, value)).toBe(true);
     value[0] = 0xff;
     expect(session.getOwned(write, claim(), producer().stateOwner)?.[0]).toBe(0x61);
     const retrieved = session.getOwned(write, claim(), producer().stateOwner)!;
     retrieved[0] = 0xee;
     expect(session.getOwned(write, claim(), producer().stateOwner)?.[0]).toBe(0x61);
-    expect(session.stageOwned(write, claim(1), producer().stateOwner, value)).toBe(false);
+    expect(session.stageOwned(write, claim(1), producer().stateOwner, later)).toBe(true);
+    expect(session.getOwned(write, claim(), producer().stateOwner)?.[0]).toBe(0x61);
+    expect(session.getOwned(write, claim(1), producer().stateOwner)?.[0]).toBe(0x72);
+    expect(session.stageOwned(
+      write, claim(1), producer().stateOwner, new Uint8Array(96).fill(0x73),
+    )).toBe(false);
     expect(session.getOwned(write, claim(), producer().stateOwner)).toBeUndefined();
     expect(session.getOwned(write, claim(1), producer().stateOwner)).toBeUndefined();
     session.clear(categoryId);
@@ -237,6 +319,18 @@ describe('hierarchical value-chunk producer identity', () => {
     )).toBe(true);
     expect(ownedFirst.stage(write, new Uint8Array(96).fill(2))).toBe(false);
     expect(ownedFirst.getOwned(write, claim(), producer().stateOwner)).toBeUndefined();
+  });
+
+  it('allows an exact terminal producer to supersede a resource-only seed explicitly', () => {
+    const session = new ValueChunkWriteStagingSession();
+    const seed = new Uint8Array(96).fill(1);
+    const terminal = new Uint8Array(96).fill(2);
+    expect(session.stage(write, seed)).toBe(true);
+    expect(session.stageOwned(
+      write, claim(), producer().stateOwner, terminal, { supersedeUnowned: true },
+    )).toBe(true);
+    expect(session.get(write)).toBeUndefined();
+    expect(session.getOwned(write, claim(), producer().stateOwner)).toEqual(terminal);
   });
 
   it('rejects incomplete source paths and resource mismatches', () => {

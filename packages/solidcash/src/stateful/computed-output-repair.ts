@@ -5,6 +5,51 @@ import { isEmptyValueEntryCommitment } from './SortedList.js';
 
 type VmInstruction = { opcode: number; data?: Uint8Array };
 
+/** Each fixed output has at most three repairable semantic fields, regardless of how many inputs inspect it. */
+export function computedOutputRepairPassLimit(inputCount: number, outputCount: number): number {
+  if (!Number.isSafeInteger(inputCount) || inputCount < 0
+    || !Number.isSafeInteger(outputCount) || outputCount < 0) {
+    throw new Error('Computed-output repair requires finite input and output counts.');
+  }
+  const claims = outputCount * 3;
+  if (!Number.isSafeInteger(claims)) {
+    throw new Error('Computed-output repair surface exceeds the safe integer range.');
+  }
+  return Math.max(1, claims + 1);
+}
+
+/**
+ * Record an authenticated field transition and reject any return to a value already seen at that coordinate.
+ * The caller may discover coordinates in any order; this tracks cycles per exact output field.
+ */
+export function recordComputedOutputRepairTransition(
+  history: Map<string, string>,
+  inputIndex: number,
+  coordinate: string,
+  proposed: string,
+): void {
+  const prior = history.get(coordinate);
+  const claim = `${inputIndex}:${proposed}`;
+  if (prior !== undefined) {
+    throw new Error(
+      `Computed-output repair repeated authenticated claim ${coordinate}`
+      + `${prior === claim
+        ? '' : ' with a conflicting value or conflicting input'}.`,
+    );
+  }
+  history.set(coordinate, claim);
+}
+
+/** Reject repeated normalized transaction states, including coupled multi-coordinate cycles. */
+export function recordComputedOutputConvergenceState(
+  history: Set<string>, fingerprint: string,
+): void {
+  if (history.has(fingerprint)) {
+    throw new Error('Computed-output repair convergence cycle in the normalized transaction state.');
+  }
+  history.add(fingerprint);
+}
+
 /** VM observers run before libauth's conditional-operation wrapper, including for opcodes in untaken branches. */
 export function isActiveVmControlBranch(controlStack: readonly boolean[]): boolean {
   return controlStack.every((frame) => frame);

@@ -11,7 +11,8 @@ import {
   getDefaultStateValue,
 } from '@solidcash/utils';
 import type {
-  Artifact, ChildDeploymentValueRecipe, FixedBchTransferAbi, StateValue, StructDefinitionInfo,
+  Artifact, ChildDeploymentValueRecipe, ExternalResultEncoding, FixedBchTransferAbi, StateValue,
+  StructDefinitionInfo,
 } from '@solidcash/utils';
 import type { ConstructorArgument, FunctionArgument } from '../Argument.js';
 import type {
@@ -25,7 +26,7 @@ import {
   StatefulContract, StatefulFunctionCall,
 } from '../stateful/StatefulContract.js';
 import { valueChunkIndexFromCommitment } from '../stateful/StatefulTransactionBuilder.js';
-import { artifactUsesSolidityAbi } from '../stateful/solidityAbi.js';
+import { artifactUsesSolidityAbi, resolveExternalResultEncoding } from '../stateful/solidityAbi.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
 import {
   resolveLogicalIdentity, type ResolvedLogicalIdentity,
@@ -53,7 +54,7 @@ import {
 import { convergeMessageBusComputedValueChunkOutputs } from './computed-value-chunks.js';
 import { deriveCompiledGraphPlan, type WorklistParticipant } from './worklist.js';
 import {
-  canonicalValueChunkProducerPathContext,
+  canonicalValueChunkProducerPathContext, canonicalValueChunkProducerResourceIdentity,
   type ValueChunkProducerPathDisposition,
 } from '../stateful/ValueChunkProducerIdentity.js';
 
@@ -798,9 +799,12 @@ const provisionalEvmTuple = (fields: readonly EvmResultLayout[]): Uint8Array => 
 
 /** @internal Optimistic, type-correct seed used during fixed-point assembly and schema conformance tests. */
 export const provisionalInvocationResult = (
-  artifact: Artifact, resultTypes: readonly string[],
+  artifact: Artifact, resultTypes: readonly string[], publishedEncoding?: ExternalResultEncoding,
 ): string => {
-  if (!artifactUsesSolidityAbi(artifact)) {
+  const encoding = resolveExternalResultEncoding(
+    publishedEncoding, artifact, resultTypes, 'provisional invocation result',
+  );
+  if (encoding === 'compact-pushdata-v1') {
     return binToHex(Uint8Array.from(resultTypes.flatMap((type) => [
       // A transaction signature used as result data is a compact byte string, not a deferred signer. Seed it
       // with canonical empty bytes; passing numeric zero to the byte encoder is neither typed nor encodable.
@@ -923,11 +927,15 @@ const canonicalNativeResultField = (
 
 const preparedInvocationResult = (
   commitment: Uint8Array | undefined, artifact: Artifact, resultTypes: readonly string[],
+  publishedEncoding?: ExternalResultEncoding,
 ): string | undefined => {
   if (!commitment) return undefined;
+  const encoding = resolveExternalResultEncoding(
+    publishedEncoding, artifact, resultTypes, 'prepared invocation result',
+  );
   const canonical = (candidate: Uint8Array): Uint8Array | undefined => {
     try {
-      if (artifactUsesSolidityAbi(artifact)) {
+      if (encoding === 'evm-abi-v1') {
         return evmInvocationResultLength(candidate, 0, resultTypes, artifact) === candidate.length
           ? candidate : undefined;
       }
@@ -1216,6 +1224,112 @@ interface ComputedValueChunkClaim {
   lockingBytecodeHex: string;
   tokenCategory: string;
   commitment: string;
+}
+
+export interface ComputedValueChunkSpanClaim {
+  offset: number;
+  resourceIdentity?: string;
+  resourcePart?: string;
+}
+
+/**
+ * Keep compiler-authenticated continuation slots inside their participant while compacting a published block.
+ * Claim offsets are absolute transaction coordinates; the returned size is participant-relative and never
+ * exceeds the compiler-published maximum.
+ */
+export function minimumActualSizeForComputedValueChunkClaims(
+  participant: number,
+  participantBase: number,
+  fixedSize: number,
+  maximumSize: number,
+  claims: readonly ComputedValueChunkSpanClaim[],
+): number {
+  if (![participant, participantBase, fixedSize, maximumSize].every(Number.isSafeInteger)
+    || participant < 0 || participantBase < 0 || fixedSize < 0 || maximumSize < fixedSize) {
+    throw new Error(`messageBus: participant ${participant} has invalid computed value-chunk span geometry`);
+  }
+  let minimumSize = fixedSize;
+  const offsets = new Map<number, string>();
+  const parts = new Map<string, number>();
+  const starts = new Map<string, number>();
+  const indices = new Map<string, Set<number>>();
+  for (const claim of claims) {
+    if (claim.resourceIdentity === undefined) continue;
+    const resourceIdentity = canonicalValueChunkProducerResourceIdentity(claim.resourceIdentity);
+    if (resourceIdentity === undefined || resourceIdentity !== claim.resourceIdentity) {
+      throw new Error(`messageBus: participant ${participant} has a non-canonical computed value-chunk resource identity`);
+    }
+    const part = /^(?:chunk:)(0|[1-9][0-9]*)$/.exec(claim.resourcePart ?? '');
+    if (part === null) {
+      throw new Error(
+        `messageBus: participant ${participant} computed value-chunk resource '${resourceIdentity}' `
+        + 'has a non-canonical resource part',
+      );
+    }
+    if (!Number.isSafeInteger(claim.offset)) {
+      throw new Error(
+        `messageBus: participant ${participant} computed value-chunk resource '${resourceIdentity}' `
+        + 'has an invalid absolute offset',
+      );
+    }
+    const localOffset = claim.offset - participantBase;
+    if (localOffset < fixedSize || localOffset >= maximumSize) {
+      throw new Error(
+        `messageBus: participant ${participant} computed value-chunk resource '${resourceIdentity}' `
+        + `offset ${claim.offset} is outside its published trailing range `
+        + `[${participantBase + fixedSize}, ${participantBase + maximumSize})`,
+      );
+    }
+    const chunkIndex = Number(part[1]);
+    if (!Number.isSafeInteger(chunkIndex)) {
+      throw new Error(
+        `messageBus: participant ${participant} computed value-chunk resource '${resourceIdentity}' `
+        + 'has an invalid chunk index',
+      );
+    }
+    const partIdentity = `${resourceIdentity}\u0000${part[0]}`;
+    const priorPartOffset = parts.get(partIdentity);
+    if (priorPartOffset !== undefined && priorPartOffset !== claim.offset) {
+      throw new Error(
+        `messageBus: participant ${participant} computed value-chunk resource '${resourceIdentity}' `
+        + `moves ${part[0]} from ${priorPartOffset} to ${claim.offset}`,
+      );
+    }
+    if (priorPartOffset === claim.offset) continue;
+    parts.set(partIdentity, claim.offset);
+    const priorOffsetOwner = offsets.get(claim.offset);
+    if (priorOffsetOwner !== undefined) {
+      throw new Error(
+        `messageBus: participant ${participant} computed value-chunk offset ${claim.offset} is claimed by both `
+        + `'${priorOffsetOwner}' and '${resourceIdentity}'`,
+      );
+    }
+    offsets.set(claim.offset, resourceIdentity);
+    const runStart = localOffset - chunkIndex;
+    const priorStart = starts.get(resourceIdentity);
+    if (priorStart !== undefined && priorStart !== runStart) {
+      throw new Error(
+        `messageBus: participant ${participant} computed value-chunk resource '${resourceIdentity}' `
+        + 'has conflicting chunk geometry',
+      );
+    }
+    starts.set(resourceIdentity, runStart);
+    const resourceIndices = indices.get(resourceIdentity) ?? new Set<number>();
+    resourceIndices.add(chunkIndex);
+    indices.set(resourceIdentity, resourceIndices);
+    minimumSize = Math.max(minimumSize, localOffset + 1);
+  }
+  for (const [resourceIdentity, resourceIndices] of indices) {
+    const maximumIndex = Math.max(...resourceIndices);
+    for (let index = 0; index <= maximumIndex; index += 1) {
+      if (resourceIndices.has(index)) continue;
+      throw new Error(
+        `messageBus: participant ${participant} computed value-chunk resource '${resourceIdentity}' `
+        + `omits chunk:${index}`,
+      );
+    }
+  }
+  return minimumSize;
 }
 
 type DeferredComputeBuilder = TransactionBuilder & {
@@ -1845,13 +1959,14 @@ export class AtomicMessageBusComposition {
         descriptors[invocation.index]?.provisionalResultCommitment,
         artifact,
         invocation.resultTypes,
+        invocation.resultEncoding,
       );
       return prepared === undefined ? [] : [[invocation.index, prepared] as const];
     }));
     const provisionalResults = Object.fromEntries(returning.map((invocation) => {
       const artifact = plan.participants[invocation.callee].artifact;
       return [invocation.index, preparedResults[invocation.index]
-        ?? provisionalInvocationResult(artifact, invocation.resultTypes)];
+        ?? provisionalInvocationResult(artifact, invocation.resultTypes, invocation.resultEncoding)];
     }));
     const propagateResultDependentArguments = (
       results: Readonly<Record<number, string>>,
@@ -1865,7 +1980,7 @@ export class AtomicMessageBusComposition {
         const decoded = decodeAuthenticatedProducerResultVector(
           hexToBin(resultHex), invocation.resultTypes,
           artifact.structs ?? artifact.stateLayout?.structs,
-          artifactUsesSolidityAbi(artifact), artifact.enums,
+          invocation.resultEncoding === 'evm-abi-v1', artifact.enums,
         );
         const value = decoded === undefined
           ? undefined
@@ -2416,6 +2531,7 @@ export class AtomicMessageBusComposition {
               sourceLogicalIndex: plannedInvocation.sourceLogicalIndex,
               occurrenceIndex: plannedInvocation.occurrenceIndex,
               sourceEffectOrdinal: plannedInvocation.sourceEffectOrdinal,
+              producerPath: plannedInvocation.producerPath,
             };
           }),
           logicalIdentities.get(participant.participant),
@@ -2786,8 +2902,43 @@ export class AtomicMessageBusComposition {
         }
         const fixedSize = participant.blockLayout!.fixedSuffix
           ? blockSize : participant.blockLayout!.trailingBase ?? blockSize;
+        const computedValueChunkMetadata = local as TransactionBuilder & {
+          __messageBusComputedValueChunkSpanClaims?: readonly ComputedValueChunkSpanClaim[];
+          __messageBusComputedValueChunks?: readonly ComputedValueChunkSpanClaim[];
+        };
+        const computedValueChunkClaims = [
+          ...(computedValueChunkMetadata.__messageBusComputedValueChunkSpanClaims ?? []),
+          ...(computedValueChunkMetadata.__messageBusComputedValueChunks ?? []),
+        ];
+        const minimumActualSize = minimumActualSizeForComputedValueChunkClaims(
+          participant.participant,
+          graph.layout.participantInputs[participant.participant],
+          fixedSize,
+          blockSize,
+          computedValueChunkClaims,
+        );
+        if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+          ?.SOLIDC_DEBUG_ATOMIC_GRAPH === '1'
+          && (computedValueChunkClaims.length > 0 || participant.routeInputs.some(
+            (input) => input.name === '__internal__valueChunkOutputBase',
+          ))) {
+          console.error('atomic-computed-value-chunk-span', {
+            participant: participant.participant,
+            participantBase: graph.layout.participantInputs[participant.participant],
+            fixedSize,
+            maximumSize: blockSize,
+            minimumActualSize,
+            spanClaimCount: computedValueChunkMetadata.__messageBusComputedValueChunkSpanClaims?.length ?? 0,
+            materializedClaimCount: computedValueChunkMetadata.__messageBusComputedValueChunks?.length ?? 0,
+            claims: computedValueChunkClaims.map((claim) => ({
+              offset: claim.offset,
+              resourceIdentity: claim.resourceIdentity,
+              resourcePart: claim.resourcePart,
+            })),
+          });
+        }
         let actualSize = blockSize;
-        while (actualSize > fixedSize) {
+        while (actualSize > minimumActualSize) {
           const input = local.inputs[actualSize - 1];
           const output = local.outputs[actualSize - 1];
           const outputLockingBytecode = typeof output.to === 'string' ? addressToLockScript(output.to) : output.to;
@@ -3193,7 +3344,7 @@ export class AtomicMessageBusComposition {
           {
             resultTypes: owned.flatMap((invocation) => plan.invocations[invocation].resultTypes),
             resultTypeGroups: owned.map((invocation) => plan.invocations[invocation].resultTypes),
-            solidityAbi: artifactUsesSolidityAbi(participant.artifact),
+            resultEncodings: owned.map((invocation) => plan.invocations[invocation].resultEncoding!),
           },
         );
         if (!blob) {
@@ -3247,7 +3398,7 @@ export class AtomicMessageBusComposition {
         for (const invocationIndex of owned) {
           const invocation = plan.invocations[invocationIndex];
           const start = cursor;
-          if (artifactUsesSolidityAbi(participant.artifact)) {
+          if (invocation.resultEncoding === 'evm-abi-v1') {
             cursor += evmInvocationResultLength(
               outer.value, cursor, invocation.resultTypes, participant.artifact,
             );
@@ -3262,7 +3413,7 @@ export class AtomicMessageBusComposition {
             }
             derivedResults[invocationIndex] = binToHex(concatBytes(canonicalFields));
           }
-          if (artifactUsesSolidityAbi(participant.artifact)) {
+          if (invocation.resultEncoding === 'evm-abi-v1') {
             derivedResults[invocationIndex] = binToHex(outer.value.slice(start, cursor));
           }
         }
@@ -3283,7 +3434,7 @@ export class AtomicMessageBusComposition {
         if (cursor !== outer.value.length) {
           throw new Error(`messageBus: participant ${participant.participant} return vector has an unchecked suffix`);
         }
-        if (!artifactUsesSolidityAbi(participant.artifact)) {
+        if (owned.some((invocation) => plan.invocations[invocation].resultEncoding === 'compact-pushdata-v1')) {
           // The trace extractor can observe the provisional output before the route's completed result still live
           // above it. Re-materialize the output from the completely decoded, canonical field vector; final BCH VM
           // preflight remains the authority and rejects this claim if it differs from the producer's actual result.

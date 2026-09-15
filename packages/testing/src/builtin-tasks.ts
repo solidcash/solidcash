@@ -185,6 +185,11 @@ task('compile', 'Compile .scash and .sol contracts to artifacts (per-contract, H
     const maximumNftCommitmentBytes = hre.network.provider.consensusLimits?.maximumNftCommitmentBytes ?? 128;
     const suppressWarnings = args['suppress-warnings'] === true
       || hre.config.solc?.suppressWarnings === true;
+    // Reuse compiled artifacts across CLI invocations. A cache entry is keyed by the compiler build id, the root
+    // source, the contents of the whole transitive import closure, the primary declaration and every published
+    // option, so a hit is equivalent to recompiling; editing an imported file or rebuilding the compiler misses.
+    // `SOLIDC_COMPILE_CACHE=0` forces a full compile.
+    const artifactCache = process.env.SOLIDC_COMPILE_CACHE !== '0';
     const compilerOptions = {
       ...hre.config.solc,
       suppressWarnings,
@@ -193,8 +198,12 @@ task('compile', 'Compile .scash and .sol contracts to artifacts (per-contract, H
         (hre.config.solc?.commitmentLimit as number | undefined) ?? maximumNftCommitmentBytes,
         maximumNftCommitmentBytes,
       ),
+      ...(artifactCache && { __artifactCache: true }),
     };
     const cacheDir = path.join(hre.config.paths.cache, 'solidcash');
+    // The disk layer is what makes the cache survive between CLI invocations; without it only one process would
+    // benefit. An explicitly configured directory always wins.
+    if (artifactCache) process.env.SOLIDC_COMPILE_CACHE_DIR ??= cacheDir;
     const artifactContextFile = path.join(cacheDir, 'artifact-context');
     const artifactContext = artifactCompileContextIdentity(
       compilerCacheIdentity,

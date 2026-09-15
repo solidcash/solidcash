@@ -123,12 +123,22 @@ kernel reasons. Add a negative admission test and release-note entry, then defer
 described by type/effect/flow/layout metadata, have an alpha-renamed neutral test, and include kernel-vs-legacy
 observable parity.
 
+These are RC policy gates, not all automated by the current script. In particular the gate does not run the
+Marketplace smoke slice, compute timing medians, assert a relative kernel/legacy size ratio, count/hash the 66-test
+suite, or scan the two large SDK stateful files for pre-existing forbidden names. Add explicit checks or record and
+review this evidence manually before claiming the checkpoint.
+
 ## Marketplace frontier
 
 The proposed five-title smoke slice is not currently part of `scripts/kernel-beta-manifest.json` or
 `scripts/kernel-beta-gate.mjs`; a clean gate can pass without it. Recorded evidence confirms the four posting
 titles, but `should whitelist worker` previously exceeded a 300-second wrapper and has not been proven green. Do
 not describe the five-title slice or Tier 1g as green until a fresh run establishes that result.
+
+The Marketplace config currently selects `.marketplace/project/test/marketplace.test.ts`, an ignored symlink to an
+external checkout, not the maintained repository test. Both currently contain 66 matching titles, but their bodies
+differ, and clean-tree checks cannot detect target changes. Before adding the smoke to the executable beta gate,
+either run the maintained in-repo suite with compatible imports or resolve and verify explicit source/config hashes.
 
 Exact proposed smoke command:
 
@@ -152,11 +162,14 @@ deployments plus many negative calls. Do one full 600-second run before classify
 
 ## Generality debt before beta
 
+Commit `cf87d4ad9` removed the nested-call function-name/argument-position trigger: arbitrary function names now
+adapt only under exact legacy-unroll JobEvent ABI metadata, while kernel and renamed schemas remain untouched.
+
 The SDK still has live, unfenced application-shape logic. Audit and replace or fence at least these areas before the
 beta checkpoint:
 
-- `StatefulContract.ts`: the `publishJobEvent`/`JobEventData` reconstruction and positional timestamp paths around
-  the former lines 5613, 14794, 24057, and 25336;
+- `StatefulContract.ts`: the `publishJobEvent`/`JobEventData` reconstruction and broad positional timestamp paths
+  around the former lines 5613, 14794, and 25336 (the nested-call path formerly around 24057 is now fenced);
 - `StatefulTransactionBuilder.ts`: `publishJobEvent` input/output layout handling, `_ensureDistinctJobEventNfts`,
   and `transferFrom`/`balances` repair or surplus-stripping paths around the former lines 4098, 7397, 9111, 10114,
   16313, and 19468.

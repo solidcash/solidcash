@@ -33,26 +33,28 @@ retries, and the narrower rungs; the cheap-widest-rung `rejectFreeFunctionMissin
 to the first-rung attempt so a source with an uncovered returning free helper still falls through to the
 public-only rungs exactly as before.
 
-Measured on the ten-root project compile as interleaved A/B pairs (`SOLIDC_DISABLE_FIRST_RUNG_ADMISSION`
-was the temporary switch used to produce the baseline half; it is removed from the landed code). CPU time
+Measured on the ten-root project compile as interleaved A/B pairs, with the baseline half produced by
+`git checkout HEAD~1 -- packages/solidc/src/compiler.ts` and the two halves run alternately. CPU time
 (user+system, per root, median of three pairs) is the load-independent half of the measurement and is what
-the verdict uses - wall clock on this shared machine swings ±15 % between identical runs. The headline
-−30.2 % is the median pair; the two pairs taken at comparable absolute CPU read −30.2 % and −18.2 %, and
-the third, taken while a sibling session pushed absolute CPU ~1.9× higher, read only −2.6 %:
+the verdict uses - wall clock on this shared machine swings ±15 % between identical runs. An earlier run of
+the same A/B, taken while a sibling session pushed absolute CPU ~1.6× higher, read −30.2 % as its median;
+the clean pairs below read −25.7 %, −17.2 % and −14.3 %, so the honest headline is **−17.7 %**, not the
+inflated earlier figure:
 
 | | baseline | first rung | delta |
 |---|---|---|---|
-| total CPU (median of three pairs) | 53,626 ms | **37,434 ms** | **−30.2 %** |
-| MarketplaceV1 | 24,042 ms | 13,718 ms | −42.9 % |
-| MarketplaceV2 | 7,842 ms | 5,898 ms | −24.8 % |
-| MarketplaceV3 | 6,556 ms | 4,018 ms | −38.7 % |
-| MarketplaceDataV1 | 4,306 ms | 3,971 ms | −7.8 % |
-| EACCToken | 3,655 ms | 4,179 ms | **+14.3 %** |
-| TreasurySplit | 964 ms | 618 ms | −35.9 % |
-| unicrow/FakeToken | 1,646 ms | 934 ms | −43.3 % |
-| unicrow/UnicrowDispute | 2,002 ms | 1,176 ms | −41.3 % |
-| unicrow/UnicrowArbitrator | 1,935 ms | 1,714 ms | −11.4 % |
-| unicrow/UnicrowClaim | 1,426 ms | 1,295 ms | −9.2 % |
+| total CPU (median of three clean pairs) | 33,028 ms | **27,171 ms** | **−17.7 %** |
+| total wall (same pairs) | 18,553 ms | 15,433 ms | −16.8 % |
+| MarketplaceV1 | 10,875 ms | 8,690 ms | −20.1 % |
+| MarketplaceV2 | 5,713 ms | 4,572 ms | −20.0 % |
+| MarketplaceV3 | 4,263 ms | 3,307 ms | −22.4 % |
+| MarketplaceDataV1 | 2,896 ms | 3,178 ms | +9.7 % |
+| EACCToken | 2,780 ms | 2,906 ms | +4.5 % |
+| TreasurySplit | 530 ms | 499 ms | −5.8 % |
+| unicrow/FakeToken | 1,096 ms | 817 ms | −25.5 % |
+| unicrow/UnicrowDispute | 2,304 ms | 949 ms | −58.8 % |
+| unicrow/UnicrowArbitrator | 1,777 ms | 1,372 ms | −22.8 % |
+| unicrow/UnicrowClaim | 1,116 ms | 923 ms | −17.3 % |
 
 Every root's non-route bytecode is **unchanged**: nine of ten match the fixture hash-for-hash
 (`debug.bytecode` and the SCB1 route body), and `TreasurySplit`'s route body shrinks 1,318 → 1,279 B
@@ -62,10 +64,13 @@ one. That is inside the ±5 % budget and the fixture was regenerated for it; the
 derived from it (`bytecode`, `debug.bytecode`, `functionBodies['53434231']`, that function's
 `debug.functionDebug` source map and require IPs) - no ABI, layout or fingerprint change.
 
-The one regression is the refusal path: a source whose first-rung attempt is refused pays that attempt
-*and* the ordinary ladder. That is `EACCToken` (+14 %, the only route-less root in the corpus: no message
-bus at all) and any heavy source the placeholder bind refuses. The cost is bounded by one extra full
-compile, and the source is still compiled correctly - the ladder decides, exactly as before. The
+The refusal path costs little: a source the first-rung attempt refuses pays that attempt *and* the
+ordinary ladder, but the cheap-widest-rung gate refuses `EACCToken` on the *pristine* AST in 5 ms
+(`MessageHashUtils.toEthSignedMessageHash` has an uncovered return path, so the source is not widest-rung
+admissible at all), which is why its delta is +4.5 % rather than the +14 % an earlier build measured before
+that gate existed. `MarketplaceDataV1`'s +9.7 % is of the same order as this machine's per-root spread and
+is not a stable signal; the route-less/refused class as a whole stays within a few percent of baseline,
+and the source is still compiled correctly - the ladder decides, exactly as before. The
 first-rung attempt also only runs for callers that pass `optimizeForCompilationSpeed`, so the default test
 matrix is untouched: `KERNEL`-style options (`{ forceStateful, messageBus, messageBusKernel }`) never set
 `__cheapAdmissionCodegen` and are byte- and timing-identical.
@@ -187,6 +192,18 @@ here. The rebuilt files differ from the pre-run snapshot only in `updatedAt` (by
 fingerprints and all other keys identical), so nothing functional changed in that tree - but use a
 local script for regeneration instead of that file.
 
+
+### Incident to know about (round 7, no harm done)
+
+A round-7 A/B script used `git stash push packages/solidc/src/compiler.ts` to produce its baseline half
+after that change had already been committed. With nothing to stash, the push was a silent no-op and the
+matching `git stash pop` took the top entry off the **repository-wide** stash stack - another session's
+`copywithin-ab-2` (`packages/utils/src/outline.ts`, `packages/utils/test/outline.test.ts`). The pop
+conflicted, so git kept the entry, and the only damage was two files in this worktree, restored with
+`git checkout HEAD -- <paths>`. `git stash list` afterwards still shows all seven pre-existing entries with
+the same hashes, and `git reflog show stash` shows no drop. Two lessons, both now written into the
+reproduction section: the stash stack is shared across worktrees, and an A/B baseline belongs on
+`git checkout HEAD~1 -- <path>`.
 
 ## 1. SDK transaction building — landed, measured
 
@@ -354,8 +371,12 @@ Two traps for whoever measures next:
 * Run the A/B pair back-to-back on an otherwise idle machine. A sibling session's marketplace run made
   the same optimized test report 60 s (transform 27.5 s / import 29.5 s) instead of 18 s.
 
-For a compiler A/B, `git stash push packages/solidc/src/compiler.ts && yarn build` produces the baseline
-half; run the halves alternately (`off on off on`) and judge with **`totalCpuMs`/`cpuMs`**, not `totalMs`.
+For a compiler A/B, produce the baseline half with `git checkout HEAD~1 -- packages/solidc/src/compiler.ts`
+(restore with `git checkout HEAD -- ...`) and run the halves alternately (`base new base new`). **Do not
+use `git stash` for this in this repository**: the stash stack is shared by every worktree and every agent
+session, and `git stash push <path>` on a path with no local changes is a silent no-op whose matching
+`git stash pop` then consumes whichever entry another session happens to have left on top (see the incident
+below). Judge with **`totalCpuMs`/`cpuMs`**, not `totalMs`.
 Both drift with the machine's external load between pairs, but CPU time is insensitive to preemption
 *within* a pair, so paired CPU deltas keep their sign where paired wall-clock deltas do not. Round 7's
 three pairs read −15.1 % / +14.5 % / −13.4 % in wall clock against −2.6 % / −30.2 % / −18.2 % in CPU time;

@@ -1420,7 +1420,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private graphStraightRuntimeMode = false;
   private deferredGraphEmissionRows = 0;
   private pendingGraphEmissionRows = 0;
-
   // External outState tracking
   private externalOutStateSlots: ExternalOutStateSlot[] = [];
 
@@ -11262,36 +11261,50 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // (matches the SDK's [...encodedArgs].reverse() convention)
     let pushedArgs = 0;
     let pushedSegmentBank = false;
+    const ownerParameterIndex = targetFunc.parameters.findIndex((parameter) =>
+      parameter.name === '__internal__messageBusOwnerInput');
+    if (ownerParameterIndex >= 0 && node.parameters.length !== targetFunc.parameters.length) {
+      throw new Error(`Message-bus owner frame for '${targetFunc.name}' has mismatched semantic arity `
+        + `(call ${node.parameters.length}, target ${targetFunc.parameters.length}, owner ${ownerParameterIndex})`);
+    }
     for (let i = node.parameters.length - 1; i >= 0; i--) {
       if (skipArg(i)) continue;
-      const argument = this.bindMessageBusPhysicalEntryArgument(
-        node.parameters[i], targetFunc.parameters[i], targetFunc,
-      );
       const targetParameterName = targetFunc.parameters[i]?.name;
-      if (targetParameterName?.startsWith(KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX)) {
-        if (!pushedSegmentBank) {
-          pushedArgs += this.emitKernelJournalSegmentCallArguments(targetFunc, locationData);
-          pushedSegmentBank = true;
-        }
-        continue;
-      }
-      if (argument instanceof IdentifierNode && (targetParameterName?.startsWith(VMAP_RUNTIME_INPUT_COUNT_PREFIX)
-        || targetParameterName?.startsWith(VMAP_RUNTIME_OUTPUT_COUNT_PREFIX)
-        || targetParameterName === KERNEL_JOURNAL_RECORDS)) {
-        // These declared parameters are copy-in/copy-out route context. Never let ordinary final-use lowering
-        // OP_ROLL the caller's cell: the returned remainder must replace that same stable frame slot and a later
-        // row must receive the updated value.
-        const contextIndex = this.getStackIndex(argument.name, true);
-        if (contextIndex < 0) {
-          throw new Error(
-            `Missing route-owned context '${argument.name}' while invoking '${targetFunc.name}'`,
-          );
-        }
-        this.emit(encodeInt(BigInt(contextIndex)), locationData);
-        this.emit(Op.OP_PICK, locationData);
-        this.pushToStack(`(__vmap_cardinality_arg_${targetFunc.functionId}_${i})`);
+      if (targetParameterName === '__internal__messageBusOwnerInput') {
+        // This is a compiler-owned argument lane. Reproduce it from the authenticated current participant rather
+        // than trusting the generated call expression or allowing final-use lowering to consume its frame slot.
+        // It is not necessarily trailing: an oracle/blockhash context can follow it.
+        this.emitMasterInputIndex(locationData);
+        this.pushToStack(`(__message_bus_owner_arg_${targetFunc.functionId})`);
       } else {
-        node.parameters[i] = this.visit(argument);
+        const argument = this.bindMessageBusPhysicalEntryArgument(
+          node.parameters[i], targetFunc.parameters[i], targetFunc,
+        );
+        if (targetParameterName?.startsWith(KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX)) {
+          if (!pushedSegmentBank) {
+            pushedArgs += this.emitKernelJournalSegmentCallArguments(targetFunc, locationData);
+            pushedSegmentBank = true;
+          }
+          continue;
+        }
+        if (argument instanceof IdentifierNode && (targetParameterName?.startsWith(VMAP_RUNTIME_INPUT_COUNT_PREFIX)
+          || targetParameterName?.startsWith(VMAP_RUNTIME_OUTPUT_COUNT_PREFIX)
+          || targetParameterName === KERNEL_JOURNAL_RECORDS)) {
+          // These declared parameters are copy-in/copy-out route context. Never let ordinary final-use lowering
+          // OP_ROLL the caller's cell: the returned remainder must replace that same stable frame slot and a later
+          // row must receive the updated value.
+          const contextIndex = this.getStackIndex(argument.name, true);
+          if (contextIndex < 0) {
+            throw new Error(
+              `Missing route-owned context '${argument.name}' while invoking '${targetFunc.name}'`,
+            );
+          }
+          this.emit(encodeInt(BigInt(contextIndex)), locationData);
+          this.emit(Op.OP_PICK, locationData);
+          this.pushToStack(`(__vmap_cardinality_arg_${targetFunc.functionId}_${i})`);
+        } else {
+          node.parameters[i] = this.visit(argument);
+        }
       }
       pushedArgs += 1;
     }
@@ -18696,7 +18709,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       return resolved;
     };
     const rawCall = slot.interfaceName === '__raw__' && slot.functionName === '__raw__';
-    const canonicalRawParameters = rawCall && slot.rawSelector
+    // Both `abi.encodeWithSelector` and typed `abi.encodeCall` publish their exact payload selector into
+    // `rawSelector`. Requiring that compiler-authenticated identity keeps physical route selectors separate from
+    // selectors embedded in low-level call payloads.
+    const canonicalRawSelector = slot.rawSelector;
+    const canonicalRawParameters = rawCall && canonicalRawSelector
       && slot.rawParameters !== undefined
       && slot.rawParameters.every((parameter) => parameter.type !== undefined)
       ? slot.rawParameters.map((parameter) => (
@@ -18793,7 +18810,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         // Authenticate that same canonical selector + SolidCash pushdata argument vector here. Comparing the
         // original Solidity-ABI payload tail instead would disagree with the route that must unlock the concrete
         // callee, despite both representations carrying the same proven typed values.
-        this.emit(slot.rawSelector!, locationData);
+        this.emit(canonicalRawSelector!, locationData);
       } else {
         const source = slot.argSources?.[0];
         const payload = parametersAreCallArguments
@@ -18874,10 +18891,20 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       for (let i = 0; i < callManifestArgumentParameters.length; i++) {
         let { parameter } = callManifestArgumentParameters[i];
         const { sourceIndex } = callManifestArgumentParameters[i];
+        const source = (canonicalRawParameters ? slot.rawArgSources : slot.argSources)?.[sourceIndex];
+        const useParticipantOwnerAddress = source?.kind === 'selfAddress';
         const evaluateArgument = parametersAreCallArguments
-          || (slot.argSources?.[sourceIndex]?.kind) === 'expression'
+          || source?.kind === 'expression'
           || !(parameter instanceof IdentifierNode);
-        if (evaluateArgument) {
+        if (useParticipantOwnerAddress) {
+          // Runtime graph handlers receive already-evaluated call arguments. For a delegate, the original
+          // `address(this)` value was evaluated at the implementation executor and cannot be trusted as the
+          // Solidity-visible caller identity. Reconstruct this exact compiler-labelled lane from the same
+          // authenticated participant owner used by state access and final call-manifest planning.
+          this.emitMasterInputIndex(locationData);
+          this.emit(Op.OP_UTXOBYTECODE, locationData);
+          this.pushToStack('(__graph_arg_value)');
+        } else if (evaluateArgument) {
           parameter = this.visit(parameter);
           callManifestArgumentParameters[i].parameter = parameter;
         } else {

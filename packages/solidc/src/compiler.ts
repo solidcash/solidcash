@@ -498,6 +498,7 @@ function isInternalCodegenAttemptFailure(error: unknown): boolean {
   // migrated, without treating typed KERNEL_* admission fences as compiler failures.
   return message.startsWith('Block slot not found:')
     || message.startsWith('Missing journal context ')
+    || message.startsWith('Message-bus owner frame for ')
     || /lacks compiler metadata \(slot /.test(message);
 }
 

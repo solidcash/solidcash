@@ -8557,9 +8557,11 @@ export default class SymbolTableTraversal extends AstTraversal {
       const rawFunctionName = rawPayload instanceof AbiEncodeCallNode
         ? rawPayload.functionName
         : undefined;
-      const rawSelector = rawPayload instanceof AbiEncodeWithSelectorNode
-        && rawPayload.selector instanceof HexLiteralNode
-        ? rawPayload.selector.value : undefined;
+      const rawSelector = rawPayload instanceof AbiEncodeCallNode
+        ? rawPayload.computedSelector
+        : rawPayload instanceof AbiEncodeWithSelectorNode
+          && rawPayload.selector instanceof HexLiteralNode
+          ? rawPayload.selector.value : undefined;
       const rawParameters = rawPayload instanceof AbiEncodeCallNode
         || rawPayload instanceof AbiEncodeWithSelectorNode
         ? rawPayload.parameters : undefined;

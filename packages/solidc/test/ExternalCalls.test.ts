@@ -678,6 +678,38 @@ describe('value-returning low-level-call helpers are inlined at direct call site
     ]);
   });
 
+  it('publishes the typed selector for abi.encodeCall graph arguments derived from address(this)', () => {
+    const src = 'interface ITarget { function approve(address spender, uint256 value) external returns (bool); }'
+      + ' library Raw { function call(address target, bytes memory payload) internal returns (bytes) {'
+      + ' (bool ok, bytes memory result) = target.call(payload); require(ok); return result; } }'
+      + ' contract C { uint256 marker; function run(address target, uint256 value) public {'
+      + ' Raw.call(target, abi.encodeCall(ITarget.approve, (address(this), value)));'
+      + ' this.marker = value; require(true); } }';
+    const artifact = compileString(src, {
+      solidityImportCompat: true,
+      messageBus: true,
+      messageBusKernel: true,
+      messageBusGraphContext: true,
+      maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true,
+      __artifactCache: false,
+      __strictNoInternalRecovery: true,
+    });
+    expect(artifact.messageBus?.convention).toBe('kernel-row-loop');
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'run')?.eligible).toBe(true);
+    const call = artifact.abi.find((candidate) => candidate.name === 'run')?.externalCalls?.[0];
+    expect(call).toEqual(expect.objectContaining({
+      interfaceName: '__raw__',
+      functionName: '__raw__',
+      rawFunctionName: 'approve',
+      rawSelector: '9f0bb8a9',
+      rawArgSources: [
+        expect.objectContaining({ kind: 'selfAddress' }),
+        expect.objectContaining({ kind: 'forward' }),
+      ],
+    }));
+  });
+
   // Inlining the SAME low-level-call helper through two paths (`fcv` directly and via `fcv2`) must not collide:
   // cloneNode shares plain-object `elements`/`callOptions` across clones, so an in-place rename would stomp the
   // other frame's `(bool ok, bytes ret)` slot or `{value: v}` option (dangling `__rhN_ok`/`__rhN_v`).

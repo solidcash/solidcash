@@ -29350,10 +29350,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           const materializedIndex = target && materialized?.inputs.findIndex((input) => (
             input.txid.toLowerCase() === target.txid.toLowerCase() && input.vout === target.vout
           ));
-          physicalArgs[physicalDelegateArgumentIndex] = BigInt(materializedIndex !== undefined
-            && materializedIndex >= 0
+          // A graph participant is built in isolation, so a materialized index is participant-local. The proxy
+          // covenant executes in the final aggregate and must authenticate the absolute delegate input.
+          const localIndex = materializedIndex !== undefined && materializedIndex >= 0
             ? materializedIndex
-            : builder.getLowLevelCallMasterInputIndex(physicalDelegateGroupIndex));
+            : builder.getLowLevelCallMasterInputIndex(physicalDelegateGroupIndex);
+          physicalArgs[physicalDelegateArgumentIndex] = BigInt((overrides.blockBase ?? 0) + localIndex);
           if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
             ?.SOLIDC_DEBUG_FORWARD_ARGS === '1') {
             console.error('physical-delegate-input-refresh', {
@@ -29379,10 +29381,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           const materializedIndex = target && materialized?.inputs.findIndex((input) => (
             input.txid.toLowerCase() === target.txid.toLowerCase() && input.vout === target.vout
           ));
-          finalArgs[delegateInputArgumentIndex] = BigInt(materializedIndex !== undefined
-            && materializedIndex >= 0
+          const localIndex = materializedIndex !== undefined && materializedIndex >= 0
             ? materializedIndex
-            : builder.getLowLevelCallMasterInputIndex(activeDelegateGroupIndex!));
+            : builder.getLowLevelCallMasterInputIndex(activeDelegateGroupIndex!);
+          finalArgs[delegateInputArgumentIndex] = BigInt((overrides?.blockBase ?? 0) + localIndex);
           return unlockFn(...finalArgs);
         };
       }

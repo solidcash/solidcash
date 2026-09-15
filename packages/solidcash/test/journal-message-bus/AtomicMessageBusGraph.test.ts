@@ -161,6 +161,16 @@ describe('atomic compiled invocation graph', () => {
       provisionalResultCommitment: Uint8Array.of(1),
       producerPath: { status: 'unavailable' },
     });
+    let productionRefreshes = 0;
+    const siblingRefreshed = messageBus.rebuildPreparedInvocation({
+      ...descriptor,
+      resolveValueChunkProductionsFromArgs: () => {
+        productionRefreshes += 1;
+        return [];
+      },
+    }, descriptor.args, undefined, { refreshValueProductions: true });
+    expect(productionRefreshes).toBe(1);
+    expect(siblingRefreshed.args).toBe(descriptor.args);
     expect(() => messageBus.assertPreparedInvocationIdentity({
       ...descriptor,
       producerPath: { status: 'complete', context: { version: 1, sourcePath: [] } },

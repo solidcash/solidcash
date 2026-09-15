@@ -3,14 +3,17 @@ import { computeCollectionHash } from '@solidcash/utils';
 import { describe, expect, it } from 'vitest';
 import {
   ValueChunkWriteStagingSession,
+  advanceValueChunkProducerArgumentEpoch,
   bindValueChunkProducerClaimAliases,
   canonicalValueChunkProducerResourceClaim,
   canonicalValueChunkProducerIdentity,
   deriveValueChunkProducerChildPath,
+  createValueChunkProducerArgumentEpoch,
   selectSingletonValueChunkProducer,
   terminalValueChunkProducerClaim,
   valueChunkProducerClaimFromRouteRow,
   valueChunkEffectDomainId,
+  valueChunkProducerArgumentsInEpoch,
   type ValueChunkWriteDescriptor,
   type ValueChunkProducerIdentity,
   type ValueChunkProducerResourceClaim,
@@ -50,6 +53,28 @@ const write: ValueChunkWriteDescriptor = {
 };
 
 describe('hierarchical value-chunk producer identity', () => {
+  it('advances sibling arguments in an immutable producer-path epoch', () => {
+    const firstPath = { status: 'complete' as const, context: {
+      version: 1 as const, sourcePath: producer(0).sourcePath,
+    } };
+    const secondPath = { status: 'complete' as const, context: {
+      version: 1 as const, sourcePath: producer(1).sourcePath,
+    } };
+    const initial = createValueChunkProducerArgumentEpoch([
+      { producerPath: firstPath, args: [1n] },
+      { producerPath: secondPath, args: [2n] },
+    ]);
+    const afterFirst = advanceValueChunkProducerArgumentEpoch(initial, firstPath, [11n]);
+    const afterSecond = advanceValueChunkProducerArgumentEpoch(afterFirst, secondPath, [22n]);
+
+    expect(valueChunkProducerArgumentsInEpoch(initial, firstPath)).toEqual([1n]);
+    expect(valueChunkProducerArgumentsInEpoch(afterSecond, firstPath)).toEqual([11n]);
+    expect(valueChunkProducerArgumentsInEpoch(afterSecond, secondPath)).toEqual([22n]);
+    expect(() => advanceValueChunkProducerArgumentEpoch(
+      afterSecond, { status: 'unavailable' }, [33n],
+    )).toThrow(/no stable producer path/);
+  });
+
   it('derives a tagged effect domain from exact executable bytecode and selector', () => {
     const baseline = valueChunkEffectDomainId('51', '01020304');
     expect(baseline).toMatch(/^[0-9a-f]{64}$/);

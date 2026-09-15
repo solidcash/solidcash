@@ -104,10 +104,13 @@ import { hasCanonicalBatchBlobLineage } from '../message-bus/internal-batch-auth
 export { inactiveMessageBusRouteWitness } from '../message-bus/message-bus.js';
 import type { PreparedAtomicMessageBusCall } from '../message-bus/compose.js';
 import {
+  advanceValueChunkProducerArgumentEpoch,
   canonicalValueChunkProducerPathContext,
+  createValueChunkProducerArgumentEpoch,
   deriveValueChunkProducerChildPath,
   selectSingletonValueChunkProducer,
   terminalValueChunkProducerClaim,
+  valueChunkProducerArgumentsInEpoch,
   type ValueChunkProducerPathDisposition,
   type ValueChunkProducerResourceClaim,
 } from './ValueChunkProducerIdentity.js';
@@ -25300,6 +25303,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               let refreshChunkableRouteWitnesses: ((
                 rowArguments: readonly RouteExpressionKeyRow[] | undefined,
                 finalVisibleArgs: readonly FunctionArgument[],
+                stagingSession?: ValueChunkWriteStagingSession,
               ) => { internalArgs: Record<string, FunctionArgument>; payloadBytes: number }) | undefined;
               if (timingEnabled) console.error('nested-callsite-layout', {
                 callsiteId: nested.callsiteId, sharedGroupIndex, childWritesState,
@@ -25852,7 +25856,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   // exists. The selector resolver and producer path both fail closed for overloaded or
                   // incompletely-coordinated edges, so this cannot turn a name-derived SDK guess into authority.
                   const discoveredProducerRows = sequentialRows ?? directInvocationRows;
-                  refreshChunkableRouteWitnesses = (rowArguments, finalVisibleArgs) => {
+                  refreshChunkableRouteWitnesses = (
+                    rowArguments, finalVisibleArgs,
+                    refreshStagingSession = new ValueChunkWriteStagingSession(),
+                  ) => {
                     const internalArgs: Record<string, FunctionArgument> = {};
                     const producerClaims: ValueChunkProducerResourceClaim[] = [];
                     const productions: Array<NonNullable<
@@ -26006,7 +26013,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                               }));
                             }
                             if (producerClaim) {
-                              const stagedOwned = valueChunkWriteStagingSession.stageOwned(
+                              const stagedOwned = refreshStagingSession.stageOwned(
                                 exactWrite, producerClaim, stateOwner, nextValue,
                                 { supersedeUnowned: true },
                               );
@@ -26033,7 +26040,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                               });
                             } else {
                               stageValueChunkWrite(
-                                exactWrite, nextValue, valueChunkWriteStagingSession,
+                                exactWrite, nextValue, refreshStagingSession,
                               );
                             }
                           } else if (permitsLegacyNamedValueChunkFallback(
@@ -26061,6 +26068,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   const refreshed = refreshChunkableRouteWitnesses(
                     childCompilerRoute?.rowArguments ?? discoveredProducerRows,
                     routePlanningArgs,
+                    valueChunkWriteStagingSession,
                   );
                   Object.assign(childCompilerInternalArgs, refreshed.internalArgs);
                   const encodedPayloadBytes = refreshed.payloadBytes;
@@ -26572,13 +26580,21 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 const atomicNodeIndex = preparedAtomicNodes.length;
                 const runtimeRows = childCompilerRoute?.rowArguments ?? directInvocationRows;
                 if (runtimeRows?.length) {
-                  for (const row of runtimeRows) {
-                    const producerPath = row.producerPath ?? preparedChildProducerPath(0, {
+                  const runtimeRowsWithProducerPaths = runtimeRows.map((row) => ({
+                    row,
+                    producerPath: row.producerPath ?? preparedChildProducerPath(0, {
                       sourceCallsiteId: row.sourceCallsiteId ?? nested.callsiteId,
                       sourceLogicalIndex: row.sourceLogicalIndex,
                       occurrenceIndex: row.occurrenceIndex,
                       sourceEffectOrdinal: row.sourceEffectOrdinal,
-                    });
+                    }),
+                  }));
+                  let routeArgumentEpoch = createValueChunkProducerArgumentEpoch(
+                    runtimeRowsWithProducerPaths.map(({ row, producerPath }) => ({
+                      producerPath, args: row.args,
+                    })),
+                  );
+                  for (const { row, producerPath } of runtimeRowsWithProducerPaths) {
                     const rowValueChunkProductions = valueChunkProductionsForPath(producerPath);
                     preparedAtomicNodes.push({
                       contract: callee,
@@ -26602,11 +26618,17 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                       ...(rowValueChunkProductions?.length && {
                         valueChunkProductions: rowValueChunkProductions,
                       }),
-                      ...(refreshChunkableRouteWitnesses && {
+                      ...(refreshChunkableRouteWitnesses && producerPath.status === 'complete' && {
                         resolveValueChunkProductionsFromArgs: (nextArgs) => {
-                          const refreshedRows = runtimeRows.map((candidate) => (
-                            candidate === row ? { ...candidate, args: [...nextArgs] } : candidate
-                          ));
+                          routeArgumentEpoch = advanceValueChunkProducerArgumentEpoch(
+                            routeArgumentEpoch, producerPath, nextArgs,
+                          );
+                          const refreshedRows = runtimeRowsWithProducerPaths.map((candidate) => ({
+                            ...candidate.row,
+                            args: valueChunkProducerArgumentsInEpoch(
+                              routeArgumentEpoch, candidate.producerPath,
+                            ) ?? candidate.row.args,
+                          }));
                           refreshChunkableRouteWitnesses!(
                             refreshedRows, refreshedRows[refreshedRows.length - 1]!.args,
                           );
@@ -27957,12 +27979,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         }
         for (const groupIdx of swappedTokenGroups) {
           const group = externalCallUtxoGroups[groupIdx];
-          const writer = externalCallUtxoGroups.find((candidate, index) =>
+          const writers = externalCallUtxoGroups.filter((candidate, index) =>
             (candidate.sharedGroupIndex ?? index) === groupIdx
             && ((candidate.batchPredecessorOutputs?.length ?? 0) > 0
+              || (candidate.plannedEntryInserts?.length ?? 0) > 0
               || Object.entries({ ...candidate.compilerRoute?.internalArgs, ...candidate.internalArgs })
                 .some(([name]) => isWriterBatchWitnessName(name))));
-          inheritWriterBatchPlan(group, writer);
+          for (const writer of writers) inheritWriterBatchPlan(group, writer);
           if ((group?.batchPredecessorOutputs?.length ?? 0) === 0) continue;
           const postMaster = nestedMasterIndices[groupIdx];
           if (postMaster === undefined) continue;
@@ -31511,12 +31534,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         if (fill.tokenGroup) {
           const tokenMaster = builder.findMintingInputIndex(fill.tokenGroup.categoryId);
           const physicalIdx = externalCallUtxoGroups.indexOf(fill.tokenGroup);
-          const writer = externalCallUtxoGroups.find((candidate, index) =>
+          const writers = externalCallUtxoGroups.filter((candidate, index) =>
             (candidate.sharedGroupIndex ?? index) === physicalIdx
             && ((candidate.batchPredecessorOutputs?.length ?? 0) > 0
+              || (candidate.plannedEntryInserts?.length ?? 0) > 0
               || Object.entries({ ...candidate.compilerRoute?.internalArgs, ...candidate.internalArgs })
                 .some(([name]) => isWriterBatchWitnessName(name))));
-          inheritWriterBatchPlan(fill.tokenGroup, writer);
+          for (const writer of writers) inheritWriterBatchPlan(fill.tokenGroup, writer);
           const hasPred = (fill.tokenGroup.batchPredecessorOutputs?.length ?? 0) > 0
             || Object.entries({
               ...fill.tokenGroup.internalArgs,
@@ -31622,19 +31646,21 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       // Trailing INSERT P' is part of the token planner's physical output block.
       for (const [groupIdx, group] of externalCallUtxoGroups.entries()) {
         if (group.sharedGroupIndex !== undefined) continue;
-        const writer = externalCallUtxoGroups.find((candidate, index) =>
+        const writers = externalCallUtxoGroups.filter((candidate, index) =>
           (candidate.sharedGroupIndex ?? index) === groupIdx
           && ((candidate.batchPredecessorOutputs?.length ?? 0) > 0
+            || (candidate.plannedEntryInserts?.length ?? 0) > 0
             || Object.entries({ ...candidate.compilerRoute?.internalArgs, ...candidate.internalArgs })
               .some(([name]) => isWriterBatchWitnessName(name))));
-        inheritWriterBatchPlan(group, writer);
+        for (const writer of writers) inheritWriterBatchPlan(group, writer);
         const hasPred = (group.batchPredecessorOutputs?.length ?? 0) > 0
           || Object.entries({ ...group.internalArgs, ...group.compilerRoute?.internalArgs })
             .some(([name, value]) => /^__internal__vmapBatchPredOut_\d+$/.test(name)
               && typeof value === 'bigint' && value >= 0n)
-          || Object.entries({ ...writer?.internalArgs, ...writer?.compilerRoute?.internalArgs })
-            .some(([name, value]) => /^__internal__vmapBatchPredOut_\d+$/.test(name)
-              && typeof value === 'bigint' && value >= 0n);
+          || writers.some((writer) => Object.entries({
+            ...writer.internalArgs, ...writer.compilerRoute?.internalArgs,
+          }).some(([name, value]) => /^__internal__vmapBatchPredOut_\d+$/.test(name)
+            && typeof value === 'bigint' && value >= 0n));
         if (!hasPred) continue;
         const master = builder.findMintingInputIndex(group.categoryId);
         if (master < 0) continue;

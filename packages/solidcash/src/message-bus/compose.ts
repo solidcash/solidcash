@@ -228,13 +228,14 @@ export function rebuildPreparedInvocation(
   descriptor: PreparedAtomicMessageBusCall,
   args: readonly FunctionArgument[],
   provisionalResultHex?: string,
+  options: { refreshValueProductions?: boolean } = {},
 ): PreparedAtomicMessageBusCall {
   const argsChanged = semanticJson(args) !== semanticJson(descriptor.args);
   if (argsChanged && descriptor.valueChunkProductions?.length
     && !descriptor.resolveValueChunkProductionsFromArgs) {
     throw new Error('messageBus: changed producer arguments have no value-production refresher');
   }
-  const valueChunkProductions = argsChanged
+  const valueChunkProductions = (argsChanged || options.refreshValueProductions === true)
     ? descriptor.resolveValueChunkProductionsFromArgs?.(args)
     : descriptor.valueChunkProductions;
   return {
@@ -2045,7 +2046,7 @@ export class AtomicMessageBusComposition {
         resultsByParent.set(invocation.parent, siblings);
       }
       let propagated = false;
-      const calls = descriptors.map((descriptor, index): PreparedAtomicMessageBusCall => {
+      const resolvedArguments = descriptors.map((descriptor, index): readonly FunctionArgument[] => {
         const invocation = plan.invocations[index];
         const siblingResults = invocation.parent === null
           ? undefined : resultsByParent.get(invocation.parent);
@@ -2065,10 +2066,16 @@ export class AtomicMessageBusComposition {
         let args = descriptor.args;
         if (resolved && semanticJson(resolved) !== semanticJson(descriptor.args)) {
           propagated = true;
-          args = resolved;
+          return resolved;
         }
-        return rebuildPreparedInvocation(descriptor, args, results[index]);
+        return args;
       });
+      // A changed row can alter a terminal collection value produced by a later sibling even when that later
+      // sibling's own public arguments are unchanged. Refresh all capable rows against the now-complete shared
+      // producer-path argument epoch, in source order, after argument propagation has been decided.
+      const calls = descriptors.map((descriptor, index) => rebuildPreparedInvocation(
+        descriptor, resolvedArguments[index], results[index], { refreshValueProductions: propagated },
+      ));
       return { propagated, calls };
     };
     // A graph-discovery seed is already semantically available on the first atomic pass. Rebuild expressions

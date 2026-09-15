@@ -2342,6 +2342,8 @@ describe('assignPhysicalReturnIndices', () => {
 
   it('promotes a fused writer batch plan onto the physical read carrier', () => {
     const predecessor = { outputBlockSlot: 8 };
+    const plannedInsert = { blockSlot: 6, outputBlockSlot: 9 };
+    const entryLock = new Uint8Array([0xaa, 0x20]);
     const carrier = {
       internalArgs: {
         __internal__vmapBatchPredOut_0: -1n,
@@ -2350,7 +2352,12 @@ describe('assignPhysicalReturnIndices', () => {
       compilerRoute: {
         internalArgs: { __internal__vmapBatchSlot_0: new Uint8Array(32) as bigint | Uint8Array },
       },
+      plannedEntryInserts: [] as Array<{ blockSlot: number; outputBlockSlot: number }>,
+      plannedEntryInsertHandles: [] as number[],
+      relativeOutputInternalArgs: [] as string[],
       batchPredecessorOutputs: [] as Array<{ outputBlockSlot: number }>,
+      batchEntryLockingBytecodes: new Map<number, Uint8Array>(),
+      batchEntryCommitments: new Map<number, string>(),
     };
     const writer = {
       internalArgs: {
@@ -2360,11 +2367,25 @@ describe('assignPhysicalReturnIndices', () => {
       compilerRoute: {
         internalArgs: { __internal__vmapBatchNext_0: new Uint8Array([1]) as bigint | Uint8Array },
       },
+      plannedEntryInserts: [plannedInsert],
+      plannedEntryInsertHandles: [17],
+      relativeOutputInternalArgs: ['__internal__vmapBatchPredOut_0'],
       batchPredecessorOutputs: [predecessor],
+      batchEntryLockingBytecodes: new Map([[6, entryLock]]),
+      batchEntryCommitments: new Map([[6, '01']]),
     };
 
-    expect(inheritWriterBatchPlan<bigint | Uint8Array, { outputBlockSlot: number }>(carrier, writer)).toBe(true);
-    expect(carrier.batchPredecessorOutputs).toBe(writer.batchPredecessorOutputs);
+    expect(inheritWriterBatchPlan<
+    bigint | Uint8Array,
+    { outputBlockSlot: number },
+    { blockSlot: number; outputBlockSlot: number }
+    >(carrier, writer)).toBe(true);
+    expect(carrier.plannedEntryInserts).toBe(writer.plannedEntryInserts);
+    expect(carrier.plannedEntryInsertHandles).toBe(writer.plannedEntryInsertHandles);
+    expect(carrier.relativeOutputInternalArgs).toEqual(writer.relativeOutputInternalArgs);
+    expect(carrier.batchPredecessorOutputs).toEqual(writer.batchPredecessorOutputs);
+    expect(carrier.batchEntryLockingBytecodes).toEqual(writer.batchEntryLockingBytecodes);
+    expect(carrier.batchEntryCommitments).toEqual(writer.batchEntryCommitments);
     expect(carrier.internalArgs).toMatchObject({
       __internal__vmapBatchPredOut_0: 8n,
       __internal__vmapBatchTrailingCount: 1n,
@@ -2376,6 +2397,18 @@ describe('assignPhysicalReturnIndices', () => {
       __internal__vmapBatchTrailingCount: 1n,
       __internal__vmapBatchNext_0: new Uint8Array([1]),
     });
+  });
+
+  it('rejects mixing distinct writer batch plans on one physical carrier', () => {
+    const carrier = {
+      plannedEntryInserts: [{ blockSlot: 2, outputBlockSlot: 8 }],
+      batchPredecessorOutputs: [{ outputBlockSlot: 8 }],
+    };
+    const writer = {
+      plannedEntryInserts: [{ blockSlot: 3, outputBlockSlot: 9 }],
+      batchPredecessorOutputs: [{ outputBlockSlot: 9 }],
+    };
+    expect(() => inheritWriterBatchPlan(carrier, writer)).toThrow(/conflicting sorted-batch/);
   });
 
   it('relocates only the planned INSERT PredOut and keeps leftover UPDATE sentinels', () => {

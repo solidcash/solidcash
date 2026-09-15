@@ -5847,25 +5847,145 @@ export function inheritWriterBatchWitnesses<T>(
  * A fused read may be the first logical callsite and therefore retain the carrier identity, but it must not
  * retain stale read-only topology witnesses after a sibling call writes the same participant.
  */
-export function inheritWriterBatchPlan<T, P>(
-  target: {
-    internalArgs?: Record<string, T>;
-    compilerRoute?: { internalArgs?: Record<string, T> };
-    batchPredecessorOutputs?: P[];
-  },
-  writer: {
-    internalArgs?: Record<string, T>;
-    compilerRoute?: { internalArgs?: Record<string, T> };
-    batchPredecessorOutputs?: P[];
-  } | undefined,
+type PromotableWriterBatchPlan<T, P, I> = {
+  internalArgs?: Record<string, T>;
+  compilerRoute?: { internalArgs?: Record<string, T> };
+  plannedEntryInserts?: I[];
+  plannedEntryInsertHandles?: number[];
+  relativeOutputInternalArgs?: string[];
+  batchPredecessorOutputs?: P[];
+  batchEntryLockingBytecodes?: Map<number, Uint8Array>;
+  batchEntryCommitments?: Map<number, string>;
+};
+
+const writerBatchPlanPartPresent = (value: unknown): boolean => (
+  value instanceof Map ? value.size > 0 : Array.isArray(value) ? value.length > 0 : value !== undefined
+);
+
+const writerBatchBytesEqual = (left: Uint8Array, right: Uint8Array): boolean => (
+  left.length === right.length && left.every((byte, index) => byte === right[index])
+);
+
+const writerBatchPlanPartEqual = (left: unknown, right: unknown): boolean => {
+  if (left === right) return true;
+  if (left instanceof Map && right instanceof Map) {
+    if (left.size !== right.size) return false;
+    return [...left].every(([key, value]) => {
+      const candidate = right.get(key);
+      return value instanceof Uint8Array && candidate instanceof Uint8Array
+        ? writerBatchBytesEqual(value, candidate) : value === candidate;
+    });
+  }
+  if (Array.isArray(left) && Array.isArray(right)) {
+    if (left.length !== right.length) return false;
+    return left.every((value, index) => {
+      const candidate = right[index];
+      if (value instanceof Uint8Array && candidate instanceof Uint8Array) {
+        return writerBatchBytesEqual(value, candidate);
+      }
+      if (typeof value === 'object' && value !== null && typeof candidate === 'object' && candidate !== null) {
+        const leftEntries = Object.entries(value);
+        const rightRecord = candidate as Record<string, unknown>;
+        return leftEntries.length === Object.keys(rightRecord).length
+          && leftEntries.every(([key, entry]) => {
+            const rightEntry = rightRecord[key];
+            return entry instanceof Uint8Array && rightEntry instanceof Uint8Array
+              ? writerBatchBytesEqual(entry, rightEntry) : entry === rightEntry;
+          });
+      }
+      return value === candidate;
+    });
+  }
+  return !writerBatchPlanPartPresent(left) && !writerBatchPlanPartPresent(right);
+};
+
+export function inheritWriterBatchPlan<T, P, I = never>(
+  target: PromotableWriterBatchPlan<T, P, I>,
+  writer: PromotableWriterBatchPlan<T, P, I> | undefined,
 ): boolean {
   if (!writer) return false;
   let changed = false;
-  if ((target.batchPredecessorOutputs?.length ?? 0) === 0
-    && (writer.batchPredecessorOutputs?.length ?? 0) > 0) {
-    target.batchPredecessorOutputs = writer.batchPredecessorOutputs;
-    changed = true;
+  const copyExactPart = <K extends keyof PromotableWriterBatchPlan<T, P, I>>(field: K): void => {
+    const incoming = writer[field];
+    if (!writerBatchPlanPartPresent(incoming)) return;
+    const current = target[field];
+    if (!writerBatchPlanPartPresent(current)) {
+      target[field] = incoming;
+      changed = true;
+    } else if (!writerBatchPlanPartEqual(current, incoming)) {
+      throw new Error(`Cannot promote conflicting sorted-batch '${String(field)}' plans onto one physical carrier.`);
+    }
+  };
+  // INSERT locations and their builder handles are one positional vector. Never concatenate independently.
+  copyExactPart('plannedEntryInserts');
+  copyExactPart('plannedEntryInsertHandles');
+
+  const relativeNames = new Set(target.relativeOutputInternalArgs ?? []);
+  for (const name of writer.relativeOutputInternalArgs ?? []) {
+    if (!relativeNames.has(name)) {
+      relativeNames.add(name);
+      changed = true;
+    }
   }
+  if (relativeNames.size > 0) target.relativeOutputInternalArgs = [...relativeNames];
+
+  const mergeKeyedArray = <V>(
+    current: V[] | undefined,
+    incoming: V[] | undefined,
+    keyOf: (value: V) => number,
+    field: 'batchPredecessorOutputs',
+  ): V[] | undefined => {
+    if (!incoming?.length) return current;
+    const merged = [...(current ?? [])];
+    const byKey = new Map(merged.map((value) => [keyOf(value), value]));
+    for (const value of incoming) {
+      const key = keyOf(value);
+      const prior = byKey.get(key);
+      if (prior !== undefined && !writerBatchPlanPartEqual([prior], [value])) {
+        throw new Error(`Cannot promote conflicting sorted-batch '${field}' plans onto one physical carrier.`);
+      }
+      if (prior === undefined) {
+        merged.push(value);
+        byKey.set(key, value);
+        changed = true;
+      }
+    }
+    return merged;
+  };
+  target.batchPredecessorOutputs = mergeKeyedArray(
+    target.batchPredecessorOutputs,
+    writer.batchPredecessorOutputs,
+    (value) => (value as { outputBlockSlot: number }).outputBlockSlot,
+    'batchPredecessorOutputs',
+  );
+
+  const mergeMap = <V>(
+    current: Map<number, V> | undefined,
+    incoming: Map<number, V> | undefined,
+    field: 'batchEntryLockingBytecodes' | 'batchEntryCommitments',
+  ): Map<number, V> | undefined => {
+    if (!incoming?.size) return current;
+    const merged = new Map(current);
+    for (const [key, value] of incoming) {
+      const prior = merged.get(key);
+      const equal = prior instanceof Uint8Array && value instanceof Uint8Array
+        ? writerBatchBytesEqual(prior, value) : prior === value;
+      if (prior !== undefined && !equal) {
+        throw new Error(`Cannot promote conflicting sorted-batch '${field}' plans onto one physical carrier.`);
+      }
+      if (prior === undefined) {
+        merged.set(key, value);
+        changed = true;
+      }
+    }
+    return merged;
+  };
+  target.batchEntryLockingBytecodes = mergeMap(
+    target.batchEntryLockingBytecodes, writer.batchEntryLockingBytecodes, 'batchEntryLockingBytecodes',
+  );
+  target.batchEntryCommitments = mergeMap(
+    target.batchEntryCommitments, writer.batchEntryCommitments, 'batchEntryCommitments',
+  );
   const writerArgs = { ...writer.compilerRoute?.internalArgs, ...writer.internalArgs };
   if (!Object.keys(writerArgs).some(isWriterBatchWitnessName)) return changed;
   target.internalArgs = inheritWriterBatchWitnesses(target.internalArgs, writerArgs);
@@ -11441,12 +11561,16 @@ export class StatefulTransactionBuilder {
     const tokenGroupIndex = this.externalCallUtxoGroups.findIndex((group) =>
       group.categoryId === swapCategoryId && group.sharedGroupIndex === undefined);
     const tokenGroup = tokenGroupIndex >= 0 ? this.externalCallUtxoGroups[tokenGroupIndex] : undefined;
-    const tokenWriter = this.externalCallUtxoGroups.find((group, index) =>
-      (group.sharedGroupIndex ?? index) === tokenGroupIndex
-      && ((group.batchPredecessorOutputs?.length ?? 0) > 0
-        || Object.entries({ ...group.compilerRoute?.internalArgs, ...group.internalArgs })
-          .some(([name]) => isWriterBatchWitnessName(name)))) ?? tokenGroup;
-    if (tokenGroup) inheritWriterBatchPlan(tokenGroup, tokenWriter);
+    if (tokenGroup) {
+      for (const [index, sibling] of this.externalCallUtxoGroups.entries()) {
+        if ((sibling.sharedGroupIndex ?? index) !== tokenGroupIndex) continue;
+        if ((sibling.batchPredecessorOutputs?.length ?? 0) === 0
+          && (sibling.plannedEntryInserts?.length ?? 0) === 0
+          && !Object.entries({ ...sibling.compilerRoute?.internalArgs, ...sibling.internalArgs })
+            .some(([name]) => isWriterBatchWitnessName(name))) continue;
+        inheritWriterBatchPlan(tokenGroup, sibling);
+      }
+    }
     const after = master + (tokenGroup?.blockLayout?.blockSize ?? 8);
     const jobsCount = this.delegateDynamicChunksAtSuffix ? this._dynamicChunkOutputCount() : 0;
     const tailReturns = this.tailReturnEventOutputs();

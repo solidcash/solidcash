@@ -33,6 +33,49 @@ export type ValueChunkProducerPathDisposition =
   | { readonly status: 'complete'; readonly context: ValueChunkProducerPathContext }
   | { readonly status: 'unavailable' };
 
+/** Copy-on-write argument state for independently rebuilt graph rows, keyed only by compiler source path. */
+export type ValueChunkProducerArgumentEpoch<T> = ReadonlyMap<string, readonly T[]>;
+
+export function createValueChunkProducerArgumentEpoch<T>(
+  rows: readonly { producerPath?: ValueChunkProducerPathDisposition; args: readonly T[] }[],
+): ValueChunkProducerArgumentEpoch<T> {
+  const epoch = new Map<string, readonly T[]>();
+  for (const row of rows) {
+    const key = row.producerPath?.status === 'complete'
+      ? canonicalValueChunkProducerPathContext(row.producerPath.context) : undefined;
+    if (!key) continue;
+    if (epoch.has(key)) {
+      throw new Error('Value-chunk producer argument epoch contains a duplicate producer path.');
+    }
+    epoch.set(key, Object.freeze([...row.args]));
+  }
+  return epoch;
+}
+
+export function advanceValueChunkProducerArgumentEpoch<T>(
+  epoch: ValueChunkProducerArgumentEpoch<T>,
+  producerPath: ValueChunkProducerPathDisposition | undefined,
+  args: readonly T[],
+): ValueChunkProducerArgumentEpoch<T> {
+  const key = producerPath?.status === 'complete'
+    ? canonicalValueChunkProducerPathContext(producerPath.context) : undefined;
+  if (!key || !epoch.has(key)) {
+    throw new Error('Value-chunk producer argument refresh has no stable producer path.');
+  }
+  const next = new Map(epoch);
+  next.set(key, Object.freeze([...args]));
+  return next;
+}
+
+export function valueChunkProducerArgumentsInEpoch<T>(
+  epoch: ValueChunkProducerArgumentEpoch<T>,
+  producerPath: ValueChunkProducerPathDisposition | undefined,
+): readonly T[] | undefined {
+  const key = producerPath?.status === 'complete'
+    ? canonicalValueChunkProducerPathContext(producerPath.context) : undefined;
+  return key ? epoch.get(key) : undefined;
+}
+
 export function appendValueChunkProducerSourceSite(
   context: ValueChunkProducerPathContext,
   site: ValueChunkProducerSourceSite,

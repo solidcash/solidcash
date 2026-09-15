@@ -2680,6 +2680,7 @@ export interface ExternalCallArgSource {
   paramIndex?: number;
   indexParamIndex?: number;
   indexValue?: number;
+  indexStepValue?: number;
   initialValue?: string;
   stepValue?: string;
   stepExpression?: ExternalCallExpression;

@@ -7721,14 +7721,32 @@ export default class SymbolTableTraversal extends AstTraversal {
               };
             }
             if (expression.index instanceof IntLiteralNode) {
+              // A literal index does not advance with the reached occurrence. Publishing the zero delta keeps
+              // that explicit, so a consumer can never mistake a fixed element for a loop-local index.
               return {
                 kind: 'arrayElement',
                 paramIndex: arraySource.paramIndex,
                 indexValue: Number(expression.index.value),
+                indexStepValue: 0,
               };
             }
-            // A loop-local index cannot be supplied by the caller. The SDK expands
-            // these call sites in array order; index zero identifies the first group.
+            // The index is this function's own loop induction variable. The SDK expands the callsite in array
+            // order, so publish the variable's value at occurrence zero together with its per-occurrence delta:
+            // each reached occurrence then resolves to exactly the element the generated loop body selects.
+            // Without the delta every occurrence resolves to the first element while the covenant keeps
+            // evaluating the element the loop actually reached.
+            if (indexSource?.kind === 'loopIndex' && indexSource.initialValue !== undefined
+              && indexSource.stepValue !== undefined) {
+              return {
+                kind: 'arrayElement',
+                paramIndex: arraySource.paramIndex,
+                indexValue: Number(indexSource.initialValue),
+                indexStepValue: Number(indexSource.stepValue),
+              };
+            }
+            // An index the compiler cannot describe as a loop induction variable (a loop-local index reached
+            // through a computed expression). The SDK expands these call sites in array order; index zero
+            // identifies the first group, and the absent step marks the expansion as unproven.
             return { kind: 'arrayElement', paramIndex: arraySource.paramIndex, indexValue: 0 };
           }
         }

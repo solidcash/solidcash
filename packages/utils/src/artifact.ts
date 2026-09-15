@@ -988,7 +988,8 @@ export interface ArgSource {
   | 'expression';
   paramIndex?: number;     // for 'forward': index into the user-visible function args
   indexParamIndex?: number; // for 'arrayElement': optional function parameter containing the element index
-  indexValue?: number;     // for 'arrayElement': fixed index (loop call sites commonly begin at zero)
+  indexValue?: number;     // for 'arrayElement': fixed index, or the index at occurrence zero when indexStepValue is present
+  indexStepValue?: number; // for 'arrayElement': per-occurrence index delta of a loop induction variable index
   initialValue?: string;   // for 'loopIndex': value at occurrence zero
   stepValue?: string;      // for 'loopIndex': delta per reached occurrence
   stepExpression?: ExternalCallExpression; // for 'loopIndex': runtime delta from public arguments

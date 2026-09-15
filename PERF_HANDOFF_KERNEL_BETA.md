@@ -312,6 +312,252 @@ Remaining option, deliberately not taken: have the dry run also emit bytes and r
 relocated to the cheap pool - and it requires the count-driven `OP_DEFINE`-vs-inline decisions to be made
 during the *same* pass, which is exactly what makes it a redesign of `visitContract`, not a saving.
 
+### Round 13: the two unprofiled areas, measured
+
+**Parallel root compilation pays, but sub-linearly and at a large CPU cost.** Measured by running the ten-root
+corpus as N independent probe processes at once (each process is a real compile with its own startup and its
+own caches, so this is the achievable number, not an idealised one):
+
+| processes | group walls | wall | summed CPU |
+|---|---|---|---|
+| 1 | 16-19 s total | 16-19 s | 32,134 ms |
+| 2 | 9,671 / 13,015 ms | ~13.0 s | 40,430 ms (**+26 %**) |
+| 4 | 6,926 / 10,064 / 9,905 / 6,062 ms | ~10.1 s | 56,793 ms (**+77 %**) |
+
+So four workers buy roughly **1.7x wall for 1.8x the CPU**. The shrinkage is per-process ESM startup, repeated
+JIT warm-up, memory-bandwidth/GC contention, and - the one that matters for this branch - the loss of every
+cross-root cache this session added (import parse cache, verifier program memo, the round-10 lock cache), all
+of which are per-process. On a smaller CI box the CPU multiplier would bite before the wall win. If this is
+built, it should be an opt-in `--parallel` (or `--jobs N`) on the compile task, not a default, and the job
+cache means it only ever helps a cold full build.
+
+**The split path is not a hidden cost multiplier here - it is a capacity wall.** Compiling the marketplace
+roots against the real 10,000-byte input limit does not shard them; it refuses:
+`SPLIT_CLOSURE_CAPACITY: Cannot split 'MarketplaceV2': indivisible closure 'approveResult' is 20,624 bytes
+(limit 10,000)` and `Cannot split 'UnicrowClaim': indivisible closure 'claim' is 15,035 bytes (limit 10,000)`.
+The route closures are 1.5-2x the limit as single units, so no facet packing can help. Every performance
+number in this document was therefore measured on the *only* path these contracts have (the mock network's
+10 MB ceiling), and the binding constraint for deploying them at consensus size is **bytecode size, not
+compile speed** - which is what the kernel work exists to move. Do not spend compile-time effort on the split
+path until the contracts fit.
+
+### Round 14: what the marketplace harness actually spends (measured)
+
+`DEBUG=vite:transform` on `post job 1` reports **381 transform events totalling 999 ms** - not the 4.4 s the
+vitest summary calls "transform". The rest of that phase is resolution and plugin work, including the
+`eaSrcRedirectPlugin`'s `existsSync` probing (`internalModuleStat` ~0.11 s + `getPackageScopeConfig` ~0.15 s
+in the worker profile). The real transform time localises to:
+
+| group | ms |
+|---|---|
+| `typechain-types/index.ts` barrel **and its transitive factories** | ~398 |
+| `packages/solidcash` (`StatefulContract` 31, `StatefulTransactionBuilder` 18, rest) | ~131 |
+| `@solidcash/testing` + the test file + `solidc/utils` | ~57 |
+
+So the harness cost is not "a big module graph" in the abstract: it is one **barrel file** - the generated
+`typechain-types/index.ts` re-export that drags every factory in - plus Vite resolution overhead. Two
+consequences for whoever picks this up:
+
+* The barrel lives in the *project's* test file (`.marketplace/project/test/marketplace.test.ts` imports it),
+  so shrinking it means changing the imported suite, not this repository. Any real project using typechain
+  barrels pays the same ~0.4 s per test file.
+* The resolution overhead is addressable locally: memoising `existingSource`/`redirectEffectiveAccelerationSrc`
+  in `vitest.marketplace.config.ts`'s plugin removes repeated `existsSync` probing per import. Estimated
+  0.2-0.3 s of a 19 s run, i.e. ~1 % - measured cost of the change is one vitest run. **Round 15 measured the
+  plugin's whole cost at 1.16 ms; this estimate was wrong. See round 15 before acting on it.**
+
+Also closed here: per-worker signer derivation is **not** a lazy-derivation win. The 0.44 s is a single
+BIP-39 PBKDF2-HMAC-SHA512 (2048 iterations) producing the seed that the first signer already needs; caching it
+across workers would mean writing a seed to disk, which is not an acceptable trade for 2 % of a test run.
+
+### Round 15: the round-14 handover list, implemented and measured
+
+Three of the four items were carried out; two of the three turned out not to be work. The fourth was a statement
+about the binding constraint (contract size, not compile speed) and stays one.
+
+**Item 1 - the marketplace resolver memoisation: 1.16 ms, not 0.2-0.3 s. Closed, nothing landed.** The plugin in
+`vitest.marketplace.config.ts` was instrumented with counters and a `process.hrtime.bigint()` accumulator
+(temporary, reverted). On `post job 1`:
+
+| plugin cost | count | ms |
+|---|---|---|
+| `resolveId` calls from Vite | 1,157 | - |
+| `existingSource` calls | 1,161 | - |
+| `existsSync` probes (the only syscalls) | **8** | **1.16** |
+| `redirectEffectiveAccelerationSrc` scans | ~2,300 | 2.20 |
+
+The redirect only ever fires for the 8 real EffectiveAcceleration sources, and every candidate resolves on the
+first stat, so there is no repeated probing to memoise. Round 14's 0.2-0.3 s estimate had attributed Vite's own
+`internalModuleStat`/`getPackageScopeConfig` time (0.11 + 0.15 s in the worker profile) to this plugin; that time
+is inside Vite's resolver for the whole module graph, not in the plugin, and no local plugin change reaches it.
+Memoising here would have been a measured no-op.
+
+**Item 2 - the convergence loop: instrumented, fully attributed, nothing redundant to remove** (`677244060`). `_assertConvergedFinalTransaction`
+reported 0.65 s per title with "iterations uninstrumented". It now reports under `SOLIDC_DEBUG_CONVERGENCE_ROUNDS=1`
+(sweeps, rebuilds, preflights and refusals, repairs, fee calls, and per-stage ms). On `post job 1`, 8 calls,
+591 ms total:
+
+| stage | ms | share | note |
+|---|---|---|---|
+| covenant preflight (`assertFinalizedTransactionCovenants`) | 349 | 59 % | 9 attempts: 1 accepting, 8 refusing |
+| computed-output repairs (`_repairComputedChunkOutput`) | 204 | 35 % | 30 attempts |
+| transaction rebuilds | 20 | 3 % | 17 rebuilds |
+| post-repair bookkeeping (4 passes x 22 iterations) | 8 | 1 % | strip / restore / clear / clear |
+| fee adjustment (encodes the tx per sweep) | 2 | <1 % | 17 calls |
+
+Two premises died here. The loop is **not** iterating redundantly: every call reaches one accepting preflight,
+and the extra sweeps and preflights are the fee adjuster and the *refusals* which trigger each repair. And the
+unaccounted time was the refused preflights: the first instrumentation pass only counted the attempt which
+passed, which attributed 240 ms to nothing. 59 % is the BCH-2026 covenant verification this path exists to
+perform and 35 % is the recovery work itself, so the item closes as "required work, now attributed".
+`SOLIDC_DEBUG_CONVERGENCE_ROUNDS` stays as the diagnostic.
+
+Also closed by measurement: the "nested faithful probe traces 0.47 s" item is **72 ms** on this title
+(`probe-trace-faithful`, 2 traces of ~6.1 k states each). The larger figure came from a heavier fixture.
+
+**Item 3 - `--jobs N` on the compile task: landed** (`57566b246`). `compileSolidityProject` takes an optional parallel option
+and `solidcash compile --jobs N` (default 1, one process) fans the Solidity roots out over N worker threads.
+Measured on the ten marketplace roots through the production path, each run with a fresh cache:
+
+| jobs | wall (quiet box) | wall (loaded box) | process CPU | speedup |
+|---|---|---|---|---|
+| 1 | 21,410 / 22,695 ms | 23,607 / 26,014 ms | 37,518 / 39,040 ms | 1.00x |
+| 2 | 15,193 / 15,783 ms | 19,901 ms | 47,972 / 52,602 ms | **1.36x quiet, 1.19x loaded** |
+| 4 | 12,440 / 13,224 ms | 16,325 ms | 70,229 / 75,344 ms | **1.72x quiet, 1.45x loaded** |
+
+The CPU multiplier is the stable half of this trade (+40 % for 2 jobs, +87 % for 4 jobs) and the wall win is the
+part which moves with the machine: one 4-worker run taken while a sibling session was compiling took 18.5 s of
+wall clock against **91.3 s** of process CPU, i.e. no wall win at all over the sequential 22.7 s / 39.0 s run, at
+2.3x the CPU. **Recommend 2 jobs; the default stays 1**, and the help
+text says the same. Two further limits are deliberate: only a cold build can benefit (the job cache resolves hits
+in the parent before a worker is ever spawned, and the pool is skipped entirely when fewer than two jobs remain),
+and `.scash` sources plus the split-bundle loop stay sequential.
+
+Equivalence, in the order it was checked:
+
+* The published artifacts of `jobs=1/2/4` are identical: one digest over every artifact of all ten roots with
+  `updatedAt` stripped matched across all four runs (`f67cee99...`). The only field which differs between any two
+  fresh compiles - sequential or parallel - is the `updatedAt` compile timestamp (top-level and inside
+  `delegateArtifact`).
+* A sequential `jobs=1` run over the cache a parallel `jobs=2` run had just written reported **10 cache hits and
+  0 compiles**, so the parallel path writes exactly the job entries (key and payload) the sequential path looks
+  for.
+* Through the task, on a four-root `.sol` project: `--jobs 2` logged
+  `project-parallel {workers: 2, planned: 4, jobs: 4}`, and the published `artifacts/` tree was identical to the
+  `--jobs 1` tree except for the `updatedAt` line. A following plain `compile` reported 4 cache hits, 0 compiles.
+* `packages/testing/test/project-compiler.test.ts` covers the fan-out: same artifacts/accounting as sequential,
+  the in-process fallback for a job the parallel pre-pass cannot predict, and the options-cloneability refusal.
+
+The parallel path is only allowed to change **where** a job runs. The skip rule which decides whether a source's
+artifacts are published ("a non-canonical source whose declarations are already published is skipped") is
+evaluated in the sequential merge loop, in order, for every source - including ones a worker already compiled.
+The pre-pass which decides what to *compile* in parallel is a prediction built from the scanned declaration
+lists; when it is wrong the merge loop simply compiles that source in process, so a wrong prediction costs time
+and cannot change the artifact tree.
+
+### The artifact-cache defect this round found
+
+Building the equivalence gate above exposed a pre-existing bug in the persistent job cache, not in the parallel
+path: **a warm project build could silently drop an artifact a cold build publishes.** Fixed in `cf6607de6`.
+
+`MarketplaceV1.sol` imports `MarketplaceDataV1.sol` and `MarketplaceDataV1.sol` imports `MarketplaceV1.sol`, so
+the two files' transitive import closures are *identical sets*. `dependencyHashes` hashed that closure, and the
+job key did not include `compileDeclarations`, so both files resolved to **one job file**. The cold run compiled
+both and wrote one payload over the other; the warm run read that payload for both sources, and since
+`MarketplaceV1.sol`'s payload is filtered to its own declaration, the second source published nothing:
+
+| run | job files | compiles | hits | artifacts |
+|---|---|---|---|---|
+| cold | **9** (10 sources) | 10 | 0 | 10 |
+| warm | 9 | 0 | 10 | **9 - `MarketplaceV1` gone** |
+
+Reproduced with `scripts`-free probes against the ten roots, and it is reachable from the CLI: the task publishes
+the artifact tree from this map, so a second `solidcash compile` could publish a tree missing a contract. Fixed by
+adding `declarations` to the key and bumping `artifactCacheVersion` to 4 (one-time invalidation of every existing
+entry), with a regression test which fails on the old key (`expected [ 'Beta' ] to deeply equal [ 'Alpha', 'Beta' ]`)
+and passes on the new one. After the fix the cold and warm runs both report 10 job files and 10 artifacts.
+
+This is worth generalising: **a content-addressed job key must cover every input which changes the job's output,
+not just the inputs which change the input files.** The closure and the options were covered; the primary
+declaration set - which decides *which* artifacts the job returns - was not, and an import cycle is enough to
+make the closure ambiguous.
+
+Round 15 leaves these open, in the order they are worth doing:
+
+1. **`--jobs` does not cover the split-bundle loop or `.scash` sources.** Both stay sequential. The split loop is
+   the interesting one: it recompiles an oversized root to shard it, and on the marketplace corpus every attempt
+   refuses at `SPLIT_CLOSURE_CAPACITY` (round 13), so a project pays one full compile per oversized root for a
+   result it cannot use. A `--skip-split`-style capability check before the attempt would remove that, but it
+   changes what the task publishes, so it needs a decision rather than a measurement.
+2. **`SOLIDC_COMPILE_CACHE` is still a legacy switch** (round 11): the compile task enables the cache by default,
+   so the variable is only the test harness's way in and an escape hatch. Replace it with `--no-cache`, migrate
+   the four test/harness users, then delete `artifactCacheEnabled`'s environment read.
+3. **The artifact cache's own coverage is now a known-sharp edge.** `declarations` was missing from the key for
+   as long as the `.sol` job cache has existed. The fix is verified for the marketplace corpus, but the same
+   question - "what else changes the job's output?" - should be asked of `artifactCompilerOptions`'s delete-list
+   (`suppressWarnings` only) and of any option added later.
+4. **Two pre-existing `packages/testing` failures** are now recorded above (the empty-function-body e2e fixture
+   and the unused `source` read in the split loop). Neither is caused by this branch's work, and both are cheap
+   to fix in a change which is allowed to touch that package's fixtures.
+
+### Round 16: the vitest harness is latency-bound, not compute-bound
+
+Rounds 14-15 closed the two harness items that were visible from the transform side (the resolver plugin at 1.16 ms,
+the typechain barrel at ~0.4 s). What was left was the phase summary itself: `transform 4.4 s, setup 4.2 s,
+import 2.2 s, tests 12.4 s` on a 19 s title. Profiling all three processes (worker via `test.execArgv`, main via
+`NODE_OPTIONS=--cpu-prof`) explains it, and the explanation says the remaining levers are small.
+
+**The decomposition that makes the rest measurable.** A filter matching no test still transforms the file, runs
+the setup files and imports the graph, so it prices the harness on its own:
+
+| run | vitest duration | bash wall | CPU (user+sys) | transform | setup | import | tests |
+|---|---|---|---|---|---|---|---|
+| `-t 'no-such-test'` (66 skipped) | 5.84 s | 6.72 s | 7.79 s | 3.79 | 3.77 | 1.86 | 0 |
+| `-t 'post job 1$'` | 17.94 s | 18.51 s | 12.46 s | 3.71 | 3.56 | 1.88 | **12.31** |
+
+So the harness floor is **~6 s wall of an ~18 s run** (and it is CPU-bound: 7.8 s of CPU over 6.7 s of wall,
+because the main process and the worker overlap), while the test phase is **12.3 s wall for ~4.7 s of CPU**.
+The test's own cost is therefore ~62 % waiting.
+
+**Where the CPU actually is** (sampled self time; idle in brackets):
+
+| process | sampled | own work | notable |
+|---|---|---|---|
+| main | 18.2 s (82 % idle) | 3.2 s | vite 1.34 (`visit`, `traceMappings`, `decode` - sourcemap machinery), gc 0.43, node 0.37, vitest 0.12, rollup 0.09; `getPackageScopeConfig` 194 ms + `internalModuleStat` 161 ms |
+| worker | 18.6 s (69 % idle) | 5.7 s | libauth 1.94 (contract VM - real execution), SDK 0.69, structuredClone 0.40, module evaluation ~0.5, vite 0.09, gc 0.28 |
+| npm wrapper | 18.5 s (98 % idle) | ~0.3 s | - |
+
+The timelines are the interesting part: the **main** process is busy only in seconds 0-6.5 (vite transform) and
+idle from 7 to 18; the **worker** is busy in 0-7 (module evaluation and fixture deployment) and 15-18 (the test's
+final transactions), and runs at ~50 ms of JS per second through 8-14. Both processes are idle at the same time
+for roughly 6 s. Nothing in the test, the SDK or the shims sleeps (no `setTimeout`, no `await new Promise(delay)`),
+so that window is waiting on something outside the two JS stacks.
+
+**One concrete trace of it:** the vitest processes write **~4-7 MB/s in two bursts, ~23 MB per run**, and it is not
+the Vite cache (`.marketplace/vite-cache-marketplace` is 4 KB of `results.json`) and not the repo (nothing new
+under `.marketplace/` or `examples/effectiveacceleration/` survives the run), so it is temp files that are deleted
+again. Locating that writer is the top remaining harness item: run with `TMPDIR` pointed at a directory that is
+polled during the run, or sample `/proc/<worker>/fd` for regular-file descriptors.
+
+**Levers tested, none landed:**
+
+| lever | result |
+|---|---|
+| `pool: 'threads'` | 19.83 s wall / 12.55 s CPU against the fork pool's 18.51 / 12.47 - no win, and the threads pool rejects `execArgv: ['--max-old-space-size=8192']` outright (`ERR_WORKER_INVALID_EXEC_ARGV`), so it would force that flag into `NODE_OPTIONS` for every run |
+| `esbuild.sourcemap: false` + `build.sourcemap: false` | inconclusive: the run took 23.8 s wall with 8.2 s of system time, i.e. the host was doing heavy I/O; the profiled sourcemap work is inside Vite's SSR transform, which the esbuild knob does not necessarily reach. Worth one clean repeat before believing either way |
+| resolver-plugin memoisation | 1.16 ms (round 15) - closed |
+
+**Ceiling, so the next session does not re-open this:** the entire pre-test harness is ~6 s, and its largest piece
+(Vite transform, 3.7 s wall) is only ~1.9 s of CPU across two processes - it is round-trip latency, not
+computation. Removing *all* of the main process's sourcemap and resolution work would save about 1 s of wall. The
+12.3 s test phase is the fixture deployment plus one test body, whose 4.7 s of CPU is mostly libauth VM execution
+(real contract evaluation) and the SDK; the rest is the wait for whatever the ~23 MB of writes belong to. There is
+no longer a large lever in the vitest configuration itself.
+
+Judge future work with the two-run decomposition above (floor vs full, CPU and delta) rather than with the phase
+labels, which overlap: their sum is ~22 s on an 18 s run, and round 14 already showed most of "transform" is not
+transform.
+
 ### Incident to know about (round 11, caught before it shipped)
 
 `scripts/perf-ab.sh` originally produced its baseline half with `git checkout <commit> -- <path>`, which
@@ -547,11 +793,20 @@ fix. The large items are structural:
     yarn build
     npx vitest run --config vitest.marketplace.config.ts -t 'post job 1$'
     SOLIDC_DEBUG_BUILDER_TIMING=1 npx vitest run --config vitest.marketplace.config.ts -t 'post job 1$'
+    SOLIDC_DEBUG_CONVERGENCE_ROUNDS=1 npx vitest run --config vitest.marketplace.config.ts -t 'post job 1$'
     SOLIDC_DEBUG_TRACE_PARITY=1 npx vitest run --config vitest.marketplace.config.ts -t 'post two jobs$'
     node --max-old-space-size=8192 scripts/profile-marketplace-compile.mjs --kernel
     SOLIDC_PROFILE=1 node --max-old-space-size=8192 scripts/profile-marketplace-compile.mjs --kernel
     node --max-old-space-size=8192 scripts/perf-project-compile.mjs
     SOLIDC_PROFILE=1 node --max-old-space-size=8192 scripts/perf-project-compile.mjs
+
+The worker-thread fan-out is measured through its production entry point, one fresh cache directory per run so
+every root is a miss (a throwaway script is enough: import `compileSolidityProject` from
+`packages/testing/dist/project-compiler.js`, pass `compileFileMulti` from `packages/solidc/dist/index.js` as the
+compile function, `jobs` as the fifth argument, and hash every artifact with `updatedAt` stripped):
+
+    node --max-old-space-size=8192 <probe> --jobs 1   # then 2 and 4, interleaved
+    SOLIDC_PROFILE=1 node packages/testing/dist/cli.js compile --jobs 2
 
 Two traps for whoever measures next:
 
@@ -592,6 +847,24 @@ SDK commits in place:
 | `yarn workspace solidcash vitest run test/journal-message-bus` + `sdk-regressions` | 10 failed / 818 passed, identical to a baseline build of this worktree (diffed by test name) |
 | `yarn workspace solidcash test:fast` | 6 failed / 1,136 passed, identical to baseline (diffed by `FAIL` lines) |
 | four passing marketplace titles | all pass: 17.4 s / 18.4 s / 19.7 s / 21.5 s (baseline 27-31 s); re-run together after round 7 in 27.3 s total (20.0 s of test time) |
+
+Round 15 added these gates (all after the last code change of the round):
+
+| gate command | result |
+|---|---|
+| `yarn workspace @solidcash/testing vitest run test/project-compiler.test.ts` | 15 passed, including the three fan-out cases |
+| `yarn workspace @solidcash/testing vitest run` | 1 failed / 59 passed: `incremental-compile.e2e.test.ts > recompiles selected declarations...` fails identically on the pre-change source (`Function changed contains no statements`), so it is pre-existing on this branch |
+| `npx eslint src/project-compiler.ts src/builtin-tasks.ts test/project-compiler.test.ts` (in `packages/testing`) | 1 pre-existing error: `builtin-tasks.ts` `const source = fs.readFileSync(full, 'utf8')` in the split loop is unused, also at HEAD |
+| `yarn workspace testing-suite vitest run test/artifact-freshness.test.ts` | 2 passed (exercises the now-async compile task end to end on a `.scash` project) |
+| `npx vitest run --config vitest.marketplace.config.ts -t 'post job 1$'` | passes, 21.8 s (18.9 s before the `SOLIDC_DEBUG_CONVERGENCE_ROUNDS` instrumentation, i.e. wall-clock noise) |
+| `yarn workspace solidcash test:fast` after the SDK instrumentation | failure set identical to a pre-change baseline build of the same worktree, diffed by `FAIL` lines (the same copy-source-in, build, run, restore dance the earlier rounds used - never `git stash`) |
+
+* `packages/testing/src/project-compiler.ts` — the parallel option, the worker pool, the pre-pass/merge split and
+  the artifact-cache key (`artifactCacheVersion: 4`).
+* `packages/testing/test/fixtures/parallel-compile-stub.mjs` — worker-loadable stub compiler for the fan-out
+  tests, because a closure cannot cross a thread boundary.
+* `packages/solidcash/src/stateful/StatefulTransactionBuilder.ts` — `SOLIDC_DEBUG_CONVERGENCE_ROUNDS` counters in
+  `_assertConvergedFinalTransaction`, silent when unset.
 
 * `scripts/perf-project-compile.mjs` — single-process multi-root project-compile probe with per-root
   bytecode hashes and per-root CPU accounting. The CPU columns are what round 7's verdict uses: wall

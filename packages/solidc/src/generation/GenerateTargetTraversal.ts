@@ -6411,6 +6411,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const loc = { location: node.body.location, positionHint: PositionHint.END } as SingleLocationData;
       for (const name of [
         GRAPH_EFFECT_SITE, GRAPH_STATIC_DIRTY, GRAPH_STATIC_MODE, GRAPH_HANDLER_CALLER_DEPTH,
+        ...(this.usesMessageBusOwnerBlockBase() ? ['__internal__messageBusOwnerInput'] : []),
         ...this.graphDeploySettlementDependencies(),
       ]) {
         const index = this.getStackIndex(name, true);
@@ -11261,50 +11262,36 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // (matches the SDK's [...encodedArgs].reverse() convention)
     let pushedArgs = 0;
     let pushedSegmentBank = false;
-    const ownerParameterIndex = targetFunc.parameters.findIndex((parameter) =>
-      parameter.name === '__internal__messageBusOwnerInput');
-    if (ownerParameterIndex >= 0 && node.parameters.length !== targetFunc.parameters.length) {
-      throw new Error(`Message-bus owner frame for '${targetFunc.name}' has mismatched semantic arity `
-        + `(call ${node.parameters.length}, target ${targetFunc.parameters.length}, owner ${ownerParameterIndex})`);
-    }
     for (let i = node.parameters.length - 1; i >= 0; i--) {
       if (skipArg(i)) continue;
       const targetParameterName = targetFunc.parameters[i]?.name;
-      if (targetParameterName === '__internal__messageBusOwnerInput') {
-        // This is a compiler-owned argument lane. Reproduce it from the authenticated current participant rather
-        // than trusting the generated call expression or allowing final-use lowering to consume its frame slot.
-        // It is not necessarily trailing: an oracle/blockhash context can follow it.
-        this.emitMasterInputIndex(locationData);
-        this.pushToStack(`(__message_bus_owner_arg_${targetFunc.functionId})`);
+      const argument = this.bindMessageBusPhysicalEntryArgument(
+        node.parameters[i], targetFunc.parameters[i], targetFunc,
+      );
+      if (targetParameterName?.startsWith(KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX)) {
+        if (!pushedSegmentBank) {
+          pushedArgs += this.emitKernelJournalSegmentCallArguments(targetFunc, locationData);
+          pushedSegmentBank = true;
+        }
+        continue;
+      }
+      if (argument instanceof IdentifierNode && (targetParameterName?.startsWith(VMAP_RUNTIME_INPUT_COUNT_PREFIX)
+        || targetParameterName?.startsWith(VMAP_RUNTIME_OUTPUT_COUNT_PREFIX)
+        || targetParameterName === KERNEL_JOURNAL_RECORDS)) {
+        // These declared parameters are copy-in/copy-out route context. Never let ordinary final-use lowering
+        // OP_ROLL the caller's cell: the returned remainder must replace that same stable frame slot and a later
+        // row must receive the updated value.
+        const contextIndex = this.getStackIndex(argument.name, true);
+        if (contextIndex < 0) {
+          throw new Error(
+            `Missing route-owned context '${argument.name}' while invoking '${targetFunc.name}'`,
+          );
+        }
+        this.emit(encodeInt(BigInt(contextIndex)), locationData);
+        this.emit(Op.OP_PICK, locationData);
+        this.pushToStack(`(__vmap_cardinality_arg_${targetFunc.functionId}_${i})`);
       } else {
-        const argument = this.bindMessageBusPhysicalEntryArgument(
-          node.parameters[i], targetFunc.parameters[i], targetFunc,
-        );
-        if (targetParameterName?.startsWith(KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX)) {
-          if (!pushedSegmentBank) {
-            pushedArgs += this.emitKernelJournalSegmentCallArguments(targetFunc, locationData);
-            pushedSegmentBank = true;
-          }
-          continue;
-        }
-        if (argument instanceof IdentifierNode && (targetParameterName?.startsWith(VMAP_RUNTIME_INPUT_COUNT_PREFIX)
-          || targetParameterName?.startsWith(VMAP_RUNTIME_OUTPUT_COUNT_PREFIX)
-          || targetParameterName === KERNEL_JOURNAL_RECORDS)) {
-          // These declared parameters are copy-in/copy-out route context. Never let ordinary final-use lowering
-          // OP_ROLL the caller's cell: the returned remainder must replace that same stable frame slot and a later
-          // row must receive the updated value.
-          const contextIndex = this.getStackIndex(argument.name, true);
-          if (contextIndex < 0) {
-            throw new Error(
-              `Missing route-owned context '${argument.name}' while invoking '${targetFunc.name}'`,
-            );
-          }
-          this.emit(encodeInt(BigInt(contextIndex)), locationData);
-          this.emit(Op.OP_PICK, locationData);
-          this.pushToStack(`(__vmap_cardinality_arg_${targetFunc.functionId}_${i})`);
-        } else {
-          node.parameters[i] = this.visit(argument);
-        }
+        node.parameters[i] = this.visit(argument);
       }
       pushedArgs += 1;
     }
@@ -11713,6 +11700,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         GRAPH_STATIC_DIRTY,
         GRAPH_STATIC_MODE,
         GRAPH_HANDLER_CALLER_DEPTH,
+        ...(this.usesMessageBusOwnerBlockBase() ? ['__internal__messageBusOwnerInput'] : []),
         ...graphDeployDependencies,
         ...this.pendingEmits.flatMap((emit) => [emit.stackName, emit.identityStackName]),
         ...this.pendingTransfers.flatMap((transfer) => [
@@ -32214,23 +32202,25 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   private emitMasterInputIndex(locationData: SingleLocationData, extraStackOffset = 0): void {
-    if (this.usesMessageBusOwnerBlockBase() && !this.usesProxyStateBlockBase()) {
-      // A non-delegate handler executes inside its participant's route input, so OP_INPUTINDEX is already the
-      // authenticated owner. Using the threaded copy here is both redundant and fragile: a row-loop invocation
-      // can carry cache/journal operands above the declared frame, and a stale top-relative depth then selects a
-      // dummy entry slot whose empty token category fails at OP_SPLIT. Delegates still require the explicit proxy
-      // owner below because their executor and state owner are distinct inputs.
-      this.emit(Op.OP_INPUTINDEX, locationData);
-    } else if (this.usesMessageBusOwnerBlockBase()) {
+    if (this.usesMessageBusOwnerBlockBase()) {
       // Every generated route handler receives its physical participant owner as an explicit compiler argument.
       // Use that one authority for both direct routes (where the caller supplied OP_INPUTINDEX) and delegated
       // routes (where the caller supplied its authenticated proxy witness). Deciding again from transient clone
       // metadata is unsound: later lowering can preserve the owner parameter while losing the delegate marker,
       // causing state reads to fall back to the implementation executor's adjacent inputs. The local top-relative
       // frame includes every compiler-owned handler operand, so it does not cross the caller's still-live frame.
-      const ownerIndex = this.getStackIndex('__internal__messageBusOwnerInput') + extraStackOffset;
-      this.emit(encodeInt(BigInt(ownerIndex)), locationData);
-      this.emit(Op.OP_PICK, locationData);
+      const trackedOwnerIndex = this.getStackIndex('__internal__messageBusOwnerInput', true);
+      if (trackedOwnerIndex >= 0) {
+        this.emit(encodeInt(BigInt(trackedOwnerIndex + extraStackOffset)), locationData);
+        this.emit(Op.OP_PICK, locationData);
+      } else if (this.isSubroutineUseProbe) {
+        // The call-graph probe has no physical function frame; its emitted instructions are discarded.
+        this.emit(Op.OP_INPUTINDEX, locationData);
+      } else {
+        throw new StackVariableUnavailableError(
+          '__internal__messageBusOwnerInput', ` while compiling '${this.currentFunction.name}'`,
+        );
+      }
     } else if (this.usesProxyStateBlockBase()) {
       if (!this.isDefineSubTraversal) {
         if (this.isCompilerMessageBusRoute()) {

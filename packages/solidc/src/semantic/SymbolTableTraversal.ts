@@ -3094,6 +3094,10 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (node.parameters.some((parameter) => parameter.name === '__internal__messageBusOwnerInput')) {
       const owner = this.symbolTables[0].get('__internal__messageBusOwnerInput');
       if (owner) owner.references.push({ name: '__internal__messageBusOwnerInput' } as IdentifierNode);
+      // Backend-generated state/resource and graph-emission checks can read this authority more than once after
+      // the final source-level use. Keep the participant owner in its stable frame slot for the whole outlined
+      // handler; function cleanup consumes it exactly once.
+      node.opRolls.delete('__internal__messageBusOwnerInput');
     }
     for (const parameter of node.parameters.filter((candidate) =>
       candidate.name.startsWith('__internal__vmapRuntimeInputCount_')

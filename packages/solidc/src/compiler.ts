@@ -12516,6 +12516,103 @@ function compileResolvedAst(
         && chunkableWriteCollections.size === 1 ? [...chunkableWriteCollections][0] : undefined;
       const pooledChunkableArrayPushAccesses = (abi?.entryAccesses ?? []).filter((access) =>
         access.operations.includes('write') && access.collection === pooledChunkableArrayPushCollection);
+      const hasValidStoredElementSource = (() => {
+        if (pooledChunkableArrayPushAccesses.length !== 1 || !abi) return false;
+        const access = pooledChunkableArrayPushAccesses[0];
+        // Lowered indexed element/field writes share the whole-array continuation transport, but they are not
+        // appends and must not be forced through the SDK's stored-element replay channel.
+        if (access.arrayMutation !== 'push') return true;
+        const source = access.storedElementSource;
+        const collection = artifact.stateLayout?.collections?.find((candidate) =>
+          candidate.name === access.collection || candidate.signature === access.collection);
+        const array = collection?.valueType.match(/^(.*)\[\]$/);
+        const visibleInputs = abi.inputs.filter((input) => !input.name.startsWith('__internal__'));
+        const normalizeType = (type: string | undefined): string | undefined => (
+          type === 'uint' ? 'uint256' : type === 'int' ? 'int256' : type
+        );
+        const typeMatches = (actual: string | undefined, expected?: string): boolean => (
+          expected === undefined || normalizeType(actual) === normalizeType(expected)
+        );
+        const numericType = (type: string | undefined): boolean => (
+          type === 'bigint' || /^(?:u?int(?:\d+)?|u?fixed(?:\d+x\d+)?)$/u.test(type ?? '')
+        );
+        const validate = (
+          expression: NonNullable<typeof source>['expression'], expectedType?: string,
+        ): boolean => {
+          const comparison = ['==', '!=', '<', '<=', '>', '>=', '&&', '||'].includes(expression.operator ?? '');
+          const inferredExpressionType = expression.type ?? (expression.kind === 'binary'
+            ? comparison ? 'bool' : expression.left?.type : undefined);
+          if (expression.kind !== 'field' && !typeMatches(inferredExpressionType, expectedType)) return false;
+          if (expression.kind === 'source') {
+            const index = expression.source?.paramIndex;
+            return expression.source?.kind === 'forward' && Number.isSafeInteger(index)
+              && index! >= 0 && index! < visibleInputs.length
+              && typeMatches(expression.type, visibleInputs[index!].type);
+          }
+          if (expression.kind === 'literal') {
+            if (numericType(expression.type)) {
+              return typeof expression.value === 'string' && /^-?\d+$/u.test(expression.value);
+            }
+            if (expression.type === 'bool') return typeof expression.value === 'boolean';
+            if (expression.type === 'string') return typeof expression.value === 'string';
+            if (expression.type?.startsWith('bytes')) {
+              return typeof expression.value === 'string' && /^(?:[0-9a-fA-F]{2})*$/u.test(expression.value);
+            }
+            return false;
+          }
+          if (expression.kind === 'state') {
+            return expression.name === '__block_timestamp' && numericType(expression.type);
+          }
+          if (expression.kind === 'cast') {
+            return expression.expression !== undefined && expression.type !== undefined
+              && validate(expression.expression);
+          }
+          if (expression.kind === 'field') {
+            if (!expression.expression || !validate(expression.expression)) return false;
+            const struct = artifact.structs?.find((candidate) => candidate.name === expression.expression!.type);
+            const field = struct?.fields.find((candidate) => candidate.name === expression.name);
+            return field !== undefined
+              && (expression.type === undefined || typeMatches(expression.type, field.type))
+              && typeMatches(field.type, expectedType);
+          }
+          if (expression.kind === 'binary') {
+            return ['+', '-', '*', '/', '%', '&', '|', '^', '==', '!=', '<', '<=', '>', '>=', '&&', '||']
+              .includes(expression.operator ?? '')
+              && expression.left !== undefined && expression.right !== undefined
+              && validate(expression.left) && validate(expression.right);
+          }
+          if (expression.kind === 'ternary') {
+            return expression.condition !== undefined && expression.ifTrue !== undefined
+              && expression.ifFalse !== undefined && validate(expression.condition, 'bool')
+              && validate(expression.ifTrue, expression.type) && validate(expression.ifFalse, expression.type);
+          }
+          if (expression.kind === 'arrayAccess') {
+            const elementType = expression.left?.type?.match(/^(.*)\[(?:\d*)\]$/u)?.[1];
+            return expression.left !== undefined && expression.right !== undefined && elementType !== undefined
+              && validate(expression.left) && validate(expression.right)
+              && numericType(expression.right.type) && typeMatches(expression.type, elementType);
+          }
+          if (expression.kind === 'array') {
+            const elementType = expression.type?.match(/^(.*)\[(?:\d*)\]$/u)?.[1];
+            return elementType !== undefined && expression.args?.every((argument) => (
+              validate(argument, elementType)
+            )) === true;
+          }
+          if (expression.kind === 'call') {
+            const struct = artifact.structs?.find((candidate) => candidate.name === expression.name);
+            return struct !== undefined && expression.type === struct.name
+              && expression.args?.length === struct.fields.length
+              && expression.args.every((argument, index) => validate(argument, struct.fields[index].type));
+          }
+          return false;
+        };
+        return source?.version === 1 && array !== null && array !== undefined
+          && source.elementType === array[1]
+          && source.expression.type === source.elementType
+          && access.mutationEffectOrdinals?.length === 1
+          && source.mutationEffectOrdinal === access.mutationEffectOrdinals[0]
+          && validate(source.expression, source.elementType);
+      })();
       const hasCompletePooledChunkableArrayPushTransport = fn.messageBusDispatched === true
         && fn.messageBusPooledChunkableArrayPush === true
         && abi?.sourceEffectOrder === 'linear'
@@ -12529,6 +12626,7 @@ function compileResolvedAst(
           || (pooledChunkableArrayPushAccesses[0].keySources?.length === 1
             && pooledChunkableArrayPushAccesses[0].keySources?.[0].kind === 'param'))
         && pooledChunkableArrayPushAccesses[0].mutationEffectOrdinals?.length === 1
+        && hasValidStoredElementSource
         && runtimeJournalAccesses.every((access) => access.op === 'read'
           || access.collection !== pooledChunkableArrayPushCollection);
       const hasIncompleteChunkableTransport = [...chunkableWriteCollections].some((collection) => (

@@ -51,6 +51,10 @@ const composeCount = (outer: number | undefined, inner: number | undefined): num
 const safeSourceEffectOrdinal = (value: number | undefined): value is number =>
   typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
 
+/** Replay expressions are JSON-shaped; detach every nested node before publishing compiler metadata. */
+const cloneExternalCallExpression = (expression: ExternalCallExpression): ExternalCallExpression =>
+  JSON.parse(JSON.stringify(expression)) as ExternalCallExpression;
+
 /** Fail-closed artifact publication gate for compiler-owned source-effect identities. */
 export const sourceEffectOrderForArtifact = (
   declared: FunctionDefinitionNode['sourceEffectOrder'],
@@ -1936,6 +1940,13 @@ function buildFunctionAbiMetadata(
           && { runtimeAliasPriorSlots: ea.runtimeAliasPriorSlots }),
         ...(ea.valueParam !== undefined && { valueParam: ea.valueParam }),
         ...(ea.valueSource !== undefined && { valueSource: ea.valueSource }),
+        ...(ea.storedElementSource !== undefined && {
+          storedElementSource: {
+            ...ea.storedElementSource,
+            expression: cloneExternalCallExpression(ea.storedElementSource.expression),
+          },
+        }),
+        ...(ea.arrayMutation !== undefined && { arrayMutation: ea.arrayMutation }),
       })),
     }),
     ...(publishedSourceEffectOrder !== undefined && { sourceEffectOrder: publishedSourceEffectOrder }),

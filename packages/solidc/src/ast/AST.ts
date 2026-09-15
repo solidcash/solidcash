@@ -278,6 +278,19 @@ export interface EntryAccessInfo {
   valueParam?: string;
   // Canonical whole-value expression used by the SDK when it can be evaluated off-chain (notably literals).
   valueSource?: string;
+  /**
+   * Exact off-chain replay recipe for the element consumed by one chunkable sorted-array push. The recipe is
+   * attached to the mutation's compiler-owned source-effect ordinal; omission means the push must not be
+   * reconstructed from ABI type similarity.
+   */
+  storedElementSource?: {
+    version: 1;
+    mutationEffectOrdinal: number;
+    elementType: string;
+    expression: ExternalCallExpression;
+  };
+  /** Exact collection-array mutation represented by this access. */
+  arrayMutation?: 'push' | 'pop' | 'indexed' | 'mixed';
 }
 
 export interface TokenContainerAccessInfo {

@@ -969,6 +969,15 @@ export interface EntryAccessAbi {
   valueParam?: string;
   /** Canonical expression for a whole-value write when it is not a direct parameter (e.g. `lit:hello`). */
   valueSource?: string;
+  /** Compiler-authenticated, typed source of the element appended by one exact chunkable-array mutation. */
+  storedElementSource?: {
+    version: 1;
+    mutationEffectOrdinal: number;
+    elementType: string;
+    expression: ExternalCallExpression;
+  };
+  /** Exact collection-array mutation represented by this access. */
+  arrayMutation?: 'push' | 'pop' | 'indexed' | 'mixed';
 }
 
 export interface ExternalReadAbi {

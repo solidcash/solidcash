@@ -15,6 +15,78 @@ describe('vmap fixed-write batch metadata', () => {
       .toMatchObject({ operations: ['read', 'write'], chunkableArrayValue: true });
   });
 
+  it('binds a chunkable-array element recipe to the exact mutated parameter and effect', () => {
+    const artifact = compileString(`pragma solidity ^0.8.0;
+      struct Packet { uint8 tag; bytes owner; bytes data; uint32 recordedAt; }
+      contract Archive {
+        mapping(uint256 => Packet[]) history;
+        function append(uint256 key, Packet decoy, Packet selected) public {
+          selected.recordedAt = uint32(block.timestamp);
+          history[key].push(selected);
+          require(true);
+        }
+      }
+    `, { forceStateful: true, solidityImportCompat: true, messageBus: true, messageBusKernel: true });
+    const access = artifact.abi.find((fn) => fn.name === 'append')?.entryAccesses?.[0];
+    expect(access?.storedElementSource).toMatchObject({
+      version: 1,
+      mutationEffectOrdinal: access?.mutationEffectOrdinals?.[0],
+      elementType: 'Packet',
+      expression: {
+        kind: 'call', name: 'Packet', type: 'Packet',
+        args: [
+          expect.objectContaining({ kind: 'field', name: 'tag' }),
+          expect.objectContaining({ kind: 'field', name: 'owner' }),
+          expect.objectContaining({ kind: 'field', name: 'data' }),
+          expect.objectContaining({ kind: 'cast', type: 'uint32', expression: expect.objectContaining({
+            kind: 'state', name: '__block_timestamp',
+          }) }),
+        ],
+      },
+    });
+    expect(access?.arrayMutation).toBe('push');
+    const selectedSource = access?.storedElementSource?.expression.args?.[0].expression;
+    expect(selectedSource).toMatchObject({ source: { kind: 'forward', paramIndex: 2 } });
+  });
+
+  it('omits a stored-element recipe when control flow can redefine its operand', () => {
+    const artifact = compileString(`pragma solidity ^0.8.0;
+      struct Cell { uint256 value; uint32 writtenAt; }
+      contract Archive {
+        mapping(uint256 => Cell[]) history;
+        function append(uint256 key, Cell selected, bool replace) public {
+          if (replace) selected.writtenAt = uint32(block.timestamp);
+          history[key].push(selected);
+          require(true);
+        }
+      }
+    `, { forceStateful: true, solidityImportCompat: true, messageBus: true, messageBusKernel: true });
+    const access = artifact.abi.find((fn) => fn.name === 'append')?.entryAccesses?.[0];
+    expect(access?.storedElementSource).toBeUndefined();
+    expect(access?.arrayMutation).toBe('push');
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'append'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+  });
+
+  it('omits a stored-element recipe after an unsupported local mutation', () => {
+    const artifact = compileString(`pragma solidity ^0.8.0;
+      struct Cell { uint256 value; }
+      contract Archive {
+        mapping(uint256 => Cell[]) history;
+        function append(uint256 key, Cell selected) public {
+          delete selected;
+          history[key].push(selected);
+          require(true);
+        }
+      }
+    `, { forceStateful: true, solidityImportCompat: true, messageBus: true, messageBusKernel: true });
+    const access = artifact.abi.find((fn) => fn.name === 'append')?.entryAccesses?.[0];
+    expect(access).toMatchObject({ arrayMutation: 'push' });
+    expect(access?.storedElementSource).toBeUndefined();
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'append'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+  });
+
   it('groups distinct fixed writes to one collection by final entry slot', () => {
     const artifact = compileString(`contract C {
       mapping(int => int) m;

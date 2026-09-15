@@ -5616,21 +5616,34 @@ export function encodeLeadingRouteArrayPushes(params: {
   timestamp?: bigint;
   /** Historical legacy-unroll JobEventData adapter; never inferred from arbitrary field names. */
   legacyJobEventCompatibility?: boolean;
+  /** Evaluate the compiler-authenticated element recipe in this row's exact ABI/state environment. */
+  resolveElement?: (
+    row: RouteExpressionKeyRow, access: EntryAccessAbi, elementType: string,
+  ) => Uint8Array | undefined;
 }): Uint8Array | undefined {
   const array = parseArrayTypeString(params.valueType);
   if (!array || array.bound !== undefined) return undefined;
-  const rows = params.rowArguments.flatMap((row) => {
+  const rows: Array<{
+    row: RouteExpressionKeyRow; key: string; access: EntryAccessAbi; legacyElementIndex?: number;
+  }> = params.rowArguments.flatMap((row) => {
     const accesses = (row.handler.entryAccesses ?? []).filter((access) => (
       access.collection === params.collection && access.operations?.includes('write')
     ));
     if (accesses.length !== 1) return [];
     const key = routeRowCollectionKey(row, accesses[0], params.structs);
+    if (key === undefined) return [];
+    const recipe = accesses[0].storedElementSource;
+    if (accesses[0].arrayMutation === 'push' && recipe?.version === 1) {
+      return [{ row, key, access: accesses[0] }];
+    }
+    // Old legacy-unroll artifacts have no recipe. Keep their exact schema adapter isolated here; kernel rows are
+    // never authorized by a same-typed argument search.
+    if (params.legacyJobEventCompatibility !== true) return [];
     const visible = visibleHandlerInputs(row.handler.inputs);
-    const elementInputs = visible
-      .map((input, index) => ({ input, index }))
+    const elementInputs = visible.map((input, index) => ({ input, index }))
       .filter(({ input }) => input.type === array.elementType);
-    if (key === undefined || elementInputs.length !== 1) return [];
-    return [{ row, key, elementIndex: elementInputs[0].index }];
+    return elementInputs.length === 1
+      ? [{ row, key, access: accesses[0], legacyElementIndex: elementInputs[0].index }] : [];
   });
   if (rows.length < 2) return undefined;
   const final = rows[rows.length - 1];
@@ -5640,10 +5653,14 @@ export function encodeLeadingRouteArrayPushes(params: {
   for (const candidate of earlier) {
     // Same wire rule as the refresh's current element: an empty event timestamp is stamped by the storing handler,
     // so the derived leading mutation must carry the stamp too.
-    const raw = candidate.row.args[candidate.elementIndex];
-    const element = encodeStructArgument(
-      raw, array.elementType, params.structs, params.timestamp,
-      params.legacyJobEventCompatibility === true,
+    const element = candidate.legacyElementIndex === undefined
+      ? params.resolveElement?.(candidate.row, candidate.access, array.elementType)
+      : encodeStructArgument(
+        candidate.row.args[candidate.legacyElementIndex], array.elementType, params.structs,
+        params.timestamp, true,
+      );
+    if (!element) throw new Error(
+      `Cannot evaluate compiler-authenticated stored element for '${params.collection}'.`,
     );
     encoded = appendEncodedArrayElement(encoded, element);
   }
@@ -18342,16 +18359,22 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               const selectedRows = (entryAbiFunction as MessageBusRuntimeAbiFunction | undefined)
                 ?.messageBusRowArguments;
               if (selectedRows && authenticatedChunkableValue) {
-                const timestamp = typeof onChainState.state.__block_timestamp === 'bigint'
+                const legacyCompatibility = usesLegacyJobEventCompatibility(
+                  entryArtifact, collection.valueType, stateLayout.structs,
+                );
+                const legacyTimestamp = legacyCompatibility
+                  && typeof onChainState.state.__block_timestamp === 'bigint'
                   ? onChainState.state.__block_timestamp : undefined;
                 const leadingValue = encodeLeadingRouteArrayPushes({
                   rowArguments: selectedRows,
                   collection: access.collection,
                   valueType: collection.valueType,
                   structs: stateLayout.structs,
-                  timestamp,
-                  legacyJobEventCompatibility: usesLegacyJobEventCompatibility(
-                    entryArtifact, collection.valueType, stateLayout.structs,
+                  timestamp: legacyTimestamp,
+                  legacyJobEventCompatibility: legacyCompatibility,
+                  resolveElement: (row, rowAccess, elementType) => this._encodeStoredElementSource(
+                    rowAccess, elementType, [...row.args], row.handler, entryArtifact,
+                    onChainState.state as Record<string, unknown>,
                   ),
                 });
                 const leadingIndex = entryAbiFunction!.inputs.findIndex((input) =>
@@ -25367,28 +25390,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   // exists. The selector resolver and producer path both fail closed for overloaded or
                   // incompletely-coordinated edges, so this cannot turn a name-derived SDK guess into authority.
                   const discoveredProducerRows = sequentialRows ?? directInvocationRows;
-                  const oracleTimestamp = (() => {
-                    const raw = (childState as { state?: Record<string, unknown> })?.state?.__block_timestamp;
-                    if (typeof raw === 'bigint' && raw > 0n) return raw;
-                    if (typeof raw === 'number' && raw > 0) return BigInt(raw);
-                    const providerTime = Number(
-                      (this.inner.provider as { getBlockTime?: () => number }).getBlockTime?.() ?? 0,
-                    );
-                    if (providerTime <= 0) return undefined;
-                    // updateJobWhitelist appends onto an existing JobEventData[]; publishJobEvent assigns
-                    // block.timestamp (= nLocktime = tip-1). First inserts keep the tip so post-job
-                    // green paths are unchanged.
-                    const emptyArrayLen = 1; // encodePushdataValue([], ...) => 0x00
-                    const appending = [...childStoredValues.values()]
-                      .some((value) => value.length > emptyArrayLen);
-                    if (appending) {
-                      const locktime = providerUnixLocktime(
-                        this.inner.provider as { getBlockTime?: () => number },
-                      );
-                      return BigInt(locktime ?? providerTime);
-                    }
-                    return BigInt(providerTime);
-                  })();
                   refreshChunkableRouteWitnesses = (rowArguments, finalVisibleArgs) => {
                     const internalArgs: Record<string, FunctionArgument> = {};
                     const producerClaims: ValueChunkProducerResourceClaim[] = [];
@@ -25408,6 +25409,25 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                       if (!collection?.chunkableValue) continue;
                       let payloadBytes = fallbackPayloadBytes;
                       if (collection.valueType.endsWith('[]')) {
+                        const legacyCompatibility = usesLegacyJobEventCompatibility(
+                          sharedLogicalArtifact, collection.valueType, structs,
+                        );
+                        const legacyTimestamp = (() => {
+                          if (!legacyCompatibility) return undefined;
+                          const raw = (childState as { state?: Record<string, unknown> })
+                            ?.state?.__block_timestamp;
+                          if (typeof raw === 'bigint' && raw > 0n) return raw;
+                          if (typeof raw === 'number' && raw > 0) return BigInt(raw);
+                          const providerTime = Number(
+                            (this.inner.provider as { getBlockTime?: () => number }).getBlockTime?.() ?? 0,
+                          );
+                          if (providerTime <= 0) return undefined;
+                          const appending = [...childStoredValues.values()].some((value) => value.length > 1);
+                          const plannedLocktime = providerUnixLocktime(
+                            this.inner.provider as { getBlockTime?: () => number },
+                          );
+                          return BigInt(appending ? plannedLocktime ?? providerTime : providerTime);
+                        })();
                         const leadingName = `__internal__leadingPushValue_${routeSlot}`;
                         const inheritedLeading = inheritedRouteInternalArgs[leadingName];
                         const routeLeading = effectiveRowArguments
@@ -25416,9 +25436,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                             collection: access.collection,
                             valueType: collection.valueType,
                             structs,
-                            timestamp: oracleTimestamp,
-                            legacyJobEventCompatibility: usesLegacyJobEventCompatibility(
-                              sharedLogicalArtifact, collection.valueType, structs,
+                            timestamp: legacyTimestamp,
+                            legacyJobEventCompatibility: legacyCompatibility,
+                            resolveElement: (row, rowAccess, elementType) => this._encodeStoredElementSource(
+                              rowAccess, elementType, [...row.args], row.handler, sharedLogicalArtifact,
+                              (childState as { state?: Record<string, unknown> })?.state,
                             ),
                           }) : undefined;
                         const leadingPush = inheritedLeading instanceof Uint8Array
@@ -25430,17 +25452,22 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                         const emptyArray = encodePushdataValue([], collection.valueType, structs);
                         const storedPreValue = childStoredValues.get(routeSlot) ?? emptyArray;
                         const elementType = collection.valueType.slice(0, -2);
-                        const elementIndex = visibleInputs.findIndex((input) => input.type === elementType);
-                        let currentElement: Uint8Array | undefined;
-                        if (elementIndex >= 0) {
-                          // Encode the exact source argument. The encoder applies timestamp/address adaptation
-                          // only for the explicitly identified legacy-unroll wire schema; kernel values must not
-                          // change because a field happens to have an application-associated spelling.
-                          currentElement = encodeStructArgument(
-                            finalVisibleArgs[elementIndex], elementType, structs, oracleTimestamp,
-                            usesLegacyJobEventCompatibility(sharedLogicalArtifact, elementType, structs),
-                          );
-                        }
+                        const storedRows = (effectiveRowArguments ?? []).flatMap((row) => (
+                          (row.handler.entryAccesses ?? []).filter((rowAccess) => (
+                            rowAccess.collection === access.collection
+                            && rowAccess.operations.includes('write')
+                          )).map((rowAccess) => ({ row, rowAccess }))
+                        ));
+                        const terminalStored = storedRows.at(-1);
+                        // The actual terminal write owns the current element. Never skip a recipe-less terminal
+                        // row and silently reuse an earlier producer for the same collection.
+                        const currentElement = terminalStored?.rowAccess.arrayMutation === 'push'
+                          && terminalStored.rowAccess.storedElementSource?.version === 1
+                          ? this._encodeStoredElementSource(
+                            terminalStored.rowAccess, elementType, [...terminalStored.row.args],
+                            terminalStored.row.handler, sharedLogicalArtifact,
+                            (childState as { state?: Record<string, unknown> })?.state,
+                          ) : undefined;
                         const channels = deriveChunkableArrayValueChannels({
                           preValueWitness: childValueWitnesses.get(routeSlot),
                           storedPreValue,
@@ -33041,6 +33068,113 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     return step;
   }
 
+  /** Validate and evaluate one compiler-authenticated chunkable-array push operand. */
+  private _encodeStoredElementSource(
+    access: EntryAccessAbi,
+    elementType: string,
+    functionArgs: FunctionArgument[],
+    handler: AbiFunction,
+    artifact: Artifact,
+    state?: Record<string, unknown>,
+  ): Uint8Array | undefined {
+    const recipe = access.storedElementSource;
+    const visibleInputs = visibleHandlerInputs(handler.inputs);
+    const structs = artifact.structs ?? artifact.stateLayout?.structs;
+    const normalizeType = (type: string | undefined): string | undefined => (
+      type === 'uint' ? 'uint256' : type === 'int' ? 'int256' : type
+    );
+    const typeMatches = (actual: string | undefined, expected?: string): boolean => (
+      expected === undefined || normalizeType(actual) === normalizeType(expected)
+    );
+    const numericType = (type: string | undefined): boolean => (
+      type === 'bigint' || /^(?:u?int(?:\d+)?|u?fixed(?:\d+x\d+)?)$/u.test(type ?? '')
+    );
+    const validate = (expression: ExternalCallExpression, expectedType?: string): boolean => {
+      const comparison = ['==', '!=', '<', '<=', '>', '>=', '&&', '||'].includes(expression.operator ?? '');
+      const inferredExpressionType = expression.type ?? (expression.kind === 'binary'
+        ? comparison ? 'bool' : expression.left?.type : undefined);
+      if (expression.kind !== 'field' && !typeMatches(inferredExpressionType, expectedType)) return false;
+      if (expression.kind === 'source') {
+        const index = expression.source?.paramIndex;
+        return expression.source?.kind === 'forward' && Number.isSafeInteger(index)
+          && index! >= 0 && index! < visibleInputs.length
+          && typeMatches(expression.type, visibleInputs[index!].type);
+      }
+      if (expression.kind === 'literal') {
+        if (numericType(expression.type)) {
+          return typeof expression.value === 'string' && /^-?\d+$/u.test(expression.value);
+        }
+        if (expression.type === 'bool') return typeof expression.value === 'boolean';
+        if (expression.type === 'string') return typeof expression.value === 'string';
+        if (expression.type?.startsWith('bytes')) {
+          return typeof expression.value === 'string' && /^(?:[0-9a-fA-F]{2})*$/u.test(expression.value);
+        }
+        return false;
+      }
+      if (expression.kind === 'state') {
+        return expression.name === '__block_timestamp' && numericType(expression.type);
+      }
+      if (expression.kind === 'cast') {
+        return expression.expression !== undefined && expression.type !== undefined
+          && validate(expression.expression);
+      }
+      if (expression.kind === 'field') {
+        if (!expression.expression || !validate(expression.expression)) return false;
+        const struct = structs?.find((candidate) => candidate.name === expression.expression!.type);
+        const field = struct?.fields.find((candidate) => candidate.name === expression.name);
+        return field !== undefined
+          && (expression.type === undefined || typeMatches(expression.type, field.type))
+          && typeMatches(field.type, expectedType);
+      }
+      if (expression.kind === 'binary') {
+        return ['+', '-', '*', '/', '%', '&', '|', '^', '==', '!=', '<', '<=', '>', '>=', '&&', '||']
+          .includes(expression.operator ?? '')
+          && expression.left !== undefined && expression.right !== undefined
+          && validate(expression.left) && validate(expression.right);
+      }
+      if (expression.kind === 'ternary') {
+        return expression.condition !== undefined && expression.ifTrue !== undefined
+          && expression.ifFalse !== undefined && validate(expression.condition, 'bool')
+          && validate(expression.ifTrue, expression.type) && validate(expression.ifFalse, expression.type);
+      }
+      if (expression.kind === 'arrayAccess') {
+        const elementType = expression.left?.type?.match(/^(.*)\[(?:\d*)\]$/u)?.[1];
+        return expression.left !== undefined && expression.right !== undefined && elementType !== undefined
+          && validate(expression.left) && validate(expression.right)
+          && numericType(expression.right.type) && typeMatches(expression.type, elementType);
+      }
+      if (expression.kind === 'array') {
+        const elementType = expression.type?.match(/^(.*)\[(?:\d*)\]$/u)?.[1];
+        return elementType !== undefined && expression.args?.every((argument) => (
+          validate(argument, elementType)
+        )) === true;
+      }
+      if (expression.kind === 'call') {
+        const struct = structs?.find((candidate) => candidate.name === expression.name);
+        return struct !== undefined && expression.type === struct.name
+          && expression.args?.length === struct.fields.length
+          && expression.args.every((argument, index) => validate(argument, struct.fields[index].type));
+      }
+      return false;
+    };
+    if (access.arrayMutation !== 'push' || recipe?.version !== 1 || recipe.elementType !== elementType
+      || recipe.expression.type !== elementType
+      || access.mutationEffectOrdinals?.length !== 1
+      || recipe.mutationEffectOrdinal !== access.mutationEffectOrdinals[0]
+      || !validate(recipe.expression, recipe.elementType)) return undefined;
+    const value = this._evaluateExternalExpression(
+      recipe.expression, functionArgs, artifact, state, visibleInputs,
+      undefined, 0, false, undefined, undefined, undefined, true,
+    );
+    if (value === undefined) return undefined;
+    try {
+      const encoded = encodeFunctionArgument(value, elementType, structs);
+      return encoded instanceof Uint8Array ? encoded : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
   private _evaluateExternalExpression(
     expression: ExternalCallExpression,
     functionArgs: FunctionArgument[],
@@ -33053,11 +33187,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     executionSelfAddress?: FunctionArgument,
     localBindings?: ReadonlyMap<string, FunctionArgument>,
     stateLengthDeltas?: Readonly<Record<string, bigint>>,
+    strictFieldAccess = false,
   ): FunctionArgument | undefined {
     const evaluate = (candidate: ExternalCallExpression): FunctionArgument | undefined => (
       this._evaluateExternalExpression(
         candidate, functionArgs, artifact, state, callerInputs, externalReturns, occurrenceIndex,
-        stateIncludesPriorWrites, executionSelfAddress, localBindings, stateLengthDeltas,
+        stateIncludesPriorWrites, executionSelfAddress, localBindings, stateLengthDeltas, strictFieldAccess,
       )
     );
     const concat = (parts: Uint8Array[]): Uint8Array => {
@@ -33264,7 +33399,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       )?.[0];
     }
     if (expression.kind === 'literal') {
-      if (expression.type === 'bigint' && typeof expression.value === 'string') return BigInt(expression.value);
+      if (typeof expression.value === 'string'
+        && (expression.type === 'bigint'
+          || /^(?:u?int(?:\d+)?|u?fixed(?:\d+x\d+)?)$/u.test(expression.type ?? ''))) {
+        try { return BigInt(expression.value); } catch { return undefined; }
+      }
       if (expression.type === 'bool' && typeof expression.value === 'boolean') return expression.value;
       if (expression.type === 'string' && typeof expression.value === 'string') return expression.value;
       if (typeof expression.value === 'string' && expression.type?.startsWith('bytes')) {
@@ -33287,7 +33426,19 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       return value as FunctionArgument | undefined;
     }
     if (expression.kind === 'field' && expression.expression && expression.name) {
-      const base = evaluate(expression.expression);
+      let base = evaluate(expression.expression);
+      if (base instanceof Uint8Array) {
+        const structType = inferredType(expression.expression);
+        const structs = artifact.structs ?? artifact.stateLayout?.structs;
+        if (structs?.some((candidate) => candidate.name === structType)) {
+          try {
+            const decoded = decodePushdataValue(base, 0, structType, structs);
+            if (decoded.bytesConsumed === base.length) base = decoded.value as FunctionArgument;
+          } catch {
+            return undefined;
+          }
+        }
+      }
       if (base && typeof base === 'object' && !Array.isArray(base) && !(base instanceof Uint8Array)) {
         const value = (base as unknown as Record<string, FunctionArgument>)[expression.name];
         if (value !== undefined) return value;
@@ -33304,6 +33455,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           return base[fieldIndex] as FunctionArgument;
         }
       }
+      if (strictFieldAccess) return undefined;
       if (expression.type === 'bool') return false;
       if (expression.type?.startsWith('uint') || expression.type?.startsWith('int')) return 0n;
       return undefined;
@@ -33501,8 +33653,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         const result = execute(expression.statements);
         if (!invalid && result.returned) return result.value;
       }
-      // Struct constructor: positional arrays are accepted by the ABI encoder.
-      if (expression.name && /^[A-Z]/.test(expression.name)) {
+      // Struct constructors are admitted only by the artifact's exact declared schema; spelling is not authority.
+      if (expression.name && expression.type === expression.name
+        && (artifact.structs ?? artifact.stateLayout?.structs)
+          ?.some((candidate) => candidate.name === expression.name
+            && candidate.fields.length === values.length)) {
         return values as unknown as FunctionArgument;
       }
     }

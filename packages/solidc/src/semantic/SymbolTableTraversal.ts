@@ -5749,6 +5749,204 @@ export default class SymbolTableTraversal extends AstTraversal {
     return found;
   }
 
+  /** Exact, statement-bounded operand recipe for one straight-line chunkable-array push. */
+  private storedElementSourceOf(node: MappingAssignNode): EntryAccessInfo['storedElementSource'] | undefined {
+    if (!node.arrayPush || node.arrayPop || node.arrayIndex || node.sourceEffectOrdinal === undefined
+      || !(node.collection?.innermostValueType instanceof ArrayType) || !this.currentFunction?.body) return undefined;
+    const elementType = node.collection.innermostValueType.elementType.toString();
+    // Entry collection can operate on a lowered clone while `currentFunction.body` retains the source handler
+    // instance. Join them only by the already-assigned effect identity and exact collection/mutation shape.
+    const matching: MappingAssignNode[] = [];
+    const locate = (candidate: Node, seen = new Set<Node>()): void => {
+      if (seen.has(candidate)) return;
+      seen.add(candidate);
+      if (candidate instanceof MappingAssignNode && candidate.name === node.name && candidate.arrayPush
+        && candidate.sourceEffectOrdinal === node.sourceEffectOrdinal) matching.push(candidate);
+      for (const [key, value] of Object.entries(candidate)) {
+        if (['location', 'resolvedFunction', 'functionReference', 'definition', 'symbolTable', 'referencedContract',
+          'stateVariable', 'collection', 'sourceCallNode', 'type'].includes(key)) continue;
+        if (value instanceof Node) locate(value, seen);
+        else if (Array.isArray(value)) for (const item of value) if (item instanceof Node) locate(item, seen);
+      }
+    };
+    locate(this.currentFunction.body);
+    if (matching.length !== 1) return undefined;
+    const targetNode = matching[0];
+    const bindings = new Map<Node, ExternalCallExpression>();
+    for (const [index, parameter] of this.currentFunction.parameters.entries()) {
+      bindings.set(parameter, {
+        kind: 'source', type: parameter.type.toString(), source: { kind: 'forward', paramIndex: index },
+      });
+    }
+    const backrefs = new Set([
+      'location', 'resolvedFunction', 'functionReference', 'definition', 'symbolTable', 'referencedContract',
+      'stateVariable', 'collection', 'sourceCallNode', 'type',
+    ]);
+    const contains = (root: Node, target: Node, seen = new Set<Node>()): boolean => {
+      if (root === target) return true;
+      if (seen.has(root)) return false;
+      seen.add(root);
+      for (const [key, value] of Object.entries(root)) {
+        if (backrefs.has(key)) continue;
+        if (value instanceof Node && contains(value, target, seen)) return true;
+        if (Array.isArray(value)
+          && value.some((item) => item instanceof Node && contains(item, target, seen))) return true;
+      }
+      return false;
+    };
+    const containsCall = (root: Node, seen = new Set<Node>()): boolean => {
+      if (seen.has(root)) return false;
+      seen.add(root);
+      if (root instanceof FunctionCallNode || root instanceof MethodCallNode
+        || root instanceof IndirectCallNode || root instanceof ExternalFunctionCallNode
+        || root instanceof LowLevelCallNode) return true;
+      for (const [key, value] of Object.entries(root)) {
+        if (backrefs.has(key)) continue;
+        if (value instanceof Node && containsCall(value, seen)) return true;
+        if (Array.isArray(value)
+          && value.some((item) => item instanceof Node && containsCall(item, seen))) return true;
+      }
+      return false;
+    };
+    const serialize = (expression: ExpressionNode, seen = new Set<Node>()): ExternalCallExpression | undefined => {
+      if (seen.has(expression)) return undefined;
+      seen = new Set(seen).add(expression);
+      if (expression instanceof IdentifierNode) {
+        const definition = expression.definition?.definition;
+        return definition ? bindings.get(definition) : undefined;
+      }
+      if (expression instanceof IntLiteralNode) {
+        return { kind: 'literal', type: expression.type?.toString() ?? 'bigint', value: expression.value.toString() };
+      }
+      if (expression instanceof BoolLiteralNode) return { kind: 'literal', type: 'bool', value: expression.value };
+      if (expression instanceof StringLiteralNode) {
+        return { kind: 'literal', type: 'string', value: expression.value };
+      }
+      if (expression instanceof HexLiteralNode) {
+        return { kind: 'literal', type: `bytes${expression.value.length}`, value: binToHex(expression.value) };
+      }
+      if (expression instanceof NullaryOpNode && expression.operator === NullaryOperator.BLOCK_TIMESTAMP) {
+        return { kind: 'state', name: '__block_timestamp', type: expression.type?.toString() ?? 'uint256' };
+      }
+      if (expression instanceof StateAccessNode && expression.name === '__block_timestamp') {
+        return { kind: 'state', name: expression.name, type: expression.type?.toString() ?? 'uint32' };
+      }
+      if (expression instanceof CastNode) {
+        const inner = serialize(expression.expression, seen);
+        return inner && { kind: 'cast', type: expression.type.toString(), expression: inner };
+      }
+      if (expression instanceof FieldAccessNode) {
+        const inner = serialize(expression.expression, seen);
+        return inner && {
+          kind: 'field', name: expression.name, expression: inner,
+          ...(expression.type && { type: expression.type.toString() }),
+        };
+      }
+      if (expression instanceof BinaryOpNode) {
+        const left = serialize(expression.left, seen);
+        const right = serialize(expression.right, seen);
+        return left && right && {
+          kind: 'binary', operator: expression.operator, left, right,
+          ...(expression.type && { type: expression.type.toString() }),
+        };
+      }
+      if (expression instanceof TernaryOpNode) {
+        const condition = serialize(expression.condition, seen);
+        const ifTrue = serialize(expression.ifTrue, seen);
+        const ifFalse = serialize(expression.ifFalse, seen);
+        return condition && ifTrue && ifFalse && {
+          kind: 'ternary', condition, ifTrue, ifFalse,
+          ...(expression.type && { type: expression.type.toString() }),
+        };
+      }
+      if (expression instanceof ArrayAccessNode) {
+        const left = serialize(expression.array, seen);
+        const right = serialize(expression.index, seen);
+        return left && right && {
+          kind: 'arrayAccess', left, right,
+          ...(expression.type && { type: expression.type.toString() }),
+        };
+      }
+      if (expression instanceof ArrayNode) {
+        const args = expression.elements.map((item) => serialize(item, seen));
+        return args.every((item): item is ExternalCallExpression => item !== undefined)
+          ? { kind: 'array', args, ...(expression.type && { type: expression.type.toString() }) } : undefined;
+      }
+      if (expression instanceof FunctionCallNode || expression instanceof InstantiationNode) {
+        const struct = this.structMap.get(expression.identifier.name);
+        if (!struct || expression.parameters.length !== struct.fields.length) return undefined;
+        const args = expression.parameters.map((parameter) => serialize(parameter, seen));
+        return args.every((item): item is ExternalCallExpression => item !== undefined)
+          ? { kind: 'call', name: struct.name, type: struct.name, args } : undefined;
+      }
+      return undefined;
+    };
+    let reached = false;
+    let invalid = false;
+    const processBlock = (block: BlockNode): void => {
+      for (const statement of block.statements ?? []) {
+        if (reached || invalid) return;
+        if (statement === targetNode) { reached = true; return; }
+        if (contains(statement, targetNode)) {
+          if (statement instanceof BlockNode) processBlock(statement);
+          else if (statement instanceof UncheckedNode) processBlock(statement.block);
+          else invalid = true;
+          return;
+        }
+        if (statement instanceof BranchNode || statement instanceof WhileNode || statement instanceof DoWhileNode
+          || statement instanceof SwitchNode || statement instanceof TryCatchNode
+          || statement instanceof CollectionIterationNode) {
+          invalid = true;
+          return;
+        }
+        if (statement instanceof BlockNode) processBlock(statement);
+        else if (statement instanceof UncheckedNode) processBlock(statement.block);
+        else if (statement instanceof VariableDefinitionNode) {
+          const value = statement.expression ? serialize(statement.expression) : undefined;
+          if (value) bindings.set(statement, value);
+          else bindings.delete(statement);
+        } else if (statement instanceof AssignNode) {
+          const definition = statement.identifier.definition?.definition;
+          const value = serialize(statement.expression);
+          if (!definition || !bindings.has(definition)) {
+            if (!value && containsCall(statement.expression)) invalid = true;
+            continue;
+          }
+          if (value) bindings.set(definition, value);
+          else {
+            bindings.delete(definition);
+            if (containsCall(statement.expression)) invalid = true;
+          }
+        } else if (statement instanceof DeleteLocalNode) {
+          const definition = statement.identifier.definition?.definition;
+          if (definition) bindings.delete(definition);
+        } else {
+          // Calls and local aggregate mutations can change a memory-backed operand without rebinding its root.
+          // Ignore only statement forms which cannot do so and whose expression tree contains no call.
+          const localAggregateMutation = statement instanceof ArrayAssignNode
+            || statement instanceof ArrayDeleteNode || statement instanceof ArrayPushNode
+            || statement instanceof ArrayPopNode || statement instanceof TupleAssignmentNode;
+          const inertForBindings = statement instanceof RequireNode || statement instanceof AssertNode
+            || statement instanceof EmitStatementNode || statement instanceof ConsoleStatementNode
+            || statement instanceof ExpressionStatementNode || statement instanceof StateAssignNode
+            || statement instanceof DeleteStateNode || statement instanceof MappingAssignNode
+            || statement instanceof MappingFieldAssignNode || statement instanceof MappingDeleteNode
+            || statement instanceof TransferStatementNode || statement instanceof AddressTransferStatementNode
+            || statement instanceof TokenContainerMethodStatementNode;
+          if (localAggregateMutation || !inertForBindings || containsCall(statement)) invalid = true;
+        }
+      }
+    };
+    processBlock(this.currentFunction.body);
+    if (!reached || invalid) return undefined;
+    const expression = serialize(targetNode.expression);
+    if (!expression) return undefined;
+    return {
+      version: 1, mutationEffectOrdinal: node.sourceEffectOrdinal, elementType,
+      expression: { ...expression, type: expression.type ?? elementType },
+    };
+  }
+
   private collectEntryAccesses(node: Node, map: Map<string, EntryAccessInfo>): void {
     // FieldAccessNode wraps an inner expression - recurse into it
     if (node instanceof FieldAccessNode) {
@@ -5791,6 +5989,11 @@ export default class SymbolTableTraversal extends AstTraversal {
       const vt = node.collection.innermostValueType;
       const chunkableValue = node.collection.sorted && isChunkableValueType(vt);
       const chunkableArrayValue = chunkableValue && vt.toString().endsWith('[]');
+      const storedElementSource = chunkableArrayValue ? this.storedElementSourceOf(node) : undefined;
+      const arrayMutation = !chunkableArrayValue ? undefined
+        : node.arrayPush ? 'push' as const
+          : node.arrayPop ? 'pop' as const
+            : node.arrayIndex ? 'indexed' as const : undefined;
       // Only a WHOLE-value direct-param assign (`m[k] = p`) records the source param. An element/push/pop write's
       // expression is the element, not the whole array value (that value is computed by the RMW -> derived from trace).
       const wholeValueWrite = !node.arrayIndex && !node.arrayPush && !node.arrayPop;
@@ -5829,6 +6032,14 @@ export default class SymbolTableTraversal extends AstTraversal {
         if (!existing.operations.includes('write')) existing.operations.push('write');
         if (rmw && !existing.operations.includes('read')) existing.operations.push('read');
         if (chunkableArrayValue) existing.chunkableArrayValue = true;
+        if (storedElementSource && existing.storedElementSource === undefined) {
+          existing.storedElementSource = storedElementSource;
+        }
+        if (arrayMutation !== undefined && existing.arrayMutation === undefined) {
+          existing.arrayMutation = arrayMutation;
+        } else if (arrayMutation !== undefined && existing.arrayMutation !== arrayMutation) {
+          existing.arrayMutation = 'mixed';
+        }
         if (valueParam && existing.valueParam === undefined) existing.valueParam = valueParam;
         if (alreadyWrote) existing.valueSource = valueSource;
         else if (valueSource && existing.valueSource === undefined) existing.valueSource = valueSource;
@@ -5842,6 +6053,8 @@ export default class SymbolTableTraversal extends AstTraversal {
           collection: node.collection.name, collectionSignature: collSig,
           keyParams, keySources, operations: rmw ? ['read', 'write'] : ['write'], slotIndex: -1,
           ...(chunkableArrayValue && { chunkableArrayValue: true }),
+          ...(storedElementSource && { storedElementSource }),
+          ...(arrayMutation && { arrayMutation }),
           ...(valueParam !== undefined && { valueParam }),
           ...(valueSource !== undefined && { valueSource }),
           ...(node.sourceEffectOrdinal !== undefined && {

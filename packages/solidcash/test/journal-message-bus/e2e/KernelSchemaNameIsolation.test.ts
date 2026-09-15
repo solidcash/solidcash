@@ -1,4 +1,5 @@
 import { hexToBin, lockingBytecodeToCashAddress } from '@bitauth/libauth';
+import { decodePushdataValue, type EntryAccessAbi, type AbiFunction, type Artifact } from '@solidcash/utils';
 import { compileString } from 'solidc';
 import { describe, expect, it } from 'vitest';
 import { Contract, StatefulContract } from '../../../src/index.js';
@@ -27,6 +28,81 @@ const vmAccepts = (builder: TransactionBuilder): boolean => {
 };
 
 describe('kernel schema-name isolation', () => {
+  it('evaluates the exact stored-element recipe with a same-typed decoy', async () => {
+    const provider = createMessageBusCapstoneTestProvider();
+    const artifact = compileString(`pragma solidity ^0.8.0;
+      struct Capsule { uint8 code; bytes recipient; bytes payload; uint32 observedAt; }
+      contract Ledger {
+        mapping(uint256 => Capsule[]) records;
+        function append(uint256 key, Capsule decoy, Capsule selected) public {
+          selected.observedAt = uint32(block.timestamp);
+          records[key].push(selected);
+          require(records[key].length > 0);
+        }
+      }
+    `, { ...OPTIONS, messageBusHandlers: ['append'] });
+    const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'append');
+    expect(handler).toMatchObject({ eligible: true });
+    expect(artifact.abi.find((candidate) => candidate.name === 'append')
+      ?.entryAccesses?.[0].storedElementSource).toMatchObject({
+      version: 1, elementType: 'Capsule', expression: { kind: 'call', name: 'Capsule' },
+    });
+    const base = new Contract(artifact, [], { provider });
+    const setup = await setupStatefulUtxos(provider, base, artifact.stateLayout!, {}, { saltContract: true });
+    const connected = StatefulContract.withCategory(
+      base.withCategory(hexToBin(setup.categoryId)), setup.categoryId,
+    );
+    const decoy = [9n, new Uint8Array([9]), new Uint8Array([9]), 999n];
+    const selected = [2n, new Uint8Array([2]), new Uint8Array([4, 2]), 0n];
+    const builder = await connected.batch([
+      { function: 'append', args: [7n, decoy, selected] },
+      { function: 'append', args: [7n, decoy, selected] },
+    ]).build();
+    expect(vmAccepts(builder)).toBe(true);
+  }, 120_000);
+
+  it('evaluates typed literal arithmetic in a stored-element recipe', async () => {
+    const provider = createMessageBusCapstoneTestProvider();
+    const artifact = compileString(`struct Cell { int value; bytes payload; }
+      contract Ledger {
+      mapping(int => Cell[]) records;
+      function append(int key, int delta, bytes payload) public {
+        records[key].push(Cell(delta + 2, payload));
+        require(records[key].length > 0);
+      }
+    }`, { ...OPTIONS, solidityImportCompat: false, messageBusHandlers: ['append'] });
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'append'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.abi.find((candidate) => candidate.name === 'append')
+      ?.entryAccesses?.[0]).toMatchObject({
+      arrayMutation: 'push',
+      storedElementSource: {
+        expression: {
+          kind: 'call', name: 'Cell',
+          args: [expect.objectContaining({ kind: 'binary', operator: '+' }), expect.anything()],
+        },
+      },
+    });
+    const base = new Contract(artifact, [], { provider });
+    const setup = await setupStatefulUtxos(provider, base, artifact.stateLayout!, {}, { saltContract: true });
+    const connected = StatefulContract.withCategory(
+      base.withCategory(hexToBin(setup.categoryId)), setup.categoryId,
+    );
+    const handler = artifact.abi.find((candidate) => candidate.name === 'append')!;
+    const access = handler.entryAccesses![0];
+    const payload = new Uint8Array(70).fill(0x51);
+    const evaluator = connected as unknown as {
+      _encodeStoredElementSource(
+        sourceAccess: EntryAccessAbi, elementType: string, args: unknown[], sourceHandler: AbiFunction,
+        sourceArtifact: Artifact, state?: Record<string, unknown>,
+      ): Uint8Array | undefined;
+    };
+    const encoded = evaluator._encodeStoredElementSource(access, 'Cell', [3n, 5n, payload], handler, artifact);
+    expect(encoded).toBeDefined();
+    expect(decodePushdataValue(encoded!, 0, 'Cell', artifact.structs).value)
+      .toEqual({ value: 7n, payload });
+  }, 120_000);
+
   it('treats historical Marketplace identifiers exactly like an alpha-renamed chunkable write', async () => {
     const provider = createMessageBusCapstoneTestProvider();
     const variants = [

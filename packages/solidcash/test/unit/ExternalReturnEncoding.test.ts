@@ -4,6 +4,7 @@ import { AbiCoder } from 'ethers';
 import { decodePushdataValue, encodePushdataValue, type StructDefinitionInfo } from '@solidcash/utils';
 import {
   decodeEvmReturnValue, encodeExternalReturnValue, encodeExternalReturnValues, encodeLeadingRouteArrayPushes,
+  encodeStructArgument,
   isCanonicalEvmReturnBlob, isCanonicalEvmReturnSequence, isCanonicalEvmReturnVector,
   isCanonicalEvmScalarReturnBlob, isCanonicalEvmScalarReturnVector,
   selectEvmReturnCommitment, selectEvmScalarReturnCommitment,
@@ -258,9 +259,22 @@ describe('encodeLeadingRouteArrayPushes', () => {
         collection: 'history',
         keyParams: ['recordId'],
         operations: ['read', 'write'],
+        mutationEffectOrdinals: [0],
+        arrayMutation: 'push',
+        storedElementSource: {
+          version: 1, mutationEffectOrdinal: 0, elementType: 'Pair',
+          expression: { kind: 'source', type: 'Pair', source: { kind: 'forward', paramIndex: 1 } },
+        },
       }],
     },
   });
+  const resolveElement = (definitions: StructDefinitionInfo[]) => (
+    candidate: RouteRow, access: NonNullable<RouteRow['handler']['entryAccesses']>[number], type: string,
+  ): Uint8Array | undefined => {
+    const index = access.storedElementSource?.expression.source?.paramIndex;
+    return index === undefined ? undefined
+      : encodeStructArgument(candidate.args[index], type, definitions);
+  };
 
   it('encodes only earlier pushes targeting the final row key', () => {
     const encoded = encodeLeadingRouteArrayPushes({
@@ -268,6 +282,7 @@ describe('encodeLeadingRouteArrayPushes', () => {
       collection: 'history',
       valueType: 'Pair[]',
       structs,
+      resolveElement: resolveElement(structs),
     });
     expect(encoded).toBeDefined();
     expect(decodePushdataValue(encoded!, 0, 'Pair[]', structs).value).toEqual([{
@@ -282,6 +297,7 @@ describe('encodeLeadingRouteArrayPushes', () => {
       collection: 'history',
       valueType: 'Pair[]',
       structs,
+      resolveElement: resolveElement(structs),
     })).toBeUndefined();
   });
 
@@ -304,6 +320,12 @@ describe('encodeLeadingRouteArrayPushes', () => {
           collection: 'history',
           keyParams: ['recordId'],
           operations: ['read', 'write'],
+          mutationEffectOrdinals: [0],
+          arrayMutation: 'push',
+          storedElementSource: {
+            version: 1, mutationEffectOrdinal: 0, elementType: 'Stamped',
+            expression: { kind: 'source', type: 'Stamped', source: { kind: 'forward', paramIndex: 1 } },
+          },
         }],
       },
     });
@@ -316,7 +338,7 @@ describe('encodeLeadingRouteArrayPushes', () => {
       collection: 'history',
       valueType: 'Stamped[]',
       structs: stampedStructs,
-      timestamp: 42n,
+      resolveElement: resolveElement(stampedStructs),
     });
     expect(decodePushdataValue(encoded!, 0, 'Stamped[]', stampedStructs).value).toEqual([
       { value: 2n, timestamp_: 0n },
@@ -341,18 +363,31 @@ describe('encodeLeadingRouteArrayPushes', () => {
             args: [7n, [0n, payload]],
             handler: {
               inputs: [{ name: 'id', type: 'uint256' }, { name: 'record', type }],
-              entryAccesses: [{ collection: 'history', keyParams: ['id'], operations: ['read', 'write'] }],
+              entryAccesses: [{
+                collection: 'history', keyParams: ['id'], operations: ['read', 'write'],
+                mutationEffectOrdinals: [0], arrayMutation: 'push', storedElementSource: {
+                  version: 1, mutationEffectOrdinal: 0, elementType: type,
+                  expression: { kind: 'source', type, source: { kind: 'forward', paramIndex: 1 } },
+                },
+              }],
             },
           },
           {
             args: [7n, [1n, new Uint8Array()]],
             handler: {
               inputs: [{ name: 'id', type: 'uint256' }, { name: 'record', type }],
-              entryAccesses: [{ collection: 'history', keyParams: ['id'], operations: ['read', 'write'] }],
+              entryAccesses: [{
+                collection: 'history', keyParams: ['id'], operations: ['read', 'write'],
+                mutationEffectOrdinals: [0], arrayMutation: 'push', storedElementSource: {
+                  version: 1, mutationEffectOrdinal: 0, elementType: type,
+                  expression: { kind: 'source', type, source: { kind: 'forward', paramIndex: 1 } },
+                },
+              }],
             },
           },
         ],
-        collection: 'history', valueType: `${type}[]`, structs: definitions, timestamp: 42n,
+        collection: 'history', valueType: `${type}[]`, structs: definitions,
+        resolveElement: resolveElement(definitions),
       });
     const namedValue = decodePushdataValue(encodedRows('Named', named)!, 0, 'Named[]', named).value;
     const renamedValue = decodePushdataValue(encodedRows('Renamed', renamed)!, 0, 'Renamed[]', renamed).value;

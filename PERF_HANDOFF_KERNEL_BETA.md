@@ -33,28 +33,28 @@ retries, and the narrower rungs; the cheap-widest-rung `rejectFreeFunctionMissin
 to the first-rung attempt so a source with an uncovered returning free helper still falls through to the
 public-only rungs exactly as before.
 
-Measured on the ten-root project compile as interleaved A/B pairs, with the baseline half produced by
-`git checkout HEAD~1 -- packages/solidc/src/compiler.ts` and the two halves run alternately. CPU time
-(user+system, per root, median of three pairs) is the load-independent half of the measurement and is what
-the verdict uses - wall clock on this shared machine swings ±15 % between identical runs. An earlier run of
-the same A/B, taken while a sibling session pushed absolute CPU ~1.6× higher, read −30.2 % as its median;
-the clean pairs below read −25.7 %, −17.2 % and −14.3 %, so the honest headline is **−17.7 %**, not the
-inflated earlier figure:
+Measured on the ten-root project compile as interleaved A/B pairs: the baseline half is
+`git checkout f0ed22319 -- packages/solidc/src/compiler.ts` (the commit before the change - **not**
+`HEAD~1`, see the trap below), the two halves run alternately, and each build is asserted by grepping the
+emitted `packages/solidc/dist/compiler.js` for the change. CPU time (user+system, per root, median of five
+pairs) is the load-independent half of the measurement and is what the verdict uses - wall clock on this
+shared machine swings ±15 % between identical runs. Paired CPU deltas read −1.6 %, −22.4 %, −15.4 %,
+−17.7 % and −24.5 %, so the headline is **−19.3 %**:
 
 | | baseline | first rung | delta |
 |---|---|---|---|
-| total CPU (median of three clean pairs) | 33,028 ms | **27,171 ms** | **−17.7 %** |
-| total wall (same pairs) | 18,553 ms | 15,433 ms | −16.8 % |
-| MarketplaceV1 | 10,875 ms | 8,690 ms | −20.1 % |
-| MarketplaceV2 | 5,713 ms | 4,572 ms | −20.0 % |
-| MarketplaceV3 | 4,263 ms | 3,307 ms | −22.4 % |
-| MarketplaceDataV1 | 2,896 ms | 3,178 ms | +9.7 % |
-| EACCToken | 2,780 ms | 2,906 ms | +4.5 % |
-| TreasurySplit | 530 ms | 499 ms | −5.8 % |
-| unicrow/FakeToken | 1,096 ms | 817 ms | −25.5 % |
-| unicrow/UnicrowDispute | 2,304 ms | 949 ms | −58.8 % |
-| unicrow/UnicrowArbitrator | 1,777 ms | 1,372 ms | −22.8 % |
-| unicrow/UnicrowClaim | 1,116 ms | 923 ms | −17.3 % |
+| total CPU (median of five pairs) | 36,794 ms | **29,688 ms** | **−19.3 %** |
+| total wall (same pairs) | 21,072 ms | 16,893 ms | −19.8 % |
+| MarketplaceV1 | 12,898 ms | 9,499 ms | −26.4 % |
+| MarketplaceV2 | 6,184 ms | 4,866 ms | −21.3 % |
+| MarketplaceV3 | 4,165 ms | 4,038 ms | −3.0 % |
+| MarketplaceDataV1 | 4,073 ms | 3,270 ms | −19.7 % |
+| EACCToken | 3,294 ms | 3,269 ms | −0.8 % |
+| TreasurySplit | 647 ms | 588 ms | −9.1 % |
+| unicrow/FakeToken | 1,142 ms | 1,002 ms | −12.3 % |
+| unicrow/UnicrowDispute | 1,731 ms | 1,154 ms | −33.3 % |
+| unicrow/UnicrowArbitrator | 1,758 ms | 1,525 ms | −13.3 % |
+| unicrow/UnicrowClaim | 1,183 ms | 1,127 ms | −4.7 % |
 
 Every root's non-route bytecode is **unchanged**: nine of ten match the fixture hash-for-hash
 (`debug.bytecode` and the SCB1 route body), and `TreasurySplit`'s route body shrinks 1,318 → 1,279 B
@@ -64,13 +64,10 @@ one. That is inside the ±5 % budget and the fixture was regenerated for it; the
 derived from it (`bytecode`, `debug.bytecode`, `functionBodies['53434231']`, that function's
 `debug.functionDebug` source map and require IPs) - no ABI, layout or fingerprint change.
 
-The refusal path costs little: a source the first-rung attempt refuses pays that attempt *and* the
-ordinary ladder, but the cheap-widest-rung gate refuses `EACCToken` on the *pristine* AST in 5 ms
-(`MessageHashUtils.toEthSignedMessageHash` has an uncovered return path, so the source is not widest-rung
-admissible at all), which is why its delta is +4.5 % rather than the +14 % an earlier build measured before
-that gate existed. `MarketplaceDataV1`'s +9.7 % is of the same order as this machine's per-root spread and
-is not a stable signal; the route-less/refused class as a whole stays within a few percent of baseline,
-and the source is still compiled correctly - the ladder decides, exactly as before. The
+No root regresses: the refusal path costs almost nothing, because the cheap-widest-rung gate refuses
+`EACCToken` on the *pristine* AST in 5 ms (`MessageHashUtils.toEthSignedMessageHash` has an uncovered return
+path, so the source is not widest-rung admissible at all) rather than paying a discarded full compile, and
+its delta is −0.8 %. The
 first-rung attempt also only runs for callers that pass `optimizeForCompilationSpeed`, so the default test
 matrix is untouched: `KERNEL`-style options (`{ forceStateful, messageBus, messageBusKernel }`) never set
 `__cheapAdmissionCodegen` and are byte- and timing-identical.
@@ -226,6 +223,13 @@ process CPU; the difference is background GC/JIT threads) has this inclusive sha
   interleaved pairs it still did not pay: paired CPU deltas −8.4 %, −5.0 %, +0.1 %, +3.9 %, +2.7 % (median
   +0.1 %, spread ±8 %). A `Map` holding mixed SMI and array values costs back roughly what the two saved
   lookups buy. Reverted, not landed - do not re-try it as a "free" change.
+* **The detached verifier's two compiles per root are both required - tested, not assumed.** Round 9
+  tried to remove the pre-codegen one (its program is replaced by the post-codegen specialized program at
+  `compiler.ts` `singlePassVerifierSource` handling, and the placeholder lock it patches looked discardable).
+  Skipping it *leaks the `b1b1…b1` placeholder lock into the shipped script*: `SOLIDC_NO_VERIFIER_PRECOMPILE=1`
+  makes every artifact differ from the baseline, so the pre-codegen compile is what puts the real lock in the
+  route. Cross-root memo reuse of the generic program is also unsafe: the memo key carries `rootFileId`
+  because the program's locations do. Two compiles per routed root is the cost of the design, not waste.
 * **`subroutineUseProbe`'s dry run is the largest remaining single item (7 % inclusive) and is not a
   rewrite target.** It is not one hot loop: its whole subtree is 415 ms of self time on the largest root,
   spread across `walk` (112 ms), `hasRuntimeLoopEntryWrite` (21 ms), `scan` (21 ms), `hasChunkableMappingWrite`
@@ -233,6 +237,79 @@ process CPU; the difference is background GC/JIT threads) has this inclusive sha
   *before* ids can be assigned, and it also discovers the structural-helper maps the real emission then reuses,
   so a census would have to reproduce the emission's own helper-capture decisions to be equivalent. Measured,
   understood, and left alone.
+
+**Landed: verifier covenant locks are reused across roots** (`0a9e1a973`, round 10 - the first win the
+round-9 map produced). The pre-codegen detached-verifier compile exists to produce exactly one value: the
+covenant lock that `bindPlaceholderVerifierLock` patches into the route. On the kernel path its program is
+replaced wholesale by the post-codegen specialized program, and the published program carries only
+`{ id, name, bytecode }` per function - no locations - so the lock is the compile's only surviving product.
+The lock is also not root-file dependent, which was measured rather than assumed: `TreasurySplit` and
+`UnicrowClaim` have different root files *and* different verifier sources (42,124 and 43,082 chars) and
+still produced the same lock (`aa2022f4a6010bda1ab367ec`). Caching the lock by verifier source plus every
+option that can change the covenant script therefore lets a route shape recompiled in another root skip a
+~0.2-0.4 s mini-compile. Non-kernel callers publish this program, so they always compile.
+
+Corpus effect: **18 -> 16 verifier compiles**, five interleaved A/B pairs reading −3.33 %, −2.79 %, −2.87 %,
++0.72 %, −7.72 % CPU (median **−2.87 %**, mean −3.20 %). Output is unchanged in the strongest sense
+available: all ten roots reproduce the committed fixture as a **whole-artifact JSON match** - ABI, bytecode,
+debug, functionBodies, `messageBus`/`verifierProgram`, fingerprint and invocationAnalysis - and the compiler
+journal gate is identical to baseline (6 failed / 1,442 passed, same six names). The saving scales with the
+number of roots that share a route shape, so a project compile with many participants gains more than this
+ten-root corpus shows.
+
+### Round 9: the structural map (what is left, and what blocks it)
+
+One root's compile, by phase (`MarketplaceV1`, `SOLIDC_PROFILE=1`, total 4,247 ms; phases nest):
+
+| phase | ms | share | note |
+|---|---|---|---|
+| codegen | 1,747 | 41 % | `emitBodies` 773, `outline` 489, `subroutineUseProbe` 427 |
+| lowering pipeline | 1,098 | 26 % | ~40 ordered passes, none above 1.5 % on its own |
+| parse + import resolve | 852 | 20 % | 21 files; root file plus its import graph |
+| semantic (symbol + typecheck) | 700 | 16 % | |
+| detached verifier | 624 | 15 % | two compiles: 426 pre-codegen + 198 specialized |
+| route synthesis | 391 | 9 % | |
+
+Every remaining double-digit item is blocked by something concrete, and the blockers were measured, not
+assumed:
+
+* **`subroutineUseProbe` (10 % of a root) - blocked by emission, not by the probe.** The probe is a full
+  dry run of `emitFunctionDefinesAndDispatch` whose byte appends are skipped; its products are the use counts
+  (which decide which helpers are captured and in which order ids are rehomed) and the structural-helper id
+  maps the real emission then reuses. Removing it needs the emission and the census to become one pass, i.e.
+  emitting with provisional ids and patching every `<id push> OP_INVOKE` after rehoming - a codegen redesign,
+  not a probe rewrite. The alternative "count the sites from the AST instead" has to reproduce the emission's
+  own helper-capture decisions to stay equivalent.
+* **The detached verifier (15 %) - both compiles are required, proven by experiment (round 9).** See the round-8
+  entry below: skipping the pre-codegen compile leaks the placeholder lock into the shipped script.
+* **The outline width sweep (16 %) - required for bytecode size.** Both `[12, 10]` widths run only for
+  kernel message-bus contracts whose estimated size is within ±512 bytes of the 10,000-byte input limit;
+  dropping the second width changes published bytecode.
+* **The lowering pipeline (26 %) - merging saves dispatch only.** The passes are each below 1.5 % and are
+  deliberately order-sensitive; fusing them would still visit every node once per pass's semantics and save
+  only the ~3 % visitor-dispatch floor. Not worth the risk.
+
+The marketplace title itself is now **harness-dominated**, which caps what compiler and SDK work can buy
+there. CPU profile of `post job 1` (`--cpu-prof` in the marketplace config's `test.execArgv`; 1 file, 1 test):
+duration 19.0 s = transform 4.4 s + setup 4.2 s + import 2.2 s + tests 12.4 s, and the forked worker is
+**idle for 13.0 s of its 19.0 s** - it waits while the main process transforms the module graph. Of the ~6 s
+of JS the worker does run, the SDK items are all legitimate work, not waste:
+
+| item | inclusive | what it is |
+|---|---|---|
+| `_sendWithoutLogicalNonce` | 0.77 s | the whole send path |
+| `_deriveFullTransactionState` | 0.70 s | state derivation for the 26-input / 36-output forward |
+| `_assertConvergedFinalTransaction` | 0.65 s | builds and VM-validates the exact transaction that is serialized, repairing until it converges |
+| `_createBuilder` | 0.49 s | input/output construction |
+| `deriveSeedFromBip39Mnemonic` | 0.44 s | PBKDF2 for the 20 test signers, once per worker |
+| `evaluateEveryInput` | 0.36 s | preflight VM run |
+| faithful probe traces | 0.47 s | nested delegate evaluations the sparse observer cannot see |
+
+The one harness-side item that is clearly redundant is `blockOracleUpdater`'s `structuredClone` of the whole
+mock memory storage on every deployment sync (0.32 s per title, `snapshot[memoryStorage.js]`); the resolver
+plugin's per-import `existsSync` probing (`internalModuleStat` 0.11 s + `getPackageScopeConfig` 0.15 s) is the
+next-largest. Both live in `packages/testing`, not in the compiler or SDK, and neither is reachable by a
+compiler or SDK change.
 
 ### Incident to know about (round 7, no harm done)
 
@@ -412,12 +489,16 @@ Two traps for whoever measures next:
 * Run the A/B pair back-to-back on an otherwise idle machine. A sibling session's marketplace run made
   the same optimized test report 60 s (transform 27.5 s / import 29.5 s) instead of 18 s.
 
-For a compiler A/B, produce the baseline half with `git checkout HEAD~1 -- packages/solidc/src/compiler.ts`
-(restore with `git checkout HEAD -- ...`) and run the halves alternately (`base new base new`). **Do not
-use `git stash` for this in this repository**: the stash stack is shared by every worktree and every agent
-session, and `git stash push <path>` on a path with no local changes is a silent no-op whose matching
-`git stash pop` then consumes whichever entry another session happens to have left on top (see the incident
-below). Judge with **`totalCpuMs`/`cpuMs`**, not `totalMs`.
+For a compiler A/B, produce the baseline half with `git checkout <the-commit-before-the-change> --
+packages/solidc/src/compiler.ts` (restore with `git checkout HEAD -- ...`) and run the halves alternately
+(`base new base new`). **Name that commit, never `HEAD~1` or `HEAD~2`**: documentation-only commits sit on
+top of code changes here, so a relative revision can silently still contain the change - and `tsc -b` then
+emits nothing, so the "baseline" half runs the new compiler and every delta is run-order bias. Assert each
+half after building, e.g. `grep -c '<a string only the change adds>' packages/solidc/dist/compiler.js`,
+before timing it. **Do not use `git stash` for this in this repository**: the stash stack is shared by every
+worktree and every agent session, and `git stash push <path>` on a path with no local changes is a silent
+no-op whose matching `git stash pop` then consumes whichever entry another session happens to have left on
+top (see the incident below). Judge with **`totalCpuMs`/`cpuMs`**, not `totalMs`.
 Both drift with the machine's external load between pairs, but CPU time is insensitive to preemption
 *within* a pair, so paired CPU deltas keep their sign where paired wall-clock deltas do not. Round 7's
 three pairs read −15.1 % / +14.5 % / −13.4 % in wall clock against −2.6 % / −30.2 % / −18.2 % in CPU time;

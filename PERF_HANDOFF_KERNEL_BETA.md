@@ -193,6 +193,47 @@ fingerprints and all other keys identical), so nothing functional changed in tha
 local script for regeneration instead of that file.
 
 
+### Round 8: the flat tail (measured, nothing landed)
+
+With route admission and outlining both cut, the remaining profile is flat - no single frame above 4 % self
+time - so round 8 measured the two candidates §0 and §5 had named, and both were rejected on their numbers.
+
+A CPU profile of the ten-root project compile on the landed build (main thread, 19.7 s sampled of ~34 s
+process CPU; the difference is background GC/JIT threads) has this inclusive shape:
+
+| frame | inclusive | share |
+|---|---|---|
+| `compileStringUnchecked` | 15.62 s | 79 % |
+| `compileResolvedAst` | 14.02 s | 71 % |
+| AST visitor dispatch (`accept`) | 9.29 s | 47 % |
+| codegen `visitSourceFile` | 4.51 s | 23 % |
+| symbol table `visitSourceFile` | 2.15 s | 11 % |
+| detached verifier compile | 2.11 s | 11 % |
+| `outlineSharedFunctionBodies` | 1.64 s | 8 % |
+| GC | 1.56 s | 8 % |
+| `subroutineUseProbe` | 1.40 s | 7 % |
+| `synthesizeMessageBusRoute` | 1.05 s | 5 % |
+
+* **GC / young-generation tuning - no code-level win found.** Raising the semi-space
+  (`--max-semi-space-size=64`) moves the corpus from 31,409/29,961 ms to 28,927/28,765 ms, i.e. about 5 %, but
+  that is a runtime flag, not a change this package can make, and it is the *only* allocation-side lever that
+  responded. The tail is not a few big allocators that could be pooled away.
+* **`findCandidates` bucketing - rewritten, byte-identical, and still a wash.** The loop looked up three maps
+  per window (a bucket map plus separate first-body/first-start maps) and leaked two lookups per unique hash.
+  Replacing all three with one map whose value is either a packed first occurrence or the group array - with a
+  separate `seeded` list to preserve second-occurrence bucket order exactly - is **byte-identical on all ten
+  roots** (verified against the fixture), so the semantics were never in question. Measured over five
+  interleaved pairs it still did not pay: paired CPU deltas −8.4 %, −5.0 %, +0.1 %, +3.9 %, +2.7 % (median
+  +0.1 %, spread ±8 %). A `Map` holding mixed SMI and array values costs back roughly what the two saved
+  lookups buy. Reverted, not landed - do not re-try it as a "free" change.
+* **`subroutineUseProbe`'s dry run is the largest remaining single item (7 % inclusive) and is not a
+  rewrite target.** It is not one hot loop: its whole subtree is 415 ms of self time on the largest root,
+  spread across `walk` (112 ms), `hasRuntimeLoopEntryWrite` (21 ms), `scan` (21 ms), `hasChunkableMappingWrite`
+  (13 ms), `collectMappingSlots` (13 ms) and a long tail. It re-walks the contract to count subroutine uses
+  *before* ids can be assigned, and it also discovers the structural-helper maps the real emission then reuses,
+  so a census would have to reproduce the emission's own helper-capture decisions to be equivalent. Measured,
+  understood, and left alone.
+
 ### Incident to know about (round 7, no harm done)
 
 A round-7 A/B script used `git stash push packages/solidc/src/compiler.ts` to produce its baseline half
@@ -436,6 +477,8 @@ same experiments are not repeated. Round 2 added these results (all on the ten-r
 | `subroutineUseProbe` → direct census | already a census: `emit()` returns immediately in probe mode, so the probe's 416 ms is the decision traversal that *produces* the counts and id maps | infeasible |
 | admission-shape reuse | the cheap pass parks unemitted functions; lowering them there moves work instead of removing it, so only the ~300 ms overlap is recoverable | ~6 %, deep refactor; superseded by the first-rung admission landed in round 7 (§0), which removes the whole cheap pass and the binder recompile instead of sharing work with them |
 | compile ordering (JIT warm-up) | big-first 22,420/22,189 ms vs alphabetical 21,290/22,857 ms over two repetitions | no effect, noise |
+| `findCandidates` single-map bucketing (round 8) | byte-identical on all ten roots, five interleaved pairs: −8.4 %, −5.0 %, +0.1 %, +3.9 %, +2.7 % CPU (median +0.1 %) | rejected, reverted |
+| semi-space / GC tuning (round 8) | `--max-semi-space-size=64` 31.4/30.0 s → 28.9/28.8 s (~5 %) | runtime flag, not a package change; no code-level allocator to remove |
 
 Two operational facts for whoever picks this up:
 

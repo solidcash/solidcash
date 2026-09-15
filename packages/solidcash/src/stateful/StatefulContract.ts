@@ -23846,9 +23846,20 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   requestedFunctionName: callInfo.functionName,
                   requestedArgs: callInfo.args,
                 });
-              } catch {
+              } catch (error) {
                 // Promotion is optional. A stale, widened, or mismatched frame retains the ordinary direct
                 // delegate transaction, whose proxy and implementation covenants remain authoritative.
+                if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+                  ?.SOLIDC_DEBUG_FORWARD_ARGS === '1') {
+                  console.error('kernel-delegate-promotion-refused', {
+                    functionName, requestedFunctionName: callInfo.functionName,
+                    reason: error instanceof Error ? error.message : String(error),
+                    payload: args[physicalAbiFunction?.delegateForwarding?.payloadInput ?? -1]
+                      instanceof Uint8Array
+                      ? binToHex(args[physicalAbiFunction!.delegateForwarding!.payloadInput] as Uint8Array)
+                      : undefined,
+                  });
+                }
               }
               if (promoted) {
                 promotedDelegateOwnerFrame = resolvePreparedKernelDelegateOwnerFrame({
@@ -24514,6 +24525,31 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   effectiveReturnTypes,
                   `function '${effectiveReturnFn?.name ?? nested.functionName}' result`,
                 ) === 'evm-abi-v1';
+              const proxyStateNames = proxyCallee
+                ? new Set([
+                  ...(proxyCallee.implementation.inner.artifact.stateLayout?.variables ?? []).map((v) => v.name),
+                  ...(proxyCallee.implementation.inner.artifact.stateLayout?.collections ?? []).map((c) => c.name),
+                ]) : undefined;
+              const evaluateProxyRead = (
+                fn: AbiFunction, readArgs: FunctionArgument[],
+              ): Promise<FunctionArgument | undefined> => {
+                // Public state getters read the proxy-owned category directly. They are ordinary view entry
+                // points, not delegate executors, so routing them through `forward()` would incorrectly require
+                // a state-writing delegate ABI variant. The exact state-layout name and selected ABI handler are
+                // compiler-owned identities; no source-application convention participates in this decision.
+                if (proxyCallee && proxyStateNames?.has(fn.name)) {
+                  const accessor = (proxyCallee.proxy.state as unknown as Record<
+                  string, (...values: FunctionArgument[]) => Promise<StateValue>
+                  >)[fn.name];
+                  if (typeof accessor !== 'function') {
+                    throw new Error(`Proxy state getter '${fn.name}' is not available.`);
+                  }
+                  return accessor(...readArgs) as Promise<FunctionArgument>;
+                }
+                return proxyCallee
+                  ? proxyCallee.forward(fn.name, readArgs).staticCall() as Promise<FunctionArgument>
+                  : callee._deriveReturnValue(fn.name, readArgs) as Promise<FunctionArgument>;
+              };
               if (childCompilerRoute && nested.hasReturnValues && !sharedCompilerRouteCoversCall) {
                 const firstWrite = childCompilerRoute.rowArguments.findIndex(
                   (row) => row.handler.writesState === true,
@@ -24528,9 +24564,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   && returningRows.every(({ index }) => firstWrite < 0 || index < firstWrite)) {
                   const encodedResults: Uint8Array[] = [];
                   for (const { row } of returningRows) {
-                    const evaluateReturn = (): Promise<FunctionArgument | undefined> => proxyCallee
-                      ? proxyCallee.forward(row.handler.name, row.args).staticCall() as Promise<FunctionArgument>
-                      : callee._deriveReturnValue(row.handler.name, row.args) as Promise<FunctionArgument>;
+                    const evaluateReturn = (): Promise<FunctionArgument | undefined> =>
+                      evaluateProxyRead(row.handler, row.args);
                     const returnCallsiteId = row.sourceCallsiteId ?? nested.callsiteId;
                     const values = returnCallsiteId === undefined
                       ? await evaluateReturn()
@@ -24563,11 +24598,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 }
               } else if (nested.hasReturnValues && effectiveReturnFn && !childWritesState
                 && effectiveReturnFn.outputs?.length === 1) {
-                const proxyStateNames = proxyCallee
-                  ? new Set([
-                    ...(proxyCallee.implementation.inner.artifact.stateLayout?.variables ?? []).map((v) => v.name),
-                    ...(proxyCallee.implementation.inner.artifact.stateLayout?.collections ?? []).map((c) => c.name),
-                  ]) : undefined;
                 const proxyStateAccessor = proxyCallee && proxyStateNames?.has(nested.functionName)
                   ? (proxyCallee.proxy.state as unknown as Record<
                   string, (...values: FunctionArgument[]) => Promise<StateValue>
@@ -27572,7 +27602,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             : this.categoryId);
         const encoded = childFn.inputs.map((input, inputIndex) => {
           if (!input.name.startsWith('__internal__')) {
-            const visibleArgs = selectVisibleCallArguments(
+            // A compiler route has its own visible ABI (`batchBlob` plus route witnesses), distinct from the
+            // logical handler arguments retained on the group for graph metadata. Use the route's exact vector;
+            // selecting by coincidental arity can shift a handler amount into an address witness.
+            const visibleArgs = child.compilerRoute?.args ?? selectVisibleCallArguments(
               childFn.inputs, child.logicalFunctionArgs, child.functionArgs,
             );
             const value = visibleArgs[visible++];
@@ -27593,6 +27626,29 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             return child.compilerRoute?.internalArgs?.[input.name]
               ?? child.internalArgs?.[input.name]
               ?? -1n;
+          }
+          if (input.name === '__internal__dynamicChunkInputBase') {
+            // The exact input coordinate is patched after the builder places selected continuation UTXOs.
+            // A negative sentinel is the canonical provisional value for an empty/non-chunked state value.
+            return child.compilerRoute?.internalArgs?.[input.name]
+              ?? child.internalArgs?.[input.name]
+              ?? -1n;
+          }
+          if (['__internal__activeVerifierIndex', '__internal__graphFixedSize',
+            '__internal__graphBlockSize', '__internal__graphSettlementBoundary',
+            '__internal__blockhashInputIndex', '__internal__graphEmissions',
+            '__internal__graphCallers', '__internal__graphCompletionPositions',
+            '__internal__graphSettlementTable'].includes(input.name)) {
+            // This unlocker exists only for ordinary graph discovery. If the completed graph requires atomic
+            // execution, send() rebuilds it from PreparedAtomicMessageBusCall and the composer supplies the
+            // finalized verifier/manifest values. Preserve the compiler route's typed provisional values here
+            // so discovery cannot silently fall back to a direct handler outside OP_INVOKE.
+            const provisional = child.compilerRoute?.internalArgs?.[input.name];
+            if (provisional !== undefined) return provisional;
+            if (['__internal__graphEmissions', '__internal__graphCallers',
+              '__internal__graphCompletionPositions', '__internal__graphSettlementTable']
+              .includes(input.name)) return new Uint8Array();
+            return -1n;
           }
           if (input.name === '__internal__msgSenderCategory') {
             // OP_UTXOTOKENCATEGORY exposes the transaction-hash bytes in wire
@@ -33945,7 +34001,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       if (!args || args.length !== row.inputs.length) {
         throw new Error(`Could not resolve every argument for external message-bus batch row ${rowIndex}`);
       }
-      const handlerAbi = calleeRouteArtifact.abi.find((fn) => fn.name === handler.name);
+      const handlerAbi = calleeRouteArtifact.abi.find((fn) => (
+        fn.selector?.toLowerCase() === row.selector.toLowerCase()
+      ));
       if (!handlerAbi) throw new Error(`Message-bus handler ABI '${handler.name}' is missing`);
       rowArguments.push({
         selector: row.selector,
@@ -37316,6 +37374,9 @@ export class StatefulFunctionCall {
     // re-derive only when new context (transfers) has been added and no manual
     // .setState() was called.
     const vmErrored = !!(builder as any).__vmErrored;
+    const transparentAtomicPromotion = ((builder as StatefulTransactionBuilder & {
+      __preparedAtomicCalls?: readonly PreparedAtomicMessageBusCall[];
+    }).__preparedAtomicCalls?.length ?? 0) > 0;
     const shouldReDerive = (!derived || vmErrored) && this.stateOverrides.length === 0;
     if (shouldReDerive) {
       const reDerive = (builder as any).__reDerive;
@@ -37409,7 +37470,7 @@ export class StatefulFunctionCall {
         // update depends on a callee result cannot derive its chunks in the first owner-local probe. The composer
         // builds those probes without a local fee tail, evaluates the complete graph, and independently refuses
         // a stable/final assembly containing any unresolved chunk. Standalone sends retain this fail-closed gate.
-        if (this.compilerRoute?.omitLocalFeeTail) continue;
+        if (transparentAtomicPromotion || this.compilerRoute?.omitLocalFeeTail) continue;
         const derivationError = (builder as any).__derivationError;
         // A covenant OP_VERIFY is the function rejecting (e.g. registerUser pubkey length).
         // Do not wrap that as a chunk-layout construction failure — revertedWith cannot match.
@@ -37432,7 +37493,7 @@ export class StatefulFunctionCall {
     // silently building a transaction with dummy amounts the covenant would reject.
     const expectedSatoshiTransfers = (builder as any).__expectedTransferCount ?? 0;
     const expectedFtTransfers = (builder as any).__expectedFtTransferCount ?? 0;
-    if (expectedSatoshiTransfers > 0 && effectiveTransfers.length === 0
+    if (!transparentAtomicPromotion && expectedSatoshiTransfers > 0 && effectiveTransfers.length === 0
         && !(builder as any).__derivedTransfers) {
       const derivationError = (builder as any).__derivationError as Error | undefined;
       // A covenant OP_VERIFY is a revert, not a missing transfer slot. Surface it so
@@ -37447,7 +37508,7 @@ export class StatefulFunctionCall {
         + detail + ' Use .transfer() to provide transfer outputs manually.',
       );
     }
-    if (expectedFtTransfers > 0 && this.tokenContainerTransfers.length === 0
+    if (!transparentAtomicPromotion && expectedFtTransfers > 0 && this.tokenContainerTransfers.length === 0
         && !(builder as any).__derivedTokenContainerTransfers) {
       const derivationError = (builder as any).__derivationError;
       const detail = derivationError ? ` Reason: ${derivationError.message}` : '';
@@ -37458,7 +37519,7 @@ export class StatefulFunctionCall {
       );
     }
     const expectedNftTransfers = (builder as any).__expectedNftTransferCount ?? 0;
-    if (expectedNftTransfers > 0 && this.tokenContainerTransferNfts.length === 0
+    if (!transparentAtomicPromotion && expectedNftTransfers > 0 && this.tokenContainerTransferNfts.length === 0
         && !(builder as any).__derivedTokenContainerTransferNfts) {
       const derivationError = (builder as any).__derivationError;
       const detail = derivationError ? ` Reason: ${derivationError.message}` : '';

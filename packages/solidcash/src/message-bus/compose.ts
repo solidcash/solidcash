@@ -1543,6 +1543,7 @@ export class AtomicMessageBusComposition {
     // row numbering before planning, so a route input named `_rN` receives the Nth invocation's proven key.
     const ownerWitnesses = new Map<string, Record<string, FunctionArgument>>();
     const ownerRows = new Map<string, number>();
+    const ownerActiveRouteKeys = new Map<string, Set<string>>();
     descriptors.forEach((descriptor, index) => {
       const owner = descriptor.contract.inner.lockingBytecode.toLowerCase();
       const row = ownerRows.get(owner) ?? 0;
@@ -1552,6 +1553,11 @@ export class AtomicMessageBusComposition {
         descriptor.artifact, descriptor.functionName, descriptor.selector,
       );
       const handler = resolveMessageBusHandler(descriptor.artifact, descriptor.functionName, abi?.selector);
+      const activeRouteKeys = ownerActiveRouteKeys.get(owner) ?? new Set<string>();
+      for (const binding of handler?.batchKeyWitnesses ?? []) {
+        activeRouteKeys.add(binding.perRow ? `${binding.routeInput}_r${row}` : binding.routeInput);
+      }
+      ownerActiveRouteKeys.set(owner, activeRouteKeys);
       for (const binding of handler?.batchKeyWitnesses?.filter((candidate) =>
         candidate.source === 'expression') ?? []) {
         const value = descriptorWitnesses[index][binding.routeInput];
@@ -1590,8 +1596,13 @@ export class AtomicMessageBusComposition {
     for (const descriptor of descriptors) {
       const owner = descriptor.contract.inner.lockingBytecode.toLowerCase();
       const aggregate = ownerWitnesses.get(owner) ?? {};
+      const activeRouteKeys = ownerActiveRouteKeys.get(owner) ?? new Set<string>();
       for (const input of descriptor.artifact.messageBus?.route.inputs ?? []) {
         if (!input.name.startsWith('__message_bus_key_') || aggregate[input.name] !== undefined) continue;
+        // Direct-argument and msg.sender bindings are derived by encodeMessageBatch from the authenticated
+        // invocation row. Supplying an inactive filler for one of these active positions creates an artificial
+        // conflict with the real key and can never identify a physical entry.
+        if (activeRouteKeys.has(input.name)) continue;
         // An unrolled route's collection journal initializes every bounded row cache before dispatch. Reuse an
         // actually bound value from the same row-parameter family for unused capacity: those inactive caches then
         // alias one real logical entry and can share its proof safely. A distinct filler per row creates distinct

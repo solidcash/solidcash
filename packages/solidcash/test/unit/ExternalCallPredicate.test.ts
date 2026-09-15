@@ -504,4 +504,32 @@ describe('conditional external-call topology', () => {
     expect(isSdkResolvedExternalCallTopologyWitness('__internal__extcallAnchorIdx6')).toBe(true);
     expect(isSdkResolvedExternalCallTopologyWitness('__internal__vmapBatchProof_0')).toBe(false);
   });
+
+  it('selects the array element a reached loop occurrence actually evaluates', () => {
+    // A runtime loop's callsite is expanded once per reached occurrence, so an induction-variable element index
+    // advances with it. Freezing the index on the first element makes every later row carry an argument the
+    // callee row it is paired with never evaluated.
+    const resolveAt = (occurrenceIndex: number): FunctionArgument[] | undefined =>
+      evaluator._resolveExternalArgs(
+        [{ kind: 'arrayElement', paramIndex: 0, indexValue: 0, indexStepValue: 1 }],
+        [['DV', 'test', 'DA']], artifact, undefined, [{ type: 'string[]' }], undefined, occurrenceIndex,
+      );
+
+    expect(resolveAt(0)).toEqual(['DV']);
+    expect(resolveAt(1)).toEqual(['test']);
+    expect(resolveAt(2)).toEqual(['DA']);
+  });
+
+  it('does not advance a literal array index between reached occurrences', () => {
+    // A published zero step marks an index the compiler proved does not depend on the loop variable, so every
+    // reached occurrence must keep selecting the same element.
+    const resolveAt = (occurrenceIndex: number): FunctionArgument[] | undefined =>
+      evaluator._resolveExternalArgs(
+        [{ kind: 'arrayElement', paramIndex: 0, indexValue: 1, indexStepValue: 0 }],
+        [['DV', 'test', 'DA']], artifact, undefined, [{ type: 'string[]' }], undefined, occurrenceIndex,
+      );
+
+    expect(resolveAt(0)).toEqual(['test']);
+    expect(resolveAt(2)).toEqual(['test']);
+  });
 });

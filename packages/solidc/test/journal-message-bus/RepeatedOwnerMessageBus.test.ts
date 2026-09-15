@@ -193,10 +193,46 @@ describe('inferred message-bus batching for repeated external callees', () => {
         {
           logicalIndex: 1,
           occurrence: 'loop',
-          argSources: [{ kind: 'arrayElement', paramIndex: 1, indexValue: 0 }],
+          argSources: [{ kind: 'arrayElement', paramIndex: 1, indexValue: 0, indexStepValue: 1 }],
         },
       ],
     });
+  });
+
+  it('publishes the loop induction step so each reached occurrence names its own element', () => {
+    const artifact = compileString(`
+      interface ISink { function put(int value) external; }
+      contract Caller(address sink) {
+        function run(int[] values) public {
+          for (int i = 0; i < values.length; i = i + 1) ISink(sink).put(values[i]);
+          require(values.length > 0);
+        }
+      }
+    `);
+    const run = artifact.abi.find((fn) => fn.name === 'run');
+    expect(run?.externalCalls).toHaveLength(1);
+    expect(run?.externalCalls?.[0]).toMatchObject({
+      occurrence: 'loop',
+      argSources: [{ kind: 'arrayElement', paramIndex: 0, indexValue: 0, indexStepValue: 1 }],
+    });
+  });
+
+  it('leaves an index the compiler cannot describe as an induction variable on the unproven fallback', () => {
+    const artifact = compileString(`
+      interface ISink { function put(int value) external; }
+      contract Caller(address sink) {
+        function run(int[] values) public {
+          for (int i = 0; i < values.length; i = i + 1) ISink(sink).put(values[i + 1]);
+          require(values.length > 0);
+        }
+      }
+    `);
+    const run = artifact.abi.find((fn) => fn.name === 'run');
+    expect(run?.externalCalls).toHaveLength(1);
+    // No step is published, so a consumer must read the source as array-order expansion of the first group
+    // rather than as an index it has been told how to advance.
+    expect(run?.externalCalls?.[0]?.argSources?.[0])
+      .toEqual({ kind: 'arrayElement', paramIndex: 0, indexValue: 0 });
   });
 
   it('collapses the supported repeated-owner shape by default', () => {

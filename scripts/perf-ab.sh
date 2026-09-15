@@ -46,11 +46,14 @@ build_half() {
   # Restore by writing the file, never `git checkout <commit> -- <path>`: that also updates the index, so a
   # later `git commit` silently commits the baseline over the change being measured.
   if [ "$half" = base ]; then git show "$baseline:$compiler" > "$compiler"; else cp "$newCopy" "$compiler"; fi
-  # Touch so an incremental build cannot skip the changed file, then build. A swallowed build failure used to
-  # surface later as an unrelated module-resolution error from the probe, so fail loudly and show why.
+  # Touch so an incremental build cannot skip the changed file, then build. Build the project references
+  # directly rather than `yarn build`: the harness only measures the compiler, and `yarn build` additionally
+  # recompiles the example projects through `tsx`, which is slower, irrelevant here, and the flakiest step in
+  # the chain. A swallowed build failure used to surface later as an unrelated module-resolution error from the
+  # probe, so fail loudly and show why.
   touch "$compiler"
   local buildLog="$scratch/build-$half-$1.log"
-  if ! yarn build >"$buildLog" 2>&1; then
+  if ! npx tsc -b tsconfig.packages.json >"$buildLog" 2>&1; then
     echo "BUILD FAILED for the $half half:" >&2
     tail -20 "$buildLog" >&2
     exit 1

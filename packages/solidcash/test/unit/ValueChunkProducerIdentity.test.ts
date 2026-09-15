@@ -333,6 +333,31 @@ describe('hierarchical value-chunk producer identity', () => {
     expect(session.getOwned(write, claim(), producer().stateOwner)).toEqual(terminal);
   });
 
+  it('does not let a same-category decoy resource seed the selected write', () => {
+    const session = new ValueChunkWriteStagingSession();
+    const decoySignature = 'archives:mapping(uint256 => bytes32[])';
+    const decoyWrite: ValueChunkWriteDescriptor = {
+      ...write,
+      collection: 'archives',
+      collectionSignature: decoySignature,
+      collectionHash: binToHex(computeCollectionHash(decoySignature)),
+      keySlot: '43'.repeat(32),
+    };
+    const decoyResourceIdentity = `${categoryId}:${decoyWrite.collectionHash}:${decoyWrite.keySlot}`;
+    const decoyClaim: ValueChunkProducerResourceClaim = {
+      producer: producer(), resourceIdentity: decoyResourceIdentity,
+    };
+    const authentic = new Uint8Array(96).fill(0x61);
+    const hostile = new Uint8Array(96).fill(0x78);
+
+    expect(session.stageOwned(decoyWrite, decoyClaim, producer().stateOwner, hostile)).toBe(true);
+    expect(session.getOwned(write, claim(), producer().stateOwner)).toBeUndefined();
+    expect(session.getOwned(write, decoyClaim, producer().stateOwner)).toBeUndefined();
+    expect(session.stageOwned(write, claim(), producer().stateOwner, authentic)).toBe(true);
+    expect(session.getOwned(write, claim(), producer().stateOwner)).toEqual(authentic);
+    expect(session.getOwned(decoyWrite, decoyClaim, producer().stateOwner)).toEqual(hostile);
+  });
+
   it('rejects incomplete source paths and resource mismatches', () => {
     const invalid = claim();
     invalid.producer = {

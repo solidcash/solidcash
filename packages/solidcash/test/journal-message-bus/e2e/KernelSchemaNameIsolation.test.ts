@@ -61,6 +61,42 @@ describe('kernel schema-name isolation', () => {
     expect(vmAccepts(builder)).toBe(true);
   }, 120_000);
 
+  it('does not give historical function or schema names special kernel authority', async () => {
+    const provider = createMessageBusCapstoneTestProvider();
+    const artifact = compileString(`pragma solidity ^0.8.0;
+      struct JobEventData { uint8 type_; bytes address_; bytes data_; uint32 timestamp_; }
+      contract Marketplace {
+        mapping(uint256 => JobEventData[]) jobEvents;
+        function publishJobEvent(
+          uint256 key, JobEventData decoy, JobEventData selected
+        ) public {
+          selected.timestamp_ = uint32(block.timestamp);
+          jobEvents[key].push(selected);
+          require(jobEvents[key].length > 0);
+        }
+      }
+    `, { ...OPTIONS, messageBusHandlers: ['publishJobEvent'] });
+    const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'publishJobEvent');
+    expect(handler).toMatchObject({ eligible: true });
+    expect(artifact.messageBus?.convention).toBe('kernel-row-loop');
+    expect(artifact.abi.find((candidate) => candidate.name === 'publishJobEvent')
+      ?.entryAccesses?.[0].storedElementSource).toMatchObject({
+      version: 1, elementType: 'JobEventData', expression: { kind: 'call', name: 'JobEventData' },
+    });
+    const base = new Contract(artifact, [], { provider });
+    const setup = await setupStatefulUtxos(provider, base, artifact.stateLayout!, {}, { saltContract: true });
+    const connected = StatefulContract.withCategory(
+      base.withCategory(hexToBin(setup.categoryId)), setup.categoryId,
+    );
+    const decoy = [9n, new Uint8Array([9]), new Uint8Array([9]), 999n];
+    const selected = [2n, new Uint8Array([2]), new Uint8Array([4, 2]), 0n];
+    const builder = await connected.batch([
+      { function: 'publishJobEvent', args: [7n, decoy, selected] },
+      { function: 'publishJobEvent', args: [7n, decoy, selected] },
+    ]).build();
+    expect(vmAccepts(builder)).toBe(true);
+  }, 120_000);
+
   it('evaluates typed literal arithmetic in a stored-element recipe', async () => {
     const provider = createMessageBusCapstoneTestProvider();
     const artifact = compileString(`struct Cell { int value; bytes payload; }

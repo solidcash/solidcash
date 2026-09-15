@@ -3642,36 +3642,6 @@ export function isCanonicalEvmScalarReturnVector(
   });
 }
 
-/**
- * Encoded length of the pushdata operation at `offset`, resolved from its length prefix alone.
- *
- * Mirrors `decodePushdataValue`'s acceptance exactly (including the one-byte constant opcodes, which decode to a
- * one-byte value) without reading the payload. Return-frame candidates are overwhelmingly raw stack items rather
- * than framed pushes, and `decodePushdataValue` rejects those by throwing: for a multi-megabyte covenant frame
- * the captured stack traces dominate the probe. Resolving the length first turns each ordinary rejection into a
- * byte comparison; a candidate the decoder would reject outright can never be a complete outer frame.
- */
-function peekPushdataEncodedLength(data: Uint8Array, offset = 0): number | undefined {
-  if (offset < 0 || offset >= data.length) return undefined;
-  const firstByte = data[offset];
-  // OP_0 pushes an empty item; OP_1NEGATE / OP_1-OP_16 push one byte.
-  if (firstByte === 0x00 || firstByte === 0x4f) return 1;
-  if (firstByte >= 0x51 && firstByte <= 0x60) return 1;
-  if (firstByte === 0x4c) {
-    if (offset + 2 > data.length) return undefined;
-    const length = data[offset + 1];
-    return offset + 2 + length <= data.length ? 2 + length : undefined;
-  }
-  if (firstByte === 0x4d) {
-    if (offset + 3 > data.length) return undefined;
-    const length = data[offset + 1] | (data[offset + 2] << 8);
-    return offset + 3 + length <= data.length ? 3 + length : undefined;
-  }
-  // Any other byte is either a direct length (1-75) or not a push at all (OP_PUSHDATA_4 and ordinary opcodes).
-  if (firstByte > 75) return undefined;
-  return offset + 1 + firstByte <= data.length ? 1 + firstByte : undefined;
-}
-
 /** Select a complete Solidity return from strongest-to-weakest live stack candidates. */
 export function selectEvmScalarReturnCommitment(
   candidates: readonly Uint8Array[], expectedTypes: readonly string[], allowRaw = true,
@@ -15052,16 +15022,21 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             const valueChunkResourceSelection = selectValueChunkResource(valueChunkWrites);
             const valueChunkResourceIdentity = valueChunkResourceSelection.status === 'exact'
               ? valueChunkResourceSelection.identity : undefined;
-            // When the nested probe has a valueTail but not the full JobEventData[] blob,
-            // reconstruct from publishJobEvent args (+ any staged leading pushes).
-            // The reconstructed continuation value is offered before the pre-handler witness: this band carries
-            // the derived post-state, and the witness exists to authenticate the proof entry before the handler.
-            // The witness stays as the last candidate so an encoding the local reconstruction cannot reproduce
-            // (timestamp / legacy mismatch) still falls back to the authenticated blob instead of giving up.
-            const publishArgsCandidates: Uint8Array[] = [];
+            // Old descriptor-free routes reconstructed their computed array value from a historical ABI shape.
+            // Keep that adapter outside kernel routes. A kernel candidate must come from the VM trace or from the
+            // exact producer/resource pair staged while evaluating `storedElementSource`; a function name, argument
+            // position, or same-typed value is not producer authority.
+            const legacyValueCandidates: Uint8Array[] = [];
+            const permitsLegacyValueCandidate = valueChunkResourceSelection.status === 'absent'
+              && permitsLegacyNamedValueChunkFallback(
+                [llc, ...(proxyGroup ? [proxyGroup] : [])],
+                this.inner.artifact.messageBus?.convention
+                  ?? (llc.compilerRoute?.abiFunction as MessageBusRuntimeAbiFunction | undefined)
+                    ?.messageBusConvention,
+              );
             const publishName = llc.functionName ?? llc.logicalFunctionName
               ?? llc.compilerRoute?.abiFunction?.name;
-            if (publishName === 'publishJobEvent') {
+            if (permitsLegacyValueCandidate && publishName === 'publishJobEvent') {
               const args = llc.logicalFunctionArgs ?? llc.functionArgs;
               const structs = llc.logicalArtifact?.structs
                 ?? llc.externalContract?.inner?.artifact?.structs
@@ -15097,12 +15072,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   // encoding (timestamp / legacy mismatch) overwrites the witness blob
                   // the unlocker and chunk commitments must share.
                   if (built.length > VALUE_HEAD_SIZE) {
-                    publishArgsCandidates.push(built);
+                    legacyValueCandidates.push(built);
                   }
                 } catch { /* fall through to stack/staged selection */ }
               }
               if (witness instanceof Uint8Array && witness.length > VALUE_HEAD_SIZE) {
-                publishArgsCandidates.push(witness);
+                legacyValueCandidates.push(witness);
               }
             }
             const allChunks = extractAllRouteValueChunks(
@@ -15111,7 +15086,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               band?.nNew ?? identityPin?.nNew ?? llc.valueChunkOutputCount ?? 0,
               chunkCategory,
               valueChunkWrites,
-              publishArgsCandidates,
+              legacyValueCandidates,
               stb.valueChunkWriteStagingSession,
               transportedProducerClaims,
               transportedStateOwner,
@@ -15120,7 +15095,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             // outputs and persistence only. `__internal__valueWitness_N` authenticates the
             // exact proof-entry value before this handler; replacing it here would make a
             // long-value read authenticate the post-state digest against the pre-state entry.
-            if (lastExtractedComputedValue && lastExtractedComputedValue.length > VALUE_HEAD_SIZE) {
+            if (permitsLegacyValueCandidate && lastExtractedComputedValue
+              && lastExtractedComputedValue.length > VALUE_HEAD_SIZE) {
               const selectedValue = lastExtractedComputedValue;
               if (chunkCategory) stageJobEventsValue(chunkCategory, selectedValue);
             }
@@ -15196,10 +15172,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               chunks: allChunks.length,
             });
             if (chunkCategory && allChunks.length > 0) {
-              stb.rememberJobEventsChunks(chunkCategory, allChunks.map((chunk) => ({
-                ...chunk,
-                categoryId: chunkCategory,
-              })));
+              if (permitsLegacyValueCandidate) {
+                stb.rememberJobEventsChunks(chunkCategory, allChunks.map((chunk) => ({
+                  ...chunk,
+                  categoryId: chunkCategory,
+                })));
+              }
               if (stb.bumpPublishJobEventsWidth(allChunks.length)) stb._refreshInputs();
               if (lastExtractedComputedValue) {
                 const selection = selectValueChunkWriteCategory(valueChunkWrites.filter(
@@ -15217,7 +15195,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             }
             const redeemLock = pin?.lockingBytecode && isP2sh32LockingBytecode(pin.lockingBytecode)
               ? pin.lockingBytecode
-              : (chunkCategory ? persistedJobEventsLock(chunkCategory) : undefined);
+              : (permitsLegacyValueCandidate && chunkCategory
+                ? persistedJobEventsLock(chunkCategory) : undefined);
             if (chunkCategory && redeemLock) {
               const selection = selectValueChunkWriteCategory(valueChunkWrites.filter(
                 (write) => write.categoryId.toLowerCase() === chunkCategory.toLowerCase(),

@@ -32713,11 +32713,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         outputs.map((output) => output.type),
         `function '${resultFunction?.name ?? functionName}' result`,
       );
-      const scalar = resultEncoding === 'evm-abi-v1'
-        ? decodeEvmScalarReturn(blob, outputs[0].type) : undefined;
+      const evmDecoded = resultEncoding === 'evm-abi-v1'
+        ? decodeEvmReturnValue(blob, outputs[0].type) : undefined;
       let decoded: StateValue;
       try {
-        const rawDecoded = scalar ?? decodePushdataValue(blob, 0, outputs[0].type, structs).value;
+        const rawDecoded = evmDecoded ?? decodePushdataValue(blob, 0, outputs[0].type, structs).value;
         decoded = (usesLegacyJobEventCompatibility(returnArtifact, outputs[0].type, structs)
           ? normalizeJobEventAddresses(rawDecoded, outputs[0].type, structs)
           : rawDecoded) as StateValue;

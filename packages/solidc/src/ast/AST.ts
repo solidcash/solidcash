@@ -2977,6 +2977,10 @@ export interface EmitInfo {
   eventSignature: string;
   emitIndex: number;
   chunkCount: number;
+  // The definition this site resolved to. Retained because later lowering may inline or erase the emit statement
+  // itself (an inherited internal helper such as OpenZeppelin's `_approve`), leaving this metadata as the only
+  // surviving record that the handler really emits the event. Overload resolution replaces it in TypeCheck.
+  eventDefinition?: EventDefinitionNode;
 }
 
 export interface RuntimeLoopEventInfo {

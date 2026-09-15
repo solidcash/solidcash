@@ -2596,9 +2596,17 @@ export function generateArtifact(
   }
 
   // Build events if contract has event definitions
-  // Build events from file-level (library imports), contract-level, and emitted sibling-contract event defs
-  const allEventDefs = [...(ast.eventDefinitions || []), ...contract.eventDefinitions, ...contract.emittedForeignEvents]
-    .filter((ev, i, a) => a.findIndex((e) => e.signature === ev.signature) === i);
+  // Build events from file-level (library imports), contract-level, emitted sibling-contract event defs, and the
+  // definitions retained by each surviving emit site. The last source matters because lowering can inline or erase
+  // the emit statement itself (an inherited internal helper such as OpenZeppelin's `_approve`), so the handler's
+  // `emits` metadata can name a schema that no longer has a statement to be discovered from. Deduplicate by
+  // signature exactly as before.
+  const emittedEventDefs = contract.functions
+    .flatMap((func) => func.emitInfos ?? [])
+    .flatMap((info) => (info.eventDefinition ? [info.eventDefinition] : []));
+  const allEventDefs = [
+    ...(ast.eventDefinitions || []), ...contract.eventDefinitions, ...contract.emittedForeignEvents, ...emittedEventDefs,
+  ].filter((ev, i, a) => a.findIndex((e) => e.signature === ev.signature) === i);
   const events = allEventDefs.length > 0
     ? allEventDefs.map((ev) => ({
       name: ev.name,

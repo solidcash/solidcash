@@ -112,6 +112,7 @@ import {
   StateArrayDeleteNode,
   FunctionModifier,
   TryCatchNode,
+  EmitInfo,
 } from '../ast/AST.js';
 import AstTraversal from '../ast/AstTraversal.js';
 import {
@@ -174,6 +175,9 @@ import { generatedOriginOf } from '../ast/Location.js';
 
 export default class TypeCheckTraversal extends AstTraversal {
   private currentFunction: FunctionDefinitionNode;
+  // The contract whose members are currently being checked. Overloaded emits select their definition here, so the
+  // artifact's emitted-event inventory is collected after selection instead of during symbol resolution.
+  private currentContract?: ContractNode;
   private functionDefinitions: Map<string, FunctionDefinitionNode[]> = new Map();
   private abiCoderV1 = false;
 
@@ -220,6 +224,7 @@ export default class TypeCheckTraversal extends AstTraversal {
   }
 
   visitContract(node: ContractNode): Node {
+    this.currentContract = node;
     node.parameters = this.visitList(node.parameters) as any[];
     node.structDefinitions.forEach((sd) => this.visitStructDefinition(sd));
     node.eventDefinitions.forEach((ev) => this.visitEventDefinition(ev));
@@ -273,6 +278,11 @@ export default class TypeCheckTraversal extends AstTraversal {
     if (node.receiveDef) {
       node.receiveDef = this.visit(node.receiveDef) as FunctionDefinitionNode;
     }
+    // Every member body is typed now, so each emit has its final `eventDefinition`. Collect the emitted events
+    // this contract does not itself declare (see recordEmittedForeignEvents).
+    for (const member of [node.constructorDef, ...node.functions, node.fallbackDef, node.receiveDef]) {
+      this.recordEmittedForeignEvents(member?.body);
+    }
     return node;
   }
 
@@ -319,24 +329,66 @@ export default class TypeCheckTraversal extends AstTraversal {
     return node;
   }
 
-  private patchEmitSignatures(node: Node, emitInfos: { eventSignature: string; emitIndex: number }[]): void {
-    if (node instanceof EmitStatementNode && node.eventDefinition) {
-      const info = emitInfos.find((ei) => ei.emitIndex === node.emitIndex);
-      if (info && !info.eventSignature) {
-        info.eventSignature = node.eventDefinition.signature;
-      }
+  /**
+   * Visit every emit statement reachable from `node`. Covers all statement containers an emit can survive in:
+   * blocks, switch cases, try/catch clauses, and the single-statement `body`/`block` carriers (`if`/`while`/
+   * `unchecked`).
+   */
+  private visitEmits(node: Node | undefined, visit: (emit: EmitStatementNode) => void): void {
+    if (!node) return;
+    if (node instanceof EmitStatementNode) {
+      visit(node);
+      return;
     }
     if ('statements' in node && Array.isArray((node as any).statements)) {
-      for (const stmt of (node as any).statements) {
-        this.patchEmitSignatures(stmt, emitInfos);
-      }
+      for (const stmt of (node as any).statements) this.visitEmits(stmt, visit);
+    }
+    if ('cases' in node && Array.isArray((node as any).cases)) {
+      for (const swCase of (node as any).cases) this.visitEmits(swCase, visit);
+    }
+    if ('catchClauses' in node && Array.isArray((node as any).catchClauses)) {
+      for (const clause of (node as any).catchClauses) this.visitEmits(clause, visit);
     }
     if ('body' in node && (node as any).body) {
-      this.patchEmitSignatures((node as any).body, emitInfos);
+      this.visitEmits((node as any).body, visit);
     }
     if ('block' in node && (node as any).block) {
-      this.patchEmitSignatures((node as any).block, emitInfos);
+      this.visitEmits((node as any).block, visit);
     }
+  }
+
+  /**
+   * Record the events a contract emits without declaring them. A sibling contract's or an implemented interface's
+   * event is a lexical emit target but not a member of this contract's declaration list, so the artifact would
+   * omit its schema. This runs AFTER type checking has selected `node.eventDefinition`, so an unused same-name
+   * overload of a foreign event can no longer leak into the artifact's event inventory (Solidity lists emitted
+   * foreign events in the emitter's ABI).
+   */
+  private recordEmittedForeignEvents(node: Node | undefined): void {
+    const contract = this.currentContract;
+    if (!contract) return;
+    this.visitEmits(node, (emit) => {
+      const eventDefinition = emit.eventDefinition;
+      if (eventDefinition
+        && !contract.eventDefinitions.some((own) => own.signature === eventDefinition.signature)
+        && !contract.emittedForeignEvents.some((recorded) => recorded.signature === eventDefinition.signature)) {
+        contract.emittedForeignEvents.push(eventDefinition);
+      }
+    });
+  }
+
+  private patchEmitSignatures(node: Node, emitInfos: EmitInfo[]): void {
+    this.visitEmits(node, (emit) => {
+      const eventDefinition = emit.eventDefinition;
+      if (!eventDefinition) return;
+      const info = emitInfos.find((ei) => ei.emitIndex === emit.emitIndex);
+      if (!info) return;
+      if (!info.eventSignature) info.eventSignature = eventDefinition.signature;
+      // Overload resolution may have selected a different definition than the symbol pass saw. Retain the
+      // SELECTED one: the artifact's event inventory is derived from this metadata, so an unused same-name
+      // overload must not survive here.
+      info.eventDefinition = eventDefinition;
+    });
   }
 
   visitEventDefinition(node: EventDefinitionNode): Node {

@@ -624,9 +624,6 @@ export default class SymbolTableTraversal extends AstTraversal {
   private fileStructNames: Set<string> = new Set();
   private fileTypeDefNames: Set<string> = new Set();
   private eventMap: Map<string, EventDefinitionNode> = new Map();
-  // Events declared in a sibling/imported contract (not the target contract nor a library): a qualified
-  // `emit C.E(...)` of one is recorded on the emitting contract so the artifact lists it (Solidity ABI parity).
-  private siblingContractEvents: WeakSet<EventDefinitionNode> = new WeakSet();
   // Calls visited from MethodCallStatement discard their ABI result. This lets deploy-folding safely erase an
   // intentionally mismatched interface return layout without extending that relaxation to value contexts.
   private discardedMethodCalls: WeakSet<MethodCallNode> = new WeakSet();
@@ -845,7 +842,6 @@ export default class SymbolTableTraversal extends AstTraversal {
       for (const ev of imported.eventDefinitions) {
         const sig = computeEventSignature(ev.name, ev.parameters.map((p) => p.type?.toString() ?? 'address'));
         ev.signature = sig;
-        this.siblingContractEvents.add(ev);
         if (!this.eventMap.has(sig)) {
           this.eventMap.set(sig, ev);
         }
@@ -4236,6 +4232,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         node.emitInfos = emitInfos;
 
       }
+
     }
 
 
@@ -4830,7 +4827,9 @@ export default class SymbolTableTraversal extends AstTraversal {
           eventSignature = ''; // will be resolved after TypeCheck
         }
         node.emitIndex = emitIndex;
-        emitInfos.push({ eventName: node.eventName, eventSignature, emitIndex, chunkCount: 1 });
+        emitInfos.push({
+          eventName: node.eventName, eventSignature, emitIndex, chunkCount: 1, eventDefinition: eventDef,
+        });
         return emitIndex + 1;
       }
     }
@@ -12034,16 +12033,9 @@ export default class SymbolTableTraversal extends AstTraversal {
       node.eventCandidates = candidates;
     }
 
-    // Record any emitted event declared in a sibling contract so the artifact lists it (library events already
-    // reach the artifact via file-level eventDefinitions; the contract's own events are listed directly).
-    if (this.currentContract) {
-      for (const ev of node.eventDefinition ? [node.eventDefinition] : (node.eventCandidates ?? [])) {
-        if (this.siblingContractEvents.has(ev)
-          && !this.currentContract.emittedForeignEvents.some((e) => e.signature === ev.signature)) {
-          this.currentContract.emittedForeignEvents.push(ev);
-        }
-      }
-    }
+    // Emitted foreign events (a sibling contract's, or an implemented interface's) are recorded by
+    // TypeCheckTraversal once overload resolution has selected this emit's exact definition: recording a
+    // candidate here would publish every same-name overload's schema instead of the selected one.
 
     // Solidity external-function event values are the composite `(address, selector)`. Materialize that pair as
     // `selector ++ address` before ordinary member traversal can mistake `C(addr).f` for external state. Cast it

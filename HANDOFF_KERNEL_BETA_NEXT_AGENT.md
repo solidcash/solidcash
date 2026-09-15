@@ -1,6 +1,6 @@
 # Kernel beta candidate — next-agent handoff
 
-Updated: 2026-09-15 (Europe/Berlin)
+Updated: 2026-09-15 09:35 (Europe/Berlin)
 
 ## Workspace and goal
 
@@ -18,6 +18,71 @@ release claims full Marketplace compatibility.
 
 The tree contains many generated `.js`, `.js.map`, `.d.ts`, and `.tsbuildinfo` files. Never use `git add -A`;
 stage reviewed source, tests, and handoffs explicitly.
+
+## Resume point (latest)
+
+HEAD is `08031a54e` after two new checkpoints:
+
+```text
+32c4a3c55 fix(sdk): decode aggregate delegate payload arguments
+08031a54e fix(sdk): preserve atomic graph discovery boundaries
+```
+
+Run the single current title with:
+
+```bash
+yarn vitest run --config vitest.marketplace.config.ts -t 'post job 1'
+```
+
+It reaches the authoritative atomic composer and now fails deterministically with:
+
+```text
+messageBus [L3_RESOURCE_UNRESOLVED]: message-bus batch collection witness
+'__message_bus_key__allowances_0' must identify one physical entry
+handler=transferFrom, local invocation row=4
+```
+
+This is the meaningful architectural pause point, not another SDK layout-repair bug. The FakeToken participant
+has five reached rows: `balanceOf`, three conditional raw `approve` edges, and raw `transferFrom`. The allowance
+tuples are genuinely different:
+
+```text
+approve:      (authenticated Marketplace proxy caller, spender argument = Marketplace proxy)
+transferFrom: (from argument = user, authenticated caller = Marketplace proxy)
+```
+
+Caller and owner identities are correct. The compiler recognizes the cross-handler key-source mismatch around
+`packages/solidc/src/compiler.ts:7039`, but deliberately promotes it to row-local geometry only for legacy mode.
+The kernel route consequently publishes one global allowance tuple and one physical `_allowances` entry slot.
+`encodeMessageBatch` correctly refuses to collapse the two entries.
+
+The next implementation must be compiler-owned and general: represent cross-handler-distinct collection entries
+in kernel resource geometry as a fixed shared/alternate tuple (all components of a nested-mapping key move
+together), analogous to the existing balances shared/`_row` pair. Do not emit `_rN` maximum-row unrolling and do
+not key behavior to ERC20, approve, transferFrom, Marketplace, or field names. Extend runtime alias/settlement
+logic and add an alpha-renamed neutral regression before retrying Marketplace.
+
+Also preserve raw-call semantics. These SafeERC20 edges are published as `__raw__`/`opaqueReturn` while the target
+handler returns typed `bool`; do not silently reinterpret a low-level `(success, returndata)` result as that bool.
+Either retain the existing authenticated raw-call adapter or add compiler proof for typed lowering.
+
+The SDK singleton-route experiment was removed before commit. Final graph calls are routed by the atomic composer;
+the ordinary builder is only a discovery scaffold. `08031a54e` lets its speculative failures defer only when a
+complete prepared atomic call list exists, while the composer remains the final VM authority.
+
+Latest verification:
+
+```text
+solidcash TypeScript build: PASS
+GraphProducerResult.test.ts: 8/8 PASS
+AssignPhysicalReturnIndices.test.ts: 150/150 PASS
+KernelMultiResultGraphParity.test.ts: 1/1 PASS
+Marketplace post job 1: reaches the explicit allowance resource collision above
+```
+
+Before the next code change, add the neutral compiler regression for two handlers touching the same mapping with
+different argument/msg.sender key provenance. Assert kernel-row-loop, two fixed physical tuple identities, source
+order/read-after-write parity with legacy, and route size independent of `maximumRows`.
 
 ## Architecture that must remain true
 

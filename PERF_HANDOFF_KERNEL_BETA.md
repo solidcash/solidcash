@@ -82,6 +82,27 @@ Remaining measured items after this round (project compile ≈ 21 s of CPU):
 | `findTupleInit` + `findLocalInit` | 193 + 120 ms | per-(body, name) searches; memoizing is only sound if the pass's in-place rewrites cannot invalidate entries |
 | transfer-index walk, `walkNodes`, `inspect`, `claim` | 100-165 ms each | long tail |
 
+### Round 6: where the remaining time actually is (all measured, none landed)
+
+With the parse cache, the slot-walk fix and the outline speed mode in place, the ten-root project compile
+is ~21 s of CPU. Everything below was measured with the CPU profiler at a 250 us interval and, for the
+function-level comparisons, as the **minimum self time over two runs** (single runs on this box vary by
+more than the effects being chased).
+
+| target | measured | verdict |
+|---|---|---|
+| `walkInvocationAst` (977 ms, the largest single function) | replacing its 15-term chained key comparison with a module-level `Set` measured **977 → 1,183 ms** | rejected; the chained comparison on interned strings wins |
+| `findExistingSerials` (267 ms) | prefix guard before the serial regex measured 267 → 260 ms minimum | neutral, reverted |
+| `findCandidates` (1,322 ms across 306 calls, broken down in-function) | `extend` 449 ms, `bucket` 447 ms, `hashes` 184 ms, `rank` 122 ms, `split` 120 ms | a typed-array bucket rewrite targets ≤250 ms (≈1 % of the compile) in the most tuned code in the repo; not attempted |
+| test-run async idle | `MockNetworkProvider` and the solidhat/testing network layer contain **no** `setTimeout`, `setImmediate`, `await new Promise` or queue; the focused run's ~6 s of non-test time is bootstrap (transform/setup/import) plus worker idle, not an injectable delay | nothing to remove |
+
+The only remaining double-digit candidate is the admission fast path: run the widest rung as the
+single-pass placeholder bind (what the shipping recompile already does) *before* paying the cheap
+search, falling back to the existing ladder when it throws. The ungated version measured −4.6 %
+end-to-end but is not equivalent (`EACCToken` has no route and fails on
+`single-pass bind: missing __message_bus_verify_atomic`, and some roots' route bytes change), so a
+landable version needs a message-bus-graph-edge gate plus a full-suite and fixture regeneration cycle.
+
 ### Incident to know about (no harm done)
 
 `.marketplace/iteration/recompile.sh` has **hard-coded paths to the candidate worktree**

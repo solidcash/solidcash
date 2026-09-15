@@ -5641,9 +5641,8 @@ export function encodeLeadingRouteArrayPushes(params: {
     // Same wire rule as the refresh's current element: an empty event timestamp is stamped by the storing handler,
     // so the derived leading mutation must carry the stamp too.
     const raw = candidate.row.args[candidate.elementIndex];
-    const stamped = params.timestamp === undefined ? raw : stampEmptyJobEventTimestamp(raw, params.timestamp);
     const element = encodeStructArgument(
-      stamped as typeof raw, array.elementType, params.structs, params.timestamp,
+      raw, array.elementType, params.structs, params.timestamp,
       params.legacyJobEventCompatibility === true,
     );
     encoded = appendEncodedArrayElement(encoded, element);
@@ -25434,15 +25433,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                         const elementIndex = visibleInputs.findIndex((input) => input.type === elementType);
                         let currentElement: Uint8Array | undefined;
                         if (elementIndex >= 0) {
-                          // The handler that stores this element fills an empty wire timestamp with the
-                          // transaction timestamp, so the derived continuation value must carry that same stamp.
-                          // Encoding the raw argument would produce a 24-byte element where the covenant stores
-                          // 28 bytes, and the covenant then rejects the value chunks derived from it.
-                          const elementArg = oracleTimestamp === undefined
-                            ? finalVisibleArgs[elementIndex]
-                            : stampEmptyJobEventTimestamp(finalVisibleArgs[elementIndex], oracleTimestamp);
+                          // Encode the exact source argument. The encoder applies timestamp/address adaptation
+                          // only for the explicitly identified legacy-unroll wire schema; kernel values must not
+                          // change because a field happens to have an application-associated spelling.
                           currentElement = encodeStructArgument(
-                            elementArg as FunctionArgument, elementType, structs, oracleTimestamp,
+                            finalVisibleArgs[elementIndex], elementType, structs, oracleTimestamp,
                             usesLegacyJobEventCompatibility(sharedLogicalArtifact, elementType, structs),
                           );
                         }

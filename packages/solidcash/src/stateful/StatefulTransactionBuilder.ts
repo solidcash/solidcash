@@ -80,6 +80,7 @@ import {
 import {
   canMaterializeRepairedValueChunk,
   canApplyRepairedNftCommitment,
+  computedOutputConvergenceFingerprint,
   computedOutputRepairPassLimit,
   followsMutableNftOutputGuard,
   isActiveVmControlBranch,
@@ -21646,7 +21647,7 @@ export class StatefulTransactionBuilder {
         );
       }
       recordComputedOutputConvergenceState(
-        convergenceStates, binToHex(encodeTransaction(transaction)),
+        convergenceStates, computedOutputConvergenceFingerprint(encodeTransaction(transaction)),
       );
       if (beforeValidation?.(transaction)) {
         acceptControlledOutputGeometry();

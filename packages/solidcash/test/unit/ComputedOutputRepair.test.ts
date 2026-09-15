@@ -4,6 +4,7 @@ import { Op } from '@solidcash/utils';
 import {
   canMaterializeRepairedValueChunk,
   canApplyRepairedNftCommitment,
+  computedOutputConvergenceFingerprint,
   computedOutputRepairPassLimit,
   followsMutableNftOutputGuard,
   isActiveVmControlBranch,
@@ -18,6 +19,16 @@ import {
 } from '../../src/stateful/computed-output-repair.js';
 
 describe('computed-output repair convergence', () => {
+  it('uses fixed-width transaction identities for cycle detection', () => {
+    const first = computedOutputConvergenceFingerprint(new Uint8Array(1_000_000).fill(0x41));
+    const same = computedOutputConvergenceFingerprint(new Uint8Array(1_000_000).fill(0x41));
+    const different = computedOutputConvergenceFingerprint(new Uint8Array(1_000_000).fill(0x42));
+
+    expect(first).toHaveLength(64);
+    expect(same).toBe(first);
+    expect(different).not.toBe(first);
+  });
+
   it('scales its finite pass budget beyond 32 independently repaired coordinates', () => {
     const limit = computedOutputRepairPassLimit(1, 40);
     const claims = new Map<string, string>();

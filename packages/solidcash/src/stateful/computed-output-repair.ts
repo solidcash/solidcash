@@ -1,4 +1,4 @@
-import { binToHex, hexToBin } from '@bitauth/libauth';
+import { binToHex, hash256, hexToBin } from '@bitauth/libauth';
 import { Op } from '@solidcash/utils';
 import { isScidIdentityCommitment } from './logical-identity.js';
 import { isEmptyValueEntryCommitment } from './SortedList.js';
@@ -48,6 +48,11 @@ export function recordComputedOutputConvergenceState(
     throw new Error('Computed-output repair convergence cycle in the normalized transaction state.');
   }
   history.add(fingerprint);
+}
+
+/** Build a fixed-width identity without retaining each complete serialized transaction. */
+export function computedOutputConvergenceFingerprint(transaction: Uint8Array): string {
+  return binToHex(hash256(transaction));
 }
 
 /** VM observers run before libauth's conditional-operation wrapper, including for opcodes in untaken branches. */

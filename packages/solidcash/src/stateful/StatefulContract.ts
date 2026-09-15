@@ -1251,6 +1251,19 @@ export function anchorRoutedDynamicResourcesAtOwner<T extends { token?: unknown 
   return anchored;
 }
 
+/** A compiler route needs the physical entry ABI only when an actual wrapper entry point carries it. Synthetic
+ * routes live exclusively in message-bus metadata, so the absence of a same-named physical ABI is not a wrapper. */
+export function compilerRouteUsesPhysicalWrapper(
+  compilerRouteSelector: Uint8Array | undefined,
+  physicalAbiFunction: AbiFunction | undefined,
+  effectiveAbiFunction: AbiFunction | undefined,
+): boolean {
+  return compilerRouteSelector !== undefined
+    && physicalAbiFunction !== undefined
+    && effectiveAbiFunction !== undefined
+    && physicalAbiFunction !== effectiveAbiFunction;
+}
+
 /** Rebase compiler-route proof offsets when an implementation block is embedded after a proxy's state prefix.
  * Batch proof witnesses are relative to the authenticated state owner, unlike ordinary implementation block slots
  * which are relative to the executor. Negative sentinels and output-relative witnesses are intentionally unchanged. */
@@ -30739,7 +30752,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     });
     const firstRootDynamicChunk = dynamicReadChunkInputs[0] ?? dynamicChunkInputs[0];
     const refreshTopLevelDynamicChunkInputBase = topLevelDynamicChunkArgumentIndex < 0
-      || (overrides?.compilerRouteSelector !== undefined && physicalAbiFunction !== abiFunction)
+      || compilerRouteUsesPhysicalWrapper(
+        overrides?.compilerRouteSelector, physicalAbiFunction, abiFunction,
+      )
       ? undefined
       : (materialized?: TransactionBuilder): void => {
         const target = firstRootDynamicChunk;

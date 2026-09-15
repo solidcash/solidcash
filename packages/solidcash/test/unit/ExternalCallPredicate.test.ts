@@ -7,6 +7,7 @@ import { compileString } from '../direct-compile.js';
 import { StatefulContract } from '../../src/index.js';
 import {
   anchorRoutedDynamicResourcesAtOwner,
+  compilerRouteUsesPhysicalWrapper,
   externalCallTargetSourceLockingBytecodeHex,
   externalReturnParamSlot,
   groupIndexForExternalCallSlot,
@@ -103,6 +104,17 @@ describe('compiler-published external-call predicate evaluation', () => {
     expect(anchored[3]).toBe(chunk);
     expect(anchored[5]).toEqual({ id: 3 });
     expect(inputs[5]).toBe(chunk);
+  });
+
+  it('distinguishes synthetic compiler routes from physical wrapper routes', () => {
+    const selector = Uint8Array.of(1, 2, 3, 4);
+    const route = { name: '__message_bus1', inputs: [] } as never;
+    const wrapper = { name: '__forward', inputs: [] } as never;
+
+    expect(compilerRouteUsesPhysicalWrapper(selector, undefined, route)).toBe(false);
+    expect(compilerRouteUsesPhysicalWrapper(selector, wrapper, route)).toBe(true);
+    expect(compilerRouteUsesPhysicalWrapper(selector, route, route)).toBe(false);
+    expect(compilerRouteUsesPhysicalWrapper(undefined, wrapper, route)).toBe(false);
   });
 
   it('selects loop resources from the concrete message-bus handlers', () => {

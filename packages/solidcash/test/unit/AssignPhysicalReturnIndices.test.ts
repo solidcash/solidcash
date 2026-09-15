@@ -142,6 +142,10 @@ import {
   reassertTokenInsertCommitments,
   reassertDescribedEntryInsertLocks,
   entryInsertLockRepairs,
+  linearSortedBatchEntryBands,
+  linearSortedBatchPlannedLockCounts,
+  linearSortedBatchValueArgument,
+  reorderLinearBatchProofSuccessor,
   stripSurplusEmptyCollectionEntries,
   stripSurplusValueChunkLocks,
   reassertScidIdentityOutputs,
@@ -4808,24 +4812,44 @@ describe('assignPhysicalReturnIndices', () => {
       }],
     })).toEqual([]);
 
-    // Descriptor-free artifacts retain the historical repair coordinates.
-    expect(entryInsertLockRepairs({ functionName: 'transferFrom' })).toEqual([{
-      collection: '', predecessorOffset: 2, candidateInsertedOffsets: [4], insertedSlot: '',
-    }]);
-
-    // FakeToken.transferFrom publishes balances/allowances descriptors: even with no planned
-    // INSERT metadata, repair balances P' (+2) / NEW (+4) so allowances cannot keep the NEW lock.
+    // Only an explicitly legacy-unroll descriptor-free artifact retains the historical coordinates.
     expect(entryInsertLockRepairs({
       functionName: 'transferFrom',
+      logicalArtifact: { messageBus: { convention: 'legacy-unroll' } } as unknown as Artifact,
+    })).toEqual([{
+      collection: '', predecessorOffset: 2, candidateInsertedOffsets: [4], insertedSlot: '',
+    }]);
+    expect(entryInsertLockRepairs({ functionName: 'transferFrom' })).toEqual([]);
+    expect(entryInsertLockRepairs({
+      functionName: 'transferFrom',
+      logicalArtifact: { messageBus: { convention: 'kernel-row-loop' } } as unknown as Artifact,
+    })).toEqual([]);
+
+    // A renamed linear batch publishes the two entry accesses which share one sorted collection. No source
+    // spelling or positional value argument participates in selecting its repair geometry.
+    const linear = {
+      functionName: 'moveUnitsFrom',
+      logicalFunctionArgs: [9n, 'alice', 'bob'],
       compilerRoute: { abiFunction: {
-        name: 'transferFrom',
-        inputs: [],
+        name: 'moveUnitsFrom',
+        inputs: [
+          { name: 'quantity', type: 'uint256' },
+          { name: 'source', type: 'address' },
+          { name: 'destination', type: 'address' },
+        ],
         writesState: true,
         entryAccesses: [
-          { collection: '_balances', keyParams: ['to'], operations: ['read', 'write'] },
-          { collection: '_allowances', keyParams: ['from'], operations: ['read', 'write'] },
-          { collection: '_balances', keyParams: ['from'], operations: ['read', 'write'] },
+          {
+            collection: 'ledger', keyParams: ['destination'], operations: ['read', 'write'],
+            valueSource: 'binop:+(entry,id:quantity)',
+          },
+          { collection: 'permits', keyParams: ['source'], operations: ['read', 'write'] },
+          {
+            collection: 'ledger', keyParams: ['source'], operations: ['read', 'write'],
+            valueSource: 'binop:-(entry,id:quantity)',
+          },
         ],
+        sortedBatchInfo: [{ collection: 'ledger', slotIndices: [0, 2], linear: true }],
         blockLayout: {
           blockSize: 8,
           slots: [
@@ -4838,11 +4862,101 @@ describe('assignPhysicalReturnIndices', () => {
         },
       } },
       plannedEntryInserts: [],
-    })).toEqual([{
-      collection: '_balances',
+    };
+    expect(linearSortedBatchEntryBands(linear)).toEqual([{
+      collection: 'ledger', offsets: [2, 4],
+    }]);
+    expect(linearSortedBatchValueArgument(linear, 'ledger')).toBe(9n);
+    expect(entryInsertLockRepairs(linear)).toEqual([{
+      collection: 'ledger',
       predecessorOffset: 2,
       candidateInsertedOffsets: [4],
       insertedSlot: '',
     }]);
+    const ledgerLock = hexToBin(`aa20${'41'.repeat(32)}87`);
+    const permitLock = hexToBin(`aa20${'52'.repeat(32)}87`);
+    const batchOutputs = Array.from({ length: 5 }, () => ({ to: Uint8Array.of(0x51) }));
+    batchOutputs[2] = { to: ledgerLock, token: { category: 'token' } } as never;
+    batchOutputs[3] = { to: permitLock, token: { category: 'token' } } as never;
+    batchOutputs[4] = { to: ledgerLock, token: { category: 'token' } } as never;
+    expect([...linearSortedBatchPlannedLockCounts(batchOutputs, 0, 'token', linear)])
+      .toEqual([[binToHex(ledgerLock), 2]]);
+
+    // A familiar application name without compiler batch authority remains inert.
+    const decoy = {
+      ...linear,
+      functionName: 'transferFrom',
+      compilerRoute: { abiFunction: {
+        ...linear.compilerRoute.abiFunction, name: 'transferFrom', sortedBatchInfo: undefined,
+      } },
+    };
+    expect(linearSortedBatchEntryBands(decoy)).toEqual([]);
+    expect(linearSortedBatchPlannedLockCounts(batchOutputs, 0, 'token', decoy).size).toBe(0);
+
+    // Even one tempting numeric non-key argument is not a mutation value without compiler-authenticated
+    // valueSource provenance for the selected collection.
+    const unrelatedNumericDecoy = {
+      ...linear,
+      functionName: 'transferFrom',
+      compilerRoute: { abiFunction: {
+        ...linear.compilerRoute.abiFunction,
+        name: 'transferFrom',
+        entryAccesses: linear.compilerRoute.abiFunction.entryAccesses.map((access) => ({
+          ...access, valueSource: undefined,
+        })),
+      } },
+    };
+    expect(linearSortedBatchEntryBands(unrelatedNumericDecoy)).toHaveLength(1);
+    expect(linearSortedBatchValueArgument(unrelatedNumericDecoy, 'ledger')).toBeUndefined();
+  });
+
+  it('reorders a linear proof successor at descriptor-owned nonstandard offsets', () => {
+    const category = 'token';
+    const lock = hexToBin(`aa20${'63'.repeat(32)}87`);
+    const proofSlot = '71'.repeat(32);
+    const successorSlot = '82'.repeat(32);
+    const tailSlot = '93'.repeat(32);
+    const predecessor = `${proofSlot}${successorSlot}01`;
+    const successor = `${successorSlot}${tailSlot}02`;
+    const master = 2;
+    const outputs = Array.from({ length: 12 }, () => ({ to: Uint8Array.of(0x51) })) as Parameters<
+      typeof reorderLinearBatchProofSuccessor
+    >[0];
+    outputs[master + 3] = {
+      to: lock, amount: 1300n,
+      token: { category, nft: { capability: 'mutable', commitment: predecessor } },
+    };
+    outputs[master + 7] = {
+      to: Uint8Array.of(0x51), amount: 1400n,
+      token: { category, nft: { capability: 'mutable', commitment: successor } },
+    };
+    const inputs = Array.from({ length: 12 }, () => ({})) as Parameters<
+      typeof reorderLinearBatchProofSuccessor
+    >[1];
+    inputs[master + 5] = { token: { nft: { commitment: `${proofSlot}${tailSlot}03` } } };
+    const repair = {
+      collection: 'ledger', predecessorOffset: 3, candidateInsertedOffsets: [7],
+      proofInputOffset: 5, insertedSlot: '',
+    };
+    const ambiguousOutputs = outputs.map((output) => ({
+      ...output,
+      ...(output.token && { token: { ...output.token, nft: { ...output.token.nft } } }),
+    }));
+    ambiguousOutputs[master + 9] = {
+      to: lock, amount: 1500n,
+      token: {
+        category, nft: { capability: 'mutable', commitment: `${successorSlot}${'a4'.repeat(32)}04` },
+      },
+    };
+    expect(reorderLinearBatchProofSuccessor(ambiguousOutputs, inputs, master, category, {
+      ...repair, candidateInsertedOffsets: [7, 9],
+    })).toBe(false);
+    expect(ambiguousOutputs[master + 3].token?.nft?.commitment).toBe(predecessor);
+    expect(reorderLinearBatchProofSuccessor(outputs, inputs, master, category, repair)).toBe(true);
+    expect(outputs[master + 3].token?.nft?.commitment).toBe(successor);
+    expect(outputs[master + 7].token?.nft?.commitment).toBe(predecessor);
+    expect(outputs[master + 3].to).toEqual(lock);
+    expect(outputs[master + 7].to).toEqual(lock);
+    expect(reorderLinearBatchProofSuccessor(outputs, inputs, master, category, repair)).toBe(false);
   });
 });

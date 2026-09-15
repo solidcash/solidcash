@@ -534,7 +534,7 @@ export function isCompilerDescribedMintingBandWriter(
   const artifact = group.logicalArtifact ?? group.externalContract?.inner?.artifact;
   const logicalName = group.logicalFunctionName ?? group.functionName;
   const abiFunction = group.compilerRoute?.abiFunction
-    ?? artifact?.abi.find((candidate) => candidate.name === logicalName);
+    ?? artifact?.abi?.find((candidate) => candidate.name === logicalName);
   if (abiFunction?.entryAccesses !== undefined) {
     const writtenEntries = abiFunction.entryAccesses.filter((access) => access.operations.includes('write'));
     return abiFunction.writesState === true
@@ -4051,6 +4051,88 @@ export type EntryInsertLockRepair = {
   proofInputOffset?: number;
 };
 
+export type LinearSortedBatchEntryBand = { collection: string; offsets: number[] };
+
+/** Resolve each compiler-described linear sorted batch onto its exact physical entry offsets. */
+export function linearSortedBatchEntryBands(group: CompilerTokenWriterGroup & {
+  blockLayout?: FunctionBlockLayout;
+}): LinearSortedBatchEntryBand[] {
+  const artifact = group.logicalArtifact ?? group.externalContract?.inner?.artifact;
+  const logicalName = group.logicalFunctionName ?? group.functionName;
+  const abiFunction = group.compilerRoute?.abiFunction
+    ?? artifact?.abi?.find((candidate) => candidate.name === logicalName);
+  const layout = abiFunction?.blockLayout ?? group.blockLayout;
+  if (!abiFunction?.entryAccesses || !layout) return [];
+  return (abiFunction.sortedBatchInfo ?? []).flatMap((batch) => {
+    if (batch.linear !== true || batch.slotIndices.length === 0
+      || new Set(batch.slotIndices).size !== batch.slotIndices.length) return [];
+    const offsets = batch.slotIndices.flatMap((slotIndex) => {
+      const access = abiFunction.entryAccesses?.[slotIndex];
+      const slots = layout.slots.filter((slot) => slot.kind === 'entry' && slot.slotIndex === slotIndex);
+      if (!access || access.collection !== batch.collection || !access.operations.includes('write')
+        || slots.length !== 1) return [];
+      return [slots[0].offset];
+    });
+    if (offsets.length !== batch.slotIndices.length || new Set(offsets).size !== offsets.length) return [];
+    return [{ collection: batch.collection, offsets: offsets.sort((left, right) => left - right) }];
+  });
+}
+
+/** Resolve the compiler-authenticated parameter subtracted from a linear batch entry. The downstream repair can
+ * only reconstruct a debit (`inputValue - amount`), so direct values, credits, and unsupported expressions remain
+ * trace/commitment-owned rather than being guessed from ABI shape. */
+export function linearSortedBatchValueArgument(
+  group: CompilerTokenWriterGroup & { functionArgs?: readonly unknown[]; logicalFunctionArgs?: readonly unknown[] },
+  collection: string,
+): unknown {
+  const artifact = group.logicalArtifact ?? group.externalContract?.inner?.artifact;
+  const logicalName = group.logicalFunctionName ?? group.functionName;
+  const abiFunction = group.compilerRoute?.abiFunction
+    ?? artifact?.abi?.find((candidate) => candidate.name === logicalName);
+  if (!abiFunction || !linearSortedBatchEntryBands(group).some((band) => band.collection === collection)) {
+    return undefined;
+  }
+  const batch = abiFunction.sortedBatchInfo?.find((candidate) => (
+    candidate.linear === true && candidate.collection === collection
+  ));
+  if (!batch) return undefined;
+  const debitParameters = new Set(batch.slotIndices.flatMap((slotIndex) => {
+    const source = abiFunction.entryAccesses?.[slotIndex]?.valueSource;
+    const match = source?.match(/^binop:-\(entry,id:([A-Za-z_$][A-Za-z0-9_$]*)\)$/);
+    return match ? [match[1]] : [];
+  }));
+  if (debitParameters.size !== 1) return undefined;
+  const parameter = [...debitParameters][0];
+  const visibleInputs = abiFunction.inputs.filter((input) => !input.name.startsWith('__internal__'));
+  const inputIndex = visibleInputs.findIndex((input) => (
+    input.name === parameter && /^(u?int)([0-9]+)?$/.test(input.type)
+  ));
+  if (inputIndex < 0) return undefined;
+  return (group.logicalFunctionArgs ?? group.functionArgs)?.[inputIndex];
+}
+
+/** Count only the locking bytecodes occupying compiler-owned linear-batch entry slots. */
+export function linearSortedBatchPlannedLockCounts(
+  outputs: ReadonlyArray<{
+    to?: Uint8Array | string;
+    token?: { category?: string };
+  }>,
+  masterIndex: number,
+  categoryId: string,
+  group: CompilerTokenWriterGroup & { blockLayout?: FunctionBlockLayout },
+): ReadonlyMap<string, number> {
+  const planned = new Map<string, number>();
+  for (const batch of linearSortedBatchEntryBands(group)) {
+    for (const offset of batch.offsets) {
+      const output = outputs[masterIndex + offset];
+      const lock = output?.to instanceof Uint8Array ? binToHex(output.to) : '';
+      if (!lock.startsWith('aa20') || output?.token?.category !== categoryId) continue;
+      planned.set(lock, (planned.get(lock) ?? 0) + 1);
+    }
+  }
+  return planned;
+}
+
 /** Resolve compiler-planned sorted-entry predecessor/new-node lock pairs without relying on function names. */
 export function entryInsertLockRepairs(
   group: CompilerTokenWriterGroup & {
@@ -4063,7 +4145,7 @@ export function entryInsertLockRepairs(
   const artifact = group.logicalArtifact ?? group.externalContract?.inner?.artifact;
   const logicalName = group.logicalFunctionName ?? group.functionName;
   const abiFunction = group.compilerRoute?.abiFunction
-    ?? artifact?.abi.find((candidate) => candidate.name === logicalName);
+    ?? artifact?.abi?.find((candidate) => candidate.name === logicalName);
   const layout = abiFunction?.blockLayout ?? group.blockLayout;
   const planned = group.plannedEntryInserts;
   if (planned && planned.length > 0 && layout && abiFunction?.entryAccesses) {
@@ -4079,8 +4161,8 @@ export function entryInsertLockRepairs(
       const insertedSlot = insert.newCommitment?.slice(0, SLOT_HEX).toLowerCase() ?? '';
       if (!access?.operations.includes('write') || insertedSlot.length !== SLOT_HEX) continue;
       // Keep all other entry offsets as candidates so NEW can be found after a foreign
-      // collection overwrote its lock (renamed multi-collection descriptors). Cardinality
-      // strip below must not treat foreign locks as planned balances nodes.
+      // collection overwrote its lock (renamed multi-collection descriptors). Cardinality stripping must not
+      // treat foreign locks as nodes owned by this batch.
       const candidateInsertedOffsets = layout.slots
         .filter((candidate) => candidate.kind === 'entry' && candidate.offset !== insert.blockSlot)
         .map((candidate) => candidate.offset);
@@ -4095,41 +4177,25 @@ export function entryInsertLockRepairs(
     }
     if (repairs.size > 0) return [...repairs.values()];
   }
+  const linearRepairs = linearSortedBatchEntryBands(group).flatMap((batch) => (
+    batch.offsets.length < 2 ? [] : [{
+      collection: batch.collection,
+      predecessorOffset: batch.offsets[0],
+      candidateInsertedOffsets: batch.offsets.slice(1),
+      insertedSlot: '',
+    }]
+  ));
+  if (linearRepairs.length > 0) return linearRepairs;
   const legacyName = group.functionName ?? group.logicalFunctionName ?? abiFunction?.name;
-  // transferFrom-shaped multi-collection batches: balances P'/NEW share a category with allowances.
-  // Even with compiler descriptors, an empty/unmatched planned-insert list must still repair the
-  // balances entry locks or allowances can occupy master+NEW and fail OUTPUTBYTECODE EQUALVERIFY.
-  if (legacyName === 'transferFrom' || abiFunction?.name === 'transferFrom') {
-    const accesses = abiFunction?.entryAccesses ?? [];
-    const balanceOffsets = (layout?.slots ?? [])
-      .filter((slot) => {
-        if (slot.kind !== 'entry' || slot.slotIndex === undefined) return false;
-        const collection = accesses[slot.slotIndex]?.collection ?? '';
-        return collection === '_balances' || collection === 'balances'
-          || collection.endsWith(':_balances') || collection.includes('balances');
-      })
-      .map((slot) => slot.offset)
-      .sort((left, right) => left - right);
-    if (balanceOffsets.length >= 2) {
-      return [{
-        collection: accesses[
-          layout!.slots.find((slot) => slot.kind === 'entry' && slot.offset === balanceOffsets[0])?.slotIndex
-            ?? -1
-        ]?.collection ?? '_balances',
-        predecessorOffset: balanceOffsets[0],
-        candidateInsertedOffsets: balanceOffsets.slice(1),
-        insertedSlot: '',
-      }];
-    }
-    // Descriptor-free (or balances offsets unavailable): historical +2/+4 band.
-    if (layout === undefined && abiFunction?.entryAccesses === undefined) {
-      return [{
-        collection: '',
-        predecessorOffset: 2,
-        candidateInsertedOffsets: [4],
-        insertedSlot: '',
-      }];
-    }
+  // Exact compatibility fence for pre-kernel legacy-unroll artifacts which published no resource geometry.
+  if (legacyName === 'transferFrom' && artifact?.messageBus?.convention === 'legacy-unroll'
+    && layout === undefined && abiFunction?.entryAccesses === undefined) {
+    return [{
+      collection: '',
+      predecessorOffset: 2,
+      candidateInsertedOffsets: [4],
+      insertedSlot: '',
+    }];
   }
   // Other descriptor-published functions: empty planned inserts must not invent coordinates.
   if (layout !== undefined || abiFunction?.entryAccesses !== undefined) return [];
@@ -4157,6 +4223,58 @@ export function reassertDescribedEntryInsertLocks(
     }
   }
   return changed;
+}
+
+/**
+ * Put a linear batch's NEW and successor/predecessor commitments into the compiler-described entry order.
+ * The proof input and every output coordinate come from the repair descriptor; ambiguous candidates fail closed.
+ */
+export function reorderLinearBatchProofSuccessor(
+  outputs: Parameters<typeof reassertTokenInsertNewLock>[0],
+  inputs: ReadonlyArray<{ token?: { nft?: { commitment?: Uint8Array | string } } }>,
+  masterIndex: number,
+  categoryId: string,
+  repair: EntryInsertLockRepair,
+): boolean {
+  const firstIndex = masterIndex + repair.predecessorOffset;
+  const first = outputs[firstIndex];
+  const firstCommitment = String(first?.token?.nft?.commitment ?? '');
+  const lockingBytecode = first?.to instanceof Uint8Array ? first.to : undefined;
+  const proofOffset = repair.proofInputOffset ?? repair.predecessorOffset;
+  const proofCommitment = String(inputs[masterIndex + proofOffset]?.token?.nft?.commitment ?? '');
+  const proofSlot = proofCommitment.slice(0, SLOT_HEX).toLowerCase();
+  if (!lockingBytecode || proofSlot.length !== SLOT_HEX || firstCommitment.length <= SLOT_HEX * 2
+    || first?.token?.category !== categoryId
+    || !firstCommitment.toLowerCase().startsWith(proofSlot)) return false;
+  const candidates = repair.candidateInsertedOffsets.flatMap((offset) => {
+    const output = outputs[masterIndex + offset];
+    const commitment = String(output?.token?.nft?.commitment ?? '');
+    return commitment.length > SLOT_HEX * 2 && output?.token?.category === categoryId
+      && firstCommitment.slice(SLOT_HEX, SLOT_HEX * 2).toLowerCase()
+        === commitment.slice(0, SLOT_HEX).toLowerCase()
+      ? [{ offset, output, commitment }] : [];
+  });
+  if (candidates.length !== 1) return false;
+  const successor = candidates[0];
+  outputs[firstIndex] = {
+    to: lockingBytecode,
+    amount: first.amount ?? 1200n,
+    token: {
+      amount: 0n,
+      category: categoryId,
+      nft: { capability: 'mutable', commitment: successor.commitment },
+    },
+  };
+  outputs[masterIndex + successor.offset] = {
+    to: lockingBytecode,
+    amount: successor.output?.amount ?? 1200n,
+    token: {
+      amount: 0n,
+      category: categoryId,
+      nft: { capability: 'mutable', commitment: firstCommitment },
+    },
+  };
+  return true;
 }
 
 /**
@@ -19549,15 +19667,12 @@ export class StatefulTransactionBuilder {
     return true;
   }
 
-  /**
-   * Linear in-block transferFrom expects exactly the layout entry nodes. Trailing clones that
-   * reuse balances/allowances locks (misdetected P' nextKey changes) break output cardinality.
-   */
+  /** Linear in-block sorted batches expect exactly their compiler-owned entry nodes. Trailing clones which reuse
+   * those locks (misdetected P' nextKey changes) break output cardinality. */
   private _stripSurplusLinearBatchEntryClones(builder: TransactionBuilder): void {
     for (const group of this.externalCallUtxoGroups) {
       if (group.sharedGroupIndex !== undefined || !group.categoryId) continue;
       const fnName = group.logicalFunctionName ?? group.functionName;
-      if (fnName !== 'transferFrom') continue;
       const trailingCountRaw = group.internalArgs?.__internal__vmapBatchTrailingCount
         ?? group.compilerRoute?.internalArgs?.__internal__vmapBatchTrailingCount;
       const trailingCount = typeof trailingCountRaw === 'bigint' ? Number(trailingCountRaw)
@@ -19574,15 +19689,11 @@ export class StatefulTransactionBuilder {
       const abiFn = group.compilerRoute?.abiFunction
         ?? (group.externalContract?.inner?.artifact?.abi as AbiFunction[] | undefined)
           ?.find((candidate) => candidate.name === fnName);
-      if (!abiFn?.sortedBatchInfo?.some((batch) => batch.linear === true)) continue;
-      const plannedByLock = new Map<string, number>();
-      for (const slot of group.blockLayout?.slots ?? []) {
-        if (slot.kind !== 'entry') continue;
-        const out = builder.outputs[master + slot.offset];
-        const lock = out?.to instanceof Uint8Array ? binToHex(out.to) : '';
-        if (!lock.startsWith('aa20') || out?.token?.category !== group.categoryId) continue;
-        plannedByLock.set(lock, (plannedByLock.get(lock) ?? 0) + 1);
-      }
+      const linearBands = linearSortedBatchEntryBands(group);
+      if (!abiFn || linearBands.length === 0) continue;
+      const plannedByLock = linearSortedBatchPlannedLockCounts(
+        builder.outputs, master, group.categoryId, group,
+      );
       for (const [lockHex, planned] of plannedByLock) {
         const matches: number[] = [];
         for (let index = 0; index < builder.outputs.length; index++) {
@@ -19616,16 +19727,12 @@ export class StatefulTransactionBuilder {
     }
   }
 
-  /**
-   * transferFrom INSERT is P' at master+2 and NEW at master+4. Occupancy can leave
-   * the allowance collection on +4; put P''s lock back without shifting tails.
-   */
+  /** Reassert compiler-described sorted-batch INSERT and UPDATE entry geometry without shifting output tails. */
   private _reassertTokenInsertNewLocks(builder: TransactionBuilder): void {
     const repairedMasters = new Set<number>();
     const groups = [...this.externalCallUtxoGroups, ...this.lowLevelCallUtxoGroups];
     for (const group of groups) {
-      // Shared views still need balances/allowances lock repair; resolve to the physical owner
-      // so we do not skip FakeToken.transferFrom when it is fused onto a shared participant.
+      // Shared logical views still need their described entry-lock repair; resolve them to the physical owner.
       const physical = ('sharedGroupIndex' in group && group.sharedGroupIndex !== undefined)
         ? groups[group.sharedGroupIndex] ?? group
         : group;
@@ -19635,8 +19742,7 @@ export class StatefulTransactionBuilder {
       repairedMasters.add(master);
       const repairGroup = physical === group ? group : {
         ...physical,
-        // Prefer the view that still carries transferFrom descriptors when the physical
-        // owner is a generic shared shell.
+        // Prefer the logical view that still carries entry descriptors when the physical owner is a shared shell.
         ...(entryInsertLockRepairs(group).length > 0 ? group : {}),
       };
       const debugTokenInsert = (globalThis as { process?: { env?: Record<string, string> } }).process?.env
@@ -19666,8 +19772,8 @@ export class StatefulTransactionBuilder {
           }),
         });
       }
-      // transferFrom INSERT can lose TrailingCount/planned inserts after the minting-band swap,
-      // leaving NEW commitment on the predecessor output. Restore P' at +2 and NEW at +4.
+      // A sorted INSERT can lose its trailing-count/planned-insert projection after physical block relocation,
+      // leaving NEW on a predecessor output. Restore only coordinates published by the repair descriptor.
       let repaired = false;
       const predOutArgs = Object.entries({
         ...repairGroup.compilerRoute?.internalArgs,
@@ -19675,19 +19781,18 @@ export class StatefulTransactionBuilder {
       });
       const hasTrailingPred = (repairGroup.batchPredecessorOutputs?.length ?? 0) > 0
         || predOutArgs.some(([, value]) => typeof value === 'bigint' && value >= 0n);
-      // Second post job: marketplace already holds a balance → both balances keys UPDATE
-      // (PredOut=-1, no trailing P'). Skip INSERT surgery entirely for that shape.
+      // A pure UPDATE batch has no trailing predecessor. Skip INSERT surgery for that flow.
       const hasInsert = hasTrailingPred
         || (repairGroup.plannedEntryInserts?.length ?? 0) > 0;
       // In-block P'/NEW lock copy is only safe when P' is in-band. With a trailing PredOut, NEW is
-      // already at the first balances entry; copying its lock onto +4 leaves an allowances
-      // commitment under a balances lock and fails OUTPUTTOKENCOMMITMENT.
+      // already at the first collection entry; copying its lock onto an unrelated collection slot would fail
+      // output-token commitment verification.
       if (!hasTrailingPred && hasInsert) {
         reassertDescribedEntryInsertLocks(builder.outputs, master, physical.categoryId, repairGroup);
       }
       let lastRepairAmount: bigint | undefined;
       for (const repair of entryInsertLockRepairs(repairGroup)) {
-        const amountArg = (repairGroup.logicalFunctionArgs ?? repairGroup.functionArgs)?.[2];
+        const amountArg = linearSortedBatchValueArgument(repairGroup, repair.collection);
         let amount: bigint | undefined = typeof amountArg === 'bigint' ? amountArg
           : typeof amountArg === 'number' ? BigInt(amountArg)
             : undefined;
@@ -19697,10 +19802,8 @@ export class StatefulTransactionBuilder {
         }
         lastRepairAmount = amount;
         if (hasTrailingPred) {
-          // FakeToken with trailing P': NEW stays at the first balances entry; do NOT run
-          // in-block P'/NEW commitment surgery (that swaps NEW onto +4). Only restore the
-          // planned trailing predecessor clone and foreign-collection locks on other balance
-          // entry slots when their commitments already look like balances nodes.
+          // With a trailing P', NEW stays at the first described entry. Do not run in-block P'/NEW surgery;
+          // restore only the planned predecessor clone and described same-collection entry locks.
           if ((repairGroup.batchPredecessorOutputs?.length ?? 0) > 0) {
             // Refuse PredOut placement until `master` is the minting head. A drifted master
             // (e.g. 4) writes P' at master+8=12; the real FakeToken block later lands at 22
@@ -19746,14 +19849,13 @@ export class StatefulTransactionBuilder {
               snapBal('after-predOut-sync');
             }
           }
-          // 1:1 balances entry slots: when the co-spent input is balances but the output was
-          // overwritten by allowances, restore the input lock and a value-bearing post-debit
-          // UPDATE. Nested planBatchUpsert seeds are slot||next only — reject those empties.
+          // For 1:1 entry slots overwritten by another collection, restore the authenticated input lock and a
+          // value-bearing post-debit UPDATE. Slot||next-only batch seeds are not post-state values.
           const balancesLock = builder.outputs[master + repair.predecessorOffset]?.to;
           const layoutSlots = repairGroup.compilerRoute?.abiFunction?.blockLayout?.slots
             ?? repairGroup.blockLayout?.slots
             ?? [];
-          // INSERT NEW at predecessorOffset credits `value`; use it when args encode value as VM bytes.
+          // INSERT NEW at predecessorOffset credits the compiler-bound mutation value when available.
           if (amount === undefined && balancesLock instanceof Uint8Array) {
             const newCommit = String(
               builder.outputs[master + repair.predecessorOffset]?.token?.nft?.commitment ?? '',
@@ -19877,8 +19979,8 @@ export class StatefulTransactionBuilder {
           repair.proofInputOffset,
         )) repaired = true;
         else if (!hasInsert) {
-          // Pure UPDATE batch (post two jobs): still restore balances[from] when allowances
-          // overwrote its output lock. No NEW/P' coordinates to invent.
+          // Pure UPDATE batch: restore a described entry when another collection overwrote its output lock.
+          // There are no NEW/P' coordinates to infer.
           const balancesLock = builder.outputs[master + repair.predecessorOffset]?.to;
           if (balancesLock instanceof Uint8Array) {
             for (const offset of [repair.predecessorOffset, ...repair.candidateInsertedOffsets]) {
@@ -19957,39 +20059,13 @@ export class StatefulTransactionBuilder {
           }),
         });
       }
-      // Linear-batch shared-proof transferFrom keeps PredOut=-1 on both slots; P' is the layout
-      // fixed output for the UPDATE rank (balances[from] at +4), NEW is balances[to] at +2.
+      // A shared-proof linear batch can leave P' on its proof co-spend while NEW occupies a later described
+      // entry. Reorder only when the exact slot/next relationship selects one successor unambiguously.
       if (repaired) {
-        const at2 = builder.outputs[master + 2];
-        const at4 = builder.outputs[master + 4];
-        const c2 = String(at2?.token?.nft?.commitment ?? '');
-        const c4 = String(at4?.token?.nft?.commitment ?? '');
-        const lock2 = at2?.to instanceof Uint8Array ? at2.to : undefined;
-        const proofCommit = String(this.allInputs[master + 2]?.token?.nft?.commitment ?? '');
-        const proofSlot = proofCommit.slice(0, SLOT_HEX).toLowerCase();
-        if (lock2 && proofSlot && c2.length > 128 && c4.length > 128
-          && at2?.token?.category === physical.categoryId
-          && c2.toLowerCase().startsWith(proofSlot)
-          && c2.slice(SLOT_HEX, SLOT_HEX * 2).toLowerCase() === c4.slice(0, SLOT_HEX).toLowerCase()) {
-          // P' is still on the proof co-spend (+2); swap into layout order.
-          builder.outputs[master + 2] = {
-            to: lock2,
-            amount: at2.amount ?? 1200n,
-            token: {
-              amount: 0n,
-              category: physical.categoryId!,
-              nft: { capability: 'mutable', commitment: c4 },
-            },
-          };
-          builder.outputs[master + 4] = {
-            to: lock2,
-            amount: at4?.amount ?? 1200n,
-            token: {
-              amount: 0n,
-              category: physical.categoryId!,
-              nft: { capability: 'mutable', commitment: c2 },
-            },
-          };
+        for (const repair of entryInsertLockRepairs(repairGroup)) {
+          reorderLinearBatchProofSuccessor(
+            builder.outputs, this.allInputs, master, physical.categoryId, repair,
+          );
         }
       }
     }

@@ -46,9 +46,19 @@ build_half() {
   # Restore by writing the file, never `git checkout <commit> -- <path>`: that also updates the index, so a
   # later `git commit` silently commits the baseline over the change being measured.
   if [ "$half" = base ]; then git show "$baseline:$compiler" > "$compiler"; else cp "$newCopy" "$compiler"; fi
-  # Touch so an incremental build cannot skip the changed file, then build.
+  # Touch so an incremental build cannot skip the changed file, then build. A swallowed build failure used to
+  # surface later as an unrelated module-resolution error from the probe, so fail loudly and show why.
   touch "$compiler"
-  yarn build >/dev/null 2>&1
+  local buildLog="$scratch/build-$half-$1.log"
+  if ! yarn build >"$buildLog" 2>&1; then
+    echo "BUILD FAILED for the $half half:" >&2
+    tail -20 "$buildLog" >&2
+    exit 1
+  fi
+  if [ ! -f packages/solidc/dist/index.js ]; then
+    echo "BUILD FAILED for the $half half: packages/solidc/dist/index.js is missing" >&2
+    exit 1
+  fi
   local found
   found=$(grep -c -- "$marker" "$emitted" || true)
   if [ -n "$marker" ]; then

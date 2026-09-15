@@ -987,6 +987,11 @@ function artifactCacheEnabled(
   // would let strict mode report a vacuous success after a prior non-strict compilation populated the cache.
   if (internal.__attemptFailureBox || internal.__strictNoInternalRecovery
     || internal.__kernelReadCarrierAuthorizationBox) return false;
+  // TODO(remove SOLIDC_COMPILE_CACHE): the compile task now passes `__artifactCache` by default, so this
+  // variable is only a legacy switch plus the test harness's way in (`packages/solidcash/vitest.setup.ts` sets
+  // it, `DelegateInference` and `CompileCacheDisk` toggle it, `KernelGraphResultDependency` disables it with
+  // `'0'`). Migrate those to `__artifactCache` and a `--no-cache` task flag, then delete the boolean read here.
+  // `SOLIDC_COMPILE_CACHE_DIR`/`_MAX_ENTRIES`/`_BUILD_ID` are separate knobs and stay.
   const want = process.env.SOLIDC_COMPILE_CACHE === '1' || options.__artifactCache === true;
   return want
     && !errorListener

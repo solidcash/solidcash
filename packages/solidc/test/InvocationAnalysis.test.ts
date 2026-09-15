@@ -132,6 +132,23 @@ describe('Release 0 shared invocation analysis', () => {
       .toMatchObject({ bounded: false });
   });
 
+  it('does not classify a low-level producer in a branch predicate as an optional arm', () => {
+    const artifact = compileString(`pragma solidcash >=0.8.0;
+      contract PredicateCalls() {
+        function probe(address target, bytes payload) private returns (bool) {
+          (bool ok, bytes memory result) = target.call(payload);
+          return ok && result.length >= 0;
+        }
+        function run(address target, bytes payload) public {
+          if (!probe(target, payload)) { require(false); }
+          require(true);
+        }
+      }`, { solidityImportCompat: true, messageBus: true, messageBusKernel: true });
+    const call = artifact.invocationAnalysis!.functions
+      .find((fn) => fn.name === 'run')!.externalCalls![0];
+    expect(call).toMatchObject({ callsiteId: 0, occurrence: 'once', maximumOccurrences: 1 });
+  });
+
   it('publishes an exact floor only where the reached count cannot vary', () => {
     const artifact = compileString(`pragma solidcash >=0.8.0;
       interface ITarget { function step(bigint n); }

@@ -169,6 +169,45 @@ function collectLowLevelCalls(
     return;
   }
 
+  // A control-flow predicate is evaluated whenever its enclosing statement is reached; only the selected arms
+  // are conditional. Propagating the arm context into the predicate turns a producer used to choose the branch
+  // into an optional callsite, which prevents later consumers from naming its authenticated result precisely.
+  const armContext: CallsiteContext = context === 'loop' ? 'loop' : 'conditional';
+  const armWithinLoop = conditionalWithinLoop || context === 'loop';
+  if (value instanceof BranchNode) {
+    collectLowLevelCalls(value.condition, context, found, seen, fixedLoopOccurrences, conditionalWithinLoop);
+    collectLowLevelCalls(value.ifBlock, armContext, found, seen, fixedLoopOccurrences, armWithinLoop);
+    if (value.elseBlock) {
+      collectLowLevelCalls(value.elseBlock, armContext, found, seen, fixedLoopOccurrences, armWithinLoop);
+    }
+    return;
+  }
+  if (value instanceof TernaryOpNode) {
+    collectLowLevelCalls(value.condition, context, found, seen, fixedLoopOccurrences, conditionalWithinLoop);
+    collectLowLevelCalls(value.ifTrue, armContext, found, seen, fixedLoopOccurrences, armWithinLoop);
+    collectLowLevelCalls(value.ifFalse, armContext, found, seen, fixedLoopOccurrences, armWithinLoop);
+    return;
+  }
+  if (value instanceof SwitchNode) {
+    collectLowLevelCalls(value.expression, context, found, seen, fixedLoopOccurrences, conditionalWithinLoop);
+    for (const candidate of value.cases) {
+      collectLowLevelCalls(candidate.value, armContext, found, seen, fixedLoopOccurrences, armWithinLoop);
+      collectLowLevelCalls(candidate.body, armContext, found, seen, fixedLoopOccurrences, armWithinLoop);
+    }
+    if (value.defaultCase) {
+      collectLowLevelCalls(value.defaultCase, armContext, found, seen, fixedLoopOccurrences, armWithinLoop);
+    }
+    return;
+  }
+  if (value instanceof TryCatchNode) {
+    collectLowLevelCalls(value.expression, context, found, seen, fixedLoopOccurrences, conditionalWithinLoop);
+    collectLowLevelCalls(value.tryBlock, armContext, found, seen, fixedLoopOccurrences, armWithinLoop);
+    for (const clause of value.catchClauses) {
+      collectLowLevelCalls(clause.block, armContext, found, seen, fixedLoopOccurrences, armWithinLoop);
+    }
+    return;
+  }
+
   for (const child of Object.values(value)) {
     const nestedConditional = conditionalWithinLoop
       || (context === 'loop' && isInstanceOfAny(value, CONDITIONAL_NODES));

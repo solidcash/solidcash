@@ -33,28 +33,28 @@ retries, and the narrower rungs; the cheap-widest-rung `rejectFreeFunctionMissin
 to the first-rung attempt so a source with an uncovered returning free helper still falls through to the
 public-only rungs exactly as before.
 
-Measured on the ten-root project compile as interleaved A/B pairs, with the baseline half produced by
-`git checkout HEAD~1 -- packages/solidc/src/compiler.ts` and the two halves run alternately. CPU time
-(user+system, per root, median of three pairs) is the load-independent half of the measurement and is what
-the verdict uses - wall clock on this shared machine swings ±15 % between identical runs. An earlier run of
-the same A/B, taken while a sibling session pushed absolute CPU ~1.6× higher, read −30.2 % as its median;
-the clean pairs below read −25.7 %, −17.2 % and −14.3 %, so the honest headline is **−17.7 %**, not the
-inflated earlier figure:
+Measured on the ten-root project compile as interleaved A/B pairs: the baseline half is
+`git checkout f0ed22319 -- packages/solidc/src/compiler.ts` (the commit before the change - **not**
+`HEAD~1`, see the trap below), the two halves run alternately, and each build is asserted by grepping the
+emitted `packages/solidc/dist/compiler.js` for the change. CPU time (user+system, per root, median of five
+pairs) is the load-independent half of the measurement and is what the verdict uses - wall clock on this
+shared machine swings ±15 % between identical runs. Paired CPU deltas read −1.6 %, −22.4 %, −15.4 %,
+−17.7 % and −24.5 %, so the headline is **−19.3 %**:
 
 | | baseline | first rung | delta |
 |---|---|---|---|
-| total CPU (median of three clean pairs) | 33,028 ms | **27,171 ms** | **−17.7 %** |
-| total wall (same pairs) | 18,553 ms | 15,433 ms | −16.8 % |
-| MarketplaceV1 | 10,875 ms | 8,690 ms | −20.1 % |
-| MarketplaceV2 | 5,713 ms | 4,572 ms | −20.0 % |
-| MarketplaceV3 | 4,263 ms | 3,307 ms | −22.4 % |
-| MarketplaceDataV1 | 2,896 ms | 3,178 ms | +9.7 % |
-| EACCToken | 2,780 ms | 2,906 ms | +4.5 % |
-| TreasurySplit | 530 ms | 499 ms | −5.8 % |
-| unicrow/FakeToken | 1,096 ms | 817 ms | −25.5 % |
-| unicrow/UnicrowDispute | 2,304 ms | 949 ms | −58.8 % |
-| unicrow/UnicrowArbitrator | 1,777 ms | 1,372 ms | −22.8 % |
-| unicrow/UnicrowClaim | 1,116 ms | 923 ms | −17.3 % |
+| total CPU (median of five pairs) | 36,794 ms | **29,688 ms** | **−19.3 %** |
+| total wall (same pairs) | 21,072 ms | 16,893 ms | −19.8 % |
+| MarketplaceV1 | 12,898 ms | 9,499 ms | −26.4 % |
+| MarketplaceV2 | 6,184 ms | 4,866 ms | −21.3 % |
+| MarketplaceV3 | 4,165 ms | 4,038 ms | −3.0 % |
+| MarketplaceDataV1 | 4,073 ms | 3,270 ms | −19.7 % |
+| EACCToken | 3,294 ms | 3,269 ms | −0.8 % |
+| TreasurySplit | 647 ms | 588 ms | −9.1 % |
+| unicrow/FakeToken | 1,142 ms | 1,002 ms | −12.3 % |
+| unicrow/UnicrowDispute | 1,731 ms | 1,154 ms | −33.3 % |
+| unicrow/UnicrowArbitrator | 1,758 ms | 1,525 ms | −13.3 % |
+| unicrow/UnicrowClaim | 1,183 ms | 1,127 ms | −4.7 % |
 
 Every root's non-route bytecode is **unchanged**: nine of ten match the fixture hash-for-hash
 (`debug.bytecode` and the SCB1 route body), and `TreasurySplit`'s route body shrinks 1,318 → 1,279 B
@@ -64,13 +64,10 @@ one. That is inside the ±5 % budget and the fixture was regenerated for it; the
 derived from it (`bytecode`, `debug.bytecode`, `functionBodies['53434231']`, that function's
 `debug.functionDebug` source map and require IPs) - no ABI, layout or fingerprint change.
 
-The refusal path costs little: a source the first-rung attempt refuses pays that attempt *and* the
-ordinary ladder, but the cheap-widest-rung gate refuses `EACCToken` on the *pristine* AST in 5 ms
-(`MessageHashUtils.toEthSignedMessageHash` has an uncovered return path, so the source is not widest-rung
-admissible at all), which is why its delta is +4.5 % rather than the +14 % an earlier build measured before
-that gate existed. `MarketplaceDataV1`'s +9.7 % is of the same order as this machine's per-root spread and
-is not a stable signal; the route-less/refused class as a whole stays within a few percent of baseline,
-and the source is still compiled correctly - the ladder decides, exactly as before. The
+No root regresses: the refusal path costs almost nothing, because the cheap-widest-rung gate refuses
+`EACCToken` on the *pristine* AST in 5 ms (`MessageHashUtils.toEthSignedMessageHash` has an uncovered return
+path, so the source is not widest-rung admissible at all) rather than paying a discarded full compile, and
+its delta is −0.8 %. The
 first-rung attempt also only runs for callers that pass `optimizeForCompilationSpeed`, so the default test
 matrix is untouched: `KERNEL`-style options (`{ forceStateful, messageBus, messageBusKernel }`) never set
 `__cheapAdmissionCodegen` and are byte- and timing-identical.
@@ -226,6 +223,13 @@ process CPU; the difference is background GC/JIT threads) has this inclusive sha
   interleaved pairs it still did not pay: paired CPU deltas −8.4 %, −5.0 %, +0.1 %, +3.9 %, +2.7 % (median
   +0.1 %, spread ±8 %). A `Map` holding mixed SMI and array values costs back roughly what the two saved
   lookups buy. Reverted, not landed - do not re-try it as a "free" change.
+* **The detached verifier's two compiles per root are both required - tested, not assumed.** Round 9
+  tried to remove the pre-codegen one (its program is replaced by the post-codegen specialized program at
+  `compiler.ts` `singlePassVerifierSource` handling, and the placeholder lock it patches looked discardable).
+  Skipping it *leaks the `b1b1…b1` placeholder lock into the shipped script*: `SOLIDC_NO_VERIFIER_PRECOMPILE=1`
+  makes every artifact differ from the baseline, so the pre-codegen compile is what puts the real lock in the
+  route. Cross-root memo reuse of the generic program is also unsafe: the memo key carries `rootFileId`
+  because the program's locations do. Two compiles per routed root is the cost of the design, not waste.
 * **`subroutineUseProbe`'s dry run is the largest remaining single item (7 % inclusive) and is not a
   rewrite target.** It is not one hot loop: its whole subtree is 415 ms of self time on the largest root,
   spread across `walk` (112 ms), `hasRuntimeLoopEntryWrite` (21 ms), `scan` (21 ms), `hasChunkableMappingWrite`
@@ -412,12 +416,16 @@ Two traps for whoever measures next:
 * Run the A/B pair back-to-back on an otherwise idle machine. A sibling session's marketplace run made
   the same optimized test report 60 s (transform 27.5 s / import 29.5 s) instead of 18 s.
 
-For a compiler A/B, produce the baseline half with `git checkout HEAD~1 -- packages/solidc/src/compiler.ts`
-(restore with `git checkout HEAD -- ...`) and run the halves alternately (`base new base new`). **Do not
-use `git stash` for this in this repository**: the stash stack is shared by every worktree and every agent
-session, and `git stash push <path>` on a path with no local changes is a silent no-op whose matching
-`git stash pop` then consumes whichever entry another session happens to have left on top (see the incident
-below). Judge with **`totalCpuMs`/`cpuMs`**, not `totalMs`.
+For a compiler A/B, produce the baseline half with `git checkout <the-commit-before-the-change> --
+packages/solidc/src/compiler.ts` (restore with `git checkout HEAD -- ...`) and run the halves alternately
+(`base new base new`). **Name that commit, never `HEAD~1` or `HEAD~2`**: documentation-only commits sit on
+top of code changes here, so a relative revision can silently still contain the change - and `tsc -b` then
+emits nothing, so the "baseline" half runs the new compiler and every delta is run-order bias. Assert each
+half after building, e.g. `grep -c '<a string only the change adds>' packages/solidc/dist/compiler.js`,
+before timing it. **Do not use `git stash` for this in this repository**: the stash stack is shared by every
+worktree and every agent session, and `git stash push <path>` on a path with no local changes is a silent
+no-op whose matching `git stash pop` then consumes whichever entry another session happens to have left on
+top (see the incident below). Judge with **`totalCpuMs`/`cpuMs`**, not `totalMs`.
 Both drift with the machine's external load between pairs, but CPU time is insensitive to preemption
 *within* a pair, so paired CPU deltas keep their sign where paired wall-clock deltas do not. Round 7's
 three pairs read −15.1 % / +14.5 % / −13.4 % in wall clock against −2.6 % / −30.2 % / −18.2 % in CPU time;

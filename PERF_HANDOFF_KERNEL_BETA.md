@@ -238,6 +238,25 @@ process CPU; the difference is background GC/JIT threads) has this inclusive sha
   so a census would have to reproduce the emission's own helper-capture decisions to be equivalent. Measured,
   understood, and left alone.
 
+**Landed: verifier covenant locks are reused across roots** (`0a9e1a973`, round 10 - the first win the
+round-9 map produced). The pre-codegen detached-verifier compile exists to produce exactly one value: the
+covenant lock that `bindPlaceholderVerifierLock` patches into the route. On the kernel path its program is
+replaced wholesale by the post-codegen specialized program, and the published program carries only
+`{ id, name, bytecode }` per function - no locations - so the lock is the compile's only surviving product.
+The lock is also not root-file dependent, which was measured rather than assumed: `TreasurySplit` and
+`UnicrowClaim` have different root files *and* different verifier sources (42,124 and 43,082 chars) and
+still produced the same lock (`aa2022f4a6010bda1ab367ec`). Caching the lock by verifier source plus every
+option that can change the covenant script therefore lets a route shape recompiled in another root skip a
+~0.2-0.4 s mini-compile. Non-kernel callers publish this program, so they always compile.
+
+Corpus effect: **18 -> 16 verifier compiles**, five interleaved A/B pairs reading −3.33 %, −2.79 %, −2.87 %,
++0.72 %, −7.72 % CPU (median **−2.87 %**, mean −3.20 %). Output is unchanged in the strongest sense
+available: all ten roots reproduce the committed fixture as a **whole-artifact JSON match** - ABI, bytecode,
+debug, functionBodies, `messageBus`/`verifierProgram`, fingerprint and invocationAnalysis - and the compiler
+journal gate is identical to baseline (6 failed / 1,442 passed, same six names). The saving scales with the
+number of roots that share a route shape, so a project compile with many participants gains more than this
+ten-root corpus shows.
+
 ### Round 9: the structural map (what is left, and what blocks it)
 
 One root's compile, by phase (`MarketplaceV1`, `SOLIDC_PROFILE=1`, total 4,247 ms; phases nest):

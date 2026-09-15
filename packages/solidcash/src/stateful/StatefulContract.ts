@@ -32739,7 +32739,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       for (const state of trace) {
         if (state.controlStack.some((flag) => flag === false)) continue;
         if (state.instructions[state.ip]?.opcode !== Op.OP_OUTPUTTOKENCOMMITMENT || state.stack.length < 2) continue;
-        if (state.instructions[state.ip + 1]?.opcode !== Op.OP_EQUALVERIFY) continue;
+        const nextOpcode = state.instructions[state.ip + 1]?.opcode;
+        const tightEquality = nextOpcode === Op.OP_EQUALVERIFY
+          || (nextOpcode === Op.OP_EQUAL
+            && state.instructions[state.ip + 2]?.opcode === Op.OP_VERIFY);
+        if (!tightEquality) continue;
         const outputIndex = Number(decodeScriptNumber(state.stack[state.stack.length - 1]));
         if (!requested.has(outputIndex)) continue;
         found.set(outputIndex, binToHex(state.stack[state.stack.length - 2]));

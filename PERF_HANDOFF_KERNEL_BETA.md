@@ -28,19 +28,23 @@ hashes match the pre-change run. Measured: `parseAndResolve` 2,091 → 1,728 ms 
 build of this branch by exactly one 60 s timeout under full parallel load (that test passes in
 isolation with the cache, twice); the compiler journal gate is unchanged.
 
-**Landed and enabled: the size-bounded outline mode** (`11053eaff`, option `outlineThoroughness`).
-Outlining spends ~1.0 s of a 21.5 s project compile on its two lowest-yield behaviours - the ordinary
-(window-12) search's follow-up rounds (rounds 2-5: 335 ms for 11.3 KB, 34 B/ms) and the nested
-compiler-helper pass (417 ms for 14.6 KB, 36 B/ms), against 500+ B/ms for the main rounds. `'speed'`
-stops both; the default `'thorough'` leaves every other project untouched, and only the marketplace
-config opts in. Measured over two paired runs: `outline` 2,923/3,073 → 1,997/1,991 ms,
-`codegen:emitBodies` 4,981/5,389 → 4,044/4,256 ms, end-to-end 21,891/23,992 → 20,603/22,571 ms
-(−1.36 s, −5.8 %). Size: per-root full-bytecode deltas −0.20 … **+4.99 %** (MarketplaceDataV1 is the
-one root near the budget; route +4.01 % there), all inside the ±5 % allowance.
+**Landed: the ordinary outlining search stops after two rounds** (`6fc9c83e6`), with **no new option** -
+an earlier `outlineThoroughness` flag was removed on instruction, so the behaviour is unconditional and
+`CompilerOptions` is back to its previous shape. Rounds 2-5 recover 11.3 KB at 34 B/ms against 500+ B/ms
+for round 0, and stopping after round 1 also removes the downstream work those extra outlined functions
+created. Measured as CPU-profile self time, minimum of two runs each, on the ten-root project compile:
 
-Verification for this commit: the regenerated fixture matches the compiler hash-for-hash on all ten
-roots (route and full), the four passing titles are green, `yarn build` clean, and the full `solidc`
-suite is at baseline parity (224 failed / 4,811 passed) because the default leaves its tests untouched.
+| | thorough | capped |
+|---|---|---|
+| `outline.js` | 2,205-2,267 ms | **1,647-1,660 ms** |
+| GC | 1,709-1,752 ms | **1,310-1,409 ms** |
+| busy CPU total | 21,610-22,011 ms | **19,423-19,588 ms (−10.5 %)** |
+
+Per-root bytecode versus the previous behaviour is **equal or smaller** (MarketplaceV1/V2/V3, EACCToken
+and TreasurySplit unchanged; MarketplaceDataV1 −0.26 %, Claim −0.57 %, Arbitrator −0.62 %, Dispute
+−0.45 %, FakeToken +0.01 %), so this uses none of the ±5 % budget. The nested compiler-helper pass is
+kept deliberately: it is pinned by `VMapBytecodeOptimizations > nests only compiler-authored helpers
+while sharing composite array traversal`, and removing it was what pushed bytecode up to +4.99 %.
 
 **Do not retry the obvious substitute.** Keying that behaviour on the existing
 `optimizeForCompilationSpeed` looks equivalent and is not: `compileResolvedAst` forces

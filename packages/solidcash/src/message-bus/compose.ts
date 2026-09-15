@@ -2491,6 +2491,37 @@ export class AtomicMessageBusComposition {
     };
     const eventLockingBytecodes = (participant: (typeof plan.participants)[number]): string[] =>
       eventCandidates(participant).map((candidate) => candidate.lockingBytecode);
+    // The lock the compiler published for one physical event site: frame row -> selected invocation -> selected
+    // handler -> the schema that handler emits at that slot index. Purely resource geometry: no handler, event or
+    // contract name participates, only the compiler's own published mapping.
+    const eventLockingBytecodeAtOffset = (
+      participant: (typeof plan.participants)[number], offset: number,
+    ): string | undefined => {
+      const frame = participant.artifact.messageBus?.route.graphEffectFrame;
+      if (!frame || frame.eventWidth < 1) return undefined;
+      const slot = participant.blockLayout!.slots.find((candidate) =>
+        candidate.kind === 'event' && candidate.offset === offset && candidate.slotIndex !== undefined);
+      if (slot?.slotIndex === undefined || slot.slotIndex < frame.eventBase) return undefined;
+      const relative = slot.slotIndex - frame.eventBase;
+      const localRow = Math.floor(relative / frame.eventWidth);
+      const emitIndex = relative % frame.eventWidth;
+      if (localRow >= frame.sites) return undefined;
+      const invocationIndex = participant.invocations[localRow];
+      const invocation = invocationIndex === undefined ? undefined : plan.invocations[invocationIndex];
+      const handler = invocation === undefined ? undefined : participant.artifact.messageBus?.handlers.find(
+        (candidate) => candidate.name === invocation.function
+          && candidate.selector.toLowerCase() === invocation.selectorHex.toLowerCase(),
+      );
+      const signature = handler?.emits?.find((emitted) => emitted.emitIndex === emitIndex)?.eventSignature;
+      const event = participant.artifact.events?.find((candidate) => candidate.signature === signature);
+      if (!event) return undefined;
+      const category = hexToBin(categories[participant.participant]);
+      const script = event.anonymous
+        ? buildAnonymousEventNftCovenantScript(category)
+        : buildEventNftCovenantScript(category, computeEventNameHash(event.signature));
+      const contract = byLockingBytecode.get(participant.lockingBytecode.toLowerCase())!;
+      return binToHex(scriptToLockingBytecode(script, contract.inner.addressType));
+    };
     const eventLockingBytecodeForCommitment = (
       participant: (typeof plan.participants)[number], commitment: string,
     ): string | undefined => {
@@ -2917,17 +2948,36 @@ export class AtomicMessageBusComposition {
               && eventLockSet.has(binToHex(lockingBytecode))
               ? [offset] : [];
           });
-          const inactive = eventOffsets.map((offset) => local.outputs[offset]).find((output) => !output?.token);
-          if (eventLocks.length < eventClaims.length || !inactive) {
+          // The participant builder materializes one event output per compiler-published site, so every reserved
+          // slot already carries the event covenant's lock and the site's satoshi value; only its commitment
+          // identifies an occurrence. A token-less slot is therefore NOT the normal blank template - derive the
+          // canonical blank frame from a published site (identical lock/value, empty commitment) and only fall
+          // back to a token-less slot when this participant published no site at all. Requiring a token-less slot
+          // rejected a correct frame whose union slots were all already materialized.
+          const plainEventTemplate = (): (typeof local.outputs)[number] | undefined => {
+            const site = [...eventClaims].reverse()
+              .map((row) => local.outputs[row.targetOffset])
+              .find((output) => output?.token?.nft?.capability === 'none');
+            if (!site) return undefined;
+            return { ...site, token: { ...site.token!, nft: { ...site.token!.nft!, commitment: '' } } };
+          };
+          const inactive = eventOffsets.map((offset) => local.outputs[offset]).find((output) => !output?.token)
+            ?? plainEventTemplate();
+          if (!inactive) {
             throw new Error(
               `messageBus: participant ${participant.participant} cannot materialize its authenticated event frame`,
             );
           }
+          // Save the compiler-built site templates before clearing the union frame: a previously authenticated
+          // graph row is the authority for identity and payload even when the consumer artifact lacks a redundant
+          // event-schema table.
+          const claimTemplates = new Map(eventClaims.map((row) => [row.targetOffset, local.outputs[row.targetOffset]]));
           for (const offset of new Set([...eventOffsets, ...templateOffsets])) local.outputs[offset] = { ...inactive };
           eventClaims.forEach((row) => {
+            const template = claimTemplates.get(row.targetOffset) ?? inactive;
             local.outputs[row.targetOffset] = {
               to: hexToBin(row.subjectHex),
-              amount: inactive.amount,
+              amount: template.amount,
               token: {
                 category: categories[participant.participant], amount: 0n,
                 nft: { capability: 'none', commitment: row.effectHex },
@@ -4074,14 +4124,37 @@ export class AtomicMessageBusComposition {
             return nft?.capability === 'none' && lockingBytecode !== undefined
               && eventLockSet.has(binToHex(lockingBytecode));
           });
+          // A kind-2 row is an authenticated producer result from the preceding fixed-point pass. A faithful VM
+          // trace normally stops reporting that event once its output is correct, so retain the stable row by
+          // physical participant slot rather than reading the absence of a new mismatch as an inactive event.
+          const authenticated = new Map(finalized.callManifest.rows.flatMap((row) =>
+            row.kind === 2 && row.mode === 1 && row.owner === participant.participant
+              ? [[participantBase + row.targetOffset, {
+                commitment: row.effectHex, lockingBytecode: row.subjectHex,
+              }] as const] : []));
+          const expectationAt = (index: number): { commitment: string; lockingBytecode?: string } | undefined => {
+            const observed = discoveredEvents.get(index);
+            const prior = authenticated.get(index);
+            if (!observed) return prior;
+            return {
+              commitment: observed.commitment,
+              lockingBytecode: observed.lockingBytecode
+                ?? (prior?.commitment === observed.commitment ? prior.lockingBytecode : undefined),
+            };
+          };
           // Inactive route slots only bind an empty commitment. A relaxed trace can carry that introspection into
           // a neighboring equality and produce a false commitment match, but it cannot invent the event covenant's
           // independently verified locking bytecode. The executing covenant's commitment+lock pair is authoritative
           // for proxy/delegate routes, where the logical handler artifact need not publish the physical event lock.
           const targets = indices.filter((index) => {
-            const expectation = discoveredEvents.get(index);
+            const expectation = expectationAt(index);
             const schemaLock = expectation === undefined ? undefined
               : eventLockingBytecodeForCommitment(participant, expectation.commitment);
+            // The SDK materialized this immutable output from the selected handler's compiler-published event
+            // site, so its lock is exact site evidence even when a commitment mismatch stopped the VM immediately
+            // before the following OUTPUTBYTECODE pin and the trace cannot reconstruct the payload.
+            const callsiteLock = eventLockingBytecodeAtOffset(participant, index - participantBase);
+            const activeTemplate = active.includes(index);
             return (selectedEventOffsets === undefined
               || selectedEventOffsets.has(index - participantBase))
               && (expectation?.commitment.length ?? 0) > 0
@@ -4089,7 +4162,8 @@ export class AtomicMessageBusComposition {
               // output-bytecode pin. The emitted commitment still carries the compiler-published event schema;
               // when that schema identifies exactly one selected-handler covenant, it is an equally exact output
               // template for the next fixed-point pass. Ambiguous or unknown schemas remain trace-only.
-              && (expectation?.lockingBytecode !== undefined || schemaLock !== undefined);
+              && (expectation?.lockingBytecode !== undefined || schemaLock !== undefined
+                || callsiteLock !== undefined || activeTemplate);
           });
           const inactive = indices.map((index) => provisional.outputs[index]).find((output) => !output.token);
           if (!inactive && targets.some((target) => !active.includes(target))) {
@@ -4101,18 +4175,31 @@ export class AtomicMessageBusComposition {
           if (targets.length === 0 && active.length === 0) continue;
           const template = inactive ?? provisional.outputs[targets[0]];
           if (!template) throw new Error('messageBus: active event frame has no output template');
+          const targetTemplates = new Map(targets.map((target) => [target, provisional.outputs[target]]));
           if (inactive) {
             for (const index of new Set([...indices, ...active])) provisional.outputs[index] = { ...inactive };
           }
           targets.forEach((target, index) => {
-            const expectation = discoveredEvents.get(target)!;
+            const expectation = expectationAt(target)!;
             // A flattened route trace can expose a sibling event identity beside the reached handler's payload.
             // Prefer the unique event schema published by the selected handlers; retain the trace for genuinely
             // ambiguous same-schema events, where the commitment alone cannot identify a named covenant.
             const decodedLock = eventLockingBytecodeForCommitment(participant, expectation.commitment);
+            const callsiteLock = eventLockingBytecodeAtOffset(participant, target - participantBase);
+            const current = targetTemplates.get(target);
+            const currentLock = typeof current?.to === 'string'
+              ? addressToLockScript(current.to) : current?.to;
             provisional.outputs[target] = {
-              to: hexToBin(decodedLock ?? expectation.lockingBytecode ?? eventLocks[index]),
-              amount: template.amount,
+              to: decodedLock !== undefined
+                ? hexToBin(decodedLock)
+                : expectation.lockingBytecode !== undefined
+                  ? hexToBin(expectation.lockingBytecode)
+                  : callsiteLock !== undefined
+                    ? hexToBin(callsiteLock)
+                    : currentLock ?? hexToBin(eventLocks[index]),
+              // Preserve the value the compiler-built site at this target already carried: `template` can be a
+              // different (inactive) index's output, and its satoshi amount is an observable part of the frame.
+              amount: current?.amount ?? template.amount,
               token: {
                 category: categories[participant.participant], amount: 0n,
                 nft: { capability: 'none', commitment: expectation.commitment },

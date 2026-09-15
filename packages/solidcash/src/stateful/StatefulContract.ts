@@ -3920,6 +3920,43 @@ export function probeRequireMessage(
   return undefined;
 }
 
+/**
+ * Resolve the failing `require` statement itself - not just its custom message.
+ *
+ * The artifact's `requires[]` table already carries the source line, which is what makes a bare
+ * `require(x < n)` (`message: undefined`) attributable: a revert inside a compiled view is otherwise
+ * unattributable from the outside, and the message alone cannot say WHICH predicate failed when a handler
+ * has several. Returns the owning contract name so a multi-contract graph still names the right body.
+ */
+export function probeRequireStatement(
+  artifacts: readonly (Artifact | undefined)[],
+  selector: string | undefined,
+  errorIp: number | undefined,
+): { contractName?: string; line: number; message?: string } | undefined {
+  if (errorIp === undefined) return undefined;
+  const seen = new Set<Artifact>();
+  const candidates: Artifact[] = [];
+  const add = (artifact: Artifact | undefined): void => {
+    if (!artifact || seen.has(artifact)) return;
+    seen.add(artifact);
+    candidates.push(artifact);
+    add(artifact.delegateArtifact);
+  };
+  for (const artifact of artifacts) add(artifact);
+  for (const artifact of candidates) {
+    const selectors = selector ? [selector] : Object.keys(artifact.debug?.functionDebug ?? {});
+    for (const candidateSelector of selectors) {
+      const requirements = artifact.debug?.functionDebug?.[candidateSelector]?.requires ?? [];
+      const requirement = requirements.find((entry) => entry.ip === errorIp - 1)
+        ?? requirements.find((entry) => entry.ip === errorIp);
+      if (requirement) {
+        return { contractName: artifact.contractName, line: requirement.line, message: requirement.message };
+      }
+    }
+  }
+  return undefined;
+}
+
 /** Decode the single-word Solidity ABI scalar forms emitted by imported Solidity contracts. */
 export function decodeEvmScalarReturn(value: Uint8Array, type: string): FunctionArgument | undefined {
   if (value.length !== 32) return undefined;
@@ -32317,7 +32354,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       if (!blob) {
         throw new Error(
           `Could not derive the return value of '${functionName}' for .emitReturn(). `
-          + 'The covenant trace did not expose an authenticated return commitment.',
+          + 'The covenant trace did not expose an authenticated return commitment.'
+          // Name the failing predicate when the probe captured one. A bare `require` (or a compiler-emitted
+          // bounds check) leaves no custom message, so without this the caller cannot tell which check refused -
+          // they see only "could not derive" and must guess from the committed return band.
+          + `${this.lastReturnProbeFailure !== undefined
+            ? ` Probe detail: ${this.lastReturnProbeFailure}.` : ''}`,
         );
       }
       // A rolled call can populate a runtime-sized returned array. The compiler links only the structurally exact
@@ -32660,6 +32702,45 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     return builder;
   }
 
+  /**
+   * Why the last return probe could not expose an authenticated commitment.
+   *
+   * A view that reverts on a source-level `require` otherwise surfaces only its custom message (or nothing at
+   * all for a bare `require`), which is not enough to tell WHICH predicate failed. Retain the failing instruction
+   * and the resolved `require` site so the caller can name the source expression instead of guessing from the
+   * committed return band.
+   */
+  private lastReturnProbeFailure?: string;
+
+  private describeReturnProbeFailure(
+    trace: readonly { ip: number; error?: unknown; instructions: readonly { opcode: number }[] }[],
+    inputIndex: number,
+  ): string | undefined {
+    const last = trace.at(-1);
+    if (!last) return undefined;
+    const rawError = last.error;
+    const detail = rawError === undefined ? undefined
+      : typeof rawError === 'string' ? rawError
+        : rawError && typeof rawError === 'object' && 'error' in (rawError as object)
+          ? String((rawError as { error: unknown }).error)
+          : String(rawError);
+    const opcode = last.instructions[last.ip]?.opcode;
+    const artifacts: Artifact[] = [this.inner.artifact as Artifact];
+    const delegated = (this.inner.artifact as Artifact).delegateArtifact;
+    if (delegated !== undefined) artifacts.push(delegated);
+    const requirement = probeRequireStatement(artifacts, undefined, last.ip);
+    const site = requirement
+      ? `${requirement.contractName ?? 'contract'}:${requirement.line}`
+        + `${requirement.message ? ` (${requirement.message})` : ''}`
+      : undefined;
+    if (detail === undefined && site === undefined) return undefined;
+    return `probe stopped at ip ${last.ip}`
+      + `${opcode !== undefined ? ` (opcode ${opcode})` : ''}`
+      + `${detail !== undefined ? `: ${detail}` : ''}`
+      + `${site !== undefined ? `; failing require in ${site}` : ''}`
+      + `; probed input ${inputIndex}`;
+  }
+
   // B8 emit: run one VM probe and extract the encoded return blob from the return-event verification
   // (OP_OUTPUTTOKENCOMMITMENT == __returnBlob), the same trace-extraction used for external-call returns.
   private _deriveReturnBlob(
@@ -32669,6 +32750,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const transaction = probe.buildLibauthTransaction();
     const sourceOutputs = generateLibauthSourceOutputs(probe.inputs);
     const trace = evaluateProbeTrace(this.inner.provider, { inputIndex, sourceOutputs, transaction });
+    this.lastReturnProbeFailure = this.describeReturnProbeFailure(trace, inputIndex);
     const commitments = extractCommitmentsFromTrace(trace, 1, {
       min: returnOutputIndex, max: returnOutputIndex + 1,
     });
@@ -33200,7 +33282,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     if (!blob) {
       throw new Error(
         `staticCall: could not derive the return value of '${functionName}'. `
-        + 'Functions that write state and return a value are not yet supported as reads.',
+        + 'Functions that write state and return a value are not yet supported as reads.'
+        // Name the failing probe predicate when one is known: a bare `require` leaves no custom message, so
+        // without this the caller sees only "could not derive" and cannot tell which check refused.
+        + `${this.lastReturnProbeFailure !== undefined
+          ? ` Probe detail: ${this.lastReturnProbeFailure}.` : ''}`,
       );
     }
     const resultArtifact = directResult

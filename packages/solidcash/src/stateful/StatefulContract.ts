@@ -1339,8 +1339,21 @@ function selectGraphBlockhashReads(
  * describe the envelope itself, so compute sidecars must be derived from each selected handler row. */
 function selectGraphEcrecoverCalls(artifact: Artifact, blob: Uint8Array): GraphEcrecoverCall[] {
   const route = artifact.messageBus?.route;
+  // A handler whose recovery call lives in an OUTLINED shared body publishes no `ecrecoverArgParams` - the call is
+  // generated for that body, whose parameters carry the outlined values, not the handler's own names - but the
+  // closure analysis still publishes one `ecrecoverEvmFlags` entry per call in the handler's footprint. The flag
+  // VECTOR is therefore the authoritative call count for such a handler, and every one of its arguments is
+  // computed from arguments the batch row does not name. Reading it here is what keeps the selected call set equal
+  // to the calls this envelope actually makes: the route's block layout reserves the UNION of every eligible
+  // handler's recovery slots, and treating that union as the call list invents deferred resources for call sites
+  // no selected handler executes - which no probe can ever learn and which then fails the whole graph.
+  const handlerCalls = (handler: { ecrecoverArgParams?: readonly (readonly (string | null)[])[] | null;
+    ecrecoverEvmFlags?: readonly boolean[] | null }): ReadonlyArray<readonly (string | null)[]> =>
+    handler.ecrecoverArgParams?.length
+      ? handler.ecrecoverArgParams
+      : (handler.ecrecoverEvmFlags ?? []).map(() => [null, null, null, null] as const);
   if (!route?.ecrecoverCompute
-    || !artifact.messageBus?.handlers.some((handler) => handler.ecrecoverArgParams?.length)) return [];
+    || !artifact.messageBus?.handlers.some((handler) => handlerCalls(handler).length > 0)) return [];
   if (blob.length < 7 || binToHex(blob.slice(0, 4)) !== '53434231'
     || (blob[4] !== 1 && blob[4] !== 2)) {
     throw new Error('message-bus batch graph ecrecover route requires a canonical version-1 or version-2 envelope');
@@ -1374,7 +1387,7 @@ function selectGraphEcrecoverCalls(artifact: Artifact, blob: Uint8Array): GraphE
       argCursor += value.bytesConsumed;
     }
     if (argCursor !== argsEnd) throw new Error(`message-bus batch row ${row} argument vector is non-canonical`);
-    for (const names of handlerInfo.ecrecoverArgParams ?? []) {
+    for (const names of handlerCalls(handlerInfo)) {
       const values = names.map((name) => (name === null ? undefined : decoded.get(name)));
       if (names.some((name, index) => name !== null && values[index] === undefined)) {
         throw new Error(`message-bus batch row ${row} cannot resolve its ecrecover argument vector`);

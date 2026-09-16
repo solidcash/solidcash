@@ -1,6 +1,6 @@
 # Handoff — kernel-beta marketplace climb (after the event/continuation round)
 
-> **Latest state (ROUND 139: the chai harness could not evaluate `.and.not.to.emit(...)`, so `take job multiple` died in chain construction before it ever sent; with that fixed it reaches the SAME deferred-compute wall. Ladder stays 43 pass / 23 fail.** The sections below are a chronological log;
+> **Latest state (ROUND 140: the deferred ecrecover call list is now selected from the handlers this envelope actually runs, not from the route's union slot count - `take job` gets PAST the deferred wall and now fails later, in BCH-2026 preflight at the verifier input. Ladder pending re-measure.** The sections below are a chronological log;
 > read ROUNDS 51-52 and 54 (the collection-key, rolled-array and dynamic-storage-read fixes: 32 -> 37),
 > ROUNDS 53-96 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
 > deferred-`takeJob` class and its three falsified hypotheses) at the end. Earlier "State" numbers in this header
@@ -5543,3 +5543,84 @@ the pointer through that artifact's maps produced no candidates at all. The impl
 through the low-level call groups (`group.logicalArtifact ?? group.externalContract.inner.artifact`).
 
 Focused state: ladder 43 pass / 23 fail, `yarn build` green, tree clean after this commit.
+
+### ROUND 140: the eight deferred ecrecover calls were never eight calls
+
+**Root cause of the `complete graph did not expose arguments` wall for the take-job family: the SDK invented
+deferred resources for call sites no selected handler executes.**
+
+Evidence chain, all measured:
+
+1. `take job`'s route (`MarketplaceV1`) publishes `ecrecoverCompute: true` and a block layout with **16
+   `ecrecoverSideCar` slots (8 A/B pairs)** - the UNION of every eligible handler's recovery coordinates. The
+   selected handler `takeJob` owns exactly ONE of them (`ecrecoverEvmFlags: [false]`, one entry).
+2. No handler in the artifact publishes `ecrecoverArgParams`, so `selectGraphEcrecoverCalls` returned `[]` and
+   `_resolveEcrecoverComputeCoSpends` fell back to `layoutCallCount` - the union slot count / 2 = **8 deferred
+   calls with all-null arguments**. Seven of them have no call site in this envelope at all, so no probe can ever
+   reach a read for them: that is exactly the measured `ecrecoverUnresolved 7/8` that survived every probe
+   improvement (ROUNDS 128-138).
+3. Why no `ecrecoverArgParams`: the call is generated in an **OUTLINED shared body** (`invokeDebug` entries named
+   `outlined source span`), whose parameters carry the outlined values, so `emitEcrecoverComputeCall`'s
+   `isParam(name)` test is false for every argument and the *owning handler* records nothing. The closure analysis
+   still publishes `ecrecoverClosureEvmFlags` (Artifact.ts deliberately falls back to it for `ecrecoverEvmFlags`),
+   which is one entry per call in the handler's footprint - the authoritative count.
+4. Fix: `selectGraphEcrecoverCalls` treats a handler with no `ecrecoverArgParams` as one all-computed call per
+   published EVM flag, so the selected call list equals the calls this envelope makes (1 for `take job`), and the
+   SDK builds one sidecar pair instead of eight.
+
+Also identified while measuring (kept, but not the fix): the failing instruction of the old probe stall was
+`OP_NUMEQUALVERIFY` (157) in a 13-instruction shared outlined helper `[OP_ADD, OP_DUP, OP_TXOUTPUTCOUNT,
+OP_LESSTHAN, OP_IF, OP_OUTPUTTOKENCOMMITMENT, OP_SIZE, OP_NIP, OP_0, OP_NUMEQUALVERIFY, OP_ELSE, OP_DROP,
+OP_ENDIF]` - i.e. `require(tx.outputs[a+b].tokenCommitment.size == 0)`, a TOKEN-LESS output requirement, reached
+with a placeholder token on that coordinate. Bounding the probe's structural placeholders to the participant's own
+block (`index < inputBase + blockSize`) removed that abort and raised the probe's read count (1426 -> 2382) without
+changing what was learned, so it was NOT the wall; it stays unlanded (an env-gated experiment was measured and
+reverted). The same helper explained the very first stall record's `failingStack`.
+
+**Where `take job` fails now** (new frontier, after the fix): `messageBus [L3_VM_RESOURCE_LIMIT]: BCH-2026
+preflight failed at input 127: Program called an OP_SPLIT operation with an invalid index. stack item length: 0;
+requested split index: 32.` `SOLIDC_DEBUG_ROUTE_INPUTS=1` attributes input 127 to
+`MarketplaceV1.__message_bus1` - the participant's *verifier* input (unlocking head `04534342314c5653...` = the
+`SCB1` envelope) - and `SOLIDC_DEBUG_FAILURE_POINT=1` reports the terminal state at the end of a 1721-instruction
+frame whose innermost invoked body is 7 instructions: `OP_SPLIT, OP_NIP, push32, OP_SPLIT, OP_DROP, ?, OP_CAT`
+(the standard `32|32|rest` commitment parse), so the verifier reads an EMPTY commitment and splits it at 32. The
+verifier covenant's own commitment read is a 6-byte split, so the empty operand is a *parsed* commitment, not the
+verifier's own. No 7-instruction body with that opcode prefix exists in any artifact's verifier program, invoke
+bodies or function bodies, so the failing body is either generated at runtime or the pointer/frame attribution
+needs `SOLIDC_DEBUG_FAILURE_RING=1` to pin down. Next lever: identify that empty commitment - the candidates are
+the two coordinates the fix changed: the 14 union ecrecover slots that are now token-less funders instead of
+placeholder sidecars, and the verifier input's own commitment (`""` in the failure record).
+
+**Round-140 follow-up measurements** (all on `-t 'take job'`, the working window):
+
+- The `takeJob` batch row itself is well formed. Decoding the SCB1 envelope from the failing input's unlocking
+  (`SOLIDC_DEBUG_FAILURE_RING=1`, then offline: selector `7474f902`, one row) yields argsLen 67 with exactly two
+  items: `jobId_` = 0 (empty VM number, legal) and `signature_` = the full 65-byte signature. The empty item the
+  contract splits is therefore NOT a missing call argument.
+- The failing instruction is the shared 5-instruction OUTLINED span `[OP_SPLIT, OP_NIP, push32, OP_SPLIT,
+  OP_DROP]` (id 122 in `MarketplaceV1.invokeDebug`, present byte-identically in every artifact) = `x[32:64]`, i.e.
+  the second 32-byte word of a commitment-shaped value, invoked on an EMPTY item.
+- `SOLIDC_DEBUG_INVOKE_INPUT=127 SOLIDC_DEBUG_INVOKE_ID=122` records all 68 invokes of that span on the failing
+  input: every one receives a NON-empty argument (`0x01` or `0x20`), so the abort is not one of those invokes -
+  the failing frame must be a different (7-instruction) body with the same opcode prefix, or the failing pointer's
+  frame attribution needs `SOLIDC_DEBUG_FAILURE_RING`'s opcode ring rather than `invokeWindow` (which stays empty).
+- Provisioning structural placeholder sidecars for the route's UNSELECTED union coordinates (env-gated
+  experiment, reverted) moves the abort from input 127 / split-32 to input 6 / split-128 for the same test, so
+  unselected union coordinates are NOT the empty item and the aggregate is sensitive to how many sidecar pairs
+  exist; the fix is not "provision the whole union".
+- The failure record's `focus.inputs` shows the envelope-carrying input (127) with an EMPTY NFT commitment while
+  neighbours carry real ones, and input 127 is the input whose unlocking carries the `SCB1` batch envelope. That
+  is the strongest remaining lead: find which component is supposed to publish that commitment (participant
+  master state vs verifier instance) and why it is empty in this composition but not in a passing one.
+
+Regression check for the landed change: `close job` 2 passed, `withdraw collateral` 1 passed, `take job > sanity
+checks` passed; `take job` and `take job multiple` fail at preflight instead of at composition.
+
+## Standing operator rules (from the operator, ROUND 140)
+
+- Run ONLY the test currently being worked on, plus two titles around it. NEVER run the full ladder; a full run
+  costs ~10+ minutes and burns the round. The full ladder is reserved for confirming a NEW title turns green and
+  only when the operator asks.
+- Keep every fix general - no contract/function/source-name special cases - and prefer a real fix over more
+  instrumentation.
+- Never commit a memory/handoff-only change: a memory update must ride along with a code change.

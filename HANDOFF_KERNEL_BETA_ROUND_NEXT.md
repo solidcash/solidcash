@@ -1,8 +1,8 @@
 # Handoff — kernel-beta marketplace climb (after the event/continuation round)
 
-> **Latest state (ROUND 90, side-car slots verified): 39 pass / 27 fail; tree at `0be46892c`.** The sections below are a chronological log;
+> **Latest state (ROUND 91, commitment-length shortfall): 39 pass / 27 fail; tree at `a8eb05178`.** The sections below are a chronological log;
 > read ROUNDS 51-52 and 54 (the collection-key, rolled-array and dynamic-storage-read fixes: 32 -> 37),
-> ROUNDS 53-90 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
+> ROUNDS 53-91 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
 > deferred-`takeJob` class and its three falsified hypotheses) at the end. Earlier "State" numbers in this header
 > are historical.
 
@@ -3895,6 +3895,31 @@ Landed this round: the `deferred-stall-sidecars` probe (diagnostics only).
 Next round: dump the **full buffer** the failing frame parses (the 225-byte item and its neighbours on the stack)
 together with the 7 instructions it executes and the offsets it uses - then compare that buffer against the same
 frame in a passing build of the same run. A shorter/truncated serialization is then directly visible.
+
+### ROUND 91: the failing helper splits an output commitment that is one chunk short
+
+Dumped the full programs and stacks of the two innermost frames of a correlated stall build (112) and resolved the
+opcode numbers against the BCH-2026 table (`127 = OP_SPLIT`, `119 = OP_NIP`, `117 = OP_DROP`, `126 = OP_CAT`,
+`83 = OP_3`, `147 = OP_ADD`, `138 = OP_INVOKE`, `210 = OP_OUTPUTTOKENCOMMITMENT`, `202 = OP_INPUTBYTECODE`):
+
+    5-instruction frame: ['127','119','1:20','127','117']            = OP_SPLIT OP_NIP <0x20> OP_SPLIT OP_DROP
+    7-instruction frame: ['83','147','210','1:20','1:7a','138','126'] = OP_3 OP_ADD OP_OUTPUTTOKENCOMMITMENT
+                                                                        <0x20> <0x7a> OP_INVOKE OP_CAT
+
+So the 7-instruction frame computes an output index (`3 + k`), reads that output's **token commitment**, pushes 32 and
+an invoke id, and calls a helper that does `SPLIT NIP <32> SPLIT DROP` - i.e. it skips the first `index` bytes and
+then requires **32 more bytes** to remain. The failure `OP_SPLIT ... stack item length: 0; requested split index: 32`
+means the first split consumed the whole item: the helper was handed an output commitment that is exactly as long as
+the offset it split at.
+
+ROUND 90's slot table matches that reading: the side-car outputs are 32 or 34 bytes, and the 32-byte ones leave
+nothing after the skip. So the helper expects the commitment to still carry a 32-byte chunk past the offset - the
+*length* of the output commitment the SDK places is what is short, not its token.
+
+Next round: identify the helper (the pushed id `0x7a` / body 18, sourceMap `192:24:192:54`) in
+`MarketplaceDataV1`'s `invokeDebug` and read what layout it expects, then fix the commitment the SDK builds for
+that side-car output (general: the side-car commitment layout, not a marketplace rule). Oracle: `ip 1` must stop
+being the failure point in the correlated builds and `deferred-ecrecover-learned` must rise above 2.
 
 ### How to localize it next
 

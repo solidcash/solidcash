@@ -36688,6 +36688,21 @@ export class StatefulFunctionCall {
                 console.error('no-progress-before-frame', JSON.stringify({
                   buildId: builderBuildSequence, firstTiny, before,
                 }));
+                const framesOf = (count: number): unknown[] => {
+                  const first = trace.find((raw) => (
+                    (raw as { instructions?: unknown[] }).instructions?.length ?? 0) === count) as
+                    { instructions?: Array<{ opcode: number; data?: Uint8Array }>; stack?: Uint8Array[] } | undefined;
+                  if (!first) return [];
+                  return [{
+                    program: (first.instructions ?? []).map((instruction) => `${instruction.opcode}`
+                      + (instruction.data ? `:${binToHex(instruction.data)}` : '')),
+                    stack: (first.stack ?? []).slice(-6).map((item, index, stack) =>
+                      `${stack.length - 1 - index}:${item.length}:${binToHex(item).slice(0, 260)}`),
+                  }];
+                };
+                console.error('no-progress-frames', JSON.stringify({
+                  buildId: builderBuildSequence, five: framesOf(5), seven: framesOf(7),
+                }));
                 console.error('no-progress-terminal', JSON.stringify({
                   buildId: builderBuildSequence,
                   ip,

@@ -6438,7 +6438,12 @@ const computeSideCarStandIn = (domain: string, lock: Uint8Array, index: number):
     vout: index,
     satoshis: 100_000n,
     token: {
-      category: binToHex(identity), amount: 0n, nft: { capability: 'mutable', commitment: '' },
+      // A compute side-car's covenant splits a 32-byte chunk out of its commitment, so a fabricated stand-in must
+      // carry a well-formed one: an empty commitment makes the split run on a zero-length item and abort the
+      // script before the compute call is ever reached, which is exactly where a deferred argument is supposed to
+      // be exposed. Zeros are a placeholder the resolver replaces with the real chunk once the argument is learned.
+      category: binToHex(identity), amount: 0n,
+      nft: { capability: 'mutable', commitment: binToHex(new Uint8Array(32)) },
     },
   };
 };

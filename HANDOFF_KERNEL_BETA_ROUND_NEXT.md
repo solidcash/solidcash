@@ -1,8 +1,8 @@
 # Handoff — kernel-beta marketplace climb (after the event/continuation round)
 
-> **Latest state (ROUND 88, ecrecover side-car abort): 39 pass / 27 fail; tree at `54aa626b0`.** The sections below are a chronological log;
+> **Latest state (ROUND 89, output-token read): 39 pass / 27 fail; tree at `5594acb79`.** The sections below are a chronological log;
 > read ROUNDS 51-52 and 54 (the collection-key, rolled-array and dynamic-storage-read fixes: 32 -> 37),
-> ROUNDS 53-88 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
+> ROUNDS 53-89 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
 > deferred-`takeJob` class and its three falsified hypotheses) at the end. Earlier "State" numbers in this header
 > are historical.
 
@@ -3849,6 +3849,28 @@ Next round's first experiment: give the stand-in side-cars a well-formed placeho
 zeros or the SDK's placeholder preimage) instead of an empty one, then re-run and read the correlated trace: the
 abort should move past the split, and the oracle stays `deferred-ecrecover-learned` / the stall composition's
 `whitelistEntryInputs`.
+
+### ROUND 89: a well-formed stand-in commitment is not the missing operand
+
+**Landed:** `computeSideCarStandIn` now gives a fabricated compute side-car a well-formed placeholder commitment
+(32 zero bytes) instead of an empty one - a covenant that splits a 32-byte chunk cannot run on an empty commitment,
+and zeros are a placeholder the resolver replaces once it learns the real chunk. Mock-only path; real networks
+deploy side-cars explicitly.
+
+Focused `take job` after the change: unchanged - sanity passes, both real titles fail, `deferred-ecrecover-learned`
+stays at 2, and the correlated stalls are identical (`build 112/119/126/133/175 ip 1`, `OP_SPLIT ... length: 0`,
+plus the sanity builds' `OP_VERIFY`s). So the empty operand the outline splits does **not** come from the stand-in
+commitment.
+
+The entry states say where it does come from: the frame that invokes the outline is a **7-instruction frame** whose
+stack at `ip 2` holds `['', 01, 28:19457468657265756d205369676e6564204d657373616765..., 1:42]` and whose opcode
+there is `210` (2026 numbering: output-token commitment). In other words the frame reads an **output's token
+commitment** and gets nothing, i.e. the output it reads is token-less for these builds - the side-car/continuation
+output placeholder those builds place is missing its token, so the covenant cannot split a chunk out of it.
+
+Next round: for a correlated stall build, dump the aggregate's outputs at the participant's side-car slots
+(category, capability, commitment) and confirm whether they carry tokens; the oracle remains `ip 1` moving off
+`OP_SPLIT` and `deferred-ecrecover-learned` rising above 2.
 
 ### How to localize it next
 

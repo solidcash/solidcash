@@ -1,8 +1,8 @@
 # Handoff — kernel-beta marketplace climb (after the event/continuation round)
 
-> **Latest state (ROUND 64, composed executor input): 39 pass / 27 fail; tree at `b357214ff`.** The sections below are a chronological log;
+> **Latest state (ROUND 65, output-scan stall): 39 pass / 27 fail; tree at `888142361`.** The sections below are a chronological log;
 > read ROUNDS 51-52 and 54 (the collection-key, rolled-array and dynamic-storage-read fixes: 32 -> 37),
-> ROUNDS 53-64 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
+> ROUNDS 53-65 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
 > deferred-`takeJob` class and its three falsified hypotheses) at the end. Earlier "State" numbers in this header
 > are historical.
 
@@ -3102,6 +3102,35 @@ to the implementation or the evaluated input index is the block's *identity* slo
 master UTXO with its invocation unlocker, not the local placeholder; the ecrecover resolver then sees the
 `OP_INPUTBYTECODE` reads it expects (its sidecars sit at the same block-local offsets 4..19, which is why the
 `unresolvedAIndices` keys are local while the covenant addresses them absolutely).
+
+### ROUND 65: the premature-throw hypothesis is FALSIFIED; the stall is an output scan
+
+Tested and reverted (tree stays at `888142361`): turning `assemble()`'s "no progress" throw into a pending signal
+(`deferredComputePending`, refused only on a stable graph) so the claim loop could learn the missing nested returns
+and rebuild before the compute resolution is judged. Result on `deliver result`: the composition now runs its full
+claim loop (6 resolve attempts instead of 1) and still ends with the *stable-graph* variant of the same error
+`... did not expose arguments for all deferred compute resources (participant(s) 0)`, and the controller's own
+diagnostic is byte-identical: `executionInput 127, inputBase 0, states 951, ip 1,
+'OP_SPLIT ... stack item length: 0; requested split index: 32'`. So the missing nested invocation results are not
+what blocks the resolution - the executed transcript itself never reaches the compute call.
+
+What the transcript does instead (from the `ring` of the same diagnostic): a tight **output scan loop** -
+`ip 247 opcode 205 (OP_OUTPUTBYTECODE)` repeated with the index on top incrementing `ca01, cb01, cc01, ... cf01`,
+then `ip 255 opcode 209 (OP_OUTPUTTOKENCOMMITMENT)` - before the OP_SPLIT-over-empty failure. Note the scan
+`ip` values 247/255 are *outside* participant 0's 129-slot block, i.e. the script is walking an aggregate
+coordinate space, which is consistent with a composed participant scanning past its own block (the scan bound and
+the read coordinate come from different witnesses).
+
+Also identified (useful for the next trace read): the terminal 5-instruction frame is invoke body 18 of
+MarketplaceDataV1 = `7f7701207f75` (OP_3DUP OP_NIP <32> OP_3DUP OP_VERIFY) and its sourceMap span
+`192:24:192:54` = `marketplace.getJob(i + index_)`. The same bytecode appears in 13 fixture artifacts at
+*unrelated* spans (`_timestamps[id] = ...`, `symbol: ... ? ...`, `shares,`), so it is a **generic compiler
+outline** (a value store/decode shape), not evidence about `getJob` - do not read it as a nested-return problem.
+
+Next round: locate the output-scan loop whose bound lets a composed participant read past its block (candidates:
+the entry/data-NFT scan in the route prologue, `__internal__graphBlockSize`/`fixedSize` witnesses, or the
+`__internal__` participant scan) and make the bound block-local, exactly like ROUND 63 did for the continuation
+band.
 
 ### How to localize it next
 

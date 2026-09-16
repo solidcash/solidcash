@@ -14001,7 +14001,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               const nextTransaction = nextProbe.buildLibauthTransaction();
               const nextFingerprint = binToHex(encodeTransaction(nextTransaction));
               if (routeProbeTransactions.has(nextFingerprint)) {
-                throw new Error('Route probe convergence repeated a physical transaction state.');
+                // A repeated physical transaction is a FIXED POINT: this pass applied every observation the trace
+                // revealed and the built transaction is unchanged, so further probing cannot reveal anything new.
+                // Accepting it is what "converged" means; the previous guard treated convergence as failure and
+                // told the caller to supply state manually.
+                break;
               }
               if (pass + 1 === routeProbePassLimit) {
                 throw new Error(

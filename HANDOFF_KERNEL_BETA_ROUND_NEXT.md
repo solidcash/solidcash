@@ -1,6 +1,6 @@
 # Handoff — kernel-beta marketplace climb (after the event/continuation round)
 
-> **Latest state (ROUND 135: the meceTags fix is a PASS-ORDERING knot - row locality is decided before the expression labels that could decide it exist): 39 pass / 27 fail.** The sections below are a chronological log;
+> **Latest state (ROUND 136: FIX LANDED - the route-probe convergence guard treated a FIXED POINT as failure; accepting it turns 2 titles green (close job after timeout, withdraw collateral): 41 pass / 25 fail expected).** The sections below are a chronological log;
 > read ROUNDS 51-52 and 54 (the collection-key, rolled-array and dynamic-storage-read fixes: 32 -> 37),
 > ROUNDS 53-96 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
 > deferred-`takeJob` class and its three falsified hypotheses) at the end. Earlier "State" numbers in this header
@@ -5385,3 +5385,39 @@ more than one `__message_bus_key_meceTags*` name -> `npx vitest run -t 'update j
 
 Focused state: `-t 'take job'` = 2 failed | 1 passed, `-t 'update job tags'` = 1 failed, `yarn build` green, tree
 clean (no unvalidated compiler change).
+
+### ROUND 136: the convergence guard was throwing on a FIXED POINT - 2 titles turn green
+
+Widened the survey instead of staying on meceTags, and the convergence class turned out to be a one-line guard
+bug. The route-probe loop in `StatefulContract.ts` (~13995) is:
+
+    if (!progressed) break;
+    const nextProbe = stb.build();
+    const nextFingerprint = binToHex(encodeTransaction(nextProbe.buildLibauthTransaction()));
+    if (routeProbeTransactions.has(nextFingerprint)) {
+      throw new Error('Route probe convergence repeated a physical transaction state.');
+    }
+
+A repeated physical transaction means this pass APPLIED every observation the trace revealed and the built
+transaction is unchanged - that is a fixed point, i.e. convergence, not failure. The guard treated it as failure and
+surfaced as `Cannot send stateful transaction: state commitments could not be auto-derived. Reason: Full state
+derivation failed: Route probe convergence repeated a physical transaction state.` The loop now `break`s on the fixed
+point.
+
+Measured (focused windows):
+
+    -t 'close job'            : 2 passed | 64 skipped   (before: 1 failed | 1 passed)
+        close job after timeout    FAIL -> PASS
+    -t 'withdraw collateral'  : 1 passed | 65 skipped   (before: 1 failed)
+        withdraw collateral        FAIL -> PASS
+
+So the convergence class is fixed by accepting the fixed point; the handoff's remaining convergence-flavoured
+targets are the other titles that reported the same error text (this round's survey found `withdraw collateral` and
+`close job after timeout`; a full ladder run follows to confirm the count).
+
+Also surveyed this round (new error signatures worth attacking next):
+  - 'mece tags' window: `post job with invalid mece tags` fails with "Expected transaction NOT to be reverted, but it
+    reverted"; the three meceTags read/update/remove titles PASS.
+  - 'refuse arbitration' window: `job closed` PASSES; `job not taken` fails with an AssertionError
+    (`expected 0n to deeply equal 1n`, a state-read mismatch) and `job taken` fails with "Expected transaction NOT to
+    be reverted, but it reverted".

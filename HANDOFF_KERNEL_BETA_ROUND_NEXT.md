@@ -1,6 +1,6 @@
 # Handoff — kernel-beta marketplace climb (after the event/continuation round)
 
-> **Latest state (ROUND 131: `update job tags` root cause pinned - five DISTINCT literal keys collapse onto ONE route witness name): 39 pass / 27 fail.** The sections below are a chronological log;
+> **Latest state (ROUND 132: CRITICAL WORKFLOW FINDING - the marketplace fixture artifacts are STALE, so every COMPILER-side change this session was never exercised): 39 pass / 27 fail.** The sections below are a chronological log;
 > read ROUNDS 51-52 and 54 (the collection-key, rolled-array and dynamic-storage-read fixes: 32 -> 37),
 > ROUNDS 53-96 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
 > deferred-`takeJob` class and its three falsified hypotheses) at the end. Earlier "State" numbers in this header
@@ -5232,3 +5232,39 @@ compiler-only change; the SDK reads the names from the artifact metadata (`batch
 verifies it in ~25s.
 
 Focused state: `-t 'take job'` = 2 failed | 1 passed (green `sanity checks`), `yarn build` green.
+
+### ROUND 132: the fixture artifacts are STALE - compiler-side changes are invisible to the ladder
+
+While trying to land the expression-key discriminator for `update job tags`, three variants produced the byte-for-byte
+identical error naming the identical witness. Checking the artifact instead of the code settled why:
+
+    grep -c "_x"                    .marketplace/artifacts/solidcash/MarketplaceDataV1.artifact.ts  -> 0
+    grep -o "__message_bus_key_meceTags[^']*" ...                                                  -> __message_bus_key_meceTags_0
+    ls -l --time-style=+%H:%M  ...                                                                 -> 15:40 (touched, CONTENT unchanged, 1229326 bytes)
+
+i.e. the fixture artifact predates every compiler edit of this session: it still publishes the un-discriminated
+`__message_bus_key_meceTags_0`. The attempted recompiles did not help:
+
+  - `bash .marketplace/iteration/recompile.sh contracts/MarketplaceDataV1.sol contracts/MarketplaceV1.sol`
+    fails for both sources with a stack ending in `at selectCompileSources
+    (packages/testing/dist/builtin-tasks.js:80:19)` and copies the stale merged files back;
+  - `rm -rf .marketplace/cache .marketplace/vite-cache-marketplace .marketplace/vite-cache-mece` followed by a
+    fresh `-t 'update job tags'` run leaves the artifact untouched (same size, same content, same missing suffix).
+
+IMPLICATION (important for every remaining round): the LADDER only exercises SDK changes (built into
+`packages/solidcash/dist`); COMPILER changes are invisible until the marketplace fixture is actually recompiled.
+That is why the last several compiler-side experiments (perRow, both naming branches) showed no effect - they were
+never compiled in. All of them have been REVERTED; the tree carries no unvalidated compiler change.
+
+Evidence that SDK-side work IS exercised: the ladder's behaviour changed repeatedly with SDK edits (OP_SPLIT class
+eliminated, stall counts, error texts), so the SDK conclusions from ROUNDS 96-129 stand.
+
+NEXT ROUND (do this first): find the compile step the marketplace fixture actually uses and make it regenerate -
+candidates: the project-level task behind `.marketplace/project` (the vite config / setup file in
+`.marketplace/project` that produced `artifacts/solidcash` and the `vite-cache-*` directories), `packages/testing`'s
+`compile` task with `KB_ARTIFACTS`/`KB_CACHE` set correctly (the recompile helper's invocation is the failing one),
+or a hard `rm -rf .marketplace/artifacts/solidcash` followed by whatever command repopulates it. Verify success by
+the discriminator appearing in the artifact (`grep -c _x ...` > 0) BEFORE re-testing any compiler fix.
+
+Focused state: `-t 'update job tags'` = 1 failed (unchanged, stale artifact), `-t 'take job'` = 2 failed | 1 passed,
+`yarn build` green, tree clean.

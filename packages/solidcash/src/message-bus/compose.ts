@@ -3622,6 +3622,35 @@ export class AtomicMessageBusComposition {
                     output: describe(aggregate.outputs[base + slot.offset] as never, base + slot.offset),
                   }));
               });
+              console.error('deferred-stall-band', JSON.stringify({
+                buildId: peekBuilderBuildId(),
+                participants: plan.participants.map((candidate) => {
+                  const artifact = candidate.artifact as {
+                    messageBus?: { route?: { graphEffectFrame?: Record<string, unknown> } };
+                  };
+                  const slots = candidate.blockLayout?.slots ?? [];
+                  return {
+                    participant: candidate.participant,
+                    slots: slots.map((slot) => [slot.offset, slot.kind, slot.slotIndex, slot.nftIndex,
+                      slot.conditional === true ? 1 : 0]),
+                    frame: artifact.messageBus?.route?.graphEffectFrame,
+                  };
+                }),
+              }));
+              console.error('deferred-stall-io', JSON.stringify({
+                buildId: peekBuilderBuildId(),
+                inputs: aggregate.inputs.slice(0, 24).map((item, index) => ({
+                  index,
+                  cat: item?.token?.category?.slice(0, 10),
+                  cap: item?.token?.nft?.capability,
+                  commitBytes: (item?.token?.nft?.commitment?.length ?? 0) / 2,
+                  lock: (() => {
+                    const unlocker = (item as { unlocker?: { generateLockingBytecode: () => Uint8Array } })
+                      ?.unlocker;
+                    return unlocker ? binToHex(unlocker.generateLockingBytecode()).slice(0, 12) : '';
+                  })(),
+                })),
+              }));
               console.error('deferred-stall-outputs', JSON.stringify({
                 buildId: peekBuilderBuildId(),
                 outputs: aggregate.outputs.slice(0, 24).map((output, index) => ({

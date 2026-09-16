@@ -92,6 +92,7 @@ import {
   runtimeLoopEventRepeatSource,
 } from './runtime-loop-event-domain.js';
 import { assertConstructedKeyVectorRouteBinding } from './ConstructedKeyVector.js';
+import { nextBuildId, peekBuildId } from './buildSequence.js';
 import {
   decodeEvmInvocationResult, decodeEvmInvocationResultPrefix, encodeEvmInvocationResult,
 } from './evm-abi-result.js';
@@ -6453,11 +6454,8 @@ const hasOutpoint = (utxos: readonly Utxo[], candidate: Utxo): boolean => utxos.
   (utxo) => utxo.txid.toLowerCase() === candidate.txid.toLowerCase() && utxo.vout === candidate.vout,
 );
 
-/** Monotonic id for the builder pass currently resolving entry accesses (diagnostics correlation). */
-let builderBuildSequence = 0;
-
 /** Current builder-pass id; the composer reports it beside a stall so the stall's own plans can be isolated. */
-export const peekBuilderBuildId = (): number => builderBuildSequence;
+export const peekBuilderBuildId = peekBuildId;
 
 export class StatefulContract<TArtifact extends Artifact = Artifact> {
   // Backing for inner / categoryId. When constructed from an ADDRESS the category is unknown until the first
@@ -7425,6 +7423,20 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       return keys.length > 0 && keys.every((key) => key.startsWith('__message_bus_key_'))
         && !keys.every((key) => activeRouteEntryKeys.has(key)) ? [access.slotIndex ?? denseIndex] : [];
     });
+    if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+      ?.SOLIDC_DEBUG_COLLECTION_FETCH === '1' && (capability.route.entryAccesses ?? []).length > 0) {
+      console.error('route-entry-keys', JSON.stringify({
+        buildId: peekBuildId(),
+        contract: this.inner.artifact.contractName,
+        route: capability.route.name,
+        reached: reachedHandlers.map((handler) => handler.name),
+        activeKeys: [...activeRouteEntryKeys],
+        bindings: reachedHandlers.map((handler) => [handler.name,
+          (handler.batchKeyWitnesses ?? []).map((binding) => [binding.routeInput, binding.perRow === true,
+            binding.alternateRouteInput])]),
+        inactive: inactiveRouteEntrySlots,
+      }));
+    }
     // `route.entryAccesses` is the union of every admitted handler. Narrow each selected row back to the
     // operations of its direct handler using the compiler-published physical-slot correspondence. Per-row route
     // slots are copies of that canonical physical slot, so replace only the `_rN` coordinate and find the exact
@@ -18463,6 +18475,16 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       (entryAbiFunction as AbiFunction & { messageBusInactiveEntrySlots?: readonly number[] } | undefined)
         ?.messageBusInactiveEntrySlots ?? [],
     );
+    if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+      ?.SOLIDC_DEBUG_COLLECTION_FETCH === '1') {
+      console.error('message-bus-entry-meta', JSON.stringify({
+        buildId: peekBuildId(),
+        contract: this.inner.artifact.contractName,
+        abiFunction: entryAbiFunction?.name,
+        inactive: [...inactiveMessageBusEntrySlots],
+        accesses: (entryAccesses ?? []).map((access) => [access.slotIndex, access.collection, access.operations]),
+      }));
+    }
     const activeMessageBusWriteCollections = (entryAbiFunction as MessageBusRuntimeAbiFunction | undefined)
       ?.messageBusActiveWriteCollections;
     const activeMessageBusEntryOperations = (entryAbiFunction as MessageBusRuntimeAbiFunction | undefined)
@@ -18475,7 +18497,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         : entryAccessForSlot(slotIndex)?.operations ?? [];
 
     if (entryAccesses && entryAccesses.length > 0 && stateLayout.collections) {
-      builderBuildSequence += 1;
+      nextBuildId();
       // Entries of DIFFERENT collections share the master's category and are indistinguishable by commitment
       // when they carry the same key (a[k] and b[k] both parse under either collection's types). onChainState.
       // entryNftUtxos also mixes in dynamic-storage chunks, so matching within that category-wide list can pick
@@ -18808,7 +18830,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               const freshAddress = getEntryNftAddress(this.inner, this.categoryId, access.collection);
               const freshCount = present ? -1 : (await this.inner.provider.getUtxos(freshAddress)).length;
               console.error('entry-read-plan', JSON.stringify({
-                buildId: builderBuildSequence,
+                buildId: peekBuildId(),
                 freshCount,
                 collection: access.collection,
                 slotIndex,
@@ -36686,7 +36708,7 @@ export class StatefulFunctionCall {
                     };
                   });
                 console.error('no-progress-before-frame', JSON.stringify({
-                  buildId: builderBuildSequence, firstTiny, before,
+                  buildId: peekBuildId(), firstTiny, before,
                 }));
                 const framesOf = (count: number): unknown[] => {
                   const first = trace.find((raw) => (
@@ -36755,22 +36777,22 @@ export class StatefulFunctionCall {
                     };
                   });
                 console.error('no-progress-around-failing', JSON.stringify({
-                  buildId: builderBuildSequence, failingIndex, around,
+                  buildId: peekBuildId(), failingIndex, around,
                 }));
                 console.error('no-progress-bodies', JSON.stringify({
-                  buildId: builderBuildSequence,
+                  buildId: peekBuildId(),
                   failing,
                   bodies: [...bodies.entries()].map(([key, entry]) => ({ key, ...entry })),
                 }));
                 console.error('no-progress-frame-entries', JSON.stringify({
-                  buildId: builderBuildSequence,
+                  buildId: peekBuildId(),
                   entries: frameEntries.slice(-10),
                 }));
                 console.error('no-progress-frames', JSON.stringify({
-                  buildId: builderBuildSequence, five: framesOf(5), seven: framesOf(7),
+                  buildId: peekBuildId(), five: framesOf(5), seven: framesOf(7),
                 }));
                 console.error('no-progress-terminal', JSON.stringify({
-                  buildId: builderBuildSequence,
+                  buildId: peekBuildId(),
                   ip,
                   program: (terminalState?.instructions ?? []).slice(0, 8).map(
                     (instruction) => `${instruction.opcode}`
@@ -36781,7 +36803,7 @@ export class StatefulFunctionCall {
                     `${stack.length - 1 - index}:${item.length}:${binToHex(item).slice(0, 60)}`),
                 }));
                 console.error('atomic-deferred-compute-no-progress', JSON.stringify({
-                  buildId: builderBuildSequence,
+                  buildId: peekBuildId(),
                   error: diagnostic.error,
                   ip: diagnostic.ip,
                   states: diagnostic.states,

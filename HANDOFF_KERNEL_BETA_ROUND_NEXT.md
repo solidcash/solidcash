@@ -1,6 +1,6 @@
 # Handoff — kernel-beta marketplace climb (after the event/continuation round)
 
-> **Latest state (ROUND 96, commitment limit verified at 128 B): 39 pass / 27 fail; tree at `bdabd8e13`.** The sections below are a chronological log;
+> **Latest state (ROUND 97, the deferred stall's read index identified): 39 pass / 27 fail; tree at `fa2931dfc` + diagnostics.** The sections below are a chronological log;
 > read ROUNDS 51-52 and 54 (the collection-key, rolled-array and dynamic-storage-read fixes: 32 -> 37),
 > ROUNDS 53-96 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
 > deferred-`takeJob` class and its three falsified hypotheses) at the end. Earlier "State" numbers in this header
@@ -4064,3 +4064,58 @@ At 20:54 — after this round's last compose.ts edit at 20:35 — an uncalled he
 session; nothing in this round edits that file. It has been reverted to HEAD and the
 SDK rebuilt. **If a parallel session is working in this worktree, its edits will land
 on top of these commits — check `git status` before building.**
+
+### ROUND 97: the deferred-compute stall reads a CONSECUTIVE BAND of aggregate OUTPUTS
+
+Measurements (all from `-t 'take job'`, deterministic: stalls are builds 40/67/74/104/112/119/126/133/140/175):
+
+1. `deferred-stall-band` (compose, gated by `SOLIDC_DEBUG_ENTRY_COUNTS=1`) shows participant 0's route layout:
+   master(0), dataNft(1,2), `keccakSideCar`(3), `ecrecoverSideCar`(4..19, first four unconditional, the rest
+   `conditional`), `entry`(20, slotIndex 0, conditional), `entry`(21, slotIndex 1), then 40 `event` slots (22..61),
+   `returnEvent`(62), 64 `trailing` slots (63..126), `lowLevelCall`(127), `identityAnchor`(128). Route frame:
+   `sites 8, ecrecoverWidth 2, ecrecoverOffset 4, eventWidth 5, eventOffset 22`.
+2. `deferred-stall-io` (compose) shows the aggregate's token table: inputs/outputs 0..20 are token-bearing and
+   MIRRORED 1:1 (including output 20 = the entry NFT, category = participant category, 64-byte commitment);
+   outputs 21+ are token-less funder pads (`lock 51`), while input 21 is the caller's P2PKH funding input.
+3. The failing bytecode is `outlined source span -381` of `MarketplaceV1`
+   (`5393d20120017a8a7e` = `OP_3 OP_ADD OP_OUTPUTTOKENCOMMITMENT <push 32> <invoke helper 122> OP_CAT`,
+   helper 122 = `7f7701207f75` = `OP_SPLIT OP_NIP <32> OP_SPLIT OP_DROP`, i.e. "drop the first 32 bytes, keep the
+   next 32"), sourceMap `689:16:689:59` = `keccak256(abi.encode(eventsLength, jobId_))`. So the covenant reads
+   `output[3 + k]` for k = 0,1,... and parses each commitment as two 32-byte ABI words. `OP_3` is the keccak
+   side-car slot, so the read walks the compute band 3.. and the failing k is the one that lands on index 21
+   (k = 18) - the first token-less output.
+4. `entry-slot-position` (builder, gated by `SOLIDC_DEBUG_KEY_SLOT=1`) shows which fixed entry slots received a
+   real resource and which fell back to `funderPool.shift()`; `route-entry-keys`/`message-bus-entry-meta`
+   (gated by `SOLIDC_DEBUG_COLLECTION_FETCH=1`) show, per build id, the reached rows, `activeRouteEntryKeys`,
+   the handlers' `batchKeyWitnesses`/`physicalEntrySlots` and the computed `messageBusInactiveEntrySlots`.
+   Measured: the 2-access whitelist capability of `SolidCashProxy.__message_bus1` runs with
+   `inactive [0, 1]` for the `publishJobPost` row (its `batchKeyWitnesses` is EMPTY, hence `activeKeys []`)
+   and with `inactive []` for the `takeJob` row (bindings `_0`/`_1` plus `_0_alt`/`_1_alt`).
+5. Falsified this round (do not repeat):
+   - "Force every entry slot active" (`inactive = []`): still 3 failures in `take job`, error changes to
+     `preflight failed at input 127: OP_VERIFY`, and the previously GREEN `take job > sanity checks` breaks.
+     So blind activation is not the fix: the SDK's `batchAliasSkips`/`entryDeleteSlots` deactivation is load
+     bearing, and the covenant then rejects whatever the SDK publishes (the entry proof/keys are missing).
+   - "The alias-skip slot is a token-less pad but the covenant skips it": the covenant DOES address it
+     (measurement 3), so the gate the SDK relies on ("the covenant gates the write off, so fund this slot")
+     does not hold for the READ alias at `runtimeAliasPriorSlots: [0]`.
+   - "The failing band is the side-car band only": no. The covenant's band is content-addressed by
+     `3 + k` over aggregate OUTPUTS, so a *missing trailing band member* (not the side-car count) is the
+     proximate cause.
+
+Open question for the next round (the fix fork):
+  (a) SDK: when the SDK decides an alias/read slot may be skipped, it must still publish the OWNER's entry
+      mirror at that slot (same commitment/category/bytecode) instead of a bare funder, so any covenant read of
+      the slot is well defined; or
+  (b) compiler: the route's row gating must not read a slot the SDK was told to skip, or the covenant's band
+      walk must be bounded by the published band width.
+  Decide with: `deferred-stall-io` on the STALL build (does index 21 belong to the entry band or to the compute
+  band?), plus `route-entry-keys` for the same build id (which rows were reached and what `inactive` was).
+
+Diagnostics landed this round (permanent, gated, build-correlated):
+  - `packages/solidcash/src/stateful/buildSequence.ts` (new leaf module) + `peekBuildId()`/`nextBuildId()`;
+    `peekBuilderBuildId` in `StatefulContract` now re-exports it, so every participant-side record carries the
+    same id as the composer's stall record (`StatefulTransactionBuilder` imports the leaf module directly, so
+    no import cycle is introduced).
+  - `entry-slot-position` (builder), `route-entry-keys` and `message-bus-entry-meta` (contract), plus
+    `deferred-stall-band` and `deferred-stall-io` (composer) - each stamped with `buildId`.

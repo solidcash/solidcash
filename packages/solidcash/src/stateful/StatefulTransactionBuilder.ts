@@ -39,6 +39,7 @@ import {
   lockingBytecodeToCashAddress, encodeDataPush, bigIntToVmNumber, vmNumberToBigInt,
 } from '@bitauth/libauth';
 import { getDustThreshold } from '@mem-cash/validation';
+import { peekBuildId } from './buildSequence.js';
 import {
   canonicalValueChunkProducerIdentity,
   canonicalValueChunkProducerResourceClaim,
@@ -7335,6 +7336,21 @@ export class StatefulTransactionBuilder {
             // proxy-state output slots. The implementation is the input; the entry NFT is produced only on output.
             if (positioned[slot.offset]) break;
             const entryInput = slot.slotIndex !== undefined ? entryInputBySlot.get(slot.slotIndex) : undefined;
+            if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+              ?.SOLIDC_DEBUG_KEY_SLOT === '1') {
+              console.error('entry-slot-position', JSON.stringify({
+                buildId: peekBuildId(),
+                offset: slot.offset,
+                slotIndex: slot.slotIndex,
+                occupied: positioned[slot.offset] !== undefined,
+                found: entryInput !== undefined,
+                provided: [...entryInputBySlot.keys()],
+                entries: this.entryNfts.map((info) => [info.slotIndex, info.exists, info.utxo !== undefined,
+                  Object.keys(info)]),
+                declared: this.blockLayout.slots.filter((candidate) => candidate.kind === 'entry')
+                  .map((candidate) => [candidate.offset, candidate.slotIndex, candidate.conditional === true]),
+              }));
+            }
             if (entryInput) positioned[slot.offset] = entryInput;
             else { const f = funderPool.shift(); if (f) positioned[slot.offset] = f; }
             break;

@@ -1,6 +1,6 @@
 # Handoff — kernel-beta marketplace climb (after the event/continuation round)
 
-> **Latest state (ROUND 100, the probe's aborting read is output 0's master commitment): 39 pass / 27 fail.** The sections below are a chronological log;
+> **Latest state (ROUND 101, the abort is a 38-byte commitment read at a collection address): 39 pass / 27 fail.** The sections below are a chronological log;
 > read ROUNDS 51-52 and 54 (the collection-key, rolled-array and dynamic-storage-read fixes: 32 -> 37),
 > ROUNDS 53-96 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
 > deferred-`takeJob` class and its three falsified hypotheses) at the end. Earlier "State" numbers in this header
@@ -4248,6 +4248,43 @@ Still open (the next measurement): which check fails at those ips, and why the t
 `OP_INPUTBYTECODE` recovery read (still exactly one read, at input 127, `belowBytes 0`) before it does.
 `deferred-ecrecover-learned` stays at 2 and `deferred-no-progress-reads` at 10, so the resolver still cannot
 learn the eight recovery blobs - the composer error is unchanged.
+
+Focused state: `-t 'take job'` = 2 failed | 1 passed (green `sanity checks`), `yarn build` green, no full-ladder
+run (no title turned green).
+
+### ROUND 101: the aborting resource is a SHORT (38-byte) commitment mirror
+
+`deferred-no-progress-reads` is now self-contained: it also carries the terminal `error`, `failingIp` and
+`failingOpcode`, so the DERIVE-gated `no-progress-*` frames are no longer needed to read a stall. Measured
+(builds 40/67/74, default path):
+
+    error: "Program failed an OP_VERIFY operation."
+    build 67/74: failingIp 183 / 244     build 40: failingIp 424
+    last introspection: out-commitment idx 216 (67/74) / 463 (40), cat a3cef944, commitment 38 BYTES
+
+and the surrounding 1:1 pairs (io-full, build 67) are exact mirrors:
+
+    idx 212  in ee643a16:128  out ee643a16:128
+    idx 213  in ee643a16:53   out ee643a16:83   <- the only pair that CHANGED
+    idx 214  in 3770ad41:0    out 3770ad41:0
+    idx 215  in ee643a16:75   out ee643a16:75
+    idx 216  in a3cef944:38   out a3cef944:38   <- the aborting read, lock aa20ee2996...
+    idx 217  in ee643a16:38   out ee643a16:38
+
+So the program dies immediately after a covenant parses the commitment of a resource that input and output agree
+on - a 38-byte commitment at a COLLECTION address (`aa20ee2996...`), while the code applies the SORTED entry
+shape `slot(32) || nextKey(32) || value` (>= 64 bytes, `commitmentField(..., 'next')` = "drop 32, take next 32").
+38 = 32-byte slot/key hash + 6-byte tail, i.e. the shape of a NON-sorted entry or of a value-chunk commitment
+(`index(2) || data`), not of a sorted entry.
+
+Next (the fix fork): decide which side owns the mismatch -
+  (a) the published resource is a stale value chunk from the previous derivation and the scan's `nNew` count /
+      digest expectation is computed for the new value;
+  (b) a non-sorted collection entry is matched by a sorted scan (collection/address mix-up in the route's union
+      layout);
+  (c) the SDK mirrors the wrong resource kind into a collection slot.
+Start from the io-full pair at the aborting index: whether the input is a real UTXO of that collection (then the
+address is right and the parse shape is wrong) or a placeholder (then the SDK published the wrong resource).
 
 Focused state: `-t 'take job'` = 2 failed | 1 passed (green `sanity checks`), `yarn build` green, no full-ladder
 run (no title turned green).

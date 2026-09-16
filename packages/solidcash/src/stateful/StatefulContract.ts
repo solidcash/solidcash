@@ -36693,9 +36693,18 @@ export class StatefulFunctionCall {
                   lock: lock ? binToHex(lock).slice(0, 12) : undefined,
                 }];
               });
+              // The terminal state names the aborting instruction and its error; together with the trailing
+              // introspection reads this makes the ENTRY_COUNTS record self-contained (the DERIVE-gated
+              // no-progress-* frames are no longer needed to interpret a stalled resolve).
+              const terminal = trace.at(-1) as {
+                error?: string; ip?: number; instructions?: Array<{ opcode?: number }>;
+              } | undefined;
               console.error('deferred-no-progress-reads', JSON.stringify({
                 buildId: peekBuildId(),
                 total: commitmentReads.length,
+                error: terminal?.error,
+                failingIp: terminal?.ip,
+                failingOpcode: terminal?.instructions?.[terminal.ip ?? -1]?.opcode,
                 trailing: commitmentReads.slice(-12),
               }));
             }

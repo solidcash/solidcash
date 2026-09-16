@@ -1,8 +1,8 @@
 # Handoff — kernel-beta marketplace climb (after the event/continuation round)
 
-> **Latest state (ROUND 67, verifier digest loop): 39 pass / 27 fail; tree at `0563094fe`.** The sections below are a chronological log;
+> **Latest state (ROUND 68, digest counter trace): 39 pass / 27 fail; tree at `9ff11f792`.** The sections below are a chronological log;
 > read ROUNDS 51-52 and 54 (the collection-key, rolled-array and dynamic-storage-read fixes: 32 -> 37),
-> ROUNDS 53-67 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
+> ROUNDS 53-68 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
 > deferred-`takeJob` class and its three falsified hypotheses) at the end. Earlier "State" numbers in this header
 > are historical.
 
@@ -3225,6 +3225,27 @@ digest runs over its own window instead of the last participant's tail.
 Cheap oracle for either: dump the counter's *initial* value and the witness it came from on the first iteration
 (trace states of the 315-instruction frame with ip == the OP_TXOUTPUTCOUNT site), then check whether outputs
 450..461 disappear from the digest input.
+
+### ROUND 68: the digest loop really walks every output, through the change output
+
+Traced the counter itself (probe printing the first state of every `ip 247` visit in the 315-instruction body, on
+`deliver result`):
+
+* the loop body runs **469 visits** with the stack carrying `d501` (=469, `OP_TXOUTPUTCOUNT`) and `81` (=1);
+* the visits start at counter `00, 01, 02, 03, 04, 05, ...` (shallow depth 4, the first pass over the whole
+  transaction) and the *last* six are `cf01, d001, d101, d201, d301, d401` = **463, 464, 465, 466, 467, 468**
+  with depth 53 and a 32-byte digest accumulator (`3e0898a59579c5f6f2e6db6b855bcbaf...`) on the stack;
+* 468 is the composer's **fee change output**, which is token-less (`to: changeAddress` via
+  `addBchChangeOutputIfNeeded`), and 463..467 are the five verifier outputs. So the digest pairs output i with
+  input i for `i` in `[0, OP_TXOUTPUTCOUNT)` - including the fee/change pair and every OP_TRUE pad in every
+  participant block - and the pair that contributes nothing (empty XOR empty) leaves the accumulator empty for the
+  following `OP_SPLIT 32` (the ROUND 67 mechanism).
+
+Next measurement (cheap, decisive): run the same tail dump on a **passing** kernel title (e.g. `post two jobs`)
+and compare its last outputs with the failing one's `... 447..468` tail - specifically whether the change output
+exists, whether it carries a token, and whether the digest loop's last counter stops at the change. That decides
+between "the composer must not put a token-less change inside the digested range" and "the loop bound/start is a
+witness that must be block-local".
 
 ### How to localize it next
 

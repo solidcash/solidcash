@@ -1,8 +1,8 @@
 # Handoff — kernel-beta marketplace climb (after the event/continuation round)
 
-> **Latest state (ROUND 58, HEAD `a74a6da53`): 37 pass / 28 fail.** The sections below are a chronological log;
+> **Latest state (ROUND 59, HEAD `9eab67b7a`): 37 pass / 28 fail.** The sections below are a chronological log;
 > read ROUNDS 51-52 and 54 (the collection-key, rolled-array and dynamic-storage-read fixes: 32 -> 37),
-> ROUNDS 53 and 55-58 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
+> ROUNDS 53 and 55-59 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
 > deferred-`takeJob` class and its three falsified hypotheses) at the end. Earlier "State" numbers in this header
 > are historical.
 
@@ -2900,6 +2900,37 @@ while the SDK materialized a chunk with lock `aa20988cb8…`. Because a chunk lo
 for candidate values (the SDK witness as-is, and with the last event removed so the value matches the input
 entry's 241 bytes) with `getValueChunkLockingBytecode(category, 'jobEvents', keyToSlot(0), sha256(candidate))` and
 see which candidate reproduces `aa20c76e…` - that names the exact extra or missing bytes.
+
+### ROUND 59: exact geometry of the failing OP_EQUALVERIFY (input 11, `reopen job before timeout`)
+
+The failure-point dump truncates every hex item at 70 chars, but the lock is 35 bytes (70 chars), so the lock is
+complete while the values are not. Stack at `ip 255 = OP_EQUALVERIFY` (reported `ip 256`, `opcode 109`):
+
+    STK 5  = 241-byte OLD jobEvents value      (53001471782e8159...4caf2043...)
+    STK 8  = 5800000460fb5565                  (the new event frame, 8 bytes)
+    STK 10 = 249-byte NEW value (old + frame)  (54001471782e8159...4caf2043...)
+    STK 11 = 32-byte NEW value root            (38c1ef95c3c7f1f52c2c87eca27b5ca36d2e37672c3439ad2c748e...)
+    STK 12 = e3b0c442...b855                   (SHA256("") = the key-0 slot)
+    STK 13 = aa20c76e2793ab407f5be653fe3b9c97835454ccd50844d307f7195b68524821d95087   <- covenant-computed
+    STK 14 = 02, STK 15 = 249-byte NEW value, STK 16 = aa20c76e... (same pair computed a second time)
+
+So the covenant derives `root = sha256(newValue)` and then the value-chunk locking bytecode for
+`(category, slot = e3b0c442..., root)`, i.e. exactly `getValueChunkLockingBytecode(categoryId, 'jobEvents',
+keyToSlot(0), root)`; it EQUALVERIFYs that against an output the SDK was supposed to materialize.
+
+The SDK's only chunk-shaped output is index 17 - lock `aa20988cb8f2620a1663a40aecdfbe2a54e17c4646800ba944c7f47957dbd920d70487`,
+commitment `0000` || `656174652061206d61726b6574706c61636520696e20736f6c6964697479a0b16a`
+("eate a marketplace in solidity" + 3 bytes; only 33 data bytes, not a 120-byte chunk). `aa20c76e...` appears
+nowhere in the prepared transaction.
+
+Next measurement (probe already chosen): rerun the focused title with the SDK's own value-chunk tracing -
+`SOLIDC_DEBUG_VALUE_CHUNKS=1 SOLIDC_DEBUG_VALUE_WITNESS=1 SOLIDC_DEBUG_CHUNK_LAYOUT=1 SOLIDC_DEBUG_CHUNK_GEOM=1`
+- which prints the (collection, slot, root) the SDK *does* address chunks with. Two outcomes decide the fix:
+(a) the SDK addresses the jobEvents chunk with a stale root (e.g. the pre-transaction root, or its own pushed
+value instead of the covenant's recomputed one) -> the root/digest the SDK feeds into
+`getValueChunkLockingBytecode` must come from the same derivation the covenant uses;
+(b) the SDK emits no jobEvents value chunk at all for this write (only the dynamic-string chunk of the job
+title, which is what output 17 looks like) -> the write path drops the value-chunk output for an event append.
 
 ### How to localize it next
 

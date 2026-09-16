@@ -1,0 +1,2926 @@
+# Handoff — kernel-beta marketplace climb (after the event/continuation round)
+
+> **Latest state (ROUND 58, HEAD `a74a6da53`): 37 pass / 28 fail.** The sections below are a chronological log;
+> read ROUNDS 51-52 and 54 (the collection-key, rolled-array and dynamic-storage-read fixes: 32 -> 37),
+> ROUNDS 53 and 55-58 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
+> deferred-`takeJob` class and its three falsified hypotheses) at the end. Earlier "State" numbers in this header
+> are historical.
+
+## State
+
+HEAD: `9b4792c19 fix(message-bus): keep the terminal continuation lane per storage resource`
+
+Three commits landed this round, each a general fix with no application naming:
+
+| commit | scope | what it fixes |
+|---|---|---|
+| `95075e7db` | compiler | `artifact.events` omitted an interface/sibling-declared event's schema; emit overloads leaked |
+| `5cc5c6558` | SDK | authenticated kind-2 event rows were dropped during final relocation |
+| `9b4792c19` | SDK | a collection appended by several batched rows produced several continuation lanes |
+
+Plus `68d518a17`, the generic e2e regression for the first two (interface-declared
+event, concrete inherited implementation, two calls from a root contract, every
+input evaluated under BCH-2026).
+
+Gates: `yarn build` clean. `packages/solidc` full suite: **223 failed / 4843 passed
+both before and after** the compiler commit (`comm`-diffed by test name) — zero new
+failures. `journal-message-bus/e2e`: **117 → 116 failures**, zero new, one newly
+passing. Lint on the touched files: same 31 pre-existing errors.
+
+## Marketplace ladder: 21 pass / 45 fail (unchanged count, replaced failure class)
+
+The 66-title suite is at the same 21/45 as the handoff baseline, but the dominant
+failure class changed completely. The 38-title
+`one routed participant cannot publish multiple continuation resource lanes` class
+is **gone**; all 40 preflight failures now reduce to three inputs:
+
+    38  input 214   MarketplaceDataV1 __message_bus1
+     5  input 216   FakeToken __message_bus1
+     2  input 127
+
+Remaining non-preflight failures: 3 `index out of bounds` (`getUsers` /
+`getArbitrators` dynamic-array reads, `upgrades.ts:521`), 1 "Expected transaction NOT
+to be reverted" (`post job with invalid mece tags`), 1 state-derivation convergence
+(`post job with invalid amount`).
+
+## The artifact fixture is not in the repository and cannot be regenerated wholesale
+
+This is the most important operational fact of the round.
+
+* `node --max-old-space-size=8192 packages/testing/dist/cli.js compile --jobs 4`
+  (the "force a genuinely cold compile" step) **destructively replaces**
+  `.marketplace/artifacts/solidcash/` with this repo's own ~19 artifacts. It does
+  NOT maintain the fixture. Running it wipes ~85 artifacts the suite needs and every
+  title then fails with `one routed participant cannot publish multiple continuation
+  resource lanes` or `function 'meceTags' … has no authenticated resultEncoding`.
+* The fixture is the 11 marketplace sources compiled by the recipe in
+  `.marketplace/iteration/recompile.sh` **merged over** a ~105-artifact base tree.
+* Two complete base trees survive in `/tmp`:
+  * `/tmp/kb-artifacts-105-preargfix` — round-46 vintage, pre-dates `46d682882` and
+    the event fixes. Stale: it reports `no authenticated resultEncoding`.
+  * `/tmp/artifacts-full-105` — the other historical base.
+  * `.worktrees/kernel-beta-perf/.marketplace/artifacts/solidcash` (105) — a
+    different vintage; its `FakeToken.json` has **no** events, so it is ALSO stale.
+
+**To get a consistent fixture:** copy a base tree, then run the recipe so the 11
+marketplace artifacts (and their event inventories) match the current compiler:
+
+    cd .marketplace/iteration
+    ./recompile.sh MarketplaceV1.sol MarketplaceV2.sol MarketplaceV3.sol \
+      MarketplaceDataV1.sol EACCToken.sol TreasurySplit.sol unicrow/FakeToken.sol \
+      unicrow/Unicrow.sol unicrow/UnicrowDispute.sol unicrow/UnicrowArbitrator.sol \
+      unicrow/UnicrowClaim.sol
+
+Then confirm `FakeToken.json` has BOTH
+`Transfer(address,address,uint256)` and `Approval(address,address,uint256)` and that
+`MarketplaceDataV1.json`'s `meceTags` has `resultEncoding: "evm-abi-v1"`. Those two
+checks are the fastest fixture-consistency probe.
+
+**The marketplace vitest config aliases `solidcash` to `packages/solidcash/dist`.**
+Every SDK edit needs `yarn workspace solidcash build` before a marketplace run, or
+the run silently exercises the previous build. This cost most of a session.
+
+## Next blocker: a 32-byte commitment equality at input 214 (38 titles)
+
+**Correction to an earlier claim in this file's first draft:** the reserved inactive
+slots are NOT the problem. A probe of the real transaction at input 214
+(`SOLIDC_DEBUG_SLOT_SATS` was added for this and reverted) shows the SDK already
+materializes every tokenless reserved slot at exactly **1000 satoshis**:
+
+    221-223, 225-226, 228-237   sats=1000  lock=51 (OP_TRUE)  tokenless
+    214-220, 224, 227           sats=1200  (real data/entry/event NFTs)
+    238                         sats=873   (trailing/fee tail)
+
+So `emitInactiveGraphDeployOutput`'s 1000-sat assertion (and its twin at
+`GenerateTargetTraversal.ts:28488`) passes. The earlier 1200-vs-1000 note was wrong.
+
+### The actual failing operation
+
+`SOLIDC_DEBUG_PREFLIGHT_ROUTE=1 SOLIDC_DEBUG_ROUTE_INPUT_INDEX=214` prints the exact
+failing comparison, and it is precise and readable:
+
+    message-bus-preflight-failure {
+      inputIndex: 214,
+      ip: 7856, opcode: 119, instructionCount: 18313,
+      error: 'Program failed an OP_VERIFY operation.',
+      failedComparison: {
+        ip: 7855, opcode: 136,          // OP_EQUALVERIFY
+        left:  'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',  // sha256("")
+        right: 'c2a8d2ff56802508ee018495941516441069e7ddcd8d1f9c96c3219591547617',
+        lastOutputCategoryIndex: 305,
+        lastOutputCategory: 'ee643a1671fbbe5333480fe40ff0fa72b65b6df0818805a2209586e991ca0af0:mutable',
+        lastOutputBytecodeIndex: 307,
+      },
+      stack: [ 26:'1976a914c4ad89cdb7377ec8a163070e8442d399a87b870188ac',
+               0:'', 0:'',
+               30:'9bd3de951976a914c4ad89cdb7377ec8a163070e8442d399a87b870188ac',
+               25:'76a914c4ad89cdb7377ec8a163070e8442d399a87b870188ac',
+               0:'', 32:'c2a8d2ff56802508ee018495941516441069e7ddcd8d1f9c96c3219591547617', 0:'' ],
+    }
+
+The covenant compares a 32-byte value it computed as `sha256("")` against the
+256-bit value `c2a8d2ff…` that the SDK supplied. `9bd3de95` is a handler selector in
+the stack window, so this is a state/commitment equality inside a participant block,
+not an event-frame check. `lastOutputBytecodeIndex: 307` says output 307 (the fee
+tail) was the most recent `OP_OUTPUTBYTECODE` index.
+
+**It is NOT a regression.** The identical failure at input 214 reproduces with
+`packages/solidcash/src/message-bus/compose.ts` stashed back to its pre-session
+revision and the SDK rebuilt, so neither `5cc5c6558` nor `9b4792c19` introduced it.
+It was previously masked: before `9b4792c19` these 38 titles died earlier at the
+continuation-lane check.
+
+### Round 3 refinements
+
+* **`e3b0c442…` is the `keySlot` of the `jobEvents` entry, not a computed state digest.**
+  It appears verbatim as the third component of the resource identity in
+  `SOLIDC_DEBUG_VALUE_CHUNKS=1` output:
+  `ee643a16…:3b2d866b…:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`.
+  So the covenant is comparing the entry's **slot key** against the SDK's entry
+  commitment (`c2a8d2ff…`), i.e. a slot/key-derivation disagreement for the
+  `jobEvents` entry, not a wrong hash of an empty payload.
+* The SDK's materialized state entries in the failing transaction carry **38-byte**
+  commitments of the form `4c335631` + payload (e.g. output 212
+  `0000656174652061206d61726b6574706c61636520696e20736f`), while `c2a8d2ff…` is 32
+  bytes — so the right operand is not simply one of those outputs' commitments.
+* `c2a8d2ff…` is not `sha256`/`hash160` of any simple candidate (empty, zero32,
+  ff32, single 0/1, or 0..1024 as u64le/u64be/b32le), in either byte order. It is
+  runtime-derived.
+* **`admit` only sees one transaction per invocation.** A probe added at the top of
+  `admit` (since reverted) showed `participantInputs [0, 129, 216]` and no kind-6
+  rows — that is an *earlier* transaction of the same title, not the one failing at
+  input 214. `update job tags` sends several transactions in sequence. Any future
+  probe at `admit` must either filter by the transaction that contains the failing
+  input or hook `evaluateEveryInput` instead.
+* `SOLIDC_DEBUG_VALUE_CHUNKS=1` shows the `jobEvents` chain for this title staging two
+  owned values (205 and 233 bytes); the terminal (233-byte) one is the correct lane
+  after `9b4792c19`. Comparing that lane's expected commitment against the covenant's
+  `e3b0c442…` slot check is the most direct remaining experiment.
+
+### ROUND 3 BREAKTHROUGH: it is the entry-output cardinality defect, already documented
+
+The failing operands are **entry keySlots**, not payload hashes. Dumping the failing
+transaction's outputs (`SOLIDC_DEBUG_TX_OUTPUTS=1`, probe reverted; hook
+`evaluateEveryInput` just before its `transaction.inputs.forEach`, NOT `admit` —
+see above) reproduces the shape the repo already documents:
+
+    output 218  mutable  commit e2a4aac2…  …(1f9)…  e3b0c44298fc1c14…b7852b855 00907b984f02ca30
+    output 219  mutable  commit 8c600621…  …(21)…   c2a8d2ff56802508…1547617    000010632d5ec76b05
+    output 220  mutable  commit 09f85bbf…  …(48)…   484c83d413774888…b5ded26b   ffffffffffffffff…ff00
+
+`e3b0c442… = sha256("")` is **`jobEvents[0]`'s collection hash**, i.e. the
+`jobEvents` HEAD/entry slot; `c2a8d2ff…` is a second slot key the SDK also
+materialized. The covenant's `__internal__vmapBatchSlot_N` witness table does not
+agree with the second one.
+
+This is the same defect family as `MARKETPLACE_ENTRY_CARDINALITY_FINDINGS.md`
+(read it — it is the highest-value document in the worktree). That file records for
+`publishJobEvent` on this same collection:
+
+* `message-bus-large-equals`: `left = 01` (expected) vs `right = 02` (found);
+* `aa2047362c…87` (category `ee643a16…`, slot `e3b0c442…`, i.e. `jobEvents[0]`) with
+  `inputs: [16], outputs: [16, 18]` — **one consumed entry, two recreated entries**;
+* output 18 is byte-identical to the consumed input commitment (stale pre-state body
+  `…e9000000a68b212f…`), and is the illegal copy;
+* a prior session already fixed one half of this (`3ef649fcd`: `_deriveFullTransactionState`
+  preferred `blockSize` instead of the layout's own entry-slot offset).
+
+So the remaining defect is **the SDK materializing a second, stale entry output for a
+sorted-vmap collection** (or the covenant counting one it should not). The
+compiler's expectation is explicit and is the right place to match:
+`GenerateTargetTraversal.ts:20653` expects `1n + extraCollectionOutputs` for UPDATE and
+`:20694` expects `2n + extraCollectionOutputs` for INSERT, then `:20697` censuses
+outputs at the collection address via `emitVerifySortedOutputCountRaw`
+(`:27879`). The SDK's entry-output plan must produce exactly that many.
+
+Highest-value next step: start from `.marketplace/iteration` + the
+`SOLIDC_DEBUG_ENTRY_LOCK`/`SOLIDC_DEBUG_LOOP_ENTRIES` diagnostics named in
+`MARKETPLACE_ENTRY_CARDINALITY_FINDINGS.md`, and find where the SDK appends the
+second entry output for a sorted collection whose consumed entry is byte-identical to
+the pre-state. That single fix is the whole of the 38-title input-214 class.
+
+### Round 4: the entry-cardinality hypothesis does NOT reproduce for `update job tags`
+
+I built the decisive probe the findings file lacked: an insert-order log in
+`TransactionBuilder.addOutputs` (recording absolute index, lock, capability and
+commitment for every added output), scoped per `StatefulTransactionBuilder.build()`
+session, plus a report in `evaluateEveryInput` that groups mutable entry commitments by
+their 32-byte slot and flags any slot seen at two different indices **within one
+session**. Both probes are reverted.
+
+Result: **no intra-session duplicate entry slot.** The apparent duplicates are
+local-index artifacts — the composition builds one `TransactionBuilder` per
+participant, and each builder numbers its own outputs from 0, so the same logical entry
+appears in the log as e.g. `2` (local, in one participant's builder) and `218`
+(absolute, in another). Grouping across sessions therefore manufactured false positives.
+
+Concretely, the entry slots actually materialized in the failing transaction are
+`e2a4aac2498e0a62…` (entry index 218), `0000…0000` (the HEAD sentinel, index 219) and
+`f8f64388910649b0…` (index 220) — plus a second `mutable` entry at index 238 whose
+commitment has the same *value tail* as index 220 but a different leading slot.
+
+**Neither failing operand matches any of them.** The covenant compares
+`e3b0c44298fc1c14…` against `c2a8d2ff56802508…`, and no entry in this transaction
+carries either as its slot. So for this title the two operands are **not** entry slots
+of this transaction; the round-3 note that inferred "entry keySlot" from the resource
+identity was only correct for `e3b0c442…` (which is `jobEvents[0]`'s collection hash and
+does appear as a *slot* in other transactions of this title), and `c2a8d2ff…` is still
+unattributed.
+
+What that leaves, and what to try next:
+
+1. `_padOutputsToIndex` (`StatefulTransactionBuilder.ts:7951`) clones the same-index
+   input's token when padding — the mechanism the findings file blames. It runs at
+   `:13282`, `:13483`, `:16921`, `:18433`. Instrument **inside** it to log the padded
+   index and the cloned commitment, and correlate with the covenant's census, rather
+   than inferring duplicates from an output log.
+2. The compiler's expectation is unambiguous and is the target to match:
+   `GenerateTargetTraversal.ts:20653` wants `1n + extraCollectionOutputs` for UPDATE,
+   `:20694` wants `2n + extraCollectionOutputs` for INSERT, censused at `:20697` via
+   `emitVerifySortedOutputCountRaw` (`:27879`). Run the failing title with
+   `SOLIDC_DEBUG_FAILURE_POINT=1 SOLIDC_DEBUG_FAILURE_RING=1 SOLIDC_DEBUG_ROUTE_INPUT_INDEX=214`
+   and read `message-bus-large-equals` — the findings file shows that hook printing
+   `left = 01 / right = 02` for the sibling title, which is the direct cardinality read
+   this round did not obtain.
+3. Attribute `c2a8d2ff56802508…` by breaking on `OP_EQUALVERIFY` at ip 7855 in
+   `evaluateEveryInput` and walking the previous ~40 executed instructions via
+   `evaluated.instructions` — the byte-boundary decode attempted by hand in round 3 was
+   unreliable and should be done programmatically.
+
+### Round 5: the mismatch is now named — the SDK materializes the NEW node's slot wrong
+
+Two decisive facts, both obtained cheaply:
+
+**1. The digest is the NEW node's slot, and it is already published as a witness.**
+`preflight-unlocker-params` for input 214 (`SOLIDC_DEBUG_PREFLIGHT_ROUTE=1
+SOLIDC_DEBUG_ROUTE_INPUT_INDEX=214`) lists the vmap batch the compiler built:
+
+    __message_bus_key_jobEvents_0   '0'                       # inserting jobEvents[0]
+    __internal__vmapBatchSlot_1     e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+    __internal__vmapBatchPredOut_1  150
+    __internal__vmapBatchSlot_2     e2a4aac2498e0a62d7a3936482584bb94059e33c96b7090c81338243b335d559
+    __internal__vmapBatchSlot_3     e2a4aac2498e0a62d7a3936482584bb94059e33c96b7090c81338243b335d559
+
+So `e3b0c442…` — the covenant's `left` operand, and the thing the 103-byte runtime
+value must decode to — **is `vmapBatchSlot_1`, the NEW node's slot for
+`jobEvents[0]`** (`sha256("")` with the high bit cleared, i.e. the key-0 slot).
+
+**2. The SDK's materialized entries do not contain that slot.** The `mutable` entries
+in the failing transaction carry slots `e2a4aac2498e0a62…` (index 218, value tail all
+zero), `0000…0000` (index 219, the HEAD sentinel) and `f8f64388910649b0…` (index 220).
+**No entry in the transaction has slot `e3b0c442…`.** The batch says "the NEW[k] node
+lives at output 150 (via `PredOut_1`)"; the SDK's entry at the collection band carries
+the *predecessor/HEAD* slot with an empty tail instead of the NEW node's slot with the
+appended `jobEvents` value.
+
+That is exactly the defect `MARKETPLACE_ENTRY_CARDINALITY_FINDINGS.md` describes from
+the other end ("output 18 is byte-identical to the consumed input commitment (stale
+pre-state body)"), and it reproduces for this title after all — my round-4 conclusion
+of "does not reproduce" was drawn from an output log that conflated per-participant
+local indices; the correct comparison is **SDK entry slots vs the published
+`vmapBatchSlot_*` witnesses**, which is unambiguous and does fail.
+
+**Next experiment (bounded, start here):** take `vmapBatchPredOut_1 = 150` as the
+covenant's declared NEW-node coordinate and check what the SDK placed there. Then find
+which code path decides the entry commitment written **inside the collection band**
+(not the padded slot): the suspect list from the findings file is
+`_padOutputsToIndex` (`StatefulTransactionBuilder.ts:7951`, call sites `:13282`,
+`:13483`, `:16921`, `:18433`), `build`'s `derivedChunkOutputs` placement (~`:18226`),
+and `appendDelegateGroupOutputs` (`:15894`). The `band` reset arm in
+`_reassertStagedValueChunkOutputs` (`:13282+`) writes
+`cloneToken(occupant.token)` from `this.allInputs[index]` — i.e. the consumed
+input's pre-state commitment — which is precisely a "stale pre-state body" writer.
+
+**Also correct two tool notes from earlier rounds:**
+
+* The ring/large-equals diagnostics need `SOLIDC_DEBUG_FAILURE_RING=1` (not only
+  `SOLIDC_DEBUG_FAILURE_POINT`); with it, `message-bus-large-equals` prints every
+  `OP_EQUALVERIFY` operand pair. For this title it yields exactly one meaningful row —
+  the `e3b0c442…` vs `c2a8d2ff…` pair — plus small `00`/`00` and self-equal rows, so
+  there is no separate cardinality read to find.
+* `SOLIDC_DEBUG_EQUAL_WATCH=<hex-prefix>` (added this round, then reverted with the
+  rest of the probe) makes the scan print the last 60 executed instructions with their
+  stack tops when a matching operand appears. That trace is what showed the value is
+  pushed as a 103-byte item and DLE-decoded at ip 7847-7855 (`OP_NIP OP_ROLL OP_SPLIT
+  OP_0 OP_ROLL OP_DUP OP_2 OP_PICK OP_EQUALVERIFY`) into the 32-byte slot — worth
+  re-adding rather than hand-decoding byte boundaries again.
+
+### ROUND 6 ROOT CAUSE: the SDK transposes the predecessor entry's `slot` and `nextKey`
+
+The compiler publishes the complete vmap topology as witnesses, and the SDK's
+materialized entry disagrees with it by a straight field swap. From
+`preflight-unlocker-params` (input 214, `SOLIDC_DEBUG_PREFLIGHT_ROUTE=1
+SOLIDC_DEBUG_ROUTE_INPUT_INDEX=214`):
+
+    __internal__vmapBatchSlot_0   725babc3f2b6f93c99f4ae965d72a8e28fe0efaddffe66f6fcf48e2144cf4215   Next_0  0                   PredOut_0  -2
+    __internal__vmapBatchSlot_1   e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855   Next_1  0                   PredOut_1  150
+    __internal__vmapBatchSlot_2   e2a4aac2498e0a62d7a3936482584bb94059e33c96b7090c81338243b335d559   Next_2  0                   PredOut_2  -1
+    __internal__vmapBatchSlot_3   e2a4aac2498e0a62d7a3936482584bb94059e33c96b7090c81338243b335d559   Next_3  0                   PredOut_3  -2
+    __internal__vmapBatchSlot_4   41d0326f18316d0cde6612927fcf6def7c1fa980e37aa3eafc155955f19eda26   Next_4  0                   PredOut_4  -1
+    __internal__vmapBatchSlot_5   3df6d4d865fadd63a788de2eec3d24ec56f4fae1a1751217c8b1d8faf9133635   Next_5  f6e31252a31d19336117582c2c39cd60f81de513948b5cc722d3e03b05c23247   PredOut_5  -1
+
+The SDK's entry **at the declared P' coordinate** (`PredOut_1 = 150`), decoded as
+`slot || nextKey || value`:
+
+    idx 150  sats 1200  mutable  64 bytes
+      slot    0000000000000000000000000000000000000000000000000000000000000000
+      next    e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+      value   (empty, 0 bytes)
+
+Compare `Slot_1 = e3b0c442…`, `Next_1 = 0…0`. **The two fields are swapped.** The
+covenant's `emitSortedValueUpsert` INSERT branch verifies
+`P' = coSlot32 || Hk32 || coValue` (`GenerateTargetTraversal.ts:20668`,
+`emitVerifySortedValueOutput(loc, 4, 3, 5, 1, 6)`), i.e. it reads the on-chain
+commitment as `slot || next || value` and requires `slot == Slot_1` and
+`next == Next_1`. Against the SDK's transposed entry it reads `slot = 0…0` and
+compares it to `e3b0c442…` — which is exactly the failing `OP_EQUALVERIFY` at ip 7855
+(`left = e3b0c442…`, `right = c2a8d2ff…`, the latter being the runtime DLE-decoded
+form of the observed `slot || next || value` tuple).
+
+Secondary observation from the same dump: the on-chain band is
+`150 = slot 0, next e3b0c442` (P' as the SDK built it),
+`218 = slot e2a4aac2, next 0`,
+`219 = slot 8c600621, next 21c513b0`,
+`220 = slot 09f85bbf, next 484c83d4`,
+`239 = slot 0, next 8c600621` — so the whole band is present but the FIRST member (the
+declared P') is the transposed one. `218` also has `next = 0` where the witness wants
+`Slot_2`/`Next_2`, so 218 looks like the NEW node built with `next = 0` instead of the
+splice predecessor's next.
+
+**Where to fix (bounded):** the P' commitment is built in `SortedList.ts`:
+`:237` `predNewCommitment: encodeEntryCommitment(predecessor.slot, slot, predecessor.value)`
+(insert) and `:479` (splice out). `encodeEntryCommitment(slot, nextKey, value)` writes
+`slot || nextKey || value`, so those call sites look correct — the transposition must
+happen where the SDK *re-derives* the P' output before writing it (the same three paths
+the findings file names: `_padOutputsToIndex` `:7951`, `build`'s `derivedChunkOutputs`
+placement ~`:18226`, `appendDelegateGroupOutputs` `:15894`, plus the band reset in
+`_reassertStagedValueChunkOutputs` ~`:13282`). The decisive question is narrow and
+should be answered next: **which code writes output 150's commitment**, and does it use
+`predNewCommitment` or a `decodeEntryCommitment(out.commitment)` round-trip (see
+`:19423-19425`, which rebuilds a target commitment as
+`encodeEntryCommitment(slot, decodeEntryCommitment(out.commitment).nextKey, valueTail)`) —
+a round-trip through `.nextKey` where `.slot` was intended produces exactly this swap,
+and `:19443`'s `raw?.next ?? decodeEntryCommitment(out.commitment).nextKey` shows a
+`.nextKey` read feeding a field that the covenant treats as the node's next.
+
+**Diagnostic used (re-add if needed):** `SOLIDC_DEBUG_OUTPUT_SLICE=1` plus
+`SOLIDC_DEBUG_OUTPUT_SLICE_INDICES=<comma list>` (added at the top of
+`evaluateEveryInput` in `preflight.ts`, then reverted with the rest of the probe) prints
+`sats`, `capability`, byte length and full commitment hex for named output indices, which
+is what made the swap visible.
+
+### ROUND 7 CORRECTION: there is no slot/nextKey transposition — round 6 misread it
+
+Round 6 concluded that output 150's `slot = 0…0, next = e3b0c442…` was a transposition
+against the witnesses. **That was wrong.** Reading `SortedList.planInsert`
+(`SortedList.ts:233-239`):
+
+    const predecessor = this.predecessorOf(slot);
+    const oldNext = predecessor.nextKey;              // becomes NEW's next
+    predNewCommitment: encodeEntryCommitment(predecessor.slot, slot, predecessor.value),
+    newNodeCommitment: encodeEntryCommitment(slot, oldNext, value),
+
+and `encodeEntryCommitment(slot, nextKey, value)` writes `slot || nextKey || value`.
+
+For this title the insertion is a **HEAD insert into an empty collection**: the
+predecessor is the HEAD sentinel, so `predecessor.slot = 0…0`, the new key is
+`slot = e3b0c442…`, and `predecessor.value` is empty. Therefore
+
+* P'  = `0…0 || e3b0c442… || (empty)` — **exactly the 64-byte entry at output 150**;
+* NEW = `e3b0c442… || 0…0 || value` — the new node.
+
+Both are correct, and the covenant's `Slot_1 = e3b0c442…` is `coHk32`, not the
+predecessor's slot. So no transposition exists and output 150 is right.
+
+**Also tried and rejected this round:** the batch `Next` witness was read from
+`plan.newNodeCommitment` where the predecessor's spliced link is meant
+(`StatefulContract.ts` batched entry path). That is a genuine latent semantic bug —
+they differ whenever the predecessor was not already adjacent to the inserted key —
+and it is now fixed in `b8dea98a6`, but for a HEAD insert both nexts are `0…0`, so the
+witness values and the transaction are byte-identical and the title fails unchanged.
+It is committed as a correction, **not** as a fix for this blocker.
+
+Verified after both: `SOLIDC_DEBUG_PREFLIGHT_ROUTE=1` witness dump is unchanged
+(`Slot_1 = e3b0c442…`, `Next_1 = 0…0`), and `journal-message-bus/e2e` is 116 failures
+with zero new.
+
+### So the failing value is NOT P' — the next target
+
+The failing `OP_EQUALVERIFY` at ip 7855 compares `e3b0c442…` (the covenant's computed
+value) against `c2a8d2ff…` (runtime). Since P' at output 150 is provably correct, the
+`c2a8d2ff…` operand is **not the P' commitment**. Candidates left, in order:
+
+1. **The NEW node.** `PredOut_1 = 150` is P'; the covenant then verifies NEW via
+   `emitVerifySortedValueOutput(loc, 1, 6, 3, 7, 6)` after computing the trailing block
+   base (`GenerateTargetTraversal.ts:20679-20697`). The SDK's band member that looks
+   like NEW is index **218** (`slot e2a4aac2…`, next `0…0`, value tail
+   `0000907b984f02ca30`) — but the witnesses say the new key's slot is `e3b0c442…` and
+   `Slot_2`/`Slot_3` are both `e2a4aac2…`. Check which SDK output is meant to be NEW and
+   whether it carries `e3b0c442…` as its slot.
+2. **The value tail.** `218`'s tail is 8 bytes (`0000907b984f02ca30`) where the
+   `jobEvents` append should carry the encoded `JobEventData` element — compare against
+   the `code`/`value` the handler wrote.
+3. The `jobEvents` batch's key-slot derivation: `__message_bus_key_jobEvents_0 = '0'`
+   is the raw key, and `Slot_1 = e3b0c442…` is asserted to be its slot. Confirm the
+   covenant's own `keyToSlot` for key 0 agrees (`sha256(sha256(<encoded 0>))` with the
+   high bit cleared) — my attempts at `sha256("")`/u64 encodings did not reproduce
+   `c2a8d2ff…`, so identify what actually produces that value rather than assuming.
+
+The cheapest discriminator: dump the covenant's `coHk32`, `coSlot32` and `coValue`
+inputs for this insert (they are computed from the batch witnesses above, all of which
+are known) and compare each against the three fields of the SDK's NEW candidate.
+
+### ROUND 8: the SDK's P' is correct by construction — the open question is now sharp
+
+Confirmed with a full-transaction slot scan (`SOLIDC_DEBUG_SLOT_SCAN=1` plus
+`SOLIDC_DEBUG_SLOT_SCAN_HEX=<32-byte hex>`, added at the top of `evaluateEveryInput`
+and reverted): `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855` occurs
+in exactly two outputs, as the **second 32-byte field** of a 64-byte commitment:
+
+    idx 150 (the declared P' coordinate, PredOut_1):
+        off  0: 0000000000000000…0000     (slot)
+        off 32: e3b0c44298fc1c14…b7852b855 (next)
+    idx 133: identical
+
+So P' = `0…0 || e3b0c442…`, which is *exactly* what `SortedList.planInsert` produces for
+a HEAD insert of key-slot `e3b0c442…`: `encodeEntryCommitment(predecessor.slot, slot,
+predecessor.value)` with `predecessor.slot = 0…0`, `slot = e3b0c442…`, empty value. **The
+SDK's P' is correct by construction**, which is why round 7's `Next`-witness change was
+inert and why no transposition exists (round 6 and round 7 both settled).
+
+That leaves one sharp, unresolved contradiction to attack next — it is now the whole
+of the remaining question:
+
+* The compiler reads the batch `Slot_N` witness as the **entry's own slot**:
+  `GenerateTargetTraversal.ts:22271` emits
+  `fixedField('slot'); arg('__internal__vmapBatchSlot_' + aliasOwner, 1); OP_EQUALVERIFY`.
+  The SDK sets `Slot_N = bSlot` — the key being inserted — so for this insert
+  `Slot_1 = e3b0c442…`.
+* The SDK's P' at output 150 has `slot = 0…0`, i.e. the PREDECESSOR's slot. If the
+  covenant looks up P' by `Slot_1`, it will not find it, because the on-chain entry at
+  the `PredOut_1 = 150` coordinate does not carry `Slot_1` in its slot field.
+* Also unexplained: the covenant's `Next_N` for this slot is `0…0`
+  (`__internal__vmapBatchNext_1`), and after round 7 the SDK publishes
+  `decodeEntryCommitment(plan.predNewCommitment).nextKey`, which must equal the inserted
+  key's slot (`e3b0c442…`) for an insert. It stayed `0…0`, so **the `plan` that ran for
+  route slot 1 is not the insert plan this model predicts** — either `bList.has(bSlot)`
+  was true (taking the `exact` branch at `StatefulContract.ts:22702`, which sets
+  `PredOut_N = -1`), or a different slot-to-key mapping produced this pair. Determining
+  which is the next concrete step, and it decides everything downstream.
+
+**Recommended next experiment (do this first):** log, in the batched entry path at
+`StatefulContract.ts:22700-22737`, for each `routeSlot`: `routeSlot`, `bSlot`,
+`bList.has(bSlot)`, `blockOffset`, `plan.predNewCommitment` and `plan.newNodeCommitment`
+as hex. That single log resolves whether slot 1 took the insert or the exact branch and
+what the true predecessor is — it is the ambiguity that made rounds 6, 7 and 8 each
+reason from an assumption instead of a measurement.
+
+### ROUND 9: the running branch is identified, and the witness family is now consistent
+
+**The branch that runs is not `planInsert` in the batched entry path.** Instrumenting
+`StatefulContract.ts:22722` shows *zero* executions for this title; the work is done by
+the **nested batch planner at `StatefulContract.ts:26260-26275`**, which publishes:
+
+    childCompilerInternalArgs[`__internal__vmapBatchSlot_${slotIndex}`]    = target
+    childCompilerInternalArgs[`__internal__vmapBatchNext_${slotIndex}`]    = decodeEntryCommitment(output.commitment).nextKey
+    childCompilerInternalArgs[`__internal__vmapBatchPredOut_${slotIndex}`] = batchInsertBase + childBatchTrailingCount + predecessorOrdinal
+
+where `proof = list.find(target) ?? list.predecessorOf(target)` and `output` is the plan's
+own output for `target`. That establishes the family's invariant, which is uniform across
+all three writers: **`Slot_N` = the target key's slot, `Next_N` = that target entry's
+nextKey, `PredOut_N` = the predecessor's output coordinate.**
+
+**`b8dea98a6` broke that uniformity and is reverted by `94cb9ac11`.** It derived `Next_N`
+from `predNewCommitment` in the (unused-here) batched path, making one branch disagree
+with the other two about the field's meaning. `94cb9ac11` restores the target-entry read
+and documents the invariant. Measured: the title fails identically either way, so this is
+a consistency repair, not the fix; `journal-message-bus/e2e` is unchanged at 116 failures,
+zero new.
+
+**Consequence for the remaining blocker.** Given that invariant, the covenant must obtain
+the predecessor's slot for the P' check from **`Proof_N` / `PredOut_N`**, not from
+`Slot_N` (which is the target). The SDK's P' at output 150 is `proof.slot || target ||
+proof.value` = `0…0 || e3b0c442… || (empty)` — consistent with that reading. So the open
+question is now narrow and mechanical: **where does the covenant get `coSlot32` for the P'
+commitment, and does the SDK's `PredOut_1 = 150` actually point at an output whose
+predecessor fields match?** The next probe should log, in the nested planner at `:26260`:
+`routeSlot`, `target`, `proof.slot`, `proof.nextKey`, `predecessorOrdinal`, the computed
+`PredOut`, and `output.commitment` — then compare `PredOut`'s referenced output against
+150 and against the plan's `predNewCommitment`.
+
+Both `SOLIDC_DEBUG_VMAP_BRANCH` (batched path) and the earlier `DBG-OUTPUT-SLICE` /
+`DBG-SLOT-SCAN` probes are reverted; re-adding the nested-planner log above is a
+five-line change at a known location.
+
+### ROUND 10: the witness table and the output plan disagree about which keys exist
+
+Instrumenting the nested batch planner (`:26260`, probe reverted) prints its decisions for
+this title. All four:
+
+    _allowances  routeSlot 0  target 09f85bbf77ab…  predOut 4    (targetOffset 1)
+    _balances    routeSlot 0  target 8c60062159c0…  predOut 8    (targetOffset 2)
+    _balances    routeSlot 2  target e2a4aac2498e…  predOut -1   (targetOffset 4)
+    _allowances  routeSlot 1  target f8f643889106…  predOut -1   (targetOffset 3)
+
+Each carries a **correct-looking** predecessor record, e.g. for `_allowances` slot 0:
+
+    predecessorOutputs[0] = { slot: f8f64388910649b0…, commitment: f8f64388910649b0…09f85bbf77abf3d5…, existed: true }
+
+i.e. the correct predecessor `f8f64388` whose successor is being set to `09f85bbf` — exactly
+`predNewCommitment = predecessor.slot || target || predecessor.value`.
+
+**The contradiction:** the planner produces targets
+`{09f85bbf, 8c600621, e2a4aac2, f8f64388}`, but the witness table applies to six slots:
+
+    Slot_0 725babc3f2b6f93c99f4ae965d72a8e28fe0efaddffe66f6fcf48e2144cf4215   <- never produced by the planner
+    Slot_1 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855   <- never produced by the planner
+    Slot_2 e2a4aac2498e0a62d7a3936482584bb94059e33c96b7090c81338243b335d559   <- produced (slot 2)
+    Slot_3 e2a4aac2498e0a62d7a3936482584bb94059e33c96b7090c81338243b335d559   <- produced (slot 2, duplicated)
+    Slot_4 41d0326f18316d0cde6612927fcf6def7c1fa980e37aa3eafc155955f19eda26   <- never produced
+    Slot_5 3df6d4d865fadd63a788de2eec3d24ec56f4fae1a1751217c8b1d8faf9133635   <- never produced
+
+So two witnesses (`Slot_0 = 725babc3…`, `Slot_4 = 41d0326f…`) name keys that the output
+plan never materializes, and the `jobEvents` insert (`Slot_1 = e3b0c442…`) has **no planner
+decision at all** — yet `PredOut_1 = 150` points at a real output that does carry
+`0…0 || e3b0c442…`. Either a third writer sets these witnesses (candidates:
+`:22905 bPlannedEntryInserts`, `:27254`/`:27364 lateInternalArgs`, `:27326` alias
+targets), or the witnesses are computed against a different `SortedList` than the outputs.
+
+**This is the thing to measure next, and it is cheap:** log every write to
+`__internal__vmapBatchSlot_*` and `__internal__vmapBatchPredOut_*` with the calling site
+(line number) and the value, then diff the set of `(routeSlot, slot)` pairs against what
+the planner produced. Whichever writer emits `Slot_0 = 725babc3…` and `Slot_1 =
+e3b0c442…` is the one whose `PredOut` must be correct — and until that is known, every
+hypothesis about "which output is P'" is guesswork, as rounds 6-9 demonstrated.
+
+Why this is the likely bug rather than a detail: the covenant locates P' **by the output
+coordinate `PredOut_N`**, and cross-checks it against its own slot/next witnesses. If two
+writers disagree, `PredOut_N` and `Slot_N` can come from different plans, which is exactly
+the symptom — a correct-looking P' at 150 paired with a witness pair that does not
+describe it.
+
+### ROUND 11: the transaction consumes and recreates the same entries at the same coordinates
+
+Full band dump for the failing transaction (probes reverted; entry rows below are
+`slot=`, `next=`, and value-tail length, from each mutable 128-byte-or-longer commitment):
+
+**Consumed mutable entry inputs (120..216):**
+
+    in 130  slot 0023aa20fb9daa43  next 32e767d387013501  valLen 11
+    in 133  slot 0000000000000000  next 0000000000000000  valLen 0
+    in 134  slot e2a4aac2498e0a62  next 0000000000000000  valLen 64
+    in 136  slot 41d0326f18316d0c  next 0000000000000000  valLen 64
+    in 137  slot 3df6d4d865fadd63  next f6e31252a31d1933  valLen 17
+    in 138  slot 0000000000000000  next cabb7b582130831e  valLen 0
+
+**Outputs:**
+
+    out 130  slot 0023aa20fb9daa43  next 32e767d387013501  valLen 11   <- byte-identical to in 130
+    out 133  slot 0000000000000000  next e3b0c44298fc1c14  valLen 0    <- CHANGED next
+    out 134  slot e2a4aac2498e0a62  next 0000000000000000  valLen 64   <- byte-identical to in 134
+    out 136  slot 41d0326f18316d0c  next 0000000000000000  valLen 64   <- byte-identical to in 136
+    out 137  slot 3df6d4d865fadd63  next f6e31252a31d1933  valLen 17   <- byte-identical to in 137
+    out 138  slot 0000000000000000  next cabb7b582130831e  valLen 0    <- byte-identical to in 138
+    out 150  slot 0000000000000000  next e3b0c44298fc1c14  valLen 0
+    out 218  slot e2a4aac2498e0a62  next 0000000000000000  valLen 9
+    out 219  slot 8c60062159c0569d  next 21c513b0c2661060  valLen 9
+    out 220  slot 09f85bbf77abf3d5  next 484c83d413774888  valLen 33
+    out 239  slot 0000000000000000  next 8c60062159c0569d  valLen 0
+
+Two facts stand out and neither is explained by any hypothesis tried so far:
+
+1. **134, 136, 137 (and 138) are recreated byte-identically at their own input indices.**
+   Those are the *modified* targets per the nested planner — `_balances` slot 2
+   (`e2a4aac2`, targetOffset 4), `_allowances` slot 1 (`f8f64388`, targetOffset 3) — but at
+   134/136 they carry their **pre-state** contents. The actually-updated rows are the ones
+   at 218/219/220 (real value tails 9, 9 and 33 bytes) and 150/239.
+2. **`Slot_0 = 725babc3…` has no output at all**, and `Slot_5 = 3df6d4d8…`'s `PredOut_N`
+   is `-1` while output 137 still carries `next = f6e31252…`, i.e. the pre-splice link.
+   The witness table therefore names at least one entry the transaction never creates.
+
+Also note `Slot_2` and `Slot_3` are the **same** slot (`e2a4aac2…`) appearing twice in one
+batch, with `PredOut_2 = -1` and `PredOut_3 = -2`, while the nested planner emitted only
+**one** decision for that target (`_balances` slot 2, `predOut -1`). Duplicate slot
+witnesses with different predecessors are another sign that the witness table and the
+output plan are not describing the same batch.
+
+**Most valuable next step (cheap, decisive):** the transaction's own inputs show the true
+pre-state (`133 next 0`, `137 next f6e31252`). Recompute, for each witness N, what
+`PredOut_N` *should* be from those inputs, and compare against the published value. If
+`PredOut_0`/`Slot_0` and `Slot_2`/`Slot_3` cannot be satisfied by any output in the
+transaction, the witnesses are stale — i.e. computed from an earlier planning iteration —
+and the fix belongs where `vmapBatchSlot_*`/`vmapBatchPredOut_*` are memoized, not in the
+entry planner that rounds 6-10 kept re-examining.
+
+### ROUND 12: `Slot_0`'s entry does not exist anywhere in the transaction
+
+A needle scan over **both** the transaction's outputs and the source outputs of every one
+of its 308 inputs (probe reverted) for
+`725babc3f2b6f93c99f4ae965d72a8e28fe0efaddffe66f6fcf48e2144cf4215`
+(`__internal__vmapBatchSlot_0`) returns:
+
+    in inputs : []
+    in outputs: []
+
+So the covenant is handed a batch entry slot that the transaction neither consumes nor
+creates. That is not a P'/NEW placement problem — it is the witness table naming a key
+that has no state at all in this transaction, which is the signature of **stale witnesses**
+(the value was computed against an earlier plan/state and not refreshed).
+
+Cross-checks from the same round, all consistent with that reading:
+
+* `Slot_1 = e3b0c442…` **is** present, as the `next` field of outputs 133 and 150.
+* `Slot_4 = 41d0326f…` **is** present, as the `slot` of output 136, and output 136 is
+  byte-identical to the consumed input 136 — i.e. the entry was preserved, not rewritten.
+* `Slot_5 = 3df6d4d8…` is present at output 137, whose `next` is `f6e31252…` — matching
+  `Next_5 = f6e31252…` exactly. Its `PredOut_5 = -1` therefore claims "target entry is its
+  own proof", which is consistent.
+* 134, 136, 137 and 138 are **recreated byte-identically at their own input indices**,
+  while the rows with genuinely new value tails are 218/219/220 (tails 9, 9, 33 bytes) and
+  150/239.
+
+Note also that the key parameters for this transaction are `jobEvents`,`users`,
+`arbitrators`,`userRatings`,`meceTags`,`userReviews` — six keys for six witness slots — and
+`__message_bus_key_jobEvents_0 = '0'` whose slot is `e3b0c442…`, which the table assigns to
+**`Slot_1`**. So slot index and key index are offset relative to each other as well, which
+is what one expects if the table was assembled from a different batch than the one the
+outputs implement.
+
+**Next step (was `PredOut` recomputation; now sharper):** find where
+`__internal__vmapBatchSlot_*` / `__internal__vmapBatchPredOut_*` are *cached or reused*
+across planning iterations and confirm whether a stale entry survives into the final
+assembly. Concretely, log the witness map at each write with a monotonically increasing
+iteration/assembly counter, then fail loudly if the final assembly reuses a map whose
+`Slot_0` key is absent from the plan it is assembling. That converts "stale" from an
+inference into an assertion, and the assertion is the fix's guard rail.
+
+`__message_bus_key_jobEvents_0 = '0'` -> slot `e3b0c442…` is `Slot_1`, not `Slot_0`, so the
+slot/key alignment is itself suspect; verify the intended correspondence before changing
+either side.
+
+### ROUND 13: the executed nested planner produces only 4 of the 6 witness slots
+
+Re-ran the nested-planner probe without deduplication. It runs its per-slot branch **eight**
+times (two batches × their slot indices) but completes a decision only four times, and never
+for the slots that matter:
+
+    iteration 1  _allowances  slot=0  target=09f85bbf77ab  proofSlot=f8f643889106  isTarget=False  predOut=4   active=['_allowances:0']
+    iteration 2  _balances    slot=0  target=8c60062159c0  proofSlot=000000000000  isTarget=False  predOut=8   active=['_balances:0,2', '_allowances:1']
+    iteration 3  _balances    slot=2  target=e2a4aac2498e  proofSlot=e2a4aac2498e  isTarget=True   predOut=-1  active=['_balances:0,2', '_allowances:1']
+    iteration 4  _allowances  slot=1  target=f8f643889106  proofSlot=f8f643889106  isTarget=True   predOut=-1  active=['_balances:0,2', '_allowances:1']
+
+So the executed planner accounts for `_allowances:{0,1}` and `_balances:{0,2}` and **nothing
+else**. The witness table's `Slot_0 = 725babc3…`, `Slot_1 = e3b0c442…`, `Slot_4 = 41d0326f…`
+and `Slot_5 = 3df6d4d8…` are not produced by it.
+
+Two of the four values are now explained and are **correct**, which narrows the search:
+
+* `PredOut_N = -2` is a deliberate marker, not a bug: `StatefulContract.ts:26308` comments
+  "predOut=-2 is a true same-target runtime alias and deliberately has no target output",
+  and the alias assignment at `:26196-26200` sets `Next = zeros`, `PredOut = -2`.
+* The alias path itself does **not** run for this title — a probe of
+  `aliasOwner.get(slotIndex)` shows `aliasOwnerSize: 0` on every visit, so `-2` is not coming
+  from there.
+
+**Therefore the remaining suspects are the *other* witness writers**, which is where the next
+round should look rather than at the nested planner: `:22905`
+(`bCompilerInternalArgs[vmapBatchPredOut_${planned.slotIndex}]`), `:27237-27241` and
+`:27309-27312` / `:27347-27349` (the `lateInternalArgs` family), and `:26333`
+(`childCompilerInternalArgs[...PredOut]` rewrite for planned inserts). One of those is
+producing `Slot_0`/`Slot_1`/`Slot_4`/`Slot_5` for the batch, and since `Slot_0`'s entry is
+provably absent from the transaction (round 12), that writer is working from state that the
+assembled transaction does not share.
+
+**Cheapest decisive measurement:** print the *final* `childCompilerInternalArgs` /
+`lateInternalArgs` witness map immediately before the route ABI is encoded, and compare its
+`(slotIndex -> slot, predOut)` pairs against the four planner decisions above. That single
+dump identifies both the extra writer and the stale keys, and it is the last piece needed
+before the fix.
+
+### ROUND 14: the route's real witness table, and the chain it does not satisfy
+
+**Correction:** the six-slot table quoted in rounds 10-12 was extracted from a *different*
+transaction's parameter dump (it belonged to an `initialize`/genesis entry). The route under
+failure is `__message_bus1` with `sortedBatchInfo = ['_balances[0,1]', '_allowances[2,3]']`,
+and dumping the final witness map where it is assembled
+(`StatefulContract.ts:19462`, `entryBatchWitnesses = new Map(...)`; probe reverted) gives
+exactly **four** slots:
+
+    Slot_0  e2a4aac2498e0a62d7a3936482584bb94059e33c96b7090c81338243b335d559   Next_0  0…0                                                                PredOut -1
+    Slot_1  8c60062159c0569d397635696b7dbdf03420bc417718429c56d738db370e621d   Next_1  21c513b0c2661060bc5c9ddd6640b03c5e4e9d3976f1d0e60cc9f197f96dac32   PredOut 239
+    Slot_2  09f85bbf77abf3d58fa693e798679c2ddfb77fdbd6ffc99aed72387e82d9656b   Next_2  484c83d4137748889dcd31f84f30a96393d30b42722e64b5cdf73cc3b5ded26b   PredOut -1
+    Slot_3  f8f64388910649b0cff4b60b13d9c517620fec824459a639ee346a4f6d6d9232   Next_3  09f85bbf77abf3d58fa693e798679c2ddfb77fdbd6ffc99aed72387e82d9656b   PredOut -1
+
+Correlating against the assembled transaction's entry outputs
+(`slot`, `next`, value-tail bytes):
+
+    out 134  slot e2a4aac2…  next 0…0   tail 64        <- matches Slot_0's (slot, Next)
+    out 136  slot 41d0326f…  next 0…0   tail 64        <- matches NOTHING in the table
+    out 137  slot 3df6d4d8…  next f6e31252…  tail 17   <- matches NOTHING in the table
+    out 218  slot e2a4aac2…  next 0…0   tail 9         <- ALSO matches Slot_0's (slot, Next)
+    out 219  slot 8c600621…  next 21c513b0…  tail 9    <- matches Slot_1 (slot, Next) exactly
+    out 220  slot 09f85bbf…  next 484c83d4…  tail 33   <- matches Slot_2 (slot, Next) exactly
+    out 150  slot 0…0        next e3b0c442…  tail 0
+    out 239  slot 0…0        next 8c600621…  tail 0    <- PredOut_1 = 239
+
+Four concrete defects are now visible, all inside this 4-slot table:
+
+1. **`Slot_3`'s entry does not exist in the outputs.** Nothing carries slot `f8f64388…`,
+   and nothing carries `Next_3 = 09f85bbf…` as a *next*. Yet the nested planner explicitly
+   planned `_allowances` slot 1 → target `f8f64388…` with `predOut = -1` (round 13). The
+   ledger write for that entry was planned and then not materialized.
+2. **`Slot_0` matches two outputs** (134 and 218) with identical `(slot, next)`. `134` is
+   byte-identical to consumed input 134, i.e. pre-state preserved; `218` is the same slot
+   with a 9-byte value tail. So the collection appears twice in the same transaction and
+   the covenant cannot tell which one the witness means.
+3. **`Slot_0`'s `Next_0 = 0…0`** while `Slot_0` is mid-chain: `Slot_2` points at `484c83d4…`
+   and `Slot_1` sits between `e2a4aac2…` and `09f85bbf…` in value order. A zero next in the
+   middle of the chain is only valid for the last element.
+4. **The successor chain is broken.** For the covenant's linked-list check, `Next_0` should
+   be `Slot_1`'s slot (`8c600621…`) and `Next_1` should be `Slot_2`'s (`09f85bbf…`). They
+   are `0…0` and `21c513b0…` respectively, and `21c513b0…` is not any slot in the table.
+   Meanwhile `Next_3 = 09f85bbf…` *is* `Slot_2`'s slot — as if `Slot_3` were the element
+   immediately before `Slot_2`, not after `Slot_0`.
+
+**Next step:** the table and the outputs agree on `Slot_1`/`Slot_2` and disagree on
+`Slot_0`/`Slot_3`, so diff those two by construction. Specifically, for `_balances[0,1]`
+and `_allowances[2,3]`, print from the planner the `(slot, proof.slot, proof.nextKey,
+predOut)` it decided and the `(slot, next)` it wrote, then compare against the table above —
+`Slot_3`'s missing output and `Slot_0`'s two outputs should fall straight out. Note also that
+`_allowances` uses slot indices `2,3` in the route while the nested planner plans
+`_allowances` slots `0,1` (round 13): a slot-index remap between planning and route
+publication is a strong candidate for the whole discrepancy.
+
+### ROUND 15: the slot-index remap hypothesis is refuted
+
+Round 14's prime candidate ("a slot-index remap between planning and route publication")
+does not hold. Probing the planner and the route's published metadata together
+(`SOLIDC_DEBUG_BATCH_SPACE=1`, probe reverted) shows all three observed configurations are
+**internally consistent**:
+
+    handler=approve       _allowances  planner [0]      route [{' _allowances', [0]}]                  layout entries [0]
+    handler=transferFrom  _balances    planner [0, 2]   route [{' _balances', [0, 2]}, {' _allowances', [1]}]  layout entries [0, 1, 2]
+    handler=transferFrom  _allowances  planner [1]      route (same as above)                          layout entries [0, 1, 2]
+
+and the four-slot table from round 14
+
+    handler=__message_bus1  _balances [0, 1]   _allowances [2, 3]   layout entries [0, 1, 2, 3]
+
+is a third, self-consistent configuration. In every case `plannerBatchSlotIndices`,
+`route.sortedBatchInfo[].slotIndices` and the layout's entry slot indices agree. My round-13
+reading of "`_allowances` slots 0,1 in the planner vs 2,3 in the route" was comparing **two
+different contracts' configurations**, not a remap inside one.
+
+So the discrepancy is not in the index space. It is still the four defects isolated in round
+14, all within the `__message_bus1` four-slot table: `Slot_3`'s entry never materializes,
+`Slot_0` matches two outputs, `Next_0 = 0…0` mid-chain, and the successor chain does not
+match the table (the covenant wants `Next_0 = 8c600621…` and `Next_1 = 09f85bbf…`).
+
+**Where to go next, given the above:** the useful next measurement is no longer about indices
+but about *which writer last set each of the four slots*. Dump, at the point the route ABI is
+encoded, the four `(Slot_N, Next_N, PredOut_N)` triples together with a per-slot
+"last writer" tag (add the tag at each of the five candidate sites: `:22905`, `:26252-26257`,
+`:26333`, `:27237-27241`, `:27347-27349`). Whichever site set `Slot_0`/`Slot_3` is the one
+whose predecessor plan disagrees with the assembled outputs — and for `Slot_3` the plain
+question is why a planned `_allowances` write produced no entry output at all.
+
+Note for whoever continues: the marketplace suite is at 21/66 and every round since round 5
+has been diagnosis rather than a fix on this blocker. The three commits that *did* move the
+suite are `95075e7db`, `5cc5c6558`, `9b4792c19` (and `94cb9ac11` restored correctness without
+moving the count). If this blocker resists another round or two of the above, it may be worth
+routing around it — the remaining 21 non-preflight failures (3 `index out of bounds`, 1 revert
+assertion, 1 state-derivation convergence) are independent and may be cheaper.
+
+### ROUND 16: routed around the input-214 blocker — the `index out of bounds` mechanism, corrected
+
+Following this file's own advice, this round worked the independent failures instead of the
+38-title batch-witness blocker. Result: the documented explanation of the three
+`index out of bounds` titles is **wrong in its mechanism**, and the real one is now pinned.
+
+**Correction.** `MARKETPLACE_ENTRY_CARDINALITY_FINDINGS.md` says the revert comes from the
+synthetic pagination fallback. It does not. That fallback lives in
+`StatefulContract`/`upgrades.ts:418-425` and is gated by
+`proxySyntheticPaginationCollection` (`stateful/proxy-pagination.ts`), which returns
+`undefined` whenever the artifact already declares the method:
+
+    if (implementation.abi.some((entry) => entry.name === methodName)) return undefined;
+
+and `getArbitrators` **is** declared in `MarketplaceDataV1.json`'s ABI. So the fallback never
+runs, and `throw new Error('index out of bounds')` in the *test* is simply the echoed VM
+revert reason surfaced through `probeRequireMessage`.
+
+**The real mechanism.** The compiled view function is:
+
+    getArbitrators(index_ uint256, limit_ uint256,
+                   __internal__valueWitness_0 bytes, __internal__returnOutputIdx bigint,
+                   __internal__proxyMasterIndex bigint, __internal__dynamicChunkInputBase bigint)
+      -> JobArbitrator[]
+
+`arbitratorAddresses` is not a `stateLayout.collections` entry (I checked: `undefined`), so
+the body's bounds check reads the dynamic state array's length from the **P5b chunkable value
+witness** (`__internal__valueWitness_0`). The witness path is gated at
+`StatefulContract.ts:18417`:
+
+    const hasChunkableValueWitness = collection.sorted && collection.chunkableValue
+      && (entryOperations(slotIndex).includes('read') || ...);
+
+and the witness is built from `proofEntry.value` (`:18683-18700`), i.e. the 4-byte LE length
+prefix followed by the inline value or `sha256(value) || head`. Inside the VM the array
+therefore reads as **length 0**, so `require(index_ < length_)` reverts —
+exactly what the earlier session's instrumentation saw ("SDK does see the entry UTXOs:
+`rawUtxos: 2, filtered: 2`, yet the call still reverts").
+
+**Why this is a bigger job than it looks.** The Solidity source is
+`arbitratorAddresses.length` + `getArbitrators(index, limit)` returning
+`JobArbitrator[]`. The port compiled the *storage* as `arbitrators: mapping(address =>
+JobArbitrator)` and kept a `getArbitrators(index, limit)` view, so the index/limit arguments
+are being interpreted against a mapping-keyed view rather than a positional array. Making the
+witness carry the real array contents requires the compiled `arbitratorAddresses` array to be
+materialized as an addressable collection (a `T[]`-kind collection with its trailing chunks),
+not merely deriving a better witness for a mapping entry. That is a compiler-semantic change,
+and it should be scoped deliberately rather than patched in the SDK.
+
+**Cheapest next probe (5 lines):** log `access.collection`, `collection.sorted`,
+`collection.chunkableValue`, `entryOperations(slotIndex)`, and the resulting
+`proofEntry.value` length at `:18417`/`:18688` for `getArbitrators`. If
+`hasChunkableValueWitness` is true but the value tail is empty or is a longer-than-head
+digest, the defect is in the proof-entry selection; if it is false, the param is absent from
+the ABI order and the length read is reading something else entirely.
+
+### ROUND 17: the array length reads 79 because the witness is one struct, not the array
+
+Used the repo's own `SOLIDC_DEBUG_VALUE_WITNESS=1` hook (`StatefulContract.ts:18744`,
+`chunkable-read-witness`) on `register arbitrator`, which fails with `index out of bounds`.
+The block for the failing view:
+
+    functionName: 'getArbitrators'   collection: 'arbitrators'   slotIndex: 0
+    slot:        41d0326f18316d0cde6612927fcf6def7c1fa980e37aa3eafc155955f19eda26
+    present:     true                proofSlot: same (the entry itself)
+    tailBytes:   64                  storedLength: 79
+    witnessBytes: 79
+    witnessHead: 1976a914c4ad89cdb7377ec8a163070e8442d399a87b870188ac210211c5a8d9b0e12cdd69fd6c4b0008bc1c830e766e9d5aff5779ecc5decfd240f2
+
+Decoding the witness: `19 76a914…88ac` is a 25-byte `address` (the 20-byte pubkey hash with
+its prefix), then `21 02 11c5…40f2` is a 33-byte compressed `pubkey`. That is **one
+`JobArbitrator` struct** = 25 + 33 = 58 bytes of payload, 79 with the pushdata-length
+prefixes. It is exactly the selected mapping entry's value.
+
+The covenant is reading the dynamic array's length from that witness, so it sees 79 where the
+source-level array has 1 element, and `require(index_ < length_)` then fails on a completely
+different comparison — hence "index out of bounds" for a call that passes `index=0`.
+
+**So the defect is now fully characterised, and it is a compiler-semantic gap, not an SDK
+bug:** Solidity's `arbitratorAddresses` (`address[]`) plus `getArbitrators(index, limit)`
+returning `JobArbitrator[]` was lowered to a single `arbitrators` mapping with the positional
+view retained. The view's `index`/`limit` are then interpreted against a one-entry-per-key
+mapping, and the only value available to serve as the array witness is that one struct.
+
+**Options, in increasing cost:**
+
+1. **Lower the view as a mapping access** — when the compiled body of a
+   `getX(index, limit)` view reads a length from a witness whose collection is a mapping,
+   treat the mapping's entries as the array (the SDK already enumerates them and the test
+   harness does exactly that in the passing titles). Smallest change, but it must be gated so
+   it cannot alter declared-array semantics.
+2. **Materialize `arbitratorAddresses` as a real `T[]` collection** at lowering time, with its
+   trailing chunks, so the witness is the encoded array. Correct and general, larger.
+
+Given four rounds have now been spent diagnosing around this title without moving the suite,
+option 1 should be attempted first and timeboxed; if it does not land quickly, option 2 is the
+honest scoping and belongs in its own session with the compiler-lowering tests as the gate.
+
+**Also worth noting for triage:** the three `index out of bounds` titles share this one
+mechanism, and `register arbitrator`/`update arbitrator` additionally call
+`registerArbitrator` first (whose witness is correctly empty for an absent key), so the
+failing call is only ever the view.
+
+### ROUND 18: `getUsers` passes with the same struct witness — so the witness is NOT the discriminator
+
+Attempted the timeboxed option 1 from round 17 and the first measurement refuted the round-17
+hypothesis. Comparing the `chunkable-read-witness` output for the two titles, which use the
+*same* Solidity pattern (`address[]` + `mapping(address => T)`) and the *same* view shape
+(`getX(index, limit)`):
+
+    register arbitrator (FAILS)   getArbitrators   coll=arbitrators  present=true  witness=60 bytes
+    register user       (PASSES)  publicKeys       coll=users        present=true  witness=57 bytes
+
+(Both are single structs: `19 <25-byte address> 21 <33-byte pubkey>` = 60 bytes for
+`JobArbitrator`; `User` is the same shape with a shorter tail. The `79`/`77` figures in
+round 17 were a regex artifact in my extraction — the decoded hex is 60 and 55 bytes, with no
+array length prefix in either.)
+
+So a struct-shaped `__internal__valueWitness_0` is **normal**, `getUsers` consumes one without
+trouble, and round 17's "the length reads 79 because the witness is one struct" conclusion is
+**withdrawn**. The two titles differ somewhere else.
+
+What the two have in common, per the ported source
+(`.marketplace/contracts/MarketplaceDataV1.sol:404-421`):
+
+    uint256 arbitratorsLength_ = arbitratorAddresses.length;
+    require(index_ < arbitratorsLength_, "index out of bounds");
+    ...
+    result[i] = arbitrators[arbitratorAddresses[i + index_]];
+
+and the declarations are **identical in shape**: `address[] public userAddresses;` /
+`address[] public arbitratorAddresses;` (lines 116/119), while the artifact shows both as
+ordinary `stateLayout.variables` of type `address[]` (`userAddresses`, `arbitratorAddresses`)
+and neither as a `collections` entry. The mapping sides are also symmetric
+(`users`/`arbitrators`, both `kind: 'mapping'`).
+
+So the difference is **data/state dependent, not shape dependent** — e.g. what the
+`arbitratorAddresses` array holds and whether `arbitrators[arbitratorAddresses[i]]` resolves
+after `registerArbitrator`. The next measurement should therefore be at the *array* access,
+not the mapping witness: instrument the compiled `getArbitrators` run (or the SDK's derivation
+of the array's stored value) and compare `arbitratorAddresses`'s decoded contents against
+`userAddresses`'s in the passing title.
+
+**Triage note, and a recommendation.** Five consecutive rounds (14-18) have each ended by
+withdrawing the previous round's hypothesis on this title, and the suite has been flat at
+21/66 since round 6. The persistent difficulty is that every probe here observes SDK-side
+derivations, while the failing predicate lives inside a compiled covenant whose bytecode
+cannot be attributed without a compiler-side mapping. Rather than spend another round on
+another single-probe hypothesis, the higher-value move is to fix the **instrumentation gap**
+first: make the failing `require` name its source expression (the compiler already emits
+`requires[]` with `ip` and `message`, and `probeRequireMessage` resolves messages — extending
+that to report the *source expression* for a revert inside a view would end this class of
+guessing for every remaining title, not just this one).
+
+### ROUND 19: closed the instrumentation gap (committed) — and it paid for itself immediately
+
+Following round 18's recommendation, the instrumentation gap is closed.
+`d6639cd67 feat(solidcash): name the failing probe predicate when a return cannot be derived`:
+
+* `probeRequireStatement` resolves the failing `require` itself, using the source line the
+  artifact's `requires[]` table already carries - which is what makes a **bare**
+  `require(x < n)` (`message: undefined`) attributable at all - and returns the owning contract
+  name so a multi-contract graph names the right body.
+* `_deriveReturnBlob` records a one-line description of why the last probe stopped
+  (instruction pointer, opcode, VM detail, resolved `require` site, probed input index), and
+  both "could not derive" throw sites append it.
+
+It paid off on the first title it was pointed at. `register arbitrator` now reports:
+
+    Could not derive the return value of '__forward' for .emitReturn(). The covenant trace did
+    not expose an authenticated return commitment. Probe detail: probe stopped at ip 5
+    (opcode 85): Program attempted to read from an invalid transaction UTXO index.
+    Transaction UTXO count: 9; requested index: -1.; probed input 3.
+
+**`ip 5, opcode 85` is `OP_OUTPUTTOKENCOMMITMENT` reading output index `-1`** (opcode 85 =
+0x55; the SDK's own message says so). So the covenant's `__internal__returnOutputIdx` is
+reaching it as **-1**, not as an out-of-range positive index. That is a completely different
+defect from the array-length story of rounds 17-18, and it is consistent with
+`StatefulContract` computing `returnOffset === 0xffff ? -1` (see the message-bus route
+context) - i.e. the callee/route being asked to publish a return it was never given a
+coordinate for.
+
+**Next step, now cheap:** trace where `__internal__returnOutputIdx` is set to -1 for this
+view and why. Candidates: the return slot is absent from the block layout for `getArbitrators`
+(so the layout lookup yields `0xffff`), or the delegate/proxy path forwards -1 because the
+route publishes no return. Grep `__internal__returnOutputIdx` assignments in
+`StatefulContract.ts` and check the value for this function at the point the unlocker args are
+built.
+
+Verified for the commit: `test/e2e/BehaviorParityPins.test.ts` 19/19 (it pins this exact
+message by prefix, so the appended detail is safe), `journal-message-bus/e2e` unchanged at 116
+failures with zero new, lint error count on the file identical before and after (3408).
+Behaviour is unchanged - only diagnostic text, and only when a probe actually failed.
+
+### ROUND 20: the `-1` is because the proxy's `__forward` has no return index in its ABI
+
+Instrumented the exact decision point (`StatefulContract.ts:29346`, immediately before
+`materializeInternalFunctionArgument(finalArgs, abiFunction.inputs,
+'__internal__returnOutputIdx', BigInt(returnEmitOutputIndex))`). For the failing view probe:
+
+    functionName: '__forward'            abiFunctionName: '__forward'
+    selector: '88b357fe'                 emitReturn: true    returnProbeOnly: true
+    returnEmitOutputIndex: 7             returnMaterializationOutputIndex: 7
+    returnEmitBlockOffset: 7             returnAbiFunctionName: 'getArbitrators' (1 output)
+    hasReturnSlot: false                 finalArgValue: 'ABSENT-FROM-ABI'
+
+**`finalArgValue: 'ABSENT-FROM-ABI'`** is the finding: the proxy's `__forward` ABI has **no
+`__internal__returnOutputIdx` input at all**, so `materializeInternalFunctionArgument` is a
+no-op and nothing is published. The value the covenant then reads is its own default
+(`StatefulContract.ts:7280` returns `-1n` for that param name), which is why
+`OP_OUTPUTTOKENCOMMITMENT` reads output `-1` and the probe dies at ip 5.
+
+So the SDK does *want* a return here and correctly relocates it to the delegated
+implementation's layout (`returnAbiFunctionName: 'getArbitrators'`,
+`returnEmitBlockOffset: 7`, via the delegate projection at `:28557`), but it is handing that
+coordinate to a forwarder that cannot carry it. `hasReturnSlot: false` confirms the proxy has
+no `returnEvent` slot of its own.
+
+Note this contradicts nothing in the code's own comments - `:28556` says exactly the right
+thing for a plain send ("A plain send materializes no return event, so only the layout slot
+moves there - the witness stays -1 and the covenant skips the check entirely"). The unhandled
+case is a **view read through a proxy**: `.emitReturn()` is set, the delegated function does
+have an output, and the return event must be materialized by the *implementation* while the
+forwarder is told nothing.
+
+**Next step (small and concrete):** for a probe/read of a delegated call, the return event must
+be published by the co-spent implementation's body, not the forwarder's. Two candidate fixes,
+in order of preference:
+
+1. When the executing `abiFunction` has no `returnEvent` slot but `returnAbiFunction` does,
+   route the probe at the implementation input (the SDK already computes
+   `delegatecallInputIndex` / `executorOffset` for this) and keep the forwarder's index at -1.
+   The proxy path already has all the coordinates; this only changes which input the probe
+   evaluates.
+2. If the forwarder must still be the probed input, give it a real return coordinate by
+   materializing the return event inside the proxy's own block (a larger change: the proxy
+   would need the slot reserved, which the layout currently does not publish).
+
+Option 1 matches the existing delegate-return machinery (`delegateReturnEventOffset`, the
+`omitLocalFeeTail` branch) and should be attempted first.
+
+**Diagnostic to keep:** the round-19 commit (`d6639cd67`) is what produced this finding - it
+turned "could not derive the return value" into `ip 5 (opcode 85) ... requested index: -1`,
+which is what pointed at the parameter in one step instead of five rounds.
+
+### ROUND 21: the `-1` reaches the implementation as an ARGUMENT — narrows the fix
+
+Two facts from the code, which change the shape of the fix from round 20's option 1:
+
+* `delegatecallInputIndex` already exists and is threaded into every return derivation
+  (`StatefulContract.ts:32353`, `:32446`: `this._deriveReturnBlob(builder,
+  returnMaterializationOutputIndex, delegatecallInputIndex ?? 0)`), and
+  `returnMaterializationOutputIndex` is set by the delegate projection at `:28557-28562`.
+  So the SDK already computes both coordinates for a delegated call.
+* The failing program ran at **input 3** (round 19's `probed input 3`), and the proxy's
+  `__forward` body reaches the implementation through `OP_INVOKE`, not by co-spending a
+  second evaluated input. The implementation's own return check therefore sees the value the
+  forwarder **passed it as an invocation argument**.
+
+So the defect is not "the probe evaluates the wrong input" (round 20 option 1) — the probe is
+already at the right input. It is that the forwarder **forwards `-1` to the implementation
+for the return-output coordinate**: the SDK wants 7 (correctly relocated to the
+implementation's layout), but because the proxy's `__forward` ABI has no
+`__internal__returnOutputIdx` input (`ABSENT-FROM-ABI`), `materializeInternalFunctionArgument`
+is a no-op and the delegated invocation is built with the default `-1`.
+
+**Therefore the fix belongs where the delegated invocation's arguments are assembled**, not in
+the probe's input selection and not in the proxy's published layout. Concretely: when a
+delegated call is built for a probe/read (`emitReturn` set, `returnAbiFunction` has an output)
+and the executing forwarder cannot carry the coordinate, the delegated invocation must still be
+given the relocated index. The two places to look are the low-level-call argument assembly
+(`:28557`'s block and its callers, which already know `delegateReturnEventOffset`) and
+`:29344-29350`'s `materializeInternalFunctionArgument`, which currently cannot see that a
+delegated invocation will be built from the same `finalArgs`.
+
+**Why this is the right level.** Option 1 from round 20 (probe the implementation input) is
+now ruled out: the implementation is not a separate evaluated input, so there is nothing to
+re-point. Option 2 (reserve a return slot in the proxy's own block) remains valid but is a
+larger change to the published layout. The narrow fix is to publish the already-computed
+relocated coordinate into the forwarder's *invocation* arguments even though the forwarder's
+own ABI does not declare it — i.e. thread it by name the way other hidden route values are
+threaded, rather than through positional ABI materialization.
+
+**Verification available:** `journal-message-bus/e2e` must stay at 116 failures with zero new,
+`test/e2e/BehaviorParityPins.test.ts` 19/19, and the title's own probe detail must change from
+`requested index: -1` to a real index (that message is the round-19 diagnostic and is the
+fastest feedback loop for exactly this change).
+
+### ROUND 21b: the exact line that forwards `-1`, and why the failing program is the forwarder
+
+The delegated invocation's return coordinate is chosen at **`StatefulContract.ts:28778-28782`**:
+
+    if (inp.name === '__internal__returnOutputIdx') {
+      const proxyExternalGroup = nestedDelegateProxyGroupByLowLevel.get(groupLocalIdx);
+      return BigInt(proxyExternalGroup === undefined
+        ? returnEmitOutputIndex
+        : physicalReturnIndexForGroup.get(proxyExternalGroup) ?? -1);
+    }
+
+For the failing read this is the `proxyExternalGroup === undefined` arm, and
+`returnEmitOutputIndex` is 7 (round 20's measurement), so **the implementation IS handed 7** -
+the round-21a hypothesis that `-1` is forwarded as an argument is therefore **not** what the
+VM saw at ip 5.
+
+What the VM saw at ip 5 (`OP_OUTPUTTOKENCOMMITMENT`, index -1, opcode 85) is the
+**forwarder's own** operation, in its own body, at the top of the program
+(`instructionCount` small; round 19 reported `ip 5 (opcode 85)` for input 3). So the shape is:
+
+* the proxy's `__forward` is the executed input (3) and the probed program;
+* `__forward` has no `returnEvent` slot of its own (`hasReturnSlot: false`) and no
+  `__internal__returnOutputIdx` ABI input (`ABSENT-FROM-ABI`), so
+  `materializeInternalFunctionArgument` at `:29346` is a no-op and the covenant reads its
+  `-1` default (`:7280`);
+* the forwarder's body performs a return-output operation at ip 5 which, with `-1`, reads an
+  invalid UTXO index and aborts **before** the delegated call ever runs.
+
+That last point is the actionable one, and it is a different failure from "the implementation
+was not told where to emit": **the forwarder itself needs a non-negative return coordinate for
+a probe/read, because its own body indexes a return output before delegating.**
+`hasReturnSlot: false` says its layout publishes none, which is exactly why the value defaults
+to -1 - so the fix must either
+
+1. reserve/publish a `returnEvent` slot in the forwarder's effective layout for the
+   probe/read case (so `:18201`'s `slot` lookup succeeds and `returnEmitOutputIndex >= 0`), or
+2. make the forwarder's probe body skip its own return-output operation and let the
+   implementation's returned value be extracted from the delegated call result
+   (`:33266-33271` shows `callee.forward(...).staticCall()` already returns the
+   implementation's value for the passthrough arm - the non-passthrough arm at `:33273` is the
+   one that fails).
+
+Option 2 is closer to the existing design: the `passthrough` / `callee.forward` arms above
+already read through the implementation successfully for other titles, so the bug is that this
+title falls past them into the generic `_createBuilder` probe.
+
+**Cheapest next check (one line of logging):** print, at `:33260-33275`, which arm is taken for
+`getArbitrators` (`passthrough`, `proxy` public method, `callee.forward`, or the generic
+builder) and the value of `passthroughOnly`. If `passthroughOnly` is false only because
+`(resultFunction?.emits?.length ?? 0) !== 0` or a `dynamicWrites` entry exists, that predicate
+is over-strict for a read and is the real bug.
+
+### ROUND 22: the proxy read arm was discarding the diagnostic — fixed and committed
+
+`f2397e74e fix(solidcash): stop the proxy read path from discarding the probe diagnostic`.
+
+`wrapDispatch`'s read arm (`upgrades.ts:518-524`) caught the derive failure and rethrew
+`new Error(declared[0])` - the single declared revert reason. That is right for callers that
+assert on the reason, but it threw away the `Probe detail:` added by `d6639cd67`, which is why
+`pa.ERROR` kept reading exactly that message in round 20-21 despite the earlier fix. The
+declared reason is now the message **prefix** with the detail appended, so
+`revertedWith`/`toThrow` keep matching and the cause is visible.
+
+`register arbitrator` now reports:
+
+    index out of bounds Probe detail: probe stopped at ip 5 (opcode 85): Program attempted to
+    read from an invalid transaction UTXO index. Transaction UTXO count: 9; requested
+    index: -1.; probed input 3.
+
+Verified: `test/e2e/BehaviorParityPins.test.ts` 19/19, `journal-message-bus/e2e` unchanged at
+116 failures with zero new.
+
+**Also learned this round (path map, useful for the next attempt):** a proxied view read does
+*not* go through `_deriveReturnValue`'s passthrough machinery at all - the
+`static-return-passthrough` hook never fires for `getArbitrators`. It goes
+`wrapDispatch` -> `target.forward(prop, args)` -> `call.staticCall()`, i.e. the generic
+`__forward` probe described in round 21. That is why the `passthroughOnly` predicate cannot be
+the bug (round 21's last suggestion is withdrawn), and it confirms the target is the
+forwarder's own pre-delegation return-index operation.
+
+**Note a second, adjacent shortcut already in that arm** (`upgrades.ts:495-509`): a
+`fooLength()`-shaped zero-argument view over a declared state variable is served from
+`target.proxy.getState()` instead of a VM probe, precisely because "the proxy `__forward` view
+probe can decode an empty return slot as 0n even when the array is on-chain". `getArbitrators`
+is not zero-argument, so it misses that shortcut - but the comment is direct evidence that the
+forwarder-view-probe return-slot problem is already known and worked around in this file. The
+next fix should generalise that insight rather than re-derive it.
+
+### ROUND 23: the delegate return base IS computed (8) — but the registry is empty at read time
+
+Ran `SOLIDC_DEBUG_RETURN=1` on `register arbitrator` and read the passthrough diagnostic
+properly this time (round 21's `{}` was a parsing bug on my side, not a hook that failed to
+fire - I had extracted with a regex that did not match the multi-line object). It says:
+
+    static-return-passthrough {
+      functionName: '__forward',
+      resultFunction: 'getArbitrators',
+      delegated: 'getArbitrators',
+      passthrough: undefined,
+      passthroughOnly: false,
+      delegateRegistry: [],
+      rootRegistry: []
+    }
+
+and, immediately after, a second hook shows the delegate geometry **is** known:
+
+    delegate-return-base {
+      functionName: 'getArbitrators',
+      entryOutputs: 1, externalOutputStart: 4, externalGroupOutputCount: 0,
+      delegateImplOutputCount: 3, delegatedCallerReturnCount: 1, delegatedLoopOutputCount: 0,
+      delegatedDynamicWriteChunkCount: 0,
+      delegateReturnOutputBase: 8,
+      groups: [],
+      delegates: [ { i: 0, fn: 'getArbitrators', mode: 'delegatecall', data: 2 } ]
+    }
+
+Two things follow, and they narrow the fix to a single decision:
+
+1. **The `passthrough` predicate is genuinely not the bug** (round 21's suggestion stays
+   withdrawn). `passthrough` is `undefined` because `resultFunction.externalCalls` is not a
+   single external call - `getArbitrators` is a local loop over `arbitrators[...]`, so there
+   is no passthrough edge to follow. Correct behaviour for that predicate.
+2. **The delegate return coordinate is computed and is 8**, i.e. `entryOutputs 1 +
+   externalOutputStart 4 + delegateImplOutputCount 3 = 8`, while round 20 measured the
+   forwarder being given `returnEmitOutputIndex = 7`. `delegateReturnOutputBase` and
+   `returnEmitOutputIndex` disagreeing by one - combined with `delegateRegistry: []` (the
+   registry is empty on this contract, so the delegated call is resolved positionally rather
+   than by name) - is the most concrete lead yet.
+
+**Next step (one measurement, then a fix):** log `returnEmitOutputIndex`,
+`returnMaterializationOutputIndex`, `delegateReturnEventOffset` and `delegateReturnOutputBase`
+**at the point the forwarded invocation's arguments are built** (`:28778-28782`, where the
+`__internal__returnOutputIdx` argument is chosen for the delegated call), for this title. If
+that site returns 7 while the covenant requires 8, the fix is to source the argument from
+`delegateReturnOutputBase` (the relocated value) rather than from `returnEmitOutputIndex` (the
+pre-relocation value); if it already returns 8, then the -1 the VM reads is produced later and
+the probe should follow the argument into the built unlocking bytecode.
+
+Also worth noting for whoever continues: this file already documents the same limitation twice
+- the `fooLength()` shortcut (`upgrades.ts:495-509`) exists because "the proxy `__forward` view
+probe can decode an empty return slot as 0n even when the array is on-chain", and `:28556`
+states the plain-send rule ("the witness stays -1 and the covenant skips the check entirely").
+Both are consistent with the read-probe case simply never having been given a valid coordinate.
+
+### ROUND 24: exact off-by-one confirmed, and the code already names it
+
+Instrumented the forwarded-argument site (`:28778-28782`) and got the full picture in one run:
+
+    functionName: '__forward'        groupFunctionName: 'getArbitrators'
+    hasProxyExternalGroup: false     chosen: '7'
+    returnEmitOutputIndex: 7         returnMaterializationOutputIndex: 7
+    returnEmitBlockOffset: 7         delegateReturnEventOffset: 7
+    delegateReturnOutputBase: 8      physicalReturnIndexForGroup: []
+
+So the SDK hands the **delegated** call `7` (`delegateReturnEventOffset`) while its own
+independently computed base for the same return band is **8**
+(`externalOutputStart 4 + externalGroupOutputCount 0 + delegateImplOutputCount 3
++ delegatedCallerReturnCount 1 = 8`). `chosen` comes from
+`physicalReturnIndexForGroup.get(proxyExternalGroup) ?? -1`, which is empty, so it falls to
+the `proxyExternalGroup === undefined` arm and returns `returnEmitOutputIndex` = 7.
+
+**The code already documents exactly this failure mode.** At `:27830-27834`, immediately above
+the `delegateReturnOutputBase` sum:
+
+    // An associated/embedded delegate is emitted while materializing its external proxy group rather than
+    // in the later low-level loop, but it still occupies physical output coordinates before the appended
+    // return band. Excluding it made every proxy return witness point one slot early (at the implementation
+    // master rather than the first return event).
+
+That is a one-slot-early witness at a proxy return - the same off-by-one seen here, one layer
+up. The two quantities that should agree (`delegateReturnEventOffset` and
+`delegateReturnOutputBase`) are computed in different places (`:28545-28562` relocates
+`returnEmitBlockOffset` to `delegateReturnEventOffset`; `:27836-27843` computes
+`delegateReturnOutputBase`), and nothing asserts they match.
+
+**Fix to attempt next, in this order:**
+
+1. Make the forwarded `__internal__returnOutputIdx` use `delegateReturnOutputBase` rather than
+   `returnEmitOutputIndex` when the group is a delegatecall and a return band exists. One-line
+   change at `:28778-28782`; the comment above the base computation is the justification.
+2. If that is wrong in the other direction (the covenant wants the implementation-relative
+   offset), add an assertion where both are in scope - fail loudly when
+   `delegateReturnEventOffset !== delegateReturnOutputBase` for a group with a return - so the
+   next occurrence is a hard error rather than a silent -1 at the VM.
+
+Verify with: the title's probe detail must stop reporting `requested index: -1`, plus
+`journal-message-bus/e2e` at 116 failures with zero new and
+`test/e2e/BehaviorParityPins.test.ts` 19/19. The round-19/22 diagnostic makes this a fast loop.
+
+### ROUND 25: the delegated-argument fix is INERT — the failing read is the forwarder's own
+
+Attempted round 24's fix #1: at `:28778-28782`, when the group is a `delegatecall` and a return
+band exists, return `delegateReturnOutputBase` instead of `returnEmitOutputIndex`. Built and
+ran `register arbitrator`:
+
+    → index out of bounds Probe detail: probe stopped at ip 5 (opcode 85): Program attempted to
+      read from an invalid transaction UTXO index. ... requested index: -1.; probed input 3.
+
+**Byte-identical failure.** So the value passed to the delegated invocation is not what the VM
+reads at ip 5, and round 24's causal chain was wrong. Reverted; tree clean.
+
+The correct reading of the evidence, now consistent with every measurement:
+
+* The failing operation is in the **forwarder's own body at ip 5** - the very top of the
+  program, before any `OP_INVOKE` to the implementation. The delegated call has not run yet.
+* `ip 5 / opcode 85 / index -1` is therefore the forwarder evaluating **its own**
+  `__internal__returnOutputIdx`, which is `-1` because `__forward`'s ABI does not declare it
+  (`ABSENT-FROM-ABI`, round 20) and `:7280` defaults that parameter name to `-1n`.
+* Round 20's `returnEmitOutputIndex: 7` and round 24's `chosen: 7` describe how the SDK
+  parameterises the *delegated call*; they are real but they are downstream of the aborting
+  instruction, which is why changing `chosen` changed nothing observable.
+
+**So the fix must give the FORWARDER a usable coordinate, or stop it reading one.** That means
+one of:
+
+1. **Publish a `returnEvent` slot in the forwarder's effective layout for the probe/read case.**
+   `:18201`'s `slot` lookup would then succeed, `returnEmitOutputIndex >= 0`, and `:19348`'s
+   `materializeInternalFunctionArgument` would fill the ABI position - except that
+   `__forward`'s ABI has no such position, so this also requires publishing the input. This is
+   round 20's option 2 and it is the one the evidence now supports.
+2. **Make the forwarder's probe body not perform its own return-output operation** and take the
+   value from the delegated result. The `passthrough` arms at `:33266-33271` already do exactly
+   that for single-external-call views (`callee.forward(...).staticCall()`); `getArbitrators`
+   has no such arm because its body is a local loop, so this needs the probe to accept the
+   implementation's return rather than the forwarder's.
+
+Note the dependency this creates for the *test*: both options change what the proxy exposes for
+a read, so either needs the full `journal-message-bus/e2e` + parity-pin gate, and the
+`fooLength()` shortcut at `upgrades.ts:495-509` is prior art for option 1 (it sidesteps the
+forwarder probe entirely rather than repairing it).
+
+**Method note for the next attempt:** rounds 23-25 were three consecutive wrong causal
+attributions, each from reading a diagnostic *near* the failure rather than at it. The
+diagnostic added in rounds 19/22 reports the failing `ip`, `opcode` and index precisely - the
+mistake was reasoning about SDK-side values (`chosen`, `returnEmitOutputIndex`,
+`delegateReturnOutputBase`) that are computed for a *different* program than the one that
+aborts. Anchor on `ip` first: for this title it is `ip 5`, in the forwarder, before delegation.
+
+### ROUND 26: why the existing delegate-read machinery cannot be reused, and the real fork
+
+Read the read-path resolution in full. Every arm that would avoid the generic forwarder probe is
+gated on `passthrough`, which is `undefined` for this title:
+
+* `_deriveReturnValue` resolves `registered` at `:33216` from
+  `delegatedCall.contract._externalRegistry.get(passthrough.interfaceName) ?? ... ?? byName`, and
+  `resolvedArgs` at `:33222` from `passthrough.argSources`. Both dereference `passthrough`.
+* The whole block is entered at `:33240` (`if (registered && resolvedArgs)`), so with
+  `passthrough === undefined` none of `callee.forward(...).staticCall()` (`:33266`), the proxy
+  public-method arm (`:33260`) or `callable(...)` (`:33271`) can run.
+* `passthrough` is `undefined` because `resultFunction.externalCalls` is not a single external
+  call - `getArbitrators` is a local loop over `arbitrators[...]` (round 23). That is correct
+  behaviour for the predicate, so this is not a predicate bug.
+
+Hence the read falls through to the generic `_createBuilder(..., { emitReturn: true,
+returnProbeOnly: true })` probe at `:33273`, i.e. the proxy's `__forward` body, which aborts at
+ip 5 because `__forward` has no `returnEvent` slot and no `__internal__returnOutputIdx` ABI
+input.
+
+**This is the fork, and it is architectural rather than parametric:**
+
+* **A. Repair the forwarder probe.** Publish a `returnEvent` slot *and* the matching ABI input
+  for `__forward` in the probe/read case (`:19348`'s `materializeInternalFunctionArgument` can
+  then fill it). This is the only option that fixes reads for *every* local-loop view on a
+  proxy at once - `getArbitrators`, `getUsers`, and whatever else the remaining titles call.
+  It changes the proxy's published layout and ABI, so it needs the compiler/lowering side to
+  agree that the forwarder owns a return channel, and it needs the full parity gate.
+* **B. Extend the state-read shortcut.** `upgrades.ts:495-509` already serves a zero-argument
+  `fooLength()` view from `target.proxy.getState()` with the comment that "the proxy `__forward`
+  view probe can decode an empty return slot as 0n even when the array is on-chain". Extending
+  that to an indexed slice view (`getX(index, limit)` over `address[]` + `mapping(address => T)`)
+  would work, but it means reimplementing the view's slice/filter/struct-projection semantics in
+  the SDK. The existing precedent is a two-line length read; this would be materially more, and
+  it belongs in `proxy-pagination.ts` if attempted, not inline.
+
+**Recommendation.** Option A is the correct fix and is bounded by the same gate discipline as
+the earlier commits, but it is a compiler+SDK change and should be started with a fresh context
+budget rather than at the end of a long session. Option B is a legitimate stopgap for this
+specific view shape if the goal is to move the ladder, but it must be written as general
+pagination semantics with its own regression, not as a name-matched special case - the same
+discipline the repo already applies elsewhere.
+
+**Status of the arc.** Rounds 19-26 produced two committed, verified improvements
+(`d6639cd67` probe attribution, `f2397e74e` stop discarding it) and one confirmed root cause
+with a precise ip-level mechanism. No title moved: the ladder is 21/66. The three
+`index out of bounds` titles and the `getArbitrators`/`getUsers` family all wait on option A
+or B; the 38-title input-214 batch-witness class is independent and still open.
+
+### ROUND 27: `post job with invalid mece tags` is a genesis-state read, not a routing bug
+
+Took the remaining independent failure with the clearest signature. The title's error is
+`Expected transaction NOT to be reverted, but it reverted` on the **last, expected-success**
+call:
+
+    publishJobPost(title, contentHash, false, ["DV", "test"], fakeToken, 100e18, 120, "digital", 0, [user2])
+
+The two `revertedWith` assertions before it pass. The contract's own check
+(`MarketplaceV1.sol:247-259`) is:
+
+    for (uint8 i = 0; i < tags_.length; i++)
+      if (bytes(marketplaceData.meceTags(tags_[i])).length != 0) { meceCount++; if (meceCount > 1) revert("Only one MECE tag is allowed"); }
+    require(meceCount == 1, "Exactly one MECE tag is required");
+
+so for `["DV","test"]` to succeed exactly one of those two strings must be present in the
+`meceTags` mapping. It is reverting, which means **the covenant reads `meceTags` as empty** -
+and that also explains the passing-elsewhere assertion: `revertedWith("Only one MECE tag is
+allowed")` passes because the call does revert, just with the *other* message
+(`Exactly one MECE tag is required`), which the assertion does not distinguish.
+
+Where the mapping comes from: `MarketplaceDataV1.sol:149-155` populates it **in
+`initialize()`** (`meceTags["DA"] = "DIGITAL_AUDIO"`, `["DV"] = "DIGITAL_VIDEO"`, …), i.e. at
+genesis. The artifact confirms this is a **sorted, chunkable** mapping written through an
+8-slot batched upsert:
+
+    meceTags collection: { kind: 'mapping', keyType: 'string', valueType: 'string',
+                           sorted: true, chunkableValue: true }
+    initialize entryAccesses: meceTags slots 0..7, all operations: ['write']
+    initialize inputs: __internal__vmapBatchSlot_0..7, __internal__vmapBatchRows_meceTags,
+                       __internal__valueWitness_0..7, __internal__leadingPushValue_0..7
+
+So this is the **same 8-slot sorted batch family** as the input-214 class, but exercised at
+genesis rather than on a route, and observable through a much simpler predicate
+(`meceTags(tag).length != 0`).
+
+**Highest-value next probe (cheap, and it discriminates two very different causes):** after
+`deployContractsFixture`, read the `meceTags` entries back from the proxy -
+`marketplaceData.meceTags("DV")` should return `"DIGITAL_VIDEO"`. If it returns empty, the
+genesis batch wrote nothing (or wrote it at unreachable coordinates) and the whole
+`getArbitrators`/`publishJobPost` family shares this cause. If it returns the value, then the
+read inside the covenant is failing while the SDK's own read succeeds, which points at a
+string key-encoding mismatch between the SDK's `keyToSlot` for `string` keys and the covenant's
+key derivation - also a general bug, and one that would affect every string-keyed sorted
+mapping.
+
+**Note on scope:** unlike rounds 19-26, this defect is not behind the proxy-forwarder view-probe
+problem (option A/B in round 26). It is a state-materialization or key-derivation question,
+reachable with `meceTags(...)` directly on the proxy handle - no delegated read, no return band.
+That makes it the most promising independently-fixable target currently open.
+
+
+**Caveat on the readback probe:** a standalone fixture test was attempted and did not run - the
+marketplace fixtures are local to `marketplace.test.ts`'s describe scope, so importing that file
+does not expose `deployContractsFixture`. The probe and its vitest config were removed; tree is
+clean. Exercise the readback instead with a temporary assertion *inside* the existing title,
+immediately before the final `publishJobPost`:
+
+    console.log('DBG-MECE', await (marketplaceData as any).meceTags('DV'));
+
+Non-invasive, but it edits the Marketplace suite, which this repo's handoff requires be
+reverted after measuring.
+
+**One ambiguity to resolve with that same log:** the second assertion
+`.revertedWith("Only one MECE tag is allowed")` passes, and that message requires
+`meceCount > 1` - at least two tags *present*. A wholly empty map would revert that call with
+"Exactly one MECE tag is required" instead. So the mapping is probably NOT empty, and the
+failing `["DV","test"]` call is more likely hitting `meceCount == 0` or a neighbouring guard.
+Read `meceTags("DV")` and `meceTags("test")`: if `DV` returns `"DIGITAL_VIDEO"` while `test`
+returns `""`, genesis state is healthy and the defect is in how `checkJobPostData` iterates a
+runtime-sized `string[]` argument - a different and narrower bug than the one hypothesised
+above, and worth knowing before touching genesis materialization.
+
+### ROUND 28: the mece-tags hypothesis is REFUTED — it is the same preflight class
+
+Ran the readback probe from round 27 inside the title. Result:
+
+    DBG-MECE {"dv":"DIGITAL_VIDEO","test":"","da":"DIGITAL_AUDIO"}
+
+**Genesis is healthy.** `meceTags("DV")` returns `"DIGITAL_VIDEO"` and `meceTags("DA")` returns
+`"DIGITAL_AUDIO"`; `"test"` is correctly absent. So the mapping is populated, `keyToSlot` for
+string keys agrees with the covenant's derivation on this collection, and the sorted 8-slot
+genesis batch works. Every hypothesis in round 27 is refuted.
+
+Then captured the actual revert reason for the failing call:
+
+    Revert reason: "messageBus: BCH-2026 preflight failed at input 127: Program failed an OP_VERIFY operation."
+
+**This title belongs to the 38-title preflight class, not to an independent defect.** Input 127
+is a MarketplaceV1 route input, the same `BCH-2026 preflight failed at input N: Program failed an
+OP_VERIFY operation` family as the 214/216/127 groups in the ladder. It is not a tag-reading or
+argument-iteration bug at all: the `revertedWith` assertions earlier in the title pass because
+those calls are *supposed* to revert, and this one is supposed to succeed but dies in preflight.
+
+**Correction to the ladder accounting used in rounds 16-27.** The genuinely independent
+non-preflight failures are **3** (`index out of bounds` x3), plus 1 state-derivation convergence
+on `post job with invalid amount`. The "1 revert assertion" I repeatedly listed as independent
+was this title, and it is not independent. So the open work is:
+
+* 38 titles - input-214 batch-witness class (rounds 10-15; four defects isolated in the 4-slot
+  table, no fix landed);
+* 5 titles - input-216 (FakeToken route);
+* 2 titles - input-127 (this title among them);
+* 3 titles - `index out of bounds` (blocked on the proxy-forwarder view probe, round 26
+  options A/B);
+* 1 title - state-derivation convergence.
+
+**Method note, third instance this arc:** rounds 23-25 misattributed because I read a diagnostic
+near rather than at the failure; round 27 misclassified because I inferred the cause from the
+contract's source and a passing assertion instead of reading the revert. In both cases the
+one-line measurement (here: the `Revert reason:` line, which the harness already prints) was
+available and would have prevented the detour. Read the revert reason first.
+
+The test-file probe has been reverted; `.marketplace/` is generated and not tracked, and
+`grep DBG-MECE` confirms it is gone.
+
+### ROUND 29: input 127 — a 36-byte P2SH32 contract-identity mismatch at offset 6
+
+Ran the round-28 method (read the failure first, then the equality operands). `input 127` is
+`MarketplaceV1`, reached through `SolidCashProxy` (input 129) with `DataNft_ee643a16` entries
+alongside. The route aborts at instruction pointer **6** of an 8-instruction program
+(`instructionCount: 8`), and the ring capture shows exactly one mismatched large equality in the
+whole run:
+
+    ip 6:
+      left  = 23aa20ac44e8d664563800c6aae011c226b3327543616d4ec57251b85a2fbea6f9786287
+      right = 23aa2005e29c954b39460500103ebba17925a8b14d73727dc34e4b61428de3784cbc2b87
+
+Both are **36 bytes**, and both begin `23 aa20` - `0x23` is the pushdata length 35, so each
+operand is `PUSH35 aa20 <32-byte hash> 87`, i.e. a **P2SH32 locking bytecode**. Every other large
+equality in the run compares equal; this one does not.
+
+So the route is comparing two *contract addresses* and they differ in their 32-byte script hash.
+Neither hash appears literally in any artifact (confirmed by scanning all 105 JSONs), which is
+expected: these locks are assembled at runtime from a token category plus a slot/hash payload,
+so the mismatch is a **parameterisation** difference, not a stale constant.
+
+**Why this shape is informative:** the check sits at offset 6 of an 8-instruction program, i.e.
+in a *prologue*, before any effect handling - consistent with a participant/route identity
+assertion (`OP_INPUTBYTECODE`/`OP_UTXOBYTECODE`-parameterised lock equal to a computed one)
+rather than an effect or return check. It is therefore a different mechanism from both the
+input-214 batch-witness defects (rounds 10-15) and the input-216 FakeToken event frame.
+
+**Next step (one measurement):** dump the 8-instruction program at input 127 with its opcodes and
+pushdata (the failure dump already carries `ipWindow` when `SOLIDC_DEBUG_FAILURE_POINT_FULL=1`),
+and identify which local/slot the right-hand lock is derived from. Then compare that against the
+block layout the SDK used for input 127's participant. Because both operands are well-formed
+P2SH32 locks of the same structural shape, the difference is almost certainly *which* slot/category
+each side used - so the decisive question is "which two slots do these two locks correspond to",
+answerable by recomputing candidate locks from the participant's category and slot list.
+
+Note the participant geometry already known for this title (`MarketplaceV1` at input 127, proxy
+at 129, two `DataNft_ee643a16` at 130-131) - the mismatching pair may be the route's own block
+lock versus a *proxy/implementation* lock, which would make this a delegate-identity
+parameterisation bug rather than an entry/slot bug.
+
+### ROUND 30: input 127's prologue decoded — a bytecode-identity check with a computed operand
+
+Dumped the prologue (the failing program is 1721 instructions; the abort is in the first six):
+
+    ip 0  op 121   OP_DUP
+    ip 1  op 124   OP_SWAP      (124 = 0x7c)
+    ip 2  op 127   OP_NIP       (127 = 0x7f)
+    ip 3  op 124   OP_SWAP
+    ip 4  op 123   OP_ROLL      (123 = 0x7b)
+    ip 5  op 136   OP_EQUALVERIFY   <- this one PASSED (every large-equals row at ip 5 compares equal)
+    ip 6  (failing)
+
+and the mismatching equality is the one at ip 6:
+
+    left  = 23aa20ac44e8d664563800c6aae011c226b3327543616d4ec57251b85a2fbea6f9786287
+    right = 23aa2005e29c954b39460500103ebba17925a8b14d73727dc34e4b61428de3784cbc2b87
+
+Decoding the prologue: an `OP_OUTPUTBYTECODE` result is being rolled into place and compared
+against a precomputed P2SH32 lock, with a second equality immediately after. The passing ip-5
+equality and the failing ip-6 equality are therefore **two identity checks in sequence**, and the
+second one is the one whose right-hand operand disagrees with the transaction.
+
+**The actionable shape of this:** the left operand is a *computed* lock (it is produced by the
+prologue itself from introspection) and the right operand is a 35-byte `aa20<32>87` P2SH32
+address. A bytecode-identity check failing at this position means the SDK built the participant's
+output lock from **different parameters** than the covenant computed - the same class as the
+input-214 family's identity disagreements, but arrived at through an output-lock comparison
+rather than a batch witness.
+
+**Cheapest decisive measurement:** log, while building input 127's participant block, the
+`(slot or nftIndex, categoryId, computed lockingBytecode)` triples the SDK emits for its
+output-only slots, and compare each against `aa20ac44e8d6…` and `aa2005e29c95…`. Whichever triple
+reproduces the **right** operand is the slot the SDK chose; whichever reproduces the **left** is
+what the covenant expected. The difference between those two slot descriptors is the bug, and it
+is a one-line report rather than a new investigation.
+
+**Why not infer it from the artifacts:** neither hash appears literally in any of the 105
+artifact JSONs (round 29), because these locks are assembled at runtime from a category plus a
+slot/hash payload. The mapping has to come from the SDK's own construction, not from a constant
+search.
+
+### ROUND 31: input 127 compares the participant's own master lock against an unrelated slot
+
+Traced both operands of the ip-6 equality through the built transaction by scanning every input
+and output lock for the two 32-byte hashes (probe reverted). Result, filtered to distinct
+`(label, index, hit)`:
+
+    in  idx=  0   LEFT   cat=ee643a16  cap=minting  commitLen=0    <- participant master
+    in  idx= 18   RIGHT  cat=ee643a16  cap=none     commitLen=75   <- a state NFT
+    out idx=  0   LEFT   cat=ee643a16  cap=minting  commitLen=0
+    out idx= 18   RIGHT  cat=ee643a16  cap=none     commitLen=75
+    out idx= 10   RIGHT  cat=ee643a16  cap=none     commitLen=75   (from in 9)
+    in/out 217    LEFT,  in/out 303 RIGHT        (a second participant block)
+    in/out 129    LEFT,  in/out 215 RIGHT        (a third)
+
+All operands share category `ee643a16` (MarketplaceDataV1), so this is one contract family.
+
+**The reading:** the covenant's *left* operand is a **minting** NFT with an empty commitment -
+a participant **master** - and it sits at index 0 of its own block, i.e. literally
+`INPUTINDEX`. The *right* operand is a **mutable/none state NFT carrying a 75-byte commitment**
+at **index 18**. For input 127 the compared pair is therefore *this participant's master lock*
+against *a state NFT 18 slots away* - and 18 is far outside the master+block region, so the
+comparison is between two unrelated coordinates.
+
+**This is the same "wrong coordinate" family already documented twice in this file**, and the
+codebase already warns about exactly this shape:
+
+* `:28556` - "A plain send materializes no return event, so only the layout slot moves there -
+  the witness stays -1"; and
+* `MARKETPLACE_ENTRY_CARDINALITY_FINDINGS.md` / `_deriveFullTransactionState` - correcting
+  `implInputIndex + (physicalEntrySlot ?? blockSize)` to the layout's own entry-slot offset,
+  because `blockSize` is the coordinate just PAST the block.
+
+**Next step (one comparison, then a fix):** the participant's state/slot layout maps
+`master -> offset 0`, so identify which slot the covenant *intends* on the right-hand side and
+what index that slot resolves to for this participant. `input 127`'s block should place it near
+index 1-9, not 18. Log the slot list for input 127's participant (`blockLayout.slots` with
+`kind`/`offset`/`slotIndex`) together with the layout-derived absolute index of each, and the
+18-vs-expected delta names the bug. Given the two prior instances of this exact class were both
+"used a base instead of a published offset", start by checking whether the right-hand index was
+computed from a `blockSize`-like value rather than from the slot's own offset.
+
+### ROUND 32: input 127 is an ECRECOVER SIDECAR lock mismatch, and the expected hash is IN the commitment
+
+Resolved the `18` delta against the participant's published layout. `MarketplaceV1`'s route block
+is **127 slots**, and offset 18 is:
+
+    {"kind":"ecrecoverSideCar","offset":18,"slotIndex":14,"conditional":true}
+
+with `master` at offset 0, `dataNft` at 1-2, `keccakSideCar` at 3, and `ecrecoverSideCar` at
+4..19. So the right-hand operand of the failing equality is the **ecrecover sidecar slot at block
+offset 18** - not an entry and not an unrelated participant, as the previous two rounds guessed.
+
+Then the decisive detail. The left operand's hash appears **inside the idx-18 commitment**:
+
+    left  lock = 23aa20 ac44e8d664563800c6aae011c226b3327543616d4ec57251b85a2fbea6f9786287 87
+    right lock = 23aa20 05e29c954b39460500103ebba17925a8b14d73727dc34e4b61428de3784cbc2b87 87
+    idx-18 commitment begins: 0023aa20ac44e8d664563800c6aae011c226b3327543616d4ec57251b85a2fbea6f9786287...
+    -> embeds the LEFT hash  (verified)
+
+So the covenant compares `aa20<ac44e8d6>87` against `aa20<05e29c95>87`, and `ac44e8d6` is the
+P2SH32 that the ecrecover sidecar's own commitment references. The SDK materialised the
+offset-18 sidecar with **a lock that is not the sidecar lock its commitment points at** -
+commitment and locking bytecode disagree at the same output.
+
+**What this means and what to do next:**
+
+* This is the third distinct mechanism found in this group, and it is much narrower than
+  "wrong coordinate": it is an **output whose token commitment and locking bytecode were
+  produced from different parameters**. That is a single-output inconsistency, not a layout
+  offset error.
+* The immediate check: recompute the ecrecover sidecar locking bytecode for this participant's
+  category (`ecrecoverSideCar`, `slotIndex 14`) and see which of the two hashes it equals. Whichever
+  it is tells you which side is wrong - the commitment's expected lock or the output's actual
+  lock.
+* Because the sidecar is `conditional: true`, also check whether the SDK is materialising the
+  sidecar for a **different** slot index than the one whose commitment it wrote - i.e. writing
+  slot 14's commitment onto a lock computed for another ecrecover slot. The block publishes 16
+  ecrecover slots (offsets 4..19), 12 of them conditional, so a slot-index mix-up within that
+  family is plausible and would produce exactly this "commitment and lock disagree" shape.
+* `ecrecoverSideCar` appears 20 times in `MarketplaceV1.json`, so this is a first-class layout
+  feature with existing handling - search the SDK for how it builds these outputs before
+  changing anything.
+
+**Method note:** this round finally landed because the prologue (round 30) was decoded to an
+operand *pair*, and the pair was then traced to concrete transaction indices (round 31), which
+made the layout lookup meaningful. The previous two attempts reasoned from the artifact search
+alone and from a `blockSize`-style hypothesis; both were guesses about *which* coordinate was
+wrong. Deriving the actual index first was what made the slot identifiable.
+
+### ROUND 33: the sidecar salt scheme is a third form — computed locks match neither operand
+
+Read the sidecar construction. `ecrecoverComputeLockingBytecode(salt, 'A'|'B')`
+(`packages/utils/src/ecrecover-compute-library.ts:40`) is `aa20 <hash256(redeem(salt, role))> 87`,
+and the file documents **two** salts:
+
+* `salt = hexToBin(this.categoryId).reverse()` - the *branded* form, used for direct calls
+  (`StatefulContract.ts:12366`: "A branded sidecar checks the category at absolute input 0, which
+  is only the owning master for a direct call");
+* `new Uint8Array(32)` - the *shared* form, used when `selectedCalls || options.graphExecution`,
+  with the note that "Loop side-cars are always shared-salt ... the argBlob bind + A->B hash chain
+  secures the result", exposed as `ECRECOVER_COMPUTE_A_SHARED_LOCK` / `_B_`.
+
+Computed all four candidate locks for category `ee643a16…` and compared their hashes against the
+two operands:
+
+    shared(zeros)          A  e932c48ff89e3522e9b9f02f...    no match
+    shared(zeros)          B  d3572e7459708a7176fae150...    no match
+    branded(reversed cat)  A  08b82d62a1982500ba050e66...    no match
+    branded(reversed cat)  B  d5b82966aa685c867e95cfdb...    no match
+
+    LEFT  (covenant expected)  ac44e8d664563800c6aae011c226b3327543616d4ec57251b85a2fbea6f9786287
+    RIGHT (SDK materialised)   05e29c954b39460500103ebba17925a8b14d73727dc34e4b61428de3784cbc2b87
+
+**So neither operand is the branded or shared A/B lock for this category.** The mismatch is
+therefore not "the SDK picked the wrong one of the two documented salts" - it is a *third*
+derivation, or the operands are not sidecar locks at all despite offset 18 being an
+`ecrecoverSideCar` slot.
+
+**Two candidate explanations, in order of cheapness to test:**
+
+1. **The category is not the one I assumed.** I used `ee643a16…` because the idx-18 output carries
+   it, but the *covenant's* expected lock may be branded to a different category - e.g. the
+   master's category at absolute input 0, which for input 127 may be a different participant's
+   master than the one whose category the SDK used. Recompute the four locks for each category
+   present in the transaction (`ee643a16…`, `3770ad41…`, `424cc33a…`, `a3cef944…`) and for the
+   `SolidCashProxy` category; if one reproduces `ac44e8d6…`, the defect is a category mix-up.
+2. **The operands are not sidecar locks.** Offset 18 is an ecrecover slot *in this layout*, but
+   the compared index is derived by the covenant and need not equal the block offset. Re-derive
+   the compared index from the prologue's introspection sequence rather than assuming it is 18.
+
+Explanation 1 should be run first; it also retroactively tests the round-31/32 assumption that the
+right operand is "the idx-18 output's lock" rather than merely a lock *equal* to it.
+
+**Already run, and it failed:** all four locks were computed for the four categories present in the
+transaction (`ee643a16…`, `3770ad41…`, `424cc33a…`, `a3cef944…`), both salts, both roles - **zero
+matches**. So explanation 1 is eliminated as stated, and neither operand is an ecrecover sidecar
+lock under either documented salt for any category in this transaction. Explanation 2 (the compared
+index is not block offset 18) is therefore the live one.
+
+**Caution for the next probe:** the `SOLIDC_DEBUG_FAILURE_POINT_FULL` output truncates
+`lockingBytecode` to 16 hex characters and `commitmentHead` to 20, so it cannot be scanned for a
+32-byte hash. The round-31 index mapping (0 and 18) came from a *different* probe that emitted full
+locks (`SOLIDC_DEBUG_LOCK_NEEDLE`), and that probe has been reverted. Any further index mapping
+must emit full lock hex, not the truncated dump form.
+
+**Method note.** This round closed off a plausible mechanism (branded-vs-shared salt) with a
+direct computation rather than another inference. Worth keeping: computing the candidate values
+and diffing them is cheap, and it has now either confirmed or eliminated three hypotheses in two
+rounds.
+
+### ROUND 34: the input-127 comparison is an external-call transcript row, and the SDK duplicated the loop's element
+
+Rounds 29-33 chased a "P2SH32 lock mismatch at offset 6/18". That reading was wrong at the
+first step: the failing frame is a **6-instruction program** whose last instruction is an
+`OP_EQUALVERIFY`, and the two operands are **47/49-byte transcript records**, not bare locks.
+`evaluated.ip` is one past the last instruction, which is why the dump showed `ip: 6` with
+`opcode: None` and an `ipWindow` of only six entries.
+
+Decoding the operands as pushdata (the round-31/32 "locks" were 2-byte-length-prefixed
+frames, and the `23 aa20 … 87` I read as one lock is really `<u16 35> <P2SH32>` followed by a
+selector and an argument):
+
+    record = <u16 subjectLen> subject  <u8 mode> <4-byte selector> <u16 argsLen> args  <u16 resultLen> result
+
+`compose.ts:1393` builds exactly that (`concat(framed(targetLbc), mode, selector, framed(args),
+framed(result))`), so the compared value is an **invocation-transcript row** and the selector
+`2d232774` is the ABI selector of `meceTags` (confirmed in `MarketplaceDataV1.json`).
+
+`SOLIDC_DEBUG_FAILURE_POINT=1` at input 127 gave the real defect directly. The same 6-instruction
+program runs once per tag, and the failing pair differs **only in the tag bytes**:
+
+    occurrence 0: left == right == "...02 4456"                 ("DV" vs "DV")   equal
+    occurrence 1: left  = "...02 4456 40 00"                    ("DV" + 2 bytes)
+                  right = "...04 74657374"                      ("test")         MISMATCH
+
+`post job with invalid mece tags` calls `publishJobPost(tags = ["DV","test"])`; the Solidity loop
+`for (i…) if (bytes(marketplaceData.meceTags(tags_[i])).length != 0)` therefore evaluates
+`meceTags("DV")` and `meceTags("test")`. The covenant evaluated the right element, the SDK's row
+carried the **first** element for every occurrence.
+
+Confirmed at the SDK level with `SOLIDC_DEBUG_ATOMIC_PROMOTION=1`: the discovered node list has
+two `meceTags` rows at callsite 1 and **both print `args: ['DV']`**. Root cause chain:
+
+1. `SymbolTableTraversal.classifyArg` published a loop-local array index as `indexValue: 0`, the
+   same shape as "element zero, fixed" (its own comment said "the SDK expands these call sites in
+   array order; index zero identifies the first group").
+2. `StatefulContract._resolveExternalArgs`'s `arrayElement` case then used `indexValue ?? 0` and
+   ignored the `occurrenceIndex` it was already given — so every occurrence read element 0. The
+   **return-value** path did expand by occurrence (which is why row 1's *result* was already the
+   empty string for `meceTags("test")` while its *argument* was still `"DV"`).
+
+**Landed** (three commits, audit clean, no application names):
+
+* `1476de821` feat(solidc): publish the array index a loop occurrence selects — a loop induction
+  variable index publishes `indexValue` (value at occurrence zero) plus `indexStepValue`; a
+  literal index publishes an explicit `indexStepValue: 0`; an index the compiler cannot describe
+  keeps the unstepped form.
+* `823aafd78` fix(solidcash): advance a loop callsite's array index per reached occurrence — apply
+  the published delta in `_resolveExternalArgs`, and bind the reached occurrence at the two callers
+  that bake an occurrence into the sources themselves (`resolveLoopReturnValue`,
+  `rewriteOccurrenceIndex`) before resolving with occurrence zero.
+* `8e4077f86` test: cover the per-occurrence array index of a loop callsite.
+
+Fixture regeneration (required: the compiler's emitted JS changed) reproduced **only**
+`indexStepValue: 1` additions plus `updatedAt` in 11 artifacts — no bytecode change — and
+`yarn workspace testing-suite compile` reported all three example artifacts `Unchanged`.
+Pass-set check: 20/21 previously-passing titles still pass (the one "failure" is the pre-existing
+`register user > update user` index-out-of-bounds title matching the same `-t` filter).
+
+**Effect on this title: the input-127 preflight failure is GONE.** The third assertion now fails
+one layer earlier, at *planning*:
+
+    messageBus [L3_RESOURCE_UNRESOLVED]: message-bus batch collection witness
+    '__message_bus_key_meceTags_0' must identify one physical entry
+
+### ROUND 35: the next blocker is a kernel-route capability gap — a per-row collection key
+
+This is a real architectural gap, not a residual of the round-34 fix, and it is now the
+input-127 class's actual blocker.
+
+* The `meceTags` handler in `MarketplaceDataV1.json` declares one **global** key witness
+  (`batchKeyWitnesses: [{ routeInput: '__message_bus_key_meceTags_0', inputIndex: 0,
+  source: 'argument' }]`), and the route declares exactly one input of that name.
+* `encodeMessageBatch` (and `_buildRepeatedExternalBatch`) therefore require every row of the
+  batch to carry the **same** key value. Two rows reading two different mapping entries cannot be
+  expressed: the route has one value to authenticate one entry.
+* The compiler *has* a per-row form — binding `perRow: true` makes the route declare
+  `<name>_r<row>` parameters and the handler use `<name>_r${rowIndex}` — but it is only set by
+  `crossHandlerPerRowWitnesses` (two *handlers* binding the same witness from different
+  argument positions), never for one handler reached twice with different keys. It is also
+  currently **unreachable in the kernel convention**: `compiler.ts:8878` expands the per-row
+  parameters only `if (perRow && !kernelLoopDispatch)`.
+* So under `kernel-row-loop`, a generated public getter over a mapping can be batched only if
+  every row passes the same key — which is never true for the loop that motivated the call.
+
+**What the fix has to decide (not yet done):** in the kernel loop, an argument-sourced entry key
+should be resolved from the **row's decoded argument** rather than from a single route witness.
+`entryKeyArguments(fn)` already names the handler's entry-key arguments and the kernel body
+already decodes each row's arguments (`decode`/`declarations`); the `keyChecks`
+(`require(<entryKey> == <witness>)`) and the SDK's one-value-per-global-witness requirement are
+what force the single value. The open question that must be answered before writing it: whether the
+participant block layout can co-spend **two entries of one collection** (two distinct
+`meceTags` keys) at the key-derived input indices the covenant computes. That is the same
+subsystem as the input-214 batch-witness defects (`Slot_3` never materialising, `Next_0 = 0…0`),
+so those should be understood together rather than separately.
+
+### ROUND 36: input 214 resolves to an exact source line — a chunkable value never reaches its frame slot
+
+Ran `should whitelist worker` (the cheapest input-214 title) with
+`SOLIDC_DEBUG_FAILURE_POINT=1 SOLIDC_DEBUG_FAILURE_RING=1 SOLIDC_DEBUG_ROUTE_INPUT_INDEX=214`.
+
+**New technique — route ips map to source lines.** The failing program is input 214's
+`MarketplaceDataV1` route (`__message_bus1`, 18313 instructions, `unlockerContract:
+MarketplaceDataV1`, category `3770ad41…`). `MarketplaceDataV1.json` publishes
+`debug.functionDebug['53434231'].requires` with **1641** entries whose `ip` values run to 15317 —
+i.e. the route program's own coordinate space. Looking up `ip 7855` gives:
+
+    {"ip":7855,"line":393}                       (and every ip 7836…7880 → line 393)
+
+and `MarketplaceDataV1.sol:393` is
+
+    function arbitratorRegistered(address address_) public view returns (bool) {
+        return arbitrators[address_].publicKey.length > 0;      // <- line 393
+    }
+
+`JobArbitrator.publicKey` is `bytes` (unbounded, so a chunkable value: the entry stores
+`len || sha256(value)` and the value lives in chunk UTXOs). This is the **first time this class has
+been tied to a named source statement**; earlier rounds only had witness tables and output
+coordinates.
+
+**The failing instruction, decoded.** `message-bus-large-equals` reports the one unequal
+EQUALVERIFY in the whole run:
+
+    ip 7855 (of 18313):  left = e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+                         right = c2a8d2ff56802508ee018495941516441069e7ddcd8d1f9c96c3219591547617
+
+`left` is exactly `sha256("")`. The ip window is
+
+    7845 OP_16   7846 OP_INVOKE (function table 16)   7847 OP_DEPTH   7848 OP_11
+    7849 OP_MUL  7850 OP_PICK   7851 OP_DUP  7852 OP_SHA256  7853 OP_2  7854 OP_PICK
+    7855 OP_EQUALVERIFY   <- fails
+
+which is `require(sha256(V) == A)` where `V` is read out of the **current row frame** at
+`stackDepth * 11` (`OP_DEPTH OP_11 OP_MUL OP_PICK`: each row frame is 11 slots) and `A` is the
+expected value digest. `V` is empty. So the covenant looked in the frame slot that should hold
+`arbitrators[address_].publicKey`'s value and found nothing, while the expected digest
+(`c2a8d2ff…`) was computed correctly.
+
+**The SDK did stage a value.** `SOLIDC_DEBUG_VALUE_CHUNKS=1 SOLIDC_DEBUG_VALUE_WITNESS=1` shows,
+for resource `ee643a16…:3b2d866b…:e3b0c442…`:
+
+    value-chunk-producer-stage        valueBytes 205   -> stage-result stagedOwned: true
+    value-chunk-producer-stage        valueBytes 233   -> stage-result stagedOwned: true
+    value-chunk-producer-select       producerSelectionStatus "owned:233" writeCount 1 claimCount 2 minChunks 2
+    value-chunk-producer-select       producerSelectionStatus "owned:233" writeCount 1 claimCount 2 minChunks 6
+    value-chunk-producer-bind (x4)    functionName __message_bus1, rowCount 5, rows
+                                      [9bd3de95, 2d232774, 177472f2, a826ee9c, a826ee9c]
+
+Note `9bd3de95` **is** `arbitratorRegistered`'s selector (row 0 of the five-row batch), and the
+staged owned value is 233 bytes. So the value exists on the SDK side and does not reach the frame
+slot the covenant reads. This is the **value-witness / frame-relocation family** that rounds 6-9
+and the `transportedValueChunks` work already touched — not the entry-slot index space that
+rounds 10-15 chased.
+
+**Next step (one measurement):** dump, for the failing row, the `(rowIndex, frameSlot, value)`
+pairs the SDK writes into the route frame (the `__internal__valueWitness_*` /
+`__internal__leadingPushValue_*` family) next to the slot the covenant reads at ip 7850
+(`depth * 11 - <frame base>`). The row-0 selector is `9bd3de95` and the frame stride is 11, so the
+comparison is a small table, not a new investigation. `SOLIDC_DEBUG_VALUE_WITNESS=1` already prints
+the witness side; what is missing is the *frame slot ordinal* each staged value lands in.
+
+**Method note.** Two things made this round cheap and would have made earlier input-214 rounds
+cheap: (1) `debug.functionDebug['53434231'].requires` maps a route `ip` straight to a source line,
+and `probeRequireStatement` in the SDK already implements that lookup; (2) reading the two
+EQUALVERIFY operands *as the decoded instruction sequence around them* (`OP_PICK OP_DUP OP_SHA256
+OP_2 OP_PICK OP_EQUALVERIFY` = "verify a value against its digest") says what the check means,
+where reading the operands alone only said "two 32-byte values differ".
+
+### ROUND 37: the input-214 class is FIXED — value witnesses were keyed by position, not by slot ordinal
+
+Round 36 left one measurement: "dump the `(rowIndex, frameSlot, value)` pairs the SDK writes next to the
+slot the covenant reads". That measurement found a defect one layer up from the value itself.
+
+**What the route actually received.** Re-ran `should whitelist worker` with the failure-point diagnostic
+widened (now committed) to print the `__internal__valueWitness_*` / `__internal__leadingPushValue_*`
+route parameters. The route passed:
+
+    valueWitness_0  0B      leadingPushValue_0    0B
+    valueWitness_1  106B    leadingPushValue_1  205B
+    valueWitness_2  106B    leadingPushValue_2    0B
+    valueWitness_3  114B    leadingPushValue_3    0B      <- the arbitrators struct
+    valueWitness_4..8  0B
+
+`arbitratorRegistered` is bound to physical entry slot **4** (`physicalEntrySlots: [4]`), and the route's
+`__internal__valueWitness_4` was **empty**, while the 114-byte `arbitrators` value sat on slot 3. The
+covenant hashed the empty value it found and failed `require(sha256(value) == <entry digest>)` - the
+round-36 equality at ip 7855.
+
+**Root cause.** `route.entryAccesses` is the union `[userRatings, jobEvents, users, users, arbitrators,
+meceTags, users, arbitrators, userReviews]`, so the route publishes one witness position per union entry
+slot. `userRatings` is not a chunkable collection, so the SDK's collection loop pushed nothing for it, and
+the SDK then filled the published positions **positionally** from that compact list. Every value after the
+first unwitnessed slot landed on the parameter of the slot before it. The two consumers
+(`abiFunction.inputs` for a direct frame, `bFunc.inputs` at the delegate-argument assembly) both read
+`entryValueWitnesses` positionally, which is why both were affected.
+
+**Landed** (`05be374e7` fix(solidcash): key a value witness by its entry-slot ordinal, not by position):
+`entryValueWitnesses` is now a `Map<slot ordinal, witness>`, and both consumers read the ordinal out of the
+ABI name they are filling (`__internal__valueWitness_<ordinal>`). A slot that resolves no witness leaves
+its own position empty, and a resolved witness with no published position is refused instead of silently
+mis-slotted. The failure-point `routeParams` diagnostic also prints the value-witness / leading-push route
+parameters (kept: it is what localized this).
+
+**Effect.** Every input-214 title measured now advances to **input 216**:
+`take job`, `update job tags`, `integration test`, `post job 1`, `post job with whitelist`,
+`should whitelist worker` (and `post job two jobs`). The pass set is unchanged (20/21; the one is the known
+`register user > update user` index-out-of-bounds title matching the same `-t` filter).
+
+### ROUND 38: input 216 is one batch entry output short — `_allowances` lane 3 never materializes
+
+With 214 fixed, the next blocker is input 216: a **FakeToken** route participant (category `424cc33a…`).
+The failure is at `ip 1` of a **5-instruction** body (`invokeDebug['45']` = `OP_PICK OP_EQUALVERIFY OP_DUP
+OP_OUTPUTTOKENCATEGORY OP_DUP`, used from the route at ip 6397):
+
+    UNEQUAL ip 1 of 5:  left = 51                                  (a bare OP_1 output script)
+                        right = aa20c85f18ac45dbf85476ec948a712b3050f9ae817c32f3e89228d8da3e3b93883087
+
+The helper is `require(<expected entry lock> == OP_OUTPUTBYTECODE(inputIndex + 5))`, and the trace
+(`message-bus-failure-ring`, which now shows the pre-instruction stack) proves `tx.outputs[221]` has
+locking bytecode `51` while the covenant expects the `_allowances` entry covenant lock.
+
+`FakeToken.messageBus.route.blockLayout` puts the four sorted-batch entry slots at block offsets
+**2, 3, 4, 5**, and the assembled block (base = output 216) has:
+
+    out 216 master | 217 dataNft | 218 entry e2a4aac2 (offset 2) | 219 entry 8c600621 (offset 3)
+    out 220 entry 09f85bbf (offset 4)  |  out 221 = 0x51 PLACEHOLDER (offset 5)  <- missing entry
+
+The batch is `_balances[0,1]` + `_allowances[2,3]`; lane 3's target is `f8f64388…` and **no output in the
+whole transaction carries it** (checked the full entry-lock inventory and the 308-output dump).
+
+**Where it is NOT (measured, probes reverted):**
+
+* The plan is right: `vmap-batch-plan` shows `_allowances slotIndices [2,3]` with plan outputs for both
+  `09f85bbf` and `f8f64388`.
+* The final entry plan is right: `entry-plan-final` shows slot 3 with `exists=false`, `utxo=false`,
+  `inactive/hardDelete/softDelete/aliasSkip` all false and `placeholder='f8f64388…'`.
+* The builder is right: `entry-output-slot` shows `slot=3 offset=5 produced=true raw='f8f64388…'` in every
+  instance, and `assignBalancedOutputAtOffset` never substitutes a placeholder.
+
+So the entry output **is** produced at the group's offset 5 and something *after* `_createBuilder`
+replaces it. The one place that writes a bare `0x51` output into a participant block is
+`compose.ts:3104`:
+
+    while (local.outputs.length < blockSize && local.outputs.length < local.inputs.length) {
+      const input = local.inputs[local.outputs.length];
+      local.addOutput({ to: Uint8Array.of(0x51), amount: input.satoshis });
+    }
+
+**Next step (one measurement):** log the participant's `local.outputs` immediately before and after that
+padding loop (lock, index, token commitment) together with the group builder's own outputs. If the entry
+output for offset 5 is absent from `local.outputs` before padding, the assembly dropped it (compare the
+group's `outputs` array against `local.outputs`, slot by slot); if it is present before padding and gone
+after, the padding loop is replacing it.
+
+**Method note.** The ring's pre-instruction stack (`message-bus-failure-ring`, the last entry with
+`instructionCount == <body size>`) is what identified `OP_OUTPUTBYTECODE(inputIndex+5)`; the collector's
+`large-equals` pair alone only said "`51` vs a lock". Pair the two dumps: the collector gives the operands,
+the ring gives the stack that produced them.
+
+### ROUND 39: the missing lane is a deleted one — derivation removed an active batch lane
+
+Round 38 asked for the participant's `local.outputs` before/after the composer's padding loop. The padding
+loop is innocent, and so is the composer: `atomic-local-block-as-built` (probe, reverted) shows the block
+arriving from `localCall.build()` already with the placeholder at offset 5.
+
+The built-in stage hook found the writer in one run - it prints the transition of one output index through
+every builder stage:
+
+    SOLIDC_DEBUG_OUTPUT_INDEX=5 SOLIDC_DEBUG_OUTPUT_CATEGORY=424cc33a
+
+    layout-entries          -> output 5 MISSING            (nothing placed it at the entry layout)
+    balanced-trailing-frame -> output 5 = _balances lock, commitment e3b0c442…   (a filler)
+    … later builders: layout-entries -> _allowances lock f8f64388…   (correct!)
+    … and others:     layout-entries -> 51 placeholder
+
+So the decision is made **inside the builder**, before the composer ever sees it: sometimes the lane's
+entry output is produced, sometimes the slot is a placeholder. The writer is the derivation's conditional-slot
+cleanup (`_deriveFullTransactionState`, ~16193):
+
+    const observedSlots = new Set([...commitMap.keys()].map((outIdx) => slotOrder[outIdx - entryOutputBase]));
+    const conditionalSlots = new Set(slotOrder.filter((slotIndex) => … stb.isEntrySlotConditional(slotIndex)));
+    for (const slotIndex of conditionalSlots) {
+      if (observedSlots.has(slotIndex) || stb.isEntrySlotPinned(slotIndex)) continue;
+      const commitment = stb.getExistingEntryCommitment(slotIndex);
+      if (commitment) { … } else { stb.deleteEntry(slotIndex); … }
+    }
+
+Every FakeToken entry slot is `conditional: true`, lane 3 is a *fresh insert* (no existing entry) and the
+probe never observed its commitment (the covenant gates the untaken orientation of the swappable
+`_allowances` pair), so derivation **deleted** it. That rule is right for a cache-lowered invariant flush
+whose dirty arm was not reached; it is wrong for a sorted-batch lane, whose coordinate the batch covenant
+verifies positionally - the lane's published batch witness (`predOut`), not the trace, says whether the lane
+is active.
+
+**Landed** (`52a9a8fea` fix(solidcash): keep an active sorted-batch lane's entry output): every slot that
+receives a batch target placeholder is marked with the new builder method `requireEntryOutputSlot`, and the
+derivation cleanup skips required slots. A placeholder only exists for a lane the batch publishes as active
+(inactive and alias-skipped lanes `continue` before it), so the mark is exactly "this lane's output is read
+at its fixed block coordinate". Probes reverted; pass set unchanged (20/21, the one being the known
+`register user > update user` filter overlap).
+
+**Effect:** output 5 now consistently ends as the `_allowances` entry with commitment `f8f64388…`, and the
+input-216 failure **moves past the lane check** to `ip 2` of a different body.
+
+### ROUND 40: the next input-216 check is the participant's own return-event frame
+
+The new failure is inside the callee's route, at `ip 2` of the 33-instruction body
+`invokeDebug['-25']` (`OP_OVER OP_OUTPUTTOKENCOMMITMENT OP_EQUALVERIFY OP_DUP OP_OUTPUTTOKENCATEGORY …` -
+"verify this output is exactly (commitment, category, amount, lock, value)"). Both operands are
+**98-byte pushdata-wrapped frames** (`4c60` = `OP_PUSHDATA1 96` + a 96-byte payload):
+
+    L (stack[-2], the route's expectation, 98 B)
+      4c60 00×22 36 35 c9 ad c5 de a0 00 00 00 00 00 00 01 00×32 01
+    R (stack[-1], OP_OUTPUTTOKENCOMMITMENT of the output under test, 98 B)
+      4c60 00×29 01 00×33 01
+
+    diff: payload bytes 23..29  L = 36 35 c9 ad c5 de a0   R = 00 00 00 00 00 00 00
+          payload byte 31      L = 00                        R = 01
+
+So the SDK materialized a return-event frame whose amount-like 8-byte field is zero where the covenant
+computed a value, and whose trailing flag byte is 1 where the covenant has 0. The ring shows the output
+index on the stack below the pair (`2:ee00` = 238 = the FakeToken participant's `returnEvent` slot at block
+offset 22), and the *next* checks in the same body (category split, token amount 0, locking bytecode,
+output value ≤ N) are the standard "this output is exactly the declared event" sequence.
+
+This failure was previously masked by the lane check in the same input, so it is *not* a regression from
+ROUND 39 - but ROUND 39 changed which entry outputs exist, so the derived frame may legitimately have
+changed too. Confirm that before treating it as pre-existing.
+
+**Next step (one measurement):** dump the return-event frame the SDK writes for this participant next to the
+one the route computes: `SOLIDC_DEBUG_RETURN=1` prints the return-event derivation, and
+`message-bus-output-summary`/`SOLIDC_DEBUG_FAILURE_POINT_FULL=1` give output 238's commitment. The byte that
+separates the two frames is a `01` in the SDK's trailing field and an amount (zero in the SDK's) - i.e. the
+SDK's frame looks like "amount field empty, flag set" while the route's is "amount present, flag clear".
+`SOLIDC_DEBUG_OUTPUT_INDEX=22 SOLIDC_DEBUG_OUTPUT_CATEGORY=424cc33a` traces that slot through the builder
+stages.
+
+**Already run (round 40b), and here is the frame's shape.** The slot really is the `returnEvent` slot
+(block offset 22, absolute output 238): its output is a **bare `OP_1` lock carrying a `capability: none`
+token whose commitment is the 98-byte frame** (`4c60` = `OP_PUSHDATA1 96` + a 96-byte payload), which is
+`<u16 length> + 3 × 32-byte words`:
+
+    word 0 (payload bytes 0..31):  covenant L = 36 35 c9 ad c5 de a0 00 00  (0x3635c9adc5dea00000 = 1e21)
+                                   SDK      R = 00 … 01
+    word 1 (payload bytes 32..63): both = 00 … 01
+    word 2 (payload bytes 64..95): both = 00 … 01
+
+So the SDK wrote `1` in the first word where the route's own computation has the **transfer amount**
+(`1e21` = `BigInt(1000e18)`, the amount both `post job 1` and `should whitelist worker` move), and the other
+two words agree. `SOLIDC_DEBUG_OUTPUT_INDEX=22 SOLIDC_DEBUG_OUTPUT_CATEGORY=424cc33a` shows the frame is
+written at the builder's `balanced-trailing-frame` stage (and is sometimes `00`, i.e. an empty
+commitment, in probe builders), so the writer is whatever materializes the participant's return-event
+output, not the composer.
+
+**Next measurement (narrowed):** find the writer of that first word. `SOLIDC_DEBUG_RETURN=1` plus a grep for
+the return-event commitment builder (`returnEventCommitment` / `pendingReturnEventOutputs` /
+`seedPrecomputedReturnEvents` in `StatefulContract.ts` and the return-event block in
+`StatefulTransactionBuilder`) - start from the value `1`: a literal 1 in the first word of a 3-word frame is
+what a *default/blank* frame looks like, so the likely defect is that the amount-bearing word is never
+filled for this participant (the amount is known from the row's arguments, which the covenant reads).
+
+### ROUND 41: the frame is the participant's return vector, and two seeds for one part disagree
+
+Chased the first word. `SOLIDC_DEBUG_RETURN_VECTOR=1` and the return-event seeding probe
+(`set-return-event-output`, enabled by `SOLIDC_DEBUG_FAILURE_RING=1`) give both sides:
+
+    atomic-return-vector  -> only participant 0 (MarketplaceV1) is printed; the FakeToken participant never
+                             reaches that path, so its 98-byte commitment is not assembled there.
+
+    set-return-event-output (FakeToken category 424cc33a…):
+      424cc33a…          len=1   '00'                                  (clear)
+      424cc33a…          len=32  …0001
+      external-call:1:0  len=32  …3635c9adc5dea00000   = 1e21
+      external-call:2:0  len=32  …3635c9adc5dea00000   = 1e21
+      external-call:4:0  len=32  …3635c9adc5dea00000   = 1e21
+      external-call:4    len=32  …3635c9adc5dea00000   = 1e21
+      external-call:1    len=32  …0001                              <-- disagrees with :1:0
+      424cc33a…          len=98  4c60…  (the frame the covenant rejects)
+
+So the frame is the participant's **return vector**: one 32-byte word per returning invocation
+(`external-call:N` / `external-call:N:0` name one physical return part). The covenant's expected frame is
+`[1e21, 1, 1]` and the SDK's is `[1, 1, 1]` - i.e. the first returning invocation's result is the one in
+dispute, and the *call-specific* seed (`external-call:1:0` = 1e21) agrees with the covenant while the
+non-provisional `external-call:1` = `1` does not.
+
+Where each seed comes from:
+
+* `external-call:N:P` - `seedPrecomputedReturnEvents` (`StatefulTransactionBuilder.ts:15155`), value
+  `candidate.precomputedReturnCommitment ?? fallback`, provisional when the candidate has no precomputed
+  value. This is the call-specific value and it matches the covenant.
+* `external-call:N` - the same pass (`:15166`) seeds the whole-call alias with the **physical group's**
+  fallback; `StatefulContract.ts:14267/14692` also seed both names from a **trace-extracted**
+  `returnCommitments[0]` with `provisional = false`, and a non-provisional write can never be replaced.
+
+**Tried and reverted:** seeding the whole-call alias with the *same call's* first part
+(`loopReturnCommitments[0] ?? precomputedReturnCommitment ?? fallback`) instead of the physical group's
+value - the fix that matches the documented alias rule. It is **inert for this blocker**: `external-call:1`
+already holds a non-provisional trace-extracted value, so `shouldReplaceReturnEventCommitment(false, true)`
+rejects the corrected seed. The change is correct in principle (see the alias-synchronization comment at
+`StatefulTransactionBuilder.ts:15214`), but it cannot help until the trace-extracted value is right, so it was
+reverted rather than landed unverified.
+
+**The live hypothesis (next measurement):** the trace extraction returns `…0001` for a part whose value is a
+*`uint256` result* (`1e21`). A `bool` and a `uint256` both encode to a 32-byte word, so a **wrong result
+type** for that invocation would produce exactly this "same length, `1` instead of the amount" shape. Note
+the two encodings the composer supports: `compact-pushdata-v1` decodes per `invocation.resultTypes` via
+`canonicalNativeResultField`, and for it the composer *re-materializes* the output from the decoded canonical
+fields (`compose.ts` ~3700); `evm-abi-v1` slices `evmInvocationResultLength`. So:
+
+1. print the plan's per-invocation `resultTypes`/`resultEncoding` for the FakeToken participant and compare
+   them with the route's actual return schema (`messageBus.handlers[].outputs` for the selected handlers);
+2. if they disagree for the first returning invocation, the fix is in the type list the plan carries, not in
+   the seed values;
+3. if they agree, the extraction is at fault - start from
+   `extractPendingReturnCommitment` / `extractCommitmentsFromTrace` /
+   `extractExpectedOutputCommitmentFromTrace` (`StatefulContract.ts:14160-14290`) for that part.
+
+`atomic-return-vector` did not fire for this participant, so whatever assembles its 98-byte frame is the
+`seedPrecomputedReturnEvents` path plus the builder's `balanced-trailing-frame` materialization of
+`pendingReturnEventOutputs` - not the composer's decode loop. Confirm which value that materialization
+selects for the aliased part before changing the seeds.
+
+**The return schema makes the hypothesis concrete.** `FakeToken.messageBus.handlers` publish mixed result
+types:
+
+    balanceOf uint256   allowance uint256   totalSupply uint256
+    transfer  bool      approve   bool      transferFrom bool
+
+so the participant's return vector is a mix of `uint256` words and `bool` words, and a `uint256` word of
+`1e21` versus a `bool` word of `1` is exactly the observed "same 32-byte length, different value" shape. The
+first returning invocation of this participant must therefore be a `uint256`-returning call whose word the
+frame filled with a `bool` value - i.e. the per-invocation `resultTypes` the plan carries for it are the
+thing to check first (see the three steps above).
+
+### ROUND 42: the types are right - the CLAIMED VALUE for the uint256 invocation is not
+
+Round 41's first step (compare the plan's per-invocation result types with the route's schema) came back
+clean, and it also produced the value that is actually wrong. A probe on `compose.ts:3586`
+(`atomic-owned-returns`, since reverted) prints, per participant, the invocations whose `resultTypes` are
+non-empty together with the result the plan currently claims for each:
+
+    participant 2 FakeToken
+      invocation 2  balanceOf     resultTypes ['uint256']  evm-abi-v1  claimed …0001   <-- wrong
+      invocation 3  approve       resultTypes ['bool']     evm-abi-v1  claimed …0001
+      invocation 5  transferFrom  resultTypes ['bool']     evm-abi-v1  claimed …0001
+
+So the vector is `[balanceOf, approve, transferFrom]`, the types match the handler schema
+(`balanceOf uint256`, `approve`/`transferFrom` bool), and the only bad value is the `uint256` one: the plan
+claims `1` (a bool-shaped word) where the covenant computes the balance (`0x3635c9adc5dea00000`, the value
+the `_balances` input commitment at index 218 also carries). No type or ordering defect.
+
+**Where that claim comes from.** `claimedResults` starts as `provisionalResults` (`compose.ts:3722`) - the
+discovery pass's provisional result commitments - and the convergence loop only replaces an entry when the
+*provisional transaction* exposes a different value (`deriveReturnResults`, `compose.ts:3575-3710`, then
+`claimedResults = derivedResults`). The FakeToken participant's own return output is materialized by its
+builder from exactly those seeds (`seedPrecomputedReturnEvents` -> `pendingReturnEventOutputs` ->
+`balanced-trailing-frame`), so a wrong provisional value can be **read back out of the transaction the SDK
+just built** and confirm itself; `atomic-return-probe-missing` never fired for participant 2, i.e. the probe
+*did* extract a blob there.
+
+**Next measurement:** print the FakeToken participant's `provisionalResults` entry for invocation 2 where it
+is first produced (the discovery path that evaluates `balanceOf` off-chain and stores
+`provisionalResultCommitment` on the prepared call) and compare it with the same call's *post-state* balance
+in the composed transaction. If the off-chain evaluation reads the **pre-transaction** balances entry (a
+stale/other value, here `1`), the fix is to stop trusting a provisional result that the same pass also seeds
+into the transaction - e.g. mark the seeded return output untrusted in `deriveReturnResults`, or derive the
+value from the covenant's own computation in the trace instead of from the output commitment the SDK wrote.
+
+### ROUND 43: the frame is not assembled from the `external-call:*` seeds at all
+
+Round 42 left "print where `provisionalResults` for the `balanceOf` invocation comes from". Doing that named
+the exact writer, and it is **not** the alias selection.
+
+**What the seeds are.** A probe on the node→seed mapping (`atomic-seed-selection`, reverted) shows the
+FakeToken participant's returning nodes and the identity each one picks:
+
+    meceTags        group 0  identities {0}     matched external-call:0:0
+    balanceOf       group 1  identities {1, 4}  matched external-call:1:0      <- fused with group 4
+    approve         group 2  identities {2}     matched (none)
+    userRegistered  group 3  identities {3}     matched external-call:3:0
+    transferFrom    group 4  identities {4}     matched external-call:4:0
+
+`balanceOf`'s physical group is 1 and its logical return group is 4, i.e. the two calls fuse onto one
+physical return group. The seeds themselves (from the `set-return-event-output` probe):
+
+    external-call:1:0 = …3635c9adc5dea00000   (1e21 - the canonical value the covenant expects)
+    external-call:1   = …0001                 (later, non-provisional, probe-extracted)
+
+**Two preference fixes tried, both inert.** Both the tail selector
+(`selectMaterializedTailReturnEvents`, whose own doc comment says the numbered form is the call's
+independently evaluated canonical result and only a *provisional* seed may be superseded) and the in-block
+writer reassert (`_reassertInBlockWriterReturns`, which looks the alias up before its `:0` counterpart) were
+changed to prefer an authenticated numbered entry. Neither changed the failing frame by a single byte, and a
+probe placed in the tail selector **never fired** for this participant, so neither path assembles the frame.
+Both were reverted.
+
+**Where the frame really comes from.** The 98-byte frame is seeded with identity = the *participant
+category* (not `external-call:*`) by
+
+    builder.setReturnEventOutput(this.categoryId, blob);        // StatefulContract.ts ~32477
+
+with `blob = this._deriveReturnBlob(builder, returnMaterializationOutputIndex, delegatecallInputIndex ?? 0)`,
+i.e. the contract derives the participant's whole return blob and publishes it as one opaque frame. That is
+the value the materializer and the composer both read, so the wrong first word is either produced inside
+`_deriveReturnBlob` (a probe read of the participant's own return output) or in whatever materializes that
+output's commitment for a multi-part participant before the probe runs.
+
+**Next measurement (one probe):** log inside `_deriveReturnBlob` for the FakeToken participant
+(`returnOutputIndex` = its `returnEvent` slot, category `424cc33a`) the `commitments` it extracts, the probe
+transaction's commitment at that index, and the `trace` tail if the extraction comes back empty. That names
+the reader; then walk backwards one step to whichever code writes that output's commitment (the builder's
+`balanced-trailing-frame` stage is where the 98-byte value first appears, per
+`SOLIDC_DEBUG_OUTPUT_INDEX=22 SOLIDC_DEBUG_OUTPUT_CATEGORY=424cc33a`).
+
+**Note for whoever continues:** the `post job 1` frame and the `should whitelist worker` frame are
+byte-identical in their first word conflict, so this one writer is the whole input-216 class.
+
+### ROUND 44: the input-216 return-frame class falls — 26/66
+
+ROUND 43's one-probe plan paid off, and the writer it named is not the fix site. The chain is:
+
+1. The composer's only correction path for a returning participant's claimed per-invocation results is
+   `_messageBusReturnBlobFromTransaction` (`compose.ts:3599`). Its targeted observation
+   (`extractCommitmentsFromTrace` over the return-event output) finds nothing when the progressive probe stops
+   after the route assembled its frame and before that frame's output comparison.
+2. The weaker reading that exists for exactly that state - `extractSchemaFallback` -> `extractEvmReturnCommitment`
+   - was called with `allowRaw = false`, which rejects a *bare* (unframed) ABI vector. So `blob` came back
+   `undefined`, `atomic-return-probe-missing` fired for participant 2, and `deriveReturnResults` kept the
+   discovery pass's provisional claim for the `balanceOf` row (`…0001`) instead of the value the route computed.
+3. The participant's frame is then assembled by the composer from those claims, so it stayed `[1, 1, 1]` and the
+   participant's own covenant rejected it at input 216 - exactly ROUND 40's byte conflict.
+
+**Evidence.** With `SOLIDC_DEBUG_RETURN_VECTOR=1 SOLIDC_DEBUG_RETURN_VECTOR_CONTRACT=FakeToken
+SOLIDC_DEBUG_RETURN_VECTOR_INPUT=216` the failing route frame's stack carries the *complete and correct* vector
+`0000…3635c9adc5dea00000 ++ <bool 1> ++ <bool 1>` while `observations` is empty and `atomic-return-vector` never
+prints for participant 2. A probe on `_deriveReturnBlob` (reverted) also showed that the FakeToken participant's
+own blob derivation is not called inside the composition at all - it runs once during deployment
+(`inputIndex 0`, `returnOutputIndex 3`) - so the frame really is the composer's, assembled from claims. That
+closes ROUND 42's "where does the claim come from" question: the claim is right, only its correction path refused
+the evidence.
+
+**The fix** (commit `00b8a78ed`): `isConstrainedEvmResultVector` (`StatefulContract.ts`, next to
+`EVM_DYNAMIC_RETURN_TYPES`) now decides `allowRaw`. A *multi-row* scalar vector whose rows constrain their
+encoding - at least one `bool`, `address`, fixed-bytes, or narrow `int`/`uint`/`fixed` row - is accepted in its
+bare form as the weaker reading. A lone ABI-width word stays rejected (state hashes, mapping witnesses, and
+placeholders are all canonical `uint256` words), a vector made only of unbounded `int`/`uint`/`bigint` rows stays
+rejected, dynamic rows stay rejected, and the compiler-framed reading still wins whenever the trace exposes it.
+The final BCH-2026 preflight authenticates whichever reading reaches assembly, so a wrong claim cannot survive.
+Regression coverage: `packages/solidcash/test/unit/ExternalReturnEncoding.test.ts`
+(`isConstrainedEvmResultVector`, plus the bare-vs-framed selection it drives).
+
+**Ladder: 26 pass / 39 fail** (was 21/45), one complete 66-title run
+(`npx vitest run --config vitest.marketplace.config.ts --reporter=verbose --no-file-parallelism`), zero
+regressions - all 21 previously passing titles still pass. The five new passes are
+`job posting > post job with whitelist`, `take job > sanity checks`, `pay start job > sanity checks`,
+`dispute > sanity checks closed job`, `refuse arbitration > job closed`; the rest of the input-216 class now
+fails later, in the classes below.
+
+**Gates.** Root `yarn build` clean. SDK unit suite: 4 failed / 720 passed; the same four test names fail with the
+fix reverted (`RecursiveEvmResultLayout` x1, `ValueChunkConstructionAuthority` x1, `ValueChunkDescriptorAuthority`
+x2), so the fix adds three passing tests and regresses none. The change is SDK-only, so the compiled fixture and
+the testing-suite artifacts are untouched.
+
+### ROUND 44b: what is left, and the next measurement
+
+The 39 failures are now six signatures. The dominant one is a *send* guard, not a read:
+
+    18  "messageBus: transported continuation output does not own a balanced trailing slot"
+     7  getEvents / getJobs read an empty array ("Cannot read properties of undefined (reading 'job')" x6,
+        "expected [] to contain subset" x1)
+     3  "index out of bounds ... probe stopped at ip 5 (opcode 85): Program attempted to read from an invalid
+        transaction UTXO index ... requested index: -1" (getUsers / getArbitrators)
+     3  "state commitments could not be auto-derived ... Route probe convergence repeated a physical state"
+     2  "Signer transaction nonce 16 is already reserved"
+     2  "[L3_RESOURCE_UNRESOLVED] ... '__message_bus_key_meceTags_0' must identify one physical entry"
+     1  "expected 0n to deeply equal 2n" (update job many times, get history)
+
+**The continuation class, measured.** A probe on `update job` (`SOLIDC_DEBUG_CONTINUATION=1`, reverted) prints
+the plan the composer computes at `compose.ts:2706` and the state that raises the guard at `compose.ts:2836`:
+
+    participant 1 MarketplaceDataV1, transportedChunkCount 2, chunksPerCandidate [2]
+    valueChunkSlots: [[0,21], [1,22], … [62,83], [63,84]]      (route __message_bus1, trailingBase 21, capacity 64)
+    selected: [[62,83], [63,84]]                               (slice(-transportedChunkCount) = the last two)
+    __internal__valueChunkOutputBase = 212 = participant base 129 + 83
+
+    guard state: slot { kind: 'trailing', offset: 83, slotIndex: 62, conditional: true }
+    local.inputs[83] = { satoshis: 5000n,
+                         token: 'ee643a1671fbbe5333480fe40ff0fa72b65b6df0818805a2209586e991ca0af0',
+                         lock: 'aa201424fcc85ecd6566e6aadb49e8ebda0907d0fe20b6f48d3c2cabcafdbac0763987' }
+    BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX = aa20953c…
+
+The composer hands the participant the *last* two trailing slots and asserts that the participant's own balanced
+block funded them with dummy funders - but the participant's build materialized a token-bearing input at offset 83
+instead. Note the chunk indices in the guard ran as high as 4 in an earlier assembly pass (a later pass transports
+only 2), i.e. the mismatch appears on the pass whose transported value is widest, which is why the failure
+survives every claim convergence. The next measurement is inside the participant's own `build()`: print which
+input and output (with owner and lock) occupy offsets 83/84 and whether the routed builder's value-chunk band
+agrees with the `__internal__valueChunkOutputBase` it was handed. The reconciliation is either the band the
+composer names or the occupancy map it assumes - not the transport loop itself.
+
+**The read class.** `post job 1` now completes its `publishJobPost` send and its
+`to.emit(marketplaceData, 'JobEvent')` assertion (the event *output* path is correct), then
+`checkJobFromStateDiffs` calls `marketplaceData.getEvents(jobId, 0n, 0n)` and receives `[]` while
+`marketplaceData.getJob(0)` reads correctly in the same fixture. `post two jobs` fails the same way one step
+later on `getJobs(0, 1)`. Both handlers return a *dynamic array* (`JobEventData[]`, `JobPost[]`) over a
+`chunkableArrayValue` collection, so the read path - not the composer - is where to look next; the composer-side
+ABI decoder already supports dynamic array layouts (`evmResultLayout`, `compose.ts:772`).
+
+### ROUND 45: the transported-continuation guard was rejecting a consumed predecessor (26/66, new class)
+
+ROUND 44b's measurement was taken and it named a wrong requirement rather than a wrong band.
+
+**What the guard demanded.** `assemble` (`compose.ts:2866`) takes the participant block's *last*
+`transportedChunkCount` trailing slots, replaces each slot's output with the transported chunk, and required the
+slot's **input** to be a balanced dummy funder. A participant whose continuation already existed in the prior
+state consumes the predecessor chunk there instead, so every pass threw
+`messageBus: transported continuation output does not own a balanced trailing slot` - 18 of the 66 titles.
+
+Measured on `update job` (`SOLIDC_DEBUG_CONTINUATION=1`, probes reverted):
+
+    participant 1 MarketplaceDataV1, transportedChunkCount 3
+    selectedValueChunkSlots [[61,82],[62,83],[63,84]]   (route __message_bus1, trailingBase 21, capacity 64)
+    slot 83 input: mutable token of the participant's own category, commitment `0000…` -> chunkIndex 0
+    claim for that slot: commitment `0100…` -> chunkIndex 1        <-- band shifted by the wider value
+    slot 84 input: `0100…` -> chunkIndex 1;  slots 82 input: balanced dummy funder
+
+The transported value grew from 2 to 3 chunks, so its band moved one slot down while the participant's
+predecessor chunks stayed at the band tail. The predecessor at a slot therefore need not carry the index being
+written there; the covenant pins the *outputs* by band index and consumes the old chunks as inputs, and the
+final BCH-2026 preflight authenticated the arrangement once the guard admitted it (`update job` now completes its
+`updateJobPost` send and fails later, in the read class below).
+
+**The fix** (commit `fb4533419`): `canOwnTransportedContinuationSlot` (`compose.ts:303`) authorizes the slot when
+it is either the balanced dummy or a mutable token input of the transported category whose commitment parses as a
+canonical value chunk (`valueChunkIndexFromCommitment`). Shared category, mutable capability, and a canonical
+chunk index keep an unrelated token input from authorizing the replacement, and the participant's own covenant VM
+still authenticates the completed block. Regression coverage:
+`packages/solidcash/test/journal-message-bus/AtomicMessageBusGraph.test.ts`.
+
+**Ladder: 26 pass / 39 fail, and the pass set is *identical*** (`comm`-style set diff between the ROUND 44 and
+ROUND 45 full runs: no new passes, no lost passes). The value of this round is that the 18-title guard is gone;
+every one of those titles now fails later, in the two classes below, with 8 of them reaching the event read.
+Full run: `npx vitest run --config vitest.marketplace.config.ts --reporter=verbose --no-file-parallelism`.
+Root `yarn build` clean; the change is SDK-only, so the compiled fixture is untouched.
+
+### ROUND 45b: the new failure map
+
+    14  "messageBus: complete graph did not expose arguments for all deferred compute resources"
+     8  getEvents / getJobs return an empty array ("Cannot read properties of undefined (reading 'job')" x7,
+        "expected [] to contain subset" x1)
+     3  "index out of bounds ... probe stopped at ip 5 (opcode 85): ... requested index: -1" (getUsers/getArbitrators)
+     3  "state commitments could not be auto-derived ... Route probe convergence repeated a physical state"
+     2  "Signer transaction nonce 16 is already reserved"
+     2  "[L3_RESOURCE_UNRESOLVED] ... '__message_bus_key_meceTags_0' must identify one physical entry"
+     1  "BCH-2026 preflight failed at input 127: Program failed an OP_VERIFY" (pay start job)
+     1  "BCH-2026 preflight failed at input 3: ... requested index: -1" (should whitelist worker)
+     1  "expected 0n to deeply equal 2n" (update job many times, get history)
+
+**The deferred-compute class, measured.** One run of `deliver result` with `SOLIDC_DEBUG_ECRECOVER_DERIVE=1`
+prints the controller's own view (`StatefulTransactionBuilder.ts:12092`):
+
+    deferred-ecrecover-no-argument {
+      unresolvedAIndices: [[4,0],[6,1],[8,2],[10,3],[12,4],[14,5],[16,6],[18,7]],
+      inputCount: 129,
+      inputBytecodeReads: [ { index: 127, belowBytes: 0 }, { index: 3, belowBytes: 1, below: '02' } ],
+    }
+
+Eight deferred `ecrecover` calls are unresolved, each waiting for the 97-byte argument blob
+(`hash ++ v ++ r ++ s`) that the resolver expects to find **below** an `OP_INPUTBYTECODE` observation whose
+index is the call's sidecar-A input (`resolveDeferredEcrecoverArgument`, `StatefulTransactionBuilder.ts:12092`:
+the sidecar A/input index map at 12095-12104, the 97-byte read at 12108-12122). The trace exposes no such read:
+the two `OP_INPUTBYTECODE` states it does expose carry 0- and 1-byte operands, so the covenant never reached the
+argument reads for those eight calls. An earlier pass in the same run *did* learn one argument
+(`deferred-ecrecover-learned { callIndex: 0, inputIndices: [7], argument: c812bf42… }`), so the machinery works
+when the covenant reaches the read - the next measurement is what the covenant is doing at inputs 4..18 instead
+(the failing ip / the resource claim that stops it), i.e. the usual
+`SOLIDC_DEBUG_FAILURE_POINT=1 SOLIDC_DEBUG_FAILURE_RING=1` pair on the participant that owns those sidecars.
+
+**First failure-point datum for that class (same run, `SOLIDC_DEBUG_FAILURE_POINT=1`).** Four passes print a
+failure point; the last two - the ones immediately before the throw - are identical in shape and read:
+
+    failure-point { inputIndex: 0, ip: 11, opcode: 109,
+      controlStack: [ { ip: 803, instructionCount: 803 }, true x5,
+                      { ip: 327, instructionCount: 1199, opcode: 103 } ],
+      stack: [ '8:1:05', '9:32:e2a4…', '10:1:02', '11:32:cabb…', '12:32:00…', '13:1:01',
+               '14:9:0000a0dec5adc93536', '15:25:76a91447d9…', '16:256:cabb…020000', '17:0:', '18:0:', … ] }
+
+(`opcode: 109` is the instruction *after* the failing one - the reported `ip` is one past a failing
+`OP_EQUALVERIFY`/`OP_VERIFY`, the convention this file uses throughout - and `opcode: 103` in the control stack is
+the enclosing `OP_ELSE`.) The failing frame is a small body (803 instructions) inside the 1199-instruction body of
+the branch taken at `ip 327`. The stack at that point carries three small script numbers (`05`, `02`, `01`), a
+32-byte value, and a 256-byte blob - i.e. the branch is still doing selector/flag work and has not reached the
+ecrecover argument reads for the eight unresolved calls at inputs 4..18. Next: decode the failing instruction at
+`ip 10` of that 803-instruction body against the participant's debug map (`debug.functionDebug`), and check whether
+the 256-byte stack item is the `batchBlob`-relative row the deferred calls need.
+
+### ROUND 46: both post-ROUND-45 classes measured to their failing instruction (no commit)
+
+No fix landed this round; both dominant classes were driven to a precise failing point with temporary probes
+(all reverted, tree clean at `fb4533419`).
+
+**Deferred compute (14 titles).** `deliver result` with `SOLIDC_DEBUG_ECRECOVER_DERIVE=1` ends in one
+`atomic-deferred-compute-no-progress`:
+
+    executionInput: 127, inputBase: 0, states: 951,
+    error: 'Program called an OP_SPLIT operation with an invalid index.
+            stack item length: 0; requested split index: 32.',
+    ip: 1,  stackBytes: [0, 35, 35, 35, 0, 0, 1, 28],
+    terminalStack bottom item: '19457468657265756d205369676e6564204d6573736167653a0a3332'
+                               (= "\x19Ethereum Signed Message:\n32")
+
+`resolveDeferredEcrecoverArgument` (`StatefulTransactionBuilder.ts:12092`) needs the 97-byte argument blob
+*below* an `OP_INPUTBYTECODE` observation whose index is the call's sidecar-A input; the controller reports 8
+unresolved calls whose sidecars sit at aggregate inputs 4,6,…,18 while the trace only exposes bytecode reads at
+127 and 3, with 0- and 1-byte operands. The covenant is splitting an **empty** item to obtain a 32-byte field
+while the EIP-191 prefix is already on the stack, i.e. an argument (message hash or signature component) the
+route should have produced is empty before the deferred read is reached. An earlier pass of the same run *does*
+learn one argument (`deferred-ecrecover-learned { callIndex: 0, inputIndices: [7], argument: c812bf42… }`), so the
+mechanism works when the covenant gets there. Next: identify the route argument that is empty for those eight
+calls (the row's signature/message parameter) - the failing split is one instruction past the reported `ip`.
+
+**Read class (8 titles).** `post job 1` with `SOLIDC_DEBUG_READ_PROBE=1` (probe added and reverted) shows the
+`getEvents` read is *fully supplied*:
+
+    input 3: fn 'getEvents'
+      jobId_: 0   index_: 0   limit_: 0
+      __internal__valueWitness_0: bytes:180  head '51001471782e8159265ed94bd35b8e699c08f53a6f38c6…'
+      __internal__returnOutputIdx: 7    __internal__proxyMasterIndex: 0
+    entry input 6: EntryNft_ee643a16, commitment 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4…'
+    chunkable-read-witness { functionName: 'getEvents', collection: 'jobEvents',
+      slot/proofSlot 'e3b0c442…', present: true, tailBytes: 64, storedLength: 180, witnessBytes: 180 }
+
+(`e3b0c442…` is `SHA256("")`, which is this compiler's key slot for `jobEvents[0]`: a VM-number zero hashes as
+an empty item. The write derivation uses the same slot, so the entry choice is right.) The derived return is
+still an empty ABI array (`480:0000000000000000000000000000000000000000000000000000000000000020 00…`) and the
+probe ends `probe stopped at ip 5 (opcode 118): Program failed an OP_VERIFY operation.; probed input 3`. The
+source explains what that means: `getEvents` starts with `require(index_ < eventsLength_, "index out of bounds")`,
+so a zero-length read means the *covenant* saw `jobEvents[jobId_]` as empty - or the read of the chunked value
+failed authentication - and the SDK then returned its own placeholder (the empty array). The value is chunked
+(180 B > the inline limit) and the probe supplies the entry plus the assembled witness but **no value-chunk
+inputs**; `getEvents` needs to be compared with a passing chunked read (there is none in the suite yet, which is
+itself the open question) before choosing between "supply the chunks" and "the witness is not accepted".
+
+**One shared failing instruction.** Three different classes stop in the *same* tiny helper body at `ip 5`:
+`register user > update user` / `register arbitrator` / `update arbitrator` report
+`probe stopped at ip 5 (opcode 85): … requested index: -1`;
+`post thread message > sanity checks` and `should whitelist worker` report the same `ip 5` preflight read of an
+invalid UTXO index; the `getEvents` read above stops at `ip 5 (opcode 118)`. Mapping that body once (its
+`debug.functionDebug` entry, or the `requires` list of the enclosing route) is likely to pay for several classes
+at once - it is the single highest-leverage next measurement.
+
+### ROUND 47: the read class falls - aggregate Solidity results were decoded with a scalar-only helper (32/66)
+
+ROUND 46's "shared failing instruction at `ip 5`" was the thread that unravelled the read class. The failing body
+is `[OP_1, OP_PICK, OP_OVER, OP_OUTPUTTOKENCOMMITMENT, OP_EQUALVERIFY, OP_DUP, OP_OUTPUTTOKENCATEGORY]` - the
+"this output is exactly (commitment, category, …)" helper - and for `getEvents` it failed because the probe's
+return output held **no** commitment while the covenant's expected side was a *complete, non-empty* frame:
+
+    return-blob-extract { contract: 'SolidCashProxy', inputIndex: 3, returnOutputIndex: 7,
+      materialized: 'absent',
+      extracted: { bytes: 480,
+                   word0: '…0020',   # ABI offset 32
+                   word1: '…0001',   # array length 1
+                   word2: '…0020' } }
+
+So the whole read path was already correct - correct key (`e3b0c442…` is this compiler's slot for
+`jobEvents[0]`), correct entry input, correct 180-byte value witness, correct 480-byte authenticated return
+frame - and only the **decode** was wrong: `_deriveReturnValue` decoded an `evm-abi-v1` result with
+`decodeEvmReturnValue`, which is scalar-only (`EVM_DYNAMIC_RETURN_TYPES` = `bytes`/`string`; everything else goes
+to `decodeEvmScalarReturn`, which returns `undefined` unless the value is exactly 32 bytes). The `undefined`
+then fell through to `decodePushdataValue(blob, 0, type, structs)` - the *native* pushdata decoder applied to a
+Solidity ABI blob - which reads the ABI head as a length and returned `[]`. `SOLIDC_DEBUG_RETURN=1` shows it
+directly: `static-return-decoded { contract: 'SolidCashProxy', functionName: '__forward',
+outputType: 'JobEventData[]', decoded: [] }`.
+
+**The fix** (commit `3b7157e03`): decode an `evm-abi-v1` result with the complete ABI decoder
+(`decodeEvmInvocationResult`) over the declared output types, which walks offsets, lengths, and nested structs
+exactly as the writer encoded them. Scalar results decode identically; `decodeEvmReturnValue` stays exported for
+its own callers. Regression coverage: `packages/solidcash/test/unit/ExternalReturnEncoding.test.ts`
+(`decodeEvmInvocationResult for aggregate results`, including that the scalar-only helper rejects `uint256[]`).
+
+**Ladder: 32 pass / 33 fail** (was 26/39), pass-set diff shows **no lost titles** and six new passes:
+`job posting > post job 1`, `job updates > update job`, `job updates > update job arbitrator`,
+`job updates > update job many times, get history`, `close job > close job before timeout`,
+`post thread message > post thread message`. Root `yarn build` clean; SDK unit suite 4 failed / 722 passed with
+the same four pre-existing names; SDK-only change, fixture untouched.
+
+### ROUND 47b: the failure map after the read fix
+
+    14  "messageBus: complete graph did not expose arguments for all deferred compute resources"
+         (the ROUND 46 ecrecover measurement still stands: OP_SPLIT of an empty 32-byte field with the
+          EIP-191 prefix on the stack, 8 unresolved calls)
+     4  "state commitments could not be auto-derived ... Route probe convergence repeated a physical state"
+         (post job with invalid amount, close job after timeout, reopen job after timeout, withdraw collateral)
+     3  "index out of bounds ... probe stopped at ip 5 (opcode 85) ... requested index: -1"
+         (register user > update user, register arbitrator, update arbitrator)
+     3  preflight read of an invalid UTXO index / OP_VERIFY at input 3, 11, or 127
+         (should whitelist worker, post thread message > sanity checks, reopen job before timeout, pay start job)
+     2  "[L3_RESOURCE_UNRESOLVED] ... '__message_bus_key__balances_0' has no shared physical entry orientation"
+         (update job amounts) and the meceTags witness (update job tags, post job with invalid mece tags)
+     2  "Signer transaction nonce 16 is already reserved" (take job, take job multiple)
+     1  "expected [] to contain subset [{title: B}]" - `post two jobs`: `getJobs(0, 2)` now returns the first job
+         and no longer an empty array, so the array decode is fixed and the remaining defect is the read's
+         `index_`/`limit_` window (one row instead of two)
+     1  "expected 0n to deeply equal 1n" (refuse arbitration > job not taken - moved on from the empty read)
+
+`post two jobs` is the cheapest next target of the remaining read-family defects: it needs no new
+infrastructure, only the `index_`/`limit_` argument handling of an aggregate read (compare `getJobs(0, 1)` and
+`getEvents(jobId, 0, 0)`, which are correct, with `getJobs(0, 2)`).
+
+### ROUND 47c: `post two jobs` measured - the loop rows are duplicates, not missing
+
+`getJobs(0, 2)` now returns the right **width** with the wrong **contents**: two rows, both title `A`
+(`expected [ {…"title":"A"}, {…"title":"A"} ] to contain subset [{"title":"B"}]`). Probes (reverted) narrow it:
+
+* the final result blob is a well-formed 1856-byte `JobPost[]` whose ABI length word is `0x02` and which decodes
+  to 2 rows - so the ROUND 47 decode fix is doing its job and the width comes from the covenant;
+* `loop-return-array-commitments` (for the `getJob` loop callsite inside `getJobs`) reports `reached: 0` and the
+  only commitment is the all-zero placeholder, and `loop-return-resolve` never fires: the SDK's loop-return
+  expansion is not what produced the second row;
+* source of the read: `MarketplaceDataV1.getJobs` loops `result[i] = marketplace.getJob(i + index_)`, i.e. its
+  callsite argument is an **expression over the loop variable** (`i + index_`), not an array element. If every
+  occurrence materializes the same argument, the *covenant itself* computes `[A, A]` - and preflight accepts it
+  because the transaction is self-consistent; only the application-level expectation (`getJobs(0,2)` must list
+  both jobs) sees the defect.
+
+So the next target is the per-occurrence materialization of a loop callsite argument that is an expression over
+the induction variable. The machinery exists and is threaded: `resolveArguments` (`worklist.ts:175`) passes
+`occurrence` into `loopIndex` (`initialValue + stepValue * occurrence`, line 202) and into the
+`expressionArgument` callback (line 230), and compose's callback (`compose.ts:1761`) resolves
+`descriptors[next - 1].args[argument]` after `takeTarget` advanced `next` for that occurrence. The measurement to
+take next is therefore on the **prepared descriptors themselves** for the two `getJob` rows - print
+`descriptors[i].args` (and `batchLogicalIndex`/`batchOccurrenceIndex`) while expanding `getJobs`, and check
+whether the second row's `index_` argument is `1` or `0`. If the descriptors are already identical, the defect is
+in the read's own prepared-call construction (`_deriveReturnValue`'s callsite expansion, where
+`_evaluateExternalExpression(..., occurrenceIndex, ...)` is the local equivalent of `expressionArgument`).
+
+### ROUND 48: the deferred-ecrecover class is `takeJob`, and the argument is never exposed
+
+The dominant class is one handler. `MarketplaceV1.messageBus.handlers` publishes exactly one ecrecover handler -
+`takeJob` (`ecrecoverCompute: true`, `ecrecoverEvmFlags: [false]`) - and every later title calls `takeJob` to get a
+job taken, which is why 14+ titles share the failure.
+
+**What the route publishes.** `MarketplaceV1.messageBus.route` has `ecrecoverCompute: true`,
+`ecrecoverLoopReads: true`, `graphEffectFrame { sites: 8, ecrecoverBase: 0, ecrecoverWidth: 2,
+ecrecoverOffset: 4 }`, and its block layout carries **16 `ecrecoverSideCar` slots at offsets 4..19** (8 A/B
+pairs, the pairs from offset 8 on `conditional: true`). That matches the measured sidecar inputs exactly:
+`unresolvedAIndices [[4,0],[6,1],[8,2],…,[18,7]]`. So the mapping is **one ecrecover call site per row**
+(8 rows x 2 sidecars), and the harness also shows why nothing can be resolved from the ABI directly:
+
+    ecrecover-call-arguments { functionName: 'takeJob', callIndex: 0, params: [null,null,null,null],
+      visible: ['jobId_','signature_'],
+      args: ['0','0xbedae1ac55f4e95a7992791b0c0d50fdb8d4d34c494dbeb31f14ecfafff7fd48167fcfc9f508d05c83d0293b08dc3c5d5e1c56648f603b25d75e3f32e205262c1c'],
+      hash: 'undefined', v: 'undefined', r: 'undefined', s: 'undefined', graphExecution: false }
+
+The signature is present in the invocation; only the compiler's `(hash, v, r, s)` split is unpublished, so the
+argument is deferred by design and must be learned from the covenant's trace.
+
+**Tried and reverted: requiring only the first call site.** Restricting
+`hasUnresolvedDeferredEcrecoverArguments`/`resolveDeferredEcrecoverArgument` to `callIndex 0` does **not** unblock
+`take job` - the composition still ends in `complete graph did not expose arguments for all deferred compute
+resources`. So the dormant rows are not the blocker: the covenant fails *before* it exposes any argument, exactly
+as ROUND 46 measured (`atomic-deferred-compute-no-progress`: `OP_SPLIT … stack item length: 0; requested split
+index: 32`, `executionInput 127`, with the EIP-191 prefix `\x19Ethereum Signed Message:\n32` at the bottom of the
+stack and the test's 65-byte signature `0041bedae1ac…1c` in the frame). The next measurement is therefore the
+*item being split*: print what sits directly below the EIP-191 prefix on that stack (the signed message), the
+identifier of the failing helper body, and whether the participant's state NFTs are still provisional at that
+point - if the message comes from a job-state read, the probe is seeing placeholder state, which would explain an
+empty message and why no pass can ever expose the argument.
+
+**Isolated runs differ from the ladder for this class.** `take job` alone fails with the deferred-compute error;
+inside the full 66-title ladder it fails earlier with `Signer transaction nonce 16 is already reserved`, i.e. the
+fixture snapshot does not reset the mock signer's logical nonce across titles. Use isolated runs when judging
+this title, and do not treat the ladder's nonce message as its blocker.
+
+### ROUND 48b: the `getUsers` read class, measured
+
+    Error: index out of bounds Probe detail: probe stopped at ip 5 (opcode 85):
+      Program attempted to read from an invalid transaction UTXO index.
+      Transaction UTXO count: 9; requested index: -1.; probed input 3.
+    failing-body { inputIndex: 3, ip: 5, instructionCount: 13,
+      opcodes: [81,121,147,118,199,85,121,136,118,206,118,1,138],
+      stack: ['0:','0:','1:1b','35:aa20e755…','1:01','0:','0:','1:81'] }
+
+`marketplaceData.getUsers(0, 0)` (test line 385, through `upgrades.ts:526`) reads
+`return userAddresses[i + index_]` in a loop, so the read needs the **dynamic array element inputs**. The route
+body is `OP_1 OP_PICK OP_ADD OP_DUP <199> OP_5 OP_PICK OP_EQUALVERIFY OP_DUP OP_UTXOTOKENCATEGORY OP_DUP
+<push 0x01> OP_INVOKE` - a "verify input N is this token family" helper - and the index it read is `-1`
+(`1:81`, script-number -1), i.e. the element coordinate was computed below the array's base. The contract's own
+`require(index_ < usersLength_, "index out of bounds")` supplies the message, so the route also saw
+`userAddresses.length` as 0. This class needs the dynamic-array element geometry, not the aggregate decoder that
+ROUND 47 fixed; the three titles are `register user > update user`, `register arbitrator`, `update arbitrator`.
+
+### ROUND 49: two dead ends closed on the deferred-ecrecover class
+
+Both cheap hypotheses were tested and falsified; the class is now narrowed to the pass ordering around
+`assemble`.
+
+**Dead end 1 - the empty signature witness is not the bug.** The route input `__message_bus_sig_38_0_rows`
+arrives as `array:1[bytes:0:]` (one empty signature), which looked exactly like a dropped signature for
+`takeJob(jobId_, signature_)`. It is not: the witness is named for handler index 38 / parameter 0, i.e. the
+**block-oracle handler** (`__updateBlockOracle(sig, uint32)`, the only `sig`-typed handler), and
+`message-bus.ts:944-960` deliberately fills an unselected handler's signature array with
+`inactiveSignatureRouteWitness` ("the handler is not selected in this envelope, so the route never indexes this
+array"). `takeJob`'s second parameter is `bytes calldata signature_`, not `sig`, so it travels inside the row
+blob; a probe on the kernel-row-loop witness assignment (`SOLIDC_DEBUG_SIG_WITNESS`, reverted) never fires for
+this title, confirming it. Do not chase this witness again.
+
+**Dead end 2 - requiring only the reached call site does not unblock it.** ROUND 48's experiment stands: the
+covenant fails before exposing *any* ecrecover argument.
+
+**What the failure looks like now.** The failing helper body is four instructions -
+`nearby: [{ip:0, opcode:127 (OP_3DUP)}, {ip:1, opcode:119 (OP_NIP)}, {ip:2, opcode:1, data:'20'}]` - i.e.
+`OP_3DUP OP_NIP <0x20> OP_SPLIT`: "select the second item from the top and split 32 bytes off it", and that item
+is **empty** (`atomic-deferred-compute-no-progress`: `stack item length: 0; requested split index: 32`). The ring
+immediately before it is an `OP_OUTPUTBYTECODE` (opcode 205) scan over **output indices around 458-469**, so the
+empty operand is almost certainly a *frame blob read out of one of those outputs* rather than a route argument.
+
+**The structural suspect.** `assemble` performs the deferred resolution *inside* the participant assembly and
+throws `complete graph did not expose arguments for all deferred compute resources` when one round makes no
+progress (`compose.ts:3571`), while the composer's claim loop - which is what materializes a nested returning
+invocation such as `takeJob`'s `marketplaceData.eventsLength(jobId_)` result - only runs *after* `assemble`
+returns (`compose.ts:3760-3800`). If the frame the helper parses is still a placeholder on that first pass, no
+pass can ever fix it. Next measurement: in the deferred probe, print the commitments of the outputs in the
+458-469 band (they should be the ecrecover sidecar frame outputs) and the `resultBlob`/`returnCommitment` the
+composer handed the involved invocations; if those are placeholders while the nested read's claim is only
+provisional, the fix is to let the deferred resolution retry across claim passes instead of throwing on the
+first one.
+
+### ROUND 50: the pass-ordering hypothesis is falsified too; the covenant's own split is the blocker
+
+Three measurements and one experiment, all reverted.
+
+**The deferred block, in aggregate coordinates.** `SOLIDC_DEBUG_DEFERRED_BAND=1` (probe reverted) prints, for
+`take job`:
+
+    blocks: [ { participant: 0, inputBase: 0, executionInput: 127,
+                offsets: [3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19],
+                invocationReturns: [] } ]
+    band 450..468: 450-461 `OP_1` placeholders (1000 sat), 462 `53434944…` (150 B, capability none),
+                   463-467 five 76-byte `4c335631` ("L3V1") mutable frames - the participants' state outputs,
+                   468 the P2PKH change.
+
+So the sidecars occupy outputs 3..19 of participant 0's own block and participant 0 has **no returning
+invocation**; the 76-byte frames the earlier ring saw scanned (`OP_OUTPUTBYTECODE` over ~458-469) are the *other
+participants'* state outputs.
+
+**The graph route has no external-return indices.** A probe over the route's inputs
+(`SOLIDC_DEBUG_ECRECOVER_ARGS=1`, reverted) shows `__internal__externalReturnOutputIdx*`, `__internal__extcallMasterIdx*`,
+`__internal__externalCallSelector*` and `__internal__extcallAnchorIdx*` are **not route inputs at all**; the route
+resolves nested results from `__internal__graphSettlementTable` plus the callers/emissions tables, with
+`__internal__activeVerifierIndex` = 463. Any hypothesis built on a `-1` return index is therefore wrong for the
+graph path.
+
+**What actually fails.** The stack at the failure carries `abi.encode(eventsLength, jobId_)` as **64 all-zero
+bytes** (i.e. the route read `eventsLength` as 0), the 28-byte EIP-191 prefix above it, and the test's 65-byte
+signature deeper in the frame; the failing helper is `OP_3DUP OP_NIP <0x20> OP_SPLIT` and its operand is
+**empty** (`stack item length: 0; requested split index: 32`).
+
+**Falsified: the composer's pass ordering.** Made `assemble` tolerant of an unresolved deferred controller during
+the claim loop (`allowUnresolvedCompute`, recording the stalled participants) and strict again both when the
+claims go stable and in the final straight-line path. With tolerance the build advanced past the deferred stall -
+and failed at the final preflight on the *sidecar* input instead (`input 4: OP_SPLIT … requested split index:
+128`, i.e. the placeholder sidecar covenant rejecting its own unwritten argument) - and the strict re-assembly at
+stability still reported `complete graph did not expose arguments for all deferred compute resources`. So a
+provisional nested-claim value is **not** what blocks the argument: even with settled claims the covenant never
+exposes it. The change was reverted (inert for the ladder).
+
+**Also falsified:** running the controller's probe with a faithful (non-sparse) trace
+(`evaluateProbeTrace(..., forceFullDebug = true)`) - same error.
+
+**Next measurement.** The route's own view of the two operands: inside the participant-local build (not the
+aggregate), print (a) the value the route computed for the nested `eventsLength` read and (b) the length of the
+signature it holds when it enters `ECDSA.recover`. The 64 zero bytes say the nested read produced 0 even in a
+settled graph, which points at the *callee's* return frame as seen from the caller's block (the
+`__internal__graphSettlementTable` coordinate) rather than at the deferred controller.
+
+### ROUND 51: a caller-identity row no longer breaks the shared collection key (33/66)
+
+`update job amounts` failed in the SDK's own batch encoder:
+
+    MessageBusDiagnosticError: messageBus [L3_RESOURCE_UNRESOLVED]:
+      message-bus batch collection witness '__message_bus_key__balances_0' has no shared physical entry orientation
+
+**Root cause** (`message-bus.ts:583`, probed with `SOLIDC_DEBUG_KEY_ORIENTATION`, reverted). `swappableBases`
+is the *union* over the artifact's handlers, so `_balances_0` is in it as soon as one handler binds it to a batch
+argument (`transferFrom`: shared = `from`, row = `to`, both `swappable: true`). But the per-row candidate
+collection required the *row's own* binding to be marked swappable, so a row whose shared binding is the caller
+identity contributed nothing:
+
+    invocations: [ { function: 'transfer', args: ['bytes:25:76a9147178…', '200000000000000000000'] } ]
+    bindings:    [ { routeInput: '__message_bus_key__balances_0',     source: 'msgSender', inputIndex: -2, swappable: false },
+                   { routeInput: '__message_bus_key__balances_0_row', source: 'argument',  inputIndex:  0, swappable: false } ]
+    choices: []
+
+A batch reaching only `transfer` therefore had no candidate at all and threw, even though the row derives its
+key from the caller at run time and never consumes the shared route input.
+
+**The fix** (commit `1308f87e2`): a row constrains the shared slot only when its binding for that base comes from
+a batch argument; otherwise it is skipped and merely offers its row-local value as a fallback. A batch that no
+row constrains falls back to the supplied witness (the caller identity the encoder already derives) or a
+type-correct inactive value, and a constraining row still decides the value, so mixed batches are unchanged. The
+regression test (`MessageBatchEncoding.test.ts`, `SWAPPABLE_BALANCE_SOURCE`) uses neutral `send`/`sendFrom` names
+precisely because the shape, not the name, drives the binding.
+
+**Ladder: 33 pass / 32 fail** (was 32/33), no lost titles, one new pass (`job updates > update job amounts`).
+Root `yarn build` clean; SDK unit suite 4 failed / 722 passed (same four pre-existing names).
+
+**Failure map now:** 15 deferred compute (`takeJob`), 4 state-derivation convergence ("Route probe convergence
+repeated a physical transaction state"), 3 `index out of bounds` (`getUsers`/`getArbitrators` dynamic reads), 2
+`Signer transaction nonce 16 is already reserved` (ladder-only artifact - the fixture does not reset the mock
+signer nonce; `take job` alone reaches the deferred class instead), 2 meceTags collection-witness failures, 1
+`should whitelist worker` (preflight input 3), 1 `reopen job before timeout` (preflight input 11), 1 `post two
+jobs` (duplicate loop rows, ROUND 47c), 1 `refuse arbitration > job not taken` (`0n` vs `1n`).
+
+### ROUND 52: a rolled call's parent array was split with the wrong codec (34/66)
+
+ROUND 47c's duplicate rows were not a covenant problem. The read's own groups say:
+
+    read-groups { functionName: '__forward', resultFunction: 'getJobs', blobBytes: 1856,
+      groups: [ { fn: '__forward', logical: 'jobsLength', loopResultArrayOutput: undefined, precomputed: 32, returnOutputIndex: 11 },
+                { fn: '__forward', logical: 'getJob',     loopResultArrayOutput: 0, hasResolver: true, precomputed: 896, returnOutputIndex: 12 } ] }
+
+`getJob` carries the compiler's rolled-call marker (`loopResultArrayOutput: 0`) and a resolver, so the SDK is
+supposed to resume one authenticated return per reached occurrence and splice them back into the parent array.
+That splice decodes the parent array out of the provisional blob and re-encodes it in place - with the *native*
+pushdata codec. For a Solidity-encoded parent (`evm-abi-v1`, `JobPost[]`) the decode step fails, the loop
+`continue`s, no occurrence is ever resolved (`loop-return-resolve` never fires), and the graph keeps a single
+callee invocation that every loop row reuses - hence `[A, A]`.
+
+**The fix** (commit `47c914134`): decode the single-output parent's prefix with
+`decodeEvmInvocationResultPrefix` and re-encode the resumed array with `encodeEvmInvocationResult` when the
+parent result encoding is `evm-abi-v1`; the native path is unchanged. Regression coverage in
+`packages/solidcash/test/unit/ExternalReturnEncoding.test.ts` (the prefix codec reports the decoded array *and*
+its blob range, and re-encoding the resumed array reproduces the same bytes).
+
+**Ladder: 34 pass / 31 fail** (was 33/32), no lost titles, one new pass (`job posting > post two jobs`). Root
+`yarn build` clean; SDK unit suite 4 failed / 723 passed (same four pre-existing names).
+
+### ROUND 53: two more classes measured (no commit)
+
+**`getUsers`/`getArbitrators` (3 titles) - the key is an SDK-resolved expression.** The handler binding is
+
+    { routeInput: '__message_bus_key_users_0', inputIndex: -1, source: 'expression',
+      expressionLabel: 'map:userAddresses(binop:+(id:i,id:index_))' }
+
+so the *user key itself* is `userAddresses[i + index_]`, and the artifact publishes only the label, not an
+expression tree: the SDK must resolve the element from state and pass it as the route witness. The covenant
+then reads the same array from its own state and reports the contract's own `require(index_ < usersLength_,
+"index out of bounds")`, i.e. it sees `userAddresses.length` as 0 - so the state-array (dynamic chunk) view is
+what disagrees, not the key witness. `SOLIDC_DEBUG_DYNAMIC_FRAME=1` prints nothing on this title (the failure is
+upstream of the dynamic-frame code) and no `collection-entries-read` mentions `userAddresses`: the next
+measurement is the read builder's dynamic-chunk input/base geometry for this handler - compare it with the
+passing `registerUser` write, which materializes the same array.
+
+**`refuse arbitration > job not taken` (1 title) - the entry value does not change.** The failure is
+`arbitratorData.refusedCount` reading `0n` where the test expects `1n` (test line 3122). With
+`SOLIDC_DEBUG_COLLECTION_FETCH=1` the `arbitrators` entry reads before and after the refusal show the *same*
+value tail (`…72 000000 c2a8d2ff56802508ee018495941516441069e7ddcd8d1f9c96c3219591547617
+1976a914c4ad89cd…87 21 02`) and differ only in the outpoint (`…:8` then `…:136`), so the refusal either updated
+a different lane (the alternate entry) or did not change the count field at all. Next measurement: which entry
+lane the refusal writes versus which one `arbitrators(address)` reads, using the entry-slot alternatives the
+compiler publishes for that collection.
+
+### ROUND 54: a delegated read never co-spent its dynamic-storage chunks (37/66)
+
+ROUND 53's lead was right: the `userAddresses` array lives as **dynamic-storage chunks**, and the SDK gathers
+them from the executing ABI's `dynamicReads` (`StatefulContract.ts:19751`). For a delegated read the executing
+ABI is the forwarder, which publishes no dynamic-storage metadata at all, so no chunk inputs were co-spent, the
+route's dynamic input base stayed absent, and the covenant saw an empty array - the contract's own
+`require(index_ < usersLength_, "index out of bounds")`, or a read of input -1. A probe
+(`SOLIDC_DEBUG_DYNAMIC_READ`, reverted) showed the shape exactly:
+
+    dynamic-read-selection { functionName: '__forward', executing: '__forward', entry: 'getUsers',
+      calls: [ { type: 'stateful', functionName: 'getUsers', route: undefined } ],
+      dynamicReads: [], dynamicWriteNames: [] }
+
+The entry ABI *is* the logical handler (`entry: 'getUsers'`) and publishes `dynamicReads: ['userAddresses']`; the
+artifact confirms `getUsers.dynamicReads = ['userAddresses']`, `getArbitrators.dynamicReads =
+['arbitratorAddresses']`, and that the route's own `dynamicReads` is the union of both.
+
+**The fix** (commit `a74a6da53`): fill the reads in from the entry ABI when the executing ABI publishes none, and
+add the entry ABI's writes to the read-modify-write skip set. The route's published union is deliberately not
+used - co-spending a collection the row does not read would shift the compiled trailing band.
+
+**Ladder: 37 pass / 28 fail** (was 34/31), no lost titles, three new passes: `register user > update user`,
+`register arbitrator > register arbitrator`, `register arbitrator > update arbitrator`. Root `yarn build` clean;
+SDK unit suite 4 failed / 723 passed (same four pre-existing names). No unit test accompanies this one: the
+selection is inline builder orchestration, so the three focused titles plus the full ladder are the verification.
+
+### ROUND 55: the preflight-failure class measured, and the convergence cycle-break falsified
+
+Failure map at 37/66: 15 deferred compute (`takeJob`), 4 "Route probe convergence repeated a physical
+transaction state" (`post job with invalid amount`, `close job after timeout`, `reopen job after timeout`,
+`withdraw collateral`), 3 preflight `OP_VERIFY` at input 11/17/127 (`should whitelist worker`, `reopen job
+before timeout`, `pay start job`), 2 meceTags collection witnesses, 2 ladder-only nonce stalls, 1
+`post thread message > sanity checks` participant revert, 1 `refuse arbitration > job not taken` (`0n` vs `1n`).
+
+**The preflight class.** `SOLIDC_DEBUG_FAILURE_POINT=1 SOLIDC_DEBUG_FAILURE_POINT_FULL=1` on
+`reopen job before timeout` lands on input 11 = `MarketplaceDataV1 publishJobEvent`, failing inside a
+1544-instruction program at ip 256. A temporary addition to the failure-point printer
+(`SOLIDC_DEBUG_FAILURE_STACK=1`, reverted) dumps the full items, which are unambiguous:
+
+    0: (empty)        1,2: '5800000460fb5565' (8 B)      3: '54001471782e81…' (249 B, the job-event frame)
+    4: '38c1ef95…' (32 B)   5: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855' (= SHA256(""))
+    6: 'aa20c76e…87' (35 B lock)   7: '02'   8: the same 249-byte frame   9: the same lock
+
+The covenant is comparing an event/journal value against the **empty** digest (`e3b0c442…`) while the SDK
+materialized a populated event frame, so the class is "empty where the contract expects a value" in the event
+path, not a geometry problem. Next measurement: which digest `e3b0c442…` belongs to (the empty-preimage sentinel
+of a `data_`/`nextKey` field) and which of the two 249-byte frames the SDK wrote versus which one the covenant
+recomputed - the 249-byte frames are byte-identical in this dump, so the mismatch is the value *hashed* next to
+them.
+
+**The convergence cycle-break is falsified.** Turning the repeated-fingerprint throw
+(`StatefulContract.ts:13955`) into a `break` (guarded by `SOLIDC_STRICT_ROUTE_CONVERGENCE` for the experiment,
+reverted) does not unblock `withdraw collateral`: the derivation then completes and the *final preflight* rejects
+the non-converged entry at input 17 (`Program failed an OP_VERIFY operation`). So the cycle is a genuine
+write/read disagreement about one entry - the earlier measurement showed output 10's expected tail alternating
+between `…907b984f02ca30` and `…a0dec5adc93536`, i.e. two different amounts for the same entry - and the next
+measurement is which pass *writes* that entry and which one *reads* it back with a different value.
+
+### ROUND 56: the arbitrators entry and the `e3b0c442…` sentinel (no fix)
+
+**`refuse arbitration > job not taken`.** `SOLIDC_DEBUG_COLLECTION_FETCH=1` dumps every prepared transaction; the
+`arbitrators` outputs are mutable 128-byte entries whose commitment begins with the slot `41d0326f18316d0c…` - the
+same slot the failing read looks at - so the *slot* is not the problem. The value after the slot is
+`…00 72 000000 c2a8d2ff56802508ee018495941516441069e7ddcd8d1f9c96c3219591547617 1976a914c4ad89cd…87 21 02`,
+identical before and after the refusal, so either the refusal never rewrote the count field or the SDK's write
+went to the zero-slot twin (`0000…000041d0326f…`, 64 bytes, which also appears in the same transactions). Next
+measurement: which of the two arbitrators entries the refusal's own transaction writes (the last prepared
+transaction in the dump is a jobEvents-only one, so the dump needs to be indexed by transaction rather than
+inspected at the tail).
+
+**The preflight class' `e3b0c442…` is most likely a key slot, not an empty digest.** `e3b0c442…` is exactly the
+slot this compiler derives for key zero (a VM-number zero hashes as an empty item - the same constant appears as
+the `jobEvents[0]` slot in every job-events entry), so the failing comparison at input 11 is consistent with the
+covenant checking an entry's key slot rather than comparing a value digest. The stack also holds
+`38c1ef95…` (32 B) next to it, which is then the *value* digest of the populated event frame. Next measurement:
+print the two operands of the failing `EQUALVERIFY` itself (not the stack tail) for `reopen job before timeout`
+and pair it with the executor's `debug` requirement map, which names the source `require`.
+
+### ROUND 57: the preflight class is a lock mismatch, not a digest mismatch
+
+The failing instruction was printed directly (`SOLIDC_DEBUG_FAILURE_POINT=1` plus a temporary
+`nearbyInstructions`/`topOperands` addition to the printer, reverted) for `reopen job before timeout`, input 11
+(`MarketplaceDataV1 publishJobEvent`):
+
+    ip 253: opcode 102 (OP_UNTIL)   254: opcode 117   255: opcode 136 (OP_EQUALVERIFY)   256: opcode 109
+    top operands: 0: 'aa20c76e2793ab407f5be653fe3b9c97835454ccd50844d307f7195b68524821d95087' (35 B lock)
+                  1: '02'   2: '5400147178…' (80 B)   3: the same 35-byte lock
+
+So the equality that fails compares a **35-byte P2SH32 locking bytecode**, not the `e3b0c442…` slot: ROUND 56's
+"key slot" reading was wrong, and the `e3b0c442…` item is just part of the surrounding frame. The class is
+therefore "an input/output carries a different lock than the covenant expects", inside the
+`publishJobEvent` event band. Next measurement: which of the two locks on the stack the SDK materialized (the
+35-byte item is the *expected* side of an `OP_EQUALVERIFY`, per this file's convention the failing opcode is the
+one at `ip`, so the two operands are the last two items the state pushed) and which output/input that lock belongs
+to - `SOLIDC_DEBUG_FAILURE_POINT_FULL=1`'s `focus.inputs` already names the neighbours
+(`DataNft_ee643a16 spend`, `MarketplaceDataV1 publishJobEvent`, two P2PKH inputs, `EntryNft_ee643a16 spend`).
+
+### ROUND 58: the preflight class is a jobEvents value-chunk lock mismatch
+
+`SOLIDC_DEBUG_COLLECTION_FETCH=1 SOLIDC_DEBUG_FAILURE_POINT=1` on `reopen job before timeout` prints the whole
+failure context (the printer emits `focus.inputs`/`focus.outputs`, `routeParams` and `ipWindow` once the
+collection-fetch switch is on). Facts:
+
+* failing input 11 = `MarketplaceDataV1 publishJobEvent`; failing instruction `ip 255 = OP_EQUALVERIFY`
+  (reported `ip 256`), comparing the 35-byte P2SH32 lock
+  **`aa20c76e2793ab407f5be653fe3b9c97835454ccd50844d307f7195b68524821d95087`**;
+* that lock occurs **nowhere** in the prepared transaction - it is the *covenant's expected* lock, not a lock the
+  SDK wrote;
+* the SDK's value-chunk output is index 17 with lock `aa20988cb8f2620a1663a40aecdfbe2a54e17c4646800ba944c7f47957dbd920d70487`
+  and commitment `0000656174652061206d61726b6574706c61636520696e20736f6c6964697479…` - the jobEvents value
+  chunk for the new value;
+* the entry output 14 (slot `e3b0c442…`, i.e. key 0) carries value `…f9000000 38c1ef95…` where its *input* 14
+  carries `…f1000000 …`: the recreated entry grew by 8 bytes, and `38c1ef95…` is the value digest the covenant
+  hashes;
+* `routeParams` publishes the SDK's own witness: `__internal__valueWitness_0` = the 249-byte value ending
+  `…045efb5565570000045ffb5565`.
+
+So the disagreement is the **jobEvents value**: the covenant computes a value whose chunk lock is `aa20c76e…`,
+while the SDK materialized a chunk with lock `aa20988cb8…`. Because a chunk lock commits to
+(category, collection, slot, root), the next measurement is a two-minute offline check: compute the chunk lock
+for candidate values (the SDK witness as-is, and with the last event removed so the value matches the input
+entry's 241 bytes) with `getValueChunkLockingBytecode(category, 'jobEvents', keyToSlot(0), sha256(candidate))` and
+see which candidate reproduces `aa20c76e…` - that names the exact extra or missing bytes.
+
+### How to localize it next
+
+Both questions this section used to carry are answered: ROUND 36 localized the input-214 failure to
+`MarketplaceDataV1.sol:393` (a chunkable-value digest check) and ROUND 37 fixed it — the value witness was
+being filled positionally, so it now keys by the entry-slot ordinal in its own ABI name. ROUND 38 carries
+the next blocker (input 216: one batch entry output short) and names its one remaining measurement.
+
+Reproduce any of it with `SOLIDC_DEBUG_FAILURE_POINT=1 SOLIDC_DEBUG_FAILURE_RING=1
+SOLIDC_DEBUG_ROUTE_INPUT_INDEX=<n>`; add `SOLIDC_DEBUG_FAILURE_POINT_FULL=1` for every output's lock,
+category, commitment length and head. `SOLIDC_DEBUG_VALUE_WITNESS=1` / `SOLIDC_DEBUG_VALUE_CHUNKS=1` print
+the staged value witnesses (`chunkable-read-witness`, `delegate-value-witness-fill`), and
+`SOLIDC_DEBUG_ATOMIC_GRAPH=1` / `SOLIDC_DEBUG_ATOMIC_PROMOTION=1` print the graph's rows and the discovered
+node argument vectors. Do not trust the earlier `preflight-return-idx` lead for this class: that message
+only records `__internal__returnOutputIdx` and is not where the equality fails.
+
+### Unrelated: an unexplained concurrent edit
+
+At 20:54 — after this round's last compose.ts edit at 20:35 — an uncalled helper
+`transportedChunkableInsertValue` (31 added lines, never referenced) appeared in
+`packages/solidcash/src/stateful/StatefulContract.ts`. It was not written by this
+session; nothing in this round edits that file. It has been reverted to HEAD and the
+SDK rebuilt. **If a parallel session is working in this worktree, its edits will land
+on top of these commits — check `git status` before building.**

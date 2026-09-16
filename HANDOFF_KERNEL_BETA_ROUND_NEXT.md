@@ -1,6 +1,6 @@
 # Handoff — kernel-beta marketplace climb (after the event/continuation round)
 
-> **Latest state (ROUND 99, empty-commitment placeholders made structurally valid): 39 pass / 27 fail; tree at `315792099` + fix.** The sections below are a chronological log;
+> **Latest state (ROUND 100, the probe's aborting read is output 0's master commitment): 39 pass / 27 fail.** The sections below are a chronological log;
 > read ROUNDS 51-52 and 54 (the collection-key, rolled-array and dynamic-storage-read fixes: 32 -> 37),
 > ROUNDS 53-96 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
 > deferred-`takeJob` class and its three falsified hypotheses) at the end. Earlier "State" numbers in this header
@@ -4221,3 +4221,33 @@ Falsified this round (do not repeat):
 
 Focused state: `-t 'take job'` = 2 failed | 1 passed (green `sanity checks`), same two errors, `yarn build`
 green, no full-ladder run (no title turned green).
+
+### ROUND 100: the aborting read is the MASTER commitment, and probe placeholders must agree
+
+`deferred-no-progress-reads` now reports the introspected PROGRAM state for every traced read
+(`cat`, `cap`, `commitBytes`, `lock`), which removes the correlation problem noted in ROUND 99 (the aggregate dump
+at the final stall and an earlier attempt's trace indices never line up). Measured (builds 40/67/74/104/112):
+
+    out-bytecode 208..218 (a bounded OUTPUT RANGE SCAN; 208..211 are `lock 51` pads, 218 is a P2PKH fee output)
+    out-commitment index 0  ->  cat a3cef944, cap minting, commitment length 0, lock aa20fb9daa43
+
+so the program dies parsing the commitment of **output 0, the participant's MASTER minting NFT**, whose
+commitment is legitimately EMPTY (minting NFTs carry none) - and the caller's fixed `OP_SPLIT 32` helper aborts
+the whole program on it. The scan at 208..218 is not the aborting site; it only reads locking bytecodes.
+
+Landed (probe-only; the sent transaction is untouched):
+  - empty token commitments in the probe program are filled from the OTHER side of the same 1:1 block
+    coordinate, else with 64 zero bytes, and BOTH sides are filled so the pair agrees.
+    Measured effect: with only outputs filled the abort moved to `OP_VERIFY` at ip 148 of the 20-instruction
+    category-check body `121 118 206 1:20 127 124 117 82 ...` (input commitment empty vs output filled - the
+    preservation check correctly failing closed); with both sides filled the abort is a plain `OP_VERIFY` at
+    ip 424 / 183 / 244 with `stackBytes [0,0,35,35,35,0,0,1]` - the same signature ROUND 95 recorded for build
+    40, i.e. the probe now dies like an ordinary incomplete transaction instead of on an invalid OP_SPLIT.
+
+Still open (the next measurement): which check fails at those ips, and why the trace never reaches the
+`OP_INPUTBYTECODE` recovery read (still exactly one read, at input 127, `belowBytes 0`) before it does.
+`deferred-ecrecover-learned` stays at 2 and `deferred-no-progress-reads` at 10, so the resolver still cannot
+learn the eight recovery blobs - the composer error is unchanged.
+
+Focused state: `-t 'take job'` = 2 failed | 1 passed (green `sanity checks`), `yarn build` green, no full-ladder
+run (no title turned green).

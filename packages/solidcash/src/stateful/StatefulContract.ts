@@ -36592,25 +36592,40 @@ export class StatefulFunctionCall {
             // sites this trace exists to observe, so the resolver can never learn its arguments and the composer
             // reports `complete graph did not expose arguments for all deferred compute resources`.
             //
-            // The probe is not the transaction that gets sent: it only feeds argument learning. Give its empty
-            // commitments the co-spent input's authenticated commitment at the same 1:1 block coordinate when there
-            // is one, else a zero-filled body long enough to parse, so the run reaches those read sites. Acceptance
-            // is unaffected: the send recomposes from the learned values and every equality check still compares
-            // against the authenticated expectation, so a filled placeholder still fails closed.
-            const probeOutputs = program.transaction.outputs.map((output, index) => {
-              const commitment = output.token?.nft?.commitment;
-              if (!output.token || !output.token.nft || commitment === undefined || commitment.length > 0) {
-                return output;
-              }
-              const mirrored = program.sourceOutputs[index]?.token?.nft?.commitment;
-              const filled = mirrored && mirrored.length > 0 ? mirrored : new Uint8Array(64);
-              return {
-                ...output,
-                token: { ...output.token, nft: { ...output.token.nft, commitment: filled } },
-              };
-            });
+            // The probe is not the transaction that gets sent: it only feeds argument learning. Fill an empty
+            // commitment from the OTHER side of the same 1:1 block coordinate when that side carries one, else with
+            // a zero-filled body long enough to parse. Both sides must agree: filling only the output leaves the
+            // co-spent input empty and the covenant's preservation check then fails (measured: the abort moved from
+            // an invalid OP_SPLIT to `OP_VERIFY` at the master commitment comparison). Acceptance is unaffected -
+            // the send recomposes from the learned values and every equality check still compares against the
+            // authenticated expectation, so a filled placeholder still fails closed.
+            const fillProbeCommitment = <T extends { nft?: { commitment?: Uint8Array } } | undefined>(
+              token: T, mirror: Uint8Array | undefined,
+            ): T => {
+              const commitment = token?.nft?.commitment;
+              if (!token?.nft || commitment === undefined || commitment.length > 0) return token;
+              const filled = mirror && mirror.length > 0 ? mirror : new Uint8Array(64);
+              return { ...token, nft: { ...token.nft, commitment: filled } } as T;
+            };
+            const emptyOn = (item: { token?: { nft?: { commitment?: Uint8Array } } } | undefined): boolean => {
+              const commitment = item?.token?.nft?.commitment;
+              return commitment !== undefined && commitment.length === 0;
+            };
+            const mirrorFor = (index: number): Uint8Array | undefined => {
+              const outputCommitment = program.transaction.outputs[index]?.token?.nft?.commitment;
+              if (outputCommitment && outputCommitment.length > 0) return outputCommitment;
+              const sourceCommitment = program.sourceOutputs[index]?.token?.nft?.commitment;
+              return sourceCommitment && sourceCommitment.length > 0 ? sourceCommitment : undefined;
+            };
+            const probeSources = program.sourceOutputs.map((source, index) => (
+              emptyOn(source) ? { ...source, token: fillProbeCommitment(source.token, mirrorFor(index)) } : source
+            ));
+            const probeOutputs = program.transaction.outputs.map((output, index) => (
+              emptyOn(output) ? { ...output, token: fillProbeCommitment(output.token, mirrorFor(index)) } : output
+            ));
             const trace = evaluateProbeTrace(provider, {
               ...program,
+              sourceOutputs: probeSources,
               transaction: { ...program.transaction, outputs: probeOutputs },
               inputIndex: executionInput,
             });
@@ -36645,13 +36660,37 @@ export class StatefulFunctionCall {
                 if (!state.stack || state.stack.length === 0) return [];
                 const isOutput = opcode === Op.OP_OUTPUTTOKENCOMMITMENT;
                 const isInput = opcode === Op.OP_UTXOTOKENCOMMITMENT;
-                const isOutputBytecode = opcode === Op.OP_OUTPUTBYTECODE;
-                if (!isOutput && !isInput && !isOutputBytecode) return [];
+                const inputSide = opcode === Op.OP_UTXOTOKENCATEGORY || opcode === Op.OP_UTXOBYTECODE
+                  || opcode === Op.OP_UTXOVALUE || opcode === Op.OP_UTXOTOKENAMOUNT
+                  || opcode === Op.OP_INPUTBYTECODE;
+                const outputSide = opcode === Op.OP_OUTPUTBYTECODE || opcode === Op.OP_OUTPUTTOKENCATEGORY
+                  || opcode === Op.OP_OUTPUTVALUE || opcode === Op.OP_OUTPUTTOKENAMOUNT;
+                if (!isOutput && !isInput && !outputSide && !inputSide) return [];
+                const label = opcode === Op.OP_OUTPUTBYTECODE ? 'out-bytecode'
+                  : opcode === Op.OP_UTXOBYTECODE ? 'in-bytecode'
+                    : opcode === Op.OP_UTXOTOKENCATEGORY ? 'in-category'
+                      : opcode === Op.OP_OUTPUTTOKENCATEGORY ? 'out-category'
+                        : opcode === Op.OP_INPUTBYTECODE ? 'in-inputbytecode'
+                          : isOutput ? 'out-commitment' : 'in-commitment';
+                const index = vmNumber(state.stack[state.stack.length - 1]);
+                // The probe program is rebuilt every resolve round, so an aggregate dump taken at the final
+                // stall cannot be correlated with an earlier round's trace indices (measured: 216 vs 463).
+                // Read the state the covenant actually introspected out of THIS program instead.
+                const introspected = isInput || inputSide
+                  ? program.sourceOutputs[index]
+                  : probeOutputs[index];
+                const commitment = introspected?.token?.nft?.commitment;
+                const lock = introspected?.lockingBytecode;
                 return [{
-                  op: isOutput ? 'out-commitment' : isInput ? 'in-commitment' : 'out-bytecode',
-                  index: vmNumber(state.stack[state.stack.length - 1]),
+                  op: label,
+                  index,
                   bytes: state.stack[state.stack.length - 1]?.length,
                   stackDepth: state.stack.length,
+                  cat: introspected?.token?.category
+                    ? binToHex(introspected.token.category).slice(0, 8) : undefined,
+                  cap: introspected?.token?.nft?.capability,
+                  commitBytes: commitment?.length,
+                  lock: lock ? binToHex(lock).slice(0, 12) : undefined,
                 }];
               });
               console.error('deferred-no-progress-reads', JSON.stringify({

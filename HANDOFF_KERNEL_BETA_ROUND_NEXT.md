@@ -1,8 +1,8 @@
 # Handoff — kernel-beta marketplace climb (after the event/continuation round)
 
-> **Latest state (ROUND 95, one slot past the side-car band): 39 pass / 27 fail; tree at `ae9eea874`.** The sections below are a chronological log;
+> **Latest state (ROUND 96, commitment limit verified at 128 B): 39 pass / 27 fail; tree at `bdabd8e13`.** The sections below are a chronological log;
 > read ROUNDS 51-52 and 54 (the collection-key, rolled-array and dynamic-storage-read fixes: 32 -> 37),
-> ROUNDS 53-95 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
+> ROUNDS 53-96 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
 > deferred-`takeJob` class and its three falsified hypotheses) at the end. Earlier "State" numbers in this header
 > are historical.
 
@@ -4020,6 +4020,26 @@ walks - i.e. fill the inactive union slot(s) with the SDK's placeholder side-car
 commitment, the participant's category) instead of a bare funder pad. The oracle is `ip 1` ceasing to be the
 failure and `deferred-ecrecover-learned` rising above 2; the general rule is that any slot a compiled scan may read
 must be materialised with the shape that scan expects, not left as a filler.
+
+### ROUND 96: commitment-limit config verified (128 bytes, unchanged)
+
+Operator check requested: confirm the maximum NFT commitment size is configured as 128 bytes and that it is not
+being changed. Verified:
+
+* the configs do **not** set it at all - neither `solidcash.config.js` nor `vitest.marketplace.config.js` contains a
+  `commitmentLimit`, so the SDK default applies;
+* the SDK default is **128** (`packages/solidcash/src/stateful/ContractFactory.ts:264` `commitmentLimit: 128`, and the
+  baked `defaultProxyArtifact.ts` entries `"commitmentLimit": 128`);
+* the `commitmentLimit: 10000000` values that appear under `.marketplace/artifacts/*` are **artifact metadata**
+  (`stateLayout.commitmentLimit`) produced by the fixture's compile options, not configuration, and they are
+  untouched;
+* `git diff --name-only HEAD` contains no config, JSON, or artifact change - every change in this session is in
+  `packages/solidcash/src/**` plus this handoff.
+
+Design rule recorded for the pending side-car fix (ROUND 95): placeholder material must stay well inside the
+128-byte commitment limit. The stand-ins introduced so far carry 32-byte commitments (ROUND 71/89), and the fix for
+the token-less slot 20 must likewise emit a commitment of at most 128 bytes - a mutable NFT with a well-formed
+short commitment, never a longer payload - and must not introduce or modify any configuration value.
 
 ### How to localize it next
 

@@ -1,8 +1,8 @@
 # Handoff — kernel-beta marketplace climb (after the event/continuation round)
 
-> **Latest state (ROUND 66, verify-atomic scan): 39 pass / 27 fail; tree at `a9b7cbf60`.** The sections below are a chronological log;
+> **Latest state (ROUND 67, verifier digest loop): 39 pass / 27 fail; tree at `0563094fe`.** The sections below are a chronological log;
 > read ROUNDS 51-52 and 54 (the collection-key, rolled-array and dynamic-storage-read fixes: 32 -> 37),
-> ROUNDS 53-66 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
+> ROUNDS 53-67 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
 > deferred-`takeJob` class and its three falsified hypotheses) at the end. Earlier "State" numbers in this header
 > are historical.
 
@@ -3187,6 +3187,44 @@ Next round (targeted, cheap): in the failing pass, dump the arguments this body 
 (trace ip where `OP_1ADD` first runs), and compute the loop's base/limit arithmetically from those witnesses. That
 names the witness that must become block-local (or the composer value that must change), instead of guessing from
 the bytecode.
+
+### ROUND 67: the verifier digest loop is `OP_TXOUTPUTCOUNT`-bounded and needs token-bearing pairs
+
+Decoded `__message_bus_verify_atomic` (MarketplaceDataV1 invokeDebug id 71, 319 instructions) **by instruction
+index** (libauth's `ip` is an instruction index, not a byte offset - an earlier byte-offset decode mislabelled the
+region) with the BCH-2026 opcode table verified from
+`@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-opcodes.js`
+(`202 = OP_INPUTBYTECODE, 205 = OP_OUTPUTBYTECODE, 206 = OP_UTXOTOKENCATEGORY, 207 = OP_UTXOTOKENCOMMITMENT,
+209 = OP_OUTPUTTOKENCATEGORY, 210 = OP_OUTPUTTOKENCOMMITMENT, 211 = OP_OUTPUTTOKENAMOUNT`):
+
+    idx 244  OP_TXOUTPUTCOUNT      <- loop limit
+    idx 245  OP_LESSTHAN           <- counter < TXOUTPUTCOUNT
+    idx 246  OP_IF
+    idx 247  OP_0 OP_PICK OP_OUTPUTBYTECODE   (205)
+    idx 250  OP_3 OP_PICK OP_UTXOBYTECODE
+    idx 253  OP_XOR
+    idx 254  OP_IF
+    idx 255  OP_0 OP_PICK OP_OUTPUTTOKENCATEGORY (209)
+    idx 258  OP_3 OP_PICK OP_UTXOTOKENCATEGORY   (206)
+    idx 261  OP_XOR
+    ... (OP_CAT / OP_SPLIT 32 over the accumulated digest follows)
+
+So the body walks outputs paired 1:1 with inputs and accumulates `output XOR input` bytecodes/categories into a
+32-byte digest. A token-less pair (the OP_TRUE pads used to balance participant blocks: aggregate outputs 450..461
+are `51` with no token) XORs two empty items into an **empty accumulator**, and the following `OP_SPLIT 32` over a
+zero-length item is exactly the failure the trace dies with. The ring's counter values (`ca01..cf01` = 458..463)
+are in that padded tail, i.e. the loop is running over participant 4's block tail rather than the participant's own
+tokenized settlement range.
+
+Fix direction for the next round (two candidates, decide by the counter's start witness):
+(a) the composer must not leave token-less pads inside the range the verifier digests - e.g. bind the pads to
+token-bearing counterpart slots, or keep the participant's verified window `[blockEnd - settlementBoundary,
+blockEnd)` free of pads; or
+(b) the loop's start coordinate is a witness that must be block-local (same class as ROUND 63), so participant 0's
+digest runs over its own window instead of the last participant's tail.
+Cheap oracle for either: dump the counter's *initial* value and the witness it came from on the first iteration
+(trace states of the 315-instruction frame with ip == the OP_TXOUTPUTCOUNT site), then check whether outputs
+450..461 disappear from the digest input.
 
 ### How to localize it next
 

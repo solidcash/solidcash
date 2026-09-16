@@ -36695,6 +36695,13 @@ export class StatefulFunctionCall {
               try {
                 classify(stb.getJobEventsRedeemLock(), 'jobEventsRedeem');
               } catch { /* no session lock */ }
+              try {
+                console.error('trailing-band-coordinates', JSON.stringify({
+                  buildId: peekBuildId(),
+                  participant: this.parentContract?.inner.artifact.contractName,
+                  coordinates: stb.getTrailingBandCoordinatesForDiagnostics(),
+                }));
+              } catch { /* coordinates unavailable */ }
               const parent = this.parentContract;
               if (parent) {
                 try {

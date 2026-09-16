@@ -1,6 +1,6 @@
 # Handoff — kernel-beta marketplace climb (after the event/continuation round)
 
-> **Latest state (ROUND 112: ROOT CAUSE of the OP_SPLIT class - the compiler's band base is `blockSize` while the SDK's chunk base is shifted past the runtime-effect prefix): 39 pass / 27 fail.** The sections below are a chronological log;
+> **Latest state (ROUND 113: measured band coordinates - trailingBase == chunkBase == 63, blockSize 127; the event records and the chunk band COLLIDE): 39 pass / 27 fail.** The sections below are a chronological log;
 > read ROUNDS 51-52 and 54 (the collection-key, rolled-array and dynamic-storage-read fixes: 32 -> 37),
 > ROUNDS 53-96 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
 > deferred-`takeJob` class and its three falsified hypotheses) at the end. Earlier "State" numbers in this header
@@ -4635,6 +4635,40 @@ fixes (both general):
   (a) SDK: place the runtime-effect prefix AFTER the band - i.e. `getChunkOutputBase()` must equal the compiler's
       `blockSize`, with events/transfers/loop-entry outputs allocated above the published band width; or
   (b) compiler: publish the band base offset (the prefix length) so the SDK and the covenant agree on it.
+
+Focused state: `-t 'take job'` = 2 failed | 1 passed (green `sanity checks`), `yarn build` green, no full-ladder
+run (no title turned green).
+
+### ROUND 113: the band bases AGREE (63), so the OP_SPLIT class is a slot COLLISION, not a shift
+
+New diagnostic `trailing-band-coordinates` (from `stb.getTrailingBandCoordinatesForDiagnostics()`, gated by
+ENTRY_COUNTS) prints the compiler's fixed base, the published `trailingBase`, the SDK's chunk base and the event
+base. Measured for the route participant (SolidCashProxy, all ten stalled builds):
+
+    {"blockSize": 127, "trailingBase": 63, "chunkBase": 63, "eventBase": 22}
+
+Corrections to ROUNDS 109/110: `blockSize` is 127, NOT 63, so the failing read at 66 is NOT
+`master + blockSize + 1 + counter`. And `trailingBase` (63) EQUALS the SDK's `chunkBase` (63), so ROUND 112's
+"the SDK's chunk base is shifted past the prefix" is refined: the bases agree, and 66 = chunkBase + 3 is the
+FOURTH value-chunk slot (index 3).
+
+Combined with ROUND 112's commitment dump: the two trailing outputs p0 did publish (63/64) do not parse as
+`uint16 index || data` chunks at all (their leading two bytes decode to out-of-range chunk indices), and they
+carry record payloads. So the covenant's value-chunk band at `trailingBase + 0..` is effectively UNPUBLISHED for
+this participant: its first two slots are occupied by runtime-effect records, and the chunk the covenant walks to
+(index 3, coordinate 66) is a bare pad whose empty commitment aborts span 122.
+
+The defect is therefore a SLOT ALLOCATION collision inside the trailing run: the runtime-effect records and the
+value-chunk band both claim `trailingBase + 0..` for the same participant. Fix options (general):
+  (a) SDK: publish the value-chunk band at `trailingBase` and allocate runtime-effect records ABOVE the band's
+      published width (`getRuntimeLoopEventOutputIndex` / `getKernelJournalTrailingEffectOutputIndex`); or
+  (b) compiler: start the covenant's chunk band after the runtime-effect footprint, which requires the footprint
+      to be a runtime value (the route already carries `__internal__vmapBatchTrailingCount`).
+
+Next measurement to pick between them: print, for the same build, `runtimeLoopEventOutputs.length`,
+`runtimeLoopTransferOutputs.length`, `_trailingLoopEntryOutputCount()` and the value-chunk band width
+(`getChunkableValueWriteBand()`) so the claimed slots can be laid out side by side and the overlap proven
+numerically.
 
 Focused state: `-t 'take job'` = 2 failed | 1 passed (green `sanity checks`), `yarn build` green, no full-ladder
 run (no title turned green).

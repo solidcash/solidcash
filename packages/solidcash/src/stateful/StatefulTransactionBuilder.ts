@@ -13142,6 +13142,23 @@ export class StatefulTransactionBuilder {
     return true;
   }
 
+  /**
+   * The trailing-band coordinates both sides use: the compiler's fixed base (`blockLayout.blockSize`), the
+   * published `trailingBase` when the artifact carries one, and the SDK's own chunk base after reserved prefixes.
+   * A disagreement here is the band-base mismatch that makes a covenant walk runtime-effect records.
+   */
+  getTrailingBandCoordinatesForDiagnostics(): {
+    blockSize?: number; trailingBase?: number; chunkBase?: number; eventBase?: number;
+  } {
+    return {
+      ...(this.blockLayout?.blockSize !== undefined ? { blockSize: this.blockLayout.blockSize } : {}),
+      ...(this.blockLayout?.trailingBase !== undefined
+        ? { trailingBase: this.blockLayout.trailingBase } : {}),
+      chunkBase: this.getChunkOutputBase(),
+      eventBase: this.getEventOutputBase(),
+    };
+  }
+
   /** Block-layout slots as built, for diagnostics that attribute aggregate coordinates to their owner. */
   getBlockLayoutSlotsForDiagnostics(): Array<{ offset: number; kind: string; slotIndex?: number }> {
     return (this.blockLayout?.slots ?? []).map((slot) => ({

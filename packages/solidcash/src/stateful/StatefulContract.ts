@@ -30846,6 +30846,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       ...(iterationEntryInputs.length > 0 && { iterationEntryInputs }),
       ...(insertLoopPredecessors.length > 0 && { insertLoopPredecessorInputs: insertLoopPredecessors }),
       ...(effectiveBlockLayout && { blockLayout: effectiveBlockLayout }),
+      ...(overrides?.omitLocalFeeTail === true && {
+        composedParticipant: true,
+        ...(overrides?.blockBase !== undefined && { composedBlockBase: overrides.blockBase }),
+      }),
       ...((entryAbiFunction as MessageBusRuntimeAbiFunction | undefined)?.messageBusConvention && {
         messageBusConvention:
           (entryAbiFunction as MessageBusRuntimeAbiFunction).messageBusConvention,
@@ -32307,8 +32311,16 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         if (refreshed) builder._refreshInputs();
         return refreshed;
       };
+      // The builder materializes a composed participant's continuation chunks at the block-LOCAL trailing
+      // coordinates (that is what keeps its balanced block inside `blockSize`), while the covenant argument and the
+      // composed value-chunk spans must name the ABSOLUTE coordinate in the concatenated transaction. The atomic
+      // composer publishes that absolute base when it can; otherwise it is the local band shifted by this
+      // participant's block base.
+      const composedValueChunkBlockBase = overrides?.omitLocalFeeTail === true
+        ? overrides?.blockBase ?? 0 : 0;
       const resolvedGraphValueChunkOutputBase = (): number => (
-        graphPublishedValueChunkOutputBase ?? builder.getValueChunkOutputBase()
+        graphPublishedValueChunkOutputBase
+          ?? builder.getValueChunkOutputBase() + composedValueChunkBlockBase
       );
       setGraphValueChunkOutputBase(resolvedGraphValueChunkOutputBase());
       if (applyMintingMasterFills()) builder._refreshInputs();
@@ -36432,7 +36444,11 @@ export class StatefulFunctionCall {
           }));
         }
       }
-      for (const [offset, chunk] of stb.getDerivedChunkOutputs()) {
+      // Derived pins live at block-local coordinates; the composer range-checks every claim against the
+      // participant's absolute trailing range, so shift them by the block base exactly once here.
+      const composedBlockBase = stb.getComposedBlockBase();
+      for (const [localOffset, chunk] of stb.getDerivedChunkOutputs()) {
+        const offset = localOffset + composedBlockBase;
         if (computedValueChunks.some((candidate) => candidate.offset === offset)) continue;
         computedValueChunks.push(Object.freeze({
         offset,

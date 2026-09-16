@@ -6696,6 +6696,11 @@ export interface StatefulTransactionOptions extends TransactionBuilderOptions {
   /** Convention of the ABI body currently driving this builder. Historical application-name fallbacks must
    * never run for a kernel-owned route, even if every nested group is legacy or descriptor-free. */
   messageBusConvention?: 'legacy-unroll' | 'kernel-row-loop';
+  /** Building one balanced participant of an atomic composition: its block is concatenated after others, so
+   * absolute coordinates in route witnesses are not local output indices. */
+  composedParticipant?: boolean;
+  /** Absolute output index this composed participant's local block starts at (0 when standalone). */
+  composedBlockBase?: number;
   /** Per-build mutable chunk candidates. Omitted by directly constructed legacy builders. */
   valueChunkWriteStagingSession?: ValueChunkWriteStagingSession;
   funderUtxos?: UnlockableUtxo[];     // funder UTXOs for output-only slots
@@ -6960,6 +6965,9 @@ export class StatefulTransactionBuilder {
   private jobEventsRedeemLock?: Uint8Array;
   /** Persist band must start after the executing emit dest (INPUTINDEX+4). */
   private forcedJobEventsBandStart?: number;
+  /** True while building one balanced participant of an atomic composition (its blocks are concatenated). */
+  private composedParticipant = false;
+  private composedBlockBase?: number;
   /** Monotonic signal for structural growth discovered while probing dynamic output regions. */
   private dynamicLayoutRevision = 0;
 
@@ -7067,6 +7075,8 @@ export class StatefulTransactionBuilder {
     this._maximumFeeSatoshis = options.maximumFeeSatoshis;
     this.blockLayout = options.blockLayout;
     this.messageBusConvention = options.messageBusConvention;
+    this.composedParticipant = options.composedParticipant === true;
+    this.composedBlockBase = options.composedBlockBase;
     this.funderUtxos = options.funderUtxos ?? [];
     this.embeddedFunderUtxos = options.embeddedFunderUtxos ?? [];
     this.logicalIdentityUtxo = options.logicalIdentityUtxo;
@@ -8681,7 +8691,27 @@ export class StatefulTransactionBuilder {
     // Live covenant nNew (extracted/persisted v) wins over a short compose plan
     // so the missing continuation (first post slot 25) is reserved. Persist is
     // cleared on deploy, so a prior test's Created extract cannot inflate this.
-    let start = forcedLayoutStart ?? layoutStart;
+    // A composed participant's continuation outputs are its compiler-declared trailing slots: the composer
+    // publishes the ABSOLUTE coordinate for the covenant argument, while this isolated participant builder must
+    // materialize them at the block-local offset. The legacy `impl + blockSize` base names a coordinate outside
+    // the local block as soon as a delegate executes inside the participant, because `impl` is already an index
+    // inside this block - adding a whole block overruns it and pads the block up to the aggregate coordinate.
+    const composedTrailing = this.composedParticipant
+      ? ((publishFn as AbiFunction | undefined)?.blockLayout?.slots ?? [])
+        .filter((slot) => slot.kind === 'trailing')
+        .map((slot) => slot.offset)
+      : [];
+    const composedContinuationWidth = Math.max(
+      1,
+      publishLlcIndex >= 0
+        ? this.lowLevelCallUtxoGroups[publishLlcIndex].valueChunkOutputCount ?? 0 : 0,
+      publishExternal?.valueChunkOutputCount ?? 0,
+      plannedWidth,
+    );
+    const composedBase = composedTrailing.length > 0
+      ? composedTrailing[Math.max(0, composedTrailing.length - composedContinuationWidth)]
+      : undefined;
+    let start = composedBase ?? forcedLayoutStart ?? layoutStart;
     // Never park the jobEvents band on another participant's minting master (FakeToken).
     // View-tail packing and surplus strips key off band.end and would rewrite that block.
     const publishCategoryLower = publishCategory?.toLowerCase();
@@ -15085,6 +15115,15 @@ export class StatefulTransactionBuilder {
 
   getValueChunkRawCommitments(id: string): string[] {
     return this.valueChunkRawCommitments.get(id) ?? [];
+  }
+
+  /**
+   * Absolute base of this participant's balanced block. Composed participants materialize continuation chunks at
+   * block-local coordinates, while the composed value-chunk claims and the covenant argument name the absolute
+   * coordinate in the concatenated transaction.
+   */
+  getComposedBlockBase(): number {
+    return this.composedParticipant ? this.composedBlockBase ?? 0 : 0;
   }
 
   /** Output index where value chunks begin: after the block, dynamic chunks, and loop-entry (NEW) outputs. */

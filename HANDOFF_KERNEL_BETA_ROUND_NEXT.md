@@ -1,8 +1,8 @@
 # Handoff — kernel-beta marketplace climb (after the event/continuation round)
 
-> **Latest state (ROUND 62, HEAD `11da5bcdd`): 39 pass / 27 fail.** The sections below are a chronological log;
+> **Latest state (ROUND 63, composed-participant continuation coordinates): 39 pass / 27 fail.** The sections below are a chronological log;
 > read ROUNDS 51-52 and 54 (the collection-key, rolled-array and dynamic-storage-read fixes: 32 -> 37),
-> ROUNDS 53-62 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
+> ROUNDS 53-63 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
 > deferred-`takeJob` class and its three falsified hypotheses) at the end. Earlier "State" numbers in this header
 > are historical.
 
@@ -3023,6 +3023,46 @@ Next round's fix shape: for `messageBusConvention === 'kernel-row-loop'`, derive
 writer route's compiler-declared trailing slot offsets (or from the captured witness rebased by the participant
 block base) instead of `impl + blockSize`; keep the absolute witness untouched for the covenant argument vector.
 Verify with `post thread message > sanity checks` (isolated run is enough, ~60 s) and then the full ladder.
+
+### ROUND 63: composed participants keep continuation placement local and claims absolute
+
+Landed (ladder-neutral prerequisite, no lost titles): the composed participant's continuation geometry is split
+into the two coordinate systems the composer actually uses.
+
+* `StatefulTransactionBuilder` gained `composedParticipant`/`composedBlockBase` options (set from `_batchBuilder`'s
+  `overrides.omitLocalFeeTail`/`blockBase`, i.e. by `AtomicMessageBusComposition`),
+  `getComposedBlockBase()`, and a band rule: when composed, the value-chunk band start is the first of the last
+  `valueChunkOutputCount`/`plannedWidth` compiler-declared `trailing` slots of the writer route (exactly the slots
+  the composer selects), not the legacy `impl + blockSize` base.
+* `_createBuilder` publishes the ABSOLUTE continuation base (`graphPublishedValueChunkOutputBase ??
+  local band + blockBase`) into the group argument/`valueChunkWrites[].outputBase`, and
+  `StatefulFunctionCall.build()` shifts the block-local derived pins by `getComposedBlockBase()` before publishing
+  `__messageBusComputedValueChunks`.
+
+Evidence/measurements: `post thread message > sanity checks` used to fail at `test.ts:2142` with
+`participant 1 built 87/174 slots` (band computed as `impl 85 + publishBlockSize 85 = 170` while the participant
+block is 87 slots and the composer's slots are 82..84 = absolute 211..213). After the change the same title fails
+later, at `test.ts:2168`, with `complete graph did not expose arguments for all deferred compute resources`; the
+full ladder stays at 39 pass / 27 fail with no lost titles, so the geometry class is closed but does not flip a
+title on its own.
+
+### ROUND 63b: the deferred-ecrecover resolver needs the composed coordinate mapping
+
+`SOLIDC_DEBUG_ECRECOVER_DERIVE=1` (with the ROUND 63 geometry fix) prints for the failing title:
+
+    deferred-ecrecover-no-argument {
+      unresolvedAIndices: [[4,0],[6,1],[8,2],[10,3],[12,4],[14,5],[16,6],[18,7]],
+      inputCount: 129,
+      inputBytecodeReads: [ { index: 127, belowBytes: 0 }, { index: 467, belowBytes: 0 }, ... ] }
+
+so the SDK's unresolved A-side indices are participant-LOCAL (4,6,...,18 in a 129-slot participant) while the
+executing covenant reads its A side-car at `__internal__activeVerifierIndex + ecrecoverOffset` = 463 + 4 = **467**,
+an absolute verifier coordinate that is not an index into the participant's own `allInputs`. `resolveDeferredEcrecoverArgument`
+only rebases local->absolute through `inputBase` (`inputBase + findIndex(...)`), which cannot reach the verifier
+region; the composer's `block.resolve(program, executionInput, block.inputBase)` therefore never progresses and the
+graph throws. Next round: map the trace's A-side read back to the participant-local sidecar input (the composition
+knows `activeVerifierIndex`/`graphSettlementTable`), i.e. reverse-map `absolute - (inputBase + verifierBase)` before
+comparing with `unresolvedAIndices`, and check `resolveDeferredKeccakPreimage` for the same confusion.
 
 ### How to localize it next
 

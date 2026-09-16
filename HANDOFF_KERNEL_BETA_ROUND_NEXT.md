@@ -1,8 +1,8 @@
 # Handoff — kernel-beta marketplace climb (after the event/continuation round)
 
-> **Latest state (ROUND 81, unified sender lookup): 39 pass / 27 fail; tree at `24f76b3f6`.** The sections below are a chronological log;
+> **Latest state (ROUND 82, absent-entry read plan): 39 pass / 27 fail; tree at `77b446c72`.** The sections below are a chronological log;
 > read ROUNDS 51-52 and 54 (the collection-key, rolled-array and dynamic-storage-read fixes: 32 -> 37),
-> ROUNDS 53-81 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
+> ROUNDS 53-82 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
 > deferred-`takeJob` class and its three falsified hypotheses) at the end. Earlier "State" numbers in this header
 > are historical.
 
@@ -3666,6 +3666,35 @@ Next round: instrument the entry-access loop itself (it fetches `collectionEntri
 predecessor"). Print, per access, the resolved `keyValues`, the selected entry's slot and whether the predecessor
 fallback was taken. That separates "key not found" from "entry selected but not placed" - the two remaining
 explanations for the missing co-spend - before touching the placement code.
+
+### ROUND 82: the read plan resolves the correct slot as ABSENT (predecessor co-spent)
+
+Instrumented the entry-access loop's read-only branch (`entryNfts.push` for `sorted` collections) and ran
+`-t 'take job'` with `SOLIDC_DEBUG_ENTRY_COUNTS=1`. For the whitelist collection the plan is computed 51 times and
+the *correct* sender (`...aa6ae7e7adb60088ac` = `47d9fe52...`, ROUND 79's whitelisted caller) resolves to slot
+`bac4afa31b5925f59e163c5993bc34d46d99ab43...` in **both** states:
+
+    present False  entry 000000000000000000000000000000000000...   (bracketing predecessor)
+    present True   entry bac4afa31b5925f59e163c5993bc34d46d99...   (the real entry)
+
+So the mechanism is now exact: when `present` is false, the SDK co-spends the sorted list's **predecessor** (an
+empty entry), the covenant's read therefore returns the absent/false value, and `require(job.whitelistWorkers ==
+false || whitelistWorkers[jobId_][msg.sender], "not whitelisted")` fails - which is precisely the stall ROUND 73
+localized at source 680-684. Other slots in the same log (`bbe40417...`, `849a4c3f...`, `1549f589...`,
+`ffde089c...`) are absent for other senders, as expected.
+
+Since the entry demonstrably exists on chain (ROUND 74/79: value `01`, fetched with `allCount 2, matchedCount 2`),
+a `present: false` for it means the collection-entry list used by that pass did not contain it - i.e. a stale
+snapshot/ordering problem in the entry fetch, not a key or placement bug.
+
+Landed this round: the `entry-read-plan` probe (env-gated) that prints collection, slot, `present`, the selected
+entry's commitment and the sender - diagnostics only.
+
+Next round: find why `collectionEntriesFor(signature)` can miss an entry that exists - check whether the fetch
+caches UTXOs (provider snapshot invalidation happens for signers via `invalidateSignerUtxos`; collection entries may
+need the same refresh after a composed write), and whether the *provisional* passes run before the publish's
+outputs are indexed. The oracle is the probe: after the fix, the correct sender's slot must read `present: true` in
+the pass that raises the stall.
 
 ### How to localize it next
 

@@ -18768,7 +18768,20 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               }
             }
           } else {
-            const entry = list.has(slot) ? list.find(slot)! : list.predecessorOf(slot);
+            const present = list.has(slot);
+            const entry = present ? list.find(slot)! : list.predecessorOf(slot);
+            if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+              ?.SOLIDC_DEBUG_ENTRY_COUNTS === '1') {
+              console.error('entry-read-plan', JSON.stringify({
+                collection: access.collection,
+                slotIndex,
+                slot: binToHex(slot),
+                present,
+                entryCommitment: String(entry.utxo.token?.nft?.commitment ?? '').slice(0, 72),
+                sender: (this._signer ?? this._logicalNonceSigner)
+                  ? binToHex((this._signer ?? this._logicalNonceSigner)!.getLockingBytecode()) : 'none',
+              }));
+            }
             const roUnlocker = createReadOnlyEntryNftUnlocker(this.inner, this.categoryId, access.collection);
             entryNfts.push({ ...entryBase, utxo: { ...entry.utxo, unlocker: roUnlocker } });
           }

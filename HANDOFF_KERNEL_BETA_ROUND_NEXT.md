@@ -1,8 +1,8 @@
 # Handoff — kernel-beta marketplace climb (after the event/continuation round)
 
-> **Latest state (ROUND 72, solidhat runtime pick + ROUND 71 stand-ins): 39 pass / 27 fail; tree at `8cf709692`.** The sections below are a chronological log;
+> **Latest state (ROUND 73, takeJob whitelist require): 39 pass / 27 fail; tree at `ecba604a6`.** The sections below are a chronological log;
 > read ROUNDS 51-52 and 54 (the collection-key, rolled-array and dynamic-storage-read fixes: 32 -> 37),
-> ROUNDS 53-72 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
+> ROUNDS 53-73 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
 > deferred-`takeJob` class and its three falsified hypotheses) at the end. Earlier "State" numbers in this header
 > are historical.
 
@@ -3416,6 +3416,39 @@ Verification: `yarn build` green; `@solidcash/solidhat` 69 passed / 1 skipped (9
 suites); `@solidcash/testing` 4 failed / 58 passed where all 4 are `incremental-compile.e2e` compiler-spawn
 failures that **also fail with the pre-pick `chai.ts`** (checked by restoring that file: same 4); marketplace
 ladder **39 pass / 27 fail, no new, no lost** and zero `nonce ... already reserved` errors.
+
+### ROUND 73: the post-stand-in blocker is takeJob's whitelist require
+
+After ROUND 71 the `take job` trace fails later, and the new failure is now identified exactly. The diagnostic's
+`ip: 424` (reported one past the failing instruction, as usual) belongs to a frame whose opcode signature
+(indices 404..423 = `OP_INVOKE x6, OP_NUMEQUAL, OP_IF OP_1 OP_ELSE OP_2SWAP OP_PICK OP_ENDIF OP_VERIFY`) matches
+**exactly one** body in the whole fixture set: `MarketplaceV1` invokeDebug id 59
+**`__message_bus_entry_takeJob`** (5073 instructions), whose `sourceMap[423]` is `680:8:684:10`. That source is:
+
+    require(
+        job.whitelistWorkers == false ||
+            whitelistWorkers[jobId_][msg.sender],
+        "not whitelisted"
+    );
+
+So the composition probe's execution of `takeJob` dies on the **whitelist read**, long before the
+`keccak256`/`ecrecover` digest it is supposed to expose. Supporting facts:
+
+* the fixture publishes the job with `whitelisted: [user2.address]` by default, so the read must be true for
+  `msg.sender == user2`;
+* the same nested mapping reads correctly through the SDK view path - `should whitelist worker` (passing) asserts
+  `marketplace.whitelistWorkers(jobId, addr) === true` after `updateJobWhitelist`, and the collection fetch log
+  shows both chained entries present (`key 0x00..00 -> slot bac4afa3...`, `slot bac4afa3... -> 0x..01`);
+* `take job > sanity checks` (passing) only asserts the *rejecting* outcomes ("not whitelisted" for user4,
+  `whitelistWorkers == false` variants), so an always-false in-covenant read is consistent with it passing.
+
+Next round: compare the inner key the covenant derives for `whitelistWorkers[jobId_][msg.sender]` with the key the
+SDK wrote (`bac4afa31b5925f59e163c5993bc34d46d99ab4307fe5e59569dcfec21113727`), inside the composed
+proxy+delegate context. If the covenant derives a different caller key (for example the proxy identity instead of
+`tx.origin`), that is the bug - and it is a general kernel/`msg.sender` witness issue, not a marketplace one.
+Cheapest probe: dump the read key from the failing trace (the entry read is preceded by the executed route's
+`OP_INVOKE`s at ip 404..414), or run `take job > sanity checks`'s third block (the `whitelisted: false` job, where
+the read must be false) and the `should whitelist worker` view read side by side.
 
 ### How to localize it next
 

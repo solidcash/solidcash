@@ -3296,6 +3296,29 @@ Effect (ladder 39 pass / 27 fail, **no lost titles**, so this is a prerequisite 
 `TypeError: Cannot read properties of undefined (reading 'to')` at `marketplace.test.ts:2038`. SDK unit gate
 unchanged (4 pre-existing failures / 723 passed); handoff audit clean.
 
+### ROUND 69b: next kernel step for the deferred-compute class (keep it general)
+
+With the nonce class gone, `take job > take job` reports the deferred-compute error directly, so the class can now
+be driven from the cheapest reproducer (`-t 'take job'`, ~1 min) instead of the 5-participant `deliver result`.
+
+The composer's own contract for this mechanism (`compose.ts`, `assemble`): the first semantic pass carries
+*placeholder sidecars* on purpose, "the route verifier stops before the compute call and no complete-graph argument
+can be observed", and only blocks "whose sidecar slots are already present in the authenticated manifest" are
+resolved; "the ordinary effect pass below will add them and rebuild this assembly". Our readiness dump confirms the
+kind-6 rows ARE present (`{participant: 0, offset: 3..19}`) while the trace still dies inside
+`__message_bus_verify_atomic` before reaching the compute call - i.e. what is present is the *row declaration*,
+not necessarily a *committed endpoint*.
+
+General next step (kernel, no application names): make the deferred-compute readiness condition require the
+sidecar pair the verifier will digest - the input endpoint in the aggregate *and* the output commitment the
+manifest claims for that row - rather than the row's presence alone; when the endpoint is still a placeholder, the
+assembly must be rebuilt from the effect pass instead of being judged unresolvable. Concretely: dump, in the
+failing pass, `aggregate.inputs[absolute]`/`aggregate.outputs[absolute]` for each `offset` in
+`block.offsets` and compare them with `graph.callManifest.rows.filter(kind === 6)` for that owner/offset; if they
+disagree, the readiness filter (or the pass ordering) is the fix, not the resolver. This keeps the change inside
+the composition contract that already documents this behaviour, so it applies to every deferred-compute consumer
+(ecrecover, keccak, and any future sidecar resource), not just the marketplace fixture.
+
 ### How to localize it next
 
 Both questions this section used to carry are answered: ROUND 36 localized the input-214 failure to

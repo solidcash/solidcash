@@ -33451,8 +33451,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         outputs.map((output) => output.type),
         `function '${resultFunction?.name ?? functionName}' result`,
       );
+      // A Solidity-encoded result is one complete ABI value of the declared type, which may be an aggregate
+      // (dynamic array, fixed array, or struct). Decode it with the full ABI decoder: the scalar-only helper
+      // rejects every aggregate, and the native pushdata decoder that would otherwise be used reads the ABI head
+      // as a length and silently returns an empty container for a non-empty array.
       const evmDecoded = resultEncoding === 'evm-abi-v1'
-        ? decodeEvmReturnValue(blob, outputs[0].type) : undefined;
+        ? decodeEvmInvocationResult(blob, outputs.map((output) => output.type), structs, returnArtifact.enums)?.[0]
+        : undefined;
       let decoded: StateValue;
       try {
         const rawDecoded = evmDecoded ?? decodePushdataValue(blob, 0, outputs[0].type, structs).value;

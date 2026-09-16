@@ -13,6 +13,9 @@ import {
 import {
   selectMaterializedTailReturnEvents,
 } from '../../src/stateful/StatefulTransactionBuilder.js';
+import {
+  decodeEvmInvocationResult, encodeEvmInvocationResult,
+} from '../../src/stateful/evm-abi-result.js';
 
 const structs: StructDefinitionInfo[] = [{
   name: 'Pair',
@@ -21,6 +24,21 @@ const structs: StructDefinitionInfo[] = [{
     { name: 'active', type: 'bool' },
   ],
 }];
+
+describe('decodeEvmInvocationResult for aggregate results', () => {
+  it('decodes a non-empty array return which the scalar-only helper rejects', () => {
+    const encoded = encodeEvmInvocationResult([[1n, 2n]], ['uint256[]'], structs);
+    expect(decodeEvmInvocationResult(encoded, ['uint256[]'], structs)).toEqual([[1n, 2n]]);
+    // The scalar-only helper only understands scalar widths; a read that fell back to the native pushdata
+    // decoder instead read the ABI head as a length and produced an empty array.
+    expect(decodeEvmReturnValue(encoded, 'uint256[]')).toBeUndefined();
+  });
+
+  it('decodes an array of named structs through the same schema the writer used', () => {
+    const encoded = encodeEvmInvocationResult([[{ count: 7n, active: true }]], ['Pair[]'], structs);
+    expect(decodeEvmInvocationResult(encoded, ['Pair[]'], structs)).toEqual([[{ count: 7n, active: true }]]);
+  });
+});
 
 describe('encodeExternalReturnValue', () => {
   it('uses the callee struct schema for positional named-type returns', () => {

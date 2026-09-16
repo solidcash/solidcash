@@ -1,8 +1,8 @@
 # Handoff — kernel-beta marketplace climb (after the event/continuation round)
 
-> **Latest state (ROUND 75, SDK whitelist key captured): 39 pass / 27 fail; tree at `15e1e5f63`.** The sections below are a chronological log;
+> **Latest state (ROUND 76, caller absent from the composed inputs): 39 pass / 27 fail; tree at `d7de864de`.** The sections below are a chronological log;
 > read ROUNDS 51-52 and 54 (the collection-key, rolled-array and dynamic-storage-read fixes: 32 -> 37),
-> ROUNDS 53-75 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
+> ROUNDS 53-76 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
 > deferred-`takeJob` class and its three falsified hypotheses) at the end. Earlier "State" numbers in this header
 > are historical.
 
@@ -3505,6 +3505,31 @@ Next round: with the SDK key known (`[empty, 25-byte locking bytecode]`), find t
 dump that ip's stack from the trace - the two 32-byte hashes or the raw key bytes it feeds to the hash helper will
 show whether the covenant derived a different caller identity (for example a 32-byte category instead of the
 25-byte locking bytecode) in the composed proxy+delegate context.
+
+### ROUND 76: the failing composition has no input owned by the caller
+
+Probed the composed aggregate at the deferred-compute site (`SOLIDC_DEBUG_ENTRY_COUNTS=1`) for the whitelist entry
+and for the caller's funding input:
+
+* the whitelist entry itself is fine: the failing 5-participant composition (469 inputs) **co-spends it at input
+  20 and recreates it at output 20** (`bac4afa3...` found in both), so the read is not blocked by a missing entry;
+  the 3-participant passes show it only at outputs 63/64 (the `updateJobWhitelist` write) - also expected;
+* but `callerAt: []` - the caller's locking bytecode `76a91447d9fe52d462741f418e9dd5efaa6ae7e7adb60088ac`
+  (ROUND 75's SDK key input, i.e. the whitelisted `user2`) appears at **no input** of that aggregate, and the first
+  non-token input is index 21 with `76a914470bf077d5619f3424774ab30b3fcb2c3a89ea7088ac` (a different P2PKH account).
+
+Since the platform defines `msg.sender` as `tx.origin` for direct calls and `tx.origin` as the first P2PKH
+(non-token) input, the covenant's `whitelistWorkers[jobId_][msg.sender]` lookup is keyed by an account that never
+took the job - which is exactly the "not whitelisted" require failure ROUND 73 localized at source 680-684.
+
+Before treating that as the root cause, one fact still has to be pinned down: whether `470bf077...` is another
+harness signer (funding the fee tail while `user2` pays nothing) or whether the *caller* of this composed
+transaction is genuinely a different account than the one the fixture whitelisted. Next round: at the same compose
+site, enumerate the provider's signers (`aggregate.provider.getSigners?.(10)`) and print their addresses next to
+that first P2PKH input - then either (a) the fee/funding input selection must prefer the caller's UTXO (general
+composer fix: the caller's funding input must stay the first non-token input so `tx.origin` keeps naming it), or
+(b) the caller identity must be supplied to the route as an authenticated witness instead of being re-derived from
+`tx.origin` (the kernel already does this for delegate rows via `__internal__msgSenderCategory`).
 
 ### How to localize it next
 

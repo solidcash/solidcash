@@ -1484,7 +1484,18 @@ const graphRouteContext = (
     ...(execution.executionKind === 1 ? {
       // The delegate route executes against the owner block rooted at this participant's physical master. The
       // distinct implementation executor is pinned by executorOffset; it is not the state/master identity.
-      __internal__proxyMasterIndex: BigInt(finalized.layout.participantInputs[participant]),
+      //
+      // SOLIDC_DEBUG_OWNER_SENTINEL=1 substitutes a distinctive value for the participant owner. It exists to
+      // answer one question that stack dumps cannot: the outlined keccak fragment computes `base + 3` from
+      // whatever the route handed it as the owner, and with the real value (0) the resulting coordinate is
+      // indistinguishable from several other frame slots. With the sentinel the fragment's coordinate reads back
+      // as `sentinel + 3` if the owner argument really is its base, and unchanged if the base comes from another
+      // slot. Debug only: never set outside a measured investigation.
+      __internal__proxyMasterIndex: BigInt(
+        (globalThis as { process?: { env?: Record<string, string> } }).process
+          ?.env?.SOLIDC_DEBUG_OWNER_SENTINEL === '1'
+          ? 0x99 : finalized.layout.participantInputs[participant],
+      ),
     } : {}),
     ...(blockhashSlot !== undefined && blockhashParameter !== undefined ? {
       [blockhashParameter]: BigInt(finalized.layout.participantInputs[participant] + blockhashSlot.offset),

@@ -1,6 +1,8 @@
 # Handoff — kernel-beta marketplace climb (after the event/continuation round)
 
-> **Latest state (ROUND 153: the wrong-coordinate read also blocks the `dispute` family (2 titles, same `OP_SPLIT ... split index 32` at input 127), so it is not a take-job-only defect. Landed: `SOLIDC_DEBUG_COMPUTE_BASE=1` is now codegen-neutral (markers need `SOLIDC_DEBUG_COMPUTE_BASE_MARKERS=1`), because a marker build changes the outliner's decisions and must never be compared with a shipped build. The base question is narrowed to one undecidable-by-values step: the emitted `PICK 20` reads the zero-length item at snapshot depth 21 (= 63) while the model calls index 20 the owner, and the frame's zero-length items are indistinguishable, so the next step needs a runtime oracle for that one slot (sentinel or `OP_DEPTH` probe at that site), not more stack dumps.** See "ROUND 153" at the end.
+> **Latest state (ROUND 154: the outlined keccak fragment is NOT the failing read - measured twice: with `SOLIDC_DEBUG_OWNER_SENTINEL=1` the failure is unchanged and the fragment does not even run, and in one evaluation BOTH of its invocations (coordinate 66 and coordinate 3) read an EMPTY commitment, so no base fix can be the whole story. A composer change that materialised already-resolved deferred blocks was tried, measured to change nothing, and REVERTED. Next: enumerate the shipped program's `OP_OUTPUTTOKENCOMMITMENT` + `push 32; SPLIT` reads, then trace the failing body's caller frame instead of assuming the fragment.** See "ROUND 154" at the end.
+>
+> Superseded (ROUND 153: the wrong-coordinate read also blocks the `dispute` family (2 titles, same `OP_SPLIT ... split index 32` at input 127), so it is not a take-job-only defect. Landed: `SOLIDC_DEBUG_COMPUTE_BASE=1` is now codegen-neutral (markers need `SOLIDC_DEBUG_COMPUTE_BASE_MARKERS=1`), because a marker build changes the outliner's decisions and must never be compared with a shipped build. The base question is narrowed to one undecidable-by-values step: the emitted `PICK 20` reads the zero-length item at snapshot depth 21 (= 63) while the model calls index 20 the owner, and the frame's zero-length items are indistinguishable, so the next step needs a runtime oracle for that one slot (sentinel or `OP_DEPTH` probe at that site), not more stack dumps.** See "ROUND 153" at the end.
 >
 > Superseded (ROUND 152: the outlined fragment's coordinate is MEASURED as 66 (`d=0 = 0x42` at its OUTPUTTOKENCOMMITMENT, with the fragment pinned uniquely by the `push 0x7a` at its instruction 4), so the base it adds 3 to really is 63 rather than the participant base 0, and `outputs[66]` is a bare pad (empty commitment) while `outputs[3]` holds the 64-byte keccak commitment. Corrected reading: `OP_PICK k` copies snapshot depth `k+1`, which makes the pick trace consistent with this. Eliminated by measurement this round: the SDK probe rebase is 0 in all 28 records, the route argument vector is name-keyed end to end, the compiler's clone binding is consistent, and the branch-height invariant is clean. One question remains: which model entry the emitted PICK index addresses at that site.** See "ROUND 152" at the end.
 >
@@ -6420,3 +6422,38 @@ one frame slot, not more stack dumps**: e.g. temporarily emit, at that site only
 and compare, or have the SDK fill the owner slot with a sentinel value in a debug build and see which output
 coordinate the fragment then addresses. Everything else on this path has been eliminated by measurement
 (ROUNDS 149-152).
+
+## ROUND 154: the outlined fragment is NOT the failing read (twice measured), and the sentinel oracle
+
+### Measured: the failure survives without the fragment, and without its base
+
+Two independent measurements say the read I chased for many rounds is not the one that aborts:
+
+1. **Owner sentinel.** `SOLIDC_DEBUG_OWNER_SENTINEL=1` (new, inert gate in `graphRouteContext`, with the probe
+   rebase skipped under it) substitutes 153 for the participant owner. The failure is UNCHANGED - same
+   `OP_SPLIT ... stack item length: 0; requested split index: 32` at input 127 - and with the sentinel the
+   outlined fragment does not run at all in the traced evaluations.
+2. **Same body, two coordinates, both empty.** With the fragment pinned by the `push 0x7a` at its instruction 4,
+   one evaluation shows TWO invocations of it: base 63 -> coordinate 66 -> EMPTY commitment, and base 0 ->
+   coordinate 3 -> **also EMPTY**. So in that composition the participant's compute outputs are bare pads
+   regardless of the coordinate, which is why "fix the base" cannot be the whole fix.
+
+Also measured: in the very next run (after the composer experiment below) the fragment does not execute at all
+while the same signature still fails - so the abort definitely comes from another `[32:64]` read on an empty
+commitment. **Stop treating the fragment as the failing read.**
+
+### Tried and REVERTED: materialising already-resolved deferred blocks
+
+Hypothesis: the resolve loop copies refreshed compute resources into the aggregate only for blocks that are
+still unresolved, so a block learned elsewhere keeps the builder's empty-commitment placeholders (which would
+explain "every coordinate reads empty"). The change was implemented (materialise every block on the first
+round), built, and measured: **the take-job signature is unchanged**, and the fragment then stops running, so it
+is not the cause. Reverted to keep the composer untouched; only the inert sentinel diagnostic remains.
+
+### Where the next round should look (cheap, specific)
+
+The failing read is a `[32:64]` slice whose operand came from an `OP_OUTPUTTOKENCOMMITMENT` and whose frame has
+the EIP-191 prefix directly beneath it. Enumerate the reads that satisfy that shape in the SHIPPED program
+(`debug.invokeDebug` bodies: find `OP_OUTPUTTOKENCOMMITMENT` immediately followed by `push 32; SPLIT`), list the
+few candidate bodies, and then trace the failing 5-instruction body's caller frame with the exact data-gated
+trace to see which of them produced the empty item - instead of assuming the keccak fragment.

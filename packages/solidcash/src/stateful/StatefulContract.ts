@@ -13397,7 +13397,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       if (debugTargetDerivation) console.error('derive-probe-rebase-start', {
         delegatecallInputIndex, probeRouteBlockSize, localProxyMasterIndex,
       });
-      for (const name of ['__internal__proxyMasterIndex', '__internal__proxyMasterOutputIndex']) {
+      // The owner sentinel diagnostic must survive this probe rebase, otherwise the value under investigation
+      // is overwritten before the composition that fails. See compose.ts' SOLIDC_DEBUG_OWNER_SENTINEL.
+      const ownerSentinel = (globalThis as { process?: { env?: Record<string, string> } }).process
+        ?.env?.SOLIDC_DEBUG_OWNER_SENTINEL === '1';
+      for (const name of ownerSentinel ? [] : ['__internal__proxyMasterIndex', '__internal__proxyMasterOutputIndex']) {
         const argumentIndex = probeRoute.inputs.findIndex((input) => input.name === name);
         if (argumentIndex < 0) continue;
         const original = probeDelegate.internalArgs?.[name]

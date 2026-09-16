@@ -1,6 +1,6 @@
 # Handoff — kernel-beta marketplace climb (after the event/continuation round)
 
-> **Latest state (ROUND 115: the composed participant has ZERO chunkable-writer candidates - the band can only come from trace learning, confirming the deadlock): 39 pass / 27 fail.** The sections below are a chronological log;
+> **Latest state (ROUND 116: OP_SPLIT class ELIMINATED (5 -> 0) by probe-side trailing placeholders; all 10 stalls are now VERIFY): 39 pass / 27 fail.** The sections below are a chronological log;
 > read ROUNDS 51-52 and 54 (the collection-key, rolled-array and dynamic-storage-read fixes: 32 -> 37),
 > ROUNDS 53-96 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
 > deferred-`takeJob` class and its three falsified hypotheses) at the end. Earlier "State" numbers in this header
@@ -4744,6 +4744,38 @@ deadlock is therefore structural, and the fix must break the cycle from one of t
       (collection, key slot, entry access slot, route slot, operation, outputBase, outputCount) or start the
       covenant's positional chunk read after a runtime prefix the route already carries
       (`__internal__vmapBatchTrailingCount`).
+
+Focused state: `-t 'take job'` = 2 failed | 1 passed (green `sanity checks`), `yarn build` green, no full-ladder
+run (no title turned green).
+
+### ROUND 116: the OP_SPLIT abort class is fixed (probe-side), the VERIFY class remains
+
+Landed (probe-only, fail-closed): every TOKEN-LESS output at or above the participant's trailing base
+(`stb.getTrailingBandCoordinatesForDiagnostics().trailingBase`, offset by the participant's `inputBase`) receives a
+structural placeholder token in the PROBE program - the participant's own master category (`minting` capability
+scan), `mutable`, with a 64-byte zero body - so the covenant's positional chunk parse cannot abort on an empty
+item. The sent transaction is untouched.
+
+Measured effect on the focused window:
+
+    before : 5 OP_SPLIT-empty + 5 VERIFY stalls      2 failed | 1 passed
+    after  : 0 OP_SPLIT-empty + 10 VERIFY stalls     2 failed | 1 passed
+
+so the OP_SPLIT class (builds 112/119/126/133/175) is ELIMINATED - the probe now runs past the positional chunk
+parse - and the remaining blocker is the VERIFY class, now 10/10. The converted builds fail at their own checks:
+
+    112, 119 : VERIFY ELSE 0 PICK 2 EQUAL IF 0 VERIFY ELSE 0 PICK 3     (a tag/kind dispatch rejection)
+    126, 175 : PICK 2 PICK 1 INVOKE PUSH1 PICK EQUAL VERIFY             (require a == b)
+    133      : INVOKE ENDIF ENDIF ELSE 0 SWAP ENDIF TOALT EQUALV ...    (equality-family)
+
+`deferred-no-progress-reads` is still 10 and `deferred-ecrecover-learned` stays at 2, so the resolver still cannot
+learn its arguments: the placeholder data satisfies the parse but not the checks that precede the recovery reads.
+
+Next: make the placeholders PLAUSIBLE rather than zero-filled - the cheapest candidate is to mirror the resource
+the coordinate rightfully carries (the co-spent input at the same 1:1 coordinate, or the value-chunk commitment the
+covenant's own pin would compute from the row's current value), so those equality checks pass and the trace reaches
+the recovery/keccak reads. The failing windows above name the checks to satisfy, and `trailingCommitments` already
+prints both sides' commitment heads for comparison.
 
 Focused state: `-t 'take job'` = 2 failed | 1 passed (green `sanity checks`), `yarn build` green, no full-ladder
 run (no title turned green).

@@ -36643,12 +36643,45 @@ export class StatefulFunctionCall {
               const sourceCommitment = program.sourceOutputs[index]?.token?.nft?.commitment;
               return sourceCommitment && sourceCommitment.length > 0 ? sourceCommitment : undefined;
             };
+            // The composed path plans no value-chunk band at all (ROUND 115), so the covenant's positional chunk
+            // read inside the participant's trailing run finds a TOKEN-LESS pad and the shared 32/32 parser aborts
+            // the whole program - which is why the deferred resolvers never reach their read sites. The probe is
+            // not the transaction that gets sent: give every token-less coordinate inside this participant's
+            // trailing run a structural placeholder token (the participant's own category, mutable, a body long
+            // enough to parse). The real run is recomposed from the learned values and every equality check still
+            // compares against the authenticated expectation, so a placeholder still fails closed - it only stops
+            // the run from aborting before the reads the resolver needs.
+            const trailingBase = ((): number | undefined => {
+              try {
+                return stb.getTrailingBandCoordinatesForDiagnostics().trailingBase;
+              } catch {
+                return undefined;
+              }
+            })();
+            const masterCategory = program.transaction.outputs
+              .find((candidate) => candidate.token?.nft?.capability === 'minting')?.token?.category;
+            const placeholderFor = <T extends { token?: unknown; lockingBytecode: Uint8Array }>(
+              output: T, index: number,
+            ): T => {
+              if (output.token !== undefined || masterCategory === undefined || trailingBase === undefined) {
+                return output;
+              }
+              if (index < inputBase + trailingBase) return output;
+              return {
+                ...output,
+                token: {
+                  amount: 0n,
+                  category: masterCategory,
+                  nft: { capability: 'mutable' as const, commitment: new Uint8Array(64) },
+                },
+              };
+            };
             const probeSources = program.sourceOutputs.map((source, index) => (
               emptyOn(source) ? { ...source, token: fillProbeCommitment(source.token, mirrorFor(index)) } : source
             ));
             const probeOutputs = program.transaction.outputs.map((output, index) => (
               emptyOn(output) ? { ...output, token: fillProbeCommitment(output.token, mirrorFor(index)) } : output
-            ));
+            )).map((output, index) => placeholderFor(output, index));
             const trace = evaluateProbeTrace(provider, {
               ...program,
               sourceOutputs: probeSources,

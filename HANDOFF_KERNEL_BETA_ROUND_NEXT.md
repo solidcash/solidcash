@@ -1,6 +1,6 @@
 # Handoff — kernel-beta marketplace climb (after the event/continuation round)
 
-> **Latest state (ROUND 64, composed executor input): 39 pass / 27 fail.** The sections below are a chronological log;
+> **Latest state (ROUND 64, composed executor input): 39 pass / 27 fail; tree at `b357214ff`.** The sections below are a chronological log;
 > read ROUNDS 51-52 and 54 (the collection-key, rolled-array and dynamic-storage-read fixes: 32 -> 37),
 > ROUNDS 53-64 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
 > deferred-`takeJob` class and its three falsified hypotheses) at the end. Earlier "State" numbers in this header
@@ -3086,8 +3086,19 @@ geometry fix in place:
   `0d428c6528f8:3`, so the aggregate is being fed the probe-local placeholder copy of the executor input whose
   unlocker never became the real delegated invocation.
 
-Next round: make the composer materialize (or refuse) the real executor input before the deferred-compute loop
-evaluates `aggregate.buildLibauthProgram()` - i.e. ensure `local.inputs[executorOffset]` is the authenticated impl
+A second probe immediately before the deferred-compute loop (`deferred-eval-inputs`, on `deliver result`) shows
+the evaluated executor input is NOT a placeholder in the resolving pass: participant 0 resolves to
+`{absolute: 127, lock: 'aa20260e28787b12...', category: '142ee8b0de81...', capability: 'minting',
+commitmentBytes: 0, satoshis: 1200, params: 18, offsets: [3..19]}` - the real delegate master with its invocation
+unlocker and all 17 published ecrecover side-car offsets. So the stub copies (`txid:127`) are probe-build
+artifacts, and the stall is not a missing executor UTXO: the implemented input runs its delegated invocation but
+the trace dies at `ip 1` on `OP_SPLIT 32` over a zero-length item while the stack holds 35-byte P2SH32 values and
+empty items, i.e. a covenant script (entry/anchor shaped) executes without its expected category/commitment item.
+
+Next round: instrument that terminal trace (its `instructions`/frame and the 35-byte stack items) to identify which
+covenant is running at `executionInput 127` and which push is empty - the ecrecover side-car A/B inputs the resolver
+looks for sit at block-local offsets 4..19 (`offsets` above), so either the invocation is passing the wrong frame
+to the implementation or the evaluated input index is the block's *identity* slot rather than its executor. - i.e. ensure `local.inputs[executorOffset]` is the authenticated impl
 master UTXO with its invocation unlocker, not the local placeholder; the ecrecover resolver then sees the
 `OP_INPUTBYTECODE` reads it expects (its sidecars sit at the same block-local offsets 4..19, which is why the
 `unresolvedAIndices` keys are local while the covenant addresses them absolutely).

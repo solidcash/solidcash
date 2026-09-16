@@ -3808,6 +3808,7 @@ export function legacyPlannedChunkableValueWriteCollection(
 /** Resolve a single physical chunkable-value writer from compiler metadata, independent of ABI names. */
 export function selectChunkableValueWriteExecution(
   candidates: ReadonlyArray<{ group: ChunkableValueWriteGroup; inputIndex: number }>,
+  options?: { allowCompilerDescribed?: boolean },
 ): {
   inputIndex: number; abiFunction: AbiFunction; collection: string;
   resourceIdentity?: string; resourceOwnerIdentity?: string;
@@ -3818,7 +3819,14 @@ export function selectChunkableValueWriteExecution(
   }>();
   for (const { group, inputIndex } of candidates) {
     if (inputIndex < 0) continue;
-    const resource = groupChunkableValueWriteResource(group);
+    // Under `kernel-row-loop` the named fallback is closed, but a COMPOSED participant still needs the band: the
+    // compiler describes the chunkable collection it writes, and the composed path is the only one that asks for
+    // this relaxation, so ordinary direct sends keep the strict claim.
+    const described = options?.allowCompilerDescribed === true
+      ? groupChunkableValueWriteCollections(group)
+      : [];
+    const resource = groupChunkableValueWriteResource(group)
+      ?? (described.length === 1 ? { collection: described[0] } : undefined);
     if (resource === undefined) continue;
     const artifact = group.logicalArtifact ?? group.externalContract?.inner?.artifact;
     const logicalName = group.logicalFunctionName ?? group.functionName;
@@ -8296,7 +8304,7 @@ export class StatefulTransactionBuilder {
           group, inputIndex: this.getExternalCallMasterInputIndex(index),
         }] : []
       )),
-    ]);
+    ], { allowCompilerDescribed: this.composedParticipant === true });
   }
 
   private _hasChunkableValueWriteMetadata(): boolean {

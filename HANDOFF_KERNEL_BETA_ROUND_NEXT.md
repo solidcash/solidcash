@@ -1,6 +1,6 @@
 # Handoff — kernel-beta marketplace climb (after the event/continuation round)
 
-> **Latest state (ROUND 126: the composed band is blocked by the `kernel-row-loop` fallback gate; a group-level relaxation REGRESSES `sanity checks`, so the fix must be scoped to the composed path): 39 pass / 27 fail.** The sections below are a chronological log;
+> **Latest state (ROUND 127: composed-scoped claim relaxation landed (no regression, but inert) - the PROXY route ABI carries no chunkable write description at all): 39 pass / 27 fail.** The sections below are a chronological log;
 > read ROUNDS 51-52 and 54 (the collection-key, rolled-array and dynamic-storage-read fixes: 32 -> 37),
 > ROUNDS 53-96 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
 > deferred-`takeJob` class and its three falsified hypotheses) at the end. Earlier "State" numbers in this header
@@ -5061,6 +5061,33 @@ matches. That scoping is the next change to make, and it is a fix attempt rather
 Also this round: the `failingTrace` instrumentation (trace tail with stack sizes) was added, read once (the tail is
 `OP_OUTPUTTOKENCATEGORY` / `OP_OUTPUTTOKENCOMMITMENT` then `EQUALVERIFY` with an empty operand), and REVERTED -
 per the operator's steer the effort is shifting from diagnostics to fixes.
+
+Focused state: `-t 'take job'` = 2 failed | 1 passed (green `sanity checks`), `yarn build` green, no full-ladder
+run (no title turned green).
+
+### ROUND 127: the scoped relaxation is safe but inert - the proxy route ABI describes no chunkable write
+
+Landed `fix(solidcash): allow a compiler-described chunkable write claim for composed participants`:
+`selectChunkableValueWriteExecution(candidates, { allowCompilerDescribed })` accepts a resource from
+`groupChunkableValueWriteCollections(group)` when the flag is set, and only `StatefulTransactionBuilder`
+passes it - and only when `this.composedParticipant === true`. Measured:
+
+    group-level relaxation (ROUND 126) : 3 failed  (sanity checks REGRESSED)
+    composed-scoped relaxation (this)  : 2 failed | 1 passed, sanity checks GREEN, 10 stalls (unchanged)
+
+so the scoping fixes the regression, but the relaxation never FIRES: `groupChunkableValueWriteCollections`
+reads the selected function's ABI metadata (`messageBusActiveWriteCollections` + `entryAccesses` + the
+collection's `chunkableValue`), and the participant the composer builds is the PROXY route, whose ABI lists only
+the whitelist entries - the chunkable `jobEvents` write belongs to the implementation, which the route ABI never
+mentions (ROUND 126's artifact survey: 0 occurrences of the chunk-base witness in MarketplaceV1, 13 in
+MarketplaceDataV1). Nothing to claim, so nothing changes - measured, not assumed.
+
+That closes the diagnosis of this class: the band is never planned because the composer's participant ABI does not
+describe the chunkable write, and the two ways forward are now both named:
+  (a) compiler: propagate the delegate's chunkable-write description into the CALLER's route ABI (so
+      `messageBusActiveWriteCollections`/an equivalent claim names it); or
+  (b) SDK: let the claim consult the IMPLEMENTATION artifact the participant delegates to (the composer knows the
+      delegate/LLC wiring) instead of only the ABI it builds.
 
 Focused state: `-t 'take job'` = 2 failed | 1 passed (green `sanity checks`), `yarn build` green, no full-ladder
 run (no title turned green).

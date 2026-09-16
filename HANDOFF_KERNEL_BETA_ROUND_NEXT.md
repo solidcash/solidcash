@@ -1,6 +1,6 @@
 # Handoff — kernel-beta marketplace climb (after the event/continuation round)
 
-> **Latest state (ROUND 108: two stall classes measured - 5 VERIFY + 5 OP_SPLIT; the band+3 shift is falsified): 39 pass / 27 fail.** The sections below are a chronological log;
+> **Latest state (ROUND 109: the OP_SPLIT read is `master + blockSize + 3`, not the side-car band at `master + 3`): 39 pass / 27 fail.** The sections below are a chronological log;
 > read ROUNDS 51-52 and 54 (the collection-key, rolled-array and dynamic-storage-read fixes: 32 -> 37),
 > ROUNDS 53-96 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
 > deferred-`takeJob` class and its three falsified hypotheses) at the end. Earlier "State" numbers in this header
@@ -4511,6 +4511,37 @@ width / chunk count the covenant walks (the `chunk-band-probe` record already pr
 trailing run and the planned width) - the read at 66 says the covenant expects a chunk at band start + 2 while the
 SDK stopped after two chunks. For the VERIFY builds, the two `require(a != b)` cases (67/74) and the three
 boolean/conditional cases (40/104/140) are separate emitters and must be located by their 13-op context.
+
+Focused state: `-t 'take job'` = 2 failed | 1 passed (green `sanity checks`), `yarn build` green, no full-ladder
+run (no title turned green).
+
+### ROUND 109: the OP_SPLIT class reads the side-car RESULT band at the wrong base
+
+`deferred-no-progress-reads` keeps the last 40 introspections now. Full sequence for build 112 (447 reads total):
+
+    183..211  out-bytecode, ascending, every one a PAD (no token)
+    212..217  out-bytecode, token-bearing (128, 83, 64, 75, 38, 38-byte commitments)
+    216       out-category (a3cef944, mutable, 38 bytes)
+    217       out-bytecode
+    218       out-bytecode
+    216       out-commitment (a3cef944, 38 bytes)          <- an identity scan that MATCHED 216
+    3         in-inputbytecode (361eb80b, mutable, 32 B)   <- the KECCAK side-car input
+    66        out-commitment -> EMPTY                     <- ABORT (span 122: SPLIT 32)
+
+So the aborting read follows the side-car input check directly, and its coordinate is
+`master + blockSize + 3` for participant 0 (blockSize 63, trailing band 63..126), NOT the side-car band at
+`master + 3` where inputs and their 1:1 mirrors actually live (outputs 3..19 are token-bearing).
+
+That is a base/offset mismatch in the code that reads a compute result: the read should address the side-car
+mirror band (`master + 3 + k`, the same coordinate as the input) or the SDK must publish the result band at
+`master + blockSize + 3 + k`. The scan before it (183..218) is a separate identity scan whose match at 216 is a
+tail resource (ROUND 103/105).
+
+Next: find the emitter that pushes `master + blockSize + <k>` before the shared span `5393d20120017a8a7e`
+(`OP_3 OP_ADD OP_OUTPUTTOKENCOMMITMENT <32> <span 122> OP_CAT`) - the candidates are the vmap batch/settlement
+readers that use `emitTrailingBlockBase`/`emitTrailingWriteOutputBase` plus a constant, and the SDK witness that
+carries the predicted output ordinal (`__internal__vmapBatchPredOut_*`) - and decide which side owns the extra
+`blockSize`.
 
 Focused state: `-t 'take job'` = 2 failed | 1 passed (green `sanity checks`), `yarn build` green, no full-ladder
 run (no title turned green).

@@ -36827,7 +36827,7 @@ export class StatefulFunctionCall {
                 failingWindow: (terminal?.instructions ?? [])
                   .slice(Math.max(0, (terminal?.ip ?? 0) - 9), (terminal?.ip ?? 0) + 4)
                   .map((instruction) => ({ op: instruction?.opcode })),
-                trailing: commitmentReads.slice(-12),
+                trailing: commitmentReads.slice(-40),
               }));
             }
             if (!progressed

@@ -1,6 +1,6 @@
 # Handoff — kernel-beta marketplace climb (after the event/continuation round)
 
-> **Latest state (ROUND 136: FIX LANDED - the route-probe convergence guard treated a FIXED POINT as failure; accepting it turns 2 titles green (close job after timeout, withdraw collateral): 41 pass / 25 fail expected).** The sections below are a chronological log;
+> **Latest state (ROUND 136: LADDER 43 pass / 23 fail (was 39/27) - the route-probe fixed-point fix turned FOUR titles green.** The sections below are a chronological log;
 > read ROUNDS 51-52 and 54 (the collection-key, rolled-array and dynamic-storage-read fixes: 32 -> 37),
 > ROUNDS 53-96 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
 > deferred-`takeJob` class and its three falsified hypotheses) at the end. Earlier "State" numbers in this header
@@ -5421,3 +5421,34 @@ Also surveyed this round (new error signatures worth attacking next):
   - 'refuse arbitration' window: `job closed` PASSES; `job not taken` fails with an AssertionError
     (`expected 0n to deeply equal 1n`, a state-read mismatch) and `job taken` fails with "Expected transaction NOT to
     be reverted, but it reverted".
+
+### ROUND 136 (continued): full ladder after the fix - 43 pass / 23 fail (was 39/27)
+
+    npx vitest run --config vitest.marketplace.config.ts --reporter=verbose --no-file-parallelism
+    -> Tests  23 failed | 43 passed (66)
+
+Four titles turned green from the single fixed-point change (two of them verified individually, the other two
+discovered by the ladder), and no title regressed. The new failing set (23), for the next rounds:
+
+    approve result and review > approve result, sanity checks
+    arbitrate > arbitrate 0-100, arbitrate 100-0, arbitrate 80-20, sanity checks
+    deliver result > deliver result, sanity checks
+    dispute > dispute creator, dispute worker, sanity checks no arbitrator, sanity checks with arbitrator
+    integration test > integration test
+    job posting > post job with invalid mece tags
+    job updates > update job tags
+    pay start job > pay start job
+    post thread message > sanity checks
+    refund > refund, sanity checks
+    refuse arbitration > job not taken, job taken
+    take job > take job, take job multiple
+
+Error signatures already known for some of them:
+  - `refuse arbitration > job not taken`: AssertionError `expected 0n to deeply equal 1n` on
+    `marketplaceData.arbitrators(arbitrator.address).refusedCount` after `refuseArbitration` - the entry's field
+    increment does not land; `refuseArbitration` appears ONLY once in the data artifact (an ABI entry, no
+    `entryAccesses`), so it is not a message-bus handler and runs through the direct-call path.
+  - `refuse arbitration > job taken` and `job posting > post job with invalid mece tags`: "Expected transaction NOT
+    to be reverted, but it reverted".
+  - `take job` / `take job multiple`: the deferred-compute stall documented in ROUNDS 96-129 (unchanged by this
+    fix; its blocks are the band/witness questions, none of which are the fixed point).

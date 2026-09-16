@@ -3127,10 +3127,25 @@ MarketplaceDataV1 = `7f7701207f75` (OP_3DUP OP_NIP <32> OP_3DUP OP_VERIFY) and i
 *unrelated* spans (`_timestamps[id] = ...`, `symbol: ... ? ...`, `shares,`), so it is a **generic compiler
 outline** (a value store/decode shape), not evidence about `getJob` - do not read it as a nested-return problem.
 
-Next round: locate the output-scan loop whose bound lets a composed participant read past its block (candidates:
-the entry/data-NFT scan in the route prologue, `__internal__graphBlockSize`/`fixedSize` witnesses, or the
-`__internal__` participant scan) and make the bound block-local, exactly like ROUND 63 did for the continuation
+Follow-up measurement (aggregate tail at the deferred stage, participant count 5, 469 inputs/outputs):
+
+    450..461  lock '51' (OP_TRUE pads), no token, empty commitment      <- tail of participant 4's block
+    462       SID token, category 2c62df0f77, capability none, 75-byte commitment
+    463..467   the five VERIFIER outputs, capability mutable, 38-byte commitments '4c3356310000...' (L3V1 + digest)
+    468       fee change
+
+and the trace's scan counter on the stack runs `ca01, cb01, cc01, cd01, ce01, cf01` = output indices
+**458, 459, 460, 461, 462, 463** while executing `OP_OUTPUTBYTECODE` (ip 247) and `OP_OUTPUTTOKENCOMMITMENT`
+(ip 255). So the script walks forward from 458 to the verifier output at 463 and, at the OP_TRUE pads (no token),
+`OP_OUTPUTTOKENCOMMITMENT` yields an EMPTY item - which is exactly the `OP_SPLIT 32` over a zero-length item that
+kills the trace. `verifierInputs[0]` is 463, so the scan endpoint is the participant's own verifier coordinate,
+but its start (458) lands inside the *previous* participant's padded block tail instead of this participant's own
 band.
+
+Next round: find which witness supplies that scan base (candidates: `__internal__activeVerifierIndex` arithmetic
+in the generated route, `__internal__graphBlockSize`/`fixedSize`, `__internal__graphSettlementTable`) and make the
+scan range block-local - the same local/absolute split ROUND 63 fixed for the continuation band. A fast oracle is
+the tail dump above: after the fix, output indices 450..461 must no longer be scanned by participant 0's route.
 
 ### How to localize it next
 

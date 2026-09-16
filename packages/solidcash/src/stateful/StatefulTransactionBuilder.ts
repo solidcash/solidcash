@@ -8747,13 +8747,23 @@ export class StatefulTransactionBuilder {
         }
       }
     }
-    return computePublishJobEventsBand({
-      start,
+    const probeShift = Number((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+      ?.SOLIDC_DEBUG_CHUNK_SHIFT ?? '0');
+    const band = computePublishJobEventsBand({
+      start: start === undefined ? undefined : start + (Number.isFinite(probeShift) ? probeShift : 0),
       preserveEndExclusive: Math.max(preserveEndExclusive, forcedStart ?? -1),
       plannedWidth,
       jobEventsCount,
       liveWidth: liveJobEventsBandWidth({ plannedWidth, persistWidth, derivedWidth }),
     });
+    if (probeShift !== 0 && (globalThis as { process?: { env?: Record<string, string> } }).process?.env
+      ?.SOLIDC_DEBUG_ENTRY_COUNTS === '1') {
+      console.error('chunk-band-probe', JSON.stringify({
+        buildId: peekBuildId(), shift: probeShift, start, band,
+        composedTrailing: composedTrailing.slice(0, 4), composedContinuationWidth,
+      }));
+    }
+    return band;
   }
 
   /** @deprecated Compatibility name for callers predating compiler-described chunkable writes. */

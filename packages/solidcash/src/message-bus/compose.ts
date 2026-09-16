@@ -3637,6 +3637,15 @@ export class AtomicMessageBusComposition {
                   };
                 }),
               }));
+              console.error('deferred-stall-io-full', JSON.stringify({
+                buildId: peekBuilderBuildId(),
+                out: aggregate.outputs.map((item, index) => item?.token?.nft
+                  ? `${index}:${item.token.category?.slice(0, 8)}:${(item.token.nft.commitment?.length ?? 0) / 2}`
+                  : `${index}:-`),
+                in: aggregate.inputs.map((item, index) => item?.token?.nft
+                  ? `${index}:${item.token.category?.slice(0, 8)}:${(item.token.nft.commitment?.length ?? 0) / 2}`
+                  : `${index}:-`),
+              }));
               console.error('deferred-stall-io', JSON.stringify({
                 buildId: peekBuilderBuildId(),
                 inputs: aggregate.inputs.slice(0, 24).map((item, index) => ({

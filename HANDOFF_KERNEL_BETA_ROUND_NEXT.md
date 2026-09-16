@@ -1,6 +1,6 @@
 # Handoff — kernel-beta marketplace climb (after the event/continuation round)
 
-> **Latest state (ROUND 97, the deferred stall's read index identified): 39 pass / 27 fail; tree at `fa2931dfc` + diagnostics.** The sections below are a chronological log;
+> **Latest state (ROUND 98, the deferred stall's ROOT CAUSE identified): 39 pass / 27 fail; tree at `52d79f3d7` + diagnostics.** The sections below are a chronological log;
 > read ROUNDS 51-52 and 54 (the collection-key, rolled-array and dynamic-storage-read fixes: 32 -> 37),
 > ROUNDS 53-96 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
 > deferred-`takeJob` class and its three falsified hypotheses) at the end. Earlier "State" numbers in this header
@@ -4119,3 +4119,65 @@ Diagnostics landed this round (permanent, gated, build-correlated):
     no import cycle is introduced).
   - `entry-slot-position` (builder), `route-entry-keys` and `message-bus-entry-meta` (contract), plus
     `deferred-stall-band` and `deferred-stall-io` (composer) - each stamped with `buildId`.
+
+### ROUND 98: the deferred stall is a PREFLIGHT CRASH, not a composition dead-end
+
+Decisive chain (measured with `SOLIDC_DEBUG_ECRECOVER_DERIVE=1`, which is REPORTING-ONLY: its branch only
+prints, so every measurement below is the default path):
+
+1. `deferred-ecrecover-no-argument` (96 records in one `-t 'take job'` run) shows the failing build as
+   `unresolvedAIndices [[4,0],[6,1],[8,2],[10,3],[12,4],[14,5],[16,6],[18,7]]` (= the eight recovery side-car A
+   inputs) with `inputCount 129` and exactly ONE `OP_INPUTBYTECODE` read in the whole trace:
+   `{index: 127, belowBytes: 0, below: '', stackBytes: [0,0,0,0,1]}` - the verifier input, with an EMPTY item
+   below. The recovery-argument read the resolver needs is never reached because the preflight program dies
+   first.
+2. The preflight death is `atomic-deferred-compute-no-progress`:
+   `Program called an OP_SPLIT operation with an invalid index. stack item length: 0; requested split index: 32`,
+   `ip 1`, `executionInput 127`, `states 451`.
+3. The failing body is `MarketplaceV1`'s shared outlined span `5393d20120017a8a7e` =
+   `OP_3 OP_ADD OP_OUTPUTTOKENCOMMITMENT <push 32> <invoke span 122> OP_CAT` (span 122 = `7f7701207f75` =
+   "drop the first 32 bytes, keep the next 32"), invoked from `__message_bus_entry_whitelistWorkers` - the
+   ENTRY COVENANT, i.e. the collection's entry NFT script, not the route body. So the covenant reads
+   `output[base + 3]`'s commitment and parses it as `slot || digest || ...`.
+4. Consequence: because the trace dies at that read, `resolveDeferredEcrecoverArgument` can never learn the
+   eight 97-byte recovery blobs, `!progressed` fires, and the composer throws
+   `messageBus: complete graph did not expose arguments for all deferred compute resources`. The "stall" is a
+   symptom; the crash is the cause.
+
+Band measurement (io table for the failing build, `deferred-stall-io-full`):
+  - token-bearing outputs: 0..20 (master, 2 data NFTs, keccak(3), 16 ecrecover(4..19), entry(20));
+  - **63 and 64 carry the two real value-chunk NFTs** (commitments 123 and 108 bytes, participant category);
+  - 21..62 and 65..126 are BARE token-less pads (lock `51`),
+    so a positional chunk read that lands past the two real chunks finds an empty commitment and the
+    covenant's `OP_SPLIT 32` helper dies.
+
+Band-base experiment (`SOLIDC_DEBUG_CHUNK_SHIFT=<n>`, read in `getChunkableValueWriteBand`; default 0 is a
+no-op, verified: the same two failures and the same error messages as before the patch):
+  - with `SOLIDC_DEBUG_CHUNK_SHIFT=3`: ZERO OP_SPLIT stalls, `deferred-ecrecover-learned` fires, and the
+    failure moves to a later stage (`complete graph did not expose arguments...` and an internal
+    `Cannot read properties of undefined (reading 'to')`), because the shift moves the band start without
+    re-clamping the reserved width (it overruns the participant's trailing region) - so the shift is EVIDENCE
+    of a band-coordinate mismatch, NOT the fix.
+
+Falsified / corrected this round (do not repeat):
+  - "`SOLIDC_DEBUG_ECRECOVER_DERIVE=1` changes behaviour": NO. Its branch in
+    `__messageBusDeferredCompute.resolve` only prints `atomic-deferred-compute-no-progress` and the
+    `no-progress-*` frames. Runs with and without the flag throw the identical error; only the record count
+    differs (10 vs 0). Earlier rounds' habit of using the flag for focused runs is harmless.
+  - "the fault is in the entry-access plan (`messageBusInactiveEntrySlots`)": no - forcing every entry slot
+    active still fails (`preflight failed at input 127: OP_VERIFY`) and breaks the green `take job > sanity
+    checks`.
+
+Next round (the fix fork, now sharp):
+  (a) SDK: every reserved slot of the value-chunk/continuation band must be published TOKEN-BEARING with a
+      structurally valid chunk commitment (2-byte index + data), instead of a bare pad, so a preflight read
+      of any band member is well defined and the trace reaches the recovery read. Fail-closed is preserved:
+      the write covenant verifies the chunk's lock identity + `slot || digest || pushdata(i) || pushdata(v)`,
+      and the read side verifies `sha256(value) == digest`, so a placeholder can never be ACCEPTED - it only
+      lets the program run far enough to learn the deferred arguments.
+  (b) compiler: align the entry covenant's read coordinate with the published band base (the `+3` in span
+      `-381`) and/or skip a read whose slot is not part of the authenticated band.
+
+Focused state after this round's changes: `-t 'take job'` = 2 failed | 1 passed (green `sanity checks`,
+failing `take job` and `take job multiple`), same two error messages as the pre-change baseline; `yarn build`
+green; no full-ladder run (no title turned green).

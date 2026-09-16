@@ -1,8 +1,8 @@
 # Handoff — kernel-beta marketplace climb (after the event/continuation round)
 
-> **Latest state (ROUND 87, outline frame dumped): 39 pass / 27 fail; tree at `13438b12e`.** The sections below are a chronological log;
+> **Latest state (ROUND 88, ecrecover side-car abort): 39 pass / 27 fail; tree at `54aa626b0`.** The sections below are a chronological log;
 > read ROUNDS 51-52 and 54 (the collection-key, rolled-array and dynamic-storage-read fixes: 32 -> 37),
-> ROUNDS 53-87 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
+> ROUNDS 53-88 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
 > deferred-`takeJob` class and its three falsified hypotheses) at the end. Earlier "State" numbers in this header
 > are historical.
 
@@ -3822,6 +3822,33 @@ Next round: walk back from that frame - print the last few states *before* the f
 is 5, i.e. the invoking site and its stack - to see which value the caller passed and why it is empty for these
 builds while the same outline succeeds elsewhere. The comparison target is a build whose outline receives a full
 32-byte item (any passing composition in the same run).
+
+### ROUND 88: the aborted frame is reached from the ecrecover side-car path with the EIP-191 prefix
+
+Dumped the states immediately before the first 5-instruction frame (build 112, the whitelisted caller):
+
+    ip 247 frame 315   op 205 (output bytecode)     [d800, d800, da00, da00]      <- verifier digest scan
+    ip 281 frame 315   op 210                       [d800, d800, db00, d800]
+    ip 16  frame 17    op 136 (EQUALVERIFY) id 00   [27:190076a91447d9fe52..., 1:19, 1:00, 1:00]
+    ip 437 frame 5073  op 202 (input bytecode)      [28:19457468657265756d205369676e6564204d657373616765...,
+                                                     64:0000000000000000..., 1:02, 1:03]
+    ip 2   frame 7     op 210                       ['', 01, 28:19457468657265756d205369676e6564204d657373616765..., 1:42]
+
+`19457468657265756d205369676e6564204d657373616765` is the EIP-191 prefix
+(`\x19Ethereum Signed Message:`), so the failing outline is reached from the **ecrecover side-car** path (the
+takeJob digest), with a 64-byte item and `02`/`03` flags beside it - not from the verifier's output digest, which
+is what the ROUND 87 terminal-stack reading suggested. The 225-byte "serialized output" is one of several pieces,
+not the operand that came up empty.
+
+This fits the placeholder story exactly: the fabricated side-car UTXOs carry an **empty commitment**
+(`computeSideCarStandIn` sets `commitment: ''`, ROUND 71), so the side-car covenant's `OP_SPLIT 32` over its input
+commitment runs on a zero-length item and aborts before the compute call is ever reached - which is also why the
+deferred argument is never exposed.
+
+Next round's first experiment: give the stand-in side-cars a well-formed placeholder commitment (32 bytes, e.g.
+zeros or the SDK's placeholder preimage) instead of an empty one, then re-run and read the correlated trace: the
+abort should move past the split, and the oracle stays `deferred-ecrecover-learned` / the stall composition's
+`whitelistEntryInputs`.
 
 ### How to localize it next
 

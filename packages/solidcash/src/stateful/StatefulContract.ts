@@ -36700,7 +36700,12 @@ export class StatefulFunctionCall {
         }).__preparedAtomicCalls;
         let receipt: TransactionDetails;
         if (preparedAtomicCalls) {
-          const signer = this.parentContract?._signer;
+          // The fee input is the transaction's first P2PKH input, and the platform derives `tx.origin` - and with
+          // it `msg.sender` for a direct call - from that input. Funding a composed transaction from the signing
+          // key alone silently renames the caller whenever the signer is not the caller (for example a contract
+          // funder account), so every `msg.sender`-keyed state read then misses. Prefer the logical-nonce signer,
+          // which `connect(caller)` binds to the account that initiated this call.
+          const signer = this.parentContract?._logicalNonceSigner ?? this.parentContract?._signer;
           if (!signer) {
             throw new Error('messageBus: transparent atomic promotion requires a connected signer');
           }
@@ -36727,6 +36732,10 @@ export class StatefulFunctionCall {
           receipt = await stb.send();
         }
         if (this.parentContract?._signer) invalidateSignerUtxos(this.parentContract._signer);
+        if (this.parentContract?._logicalNonceSigner
+          && this.parentContract._logicalNonceSigner !== this.parentContract._signer) {
+          invalidateSignerUtxos(this.parentContract._logicalNonceSigner);
+        }
         if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env?.SOLIDC_DEBUG_ROUTE
           && this.parentContract) {
           const address = this.parentContract.getDataNftAddress();

@@ -1,8 +1,8 @@
 # Handoff — kernel-beta marketplace climb (after the event/continuation round)
 
-> **Latest state (ROUND 76, caller absent from the composed inputs): 39 pass / 27 fail; tree at `d7de864de`.** The sections below are a chronological log;
+> **Latest state (ROUND 77, caller-funded compositions): 39 pass / 27 fail; tree at `7a7f1e9b7`.** The sections below are a chronological log;
 > read ROUNDS 51-52 and 54 (the collection-key, rolled-array and dynamic-storage-read fixes: 32 -> 37),
-> ROUNDS 53-76 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
+> ROUNDS 53-77 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
 > deferred-`takeJob` class and its three falsified hypotheses) at the end. Earlier "State" numbers in this header
 > are historical.
 
@@ -3530,6 +3530,35 @@ that first P2PKH input - then either (a) the fee/funding input selection must pr
 composer fix: the caller's funding input must stay the first non-token input so `tx.origin` keeps naming it), or
 (b) the caller identity must be supplied to the route as an authenticated witness instead of being re-derived from
 `tx.origin` (the kernel already does this for delegate rows via `__internal__msgSenderCategory`).
+
+### ROUND 77: composed transactions are funded by the caller, not merely the signer
+
+**Landed change** (`StatefulFunctionCall._sendWithoutLogicalNonce`, composed branch): the atomic composition's fee
+funder is now the **logical-nonce signer** (`connect(caller)` binds it to the account that initiated the call) with
+the signing `_signer` as fallback, and both signers' UTXO snapshots are invalidated afterwards. Rationale is the
+measured ROUND 76/77 behaviour: the fee input is the transaction's first P2PKH input, the platform derives
+`tx.origin` - and with it `msg.sender` for a direct call - from that input, so funding only from the signing key
+silently renames the caller whenever the two differ, and every `msg.sender`-keyed state read then misses.
+
+Measurements behind it (probe at the deferred-compute site, `SOLIDC_DEBUG_ENTRY_COUNTS=1`, `-t 'take job'`):
+
+* failing composition (469 inputs, `feeInput 468`): the fee funder IS the account of the first P2PKH input
+  (`76a914470bf077d5619f3424774ab30b3fcb2c3a89ea7088ac`, outpoint `7ae41a32d55a:11`), and the whitelisted
+  caller's locking bytecode `76a91447d9fe52d462741f418e9dd5efaa6ae7e7adb60088ac` (ROUND 75's SDK key) appears at
+  **no input** - so `tx.origin` named the funder, not the caller;
+* the passing 308-input compositions use `76a91471782e8159...88ac` as funder and first P2PKH (64) - a different
+  account again, i.e. the funder choice is not the caller in general;
+* the whitelist entry itself is present and correct in both (co-spent at input 20 in the 469-input case).
+
+Ladder after the change: **39 pass / 27 fail, no new, no lost** - the change is behaviour-neutral when the two
+signers coincide (the common case) and only reroutes funding when they differ. `take job` still stops at the
+deferred-compute error, so the caller/funder mismatch is necessary but not sufficient for that title; the remaining
+question from ROUND 76 (whether the fixture's `user2` is the whitelisted `47d9fe52...` account or the funder
+`470bf077...`) is still open and is the next thing to settle.
+
+**Testing rule for the following rounds (from the operator):** do not run the whole 66-title ladder for
+measurement. Run only the title under work plus its two neighbours (`-t '<title>'` plus the adjacent describes), and
+reserve a full ladder run for the moment a previously failing title turns green.
 
 ### How to localize it next
 

@@ -1,6 +1,6 @@
 # Handoff — kernel-beta marketplace climb (after the event/continuation round)
 
-> **Latest state (ROUND 130: REDIRECT - stopped only looking at `take job`; other ladder windows fail with SPECIFIC named errors and a cheap 15s feedback loop): 39 pass / 27 fail.** The sections below are a chronological log;
+> **Latest state (ROUND 131: `update job tags` root cause pinned - five DISTINCT literal keys collapse onto ONE route witness name): 39 pass / 27 fail.** The sections below are a chronological log;
 > read ROUNDS 51-52 and 54 (the collection-key, rolled-array and dynamic-storage-read fixes: 32 -> 37),
 > ROUNDS 53-96 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
 > deferred-`takeJob` class and its three falsified hypotheses) at the end. Earlier "State" numbers in this header
@@ -5196,3 +5196,39 @@ Next round (fresh budget): fix the compiler's per-row qualification for the mece
 `-t 'update job tags'`, then run `-t 'job updates'` and the full ladder if a title turns green.
 
 Focused state (unchanged): `-t 'take job'` = 2 failed | 1 passed (green `sanity checks`), `yarn build` green.
+
+### ROUND 131: `update job tags` - distinct literal keys collapse onto one route witness name
+
+Two experiments and one artifact survey settled the cause of the `L3_RESOURCE_UNRESOLVED` on `-t 'update job tags'`
+(the fast 15-26s loop):
+
+1. First hypothesis (compiler `perRow` for kernel param-keyed resources) - tested and REVERTED. Setting
+   `perRow = alternativeIndex > 0` for the kernel case did not change the error, and the compiler's own comment
+   explains why that flag must stay off there: the two alternatives of a param-keyed kernel resource are two
+   physical slots of ONE invocation, "not a 2-row resource template ... must not set `resourceShapedHandler` or
+   `_rN` copies".
+2. The failure context is exactly `{ handler: 'meceTags', resourceIdentity: '__message_bus_key_meceTags_0',
+   invocationIds: [2] }`, i.e. the SHARED name (not a `_row`/`_rN` copy) receives a second, different key value.
+3. MarketplaceDataV1's meceTags accesses explain why:
+
+       entryAccesses: [
+         { slotIndex: 0, collection: 'meceTags', keyParams: ['lit:DA'],
+           keySources: [{ kind: 'expression', expressionLabel: 'lit:DA' }], operations: ['write'] },
+         { slotIndex: 1, ... 'lit:DV' }, { slotIndex: 2, ... 'lit:DT' },
+         { slotIndex: 3, ... 'lit:DS' }, { slotIndex: 4, ... 'lit:DO' }, ... ]
+
+   FIVE DISTINCT literal keys, one per entry slot. The route names key witnesses by (collection, keyIndex,
+   alternative) only - "never by the handler or its parameter names" - and every one of these accesses has
+   `inputIndex === -1` (an expression), so all five collapse onto the single published name
+   `__message_bus_key_meceTags_0`. The SDK then sees one witness name carrying two different literal values and
+   rejects the second row.
+
+So the general fix is a NAME DISCRIMINATOR for expression/literal keys: the route witness name must distinguish
+the distinct physical entries those literals address (e.g. a short digest of the expression label), threaded from
+`entryAccesses[i].keySources[keyIndex].expressionLabel` into the naming loop in `compiler.ts` (the loop currently
+has only the `alternatives` index vectors, where every literal is `-1` and therefore indistinguishable). That is a
+compiler-only change; the SDK reads the names from the artifact metadata (`batchKeyWitnesses[].routeInput`,
+`alternateRouteInput`) rather than hard-coding them, so a consistent rename is safe - and `-t 'update job tags'`
+verifies it in ~25s.
+
+Focused state: `-t 'take job'` = 2 failed | 1 passed (green `sanity checks`), `yarn build` green.

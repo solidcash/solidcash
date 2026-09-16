@@ -1,6 +1,6 @@
 # Handoff — kernel-beta marketplace climb (after the event/continuation round)
 
-> **Latest state (ROUND 133: FIXTURE RECOMPILE NOW WORKS (recompile.sh repaired and verified) - compiler changes finally reach the ladder; the expression-key fix is one line away): 39 pass / 27 fail.** The sections below are a chronological log;
+> **Latest state (ROUND 134: meceTags keys are PARAMETER keys (`keyIndices:[0]`, one alternative), so each row supplies a different literal through one shared witness name): 39 pass / 27 fail.** The sections below are a chronological log;
 > read ROUNDS 51-52 and 54 (the collection-key, rolled-array and dynamic-storage-read fixes: 32 -> 37),
 > ROUNDS 53-96 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
 > deferred-`takeJob` class and its three falsified hypotheses) at the end. Earlier "State" numbers in this header
@@ -5302,3 +5302,44 @@ suffix appears in the fixture (`grep -o "__message_bus_key_meceTags[^']*" .../Ma
 show `_x...` entries), then run `-t 'update job tags'` and `-t 'job updates'`.
 
 Focused state: `-t 'take job'` = 2 failed | 1 passed, `yarn build` green, tree clean.
+
+### ROUND 134: the meceTags key is a PARAMETER, not an expression - that is why the name is shared
+
+With the repaired recompile loop I could finally instrument the *compile* (env-gated, removed again) and read what
+the route naming actually sees:
+
+    key-witness-name {"site":"single","fn":"readMeceTag",  "collectionName":"meceTags","alternatives":1,
+                      "keyIndices":[0],"accessKeys":[]}
+    key-witness-name {"site":"single","fn":"updateMeceTag","collectionName":"meceTags","alternatives":1,
+                      "keyIndices":[0],"accessKeys":[]}
+    key-witness-name {"site":"single","fn":"meceTags",     "collectionName":"meceTags","alternatives":1,
+                      "keyIndices":[0],"accessKeys":[]}
+
+Three facts, each different from my earlier reading:
+
+1. the key reaches the naming with input index **0** - the FIRST PARAMETER - not `-1`, so the expression-key
+   discriminator never applies (it keys off `-1`), which is why four attempts changed nothing;
+2. `alternatives: 1`, so the multi-alternative branch is not taken either - the single-alternative branch names it
+   `__message_bus_key_meceTags_0`, one name for the whole route;
+3. `accessKeys: []` - the naming runs BEFORE admission populates `entryAccesses`, so nothing there can be consulted
+   for an identity at this point.
+
+The artifact agrees with this and explains the failure: the data contract's five meceTags accesses are
+`keyParams: ['lit:DA'] … ['lit:DO']` (five DISTINCT literals, desugared per slot) while the route publishes ONE
+string parameter `__message_bus_key_meceTags_0`. Each row calls the handler with a different literal through that
+same parameter, so the SDK assigns one witness name two different values and rejects the second ('must identify one
+physical entry', invocationIds [2]).
+
+FIX DIRECTION (general): a PARAMETER key whose value differs between route rows must be row-qualified
+(`perRow`/`_rN`), exactly like the multi-alternative case - the existing cross-handler row-locality analysis
+(`crossHandlerPerRowWitnesses`) covers aliases within one handler but not distinct literals passed by different
+rows of the same handler. Either extend that analysis to per-row argument values, or bind the key from the row's own
+argument instead of a single route witness. The verification loop is now fast: edit -> `yarn build` ->
+`bash .marketplace/iteration/recompile.sh contracts/MarketplaceDataV1.sol` ->
+`grep -o "__message_bus_key_meceTags[^']*" .marketplace/artifacts/solidcash/MarketplaceDataV1.artifact.ts`
+(expect more than one name) -> `npx vitest run -t 'update job tags'`.
+
+All instrumentation and the incomplete discriminator are reverted; the tree carries no unvalidated compiler change.
+
+Focused state: `-t 'take job'` = 2 failed | 1 passed, `-t 'update job tags'` = 1 failed (unchanged), `yarn build`
+green, tree clean.

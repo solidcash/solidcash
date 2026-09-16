@@ -1,8 +1,8 @@
 # Handoff — kernel-beta marketplace climb (after the event/continuation round)
 
-> **Latest state (ROUND 59, HEAD `9eab67b7a`): 37 pass / 28 fail.** The sections below are a chronological log;
+> **Latest state (ROUND 60, HEAD `e8b8f518d` + value-chunk pin precedence): 39 pass / 27 fail.** The sections below are a chronological log;
 > read ROUNDS 51-52 and 54 (the collection-key, rolled-array and dynamic-storage-read fixes: 32 -> 37),
-> ROUNDS 53 and 55-59 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
+> ROUNDS 53-60 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
 > deferred-`takeJob` class and its three falsified hypotheses) at the end. Earlier "State" numbers in this header
 > are historical.
 
@@ -2931,6 +2931,46 @@ value instead of the covenant's recomputed one) -> the root/digest the SDK feeds
 `getValueChunkLockingBytecode` must come from the same derivation the covenant uses;
 (b) the SDK emits no jobEvents value chunk at all for this write (only the dynamic-string chunk of the job
 title, which is what output 17 looks like) -> the write path drops the value-chunk output for an event append.
+
+### ROUND 60: the value-chunk pins were clobbered by a direct band rewrite (39 pass / 27 fail)
+
+**Landed fix**: `packages/solidcash/src/stateful/StatefulTransactionBuilder.ts`, two writers of
+`derivedChunkOutputs` now honour one invariant - *a provisional observation must never displace a
+compiler-authenticated fixed pin at the same coordinate when the addresses disagree*:
+
+1. `setDerivedChunkOutput` refuses a non-fixed observation over an existing `fixedIndex === true` observation
+   with a different `lockingBytecode`;
+2. the job-events band rewrite (`previousDerived` loop that deletes non-fixed entries and then re-sets every
+   band index) skips an index whose `previousDerived` entry is `fixedIndex === true` with a different address.
+
+Ladder: **39 pass / 27 fail** (was 37/28), no lost titles. New passes:
+`job worker whitelisting > should whitelist worker`, `reopen job > reopen job before timeout`.
+
+How it was localized (the measurements that mattered, in order):
+
+* stack geometry (ROUND 59) proved the covenant EQUALVERIFYs the value-chunk P2SH32 of
+  `(category, slot = e3b0c442..., root = sha256(newValue))` = `aa20c76e2793ab40...`;
+* `SOLIDC_DEBUG_VALUE_CHUNKS=1` on the failing title prints `value-chunk-producer-*`,
+  `nested-identity-scan` (with `identityLock`, `identityNNew`, `placed`, `fallbackBase`, `bandStart`),
+  `finalize-reverse-suffix-jobs` and `dynamic-chunk-layout-mismatch`. The identity scan reports the *correct*
+  lock - so the derivation was right and something later clobbered the pin;
+* write-order probes on `setDerivedChunkOutput` (17/18) showed the identity path writing
+  `aa20c76e... fixed=true`, and a stack-trace probe showed **every** write came from
+  `_deriveFullTransactionState`, so the clobber was not another `setDerivedChunkOutput` caller;
+* the clobber is the direct `this.derivedChunkOutputs.set(index, ...)` in the band rewrite
+  (it deletes only *non-fixed* entries, then re-sets every band index with the provisional chunk whose
+  `lockingBytecode` is the pre-update digest's address) - which is why the final map held the stale address as a
+  **non-fixed** observation while the builder output kept the stale address too.
+
+Two useful facts for the next round: the failing preflight for this class is thrown from
+`_assertConvergedFinalTransaction` (called inside `build()`), *before* `send()`'s `reassertFinalLayout`
+re-applies derived pins - so a stale pin must be fixed in the map, not patched on the final builder. And the
+failing preflight dump (`message-bus-failure-point`) is the right oracle: it prints `focus.inputs`/`focus.outputs`
+(contract/function/category/capability/commitment) plus `routeParams`, `ipWindow`, `invokeWindow`.
+
+Remaining class after this fix: 27 titles. The deferred-compute class is still the largest (15 titles, `takeJob`),
+followed by the convergence class (4), the two `meceTags` collection witnesses, the two ladder-only nonce stalls,
+`post thread message > sanity checks`, and `refuse arbitration > job not taken`.
 
 ### How to localize it next
 

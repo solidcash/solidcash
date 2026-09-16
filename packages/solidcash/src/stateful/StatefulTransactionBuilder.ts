@@ -13060,6 +13060,12 @@ export class StatefulTransactionBuilder {
       this.derivedChunkOutputs.set(outputIndex, ownedChunk);
       return true;
     }
+    // A provisional observation (persisted-value seed, append-time placement) carries the pre-update digest's
+    // P2SH32. It must never displace a compiler-authenticated absolute pin for the same coordinate: when the value
+    // tail is byte-identical the commitment comparison below sees no difference and the stale address would
+    // survive while the covenant EQUALVERIFYs the address of sha256(post-update value).
+    if (existing?.fixedIndex === true && ownedChunk.fixedIndex !== true
+      && binToHex(existing.lockingBytecode) !== binToHex(ownedChunk.lockingBytecode)) return false;
     const kept = preferChunkCommitment(existing?.commitment, ownedChunk.commitment);
     if (existing && kept === existing.commitment && kept !== ownedChunk.commitment) return false;
     this.derivedChunkOutputs.set(outputIndex, !existing || kept === ownedChunk.commitment
@@ -13890,6 +13896,11 @@ export class StatefulTransactionBuilder {
     for (const [offset, chunk] of chunks.entries()) {
       const index = liveBand.start + offset;
       const prior = previousDerived.get(index);
+      // A compiler-authenticated absolute pin owns its coordinate. The band chunks here are provisional: they
+      // carry the pre-update value's P2SH32, so overwriting a fixed pin whose address comes from the post-update
+      // value root leaves the covenant EQUALVERIFYing sha256(post-update value) against the pre-update address.
+      if (prior?.fixedIndex === true
+        && binToHex(prior.lockingBytecode) !== binToHex(chunk.lockingBytecode)) continue;
       const commitment = preferChunkCommitment(prior?.commitment, chunk.commitment);
       this.derivedChunkOutputs.set(index, {
         ...chunk,

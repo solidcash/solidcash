@@ -1,6 +1,6 @@
 # Handoff — kernel-beta marketplace climb (after the event/continuation round)
 
-> **Latest state (ROUND 68, digest counter trace): 39 pass / 27 fail; tree at `9ff11f792`.** The sections below are a chronological log;
+> **Latest state (ROUND 68, digest counter trace + falsified tail theory): 39 pass / 27 fail; tree at `1cad61090`.** The sections below are a chronological log;
 > read ROUNDS 51-52 and 54 (the collection-key, rolled-array and dynamic-storage-read fixes: 32 -> 37),
 > ROUNDS 53-68 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
 > deferred-`takeJob` class and its three falsified hypotheses) at the end. Earlier "State" numbers in this header
@@ -3246,6 +3246,30 @@ and compare its last outputs with the failing one's `... 447..468` tail - specif
 exists, whether it carries a token, and whether the digest loop's last counter stops at the change. That decides
 between "the composer must not put a token-less change inside the digested range" and "the loop bound/start is a
 witness that must be block-local".
+
+### ROUND 68b: the "token-less tail" theory is FALSIFIED by a passing title
+
+Ran the same aggregate-tail dump on the **passing** `post two jobs` composition (3 participants [129,87,88],
+`totalSlots` 308, `verifierInputs` [304,305,306], `feeInput` 307):
+
+    302  OP_TRUE pad, no token, 1000 sats
+    303  SID token, capability none, 75-byte commitment
+    304..306  the three verifier outputs (mutable, 38-byte commitments)
+    307  change output, token-less, 200751333 sats   <- last output, index = feeInput
+
+That is byte-for-byte the same *shape* as the failing `deliver result` tail (pads, SID, verifier outputs, then a
+token-less change as the last output at `feeInput`). So the verify-atomic digest loop demonstrably copes with
+token-less pads and a token-less change, and ROUND 67's "empty accumulator from a token-less pair" is NOT the
+discriminator. Two theories are now falsified (ROUND 65 premature throw, ROUND 68 token-less tail); what actually
+differs between the two compositions is the **pass state**: the failing one runs with 5 participants and
+provisional claims (its first `graphRouteContext` dump even shows `returnOffset 65535` for participant 0, the
+"no return" sentinel), i.e. the digest input is a manifest that the trace cannot reproduce yet.
+
+Next round: diff the *manifest/claims* between a passing pass and the failing pass instead of the physical layout -
+in particular whether the failing pass's verifier commitments are placeholders (the composer's own
+`admit()` guard, 'mutable resources changed after semantic-manifest convergence', is the same family), and use
+`SOLIDC_DEBUG_GRAPH_RESULTS=1`/`SOLIDC_DEBUG_ATOMIC_GRAPH=1` to compare `graph.callManifest.rows` of a passing vs
+failing assembly.
 
 ### How to localize it next
 

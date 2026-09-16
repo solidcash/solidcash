@@ -1,8 +1,8 @@
 # Handoff — kernel-beta marketplace climb (after the event/continuation round)
 
-> **Latest state (ROUND 79, takeJob funder identified): 39 pass / 27 fail; tree at `3481e84a8`.** The sections below are a chronological log;
+> **Latest state (ROUND 80, missing msg.sender-keyed co-spend): 39 pass / 27 fail; tree at `a85fb0e40`.** The sections below are a chronological log;
 > read ROUNDS 51-52 and 54 (the collection-key, rolled-array and dynamic-storage-read fixes: 32 -> 37),
-> ROUNDS 53-79 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
+> ROUNDS 53-80 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
 > deferred-`takeJob` class and its three falsified hypotheses) at the end. Earlier "State" numbers in this header
 > are historical.
 
@@ -3613,6 +3613,39 @@ Next round: run the failing takeJob composition with a probe that matches the *w
 against `aggregate.inputs` (the entry's commitment is `bac4afa3...13727 || 0000...0000 || 01`), now that the right
 transaction is identified by its call list. If the entry is absent from the takeJob aggregate, the fix belongs in
 the kernel read planning (the row must co-spend the entry it reads); if it is present, the read itself is at fault.
+
+### ROUND 80: the compiler declares the msg.sender-keyed read; the composition does not co-spend it
+
+Probed the *failing* composition directly (inside the resolve loop's `!progressed` branch, so it is the stall, not
+a neighbour). Across `-t 'take job'`:
+
+    8x  calls ['takeJob','userRegistered','eventsLength','publishJobEvent']  219 inputs  whitelistEntryInputs []
+    2x  calls ['takeJob',...,'approve','getArbitratorFee','pay','balanceOf'] 469 inputs  whitelistEntryInputs [20]
+
+So the dominant failing shape is the small (219-input) takeJob composition and it does **not** co-spend the
+whitelist entry at all (12 entry-like inputs, none of them `bac4afa3...`), while the larger takeJob shape does
+(input 20).
+
+Metadata check (artifact, no run): `MarketplaceV1.takeJob` declares exactly the read -
+
+    entryAccesses: [{ slotIndex 0, collection 'whitelistWorkers',
+                      keyParams ['jobId_', 'sender:msg.sender'],
+                      keySources [{kind:'param',paramName:'jobId_'}, {kind:'msgSender',senderOp:'msg.sender'}],
+                      operations ['read'] }]
+
+and the SDK already knows how to resolve that key (`StatefulContract` ~18982:
+`keyValues.push(addressToLockScript(this._signer.getAddress()))`, plus the forced sender-P2PKH funder at ~31184).
+The entry is also fetched (`allCount 2, matchedCount 2`). What is missing is the **co-spend**: the read-only
+`msg.sender`-keyed access is resolved and fetched but not placed as an input of the participant block, so the
+covenant cannot read it.
+
+Landed this round: the `deferred-stall-composition` probe (env-gated, `SOLIDC_DEBUG_ENTRY_COUNTS=1`) which prints
+the failing composition's logical calls, input count and whitelist-entry co-spend state - the measurement that
+pinned the shape above; diagnostics only, no behaviour change.
+
+Next round: make the participant's read-only `msg.sender`-keyed entry access materialise as a co-spent entry NFT
+input (the same mechanism that already co-spends entry NFTs for write rows), then re-check that this composition's
+`whitelistEntryInputs` is non-empty.
 
 ### How to localize it next
 

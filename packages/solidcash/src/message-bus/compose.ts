@@ -3441,6 +3441,27 @@ export class AtomicMessageBusComposition {
       // admitted as kind-6 rows. Before those rows exist, the route verifier stops before the compute call and
       // no complete-graph argument can be observed. Resolve only blocks whose sidecar slots are already present
       // in the authenticated manifest; the ordinary effect pass below will add them and rebuild this assembly.
+      if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+        ?.SOLIDC_DEBUG_ENTRY_COUNTS === '1') {
+        const needle = 'bac4afa31b5925f5';
+        const commitments = aggregate.inputs.map((input) =>
+          String(input?.token?.nft?.commitment ?? '').toLowerCase());
+        console.error('entry-cospend', JSON.stringify({
+          calls: (this.options.preparedCalls ?? []).map((call) => {
+            const described = call as unknown as {
+              functionName?: string; logicalFunctionName?: string; selectorHex?: string;
+            };
+            return described.logicalFunctionName ?? described.functionName
+              ?? described.selectorHex ?? '?';
+          }).slice(0, 6),
+          inputCount: aggregate.inputs.length,
+          whitelistEntryInputs: commitments.flatMap((commitment, index) =>
+            commitment.includes(needle) ? [index] : []),
+          entryLikeInputs: commitments.filter((commitment) => commitment.length >= 128).length,
+          entryLikeOutputs: aggregate.outputs.filter((output) =>
+            String(output?.token?.nft?.commitment ?? '').length >= 128).length,
+        }));
+      }
       const resolvableDeferredBlocks = deferredBlocks.filter((block) => block.offsets.every((offset) =>
         graph.callManifest.rows.some((row) => row.kind === 6
           && row.owner === block.participant && row.sourceOffset === offset)));
@@ -3569,6 +3590,25 @@ export class AtomicMessageBusComposition {
             }
           }
           if (!progressed) {
+            if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+              ?.SOLIDC_DEBUG_ENTRY_COUNTS === '1') {
+              const needle = 'bac4afa31b5925f5';
+              const commitments = aggregate.inputs.map((input) =>
+                String(input?.token?.nft?.commitment ?? '').toLowerCase());
+              console.error('deferred-stall-composition', JSON.stringify({
+                calls: (this.options.preparedCalls ?? []).map((call) => {
+                  const described = call as unknown as {
+                    functionName?: string; logicalFunctionName?: string; selectorHex?: string;
+                  };
+                  return described.logicalFunctionName ?? described.functionName
+                    ?? described.selectorHex ?? '?';
+                }).slice(0, 8),
+                inputCount: aggregate.inputs.length,
+                whitelistEntryInputs: commitments.flatMap((commitment, index) =>
+                  commitment.includes(needle) ? [index] : []),
+                entryLikeInputs: commitments.filter((commitment) => commitment.length >= 128).length,
+              }));
+            }
             throw new Error(
               'messageBus: complete graph did not expose arguments for all deferred compute resources',
             );

@@ -1539,6 +1539,9 @@ const evaluateEveryInput = (
       if (failureDebugEnv?.SOLIDC_DEBUG_FAILURE_RING === '1' && failureDebugInput === inputIndex) {
         const unlockingInstructions = decodeAuthenticationInstructions(transaction.inputs[inputIndex].unlockingBytecode);
         const redeemBytecode = (unlockingInstructions.at(-1) as { data?: Uint8Array } | undefined)?.data;
+        if (failureDebugEnv?.SOLIDC_DUMP_FAILING_REDEEM === '1' && redeemBytecode !== undefined) {
+          console.error('message-bus-failing-redeem-hex', binToHex(redeemBytecode));
+        }
         const unlockerBytecodeHex = (builder.inputs[inputIndex] as unknown as {
           unlocker?: { contract?: { bytecode?: string } };
         }).unlocker?.contract?.bytecode;

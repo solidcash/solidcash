@@ -1,6 +1,8 @@
 # Handoff — kernel-beta marketplace climb (after the event/continuation round)
 
-> **Latest state (ROUND 141: the probe's structural placeholders are now bounded to the participant's own block band, which removes the token-less-output abort (the probe COMPLETES: reads 1426 -> 2382); the take-job frontier is now the preflight empty-commitment split, and the concrete defect is that the route's UNSELECTED union compute coordinates (ecrecover slots 6..19) carry tokens with ZERO-length commitments. Ladder unchanged.**
+> **Latest state (ROUND 142: the take-job preflight abort is now DECODED END TO END from the real failing redeem. The observed read is `outputs[63 + 3].nftCommitment[32:64]`, i.e. it uses 63 = `__internal__dynamicChunkInputBase` (participant block base 0 + trailingBase 63) where the keccak side-car read needs the participant BLOCK base 0 (the route's `__internal__proxyMasterIndex`, which the unlocking bytecode does supply as 0). Output 66 is a bare OP_TRUE pad with an empty commitment, so the `[32:64]` slice aborts the whole program. See "ROUND 142" at the end for the full coordinate table, the emitted-code evidence and the next step.**
+>
+> Superseded (ROUND 141: the probe's structural placeholders are bounded to the participant's own block band, which removes the token-less-output abort (the probe COMPLETES: reads 1426 -> 2382). Ladder unchanged.)
 >
 > Superseded (ROUND 140: the deferred ecrecover call list is now selected from the handlers this envelope actually runs, not from the route's union slot count - `take job` gets PAST the deferred wall and now fails later, in BCH-2026 preflight at the verifier input. Ladder pending re-measure.** The sections below are a chronological log;
 > read ROUNDS 51-52 and 54 (the collection-key, rolled-array and dynamic-storage-read fixes: 32 -> 37),
@@ -5684,3 +5686,132 @@ splitting a LENGTH-0 item; (2) all 68 tracked invokes of that span on input 127 
 the same opcode prefix or the failing input's frame attribution is wrong. Re-derive the failing coordinate from
 `SOLIDC_DEBUG_FAILURE_RING=1`/the opcode ring (authoritative) before changing any pad shape.
 
+
+## ROUND 142 (operator round): the take-job preflight abort is decoded end to end
+
+Focused loop used: `-t 'take job'` (3 titles; `-t 'take job > take job'` matches NOTHING - vitest joins the
+describe path with spaces, so use `-t 'take job take job'` to run one title). Result unchanged: 1 passed
+(`sanity checks`), 2 failed, both with
+
+    [L3_VM_RESOURCE_LIMIT] BCH-2026 preflight failed at input 127:
+    Program called an OP_SPLIT operation with an invalid index. stack item length: 0; requested split index: 32.
+
+### The failing program, byte for byte
+
+A new env-gated dump (`SOLIDC_DUMP_FAILING_REDEEM=1`, in the `SOLIDC_DEBUG_FAILURE_RING` block of
+`message-bus/preflight.ts`) writes the failing input's redeem. It is **130624 bytes, hash256
+`260e28787b12ef1852242340afdf147e630de84803dc915a78e5df2b15aac898`**, and it decodes as **1721 top-level
+instructions**: a `<push category32> OP_INPUTINDEX OP_UTXOTOKENCATEGORY OP_EQUALVERIFY` brand check, then 570
+`<push body> <push id> OP_DEFINE`s, then `OP_DEPTH OP_1SUB OP_ROLL OP_SIZE OP_4 OP_NUMEQUALVERIFY OP_INVOKE`
+(roll the `SCB1` selector to the top and invoke the route). `frameWindow.instructionCount = 1721` in the old
+failure record is exactly this preamble - the *executed* code lives in the OP_DEFINE table.
+
+Immediate call chain (from `controlStack` + a linear decode of every pushed body):
+
+    preamble(1721) -> body id 53434231 "SCB1" (11276 instrs, THE ROUTE)
+                   -> body id 3b          ( 5073 instrs)
+                   -> body id 7d81        (    7 instrs: 5393d20120017a8a7e)
+                   -> body id 7a          (    6 instrs: 7f7701207f75 = dropFirst(k) + takeFirst(32))
+
+The 7-instruction body is `OP_3 OP_ADD OP_OUTPUTTOKENCOMMITMENT <push 32> <push 0x7a> OP_INVOKE OP_CAT`, so the
+whole fragment is `CAT(EIP191_PREFIX28, outputs[base + 3].nftCommitment[32:64])` - the `withinBatch = 1` form of
+`emitKeccakComputeCall` (`dropFirst(32 * withinBatch)` then `push 32 OP_SPLIT OP_DROP`), i.e. **the SECOND
+keccak result of a 2-wide batch**, concatenated with `"\x19Ethereum Signed Message:\n32"` (MarketplaceV1.sol
+line ~686, `keccak256(bytes.concat(prefix, keccak256(abi.encode(eventsLength, jobId_))))`).
+
+### The wrong coordinate
+
+`atomic-deferred-compute-readiness` (needs `SOLIDC_DEBUG_ECRECOVER_READINESS=1`) gives the one deferred
+participant: **`p0: inputBase=0 executionInput=127 offsets=[3, 4, 5]`**. `atomic-composed-layout` (needs
+`SOLIDC_DEBUG_ATOMIC_GRAPH=1`) gives `participantInputs = [0, 129, 216]` with p0 = the `SolidCashProxy`/`publishJobPost`
+participant, `maximumSize 129`, `trailingBase 63`. The route's own block layout (`MarketplaceV1.json`) puts
+`keccakSideCar` at offset **3** and the recovery A/B pair at 4/5, so the correct absolute coordinate is
+**0 + 3 = 3**.
+
+Measured instead: the 7-body's ip 0 stack (failure ring) is
+
+    [.., '35:aa2037be..', '0:', '0:', '1:01', '28:194574..3332', '1:3f']
+
+with `1:3f` = **63** pushed by the caller, so the read went to `outputs[63 + 3] = outputs[66]`. The
+`SOLIDC_DEBUG_FAILURE_POINT_FULL=1` record for input 127 shows output 66 as **`51` (bare OP_TRUE), no token,
+commitmentLength 0** - hence the empty-item OP_SPLIT.
+
+### Where 63 comes from (and why it is the WRONG base)
+
+The failing input's unlocking bytecode is 22 pushes; mapping them against the route ABI order
+(`packages/solidcash/src/message-bus/compose.ts` `buildRouteArguments`) gives
+
+    dynamicChunkInputBase = 63   proxyMasterIndex = 0   returnOutputIdx = -1
+    vmapBatchTrailingCount = 0   kW_1_alt = P2PKH      kW_0_alt = 0        kW_1 = P2PKH   kW_0 = 0
+    sig_38_0_rows = 81           graphSettlementTable = 205B   graphCompletionPositions = 12
+    graphSettlementBoundary = 12 graphCallers = 27B    graphEmissions = 997B
+    graphBlockSize = 129         graphFixedSize = 129  activeVerifierIndex = 463   batchBlob = the 86B SCB1 envelope
+
+So **63 is `__internal__dynamicChunkInputBase` (= participantInputs[0] + trailingBase = 0 + 63) and the correct
+base 0 IS present in the frame as `__internal__proxyMasterIndex`** - the composer supplies it
+(`compose.ts:1487`, `BigInt(finalized.layout.participantInputs[participant])`). The compute-side-car read took the
+dynamic-chunk/trailing base instead of the participant block base.
+
+### The emitted code (ground truth)
+
+`MarketplaceV1.json` `functionBodies['7474f902']` (the takeJob body, 2773 instrs) reads it correctly as
+
+    499: OP_INPUTINDEX  500: OP_3  501: OP_ADD  502: OP_OUTPUTTOKENCOMMITMENT  503: push 0x20  505: OP_SPLIT
+    506: OP_DROP      (then 507: OP_INPUTINDEX  508: OP_4  509: OP_ADD ... for the recovery A side-car)
+
+while the composed route body (id `53434231`) pushes TWO hidden-context values before `push 59; OP_INVOKE` into
+body `3b`:
+
+    6587: push 19  OP_PICK        6590: push 42  OP_PICK        6593: push 59  OP_INVOKE
+
+Both are plain two-instruction top-relative PICKs, and body `3b` uses the same shape at its own ip 596-598
+(`push 0x14 OP_PICK`) to obtain the compute base - and the value it picks is 63.
+
+### The emitting site (identified from the instruction shape, not yet instrumented)
+
+A two-instruction `push k OP_PICK` for a block base is exactly ONE code path
+(`GenerateTargetTraversal.ts:32224-32230`):
+
+    emitMasterInputIndex -> usesProxyStateBlockBase() -> isDefineSubTraversal == true
+      -> emit(encodeInt(getStackIndex('__internal__proxyMasterIndex') + extraStackOffset)); emit(OP_PICK)
+
+Every other path emits a different shape: the route's NON-sub-traversal form emits
+`emitPickTrackedFromBottom('__internal__proxyMasterIndex')` (4 instructions: OP_DEPTH, push, OP_SUB, OP_PICK),
+the delegate form emits `OP_INPUTINDEX push OP_SUB`, the outlined form emits `OP_INPUTINDEX` or the
+`OUTLINED_COMPUTE_BLOCK_BASE` dance. So the wrong base comes from **the route's DEFINE-sub-traversal frame
+resolving `__internal__proxyMasterIndex` to the model index whose physical slot holds
+`__internal__dynamicChunkInputBase`** - and those two are adjacent, being the LAST TWO declared route parameters.
+The route body is compiled twice (once as the entry, where the non-sub-traversal form is used, and once as the
+DEFINE body the preamble invokes, where it is the sub-traversal form); only the sub-traversal frame is wrong.
+
+### Next step (in order)
+
+1. Confirm the alias with one env-gated compiler print in `emitMasterInputIndex`: for the route body, print
+   `currentFunction.name`, `isDefineSubTraversal`, `getStackIndex('__internal__proxyMasterIndex')`,
+   `getStackIndex('__internal__dynamicChunkInputBase')` and `this.stack`. Exercise it with the fixture compile
+   (`SOLIDC_COMPILE_CACHE=0 node packages/testing/dist/cli.js compile --jobs 4` / `recompile.sh`) - the marketplace
+   test uses the PREBUILT artifact, so a compiler-side change only reaches the failing program after the artifact
+   is regenerated, and any fix must be verified the same way.
+2. Then fix the route's sub-traversal parameter model so `__internal__proxyMasterIndex` resolves to its own slot.
+   The ABI argument pushes are in REVERSE declaration order (deepest = `__internal__dynamicChunkInputBase`, see the
+   unlocking-bytecode table above), so the likely defect is the mapping between declared-parameter order and the
+   physical frame inside the DEFINE body - including the two batch slots the route prologue rolls off the bottom
+   (`GenerateTargetTraversal.ts:5876`, `OP_DEPTH OP_1SUB OP_ROLL OP_DROP` twice).
+3. Re-run `-t 'take job take job'`; the abort should move off output 66. Regression window stays
+   `take job > sanity checks` + `close job` + `withdraw collateral`.
+
+### Ruled out this round (do not re-chase)
+
+- The empty commitment is NOT an "unselected union slot needs a shape" problem (ROUND 141's framing): output 66
+  is outside the participant's trailing band only because the base itself is wrong; slot 3's coordinate was never
+  addressed at all.
+- It is NOT a probe/placeholder problem: the placeholder machinery only shapes the probe transaction, and the
+  composition now succeeds (no `did not expose arguments` / `did not converge` error - the only error is the
+  preflight abort), so both the keccak and the ecrecover resources were learned.
+- `OP_INPUTINDEX` is 127 in this evaluation, so a base of 63 cannot be a raw active-input index either.
+
+### Diagnostic kept (env-gated, inert by default)
+
+`SOLIDC_DUMP_FAILING_REDEEM=1` prints `message-bus-failing-redeem-hex <hex>` for the failing input. It was the
+only way to obtain the real program (the artifact `bytecode` field is an ASM-annotated hybrid and cannot be
+decoded linearly), and the next round needs the same oracle to confirm the fix, so it stays.

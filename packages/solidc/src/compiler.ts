@@ -8421,6 +8421,20 @@ function synthesizeMessageBusRoute(
     handler.parameters.push(Object.assign(
       new ParameterNode(PrimitiveType.BIGINT, MESSAGE_BUS_OWNER_INPUT), { location: handler.location },
     ));
+    if ((globalThis as { process?: { env?: Record<string, string> } }).process
+      ?.env?.SOLIDC_DEBUG_ARG_ORDER === '1') {
+      // The clone's OWN parameter list, at the moment the participant owner is appended. `dispatchFor` prints
+      // the argument vector the generated call passes; a positional call is only correct while the two agree
+      // index for index, and the append order here versus the vector's [.., entry keys, caller, owner,
+      // oracle-base] order is exactly what has to be checked (parameters injected LATER by the semantic
+      // traversal - the dynamic-chunk base and the oracle-base witness - land after the owner if the source did
+      // not already carry them, which silently swaps the owner with the chunk base).
+      console.error('message-bus-clone-params', JSON.stringify({
+        clone: handler.name,
+        sourceKey: (handler as { messageBusCloneSourceKey?: string }).messageBusCloneSourceKey,
+        parameters: handler.parameters.map((parameter) => parameter.name),
+      }));
+    }
   }
   // `.value` is a dedicated lexer token for legacy call-option/member syntax. A generated state access named
   // `value` therefore has to separate the dot from the identifier; without the space, the stand-alone route

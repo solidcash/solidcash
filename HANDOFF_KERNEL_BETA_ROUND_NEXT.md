@@ -1,6 +1,8 @@
 # Handoff — kernel-beta marketplace climb (after the event/continuation round)
 
-> **Latest state (ROUND 150: route calls' argument vectors are now dumpable (`SOLIDC_DEBUG_ARG_ORDER=1`, 467 sites on the fixture) and show the appended context order is [entry-key witnesses, logical caller, **owner**, oracle-base witness] after the decoded source arguments. `takeJob`'s ABI ends `[.., proxyMasterIndex, dynamicChunkInputBase]`, so the owner parameter must be appended AFTER the chunk base; if any injection lands it earlier, the owner receives the chunk-base value 63 - exactly the measured symptom. Landed: the dump + the branch-height invariant (ROUND 149).** See "ROUND 150" at the end.
+> **Latest state (ROUND 151: the argument-binding hypothesis is FALSIFIED - `SOLIDC_DEBUG_ARG_ORDER=1` now dumps both the generated argument vector and each clone's own parameter list, and across 388 matched calls they line up index for index (the only difference is the intended `owner param <- __internal__proxyMasterIndex` argument). The frame-trace tooling is also NOT trustworthy for this read: two signature-gated traces of the same failing chain contradict each other inside one evaluation, because `length + one opcode` is not a unique body signature (my redeem scan covered 556 of ~570 DEFINEs). Next suspects are the SDK-side VALUES (`__internal__proxyMasterIndex` vs `__internal__dynamicChunkInputBase`) rather than the compiler's binding.** See "ROUND 151" at the end.
+>
+> Superseded (ROUND 150: route calls' argument vectors are now dumpable (`SOLIDC_DEBUG_ARG_ORDER=1`, 467 sites on the fixture) and show the appended context order is [entry-key witnesses, logical caller, **owner**, oracle-base witness] after the decoded source arguments. `takeJob`'s ABI ends `[.., proxyMasterIndex, dynamicChunkInputBase]`, so the owner parameter must be appended AFTER the chunk base; if any injection lands it earlier, the owner receives the chunk-base value 63 - exactly the measured symptom. Landed: the dump + the branch-height invariant (ROUND 149).** See "ROUND 150" at the end.
 >
 > Superseded (ROUND 149: the FAILING invocation is captured - the fragment (opcodes 83,147,210,1,1,138) is entered at depth 92 with **base = 63** (`__internal__dynamicChunkInputBase`) instead of the participant block base 0, so it reads `outputs[66]` (a bare OP_TRUE pad, empty commitment) and the `[32:64]` slice aborts; `outputs[3]` IS materialised with a 64-byte commitment. Landed: an opcode-signature gate for the frame trace (instruction counts are ambiguous - 20 distinct 7-instruction bodies) and the general `visitBranch` stack-height invariant.** See "ROUND 149" at the end.
 >
@@ -6275,3 +6277,54 @@ bare pad with an empty commitment). `takeJob`'s own ABI (artifact `abi`, name `t
 `[.., __internal__proxyMasterIndex, __internal__dynamicChunkInputBase]`, i.e. the chunk base is its LAST declared
 parameter - so the owner must be appended AFTER it, and any injection that lands the owner earlier produces
 exactly this swap.
+
+## ROUND 151: the argument-binding hypothesis is FALSIFIED - and the trace tooling is NOT trustworthy
+
+### Falsified: the route -> clone call binding is consistent
+
+`SOLIDC_DEBUG_ARG_ORDER=1` now prints BOTH sides of every route -> clone call: `message-bus-arg-order` (the
+generated argument vector) and `message-bus-clone-params` (the clone's OWN parameter list, captured where the
+participant owner is appended). Fixture compile: 467 call vectors and 516 clone parameter lists; 388 calls match
+a known clone. Diffing them index for index:
+
+* **zero count mismatches** - the vector and the parameter list have the same length for every matched call, and
+* the only element-wise differences are `param = __internal__messageBusOwnerInput` vs
+  `arg = __internal__proxyMasterIndex`, which is exactly what the generated code intends
+  (`routeOwnerInputExpression` = `__internal__proxyMasterIndex` for a delegate route).
+
+So the compiler's positional binding of route context into a clone is CORRECT - the earlier hypothesis (owner
+parameter swapped with the chunk base) is dead, and with it the "append order" line of investigation. NOTE for
+the record: the first version of this diagnostic compared the vector against the SOURCE function's parameter
+list and reported 388/467 "mismatches"; that was an artifact of comparing the wrong list (a clone declares the
+source's parameters plus the context) and is now documented in the code.
+
+### The frame-trace tooling cannot be trusted for this question (measured contradictions)
+
+Two signature-gated traces of the SAME failing chain disagree, which means the `[vm-stack]` gating cannot
+localise this read as used:
+
+* the 5073-instruction body, ips 461-464, gate `length 5073 && instructions[1].opcode == 138`: at the
+  `push 0x14; OP_PICK` (ip 462, depth 92) the stack is `d=0: 0x14 (the index 20)`, `d=20: EMPTY`,
+  `d=21: 63 (0x3f)`, `d=22: 4` - i.e. the pick copies a ZERO-LENGTH item and never touches 63; at ip 464
+  (depth 93) `d=0: 7d81 (the id)`, `d=1: 63`, `d=2: EIP-191 prefix` - i.e. the callee is handed 63.
+* both records repeat identically across the two evaluations in the run, so the disagreement is INSIDE one
+  evaluation, which is impossible for one instruction stream.
+
+The likely cause is the gate's ambiguity: `SOLIDC_DEBUG_STACK_BODY_LENGTH` plus ONE opcode is not a unique body
+signature (a byte-pattern scan of the redeem found 556 of the ~570 `OP_DEFINE`s, so at least 14 bodies are
+unaccounted for, and more than one body can have 5073 instructions and opcode 138 at instruction 1). **Do not
+draw conclusions from these traces until the gating is exact** (e.g. match a multi-instruction signature, or
+identify the body by its `OP_DEFINE` id in the redeem and count instructions off that same object).
+
+### Where that leaves the take-job blocker
+
+Established beyond doubt: output 3 carries the keccak side-car (64-byte commitment) and outputs 4/5 the recovery
+pair; the failing `[32:64]` slice is on an empty commitment, and the value 63 (`__internal__dynamicChunkInputBase`)
+is what reaches the outlined fragment as its base in the traced evaluations. Since the compiler's binding into
+the clone is consistent, the next suspects are (a) the VALUE the route holds for the base authority in the
+composition that fails, and (b) the fragment's own call site. Both are cheaper to attack from the SDK side than
+from VM traces: `applyDynamicChunkInputFills` writes `blockBase + inputIndex` into
+`__internal__dynamicChunkInputBase` (63 measured) and `buildRouteArguments` writes
+`participantInputs[participant]` into `__internal__proxyMasterIndex` (0) - log both per composition and per
+stage, and check whether the value the handler receives as its owner equals the route's `proxyMasterIndex` in the
+same pass.

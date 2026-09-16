@@ -36585,10 +36585,81 @@ export class StatefulFunctionCall {
             executionInput: number,
             inputBase: number,
           ): boolean => {
-            const trace = evaluateProbeTrace(provider, { ...program, inputIndex: executionInput });
+            // A deferred build publishes resources whose value it has not learned yet as empty-commitment NFTs.
+            // Every covenant that addresses a token parses its commitment (`slot||next||value` for entries,
+            // `index||data` for chunks) through a fixed `OP_SPLIT 32`, and an empty item aborts the whole program
+            // with an invalid-index failure - not a rejected check. That abort lands before the recovery/keccak read
+            // sites this trace exists to observe, so the resolver can never learn its arguments and the composer
+            // reports `complete graph did not expose arguments for all deferred compute resources`.
+            //
+            // The probe is not the transaction that gets sent: it only feeds argument learning. Give its empty
+            // commitments the co-spent input's authenticated commitment at the same 1:1 block coordinate when there
+            // is one, else a zero-filled body long enough to parse, so the run reaches those read sites. Acceptance
+            // is unaffected: the send recomposes from the learned values and every equality check still compares
+            // against the authenticated expectation, so a filled placeholder still fails closed.
+            const probeOutputs = program.transaction.outputs.map((output, index) => {
+              const commitment = output.token?.nft?.commitment;
+              if (!output.token || !output.token.nft || commitment === undefined || commitment.length > 0) {
+                return output;
+              }
+              const mirrored = program.sourceOutputs[index]?.token?.nft?.commitment;
+              const filled = mirrored && mirrored.length > 0 ? mirrored : new Uint8Array(64);
+              return {
+                ...output,
+                token: { ...output.token, nft: { ...output.token.nft, commitment: filled } },
+              };
+            });
+            const trace = evaluateProbeTrace(provider, {
+              ...program,
+              transaction: { ...program.transaction, outputs: probeOutputs },
+              inputIndex: executionInput,
+            });
             let progressed = false;
             if (stb.resolveDeferredKeccakPreimage(trace, inputBase)) progressed = true;
             if (stb.resolveDeferredEcrecoverArgument(trace, inputBase)) progressed = true;
+            if (!progressed
+              && (globalThis as { process?: { env?: Record<string, string> } }).process?.env
+                ?.SOLIDC_DEBUG_ENTRY_COUNTS === '1') {
+              // Which output/input introspection actually killed the probe. The deferred resolver can only learn a
+              // recovery/keccak argument from a trace that reaches its read site, so the LAST token-commitment
+              // introspection before the terminal state names the slot that ended the run: its index operand is
+              // still on that state's stack, and an empty commitment there is the fail-closed-under-placeholder
+              // shape the composer reports as "did not expose arguments".
+              const vmNumber = (bytes: Uint8Array | undefined): number => {
+                if (!bytes || bytes.length === 0) return 0;
+                const negative = (bytes[bytes.length - 1] & 0x80) !== 0;
+                const magnitude = Uint8Array.from(bytes);
+                if (negative) magnitude[magnitude.length - 1] &= 0x7f;
+                let value = 0n;
+                for (let byte = magnitude.length - 1; byte >= 0; byte -= 1) {
+                  value = (value << 8n) | BigInt(magnitude[byte]);
+                }
+                return Number(negative ? -value : value);
+              };
+              const commitmentReads = trace.flatMap((raw) => {
+                const state = raw as {
+                  ip?: number; stack?: Uint8Array[];
+                  instructions?: Array<{ opcode?: number }>;
+                };
+                const opcode = state.instructions?.[state.ip ?? -1]?.opcode;
+                if (!state.stack || state.stack.length === 0) return [];
+                const isOutput = opcode === Op.OP_OUTPUTTOKENCOMMITMENT;
+                const isInput = opcode === Op.OP_UTXOTOKENCOMMITMENT;
+                const isOutputBytecode = opcode === Op.OP_OUTPUTBYTECODE;
+                if (!isOutput && !isInput && !isOutputBytecode) return [];
+                return [{
+                  op: isOutput ? 'out-commitment' : isInput ? 'in-commitment' : 'out-bytecode',
+                  index: vmNumber(state.stack[state.stack.length - 1]),
+                  bytes: state.stack[state.stack.length - 1]?.length,
+                  stackDepth: state.stack.length,
+                }];
+              });
+              console.error('deferred-no-progress-reads', JSON.stringify({
+                buildId: peekBuildId(),
+                total: commitmentReads.length,
+                trailing: commitmentReads.slice(-12),
+              }));
+            }
             if (!progressed
               && (globalThis as { process?: { env?: Record<string, string> } }).process?.env
                 ?.SOLIDC_DEBUG_ECRECOVER_DERIVE === '1') {

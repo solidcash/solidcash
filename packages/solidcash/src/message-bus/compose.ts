@@ -3639,9 +3639,12 @@ export class AtomicMessageBusComposition {
               }));
               console.error('deferred-stall-io-full', JSON.stringify({
                 buildId: peekBuilderBuildId(),
-                out: aggregate.outputs.map((item, index) => item?.token?.nft
-                  ? `${index}:${item.token.category?.slice(0, 8)}:${(item.token.nft.commitment?.length ?? 0) / 2}`
-                  : `${index}:-`),
+                out: aggregate.outputs.map((item, index) => {
+                  const lock = item?.to instanceof Uint8Array ? binToHex(item.to).slice(0, 10) : '';
+                  return item?.token?.nft
+                    ? `${index}:${item.token.category?.slice(0, 8)}:${(item.token.nft.commitment?.length ?? 0) / 2}:${lock}`
+                    : `${index}:-:${lock}`;
+                }),
                 in: aggregate.inputs.map((item, index) => item?.token?.nft
                   ? `${index}:${item.token.category?.slice(0, 8)}:${(item.token.nft.commitment?.length ?? 0) / 2}`
                   : `${index}:-`),

@@ -1,6 +1,6 @@
 # Handoff — kernel-beta marketplace climb (after the event/continuation round)
 
-> **Latest state (ROUND 98, the deferred stall's ROOT CAUSE identified): 39 pass / 27 fail; tree at `52d79f3d7` + diagnostics.** The sections below are a chronological log;
+> **Latest state (ROUND 99, empty-commitment placeholders made structurally valid): 39 pass / 27 fail; tree at `315792099` + fix.** The sections below are a chronological log;
 > read ROUNDS 51-52 and 54 (the collection-key, rolled-array and dynamic-storage-read fixes: 32 -> 37),
 > ROUNDS 53-96 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
 > deferred-`takeJob` class and its three falsified hypotheses) at the end. Earlier "State" numbers in this header
@@ -4181,3 +4181,43 @@ Next round (the fix fork, now sharp):
 Focused state after this round's changes: `-t 'take job'` = 2 failed | 1 passed (green `sanity checks`,
 failing `take job` and `take job multiple`), same two error messages as the pre-change baseline; `yarn build`
 green; no full-ladder run (no title turned green).
+
+### ROUND 99: the failing introspection is a SCAN, and empty commitments were the invalid payload
+
+New diagnostic (permanent, gated by `SOLIDC_DEBUG_ENTRY_COUNTS=1`) - `deferred-no-progress-reads`: when the
+deferred resolver makes no progress, it reports the trailing `OP_UTXOTOKENCOMMITMENT`/`OP_OUTPUTTOKENCOMMITMENT`/
+`OP_OUTPUTBYTECODE` reads of the probe trace with their index operand. Measured (build 40, default path):
+
+    out-bytecode 466, 467, 468 (two-byte items, stackDepth 53) then out-commitment 463
+
+so the program dies inside a bounded OUTPUT RANGE SCAN that reads bytecode per index and then parses a matched
+commitment - the `emitSortedValueChunkPin` shape (`Scan every output ... OP_OUTPUTBYTECODE ... OP_IF ...
+OP_OUTPUTTOKENCOMMITMENT ...`). The parse helper is `OP_SPLIT 32` (`span 122`), so any matched output whose
+commitment is EMPTY kills the whole program with an invalid-index failure - a VM abort, not a rejected check -
+and that abort lands before the recovery/keccak read sites, which is why the resolver cannot learn arguments.
+
+Empty-commitment outputs measured in the stalled aggregate (`deferred-stall-io-full`, now with locking-bytecode
+prefixes): the master minting NFT (index 0, legitimate) plus four mutable NFTs with `commitment.length === 0`
+(`127:142ee8b0`, `129:ee643a16`, `214:3770ad41`, `216:424cc33a`) and one minting NFT. They are placeholders for
+slots whose value the deferred build has not learned yet.
+
+Landed (both general, neither can be ACCEPTED anywhere - every equality check still compares against the
+authenticated expectation):
+  - `StatefulTransactionBuilder` mutable-token shell repair no longer writes `commitment: ''`. It mirrors the
+    co-spent input's commitment at the same 1:1 block coordinate when there is one (that is the authenticated
+    value the preservation checks expect) and otherwise writes a 64-byte zero body long enough to parse.
+  - `StatefulContract` deferred resolver: the PROBE program (only the trace, never the sent transaction) fills
+    every empty token commitment from `program.sourceOutputs[index]` (1:1 coordinate) or with 64 zero bytes, so
+    the run can reach the read sites the resolver needs.
+
+Falsified this round (do not repeat):
+  - "filling the empty commitments is enough": with both changes in place the focused window is unchanged
+    (2 failed | 1 passed, 10 `deferred-no-progress-reads`, 2 `deferred-ecrecover-learned`, identical error
+    messages). The failing scan still aborts, so the dying commitment is either not one of the filled outputs or
+    the scan's abort is not about an empty commitment at all. Next measurement: dump the PROBE program's output
+    table at the reported read index (the `deferred-stall-io-full` record is taken at the final stall and its
+    indices do NOT line up with the earlier attempt's trace indices - 216 vs 463 - because each resolve round
+    rebuilds the program).
+
+Focused state: `-t 'take job'` = 2 failed | 1 passed (green `sanity checks`), same two errors, `yarn build`
+green, no full-ladder run (no title turned green).

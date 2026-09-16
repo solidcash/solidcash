@@ -21693,11 +21693,25 @@ export class StatefulTransactionBuilder {
       if (!output || output.token !== undefined) continue;
       const currentLock = output.to instanceof Uint8Array ? output.to : addressToLockScript(output.to);
       const proposedCategory = `${shell.categoryId}01`;
+      // A shell is a placeholder for a slot whose token a previous probe observed. An EMPTY commitment is not a
+      // valid payload: every token addressed through a collection covenant is parsed as `slot || next || value`
+      // (entry) or `index || data` (chunk), and the covenant's fixed `OP_SPLIT 32` helper aborts the whole program
+      // on a shorter item - an invalid-index failure, not a rejected check. That abort happens BEFORE the deferred
+      // compute resolvers read their arguments out of the trace, so the composition can never learn them and the
+      // sender reports `complete graph did not expose arguments for all deferred compute resources`. Mirror the
+      // co-spent input at the same 1:1 block coordinate when there is one: that is the authenticated value the
+      // covenant's preservation checks compare against. Otherwise fall back to a zero-filled body that is long
+      // enough to parse. Neither can be ACCEPTED - the equality checks still compare against the authenticated
+      // expectation, so a fabricated placeholder still fails closed.
+      const mirroredCommitment = this.allInputs[outputIndex]?.token?.nft?.commitment;
+      const placeholderCommitment = mirroredCommitment && mirroredCommitment.length > 0
+        ? mirroredCommitment
+        : '00'.repeat(64);
       output.to = shell.lockingBytecode;
       output.token = {
         amount: 0n,
         category: shell.categoryId,
-        nft: { capability: 'mutable', commitment: '' },
+        nft: { capability: 'mutable', commitment: placeholderCommitment },
       };
       output.amount = BigInt(Math.max(1200, calculateDust(output)));
       repairDetails.push({

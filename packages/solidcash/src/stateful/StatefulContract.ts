@@ -3716,6 +3716,29 @@ export function isCanonicalEvmScalarReturnBlob(
 
 const EVM_DYNAMIC_RETURN_TYPES = new Set(['bytes', 'string']);
 
+/**
+ * True when a multi-row Solidity result vector may be recognized from its bare (unframed) encoding.
+ *
+ * A lone ABI-width word is ambiguous: state hashes, mapping witnesses, and placeholders are all canonical
+ * `uint256` words. A *complete* vector is only stronger than that when at least one row's declared type
+ * constrains its 32-byte encoding (a bool word is 0/1, an address zero-extends, a narrow integer sign-extends);
+ * a vector built only from unbounded `int`/`uint`/`bigint` rows is still indistinguishable from concatenated
+ * state words and must keep waiting for a compiler-framed observation.
+ */
+export function isConstrainedEvmResultVector(
+  resultTypeGroups: readonly (readonly string[])[],
+): boolean {
+  const rows = resultTypeGroups.flat();
+  if (resultTypeGroups.length < 2 || rows.length === 0) return false;
+  if (rows.some((type) => EVM_DYNAMIC_RETURN_TYPES.has(type))) return false;
+  return rows.some((type) => {
+    if (type === 'bool' || type === 'address' || type === 'address payable') return true;
+    if (/^bytes(?:[1-9]|[12][0-9]|3[0-2])$/.test(type)) return true;
+    const bounded = /^u?(?:int|fixed)(\d+)(?:x\d+)?$/.exec(type);
+    return bounded !== null && Number(bounded[1]) < 256;
+  });
+}
+
 const decodeEvmReturnWord = (value: Uint8Array, offset: number): number | undefined => {
   if (offset < 0 || offset + 32 > value.length) return undefined;
   let decoded = 0n;
@@ -32861,8 +32884,15 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       if (allEvmResults) {
         // Only a compiler-framed vector is stronger than the targeted return-output observation. A raw ABI-width
         // stack item is ambiguous: state hashes, collection keys, and placeholders are all canonical uint256
-        // words and can otherwise replace the real result during semantic fixed-point assembly.
-        const inner = extractEvmReturnCommitment(candidateTrace, resultSchema.resultTypeGroups, false);
+        // words and can otherwise replace the real result during semantic fixed-point assembly. A complete
+        // multi-row vector with a constrained row is not one of those words, so it stays available as the weaker
+        // reading: it lets a progressive probe which stops after the route assembled its frame (and before that
+        // frame's output comparison) still correct an earlier provisional claim. The final BCH VM authenticates
+        // whichever reading reaches assembly.
+        const inner = extractEvmReturnCommitment(
+          candidateTrace, resultSchema.resultTypeGroups,
+          isConstrainedEvmResultVector(resultSchema.resultTypeGroups),
+        );
         return inner === undefined ? undefined : binToHex(scriptToBytecode([hexToBin(inner)]));
       }
       // Mixed participant result vectors have independent per-row wire formats. Only the targeted return-output

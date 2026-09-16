@@ -7,6 +7,7 @@ import {
   encodeStructArgument,
   isCanonicalEvmReturnBlob, isCanonicalEvmReturnSequence, isCanonicalEvmReturnVector,
   isCanonicalEvmScalarReturnBlob, isCanonicalEvmScalarReturnVector,
+  isConstrainedEvmResultVector,
   selectEvmReturnCommitment, selectEvmScalarReturnCommitment,
 } from '../../src/stateful/StatefulContract.js';
 import {
@@ -207,6 +208,44 @@ describe('encodeExternalReturnValue', () => {
     dirtyPadding[96] = 0x61;
     dirtyPadding[127] = 1;
     expect(isCanonicalEvmReturnVector(dirtyPadding, ['string', 'bool'])).toBe(false);
+  });
+});
+
+describe('isConstrainedEvmResultVector', () => {
+  it('accepts a complete multi-row vector with at least one constrained row', () => {
+    expect(isConstrainedEvmResultVector([['uint256'], ['bool'], ['bool']])).toBe(true);
+    expect(isConstrainedEvmResultVector([['uint256'], ['address']])).toBe(true);
+    expect(isConstrainedEvmResultVector([['uint256'], ['uint8']])).toBe(true);
+    expect(isConstrainedEvmResultVector([['bytes32'], ['uint256']])).toBe(true);
+  });
+
+  it('rejects vectors whose rows are all unconstrained ABI-width words', () => {
+    expect(isConstrainedEvmResultVector([['uint256'], ['uint256']])).toBe(false);
+    expect(isConstrainedEvmResultVector([['int'], ['bigint']])).toBe(false);
+  });
+
+  it('rejects single-row schemas and dynamic rows', () => {
+    expect(isConstrainedEvmResultVector([['bool']])).toBe(false);
+    expect(isConstrainedEvmResultVector([['uint256']])).toBe(false);
+    expect(isConstrainedEvmResultVector([['uint256'], ['bytes']])).toBe(false);
+    expect(isConstrainedEvmResultVector([['bool'], ['string']])).toBe(false);
+    expect(isConstrainedEvmResultVector([])).toBe(false);
+  });
+
+  it('selects the bare multi-row vector only when its rows constrain the encoding', () => {
+    const vector = new Uint8Array(96);
+    vector[31] = 0xa0;
+    vector[63] = 1;
+    vector[95] = 1;
+    const groups = [['uint256'], ['bool'], ['bool']];
+
+    // A progressive probe can stop after the route assembled its frame and before that frame's output
+    // comparison; the complete vector is then the only authenticated observation of the result.
+    expect(selectEvmReturnCommitment([vector], groups, true)).toBe(binToHex(vector));
+    expect(selectEvmReturnCommitment([vector], groups, false)).toBeUndefined();
+    // The compiler-framed form still wins when both are live.
+    expect(selectEvmReturnCommitment([vector, encodePushdataValue(vector, 'bytes')], groups, true))
+      .toBe(binToHex(vector));
   });
 });
 

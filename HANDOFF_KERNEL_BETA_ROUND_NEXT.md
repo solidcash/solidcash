@@ -1,6 +1,6 @@
 # Handoff — kernel-beta marketplace climb (after the event/continuation round)
 
-> **Latest state (ROUND 114: NO compiler emitter produces `valueChunkWrites`, so the SDK never plans the chunk band - the OP_SPLIT class is a deadlock, not a collision): 39 pass / 27 fail.** The sections below are a chronological log;
+> **Latest state (ROUND 115: the composed participant has ZERO chunkable-writer candidates - the band can only come from trace learning, confirming the deadlock): 39 pass / 27 fail.** The sections below are a chronological log;
 > read ROUNDS 51-52 and 54 (the collection-key, rolled-array and dynamic-storage-read fixes: 32 -> 37),
 > ROUNDS 53-96 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
 > deferred-`takeJob` class and its three falsified hypotheses) at the end. Earlier "State" numbers in this header
@@ -4711,6 +4711,39 @@ Next: determine which metadata the artifact already carries for the failing row 
 chunkableValue`, the entry-slot index and the key slot are all present in the dumps so far) and either emit the
 descriptor in the compiler or synthesise it in the SDK - then verify with the focused window and a full ladder run
 if a title turns green.
+
+Focused state: `-t 'take job'` = 2 failed | 1 passed (green `sanity checks`), `yarn build` green, no full-ladder
+run (no title turned green).
+
+### ROUND 115: the composed path has no writer CANDIDATE at all (not an ambiguity)
+
+`trailing-band-coordinates` now reports the chunkable-writer candidate identities the SDK's selector sees
+(`groupChunkableValueWriteResource` over every low-level-call and external-call group with a resolved master
+input). Measured for the route participant (all ten stalled builds):
+
+    writerCandidates: []      band: null
+
+so `selectChunkableValueWriteExecution` bails out at the FIRST test (`resource === undefined`), not at the
+ambiguity test (`executions.size !== 1`): in the composed kernel route there is no group representing the
+chunk-writing call at all, because those writes execute inside the participant's own verifier rather than through
+a separate delegate/external call group. The `ValueChunkWriteDescriptor` + group machinery is consequently
+structural-legacy only (the SDK comments already call the remaining paths "Compatibility only for plans predating
+compiler-authored valueChunkWrites", and no compiler emitter exists for that field - ROUND 114).
+
+Consequence: in the composed path the value-chunk band can ONLY be populated by the trace-learning path, and that
+path needs a probe run that reaches the chunk pin - which the token-less pad at `chunkBase + 3` prevents. The
+deadlock is therefore structural, and the fix must break the cycle from one of two sides:
+
+  (a) PROBE side (SDK, probe-only, fail-closed): give the participant's trailing-band coordinates a token-bearing
+      structural placeholder in the probe program so the positional parse (span 122) survives. The probe patch
+      added in ROUNDS 99/100 only fills tokens whose commitment is EMPTY; a slot with NO token at all - the
+      failing case - is untouched. The placeholder needs the participant's own category (the master's) to be
+      structurally plausible, and a body long enough to parse (>= 64 bytes). Any later equality check still fails
+      closed, but it must fail AFTER the recovery/keccak read sites the resolver needs.
+  (b) COMPILER side: publish the band so the SDK does not have to learn it - i.e. emit the descriptor
+      (collection, key slot, entry access slot, route slot, operation, outputBase, outputCount) or start the
+      covenant's positional chunk read after a runtime prefix the route already carries
+      (`__internal__vmapBatchTrailingCount`).
 
 Focused state: `-t 'take job'` = 2 failed | 1 passed (green `sanity checks`), `yarn build` green, no full-ladder
 run (no title turned green).

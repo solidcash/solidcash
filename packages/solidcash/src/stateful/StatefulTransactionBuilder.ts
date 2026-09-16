@@ -13150,7 +13150,8 @@ export class StatefulTransactionBuilder {
   getTrailingBandCoordinatesForDiagnostics(): {
     blockSize?: number; trailingBase?: number; chunkBase?: number; eventBase?: number;
     events: number; transfers: number; loopEntries: number; runtimeEvents: number;
-    eventSlots: number[]; band?: { start: number; end: number; nNew: number };
+    eventSlots: number[]; writerCandidates: string[];
+    band?: { start: number; end: number; nNew: number };
   } {
     const eventIndex = (offset: number): number => {
       try {
@@ -13172,6 +13173,23 @@ export class StatefulTransactionBuilder {
       loopEntries: this._trailingLoopEntryOutputCount(),
       runtimeEvents: this.runtimeLoopTrailingSegments.length,
       eventSlots: this.runtimeLoopEventOutputs.map((_event, index) => eventIndex(index)),
+      // The writer selector bails out both when NO group yields a chunkable resource and when MORE THAN ONE does
+      // (`executions.size !== 1`), which have completely different fixes. Report the candidate identities so the
+      // two cases are distinguishable from the record alone.
+      writerCandidates: [
+        ...this.lowLevelCallUtxoGroups.map((group, index) => ({
+          group, inputIndex: this.getLowLevelCallMasterInputIndex(index), kind: `llc#${index}`,
+        })),
+        ...this.externalCallUtxoGroups.map((group, index) => ({
+          group, inputIndex: this.getExternalCallMasterInputIndex(index), kind: `ext#${index}`,
+        })),
+      ].flatMap(({ group, inputIndex, kind }) => {
+        if (inputIndex < 0) return [];
+        const resource = groupChunkableValueWriteResource(group as never);
+        if (resource === undefined) return [];
+        return [`${kind}@${inputIndex}:${resource.collection}`
+          + `${resource.resourceIdentity ? `/${resource.resourceIdentity}` : ''}`];
+      }),
       ...(band ? { band: { start: band.start, end: band.end, nNew: band.nNew } } : {}),
     };
   }

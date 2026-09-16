@@ -1,8 +1,8 @@
 # Handoff — kernel-beta marketplace climb (after the event/continuation round)
 
-> **Latest state (ROUND 63, composed-participant continuation coordinates): 39 pass / 27 fail.** The sections below are a chronological log;
+> **Latest state (ROUND 64, composed executor input): 39 pass / 27 fail.** The sections below are a chronological log;
 > read ROUNDS 51-52 and 54 (the collection-key, rolled-array and dynamic-storage-read fixes: 32 -> 37),
-> ROUNDS 53-63 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
+> ROUNDS 53-64 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
 > deferred-`takeJob` class and its three falsified hypotheses) at the end. Earlier "State" numbers in this header
 > are historical.
 
@@ -3063,6 +3063,34 @@ region; the composer's `block.resolve(program, executionInput, block.inputBase)`
 graph throws. Next round: map the trace's A-side read back to the participant-local sidecar input (the composition
 knows `activeVerifierIndex`/`graphSettlementTable`), i.e. reverse-map `absolute - (inputBase + verifierBase)` before
 comparing with `unresolvedAIndices`, and check `resolveDeferredKeccakPreimage` for the same confusion.
+
+### ROUND 64: the deferred-compute stall is the composed executor input failing at ip 1
+
+Measured on `deliver result` (both titles) and `post thread message > sanity checks`, with the ROUND 63
+geometry fix in place:
+
+* keccak resolves fine (`deferred-keccak-learned` 8, zero extract misses) - this class is ecrecover.
+* `deferred-ecrecover-learned` 2 of 8 sites; the rest never learn, and the composer then reports
+  `atomic-deferred-compute-no-progress { executionInput: 127, inputBase: 0, states: 951,
+  error: 'OP_SPLIT ... stack item length: 0; requested split index: 32', ip: 1 }`.
+* `executionInput 127` is participant 0's published executor slot: `atomicMessageBusPhysicalLayout` puts one
+  verifier per participant after the participant blocks, and `compose.ts` selects
+  `inputBase + participant.executorOffset` where `executorOffset` is the `lowLevelCall` slot of the delegated
+  participant layout. A probe on that site prints participant 0 as
+  `{executorOffset: 127, blockSize: 129, executorLock: 'aa20260e28787b12...'}` and participant 1 as
+  `{executorOffset: 85, blockSize: 87, executorLock: 'aa208e08f12f204d...'}` (the impl covenant address).
+* The trace for that input dies at `ip: 1` on `OP_SPLIT 32` with a zero-length item, i.e. the implementation
+  covenant executes against an EMPTY unlocking stack: the executor input carries an impl locking bytecode but a
+  stub/placeholder unlocker. Two of the observed executor outpoints look synthetic
+  (`46d52a29bb77:127`, `7fac03652e66:127` - vout equal to the slot offset) next to the real-looking
+  `0d428c6528f8:3`, so the aggregate is being fed the probe-local placeholder copy of the executor input whose
+  unlocker never became the real delegated invocation.
+
+Next round: make the composer materialize (or refuse) the real executor input before the deferred-compute loop
+evaluates `aggregate.buildLibauthProgram()` - i.e. ensure `local.inputs[executorOffset]` is the authenticated impl
+master UTXO with its invocation unlocker, not the local placeholder; the ecrecover resolver then sees the
+`OP_INPUTBYTECODE` reads it expects (its sidecars sit at the same block-local offsets 4..19, which is why the
+`unresolvedAIndices` keys are local while the covenant addresses them absolutely).
 
 ### How to localize it next
 

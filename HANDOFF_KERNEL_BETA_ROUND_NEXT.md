@@ -1,6 +1,6 @@
 # Handoff — kernel-beta marketplace climb (after the event/continuation round)
 
-> **Latest state (ROUND 122: failing operands self-described - the empties are computed values and one compared LOCK is `nowhere`): 39 pass / 27 fail.** The sections below are a chronological log;
+> **Latest state (ROUND 123: with substring matching only 5 of 80 failing operands are `nowhere` (was 1 of 6 by whole-item lookup); the chunk-address explanation does not yet reproduce them): 39 pass / 27 fail.** The sections below are a chronological log;
 > read ROUNDS 51-52 and 54 (the collection-key, rolled-array and dynamic-storage-read fixes: 32 -> 37),
 > ROUNDS 53-96 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
 > deferred-`takeJob` class and its three falsified hypotheses) at the end. Earlier "State" numbers in this header
@@ -4943,6 +4943,33 @@ Next: identify that computed address - it is the lock the covenant compares agai
 `computeValueChunkDomain`/`getValueChunkLockingBytecode` recipe, with the slot and root the row's value yields)
 tells exactly which chunk output the SDK must publish, and the `verifier-arguments`/`routeArguments` records now
 give the row's inputs.
+
+Focused state: `-t 'take job'` = 2 failed | 1 passed (green `sanity checks`), `yarn build` green, no full-ladder
+run (no title turned green).
+
+### ROUND 123: operand origin hardened (whole-item -> substring) and the `nowhere` set is now exact
+
+The `known` test in `failingStack` only matched WHOLE carried items, but a carried value can contain the operand
+nested inside a larger blob (a graph-emission transcript or a record payload embeds other contracts' locks - the
+same `aa20e61fa6c6...` lock appears inside `suppliedEmissions` (463 bytes) and inside p0@64's trailing commitment).
+The test now also accepts substring matches of any carried value. Measured over the ten stalls:
+
+    origins: known 38, empty 37, nowhere 5
+
+so the operand picture is now exact: most compared values are carried by the program, the `empty` items are the
+values the covenant computed, and FIVE locking bytecodes are genuinely absent from the program.
+
+Also tried and NOT yet successful: explaining a `nowhere` lock as a value-chunk address
+(`getValueChunkLockingBytecode(category, collection, slot, root)` replayed from every published commitment >= 100
+bytes, taking `slot = [0:32]` and `root = [68:100]` per the `slot || next || len(4) || root(32)` entry layout).
+No collection produced the lock, so either the entry layout offset or the collection set is wrong for that value,
+or the missing resource is not a value chunk.
+
+Next: print, for each of the 5 `nowhere` locks, every candidate the recipe produced (not just the match) plus the
+commitments it was replayed from, and cross-check against `trailingCommitments`/`trailingPublished` for the same
+build - that will say whether the SDK is missing an output for a resource the covenant names, or whether the lock
+is derived from something else entirely (an event/return covenant address, or a proxy/data address of a participant
+that this build does not include).
 
 Focused state: `-t 'take job'` = 2 failed | 1 passed (green `sanity checks`), `yarn build` green, no full-ladder
 run (no title turned green).

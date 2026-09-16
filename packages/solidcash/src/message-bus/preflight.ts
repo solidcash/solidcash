@@ -1626,7 +1626,17 @@ const evaluateEveryInput = (
             const debugBodyLength = Number(failureDebugEnv?.SOLIDC_DEBUG_STACK_BODY_LENGTH ?? -1);
             const debugBodyFrom = Number(failureDebugEnv?.SOLIDC_DEBUG_STACK_BODY_FROM ?? 0);
             const debugBodyTo = Number(failureDebugEnv?.SOLIDC_DEBUG_STACK_BODY_TO ?? Number.MAX_SAFE_INTEGER);
+            // Instruction COUNT alone is ambiguous: the composed program holds 20 distinct 7-instruction
+            // bodies, so gating on a count can trace a completely different body than the one under
+            // investigation (measured: the fragment that reads outputs[base + 3].nftCommitment[32:64] has
+            // opcodes 83,147,210,1,1,138,126 while another length-7 body showed up instead). An optional
+            // opcode signature pins the body exactly.
+            const debugOpcodeIndex = Number(failureDebugEnv?.SOLIDC_DEBUG_STACK_BODY_OPCODE_INDEX ?? -1);
+            const debugOpcode = Number(failureDebugEnv?.SOLIDC_DEBUG_STACK_BODY_OPCODE ?? -1);
+            const signatureMatches = debugOpcodeIndex < 0
+              || state.instructions[debugOpcodeIndex]?.opcode === debugOpcode;
             if (state.instructions.length === debugBodyLength
+              && signatureMatches
               && state.ip >= debugBodyFrom && state.ip <= debugBodyTo) {
               // A block base is addressed by a top-relative stack index, so a one-slot model/physical
               // disagreement is invisible unless the whole frame is visible: print enough of the stack to line

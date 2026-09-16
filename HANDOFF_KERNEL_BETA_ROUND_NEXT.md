@@ -1,6 +1,12 @@
 # Handoff — kernel-beta marketplace climb (after the event/continuation round)
 
-> **Latest state (ROUND 146: the fragment's base is a value PRODUCED BY the preceding helper chain (64 `push <id>; OP_INVOKE` sites in body 59, e.g. ids 0xae/0x9481/0x14/0xfd), not a pick at its call site - so instrument the helper chain, not the fragment. The principled fix is stated: address the message-bus frame authorities (the handler's `__internal__messageBusOwnerInput`, the route's `__internal__proxyMasterIndex`) by their FIXED ordinal from the PHYSICAL bottom of the stack (`OP_DEPTH push(ordinal+1) OP_SUB OP_PICK`) instead of by a drifting model index - correct in both the take-job and close-job frame shapes, so it fixes the class instead of trading titles.** See "ROUND 146" at the end.
+> **Latest state (ROUND 149: the FAILING invocation is captured - the fragment (opcodes 83,147,210,1,1,138) is entered at depth 92 with **base = 63** (`__internal__dynamicChunkInputBase`) instead of the participant block base 0, so it reads `outputs[66]` (a bare OP_TRUE pad, empty commitment) and the `[32:64]` slice aborts; `outputs[3]` IS materialised with a 64-byte commitment. Landed: an opcode-signature gate for the frame trace (instruction counts are ambiguous - 20 distinct 7-instruction bodies) and the general `visitBranch` stack-height invariant.** See "ROUND 149" at the end.
+>
+> Superseded (ROUND 148: the round-147 drift conclusion is FALSIFIED - measured on the BASELINE build, the pick at instruction 462 reads `OP_PICK 20` and depth 20 holds the OWNER (0) while 63 sits at 21, exactly matching the compiler's model index 20 - so the base is right, `outputs[3]` is materialised with a 64-byte commitment, and the empty item the failing 5-instruction helper splits comes from a DIFFERENT 7-instruction body that ends in OP_CAT (20 candidates). Landed this round: a general `visitBranch` stack-height invariant (both arms, revert exempt), which the fixture compiles cleanly with.** See "ROUND 148" at the end.
+>
+> Superseded (ROUND 147: the model↔frame correlation is verified mechanically (self-identifying marker: debug-build body-59 instruction 476 carries site 15 and matches the DBG record `site: 15`), and the decisive finding is that at the PROBE stage the model is EXACTLY aligned with the physical frame (owner @ 20, 63 @ 21, 4 @ 22 - so `PICK 20` correctly reads the owner) while the FINAL stage reads 63 at the same index - i.e. the frame CONTENT differs between the probe and final compositions, so the drift is (at least partly) in the SDK's final assembly, not only in the compiler model.** See "ROUND 147" at the end.
+>
+> Superseded (ROUND 146: the fragment's base is a value PRODUCED BY the preceding helper chain (64 `push <id>; OP_INVOKE` sites in body 59, e.g. ids 0xae/0x9481/0x14/0xfd), not a pick at its call site - so instrument the helper chain, not the fragment. The principled fix is stated: address the message-bus frame authorities (the handler's `__internal__messageBusOwnerInput`, the route's `__internal__proxyMasterIndex`) by their FIXED ordinal from the PHYSICAL bottom of the stack (`OP_DEPTH push(ordinal+1) OP_SUB OP_PICK`) instead of by a drifting model index - correct in both the take-job and close-job frame shapes, so it fixes the class instead of trading titles.** See "ROUND 146" at the end.
 >
 > Superseded (ROUND 145: the 5073-frame loose end is CLOSED (body `3b` invokes the fragment at ip 464 using the numeric id `OP_15`), the failing emitter is confirmed as `emitMasterInputIndex`'s owner branch inside body 3b, and the model carries exactly ONE entry the physical stack does not have above the extaddr block - so every index below it (the owner included) is one slot too deep. A stack-neutral site marker (`OP_DEPTH OP_DROP`, only under SOLIDC_DEBUG_COMPUTE_BASE=1) now makes the model record and the live frame matchable in a single run; the recipe is in ROUND 145.** See "ROUND 145" at the end.
 >
@@ -6088,3 +6094,151 @@ The fixture artifacts were recompiled COLD without the debug flag after this rou
 baseline build again; the scope node_modules links are removed again. Committed diagnostics (all inert by default
 and env-gated): `SOLIDC_DUMP_FAILING_REDEEM`, `SOLIDC_DEBUG_STACK_DEPTH`/`_BODY_LENGTH`/`_FROM`/`_TO`,
 `SOLIDC_DEBUG_COMPUTE_BASE` (+ the stack-neutral `OP_DEPTH OP_DROP` site marker).
+
+## ROUND 147: the model↔frame correlation works, and the drift is BETWEEN STAGES
+
+### The instruction-index/byte-offset confusion is resolved for good
+
+`state.ip` in a libauth frame is an INSTRUCTION INDEX, not a byte offset (the round-145 byte-offset readings were
+wrong). With that fixed, in the baseline body `3b`:
+
+    instr 459 push a680   460 INVOKE          (sidecar unlocking decode)
+    instr 461 push 0x14   462 OP_PICK         (the base read: index 20)
+    instr 463 push 7d81   464 INVOKE          (the outlined fragment = 7 instrs, ip 6 = OP_CAT)
+    instr 465 push 0x13   466 OP_PICK         (the recovery-A base read)
+    instr 467..469 OP_3 OP_ADD / OP_1 OP_SWAP
+
+which matches the ring exactly (`{ip: 465, instructionCount: 5073, opcode: 1}` = resume at instruction 465 =
+`push 0x13`, opcode 1 ✓). So the failing base really is picked at instruction 461-462, right before the fragment.
+
+### The marker is now self-identifying, and the correlation is verified
+
+`emitComputeBaseSiteMarker` emits `OP_DEPTH <site> OP_DROP OP_DROP` (stack-neutral: pushes one, drops two), where
+`<site>` is the same ordinal `debugComputeBase` prints and increments. Verified end to end: in the debug build the
+marker at **instruction index 476** carries **site 15**, and the `DBG-COMPUTE-BASE` record with `site: 15`
+(function `__message_bus_entry_takeJob`) is the matching one. That is the mechanical correlation the previous
+rounds lacked.
+
+### The decisive datum: at the PROBE stage the model is EXACTLY aligned
+
+`[vm-stack]` at debug-build body 59 (5840 instructions), ip 480 (the `push 0x14; OP_PICK` of site 15), depth 92:
+
+    d=20  0                       __internal__proxyMasterIndex / the owner
+    d=21  1 byte 3f = 63          __internal__dynamicChunkInputBase
+    d=22  1 byte 04 = 4           __internal__outlinedRecoveryAIndex
+    (and d=0 = a 64-byte zero blob - the deferred-probe placeholder)
+
+and the model record for site 15 has `owner @ 20`, `dynamicChunkInputBase @ 21`, `outlinedRecoveryAIndex @ 22` -
+**identical**. So at this stage `PICK 20` reads the OWNER (0) and the read is CORRECT (the following instructions
+`OP_3 OP_ADD OP_2 OP_SWAP OP_INPUTBYTECODE` then read input 3 = the p0 keccak side-car, exactly right).
+
+But in the FINAL failing stage the same pick read 63 (= `dynamicChunkInputBase`), i.e. the physical frame has the
+owner at d=19 and 63 at d=20 - **one item fewer is missing above the owner than in the probe stage**. The pick
+index is a compile-time constant, so the frame CONTENT differs between the probe composition and the final
+composition; the drift is therefore (at least partly) in the SDK's final frame, not only in the compiler model.
+That also explains why one addressing form fixes one title and breaks another: different stages/compositions have
+different frame depths for the same compiled code.
+
+### Next step (cheap, one run)
+
+Print the failing input's route argument vector in BOTH stages and diff them: the vector is
+`builder.inputs[127].unlocker.params` / the `message-bus-failure-point` record's `routeParams` (extend its filter
+to every `__internal__*`/`__message_bus_*` name). The probe stage is the compose pass that runs the deferred
+resolve loop; the final stage is the `admit()` preflight. If the final vector carries one more/fewer value than
+the probe's, the fix belongs in `compose.ts`'s final assembly (an extra or missing hidden argument), not in
+`GenerateTargetTraversal`.
+
+## ROUND 148: the drift hypothesis is FALSIFIED at the failing pick - and a landed general invariant
+
+### The model and the frame AGREE at the failing read (measured in the FINAL evaluation)
+
+`SOLIDC_DEBUG_STACK_BODY_LENGTH=5073 SOLIDC_DEBUG_STACK_BODY_FROM=458 SOLIDC_DEBUG_STACK_BODY_TO=466
+SOLIDC_DEBUG_STACK_DEPTH=40` on the BASELINE artifacts (no debug build), input 127, gives the pick-moment stack
+(record at instruction index 462 = OP_PICK, depth 92, `beforeOperation` so the index is still on top):
+
+    d= 0  1 byte 0x14 = 20        <- the index OP_PICK is about to consume
+    d= 1  28B EIP-191 prefix
+    d= 2  1B 02
+    d= 5..7  three 35B P2SH32 locks (extaddr values)
+    d= 8..12 five zeros (extcap values)
+    d=13 225B journal    d=14 0x01    d=16 65B signature    d=18/19 P2PKH key witnesses
+    d=20  0                        <- the participant block base (the OWNER)
+    d=21  1B 3f = 63               <- __internal__dynamicChunkInputBase
+    d=22  1B 04 = 4                <- __internal__outlinedRecoveryAIndex
+
+and the compiler's `DBG-COMPUTE-BASE` record for that site has the owner at model index **20**. **So `PICK 20`
+reads the owner (0) and the model is exactly right in the final evaluation too** - the round-147 "the final frame
+is one slot short" conclusion is FALSIFIED; it came from comparing a marker-build (different program!) trace with
+a baseline trace. Lesson: the marker build must never be compared with the baseline build - `visitBranch`/
+outlining decisions change (the marker build's body 59 has NO fragment invoke at all, the baseline's has exactly
+one).
+
+Consequence: the fragment's base really is 0, so it reads `outputs[3].nftCommitment[32:64]`, and in the final
+transaction output 3 IS materialised (measured: `lock aa202b3a..`, category `361eb80b..`, mutable,
+commitmentLength **64**; output 4 = 32B, output 5 = 34B). The empty item the failing `dropFirst/takeFirst` body
+splits therefore does NOT come from this site: some OTHER 7-instruction body that ends in OP_CAT (the ring's
+innermost frame is only identified by `instructionCount: 7` and `opcode: 126`) invokes the same 5-instruction
+helper on an empty item. Next step: enumerate the redeem's 7-instruction bodies, keep those whose ip 6 is OP_CAT
+and which invoke id `7a`, and read what coordinate each reads - there are 20 distinct 7-instruction bodies.
+
+### Landed: the general control-flow stack-height invariant
+
+`visitBranch` compiles the else arm from the IF arm's post-model, and the code after OP_ENDIF from the same
+model, while at run time each path has its own height. Nothing checked that the if arm leaves the height it
+found (the inline-assembly path already had the equivalent check: 'Divergent assembly conditional stack heights
+reached code generation'). Both arms are now checked, with arms that cannot fall through (revert) exempt,
+because that is a miscompile rather than a warning. Measured: the `.marketplace` fixture compiles cleanly with
+the invariant (22/22 sources, 19 artifacts, zero violations), so it does not disturb the current baseline; the
+`packages/solidc` suite is the gate (running) and the invariant is the check that would have caught a
+height-divergent branch (the class this round's falsified hypothesis belonged to).
+
+## ROUND 149: the FAILING invocation is captured with its base value - the base is 63, not 0
+
+### The trace gate had to be fixed first (landed)
+
+`SOLIDC_DEBUG_STACK_BODY_LENGTH`/`_FROM`/`_TO` gate on an instruction COUNT, and the composed redeem holds
+**20 distinct 7-instruction bodies**, so the previous "fragment" trace silently followed a different body
+(opcodes 0,121,139,81,122,117). `SOLIDC_DEBUG_STACK_BODY_OPCODE_INDEX=<i> SOLIDC_DEBUG_STACK_BODY_OPCODE=<op>`
+now pins the body by opcode signature.
+
+### Measured: the fragment's entry stack
+
+`SOLIDC_DEBUG_FAILURE_RING=1 SOLIDC_DEBUG_ROUTE_INPUT_INDEX=127 SOLIDC_DEBUG_STACK_BODY_LENGTH=7
+SOLIDC_DEBUG_STACK_BODY_OPCODE_INDEX=6 SOLIDC_DEBUG_STACK_BODY_OPCODE=126 SOLIDC_DEBUG_STACK_BODY_FROM=0
+SOLIDC_DEBUG_STACK_BODY_TO=6 SOLIDC_DEBUG_STACK_DEPTH=6` on the BASELINE artifacts, and the traced body is
+confirmed to be the fragment (observed opcode sequence at ips 0..5: **83, 147, 210, 1, 1, 138** =
+`OP_3 OP_ADD OP_OUTPUTTOKENCOMMITMENT push32 push7a OP_INVOKE`):
+
+    fragment entry, depth 92:
+      d=0  1 byte 0x3f = 63          <- THE BASE the fragment adds 3 to
+      d=1  28B EIP-191 prefix
+      d=2  1B 02
+      d=3  0
+      d=4  0
+      d=5  35B P2SH32 aa2037be..
+
+So the failing read is `outputs[63 + 3] = outputs[66]`, a bare OP_TRUE pad (measured earlier: no token, empty
+commitment) -> the `[32:64]` slice aborts. The intended coordinate is `outputs[0 + 3] = outputs[3]`, which IS
+materialised in the final transaction (64-byte commitment).
+
+### What is still open (and is now mechanisable)
+
+The base is pushed by `PICK 20` in the 5073-instruction body, and a trace of that pick showed depth 20 = **0**
+(the owner) in the evaluations it caught - i.e. the evaluations that fail with base 63 are NOT the ones that
+trace picked up, or the pick that feeds this invocation is not the one at instruction 462. `3b` is invoked from
+TWO route sites (route instructions 5571 and 5984) and both push the same hidden-context shape
+(`push 0x13 PICK`, `push 0x2a PICK`, then the id), so the difference must come from the route's own frame at each
+site. Next: add a VALUE gate to the same diagnostic (`SOLIDC_DEBUG_STACK_BODY_OPCODE_INDEX` compares an opcode,
+which is not enough for `push k; OP_PICK`) or dump the picked index and the resulting value at each fragment
+entry (the fragment's `d=0` above already gives the value), and trace the 5073 body over both call-site regions
+with the same run. The pair (pick index, fragment base) per invocation identifies the wrong pick immediately.
+
+### Also landed this round: the general `visitBranch` height invariant
+
+Both arms of a general control-flow branch must leave the compiler's tracked stack at the height it found
+(revert-ending arms exempt, since execution never reaches the merge on that path). The inline-assembly path
+already enforced the equivalent ('Divergent assembly conditional stack heights reached code generation'); the
+statement path did not. Validated: the `.marketplace` fixture compiles cleanly (22/22 sources, 19 artifacts, no
+violation) and the `packages/solidc` suite shows **no** `Unbalanced` violation anywhere - the two failing titles
+inspected ("removes an empty extension hook...", "retains an empty hook call...") are pre-existing (the suite has
+~223 pre-existing failures and the invariant can only fail a test by throwing its own message).

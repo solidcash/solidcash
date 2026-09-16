@@ -7552,12 +7552,32 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       let stackDepth = this.stack.length; // AFTER pre-allocation
       node.ifBlock = this.visit(node.ifBlock);
       this.removeScopedVariables(stackDepth, node.ifBlock);
+      // A branch must leave the tracked stack at the height it found it, or every later read is compiled
+      // against the wrong shape: the else arm below STARTS from this arm's model, and so does the code after
+      // OP_ENDIF, while at run time each path has its own height. An arm that cannot fall through (revert) is
+      // exempt because execution never reaches the merge on that path. The inline-assembly path already
+      // enforces the same invariant ('Divergent assembly conditional stack heights reached code generation');
+      // this is the general control-flow statement equivalent, and it is fail-closed: unbalanced arms are a
+      // miscompile, not a warning.
+      if (this.stack.length !== stackDepth && !this.blockEndsWithRevert(node.ifBlock)) {
+        throw new Error(
+          `Unbalanced if-block in '${this.currentFunction.name}': tracked stack height ${stackDepth} -> `
+          + `${this.stack.length} (a branch must leave the stack as it found it)`,
+        );
+      }
 
       if (node.elseBlock) {
         this.emit(Op.OP_ELSE, { location: node.elseBlock.location, positionHint: PositionHint.START });
         stackDepth = this.stack.length;
         node.elseBlock = this.visit(node.elseBlock);
         this.removeScopedVariables(stackDepth, node.elseBlock);
+        if (this.stack.length !== stackDepth && !this.blockEndsWithRevert(node.elseBlock)) {
+          const enclosingDepth = this.stack.length;
+          throw new Error(
+            `Unbalanced else-block in '${this.currentFunction.name}': tracked stack height ${stackDepth} -> `
+            + `${enclosingDepth} (a branch must leave the stack as it found it)`,
+          );
+        }
       }
 
       const endLocationData = {
@@ -11224,7 +11244,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // site to identify in a VM trace when that read lands on the wrong frame value. ROUND 146 measured that the
       // failing base is NOT produced by a pick right at the fragment's call site but by the helper chain that
       // precedes it, so mark this push as well as the reads.
-      this.emitComputeBaseSiteMarker(locationData);
+      const pushSite = this.debugComputeBase('compute-base-push', '(hidden compute base)', -1, 0);
+      this.emitComputeBaseSiteMarker(locationData, pushSite);
       this.emitComputeSidecarBlockBase(locationData);
       this.pushToStack(`(__outlined_compute_block_base_${targetFunc.functionId})`);
       hiddenContextCount += 1;
@@ -32221,18 +32242,28 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * there is exactly the frame the emitted `OP_PICK` will index into. Model-neutral: the pair pushes and drops
    * one value, and `this.stack` is left untouched. Never emitted unless SOLIDC_DEBUG_COMPUTE_BASE=1.
    */
-  private emitComputeBaseSiteMarker(locationData: SingleLocationData): void {
+  private emitComputeBaseSiteMarker(locationData: SingleLocationData, site: number): void {
     if (!DEBUG_COMPUTE_BASE) return;
     this.emit(Op.OP_DEPTH, locationData);
+    this.emit(encodeInt(BigInt(site)), locationData);
+    this.emit(Op.OP_DROP, locationData);
     this.emit(Op.OP_DROP, locationData);
   }
+
+  /**
+   * Ordinal of the next base-resolution site in the diagnostic stream. The marker above prints it, so a live
+   * `[vm-stack]` trace names the site it belongs to and can be matched to the `DBG-COMPUTE-BASE` record with the
+   * same `site` - the model (compiler) and the frame (VM) otherwise have no common identifier.
+   */
+  private computeBaseSiteOrdinal = 0;
 
   /**
    * Report how a participant/compute block base was resolved (see DEBUG_COMPUTE_BASE). The interesting datum is
    * which NEIGHBOUR of the resolved index holds a different frame authority: an off-by-one index reads it.
    */
-  private debugComputeBase(branch: string, name: string, index: number, extraStackOffset: number): void {
-    if (!DEBUG_COMPUTE_BASE) return;
+  private debugComputeBase(branch: string, name: string, index: number, extraStackOffset: number): number {
+    if (!DEBUG_COMPUTE_BASE) return -1;
+    const site = this.computeBaseSiteOrdinal++;
     const neighbours = new Map<string, number>();
     for (const candidate of [
       '__internal__proxyMasterIndex', '__internal__dynamicChunkInputBase', '__internal__messageBusOwnerInput',
@@ -32243,6 +32274,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (candidateIndex >= 0) neighbours.set(candidate, candidateIndex);
     }
     console.error('DBG-COMPUTE-BASE', JSON.stringify({
+      site,
       function: this.currentFunction.name,
       functionId: this.currentFunction.functionId,
       isDefineSubTraversal: this.isDefineSubTraversal,
@@ -32259,6 +32291,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       neighbours: [...neighbours.entries()],
       stackTop: this.stack.slice(0, 28),
     }));
+    return site;
   }
 
   private emitMasterInputIndex(locationData: SingleLocationData, extraStackOffset = 0): void {
@@ -32279,8 +32312,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // addressing form. See DBG-COMPUTE-BASE / SOLIDC_DEBUG_COMPUTE_BASE.
       const trackedOwnerIndex = this.getStackIndex('__internal__messageBusOwnerInput', true);
       if (trackedOwnerIndex >= 0) {
-        this.debugComputeBase('owner', '__internal__messageBusOwnerInput', trackedOwnerIndex, extraStackOffset);
-        this.emitComputeBaseSiteMarker(locationData);
+        const ownerSite = this.debugComputeBase(
+          'owner', '__internal__messageBusOwnerInput', trackedOwnerIndex, extraStackOffset,
+        );
+        this.emitComputeBaseSiteMarker(locationData, ownerSite);
         this.emit(encodeInt(BigInt(trackedOwnerIndex + extraStackOffset)), locationData);
         this.emit(Op.OP_PICK, locationData);
       } else if (this.isSubroutineUseProbe) {

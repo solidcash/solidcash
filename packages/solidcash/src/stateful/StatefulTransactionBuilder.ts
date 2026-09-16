@@ -12187,7 +12187,12 @@ export class StatefulTransactionBuilder {
     }
     if (unresolvedAIndices.size === 0) return false;
 
-    let learned: { callIndex: number; argBlob: Uint8Array } | undefined;
+    // Learn EVERY argument this trace exposes, not just the first: a pass that reads several A inputs otherwise
+    // advances by one call, and if a later probe dies earlier (the composition is rebuilt each round) the
+    // remaining calls never learn at all - the measured shape is `ecrecoverUnresolved 7/8` with every keccak
+    // resolved. Applying all matches in one pass converges in as many passes as the traces allow.
+    const learnedCandidates: Array<{ callIndex: number; argBlob: Uint8Array }> = [];
+    const seenCallIndices = new Set<number>();
     for (const raw of trace) {
       const state = raw as {
         ip?: number; stack?: Uint8Array[]; instructions?: Array<{ opcode?: number }>;
@@ -12200,10 +12205,11 @@ export class StatefulTransactionBuilder {
       const callIndex = unresolvedAIndices.get(inputIndex);
       const argBlob = state.stack[state.stack.length - 2];
       if (callIndex === undefined || argBlob.length !== 97) continue;
-      learned = { callIndex, argBlob: Uint8Array.from(argBlob) };
-      break;
+      if (seenCallIndices.has(callIndex)) continue;
+      seenCallIndices.add(callIndex);
+      learnedCandidates.push({ callIndex, argBlob: Uint8Array.from(argBlob) });
     }
-    if (!learned) {
+    if (learnedCandidates.length === 0) {
       if ((globalThis as { process?: { env?: Record<string, string> } }).process
         ?.env?.SOLIDC_DEBUG_ECRECOVER_DERIVE === '1') {
         console.error('deferred-ecrecover-no-argument', {
@@ -12227,42 +12233,45 @@ export class StatefulTransactionBuilder {
       return false;
     }
 
-    const { callIndex, argBlob } = learned;
-    const sidecarA = this.ecrecoverComputeCoSpendUtxos[2 * callIndex];
-    const sidecarB = this.ecrecoverComputeCoSpendUtxos[2 * callIndex + 1];
-    if (!sidecarA || !sidecarB) return false;
-    try {
-      const witness = computeEcrecoverWitness(
-        argBlob.slice(0, 32), argBlob[32], argBlob.slice(33, 65), argBlob.slice(65, 97),
-      );
-      const chunkA = probeEcrecoverSplit(witness, deferred.salt, sidecarA, sidecarB);
-      const rebuilt = buildEcrecoverComputeSidecars(witness, chunkA, deferred.salt, sidecarA, sidecarB);
-      this.ecrecoverComputeCoSpendUtxos[2 * callIndex] = { ...sidecarA, unlocker: rebuilt.unlockerA };
-      this.ecrecoverComputeCoSpendUtxos[2 * callIndex + 1] = { ...sidecarB, unlocker: rebuilt.unlockerB };
-      this.ecrecoverComputeRecreates[2 * callIndex] = rebuilt.recreateA;
-      this.ecrecoverComputeRecreates[2 * callIndex + 1] = rebuilt.recreateB;
-      deferred.argBlobs[callIndex] = argBlob;
-      const evmPreimageIndex = deferred.evmKeccakPreimageIndices[callIndex] ?? -1;
-      if (evmPreimageIndex >= 0) {
-        this.rebuildDeferredKeccakPreimage(evmPreimageIndex, witness.uncompressedPubkey);
+    let learnedAny = false;
+    for (const candidate of learnedCandidates) {
+      const { callIndex, argBlob } = candidate;
+      const sidecarA = this.ecrecoverComputeCoSpendUtxos[2 * callIndex];
+      const sidecarB = this.ecrecoverComputeCoSpendUtxos[2 * callIndex + 1];
+      if (!sidecarA || !sidecarB) continue;
+      try {
+        const witness = computeEcrecoverWitness(
+          argBlob.slice(0, 32), argBlob[32], argBlob.slice(33, 65), argBlob.slice(65, 97),
+        );
+        const chunkA = probeEcrecoverSplit(witness, deferred.salt, sidecarA, sidecarB);
+        const rebuilt = buildEcrecoverComputeSidecars(witness, chunkA, deferred.salt, sidecarA, sidecarB);
+        this.ecrecoverComputeCoSpendUtxos[2 * callIndex] = { ...sidecarA, unlocker: rebuilt.unlockerA };
+        this.ecrecoverComputeCoSpendUtxos[2 * callIndex + 1] = { ...sidecarB, unlocker: rebuilt.unlockerB };
+        this.ecrecoverComputeRecreates[2 * callIndex] = rebuilt.recreateA;
+        this.ecrecoverComputeRecreates[2 * callIndex + 1] = rebuilt.recreateB;
+        deferred.argBlobs[callIndex] = argBlob;
+        const evmPreimageIndex = deferred.evmKeccakPreimageIndices[callIndex] ?? -1;
+        if (evmPreimageIndex >= 0) {
+          this.rebuildDeferredKeccakPreimage(evmPreimageIndex, witness.uncompressedPubkey);
+        }
+        this._refreshInputs();
+        if ((globalThis as { process?: { env?: Record<string, string> } }).process
+          ?.env?.SOLIDC_DEBUG_ECRECOVER_DERIVE === '1') {
+          console.error('deferred-ecrecover-learned', {
+            callIndex, inputIndices: [...unresolvedAIndices.keys()], argument: binToHex(argBlob),
+          });
+        }
+        learnedAny = true;
+      } catch (error) {
+        if ((globalThis as { process?: { env?: Record<string, string> } }).process
+          ?.env?.SOLIDC_DEBUG_ECRECOVER_DERIVE === '1') {
+          console.error('deferred-ecrecover-invalid-argument', {
+            callIndex, argument: binToHex(argBlob), error: error instanceof Error ? error.message : String(error),
+          });
+        }
       }
-      this._refreshInputs();
-      if ((globalThis as { process?: { env?: Record<string, string> } }).process
-        ?.env?.SOLIDC_DEBUG_ECRECOVER_DERIVE === '1') {
-        console.error('deferred-ecrecover-learned', {
-          callIndex, inputIndices: [...unresolvedAIndices.keys()], argument: binToHex(argBlob),
-        });
-      }
-      return true;
-    } catch (error) {
-      if ((globalThis as { process?: { env?: Record<string, string> } }).process
-        ?.env?.SOLIDC_DEBUG_ECRECOVER_DERIVE === '1') {
-        console.error('deferred-ecrecover-invalid-argument', {
-          callIndex, argument: binToHex(argBlob), error: error instanceof Error ? error.message : String(error),
-        });
-      }
-      return false;
     }
+    return learnedAny;
   }
 
   hasUnresolvedDeferredEcrecoverArguments(): boolean {

@@ -1,6 +1,6 @@
 # Handoff — kernel-beta marketplace climb (after the event/continuation round)
 
-> **Latest state (ROUND 136: LADDER 43 pass / 23 fail (was 39/27) - the route-probe fixed-point fix turned FOUR titles green.** The sections below are a chronological log;
+> **Latest state (ROUND 137: deferred learning no longer stops at the first argument per pass (general improvement, no regression); the `dispute`/`arbitrate` family is the same deferred-compute wall: ladder stays 43 pass / 23 fail.** The sections below are a chronological log;
 > read ROUNDS 51-52 and 54 (the collection-key, rolled-array and dynamic-storage-read fixes: 32 -> 37),
 > ROUNDS 53-96 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
 > deferred-`takeJob` class and its three falsified hypotheses) at the end. Earlier "State" numbers in this header
@@ -5452,3 +5452,28 @@ Error signatures already known for some of them:
     to be reverted, but it reverted".
   - `take job` / `take job multiple`: the deferred-compute stall documented in ROUNDS 96-129 (unchanged by this
     fix; its blocks are the band/witness questions, none of which are the fixed point).
+
+### ROUND 137: deferred argument learning was serialized; the dispute/arbitrate family is the same wall
+
+Surveyed the two biggest remaining clusters. Both fail with "Expected transaction NOT to be reverted, but it
+reverted", and the single-title diagnostic run shows why:
+
+    -t 'dispute'    : 4 failed | 1 passed  (sanity checks closed job PASSES)
+    -t 'arbitrate'  : 4 failed
+    -t 'sanity checks no arbitrator' with ENTRY_COUNTS=1:
+        deferred-no-progress-reads build 40: OP_VERIFY at ip 515,
+        deferredRemaining {keccakUnresolved 0/2, ecrecoverUnresolved 7/8}
+
+i.e. the dispute/arbitrate family is blocked by the SAME deferred-compute wall as `take job` (ROUNDS 96-129), and it
+is one argument short: every keccak resolved and one of eight ecrecover blobs learned.
+
+Landed (general, no regression): `resolveDeferredEcrecoverArgument` learned only the FIRST readable argument per
+pass and returned, so a composition that exposes several A inputs advanced by one call per pass - and when a later
+probe dies earlier (each round rebuilds the composition) the remaining calls never learn. It now collects every
+matching `OP_INPUTBYTECODE` read in the pass and applies them all, skipping candidates whose side-cars are missing
+instead of aborting the whole loop.
+
+Measured: `-t 'dispute'` unchanged (4 failed | 1 passed) - the traces evidently expose one argument per pass for
+these builds - and `-t 'close job'` still 2 passed | 64 skipped, so the change is a safe generalisation rather than
+this window's fix. The remaining wall is the probe dying before the recovery read, which is where the earlier
+band/witness work also landed.

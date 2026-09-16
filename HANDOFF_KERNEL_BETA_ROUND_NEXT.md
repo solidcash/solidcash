@@ -1,8 +1,8 @@
 # Handoff — kernel-beta marketplace climb (after the event/continuation round)
 
-> **Latest state (ROUND 68, digest counter trace + falsified tail theory): 39 pass / 27 fail; tree at `1cad61090`.** The sections below are a chronological log;
+> **Latest state (ROUND 69, logical-transaction send memo): 39 pass / 27 fail; tree at `75e07532b`.** The sections below are a chronological log;
 > read ROUNDS 51-52 and 54 (the collection-key, rolled-array and dynamic-storage-read fixes: 32 -> 37),
-> ROUNDS 53-68 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
+> ROUNDS 53-69 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
 > deferred-`takeJob` class and its three falsified hypotheses) at the end. Earlier "State" numbers in this header
 > are historical.
 
@@ -3270,6 +3270,31 @@ in particular whether the failing pass's verifier commitments are placeholders (
 `admit()` guard, 'mutable resources changed after semantic-manifest convergence', is the same family), and use
 `SOLIDC_DEBUG_GRAPH_RESULTS=1`/`SOLIDC_DEBUG_ATOMIC_GRAPH=1` to compare `graph.callManifest.rows` of a passing vs
 failing assembly.
+
+### ROUND 69: one call object is one logical transaction (nonce-stall class fixed)
+
+**Landed fix** (`StatefulContract.StatefulFunctionCall.send`): the call object memoizes its in-flight logical
+transaction, so a second send started while the first is still in flight observes that transaction instead of
+reserving a second logical nonce. A settled send is not cached (a new transaction still needs a new call object).
+This is a general SDK invariant - one call object IS one transaction - with no application-specific behaviour; it
+matters to every contract whose calls are evaluated more than once by a caller or an assertion helper.
+
+Diagnosis (probe logging `reserve`/`commit`/`release` with call stacks in `Signer`):
+
+    nonce-reserve 2  HDSigner.reserveTransactionNonce<StatefulFunctionCall.send<Assertion.revertedWith<...
+    nonce-conflict 2 HDSigner.reserveTransactionNonce<StatefulFunctionCall.send<Assertion.revertedWith<Promise.p.withArgs<...
+
+`packages/testing/src/chai.ts`'s `revertedWith` fast path calls `this.actual.send()`, and
+`revertedWithCustomError(...).withArgs(...)` re-runs `revertedWith` on the *same* actual, so the same call object
+was sent twice concurrently: the first reservation was still in flight (never committed or released, because both
+sends raced) and the second tripped `Signer`'s "nonce is already reserved" guard. Repro: `-t 'take job'` in
+isolation failed in 218 ms before any transaction was attempted; nonce 17 in the full ladder.
+
+Effect (ladder 39 pass / 27 fail, **no lost titles**, so this is a prerequisite rather than a flip): both
+`take job` titles now perform their transaction - `take job > take job` fails with the deferred-compute error
+(the 16-title class ROUNDS 62-68 are working on) and `take job multiple` with a harness event-assertion
+`TypeError: Cannot read properties of undefined (reading 'to')` at `marketplace.test.ts:2038`. SDK unit gate
+unchanged (4 pre-existing failures / 723 passed); handoff audit clean.
 
 ### How to localize it next
 

@@ -36618,7 +36618,31 @@ export class StatefulFunctionCall {
     return builder;
   }
 
+  /** In-flight logical transaction of this call object. See {@link send}. */
+  private inFlightSend?: Promise<TransactionDetails>;
+
+  /**
+   * Send this call object's single logical transaction.
+   *
+   * One call object IS one transaction, so a second send started while the first is still in flight must observe
+   * that transaction instead of reserving a second logical nonce. Assertion harnesses drive the same call object
+   * more than once (for example `revertedWithCustomError(contract, name).withArgs(...)` evaluates its actual
+   * again), and without this the second send trips the signer's "nonce is already reserved" guard even though only
+   * one transaction was ever intended. A settled send is not cached: building another transaction requires a new
+   * call object.
+   */
   async send(): Promise<TransactionDetails> {
+    if (this.inFlightSend) return this.inFlightSend;
+    const inFlight = this._sendLogicalTransaction();
+    this.inFlightSend = inFlight;
+    try {
+      return await inFlight;
+    } finally {
+      if (this.inFlightSend === inFlight) this.inFlightSend = undefined;
+    }
+  }
+
+  private async _sendLogicalTransaction(): Promise<TransactionDetails> {
     const reservation = this.consumesLogicalNonce
       ? this.parentContract?._logicalNonceSigner?.reserveTransactionNonce() : undefined;
     try {

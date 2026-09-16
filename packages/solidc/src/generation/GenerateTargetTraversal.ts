@@ -291,6 +291,17 @@ const INVALID_FUNCTION_POINTER_ID = 0x7fffffffn;
 const DEBUG_COMPUTE_BASE = (globalThis as { process?: { env?: Record<string, string> } })
   .process?.env?.SOLIDC_DEBUG_COMPUTE_BASE === '1';
 
+/**
+ * Emit the stack-neutral `OP_DEPTH OP_DROP` site marker. Kept SEPARATE from the record dump on purpose:
+ * the marker changes the emitted instruction stream, and a changed stream can change the outliner's decisions -
+ * MEASURED: with markers on, the marketplace body that invokes the outlined keccak fragment no longer invokes it
+ * at all, so a marker build must never be compared with a shipped build. The record dump alone is
+ * codegen-neutral, so `SOLIDC_DEBUG_COMPUTE_BASE=1` without this flag describes the program that ships and the
+ * site ordinals in the records stay in emission order.
+ */
+const DEBUG_COMPUTE_BASE_MARKERS = (globalThis as { process?: { env?: Record<string, string> } })
+  .process?.env?.SOLIDC_DEBUG_COMPUTE_BASE_MARKERS === '1';
+
 // X29. Hidden context an message-bus batch route pushes at every call site of an effect-carrying graph emission handler:
 // the dispatch-site ordinal that selects the handler's owner-local event/transfer frame in the route's block.
 const GRAPH_EFFECT_SITE = '__internal__handlerEffectSite';
@@ -32243,7 +32254,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * one value, and `this.stack` is left untouched. Never emitted unless SOLIDC_DEBUG_COMPUTE_BASE=1.
    */
   private emitComputeBaseSiteMarker(locationData: SingleLocationData, site: number): void {
-    if (!DEBUG_COMPUTE_BASE) return;
+    if (!DEBUG_COMPUTE_BASE_MARKERS) return;
     this.emit(Op.OP_DEPTH, locationData);
     this.emit(encodeInt(BigInt(site)), locationData);
     this.emit(Op.OP_DROP, locationData);

@@ -1,6 +1,8 @@
 # Handoff — kernel-beta marketplace climb (after the event/continuation round)
 
-> **Latest state (ROUND 152: the outlined fragment's coordinate is MEASURED as 66 (`d=0 = 0x42` at its OUTPUTTOKENCOMMITMENT, with the fragment pinned uniquely by the `push 0x7a` at its instruction 4), so the base it adds 3 to really is 63 rather than the participant base 0, and `outputs[66]` is a bare pad (empty commitment) while `outputs[3]` holds the 64-byte keccak commitment. Corrected reading: `OP_PICK k` copies snapshot depth `k+1`, which makes the pick trace consistent with this. Eliminated by measurement this round: the SDK probe rebase is 0 in all 28 records, the route argument vector is name-keyed end to end, the compiler's clone binding is consistent, and the branch-height invariant is clean. One question remains: which model entry the emitted PICK index addresses at that site.** See "ROUND 152" at the end.
+> **Latest state (ROUND 153: the wrong-coordinate read also blocks the `dispute` family (2 titles, same `OP_SPLIT ... split index 32` at input 127), so it is not a take-job-only defect. Landed: `SOLIDC_DEBUG_COMPUTE_BASE=1` is now codegen-neutral (markers need `SOLIDC_DEBUG_COMPUTE_BASE_MARKERS=1`), because a marker build changes the outliner's decisions and must never be compared with a shipped build. The base question is narrowed to one undecidable-by-values step: the emitted `PICK 20` reads the zero-length item at snapshot depth 21 (= 63) while the model calls index 20 the owner, and the frame's zero-length items are indistinguishable, so the next step needs a runtime oracle for that one slot (sentinel or `OP_DEPTH` probe at that site), not more stack dumps.** See "ROUND 153" at the end.
+>
+> Superseded (ROUND 152: the outlined fragment's coordinate is MEASURED as 66 (`d=0 = 0x42` at its OUTPUTTOKENCOMMITMENT, with the fragment pinned uniquely by the `push 0x7a` at its instruction 4), so the base it adds 3 to really is 63 rather than the participant base 0, and `outputs[66]` is a bare pad (empty commitment) while `outputs[3]` holds the 64-byte keccak commitment. Corrected reading: `OP_PICK k` copies snapshot depth `k+1`, which makes the pick trace consistent with this. Eliminated by measurement this round: the SDK probe rebase is 0 in all 28 records, the route argument vector is name-keyed end to end, the compiler's clone binding is consistent, and the branch-height invariant is clean. One question remains: which model entry the emitted PICK index addresses at that site.** See "ROUND 152" at the end.
 >
 > Superseded (ROUND 151: the argument-binding hypothesis is FALSIFIED - `SOLIDC_DEBUG_ARG_ORDER=1` now dumps both the generated argument vector and each clone's own parameter list, and across 388 matched calls they line up index for index (the only difference is the intended `owner param <- __internal__proxyMasterIndex` argument). The frame-trace tooling is also NOT trustworthy for this read: two signature-gated traces of the same failing chain contradict each other inside one evaluation, because `length + one opcode` is not a unique body signature (my redeem scan covered 556 of ~570 DEFINEs). Next suspects are the SDK-side VALUES (`__internal__proxyMasterIndex` vs `__internal__dynamicChunkInputBase`) rather than the compiler's binding.** See "ROUND 151" at the end.
 >
@@ -6376,3 +6378,45 @@ question: at the site that pushes the fragment's base, which MODEL entry does th
 (`DBG-COMPUTE-BASE` prints `resolvedName` and `above` for exactly that purpose, and the site can now be selected
 by its emitted index AND its position in the emission order). Answer that, and the fix is one line in
 `emitComputeSidecarBlockBase`/`emitMasterInputIndex`.
+
+## ROUND 153: the dispute family shares this signature, and the markers are now separable from the dump
+
+### The take-job defect is NOT isolated to take job (measured)
+
+    -t 'dispute'  ->  sanity checks no arbitrator     FAIL
+                      sanity checks with arbitrator   FAIL
+                      sanity checks closed job        PASS
+
+and both failures report the SAME signature at the same input:
+
+    L3_VM_RESOURCE_LIMIT: BCH-2026 preflight failed at input 127:
+    Program called an OP_SPLIT operation with an invalid index. stack item length: 0; requested split index: 32
+
+So the wrong-coordinate read blocks a second family, which raises the value of fixing it (and means the
+"attack a different family" idea does not dodge it - `deliver result` / `post thread message` signatures are
+still unmeasured).
+
+### Landed: the record dump no longer forces the markers
+
+`SOLIDC_DEBUG_COMPUTE_BASE=1` (records only) is now codegen-NEUTRAL; the `OP_DEPTH <site> OP_DROP OP_DROP` marker
+needs its own `SOLIDC_DEBUG_COMPUTE_BASE_MARKERS=1`. Reason, measured in ROUND 147/152: with markers on, the
+marketplace body that invokes the outlined keccak fragment no longer invokes it at all (the outliner's decisions
+change), so a marker build must never be compared with a shipped build. With the split, `SOLIDC_DEBUG_COMPUTE_BASE=1`
+alone yields 18018 records whose `site` ordinals are in emission order for the program that SHIPS.
+
+### Where the base question stands (documented so it is not re-derived)
+
+The emitted instruction is `push 0x14; OP_PICK` (body `__message_bus_entry_takeJob`, instructions 461-462) and the
+compiler's own record for that site is an OWNER-branch record (`branch: owner`, `index: 20`,
+`resolvedName: __internal__messageBusOwnerInput`, and the handler body has NO `captured` records at all - 2392
+records, all `owner`), so the index is `stack.indexOf('__internal__messageBusOwnerInput')` at that point.
+`OP_PICK k` pops the index and then copies depth `k` of the REMAINING stack, so the item it reads is at
+`k + 1` in a `beforeOperation` snapshot: with the failing snapshot showing `d=20: 0` and `d=21: 63`, it reads 63.
+The model's neighbourhood at that site (model 17/18 `ek_kw0/1`, 19 `logical_caller`, 20 `OWNER`, 21
+`dynamicChunkInputBase`, 22 `outlinedRecoveryAIndex`) aligns name-for-name with the snapshot from `d=17` down
+(0x01/signature/0/P2PKH/P2PKH/0/63/4), which is exactly why the last step is undecidable from values alone: the
+owner value 0 and several other frame values are all zero-length items. **Deciding it needs a runtime oracle for
+one frame slot, not more stack dumps**: e.g. temporarily emit, at that site only, `OP_DEPTH` plus the model index
+and compare, or have the SDK fill the owner slot with a sentinel value in a debug build and see which output
+coordinate the fragment then addresses. Everything else on this path has been eliminated by measurement
+(ROUNDS 149-152).

@@ -36731,6 +36731,12 @@ export class StatefulFunctionCall {
                 error: terminal?.error,
                 failingIp: terminal?.ip,
                 failingOpcode: terminal?.instructions?.[terminal.ip ?? -1]?.opcode,
+                // The terminal state's instruction list is the ENCLOSING script's, so print the window around the
+                // pointer rather than one index: the reported failing opcode (OP_VERIFY) and the neighbouring
+                // opcodes together identify the check without needing the artifact's ip-to-source map.
+                failingWindow: (terminal?.instructions ?? [])
+                  .slice(Math.max(0, (terminal?.ip ?? 0) - 4), (terminal?.ip ?? 0) + 3)
+                  .map((instruction) => ({ op: instruction?.opcode })),
                 trailing: commitmentReads.slice(-12),
               }));
             }

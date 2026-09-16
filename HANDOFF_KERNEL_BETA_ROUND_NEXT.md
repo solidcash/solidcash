@@ -1,6 +1,6 @@
 # Handoff — kernel-beta marketplace climb (after the event/continuation round)
 
-> **Latest state (ROUND 103, the aborting read is in the aggregate TAIL, outside every participant block): 39 pass / 27 fail.** The sections below are a chronological log;
+> **Latest state (ROUND 104, the failing check is a NEGATED EQUALITY after the tail commitment read): 39 pass / 27 fail.** The sections below are a chronological log;
 > read ROUNDS 51-52 and 54 (the collection-key, rolled-array and dynamic-storage-read fixes: 32 -> 37),
 > ROUNDS 53-96 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
 > deferred-`takeJob` class and its three falsified hypotheses) at the end. Earlier "State" numbers in this header
@@ -4343,6 +4343,38 @@ resource) at a COLLECTION address and then parses its 38-byte commitment with th
 
 Next concrete step: print, for the aborting tail index, the mirrored input's outpoint (txid:vout) and the
 collection the scan is verifying (the verifier's `nNew`/address derivation), then decide (a) vs (b).
+
+Focused state: `-t 'take job'` = 2 failed | 1 passed (green `sanity checks`), `yarn build` green, no full-ladder
+run (no title turned green).
+
+### ROUND 104: the failing instruction is `OP_EQUAL OP_NOT OP_VERIFY` (a require-not-equal)
+
+`deferred-no-progress-reads` now prints `failingWindow` - the opcodes around the terminal instruction pointer - so
+the check can be identified without the artifact's ip-to-source map. Decoded (BCH-2026 opcode numbers):
+
+    build 67  ip 183 : [117 DROP, 135 EQUAL, 145 NOT, 105 VERIFY, 96 OP_16, 121 PICK, 1]
+    build 74  ip 244 : [138 INVOKE, 135 EQUAL, 145 NOT, 105 VERIFY, 84, 1, 138 INVOKE]
+    build 40  ip 424 : [92, 121 PICK, 104 ENDIF, 105 VERIFY, 2, 138 INVOKE, 95]
+
+so in every case the program dies on `require(a != b)` - a NEGATED equality - immediately after the
+`out-commitment` read of the tail resource (index 216 for 67/74, 463 for 40; category a3cef944, 38 bytes,
+input and output identical). The two candidate semantics:
+  (a) the sorted read's ABSENCE proof: `require(slot32 != H(k))` while the parsed word equals H(k);
+  (b) a "must not be empty/zero" guard on a parsed word, tripped by the placeholder body (my probe fill uses 64
+      zero bytes only when BOTH sides are empty, so this cannot explain the 216/463 cases, whose bodies mirror a
+      real 38-byte UTXO commitment).
+
+Note the 38-byte body cannot be parsed by `commitmentField(...,'next')` at all (`SPLIT 32; NIP; SPLIT 32` on a
+6-byte remainder is an invalid-index abort, not a VERIFY), so the failing parse is a DIFFERENT field extraction -
+one that yields a word equal to the value it must differ from.
+
+Round 101's format observation stands and now looks decisive: the SDK's continuation chunk is
+`uint16-le index || raw chunk data` (`buildValueChunkCommitment`, 2 + 36 = 38 bytes - exactly the observed
+length), while the compiler's sorted-value chunk pin documents `slot(32) || digest(32) || pushdata(i) ||
+pushdata(v)` (>= 66 bytes) at the collection's value-chunk P2SH32. Next: check whether the tail resource at the
+aborting index lives at a VALUE-CHUNK address (`valueChunkSignature(collection)` / `getEntryNftAddress` with the
+chunk domain) - if yes, the SDK publishes the vmap continuation format where the covenant expects the pinned
+value-chunk format, which is a concrete SDK/compiler format mismatch to fix.
 
 Focused state: `-t 'take job'` = 2 failed | 1 passed (green `sanity checks`), `yarn build` green, no full-ladder
 run (no title turned green).

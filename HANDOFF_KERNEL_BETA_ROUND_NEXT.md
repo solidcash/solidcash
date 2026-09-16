@@ -1,8 +1,8 @@
 # Handoff — kernel-beta marketplace climb (after the event/continuation round)
 
-> **Latest state (ROUND 92, frame pairing corrected): 39 pass / 27 fail; tree at `70851325b`.** The sections below are a chronological log;
+> **Latest state (ROUND 93, bodies grouped by identity): 39 pass / 27 fail; tree at `f23562ad0`.** The sections below are a chronological log;
 > read ROUNDS 51-52 and 54 (the collection-key, rolled-array and dynamic-storage-read fixes: 32 -> 37),
-> ROUNDS 53-92 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
+> ROUNDS 53-93 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
 > deferred-`takeJob` class and its three falsified hypotheses) at the end. Earlier "State" numbers in this header
 > are historical.
 
@@ -3946,6 +3946,31 @@ grouped by their `instructions` list identity rather than by size or first ip.
 Next round: group the failing trace's states by their `instructions` array identity (or by length + first six
 opcodes) and report, per body, the first and last ip reached - that identifies the body that actually fails and its
 parent without assuming frames of equal size are the same body.
+
+### ROUND 93: bodies grouped by identity; the failing body runs exactly one state
+
+Grouped the failing trace's states by their `instructions` fingerprint (first six opcodes) for a correlated build:
+
+    order 2  443 states  ips 3..281   '195,82,148,202,0,121'      <- the executing route/handler body
+    order 0    2 states  ips 13..14   '121,118,206,1,127,124'
+    order 3    1 state   ip 16        '127,119,1,126,129,118'
+    order 4    1 state   ip 437       '2,138,1,121,79,138'
+    order 5    1 state   ip 2         '83,147,210,1,1,138'        <- OP_3 ADD OUTPUTTOKENCOMMITMENT ... OP_INVOKE
+    order 7    1 state   ip 1         '127,119,1,127,117'         <- FAILING body, entered and failed at ip 1
+
+Two durable facts: the failing body runs exactly **one** state (so it is entered with a bad operand and dies on its
+second instruction), and the body immediately before it in execution order is the 7-instruction
+`OP_3 OP_ADD OP_OUTPUTTOKENCOMMITMENT <push> <push> OP_INVOKE`.
+
+That last fact contradicts the ROUND 92 lookup again: the pushes before that `OP_INVOKE` are `0x20` and `0x7a`, so
+the popped id should be 122 (`ce01207f7c755288` = 8 instructions), yet the body that actually executes has the
+5-instruction fingerprint `127,119,1,127,117`. Either the id is not what names the body, or the trace's state order
+does not reflect the invoke directly.
+
+Next round: dump the parent state *immediately* before the failing body's single state, in full - its ip, its
+complete stack (so the popped id is visible) and the two states after it - and reconcile the id-to-body mapping
+against `invokeDebug` (matching the fingerprint to `bytecode` rather than trusting the id). That pins the invoking
+site, which is the last missing link before the operand can be named.
 
 ### How to localize it next
 

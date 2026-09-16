@@ -36715,6 +36715,30 @@ export class StatefulFunctionCall {
                     stackDepth: state.stack?.length,
                   });
                 }
+                const bodies = new Map<string, { states: number; minIp: number; maxIp: number; order: number }>();
+                let order = 0;
+                let failing = '';
+                const terminalInstructions = (terminal as { instructions?: Array<{ opcode: number }> } | undefined)
+                  ?.instructions;
+                for (const raw of trace) {
+                  const state = raw as { ip?: number; instructions?: Array<{ opcode: number }> };
+                  if (!state.instructions) continue;
+                  const key = state.instructions.slice(0, 6).map((instruction) => instruction.opcode).join(',');
+                  const entry = bodies.get(key);
+                  if (!entry) {
+                    bodies.set(key, { states: 1, minIp: state.ip ?? -1, maxIp: state.ip ?? -1, order: order++ });
+                  } else {
+                    entry.states += 1;
+                    entry.minIp = Math.min(entry.minIp, state.ip ?? -1);
+                    entry.maxIp = Math.max(entry.maxIp, state.ip ?? -1);
+                  }
+                  if (terminalInstructions && state.instructions === terminalInstructions) failing = key;
+                }
+                console.error('no-progress-bodies', JSON.stringify({
+                  buildId: builderBuildSequence,
+                  failing,
+                  bodies: [...bodies.entries()].map(([key, entry]) => ({ key, ...entry })),
+                }));
                 console.error('no-progress-frame-entries', JSON.stringify({
                   buildId: builderBuildSequence,
                   entries: frameEntries.slice(-10),

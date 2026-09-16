@@ -1,6 +1,6 @@
 # Handoff — kernel-beta marketplace climb (after the event/continuation round)
 
-> **Latest state (ROUND 121: route ABI arguments are NOT the empty operands - only one graph field is empty in one build): 39 pass / 27 fail.** The sections below are a chronological log;
+> **Latest state (ROUND 122: failing operands self-described - the empties are computed values and one compared LOCK is `nowhere`): 39 pass / 27 fail.** The sections below are a chronological log;
 > read ROUNDS 51-52 and 54 (the collection-key, rolled-array and dynamic-storage-read fixes: 32 -> 37),
 > ROUNDS 53-96 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
 > deferred-`takeJob` class and its three falsified hypotheses) at the end. Earlier "State" numbers in this header
@@ -4915,6 +4915,34 @@ Next: list the values the covenant actually picks for those witness families in 
 decisive measurement is to make `failingStack` self-describing: record, for each of the top stack items, whether
 an IDENTICAL byte string appears as a route argument, as a graph argument (`verifier-arguments`), or nowhere -
 items that appear nowhere are witness lookups, and their emptiness is then the thing to fill.
+
+Focused state: `-t 'take job'` = 2 failed | 1 passed (green `sanity checks`), `yarn build` green, no full-ladder
+run (no title turned green).
+
+### ROUND 122: the compared values are now self-described (`known` / `nowhere` / `empty`)
+
+`failingStack` entries now carry an `origin`: `known` when the byte string appears among the values the program
+actually carries (any input's unlocking-bytecode pushdatas, and every source/output locking bytecode, token
+category and commitment), `nowhere` when it does not, `empty` for zero-length items. Measured:
+
+    build 40 : 35:aa20ac44e8d6 known | 35:aa20e61fa6c6 known | 35:aa2037bea4b7 known | 0: empty | 0: empty | 1:02 known
+    build 67 : 0: empty | 35:aa20ac44e8d6 known | 35:aa20e61fa6c6 NOWHERE | 35:aa2037bea4b7 known | 0: empty | 0: empty
+
+So the operands split cleanly into (a) locking bytecodes the program really carries - including the participant's
+own data-NFT lock `aa20ac44e8d6` and another contract's `aa2037bea4b7` - (b) two EMPTY items, which are the values
+the covenant computed for that comparison, and (c) in build 67 one compared lock (`aa20e61fa6c6...`) that appears
+NOWHERE in the program, i.e. the covenant computed an address for a resource the SDK never published.
+
+That last one is the concrete, actionable shape: the covenant expects an OUTPUT at a computed collection/chunk
+address for the current value, and the SDK published nothing there - consistent with ROUNDS 114/115 (no
+chunkable-writer candidates in the composed path, so the band is never planned) and with ROUND 116 (a placeholder
+stops the parse abort but cannot satisfy the identity comparison).
+
+Next: identify that computed address - it is the lock the covenant compares against, so it is derived from
+(category, collection, slot, root) with the CURRENT row values. Reproducing it off-chain (the same
+`computeValueChunkDomain`/`getValueChunkLockingBytecode` recipe, with the slot and root the row's value yields)
+tells exactly which chunk output the SDK must publish, and the `verifier-arguments`/`routeArguments` records now
+give the row's inputs.
 
 Focused state: `-t 'take job'` = 2 failed | 1 passed (green `sanity checks`), `yarn build` green, no full-ladder
 run (no title turned green).

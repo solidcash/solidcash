@@ -36912,9 +36912,43 @@ export class StatefulFunctionCall {
                     declaredNames: declared.map((input) => input.name ?? '?').slice(0, items.length + 4),
                   };
                 })(),
-                failingStack: ((terminal as { stack?: Uint8Array[] } | undefined)?.stack ?? [])
-                  .slice(-8)
-                  .map((item) => `${item.length}:${binToHex(item).slice(0, 64)}`),
+                failingStack: (() => {
+                  // Self-describing operands: which of the values the failing check compared are values the
+                  // program actually received (a witness item, a lock, a commitment) and which are produced by the
+                  // covenant itself. An operand that matches nothing the program carries is a witness lookup the
+                  // probe left unset - the concrete thing to fill.
+                  const known = new Set<string>();
+                  const note = (bytes: Uint8Array | undefined): void => {
+                    if (bytes && bytes.length > 0) known.add(binToHex(bytes));
+                  };
+                  for (const input of program.transaction.inputs) {
+                    const unlocking = input.unlockingBytecode;
+                    for (let cursor = 0; cursor < unlocking.length;) {
+                      const opcode = unlocking[cursor];
+                      if (opcode >= 1 && opcode <= 75) {
+                        note(unlocking.slice(cursor + 1, cursor + 1 + opcode)); cursor += 1 + opcode;
+                      } else if (opcode === 0x4c && cursor + 1 < unlocking.length) {
+                        const size = unlocking[cursor + 1];
+                        note(unlocking.slice(cursor + 2, cursor + 2 + size)); cursor += 2 + size;
+                      } else cursor += 1;
+                    }
+                  }
+                  for (const item of [...program.sourceOutputs, ...program.transaction.outputs]) {
+                    const candidate = item as {
+                      lockingBytecode?: Uint8Array;
+                      token?: { category?: Uint8Array; nft?: { commitment?: Uint8Array } };
+                    };
+                    note(candidate.lockingBytecode);
+                    note(candidate.token?.category);
+                    note(candidate.token?.nft?.commitment);
+                  }
+                  const stack = (terminal as { stack?: Uint8Array[] } | undefined)?.stack ?? [];
+                  return stack.slice(-8).map((item) => ({
+                    length: item.length,
+                    hex: binToHex(item).slice(0, 48),
+                    origin: item.length === 0 ? 'empty' : (known.has(binToHex(item)) ? 'known' : 'nowhere'),
+                  }));
+                })(),
                 failingWindow: (terminal?.instructions ?? [])
                   .slice(Math.max(0, (terminal?.ip ?? 0) - 9), (terminal?.ip ?? 0) + 4)
                   .map((instruction) => ({ op: instruction?.opcode })),

@@ -13149,13 +13149,30 @@ export class StatefulTransactionBuilder {
    */
   getTrailingBandCoordinatesForDiagnostics(): {
     blockSize?: number; trailingBase?: number; chunkBase?: number; eventBase?: number;
+    events: number; transfers: number; loopEntries: number; runtimeEvents: number;
+    eventSlots: number[]; band?: { start: number; end: number; nNew: number };
   } {
+    const eventIndex = (offset: number): number => {
+      try {
+        return this.getRuntimeLoopEventOutputIndex(offset);
+      } catch {
+        return -1;
+      }
+    };
+    const band = this.getChunkableValueWriteBand();
     return {
       ...(this.blockLayout?.blockSize !== undefined ? { blockSize: this.blockLayout.blockSize } : {}),
       ...(this.blockLayout?.trailingBase !== undefined
         ? { trailingBase: this.blockLayout.trailingBase } : {}),
       chunkBase: this.getChunkOutputBase(),
       eventBase: this.getEventOutputBase(),
+      // Every family that claims a coordinate inside the trailing run, so the overlap can be laid out directly.
+      events: this.runtimeLoopEventOutputs.length,
+      transfers: this.runtimeLoopTransferOutputs.length,
+      loopEntries: this._trailingLoopEntryOutputCount(),
+      runtimeEvents: this.runtimeLoopTrailingSegments.length,
+      eventSlots: this.runtimeLoopEventOutputs.map((_event, index) => eventIndex(index)),
+      ...(band ? { band: { start: band.start, end: band.end, nNew: band.nNew } } : {}),
     };
   }
 

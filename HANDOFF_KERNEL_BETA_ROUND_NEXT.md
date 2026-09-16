@@ -1,6 +1,6 @@
 # Handoff — kernel-beta marketplace climb (after the event/continuation round)
 
-> **Latest state (ROUND 113: measured band coordinates - trailingBase == chunkBase == 63, blockSize 127; the event records and the chunk band COLLIDE): 39 pass / 27 fail.** The sections below are a chronological log;
+> **Latest state (ROUND 114: NO compiler emitter produces `valueChunkWrites`, so the SDK never plans the chunk band - the OP_SPLIT class is a deadlock, not a collision): 39 pass / 27 fail.** The sections below are a chronological log;
 > read ROUNDS 51-52 and 54 (the collection-key, rolled-array and dynamic-storage-read fixes: 32 -> 37),
 > ROUNDS 53-96 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
 > deferred-`takeJob` class and its three falsified hypotheses) at the end. Earlier "State" numbers in this header
@@ -4669,6 +4669,48 @@ Next measurement to pick between them: print, for the same build, `runtimeLoopEv
 `runtimeLoopTransferOutputs.length`, `_trailingLoopEntryOutputCount()` and the value-chunk band width
 (`getChunkableValueWriteBand()`) so the claimed slots can be laid out side by side and the overlap proven
 numerically.
+
+Focused state: `-t 'take job'` = 2 failed | 1 passed (green `sanity checks`), `yarn build` green, no full-ladder
+run (no title turned green).
+
+### ROUND 114: the chunk band is never PLANNED - `valueChunkWrites` has no producer in the compiler
+
+`trailing-band-coordinates` now also prints every family that claims a coordinate inside the trailing run plus the
+planned band. Measured for the route participant (all ten stalled builds):
+
+    {"blockSize":127, "trailingBase":63, "chunkBase":63, "eventBase":22,
+     "events":0, "transfers":0, "loopEntries":0, "runtimeEvents":0, "eventSlots":[]}     (no "band" key at all)
+
+so ROUND 113's collision reading is FALSIFIED: NOTHING else claims the trailing run for this participant, and
+`getChunkableValueWriteBand()` returns UNDEFINED - the value-chunk band is simply never planned.
+
+Why: the SDK's descriptor-driven plan (`ValueChunkWriteDescriptor`, `describeValueChunkWrites`,
+`_chunkableValueWriteGroups`) reads artifact metadata named `valueChunkWrites`, and
+
+    grep -rn "valueChunkWrites" packages/solidc/src   ->  NO MATCHES
+    grep -l "valueChunkWrites" *.artifact.ts          ->  NO FILES
+
+i.e. the compiler never emits that field, for any contract, so the SDK's descriptor-driven chunk planning is dead
+code in practice. Chunks can only ever be staged by the TRACE-LEARNING path (nothing appears in the
+`composedTrailing`), and that path needs a probe run to reach the chunk pin - which is exactly what the empty pad
+at `chunkBase + 3` (66) prevents: the covenant's positional chunk read aborts on the unpublised slot before any
+trace can expose the chunk commitment. The class is a DEADLOCK:
+
+    covenant needs published chunks to run -> SDK publishes chunks only from a trace -> the trace aborts on the
+    missing chunk.
+
+Fix options (general, both need the compiler's own metadata to be the authority):
+  (a) compiler: emit `valueChunkWrites` descriptors for every handler that writes a chunkable value (collection,
+      key slot, entry access slot, route slot, operation, outputBase, outputCount) so the SDK materialises the
+      band before the first probe; or
+  (b) SDK: synthesise the descriptor locally from metadata the artifact DOES publish (the collection's
+      `chunkableValue` / `sorted` flags, the entry slot and the key slot), keeping the descriptor path as the
+      authority when it exists.
+
+Next: determine which metadata the artifact already carries for the failing row (`stateLayout.collections[].
+chunkableValue`, the entry-slot index and the key slot are all present in the dumps so far) and either emit the
+descriptor in the compiler or synthesise it in the SDK - then verify with the focused window and a full ladder run
+if a title turns green.
 
 Focused state: `-t 'take job'` = 2 failed | 1 passed (green `sanity checks`), `yarn build` green, no full-ladder
 run (no title turned green).

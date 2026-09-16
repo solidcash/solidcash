@@ -1628,11 +1628,16 @@ const evaluateEveryInput = (
             const debugBodyTo = Number(failureDebugEnv?.SOLIDC_DEBUG_STACK_BODY_TO ?? Number.MAX_SAFE_INTEGER);
             if (state.instructions.length === debugBodyLength
               && state.ip >= debugBodyFrom && state.ip <= debugBodyTo) {
+              // A block base is addressed by a top-relative stack index, so a one-slot model/physical
+              // disagreement is invisible unless the whole frame is visible: print enough of the stack to line
+              // it up against the compiler's model (SOLIDC_DEBUG_COMPUTE_BASE).
+              const debugStackDepth = Number(failureDebugEnv?.SOLIDC_DEBUG_STACK_DEPTH ?? 4);
               console.error('[vm-stack]', JSON.stringify({
                 ip: state.ip,
                 opcode: state.instructions[state.ip]?.opcode,
                 depth: state.stack.length,
-                top: state.stack.slice(-4).map((item) => ({
+                stack: state.stack.slice(-Math.max(1, debugStackDepth)).map((item, offset, items) => ({
+                  d: items.length - 1 - offset,
                   bytes: item.length,
                   hex: binToHex(item).slice(0, 256),
                 })),

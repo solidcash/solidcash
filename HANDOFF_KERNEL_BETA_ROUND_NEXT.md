@@ -1,6 +1,8 @@
 # Handoff — kernel-beta marketplace climb (after the event/continuation round)
 
-> **Latest state (ROUND 143: the wrong base is emitted from `emitMasterInputIndex`'s OWNER branch - MEASURED by switching it to the bottom-ordinal form, which removes take-job's empty-item OP_SPLIT (the abort becomes an OP_VERIFY) but REGRESSES `close job` and `withdraw collateral`; the switch was reverted. Also measured: the artifact cache is NOT keyed by the compiler build, so `SOLIDC_COMPILE_CACHE=0` is mandatory after a compiler change - a cached compile served an experimental compiler's artifacts and faked a regression. Baseline re-verified after a cold compile: sanity checks OK, close job 2/2, withdraw collateral 1/1.** See "ROUND 143" at the end.
+> **Latest state (ROUND 144: the failure-moment PHYSICAL stack is now captured and the frame region is mapped - `PICK` resolved to 63 (`__internal__dynamicChunkInputBase`, d=22) where the intended authority is 0 (`__internal__proxyMasterIndex`, d=21), i.e. the model index is EXACTLY ONE SLOT TOO DEEP at that read; the fix must correct the model/emitter, not the addressing form. One loose end blocks it: the executed 5073-instruction caller resumes at ip 465 while the artifact's 5073 body (id `3b`) invokes the fragment at ip 599, and no runtime frame has 5073 instructions - the composed program's frame sizes do not match the artifact.** See "ROUND 144" at the end.
+>
+> Superseded (ROUND 143: the wrong base is emitted from `emitMasterInputIndex`'s OWNER branch - MEASURED by switching it to the bottom-ordinal form, which removes take-job's empty-item OP_SPLIT (the abort becomes an OP_VERIFY) but REGRESSES `close job` and `withdraw collateral`; the switch was reverted. Also measured: the artifact cache is NOT keyed by the compiler build, so `SOLIDC_COMPILE_CACHE=0` is mandatory after a compiler change - a cached compile served an experimental compiler's artifacts and faked a regression. Baseline re-verified after a cold compile: sanity checks OK, close job 2/2, withdraw collateral 1/1.** See "ROUND 143" at the end.
 >
 > Superseded (ROUND 142: the take-job preflight abort is now DECODED END TO END from the real failing redeem. The observed read is `outputs[63 + 3].nftCommitment[32:64]`, i.e. it uses 63 = `__internal__dynamicChunkInputBase` (participant block base 0 + trailingBase 63) where the keccak side-car read needs the participant BLOCK base 0 (the route's `__internal__proxyMasterIndex`, which the unlocking bytecode does supply as 0). Output 66 is a bare OP_TRUE pad with an empty commitment, so the `[32:64]` slice aborts the whole program. See "ROUND 142" at the end for the full coordinate table, the emitted-code evidence and the next step.**
 >
@@ -5906,3 +5908,74 @@ compile dies on `MockSablierLockup.sol`. Linking them into the worktree `node_mo
 compile but they must be REMOVED again before running the marketplace tests: with the whole scope set linked the
 test process resolves different package copies and every title fails. (Measured: tests fail with the links in
 place even with correct artifacts.)
+
+## ROUND 144: the failure-moment PHYSICAL stack, and the frame region mapped
+
+### The tool that produced it (kept, env-gated)
+
+`SOLIDC_DEBUG_STACK_BODY_LENGTH=<n> SOLIDC_DEBUG_STACK_BODY_FROM=<ip> SOLIDC_DEBUG_STACK_BODY_TO=<ip>
+SOLIDC_DEBUG_STACK_DEPTH=<n>` now prints `[vm-stack]` records (ip, opcode, depth, and the top N items with
+their depth-from-top) for every instruction of the frame whose instruction count is `<n>` inside the
+`SOLIDC_DEBUG_FAILURE_RING` evaluation. This is the only way to line the compiler's static model up against the
+REAL stack; the record shape changed from `top` (4 items) to `stack` (N items, `d` = depth from top).
+
+### The failure stack (input 127, the 5-instruction `dropFirst(k)+takeFirst(32)` body at ip 0, OP_SPLIT, depth 93)
+
+    d= 0  1 byte  20                 the split index (32)
+    d= 1  0        (EMPTY)           the item being split: the empty commitment read from outputs[66]
+    d= 2  28 bytes 19457468657265756d205369676e6564204d6573736167653a0a3332   the EIP-191 prefix
+    d= 3  1 byte  02
+    d= 4  0 / d=5 0
+    d= 6  35 bytes aa2037be..        P2SH32 compute side-car lock
+    d= 7  35 bytes aa20e61f..        P2SH32 compute side-car lock
+    d= 8  35 bytes aa20ac44..        P2SH32 (participant 1's lock)
+    d= 9..13  0 (five empties)
+    d=14 225 bytes 5100511976a91471782e81..   framed locking-bytecode blob
+    d=15  1 byte  01
+    d=16  0
+    d=17  65 bytes bedae1ac..        a full signature
+    d=18  0
+    d=19  25 bytes 76a91447d9fe..88ac  key witness (P2PKH)
+    d=20  25 bytes 76a91447d9fe..88ac  key witness (P2PKH)
+    d=21  0                          ** __internal__proxyMasterIndex (route ABI) = the participant block base **
+    d=22  1 byte  3f = 63            ** __internal__dynamicChunkInputBase (route ABI, last declared) **
+    d=23  1 byte  04 = 4             ** __internal__outlinedRecoveryAIndex (hidden context) = the A recovery input **
+    d=24..26  0
+    d=27 138 bytes 2300aa20ac44..    framed blob
+    d=28  36 bytes 23aa20ac44..      framed lock
+    d=29  36 bytes 23aa2037be..      framed lock
+    d=30  21 bytes 14000000000000000000000000000000000000beef
+    d=31  3 bytes  028b07
+    d=32  1 byte  00
+    d=33  1 byte  3b = 59            the callee function id pushed for OP_INVOKE
+
+This pins the frame layout exactly: the route's ABI arguments are at the physical BOTTOM in REVERSE declaration
+order (`dynamicChunkInputBase` = 63 deepest of the declared args, then `proxyMasterIndex` = 0, then the hidden
+contexts the route pushes for the handler: `outlinedRecoveryAIndex` = 4, then the handler's declared args). The
+EIP-191 prefix sitting directly under the empty commitment is exactly the 7-instruction body's
+`CAT(PREFIX, outputs[base+3].commitment[32:64])` frame, so the read really did use base 63 and the intended base
+is the participant block base 0 (d=21).
+
+### What this means for the fix
+
+`PICK <index>` resolved to 63 (d=22) while the intended authority is 0 (d=21): the compiler's model index for
+`__internal__messageBusOwnerInput` / the compute base is EXACTLY ONE SLOT TOO DEEP at that read. That is the
+"extras BELOW the modelled region / phantom above" direction, and it is why the bottom-ordinal form corrects it
+ROUND 143 - and equally why that form breaks `close job`/`withdraw collateral`, whose frames do not have the
+extra slot. So the fix must make the model match the physical frame at that call (or make only that emitter
+robust); it must NOT change the addressing form branch-wide.
+
+### Loose end that must be resolved first (measured, unexplained)
+
+The `controlStack` of the failing evaluation is
+`[main 1721] -> [11276 @resume 5573] -> [5073 @resume 465] -> [7 @resume 6] -> 5-body`, i.e. the body that
+invoked the 7-instruction fragment was a 5073-instruction frame interrupted at ip 464. In the composed redeem,
+body `3b` has 5073 instructions but invokes the fragment at ip **599** (pushing its base with `push 0x14; PICK`
+at 596-598), while body `7474f902` invokes it at ip 464 but has only 2773 instructions and pushes the base with
+`OP_INPUTINDEX`. Neither matches `5073 @ ip 464`, and `SOLIDC_DEBUG_STACK_BODY_LENGTH=5073` with FROM/TO 455-475
+AND 590-604 produced ZERO records, so at run time NO frame has exactly 5073 instructions. Resolve this before
+touching the emitter: list the executed frame lengths (`[vm-stack]` with a 1-instruction body count gives the
+5-body; add a print of `state.instructions.length` on every frame switch, or dump the function table) and find
+the body that actually performs the base push. The body the artifact names may not be the body that runs - the
+SDK composes the program from `debug.invokeDebug[*].bytecode` plus its own glue, and nothing verifies that the
+glue and the artifact agree on frame sizes.

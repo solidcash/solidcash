@@ -2619,6 +2619,10 @@ export class AtomicMessageBusComposition {
         offsets: readonly number[];
       }> = [];
 
+      // Resource locks each participant's own build published, tagged by resource family. A stall diagnostic
+      // attributes an introspected aggregate coordinate in the TAIL - which lies beyond every participant
+      // block - by the lock its owner published, since no block layout can label it.
+      const resourceLocksByParticipant = new Map<number, ReadonlyArray<readonly [string, string]>>();
       for (const participant of plan.participants) {
         const contract = byLockingBytecode.get(participant.lockingBytecode.toLowerCase())!;
         const descriptor = descriptorByLockingBytecode.get(participant.lockingBytecode.toLowerCase())!;
@@ -2850,6 +2854,12 @@ export class AtomicMessageBusComposition {
         let local: TransactionBuilder;
         try {
           local = await localCall.build();
+        const publishedLocks = (local as {
+          __messageBusResourceLocks?: ReadonlyArray<readonly [string, string]>;
+        }).__messageBusResourceLocks;
+        if (publishedLocks && publishedLocks.length > 0) {
+          resourceLocksByParticipant.set(participant.participant, publishedLocks);
+        }
         } catch (error) {
           if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
             ?.SOLIDC_DEBUG_ATOMIC_PROMOTION === '1') {
@@ -3652,9 +3662,22 @@ export class AtomicMessageBusComposition {
                 }
                 return 'other';
               });
+              const resourceKinds = new Map<string, string>();
+              for (const [participantIndex, published] of resourceLocksByParticipant) {
+                for (const [lock, kind] of published) {
+                  if (!resourceKinds.has(lock)) resourceKinds.set(lock, `p${participantIndex}:${kind}`);
+              }
+              }
+              const tailKinds = aggregate.outputs.flatMap((output, index) => {
+                if (slotLabels[index] !== 'other') return [];
+                const lock = output.to instanceof Uint8Array ? binToHex(output.to).toLowerCase() : '';
+                const commitment = output.token?.nft?.commitment;
+                return [`${index}:${resourceKinds.get(lock) ?? 'unknown'}:${(commitment?.length ?? 0) / 2}`];
+              });
               console.error('deferred-stall-io-full', JSON.stringify({
                 buildId: peekBuilderBuildId(),
                 labels: slotLabels,
+                tailKinds,
                 out: aggregate.outputs.map((item, index) => {
                   const lock = item?.to instanceof Uint8Array ? binToHex(item.to).slice(0, 10) : '';
                   return item?.token?.nft

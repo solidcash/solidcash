@@ -36562,6 +36562,31 @@ export class StatefulFunctionCall {
         resourcePart: chunk.resourcePart,
         }));
       }
+      // Every lock this participant may publish, tagged by the resource family it belongs to. The composer merges
+      // these across participants to attribute an introspected output in the aggregate tail (which lies beyond
+      // every participant block) to its owner without recomputing any covenant address.
+      {
+        const resourceLocks = new Map<string, string>();
+        const noteLock = (lock: Uint8Array | undefined, kind: string): void => {
+          if (lock && lock.length > 0) resourceLocks.set(binToHex(lock).toLowerCase(), kind);
+        };
+        for (const slot of stb.getBlockLayoutSlotsForDiagnostics()) {
+          const lock = built.outputs[slot.offset]?.to;
+          if (lock instanceof Uint8Array) noteLock(lock, `${slot.kind}${slot.slotIndex !== undefined
+            ? `#${slot.slotIndex}` : ''}`);
+        }
+        for (const [offset, chunk] of stb.getDerivedChunkOutputs()) {
+          noteLock(chunk.lockingBytecode, `chunk:${chunk.resourcePart ?? offset}`);
+        }
+        noteLock(stb.getJobEventsRedeemLock(), 'jobEventsRedeem');
+        if (resourceLocks.size > 0) {
+          Object.defineProperty(built, '__messageBusResourceLocks', {
+            configurable: false,
+            enumerable: false,
+            value: Object.freeze([...resourceLocks.entries()]),
+          });
+        }
+      }
       if (computedValueChunks.length > 0) {
         Object.defineProperty(built, '__messageBusComputedValueChunks', {
           configurable: false,
@@ -36658,6 +36683,17 @@ export class StatefulFunctionCall {
               const classify = (lock: Uint8Array | undefined, kind: string): void => {
                 if (lock) lockKinds.set(binToHex(lock).toLowerCase(), kind);
               };
+              // Value-chunk covenants commit to collection+slot+root, so their address is per-value; classify them
+              // from the builder's own derived-chunk observations rather than recomputing the recipe.
+              try {
+                for (const [offset, chunk] of stb.getDerivedChunkOutputs()) {
+                  classify(chunk.lockingBytecode, `chunk:${chunk.resourcePart ?? offset}`
+                    + `${chunk.semanticKind ? `(${chunk.semanticKind})` : ''}`);
+                }
+              } catch { /* no derived chunks */ }
+              try {
+                classify(stb.getJobEventsRedeemLock(), 'jobEventsRedeem');
+              } catch { /* no session lock */ }
               const parent = this.parentContract;
               if (parent) {
                 try {

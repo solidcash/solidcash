@@ -13142,6 +13142,15 @@ export class StatefulTransactionBuilder {
     return true;
   }
 
+  /** Block-layout slots as built, for diagnostics that attribute aggregate coordinates to their owner. */
+  getBlockLayoutSlotsForDiagnostics(): Array<{ offset: number; kind: string; slotIndex?: number }> {
+    return (this.blockLayout?.slots ?? []).map((slot) => ({
+      offset: slot.offset,
+      kind: String(slot.kind),
+      ...(slot.slotIndex !== undefined ? { slotIndex: slot.slotIndex } : {}),
+    }));
+  }
+
   getDerivedChunkOutputs(): ReadonlyMap<number, DerivedChunkOutputObservation> {
     return this.derivedChunkOutputs;
   }

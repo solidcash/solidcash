@@ -1,6 +1,6 @@
 # Handoff — kernel-beta marketplace climb (after the event/continuation round)
 
-> **Latest state (ROUND 104, the failing check is a NEGATED EQUALITY after the tail commitment read): 39 pass / 27 fail.** The sections below are a chronological log;
+> **Latest state (ROUND 105, the aborting tail resources are appended by the composer, after each participant's build): 39 pass / 27 fail.** The sections below are a chronological log;
 > read ROUNDS 51-52 and 54 (the collection-key, rolled-array and dynamic-storage-read fixes: 32 -> 37),
 > ROUNDS 53-96 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
 > deferred-`takeJob` class and its three falsified hypotheses) at the end. Earlier "State" numbers in this header
@@ -4375,6 +4375,40 @@ pushdata(v)` (>= 66 bytes) at the collection's value-chunk P2SH32. Next: check w
 aborting index lives at a VALUE-CHUNK address (`valueChunkSignature(collection)` / `getEntryNftAddress` with the
 chunk domain) - if yes, the SDK publishes the vmap continuation format where the covenant expects the pinned
 value-chunk format, which is a concrete SDK/compiler format mismatch to fix.
+
+Focused state: `-t 'take job'` = 2 failed | 1 passed (green `sanity checks`), `yarn build` green, no full-ladder
+run (no title turned green).
+
+### ROUND 105: the aborting tail resources are COMPOSER-appended, and the SDK chunk format is documented
+
+Landed (general, diagnostics only):
+  - every participant build now publishes `__messageBusResourceLocks` - its own block-slot locks, derived chunk
+    locks and session lock, each tagged by resource family;
+  - the composer records those per participant as it builds each local block and merges them in the stall probe
+    into `tailKinds` = every aggregate coordinate whose label is `other`, with the owning participant+family and
+    the commitment length.
+
+Measured (builds 40/67/74, default path):
+
+    build 67/74 tail: 216:unknown:38, 217:unknown:38, 218:unknown:0
+    build 40    tail: 463:unknown:38 .. 467:unknown:38, 468:unknown:0
+
+so the aborting tail resources are published by NONE of the participants' block slots, derived chunk locks or
+session locks. They sit at the very END of the aggregate (216..218 of 219; 463..468 of 469) and are therefore
+appended by the COMPOSER's post-build passes (`transportedValueChunks`, split/merge, upgrade-state suffix), which
+run after each participant's `build()` and cannot appear in a per-participant map.
+
+Also settled this round: `getValueChunkAddress` (SDK, covenant-helpers) documents "The address commits to
+collection, slot, and value root, so chunk commitments carry only uint16 index || raw data" - i.e. the observed
+38-byte (`uint16 index || data`) tail commitment IS the correct shape for a ROOT-ADDRESSED value-chunk covenant.
+The compiler's `emitSortedValueChunkPin` documents the other, PINNED shape (`slot(32) || digest(32) ||
+pushdata(i) || pushdata(v)`) for its own address. Two different covenants, two different formats - so ROUND 104's
+"format mismatch" reading is falsified for the root-addressed family, and the remaining question is which address
+family the aborting scan matched and which family the composer's transport published there.
+
+Next concrete step: read the composer's `transportedValueChunks` placement (compose.ts, the loop right after each
+`local = await localCall.build()`), note the lock and commitment format it appends, and compare against the
+address the verifier's scan compares (`valueChunkSignature` domain vs the pinned slot/digest domain).
 
 Focused state: `-t 'take job'` = 2 failed | 1 passed (green `sanity checks`), `yarn build` green, no full-ladder
 run (no title turned green).

@@ -3604,6 +3604,30 @@ export class AtomicMessageBusComposition {
                 const lock = lockOf(input);
                 return lock.startsWith('76a914') && index <= graph.layout.feeInput ? [{ index, lock }] : [];
               });
+              const describe = (item: { token?: { category?: string; nft?: { capability?: string; commitment?: string } } } | undefined, index: number): unknown => ({
+                index,
+                cat: item?.token?.category?.slice(0, 10),
+                cap: item?.token?.nft?.capability,
+                commitBytes: (item?.token?.nft?.commitment?.length ?? 0) / 2,
+              });
+              const sidecarSlots = plan.participants.flatMap((candidate) => {
+                const base = graph.layout.participantInputs[candidate.participant];
+                return (candidate.blockLayout?.slots ?? [])
+                  .filter((slot) => slot.kind === 'ecrecoverSideCar' || slot.kind === 'keccakSideCar')
+                  .map((slot) => ({
+                    participant: candidate.participant,
+                    kind: slot.kind,
+                    offset: slot.offset,
+                    input: describe(aggregate.inputs[base + slot.offset] as never, base + slot.offset),
+                    output: describe(aggregate.outputs[base + slot.offset] as never, base + slot.offset),
+                  }));
+              });
+              console.error('deferred-stall-sidecars', JSON.stringify({
+                buildId: peekBuilderBuildId(),
+                slots: sidecarSlots.slice(0, 8),
+                tokenlessOutputs: sidecarSlots.filter((slot) =>
+                  (slot.output as { cat?: string }).cat === undefined).length,
+              }));
               console.error('deferred-stall-composition', JSON.stringify({
                 lastBuildId: peekBuilderBuildId(),
                 firstP2pkh: p2pkhBefore[0],

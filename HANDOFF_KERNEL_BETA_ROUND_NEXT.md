@@ -1,8 +1,8 @@
 # Handoff — kernel-beta marketplace climb (after the event/continuation round)
 
-> **Latest state (ROUND 89, output-token read): 39 pass / 27 fail; tree at `5594acb79`.** The sections below are a chronological log;
+> **Latest state (ROUND 90, side-car slots verified): 39 pass / 27 fail; tree at `0be46892c`.** The sections below are a chronological log;
 > read ROUNDS 51-52 and 54 (the collection-key, rolled-array and dynamic-storage-read fixes: 32 -> 37),
-> ROUNDS 53-89 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
+> ROUNDS 53-90 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
 > deferred-`takeJob` class and its three falsified hypotheses) at the end. Earlier "State" numbers in this header
 > are historical.
 
@@ -3871,6 +3871,30 @@ output placeholder those builds place is missing its token, so the covenant cann
 Next round: for a correlated stall build, dump the aggregate's outputs at the participant's side-car slots
 (category, capability, commitment) and confirm whether they carry tokens; the oracle remains `ip 1` moving off
 `OP_SPLIT` and `deferred-ecrecover-learned` rising above 2.
+
+### ROUND 90: the side-car slots DO carry tokens (falsified), the frame is parsing a buffer
+
+Added a `deferred-stall-sidecars` probe (env-gated) that prints, for the stalling composition, every
+`ecrecoverSideCar`/`keccakSideCar` slot's input and output (category, capability, commitment size). Every correlated
+stall build reports `tokenlessOutputs: 0` and well-formed slots, e.g. build 40/67/74/104:
+
+    offset 3 keccakSideCar     in {cat 361eb80b9f, mutable, 32 B}  out {…, 64 B}
+    offset 4 ecrecoverSideCar  in {cat 9e47d0fc96, mutable, 32 B}  out {…, 32 B}
+    offset 5 ecrecoverSideCar  in {cat 5986b263aa, mutable, 32 B}  out {…, 34 B}
+
+So the ROUND 89 hypothesis - a token-less side-car/continuation output - is **falsified**: the slots the covenant
+reads are token-bearing with 32-byte commitments.
+
+What the entry states actually show is a *buffer parse*: the 7-instruction frame's stack holds 2-byte counters
+(`d800`, `db00`, ...) beside the 225-byte item, and it splits at index 32. Those look like offsets into a
+serialized output/transaction buffer, with the split running off the end of the remaining slice - i.e. the buffer is
+shorter than the parser expects, not missing a token.
+
+Landed this round: the `deferred-stall-sidecars` probe (diagnostics only).
+
+Next round: dump the **full buffer** the failing frame parses (the 225-byte item and its neighbours on the stack)
+together with the 7 instructions it executes and the offsets it uses - then compare that buffer against the same
+frame in a passing build of the same run. A shorter/truncated serialization is then directly visible.
 
 ### How to localize it next
 

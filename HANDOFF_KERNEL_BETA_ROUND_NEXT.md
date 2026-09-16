@@ -1,8 +1,8 @@
 # Handoff — kernel-beta marketplace climb (after the event/continuation round)
 
-> **Latest state (ROUND 61, HEAD `04c729750`): 39 pass / 27 fail.** The sections below are a chronological log;
+> **Latest state (ROUND 62, HEAD `11da5bcdd`): 39 pass / 27 fail.** The sections below are a chronological log;
 > read ROUNDS 51-52 and 54 (the collection-key, rolled-array and dynamic-storage-read fixes: 32 -> 37),
-> ROUNDS 53-61 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
+> ROUNDS 53-62 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
 > deferred-`takeJob` class and its three falsified hypotheses) at the end. Earlier "State" numbers in this header
 > are historical.
 
@@ -2990,6 +2990,39 @@ graph route for a handler that consumes a deferred compute resource (ecrecover l
 expose every deferred argument. `SOLIDC_DEBUG_ECRECOVER_DERIVE=1` plus `SOLIDC_DEBUG_FAILURE_POINT=1` is the pair
 to use, and `MarketplaceV1.takeJob` remains the only ecrecover handler in the fixture. Note that running the two
 `take job` titles alone reproduces the nonce stall (218 ms), so use full-ladder runs to judge the deferred class.
+
+### ROUND 62: the doubled participant block is a local/absolute continuation-band confusion
+
+`post thread message > sanity checks` fails (also in isolation, so it is not a cascade) with
+`messageBus: participant 1 built 87/174 slots, expected balanced block size 87`. Measurements:
+
+* `SOLIDC_DEBUG_ATOMIC_GRAPH=1` + the `atomic-local-block-mismatch` dump shows outputs `0..86` are the real block,
+  `87..170` are OP_TRUE pads and `171..173` are three value-chunk outputs (lock `aa209cc7f6aa439c`,
+  commitments `0000656174` / `01006bc75e` / `0200a87b87`), while `inputs` is 87 (last inputs: transported chunk
+  slots at 83/84 with lock `aa20225e7569984d`, identity anchor at 86). So the block is correct and a *second*,
+  absolute continuation run was appended to it.
+* A probe at `localCall.build()` (compose.ts) proved `build()` itself returns `87/174` - the doubling happens
+  inside the participant-local builder, not in compose.
+* Probes on `_padOutputsToIndex` and on `setDerivedChunkOutput` (index > 86) never fire, so the writes come from
+  the band materializer path.
+* A probe inside `getChunkableValueWriteBand()` names the culprit line exactly: for the failing builder
+  `convention === 'kernel-row-loop'`, `publishLlcIndex === 0`, `publishBlockSize === 85`,
+  **`bases === [170, 170]`** (`= impl input index 85 + publishBlockSize 85`), `layoutStart = 170`,
+  `band = { start: 170, end: 171, nNew: 2 }` while the local builder has only 86 inputs. The `captured` list is
+  empty at band time, i.e. the captured `__internal__valueChunkOutputBase` witness has not been applied yet.
+
+So the legacy single-contract formula `impl + blockSize` (bases are pushed at
+`StatefulTransactionBuilder.getChunkableValueWriteBand()`, the `bases.push(impl + blockSize)` loop over delegate
+low-level groups) is meaningless inside a kernel participant: there the writer's continuation outputs are the
+participant's compiler-declared **trailing** slots (compose already selects them as
+`participant.blockLayout.slots.filter(kind === 'trailing').slice(-transportedChunkCount)` = local offsets 82..84)
+and the route witness `__internal__valueChunkOutputBase` is **absolute**
+(`graph.layout.participantInputs[participant] + slot.offset`, e.g. 171 for participant 1 whose block starts at 89).
+
+Next round's fix shape: for `messageBusConvention === 'kernel-row-loop'`, derive the continuation band from the
+writer route's compiler-declared trailing slot offsets (or from the captured witness rebased by the participant
+block base) instead of `impl + blockSize`; keep the absolute witness untouched for the covenant argument vector.
+Verify with `post thread message > sanity checks` (isolated run is enough, ~60 s) and then the full ladder.
 
 ### How to localize it next
 

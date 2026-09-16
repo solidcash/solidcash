@@ -36777,17 +36777,50 @@ export class StatefulFunctionCall {
                 // what ends the trace before the deferred resolvers can read their arguments.
                 accessSentinels: program.transaction.inputs.flatMap((input, inputIndex) => {
                   const unlocking = input.unlockingBytecode;
-                  const hits: Array<{ input: number; count: number; sentinels: number[] }> = [];
+                  const hits: Array<Record<string, unknown>> = [];
                   for (let at = 0; at + 2 <= unlocking.length; at += 1) {
                     if (unlocking[at] !== KERNEL_ENTRY_JOURNAL_ACCESS_TAG) continue;
                     const count = unlocking[at + 1];
                     if (count === 0 || count > 64 || at + 2 + count * 5 > unlocking.length) continue;
-                    const sentinels = Array.from({ length: count }, (_unused, index) => index)
-                      .filter((index) => {
-                        const offset = at + 2 + 20 + index * 5;
-                        return (unlocking[offset + 1] | (unlocking[offset + 2] << 8)) === 0xffff;
+                    // The canonical tuple is `flags || target-u16le || predecessor-u16le` and the flags must
+                    // agree with the PREDECESSOR sentinel (`HAS_PREDECESSOR` iff predecessor != 0xffff). Verify
+                    // which field carries that relation before calling a sentinel a reserved TARGET ordinal:
+                    // reading the fields the other way round would report a legitimate predecessor as a defect.
+                    const tuples = Array.from({ length: count }, (_unused, index) => {
+                      const offset = at + 2 + 20 + index * 5;
+                      return {
+                        flags: unlocking[offset],
+                        fieldA: unlocking[offset + 1] | (unlocking[offset + 2] << 8),
+                        fieldB: unlocking[offset + 3] | (unlocking[offset + 4] << 8),
+                      };
+                    });
+                    const matchesAsTargetFirst = tuples.filter((tuple) =>
+                      ((tuple.flags & 0x04) !== 0) === (tuple.fieldB !== 0xffff)).length;
+                    const matchesAsPredecessorFirst = tuples.filter((tuple) =>
+                      ((tuple.flags & 0x04) !== 0) === (tuple.fieldA !== 0xffff)).length;
+                    const sentinels = tuples.map((tuple, index) => ({ tuple, index }))
+                      .filter(({ tuple }) => tuple.fieldA === 0xffff).map(({ index }) => index);
+                    const predecessorSentinels = tuples.map((tuple, index) => ({ tuple, index }))
+                      .filter(({ tuple }) => tuple.fieldB === 0xffff).map(({ index }) => index);
+                    // Only a DEFINITIVE stream may be reported. A witness blob can contain an accidental
+                    // 0x06/count pair, so require the whole stream to obey the canonical relations under the
+                    // target-first reading - flag/sentinel agreement on every tuple, canonical predecessor
+                    // sentinel, and no tuple whose target equals the predecessor - before claiming a defect.
+                    const canonicalTargetFirst = matchesAsTargetFirst === count
+                      && tuples.every((tuple) => (tuple.flags & 0x04) !== 0
+                        ? tuple.fieldB !== 0xffff : tuple.fieldB === 0xffff)
+                      && tuples.every((tuple) => tuple.fieldA !== tuple.fieldB);
+                    if (canonicalTargetFirst && sentinels.length > 0) {
+                      hits.push({
+                        input: inputIndex, count, sentinels, predecessorSentinels,
+                        canonicalOrder: 'target-first', agreement: [matchesAsTargetFirst, count],
                       });
-                    if (sentinels.length > 0) hits.push({ input: inputIndex, count, sentinels });
+                    } else if (matchesAsPredecessorFirst === count && predecessorSentinels.length > 0) {
+                      hits.push({
+                        input: inputIndex, count, sentinels, predecessorSentinels,
+                        canonicalOrder: 'predecessor-first', agreement: [matchesAsPredecessorFirst, count],
+                      });
+                    }
                   }
                   return hits;
                 }),

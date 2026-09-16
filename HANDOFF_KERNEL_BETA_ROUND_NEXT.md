@@ -1,6 +1,6 @@
 # Handoff — kernel-beta marketplace climb (after the event/continuation round)
 
-> **Latest state (ROUND 106, build 40's stall is a CONFIRMED reserved-ordinal witness: target == 0xffff): 39 pass / 27 fail.** The sections below are a chronological log;
+> **Latest state (ROUND 107: ROUND 106's sentinel finding is FALSIFIED - the failing opcode must be identified by context, not by a 3-op match): 39 pass / 27 fail.** The sections below are a chronological log;
 > read ROUNDS 51-52 and 54 (the collection-key, rolled-array and dynamic-storage-read fixes: 32 -> 37),
 > ROUNDS 53-96 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
 > deferred-`takeJob` class and its three falsified hypotheses) at the end. Earlier "State" numbers in this header
@@ -4443,6 +4443,34 @@ Next: (1) find which SDK path writes `targetRecordOrdinal = 0xffff` (an "unresol
 deferred probe is the likely origin) and give it a plausible ordinal; (2) diagnose build 67/74 independently - the
 sentinel scan can be widened to the other witness carriers (outputs, and streams with count > 64 or a different
 tag offset).
+
+Focused state: `-t 'take job'` = 2 failed | 1 passed (green `sanity checks`), `yarn build` green, no full-ladder
+run (no title turned green).
+
+### ROUND 107: ROUND 106's "confirmed sentinel" was a FALSE POSITIVE
+
+`accessSentinels` now validates the whole stream canonically before reporting (every tuple must satisfy the
+flag/sentinel relation under one field order, the predecessor sentinel must be canonical, and target != predecessor)
+and only reports when that holds. Measured with the strict rule:
+
+    loose scan (ROUND 106): 20 "definitive" stream reports across builds 40/175
+    strict scan (this round): 0 reports
+
+and the loose scan's own agreement numbers already gave it away (14 or 15 of 33 tuples matched under either field
+order, i.e. the parse was misaligned). The loose scan was matching accidental `0x06`/count byte pairs inside a large
+witness blob, so ROUND 106's claim - "build 40's stall is a reserved target ordinal" - is FALSIFIED, and the
+`require(target != 0xffff)` site at `GenerateTargetTraversal.ts:26522` is NOT where the probe dies.
+
+Related correction: the failing three-op sequence cannot be located by matching a single emission site, because
+shared-span outlining deduplicates bytecode - the same `OP_EQUAL OP_NOT OP_VERIFY` can belong to any
+`require(a != b)` in the program. The windows also show the two builds fail at DIFFERENT checks:
+
+    build 67/74 : [DROP, EQUAL, NOT, VERIFY, ...]   - a negated equality
+    build 40    : [PICK, ENDIF, VERIFY, ...]        - a bare OP_VERIFY after an ENDIF
+
+so the class has at least two causes, and the next step is to identify each by its ENCLOSING instructions (the
+`failingWindow` already carries the neighbourhood; extend it to ~12 opcodes and map it against the candidate
+emitters in `GenerateTargetTraversal` by hand).
 
 Focused state: `-t 'take job'` = 2 failed | 1 passed (green `sanity checks`), `yarn build` green, no full-ladder
 run (no title turned green).

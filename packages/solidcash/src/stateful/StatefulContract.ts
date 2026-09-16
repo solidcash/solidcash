@@ -36825,7 +36825,7 @@ export class StatefulFunctionCall {
                   return hits;
                 }),
                 failingWindow: (terminal?.instructions ?? [])
-                  .slice(Math.max(0, (terminal?.ip ?? 0) - 4), (terminal?.ip ?? 0) + 3)
+                  .slice(Math.max(0, (terminal?.ip ?? 0) - 9), (terminal?.ip ?? 0) + 4)
                   .map((instruction) => ({ op: instruction?.opcode })),
                 trailing: commitmentReads.slice(-12),
               }));

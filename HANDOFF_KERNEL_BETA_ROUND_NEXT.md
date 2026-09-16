@@ -1,6 +1,6 @@
 # Handoff — kernel-beta marketplace climb (after the event/continuation round)
 
-> **Latest state (ROUND 107: ROUND 106's sentinel finding is FALSIFIED - the failing opcode must be identified by context, not by a 3-op match): 39 pass / 27 fail.** The sections below are a chronological log;
+> **Latest state (ROUND 108: two stall classes measured - 5 VERIFY + 5 OP_SPLIT; the band+3 shift is falsified): 39 pass / 27 fail.** The sections below are a chronological log;
 > read ROUNDS 51-52 and 54 (the collection-key, rolled-array and dynamic-storage-read fixes: 32 -> 37),
 > ROUNDS 53-96 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
 > deferred-`takeJob` class and its three falsified hypotheses) at the end. Earlier "State" numbers in this header
@@ -4471,6 +4471,46 @@ shared-span outlining deduplicates bytecode - the same `OP_EQUAL OP_NOT OP_VERIF
 so the class has at least two causes, and the next step is to identify each by its ENCLOSING instructions (the
 `failingWindow` already carries the neighbourhood; extend it to ~12 opcodes and map it against the candidate
 emitters in `GenerateTargetTraversal` by hand).
+
+Focused state: `-t 'take job'` = 2 failed | 1 passed (green `sanity checks`), `yarn build` green, no full-ladder
+run (no title turned green).
+
+### ROUND 108: the stall class splits 5 VERIFY / 5 OP_SPLIT, and the band+3 shift is FALSIFIED
+
+`failingWindow` widened to 13 opcodes. Default-path error mix over the ten stalled builds (builds
+40/67/74/104/112/119/126/133/140/175):
+
+    OP_SPLIT-empty   112, 119, 126, 133, 175   [SPLIT NIP PUSH1 SPLIT DROP]  <- the 5-byte span 122 parser
+    OP_VERIFY         40, 67, 74, 104, 140
+      build 40  : 0 BOOLAND IF 1 ELSE 12 PICK ENDIF VERIFY PUSH2 INVOKE 15 PICK      (conditional require)
+      build 67  : INVOKE PUSH1 INVOKE 1NEG INVOKE DROP EQUAL NOT VERIFY 16 PICK ...  (require a != b)
+      build 74  : 15 INVOKE PUSH1 INVOKE PUSH1 INVOKE EQUAL NOT VERIFY 4 ...         (require a != b)
+      build 104 : 0x65 FROMALT PUSH2 INVOKE 0x66 DROP 0xbc BIN2NUM VERIFY ...        (bare require)
+      build 140 : INVOKE 14 INVOKE DROP 0 PUSH1 INVOKE BOOLAND VERIFY ...            (require a && b)
+
+For the OP_SPLIT class the read sequence is now exact (build 112):
+
+    in-inputbytecode idx 3 (keccak side-car, mutable, 32-byte commitment)
+    out-commitment   idx 66  -> cat None, commitment None      <- ABORTS: a token-less output
+
+i.e. the covenant reads the commitment of aggregate output 66 while only outputs 63 and 64 carry value chunks,
+so the third band slot is a bare pad.
+
+The `SOLIDC_DEBUG_CHUNK_SHIFT=3` experiment was re-run WITH a clamp that keeps the shifted band inside the
+participant's trailing run (the earlier run overran the block and produced an unrelated internal failure):
+
+    default     : 5 OP_SPLIT + 5 VERIFY stalls
+    shift+clamp : 5 OP_SPLIT + 4 VERIFY stalls
+
+so the band+3 offset removes ONE VERIFY stall and NONE of the OP_SPLIT stalls - the ROUND 97/98 "+3 offset"
+hypothesis is FALSIFIED as the fix for this class, and the shift/clamp code was reverted (only the neutral,
+default-off `SOLIDC_DEBUG_CHUNK_SHIFT` knob remains).
+
+Next (per class): for the OP_SPLIT builds, compare the number of chunk outputs the SDK publishes with the band
+width / chunk count the covenant walks (the `chunk-band-probe` record already prints `start`, `band`, the composed
+trailing run and the planned width) - the read at 66 says the covenant expects a chunk at band start + 2 while the
+SDK stopped after two chunks. For the VERIFY builds, the two `require(a != b)` cases (67/74) and the three
+boolean/conditional cases (40/104/140) are separate emitters and must be located by their 13-op context.
 
 Focused state: `-t 'take job'` = 2 failed | 1 passed (green `sanity checks`), `yarn build` green, no full-ladder
 run (no title turned green).

@@ -1,6 +1,6 @@
 # Handoff — kernel-beta marketplace climb (after the event/continuation round)
 
-> **Latest state (ROUND 132: CRITICAL WORKFLOW FINDING - the marketplace fixture artifacts are STALE, so every COMPILER-side change this session was never exercised): 39 pass / 27 fail.** The sections below are a chronological log;
+> **Latest state (ROUND 133: FIXTURE RECOMPILE NOW WORKS (recompile.sh repaired and verified) - compiler changes finally reach the ladder; the expression-key fix is one line away): 39 pass / 27 fail.** The sections below are a chronological log;
 > read ROUNDS 51-52 and 54 (the collection-key, rolled-array and dynamic-storage-read fixes: 32 -> 37),
 > ROUNDS 53-96 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
 > deferred-`takeJob` class and its three falsified hypotheses) at the end. Earlier "State" numbers in this header
@@ -5268,3 +5268,37 @@ the discriminator appearing in the artifact (`grep -c _x ...` > 0) BEFORE re-tes
 
 Focused state: `-t 'update job tags'` = 1 failed (unchanged, stale artifact), `-t 'take job'` = 2 failed | 1 passed,
 `yarn build` green, tree clean.
+
+### ROUND 133: the fixture recompile path is REPAIRED - compiler changes now reach the ladder
+
+Root cause of ROUND 132: the compile task resolves `--iteration` against the CURRENT directory, and
+`.marketplace/iteration/recompile.sh` passed a bare `contracts/<File>.sol` while `cd`-ing into `.marketplace/iteration`
+first, so the source never resolved and the run died at `selectCompileSources` - silently leaving the stale fixture
+in place. Repaired in the script (resolve the source against `.marketplace/contracts` before invoking, and skip
+loudly when it is missing) and VERIFIED end to end:
+
+    bash .marketplace/iteration/recompile.sh contracts/MarketplaceDataV1.sol contracts/MarketplaceV1.sol
+    -> Compiled 1 Solidity source(s) in 1 compiler job(s) (0 cache hit(s)) -> 1 artifact(s)   (both sources)
+    -> merged files: 22, fixture json count: 105
+    -> fixture mtimes move to the current minute
+
+So the loop is now: edit compiler -> `yarn build` -> `bash .marketplace/iteration/recompile.sh <sources>` ->
+`npx vitest run -t '<title>'` (~26s). That is the first round in this session where a compiler change can actually
+be validated.
+
+Attempted and REVERTED (incomplete, not validated): the expression-key discriminator for `update job tags`. The
+route key name is constructed at FOUR sites in `compiler.ts` and they must agree:
+  1. the alternatives-branch naming loop (~5813),
+  2. the single-alternative branch's witness list (~5873),
+  3. the handler-body rewrite inside `handler.body.statements.flatMap((statement) => ...)` (~7640),
+  4. the second rewrite inside `walkInvocationAst(handler.body, (node) => ...)` (~7677).
+Sites 3 and 4 are the ones the ARTIFACT actually renders (`entryAccesses[].keyParams`), which is why patching 1
+and 2 alone changed nothing. Each site needs the discriminator computed from its OWN enclosing variable
+(`statement.name` at site 3, `node.name` at site 4); the attempt had them swapped and the helper defined after site
+3, which fails to compile. Reverted, so the tree carries no unvalidated compiler change.
+
+Next round (the loop is fast now): re-apply the discriminator at all four sites with the correct scopes, verify the
+suffix appears in the fixture (`grep -o "__message_bus_key_meceTags[^']*" .../MarketplaceDataV1.artifact.ts` should
+show `_x...` entries), then run `-t 'update job tags'` and `-t 'job updates'`.
+
+Focused state: `-t 'take job'` = 2 failed | 1 passed, `yarn build` green, tree clean.

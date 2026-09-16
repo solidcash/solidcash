@@ -3167,6 +3167,20 @@ Identified the frame that runs the output scan (no code change; tree at `a9b7cbf
   (verifier outputs 463..467 are 38-byte `4c3356310000...`), so the empty item comes from an output the loop
   reaches that has no token at all - the OP_TRUE pads at 450..461 in participant 4's block tail.
 
+Measured the witnesses the body receives (5-participant pass, the failing one) with a probe on
+`graphRouteContext`:
+
+    participantInputs [0,129,216,304,385]   verifierInputs [463,464,465,466,467]   verifierLast 467
+    participant 0: activeVerifierIndex 463, fixedSize 129, maximumSize 129, actualSize 129,
+                   returnOffset 65535 (the "no return" sentinel), settlementBoundary 12
+    completions [129,87,88,81,78]  =>  block ends 128, 216, 304, 385, 462   derivedLimit 462
+
+The scan the trace walks is exactly the tail of the LAST participant block: outputs 458..462 = participant 4's
+block end (462 = SID token; 450..461 are OP_TRUE pads, so 458..461 have no token at all). In a standalone layout
+those five outputs before the verifier region are the participant's settlement/receipt outputs, and the verifier
+digest loop reads their commitments - in the composed layout they are another participant's padding, so
+`OP_OUTPUTTOKENCOMMITMENT` returns an empty item and the following `OP_SPLIT 32` fails.
+
 Next round (targeted, cheap): in the failing pass, dump the arguments this body receives
 (`__internal__activeVerifierIndex`, `__internal__graphFixedSize`, `__internal__graphBlockSize`,
 `__internal__graphSettlementTable`, `__internal__graphCompletionPositions`) plus the stack at the loop setup

@@ -1,6 +1,6 @@
 # Handoff — kernel-beta marketplace climb (after the event/continuation round)
 
-> **Latest state (ROUND 118: failing operands captured - 35-byte P2SH32 locks plus EMPTY items; input-side placeholders reverted as a reach regression): 39 pass / 27 fail.** The sections below are a chronological log;
+> **Latest state (ROUND 119: the verifier input carries `localBatch` and `suppliedBlockSize` EMPTY - the batch blob is missing from the probe): 39 pass / 27 fail.** The sections below are a chronological log;
 > read ROUNDS 51-52 and 54 (the collection-key, rolled-array and dynamic-storage-read fixes: 32 -> 37),
 > ROUNDS 53-96 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
 > deferred-`takeJob` class and its three falsified hypotheses) at the end. Earlier "State" numbers in this header
@@ -4834,6 +4834,32 @@ Next (narrower than the reverted experiment): identify WHICH coordinate's input 
 empty operand plus the lock operands should locate it - and give a placeholder to that coordinate only, or make
 the check's expected operand match. `deferred-stall-io-full` prints `trailingPublished`/`trailingCommitments` and
 `deferred-no-progress-reads` prints the introspection sequence, so the coordinate can be pinned from the same logs.
+
+Focused state: `-t 'take job'` = 2 failed | 1 passed (green `sanity checks`), `yarn build` green, no full-ladder
+run (no title turned green).
+
+### ROUND 119: the probe's verifier input is missing its `localBatch` and `suppliedBlockSize`
+
+`deferred-no-progress-reads` now decodes the executing input's unlocking bytecode into its pushdata items and
+names them from the artifact's `messageBus.verifierProgram.inputs`. Measured (builds 40/67, identical):
+
+    witness count 5, lengths [4, 21, 0, 1, 0], empty at indexes [2, 4]
+    empty names    ['localBatch', 'suppliedBlockSize']
+    declared       ['activeInputIndex', 'expectedLocalRows', 'localBatch', 'suppliedFixedSize',
+                    'suppliedBlockSize', 'suppliedEmissions', 'suppliedCallers',
+                    'suppliedSettlementBoundary', 'suppliedCompletionPositions', ...]
+
+So the TWO empty operands that the failing checks compare against locking bytecodes (ROUND 118) are the atomic
+verifier's `localBatch` - the batch blob itself - and `suppliedBlockSize`. Everything ROUNDS 109-118 measured about
+chunk bands, chain walks and trailing pads is a consequence of tracing a verifier invocation whose batch argument
+is empty; the covenant then computes empty values, compares them against real 35-byte P2SH32 locks and fails.
+
+Next: establish why `localBatch`/`suppliedBlockSize` are empty on this path and whether they must be filled for the
+PROBE run (or whether this verifier invocation is the wrong one to trace). The verifier's own codegen comment says
+its covenant supplies exactly `verifierProgram.inputs` "with the authenticated envelope deliberately left
+underneath", so an empty `localBatch` may belong to a script path that expects the batch on the stack - in which
+case the trace has to be taken from the invocation that does carry it (the composer builds the verifier input's
+unlocking bytecode in `compose.ts`; that is where the values come from).
 
 Focused state: `-t 'take job'` = 2 failed | 1 passed (green `sanity checks`), `yarn build` green, no full-ladder
 run (no title turned green).

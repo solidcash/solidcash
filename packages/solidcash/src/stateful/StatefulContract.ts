@@ -36873,6 +36873,45 @@ export class StatefulFunctionCall {
                 })(),
                 // The operands the failing check compared. Sizes alone cannot say which coordinate's body the
                 // covenant expected, so carry the top of the stack as length-prefixed hex.
+                // Which ROUTE witnesses the probe actually carried. The failing checks compare locking
+                // bytecodes against items that came out EMPTY, and an empty item is what an unfilled ABI witness
+                // looks like - so list the pushdata items of the executing input with their lengths, in ABI order,
+                // marking the empty ones. Mapping them onto the route ABI's internal input names is then a lookup.
+                executionWitnesses: (() => {
+                  const unlocking = program.transaction.inputs[executionInput]?.unlockingBytecode
+                    ?? new Uint8Array();
+                  const items: Array<{ index: number; length: number }> = [];
+                  let at = 0;
+                  while (at < unlocking.length && items.length < 64) {
+                    const opcode = unlocking[at];
+                    if (opcode >= 1 && opcode <= 75) {
+                      items.push({ index: items.length, length: opcode });
+                      at += 1 + opcode;
+                    } else if (opcode === 0x4c && at + 1 < unlocking.length) {
+                      const size = unlocking[at + 1];
+                      items.push({ index: items.length, length: size });
+                      at += 2 + size;
+                    } else if (opcode === 0x00) {
+                      items.push({ index: items.length, length: 0 });
+                      at += 1;
+                    } else {
+                      break;
+                    }
+                  }
+                  const empty = items.filter((item) => item.length === 0).map((item) => item.index);
+                  // Name the empty witnesses from the verifier program's own ABI so the missing values are
+                  // identifiable without a second instrumentation round.
+                  const declared = (this.parentContract?.inner.artifact.messageBus as {
+                    verifierProgram?: { inputs?: Array<{ name?: string }> };
+                  } | undefined)?.verifierProgram?.inputs ?? [];
+                  return {
+                    count: items.length,
+                    lengths: items.map((item) => item.length),
+                    empty,
+                    emptyNames: empty.map((index) => declared[index]?.name ?? `<${index}>`),
+                    declaredNames: declared.map((input) => input.name ?? '?').slice(0, items.length + 4),
+                  };
+                })(),
                 failingStack: ((terminal as { stack?: Uint8Array[] } | undefined)?.stack ?? [])
                   .slice(-8)
                   .map((item) => `${item.length}:${binToHex(item).slice(0, 64)}`),

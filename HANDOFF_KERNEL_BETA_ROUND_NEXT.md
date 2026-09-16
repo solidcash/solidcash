@@ -1,8 +1,8 @@
 # Handoff — kernel-beta marketplace climb (after the event/continuation round)
 
-> **Latest state (ROUND 93, bodies grouped by identity): 39 pass / 27 fail; tree at `f23562ad0`.** The sections below are a chronological log;
+> **Latest state (ROUND 94, empty operand at the failing helper): 39 pass / 27 fail; tree at `52cb28306`.** The sections below are a chronological log;
 > read ROUNDS 51-52 and 54 (the collection-key, rolled-array and dynamic-storage-read fixes: 32 -> 37),
-> ROUNDS 53-93 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
+> ROUNDS 53-94 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
 > deferred-`takeJob` class and its three falsified hypotheses) at the end. Earlier "State" numbers in this header
 > are historical.
 
@@ -3971,6 +3971,34 @@ Next round: dump the parent state *immediately* before the failing body's single
 complete stack (so the popped id is visible) and the two states after it - and reconcile the id-to-body mapping
 against `invokeDebug` (matching the fingerprint to `bytecode` rather than trusting the id). That pins the invoking
 site, which is the last missing link before the operand can be named.
+
+### ROUND 94: the failing helper receives an EMPTY operand (an output read that returned nothing)
+
+Dumped the states around the failing body's single state (build 112, `failingIndex 450`):
+
+    at 447  ip 437  size 5073  '2:8d81 138 1:13 121 79 138 117 93'      top: 89:25:76a91447d9fe52...88ac
+    at 448  ip 2    size 7     '83 147 210 1:20 1:7a 138 126'           top: 87:25:76a91447d9fe52...88ac
+    at 449  ip -1   size 0     (frame boundary)                         7:8064:'4c33425553310000801f...'
+    at 450  ip 1    size 5     '127 119 1:20 127 117'   top: 73:1:3f, 72:0:'', 71:1:81, 70:0:''
+
+Three things are now certain:
+
+* the 5073-body at ip 437 is the takeJob route entry (its stack still holds the caller's 25-byte P2PKH lock
+  `76a91447d9fe52...88ac`);
+* the 7-instruction body is about to execute `OP_OUTPUTTOKENCOMMITMENT` (opcode 210 at ip 2), i.e. it computes an
+  output index (`3 + k`) and reads that **output's** token commitment;
+* the failing 5-instruction body is then entered with an **empty item** beneath the split index (`72:0:''` under
+  `73:1:3f`), which is why its `OP_SPLIT` runs on a zero-length item.
+
+So ROUND 89's "token-less output read" was right in kind but at the wrong index: ROUND 90's slot dump only covered
+the *side-car* slots, while this read targets whatever output index the 7-body computes. The frame boundary at 449
+even carries the atomic envelope (`4c3342555331...` = PUSHDATA1 `BUS1...`), confirming this is the composed graph's
+execution.
+
+Next round: in the stall probe, print the aggregate's outputs for the first ~24 indices with their category /
+capability / commitment size, and match the 7-body's computed index - a token-less output at that index is then the
+whole story (and the fix is to place the token the covenant reads, or to stop the digest/read from covering a
+token-less slot).
 
 ### How to localize it next
 

@@ -36734,6 +36734,29 @@ export class StatefulFunctionCall {
                   }
                   if (terminalInstructions && state.instructions === terminalInstructions) failing = key;
                 }
+                const failingIndex = terminalInstructions
+                  ? trace.findIndex((raw) => (raw as { instructions?: unknown }).instructions === terminalInstructions)
+                  : -1;
+                const around = failingIndex < 0 ? [] : trace
+                  .slice(Math.max(0, failingIndex - 3), failingIndex + 3)
+                  .map((raw, offset) => {
+                    const state = raw as {
+                      ip?: number; instructions?: Array<{ opcode: number; data?: Uint8Array }>;
+                      stack?: Uint8Array[];
+                    };
+                    return {
+                      at: Math.max(0, failingIndex - 3) + offset,
+                      ip: state.ip,
+                      size: state.instructions?.length ?? 0,
+                      head: (state.instructions ?? []).slice(0, 8).map((instruction) => `${instruction.opcode}`
+                        + (instruction.data ? `:${binToHex(instruction.data).slice(0, 16)}` : '')).join(' '),
+                      stack: (state.stack ?? []).map((item, index, stack) =>
+                        `${stack.length - 1 - index}:${item.length}:${binToHex(item).slice(0, 120)}`),
+                    };
+                  });
+                console.error('no-progress-around-failing', JSON.stringify({
+                  buildId: builderBuildSequence, failingIndex, around,
+                }));
                 console.error('no-progress-bodies', JSON.stringify({
                   buildId: builderBuildSequence,
                   failing,

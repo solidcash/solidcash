@@ -41,6 +41,7 @@ import {
   createMessageBusVerifierUnlocker, getMessageBusVerifierLockingBytecodeForArtifact,
 } from '../stateful/covenant-helpers.js';
 import { encodeAtomicMessageBusCallManifest, encodeAtomicMessageEnvelope } from './atomic.js';
+import { peekBuilderBuildId } from '../stateful/StatefulContract.js';
 import { assertAtomicParticipantCapacity } from './capacity.js';
 import {
   finalizeAtomicInvocationGraph, graphInvocationCallerIdentity, selectedGraphEventOffsets,
@@ -3596,6 +3597,7 @@ export class AtomicMessageBusComposition {
               const commitments = aggregate.inputs.map((input) =>
                 String(input?.token?.nft?.commitment ?? '').toLowerCase());
               console.error('deferred-stall-composition', JSON.stringify({
+                lastBuildId: peekBuilderBuildId(),
                 calls: (this.options.preparedCalls ?? []).map((call) => {
                   const described = call as unknown as {
                     functionName?: string; logicalFunctionName?: string; selectorHex?: string;

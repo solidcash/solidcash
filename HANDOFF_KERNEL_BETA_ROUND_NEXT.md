@@ -1,8 +1,8 @@
 # Handoff — kernel-beta marketplace climb (after the event/continuation round)
 
-> **Latest state (ROUND 84, stale-fetch self-heal): 39 pass / 27 fail; tree at `5c961aa34`.** The sections below are a chronological log;
+> **Latest state (ROUND 85, stall-build correlation): 39 pass / 27 fail; tree at `5749e0c6d`.** The sections below are a chronological log;
 > read ROUNDS 51-52 and 54 (the collection-key, rolled-array and dynamic-storage-read fixes: 32 -> 37),
-> ROUNDS 53-84 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
+> ROUNDS 53-85 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
 > deferred-`takeJob` class and its three falsified hypotheses) at the end. Earlier "State" numbers in this header
 > are historical.
 
@@ -3741,6 +3741,30 @@ build's own read plan was never isolated from them.
 Next round: tie the plan probe to the stalling build only - print `entry-read-plan` together with the composition
 identity (prepared call list + input count) or gate it on the participant whose block is the stalling one - so the
 stall's own plan (slot, presence, list size, sender) is read directly instead of inferred from a run-wide mix.
+
+### ROUND 85: the stalling build's own whitelist plan is CORRECT (the read is not the stall)
+
+Wired a monotonic builder-pass id (`builderBuildSequence`, exported as `peekBuilderBuildId()`) into both the
+read-plan probe and the composer's `deferred-stall-composition`, so a stall can be tied to the plans of the build
+that produced it instead of a run-wide mix. On `-t 'take job'`:
+
+    stalls: 10, max lastBuildId 175
+    whitelist plans with buildId >= 167:  build 171  slot bac4afa31b5925f5  present TRUE  listSize 2
+                                          sender ...e7adb60088ac (= 47d9fe52..., the whitelisted caller)
+
+So the stalling composition's own read plan resolves the whitelist entry **correctly** (present, list of 2, right
+sender). Every `present: false` observation from ROUNDS 82-84 belonged to *other* builds - the caveat recorded then
+is now confirmed, and the whitelist co-spend is **not** what blocks this stall.
+
+That leaves the trace evidence from ROUND 73 (the same stall dies on `OP_VERIFY` at the require on source 680-684)
+to be reconciled with a correct co-spend: the covenant must be deriving a different key than the plan used. The
+key candidates are the plan's 25-byte P2PKH locking bytecode for the caller versus whatever the evaluated
+aggregate's `tx.origin` resolves to - and the covenant derives `msg.sender` from `tx.origin`, i.e. the *first P2PKH
+input of the transaction being evaluated*, which the plan does not control.
+
+Next round: in the stalling pass, print the evaluated aggregate's first P2PKH locking bytecode and compare it with
+the plan's sender (`...e7adb60088ac`); `composed-funder-plan` already gives the funded account, so a mismatch there
+- not the entry list - is the remaining explanation for the failed require.
 
 ### How to localize it next
 

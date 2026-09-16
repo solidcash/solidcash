@@ -6448,6 +6448,12 @@ const hasOutpoint = (utxos: readonly Utxo[], candidate: Utxo): boolean => utxos.
   (utxo) => utxo.txid.toLowerCase() === candidate.txid.toLowerCase() && utxo.vout === candidate.vout,
 );
 
+/** Monotonic id for the builder pass currently resolving entry accesses (diagnostics correlation). */
+let builderBuildSequence = 0;
+
+/** Current builder-pass id; the composer reports it beside a stall so the stall's own plans can be isolated. */
+export const peekBuilderBuildId = (): number => builderBuildSequence;
+
 export class StatefulContract<TArtifact extends Artifact = Artifact> {
   // Backing for inner / categoryId. When constructed from an ADDRESS the category is unknown until the first
   // async op resolves it from the indexer (ethers-style lazy network use); `_inner` starts as a category-less
@@ -18464,6 +18470,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         : entryAccessForSlot(slotIndex)?.operations ?? [];
 
     if (entryAccesses && entryAccesses.length > 0 && stateLayout.collections) {
+      builderBuildSequence += 1;
       // Entries of DIFFERENT collections share the master's category and are indistinguishable by commitment
       // when they carry the same key (a[k] and b[k] both parse under either collection's types). onChainState.
       // entryNftUtxos also mixes in dynamic-storage chunks, so matching within that category-wide list can pick
@@ -18796,6 +18803,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               const freshAddress = getEntryNftAddress(this.inner, this.categoryId, access.collection);
               const freshCount = present ? -1 : (await this.inner.provider.getUtxos(freshAddress)).length;
               console.error('entry-read-plan', JSON.stringify({
+                buildId: builderBuildSequence,
                 freshCount,
                 collection: access.collection,
                 slotIndex,

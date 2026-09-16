@@ -1,6 +1,6 @@
 # Handoff — kernel-beta marketplace climb (after the event/continuation round)
 
-> **Latest state (ROUND 125: graph transcripts measured per participant - p1/p2 get an EMPTY emissions vector while their batch blobs declare 5 and 3 rows): 39 pass / 27 fail.** The sections below are a chronological log;
+> **Latest state (ROUND 126: the composed band is blocked by the `kernel-row-loop` fallback gate; a group-level relaxation REGRESSES `sanity checks`, so the fix must be scoped to the composed path): 39 pass / 27 fail.** The sections below are a chronological log;
 > read ROUNDS 51-52 and 54 (the collection-key, rolled-array and dynamic-storage-read fixes: 32 -> 37),
 > ROUNDS 53-96 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
 > deferred-`takeJob` class and its three falsified hypotheses) at the end. Earlier "State" numbers in this header
@@ -5024,6 +5024,43 @@ computes from parsed fields; the cheapest decisive measurement is to record the 
 their producing instruction (the trace already walks every state), i.e. for the terminal frame, list the preceding
 4-6 instructions that pushed the empty operands - that names the field (a `PICK` of a witness slot, a `SPLIT` of a
 short blob, or a `CAT` of an empty argument) without guessing.
+
+Focused state: `-t 'take job'` = 2 failed | 1 passed (green `sanity checks`), `yarn build` green, no full-ladder
+run (no title turned green).
+
+### ROUND 126: why the band is never planned, and why the obvious relaxation is wrong
+
+Located the gate that stops the SDK from planning the value-chunk band in the composed kernel path:
+
+    permitsLegacyNamedValueChunkFallback(groups, ownerConvention) {
+      if (ownerConvention === 'kernel-row-loop') return false;      // <- our convention
+      return !groups.some((group) => ... artifact.messageBus?.convention === 'kernel-row-loop');
+    }
+
+and the artifact survey that explains the asymmetry behind it:
+
+    MarketplaceV1.artifact.ts      `__internal__valueChunkOutputBase` occurrences: 0
+    MarketplaceDataV1.artifact.ts  `__internal__valueChunkOutputBase` occurrences: 13
+
+i.e. the compiler DOES inject the chunk-base witness where the write happens (the implementation/delegate
+function), but never into the proxy route that the SDK builds and composites - and the route is the only thing the
+composer can claim a writer from. So under `kernel-row-loop` the named fallback is closed and the descriptor path
+has no producer (ROUND 114): the band can never be planned.
+
+Fix attempt and its measured result (reverted): relax `groupChunkableValueWriteResource` so the claim is accepted
+when the selected function's ABI names exactly one chunkable-value collection it writes, even under
+`kernel-row-loop`:
+
+    before : 2 failed | 1 passed   (sanity checks GREEN, 10 stalls)
+    after  : 3 failed              (sanity checks 10.5s failure - the claim fires where it should not)
+
+so the relaxation is correct in DIRECTION but must be scoped to the composed participant (`this.composedParticipant`),
+where the band geometry is participant-local - not applied at group level, where an ordinary direct send also
+matches. That scoping is the next change to make, and it is a fix attempt rather than instrumentation.
+
+Also this round: the `failingTrace` instrumentation (trace tail with stack sizes) was added, read once (the tail is
+`OP_OUTPUTTOKENCATEGORY` / `OP_OUTPUTTOKENCOMMITMENT` then `EQUALVERIFY` with an empty operand), and REVERTED -
+per the operator's steer the effort is shifting from diagnostics to fixes.
 
 Focused state: `-t 'take job'` = 2 failed | 1 passed (green `sanity checks`), `yarn build` green, no full-ladder
 run (no title turned green).

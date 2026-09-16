@@ -1,6 +1,6 @@
 # Handoff — kernel-beta marketplace climb (after the event/continuation round)
 
-> **Latest state (ROUND 129: deterministic chunk derivation for kernel routes landed (composed-band placement, no regression) but is INERT for this contract - the band is not these builds' blocker): 39 pass / 27 fail.** The sections below are a chronological log;
+> **Latest state (ROUND 130: REDIRECT - stopped only looking at `take job`; other ladder windows fail with SPECIFIC named errors and a cheap 15s feedback loop): 39 pass / 27 fail.** The sections below are a chronological log;
 > read ROUNDS 51-52 and 54 (the collection-key, rolled-array and dynamic-storage-read fixes: 32 -> 37),
 > ROUNDS 53-96 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
 > deferred-`takeJob` class and its three falsified hypotheses) at the end. Earlier "State" numbers in this header
@@ -5157,3 +5157,42 @@ recovery read it must reach - which is a compiler-side ordering question.
 
 Focused state: `-t 'take job'` = 2 failed | 1 passed (green `sanity checks`), `yarn build` green, no full-ladder
 run (no title turned green).
+
+### ROUND 130: other ladder windows fail for DIFFERENT, actionable reasons (and verify in seconds)
+
+I had been looking only at `take job` for ~20 rounds. Two neighbouring windows measured this round:
+
+    -t 'close job'   : 1 failed | 1 passed
+        close job before timeout  PASSES (26s)
+        close job after timeout   FAILS: "Cannot send stateful transaction: state commitments could not be
+                                   auto-derived. Reason: Full state derivation failed: Route probe convergence
+                                   repeated a physical transaction state. Use .setState() to provide state values
+                                   manually."                       <- the 4-title convergence class
+    -t 'job updates' : 1 failed | 4 passed
+        update job                     PASSES (80s)
+        update job arbitrator          PASSES (28s)
+        update job tags                FAILS in 15s with:
+            messageBus [L3_RESOURCE_UNRESOLVED]: message-bus batch collection witness
+            '__message_bus_key_meceTags_0' must identify one physical entry
+        update job amounts             PASSES (48s)
+        update job many times, history PASSES (218s)
+
+The second one names a witness and comes from `packages/solidcash/src/message-bus/message-bus.ts:851`, in the
+SWAPPABLE key path:
+
+    const varyingInput = varying.perRow ? `${varying.routeInput}_r${rowIndex}` : varying.routeInput;
+    const selectedVarying = sharedMatches ? {value: varyingValue, encoded: varyingEncoded}
+                                          : {value: sharedValue, encoded: sharedEncoded};
+    const priorVarying = keyWitnessValues.get(varyingInput);
+    if (priorVarying && priorVarying.encoded !== selectedVarying.encoded) throw ... 'must identify one physical entry'
+
+i.e. one witness NAME is being assigned two different key values across rows, which only happens when the binding
+is not row-qualified - the compiler-side `perRow` flag on the route key witness (see the route metadata's
+`__message_bus_key_meceTags_0` vs `..._row` shapes and `alternateRouteInput`). That is a small, general,
+compiler-side fix with a 15-SECOND verification loop (`-t 'update job tags'`), which is the fastest feedback this
+climb has had.
+
+Next round (fresh budget): fix the compiler's per-row qualification for the meceTags-style varying key, verify with
+`-t 'update job tags'`, then run `-t 'job updates'` and the full ladder if a title turns green.
+
+Focused state (unchanged): `-t 'take job'` = 2 failed | 1 passed (green `sanity checks`), `yarn build` green.

@@ -481,6 +481,19 @@ class EmitAssertion implements PromiseLike<void> {
   /** Chai/Waffle chain alias: `.to.emit(...).withArgs(...).and.to.emit(...)`. */
   get and(): this { return this; }
 
+  /**
+   * Negated continuation: `.to.emit(...).withArgs(...).and.not.to.emit(...)`. Chai carries an assertion's polarity
+   * in `negate` and an emit chain is an assertion like any other, so the language chain must expose it here too -
+   * without it `.and.not` is `undefined` and the following `.to` throws a TypeError instead of checking anything.
+   * The copy (rather than a mutation) keeps the shared receipt and the already-scheduled prior checks while
+   * leaving this assertion's own polarity intact for a later `.and.to.emit` in the same chain.
+   */
+  get not(): EmitAssertion {
+    return new EmitAssertion(
+      this.actual, this.contract, this.event, !this.negate, this.prior, this.expectedArgs, this.shared,
+    );
+  }
+
   then<R1 = void, R2 = never>(onOk?: ((v: void) => R1 | PromiseLike<R1>) | null,
     onErr?: ((r: any) => R2 | PromiseLike<R2>) | null): PromiseLike<R1 | R2> {
     return this.runAll().then(onOk, onErr);

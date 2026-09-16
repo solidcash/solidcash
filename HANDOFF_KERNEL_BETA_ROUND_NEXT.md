@@ -1,6 +1,6 @@
 # Handoff — kernel-beta marketplace climb (after the event/continuation round)
 
-> **Latest state (ROUND 138: the resolve loop now probes EVERY participant's verifier input (reads 952 -> 1426) but the missing recovery reads are behind control flow the placeholder data does not enter: ladder stays 43 pass / 23 fail.** The sections below are a chronological log;
+> **Latest state (ROUND 139: the chai harness could not evaluate `.and.not.to.emit(...)`, so `take job multiple` died in chain construction before it ever sent; with that fixed it reaches the SAME deferred-compute wall. Ladder stays 43 pass / 23 fail.** The sections below are a chronological log;
 > read ROUNDS 51-52 and 54 (the collection-key, rolled-array and dynamic-storage-read fixes: 32 -> 37),
 > ROUNDS 53-96 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
 > deferred-`takeJob` class and its three falsified hypotheses) at the end. Earlier "State" numbers in this header
@@ -5504,3 +5504,42 @@ running, the branches are not. That is the next lever - the placeholders must be
 preceding the recovery calls (the same VERIFY family measured in ROUNDS 116-124), not merely parseable.
 
 Focused state: `-t 'take job'` = 2 failed | 1 passed, ladder 43 pass / 23 fail, `yarn build` green, tree clean.
+
+### ROUND 139: the harness crashed on `.and.not.to.emit`, and an experiment that rules out one meceTags fix
+
+Two measurements, both cheap and both narrowing.
+
+**1. `take job multiple` was never sending.** Its first assertion is
+`expect(takeJob(...)).to.emit(marketplaceData,'JobEvent').withArgs(...).and.not.to.emit(unicrowGlobal,'Pay')`. The
+harness's `EmitAssertion` exposed `.and` and `.to` but no `.not`, so `.and.not` was `undefined` and the following
+`.to` threw `TypeError: Cannot read properties of undefined (reading 'to')` while BUILDING the chain - the send had
+not run yet, which is why the ladder reported a TypeError instead of the wall. `Assertion` (the non-emit shim)
+always had a `not`; the emit chain now has the same one, returning a polarity-flipped copy that keeps the shared
+receipt and the already-scheduled prior checks. With it, `take job multiple` reaches `publishJobPost`/`takeJob` and
+fails with the same `complete graph did not expose arguments for all deferred compute resources` as `take job`.
+So this is REQUIRED for the title but not sufficient - the wall still owns it. No regression: close job (2) and
+withdraw collateral (1) still pass.
+
+**2. meceTags: the kernel itself rejects the second key, so this is a lane-allocation feature, not a composer
+guard.** `post job with invalid mece tags` fails at its THIRD expectation - the VALID `["DV","test"]` post, not the
+two-MECE one: `_validateTags` calls `marketplaceData.meceTags(tags_[i])` in a loop, so the batch has two rows of one
+handler with different key witnesses and `encodeMessageBatch` throws `L3_RESOURCE_UNRESOLVED: ... must identify one
+physical entry`. Removing that throw (gated experiment) makes composition continue and the transaction then reverts
+on chain with `Atomic graph has duplicate authenticated producer lane 0:1`: the route has ONE meceTags entry lane
+(`route.entryAccesses[5]`, the only `__message_bus_key_meceTags_0` lane) and the kernel refuses two authenticated
+producers on it. `["DV","DA"]` still reverts with the expected `Only one MECE tag is allowed`, i.e. the derivation
+does evaluate the reads. Conclusion: a caller-side read loop needs one physical lane PER ROW. The compiler already
+emits extra lanes for a *self*-computed runtime key (`getUsers` -> `route.entryAccesses[6]` with keyParam
+`map:userAddresses(binop:+(id:i,id:index_))`, `getArbitrators` -> slot 7), but a cross-contract *argument* key has no
+such lane, and `perRow` alone is not it: kernel dispatch emits no `_rN` route inputs for argument keys (they are
+"decoded from the row", compiler.ts ~6940), which is true for the row blob but not for the entry LANE. Fix shape:
+publish N row-local lanes (or a row-indexed lane selector) for a collection whose key is a cross-contract argument.
+
+**3. `failingIp` cannot be turned into a source line from the participant artifact.** The deferred resolver's
+participant is the SDK's synthetic `SolidCashProxy` artifact (`defaultProxyArtifact.ts`), whose `source`/`sourceMap`
+describe the proxy's own `implementation.delegatecall(input)` body - the failing ip belongs to the delegated
+implementation body, which is not reachable through `this.parentContract.inner.artifact`. A diagnostic that mapped
+the pointer through that artifact's maps produced no candidates at all. The implementation artifact is reachable
+through the low-level call groups (`group.logicalArtifact ?? group.externalContract.inner.artifact`).
+
+Focused state: ladder 43 pass / 23 fail, `yarn build` green, tree clean after this commit.

@@ -3744,10 +3744,15 @@ export class AtomicMessageBusComposition {
                   } else if (opcode === 0x00) { lengths.push(0); cursor += 1; }
                   else break;
                 }
+                // Full name=length table, not just the empty entries: the failing comparison reads a witness by
+                // its ABI position, so the table lets the empty COMPUTED operands be matched to the parameter that
+                // produced them.
+                const table = lengths.slice(0, declared.length).map((length, index) =>
+                  `${declared[index]?.name ?? index}=${length}`);
                 const empty = lengths.map((length, index) => ({ length, index }))
                   .filter((item) => item.length === 0)
                   .map((item) => declared[item.index]?.name ?? `<${item.index}>`);
-                return `p${candidate.participant}:empty[${empty.join(',')}]`;
+                return `p${candidate.participant}:empty[${empty.join(',')}]:${table.join(' ')}`;
               });
               console.error('deferred-stall-io-full', JSON.stringify({
                 routeArguments,

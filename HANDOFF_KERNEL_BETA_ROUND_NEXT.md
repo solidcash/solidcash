@@ -1,6 +1,6 @@
 # Handoff — kernel-beta marketplace climb (after the event/continuation round)
 
-> **Latest state (ROUND 124: NO operand is unexplained - origins {known 43, empty 37}; the blocker is the EMPTY COMPUTED values, i.e. unset witnesses): 39 pass / 27 fail.** The sections below are a chronological log;
+> **Latest state (ROUND 125: graph transcripts measured per participant - p1/p2 get an EMPTY emissions vector while their batch blobs declare 5 and 3 rows): 39 pass / 27 fail.** The sections below are a chronological log;
 > read ROUNDS 51-52 and 54 (the collection-key, rolled-array and dynamic-storage-read fixes: 32 -> 37),
 > ROUNDS 53-96 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
 > deferred-`takeJob` class and its three falsified hypotheses) at the end. Earlier "State" numbers in this header
@@ -4997,6 +4997,33 @@ family). The concrete next measurement is to record, for the failing comparison,
 empty value - the route ABI vector is non-empty, so the empty must be an unset per-row/per-slot witness, and the
 covenant's own witness-name list (the `__internal__vmap*` family) can be enumerated against the values the probe
 carried.
+
+Focused state: `-t 'take job'` = 2 failed | 1 passed (green `sanity checks`), `yarn build` green, no full-ladder
+run (no title turned green).
+
+### ROUND 125: the graph transcript vectors, participant by participant
+
+`routeArguments` now prints the full `name=length` table (not just the empty entries) so a witness read can be
+matched to its ABI position; the route unlocking bytecode is not a flat pushdata vector, so the decoder stops at
+the first non-pushdata opcode and the table is partial by construction (recorded as such). The
+`verifier-arguments` record gives the reliable side. Measured across the failing builds:
+
+    p0  blob 199  expectedLocalRows 1  emissions 1073  callers 27   completions 2   boundary 9
+    p1  blob 353  expectedLocalRows 5  emissions 0     callers 185  completions 10  boundary 9
+    p2  blob 214  expectedLocalRows 3  emissions 0     callers 111  completions 6   boundary 7
+    p0  blob 21   expectedLocalRows 1  emissions 932   callers 27   completions 2   boundary 12
+
+So `suppliedEmissions` is EMPTY for exactly the participants that own no emitted rows (p1 with 5 declared rows,
+p2 with 3) while their caller and completion vectors are populated - which is consistent with the compiler's
+per-participant filter (`kind === 0 && parent !== 0xffff && owner === participant`) and with the composer throwing
+only on UNDEFINED arguments, so an empty transcript is by design. It is therefore NOT by itself the missing value;
+the empty COMPUTED operands (ROUND 124) are still unattributed.
+
+Next: attribute the empties directly instead of by elimination. The covenant's failing comparison reads a value it
+computes from parsed fields; the cheapest decisive measurement is to record the last few COMPUTED stack items with
+their producing instruction (the trace already walks every state), i.e. for the terminal frame, list the preceding
+4-6 instructions that pushed the empty operands - that names the field (a `PICK` of a witness slot, a `SPLIT` of a
+short blob, or a `CAT` of an empty argument) without guessing.
 
 Focused state: `-t 'take job'` = 2 failed | 1 passed (green `sanity checks`), `yarn build` green, no full-ladder
 run (no title turned green).

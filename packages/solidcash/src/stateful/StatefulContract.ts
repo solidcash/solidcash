@@ -36700,6 +36700,25 @@ export class StatefulFunctionCall {
                       `${stack.length - 1 - index}:${item.length}:${binToHex(item).slice(0, 260)}`),
                   }];
                 };
+                const frameEntries: unknown[] = [];
+                for (const [index, raw] of trace.entries()) {
+                  const state = raw as {
+                    ip?: number; instructions?: Array<{ opcode: number; data?: Uint8Array }>;
+                    stack?: Uint8Array[];
+                  };
+                  if ((state.ip ?? -1) !== 0 || !state.instructions) continue;
+                  frameEntries.push({
+                    index,
+                    size: state.instructions.length,
+                    head: state.instructions.slice(0, 6).map((instruction) => `${instruction.opcode}`
+                      + (instruction.data ? `:${binToHex(instruction.data).slice(0, 12)}` : '')).join(' '),
+                    stackDepth: state.stack?.length,
+                  });
+                }
+                console.error('no-progress-frame-entries', JSON.stringify({
+                  buildId: builderBuildSequence,
+                  entries: frameEntries.slice(-10),
+                }));
                 console.error('no-progress-frames', JSON.stringify({
                   buildId: builderBuildSequence, five: framesOf(5), seven: framesOf(7),
                 }));

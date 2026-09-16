@@ -1,8 +1,8 @@
 # Handoff — kernel-beta marketplace climb (after the event/continuation round)
 
-> **Latest state (ROUND 91, commitment-length shortfall): 39 pass / 27 fail; tree at `a8eb05178`.** The sections below are a chronological log;
+> **Latest state (ROUND 92, frame pairing corrected): 39 pass / 27 fail; tree at `70851325b`.** The sections below are a chronological log;
 > read ROUNDS 51-52 and 54 (the collection-key, rolled-array and dynamic-storage-read fixes: 32 -> 37),
-> ROUNDS 53-91 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
+> ROUNDS 53-92 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
 > deferred-`takeJob` class and its three falsified hypotheses) at the end. Earlier "State" numbers in this header
 > are historical.
 
@@ -3920,6 +3920,32 @@ Next round: identify the helper (the pushed id `0x7a` / body 18, sourceMap `192:
 `MarketplaceDataV1`'s `invokeDebug` and read what layout it expects, then fix the commitment the SDK builds for
 that side-car output (general: the side-car commitment layout, not a marketplace rule). Oracle: `ip 1` must stop
 being the failure point in the correlated builds and `deferred-ecrecover-learned` must rise above 2.
+
+### ROUND 92: the two dumped frames are NOT a nesting pair (correction)
+
+Looked up the bodies in `MarketplaceDataV1.debug.invokeDebug`:
+
+    id 18  'outlined source span 18'   bytecode 7f7701207f75  (6 B)  sourceMap 192:24:192:54
+    id 122 'outlined source span 122'  bytecode ce01207f7c755288 (8 B) sourceMap 23:6:114:7:1
+
+Decoded with the BCH-2026 table, id 122 is `OP_UTXOTOKENCATEGORY <32> OP_SPLIT OP_SWAP OP_DROP OP_2 OP_EQUAL` - the
+standard "this input's token category carries the minting capability" check - and id 18 is
+`OP_SPLIT OP_NIP <32> OP_SPLIT OP_DROP`. They are different outlines, and the pushed invoke id in the 7-instruction
+frame (`0x7a` = 122) names the minting check, not body 18.
+
+So the ROUND 91 pairing was wrong: frames of the same *size* occur in different *bodies*, and the "7-instruction
+frame invokes the 5-instruction frame" reading - and with it the "output commitment is one chunk short"
+conclusion - is **not established**. What survives is only this: some body of size 5 fails its second
+`OP_SPLIT <32>` on a zero-length remainder, and the EIP-191 prefix plus the 64-byte item in the surrounding states
+place it in the ecrecover path.
+
+Landed this round: a probe that lists the trace's *frame entries* (states at `ip 0`) with each body's first six
+instructions - which returned **no entries**, i.e. libauth does not record `ip === 0` states, so bodies must be
+grouped by their `instructions` list identity rather than by size or first ip.
+
+Next round: group the failing trace's states by their `instructions` array identity (or by length + first six
+opcodes) and report, per body, the first and last ip reached - that identifies the body that actually fails and its
+parent without assuming frames of equal size are the same body.
 
 ### How to localize it next
 

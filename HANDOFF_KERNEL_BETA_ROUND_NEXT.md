@@ -1,6 +1,6 @@
 # Handoff — kernel-beta marketplace climb (after the event/continuation round)
 
-> **Latest state (ROUND 127: composed-scoped claim relaxation landed (no regression, but inert) - the PROXY route ABI carries no chunkable write description at all): 39 pass / 27 fail.** The sections below are a chronological log;
+> **Latest state (ROUND 128: found the SDK's chunk source split (direct param vs trace) and its fix site; the first deterministic attempt regresses on block balance): 39 pass / 27 fail.** The sections below are a chronological log;
 > read ROUNDS 51-52 and 54 (the collection-key, rolled-array and dynamic-storage-read fixes: 32 -> 37),
 > ROUNDS 53-96 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
 > deferred-`takeJob` class and its three falsified hypotheses) at the end. Earlier "State" numbers in this header
@@ -5088,6 +5088,39 @@ describe the chunkable write, and the two ways forward are now both named:
       `messageBusActiveWriteCollections`/an equivalent claim names it); or
   (b) SDK: let the claim consult the IMPLEMENTATION artifact the participant delegates to (the composer knows the
       delegate/LLC wiring) instead of only the ABI it builds.
+
+Focused state: `-t 'take job'` = 2 failed | 1 passed (green `sanity checks`), `yarn build` green, no full-ladder
+run (no title turned green).
+
+### ROUND 128: the chunk source split, and where the deterministic derivation must plug in
+
+Read the P5b machinery in `StatefulContract` and found the split that matters:
+
+    if (isWrite && collection.chunkableValue) {
+      const vIdx = access.valueParam ? ... : -1;
+      const raw = vIdx >= 0 ? entryArgs[vIdx] : undefined;
+      if (vBytes) { if (vBytes.length > 60) valueChunkMints.push({ collection, slot, digest: sha256(vBytes),
+                                                                chunks: splitValueIntoValueChunks(vBytes) }); }
+      else { ... addComputedValueChunkRun(access.collection, slot); }        // <- trace discovery
+    }
+
+so a DIRECT value param produces the pinned continuations deterministically, while a handler-COMPUTED value
+(publishJobEvent's array value) registers a computed run that the SDK resolves by trace discovery - and that
+discovery is exactly what the unpublised chunk slot deadlocks (the probe halts before it reaches the pin).
+
+Attempted fix (reverted): in the computed branch, when the route carries `messageBusRowArguments`, encode the value
+from the row arguments - the code immediately above already builds exactly that encoding
+(`encodeLeadingRouteArrayPushes({ rowArguments, collection, valueType, structs, timestamp, resolveElement:
+this._encodeStoredElementSource(...) })`) - and push a `valueChunkMints` entry with its digest/chunks instead of a
+computed run. Measured:
+
+    after the change : 3 failed (sanity checks REGRESSED) and the first error is
+                       `messageBus: participant 1 built 87/146 slots, expected balanced block size 87`
+
+so the derivation direction is plausible but the mints materialize at the LAYOUT-relative base, growing the
+participant past its balanced block; they must be placed at the COMPOSED band base (the `composedTrailing` /
+`getComposedBlockBase()` coordinates the band planner already uses) for a composed participant. Reverted; the
+mints/`valueChunkMints` path is the right lever, the placement is the open detail.
 
 Focused state: `-t 'take job'` = 2 failed | 1 passed (green `sanity checks`), `yarn build` green, no full-ladder
 run (no title turned green).

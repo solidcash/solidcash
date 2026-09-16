@@ -1,6 +1,6 @@
 # Handoff — kernel-beta marketplace climb (after the event/continuation round)
 
-> **Latest state (ROUND 110: the OP_SPLIT read is the sorted-chain walk `master + blockSize + 1 + counter`, counter = 2): 39 pass / 27 fail.** The sections below are a chronological log;
+> **Latest state (ROUND 111: MEASURED chain-length mismatch - p0 publishes 2 trailing outputs where the walk needs 3): 39 pass / 27 fail.** The sections below are a chronological log;
 > read ROUNDS 51-52 and 54 (the collection-key, rolled-array and dynamic-storage-read fixes: 32 -> 37),
 > ROUNDS 53-96 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
 > deferred-`takeJob` class and its three falsified hypotheses) at the end. Earlier "State" numbers in this header
@@ -4574,6 +4574,32 @@ Next: build a focused diagnostic that prints, for one stalled build, the covenan
 index chain, now visible in the 40-read window) next to the SDK's published count for that band and the witness
 value it passed - then decide whether the SDK undercounts, the witness overcounts, or the walk should stop at the
 published run (fail-closed bound).
+
+Focused state: `-t 'take job'` = 2 failed | 1 passed (green `sanity checks`), `yarn build` green, no full-ladder
+run (no title turned green).
+
+### ROUND 111: the chain-length mismatch is measured (2 published vs 3 walked)
+
+New diagnostic field `trailingPublished` in `deferred-stall-io-full`: for every participant, how many of its
+`trailing` slots actually carry a token in the aggregate, and at which offsets. Measured:
+
+    build 40 : p0 2/64 [63,64]   p1 5/64 [21,22,82,83,84]   p2 3/64 [23,24,25]   p3 2/64 [16,17]   p4 1/64 [13]
+    build 67 : p0 2/64 [63,64]   p1 4/64 [21,22,83,84]
+    build 74 : p0 2/64 [63,64]   p1 4/64 [21,22,83,84]
+
+Participant 0 has blockSize 63, so its published run is exactly P' at +0 (63) and node 1 at +1 (64) - while the
+range-splice walk reads `master + blockSize + 1 + counter` and the measured abort was at 66 (counter 2). The
+covenant therefore walks MORE new sorted-chain nodes than the SDK materialised, and the walk runs off the
+published run into a bare pad, where the shared 32/32 parser (span 122) aborts on the empty commitment.
+
+The published counts also show the pattern per participant: a short prefix at the start of each trailing run (and
+for p1 a second pair at 82..84), which is consistent with the SDK publishing only the nodes it planned while the
+covenant's walk is bounded by the ROW's key count from its witness blob.
+
+Next: compare the row's key/insert count (the witness the covenant's loop bound comes from) with the SDK's
+published node count for the same row - both are now measurable (the read window gives the walk, `trailingPublished`
+gives the publication) - and fix whichever side is wrong: publish one node per key, or bound the walk by the
+published run.
 
 Focused state: `-t 'take job'` = 2 failed | 1 passed (green `sanity checks`), `yarn build` green, no full-ladder
 run (no title turned green).

@@ -3674,9 +3674,23 @@ export class AtomicMessageBusComposition {
                 const commitment = output.token?.nft?.commitment;
                 return [`${index}:${resourceKinds.get(lock) ?? 'unknown'}:${(commitment?.length ?? 0) / 2}`];
               });
+              // How much of each participant's trailing run was actually PUBLISHED (token-bearing). The
+              // range-splice chain walk addresses output[master + blockSize + 1 + counter], so a mismatch between
+              // this count and the counter the covenant reached in the SDK's read window is the chain-length
+              // mismatch itself, visible without another round of instrumentation.
+              const trailingPublished = plan.participants.map((candidate) => {
+                const base = graph.layout.participantInputs[candidate.participant];
+                const trailing = (candidate.blockLayout?.slots ?? [])
+                  .filter((slot) => slot.kind === 'trailing').map((slot) => slot.offset).sort((a, b) => a - b);
+                const published = trailing.filter((offset) =>
+                  aggregate.outputs[base + offset]?.token?.nft !== undefined);
+                return `p${candidate.participant}:${published.length}/${trailing.length}`
+                  + `[${published.slice(0, 6).join(',')}]`;
+              });
               console.error('deferred-stall-io-full', JSON.stringify({
                 buildId: peekBuilderBuildId(),
                 labels: slotLabels,
+                trailingPublished,
                 tailKinds,
                 out: aggregate.outputs.map((item, index) => {
                   const lock = item?.to instanceof Uint8Array ? binToHex(item.to).slice(0, 10) : '';

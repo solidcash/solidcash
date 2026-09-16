@@ -1,6 +1,6 @@
 # Handoff — kernel-beta marketplace climb (after the event/continuation round)
 
-> **Latest state (ROUND 105, the aborting tail resources are appended by the composer, after each participant's build): 39 pass / 27 fail.** The sections below are a chronological log;
+> **Latest state (ROUND 106, build 40's stall is a CONFIRMED reserved-ordinal witness: target == 0xffff): 39 pass / 27 fail.** The sections below are a chronological log;
 > read ROUNDS 51-52 and 54 (the collection-key, rolled-array and dynamic-storage-read fixes: 32 -> 37),
 > ROUNDS 53-96 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
 > deferred-`takeJob` class and its three falsified hypotheses) at the end. Earlier "State" numbers in this header
@@ -4409,6 +4409,40 @@ family the aborting scan matched and which family the composer's transport publi
 Next concrete step: read the composer's `transportedValueChunks` placement (compose.ts, the loop right after each
 `local = await localCall.build()`), note the lock and commitment format it appends, and compare against the
 address the verifier's scan compares (`valueChunkSignature` domain vs the pinned slot/digest domain).
+
+Focused state: `-t 'take job'` = 2 failed | 1 passed (green `sanity checks`), `yarn build` green, no full-ladder
+run (no title turned green).
+
+### ROUND 106: the failing check is `require(target != 0xffff)`, and build 40 carries exactly that
+
+Located the compiler site emitting the failing window's `OP_EQUAL OP_NOT OP_VERIFY`
+(`GenerateTargetTraversal.ts:26522`): it is the runtime-loop JOURNAL binding, which validates each compact access
+tuple `flags || target-u16le || predecessor-u16le` and rejects the reserved ordinal in the TARGET field:
+
+    OP_DUP 0xffff OP_EQUAL OP_NOT OP_VERIFY        // require(target != 0xffff)
+    OP_SWAP 2 OP_SPLIT                             // -> predecessor, next
+
+The SDK's own encoder agrees with that contract (`KernelEntryJournal.ts`: `NO_PREDECESSOR = 0xffff`, ordinals must
+stay below it, and its decoder throws "uses the reserved target ordinal"), so a 0xffff target is invalid on both
+sides.
+
+New diagnostic `accessSentinels` in `deferred-no-progress-reads`: it scans every probe input's unlocking bytecode
+for the compact access stream (`KERNEL_ENTRY_JOURNAL_ACCESS_TAG = 0x06`, header 2 + 20 bytes, 5 bytes per access)
+and reports the tuples whose target field is the sentinel. Measured:
+
+    build 40 : inputs 463, 464, 465, 466, 467 each carry count = 33 with sentinel targets at access ordinals
+               11 and 26          <- CONFIRMED: the probe dies on exactly this check
+    build 67 : []                 <- different cause, still open
+    build 74 : []                 <- different cause, still open
+
+Note the coincidence that matters for round 105's finding: build 40's sentinel-carrying inputs (463..467) are the
+same coordinates as its aborting tail read (463). Build 67/74's stall is NOT this sentinel, so the class has at
+least two causes and they must be fixed separately.
+
+Next: (1) find which SDK path writes `targetRecordOrdinal = 0xffff` (an "unresolved target" placeholder in the
+deferred probe is the likely origin) and give it a plausible ordinal; (2) diagnose build 67/74 independently - the
+sentinel scan can be widened to the other witness carriers (outputs, and streams with count > 64 or a different
+tag offset).
 
 Focused state: `-t 'take job'` = 2 failed | 1 passed (green `sanity checks`), `yarn build` green, no full-ladder
 run (no title turned green).

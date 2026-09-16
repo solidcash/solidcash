@@ -170,6 +170,7 @@ import {
   type KernelEntryJournalSettlementReference,
   type KernelEntryJournalDirtyFinalBodyCandidate,
   type KernelEntryJournalTopologyOperation,
+  KERNEL_ENTRY_JOURNAL_ACCESS_TAG,
 } from './KernelEntryJournal.js';
 import {
   resolveKernelDelegateForwardingTarget, resolveKernelDelegatePromotion,
@@ -36770,6 +36771,26 @@ export class StatefulFunctionCall {
                 // The terminal state's instruction list is the ENCLOSING script's, so print the window around the
                 // pointer rather than one index: the reported failing opcode (OP_VERIFY) and the neighbouring
                 // opcodes together identify the check without needing the artifact's ip-to-source map.
+                // The runtime-loop journal rejects the reserved target ordinal (0xffff) and the covenant's
+                // sentinel check is exactly `require(target != 0xffff)`, so report any access stream the probe
+                // carries whose target field still holds the sentinel: that tuple, not the commitment parse, is
+                // what ends the trace before the deferred resolvers can read their arguments.
+                accessSentinels: program.transaction.inputs.flatMap((input, inputIndex) => {
+                  const unlocking = input.unlockingBytecode;
+                  const hits: Array<{ input: number; count: number; sentinels: number[] }> = [];
+                  for (let at = 0; at + 2 <= unlocking.length; at += 1) {
+                    if (unlocking[at] !== KERNEL_ENTRY_JOURNAL_ACCESS_TAG) continue;
+                    const count = unlocking[at + 1];
+                    if (count === 0 || count > 64 || at + 2 + count * 5 > unlocking.length) continue;
+                    const sentinels = Array.from({ length: count }, (_unused, index) => index)
+                      .filter((index) => {
+                        const offset = at + 2 + 20 + index * 5;
+                        return (unlocking[offset + 1] | (unlocking[offset + 2] << 8)) === 0xffff;
+                      });
+                    if (sentinels.length > 0) hits.push({ input: inputIndex, count, sentinels });
+                  }
+                  return hits;
+                }),
                 failingWindow: (terminal?.instructions ?? [])
                   .slice(Math.max(0, (terminal?.ip ?? 0) - 4), (terminal?.ip ?? 0) + 3)
                   .map((instruction) => ({ op: instruction?.opcode })),

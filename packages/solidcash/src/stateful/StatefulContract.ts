@@ -36712,13 +36712,15 @@ export class StatefulFunctionCall {
             // enough to parse). The real run is recomposed from the learned values and every equality check still
             // compares against the authenticated expectation, so a placeholder still fails closed - it only stops
             // the run from aborting before the reads the resolver needs.
-            const trailingBase = ((): number | undefined => {
+            const trailingCoordinates = ((): { trailingBase?: number; blockSize?: number } => {
               try {
-                return stb.getTrailingBandCoordinatesForDiagnostics().trailingBase;
+                return stb.getTrailingBandCoordinatesForDiagnostics();
               } catch {
-                return undefined;
+                return {};
               }
             })();
+            const trailingBase = trailingCoordinates.trailingBase;
+            const blockSize = trailingCoordinates.blockSize;
             const masterCategory = program.transaction.outputs
               .find((candidate) => candidate.token?.nft?.capability === 'minting')?.token?.category;
             const placeholderFor = <T extends { token?: unknown; lockingBytecode: Uint8Array }>(
@@ -36728,6 +36730,15 @@ export class StatefulFunctionCall {
                 return output;
               }
               if (index < inputBase + trailingBase) return output;
+              // The trailing RUN the positional read walks is the part of THIS participant's block band, so the
+              // placeholder stops at the block's end. Everything beyond it belongs to the settlement tail - the
+              // payout and change outputs - and a token placed there aborts the probe at the shared token-less
+              // output check (`require(tx.outputs[a+b].tokenCommitment.size == 0)`, measured as the abort at the
+              // 13-instruction outlined span with OP_NUMEQUALVERIFY on an empty commitment) BEFORE the recovery
+              // read site, which is exactly what kept the deferred argument unresolved. The band is the widest
+              // region a positional read can address, so bounding the placeholder to it is what the placeholder
+              // is for: it stops the parse abort without changing a coordinate the covenant requires to be bare.
+              if (blockSize !== undefined && index >= inputBase + blockSize) return output;
               return {
                 ...output,
                 token: {

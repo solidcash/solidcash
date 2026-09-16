@@ -1,6 +1,8 @@
 # Handoff — kernel-beta marketplace climb (after the event/continuation round)
 
-> **Latest state (ROUND 140: the deferred ecrecover call list is now selected from the handlers this envelope actually runs, not from the route's union slot count - `take job` gets PAST the deferred wall and now fails later, in BCH-2026 preflight at the verifier input. Ladder pending re-measure.** The sections below are a chronological log;
+> **Latest state (ROUND 141: the probe's structural placeholders are now bounded to the participant's own block band, which removes the token-less-output abort (the probe COMPLETES: reads 1426 -> 2382); the take-job frontier is now the preflight empty-commitment split, and the concrete defect is that the route's UNSELECTED union compute coordinates (ecrecover slots 6..19) carry tokens with ZERO-length commitments. Ladder unchanged.**
+>
+> Superseded (ROUND 140: the deferred ecrecover call list is now selected from the handlers this envelope actually runs, not from the route's union slot count - `take job` gets PAST the deferred wall and now fails later, in BCH-2026 preflight at the verifier input. Ladder pending re-measure.** The sections below are a chronological log;
 > read ROUNDS 51-52 and 54 (the collection-key, rolled-array and dynamic-storage-read fixes: 32 -> 37),
 > ROUNDS 53-96 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
 > deferred-`takeJob` class and its three falsified hypotheses) at the end. Earlier "State" numbers in this header
@@ -5542,6 +5544,12 @@ implementation body, which is not reachable through `this.parentContract.inner.a
 the pointer through that artifact's maps produced no candidates at all. The implementation artifact is reachable
 through the low-level call groups (`group.logicalArtifact ?? group.externalContract.inner.artifact`).
 
+**ROUND 132 measurement (negative, reverted):** re-applying the "settle a COMPLETED probe" logic (controller
+`probeCompletedWithoutError` + composer `settledDeferredBlocks`) changes nothing for `take job` - the same
+preflight failure at input 127 with the same message. The composer already proceeds past the stall, so the
+take-job blocker is now purely the preflight empty-commitment split, not the deferred-resolution loop. Do not
+re-land the settle logic without a case where the composer actually throws.
+
 Focused state: ladder 43 pass / 23 fail, `yarn build` green, tree clean after this commit.
 
 ### ROUND 140: the eight deferred ecrecover calls were never eight calls
@@ -5624,3 +5632,55 @@ checks` passed; `take job` and `take job multiple` fail at preflight instead of 
 - Keep every fix general - no contract/function/source-name special cases - and prefer a real fix over more
   instrumentation.
 - Never commit a memory/handoff-only change: a memory update must ride along with a code change.
+
+### ROUND 141: the probe now completes, and the empty commitments have an address
+
+**Landed: the probe's structural placeholders are bounded to this participant's own block band**
+(`trailingBase <= index - inputBase < blockSize`). The unbounded form tokenized every output beyond the trailing
+base, including the settlement tail's payout/change outputs, and the probe then aborted at the shared token-less
+output check (`require(tx.outputs[a+b].tokenCommitment.size == 0)`, the 13-instruction outlined span with
+OP_NUMEQUALVERIFY on an empty commitment). Measured on `-t 'take job'`: build 40 goes from `error: "Program failed
+an OP_VERIFY operation." ip 10 total 1426` to `error: none, ip 656 (end of script), total 2382`, and the token-less
+abort signature disappears from the stall list. No regression: close job 2/2, withdraw collateral 1/1,
+take job > sanity checks pass.
+
+**Decisive new fact about the preflight frontier.** The `deferred-stall-sidecars` record (still emitted during the
+rounds the composer probes) now names the aggregate's compute coordinates with their commitment sizes:
+
+    keccakSideCar3        input 32  output 64     (selected, real)
+    ecrecoverSideCar4     input 32  output 32     (selected call's A pair, LEARNED)
+    ecrecoverSideCar5     input 32  output 34     (selected call's B pair, LEARNED)
+    ecrecoverSideCar6..19 input  0  output  0     (unselected union coordinates: TOKENS WITH EMPTY COMMITMENTS)
+
+So the route's seven unselected recovery pairs are published as NFTs whose commitment is ZERO bytes, not as
+token-less funders and not as structural placeholders. The `x[32:64]`-shaped outlined parse that aborts preflight
+on an empty item is exactly what a zero-length commitment produces, and the aborting input (127,
+`MarketplaceV1.__message_bus1`) is the input carrying the `SCB1` envelope. ROUND 140's experiment (provisioning
+`buildEcrecoverComputePlaceholders` for those coordinates, env-gated and reverted) moved the abort to input 6 with
+a 128-byte split instead of fixing it, so the placeholder *shape* was wrong, not the intent: the next step is to
+find who publishes those empty-commitment tokens and give the unselected union coordinates a shape the route's
+parse accepts - most likely the same structural body the selected pair uses, at the coordinate the route's block
+layout names.
+
+**Still outstanding for `take job`:** `ecrecoverTotal` is 1 (ROUND 140's call selection holds), and the probe now
+COMPLETES without reaching that one read site, so the argument stays unresolved. That is precisely the shape the
+ROUND 140 "settle a completed probe" idea was for; it was reverted then because the phantom calls dominated. With
+the phantoms gone it is worth re-measuring, together with a correct placeholder shape for slots 6..19.
+
+## CORRECTION (ROUND 136): the "zero-length commitment" lead is AMBIGUOUS - do not chase it
+
+The stall-sidecars record computes `commitBytes: (item?.token?.nft?.commitment?.length ?? 0) / 2` (compose.ts:3650)
+over a HEX string, so `0` means "no token", "no nft" and "empty commitment" alike, and the failure record's
+`commitment: ""` is equally undecidable. The composer separately REQUIRES block funders to be token-free
+("messageBus: split participant ... funders must be token-free", compose.ts:1853), and both builder paths fill an
+unclaimed compute coordinate with a bare `{ to: OP_TRUE, amount: BALANCED_SLOT_SATOSHIS }` pad
+(StatefulTransactionBuilder.ts:16706-16711 block-layout path, :16972-16976 delegate path). Token-less unselected
+ecrecover coordinates are therefore EXPECTED, not a defect, and ROUND 140's "give slots 6..19 a placeholder shape"
+experiment failing to help is consistent with that.
+
+Only two facts about the preflight failure remain solid: (1) the abort is the shared `x[32:64]` outlined span
+splitting a LENGTH-0 item; (2) all 68 tracked invokes of that span on input 127 received NON-empty arguments
+(`SOLIDC_DEBUG_INVOKE_INPUT=127 SOLIDC_DEBUG_INVOKE_ID=122`), so the aborting frame is either a different body with
+the same opcode prefix or the failing input's frame attribution is wrong. Re-derive the failing coordinate from
+`SOLIDC_DEBUG_FAILURE_RING=1`/the opcode ring (authoritative) before changing any pad shape.
+

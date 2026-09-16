@@ -1,8 +1,8 @@
 # Handoff — kernel-beta marketplace climb (after the event/continuation round)
 
-> **Latest state (ROUND 65, output-scan stall): 39 pass / 27 fail; tree at `888142361`.** The sections below are a chronological log;
+> **Latest state (ROUND 66, verify-atomic scan): 39 pass / 27 fail; tree at `a9b7cbf60`.** The sections below are a chronological log;
 > read ROUNDS 51-52 and 54 (the collection-key, rolled-array and dynamic-storage-read fixes: 32 -> 37),
-> ROUNDS 53-65 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
+> ROUNDS 53-66 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
 > deferred-`takeJob` class and its three falsified hypotheses) at the end. Earlier "State" numbers in this header
 > are historical.
 
@@ -3146,6 +3146,33 @@ Next round: find which witness supplies that scan base (candidates: `__internal_
 in the generated route, `__internal__graphBlockSize`/`fixedSize`, `__internal__graphSettlementTable`) and make the
 scan range block-local - the same local/absolute split ROUND 63 fixed for the continuation band. A fast oracle is
 the tail dump above: after the fix, output indices 450..461 must no longer be scanned by participant 0's route.
+
+### ROUND 66: the failing body is `__message_bus_verify_atomic`
+
+Identified the frame that runs the output scan (no code change; tree at `a9b7cbf60`):
+
+* `MarketplaceDataV1.debug.invokeDebug` is keyed by invoke id and named per generated body. The terminal 5-instruction
+  frame is id 18 (the generic outline), but the *scan* frame (trace ips 247/255, 943 states) is
+  **id 71 `__message_bus_verify_atomic`**, 319 instructions / 386 bytes - the only body with that instruction count.
+* Decoding that body (id 71, instruction offsets are byte offsets) around those ips gives a
+  commitment-digest accumulator shape: `... OP_RIGHT OP_NIP <0x21> OP_NUMEQUAL OP_ELSE OP_0 OP_ENDIF OP_IF
+  <0x4e> OP_1ADD OP_CAT OP_NIP OP_2 OP_PICK OP_XOR OP_ELSE OP_0 OP_ENDIF OP_IF OP_PICK ...
+  OP_CAT OP_DROP <0x20> ...`, i.e. it folds a sequence of 32-byte commitments with `OP_CAT`/`OP_XOR` while walking
+  an index (`OP_1ADD`). Together with the ring's `OP_OUTPUTBYTECODE`/token-commitment reads and the counter walking
+  458 -> 463, this is the atomic verifier digesting the composed layout's commitments.
+* Caveat for whoever continues: **opcodes are BCH-2026 renumbered** (205 = OP_OUTPUTBYTECODE, 210 =
+  OP_OUTPUTTOKENCOMMITMENT per the SDK's `Op`), so a decoder using the pre-2026 table (as I used) mislabels
+  0xcd/0xce/0xcf/0xd0. Map through `Op` from the SDK's libauth before drawing conclusions from raw bytes.
+* Also ruled out as the *cause* of the "empty item": the digest region itself carries non-empty commitments
+  (verifier outputs 463..467 are 38-byte `4c3356310000...`), so the empty item comes from an output the loop
+  reaches that has no token at all - the OP_TRUE pads at 450..461 in participant 4's block tail.
+
+Next round (targeted, cheap): in the failing pass, dump the arguments this body receives
+(`__internal__activeVerifierIndex`, `__internal__graphFixedSize`, `__internal__graphBlockSize`,
+`__internal__graphSettlementTable`, `__internal__graphCompletionPositions`) plus the stack at the loop setup
+(trace ip where `OP_1ADD` first runs), and compute the loop's base/limit arithmetically from those witnesses. That
+names the witness that must become block-local (or the composer value that must change), instead of guessing from
+the bytecode.
 
 ### How to localize it next
 

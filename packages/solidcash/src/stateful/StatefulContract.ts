@@ -6421,6 +6421,33 @@ function unresolvableLabelLocals(
   return names;
 }
 
+/**
+ * Deterministic stand-in for a compute side-car that a mock provider has not been provisioned with.
+ *
+ * The identity of a side-car must be a pure function of the resource it belongs to (the branded locking bytecode,
+ * which already bakes the contract category and the side-car role, plus its slot index). A random one changes the
+ * physical side-car on every derivation pass, so the authenticated call manifest can never match the slot the
+ * atomic verifier digests: the verifier rejects the assembly before the compute call, the deferred argument is
+ * never exposed, and composition reports an unresolvable compute resource even though nothing is unresolvable.
+ * Real networks never take this path - they require explicitly deployed side-cars.
+ */
+const computeSideCarStandIn = (domain: string, lock: Uint8Array, index: number): Utxo => {
+  const identity = sha256Sync(Uint8Array.from([...utf8ToBin(domain), ...lock, ...bigIntToVmNumber(BigInt(index))]));
+  return {
+    txid: binToHex(sha256Sync(Uint8Array.from([...utf8ToBin(`${domain}:utxo`), ...identity]))),
+    vout: index,
+    satoshis: 100_000n,
+    token: {
+      category: binToHex(identity), amount: 0n, nft: { capability: 'mutable', commitment: '' },
+    },
+  };
+};
+
+/** True when a fetched side-car list already contains this stand-in's outpoint (idempotent provisioning). */
+const hasOutpoint = (utxos: readonly Utxo[], candidate: Utxo): boolean => utxos.some(
+  (utxo) => utxo.txid.toLowerCase() === candidate.txid.toLowerCase() && utxo.vout === candidate.vout,
+);
+
 export class StatefulContract<TArtifact extends Artifact = Artifact> {
   // Backing for inner / categoryId. When constructed from an ADDRESS the category is unknown until the first
   // async op resolves it from the indexer (ethers-style lazy network use); `_inner` starts as a category-less
@@ -12268,11 +12295,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       const addUtxo = (this.inner.provider as { addUtxo?: (a: string, u: Utxo) => Promise<Utxo> }).addUtxo;
       if (typeof addUtxo === 'function') {
         for (let i = scUtxos.length; i < batchCount; i++) {
-          const category = randomUtxo().txid;
-          await addUtxo.call(this.inner.provider, binToHex(lock), {
-            ...randomUtxo({ satoshis: 100_000n }),
-            token: { category, amount: 0n, nft: { capability: 'mutable', commitment: '' } },
-          });
+          const standIn = computeSideCarStandIn('keccak-sidecar', lock, i);
+          if (hasOutpoint(scUtxos, standIn)) continue;
+          await addUtxo.call(this.inner.provider, binToHex(lock), standIn);
         }
         scUtxos = (await this.inner.provider.getUtxosForLockingBytecode(lock))
           .filter((u) => u.token?.nft?.capability === 'mutable');
@@ -12402,16 +12427,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     if (freeA.length < calls.length || freeB.length < calls.length) {
       const addUtxo = (this.inner.provider as { addUtxo?: (a: string, u: Utxo) => Promise<Utxo> }).addUtxo;
       if (typeof addUtxo === 'function') {
-        const provision = async (lock: Uint8Array, existing: number): Promise<void> => {
-          for (let i = existing; i < calls.length; i++) {
-            const category = randomUtxo().txid;
-            await addUtxo.call(this.inner.provider, binToHex(lock), {
-              ...randomUtxo({ satoshis: 100_000n }),
-              token: { category, amount: 0n, nft: { capability: 'mutable', commitment: '' } },
-            });
+        const provision = async (lock: Uint8Array, utxos: readonly Utxo[]): Promise<void> => {
+          for (let i = utxos.length; i < calls.length; i++) {
+            const standIn = computeSideCarStandIn('ecrecover-sidecar', lock, i);
+            if (hasOutpoint(utxos, standIn)) continue;
+            await addUtxo.call(this.inner.provider, binToHex(lock), standIn);
           }
         };
-        await Promise.all([provision(lockA, freeA.length), provision(lockB, freeB.length)]);
+        await Promise.all([provision(lockA, freeA), provision(lockB, freeB)]);
         [freeA, freeB] = await Promise.all([
           this.inner.provider.getUtxosForLockingBytecode(lockA),
           this.inner.provider.getUtxosForLockingBytecode(lockB),

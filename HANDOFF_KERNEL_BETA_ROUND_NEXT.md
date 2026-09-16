@@ -1,8 +1,8 @@
 # Handoff — kernel-beta marketplace climb (after the event/continuation round)
 
-> **Latest state (ROUND 70, sidecar endpoint mismatch measured): 39 pass / 27 fail; tree at `3c3633d4f`.** The sections below are a chronological log;
+> **Latest state (ROUND 71, deterministic side-car stand-ins): 39 pass / 27 fail; tree at `d37c7e2ba`.** The sections below are a chronological log;
 > read ROUNDS 51-52 and 54 (the collection-key, rolled-array and dynamic-storage-read fixes: 32 -> 37),
-> ROUNDS 53-70 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
+> ROUNDS 53-71 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
 > deferred-`takeJob` class and its three falsified hypotheses) at the end. Earlier "State" numbers in this header
 > are historical.
 
@@ -3364,6 +3364,29 @@ compare the physical slot against the row it is resolved for - input locking byt
 the authenticated row (the manifest is the authority the verifier will digest) or return the assembly as "not
 ready yet" so the caller rebuilds, instead of judging it unresolvable. That applies to every sidecar resource
 (keccak mode 1, ecrecover mode 2, blockhash mode 0), not just the marketplace fixture.
+
+### ROUND 71: deterministic compute side-car stand-ins (identity oscillation fixed)
+
+**Landed fix** (`StatefulContract`): a compute side-car that a mock provider has not been provisioned with now gets
+a **deterministic identity** derived from the resource - `sha256(domain || branded lock || slot index)` for the
+outpoint and the token category - instead of `randomUtxo()`. The helper (`computeSideCarStandIn`) is generic
+(keccak side-car at `_resolveKeccakComputeCoSpends`, ecrecover A/B at `_resolveEcrecoverComputeCoSpends`) and
+provisioning is idempotent by outpoint, so repeated derivation passes reuse the same physical side-car. Real
+networks never take this path (they require explicitly deployed side-cars).
+
+Measured effect on the `-t 'take job'` reproducer (endpoint probe across the 18 assemblies of one build):
+
+* before: the row's declared category changed on every row-bearing pass (`56662108...`, `c2923911...`,
+  `9313e2ff...`, `613f0de0...`) and the physical slot never matched the authenticated manifest;
+* after: `rowArgs` category is identical in **all 18 passes**, and it equals the aggregate slot's category modulo
+  the VM byte order (`rowCat` reversed == `inCat`), with the row's trailing `01` being the mutable-capability
+  suffix (not an input commitment) and the output commitment matching the declared `keccak256("")`;
+* the trace error moves from `OP_SPLIT ... stack item length: 0` at `ip 1` (the digest abort) to
+  `Program failed an OP_VERIFY operation.` at **`ip 424`** of the same body - i.e. the verifier now digests the
+  sidecars and gets 423 instructions further before its next refusal.
+
+Ladder: 39 pass / 27 fail, no lost titles (the remaining refusal is a later `require` inside the route, not the
+sidecar mismatch). SDK unit gate unchanged.
 
 ### How to localize it next
 

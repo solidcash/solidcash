@@ -1,6 +1,6 @@
 # Handoff — kernel-beta marketplace climb (after the event/continuation round)
 
-> **Latest state (ROUND 111: MEASURED chain-length mismatch - p0 publishes 2 trailing outputs where the walk needs 3): 39 pass / 27 fail.** The sections below are a chronological log;
+> **Latest state (ROUND 112: ROOT CAUSE of the OP_SPLIT class - the compiler's band base is `blockSize` while the SDK's chunk base is shifted past the runtime-effect prefix): 39 pass / 27 fail.** The sections below are a chronological log;
 > read ROUNDS 51-52 and 54 (the collection-key, rolled-array and dynamic-storage-read fixes: 32 -> 37),
 > ROUNDS 53-96 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
 > deferred-`takeJob` class and its three falsified hypotheses) at the end. Earlier "State" numbers in this header
@@ -4600,6 +4600,41 @@ Next: compare the row's key/insert count (the witness the covenant's loop bound 
 published node count for the same row - both are now measurable (the read window gives the walk, `trailingPublished`
 gives the publication) - and fix whichever side is wrong: publish one node per key, or bound the walk by the
 published run.
+
+Focused state: `-t 'take job'` = 2 failed | 1 passed (green `sanity checks`), `yarn build` green, no full-ladder
+run (no title turned green).
+
+### ROUND 112: the trailing band base disagrees between compiler and SDK (2-slot prefix)
+
+`deferred-stall-io-full` now also prints `trailingCommitments` - the commitment head of every published trailing
+output next to its co-spent input. Measured (build 67, participant 0, trailing offsets 63 and 64, both mirrored
+1:1):
+
+    p0@63 in/out = 004c785100001976a91471782e8159265ed94bd35b8e699c08f53a6f38c688ac1976a914c4ad89cd...
+    p0@64 in/out = 514c695522ee138ae55109000010632d5ec76b0523aa20e61fa6c6f5b188a0bcee4f42fd7bf0524e...
+
+Both commitments embed RECORD payloads - a P2PKH locking bytecode (76a914..88ac) and a 35-byte P2SH32 lock - i.e.
+they are the participant's runtime EVENT records, not sorted-chain nodes.
+
+The SDK's own placement code explains the geometry (`StatefulTransactionBuilder.getRuntimeLoopEventOutputIndex`):
+
+    if (this.runtimeLoopTrailingSegments.length === 0) {
+      return this.getChunkOutputBase() - transfers - events + eventIndex;
+    }
+
+so runtime events are placed immediately BEFORE the chunk base: with 2 events at 63/64 the chunk base is 65. But
+the compiler's reads use `master + blockSize + k` directly (the range-splice chain walk is
+`emitTrailingBlockBase(blockSize)` + `1ADD` + counter, and the chunk pin/reader addresses the same run), i.e. the
+compiler's band base is `blockSize` = 63 for participant 0. The SDK therefore publishes its band `prefix`
+(runtime events, loop-entry outputs, transfers) INSIDE the region the covenant walks, and the walk reads event
+records as if they were sorted-chain nodes - the link fields do not match, the walk continues off the published
+run into a bare pad, and span 122 aborts on the empty commitment.
+
+This closes the OP_SPLIT class analytically: it is a band-base disagreement, not a missing chunk. The two possible
+fixes (both general):
+  (a) SDK: place the runtime-effect prefix AFTER the band - i.e. `getChunkOutputBase()` must equal the compiler's
+      `blockSize`, with events/transfers/loop-entry outputs allocated above the published band width; or
+  (b) compiler: publish the band base offset (the prefix length) so the SDK and the covenant agree on it.
 
 Focused state: `-t 'take job'` = 2 failed | 1 passed (green `sanity checks`), `yarn build` green, no full-ladder
 run (no title turned green).

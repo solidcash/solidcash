@@ -3687,10 +3687,28 @@ export class AtomicMessageBusComposition {
                 return `p${candidate.participant}:${published.length}/${trailing.length}`
                   + `[${published.slice(0, 6).join(',')}]`;
               });
+              // The published sorted-chain nodes carry `slot(32) || nextKey(32) || value`; the covenant's
+              // range-splice walk follows `nextKey` until it reaches the predecessor's old successor, so the LAST
+              // node's nextKey is what terminates the walk. Print both sides' commitment heads so the chain links
+              // can be compared directly (input = the co-spent resource, output = the published node).
+              const trailingCommitments = plan.participants.flatMap((candidate) => {
+                const base = graph.layout.participantInputs[candidate.participant];
+                return (candidate.blockLayout?.slots ?? [])
+                  .filter((slot) => slot.kind === 'trailing')
+                  .map((slot) => ({ participant: candidate.participant, offset: slot.offset }))
+                  .filter(({ offset }) => aggregate.outputs[base + offset]?.token?.nft !== undefined)
+                  .map(({ participant, offset }) => {
+                    const input = aggregate.inputs[base + offset]?.token?.nft?.commitment ?? '';
+                    const output = aggregate.outputs[base + offset]?.token?.nft?.commitment ?? '';
+                    return `p${participant}@${offset} in=${String(input).slice(0, 80)}`
+                      + ` out=${String(output).slice(0, 80)}`;
+                  });
+              });
               console.error('deferred-stall-io-full', JSON.stringify({
                 buildId: peekBuilderBuildId(),
                 labels: slotLabels,
                 trailingPublished,
+                trailingCommitments,
                 tailKinds,
                 out: aggregate.outputs.map((item, index) => {
                   const lock = item?.to instanceof Uint8Array ? binToHex(item.to).slice(0, 10) : '';

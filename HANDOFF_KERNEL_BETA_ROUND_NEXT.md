@@ -1,6 +1,6 @@
 # Handoff — kernel-beta marketplace climb (after the event/continuation round)
 
-> **Latest state (ROUND 101, the abort is a 38-byte commitment read at a collection address): 39 pass / 27 fail.** The sections below are a chronological log;
+> **Latest state (ROUND 102, the aborting slot belongs to ANOTHER participant's scope): 39 pass / 27 fail.** The sections below are a chronological log;
 > read ROUNDS 51-52 and 54 (the collection-key, rolled-array and dynamic-storage-read fixes: 32 -> 37),
 > ROUNDS 53-96 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
 > deferred-`takeJob` class and its three falsified hypotheses) at the end. Earlier "State" numbers in this header
@@ -4285,6 +4285,34 @@ Next (the fix fork): decide which side owns the mismatch -
   (c) the SDK mirrors the wrong resource kind into a collection slot.
 Start from the io-full pair at the aborting index: whether the input is a real UTXO of that collection (then the
 address is right and the parse shape is wrong) or a placeholder (then the SDK published the wrong resource).
+
+Focused state: `-t 'take job'` = 2 failed | 1 passed (green `sanity checks`), `yarn build` green, no full-ladder
+run (no title turned green).
+
+### ROUND 102: the aborting lock is outside the reading participant's own address set
+
+`deferred-no-progress-reads` now classifies every introspected lock against the reading participant's own address
+set (master, data NFT, and every `getEntryNftAddress(parent.inner, parent.categoryId, collection)`), so a read can
+be attributed to its owner. Measured (builds 40/67/74, default path):
+
+    out-commitment idx 216 (67/74) / 463 (40), cat a3cef944, commitment 38, lock aa20ee2996d7  -> KIND: none
+    out-bytecode idx 217/218 ...                                                              -> KIND: none
+    (every other read in the window is also KIND: none, including a P2PKH pad)
+
+i.e. the aborting lock is NONE of the reading participant's own addresses - not its master, not its data NFT and
+not any of its collection entry addresses. Since the program that runs is the atomic VERIFIER (it opens with
+`OP_TXINPUTCOUNT OP_2 OP_SUB OP_INPUTBYTECODE OP_0 OP_PICK ...`, reading input 127's unlocking bytecode = the
+envelope), it addresses outputs of EVERY participant, so an aborting slot has to be classified against the whole
+AGGREGATE's participants, not against the controller's own contract.
+
+Aggregate geometry for build 67 (221 outputs): participant 0 occupies 0..128; the aborting index 216 sits in the
+last participant's block, i.e. it is a slot of a DIFFERENT participant than the one whose builder reported the
+stall - consistent with KIND: none.
+
+Next (concrete): move the classification to the aggregate level - in the composer's stall probe, build the lock ->
+kind map from every participant's own master/data/entry addresses (the composer has each participant's artifact,
+category and block layout) and re-report the aborting read with its owner. Then the fix fork from ROUND 101 can be
+decided with an owner attached.
 
 Focused state: `-t 'take job'` = 2 failed | 1 passed (green `sanity checks`), `yarn build` green, no full-ladder
 run (no title turned green).

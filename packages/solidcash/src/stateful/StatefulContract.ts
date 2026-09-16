@@ -36651,6 +36651,31 @@ export class StatefulFunctionCall {
                 }
                 return Number(negative ? -value : value);
               };
+              // Classify the introspected locks: whether the aborting slot carries the resource the covenant
+              // expects (a collection's entry NFT address, a data NFT, or the master) is the difference between
+              // "the right address parsed with the wrong shape" and "the SDK published the wrong resource".
+              const lockKinds = new Map<string, string>();
+              const classify = (lock: Uint8Array | undefined, kind: string): void => {
+                if (lock) lockKinds.set(binToHex(lock).toLowerCase(), kind);
+              };
+              const parent = this.parentContract;
+              if (parent) {
+                try {
+                  classify(addressToLockScript(parent.inner.address), 'master');
+                } catch { /* address form unavailable */ }
+                try {
+                  classify(addressToLockScript(getDataNftAddress(parent.inner, parent.categoryId)), 'dataNft');
+                } catch { /* no data NFT for this contract */ }
+                for (const collection of (parent.inner.artifact.stateLayout as {
+                  collections?: Array<{ name: string }>;
+                } | undefined)?.collections ?? []) {
+                  try {
+                    classify(addressToLockScript(getEntryNftAddress(
+                      parent.inner, parent.categoryId, collection.name,
+                    )), `entry:${collection.name}`);
+                  } catch { /* collection address unavailable */ }
+                }
+              }
               const commitmentReads = trace.flatMap((raw) => {
                 const state = raw as {
                   ip?: number; stack?: Uint8Array[];
@@ -36691,6 +36716,7 @@ export class StatefulFunctionCall {
                   cap: introspected?.token?.nft?.capability,
                   commitBytes: commitment?.length,
                   lock: lock ? binToHex(lock).slice(0, 12) : undefined,
+                  kind: lock ? lockKinds.get(binToHex(lock).toLowerCase()) : undefined,
                 }];
               });
               // The terminal state names the aborting instruction and its error; together with the trailing

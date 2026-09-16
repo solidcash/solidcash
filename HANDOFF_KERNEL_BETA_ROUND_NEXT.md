@@ -1,8 +1,8 @@
 # Handoff — kernel-beta marketplace climb (after the event/continuation round)
 
-> **Latest state (ROUND 94, empty operand at the failing helper): 39 pass / 27 fail; tree at `52cb28306`.** The sections below are a chronological log;
+> **Latest state (ROUND 95, one slot past the side-car band): 39 pass / 27 fail; tree at `ae9eea874`.** The sections below are a chronological log;
 > read ROUNDS 51-52 and 54 (the collection-key, rolled-array and dynamic-storage-read fixes: 32 -> 37),
-> ROUNDS 53-94 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
+> ROUNDS 53-95 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
 > deferred-`takeJob` class and its three falsified hypotheses) at the end. Earlier "State" numbers in this header
 > are historical.
 
@@ -3999,6 +3999,27 @@ Next round: in the stall probe, print the aggregate's outputs for the first ~24 
 capability / commitment size, and match the 7-body's computed index - a token-less output at that index is then the
 whole story (and the fix is to place the token the covenant reads, or to stop the digest/read from covering a
 token-less slot).
+
+### ROUND 95: the scan runs one slot past the side-car band, onto a token-less output
+
+Dumped the aggregate's first 24 outputs for a correlated stall build (112):
+
+    idx 0   a3cef94467  minting  0 B        idx 3   361eb80b9f  mutable  64 B   keccakSideCar
+    idx 1   a3cef94467  mutable  207 B      idx 4..19  9e47d0fc96/5986b263aa/... mutable 32/34 B  side-cars
+    idx 2   a3cef94467  mutable  35 B       idx 20  (NO TOKEN)                    <-- the read that returns empty
+
+Every slot 0..19 is token-bearing; **slot 20 is token-less**, and the 7-instruction body's
+`OP_OUTPUTTOKENCOMMITMENT` reads `3 + k` - so its scan walks the side-car band 3..19 (17 slots) and then takes
+one more step onto slot 20, gets an empty item, and hands it to the helper whose `OP_SPLIT 32` then fails.
+
+That is the whole mechanism of the deferred-compute stall: the covenant's scan width covers one slot more than the
+participant publishes as a token-bearing side-car, so the last read is empty and the compute call is never reached.
+
+Next round (fix): make the composed participant's scanned side-car band carry tokens to the full width the covenant
+walks - i.e. fill the inactive union slot(s) with the SDK's placeholder side-car (mutable NFT, well-formed
+commitment, the participant's category) instead of a bare funder pad. The oracle is `ip 1` ceasing to be the
+failure and `deferred-ecrecover-learned` rising above 2; the general rule is that any slot a compiled scan may read
+must be materialised with the shape that scan expects, not left as a filler.
 
 ### How to localize it next
 

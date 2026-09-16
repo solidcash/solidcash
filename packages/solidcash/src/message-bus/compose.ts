@@ -3622,6 +3622,16 @@ export class AtomicMessageBusComposition {
                     output: describe(aggregate.outputs[base + slot.offset] as never, base + slot.offset),
                   }));
               });
+              console.error('deferred-stall-outputs', JSON.stringify({
+                buildId: peekBuilderBuildId(),
+                outputs: aggregate.outputs.slice(0, 24).map((output, index) => ({
+                  index,
+                  cat: output.token?.category?.slice(0, 10),
+                  cap: output.token?.nft?.capability,
+                  commitBytes: (output.token?.nft?.commitment?.length ?? 0) / 2,
+                  lock: (output.to instanceof Uint8Array ? binToHex(output.to) : String(output.to)).slice(0, 12),
+                })),
+              }));
               console.error('deferred-stall-sidecars', JSON.stringify({
                 buildId: peekBuilderBuildId(),
                 slots: sidecarSlots.slice(0, 8),

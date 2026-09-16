@@ -18951,13 +18951,18 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             } else if (!inactiveMessageBusEntrySlots.has(slotIndex)
               && (activeMessageBusWriteCollections === undefined
                 || activeMessageBusWriteCollections.includes(access.collection))) {
+              let kernelEncodedValue: Uint8Array | undefined;
               // A fixed message-bus route publishes the union of every handler's entry writes. Inactive
               // sorted-batch lanes still need their authenticated zero-key journal above, but their gated write
               // never emits value continuations. Registering those collections as computed values shifts the
               // selected handler's shared continuation band by one slot per inactive collection.
               const selectedRows = (entryAbiFunction as MessageBusRuntimeAbiFunction | undefined)
                 ?.messageBusRowArguments;
-              if (selectedRows && authenticatedChunkableValue) {
+              // A write whose OLD value is unavailable still has a reproducible NEW value when the route carries
+              // row arguments: an INSERT starts from the empty array and a push appends to it. Requiring the
+              // authenticated old value here was what kept the deterministic derivation inert for those rows (the
+              // trace-discovery alternative deadlocks on the unpublised chunk slot).
+              if (selectedRows && (authenticatedChunkableValue || !list.has(slot))) {
                 const legacyCompatibility = usesLegacyJobEventCompatibility(
                   entryArtifact, collection.valueType, stateLayout.structs,
                 );
@@ -18978,6 +18983,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 });
                 const leadingIndex = entryAbiFunction!.inputs.findIndex((input) =>
                   input.name === `__internal__leadingPushValue_${slotIndex}`);
+                kernelEncodedValue = leadingValue;
                 if (leadingValue && leadingIndex >= 0) {
                   entryArgs[leadingIndex] = leadingValue;
                   if (entryAbiFunction === abiFunction) finalArgs[leadingIndex] = leadingValue;
@@ -18987,10 +18993,19 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   }
                 }
               }
-              // `valueParam` is intentionally absent for handler-computed values (array push/pop, partial field
-              // writes, and arbitrary expressions). Raw route arguments cannot reproduce mutations performed by
-              // the handler before its write, so the covenant's authenticated VM pin is the only exact source.
-              addComputedValueChunkRun(access.collection, slot);
+              // A fixed message-bus route CAN reproduce its handler-computed value from the authenticated row
+              // arguments (`leadingValue` above is exactly that encoding), so derive the pinned continuations
+              // deterministically. Trace discovery needs the probe to reach the pin, and an unpublised chunk slot
+              // halts the probe first - a deadlock this branch breaks.
+              if (kernelEncodedValue && kernelEncodedValue.length > 60) {
+                valueChunkMints.push({
+                  collection: access.collection, slot, digest: sha256Sync(kernelEncodedValue),
+                  chunks: splitValueIntoValueChunks(kernelEncodedValue),
+                });
+              } else {
+                // `valueParam` is absent for handler-computed values the route cannot reproduce.
+                addComputedValueChunkRun(access.collection, slot);
+              }
               // A computed UPDATE (present key) mints no NEW node; pin its loop entry EMPTY so the loop-entry
               // derivation does not misread the value-chunk pin's OP_OUTPUTTOKENCOMMITMENT calls as a phantom NEW.
               if (list.has(slot)) computedValueUpdateCollections.add(access.collection);
@@ -31130,16 +31145,44 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // on-stack value (emitSortedValueChunkPin), so a forged/absent chunk is rejected at write time. Placed as the
     // LAST covenant-managed outputs (after the entries + NEW node), matching the covenant's base masterInput+
     // blockSize+isInsert.
+    const composedChunkBase = ((): number | undefined => {
+      const layout = effectiveBlockLayout;
+      const composed = (layout?.slots ?? []).some((slot) => slot.kind === 'trailing')
+        && builder.getComposedBlockBase() !== 0;
+      if (!composed) return undefined;
+      const trailing = (layout?.slots ?? [])
+        .filter((slot) => slot.kind === 'trailing').map((slot) => slot.offset).sort((left, right) => left - right);
+      const total = valueChunkMints.reduce((sum, mint) => sum + mint.chunks.length, 0);
+      if (trailing.length === 0 || total === 0 || trailing.length < total) return undefined;
+      return trailing[trailing.length - total];
+    })();
     for (const mint of valueChunkMints) {
       const chunkAddr = getValueChunkAddress(this.inner, this.categoryId, mint.collection, mint.slot, mint.digest);
-      mint.chunks.forEach((data, i) => builder.addValueChunkOutput({
-        to: chunkAddr,
-        amount: 1000n,
-        token: {
-          category: this.categoryId, amount: 0n,
-          nft: { capability: 'mutable', commitment: buildValueChunkCommitment(i, data) },
-        },
-      }));
+      const chunkLock = addressToLockScript(chunkAddr);
+      mint.chunks.forEach((data, i) => {
+        const commitment = buildValueChunkCommitment(i, data);
+        // A composed participant's continuation band lives INSIDE its balanced block: appending would grow the
+        // block past the layout the covenant walks (`participant N built X/Y slots`), so pin the chunks at the
+        // participant's own trailing coordinates instead.
+        if (composedChunkBase !== undefined
+          && builder.setDerivedChunkOutput(composedChunkBase + i, {
+            commitment,
+            lockingBytecode: chunkLock,
+            categoryId: this.categoryId,
+            fixedIndex: true,
+            semanticKind: 'valueChunk',
+          })) {
+          return;
+        }
+        builder.addValueChunkOutput({
+          to: chunkAddr,
+          amount: 1000n,
+          token: {
+            category: this.categoryId, amount: 0n,
+            nft: { capability: 'mutable', commitment },
+          },
+        });
+      });
     }
     // Runtime-loop groups are final outputs in reverse iteration order. The covenant addresses group i as
     // outputCount - chunksAlreadyVerified - groupSize, so each group remains direct-indexed and bounded-cost.

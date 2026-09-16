@@ -1,6 +1,6 @@
 # Handoff — kernel-beta marketplace climb (after the event/continuation round)
 
-> **Latest state (ROUND 128: found the SDK's chunk source split (direct param vs trace) and its fix site; the first deterministic attempt regresses on block balance): 39 pass / 27 fail.** The sections below are a chronological log;
+> **Latest state (ROUND 129: deterministic chunk derivation for kernel routes landed (composed-band placement, no regression) but is INERT for this contract - the band is not these builds' blocker): 39 pass / 27 fail.** The sections below are a chronological log;
 > read ROUNDS 51-52 and 54 (the collection-key, rolled-array and dynamic-storage-read fixes: 32 -> 37),
 > ROUNDS 53-96 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
 > deferred-`takeJob` class and its three falsified hypotheses) at the end. Earlier "State" numbers in this header
@@ -5121,6 +5121,39 @@ so the derivation direction is plausible but the mints materialize at the LAYOUT
 participant past its balanced block; they must be placed at the COMPOSED band base (the `composedTrailing` /
 `getComposedBlockBase()` coordinates the band planner already uses) for a composed participant. Reverted; the
 mints/`valueChunkMints` path is the right lever, the placement is the open detail.
+
+Focused state: `-t 'take job'` = 2 failed | 1 passed (green `sanity checks`), `yarn build` green, no full-ladder
+run (no title turned green).
+
+### ROUND 129: the band work is landed but inert - back to the VERIFY class next
+
+Landed (sound, general, no regression): a kernel route whose handler-computed value is reproducible from its
+`messageBusRowArguments` now derives the pinned continuations deterministically
+(`valueChunkMints.push({ collection, slot, digest: sha256(value), chunks: splitValueIntoValueChunks(value) })`)
+instead of registering a trace-discovered run, and a COMPOSED participant pins those chunks into its own trailing
+run (`setDerivedChunkOutput(composedBase + i, ...)`, the same local coordinates the band planner and the composer's
+absolute shift use) rather than appending them past the balanced block. The row-argument encoding is also attempted
+when the OLD value is unavailable but the key is absent (an INSERT starts from the empty array).
+
+Measured across three consecutive attempts in this area - all of them safe, none of them effective for these
+builds:
+
+    deterministic derivation                : 2 failed | 1 passed, sanity green, 10 stalls
+    + composed placement (setDerivedChunk)  : 2 failed | 1 passed, sanity green, 10 stalls
+    + absent-key old value relaxed          : 2 failed | 1 passed, sanity green, 10 stalls
+    (the earlier layout-relative placement) : 3 failed - `participant 1 built 87/146 slots` (reverted)
+
+Conclusion recorded for the next round: the value-chunk band is NOT what blocks these ten builds. Whatever the
+deterministic path computes, the failing builds never reach it (identical stall count and identical error), so the
+band changes are inert here and the blocker remains the VERIFY class measured in ROUNDS 116-124: the failing
+comparisons read a value the covenant COMPUTED (empty) against locking bytecodes the program carries.
+
+Concrete next idea (fix, not instrumentation): the builder stages each entry's commitment before the probe, so the
+probe's placeholder chunk commitment can mirror the AUTHENTIC data the staged entry implies - i.e. derive the
+placeholder's `uint16 index || data` body from the entry's own tail (`len || root`) where the data can be recovered,
+so the covenant's pin comparison has a chance to pass instead of comparing zeros. If that is not recoverable for a
+handler-computed value, the honest alternative is to make the covenant's read fail closed EARLIER than the
+recovery read it must reach - which is a compiler-side ordering question.
 
 Focused state: `-t 'take job'` = 2 failed | 1 passed (green `sanity checks`), `yarn build` green, no full-ladder
 run (no title turned green).

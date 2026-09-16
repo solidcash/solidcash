@@ -1284,6 +1284,7 @@ interface DeferredComputeController {
   hasUnresolved(): boolean;
   resolve(
     program: ReturnType<TransactionBuilder['buildLibauthProgram']>, executionInput: number, inputBase: number,
+    candidateExecutions?: readonly number[],
   ): boolean;
   refresh(): TransactionBuilder;
 }
@@ -3596,7 +3597,14 @@ export class AtomicMessageBusComposition {
           const program = aggregate.buildLibauthProgram();
           let progressed = false;
           for (const block of unresolved) {
-            if (!block.controller.resolve(program, block.executionInput, block.inputBase)) continue;
+            const candidateExecutions = plan.participants.map((candidate) => {
+              const base = graph.layout.participantInputs[candidate.participant];
+              return candidate.executionKind === 1 && candidate.executorOffset !== null
+                ? base + candidate.executorOffset : base;
+            });
+            if (!block.controller.resolve(
+              program, block.executionInput, block.inputBase, candidateExecutions,
+            )) continue;
             progressed = true;
             const refreshed = block.controller.refresh();
             for (const offset of block.offsets) {

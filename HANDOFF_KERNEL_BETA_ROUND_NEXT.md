@@ -1,6 +1,6 @@
 # Handoff — kernel-beta marketplace climb (after the event/continuation round)
 
-> **Latest state (ROUND 137: deferred learning no longer stops at the first argument per pass (general improvement, no regression); the `dispute`/`arbitrate` family is the same deferred-compute wall: ladder stays 43 pass / 23 fail.** The sections below are a chronological log;
+> **Latest state (ROUND 138: the resolve loop now probes EVERY participant's verifier input (reads 952 -> 1426) but the missing recovery reads are behind control flow the placeholder data does not enter: ladder stays 43 pass / 23 fail.** The sections below are a chronological log;
 > read ROUNDS 51-52 and 54 (the collection-key, rolled-array and dynamic-storage-read fixes: 32 -> 37),
 > ROUNDS 53-96 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
 > deferred-`takeJob` class and its three falsified hypotheses) at the end. Earlier "State" numbers in this header
@@ -5477,3 +5477,30 @@ Measured: `-t 'dispute'` unchanged (4 failed | 1 passed) - the traces evidently 
 these builds - and `-t 'close job'` still 2 passed | 64 skipped, so the change is a safe generalisation rather than
 this window's fix. The remaining wall is the probe dying before the recovery read, which is where the earlier
 band/witness work also landed.
+
+### ROUND 138: multi-execution probing landed; the missing reads are behind UNTAKEN BRANCHES
+
+Landed (general, no regression): the deferred resolve loop probed a single execution input, but the
+keccak/recovery reads live in per-row bodies and each participant's verifier executes only its own rows. The
+composer now passes every participant's verifier coordinate
+(`graph.layout.participantInputs[p] + (executorOffset ?? 0)`) and the controller evaluates the probe at each
+candidate, starting with its own, stopping at the first trace that teaches something.
+
+Measured:
+
+    -t 'dispute' : 4 failed | 1 passed (unchanged)   but the probe DID change:
+        before: deferred-no-progress-reads total 952 reads, failing ip 515
+        after : total 1426 reads, failing ip 10
+        both  : deferredRemaining { keccak 0/2, ecrecover 7/8 }
+
+    -t 'close job'           : 2 passed | 64 skipped   (no regression)
+    -t 'withdraw collateral' : 1 passed | 65 skipped   (no regression)
+
+So the extra executions collect 50% more introspections yet still never reach the seven missing
+`OP_INPUTBYTECODE` recovery reads. Combined with ROUND 128's measurement (the only recovery read present is one
+input EARLIER than the plan's index, with a 1-byte item below, i.e. the contract's own argument read), the
+conclusion is that those reads sit behind control flow the probe's PLACEHOLDER DATA does not enter: the probes are
+running, the branches are not. That is the next lever - the placeholders must be plausible enough for the guards
+preceding the recovery calls (the same VERIFY family measured in ROUNDS 116-124), not merely parseable.
+
+Focused state: `-t 'take job'` = 2 failed | 1 passed, ladder 43 pass / 23 fail, `yarn build` green, tree clean.

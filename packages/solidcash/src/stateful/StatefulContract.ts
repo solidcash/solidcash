@@ -36657,6 +36657,7 @@ export class StatefulFunctionCall {
             program: ReturnType<TransactionBuilder['buildLibauthProgram']>,
             executionInput: number,
             inputBase: number,
+            candidateExecutions: readonly number[] = [],
           ): boolean => {
             // A deferred build publishes resources whose value it has not learned yet as empty-commitment NFTs.
             // Every covenant that addresses a token parses its commitment (`slot||next||value` for entries,
@@ -36729,15 +36730,24 @@ export class StatefulFunctionCall {
             const probeOutputs = program.transaction.outputs.map((output, index) => (
               emptyOn(output) ? { ...output, token: fillProbeCommitment(output.token, mirrorFor(index)) } : output
             )).map((output, index) => placeholderFor(output, index));
-            const trace = evaluateProbeTrace(provider, {
-              ...program,
-              sourceOutputs: probeSources,
-              transaction: { ...program.transaction, outputs: probeOutputs },
-              inputIndex: executionInput,
-            });
+            // The recovery/keccak reads live in PER-ROW bodies, and each participant's verifier executes its own
+            // rows: a single execution input can only expose the reads that execution reaches (measured: one of
+            // eight ecrecover arguments learned, the other seven never read). Evaluate the probe at each candidate
+            // execution - the participant's own first - and keep the first trace that teaches something.
             let progressed = false;
-            if (stb.resolveDeferredKeccakPreimage(trace, inputBase)) progressed = true;
-            if (stb.resolveDeferredEcrecoverArgument(trace, inputBase)) progressed = true;
+            let trace: ReturnType<typeof evaluateProbeTrace> = [];
+            const executions = [executionInput, ...candidateExecutions.filter((index) => index !== executionInput)];
+            for (const candidate of executions) {
+              trace = evaluateProbeTrace(provider, {
+                ...program,
+                sourceOutputs: probeSources,
+                transaction: { ...program.transaction, outputs: probeOutputs },
+                inputIndex: candidate,
+              });
+              if (stb.resolveDeferredKeccakPreimage(trace, inputBase)) progressed = true;
+              if (stb.resolveDeferredEcrecoverArgument(trace, inputBase)) progressed = true;
+              if (progressed) break;
+            }
             if (!progressed
               && (globalThis as { process?: { env?: Record<string, string> } }).process?.env
                 ?.SOLIDC_DEBUG_ENTRY_COUNTS === '1') {

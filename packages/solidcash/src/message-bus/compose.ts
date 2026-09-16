@@ -3725,7 +3725,32 @@ export class AtomicMessageBusComposition {
                       + ` out=${String(output).slice(0, 80)}`;
                   });
               });
+              // The participant's ROUTE arguments, named from the route ABI. The program is fully built here, so
+              // the master input's unlocking bytecode is the packed ABI argument vector - and unlike the
+              // verifier's script it is packed exactly as declared, so a positional mapping is sound. An EMPTY
+              // item names the route parameter the covenant computed an empty address from.
+              const routeArguments = plan.participants.map((candidate) => {
+                const base = graph.layout.participantInputs[candidate.participant];
+                const declared = (candidate.artifact.messageBus as {
+                  route?: { inputs?: Array<{ name?: string }> };
+                } | undefined)?.route?.inputs ?? [];
+                const unlocking = program.transaction.inputs[base]?.unlockingBytecode ?? new Uint8Array();
+                const lengths: number[] = [];
+                for (let cursor = 0; cursor < unlocking.length && lengths.length <= declared.length;) {
+                  const opcode = unlocking[cursor];
+                  if (opcode >= 1 && opcode <= 75) { lengths.push(opcode); cursor += 1 + opcode; }
+                  else if (opcode === 0x4c && cursor + 1 < unlocking.length) {
+                    const size = unlocking[cursor + 1]; lengths.push(size); cursor += 2 + size;
+                  } else if (opcode === 0x00) { lengths.push(0); cursor += 1; }
+                  else break;
+                }
+                const empty = lengths.map((length, index) => ({ length, index }))
+                  .filter((item) => item.length === 0)
+                  .map((item) => declared[item.index]?.name ?? `<${item.index}>`);
+                return `p${candidate.participant}:empty[${empty.join(',')}]`;
+              });
               console.error('deferred-stall-io-full', JSON.stringify({
+                routeArguments,
                 buildId: peekBuilderBuildId(),
                 labels: slotLabels,
                 trailingPublished,

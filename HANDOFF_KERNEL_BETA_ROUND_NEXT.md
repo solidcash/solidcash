@@ -1,6 +1,6 @@
 # Handoff — kernel-beta marketplace climb (after the event/continuation round)
 
-> **Latest state (ROUND 120: ROUND 119's name mapping was WRONG - `localBatch` is present (199/353/214 bytes); only `suppliedEmissions` is empty, for the participants that own no rows): 39 pass / 27 fail.** The sections below are a chronological log;
+> **Latest state (ROUND 121: route ABI arguments are NOT the empty operands - only one graph field is empty in one build): 39 pass / 27 fail.** The sections below are a chronological log;
 > read ROUNDS 51-52 and 54 (the collection-key, rolled-array and dynamic-storage-read fixes: 32 -> 37),
 > ROUNDS 53-96 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
 > deferred-`takeJob` class and its three falsified hypotheses) at the end. Earlier "State" numbers in this header
@@ -4891,6 +4891,30 @@ parse aborts) stands as measured, but ROUND 119's "the batch blob is missing" sh
 be built on it. The failing checks compare 35-byte P2SH32 locking bytecodes against items that came out empty
 (ROUND 118) - with the verifier's arguments now nameable, the next round can map those empties onto the real ABI
 parameters instead of guessing.
+
+Focused state: `-t 'take job'` = 2 failed | 1 passed (green `sanity checks`), `yarn build` green, no full-ladder
+run (no title turned green).
+
+### ROUND 121: the empty operands are NOT route arguments
+
+New field `routeArguments` in `deferred-stall-io-full`: for every participant it decodes the MASTER input's
+unlocking bytecode - which is the packed route ABI argument vector, and unlike the verifier's script it is packed
+exactly as declared, so a positional mapping is sound - and names the empty entries from
+`artifact.messageBus.route.inputs`. Measured:
+
+    build 40 : p0 empty[], p1 empty[], p2 empty[], p3 empty[], p4 empty[__internal__graphFixedSize]
+    build 67 : p0 empty[], p1 empty[]
+    build 74 : p0 empty[], p1 empty[]
+
+so the two EMPTY stack operands the failing checks compare against 35-byte P2SH32 locks (ROUND 118) do NOT come
+from the route argument vector. They must come from a per-row/per-slot witness lookup (the `_rN` / vmap witness
+family) that the probe build leaves unset, or from an introspection of a coordinate with no token. The single
+empty value found is `__internal__graphFixedSize` for participant 4 in build 40.
+
+Next: list the values the covenant actually picks for those witness families in the probe program. The cheapest
+decisive measurement is to make `failingStack` self-describing: record, for each of the top stack items, whether
+an IDENTICAL byte string appears as a route argument, as a graph argument (`verifier-arguments`), or nowhere -
+items that appear nowhere are witness lookups, and their emptiness is then the thing to fill.
 
 Focused state: `-t 'take job'` = 2 failed | 1 passed (green `sanity checks`), `yarn build` green, no full-ladder
 run (no title turned green).

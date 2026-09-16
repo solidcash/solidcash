@@ -36720,6 +36720,20 @@ export class StatefulFunctionCall {
           if (!feeUtxo) {
             throw new Error('messageBus: transparent atomic promotion requires one token-free fee UTXO');
           }
+          // The fee input is this transaction's first P2PKH input, and the platform derives `tx.origin` - and
+          // with it `msg.sender` for a direct call - from it. Report the funded account beside that coordinate so a
+          // caller/funder mismatch is visible without re-deriving it from the built transaction.
+          if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+            ?.SOLIDC_DEBUG_FUNDER_PLAN === '1') {
+            console.error('composed-funder-plan', JSON.stringify({
+              functionName: this.functionName,
+              callerLock: binToHex(signer.getLockingBytecode()),
+              feeOutpoint: `${feeUtxo.txid.slice(0, 12)}:${feeUtxo.vout}`,
+              feeSatoshis: String(feeUtxo.satoshis),
+              logicalMatchesPhysical:
+                (this.parentContract?._logicalNonceSigner ?? null) === (this.parentContract?._signer ?? null),
+            }));
+          }
           retireSignerUtxos(signer, [feeUtxo]);
           const { compose } = await import('../message-bus/compose.js');
           receipt = await compose({

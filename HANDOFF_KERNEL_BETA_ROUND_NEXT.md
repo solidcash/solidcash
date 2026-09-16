@@ -1,8 +1,8 @@
 # Handoff — kernel-beta marketplace climb (after the event/continuation round)
 
-> **Latest state (ROUND 77, caller-funded compositions): 39 pass / 27 fail; tree at `7a7f1e9b7`.** The sections below are a chronological log;
+> **Latest state (ROUND 78, funder diagnostics): 39 pass / 27 fail; tree at `1f5497c68`.** The sections below are a chronological log;
 > read ROUNDS 51-52 and 54 (the collection-key, rolled-array and dynamic-storage-read fixes: 32 -> 37),
-> ROUNDS 53-77 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
+> ROUNDS 53-78 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
 > deferred-`takeJob` class and its three falsified hypotheses) at the end. Earlier "State" numbers in this header
 > are historical.
 
@@ -3559,6 +3559,32 @@ question from ROUND 76 (whether the fixture's `user2` is the whitelisted `47d9fe
 **Testing rule for the following rounds (from the operator):** do not run the whole 66-title ladder for
 measurement. Run only the title under work plus its two neighbours (`-t '<title>'` plus the adjacent describes), and
 reserve a full ladder run for the moment a previously failing title turns green.
+
+### ROUND 78: funder/caller diagnostics and a falsified wrapper hypothesis
+
+**Landed:** an env-gated diagnostic in the composed funding path - `SOLIDC_DEBUG_FUNDER_PLAN=1` prints
+`composed-funder-plan` with the caller's locking bytecode, the chosen fee outpoint/satoshis and whether the
+logical-nonce and physical signers agree. General, zero behaviour change, and it makes the ROUND 76/77
+caller-vs-funder question answerable in one focused run instead of by probing three subsystems.
+
+Measurements this round (focused runs only, per the operator's rule):
+
+* **falsified**: the hypothesis that the harness's `withEthersMessageSigning` wrapper is not a `Signer` instance
+  (which would make `connect(user)` fall back to a stale signer). It mutates and returns the *same* `Signer`
+  (`packages/testing/src/hre.ts:237`), so `connect(user2)` does bind user2, and the probe confirms
+  `logicalMatchesPhysical: true` at funding time.
+* the composed funding for the failing `take job` transaction uses caller lock
+  `76a914470bf077d5619f3424774ab30b3fcb2c3a89ea7088ac` (outpoint `7ae41a32d55a:11`) - the same account as that
+  aggregate's first P2PKH input, so `tx.origin` and the funder do agree there;
+* across the same title the *callers* are several distinct accounts, and both `470bf077...` and `47d9fe52...`
+  (ROUND 75's whitelist-key account) appear as callers for different composed transactions. That makes ROUND 74/75's
+  single fetched whitelist entry (`bac4afa3...`, value `01`) inconclusive: it may belong to another job/fixture run
+  in the same test rather than to the read that fails, so the "no entry for the taker" reading is not established.
+
+Next round: with the new diagnostic, run the failing title and match `composed-funder-plan`'s caller lock against
+the *take* call under test (the one whose `takeJob` is expected to succeed), then check that account's whitelist
+entry directly (fetch the collection and match `keyToSlotMulti([<jobId>, <that lock>])`) instead of relying on the
+single-entry observation. Only then decide between a read-key mismatch and a wrong-caller/funder mismatch.
 
 ### How to localize it next
 

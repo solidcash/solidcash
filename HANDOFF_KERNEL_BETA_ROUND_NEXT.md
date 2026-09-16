@@ -1,6 +1,8 @@
 # Handoff — kernel-beta marketplace climb (after the event/continuation round)
 
-> **Latest state (ROUND 149: the FAILING invocation is captured - the fragment (opcodes 83,147,210,1,1,138) is entered at depth 92 with **base = 63** (`__internal__dynamicChunkInputBase`) instead of the participant block base 0, so it reads `outputs[66]` (a bare OP_TRUE pad, empty commitment) and the `[32:64]` slice aborts; `outputs[3]` IS materialised with a 64-byte commitment. Landed: an opcode-signature gate for the frame trace (instruction counts are ambiguous - 20 distinct 7-instruction bodies) and the general `visitBranch` stack-height invariant.** See "ROUND 149" at the end.
+> **Latest state (ROUND 150: route calls' argument vectors are now dumpable (`SOLIDC_DEBUG_ARG_ORDER=1`, 467 sites on the fixture) and show the appended context order is [entry-key witnesses, logical caller, **owner**, oracle-base witness] after the decoded source arguments. `takeJob`'s ABI ends `[.., proxyMasterIndex, dynamicChunkInputBase]`, so the owner parameter must be appended AFTER the chunk base; if any injection lands it earlier, the owner receives the chunk-base value 63 - exactly the measured symptom. Landed: the dump + the branch-height invariant (ROUND 149).** See "ROUND 150" at the end.
+>
+> Superseded (ROUND 149: the FAILING invocation is captured - the fragment (opcodes 83,147,210,1,1,138) is entered at depth 92 with **base = 63** (`__internal__dynamicChunkInputBase`) instead of the participant block base 0, so it reads `outputs[66]` (a bare OP_TRUE pad, empty commitment) and the `[32:64]` slice aborts; `outputs[3]` IS materialised with a 64-byte commitment. Landed: an opcode-signature gate for the frame trace (instruction counts are ambiguous - 20 distinct 7-instruction bodies) and the general `visitBranch` stack-height invariant.** See "ROUND 149" at the end.
 >
 > Superseded (ROUND 148: the round-147 drift conclusion is FALSIFIED - measured on the BASELINE build, the pick at instruction 462 reads `OP_PICK 20` and depth 20 holds the OWNER (0) while 63 sits at 21, exactly matching the compiler's model index 20 - so the base is right, `outputs[3]` is materialised with a 64-byte commitment, and the empty item the failing 5-instruction helper splits comes from a DIFFERENT 7-instruction body that ends in OP_CAT (20 candidates). Landed this round: a general `visitBranch` stack-height invariant (both arms, revert exempt), which the fixture compiles cleanly with.** See "ROUND 148" at the end.
 >
@@ -6242,3 +6244,34 @@ statement path did not. Validated: the `.marketplace` fixture compiles cleanly (
 violation) and the `packages/solidc` suite shows **no** `Unbalanced` violation anywhere - the two failing titles
 inspected ("removes an empty extension hook...", "retains an empty hook call...") are pre-existing (the suite has
 ~223 pre-existing failures and the invariant can only fail a test by throwing its own message).
+
+## ROUND 150: a route call's ARGUMENT VECTOR is now dumpable, and what it already shows
+
+### Landed: `SOLIDC_DEBUG_ARG_ORDER=1`
+
+`dispatchFor` in `compiler.ts` (the one place every route -> clone call is assembled) now prints
+`message-bus-arg-order` with the callee, the invoke target, the source parameter list and the full generated
+argument vector. Measured on the fixture: 467 call sites. The record for `takeJob` ->
+
+    invoke __message_bus_entry_takeJob
+    source params (2): jobId_, signature_
+    arguments (6): __message_bus_arg_17_0, __message_bus_arg_17_1,
+                   __message_bus_key_whitelistWorkers_0, __message_bus_key_whitelistWorkers_1,
+                   __message_bus_graph_caller, __internal__proxyMasterIndex
+
+So a clone call passes the decoded source arguments FIRST, then the route context appended in this order:
+entry-key witnesses, logical caller, **owner**, (oracle-base witness). The clone's own declaration must match
+that vector one-for-one, since the call binds positionally. NOTE (learned the hard way): comparing the vector
+against the SOURCE function's parameter list reports a mismatch for essentially every route call (measured 388 of
+467) and is NOT a defect - the clone declares the source's parameters plus the context. The clone's declaration
+is what the vector has to match, and locating/asserting that pair is the next step:
+`markDynamicChunkInputBaseFunctions`/`SymbolTableTraversal` inject `__internal__dynamicChunkInputBase` (line
+~4448) and `__internal__blockhashInputIndex` (line ~3142) as PARAMETERS, while `compiler.ts:8421` appends
+`__internal__messageBusOwnerInput` during route synthesis - if the owner is appended before the chunk base but
+the vector passes the chunk base (inside the source arguments) before the owner, the owner parameter receives the
+chunk-base VALUE, which is exactly the measured symptom (the outlined fragment's base is 63 =
+`__internal__dynamicChunkInputBase` where the participant block base 0 is required, so it reads `outputs[66]`, a
+bare pad with an empty commitment). `takeJob`'s own ABI (artifact `abi`, name `takeJob`) ends
+`[.., __internal__proxyMasterIndex, __internal__dynamicChunkInputBase]`, i.e. the chunk base is its LAST declared
+parameter - so the owner must be appended AFTER it, and any injection that lands the owner earlier produces
+exactly this swap.

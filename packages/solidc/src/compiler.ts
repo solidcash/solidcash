@@ -8750,8 +8750,32 @@ function synthesizeMessageBusRoute(
       // semantics. The distinct arm retains its own physical entry slot. Later semantic metadata gates that slot
       // off when one of these equality arms is taken.
       const dispatchFor = (entryArgs: string[]): string => {
-        const callArgs = [...sourceCallArgs, ...entryArgs, ...blockhashRowArgs, ...callerContextArgs,
-          ...ownerContextArgs, ...blockhashBaseArgs].join(', ');
+        const argumentVector = [...sourceCallArgs, ...entryArgs, ...blockhashRowArgs, ...callerContextArgs,
+          ...ownerContextArgs, ...blockhashBaseArgs];
+        if ((globalThis as { process?: { env?: Record<string, string> } }).process
+          ?.env?.SOLIDC_DEBUG_ARG_ORDER === '1') {
+          // A generated call binds POSITIONALLY, so the argument vector has to line up with the callee's
+          // parameter list one for one. When it does not, a parameter silently receives its neighbour's value -
+          // measured symptom: the route-owned clone's `__internal__messageBusOwnerInput` received the
+          // `__internal__dynamicChunkInputBase` value, so a keccak side-car read addressed the padding after the
+          // participant's trailing band instead of the compute slot, and preflight aborted on an empty item.
+          // NOTE: `fn` is the SOURCE handler while the call targets the clone (`invokeName`), and a clone
+          // declares the source's parameters PLUS the route context this vector appends (decoded arguments,
+          // entry-key witnesses, the logical caller, the participant owner, then the oracle-base witness). So
+          // the source list below is reference material, NOT the list this vector must match one-for-one: the
+          // clone's own declaration is the target, and comparing against the source list reports a mismatch for
+          // every route call (measured: 388 of 467 records) that is expected rather than a defect.
+          const parameters = fn.parameters.map((parameter) => parameter.name);
+          console.error('message-bus-arg-order', JSON.stringify({
+            callee: fn.name,
+            invoke: invokeName,
+            sourceParameterCount: parameters.length,
+            argumentCount: argumentVector.length,
+            sourceParameters: parameters,
+            arguments: argumentVector,
+          }));
+        }
+        const callArgs = argumentVector.join(', ');
         const kernelSwapped = kernelSwappedHandlerInvokeNames.get(fn);
         const kernelOrientedInvoke = kernelSwapped && swappableShared && swappableVarying
           ? `if (${decodedName(swappableShared.inputIndex)} == ${swappableShared.routeInput}) { `

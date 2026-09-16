@@ -282,6 +282,15 @@ const MAX_MATERIALIZED_ARRAY_ELEMENTS = 10000;
 // uninitialized internal fn-ptr reverts, matching Solidity. See emitDefaultValue.
 const INVALID_FUNCTION_POINTER_ID = 0x7fffffffn;
 
+/**
+ * Diagnostic switch for compute/participant block-base resolution. A block base is addressed by a stack index,
+ * and an index that is one slot off silently reads a NEIGHBOURING frame value (measured: a route handler read
+ * `__internal__dynamicChunkInputBase` where it needed the participant block base), so the resolution needs to be
+ * observable without a full bytecode diff. Off unless explicitly requested.
+ */
+const DEBUG_COMPUTE_BASE = (globalThis as { process?: { env?: Record<string, string> } })
+  .process?.env?.SOLIDC_DEBUG_COMPUTE_BASE === '1';
+
 // X29. Hidden context an message-bus batch route pushes at every call site of an effect-carrying graph emission handler:
 // the dispatch-site ordinal that selects the handler's owner-local event/transfer frame in the route's block.
 const GRAPH_EFFECT_SITE = '__internal__handlerEffectSite';
@@ -32199,16 +32208,59 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.removeFromStack(index);
   }
 
+  /**
+   * Report how a participant/compute block base was resolved (see DEBUG_COMPUTE_BASE). The interesting datum is
+   * which NEIGHBOUR of the resolved index holds a different frame authority: an off-by-one index reads it.
+   */
+  private debugComputeBase(branch: string, name: string, index: number, extraStackOffset: number): void {
+    if (!DEBUG_COMPUTE_BASE) return;
+    const neighbours = new Map<string, number>();
+    for (const candidate of [
+      '__internal__proxyMasterIndex', '__internal__dynamicChunkInputBase', '__internal__messageBusOwnerInput',
+      '__internal__lifecycleOwnerInput', '__internal__graphBlockSize', '__internal__graphFixedSize',
+      '__internal__returnOutputIdx', '__internal__activeVerifierIndex',
+    ]) {
+      const candidateIndex = this.getStackIndex(candidate, true);
+      if (candidateIndex >= 0) neighbours.set(candidate, candidateIndex);
+    }
+    console.error('DBG-COMPUTE-BASE', JSON.stringify({
+      function: this.currentFunction.name,
+      functionId: this.currentFunction.functionId,
+      isDefineSubTraversal: this.isDefineSubTraversal,
+      isRoute: this.isCompilerMessageBusRoute(this.currentFunction),
+      hasBlockLayout: this.currentFunction.blockLayout !== undefined,
+      branch,
+      name,
+      index,
+      extraStackOffset,
+      modelLength: this.stack.length,
+      resolvedName: this.stack[index],
+      nameAtIndex: this.getStackIndex(name, true),
+      above: this.stack.slice(Math.max(0, index - 2), index + 3),
+      neighbours: [...neighbours.entries()],
+      stackTop: this.stack.slice(0, 28),
+    }));
+  }
+
   private emitMasterInputIndex(locationData: SingleLocationData, extraStackOffset = 0): void {
     if (this.usesMessageBusOwnerBlockBase()) {
       // Every generated route handler receives its physical participant owner as an explicit compiler argument.
       // Use that one authority for both direct routes (where the caller supplied OP_INPUTINDEX) and delegated
       // routes (where the caller supplied its authenticated proxy witness). Deciding again from transient clone
       // metadata is unsound: later lowering can preserve the owner parameter while losing the delegate marker,
-      // causing state reads to fall back to the implementation executor's adjacent inputs. The local top-relative
-      // frame includes every compiler-owned handler operand, so it does not cross the caller's still-live frame.
+      // causing state reads to fall back to the implementation executor's adjacent inputs.
+      //
+      // The local top-relative frame includes every compiler-owned handler operand, so it does not cross the
+      // caller's still-live frame - and it is the ONLY form that is right here. MEASURED: switching this branch
+      // to the bottom-ordinal form (emitPickTrackedFromBottom, as the route-entry/outlined branches use) removes
+      // the take-job empty-item OP_SPLIT but regresses `close job` (2 titles) and `withdraw collateral`, so the
+      // two forms compensate for OPPOSITE frame mismatches: the bottom form is right when the caller leaves
+      // untracked operands ABOVE the tracked frame, the top-relative form when the extras sit BELOW it. A fix
+      // for the take-job coordinate must therefore correct the MODEL (or the specific base emitter), not the
+      // addressing form. See DBG-COMPUTE-BASE / SOLIDC_DEBUG_COMPUTE_BASE.
       const trackedOwnerIndex = this.getStackIndex('__internal__messageBusOwnerInput', true);
       if (trackedOwnerIndex >= 0) {
+        this.debugComputeBase('owner', '__internal__messageBusOwnerInput', trackedOwnerIndex, extraStackOffset);
         this.emit(encodeInt(BigInt(trackedOwnerIndex + extraStackOffset)), locationData);
         this.emit(Op.OP_PICK, locationData);
       } else if (this.isSubroutineUseProbe) {
@@ -32225,6 +32277,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           // The route entry authenticated this owner witness before executing any handler. Its aggregate frame can
           // leave runtime-only operands above the tracked ABI values, so recover the witness by stable bottom
           // ordinal rather than guessing a physical distance from the executor's active input.
+          this.debugComputeBase('route-entry', '__internal__proxyMasterIndex',
+            this.getStackIndex('__internal__proxyMasterIndex'), extraStackOffset);
           this.emitPickTrackedFromBottom('__internal__proxyMasterIndex', locationData);
         } else {
           // Ordinary delegate executors have the compact physical relation authenticated at entry.
@@ -32233,7 +32287,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           this.emit(Op.OP_SUB, locationData);
         }
       } else {
-        // Compiler-invoked handlers have a locally tracked call frame.
+        // A DEFINE'd handler body shares the caller's physical stack, so a caller-side untracked operand can sit
+        // above this frame; the route-entry and outlined branches answer that with a bottom ordinal. This branch
+        // keeps the top-relative form deliberately - see the owner branch above and ROUND 143 of the handoff.
+        this.debugComputeBase('define-body', '__internal__proxyMasterIndex',
+          this.getStackIndex('__internal__proxyMasterIndex'), extraStackOffset);
         const proxyIndex = this.getStackIndex('__internal__proxyMasterIndex') + extraStackOffset;
         this.emit(encodeInt(BigInt(proxyIndex)), locationData);
         this.emit(Op.OP_PICK, locationData);
@@ -32247,6 +32305,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private emitComputeSidecarBlockBase(locationData: SingleLocationData, capturedName?: string): void {
     if (capturedName) {
       const index = this.getStackIndex(capturedName);
+      this.debugComputeBase('captured', capturedName, index, 0);
       this.emit(encodeInt(BigInt(index)), locationData);
       this.emit(Op.OP_PICK, locationData);
     } else if (this.getStackIndex(
@@ -32256,13 +32315,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // leave runtime-only return operands above that frame which are deliberately absent from this traversal's
       // static stack model; a top-relative PICK then mistakes one of those operands for the physical block base.
       // Address it by its bottom ordinal, as for the aggregate route's authenticated owner witnesses.
+      this.debugComputeBase('outlined', GenerateTargetTraversalWithLocation.OUTLINED_COMPUTE_BLOCK_BASE,
+        this.getStackIndex(GenerateTargetTraversalWithLocation.OUTLINED_COMPUTE_BLOCK_BASE), 0);
       this.emitPickTrackedFromBottom(
         GenerateTargetTraversalWithLocation.OUTLINED_COMPUTE_BLOCK_BASE,
         locationData,
       );
     } else if (this.usesDelegateExecutorBlockBase()) {
+      this.debugComputeBase('delegate-executor', '(op_inputindex)', -1, 0);
       this.emit(Op.OP_INPUTINDEX, locationData);
     } else {
+      this.debugComputeBase('master-input-index', '(emitMasterInputIndex)', -1, 0);
       this.emitMasterInputIndex(locationData);
     }
   }

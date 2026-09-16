@@ -1,6 +1,8 @@
 # Handoff — kernel-beta marketplace climb (after the event/continuation round)
 
-> **Latest state (ROUND 142: the take-job preflight abort is now DECODED END TO END from the real failing redeem. The observed read is `outputs[63 + 3].nftCommitment[32:64]`, i.e. it uses 63 = `__internal__dynamicChunkInputBase` (participant block base 0 + trailingBase 63) where the keccak side-car read needs the participant BLOCK base 0 (the route's `__internal__proxyMasterIndex`, which the unlocking bytecode does supply as 0). Output 66 is a bare OP_TRUE pad with an empty commitment, so the `[32:64]` slice aborts the whole program. See "ROUND 142" at the end for the full coordinate table, the emitted-code evidence and the next step.**
+> **Latest state (ROUND 143: the wrong base is emitted from `emitMasterInputIndex`'s OWNER branch - MEASURED by switching it to the bottom-ordinal form, which removes take-job's empty-item OP_SPLIT (the abort becomes an OP_VERIFY) but REGRESSES `close job` and `withdraw collateral`; the switch was reverted. Also measured: the artifact cache is NOT keyed by the compiler build, so `SOLIDC_COMPILE_CACHE=0` is mandatory after a compiler change - a cached compile served an experimental compiler's artifacts and faked a regression. Baseline re-verified after a cold compile: sanity checks OK, close job 2/2, withdraw collateral 1/1.** See "ROUND 143" at the end.
+>
+> Superseded (ROUND 142: the take-job preflight abort is now DECODED END TO END from the real failing redeem. The observed read is `outputs[63 + 3].nftCommitment[32:64]`, i.e. it uses 63 = `__internal__dynamicChunkInputBase` (participant block base 0 + trailingBase 63) where the keccak side-car read needs the participant BLOCK base 0 (the route's `__internal__proxyMasterIndex`, which the unlocking bytecode does supply as 0). Output 66 is a bare OP_TRUE pad with an empty commitment, so the `[32:64]` slice aborts the whole program. See "ROUND 142" at the end for the full coordinate table, the emitted-code evidence and the next step.**
 >
 > Superseded (ROUND 141: the probe's structural placeholders are bounded to the participant's own block band, which removes the token-less-output abort (the probe COMPLETES: reads 1426 -> 2382). Ladder unchanged.)
 >
@@ -5815,3 +5817,92 @@ DEFINE body the preamble invokes, where it is the sub-traversal form); only the 
 `SOLIDC_DUMP_FAILING_REDEEM=1` prints `message-bus-failing-redeem-hex <hex>` for the failing input. It was the
 only way to obtain the real program (the artifact `bytecode` field is an ASM-annotated hybrid and cannot be
 decoded linearly), and the next round needs the same oracle to confirm the fix, so it stays.
+
+## ROUND 143: the wrong base is emitted from the OWNER branch, and a blanket bottom-ordinal switch is WRONG
+
+Two things were established by measurement this round (not inference).
+
+### 1. The compile loop is now runnable (it was broken in this worktree)
+
+`node packages/testing/dist/cli.js compile --jobs 4` (the `.marketplace` project, config `solidcash.config.ts`)
+failed at first with `Cannot resolve import '@sablier/lockup/src/types/DataTypes.sol'` and then `@prb/math`.
+Those scopes exist in the fixture project (`/Code/effectiveacceleration.ai/contract/node_modules`); they were
+missing from this worktree's `node_modules`. They are now linked there (node_modules is gitignored, so the tree
+stays clean). A full cold compile is ~60-90 s and rewrites all 19 artifacts. `yarn build` alone does NOT touch
+`.marketplace/artifacts` - a compiler change needs the explicit compile before any marketplace test can see it.
+
+### 2. The failing coordinate comes from `emitMasterInputIndex`'s OWNER branch - measured by changing it
+
+`SOLIDC_DEBUG_COMPUTE_BASE=1` adds `DBG-COMPUTE-BASE` records at every base resolution
+(`GenerateTargetTraversal.ts`, helper `debugComputeBase`), with the branch, the resolved model index, the model
+name AT that index, the model length and the neighbouring authorities. Across the fixture compile: 16320
+records, branches `owner` (4976) and `route-entry` (3614), and **zero index/name mismatches** - so the model is
+self-consistent at emission time; the wrong value must come from a physical/model disagreement at RUN time.
+
+Changing the owner branch to the bottom-ordinal form (`emitPickTrackedFromBottom`, the form the route-entry and
+outlined branches already use) gave a decisive and surprising result:
+
+| title | before | with the owner-branch switch |
+|---|---|---|
+| `take job` | `OP_SPLIT ... stack item length: 0` at input 127 | **`Program failed an OP_VERIFY operation`** at input 127 |
+| `close job` (2) | pass | **fail** |
+| `withdraw collateral` | pass | **fail** |
+
+and the composed program changed (redeem 130624 -> 130530 bytes), so the switch really did reach the failing
+code. It is therefore NOT a valid fix: the two addressing forms compensate for OPPOSITE frame mismatches -
+
+    emitPickTrackedFromBottom(name)  is right when the caller leaves untracked operands ABOVE the tracked frame
+    push getStackIndex(name); OP_PICK is right when the extras sit BELOW it (and the model mirrors the frame)
+
+The switch was reverted; the comments at both branches now record this so the next round does not re-try it. The
+diagnostic (`SOLIDC_DEBUG_COMPUTE_BASE`, `debugComputeBase`, env-gated and inert) is kept: it is the only way to
+see which named slot a base read resolves to, and an off-by-one there is otherwise invisible.
+
+### 3. What the take-job abort reads, exactly (unchanged by the revert)
+
+The failing fragment reads `outputs[base + 3].nftCommitment[32:64]` where the correct base is the participant
+block base 0 (keccak side-car at block offset 3) and the value actually used is 63 =
+`__internal__dynamicChunkInputBase` (participant base + trailingBase). In the extracted route body the compute
+base reaches the read as the CAPTURED copy created by `captureComputeSidecarBlockBase`, i.e. as the threaded
+`OUTLINED_COMPUTE_BLOCK_BASE`; the route pushes it for the callee at route ip 6587-6592 as two plain
+`push k; OP_PICK` values, and the callee re-reads it at its own ip 636-641 (`push 19; OP_PICK; OP_3; OP_ADD;
+OP_OUTPUTTOKENCOMMITMENT`). So the next round must decide between
+
+  (a) the route pushes the WRONG VALUE for the callee's compute base (it takes `dynamicChunkInputBase` where the
+      participant block base is required) - fix the *emitter* for that hidden slot, not the addressing form; or
+  (b) the callee's model is one slot out of step with the physical frame at that call (extras above), in which
+      case only THAT call's hidden-context frame needs the bottom form - a surgical change, not a branch-wide one.
+
+The instrumented datum that separates them: add the resolved *value*-producing name to the hidden-context push
+at `GenerateTargetTraversal.ts` ~11214 (`emitComputeSidecarBlockBase` for a callee in
+`outlinedComputeBlockBaseFunctionIds`) and print `stack[index]` there; the current records already print it for
+the three `emitMasterInputIndex` branches, and none of them mismatch.
+
+### 4. New frontier when the base is right
+
+With the (reverted-again) owner switch the abort became `Program failed an OP_VERIFY operation` at input 127
+with `preflight-return-idx { idxParams: [{ name: '__internal__returnOutputIdx', value: '62' }] }` - i.e. once the
+compute base is addressed correctly, the next wall is the route's RETURN slot (block offset 62, a bare OP_TRUE
+pad at outputs 58..62). Worth re-measuring as soon as the base fix is landed surgically.
+
+### 5. WORKFLOW TRAP that must be recorded: the artifact cache is NOT keyed by the compiler build
+
+`node packages/testing/dist/cli.js compile` reports `N cache hit(s)` and will happily reuse artifacts produced
+by a DIFFERENT compiler state. Two consequences, both measured this round:
+
+- After the owner-branch experiment I reverted the compiler change and recompiled; the compile reported
+  `22 cache hit(s)` and served the artifacts from the EXPERIMENTAL compiler, so `close job`,
+  `withdraw collateral` and even `take job > sanity checks` kept failing and looked like a real regression of the
+  reverted code. The same trap applies to a compile that FAILS part-way: it can leave artifacts from the failed
+  run behind for the next cached compile.
+- A cold compile fixes it: `SOLIDC_COMPILE_CACHE=0 node --max-old-space-size=8192 packages/testing/dist/cli.js
+  compile --jobs 4` regenerated all 19 artifacts from the reverted compiler and `take job > sanity checks`
+  passed again with `take job` back to the original empty-item OP_SPLIT. **Always use SOLIDC_COMPILE_CACHE=0
+  after touching the compiler**; treat any `cache hit(s)` note as "this artifact set may not match the compiler".
+
+Also: the `.marketplace` compile needs scopes that only exist in the fixture project
+(`/Code/effectiveacceleration.ai/contract/node_modules`): `@sablier/lockup`, `@prb/math`, ... Without them the
+compile dies on `MockSablierLockup.sol`. Linking them into the worktree `node_modules` is required for the
+compile but they must be REMOVED again before running the marketplace tests: with the whole scope set linked the
+test process resolves different package copies and every title fails. (Measured: tests fail with the links in
+place even with correct artifacts.)

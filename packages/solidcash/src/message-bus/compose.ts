@@ -3596,8 +3596,19 @@ export class AtomicMessageBusComposition {
               const needle = 'bac4afa31b5925f5';
               const commitments = aggregate.inputs.map((input) =>
                 String(input?.token?.nft?.commitment ?? '').toLowerCase());
+              const lockOf = (item: unknown): string => {
+                const input = item as { unlocker?: { generateLockingBytecode: () => Uint8Array } } | undefined;
+                return input?.unlocker ? binToHex(input.unlocker.generateLockingBytecode()) : '';
+              };
+              const p2pkhBefore = aggregate.inputs.flatMap((input, index) => {
+                const lock = lockOf(input);
+                return lock.startsWith('76a914') && index <= graph.layout.feeInput ? [{ index, lock }] : [];
+              });
               console.error('deferred-stall-composition', JSON.stringify({
                 lastBuildId: peekBuilderBuildId(),
+                firstP2pkh: p2pkhBefore[0],
+                p2pkhCount: p2pkhBefore.length,
+                feeInputLock: lockOf(aggregate.inputs[graph.layout.feeInput]),
                 calls: (this.options.preparedCalls ?? []).map((call) => {
                   const described = call as unknown as {
                     functionName?: string; logicalFunctionName?: string; selectorHex?: string;

@@ -1,8 +1,8 @@
 # Handoff — kernel-beta marketplace climb (after the event/continuation round)
 
-> **Latest state (ROUND 85, stall-build correlation): 39 pass / 27 fail; tree at `5749e0c6d`.** The sections below are a chronological log;
+> **Latest state (ROUND 86, trace failures attributed): 39 pass / 27 fail; tree at `a5ca64e4e`.** The sections below are a chronological log;
 > read ROUNDS 51-52 and 54 (the collection-key, rolled-array and dynamic-storage-read fixes: 32 -> 37),
-> ROUNDS 53-85 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
+> ROUNDS 53-86 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
 > deferred-`takeJob` class and its three falsified hypotheses) at the end. Earlier "State" numbers in this header
 > are historical.
 
@@ -3765,6 +3765,38 @@ input of the transaction being evaluated*, which the plan does not control.
 Next round: in the stalling pass, print the evaluated aggregate's first P2PKH locking bytecode and compare it with
 the plan's sender (`...e7adb60088ac`); `composed-funder-plan` already gives the funded account, so a mismatch there
 - not the entry list - is the remaining explanation for the failed require.
+
+### ROUND 86: the title-blocking stall is the ip-1 OP_SPLIT, NOT the whitelist require
+
+Extended the composer's stall probe with the aggregate's first P2PKH input (the `tx.origin` the covenant will
+derive `msg.sender` from) and wired `buildId` into the controller's `atomic-deferred-compute-no-progress`
+diagnostic, then ran `-t 'take job'` with `SOLIDC_DEBUG_ECRECOVER_DERIVE=1 SOLIDC_DEBUG_ENTRY_COUNTS=1`:
+
+    build 40   ip 424  states 949  OP_VERIFY            firstP2pkh 76a914470bf077...  (non-whitelisted caller)
+    build 67   ip 183  states 449  OP_VERIFY            firstP2pkh 76a91471782e81...
+    build 74   ip 244  states 449  OP_VERIFY            firstP2pkh 76a914c4ad89cd...
+    build 104  ip 121  states 449  OP_VERIFY            firstP2pkh 76a9149bf20ffc...
+    build 140  ip 361  states 449  OP_VERIFY
+    build 112  ip 1    states 451  OP_SPLIT 32 over 0    firstP2pkh 76a91447d9fe52...  (the whitelisted caller)
+    build 119/126/133 ip 1 states 451 OP_SPLIT 32 over 0
+    build 175  ip 1    states 951  OP_SPLIT 32 over 0    firstP2pkh 76a91447d9fe52...
+
+Two conclusions, both decisive:
+
+1. the whitelist chain (ROUNDS 73-85) was reading the **sanity** titles' compositions: their callers are not
+   whitelisted, so their `require` legitimately fails (the varying `OP_VERIFY` ips); the whitelisted builds are
+   different builds entirely;
+2. the compositions the failing title actually needs (**112, 175**, `firstP2pkh = 76a91447d9fe52...`, the
+   whitelisted caller, correct co-spend per ROUND 85) die with the *original* ROUND 64/67 signature:
+   `OP_SPLIT ... stack item length: 0; requested split index: 32` at **ip 1** - the verifier/digest abort, not the
+   whitelist read.
+
+Landed this round: `buildId` in the controller diagnostic (so trace failures are attributable to a build) and the
+aggregate's first P2PKH input in the stall probe; diagnostics only.
+
+Next round: with the correlation in place, dump the failing state of build 112/175's trace (ip 1, 451/951 states) -
+the terminal stack around the OP_SPLIT and the frame it belongs to - and finish the ROUND 67/68 digest analysis on
+the *right* trace instead of a mixed one.
 
 ### How to localize it next
 

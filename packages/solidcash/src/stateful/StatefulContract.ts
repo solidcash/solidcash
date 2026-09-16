@@ -36658,7 +36658,14 @@ export class StatefulFunctionCall {
                   frames: [...frames.entries()].sort(([left], [right]) => right - left).slice(0, 24),
                 }));
               } else {
-                console.error('atomic-deferred-compute-no-progress', diagnostic);
+                console.error('atomic-deferred-compute-no-progress', JSON.stringify({
+                  buildId: builderBuildSequence,
+                  error: diagnostic.error,
+                  ip: diagnostic.ip,
+                  states: diagnostic.states,
+                  executionInput: diagnostic.executionInput,
+                  stackBytes: diagnostic.stackBytes,
+                }));
               }
             }
             return progressed;

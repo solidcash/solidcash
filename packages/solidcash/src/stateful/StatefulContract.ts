@@ -36658,6 +36658,21 @@ export class StatefulFunctionCall {
                   frames: [...frames.entries()].sort(([left], [right]) => right - left).slice(0, 24),
                 }));
               } else {
+                const terminalState = terminal as {
+                  instructions?: Array<{ opcode: number; data?: Uint8Array }>;
+                  stack?: Uint8Array[];
+                } | undefined;
+                console.error('no-progress-terminal', JSON.stringify({
+                  buildId: builderBuildSequence,
+                  ip,
+                  program: (terminalState?.instructions ?? []).slice(0, 8).map(
+                    (instruction) => `${instruction.opcode}`
+                      + (instruction.data ? `:${binToHex(instruction.data).slice(0, 30)}` : ''),
+                  ),
+                  instructionCount: terminalState?.instructions?.length ?? 0,
+                  stack: (terminalState?.stack ?? []).slice(-14).map((item, index, stack) =>
+                    `${stack.length - 1 - index}:${item.length}:${binToHex(item).slice(0, 60)}`),
+                }));
                 console.error('atomic-deferred-compute-no-progress', JSON.stringify({
                   buildId: builderBuildSequence,
                   error: diagnostic.error,

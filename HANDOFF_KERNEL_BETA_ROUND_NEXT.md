@@ -1,8 +1,8 @@
 # Handoff — kernel-beta marketplace climb (after the event/continuation round)
 
-> **Latest state (ROUND 86, trace failures attributed): 39 pass / 27 fail; tree at `a5ca64e4e`.** The sections below are a chronological log;
+> **Latest state (ROUND 87, outline frame dumped): 39 pass / 27 fail; tree at `13438b12e`.** The sections below are a chronological log;
 > read ROUNDS 51-52 and 54 (the collection-key, rolled-array and dynamic-storage-read fixes: 32 -> 37),
-> ROUNDS 53-86 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
+> ROUNDS 53-87 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
 > deferred-`takeJob` class and its three falsified hypotheses) at the end. Earlier "State" numbers in this header
 > are historical.
 
@@ -3797,6 +3797,31 @@ aggregate's first P2PKH input in the stall probe; diagnostics only.
 Next round: with the correlation in place, dump the failing state of build 112/175's trace (ip 1, 451/951 states) -
 the terminal stack around the OP_SPLIT and the frame it belongs to - and finish the ROUND 67/68 digest analysis on
 the *right* trace instead of a mixed one.
+
+### ROUND 87: the whitelisted builds die inside the 5-instruction outline on a serialized output
+
+Dumped the terminal state of the failing trace for the correlated (whitelisted) builds. All of 112/119/126/133/175
+fail at `ip 1` in a **5-instruction frame**:
+
+    program: ['127', '119', '1:20', '127', '117']   = OP_3DUP OP_NIP <0x20> OP_3DUP OP_VERIFY
+    stack  : 13:''  12:225:'5100001976a91471782e8159265ed94bd35b8e699c08f53a6f38c688ac19...'  11..8:''
+
+The 225-byte item is a **serialized transaction output** - `value(8) || 0x19 || 76a914<20-byte pkh>88ac`, i.e. a
+25-byte P2PKH locking bytecode with its length prefix, for the change/funder account `71782e81...`. The frame is
+the same generic outline ROUND 66 identified (`MarketplaceDataV1` invokeDebug id 18, sourceMap `192:24:192:54`,
+bytecode `7f7701207f75`), which now clearly takes a serialized output and splits a 32-byte value out of it - and in
+these builds the operand it splits is empty, which is the `OP_SPLIT ... stack item length: 0` failure.
+
+So for the builds the failing title needs, the abort is a *digest/serialization* step over the aggregate's outputs
+(the ROUND 67/68 area), not a state read - and it is now isolated to one frame with its input on the stack.
+
+Landed this round: the `no-progress-terminal` diagnostic (env-gated) printing the failing frame's first eight
+instructions, its instruction count and the top of its stack; diagnostics only.
+
+Next round: walk back from that frame - print the last few states *before* the first state whose instruction count
+is 5, i.e. the invoking site and its stack - to see which value the caller passed and why it is empty for these
+builds while the same outline succeeds elsewhere. The comparison target is a build whose outline receives a full
+32-byte item (any passing composition in the same run).
 
 ### How to localize it next
 

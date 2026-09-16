@@ -1,8 +1,8 @@
 # Handoff — kernel-beta marketplace climb (after the event/continuation round)
 
-> **Latest state (ROUND 80, missing msg.sender-keyed co-spend): 39 pass / 27 fail; tree at `a85fb0e40`.** The sections below are a chronological log;
+> **Latest state (ROUND 81, unified sender lookup): 39 pass / 27 fail; tree at `24f76b3f6`.** The sections below are a chronological log;
 > read ROUNDS 51-52 and 54 (the collection-key, rolled-array and dynamic-storage-read fixes: 32 -> 37),
-> ROUNDS 53-80 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
+> ROUNDS 53-81 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
 > deferred-`takeJob` class and its three falsified hypotheses) at the end. Earlier "State" numbers in this header
 > are historical.
 
@@ -3646,6 +3646,26 @@ pinned the shape above; diagnostics only, no behaviour change.
 Next round: make the participant's read-only `msg.sender`-keyed entry access materialise as a co-spent entry NFT
 input (the same mechanism that already co-spends entry NFTs for write rows), then re-check that this composition's
 `whitelistEntryInputs` is non-empty.
+
+### ROUND 81: sender-key resolution unified (co-spend gap persists)
+
+**Landed:** the `keySources` entry of kind `msgSender` now resolves the sender through the same lookup the
+expression-keyed branch uses (`this._signer ?? this._logicalNonceSigner`). A composed participant is built from a
+contract instance that may carry only the logical-nonce signer (the account that initiated the call), so the old
+code either threw or keyed the entry by an account that never calls the contract; both branches now agree.
+Behaviour-safe: the previous code threw in exactly the case the fallback now handles.
+
+Focused verification (`-t 'take job'`, stall probe on): sanity still passes, the two real titles still fail, and
+the failing composition is unchanged - `whitelistEntryInputs: []` for the dominant 219-input takeJob shape, `[20]`
+for the 469-input one. So the *key resolution* branch was not what withholds the co-spend: the read-only
+`msg.sender`-keyed access is still resolved and fetched (`allCount 2, matchedCount 2`) without its entry NFT being
+placed in the participant block.
+
+Next round: instrument the entry-access loop itself (it fetches `collectionEntriesFor(signature)`, then for
+`sorted` collections builds a `SortedList` and co-spends "the exact entry if present, else the bracketing
+predecessor"). Print, per access, the resolved `keyValues`, the selected entry's slot and whether the predecessor
+fallback was taken. That separates "key not found" from "entry selected but not placed" - the two remaining
+explanations for the missing co-spend - before touching the placement code.
 
 ### How to localize it next
 

@@ -18984,13 +18984,18 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             // tx.origin = the first native P2PKH input's lockscript (emitTxOrigin). The sender funds via
             // _signer.unlockP2PKH(), so slot = keyToSlot(the signer's P2PKH lockscript). A wrong address just fails
             // the on-chain slot==keyToSlot(msg.sender) check (fail-closed).
-            if (!this._signer) {
+            // A composed participant is built from a contract instance that may carry only the logical-nonce
+            // signer (the account that initiated the call), the same fallback the expression-keyed branch uses.
+            // Requiring the physical signer here would either throw or, worse, key the entry by an account that
+            // never calls this contract, so both are resolved through one sender lookup.
+            const senderSigner = this._signer ?? this._logicalNonceSigner;
+            if (!senderSigner) {
               throw new Error(
                 `A '${keySource.senderOp ?? 'msg.sender'}'-keyed sorted mapping requires a Signer: the sender must `
                 + 'fund the call via its native P2PKH input (StatefulContract.withSigner / connect a Signer).',
               );
             }
-            keyValues.push(addressToLockScript(this._signer.getAddress()));
+            keyValues.push(addressToLockScript(senderSigner.getAddress()));
           } else {
             // Expression: evaluate the compiler's canonical label first (including fixed-array literal indices),
             // then consult an explicit override, and only then use a probe placeholder.

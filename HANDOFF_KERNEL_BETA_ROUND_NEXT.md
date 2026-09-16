@@ -1,6 +1,6 @@
 # Handoff — kernel-beta marketplace climb (after the event/continuation round)
 
-> **Latest state (ROUND 109: the OP_SPLIT read is `master + blockSize + 3`, not the side-car band at `master + 3`): 39 pass / 27 fail.** The sections below are a chronological log;
+> **Latest state (ROUND 110: the OP_SPLIT read is the sorted-chain walk `master + blockSize + 1 + counter`, counter = 2): 39 pass / 27 fail.** The sections below are a chronological log;
 > read ROUNDS 51-52 and 54 (the collection-key, rolled-array and dynamic-storage-read fixes: 32 -> 37),
 > ROUNDS 53-96 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
 > deferred-`takeJob` class and its three falsified hypotheses) at the end. Earlier "State" numbers in this header
@@ -4542,6 +4542,38 @@ Next: find the emitter that pushes `master + blockSize + <k>` before the shared 
 readers that use `emitTrailingBlockBase`/`emitTrailingWriteOutputBase` plus a constant, and the SDK witness that
 carries the predicted output ordinal (`__internal__vmapBatchPredOut_*`) - and decide which side owns the extra
 `blockSize`.
+
+Focused state: `-t 'take job'` = 2 failed | 1 passed (green `sanity checks`), `yarn build` green, no full-ladder
+run (no title turned green).
+
+### ROUND 110: the OP_SPLIT coordinate is the RANGE-SPLICE chain walk, not the side-car band
+
+The `+3` in the shared span was a red herring: the span is `OP_3 OP_ADD OP_OUTPUTTOKENCOMMITMENT <32> <span 122>`
+where `span 122` is the "drop 32, take next 32" parser used by EVERY `commitmentField`-style read, so the 5-byte
+body in the failing window identifies the parser, not the caller. The caller that produces exactly
+`master + blockSize + 3` is the range-splice chain walk:
+
+    GenerateTargetTraversal.ts:23417  emitTrailingBlockBase(blockSize)   // master + blockSize
+                                      OP_1ADD                            // + 1  (P' sits at +0)
+                                      <counter> PICK OP_ADD              // + counter
+                                      OP_DUP OP_OUTPUTBYTECODE ... OP_OUTPUTTOKENCOMMITMENT
+                                      <32/32 parse>                      // span 122
+
+i.e. `output[master + blockSize + 1 + counter]` = the `counter`-th new sorted-chain node. Triangulated with the
+measured read index for participant 0 (blockSize 63): `63 + 1 + 2 = 66`, so the covenant was walking node 2 while
+the participant published only TWO trailing outputs (63 and 64 = P' at +0 and node 1 at +1). The abort is
+therefore a CHAIN-LENGTH mismatch: the covenant walks more new nodes than the SDK materialised, and the walk runs
+off the published run into a bare pad.
+
+Candidates for the count the covenant uses: the row's key/insert count from its witness blob
+(`__internal__vmapBatchTrailingCount` is the corresponding ABI input) versus the SDK's `plannedWidth` /
+`composedContinuationWidth`. Both are already printed by `chunk-band-probe` (`start`, `band`, `composedTrailing`,
+`composedContinuationWidth`).
+
+Next: build a focused diagnostic that prints, for one stalled build, the covenant's walked node count (the read
+index chain, now visible in the 40-read window) next to the SDK's published count for that band and the witness
+value it passed - then decide whether the SDK undercounts, the witness overcounts, or the walk should stop at the
+published run (fail-closed bound).
 
 Focused state: `-t 'take job'` = 2 failed | 1 passed (green `sanity checks`), `yarn build` green, no full-ladder
 run (no title turned green).

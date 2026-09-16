@@ -1,8 +1,8 @@
 # Handoff — kernel-beta marketplace climb (after the event/continuation round)
 
-> **Latest state (ROUND 71, deterministic side-car stand-ins): 39 pass / 27 fail; tree at `d37c7e2ba`.** The sections below are a chronological log;
+> **Latest state (ROUND 72, solidhat runtime pick + ROUND 71 stand-ins): 39 pass / 27 fail; tree at `8cf709692`.** The sections below are a chronological log;
 > read ROUNDS 51-52 and 54 (the collection-key, rolled-array and dynamic-storage-read fixes: 32 -> 37),
-> ROUNDS 53-71 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
+> ROUNDS 53-72 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
 > deferred-`takeJob` class and its three falsified hypotheses) at the end. Earlier "State" numbers in this header
 > are historical.
 
@@ -3387,6 +3387,35 @@ Measured effect on the `-t 'take job'` reproducer (endpoint probe across the 18 
 
 Ladder: 39 pass / 27 fail, no lost titles (the remaining refusal is a later `require` inside the route, not the
 sidecar mismatch). SDK unit gate unchanged.
+
+### ROUND 72: cherry-picked `ecea6158a` (solidhat offline runtime)
+
+Landed as `8cf709692` = `ecea6158a` minus one environment artifact (see below). The pick brings the general
+SolidHat runtime pieces: `mock-contracts` (local contract models with ethers-shaped handles), `offline-network` /
+`offline-ipfs` / `offline-rpc` / `offline-setup`, `project-fixture`, `ported-script`, `cashaddr`, the README, and a
+`packages/testing/src/chai.ts` change. That chai change is the **harness-side counterpart of ROUND 69**: `withArgs`
+now awaits the assertion it belongs to instead of re-running `revertedWith` (which used to issue a second
+`send()` on the same call object), and it verifies argument tuples for locally modelled contracts while keeping the
+lenient pass-through for compiled covenants. Both fixes are now in the tree and compose.
+
+Two environment repairs were needed to build/test this worktree at all (neither is a source change):
+
+* the worktree had **no local `node_modules`**, so `solidcash`/`@solidcash/utils` resolved up to the main checkout's
+  stale declarations - the pick's build invalidation surfaced phantom errors (`AbiFunction.directMappingReturn`,
+  `StatefulTransactionBuilder.clearPersistedJobEvents`). Fixed with `yarn install --ignore-scripts` in the worktree
+  (creates workspace links pointing at this worktree's packages). The toolchain also declares `@noble/hashes`
+  (`^1.4.0`, resolved 1.8.0) for solidhat.
+* the pick carried a tracked `node_modules` **symlink** pointing at another worktree
+  (`/Code/cashscript/.worktrees/solidhat-marketplace-something/node_modules`); it is dropped from the landed commit
+  (`.gitignore` already ignores `node_modules/`, so nothing else changes).
+* 90 stale untracked compiled copies (`*.js`, `*.d.ts`, `*.js.map`, dated Sep 10) under `packages/solidhat/src`,
+  `packages/solidhat/test` and `packages/testing/test` were removed: vitest resolved `../src/vitest-preset.js` to a
+  stale sibling instead of the `.ts` source, and discovered each compiled test twice.
+
+Verification: `yarn build` green; `@solidcash/solidhat` 69 passed / 1 skipped (9 files, includes the pick's new
+suites); `@solidcash/testing` 4 failed / 58 passed where all 4 are `incremental-compile.e2e` compiler-spawn
+failures that **also fail with the pre-pick `chai.ts`** (checked by restoring that file: same 4); marketplace
+ladder **39 pass / 27 fail, no new, no lost** and zero `nonce ... already reserved` errors.
 
 ### How to localize it next
 

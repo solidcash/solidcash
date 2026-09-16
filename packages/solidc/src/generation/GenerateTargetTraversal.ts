@@ -11220,6 +11220,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // dynamic, compute, recovery (hidden declarations are appended to the tracked bottom).
     if (targetFunc.functionId !== undefined
       && this.outlinedComputeBlockBaseFunctionIds.has(targetFunc.functionId)) {
+      // The value this push produces is the one a later outlined read adds its slot offset to, so this is the
+      // site to identify in a VM trace when that read lands on the wrong frame value. ROUND 146 measured that the
+      // failing base is NOT produced by a pick right at the fragment's call site but by the helper chain that
+      // precedes it, so mark this push as well as the reads.
+      this.emitComputeBaseSiteMarker(locationData);
       this.emitComputeSidecarBlockBase(locationData);
       this.pushToStack(`(__outlined_compute_block_base_${targetFunc.functionId})`);
       hiddenContextCount += 1;

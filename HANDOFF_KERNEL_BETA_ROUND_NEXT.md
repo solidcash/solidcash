@@ -1,6 +1,8 @@
 # Handoff — kernel-beta marketplace climb (after the event/continuation round)
 
-> **Latest state (ROUND 145: the 5073-frame loose end is CLOSED (body `3b` invokes the fragment at ip 464 using the numeric id `OP_15`), the failing emitter is confirmed as `emitMasterInputIndex`'s owner branch inside body 3b, and the model carries exactly ONE entry the physical stack does not have above the extaddr block - so every index below it (the owner included) is one slot too deep. A stack-neutral site marker (`OP_DEPTH OP_DROP`, only under SOLIDC_DEBUG_COMPUTE_BASE=1) now makes the model record and the live frame matchable in a single run; the recipe is in ROUND 145.** See "ROUND 145" at the end.
+> **Latest state (ROUND 146: the fragment's base is a value PRODUCED BY the preceding helper chain (64 `push <id>; OP_INVOKE` sites in body 59, e.g. ids 0xae/0x9481/0x14/0xfd), not a pick at its call site - so instrument the helper chain, not the fragment. The principled fix is stated: address the message-bus frame authorities (the handler's `__internal__messageBusOwnerInput`, the route's `__internal__proxyMasterIndex`) by their FIXED ordinal from the PHYSICAL bottom of the stack (`OP_DEPTH push(ordinal+1) OP_SUB OP_PICK`) instead of by a drifting model index - correct in both the take-job and close-job frame shapes, so it fixes the class instead of trading titles.** See "ROUND 146" at the end.
+>
+> Superseded (ROUND 145: the 5073-frame loose end is CLOSED (body `3b` invokes the fragment at ip 464 using the numeric id `OP_15`), the failing emitter is confirmed as `emitMasterInputIndex`'s owner branch inside body 3b, and the model carries exactly ONE entry the physical stack does not have above the extaddr block - so every index below it (the owner included) is one slot too deep. A stack-neutral site marker (`OP_DEPTH OP_DROP`, only under SOLIDC_DEBUG_COMPUTE_BASE=1) now makes the model record and the live frame matchable in a single run; the recipe is in ROUND 145.** See "ROUND 145" at the end.
 >
 > Superseded (ROUND 144: the failure-moment PHYSICAL stack is now captured and the frame region is mapped - `PICK` resolved to 63 (`__internal__dynamicChunkInputBase`, d=22) where the intended authority is 0 (`__internal__proxyMasterIndex`, d=21), i.e. the model index is EXACTLY ONE SLOT TOO DEEP at that read; the fix must correct the model/emitter, not the addressing form. One loose end blocks it: the executed 5073-instruction caller resumes at ip 465 while the artifact's 5073 body (id `3b`) invokes the fragment at ip 599, and no runtime frame has 5073 instructions - the composed program's frame sizes do not match the artifact.** See "ROUND 144" at the end.
 >
@@ -6041,3 +6043,48 @@ is set. With it:
    record whose `above` shows [.., owner, dynamicChunkInputBase, outlinedRecoveryAIndex] and whose `index` matches
    the pushed constant - the first entry that has no physical counterpart IS the phantom, and the fix is to stop
    tracking it (or to push it), not to change the addressing form.
+
+## ROUND 146: the fragment's base is PRODUCED BY HELPERS, and the principled fix
+
+### The marker build is measurable (and the recipe from ROUND 145 needs adjusting)
+
+A cold compile with `SOLIDC_DEBUG_COMPUTE_BASE=1` succeeds (17994 `DBG-COMPUTE-BASE` records, 0 failures) and
+body 59 grows from 5073 to 5374 instructions with **160** `OP_DEPTH OP_DROP` marker sites - so the markers ARE in
+the bytecode and a live `[vm-stack]` run can be gated on the marker build's own frame length. But the markers do
+NOT sit immediately before the fragment invoke: the `push <id>; OP_INVOKE` sites that precede the fragment are
+part of long helper chains, e.g.
+`... OP_PUSHBYTES_1#ae INVOKE OP_PUSHBYTES_2#9481 INVOKE OP_14 INVOKE <push> INVOKE OP_PUSHBYTES_1#fd INVOKE
+OP_15 INVOKE ...` (64 such sites in body 59). So **the base the fragment adds 3 to is a value produced by those
+preceding helper invokes, not a pick at the invoke site** - which is why the model record and the pick do not sit
+next to each other. The chain to instrument is therefore the helper chain (ids 0xae, 0x9481, 0xfd, 0x14 ...), not
+the fragment's call site.
+
+### The principled fix (avoid the model-drift class entirely)
+
+The whole family of bugs here comes from addressing frame VALUES by a *model* index while the VM needs a *physical*
+depth. The model can drift by one (measured: the owner read resolves to 63 = `__internal__dynamicChunkInputBase`
+instead of 0); the two existing forms compensate in OPPOSITE directions, so neither can be used branch-wide
+(ROUND 143).
+
+A drift-proof alternative exists for the message-bus frame specifically: the route's ABI arguments sit at the
+PHYSICAL BOTTOM of the stack, in reverse declaration order, with fixed ordinals - measured in the round-144 dump
+(`dynamicChunkInputBase` deepest, then `proxyMasterIndex`, `returnOutputIdx`, `vmapBatchTrailingCount`, the key
+witnesses, `sig_38_0_rows`, the settlement graph blobs, `graphBlockSize`/`graphFixedSize`,
+`activeVerifierIndex`, `batchBlob`), and the two SDK-pushed batch slots are rolled off by the route prologue. A
+handler's `__internal__messageBusOwnerInput` is pushed by the route immediately above that frame as part of its
+declared/hidden argument block, so it too has a FIXED ordinal from the physical bottom. Emitting `OP_DEPTH push
+(ordinal + 1) OP_SUB OP_PICK` for those authorities is exact whatever the model believes, and is correct in BOTH
+the take-job and the close-job/withdraw-collateral shapes - i.e. it fixes the class instead of trading one title
+for another.
+
+Implement it as a new `emitPickFrameSlotFromBottom(ordinal, locationData)` used by
+`emitMasterInputIndex`'s owner branch and the route-entry `__internal__proxyMasterIndex` branch, with the ordinal
+computed from the DECLARED frame layout (route ABI order plus the caller's hidden-argument order) rather than
+from `this.stack`. Keep `emitPickTrackedFromBottom` for the tracked-name cases.
+
+### State left behind
+
+The fixture artifacts were recompiled COLD without the debug flag after this round's experiments, so they are the
+baseline build again; the scope node_modules links are removed again. Committed diagnostics (all inert by default
+and env-gated): `SOLIDC_DUMP_FAILING_REDEEM`, `SOLIDC_DEBUG_STACK_DEPTH`/`_BODY_LENGTH`/`_FROM`/`_TO`,
+`SOLIDC_DEBUG_COMPUTE_BASE` (+ the stack-neutral `OP_DEPTH OP_DROP` site marker).

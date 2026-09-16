@@ -19750,8 +19750,19 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
     // Persisted dynamic-storage reads: co-spend the var's chunks as read-only trailing inputs (ordered by
     // chunkIndex so input blockSize+i is chunk i), preserved as outputs. Reuses iterationEntryInputs.
-    const dynamicReads = abiFunction?.dynamicReads ?? [];
-    const dynamicWriteNames = abiFunction?.dynamicWrites ?? [];
+    // A delegated call publishes the row's dynamic-storage metadata on the entry ABI while the executing ABI
+    // describes only the forwarder, so fill the reads in from the entry function. The route's published union is
+    // deliberately not used here: co-spending a dispatchable collection the row does not read would shift the
+    // compiled trailing band.
+    const entryDynamicStorage = entryAbiFunction as
+      { dynamicReads?: readonly string[]; dynamicWrites?: readonly string[] } | undefined;
+    const dynamicReads = abiFunction?.dynamicReads?.length
+      ? abiFunction.dynamicReads
+      : [...new Set(entryDynamicStorage?.dynamicReads ?? [])];
+    const dynamicWriteNames = [...new Set([
+      ...(abiFunction?.dynamicWrites ?? []),
+      ...(entryDynamicStorage?.dynamicWrites ?? []),
+    ])];
     if (dynamicReads.length > 0) {
       for (const varName of dynamicReads) {
         // Read-modify-write var: its chunks are co-spent below by the write path (in chunkIndex order, so

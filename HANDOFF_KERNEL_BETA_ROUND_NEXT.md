@@ -1,8 +1,8 @@
 # Handoff — kernel-beta marketplace climb (after the event/continuation round)
 
-> **Latest state (ROUND 82, absent-entry read plan): 39 pass / 27 fail; tree at `77b446c72`.** The sections below are a chronological log;
+> **Latest state (ROUND 83, head-only collection list): 39 pass / 27 fail; tree at `e712e347c`.** The sections below are a chronological log;
 > read ROUNDS 51-52 and 54 (the collection-key, rolled-array and dynamic-storage-read fixes: 32 -> 37),
-> ROUNDS 53-82 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
+> ROUNDS 53-83 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
 > deferred-`takeJob` class and its three falsified hypotheses) at the end. Earlier "State" numbers in this header
 > are historical.
 
@@ -3695,6 +3695,31 @@ caches UTXOs (provider snapshot invalidation happens for signers via `invalidate
 need the same refresh after a composed write), and whether the *provisional* passes run before the publish's
 outputs are indexed. The oracle is the probe: after the fix, the correct sender's slot must read `present: true` in
 the pass that raises the stall.
+
+### ROUND 83: the absent slot comes from a collection list that holds only its HEAD
+
+Extended the ROUND 82 probe with the sorted list's size and re-ran `-t 'take job'`:
+
+    slot bac4afa31b5925f59e16  present False  listSize 1  headOnly True   entry 0000...
+    slot bac4afa31b5925f59e16  present True   listSize 2  headOnly False  entry bac4afa31b5925f59e163c59...
+    slot bbe4041794f2eccd9757  present False  listSize 2  headOnly False  entry 0000...   (other sender, absent)
+
+For the correct sender's slot, `present: false` is exactly `listSize === 1`: the sorted list built from
+`collectionEntriesFor(signature)` contained **only the HEAD sentinel**, so the entry really was not in the fetched
+set for that pass - the read plan is not dropping it (`SortedList.fromUtxos` only skips commitments shorter than
+`SLOT_BYTES * 4` = 64 bytes, and this entry is 65 bytes, i.e. fine). The same slot reads `present: true` with
+`listSize 2` in other passes of the same run, so the entry is visible to some builds and not to others - an
+ordering/visibility difference between builds, not a key, parse, or placement bug.
+
+Landed this round: the probe now reports `listSize`/`headOnly` beside `present`, which is what separated those
+cases.
+
+Next round: at the stall, compare the *cached* list with a **fresh** `provider.getUtxos(getEntryNftAddress(...))`
+count taken at the same moment. If the fresh fetch already returns 2, the stale data is a provider/SDK-side cache
+(`collEntryCache` is per-build, so the suspect is the provider's own UTXO view or a per-instance snapshot) and the
+fix is to refresh entry collections the way `invalidateSignerUtxos` refreshes signer UTXOs; if the fresh fetch also
+returns 1, the composed publish's output genuinely is not visible yet and the fix belongs in the ordering (do not
+finalise a composition whose reads depend on an output this same send created).
 
 ### How to localize it next
 

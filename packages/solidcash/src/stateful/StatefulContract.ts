@@ -18775,6 +18775,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               console.error('entry-read-plan', JSON.stringify({
                 collection: access.collection,
                 slotIndex,
+                listSize: list.all.length,
+                headOnly: list.all.length === 1,
                 slot: binToHex(slot),
                 present,
                 entryCommitment: String(entry.utxo.token?.nft?.commitment ?? '').slice(0, 72),

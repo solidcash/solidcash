@@ -1,6 +1,6 @@
 # Handoff — kernel-beta marketplace climb (after the event/continuation round)
 
-> **Latest state (ROUND 117: learning QUANTIFIED - 5 stalls learn nothing, 3 learn all keccak, 2 learn one ecrecover): 39 pass / 27 fail.** The sections below are a chronological log;
+> **Latest state (ROUND 118: failing operands captured - 35-byte P2SH32 locks plus EMPTY items; input-side placeholders reverted as a reach regression): 39 pass / 27 fail.** The sections below are a chronological log;
 > read ROUNDS 51-52 and 54 (the collection-key, rolled-array and dynamic-storage-read fixes: 32 -> 37),
 > ROUNDS 53-96 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
 > deferred-`takeJob` class and its three falsified hypotheses) at the end. Earlier "State" numbers in this header
@@ -4803,6 +4803,37 @@ Next: use the VERIFY windows to satisfy the specific checks that precede the rec
 are a tag/kind dispatch (`VERIFY ELSE 0 PICK 2 EQUAL IF 0 VERIFY ELSE ...`), `require a == b`
 (`PICK 2 PICK 1 INVOKE PUSH1 PICK EQUAL VERIFY`) and an equality-family check; each needs its placeholder
 coordinate's body to equal what the covenant computes, which `trailingCommitments` can now be compared against.
+
+Focused state: `-t 'take job'` = 2 failed | 1 passed (green `sanity checks`), `yarn build` green, no full-ladder
+run (no title turned green).
+
+### ROUND 118: the failing checks compare LOCKS and EMPTY items
+
+`deferred-no-progress-reads` now carries `failingStack` - the top of the terminal state's stack as
+length-prefixed hex - so the operands of the aborting check are visible, not just its opcode shape. Measured
+(builds 40/67/74):
+
+    build 40 : 35:aa20ac44e8d6... (p0 data NFT lock), 35:aa20e61fa6c6..., 35:aa2037bea4b7..., 0:, 0:, 1:02
+    build 67 : 0:, 35:aa20ac44e8d6..., 35:aa20e61fa6c6..., 35:aa2037bea4b7..., 0:, 0:
+    build 74 : (identical to 67)
+
+so the VERIFY checks compare 35-byte P2SH32 locking bytecodes and several EMPTY items (the `1:02` on build 40 is a
+one-byte `0x02` - a small ordinal/tag). The empty operands are the interesting part: a token-less coordinate yields
+an empty item for the category/commitment introspections, exactly like the output-side pads did before ROUND 116.
+
+Experiment (reverted): give the PROBE's `sourceOutputs` the same structural placeholder (both sides agreeing at
+every 1:1 coordinate). Measured reach:
+
+    outputs-only (ROUND 116/117) : 5x keccak 2/2 unresolved, 3x keccak 0/2, 2x ecrecover 7/8
+    both sides                   : 5x keccak 2/2, 5x keccak 1/2          <- SHORTER reach, no ecrecover learned
+
+so input-side placeholders change what earlier checks compare and cost reach; the change was reverted, and the
+restored tree reproduces the ROUND-117 distribution exactly (verified in the same session).
+
+Next (narrower than the reverted experiment): identify WHICH coordinate's input the failing comparison reads - the
+empty operand plus the lock operands should locate it - and give a placeholder to that coordinate only, or make
+the check's expected operand match. `deferred-stall-io-full` prints `trailingPublished`/`trailingCommitments` and
+`deferred-no-progress-reads` prints the introspection sequence, so the coordinate can be pinned from the same logs.
 
 Focused state: `-t 'take job'` = 2 failed | 1 passed (green `sanity checks`), `yarn build` green, no full-ladder
 run (no title turned green).

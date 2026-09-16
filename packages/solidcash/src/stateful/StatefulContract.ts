@@ -36871,6 +36871,11 @@ export class StatefulFunctionCall {
                     return undefined;
                   }
                 })(),
+                // The operands the failing check compared. Sizes alone cannot say which coordinate's body the
+                // covenant expected, so carry the top of the stack as length-prefixed hex.
+                failingStack: ((terminal as { stack?: Uint8Array[] } | undefined)?.stack ?? [])
+                  .slice(-8)
+                  .map((item) => `${item.length}:${binToHex(item).slice(0, 64)}`),
                 failingWindow: (terminal?.instructions ?? [])
                   .slice(Math.max(0, (terminal?.ip ?? 0) - 9), (terminal?.ip ?? 0) + 4)
                   .map((instruction) => ({ op: instruction?.opcode })),

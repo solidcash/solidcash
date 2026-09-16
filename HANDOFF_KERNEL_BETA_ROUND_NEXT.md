@@ -1,8 +1,8 @@
 # Handoff — kernel-beta marketplace climb (after the event/continuation round)
 
-> **Latest state (ROUND 69, logical-transaction send memo): 39 pass / 27 fail; tree at `75e07532b`.** The sections below are a chronological log;
+> **Latest state (ROUND 70, sidecar endpoint mismatch measured): 39 pass / 27 fail; tree at `3c3633d4f`.** The sections below are a chronological log;
 > read ROUNDS 51-52 and 54 (the collection-key, rolled-array and dynamic-storage-read fixes: 32 -> 37),
-> ROUNDS 53-69 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
+> ROUNDS 53-70 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
 > deferred-`takeJob` class and its three falsified hypotheses) at the end. Earlier "State" numbers in this header
 > are historical.
 
@@ -3318,6 +3318,34 @@ failing pass, `aggregate.inputs[absolute]`/`aggregate.outputs[absolute]` for eac
 disagree, the readiness filter (or the pass ordering) is the fix, not the resolver. This keeps the change inside
 the composition contract that already documents this behaviour, so it applies to every deferred-compute consumer
 (ecrecover, keccak, and any future sidecar resource), not just the marketplace fixture.
+
+### ROUND 70: the sidecar endpoint mismatch is measured (readiness must compare, not just find rows)
+
+Probe on the readiness site (`-t 'take job'`, the 1-minute reproducer) comparing, for every `block.offsets`
+entry, the aggregate's physical slot with the authenticated kind-6 manifest row:
+
+* 18 assemblies carry deferred blocks; only **9** of them have kind-6 rows at all - in the other half
+  `resolvableDeferredBlocks` is empty and no resolution is attempted (so the ROUND 65/66 "premature throw" reading
+  was doubly wrong: the throw only fires in the passes that *do* have rows);
+* in a row-bearing pass, offset 3 (mode 1 = keccakSideCar) declares
+  `argsHex = 613f0de0...b72a31ab` + `01` (category + **1-byte input commitment** `01`) and
+  `effectHex = a086010000000000` + `c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470`
+  (= 100000 sats + `keccak256("")`), while the aggregate slot holds
+  `input: {category: ab312ab7... (= the row's category byte-reversed, so consistent), commitment: ''}` and
+  `output: {commitment: c5d2460186f7... (= the declared keccak256("") - consistent)}`.
+
+So the *output* endpoint already matches its manifest claim, but the *input* endpoint is the placeholder
+(empty commitment) while the manifest declares `01`: the participant block's sidecar input is a placeholder whose
+commitment was never filled from the authenticated row. The verifier digests input/output pairs, so it fails before
+the compute call and the resolver never sees an argument - and the composer then reports "did not expose
+arguments" although nothing was actually unresolvable.
+
+General fix direction (kernel contract, no application names): make the deferred-compute readiness condition
+compare the physical slot against the row it is resolved for - input locking bytecode/category/commitment from
+`argsHex`, output value/commitment from `effectHex` - and, when they disagree, either fill the aggregate slot from
+the authenticated row (the manifest is the authority the verifier will digest) or return the assembly as "not
+ready yet" so the caller rebuilds, instead of judging it unresolvable. That applies to every sidecar resource
+(keccak mode 1, ecrecover mode 2, blockhash mode 0), not just the marketplace fixture.
 
 ### How to localize it next
 

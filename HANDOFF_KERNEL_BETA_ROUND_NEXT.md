@@ -1,6 +1,6 @@
 # Handoff — kernel-beta marketplace climb (after the event/continuation round)
 
-> **Latest state (ROUND 116: OP_SPLIT class ELIMINATED (5 -> 0) by probe-side trailing placeholders; all 10 stalls are now VERIFY): 39 pass / 27 fail.** The sections below are a chronological log;
+> **Latest state (ROUND 117: learning QUANTIFIED - 5 stalls learn nothing, 3 learn all keccak, 2 learn one ecrecover): 39 pass / 27 fail.** The sections below are a chronological log;
 > read ROUNDS 51-52 and 54 (the collection-key, rolled-array and dynamic-storage-read fixes: 32 -> 37),
 > ROUNDS 53-96 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
 > deferred-`takeJob` class and its three falsified hypotheses) at the end. Earlier "State" numbers in this header
@@ -4776,6 +4776,33 @@ the coordinate rightfully carries (the co-spent input at the same 1:1 coordinate
 covenant's own pin would compute from the row's current value), so those equality checks pass and the trace reaches
 the recovery/keccak reads. The failing windows above name the checks to satisfy, and `trailingCommitments` already
 prints both sides' commitment heads for comparison.
+
+Focused state: `-t 'take job'` = 2 failed | 1 passed (green `sanity checks`), `yarn build` green, no full-ladder
+run (no title turned green).
+
+### ROUND 117: deferred learning is quantified per stall
+
+New `deferredRemaining` field in `deferred-no-progress-reads` (from
+`stb.getDeferredComputeRemainingForDiagnostics()`): how many keccak preimages and ecrecover argument blobs are
+still unlearned when the resolve loop gives up. Measured on the focused window (10 stalls):
+
+    5 stalls : ecrecover 8/8 unresolved, keccak 2/2 unresolved      <- nothing learned at all
+    3 stalls : ecrecover 8/8 unresolved, keccak 0/2 unresolved      <- all keccak learned, no ecrecover
+    2 stalls : ecrecover 7/8 unresolved, keccak 0/2 unresolved      <- ONE ecrecover argument learned
+
+so the learning machinery does work when the probe survives far enough: the recovery read is reachable in at least
+one row, and each learned member advances the derivation. The remaining blocker is that the probe's placeholder
+data fails the checks that precede the OTHER reads, which is exactly what the VERIFY windows name.
+
+Also this round: a placeholder refinement (mirroring a co-spent input's real token, and shaping the placeholder
+body like `uint16-le index || data`) was implemented and then REVERTED - measured identical on every signal
+(learned 0/2, no-progress 10, OP_SPLIT 0; earlier "learned 2" readings came from pre-ROUND-116 runs), so the
+simpler ROUND-116 placeholder is kept and the working tree carries only the diagnostic addition.
+
+Next: use the VERIFY windows to satisfy the specific checks that precede the recovery reads. The three shapes seen
+are a tag/kind dispatch (`VERIFY ELSE 0 PICK 2 EQUAL IF 0 VERIFY ELSE ...`), `require a == b`
+(`PICK 2 PICK 1 INVOKE PUSH1 PICK EQUAL VERIFY`) and an equality-family check; each needs its placeholder
+coordinate's body to equal what the covenant computes, which `trailingCommitments` can now be compared against.
 
 Focused state: `-t 'take job'` = 2 failed | 1 passed (green `sanity checks`), `yarn build` green, no full-ladder
 run (no title turned green).

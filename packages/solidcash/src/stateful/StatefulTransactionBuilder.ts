@@ -12135,6 +12135,25 @@ export class StatefulTransactionBuilder {
     return true;
   }
 
+  /**
+   * How much deferred-compute work is still unlearned, for diagnostics: a stall record that only says "no
+   * progress" cannot distinguish "nothing was ever learned" from "almost everything was learned and one member
+   * stayed unresolved", and those have different causes.
+   */
+  getDeferredComputeRemainingForDiagnostics(): {
+    keccakUnresolved: number; keccakTotal: number;
+    ecrecoverUnresolved: number; ecrecoverTotal: number;
+  } {
+    const keccak = this.deferredKeccakCompute?.preimages ?? [];
+    const ecrecover = this.deferredEcrecoverCompute?.argBlobs ?? [];
+    return {
+      keccakUnresolved: keccak.filter((preimage) => preimage === null).length,
+      keccakTotal: keccak.length,
+      ecrecoverUnresolved: ecrecover.filter((blob) => blob === null).length,
+      ecrecoverTotal: ecrecover.length,
+    };
+  }
+
   hasUnresolvedDeferredKeccakPreimages(): boolean {
     return this.deferredKeccakCompute?.preimages.some((preimage) => preimage === null) === true;
   }

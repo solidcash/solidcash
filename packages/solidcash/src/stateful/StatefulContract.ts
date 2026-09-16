@@ -36864,6 +36864,13 @@ export class StatefulFunctionCall {
                   }
                   return hits;
                 }),
+                deferredRemaining: (() => {
+                  try {
+                    return stb.getDeferredComputeRemainingForDiagnostics();
+                  } catch {
+                    return undefined;
+                  }
+                })(),
                 failingWindow: (terminal?.instructions ?? [])
                   .slice(Math.max(0, (terminal?.ip ?? 0) - 9), (terminal?.ip ?? 0) + 4)
                   .map((instruction) => ({ op: instruction?.opcode })),

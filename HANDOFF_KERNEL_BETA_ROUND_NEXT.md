@@ -1,6 +1,6 @@
 # Handoff — kernel-beta marketplace climb (after the event/continuation round)
 
-> **Latest state (ROUND 102, the aborting slot belongs to ANOTHER participant's scope): 39 pass / 27 fail.** The sections below are a chronological log;
+> **Latest state (ROUND 103, the aborting read is in the aggregate TAIL, outside every participant block): 39 pass / 27 fail.** The sections below are a chronological log;
 > read ROUNDS 51-52 and 54 (the collection-key, rolled-array and dynamic-storage-read fixes: 32 -> 37),
 > ROUNDS 53-96 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
 > deferred-`takeJob` class and its three falsified hypotheses) at the end. Earlier "State" numbers in this header
@@ -4313,6 +4313,36 @@ Next (concrete): move the classification to the aggregate level - in the compose
 kind map from every participant's own master/data/entry addresses (the composer has each participant's artifact,
 category and block layout) and re-report the aborting read with its owner. Then the fix fork from ROUND 101 can be
 decided with an owner attached.
+
+Focused state: `-t 'take job'` = 2 failed | 1 passed (green `sanity checks`), `yarn build` green, no full-ladder
+run (no title turned green).
+
+### ROUND 103: the aborting read addresses the aggregate's TAIL, not a participant slot
+
+`deferred-stall-io-full` now labels every aggregate coordinate with its owner and block slot
+(`p<participant>:<kind>#<slotIndex>`, computed from `graph.layout.participantInputs` and each participant's
+`blockLayout.slots`). Measured:
+
+    build 40 (469 outputs): idx 216 p2:master, 217 p2:dataNft, 218 p2:entry#0      <- participant slots
+                            idx 463..467 = "other"                                 <- the ABORTING read (463)
+    build 67 (219 outputs): idx 216 = "other"                                      <- the ABORTING read
+
+so the aborting commitment read is always in the aggregate's TAIL - beyond every participant's block - where
+co-spent resources are mirrored 1:1 (`in == out` at the same index, e.g. `216: a3cef944:38` both sides, with
+several different categories `a3cef944`, `ee643a16`, `424cc33a`, `00000000`, `2c62df0f` in the same tail run).
+
+Combined with ROUND 101/102 this says: the verifier's scan bytecode-matches a TAIL output (a mirrored co-spent
+resource) at a COLLECTION address and then parses its 38-byte commitment with the SORTED entry shape
+(`slot||nextKey||value`, >= 64 bytes) - while a 38-byte body is the legitimate shape of a NON-sorted entry
+(`slot||value`) or of a value-chunk (`index||data`). Two candidate owners, to be decided next:
+  (a) the covenant scans too far: `emitSortedValueChunkPin` scans EVERY output ("Scan every output"), so a
+      mirrored tail resource at a collection address is matched even though the pin's authority is the writer's
+      own band; or
+  (b) the SDK mirrors the wrong resource into the tail (the mirrored UTXO at that address really is not a sorted
+      entry of that collection, i.e. the collection/address the scan expects and the resource published disagree).
+
+Next concrete step: print, for the aborting tail index, the mirrored input's outpoint (txid:vout) and the
+collection the scan is verifying (the verifier's `nNew`/address derivation), then decide (a) vs (b).
 
 Focused state: `-t 'take job'` = 2 failed | 1 passed (green `sanity checks`), `yarn build` green, no full-ladder
 run (no title turned green).

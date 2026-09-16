@@ -3637,8 +3637,24 @@ export class AtomicMessageBusComposition {
                   };
                 }),
               }));
+              // A stall is reported by ONE participant's builder, but the program that runs is the atomic verifier,
+              // which addresses every participant's outputs. Label each aggregate coordinate with its owner and
+              // block slot so an aborting read can be attributed without recomputing any participant's addresses.
+              const slotLabels = aggregate.outputs.map((_output, index) => {
+                for (const candidate of plan.participants) {
+                  const base = graph.layout.participantInputs[candidate.participant];
+                  const slot = (candidate.blockLayout?.slots ?? [])
+                    .find((entry) => base + entry.offset === index);
+                  if (slot) {
+                    return `p${candidate.participant}:${slot.kind}`
+                      + (slot.slotIndex !== undefined ? `#${slot.slotIndex}` : '');
+                  }
+                }
+                return 'other';
+              });
               console.error('deferred-stall-io-full', JSON.stringify({
                 buildId: peekBuilderBuildId(),
+                labels: slotLabels,
                 out: aggregate.outputs.map((item, index) => {
                   const lock = item?.to instanceof Uint8Array ? binToHex(item.to).slice(0, 10) : '';
                   return item?.token?.nft

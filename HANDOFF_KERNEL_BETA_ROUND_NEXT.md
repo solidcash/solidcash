@@ -1,6 +1,8 @@
 # Handoff — kernel-beta marketplace climb (after the event/continuation round)
 
-> **Latest state (ROUND 144: the failure-moment PHYSICAL stack is now captured and the frame region is mapped - `PICK` resolved to 63 (`__internal__dynamicChunkInputBase`, d=22) where the intended authority is 0 (`__internal__proxyMasterIndex`, d=21), i.e. the model index is EXACTLY ONE SLOT TOO DEEP at that read; the fix must correct the model/emitter, not the addressing form. One loose end blocks it: the executed 5073-instruction caller resumes at ip 465 while the artifact's 5073 body (id `3b`) invokes the fragment at ip 599, and no runtime frame has 5073 instructions - the composed program's frame sizes do not match the artifact.** See "ROUND 144" at the end.
+> **Latest state (ROUND 145: the 5073-frame loose end is CLOSED (body `3b` invokes the fragment at ip 464 using the numeric id `OP_15`), the failing emitter is confirmed as `emitMasterInputIndex`'s owner branch inside body 3b, and the model carries exactly ONE entry the physical stack does not have above the extaddr block - so every index below it (the owner included) is one slot too deep. A stack-neutral site marker (`OP_DEPTH OP_DROP`, only under SOLIDC_DEBUG_COMPUTE_BASE=1) now makes the model record and the live frame matchable in a single run; the recipe is in ROUND 145.** See "ROUND 145" at the end.
+>
+> Superseded (ROUND 144: the failure-moment PHYSICAL stack is now captured and the frame region is mapped - `PICK` resolved to 63 (`__internal__dynamicChunkInputBase`, d=22) where the intended authority is 0 (`__internal__proxyMasterIndex`, d=21), i.e. the model index is EXACTLY ONE SLOT TOO DEEP at that read; the fix must correct the model/emitter, not the addressing form. One loose end blocks it: the executed 5073-instruction caller resumes at ip 465 while the artifact's 5073 body (id `3b`) invokes the fragment at ip 599, and no runtime frame has 5073 instructions - the composed program's frame sizes do not match the artifact.** See "ROUND 144" at the end.
 >
 > Superseded (ROUND 143: the wrong base is emitted from `emitMasterInputIndex`'s OWNER branch - MEASURED by switching it to the bottom-ordinal form, which removes take-job's empty-item OP_SPLIT (the abort becomes an OP_VERIFY) but REGRESSES `close job` and `withdraw collateral`; the switch was reverted. Also measured: the artifact cache is NOT keyed by the compiler build, so `SOLIDC_COMPILE_CACHE=0` is mandatory after a compiler change - a cached compile served an experimental compiler's artifacts and faked a regression. Baseline re-verified after a cold compile: sanity checks OK, close job 2/2, withdraw collateral 1/1.** See "ROUND 143" at the end.
 >
@@ -5979,3 +5981,63 @@ touching the emitter: list the executed frame lengths (`[vm-stack]` with a 1-ins
 the body that actually performs the base push. The body the artifact names may not be the body that runs - the
 SDK composes the program from `debug.invokeDebug[*].bytecode` plus its own glue, and nothing verifies that the
 glue and the artifact agree on frame sizes.
+
+## ROUND 145: the loose end is CLOSED, and the model/physical pair is now matchable in one run
+
+### The 5073-frame mystery is resolved
+
+The composed redeem contains exactly ONE 5073-instruction body (`id 3b`), and its instructions at ip 463-466 are
+`OP_15 OP_INVOKE OP_14 OP_INVOKE` - i.e. it DOES invoke at ip 464, pushing the id with `OP_15` (the number 15).
+The fragment (`5393d20120017a8a7e`) is therefore defined under TWO identifiers and the caller uses the numeric
+`OP_15`, which is why a byte-pattern scan for the fragment's own define-id (`7d81`) found only the ip-599 site.
+So the executed chain `main(1721) -> route(11276) -> body 3b(5073, resume 465) -> fragment(7, resume 6) ->
+dropFirst/takeFirst(5)` is fully consistent with the artifact, and the failing base push is body 3b's
+instruction(s) immediately before ip 463.
+
+### Emitter chain confirmed for the failing push
+
+At body 3b's ip ~460 the base is pushed with a plain `push k; OP_PICK`. The only emitter that produces that shape
+for a block base is `emitMasterInputIndex`'s OWNER branch (body 3b has `__internal__messageBusOwnerInput`), reached
+from `emitComputeSidecarBlockBase(locationData)` when the route's hidden-context push for an outlined helper is
+compiled inside body 3b. So the wrong value 63 enters through the owner branch - which is exactly the branch whose
+bottom-ordinal switch fixes take job and regresses `close job`/`withdraw collateral` (ROUND 143).
+
+### Model vs physical at the failing site (aligned by the frame authorities)
+
+Model record for `__message_bus_entry_takeJob#59`, owner branch, index 20, model length 33:
+
+    13 __dcj___message_bus_entry_takeJob_0     21 __internal__dynamicChunkInputBase   (63)
+    14 __cj___message_bus_entry_takeJob_0      22 __internal__outlinedRecoveryAIndex  (4)
+    15 jobId_            16 signature_         20 __internal__messageBusOwnerInput    (0)
+    17/18 ek_kw0/ek_kw1  19 logical_caller
+
+Physical at the pick (this round's `[vm-stack]` dump at depth 91, i.e. the failure stack minus the two items the
+fragment pushes):
+
+    0 EIP-191 prefix     1 0x02        2 0            3 0
+    4/5/6 three 35-byte P2SH32 locks (the extaddr values)      7..11 five zeros (the extcap values)
+    12 225-byte journal blob   13 0x01 (jobId_)   14 0   15 65-byte signature   16 0
+    17/18 two 25-byte P2PKH key witnesses      19 0 (the OWNER)      20 63      21 4
+
+Aligning the unambiguous anchors (`dynamicChunkInputBase` = 63 and `outlinedRecoveryAIndex` = 4) puts the model
+index at physical depth + 1 for every entry from the extaddr block down: the model carries ONE entry that the
+stack does not have, above the extaddr values. The candidates in that window are `(value)`, `(value)`,
+`eventsLength`, `__rh92_target`, `__rh90_target` against the physical `[prefix, 0x02, 0, 0]`. **So the model
+over-counts by exactly one there, and every index below it - including the owner - is one slot too deep.**
+
+### How to finish the alignment in ONE run (instrumentation added this round)
+
+`SOLIDC_DEBUG_COMPUTE_BASE=1` now also emits a stack-neutral marker (`OP_DEPTH OP_DROP`) immediately before each
+owner-branch pick (`emitComputeBaseSiteMarker`). Model-neutral by construction, and never emitted unless the flag
+is set. With it:
+
+1. Cold-compile the fixture with the flag and a warmed compiler (`SOLIDC_COMPILE_CACHE=0 ... compile --jobs 4`),
+   remove the fixture-scope node_modules links, and run
+   `SOLIDC_DEBUG_FAILURE_RING=1 SOLIDC_DEBUG_ROUTE_INPUT_INDEX=127 SOLIDC_DEBUG_STACK_BODY_LENGTH=<body 3b length>
+   SOLIDC_DEBUG_STACK_BODY_FROM=<marker ip - 4> SOLIDC_DEBUG_STACK_BODY_TO=<marker ip + 4>
+   SOLIDC_DEBUG_STACK_DEPTH=40 npx vitest run --config vitest.marketplace.config.ts -t 'take job take job'`.
+2. The marker's ip is the first `OP_DEPTH` in that window whose next instruction is `OP_DROP`; the stack printed
+   for it is exactly the frame the emitted `OP_PICK` indexes. Compare it entry-by-entry with the DBG-COMPUTE-BASE
+   record whose `above` shows [.., owner, dynamicChunkInputBase, outlinedRecoveryAIndex] and whose `index` matches
+   the pushed constant - the first entry that has no physical counterpart IS the phantom, and the fix is to stop
+   tracking it (or to push it), not to change the addressing form.

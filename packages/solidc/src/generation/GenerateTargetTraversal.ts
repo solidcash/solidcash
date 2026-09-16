@@ -32209,6 +32209,20 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
+   * Emit a stack-NEUTRAL marker (`OP_DEPTH OP_DROP`) at a base-resolution site while the diagnostic is on. The
+   * model index a base read uses is only wrong relative to the PHYSICAL frame, and the two are produced by
+   * different processes (compiler model vs VM trace), so the site has to be identifiable in the VM trace: this
+   * marker shows up as an `OP_DEPTH`/`OP_DROP` pair at a known ip in `[vm-stack]` output, and the stack printed
+   * there is exactly the frame the emitted `OP_PICK` will index into. Model-neutral: the pair pushes and drops
+   * one value, and `this.stack` is left untouched. Never emitted unless SOLIDC_DEBUG_COMPUTE_BASE=1.
+   */
+  private emitComputeBaseSiteMarker(locationData: SingleLocationData): void {
+    if (!DEBUG_COMPUTE_BASE) return;
+    this.emit(Op.OP_DEPTH, locationData);
+    this.emit(Op.OP_DROP, locationData);
+  }
+
+  /**
    * Report how a participant/compute block base was resolved (see DEBUG_COMPUTE_BASE). The interesting datum is
    * which NEIGHBOUR of the resolved index holds a different frame authority: an off-by-one index reads it.
    */
@@ -32261,6 +32275,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const trackedOwnerIndex = this.getStackIndex('__internal__messageBusOwnerInput', true);
       if (trackedOwnerIndex >= 0) {
         this.debugComputeBase('owner', '__internal__messageBusOwnerInput', trackedOwnerIndex, extraStackOffset);
+        this.emitComputeBaseSiteMarker(locationData);
         this.emit(encodeInt(BigInt(trackedOwnerIndex + extraStackOffset)), locationData);
         this.emit(Op.OP_PICK, locationData);
       } else if (this.isSubroutineUseProbe) {

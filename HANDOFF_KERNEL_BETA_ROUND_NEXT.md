@@ -1,8 +1,8 @@
 # Handoff — kernel-beta marketplace climb (after the event/continuation round)
 
-> **Latest state (ROUND 74, whitelist entry decoded): 39 pass / 27 fail; tree at `191de4d9c`.** The sections below are a chronological log;
+> **Latest state (ROUND 75, SDK whitelist key captured): 39 pass / 27 fail; tree at `15e1e5f63`.** The sections below are a chronological log;
 > read ROUNDS 51-52 and 54 (the collection-key, rolled-array and dynamic-storage-read fixes: 32 -> 37),
-> ROUNDS 53-74 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
+> ROUNDS 53-75 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
 > deferred-`takeJob` class and its three falsified hypotheses) at the end. Earlier "State" numbers in this header
 > are historical.
 
@@ -3477,6 +3477,34 @@ Next round (do not guess again): probe the SDK write path to capture the exact k
 which bytes the SDK feeds for the address key and the jobId key, and (b) whether the covenant's `msg.sender`
 derive feeds the same bytes in the composed proxy+delegate context. The ROUND 73 signature match
 (`__message_bus_entry_takeJob`, require at source 680-684) remains the oracle for whether the read passes.
+
+### ROUND 75: the SDK's whitelist key bytes are captured
+
+Probed `keyToSlotMulti` directly (temporary `SOLIDC_DEBUG_KEY_SLOT` logging of its inputs, output and call stack)
+during `-t 'take job'`. The slot that holds the whitelist value is produced by exactly one call:
+
+    key-slot-multi-in  keys = ["", "76a91447d9fe52d462741f418e9dd5efaa6ae7e7adb60088ac"]
+                       frames = ["slotForKey", "StatefulContract._createBuilder", ...]
+    key-slot-multi-out bac4afa31b5925f59e163c5993bc34d46d99ab4307fe5e59569dcfec21113727
+
+so the SDK's nested-mapping key is `(jobId 0 encoded as an EMPTY byte vector, the caller's 25-byte P2PKH locking
+bytecode)`, hashed per `keyToSlotMulti` (each key sha256'd, concatenated, sha256'd again, top bit of the last byte
+cleared). That is the same slot the on-chain entry uses (ROUND 74: value `01`, head sentinel points at it), and it
+is why my ROUND 74 offline guesses failed: I never combined the *empty* jobId encoding with the *locking bytecode*
+form of the address, and the harness signer whose pkh is `47d9fe52...` is not among the first ten derived from the
+default mnemonic.
+
+Also tried to dump the same hash from the *covenant* side by scanning the failing trace for the sha256 outline
+invoke (states whose next instruction is `OP_INVOKE` with the id byte `0xa8` pushed before it). The scan found zero
+samples in all 10 no-progress attempts, so the trace's frame/instruction representation for outlined helpers is not
+what that probe assumed - the next attempt should locate the read through the artifact's `debug.functionDebug` /
+require mapping (the round-73 body is `__message_bus_entry_takeJob`, id 59) rather than pattern-matching opcodes.
+
+Next round: with the SDK key known (`[empty, 25-byte locking bytecode]`), find the ip of the entry read inside
+`__message_bus_entry_takeJob` (via its `sourceMap`: the require is at 680:8..684:10, so the read precedes it) and
+dump that ip's stack from the trace - the two 32-byte hashes or the raw key bytes it feeds to the hash helper will
+show whether the covenant derived a different caller identity (for example a 32-byte category instead of the
+25-byte locking bytecode) in the composed proxy+delegate context.
 
 ### How to localize it next
 

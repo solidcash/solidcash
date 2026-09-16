@@ -1,6 +1,6 @@
 # Handoff — kernel-beta marketplace climb (after the event/continuation round)
 
-> **Latest state (ROUND 119: the verifier input carries `localBatch` and `suppliedBlockSize` EMPTY - the batch blob is missing from the probe): 39 pass / 27 fail.** The sections below are a chronological log;
+> **Latest state (ROUND 120: ROUND 119's name mapping was WRONG - `localBatch` is present (199/353/214 bytes); only `suppliedEmissions` is empty, for the participants that own no rows): 39 pass / 27 fail.** The sections below are a chronological log;
 > read ROUNDS 51-52 and 54 (the collection-key, rolled-array and dynamic-storage-read fixes: 32 -> 37),
 > ROUNDS 53-96 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
 > deferred-`takeJob` class and its three falsified hypotheses) at the end. Earlier "State" numbers in this header
@@ -4860,6 +4860,37 @@ its covenant supplies exactly `verifierProgram.inputs` "with the authenticated e
 underneath", so an empty `localBatch` may belong to a script path that expects the batch on the stack - in which
 case the trace has to be taken from the invocation that does carry it (the composer builds the verifier input's
 unlocking bytecode in `compose.ts`; that is where the values come from).
+
+Focused state: `-t 'take job'` = 2 failed | 1 passed (green `sanity checks`), `yarn build` green, no full-ladder
+run (no title turned green).
+
+### ROUND 120: ROUND 119's "empty localBatch" was a POSITIONAL-MAPPING error
+
+New composer-side record `verifier-arguments` (gated by ENTRY_COUNTS) reports every verifier argument by its
+DECLARED name together with its actual value - the only place where names and values are both known, because the
+unlocking bytecode also carries non-ABI items and a positional mapping mislabels them. Measured:
+
+    participant 0  batchBlob 199 bytes  empty args: []
+    participant 1  batchBlob 353 bytes  empty args: ['suppliedEmissions']
+    participant 2  batchBlob 214 bytes  empty args: ['suppliedEmissions']
+
+so ROUND 119's claim - that `localBatch` and `suppliedBlockSize` are empty - is FALSIFIED: the empty items in the
+unlocking bytecode are NOT the batch blob. The 21-byte item that ROUND 119 read as `expectedLocalRows` is in fact
+the `batchBlob` (a canonical batch blob is >= 19 bytes: `SCB1` + version + row count + ...), and `expectedLocalRows`
+is a BigInt that cannot be 21 bytes at all - the positional mapping was off by one because the script carries items
+the ABI does not declare.
+
+What IS empty is `suppliedEmissions` for participants 1 and 2, which is the graph-emission transcript
+(`graphRouteContext` filters rows by `kind === 0 && parent !== 0xffff && owner === participant`). A participant
+that owns no emitted rows legitimately has an empty transcript, so this is NOT yet evidence of a defect: the next
+step is to check whether the verifier's checks depend on a non-empty emission transcript for those participants
+(the route's own binding digest does include them, so an empty value must match what the compiler bound).
+
+Consequence for the investigation: ROUNDS 109-118's chain (band coordinates, chain walks, trailing pads, chunk
+parse aborts) stands as measured, but ROUND 119's "the batch blob is missing" shortcut does not, and no fix should
+be built on it. The failing checks compare 35-byte P2SH32 locking bytecodes against items that came out empty
+(ROUND 118) - with the verifier's arguments now nameable, the next round can map those empties onto the real ABI
+parameters instead of guessing.
 
 Focused state: `-t 'take job'` = 2 failed | 1 passed (green `sanity checks`), `yarn build` green, no full-ladder
 run (no title turned green).

@@ -3407,6 +3407,27 @@ export class AtomicMessageBusComposition {
             digest: binToHex(bindingDigest),
           }));
         }
+        // Report the verifier arguments by their DECLARED names and actual values. Positional decoding of the
+        // unlocking bytecode cannot do this: the script carries non-ABI items too, and a positional mapping
+        // mislabelled the 21-byte batch blob as `expectedLocalRows` (ROUND 119's reading was wrong for that
+        // reason). This is the only place where the names and the values are both known.
+        if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+          ?.SOLIDC_DEBUG_ENTRY_COUNTS === '1') {
+          const describe = (argument: FunctionArgument | undefined): unknown => {
+            if (argument === undefined) return null;
+            if (typeof argument === 'bigint') return argument.toString();
+            const bytes = argument as Uint8Array;
+            return { bytes: bytes.length, hex: binToHex(bytes).slice(0, 32) };
+          };
+          console.error('verifier-arguments', JSON.stringify({
+            buildId: peekBuilderBuildId(),
+            participant: participant.participant,
+            batchBlob: { bytes: batchBlob.length, hex: binToHex(batchBlob).slice(0, 32) },
+            arguments: verifierProgram.inputs.map((input, index) => ({
+              name: input.name, value: describe(verifierArgs[index]),
+            })),
+          }));
+        }
         const verifierUnlocker = createMessageBusVerifierUnlocker(
           contract.inner, categories[participant.participant], messageEnvelope, verifierArgs, participant.artifact,
         );

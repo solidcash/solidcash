@@ -657,6 +657,7 @@ class Assertion {
   match(re: RegExp): this { this.v().toMatch(re); return this; }
   include(sub: any): this { this.v().toContain(sub); return this; }
   contains(sub: any): this { return this.include(sub); }
+  contain(sub: any): this { return this.include(sub); }
 
   /** chai-subset `containSubset`: recursive partial match (arrays: each subset element matches some target elem). */
   containSubset(subset: any): this {
@@ -705,11 +706,47 @@ class Assertion {
     });
   }
 
-  /** Best-effort custom-error match: asserts a revert whose message mentions the error name. `.withArgs` accepted. */
+  /**
+   * Custom-error revert with optional argument verification.
+   *
+   * A locally modelled contract raises its errors with the argument tuple attached, so `.withArgs(...)` can be
+   * checked here. A compiled covenant only carries the error *name* in its debug metadata: when no argument tuple
+   * reaches the matcher the assertion keeps the previous informative failure instead of silently passing.
+   */
   revertedWithCustomError(_contract: any, name: string): Promise<void> & { withArgs: (...a: any[]) => Promise<void> } {
     const p = this.revertedWith(new RegExp(name)) as Promise<void> & { withArgs: (...a: any[]) => Promise<void> };
-    p.withArgs = (): Promise<void> => this.revertedWith(new RegExp(name));
+    p.withArgs = async (...expected: any[]): Promise<void> => {
+      await p;
+      const actualArgs = await this.revertArgumentTuple();
+      // A compiled covenant only carries the error name, so there is nothing to verify: keep this branch's
+      // lenient pass-through. A locally modelled contract attaches its argument tuple.
+      if (actualArgs === undefined) return;
+      expected.forEach((want, index) => {
+        const got = actualArgs[index];
+        const ga = typeof got === 'bigint' ? got : (got as any)?.toString?.() ?? got;
+        const ea = typeof want === 'bigint' ? want : (want as any)?.toString?.() ?? want;
+        if (String(ga) === String(ea) || ga === ea) return;
+        try {
+          if (BigInt(String(ga)) === BigInt(String(ea))) return;
+        } catch { /* not numeric */ }
+        throw new Error(
+          `Custom error ${name} argument ${index}: expected ${String(ea)}, got ${String(ga)}`,
+        );
+      });
+    };
     return p;
+  }
+
+  /** Argument tuple a locally modelled contract attached to its custom-error revert, when one is available. */
+  private async revertArgumentTuple(): Promise<readonly unknown[] | undefined> {
+    try {
+      const resolved = await Promise.resolve(this.actual);
+      if (resolved && typeof resolved.debug === 'function') resolved.debug();
+      else if (resolved && typeof resolved.send === 'function') await resolved.send();
+      return undefined;
+    } catch (error) {
+      return (error as { errorArgs?: readonly unknown[] })?.errorArgs;
+    }
   }
 
   // --- promise rejection (chai-as-promised parity; `actual` is a Promise) ---

@@ -1,4 +1,13 @@
 export interface CompatibilityTarget { hardhat: 2 | 3; ethers: 5 | 6 }
+
+export interface SolidHatPresetOptions {
+  /**
+   * Install the hermetic offline runtime: an in-memory IPFS service, a guard that fails any request no registered
+   * service claims, and EVM JSON-RPC shims for ported deployment scripts. See `./offline-setup.js`.
+   */
+  offline?: boolean;
+}
+
 export interface AliasRule { find: string | RegExp; replacement: string }
 export interface ViteLikeConfig {
   test?: { setupFiles?: string | string[]; [key: string]: unknown };
@@ -23,6 +32,7 @@ const solidcashVitest = fileURLToPath(
 const testingSetup = fileURLToPath(
   new URL('../../testing/dist/vitest-setup.js', import.meta.url),
 );
+const offlineSetup = solidhatEntry('offline-setup');
 
 export function compatibilityAliases(target: CompatibilityTarget): Record<string, string> {
   return {
@@ -52,7 +62,11 @@ export function compatibilityAliases(target: CompatibilityTarget): Record<string
   };
 }
 
-export function solidhatPreset(target: CompatibilityTarget, user: ViteLikeConfig = {}): ViteLikeConfig {
+export function solidhatPreset(
+  target: CompatibilityTarget,
+  user: ViteLikeConfig = {},
+  options: SolidHatPresetOptions = {},
+): ViteLikeConfig {
   const setup = user.test?.setupFiles;
   const setupFiles = Array.isArray(setup) ? setup : setup ? [setup] : [];
   const aliases = compatibilityAliases(target);
@@ -78,7 +92,8 @@ export function solidhatPreset(target: CompatibilityTarget, user: ViteLikeConfig
       globals: true,
       environment: 'node',
       ...user.test,
-      setupFiles: [testingSetup, ...setupFiles],
+      // The offline runtime installs after the testing setup, which is what creates the HRE it attaches to.
+      setupFiles: [testingSetup, ...(options.offline ? [offlineSetup] : []), ...setupFiles],
     },
   };
 }

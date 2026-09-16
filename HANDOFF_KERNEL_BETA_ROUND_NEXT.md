@@ -1,6 +1,6 @@
 # Handoff — kernel-beta marketplace climb (after the event/continuation round)
 
-> **Latest state (ROUND 60, HEAD `e8b8f518d` + value-chunk pin precedence): 39 pass / 27 fail.** The sections below are a chronological log;
+> **Latest state (ROUND 60, HEAD `f72fbaa98`): 39 pass / 27 fail.** The sections below are a chronological log;
 > read ROUNDS 51-52 and 54 (the collection-key, rolled-array and dynamic-storage-read fixes: 32 -> 37),
 > ROUNDS 53-60 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
 > deferred-`takeJob` class and its three falsified hypotheses) at the end. Earlier "State" numbers in this header
@@ -2934,7 +2934,7 @@ title, which is what output 17 looks like) -> the write path drops the value-chu
 
 ### ROUND 60: the value-chunk pins were clobbered by a direct band rewrite (39 pass / 27 fail)
 
-**Landed fix**: `packages/solidcash/src/stateful/StatefulTransactionBuilder.ts`, two writers of
+**Landed fix** (`f72fbaa98`): `packages/solidcash/src/stateful/StatefulTransactionBuilder.ts`, two writers of
 `derivedChunkOutputs` now honour one invariant - *a provisional observation must never displace a
 compiler-authenticated fixed pin at the same coordinate when the addresses disagree*:
 

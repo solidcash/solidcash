@@ -92,7 +92,9 @@ import {
   runtimeLoopEventRepeatSource,
 } from './runtime-loop-event-domain.js';
 import { assertConstructedKeyVectorRouteBinding } from './ConstructedKeyVector.js';
-import { decodeEvmInvocationResult, encodeEvmInvocationResult } from './evm-abi-result.js';
+import {
+  decodeEvmInvocationResult, decodeEvmInvocationResultPrefix, encodeEvmInvocationResult,
+} from './evm-abi-result.js';
 import { buildKeccakComputeSidecar, extractKeccakPreimageFromTrace } from '../keccak/keccakComputeSidecar.js';
 import {
   buildEcrecoverComputePlaceholders, buildEcrecoverComputeSidecars, computeEcrecoverWitness, probeEcrecoverSplit,
@@ -33358,6 +33360,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         resolver: !!group.resolveLoopReturnCommitment,
       })));
     }
+    // The parent array's wire format follows the parent result encoding, never the native one: a Solidity-encoded
+    // read wraps the array in ABI offset/length words, so the pushdata decoder cannot split the rolled call's
+    // array out of the parent blob and the resumed array must be encoded the same way it was decoded.
+    const parentResultEncoding = resolveExternalResultEncoding(
+      resultFunction?.resultEncoding, resultArtifact, outputs.map((output) => output.type),
+      `function '${resultFunction?.name ?? functionName}' result`,
+    );
     for (const group of builder.getExternalCallUtxoGroups()) {
       const outputIndex = group.loopResultArrayOutput;
       if (outputIndex === undefined || !group.resolveLoopReturnCommitment) continue;
@@ -33366,16 +33375,25 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       let targetEnd = 0;
       let returnedArray: StateValue | undefined;
       try {
-        for (let index = 0; index <= outputIndex; index++) {
-          const output = outputs[index];
-          if (!output) break;
-          const start = offset;
-          const decoded = decodePushdataValue(blob, offset, output.type, resultStructs);
-          offset += decoded.bytesConsumed;
-          if (index === outputIndex) {
-            returnedArray = decoded.value;
-            targetStart = start;
-            targetEnd = offset;
+        // A single-output parent is exactly the rolled array, so its decoded prefix is also its blob range.
+        const evmPrefix = parentResultEncoding === 'evm-abi-v1' && outputs.length === 1
+          ? decodeEvmInvocationResultPrefix(blob, [outputs[0].type], resultStructs, resultArtifact.enums)
+          : undefined;
+        if (evmPrefix !== undefined) {
+          returnedArray = evmPrefix.values[0];
+          targetEnd = evmPrefix.bytesConsumed;
+        } else {
+          for (let index = 0; index <= outputIndex; index++) {
+            const output = outputs[index];
+            if (!output) break;
+            const start = offset;
+            const decoded = decodePushdataValue(blob, offset, output.type, resultStructs);
+            offset += decoded.bytesConsumed;
+            if (index === outputIndex) {
+              returnedArray = decoded.value;
+              targetStart = start;
+              targetEnd = offset;
+            }
           }
         }
       } catch {
@@ -33428,7 +33446,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         directArrayReplacements.push({
           start: targetStart,
           end: targetEnd,
-          encoded: encodePushdataValue(values, outputs[outputIndex].type, resultStructs),
+          encoded: parentResultEncoding === 'evm-abi-v1'
+            ? encodeEvmInvocationResult([values], [outputs[outputIndex].type], resultStructs, resultArtifact.enums)
+            : encodePushdataValue(values, outputs[outputIndex].type, resultStructs),
         });
       }
     }

@@ -14,7 +14,7 @@ import {
   selectMaterializedTailReturnEvents,
 } from '../../src/stateful/StatefulTransactionBuilder.js';
 import {
-  decodeEvmInvocationResult, encodeEvmInvocationResult,
+  decodeEvmInvocationResult, decodeEvmInvocationResultPrefix, encodeEvmInvocationResult,
 } from '../../src/stateful/evm-abi-result.js';
 
 const structs: StructDefinitionInfo[] = [{
@@ -37,6 +37,19 @@ describe('decodeEvmInvocationResult for aggregate results', () => {
   it('decodes an array of named structs through the same schema the writer used', () => {
     const encoded = encodeEvmInvocationResult([[{ count: 7n, active: true }]], ['Pair[]'], structs);
     expect(decodeEvmInvocationResult(encoded, ['Pair[]'], structs)).toEqual([[{ count: 7n, active: true }]]);
+  });
+
+  it('splits and resumes a rolled array with the prefix codec the replacement needs', () => {
+    // A rolled call resumes its parent array element by element: the codec must report both the decoded array and
+    // the exact blob range it consumed, and re-encoding the resumed array must reproduce that same encoding.
+    const encoded = encodeEvmInvocationResult(
+      [[{ count: 1n, active: true }, { count: 2n, active: false }]], ['Pair[]'], structs,
+    );
+    const prefix = decodeEvmInvocationResultPrefix(encoded, ['Pair[]'], structs);
+    expect(prefix?.values).toEqual([[{ count: 1n, active: true }, { count: 2n, active: false }]]);
+    expect(prefix?.bytesConsumed).toBe(encoded.length);
+    const resumed = prefix?.values[0] as Array<{ count: bigint; active: boolean }>;
+    expect(binToHex(encodeEvmInvocationResult([resumed], ['Pair[]'], structs))).toBe(binToHex(encoded));
   });
 });
 

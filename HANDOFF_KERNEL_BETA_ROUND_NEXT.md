@@ -1,6 +1,8 @@
 # Handoff — kernel-beta marketplace climb (after the event/continuation round)
 
-> **Latest state (ROUND 151: the argument-binding hypothesis is FALSIFIED - `SOLIDC_DEBUG_ARG_ORDER=1` now dumps both the generated argument vector and each clone's own parameter list, and across 388 matched calls they line up index for index (the only difference is the intended `owner param <- __internal__proxyMasterIndex` argument). The frame-trace tooling is also NOT trustworthy for this read: two signature-gated traces of the same failing chain contradict each other inside one evaluation, because `length + one opcode` is not a unique body signature (my redeem scan covered 556 of ~570 DEFINEs). Next suspects are the SDK-side VALUES (`__internal__proxyMasterIndex` vs `__internal__dynamicChunkInputBase`) rather than the compiler's binding.** See "ROUND 151" at the end.
+> **Latest state (ROUND 152: the outlined fragment's coordinate is MEASURED as 66 (`d=0 = 0x42` at its OUTPUTTOKENCOMMITMENT, with the fragment pinned uniquely by the `push 0x7a` at its instruction 4), so the base it adds 3 to really is 63 rather than the participant base 0, and `outputs[66]` is a bare pad (empty commitment) while `outputs[3]` holds the 64-byte keccak commitment. Corrected reading: `OP_PICK k` copies snapshot depth `k+1`, which makes the pick trace consistent with this. Eliminated by measurement this round: the SDK probe rebase is 0 in all 28 records, the route argument vector is name-keyed end to end, the compiler's clone binding is consistent, and the branch-height invariant is clean. One question remains: which model entry the emitted PICK index addresses at that site.** See "ROUND 152" at the end.
+>
+> Superseded (ROUND 151: the argument-binding hypothesis is FALSIFIED - `SOLIDC_DEBUG_ARG_ORDER=1` now dumps both the generated argument vector and each clone's own parameter list, and across 388 matched calls they line up index for index (the only difference is the intended `owner param <- __internal__proxyMasterIndex` argument). The frame-trace tooling is also NOT trustworthy for this read: two signature-gated traces of the same failing chain contradict each other inside one evaluation, because `length + one opcode` is not a unique body signature (my redeem scan covered 556 of ~570 DEFINEs). Next suspects are the SDK-side VALUES (`__internal__proxyMasterIndex` vs `__internal__dynamicChunkInputBase`) rather than the compiler's binding.** See "ROUND 151" at the end.
 >
 > Superseded (ROUND 150: route calls' argument vectors are now dumpable (`SOLIDC_DEBUG_ARG_ORDER=1`, 467 sites on the fixture) and show the appended context order is [entry-key witnesses, logical caller, **owner**, oracle-base witness] after the decoded source arguments. `takeJob`'s ABI ends `[.., proxyMasterIndex, dynamicChunkInputBase]`, so the owner parameter must be appended AFTER the chunk base; if any injection lands it earlier, the owner receives the chunk-base value 63 - exactly the measured symptom. Landed: the dump + the branch-height invariant (ROUND 149).** See "ROUND 150" at the end.
 >
@@ -6328,3 +6330,49 @@ from VM traces: `applyDynamicChunkInputFills` writes `blockBase + inputIndex` in
 `participantInputs[participant]` into `__internal__proxyMasterIndex` (0) - log both per composition and per
 stage, and check whether the value the handler receives as its owner equals the route's `proxyMasterIndex` in the
 same pass.
+
+## ROUND 152: the fragment's coordinate is measured as 66, and the SDK-side suspects are ELIMINATED
+
+### Measured (fragment pinned uniquely by the id it pushes)
+
+`SOLIDC_DEBUG_STACK_BODY_LENGTH=7 SOLIDC_DEBUG_STACK_BODY_OPCODE_INDEX=4 SOLIDC_DEBUG_STACK_BODY_OPCODE=1
+SOLIDC_DEBUG_STACK_BODY_DATA=7a SOLIDC_DEBUG_STACK_BODY_FROM=2 SOLIDC_DEBUG_STACK_BODY_TO=2
+SOLIDC_DEBUG_STACK_DEPTH=8` - instruction 4 of the outlined fragment is the `push 1 byte 0x7a` that names the
+5-instruction helper, so this gate pins the fragment and nothing else. At its `OP_OUTPUTTOKENCOMMITMENT` (ip 2,
+depth 92) the top of the stack is
+
+    d=0  1 byte 0x42 = 66          <- the COORDINATE (so the base really was 63, +3)
+    d=1  28B EIP-191 prefix
+    d=2  1B 02,  d=3/4 0,  d=5..7 three 35B P2SH32 locks
+
+i.e. the fragment reads `outputs[66]` = a bare OP_TRUE pad with an empty commitment, which is the failing
+`[32:64]` split. `outputs[3]` (what base 0 would address) carries the 64-byte keccak commitment.
+
+**`OP_PICK` semantics correction (this was a real reading error of mine): `OP_PICK k` pops the index and then
+copies the item at depth `k` of the REMAINING stack, so with the index still on top in a `beforeOperation`
+snapshot the copied item is at snapshot depth `k + 1`.** With that corrected, the earlier "the pick copies a
+zero-length item" reading is consistent with the fragment seeing 63: at the pick snapshot, `d=20` is `0`
+(the owner) and `d=21` is `63`, so `PICK 20` copies `63`. The bug is therefore exactly "the value reaching the
+fragment is `__internal__dynamicChunkInputBase` (63) instead of the participant block base (0)", and the
+compiler's model record for that site must be re-read with this in mind (which model entry sits at the emitted
+index `20` at that specific site - there are 8 owner-branch records with index 20, and the earlier match may not
+be the right one).
+
+### Eliminated this round (all measured, not inferred)
+
+* **The SDK's probe rebase is correct.** `derive-probe-rebase-start` (`SOLIDC_DEBUG_BUILDER_TIMING=1`) fires 28
+  times and every record has `localProxyMasterIndex = delegatecallInputIndex - probeRouteBlockSize = 0`
+  (the two geometries are 127-127 and 85-85), and the rebase is restored in a `finally`
+  (`restoreProbeWitnesses`, StatefulContract.ts:17835). So the owner value the SDK supplies is 0, not 63.
+* **The SDK's route argument vector is name-keyed end to end**: `graphRouteContext` returns a
+  `Record<string, FunctionArgument>`, `_batchRaw` fills missing ABI inputs by iterating
+  `capability.route.inputs`, and every refresh (`refreshInternalArgs`, `applyDynamicChunkInputFills`) passes
+  named updates. There is no positional packing that could swap two adjacent authorities.
+* **The compiler's binding into a clone is consistent** (ROUND 151: 388 matched calls, zero count mismatches).
+* **The branch-height invariant is clean** on the fixture (ROUND 149).
+
+So four independent suspects are now excluded by measurement. What remains is a single, sharply defined
+question: at the site that pushes the fragment's base, which MODEL entry does the emitted `PICK` index address
+(`DBG-COMPUTE-BASE` prints `resolvedName` and `above` for exactly that purpose, and the site can now be selected
+by its emitted index AND its position in the emission order). Answer that, and the fix is one line in
+`emitComputeSidecarBlockBase`/`emitMasterInputIndex`.

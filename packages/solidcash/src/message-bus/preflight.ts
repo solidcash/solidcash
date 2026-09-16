@@ -1633,8 +1633,19 @@ const evaluateEveryInput = (
             // opcode signature pins the body exactly.
             const debugOpcodeIndex = Number(failureDebugEnv?.SOLIDC_DEBUG_STACK_BODY_OPCODE_INDEX ?? -1);
             const debugOpcode = Number(failureDebugEnv?.SOLIDC_DEBUG_STACK_BODY_OPCODE ?? -1);
-            const signatureMatches = debugOpcodeIndex < 0
-              || state.instructions[debugOpcodeIndex]?.opcode === debugOpcode;
+            // An opcode at one index is NOT a unique body signature (measured: two instruction streams of the
+            // same length and opcode produced contradictory stacks in one evaluation). Comparing the PUSHED DATA
+            // as well pins the body exactly, which is what a trustworthy trace needs - e.g. the body that invokes
+            // the outlined keccak fragment is the one whose instruction 463 pushes `7d81`.
+            const debugDataHex = failureDebugEnv?.SOLIDC_DEBUG_STACK_BODY_DATA;
+            const debugData = debugOpcodeIndex < 0
+              ? undefined
+              : (state.instructions[debugOpcodeIndex] as { data?: Uint8Array } | undefined)?.data;
+            const dataMatches = debugDataHex === undefined
+              || (debugData !== undefined
+                && binToHex(debugData).toLowerCase() === debugDataHex.toLowerCase());
+            const signatureMatches = (debugOpcodeIndex < 0
+              || state.instructions[debugOpcodeIndex]?.opcode === debugOpcode) && dataMatches;
             if (state.instructions.length === debugBodyLength
               && signatureMatches
               && state.ip >= debugBodyFrom && state.ip <= debugBodyTo) {

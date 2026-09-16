@@ -18470,8 +18470,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       // the wrong collection even when the contract declares only one mapping. Always fetch through the exact
       // collection covenant address; the address commits to the collection signature.
       const collEntryCache = new Map<string, Utxo[]>();
-      const collectionEntriesFor = async (sig: string): Promise<Utxo[]> => {
-        const hit = collEntryCache.get(sig);
+      const collectionEntriesFor = async (sig: string, options?: { fresh?: boolean }): Promise<Utxo[]> => {
+        const hit = options?.fresh ? undefined : collEntryCache.get(sig);
         if (hit) return hit;
         const addr = getEntryNftAddress(this.inner, this.categoryId, sig);
         const allFetched = await this.inner.provider.getUtxos(addr);
@@ -18768,11 +18768,35 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               }
             }
           } else {
-            const present = list.has(slot);
+            let present = list.has(slot);
+            // A key that the chain holds can still miss here: the collection entries were fetched once per build,
+            // and a write performed earlier in the same test (its own composed send) may not have been visible to
+            // that fetch yet. Re-fetch before falling back to the bracketing predecessor, whose (empty) value the
+            // covenant would otherwise read as "absent". The predecessor remains the correct proof for a key that
+            // really is absent.
+            if (!present) {
+              const refreshed = SortedList.fromUtxos(
+                await collectionEntriesFor(collection.signature, { fresh: true }),
+              );
+              if (refreshed.has(slot)) {
+                present = true;
+                const refreshedEntry = refreshed.find(slot)!;
+                const roUnlockerFresh = createReadOnlyEntryNftUnlocker(
+                  this.inner, this.categoryId, access.collection,
+                );
+                entryNfts.push({
+                  ...entryBase, utxo: { ...refreshedEntry.utxo, unlocker: roUnlockerFresh },
+                });
+                continue;
+              }
+            }
             const entry = present ? list.find(slot)! : list.predecessorOf(slot);
             if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
               ?.SOLIDC_DEBUG_ENTRY_COUNTS === '1') {
+              const freshAddress = getEntryNftAddress(this.inner, this.categoryId, access.collection);
+              const freshCount = present ? -1 : (await this.inner.provider.getUtxos(freshAddress)).length;
               console.error('entry-read-plan', JSON.stringify({
+                freshCount,
                 collection: access.collection,
                 slotIndex,
                 listSize: list.all.length,

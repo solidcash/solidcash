@@ -1,8 +1,8 @@
 # Handoff — kernel-beta marketplace climb (after the event/continuation round)
 
-> **Latest state (ROUND 83, head-only collection list): 39 pass / 27 fail; tree at `e712e347c`.** The sections below are a chronological log;
+> **Latest state (ROUND 84, stale-fetch self-heal): 39 pass / 27 fail; tree at `5c961aa34`.** The sections below are a chronological log;
 > read ROUNDS 51-52 and 54 (the collection-key, rolled-array and dynamic-storage-read fixes: 32 -> 37),
-> ROUNDS 53-83 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
+> ROUNDS 53-84 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
 > deferred-`takeJob` class and its three falsified hypotheses) at the end. Earlier "State" numbers in this header
 > are historical.
 
@@ -3720,6 +3720,27 @@ count taken at the same moment. If the fresh fetch already returns 2, the stale 
 fix is to refresh entry collections the way `invalidateSignerUtxos` refreshes signer UTXOs; if the fresh fetch also
 returns 1, the composed publish's output genuinely is not visible yet and the fix belongs in the ordering (do not
 finalise a composition whose reads depend on an output this same send created).
+
+### ROUND 84: stale collection fetch confirmed and self-healed; the stall persists
+
+Added a fresh-fetch column to the read-plan probe: at the moment a plan resolves the correct slot as absent
+(`listSize 1`, head only), a **fresh** `provider.getUtxos(getEntryNftAddress(collection))` taken then returns
+**2** entries. The chain/provider had the entry; the list had been built from an earlier fetch that did not - i.e.
+the per-build collection fetch can precede a write this same test just performed.
+
+**Landed fix:** `collectionEntriesFor(signature, { fresh: true })` re-fetches and replaces the cached list, and the
+read-only branch uses it once when the key misses, before falling back to the bracketing predecessor. General and
+self-healing: any stale first fetch is repaired at the point where it would otherwise produce an absent-value
+proof; a genuinely absent key still uses its predecessor.
+
+Focused `take job` after the fix: sanity still passes, the two real titles still fail, and the stall composition is
+unchanged (`whitelistEntryInputs: []`, 219 inputs). So the staleness is real and now handled, but it is **not** what
+blocks the stall: the `present: false` observations came from *other* builds in the same run, and the stalling
+build's own read plan was never isolated from them.
+
+Next round: tie the plan probe to the stalling build only - print `entry-read-plan` together with the composition
+identity (prepared call list + input count) or gate it on the participant whose block is the stalling one - so the
+stall's own plan (slot, presence, list size, sender) is read directly instead of inferred from a run-wide mix.
 
 ### How to localize it next
 

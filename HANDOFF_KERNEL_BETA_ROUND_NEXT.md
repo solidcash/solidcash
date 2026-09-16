@@ -1,8 +1,8 @@
 # Handoff — kernel-beta marketplace climb (after the event/continuation round)
 
-> **Latest state (ROUND 73, takeJob whitelist require): 39 pass / 27 fail; tree at `ecba604a6`.** The sections below are a chronological log;
+> **Latest state (ROUND 74, whitelist entry decoded): 39 pass / 27 fail; tree at `191de4d9c`.** The sections below are a chronological log;
 > read ROUNDS 51-52 and 54 (the collection-key, rolled-array and dynamic-storage-read fixes: 32 -> 37),
-> ROUNDS 53-73 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
+> ROUNDS 53-74 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
 > deferred-`takeJob` class and its three falsified hypotheses) at the end. Earlier "State" numbers in this header
 > are historical.
 
@@ -3449,6 +3449,34 @@ proxy+delegate context. If the covenant derives a different caller key (for exam
 Cheapest probe: dump the read key from the failing trace (the entry read is preceded by the executed route's
 `OP_INVOKE`s at ip 404..414), or run `take job > sanity checks`'s third block (the `whitelisted: false` job, where
 the read must be false) and the `should whitelist worker` view read side by side.
+
+### ROUND 74: the whitelist entry exists with value `01`; the key scheme is not what I guessed
+
+Decoded the fetched whitelist collection from the ROUND 73 fetch log (`-t 'take job'`,
+`SOLIDC_DEBUG_COLLECTION_FETCH=1`), using the entry layout from
+`SortedList.encodeEntryCommitment(slot, nextKey, value) = slot(32) || nextKey(32) || value`:
+
+    entry A: 64 bytes  0000...0000 (slot = head sentinel) || bac4afa3...13727 (nextKey) || (no value)
+    entry B: 65 bytes  bac4afa3...13727 (slot)            || 0000...0000 (nextKey) || 01
+
+So the nested key `whitelistWorkers[jobId=0][user2]` really is materialized, its stored value is `01` (true), and
+the sorted-list head points at it. The data is present; the in-covenant read misses it.
+
+`SortedList.keyToSlotMulti(keys) = mask(sha256(sha256(k0) ++ sha256(k1)))` with the top bit of the last byte cleared,
+documented as "matching the covenant's emitSortedKeyHash" - i.e. both sides are supposed to derive the same slot.
+I tried to reproduce `bac4afa3...` offline from the default test mnemonic (`test test ... junk`, user2 = the third
+`ethers.getSigners()` entry) across signer indices 0..9 and several key encodings (20-byte pkh, reversed pkh,
+25-byte P2PKH locking bytecode and its reverse, 32-byte left-padded pkh) crossed with jobId encodings (32 zero
+bytes, one zero byte, empty) and both hash schemes (each key hashed, or both raw) - **no combination matches**, so
+the runtime key inputs differ from every guess (a per-collection salt, an ABI-encoded key, or a different signer
+mapping in the harness are all still open).
+
+Next round (do not guess again): probe the SDK write path to capture the exact key inputs - log inside
+`keyToSlotMulti` (or at its call sites in the sorted-list write path) for the `whitelistWorkers` collection during
+`-t 'take job'`, then compare those bytes with the slot the covenant computes. The two facts to establish are (a)
+which bytes the SDK feeds for the address key and the jobId key, and (b) whether the covenant's `msg.sender`
+derive feeds the same bytes in the composed proxy+delegate context. The ROUND 73 signature match
+(`__message_bus_entry_takeJob`, require at source 680-684) remains the oracle for whether the read passes.
 
 ### How to localize it next
 

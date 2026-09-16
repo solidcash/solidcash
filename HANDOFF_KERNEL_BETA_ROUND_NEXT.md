@@ -1,8 +1,8 @@
 # Handoff — kernel-beta marketplace climb (after the event/continuation round)
 
-> **Latest state (ROUND 60, HEAD `f72fbaa98`): 39 pass / 27 fail.** The sections below are a chronological log;
+> **Latest state (ROUND 61, HEAD `04c729750`): 39 pass / 27 fail.** The sections below are a chronological log;
 > read ROUNDS 51-52 and 54 (the collection-key, rolled-array and dynamic-storage-read fixes: 32 -> 37),
-> ROUNDS 53-60 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
+> ROUNDS 53-61 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
 > deferred-`takeJob` class and its three falsified hypotheses) at the end. Earlier "State" numbers in this header
 > are historical.
 
@@ -2971,6 +2971,25 @@ failing preflight dump (`message-bus-failure-point`) is the right oracle: it pri
 Remaining class after this fix: 27 titles. The deferred-compute class is still the largest (15 titles, `takeJob`),
 followed by the convergence class (4), the two `meceTags` collection witnesses, the two ladder-only nonce stalls,
 `post thread message > sanity checks`, and `refuse arbitration > job not taken`.
+
+### ROUND 61: the 27 remaining titles by revert reason (largest class = deferred compute)
+
+Reading the *revert reason* out of each failing title (the test harness prints `Revert reason: "..."` inside the
+FAIL block, before the assertion) splits the 27 into four real classes - the "Expected transaction NOT to be
+reverted" titles are NOT a cascade, they each revert with the deferred-compute message:
+
+| class | count | titles |
+| --- | --- | --- |
+| `messageBus: complete graph did not expose arguments for all deferred compute resources` | 16 | `post thread message > sanity checks`, `deliver result > sanity checks`, `deliver result`, `approve result and review > sanity checks`, `approve result`, `refund > sanity checks`, `refund`, `dispute > sanity checks no arbitrator`, `dispute > sanity checks with arbitrator`, `dispute creator`, `dispute worker`, `arbitrate > sanity checks`, `arbitrate 80-20`, `arbitrate 0-100`, `arbitrate 100-0`, `refuse arbitration > job taken` |
+| `Route probe convergence repeated a physical transaction state` | 4 | `post job with invalid amount`, `close job after timeout`, `reopen job after timeout`, `withdraw collateral` |
+| nonce stall (`Signer transaction nonce N is already reserved`) | 2 | `take job`, `take job multiple` |
+| single-title geometry/bookkeeping | 5 | `pay start job > sanity checks` (`participant 1 built 87/174 slots, expected balanced block size 87`), `pay start job` (preflight input 127), `post job with invalid mece tags` + `update job tags` (meceTags collection witness), `refuse arbitration > job not taken` (`refusedCount` 0 vs 1), `integration test` (600 s timeout, downstream) |
+
+So the next round should stay on the deferred-compute message, which is one root cause behind 16 titles: the
+graph route for a handler that consumes a deferred compute resource (ecrecover loop / keccak / blockhash) must
+expose every deferred argument. `SOLIDC_DEBUG_ECRECOVER_DERIVE=1` plus `SOLIDC_DEBUG_FAILURE_POINT=1` is the pair
+to use, and `MarketplaceV1.takeJob` remains the only ecrecover handler in the fixture. Note that running the two
+`take job` titles alone reproduces the nonce stall (218 ms), so use full-ladder runs to judge the deferred class.
 
 ### How to localize it next
 

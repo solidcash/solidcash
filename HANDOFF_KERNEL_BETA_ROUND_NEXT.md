@@ -1,8 +1,8 @@
 # Handoff — kernel-beta marketplace climb (after the event/continuation round)
 
-> **Latest state (ROUND 78, funder diagnostics): 39 pass / 27 fail; tree at `1f5497c68`.** The sections below are a chronological log;
+> **Latest state (ROUND 79, takeJob funder identified): 39 pass / 27 fail; tree at `3481e84a8`.** The sections below are a chronological log;
 > read ROUNDS 51-52 and 54 (the collection-key, rolled-array and dynamic-storage-read fixes: 32 -> 37),
-> ROUNDS 53-78 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
+> ROUNDS 53-79 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
 > deferred-`takeJob` class and its three falsified hypotheses) at the end. Earlier "State" numbers in this header
 > are historical.
 
@@ -3585,6 +3585,34 @@ Next round: with the new diagnostic, run the failing title and match `composed-f
 the *take* call under test (the one whose `takeJob` is expected to succeed), then check that account's whitelist
 entry directly (fetch the collection and match `keyToSlotMulti([<jobId>, <that lock>])`) instead of relying on the
 single-entry observation. Only then decide between a read-key mismatch and a wrong-caller/funder mismatch.
+
+### ROUND 79: the takeJob composition IS funded by the whitelisted caller (funder theory closed)
+
+Extended the ROUND 78 diagnostic to name the logical calls each composed send performs (the prepared atomic calls'
+`logicalFunctionName ?? functionName ?? selectorHex`), then re-ran `-t 'take job'` with
+`SOLIDC_DEBUG_FUNDER_PLAN=1`. Result:
+
+    caller 47d9fe52d462741f418e9d  fee f10cdd1971ee:11  calls ['takeJob', 'userRegistered', 'eventsLength',
+                                                          'publishJobEvent', 'approve', 'getArbitratorFee', 'pay', ...]
+    caller 71782e8159265ed94bd35b  fee d168b77edf26:11  calls ['publishJobPost', 'arbitratorRegistered', ...]
+
+So the **takeJob sends are funded by `47d9fe52...`**, which is exactly the account whose whitelist entry exists
+(`ROUND 75`: `bac4afa3... = keyToSlotMulti([jobId 0, 76a91447d9fe52...88ac])`, stored value `01`), while the
+`publishJobPost` sends (the fixture, as user1) are funded by `71782e81...`. The caller/funder mismatch theory from
+ROUNDS 76-78 is therefore **closed**: `tx.origin`, the funder and the whitelisted worker all agree for this call.
+
+That also re-reads two earlier observations: the "entry co-spent at input 20" aggregate (469 inputs) was the
+*5-participant publish* transaction - where the entry is created - not the takeJob one. What remains is whether the
+*takeJob* composition co-spends the whitelist entry at all (the SDK fetches it: `allCount 2, matchedCount 2`, but
+fetching is not co-spending), i.e. a read-planning gap for a `msg.sender`-keyed nested read.
+
+Landed this round: the diagnostic extension above (composed sends now report the logical calls they perform),
+env-gated, no behaviour change.
+
+Next round: run the failing takeJob composition with a probe that matches the *whitelist entry NFT* by commitment
+against `aggregate.inputs` (the entry's commitment is `bac4afa3...13727 || 0000...0000 || 01`), now that the right
+transaction is identified by its call list. If the entry is absent from the takeJob aggregate, the fix belongs in
+the kernel read planning (the row must co-spend the entry it reads); if it is present, the read itself is at fault.
 
 ### How to localize it next
 

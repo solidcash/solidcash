@@ -36732,6 +36732,13 @@ export class StatefulFunctionCall {
               feeSatoshis: String(feeUtxo.satoshis),
               logicalMatchesPhysical:
                 (this.parentContract?._logicalNonceSigner ?? null) === (this.parentContract?._signer ?? null),
+              calls: preparedAtomicCalls.map((call) => {
+                const described = call as unknown as {
+                  functionName?: string; logicalFunctionName?: string; selectorHex?: string;
+                };
+                return described.logicalFunctionName ?? described.functionName
+                  ?? described.selectorHex ?? '?';
+              }),
             }));
           }
           retireSignerUtxos(signer, [feeUtxo]);

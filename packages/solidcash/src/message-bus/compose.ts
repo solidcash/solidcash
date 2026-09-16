@@ -285,6 +285,37 @@ export function canSeedComputedValueChunkClaim(
       === valueChunkIndexFromCommitment(claim.commitment);
 }
 
+/** Display-order category hex without an optional capability suffix, for token/artifact comparisons. */
+const comparableTokenCategory = (category: string | undefined): string | undefined =>
+  category === undefined ? undefined : category.replace(/^0x/i, '').slice(0, 64).toLowerCase();
+
+/**
+ * Exact authority predicate for replacing a balanced continuation slot's output with a transported chunk.
+ *
+ * The composer overwrites that output, so the slot must belong to the transported continuation. Two funding
+ * shapes prove it: the balanced dummy, which reserves a slot the participant did not previously occupy, and a
+ * value-chunk predecessor of the same resource - a mutable token input of the transported category whose
+ * commitment parses as a canonical value chunk - which the executing participant consumes there when the
+ * continuation already existed in the prior state. A wider continuation shifts the transported band, so a
+ * predecessor is not necessarily the chunk at the same index; requiring the shared category, the mutable
+ * capability, and a canonical chunk index keeps an unrelated token input from authorizing the replacement. The
+ * completed block is still authenticated by the participant's own covenant VM.
+ */
+export function canOwnTransportedContinuationSlot(
+  input: Pick<UnlockableUtxo, 'token' | 'unlocker'> | undefined,
+  claim: { categoryId: string | undefined; commitment: string },
+): boolean {
+  if (input === undefined) return false;
+  if (input.token === undefined) {
+    return binToHex(input.unlocker.generateLockingBytecode()) === BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX;
+  }
+  return valueChunkIndexFromCommitment(claim.commitment) !== undefined
+    && input.token.nft?.capability === 'mutable'
+    && valueChunkIndexFromCommitment(input.token.nft.commitment) !== undefined
+    && comparableTokenCategory(input.token.category) !== undefined
+    && comparableTokenCategory(input.token.category) === comparableTokenCategory(claim.categoryId);
+}
+
 const recipeType = (
   recipe: ChildDeploymentValueRecipe,
   inputTypes: readonly string[],
@@ -2835,16 +2866,17 @@ export class AtomicMessageBusComposition {
             const slot = selectedValueChunkSlots[transportedChunkIndex++];
             if (!slot) throw new Error('messageBus: transported continuation slot allocation overflowed');
             const input = local.inputs[slot.offset];
-            if (!input || input.token !== undefined
-              || binToHex(input.unlocker.generateLockingBytecode())
-                !== BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX) {
+            const chunkCategoryId = chunk.categoryId ?? candidate.production.stateOwner.categoryId;
+            if (!canOwnTransportedContinuationSlot(input, {
+              categoryId: chunkCategoryId, commitment: chunk.commitment,
+            })) {
               throw new Error('messageBus: transported continuation output does not own a balanced trailing slot');
             }
             local.outputs[slot.offset] = {
               to: chunk.lockingBytecode,
-              amount: input.satoshis,
+              amount: input!.satoshis,
               token: {
-                category: chunk.categoryId ?? candidate.production.stateOwner.categoryId,
+                category: chunkCategoryId,
                 amount: 0n,
                 nft: { capability: 'mutable', commitment: chunk.commitment },
               },

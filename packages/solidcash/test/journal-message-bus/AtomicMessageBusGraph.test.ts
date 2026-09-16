@@ -207,6 +207,44 @@ describe('atomic compiled invocation graph', () => {
     })).toBe(true);
   });
 
+  it('authorizes a transported continuation slot from a balanced dummy or a predecessor chunk', () => {
+    const category = 'ab'.repeat(32);
+    const dummy = {
+      unlocker: {
+        generateLockingBytecode: () => Uint8Array.from(Buffer.from(
+          BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX, 'hex',
+        )),
+      },
+    } as never;
+    const predecessor = (index: number, tokenCategory = category): never => ({
+      token: {
+        category: tokenCategory,
+        amount: 0n,
+        nft: { capability: 'mutable' as const, commitment: `${index.toString(16).padStart(2, '0')}00aabb` },
+      },
+      unlocker: { generateLockingBytecode: () => Uint8Array.from([0xaa, 0x20]) },
+    }) as never;
+    const claim = { categoryId: category, commitment: '0200ccdd' };
+
+    expect(messageBus.canOwnTransportedContinuationSlot(undefined, claim)).toBe(false);
+    expect(messageBus.canOwnTransportedContinuationSlot(dummy, claim)).toBe(true);
+    // A wider continuation shifts the transported band, so a slot's predecessor need not carry the same index.
+    expect(messageBus.canOwnTransportedContinuationSlot(predecessor(0), claim)).toBe(true);
+    expect(messageBus.canOwnTransportedContinuationSlot(predecessor(2), claim)).toBe(true);
+    expect(messageBus.canOwnTransportedContinuationSlot(predecessor(0, 'cd'.repeat(32)), claim)).toBe(false);
+    expect(messageBus.canOwnTransportedContinuationSlot({
+      token: {
+        category,
+        amount: 0n,
+        nft: { capability: 'none' as const, commitment: '0000aabb' },
+      },
+      unlocker: { generateLockingBytecode: () => Uint8Array.from([0xaa, 0x20]) },
+    } as never, claim)).toBe(false);
+    expect(messageBus.canOwnTransportedContinuationSlot(predecessor(0), {
+      categoryId: category, commitment: 'ccdd',
+    })).toBe(false);
+  });
+
   it('keeps compiler-owned computed chunks inside the compact participant span', () => {
     const resourceA = `${'11'.repeat(32)}:${'22'.repeat(20)}:${'33'.repeat(32)}`;
     const resourceB = `${'44'.repeat(32)}:${'55'.repeat(20)}:${'66'.repeat(32)}`;

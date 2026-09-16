@@ -3340,6 +3340,24 @@ commitment was never filled from the authenticated row. The verifier digests inp
 the compute call and the resolver never sees an argument - and the composer then reports "did not expose
 arguments" although nothing was actually unresolvable.
 
+The same log shows the deeper pattern - the sidecar slot **oscillates across the 18 assemblies** (offset 3,
+participant 0): passes 0,2,4,... carry **no** kind-6 row while passes 1,3,5,... do, and the row's declared
+category changes between row-bearing passes (`56662108...`, `c2923911...`, `9313e2ff...` (stable for several
+passes), `613f0de0...`) while the aggregate's sidecar **input commitment is always empty** and its output
+commitment is always `c5d2460186...` (= keccak256("")). Within one pass the row's category and the aggregate
+slot's category agree modulo byte order (`ab312ab7...` reversed = `...b72a31ab`, the row's suffix), so the
+mismatch is not a byte-order bug - the physical stand-in sidecar itself is regenerated with a fresh identity
+between passes, so the authenticated manifest can never match the slots the verifier digests, and the verifier
+rejects the assembly before the compute call on every pass.
+
+That points at the kernel rule to implement (general, deterministic): while a compute resource is unresolved, the
+stand-in sidecar UTXO placed at its slot must have a **stable identity derived from the resource** (category,
+outpoint, commitment), so the provisional manifest endpoint equals the physical endpoint the verifier digests; only
+once the resolver learns the argument may the real endpoint appear. Candidate sites: the atomic plan's sidecar
+UTXO sourcing and `probeMixedKeccakLayout`'s `standIn` (`tag.repeat(32)` txid + `pool[0]` category) in
+`TransactionBuilder`, and whatever fabricates the ecrecover/keccak sidecars for `preparedAtomicCalls` - it is the
+one that currently hands out a different category (and an empty commitment) per pass.
+
 General fix direction (kernel contract, no application names): make the deferred-compute readiness condition
 compare the physical slot against the row it is resolved for - input locking bytecode/category/commitment from
 `argsHex`, output value/commitment from `effectHex` - and, when they disagree, either fill the aggregate slot from

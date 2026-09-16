@@ -1,6 +1,6 @@
 # Handoff — kernel-beta marketplace climb (after the event/continuation round)
 
-> **Latest state (ROUND 134: meceTags keys are PARAMETER keys (`keyIndices:[0]`, one alternative), so each row supplies a different literal through one shared witness name): 39 pass / 27 fail.** The sections below are a chronological log;
+> **Latest state (ROUND 135: the meceTags fix is a PASS-ORDERING knot - row locality is decided before the expression labels that could decide it exist): 39 pass / 27 fail.** The sections below are a chronological log;
 > read ROUNDS 51-52 and 54 (the collection-key, rolled-array and dynamic-storage-read fixes: 32 -> 37),
 > ROUNDS 53-96 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
 > deferred-`takeJob` class and its three falsified hypotheses) at the end. Earlier "State" numbers in this header
@@ -5343,3 +5343,45 @@ All instrumentation and the incomplete discriminator are reverted; the tree carr
 
 Focused state: `-t 'take job'` = 2 failed | 1 passed, `-t 'update job tags'` = 1 failed (unchanged), `yarn build`
 green, tree clean.
+
+### ROUND 135: the exact knot - row locality is decided BEFORE the labels that could decide it
+
+Located both halves of the mechanism in `compiler.ts`:
+
+    // ~7300, route construction (BEFORE key resolution)
+    for (const [routeInput, bindings] of bindingsByRouteInput) {
+      const identities = new Set(bindings.map((binding) =>
+        `${binding.source ?? 'argument'}:${binding.inputIndex}:${binding.expressionLabel ?? ''}`));
+      if (identities.size <= 1) continue;
+      crossHandlerPerRowWitnesses.add(routeInput);
+      for (const fn of eligible) for (const binding of fn.messageBusKeyWitnesses ?? []) {
+        if (binding.routeInput === routeInput) binding.perRow = true;
+      }
+    }
+
+    // ~13456, artifact assembly (AFTER resolution)
+    for (const witness of fn.messageBusKeyWitnesses ?? []) {
+      if (witness.source !== 'expression' || witness.expressionLabel) continue;
+      for (const access of fn.entryAccesses ?? []) { ... if (source?.kind === 'expression')
+        witness.expressionLabel = source.canonical; }
+    }
+
+The identity string already includes `expressionLabel`, so the per-row decision is *designed* to see literal
+differences - but the label is only FILLED at artifact assembly, long after the decision is taken, and only for
+witnesses whose `source === 'expression'`. The meceTags witnesses are `source: 'argument'` (their value arrives as
+the handler's first parameter, index 0) with the literal living in the ACCESS's `keySources` as an expression, so
+their labels stay empty at decision time: five rows with literals `lit:DA … lit:DO` compare as the single identity
+`argument:0:` and the witness is never marked per-row.
+
+Consequence for any fix: marking `perRow` after assembly is NOT enough, because the route ABI's parameter names are
+produced by the earlier naming pass (`__message_bus_key_meceTags_0` with no `_row`/`_rN` variant when there is one
+alternative), so a late `perRow` flag would reference parameters that do not exist. The workable shapes are:
+  (a) derive the argument keys' literal identity EARLIER - from the route rows' call-site arguments rather than
+      from resolved `entryAccesses` - so both the naming pass and the per-row decision see it; or
+  (b) after resolution, re-derive BOTH the witness names (adding the row-qualified variants to
+      `routeKeyWitnesses` / the route ABI) and `perRow`, in one consistent re-run of the naming step.
+Either way the verification is the fast loop recorded in ROUND 134: build -> recompile.sh -> grep the artifact for
+more than one `__message_bus_key_meceTags*` name -> `npx vitest run -t 'update job tags'`.
+
+Focused state: `-t 'take job'` = 2 failed | 1 passed, `-t 'update job tags'` = 1 failed, `yarn build` green, tree
+clean (no unvalidated compiler change).

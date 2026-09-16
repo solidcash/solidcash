@@ -50,6 +50,21 @@ contract RoutedCollectionEncoding() {
   }
 }`;
 
+const SWAPPABLE_BALANCE_SOURCE = `pragma solidity ^0.8.0;
+contract SwappableBalanceEncoding {
+  mapping(address => uint) balances;
+  function send(address to, uint amount) public {
+    balances[msg.sender] = balances[msg.sender] - amount;
+    balances[to] = balances[to] + amount;
+    require(amount >= 0);
+  }
+  function sendFrom(address from, address to, uint amount) public {
+    balances[from] = balances[from] - amount;
+    balances[to] = balances[to] + amount;
+    require(amount >= 0);
+  }
+}`;
+
 const FIXED_TUPLE_COLLECTION_SOURCE = `pragma solidity ^0.8.0;
 contract FixedTupleCollectionEncoding {
   mapping(address => mapping(address => uint)) credits;
@@ -361,6 +376,46 @@ describe('messageBus.encodeMessageBatch', () => {
       messageBus.inactiveMessageBusRouteWitness('address'),
     );
     expect(witness('__message_bus_key_balances_0_row_r1')).toEqual(destination);
+  });
+
+  it('encodes a row whose shared collection key is the caller identity', () => {
+    // `send` binds the shared `balances` key to msgSender and its row-local key to the recipient, while
+    // `sendFrom` binds the same shared input to its `from` argument. A batch that reaches only `send`
+    // therefore has no row that constrains the shared value: it must still publish one type-correct value for
+    // that route input instead of failing with 'no shared physical entry orientation'.
+    const routed = compileString(SWAPPABLE_BALANCE_SOURCE, {
+      forceStateful: true, messageBus: true, messageBusKernel: true,
+      solidityImportCompat: true, optimizeForCompilationSpeed: true,
+      maximumInputBytes: 1_000_000, suppressWarnings: true,
+    });
+    const visible = routed.messageBus!.route.inputs
+      .filter((input) => input.name !== 'batchBlob' && !input.name.startsWith('__internal__'));
+    const witness = (encoded: { routeWitnesses: readonly unknown[] }, name: string): unknown =>
+      encoded.routeWitnesses[visible.findIndex((input) => input.name === name)];
+    const caller = new Uint8Array(25).fill(0x11);
+    const recipient = new Uint8Array(25).fill(0x22);
+    const owner = new Uint8Array(25).fill(0x33);
+
+    const single = messageBus.encodeMessageBatch(routed, [
+      { function: 'send', args: [recipient, 10n], logicalCaller: caller },
+    ]);
+    expect(witness(single, '__message_bus_key_balances_0_row')).toEqual(recipient);
+    // No row constrains the shared slot, so the caller identity the encoder already derives for the msgSender
+    // binding is a valid value for it.
+    expect(witness(single, '__message_bus_key_balances_0')).toEqual(caller);
+
+    // A row that does constrain the shared slot still decides it, whether or not a caller-identity row is present.
+    const fromOnly = messageBus.encodeMessageBatch(routed, [
+      { function: 'sendFrom', args: [owner, recipient, 10n], logicalCaller: caller },
+    ]);
+    expect(witness(fromOnly, '__message_bus_key_balances_0')).toEqual(owner);
+    expect(witness(fromOnly, '__message_bus_key_balances_0_row')).toEqual(recipient);
+
+    const mixed = messageBus.encodeMessageBatch(routed, [
+      { function: 'send', args: [recipient, 10n], logicalCaller: caller },
+      { function: 'sendFrom', args: [owner, recipient, 10n], logicalCaller: caller },
+    ]);
+    expect(witness(mixed, '__message_bus_key_balances_0')).toEqual(owner);
   });
 
   it('assigns nested collection keys to two complete fixed tuple lanes', () => {

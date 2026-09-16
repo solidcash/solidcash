@@ -583,15 +583,24 @@ export function encodeMessageBatch(
   for (const base of swappableBases) {
     const choices: Array<Array<{ value: FunctionArgument; encoded: Uint8Array }>> = [];
     let rowBase = `${base}_row`;
+    let unconstrainedCandidate: { value: FunctionArgument; encoded: Uint8Array } | undefined;
     for (const invocation of invocations) {
       const handler = resolveMessageBusHandler(artifact, invocation.function, invocation.selector);
       if (!handler) continue;
       const bindings = handler.batchKeyWitnesses ?? [];
       const shared = bindings.find((binding) => binding.routeInput === base);
-      const varying = bindings.find((binding) => binding.swappable
-        && binding.routeInput === `${base}_row`);
+      const varying = bindings.find((binding) => binding.routeInput === `${base}_row`);
       const invocationArgs = invocation.args ?? [];
-      const relevant = varying ? [shared, varying] : [shared];
+      // A row only constrains the shared slot when its own key comes from a batch argument. A row whose shared
+      // binding is the caller identity (or an expression) derives that value at run time, so the shared route
+      // input is unused by it and it must not manufacture a disagreement: `transfer` binds `_balances_0` to
+      // msgSender while `transferFrom` binds the same input to its `from` argument, and a batch that reaches only
+      // `transfer` still has to produce one type-correct value for the shared input.
+      const constrainsShared = shared !== undefined
+        && shared.source !== 'msgSender' && shared.source !== 'expression' && shared.inputIndex >= 0;
+      const relevant = constrainsShared
+        ? [shared, ...(varying?.swappable === true ? [varying] : [])]
+        : [];
       const rowChoices = relevant.flatMap((binding) => {
         if (!binding || binding.source === 'msgSender' || binding.source === 'expression'
           || binding.inputIndex < 0) return [];
@@ -602,6 +611,17 @@ export function encodeMessageBatch(
         return encoded instanceof Uint8Array ? [{ value, encoded }] : [];
       });
       if (rowChoices.length > 0) choices.push(rowChoices);
+      // A row that does not constrain the shared slot can still name a type-correct value for it through its
+      // row-local binding; keep the first one as the fallback for a batch no row constrains.
+      if (!constrainsShared && unconstrainedCandidate === undefined && varying !== undefined
+        && varying.inputIndex >= 0) {
+        const value = invocationArgs[varying.inputIndex];
+        const type = handler.inputs[varying.inputIndex]?.type;
+        if (value !== undefined && type) {
+          const encoded = encodeFunctionArgument(value, type, structs);
+          if (encoded instanceof Uint8Array) unconstrainedCandidate = { value, encoded };
+        }
+      }
       if (varying) rowBase = varying.routeInput;
     }
     const suppliedValue = unboundRouteWitnesses[base];
@@ -612,9 +632,16 @@ export function encodeMessageBatch(
       ? { value: suppliedValue!, encoded: suppliedEncoded } : undefined;
     const suppliedFits = suppliedCandidate && (choices.length === 0 || choices.every((row) => row.some((choice) =>
       binToHex(choice.encoded) === binToHex(suppliedCandidate.encoded))));
-    const selected = suppliedFits ? suppliedCandidate : choices[0]?.find((candidate) =>
-      choices.every((row) => row.some((choice) =>
-        binToHex(choice.encoded) === binToHex(candidate.encoded))));
+    const selected = suppliedFits ? suppliedCandidate : choices.length === 0
+      ? unconstrainedCandidate ?? (suppliedType === undefined ? undefined : {
+        value: inactiveMessageBusRouteWitness(suppliedType),
+        encoded: encodeFunctionArgument(
+          inactiveMessageBusRouteWitness(suppliedType), suppliedType, structs,
+        ) as Uint8Array,
+      })
+      : choices[0]?.find((candidate) =>
+        choices.every((row) => row.some((choice) =>
+          binToHex(choice.encoded) === binToHex(candidate.encoded))));
     if (!selected) {
       throw new MessageBusDiagnosticError(
         'L3_RESOURCE_UNRESOLVED',

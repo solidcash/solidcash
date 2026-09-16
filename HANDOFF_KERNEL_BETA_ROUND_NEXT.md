@@ -1,6 +1,6 @@
 # Handoff — kernel-beta marketplace climb (after the event/continuation round)
 
-> **Latest state (ROUND 123: with substring matching only 5 of 80 failing operands are `nowhere` (was 1 of 6 by whole-item lookup); the chunk-address explanation does not yet reproduce them): 39 pass / 27 fail.** The sections below are a chronological log;
+> **Latest state (ROUND 124: NO operand is unexplained - origins {known 43, empty 37}; the blocker is the EMPTY COMPUTED values, i.e. unset witnesses): 39 pass / 27 fail.** The sections below are a chronological log;
 > read ROUNDS 51-52 and 54 (the collection-key, rolled-array and dynamic-storage-read fixes: 32 -> 37),
 > ROUNDS 53-96 (the remaining-class measurements), ROUND 47 (the aggregate-decode fix: 26 -> 32) and ROUNDS 48-50 (the
 > deferred-`takeJob` class and its three falsified hypotheses) at the end. Earlier "State" numbers in this header
@@ -4970,6 +4970,33 @@ commitments it was replayed from, and cross-check against `trailingCommitments`/
 build - that will say whether the SDK is missing an output for a resource the covenant names, or whether the lock
 is derived from something else entirely (an event/return covenant address, or a proxy/data address of a participant
 that this build does not include).
+
+Focused state: `-t 'take job'` = 2 failed | 1 passed (green `sanity checks`), `yarn build` green, no full-ladder
+run (no title turned green).
+
+### ROUND 124: every compared operand is accounted for - the blocker is the empty COMPUTED values
+
+The `failingStack` origin test was in a MIXED state: the origin line still used the whole-item `known` set while
+the family probe used the substring test, which produced five phantom `nowhere` locks (all the same address,
+`aa20e61fa6c6...`, across builds 67/74/104/126/140) and made the family field absent exactly where it was needed.
+The substring predicate is now defined once (`isCarried`, matching a carried value exactly or as a nested
+substring) and used by both. Measured over the ten stalls:
+
+    origins: known 43, empty 37, nowhere 0
+
+So EVERY operand the failing checks compare is either a value the program really carries - the previously
+"nowhere" locks turn out to be embedded inside carried blobs (the graph-emission transcript and the trailing
+record payloads) - or a zero-length item, which is the value the covenant COMPUTED for that comparison. The
+address-family probe (data NFT / entry / event / value-chunk replays) therefore has nothing left to explain, and
+the round 122/123 hunt for a missing address is closed: the SDK is not failing to publish an address, it is
+failing to supply a VALUE.
+
+That is consistent with ROUND 121 (route and verifier argument vectors are non-empty) and points the next step at
+the empty computed operands themselves: they come from witness lookups the probe leaves unset (the `_rN`/vmap
+family). The concrete next measurement is to record, for the failing comparison, WHICH witness name produced the
+empty value - the route ABI vector is non-empty, so the empty must be an unset per-row/per-slot witness, and the
+covenant's own witness-name list (the `__internal__vmap*` family) can be enumerated against the values the probe
+carried.
 
 Focused state: `-t 'take job'` = 2 failed | 1 passed (green `sanity checks`), `yarn build` green, no full-ladder
 run (no title turned green).

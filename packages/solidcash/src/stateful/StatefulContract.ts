@@ -36942,11 +36942,17 @@ export class StatefulFunctionCall {
                     note(candidate.token?.category);
                     note(candidate.token?.nft?.commitment);
                   }
+                  // A carried value can also contain the operand NESTED inside a larger item (a graph-emission
+                  // transcript or a record payload embeds other contracts' locks), so a whole-item lookup alone
+                  // reports a false `nowhere`.
+                  const carried = [...known];
+                  const isCarried = (hex: string): boolean => hex.length > 0
+                    && carried.some((value) => value === hex || value.includes(hex));
                   const stack = (terminal as { stack?: Uint8Array[] } | undefined)?.stack ?? [];
                   return stack.slice(-8).map((item) => ({
                     length: item.length,
                     hex: binToHex(item).slice(0, 48),
-                    origin: item.length === 0 ? 'empty' : (known.has(binToHex(item)) ? 'known' : 'nowhere'),
+                    origin: item.length === 0 ? 'empty' : (isCarried(binToHex(item)) ? 'known' : 'nowhere'),
                   }));
                 })(),
                 failingWindow: (terminal?.instructions ?? [])

@@ -3600,6 +3600,20 @@ export class AtomicMessageBusComposition {
           resolvable: resolvableDeferredBlocks.map((block) => block.participant),
         });
       }
+      if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+        ?.SOLIDC_DEBUG_PARTICIPANT_SLOTS === '1') {
+        // Which state/entry slots each participant publishes for THIS composition. An external call's write can
+        // only land if the CALLEE participant declares that slot here; otherwise the compiler never lowered the
+        // effect for this transaction and the missing write is a lowering gap, not a promotion gap.
+        console.error('participant-slots', JSON.stringify(plan.participants.map((candidate) => ({
+          participant: candidate.participant,
+          base: graph.layout.participantInputs[candidate.participant],
+          executionKind: candidate.executionKind,
+          slots: (candidate.blockLayout?.slots ?? [])
+            .filter((slot) => /entry|state/i.test(slot.kind))
+            .map((slot) => ({ kind: slot.kind, offset: slot.offset })),
+        }))));
+      }
       if (resolvableDeferredBlocks.length > 0) {
         const maximumRounds = resolvableDeferredBlocks.reduce((sum, block) => sum + block.offsets.length, 0) + 1;
         for (let round = 0; round < maximumRounds; round += 1) {

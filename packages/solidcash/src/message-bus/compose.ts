@@ -1698,6 +1698,23 @@ export class AtomicMessageBusComposition {
       }
       ownerWitnesses.set(owner, aggregate);
     }
+    // Diagnostic (`SOLIDC_DEBUG_WITNESS_SIZES=min,max`): the route witness entries whose byte length falls in a
+    // window, with their names. A value the program compares as two covenant-sized pieces has to be found by
+    // length first: the parameter name then says where the composer filled it.
+    if ((globalThis as { process?: { env?: Record<string, string> } }).process
+      ?.env?.SOLIDC_DEBUG_WITNESS_SIZES !== undefined) {
+      const [minBytes, maxBytes] = String(
+        (globalThis as { process?: { env?: Record<string, string> } }).process
+          ?.env?.SOLIDC_DEBUG_WITNESS_SIZES,
+      ).split(',').map((part) => Number(part));
+      for (const [owner, aggregate] of ownerWitnesses) {
+        const hits = Object.entries(aggregate).flatMap(([name, value]) => (
+          value instanceof Uint8Array && value.length >= (minBytes || 200) && value.length <= (maxBytes || 900)
+            ? [{ name, bytes: value.length, hex: binToHex(value).slice(0, 64) }] : []
+        ));
+        if (hits.length > 0) console.error('route-witness-sizes', { owner, hits });
+      }
+    }
     const workParticipants = descriptors.map((descriptor) => participantOf(
       descriptor,
       Object.freeze(ownerWitnesses.get(descriptor.contract.inner.lockingBytecode.toLowerCase()) ?? {}),

@@ -1922,6 +1922,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
+   * Whether `address(this)` in the body being compiled has to be answered from an authenticated participant owner
+   * rather than from the input that happens to execute: true for every compiler-generated route clone (which
+   * receives the owner as a hidden argument, see MESSAGE_BUS_OWNER_INPUT) and for proxy-state delegate entries
+   * (whose state block, and therefore whose Solidity-visible identity, lives at the proxy master input).
+   */
+  private selfLockingBytecodeNamesParticipantOwner(): boolean {
+    return this.usesMessageBusOwnerBlockBase() || this.usesProxyStateBlockBase();
+  }
+
+  /**
    * Emit opcodes to push a block slot's absolute index onto the stack.
    * Pushes 1 untracked value. Replaces the old base + offset + OP_PICK pattern.
    */
@@ -12403,6 +12413,26 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(Op.OP_DIV, locationData);
         this.stack[this.getStackIndex('(arrlen)')] = '(value)';
       }
+      return node;
+    }
+
+    // `address(this)` is the cast the builder produces over the contract's own locking bytecode, i.e.
+    // `tx.inputs[this.activeInputIndex].lockingBytecode`. A proxy/delegate execution physically runs inside the
+    // implementation's input, so that input's locking bytecode is the EXECUTOR's covenant rather than the account
+    // the call was made to: the Solidity-visible self is the authenticated participant owner. A caller that passes
+    // `address(this)` as a direct graph argument already resolves it from that owner lane (the `selfAddress`
+    // argument source); resolve every OTHER use - struct fields, concatenations, comparisons - the same way, so
+    // one expression cannot acquire two identities inside a single compilation.
+    // MEASURED (marketplace `take job`): a delegated take-job serialised the executor's covenant into the escrow
+    // call record while the route witness, the participant's state entries and the callee's own record check all
+    // carry the owner's, so the callee rejected the whole transaction at a 287-byte OP_EQUALVERIFY.
+    if (node.operator === UnaryOperator.INPUT_LOCKING_BYTECODE
+      && node.expression instanceof NullaryOpNode
+      && node.expression.operator === NullaryOperator.INPUT_INDEX
+      && this.selfLockingBytecodeNamesParticipantOwner()) {
+      this.emitMasterInputIndex(locationData);
+      this.emit(Op.OP_UTXOBYTECODE, locationData);
+      this.pushToStack('(value)');
       return node;
     }
 

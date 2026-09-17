@@ -32296,6 +32296,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       index,
       extraStackOffset,
       modelLength: this.stack.length,
+      // Emission position of this site. The marker build exists to recover exactly this mapping, but it re-runs
+      // the outlining heuristic, so the marked program no longer contains the shipped bodies (measured: the
+      // outlined keccak fragment loses its 7-instruction shape and its id). The shipped codegen records the raw
+      // counts instead, so a `[vm-stack]` gate can be aimed at the site without a marker build: for a DEFINE
+      // sub-traversal `outputLength` IS the body-local instruction index the gate compares against, and for an
+      // entry body the VM index is `outputLength + constructorPushes`.
+      outputLength: this.output.length,
+      constructorPushes: this.constructorParameterCount,
       resolvedName: this.stack[index],
       nameAtIndex: this.getStackIndex(name, true),
       above: this.stack.slice(Math.max(0, index - 2), index + 3),

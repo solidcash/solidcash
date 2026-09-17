@@ -3095,6 +3095,28 @@ export class AtomicMessageBusComposition {
             });
           }
         }
+        if (publishedComputeOffsets.length > 0
+          && (globalThis as { process?: { env?: Record<string, string> } }).process
+            ?.env?.SOLIDC_DEBUG_ECRECOVER_READINESS === '1') {
+          // Which participant block owns the compute side-car slots, what the composer decided about them, and
+          // what actually sits there. `deferredBlocks` staying empty is only meaningful together with these: a
+          // cache hit refreshes the slots without consulting the controller, while an empty `computeOffsets` or a
+          // non-mutable input means nothing was ever placed at the offsets the program reads.
+          console.error('composer-compute-slots', {
+            participant: participant.participant,
+            cacheHit: cachedCompute?.graphKey === deferredComputeGraphKey,
+            controllerDefined: (local as DeferredComputeBuilder).__messageBusDeferredCompute !== undefined,
+            publishedComputeOffsets,
+            computeOffsets,
+            slots: publishedComputeOffsets.map((offset) => ({
+              offset,
+              inputCapability: local.inputs[offset]?.token?.nft?.capability ?? null,
+              inputCategory: String(local.inputs[offset]?.token?.category ?? '').slice(0, 16),
+              outputCapability: local.outputs[offset]?.token?.nft?.capability ?? null,
+              outputCategory: String(local.outputs[offset]?.token?.category ?? '').slice(0, 16),
+            })),
+          });
+        }
         if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
           ?.SOLIDC_DEBUG_RETURN_LAYOUT === '1') {
           const returnSlot = participant.blockLayout!.slots.find((slot) => slot.kind === 'returnEvent');

@@ -1660,7 +1660,10 @@ const evaluateEveryInput = (
                 stack: state.stack.slice(-Math.max(1, debugStackDepth)).map((item, offset, items) => ({
                   d: items.length - 1 - offset,
                   bytes: item.length,
-                  hex: binToHex(item).slice(0, 256),
+                  // The 128-byte default truncates exactly the values a contract-bytecode comparison needs: two
+                  // covenants differing only in an embedded address look identical in their first 128 bytes. Raise
+                  // it with SOLIDC_DEBUG_STACK_HEX_BYTES when the operands themselves are the evidence.
+                  hex: binToHex(item).slice(0, Number(failureDebugEnv?.SOLIDC_DEBUG_STACK_HEX_BYTES ?? 256)),
                 })),
               }));
             }

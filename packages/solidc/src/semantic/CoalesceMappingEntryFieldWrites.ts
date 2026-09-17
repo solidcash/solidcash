@@ -22,6 +22,7 @@ import {
   HexLiteralNode,
   StringLiteralNode,
   CastNode,
+  NullaryOpNode,
   ExpressionNode,
 } from '../ast/AST.js';
 import AstTraversal from '../ast/AstTraversal.js';
@@ -286,6 +287,9 @@ export default class CoalesceMappingEntryFieldWrites extends AstTraversal {
   private isPure(expr: ExpressionNode): boolean {
     if (expr instanceof IdentifierNode || expr instanceof IntLiteralNode || expr instanceof BoolLiteralNode
       || expr instanceof HexLiteralNode || expr instanceof StringLiteralNode) return true;
+    // A transaction/environment read (`msg.sender`, `tx.origin`, `block.timestamp`, ...) evaluates to the same
+    // value at both uses of the key and changes nothing, so it is as repeatable as a local name.
+    if (expr instanceof NullaryOpNode) return true;
     if (expr instanceof FieldAccessNode) return this.isPure(expr.expression);
     if (expr instanceof CastNode) return this.isPure(expr.expression);
     if (expr instanceof ArrayAccessNode) return this.isPure(expr.array) && this.isPure(expr.index);
@@ -301,6 +305,9 @@ export default class CoalesceMappingEntryFieldWrites extends AstTraversal {
     if (a instanceof IdentifierNode && b instanceof IdentifierNode) return a.name === b.name;
     if (a instanceof IntLiteralNode && b instanceof IntLiteralNode) return a.value === b.value;
     if (a instanceof BoolLiteralNode && b instanceof BoolLiteralNode) return a.value === b.value;
+    // `m[msg.sender].f` is the ordinary authenticated-self spelling, so a transaction/environment read has to
+    // compare equal to itself for a run of writes to one entry to coalesce at all.
+    if (a instanceof NullaryOpNode && b instanceof NullaryOpNode) return a.operator === b.operator;
     if (a instanceof FieldAccessNode && b instanceof FieldAccessNode) {
       return a.name === b.name && this.exprEqual(a.expression, b.expression);
     }

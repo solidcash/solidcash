@@ -747,6 +747,20 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
   }
 
   visitArrayAccess(node: ArrayAccessNode): Node {
+    // Solidity WITHOUT `this.` parses `arr[i]` as an ArrayAccessNode on the array-name identifier, while the
+    // mapping form reaches visitMappingAccess. Both must resolve a POOLED dynamic state array (`S[] s` threaded
+    // through a compiler-owned row clone) to its in-flight journal value: the write side already targets the
+    // journal (a desugared StateArrayAssignNode), so without this branch a read of a field the same handler has
+    // just written re-materializes the persisted pre-state array and diverges from the value the row publishes.
+    if (node.array instanceof IdentifierNode) {
+      const dynamic = this.dynamicEntry(node.array.name);
+      if (dynamic) {
+        return this.at(new ArrayAccessNode(
+          this.at(new IdentifierNode(dynamic.journalName), node),
+          this.rewriteExpression(node.index),
+        ), node);
+      }
+    }
     if (this.currentMulti) {
       const flattened = this.flattenArrayAccess(node);
       const multi = flattened && this.multiEntry(flattened.collection, flattened.keys);

@@ -4022,6 +4022,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     uses: number,
     inlineEmit: (t: GenerateTargetTraversalWithLocation) => void,
   ): boolean {
+    // Diagnostic bisect (`SOLIDC_DEBUG_NO_OUTLINE=1`): never define a captured subroutine, so every use is
+    // emitted inline. Outlining replaces a body's own model effect with one OP_INVOKE at the call site; when a
+    // coordinate is off by one, comparing the two builds says whether the outlined call site or the body is
+    // responsible. Debug only: the inlined program is much larger and must never ship.
+    if ((globalThis as { process?: { env?: Record<string, string> } }).process
+      ?.env?.SOLIDC_DEBUG_NO_OUTLINE === '1') return false;
     if (uses < 2) return false;
     const sub = new GenerateTargetTraversalWithLocation(this.compilerOptions);
     sub.compiledBytecodes = this.compiledBytecodes;

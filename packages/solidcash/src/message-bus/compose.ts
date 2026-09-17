@@ -3117,6 +3117,40 @@ export class AtomicMessageBusComposition {
             })),
           });
         }
+        // Diagnostic (`SOLIDC_DEBUG_SLOT_LOCKS=1`): every slot whose input and output locking bytecode disagree.
+        // A covenant-equality check inside the program compares a slot with its preserved copy and fails when the
+        // two locks differ only in an address embedded in both, so the mismatching slots are the whole evidence.
+        // Only mismatches print, and the printed windows straddle the first differing byte.
+        if ((globalThis as { process?: { env?: Record<string, string> } }).process
+          ?.env?.SOLIDC_DEBUG_SLOT_LOCKS === '1') {
+          const mismatches = (participant.blockLayout?.slots ?? []).flatMap((slot) => {
+            const inputLock = local.inputs[slot.offset]?.unlocker?.generateLockingBytecode?.();
+            const output = local.outputs[slot.offset];
+            if (!inputLock || !(output?.to instanceof Uint8Array)) return [];
+            const inputHex = binToHex(inputLock);
+            const outputHex = binToHex(output.to);
+            if (inputHex === outputHex) return [];
+            const firstDifference = [...inputHex].findIndex((nibble, index) => nibble !== outputHex[index]);
+            return [{
+              kind: slot.kind,
+              offset: slot.offset,
+              slotIndex: slot.slotIndex,
+              inputBytes: inputLock.length,
+              outputBytes: output.to.length,
+              firstDifference,
+              inputSlice: firstDifference < 0 ? inputHex.slice(0, 96)
+                : inputHex.slice(Math.max(0, firstDifference - 40), firstDifference + 56),
+              outputSlice: firstDifference < 0 ? outputHex.slice(0, 96)
+                : outputHex.slice(Math.max(0, firstDifference - 40), firstDifference + 56),
+            }];
+          });
+          if (mismatches.length > 0) {
+            console.error('composer-slot-lock-mismatch', {
+              participant: participant.participant,
+              slots: mismatches.slice(0, 12),
+            });
+          }
+        }
         if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
           ?.SOLIDC_DEBUG_RETURN_LAYOUT === '1') {
           const returnSlot = participant.blockLayout!.slots.find((slot) => slot.kind === 'returnEvent');

@@ -32304,6 +32304,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // entry body the VM index is `outputLength + constructorPushes`.
       outputLength: this.output.length,
       constructorPushes: this.constructorParameterCount,
+      // Which emitted body this site belongs to. Measured: a record with the right function name and a plausible
+      // position can still belong to a DIFFERENT emission stream - the subroutine-use probe emits into a scratch
+      // buffer whose positions (10, 17, ...) address nothing that ships, and the same function is compiled once as
+      // an entry body and once as a DEFINE body with different instruction indices. The index into
+      // `definedBodyRecords` (plus the function/helper id recorded there) is what lets a `[vm-stack]` gate be
+      // aimed at the body that actually runs.
+      bodyIndex: this.definedBodyRecords.length,
       resolvedName: this.stack[index],
       nameAtIndex: this.getStackIndex(name, true),
       above: this.stack.slice(Math.max(0, index - 2), index + 3),

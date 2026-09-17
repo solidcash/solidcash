@@ -2048,6 +2048,17 @@ export class AtomicMessageBusComposition {
       if (!contract?.categoryId) throw new Error('messageBus: every participant must have a resolved master category');
       return contract.categoryId;
     });
+    // Diagnostic (`SOLIDC_DEBUG_PARTICIPANT_CATEGORIES=1`): the master category of every participant, in plan
+    // order. A covenant that embeds the wrong category is only diagnosable against this list.
+    if ((globalThis as { process?: { env?: Record<string, string> } }).process
+      ?.env?.SOLIDC_DEBUG_PARTICIPANT_CATEGORIES === '1') {
+      console.error('participant-categories', plan.participants.map((participant, index) => ({
+        participant: participant.participant,
+        executionKind: participant.executionKind,
+        category: categories[index],
+        locking: participant.lockingBytecode.slice(0, 16),
+      })));
+    }
     // Public CREATE/proxy identities are authenticated by immutable SCID anchors. Resolve each required anchor
     // once per fixed-point assembly pass and supply it explicitly to the local builder: address(this) still comes
     // from the active covenant input, while an ordinary nested msg.sender can select this stable public identity.

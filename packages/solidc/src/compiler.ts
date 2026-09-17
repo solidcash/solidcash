@@ -7232,6 +7232,14 @@ function synthesizeMessageBusRoute(
   if (compilerOptions.messageBusKernel === true) {
     for (const fn of functions) {
       if (fn.messageBusEligible === true || !fn.messageBusRejectionReason) continue;
+      // The catalog mapping below replaces the pass-local reason with its frozen kernel class, so the reason a
+      // gate actually assigned is not recoverable from the artifact. Publish it under an explicit switch: a
+      // refusal that names only KERNEL_LAYOUT cannot distinguish a layout bound from an unsupported construct.
+      if (process.env.SOLIDC_DEBUG_ADMISSION_REASONS === '1') {
+        console.error('message-bus-admission-source', JSON.stringify({
+          handler: fn.name, sourceReason: fn.messageBusRejectionReason,
+        }));
+      }
       if (!fn.messageBusRejectionReason.startsWith('KERNEL_')) {
         fn.messageBusRejectionReason = kernelAdmissionReason(fn.messageBusRejectionReason);
       }

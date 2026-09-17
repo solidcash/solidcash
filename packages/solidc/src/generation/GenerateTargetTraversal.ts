@@ -9978,8 +9978,19 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     for (let member = 0; member < batchWidth; member++) {
       this.emitGenericPushdataDecode(raw, loc);     // [arg, preimage, rest]
       this.emit(Op.OP_TOALTSTACK, loc);             // [arg, preimage] alt=[rest]
-      if (member === withinBatch) this.emit(Op.OP_EQUALVERIFY, loc);
-      else this.emit(Op.OP_DROP, loc);
+      if (member === withinBatch) {
+        this.emit(Op.OP_EQUALVERIFY, loc);
+        // The bind physically consumed the preimage argument, so reconcile the tracker for it HERE rather than at
+        // the end of the decoder. The side-car OUTPUT read below measures a compute-block base with a top-relative
+        // OP_PICK, and every emission in between that depends on the tracked frame must already see the consumed
+        // argument gone. Deferring it makes that read select the item immediately above the real base - measured
+        // on the marketplace take-job body, where the participant owner read resolved the dynamic chunk input base
+        // (63) instead of the owner (0) and the side-car split an empty item. The ecrecover decoder below already
+        // reconciles at its own bind for the same reason.
+        this.popFromStack(1);
+      } else {
+        this.emit(Op.OP_DROP, loc);
+      }
       this.emit(Op.OP_FROMALTSTACK, loc);           // [arg? only until selected member, rest]
     }
     this.emitGenericPushdataDecode(raw, loc);       // [width, redeempush]
@@ -10011,7 +10022,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_SPLIT, loc);
       this.emit(Op.OP_DROP, loc);                   // [hash] selected 32-byte commitment slice
     }
-    this.popFromStack(1);
+    // The preimage argument was already reconciled at the selected member's bind above, so only the decoder's
+    // result remains to declare.
     this.pushToStack('(value)');
     // Dynamic keccak loop: advance the side-car counter so the next iteration reads the next trailing side-car.
     // Tracker-neutral in-place bump (same as the entry-loop counter): the OP_PICK'd value is untracked, so the

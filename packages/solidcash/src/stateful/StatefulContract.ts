@@ -29817,6 +29817,19 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // ordinary batched keccak side-cars. Computed recovery arguments remain deferred; the full routed trace later
     // replaces both the A/B pair and that batch member atomically.
     let ecrecoverEvmPreimages: Array<Uint8Array | null> = [];
+    // Diagnostic (`SOLIDC_DEBUG_ECRECOVER_READINESS=1`): whether this build touches recovery at all. A handler
+    // that verifies a signature must reach the branch below; if it does not, the caller's ABI/route objects are
+    // the place to look, and if it does, the resolution counts say whether the side-car co-spends were built.
+    if ((globalThis as { process?: { env?: Record<string, string> } }).process
+      ?.env?.SOLIDC_DEBUG_ECRECOVER_READINESS === '1') {
+      console.error('ecrecover-build-entry', {
+        function: abiFunction?.name,
+        entryFunction: entryAbiFunction?.name,
+        abiEcrecover: abiFunction?.ecrecoverCompute === true,
+        entryEcrecover: entryAbiFunction?.ecrecoverCompute === true,
+        hasCategory: this.categoryId !== undefined,
+      });
+    }
     if ((abiFunction?.ecrecoverCompute || entryAbiFunction?.ecrecoverCompute) && this.categoryId) {
       const ecrecoverAbiFunction = abiFunction?.ecrecoverCompute ? abiFunction : entryAbiFunction!;
       // A selected message-bus handler is represented by a different ABI object than the synthetic route
@@ -29854,6 +29867,19 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           argBlobs: resolution.argBlobs,
           evmKeccakPreimageIndices,
         };
+      }
+      if ((globalThis as { process?: { env?: Record<string, string> } }).process
+        ?.env?.SOLIDC_DEBUG_ECRECOVER_READINESS === '1') {
+        console.error('ecrecover-build-resolution', {
+          function: ecrecoverAbiFunction.name,
+          delegatedEcrecover,
+          argBlobs: resolution.argBlobs.length,
+          unresolvedArgs: resolution.argBlobs.filter((argBlob) => argBlob === null).length,
+          coSpends: resolution.coSpends.length,
+          recreates: ecrecoverComputeRecreates.length,
+          evmPreimages: resolution.evmPreimages.length,
+          deferred: deferredEcrecoverCompute !== undefined,
+        });
       }
     }
 

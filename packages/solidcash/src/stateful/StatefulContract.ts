@@ -34201,24 +34201,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             ?.SOLIDC_DEBUG_RETURN === '1') {
             // The value lives in the callee's ENTRY NFTs, so an address-domain mismatch between the decoded call
             // argument and the stored key shows up as a zero result. Print the keys the callee actually holds.
-            const calleeEntries = await (async (): Promise<string[]> => {
-              try {
-                const full = await (node.contract as unknown as {
-                  getFullState: () => Promise<{ entryNftUtxos?: Array<{ token?: { nft?: { commitment?: Uint8Array } } }> }>;
-                }).getFullState();
-                const wanted = (node.args ?? []).find((arg) => arg instanceof Uint8Array) as Uint8Array | undefined;
-                const wantedHex = wanted === undefined ? '' : binToHex(wanted);
-                return (full.entryNftUtxos ?? []).slice(0, 6).map((utxo) => {
-                  const hex = utxo.token?.nft?.commitment === undefined
-                    ? 'none' : binToHex(utxo.token.nft.commitment);
-                  return `${hex.slice(0, 28)}${wantedHex !== '' && hex.includes(wantedHex) ? ' <--CONTAINS-ARG' : ''}`;
-                });
-              } catch (error) {
-                return [`<unavailable:${error instanceof Error ? error.message.slice(0, 60) : String(error)}>`];
-              }
-            })();
             console.error('atomic-seed-derived', {
-              calleeEntries,
+              eventIdentity: event.identity,
+              groupReturnOutputIndex: group.returnOutputIndex,
+              builtReturnOutputIndex: builder.getBuiltExternalCallReturnEventOutputIndex(groupIndex),
+              groupFunction: group.functionName,
+              groupShared: group.sharedGroupIndex,
               functionName: node.functionName,
               callsiteId: node.callsiteId,
               args: (node.args ?? []).map((arg) => (arg instanceof Uint8Array

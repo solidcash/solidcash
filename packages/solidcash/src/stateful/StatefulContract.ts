@@ -5221,7 +5221,11 @@ function cachedProbeVm(provider: NetworkProvider): CachedProbeVm {
     opcodes: debugTraceOperationMode === 'range'
       ? new Set(Array.from({ length: 256 }, (_, opcode) => opcode as Op))
       : debugTraceOperationMode === '1'
-      ? new Set([...PROBE_TRACE_OPCODES, Op.OP_EQUAL, Op.OP_VERIFY, Op.OP_HASH160])
+      // OP_INVOKE and OP_UTXOBYTECODE are the two operations that decide a subprogram call: the first shows the
+      // operands a caller hands down (the callee consumes them immediately), the second shows which input a
+      // participant check resolved to. Both are absent from the production observer set.
+      ? new Set([...PROBE_TRACE_OPCODES, Op.OP_EQUAL, Op.OP_VERIFY, Op.OP_HASH160,
+        Op.OP_INVOKE, Op.OP_UTXOBYTECODE])
       : debugTraceOperationMode === 'project'
         ? new Set([...PROBE_TRACE_OPCODES, Op.OP_HASH160])
       : PROBE_TRACE_OPCODES,

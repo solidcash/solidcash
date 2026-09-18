@@ -33312,6 +33312,26 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       }
     }
 
+    // `__internal__externalCallInputBase` tells the covenant where the co-spent participant region begins: the
+    // compiler adds each slot's compile-time offset to it. The plan counts only the caller's own data-NFT slots,
+    // so an assembled frame with additional input-consuming slots before the participants (the caller's own entry
+    // NFT, an output-only slot's funder) shifts the region and every identity check then authenticates the wrong
+    // input. The assembled transaction is the authority, exactly as for the return and anchor witnesses.
+    if (abiFunction) {
+      const basePosition = abiFunction.inputs.findIndex((input) =>
+        input.name === '__internal__externalCallInputBase');
+      if (basePosition >= 0 && basePosition < finalArgs.length && externalCallUtxoGroups.length > 0) {
+        const firstGroup = externalCallUtxoGroups[0];
+        const firstParticipant = firstGroup === undefined ? -1
+          : builder.findMaterializedMasterInput(firstGroup.sharedGroupIndex ?? 0);
+        if (firstParticipant >= 0 && finalArgs[basePosition] !== BigInt(firstParticipant)) {
+          finalArgs[basePosition] = BigInt(firstParticipant);
+          stateInputUnlocker = buildStateInputUnlocker();
+          builder._setMasterUnlocker(stateInputUnlocker);
+        }
+      }
+    }
+
     // A sorted-mapping proof witness publishes the distance from the executing master input to the co-spent entry
     // NFT that brackets the written key, and the covenant reads the proof input at `masterInputIndex + offset`. The
     // plan derives that distance from the collection's block slot, which equals the physical distance only while the

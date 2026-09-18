@@ -13655,13 +13655,23 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         // builder so the restarted transaction retains the same authenticated resource shape.
         for (const group of externalCallUtxoGroups) {
           if (!group.plannedEntryInserts?.length || group.sharedGroupIndex !== undefined) continue;
-          group.plannedEntryInsertHandles = group.plannedEntryInserts.map(({ blockSlot, commitment }) => {
-            const input = group.blockInputs?.[blockSlot];
-            if (!input) throw new Error('Planned nested entry insert has no block input.');
+          group.plannedEntryInsertHandles = group.plannedEntryInserts.map((insert) => {
+            const input = group.blockInputs?.[insert.blockSlot];
+            if (!input) {
+              // The plan addresses a block offset the carrier does not have, which means the writer's block shape
+              // never replaced the narrower block an earlier callsite contributed for the same callee master.
+              throw new Error(
+                `Planned sorted-batch insert for entry slot ${String(insert.slotIndex ?? '?')} names block offset `
+                + `${String(insert.blockSlot)}, but `
+                + `${group.logicalFunctionName ?? group.functionName ?? 'participant'} has `
+                + `${String(group.blockInputs?.length ?? 0)} block inputs `
+                + `(${(group.blockLayout?.slots ?? []).map((slot) => `${slot.kind}@${slot.offset}`).join(', ')}).`,
+              );
+            }
             return stb.addExternalCallEntryInsert(
               group.categoryId,
               input.unlocker.generateLockingBytecode(),
-              commitment ?? '00',
+              insert.commitment ?? '00',
             );
           });
         }
@@ -23222,6 +23232,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // Planned external-call return-event coordinates for this build, in returning-group order. The trailing ABI
     // frame is filled positionally, so these are re-placed by parameter NAME once the frame is complete.
     const topLevelReturnWitnessPlan: bigint[] = [];
+    // The group each planned witness belongs to, index-aligned with the plan, so a late assembly pass can re-read
+    // that group's physical return coordinate without re-deriving which group a witness slot came from.
+    const topLevelReturnWitnessGroups: number[] = [];
     const pendingTokenCallInputFills: {
       group: { refreshInternalArgs?: (updates: Record<string, FunctionArgument>) => void };
       encodedArgs: FunctionArgument[];
@@ -23853,6 +23866,38 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 if (!hadFullBlockKinds && !bHasLoop) bBlockInputs = undefined;
               }
             }
+            // A sorted-batch lane READS its predecessor instead of spending it, so two lanes whose keys bracket the
+            // same entry legitimately name one UTXO - an update of that entry and an insert whose predecessor it is.
+            // A transaction may consume each UTXO once, so keep the first occurrence as the block's input, back the
+            // remaining slots with funders (the layout keeps its width), and point those lanes' proofs at the
+            // surviving slot, which is the entry both covenants authenticate.
+            if (bBlockInputs !== undefined && bPlannedEntryInserts.length > 0) {
+              const firstSlotByOutpoint = new Map<string, number>();
+              for (let slot = 0; slot < bBlockInputs.length; slot++) {
+                const blockInput = bBlockInputs[slot];
+                const outpoint = `${blockInput.txid.toLowerCase()}:${blockInput.vout}`;
+                const firstSlot = firstSlotByOutpoint.get(outpoint);
+                if (firstSlot === undefined) {
+                  firstSlotByOutpoint.set(outpoint, slot);
+                  continue;
+                }
+                for (const [name, value] of Object.entries(bCompilerInternalArgs)) {
+                  if (!/^__internal__vmapBatchProof_\d+$/.test(name)) continue;
+                  if (typeof value !== 'bigint' || value !== BigInt(slot)) continue;
+                  bCompilerInternalArgs[name] = BigInt(firstSlot);
+                }
+                bBlockInputs[slot] = await makeFunder();
+                if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+                  ?.SOLIDC_DEBUG_RETURN === '1') {
+                  console.error('batch-predecessor-reuse', {
+                    functionName: callInfo.functionName,
+                    outpoint,
+                    firstSlot,
+                    reusedSlot: slot,
+                  });
+                }
+              }
+            }
             if (bBlockInputs) {
               for (const planned of bPlannedEntryInserts) {
                 planned.outputBlockSlot = Math.max(bBlockInputs.length, bBlockLayout?.blockSize ?? 0);
@@ -23997,6 +24042,64 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         const directSharedGroupIndex = physicalExternalCallGroupIndexByMasterOutpoint(
           externalCallUtxoGroups, bState.masterUtxo,
         );
+        // A return probe evaluates ONLY the contract input, so a callee's covenant never executes and its return
+        // event would keep the neutral placeholder the builder seeds (`setReturnEventOutput`), which a caller
+        // decoding a `bool` success reads as failure and answers with its library's catch path. Fabricate the value
+        // the same way the nested-call path does, and only for a probe: a broadcast transaction executes its
+        // callees and must not precompute.
+        let directPrecomputedReturn: Uint8Array | undefined;
+        if (overrides?.returnProbeOnly === true && bReturnEventInBlock) {
+          const precomputeArtifact = callInfo.externalContract.inner.artifact as Artifact;
+          const rawCall = ec as { rawFunctionName?: string; rawSelector?: string };
+          const precomputeName = callInfo.functionName === '__raw__'
+            ? rawCall.rawFunctionName ?? (precomputeArtifact.abi as readonly AbiFunction[])
+              .find((candidate) => rawCall.rawSelector !== undefined
+                && candidate.selector?.toLowerCase() === rawCall.rawSelector.toLowerCase())?.name
+            : callInfo.functionName;
+          // The callee artifact's own entry, not `_resolveCallAbi`: the latter matches by argument shape, which a
+          // raw callsite's decoded argument vector need not satisfy.
+          const precomputeAbi = precomputeName === undefined ? undefined
+            : (precomputeArtifact.abi as readonly AbiFunction[])
+              .find((candidate) => candidate.name === precomputeName);
+          if (precomputeAbi?.outputs?.length === 1 && precomputeName !== undefined) {
+            const encode = (value: StateValue): Uint8Array => encodeExternalReturnValue(
+              value,
+              precomputeAbi.outputs![0].type,
+              precomputeArtifact.structs ?? precomputeArtifact.stateLayout?.structs,
+              resolveExternalResultEncoding(
+                precomputeAbi.resultEncoding,
+                precomputeArtifact,
+                precomputeAbi.outputs!.map((output) => output.type),
+                `function '${precomputeAbi.name}' result`,
+              ) === 'evm-abi-v1',
+              precomputeArtifact.enums,
+            );
+            try {
+              const precomputeValue = await callInfo.externalContract._deriveReturnValue(
+                precomputeName, callInfo.args,
+              );
+              if (precomputeValue !== undefined) directPrecomputedReturn = encode(precomputeValue as StateValue);
+            } catch {
+              directPrecomputedReturn = undefined;
+            }
+            // A state-writing callee has no executed transaction to read a value from. The compiler's convention for
+            // such a call is that the integrity check IS the success condition (an opaque return publishes a literal
+            // `true`), so a probe fabricates the same for a single `bool` result.
+            if (directPrecomputedReturn === undefined && precomputeAbi.outputs[0].type === 'bool') {
+              directPrecomputedReturn = encode(true);
+            }
+          }
+        }
+        if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+          ?.SOLIDC_DEBUG_RETURN === '1') {
+          console.error('direct-call-precompute', {
+            functionName: callInfo.functionName,
+            probeOnly: overrides?.returnProbeOnly === true,
+            inBlock: bReturnEventInBlock,
+            sharedGroupIndex: directSharedGroupIndex,
+            precomputedHex: directPrecomputedReturn ? binToHex(directPrecomputedReturn) : undefined,
+          });
+        }
         externalCallUtxoGroups.push({
           categoryId: externalCategoryId,
           stateLayout: bStatelayout,
@@ -24036,6 +24139,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             blockInputs: [] as UnlockableUtxo[],
           }),
           ...(bReturnEventInBlock && { returnEventInBlock: true }),
+          ...(directPrecomputedReturn !== undefined
+            && { precomputedReturnCommitment: directPrecomputedReturn }),
           ...(bKeccak.recreates.length > 0 && { keccakRecreates: bKeccak.recreates }),
           ...(bEntryLoopCommitments && {
             entryLoopCommitments: bEntryLoopCommitments,
@@ -24061,6 +24166,35 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         });
         const directGroup = externalCallUtxoGroups[externalCallUtxoGroups.length - 1];
         directGroup.valueChunkWrites = describeValueChunkWrites(directGroup);
+        // Several callsites can claim one callee master UTXO (commonly a view first, then the writer). They share
+        // ONE physical block: the caller's covenant verifies the writer's callsite against the writer's own ABI
+        // layout, and the sorted-batch planner addresses that callsite's predecessor/NEW inputs relative to it. A
+        // denser writer block must therefore replace the shape an earlier callsite contributed - otherwise the
+        // physical block keeps the narrower layout, the writer's planned inserts name block offsets that do not
+        // exist, and derivation aborts before any participant state is resolved.
+        if (directSharedGroupIndex >= 0 && bBlockInputs !== undefined && bBlockLayout !== undefined) {
+          const physicalOwner = externalCallUtxoGroups[directSharedGroupIndex];
+          if (physicalOwner !== undefined
+            && bBlockLayout.slots.length > (physicalOwner.blockLayout?.slots.length ?? 0)) {
+            physicalOwner.blockInputs = bBlockInputs;
+            physicalOwner.blockLayout = bBlockLayout;
+            physicalOwner.dataNftUtxos = bDataNfts;
+            physicalOwner.requiredDataNftIndices = bRequiredNftIndices;
+            if (bReturnEventInBlock) physicalOwner.returnEventInBlock = true;
+            if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+              ?.SOLIDC_DEBUG_RETURN === '1') {
+              console.error('shared-block-promotion', {
+                physical: physicalOwner.logicalFunctionName ?? physicalOwner.functionName,
+                writer: callInfo.functionName,
+                slots: bBlockLayout.slots.map((slot) => `${slot.kind}@${slot.offset}`),
+                inputs: bBlockInputs.length,
+              });
+            }
+          }
+        }
+        if (directSharedGroupIndex >= 0 && bBlockInputs !== undefined && bBlockLayout !== undefined) {
+          directGroup.blockInputs = [] as UnlockableUtxo[];
+        }
         if (bDirectChunkValue && directGroup.valueChunkWrites.length === 1) {
           stageValueChunkWrite(
             directGroup.valueChunkWrites[0], bDirectChunkValue, valueChunkWriteStagingSession,
@@ -24782,6 +24916,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             const retOutputIdx = returnEventIndexMap.get(i);
             if (retOutputIdx !== undefined) {
               topLevelReturnWitnessPlan.push(BigInt(retOutputIdx));
+              topLevelReturnWitnessGroups.push(i);
               finalArgs = [...finalArgs, BigInt(retOutputIdx)];
             }
           }
@@ -31993,18 +32128,50 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           }));
         }
       };
-    if (refreshPhysicalDelegateInputIndex || refreshTopLevelDynamicChunkInputBase) {
+    // The compiled covenant reads a callee's return event at `__internal__externalReturnOutputIdxN`, so that witness
+    // and the assembled transaction must name the same output. The planned coordinate is written before the builder
+    // places its own outputs, and a callee's block (with the event's slot) can still move afterwards - a shared
+    // participant publishes the event in the writer's in-block slot, not its own. Re-read every returning group's
+    // physical coordinate from the builder on each assembly pass instead of freezing the plan.
+    const topLevelReturnWitnessNames = (abiFunction?.inputs ?? [])
+      .map((input) => input.name)
+      .filter((name) => /^__internal__externalReturnOutputIdx\d*$/.test(name))
+      .sort((left, right) => Number(/(\d*)$/.exec(left)?.[1] ?? 0)
+        - Number(/(\d*)$/.exec(right)?.[1] ?? 0));
+    const refreshTopLevelReturnWitnesses = (materialized?: TransactionBuilder): boolean => {
+      if (topLevelReturnWitnessNames.length === 0 || topLevelReturnWitnessGroups.length === 0) return false;
+      // The refresher runs from the builder's own assembly pass, so the recorded coordinates are current.
+      void materialized;
+      let changed = false;
+      for (const [ordinal, groupIdx] of topLevelReturnWitnessGroups.entries()) {
+        const name = topLevelReturnWitnessNames[ordinal];
+        if (name === undefined) break;
+        const position = abiFunction!.inputs.findIndex((input) => input.name === name);
+        if (position < 0 || position >= finalArgs.length) continue;
+        const built = builder.getBuiltExternalCallReturnEventOutputIndex(groupIdx);
+        const authoritative = built >= 0 ? built : builder.getExternalCallReturnEventOutputIndex(groupIdx);
+        if (authoritative < 0) continue;
+        if (finalArgs[position] === BigInt(authoritative)) continue;
+        finalArgs[position] = BigInt(authoritative);
+        changed = true;
+      }
+      return changed;
+    };
+    if (refreshPhysicalDelegateInputIndex || refreshTopLevelDynamicChunkInputBase
+      || topLevelReturnWitnessGroups.length > 0) {
       if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
         ?.SOLIDC_DEBUG_FORWARD_ARGS === '1') {
         console.error('physical-input-refresher-registered', {
           functionName,
           delegate: refreshPhysicalDelegateInputIndex !== undefined,
           dynamicChunk: refreshTopLevelDynamicChunkInputBase !== undefined,
+          topLevelReturns: topLevelReturnWitnessGroups.length,
         });
       }
       builder._setMasterUnlockerRefresher((materialized) => {
         if (refreshPhysicalDelegateInputIndex) refreshPhysicalDelegateInputIndex(builder, materialized);
         refreshTopLevelDynamicChunkInputBase?.(materialized);
+        refreshTopLevelReturnWitnesses(materialized);
         return buildStateInputUnlocker();
       });
     }
@@ -33081,29 +33248,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // 64-byte value chunk as a single ABI word yields a >2^256 integer, which aborts the caller's own integer bounds
     // check instead of merely returning a wrong value. The assembled transaction is the only authority here, so
     // retarget every return witness onto the builder's answer once the layout is materialized.
-    let returnWitnessTargetsChanged = false;
-    if (abiFunction && externalCallUtxoGroups.length > 0) {
-      const returnWitnessNames = abiFunction.inputs
-        .map((input) => input.name)
-        .filter((name) => /^__internal__externalReturnOutputIdx\d*$/.test(name))
-        .sort((left, right) => Number(/(\d*)$/.exec(left)?.[1] ?? 0)
-          - Number(/(\d*)$/.exec(right)?.[1] ?? 0));
-      let returnOrdinal = 0;
-      for (let groupIdx = 0; groupIdx < externalCallUtxoGroups.length; groupIdx++) {
-        if (!allGroupEcSlots[groupIdx]?.hasReturnValues) continue;
-        const name = returnWitnessNames[returnOrdinal];
-        const planned = topLevelReturnWitnessPlan[returnOrdinal];
-        returnOrdinal += 1;
-        if (name === undefined || planned === undefined) break;
-        const position = abiFunction.inputs.findIndex((input) => input.name === name);
-        if (position < 0 || position >= finalArgs.length) continue;
-        const authoritative = builder.getExternalCallReturnEventOutputIndex(groupIdx);
-        const resolved = authoritative >= 0 ? BigInt(authoritative) : planned;
-        if (finalArgs[position] === resolved) continue;
-        finalArgs[position] = resolved;
-        returnWitnessTargetsChanged = true;
-      }
-    }
+    const returnWitnessTargetsChanged = refreshTopLevelReturnWitnesses();
     const refreshTopLevelIdentityAnchorWitnesses = (): boolean => {
       let changed = false;
       for (const position of topLevelAnchorFillPositions) {
@@ -34270,10 +34415,30 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     this.lastReturnProbeFailure = this.describeReturnProbeFailure(trace, inputIndex);
     if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
       ?.SOLIDC_DEBUG_PROBE_IO === '1') {
+      console.error('probe-return-slot', JSON.stringify({
+        returnOutputIndex,
+        outputs: transaction.outputs.length,
+        at: transaction.outputs[returnOutputIndex] === undefined ? undefined : {
+          lock: binToHex((transaction.outputs[returnOutputIndex] as {
+            lockingBytecode: Uint8Array;
+          }).lockingBytecode).slice(0, 22),
+          category: binToHex(((transaction.outputs[returnOutputIndex] as {
+            token?: { category?: Uint8Array };
+          }).token?.category ?? new Uint8Array())).slice(0, 20),
+          commitment: (transaction.outputs[returnOutputIndex] as {
+            token?: { nft?: { commitment?: Uint8Array } };
+          }).token?.nft?.commitment === undefined ? undefined
+            : binToHex((transaction.outputs[returnOutputIndex] as {
+              token: { nft: { commitment: Uint8Array } };
+            }).token.nft.commitment),
+        },
+      }));
       console.error('probe-outputs', JSON.stringify(transaction.outputs.map((output, index) => ({
         index,
         value: String((output as { valueSatoshis?: bigint }).valueSatoshis ?? 0n),
         lock: binToHex((output as { lockingBytecode: Uint8Array }).lockingBytecode).slice(0, 22),
+        category: binToHex(((output as { token?: { category?: Uint8Array } }).token?.category
+          ?? new Uint8Array())).slice(0, 20),
         commitment: (output as { token?: { nft?: { commitment?: Uint8Array } } }).token?.nft?.commitment === undefined
           ? undefined : binToHex((output as { token: { nft: { commitment: Uint8Array } } }).token.nft.commitment),
       }))));
@@ -34448,8 +34613,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         })),
       });
     }
-    const commitment = commitments?.[0]
-      ?? extractPendingReturnCommitmentAtOutput(trace, returnOutputIndex);
+    const pending = extractPendingReturnCommitmentAtOutput(trace, returnOutputIndex);
+    const commitment = commitments?.[0] ?? pending;
     return commitment === undefined ? undefined : hexToBin(commitment);
   }
 

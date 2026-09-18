@@ -6404,6 +6404,8 @@ export interface ExternalCallUtxoGroup {
   /** Sorted entry slots known at planning time to be inserts. Placeholder NEW
    * outputs let the first derivation pass reach and reveal both commitments. */
   plannedEntryInserts?: Array<{
+    /** Collection slot this insert targets, when the planner recorded one. */
+    slotIndex?: number;
     blockSlot: number;
     outputBlockSlot: number;
     /** Recreated predecessor commitment (P'). */
@@ -17862,7 +17864,19 @@ export class StatefulTransactionBuilder {
     // skipped slot below the fill threshold (see entryPlaceholderFillThreshold).
     const sortedEntries = [...this.entryNfts].sort((a, b) => a.slotIndex - b.slotIndex);
     const fillThreshold = this.entryPlaceholderFillThreshold();
-    const layoutEntrySlots = this.preserveBlockLayoutWidth && this.blockLayout
+    // The covenant reads every existing/written entry at its own FIXED block offset, so an entry belongs at the
+    // offset its layout slot declares - not merely somewhere in the trailing band in slot order. Appending them
+    // happens to agree while nothing else occupies the band, but a lane whose block also carries value chunks,
+    // callee participants or return events pushes the entry past its coordinate and the covenant then compares an
+    // unrelated output. A declared entry slot is therefore authoritative on its own, independent of the
+    // block-width preservation flag that exists for a different purpose (holding skipped offsets open).
+    // The covenant reads every existing/written entry at its own FIXED block offset, so an entry belongs at the
+    // offset its layout slot declares - not merely somewhere in the trailing band in slot order. Appending them
+    // happens to agree while nothing else occupies the band, but a lane whose block also carries value chunks,
+    // callee participants or return events pushes the entry past its coordinate and the covenant then compares an
+    // unrelated output. A declared entry slot is therefore authoritative on its own, independent of the
+    // block-width preservation flag that exists for a different purpose (holding skipped offsets open).
+    const layoutEntrySlots = this.blockLayout?.slots.some((slot) => slot.kind === 'entry')
       ? this.blockLayout.slots.filter((slot) => slot.kind === 'entry')
         .sort((left, right) => left.offset - right.offset)
       : undefined;
@@ -17879,7 +17893,6 @@ export class StatefulTransactionBuilder {
 
       const value = this.entryUpdates.get(entry.slotIndex);
       const rawCommitment = this.entryRawCommitments.get(entry.slotIndex);
-
       // Priority: manual setEntry() > auto-derived raw commitment > UTXO preservation > default
       let commitment: string;
       const isMultiKey = entry.keyTypes && entry.keyValues && entry.keyTypes.length > 1;
@@ -20901,9 +20914,11 @@ export class StatefulTransactionBuilder {
   getExternalCallReturnEventOutputIndex(groupIdx: number): number {
     const group = this.externalCallUtxoGroups[groupIdx];
     if (!group) return -1;
-    const offset = group.blockLayout?.slots.find((slot) => slot.kind === 'returnEvent')?.offset;
+    // A shared participant owns no layout of its own - both the block layout and the minting input belong to the
+    // physical group it aliases, so read them there.
+    const physical = this.externalCallUtxoGroups[group.sharedGroupIndex ?? groupIdx];
+    const offset = physical?.blockLayout?.slots.find((slot) => slot.kind === 'returnEvent')?.offset;
     if (this.isInBlockReturnEventGroup(groupIdx) && offset !== undefined) {
-      const physical = this.externalCallUtxoGroups[group.sharedGroupIndex ?? groupIdx];
       const master = this.findMintingInputIndex(physical.categoryId);
       if (master >= 0) return master + offset;
       return this.getExternalCallOutputBase(groupIdx) + offset;

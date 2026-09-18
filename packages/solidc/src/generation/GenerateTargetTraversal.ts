@@ -302,6 +302,24 @@ const DEBUG_COMPUTE_BASE = (globalThis as { process?: { env?: Record<string, str
 const DEBUG_COMPUTE_BASE_MARKERS = (globalThis as { process?: { env?: Record<string, string> } })
   .process?.env?.SOLIDC_DEBUG_COMPUTE_BASE_MARKERS === '1';
 
+/** Report every entry-input coordinate resolution with the emitter call site that produced it. */
+const DEBUG_ENTRY_INPUT_INDEX = (globalThis as { process?: { env?: Record<string, string> } })
+  .process?.env?.SOLIDC_DEBUG_ENTRY_INPUT_INDEX === '1';
+
+/**
+ * Report the emitter call site of a chosen opcode window. The window is configurable because the interesting
+ * pattern is discovered from a live failure (`window` in a preflight message) and differs per investigation.
+ */
+const DEBUG_EMIT_TRAP = (globalThis as { process?: { env?: Record<string, string> } })
+  .process?.env?.SOLIDC_DEBUG_EMIT_TRAP === '1';
+const DEBUG_EMIT_TRAP_WINDOW = ((): number[] => {
+  const configured = (globalThis as { process?: { env?: Record<string, string> } })
+    .process?.env?.SOLIDC_DEBUG_EMIT_TRAP_WINDOW;
+  const parsed = (configured ?? '').split(',').map((part) => Number(part.trim()));
+  return parsed.length > 0 && parsed.every((value) => Number.isInteger(value))
+    ? parsed : [148, 121, 192, 147, 199, 136, 117, 116];
+})();
+
 // X29. Hidden context an message-bus batch route pushes at every call site of an effect-carrying graph emission handler:
 // the dispatch-site ordinal that selects the handler's owner-local event/transfer frame in the route's block.
 const GRAPH_EFFECT_SITE = '__internal__handlerEffectSite';
@@ -1729,15 +1747,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // The usage probe only needs helper-site counts and compact-id allocation. Appending discarded
     // opcodes and location records dominated throwaway body generation on large contracts.
     if (this.isSubroutineUseProbe) return;
-    if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-      ?.SOLIDC_DEBUG_EMIT_TRAP === '1') {
+    if (DEBUG_EMIT_TRAP) {
       const emitted = Array.isArray(op) ? op : [op];
       for (const item of emitted) {
         this.emitTrapWindow.push(typeof item === 'number' ? item : -1);
-        if (this.emitTrapWindow.length > 8) this.emitTrapWindow.shift();
-        if (this.emitTrapWindow.length === 8
-          && this.emitTrapWindow.every((value, index) =>
-            value === [148, 121, 192, 147, 199, 136, 117, 116][index])) {
+        if (this.emitTrapWindow.length > DEBUG_EMIT_TRAP_WINDOW.length) this.emitTrapWindow.shift();
+        if (this.emitTrapWindow.length === DEBUG_EMIT_TRAP_WINDOW.length
+          && this.emitTrapWindow.every((value, index) => value === DEBUG_EMIT_TRAP_WINDOW[index])) {
           console.error('emit-trap', JSON.stringify({
             function: this.currentFunction?.name,
             stack: new Error('emit-trap').stack?.split('\n').slice(1, 9),
@@ -22814,6 +22830,22 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     extraStackOffset: number,
   ): void {
     const entry = this.entrySlots[slotIndex];
+    if (DEBUG_ENTRY_INPUT_INDEX) {
+      // Name the emitter that resolved an entry input coordinate: the same coordinate is produced by several
+      // constructs (fixed block slot, batch proof, delegate base, runtime loop), so a wrong index is only
+      // actionable once the emitting call site is known.
+      const frames = new Error().stack?.split('\n').slice(2, 5).map((line) => line.trim()) ?? [];
+      console.error('DBG-ENTRY-INPUT-INDEX', JSON.stringify({
+        function: this.currentFunction.name,
+        functionId: this.currentFunction.functionId,
+        slotIndex,
+        extraStackOffset,
+        collection: entry?.collection,
+        outputLength: this.output.length,
+        stackTop: this.stack.slice(0, 12),
+        frames,
+      }));
+    }
     const runtimeLoopEntry = entry?.inLoop && this.sortedUpsertLoopActive
       && this.sortedUpsertLoopCollection === entry.collection;
     if (runtimeLoopEntry) {

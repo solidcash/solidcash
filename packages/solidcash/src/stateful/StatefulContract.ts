@@ -23647,6 +23647,20 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   const bEntryAccesses = bAbiFunc?.entryAccesses;
                   const bEntryAccess = bEntryAccesses?.[slot.slotIndex ?? 0];
                   let entryFound = false;
+                  // Why a cross-contract entry slot resolved to a UTXO, a different key's UTXO, or a funder. The
+                  // decision combines the callee's published access for the block slot, the key witness decoded
+                  // from the invocation args, and the collection's on-chain UTXO set, so a mismatch is otherwise
+                  // only visible as a downstream covenant failure.
+                  const entryDiagnostic: Record<string, unknown> | undefined = (globalThis as {
+                    process?: { env?: Record<string, string> };
+                  }).process?.env?.SOLIDC_DEBUG_EXTERNAL_ENTRY === '1' ? {
+                    callee: callInfo.externalContract?.inner.artifact.contractName,
+                    frame: compilerRoute ? 'route' : 'concrete',
+                    calleeFunction: callInfo.functionName,
+                    blockSlot: slot.offset,
+                    slotIndex: slot.slotIndex,
+                    accesses: (bEntryAccesses ?? []).map((access) => `${access.slotIndex}:${access.collection}`),
+                  } : undefined;
                   if (bEntryAccess && bSc) {
                     const bCollection = bSc.inner.stateLayout?.collections?.find(
                       (c) => c.name === bEntryAccess.collection
@@ -23700,6 +23714,23 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                         throw new Error(`External message-bus batch cannot resolve entry key '${name}'`);
                       });
                       const bSlot = keyToSlotMulti(encodedKeys);
+                      if (entryDiagnostic) {
+                        entryDiagnostic.sorted = true;
+                        entryDiagnostic.collection = bEntryAccess.collection;
+                        entryDiagnostic.keyParams = bEntryAccess.keyParams;
+                        entryDiagnostic.keySources = bEntryAccess.keySources;
+                        entryDiagnostic.entryAddress = bEntryAddr;
+                        entryDiagnostic.encodedKeys = encodedKeys.map((key) => `bytes${key.length}:${binToHex(key)}`);
+                        entryDiagnostic.senderKeySources = bEntryAccess.keySources?.map(
+                          (source, keyIndex) => isSenderKey(bEntryAccess.keySources?.[keyIndex]),
+                        );
+                        entryDiagnostic.slot = binToHex(bSlot);
+                        entryDiagnostic.available = bEntryUtxos.length;
+                        entryDiagnostic.entries = bList.all.map(
+                          (node) => `${node.utxo.txid.slice(0, 12)}:${node.utxo.vout}:`
+                            + String(node.utxo.token?.nft?.commitment ?? ''),
+                        );
+                      }
                       let unsupportedColdEntry = false;
                       try {
                         const exact = bList.find(bSlot);
@@ -23808,6 +23839,20 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                         }
                       }
                     }
+                    if (entryDiagnostic) {
+                      const describe = (value: unknown): string => value === undefined ? 'undefined'
+                        : value instanceof Uint8Array ? `bytes${value.length}:${binToHex(value)}`
+                          : typeof value === 'string' ? value : String(value);
+                      entryDiagnostic.keyParam = keyParam;
+                      entryDiagnostic.keyParamIndex = keyParamIdx;
+                      entryDiagnostic.rawKey = describe(rawKeyValue);
+                      entryDiagnostic.keyValue = describe(keyValue);
+                      entryDiagnostic.effectiveKey = describe(effKeyValue);
+                      entryDiagnostic.senderKey = isSenderKey(bEntryAccess.keySources?.[0]);
+                      entryDiagnostic.match = matchUtxo === undefined ? 'none'
+                        : `${matchUtxo.txid.slice(0, 12)}:${matchUtxo.vout}`;
+                      console.error('external-entry-match', JSON.stringify(entryDiagnostic));
+                    }
                     if (matchUtxo) {
                       const unlocker = createEntryNftUnlocker(
                         bSc.inner, bBlockInputs.length, externalCategoryId, bEntryAccess.collection,
@@ -23815,6 +23860,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                       bBlockInputs.push({ ...matchUtxo, unlocker });
                       entryFound = true;
                     }
+                  }
+                  if (entryDiagnostic && entryDiagnostic.keyParam === undefined) {
+                    entryDiagnostic.match = 'unresolved';
+                    entryDiagnostic.hasAccess = bEntryAccess !== undefined;
+                    entryDiagnostic.hasCallee = Boolean(bSc);
+                    console.error('external-entry-match', JSON.stringify(entryDiagnostic));
                   }
                   if (!entryFound) bBlockInputs.push(await makeFunder());
                   break;
@@ -32165,6 +32216,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             functionName,
             blockBase: overrides?.blockBase ?? 0,
             localIndex,
+            frameLength,
             target: target === undefined ? undefined : `${target.txid.slice(0, 12)}:${target.vout}`,
             value: String(finalArgs[topLevelDynamicChunkArgumentIndex]),
             readChunks: dynamicReadChunkInputs.length,

@@ -171,6 +171,17 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
   private activeMultiCaches = new Map<FunctionDefinitionNode, ActiveMultiCache>();
   /** One whole-array value per route, shared by every selected row touching that state array. */
   private activeDynamicCaches = new Map<string, ActiveDynamicCache>();
+  /** Dynamic chunk-backed state arrays of the contract under rewrite (name set, for writer footprints). */
+  private dynamicStateNames = new Set<string>();
+  /** Function bodies by `name/arity`, for the transitive dynamic-write footprint below. */
+  private functionByKey = new Map<string, FunctionDefinitionNode>();
+  private dynamicFootprintCache = new Map<FunctionDefinitionNode, Set<string>>();
+  /**
+   * Dynamic states whose pooled cache is forbidden in the function currently being rewritten: some writer of
+   * that array is NOT threaded through the journal, so a cache flush would write the pre-call value back over
+   * the writer's own committed state.
+   */
+  private rewriteBlockedStates: Set<string> | undefined;
   /** Route dispatchers load only selected-row caches; selected compiler handlers already own their resources. */
   private lazyMultiCaches = true;
 
@@ -186,6 +197,9 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
     const dynamicArrays = new Map(node.stateVariables.filter((state) =>
       state.isDynamic && state.type instanceof ArrayType)
       .map((state) => [state.name, state.type as ArrayType]));
+    this.dynamicStateNames = new Set(dynamicArrays.keys());
+    this.functionByKey = new Map(node.functions.map((fn) => [`${fn.name}/${fn.parameters.length}`, fn]));
+    this.dynamicFootprintCache = new Map();
     const constructorCalls = new Set<string>();
     this.walk(node.constructorDef?.body, (candidate) => {
       if (candidate instanceof FunctionCallNode) constructorCalls.add(candidate.identifier.name);
@@ -446,6 +460,11 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
       this.activeMultiCaches = this.currentMulti
         ? new Map()
         : this.prepareMultiCaches(fn.body, new Set(fn.parameters.map(({ name }) => name)));
+      // A pooled dynamic array may only be cached here when EVERY writer of that array in this body is threaded
+      // through the journal tuple. A writer that is not (a call emitted directly, or a direct state write) keeps
+      // its own frame authoritative, and the pooled flush after the row loop would write this body's PRE-call
+      // value back over it - the row's committed write silently disappears while its own verification passes.
+      this.rewriteBlockedStates = this.currentMulti ? undefined : this.unthreadedDynamicWriters(fn);
       this.activeDynamicCaches = this.currentMulti
         ? new Map()
         : this.prepareDynamicCaches(fn.body);
@@ -456,6 +475,7 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
     }
     this.current = undefined;
     this.currentMulti = undefined;
+    this.rewriteBlockedStates = undefined;
     this.activeMultiCaches = new Map();
     this.activeDynamicCaches = new Map();
     this.lazyMultiCaches = true;
@@ -538,6 +558,18 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
    * identifies exactly one candidate; an overloaded name keeps the strict arity match.
    */
   private resolveMulti(name: string, argumentCount: number): MultiCandidate | undefined {
+    const resolved = this.resolveMultiCandidate(name, argumentCount);
+    if (resolved === undefined) return undefined;
+    // Inside a body whose array has an unthreaded writer, a journaled call must fall back to the direct form so
+    // the callee's own frame owns the write (see `rewriteBlockedStates`).
+    if (this.rewriteBlockedStates !== undefined
+      && resolved.dynamicEntries.some((entry) => this.rewriteBlockedStates!.has(entry.state))) {
+      return undefined;
+    }
+    return resolved;
+  }
+
+  private resolveMultiCandidate(name: string, argumentCount: number): MultiCandidate | undefined {
     const exact = this.multiCandidates.get(`${name}/${argumentCount}`);
     if (exact) return exact;
     // Only when the call carries MORE arguments than the registered arity: that is the "route wrote a synthetic
@@ -1176,6 +1208,7 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
       const target = this.resolveMulti(node.identifier.name, node.parameters.length);
       if (!target) return;
       for (const entry of target.dynamicEntries) {
+        if (this.rewriteBlockedStates?.has(entry.state)) continue;
         if (!caches.has(entry.state)) caches.set(entry.state, {
           entry,
           name: `__dcj_cache_${entry.state}`,
@@ -1183,6 +1216,58 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
       }
     });
     return caches;
+  }
+
+  /** Every dynamic state array `fn` writes, following named internal calls (memoised, cycle-safe). */
+  private dynamicWriteFootprint(
+    fn: FunctionDefinitionNode, visiting = new Set<FunctionDefinitionNode>(),
+  ): Set<string> {
+    const cached = this.dynamicFootprintCache.get(fn);
+    if (cached) return cached;
+    const written = new Set<string>();
+    if (visiting.has(fn)) return written;
+    visiting.add(fn);
+    this.walk(fn.body, (node) => {
+      if ((node instanceof StateAssignNode || node instanceof DeleteStateNode
+        || node instanceof StateArrayAssignNode || node instanceof StateArrayDeleteNode
+        || node instanceof StateArrayPushNode || node instanceof StateArrayPopNode)
+        && this.dynamicStateNames.has(node.name)) {
+        written.add(node.name);
+      }
+      if (node instanceof FunctionCallNode) {
+        const callee = this.functionByKey.get(`${node.identifier.name}/${node.parameters.length}`);
+        if (!callee || callee === fn) return;
+        for (const state of this.dynamicWriteFootprint(callee, visiting)) written.add(state);
+      }
+    });
+    visiting.delete(fn);
+    this.dynamicFootprintCache.set(fn, written);
+    return written;
+  }
+
+  /**
+   * Dynamic states written in `fn` by something the pooled journal does NOT thread: a direct state write, or a
+   * call that is not a journal candidate for that array. `null`-free set: empty means every writer is threaded.
+   */
+  private unthreadedDynamicWriters(fn: FunctionDefinitionNode): Set<string> {
+    const blocked = new Set<string>();
+    this.walk(fn.body, (node) => {
+      if ((node instanceof StateAssignNode || node instanceof DeleteStateNode
+        || node instanceof StateArrayAssignNode || node instanceof StateArrayDeleteNode
+        || node instanceof StateArrayPushNode || node instanceof StateArrayPopNode)
+        && this.dynamicStateNames.has(node.name)) {
+        blocked.add(node.name);
+      }
+      if (!(node instanceof FunctionCallNode)) return;
+      const target = this.resolveMultiCandidate(node.identifier.name, node.parameters.length);
+      const threaded = new Set((target?.dynamicEntries ?? []).map((entry) => entry.state));
+      const callee = this.functionByKey.get(`${node.identifier.name}/${node.parameters.length}`);
+      if (!callee) return;
+      for (const state of this.dynamicWriteFootprint(callee)) {
+        if (!threaded.has(state)) blocked.add(state);
+      }
+    });
+    return blocked;
   }
 
   private installDynamicCaches(body: BlockNode): void {

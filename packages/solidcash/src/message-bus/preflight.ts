@@ -2402,10 +2402,38 @@ export function mapMessageBusVmFailure(
       + `${failure.opcode === undefined ? '' : `, opcode ${String(failure.opcode)}`}`
       + `${failure.previousOpcode === undefined ? '' : `, failing opcode ${String(failure.previousOpcode)}`})`;
   const input = builder.inputs[inputIndex] as {
-    unlocker?: { abiFunction?: { selector?: string; name?: string } }
+    unlocker?: {
+      abiFunction?: { selector?: string; name?: string };
+      contract?: {
+        artifact?: {
+          contractName?: string;
+          debug?: { functionDebug?: Record<string, { requires?: Array<{ ip: number; line: number; message?: string }> }> };
+        };
+      };
+    }
   } | undefined;
+  // Name the source predicate when the artifact maps this instruction to one. The compiler records requires per
+  // function selector; libauth reports the state after the failure, so `ip - 1` is checked first.
+  const requireSite = ((): string => {
+    const artifact = input?.unlocker?.contract?.artifact;
+    const functions = artifact?.debug?.functionDebug;
+    if (!artifact || !functions) return '';
+    const selector = input?.unlocker?.abiFunction?.selector;
+    const selectors = selector !== undefined && functions[selector] !== undefined
+      ? [selector] : Object.keys(functions);
+    for (const candidate of selectors) {
+      const requirements = functions[candidate]?.requires ?? [];
+      const hit = requirements.find((entry) => entry.ip === (failure?.ip ?? -1) - 1)
+        ?? requirements.find((entry) => entry.ip === failure?.ip);
+      if (hit !== undefined) {
+        return `; failing require in ${artifact.contractName ?? 'contract'}:${hit.line}`
+          + `${hit.message === undefined ? '' : ` (${hit.message})`}`;
+      }
+    }
+    return '';
+  })();
   if (input?.unlocker?.abiFunction?.selector?.toLowerCase() !== '53434231') {
-    return new Error(`messageBus: BCH-2026 preflight failed at input ${inputIndex}${location}: ${rawVmReason}`);
+    return new Error(`messageBus: BCH-2026 preflight failed at input ${inputIndex}${location}: ${rawVmReason}${requireSite}`);
   }
   const envelope = compilerRouteEnvelope(
     transaction.inputs[inputIndex]?.unlockingBytecode ?? new Uint8Array(),
@@ -2435,7 +2463,7 @@ export function mapMessageBusVmFailure(
       .map((match) => Number(match[0].replace(/,/g, ''))).filter(Number.isFinite);
     return new MessageBusDiagnosticError(
       'L3_VM_RESOURCE_LIMIT',
-      `BCH-2026 preflight failed at input ${inputIndex}${location}: ${rawVmReason}`,
+      `BCH-2026 preflight failed at input ${inputIndex}${location}: ${rawVmReason}${requireSite}`,
       {
         inputIndex,
         resourceIdentity: `input:${inputIndex}`,
@@ -2453,7 +2481,7 @@ export function mapMessageBusVmFailure(
     ));
     if (idxParams.length > 0) console.error('preflight-return-idx', { inputIndex, idxParams, rawVmReason });
   }
-  return new Error(`messageBus: BCH-2026 preflight failed at input ${inputIndex}${location}: ${rawVmReason}`);
+  return new Error(`messageBus: BCH-2026 preflight failed at input ${inputIndex}${location}: ${rawVmReason}${requireSite}`);
 }
 
 /** Refuse any covenant failure in an exact, fully assembled transaction. */

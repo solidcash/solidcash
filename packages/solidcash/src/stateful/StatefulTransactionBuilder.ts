@@ -7286,7 +7286,12 @@ export class StatefulTransactionBuilder {
     if (this.blockLayout && this.funderUtxos.length > 0
       && (!hasExternalGroups || this.blockhashCoSpendSlotOrdinals !== undefined
         || this.compilerRouteDelegateBlock
-        || this.delegateEntriesAfterLowLevel)) {
+        || this.delegateEntriesAfterLowLevel
+        // Any build whose funder pool can reserve the owner's output-only slots may use the dense placement: the
+        // caller's own resources then occupy their published slot offsets, which is what the covenant's
+        // `masterInputIndex + slotOffset` reads require. The pool is populated by the SDK's auto-funder before this
+        // runs, so a block with output-only slots always arrives funded (round 200's census: `pay` needs two).
+        || hasExternalGroups)) {
       const funderPool = [...this.funderUtxos];
       // Position-indexed array: each element goes at its slot.offset
       const positioned: (UnlockableUtxo | undefined)[] = new Array(this.blockLayout.blockSize);
@@ -7472,10 +7477,13 @@ export class StatefulTransactionBuilder {
       // owner offsets moves them before the executing delegate, while the generated route correctly requires
       // `externalCallInputBase == OP_INPUTINDEX + blockSize`. Reserve the owner gaps with neutral funders and
       // defer the delegate's external participants until after the implementation input band.
-      const deferredExternalCallInputs = this.compilerRouteDelegateBlock ? externalCallInputs : [];
+      // Reserve the owner's remaining slots with neutral funders and defer the participants past the caller's
+      // complete block. The route case needed this because a generated route requires
+      // `externalCallInputBase == OP_INPUTINDEX + blockSize`; a covenant reading its own entry slot as
+      // `masterInputIndex + slotOffset` needs exactly the same thing.
+      const deferredExternalCallInputs = externalCallInputs;
       const gapInputs = [
         ...externalOutStateInputs,
-        ...(this.compilerRouteDelegateBlock ? [] : externalCallInputs),
       ];
       let gapIdx = 0;
       for (let i = 0; i < positioned.length; i++) {

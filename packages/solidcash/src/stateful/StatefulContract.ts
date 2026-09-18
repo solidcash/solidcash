@@ -23177,6 +23177,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       root: boolean;
     }[] = [];
     const topLevelAnchorFillPositions: { argIndex: number; band: number; proxyRoute: boolean }[] = [];
+    // Planned external-call return-event coordinates for this build, in returning-group order. The trailing ABI
+    // frame is filled positionally, so these are re-placed by parameter NAME once the frame is complete.
+    const topLevelReturnWitnessPlan: bigint[] = [];
     const pendingTokenCallInputFills: {
       group: { refreshInternalArgs?: (updates: Record<string, FunctionArgument>) => void };
       encodedArgs: FunctionArgument[];
@@ -24736,6 +24739,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           if (groupMetas[i].ecSlot.hasReturnValues) {
             const retOutputIdx = returnEventIndexMap.get(i);
             if (retOutputIdx !== undefined) {
+              topLevelReturnWitnessPlan.push(BigInt(retOutputIdx));
               finalArgs = [...finalArgs, BigInt(retOutputIdx)];
             }
           }
@@ -33028,6 +33032,36 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       }
       if (returnWitnessesChanged) builder._refreshInputs();
     }
+    // A callee's return event is read twice: by the covenant, through `__internal__externalReturnOutputIdx*`, and
+    // by the SDK's own derivation, through `builder.getExternalCallReturnEventOutputIndex`. Both must name the same
+    // output. The witness coordinates above are planned from group widths before the builder has placed its own
+    // outputs (entry events, value chunks, funding pads), so a plan can drift onto an unrelated output. Reading a
+    // 64-byte value chunk as a single ABI word yields a >2^256 integer, which aborts the caller's own integer bounds
+    // check instead of merely returning a wrong value. The assembled transaction is the only authority here, so
+    // retarget every return witness onto the builder's answer once the layout is materialized.
+    let returnWitnessTargetsChanged = false;
+    if (abiFunction && externalCallUtxoGroups.length > 0) {
+      const returnWitnessNames = abiFunction.inputs
+        .map((input) => input.name)
+        .filter((name) => /^__internal__externalReturnOutputIdx\d*$/.test(name))
+        .sort((left, right) => Number(/(\d*)$/.exec(left)?.[1] ?? 0)
+          - Number(/(\d*)$/.exec(right)?.[1] ?? 0));
+      let returnOrdinal = 0;
+      for (let groupIdx = 0; groupIdx < externalCallUtxoGroups.length; groupIdx++) {
+        if (!allGroupEcSlots[groupIdx]?.hasReturnValues) continue;
+        const name = returnWitnessNames[returnOrdinal];
+        const planned = topLevelReturnWitnessPlan[returnOrdinal];
+        returnOrdinal += 1;
+        if (name === undefined || planned === undefined) break;
+        const position = abiFunction.inputs.findIndex((input) => input.name === name);
+        if (position < 0 || position >= finalArgs.length) continue;
+        const authoritative = builder.getExternalCallReturnEventOutputIndex(groupIdx);
+        const resolved = authoritative >= 0 ? BigInt(authoritative) : planned;
+        if (finalArgs[position] === resolved) continue;
+        finalArgs[position] = resolved;
+        returnWitnessTargetsChanged = true;
+      }
+    }
     const refreshTopLevelIdentityAnchorWitnesses = (): boolean => {
       let changed = false;
       for (const position of topLevelAnchorFillPositions) {
@@ -33037,7 +33071,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         finalArgs[position.argIndex] = next;
         changed = true;
       }
-      if (changed) {
+      if (changed || returnWitnessTargetsChanged) {
         stateInputUnlocker = buildStateInputUnlocker();
         builder._setMasterUnlocker(stateInputUnlocker);
       }

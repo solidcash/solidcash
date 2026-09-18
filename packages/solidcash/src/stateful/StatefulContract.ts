@@ -32188,6 +32188,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       }),
     });
     const firstRootDynamicChunk = dynamicReadChunkInputs[0] ?? dynamicChunkInputs[0];
+    // The composed coordinate of the root dynamic chunk. A materialized frame that cannot address the relocated
+    // index is a participant-local frame (a derivation probe or the participant's own published block); the
+    // relocated value computed from it IS the composed coordinate, and it is the only place the published block's
+    // layout is visible. Remember it so a frame-free refresh (which sees the builder's pre-layout input list) does
+    // not report a coordinate derived from the wrong index space.
+    let composedDynamicChunkBase: bigint | undefined;
     const refreshTopLevelDynamicChunkInputBase = topLevelDynamicChunkArgumentIndex < 0
       || compilerRouteUsesPhysicalWrapper(
         overrides?.compilerRouteSelector, physicalAbiFunction, abiFunction,
@@ -32209,7 +32215,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         const frameLength = materialized?.inputs.length;
         const unaddressable = localIndex >= 0 && frameLength !== undefined
           && relocated >= BigInt(frameLength);
-        finalArgs[topLevelDynamicChunkArgumentIndex] = unaddressable ? BigInt(localIndex) : relocated;
+        if (unaddressable) composedDynamicChunkBase = relocated;
+        finalArgs[topLevelDynamicChunkArgumentIndex] =
+          unaddressable ? BigInt(localIndex) : composedDynamicChunkBase ?? relocated;
         if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
           ?.SOLIDC_DEBUG_DYNAMIC_CHUNK_ORDER === '1') {
           console.error('dynamic-chunk-root-base', JSON.stringify({
@@ -32218,6 +32226,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             localIndex,
             frameLength,
             unaddressable,
+            composed: composedDynamicChunkBase === undefined ? undefined : String(composedDynamicChunkBase),
             target: target === undefined ? undefined : `${target.txid.slice(0, 12)}:${target.vout}`,
             value: String(finalArgs[topLevelDynamicChunkArgumentIndex]),
             readChunks: dynamicReadChunkInputs.length,

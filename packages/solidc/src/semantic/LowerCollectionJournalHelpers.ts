@@ -313,19 +313,51 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
           accesses.push({ name: candidate.name, keys: [candidate.index], node: candidate });
         } else if (candidate.constructor.name === 'MappingFieldAssignNode') unsupported = true;
       });
-      if (unsupported || accesses.length === 0) continue;
+      // A compiler-owned row clone can combine an independently indexed chunk-backed state array with its
+      // fixed entry journal. A raw StateArrayAssign inside the OP_INVOKE body would re-open the persisted array
+      // for every row, so row two observes the transaction pre-state and the final pending write no longer
+      // matches the source-order execution. Thread the whole array value through the clone beside the entry
+      // tuple instead. The wrapper installs one shared cache and flushes it once after the row loop.
+      const dynamicNames = new Set<string>();
+      if (this.enablePooledDynamicArrays && fn.forceCollectionJournalPool) {
+        this.walk(fn.body, (candidate) => {
+          if ((candidate instanceof StateAccessNode || candidate instanceof StateAssignNode
+            || candidate instanceof DeleteStateNode
+            || candidate instanceof StateArrayAssignNode || candidate instanceof StateArrayDeleteNode
+            || candidate instanceof StateArrayPushNode || candidate instanceof StateArrayPopNode)
+            && dynamicArrays.has(candidate.name)) dynamicNames.add(candidate.name);
+          if (candidate instanceof MappingAccessNode && dynamicArrays.has(candidate.name)) {
+            dynamicNames.add(candidate.name);
+          }
+        });
+      }
+      // The dynamic journal threads the whole array value, so it does not depend on the array's element key being
+      // a parameter. A row clone whose only threadable state is such an array must still be admitted when its
+      // FIXED entry accesses are not journalable (an unsupported shape, or no entry access at all): leaving it out
+      // strands the array write inside the OP_INVOKE body, where every row re-opens the transaction pre-state and
+      // the caller's pooled write-back republishes the value it seeded. The entry accesses then keep their existing
+      // physical handling, exactly as they do when the function is not pooled.
+      //
+      // A non-parameter (expression) key is deliberately NOT covered: a loop-varying key is what the runtime
+      // journal transport exists for, and claiming such a handler for this pooled journal would remove it from
+      // that mechanism while leaving the entry write physical. Only a handler whose entry keys are all parameters
+      // (so the entry leg is either journalable or unsupported as a whole) is admitted for the array alone.
+      const dynamicOnlyAdmission = dynamicNames.size > 0 && fn.forceCollectionJournalPool === true;
+      if ((unsupported || accesses.length === 0) && !dynamicOnlyAdmission) continue;
       const parameterNames = new Set(fn.parameters.map((parameter) => parameter.name));
       const normalized = accesses.map((access) => ({
         ...access,
         keyParameters: access.keys.map((key) =>
           key instanceof IdentifierNode && parameterNames.has(key.name) ? key.name : undefined),
       }));
-      if (normalized.some((access) => access.keyParameters.some((key) => key === undefined))) continue;
-      const leafAccesses = normalized.filter((access) => !normalized.some((other) =>
+      const stableKeys = !normalized.some((access) =>
+        access.keyParameters.some((key) => key === undefined));
+      if (!stableKeys) continue;
+      const leafAccesses = stableKeys ? normalized.filter((access) => !normalized.some((other) =>
         other !== access
         && other.name === access.name
         && other.keyParameters.length > access.keyParameters.length
-        && access.keyParameters.every((key, index) => key === other.keyParameters[index])));
+        && access.keyParameters.every((key, index) => key === other.keyParameters[index]))) : [];
       const distinct = new Map<string, JournalEntry>();
       for (const access of leafAccesses) {
         const collection = collections.get(access.name);
@@ -351,25 +383,10 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
           });
         }
       }
-      if (unsupported || distinct.size === 0) continue;
-      // A compiler-owned row clone can combine an independently indexed chunk-backed state array with its
-      // fixed entry journal. A raw StateArrayAssign inside the OP_INVOKE body would re-open the persisted array
-      // for every row, so row two observes the transaction pre-state and the final pending write no longer
-      // matches the source-order execution. Thread the whole array value through the clone beside the entry
-      // tuple instead. The wrapper installs one shared cache and flushes it once after the row loop.
-      const dynamicNames = new Set<string>();
-      if (this.enablePooledDynamicArrays && fn.forceCollectionJournalPool) {
-        this.walk(fn.body, (candidate) => {
-          if ((candidate instanceof StateAccessNode || candidate instanceof StateAssignNode
-            || candidate instanceof DeleteStateNode
-            || candidate instanceof StateArrayAssignNode || candidate instanceof StateArrayDeleteNode
-            || candidate instanceof StateArrayPushNode || candidate instanceof StateArrayPopNode)
-            && dynamicArrays.has(candidate.name)) dynamicNames.add(candidate.name);
-          if (candidate instanceof MappingAccessNode && dynamicArrays.has(candidate.name)) {
-            dynamicNames.add(candidate.name);
-          }
-        });
-      }
+      // A rejected entry journal must not leave a partially built one behind: the dynamic-only admission threads
+      // the array alone and keeps those accesses physical.
+      if (unsupported || !stableKeys) distinct.clear();
+      if ((unsupported || distinct.size === 0) && !dynamicOnlyAdmission) continue;
       const dynamicEntries: DynamicJournalEntry[] = [...dynamicNames].map((state, index) => ({
         state,
         journalName: `__dcj_${fn.name}_${index}`,
@@ -1178,11 +1195,22 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
       entry.state, this.at(new IdentifierNode(name), body),
     ), body));
     const statements = body.statements ?? [];
+    // A compiler-owned caller ends with a terminal `return` (a route hands its results blob back). Appending the
+    // write-back after it makes the whole flush unreachable: the value the callee threaded back is discarded and
+    // the caller republishes the value the cache was seeded with - for a chunk-backed resource a contradictory
+    // pin on the same chunk run, since the callee's own write is what the program ends up committing. Mirror the
+    // entry-journal flush: lift the terminal return out, flush before it and before any nested exit, and
+    // re-append it last so the later all-paths-return analysis still sees one top-level exit.
+    const tailReturn = statements.length > 0 && statements[statements.length - 1] instanceof ReturnNode
+      ? statements.pop()! as ReturnNode
+      : undefined;
+    body.accept(new FlushCollectionCachesBeforeReturns(writes));
+    const rewritten = body.statements ?? [];
     const tail: StatementNode[] = [];
-    if (statements.length > 0 && statements[statements.length - 1] instanceof RequireNode) {
-      tail.unshift(statements.pop()!);
+    if (!tailReturn && rewritten.length > 0 && rewritten[rewritten.length - 1] instanceof RequireNode) {
+      tail.unshift(rewritten.pop()!);
     }
-    body.statements = [...declarations, ...statements, ...writes, ...tail];
+    body.statements = [...declarations, ...rewritten, ...writes, ...(tailReturn ? [tailReturn] : tail)];
   }
 
   /**

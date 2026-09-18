@@ -2407,7 +2407,14 @@ export function mapMessageBusVmFailure(
       contract?: {
         artifact?: {
           contractName?: string;
-          debug?: { functionDebug?: Record<string, { requires?: Array<{ ip: number; line: number; message?: string }> }> };
+          source?: string;
+          functionBodies?: Record<string, string>;
+          debug?: {
+            functionDebug?: Record<string, {
+              requires?: Array<{ ip: number; line: number; message?: string }>;
+              sourceMap?: string;
+            }>;
+          };
         };
       };
     }
@@ -2417,16 +2424,24 @@ export function mapMessageBusVmFailure(
   const requireSite = ((): string => {
     // A proxied call executes the implementation's body, so the delegate artifact chain is searched too - the same
     // widening `probeRequireStatement` performs for probes.
-    const artifacts: Array<NonNullable<typeof input>['unlocker'] extends infer _T ? {
+    type ArtifactDebugView = {
       contractName?: string;
-      debug?: { functionDebug?: Record<string, { requires?: Array<{ ip: number; line: number; message?: string }> }> };
+      source?: string;
+      functionBodies?: Record<string, string>;
+      debug?: {
+        functionDebug?: Record<string, {
+          requires?: Array<{ ip: number; line: number; message?: string }>;
+          sourceMap?: string;
+        }>;
+      };
       delegateArtifact?: unknown;
-    } : never> = [];
+    };
+    const artifacts: ArtifactDebugView[] = [];
     const seen = new Set<unknown>();
     const add = (artifact: unknown): void => {
       if (artifact === undefined || artifact === null || seen.has(artifact)) return;
       seen.add(artifact);
-      const typed = artifact as (typeof artifacts)[number];
+      const typed = artifact as ArtifactDebugView;
       artifacts.push(typed);
       add(typed.delegateArtifact);
     };
@@ -2444,6 +2459,51 @@ export function mapMessageBusVmFailure(
         if (hit !== undefined) {
           return `; failing require in ${artifact.contractName ?? 'contract'}:${hit.line}`
             + `${hit.message === undefined ? '' : ` (${hit.message})`}`;
+        }
+      }
+    }
+    // No `requires` entry: fall back to the artifact's source map. The assembled frame carries a prologue the
+    // artifact body does not (measured: 6183-instruction frame over a 6174-instruction body), so the body index is
+    // the runtime ip minus that delta - without the correction the lookup lands on an unrelated instruction.
+    const sources = artifacts.filter((candidate) => candidate.functionBodies !== undefined);
+    for (const artifact of sources) {
+      const functions = artifact.debug?.functionDebug;
+      if (!functions) continue;
+      const runtimeIp = failure?.ip;
+      if (runtimeIp === undefined) continue;
+      const selector = input?.unlocker?.abiFunction?.selector;
+      const selectors = selector !== undefined && functions[selector] !== undefined
+        ? [selector] : Object.keys(functions);
+      for (const candidate of selectors) {
+        const sourceMap = functions[candidate]?.sourceMap;
+        const body = artifact.functionBodies?.[candidate];
+        if (typeof sourceMap !== 'string' || typeof body !== 'string') continue;
+        let instructions = 0;
+        for (let offset = 0; offset < body.length / 2;) {
+          const opcode = Number.parseInt(body.slice(offset * 2, offset * 2 + 2), 16);
+          if (!Number.isFinite(opcode)) break;
+          offset += opcode > 0 && opcode < 0x4c ? 1 + opcode
+            : opcode === 0x4c ? 2 + Number.parseInt(body.slice((offset + 1) * 2, (offset + 2) * 2), 16)
+              : opcode === 0x4d ? 3 + Number.parseInt(body.slice((offset + 1) * 2, (offset + 3) * 2), 16) : 1;
+          instructions += 1;
+        }
+        // The assembled frame and the artifact body differ by prologue, outlining and inlining, so no single delta
+        // is reliable (measured: 6183-instruction frame over a 6174-instruction body with a 15-instruction
+        // prologue). Scan a small window of candidate indices and accept only a segment whose source line is a
+        // `require` - the caller asked about a failed verify, so that is the construct worth naming.
+        const segments = sourceMap.split(';');
+        const sourceLines = (artifact.source ?? '').split('\n');
+        const correction = instructions - (failure?.programLength ?? instructions);
+        for (let delta = -24; delta <= 4; delta += 1) {
+          for (const candidateIndex of [runtimeIp + correction + delta, runtimeIp + delta]) {
+            if (candidateIndex < 0 || candidateIndex >= segments.length) continue;
+            const line = Number(segments[candidateIndex]?.split(':')[0]);
+            if (!Number.isFinite(line) || line <= 0) continue;
+            const text = sourceLines[line - 1]?.trim();
+            if (text === undefined || !/require\s*\(|revert|assert\s*\(/.test(text)) continue;
+            return `; failing instruction at ${artifact.contractName ?? 'contract'}:${line}`
+              + ` (${text.slice(0, 80)})`;
+          }
         }
       }
     }

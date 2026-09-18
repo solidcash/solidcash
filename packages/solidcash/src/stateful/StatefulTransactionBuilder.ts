@@ -22820,6 +22820,13 @@ export class StatefulTransactionBuilder {
             index,
             value: String(output.valueSatoshis),
             lock: binToHex(output.lockingBytecode).slice(0, 24),
+            // Category and commitment identify WHICH resource an output is (master / data NFT / entry), which a
+            // locking bytecode cannot do across runs: addresses are randomized per run, so two frames can only be
+            // compared structurally.
+            category: output.token === undefined ? undefined : binToHex(output.token.category).slice(0, 12),
+            capability: output.token?.nft?.capability,
+            commitment: output.token?.nft === undefined
+              ? undefined : binToHex(output.token.nft.commitment).slice(0, 20),
           })),
         }));
       }

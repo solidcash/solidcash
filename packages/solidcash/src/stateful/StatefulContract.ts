@@ -33079,6 +33079,43 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     };
     refreshTopLevelIdentityAnchorWitnesses();
 
+    // The `__internal__extcallMasterIdx<slot>` witness names the INPUT that carries the callee's master, and the
+    // caller's own identity check reads that input's locking bytecode (`OP_UTXOBYTECODE` against the compiled call
+    // target). The planned coordinate is reconstructed from dense band widths, which do not hold for a layout whose
+    // implementation bands interleave with nested callees, so a stale coordinate fails the spend with a bare
+    // `OP_VERIFY` before anything else in the frame can run. Rebind it from the assembled transaction.
+    if (abiFunction && externalCallUtxoGroups.length > 0) {
+      let masterWitnessesChanged = false;
+      for (const input of abiFunction.inputs) {
+        const masterWitness = /^__internal__extcallMasterIdx(\d*)$/.exec(input.name);
+        if (masterWitness === null) continue;
+        const slot = masterWitness[1] === '' ? 0 : Number(masterWitness[1]);
+        const group = externalCallUtxoGroups[slot];
+        if (group === undefined) continue;
+        const position = abiFunction.inputs.findIndex((candidate) => candidate.name === input.name);
+        if (position < 0 || position >= finalArgs.length) continue;
+        // The anchor band is the SDK's own record of which co-spent input carries this callee's identity, resolved
+        // from the materialized input order. For a direct route that input IS the callee master, so it outranks a
+        // planned coordinate; a proxied anchor carries the `+1_000_000` implementation marker instead of an index
+        // and is skipped.
+        const anchorPosition = abiFunction.inputs.findIndex((candidate) =>
+          candidate.name === `__internal__extcallAnchorIdx${slot}`
+          || candidate.name === '__internal__extcallAnchorIdx');
+        const anchorValue = anchorPosition < 0 ? undefined : finalArgs[anchorPosition];
+        const anchorIndex = typeof anchorValue === 'bigint'
+          && anchorValue >= 0n && anchorValue < 1_000_000n ? Number(anchorValue) : -1;
+        const authoritative = anchorIndex >= 0
+          ? anchorIndex : builder.findMaterializedMasterInput(group.sharedGroupIndex ?? slot);
+        if (authoritative < 0 || finalArgs[position] === BigInt(authoritative)) continue;
+        finalArgs[position] = BigInt(authoritative);
+        masterWitnessesChanged = true;
+      }
+      if (masterWitnessesChanged) {
+        stateInputUnlocker = buildStateInputUnlocker();
+        builder._setMasterUnlocker(stateInputUnlocker);
+      }
+    }
+
     // Build token container transfer ops from ABI for auto-derivation.
     // Uses transferCount/transferNftCount when available (fan-out support),
     // falling back to the operations array for backward compatibility.

@@ -16100,6 +16100,18 @@ export class StatefulTransactionBuilder {
       && input.txid === anchor.txid && input.vout === anchor.vout);
   }
 
+  /**
+   * The assembled input index of a callee group's own recorded master UTXO, or -1 when that UTXO was never placed.
+   * Unlike `getExternalCallMasterInputIndex` this never reconstructs a coordinate from band widths, so callers can
+   * tell an authoritative materialized coordinate from a dense estimate.
+   */
+  findMaterializedMasterInput(groupIdx: number): number {
+    const master = this.externalCallUtxoGroups[groupIdx]?.masterUtxo;
+    if (master === undefined) return -1;
+    return this.allInputs.findIndex((input) => input !== undefined
+      && input.txid === master.txid && input.vout === master.vout);
+  }
+
   getExternalCallMasterInputIndex(groupIdx: number): number {
     // Resolve an already-positioned master directly. This is authoritative for
     // delegate graphs, where implementation bands are interleaved with nested

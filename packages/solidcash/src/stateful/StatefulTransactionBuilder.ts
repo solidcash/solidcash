@@ -6955,6 +6955,12 @@ export class StatefulTransactionBuilder {
   // re-derived from the trace - the value-chunk pin adds OP_OUTPUTTOKENCOMMITMENT calls that the loop-entry
   // extractor would otherwise read as NEW nodes. Pinned like pinEntrySlot pins a fixed entry slot.
   private pinnedLoopEntries: Set<string> = new Set();
+  // Routed batch TARGET nodes the planner publishes with their key and successor link only: the route's handler
+  // builds the value (no reproducible parameter), so its tail is completed later from the value the covenant
+  // authenticates for that exact entry.
+  private pendingEntryValueTails = new Map<string, {
+    slotIndex: number; collection: string; slot: Uint8Array; seed: string; next: Uint8Array; chunkable: boolean;
+  }>();
   // P5b: unpinned same-category 0x01 value-chunk outputs (LONG sorted-mapping values). Trailing, not covenant-
   // managed - the entry stores sha256(value) and the read verifies the reassembled witness, so these need no
   // on-chain pinning. Commitments are known exactly (buildChunkCommitment) so they never enter auto-derivation.
@@ -15203,6 +15209,56 @@ export class StatefulTransactionBuilder {
     return this.pinnedLoopEntries.has(collection);
   }
 
+  /**
+   * Register a routed batch TARGET node whose VALUE the planner cannot reproduce: the route row builds it inside
+   * its handler, so the node is published with its key and successor link only. Registration is keyed by the entry
+   * that owns the node, so completion never depends on the lane's physical coordinate.
+   */
+  registerPendingEntryValueTail(params: {
+    slotIndex: number; collection: string; slot: Uint8Array; seed: string; next: Uint8Array; chunkable: boolean;
+  }): this {
+    this.pendingEntryValueTails.set(`${params.collection}|${binToHex(params.slot)}`, { ...params });
+    return this;
+  }
+
+  /**
+   * Finish a registered TARGET node from the value its own write authenticated. Only a commitment still equal to
+   * the published seed is rewritten, so a node another derivation already replaced is never clobbered. Returns
+   * whether any published commitment changed (the caller must then re-probe).
+   *
+   * Only the PUBLISHED loop-entry lane is completed. An in-block entry placeholder names the same node but is also
+   * the coordinate the entry covenant's own output checks read; rewriting it from here moved a later upgrade
+   * transaction's participant block one slot past its published span (measured), while the lane the route actually
+   * verifies is the trailing one. The entry coordinate keeps its seed and stays available to the generic
+   * entry-commitment derivation.
+   */
+  completePendingEntryValueTail(collection: string, slot: Uint8Array, value: Uint8Array): boolean {
+    const pending = this.pendingEntryValueTails.get(`${collection}|${binToHex(slot)}`);
+    if (!pending) return false;
+    const commitment = binToHex(encodeEntryCommitment(
+      pending.slot, pending.next, pending.chunkable ? encodeChunkableValueTail(value) : value,
+    ));
+    if (commitment === pending.seed) return false;
+    let changed = false;
+    const entries = this.loopEntryCommitments.get(collection) ?? [];
+    const lane = entries.indexOf(pending.seed);
+    if (lane >= 0) {
+      this.loopEntryCommitments.set(collection, entries.map((entry, index) =>
+        (index === lane ? commitment : entry)));
+      changed = true;
+    }
+    if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+      ?.SOLIDC_DEBUG_PENDING_VALUE_TAIL === '1') {
+      console.error('pending-value-tail-complete', JSON.stringify({
+        collection, slot: binToHex(slot).slice(0, 16), valueBytes: value.length, chunkable: pending.chunkable,
+        seed: pending.seed.slice(0, 40), commitment: commitment.slice(0, 40), changed, lane,
+        commitmentBytes: commitment.length / 2, tail: commitment.slice(-72),
+        inputs: this.allInputs.length,
+      }));
+    }
+    return changed;
+  }
+
   /** Register a collection whose value chunks are DERIVED from the trace (computed value, no direct param). */
   registerValueChunkVar(
     collection: string, lockingBytecode: Uint8Array, id = collection, slot?: Uint8Array,
@@ -15813,6 +15869,19 @@ export class StatefulTransactionBuilder {
    */
   setLoopEntryCommitments(collection: string, commitments: string[]): this {
     const required = this.requiredLoopEntryCounts.get(collection);
+    if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+      ?.SOLIDC_DEBUG_LOOP_ENTRY_LIFECYCLE === '1') {
+      console.error('loop-entry-set', JSON.stringify({
+        collection,
+        requested: commitments.length,
+        required,
+        pinned: this.pinnedLoopEntries.has(collection),
+        previous: (this.loopEntryCommitments.get(collection) ?? []).length,
+        ...(commitments.length === 0 && {
+          stack: (new Error().stack ?? '').split('\n').slice(1, 7).map((line) => line.trim()),
+        }),
+      }));
+    }
     this.loopEntryCommitments.set(collection, required === undefined ? commitments : Array.from(
       { length: required }, (_, index) => commitments[index] ?? '00',
     ));

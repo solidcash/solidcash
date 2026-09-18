@@ -1429,6 +1429,20 @@ const graphRouteContext = (
       return concat(framed(targetLbc), Uint8Array.of(row.mode), selector, framed(args), framed(result));
     });
   const ownedRows = rows.filter((row) => row.kind === 0 && row.consumer === participant);
+  if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+    ?.SOLIDC_DEBUG_GRAPH_EMISSIONS === '1') {
+    console.error('graph-emissions', JSON.stringify({
+      participant,
+      emissionCount: emissions.length,
+      emissionBytes: emissions.reduce((sum, entry) => sum + entry.length, 0),
+      emissionsHex: binToHex(concat(...emissions)),
+      rows: rows.map((row, index) => ({
+        index, kind: row.kind, parent: row.parent, owner: row.owner, consumer: row.consumer,
+        function: finalized.plan.invocations[index]?.function,
+        argsBytes: row.argsHex.length / 2, resultBytes: row.resultHex.length / 2,
+      })),
+    }));
+  }
   const callers = ownedRows.map((row) => framed(hexToBin(row.subjectHex)));
   const completions = ownedRows.map((row) => uint16(row.position));
   // Older/smaller routes authenticate one scalar caller category instead of the per-row graph caller stream.
@@ -2122,6 +2136,22 @@ export class AtomicMessageBusComposition {
         const invocation = plan.invocations[index];
         const siblingResults = invocation.parent === null
           ? undefined : resultsByParent.get(invocation.parent);
+        if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+          ?.SOLIDC_DEBUG_RESULT_PROPAGATION === '1') {
+          console.error('atomic-result-descriptor', JSON.stringify({
+            invocation: index,
+            functionName: descriptor.functionName,
+            callee: plan.participants[invocation.callee]?.artifact.contractName,
+            parent: invocation.parent,
+            consumerCallsiteId: invocation.consumerCallsiteId,
+            nodeCallsiteId: descriptor.callsiteId,
+            sourceCallsiteId: descriptor.sourceCallsiteId,
+            sourceLogicalIndex: descriptor.sourceLogicalIndex,
+            batchLogicalIndex: descriptor.batchLogicalIndex,
+            hasResolver: descriptor.resolveArgsFromResults !== undefined,
+            siblingCallsites: siblingResults === undefined ? null : [...siblingResults.keys()],
+          }));
+        }
         const resolved = siblingResults && descriptor.resolveArgsFromResults?.(siblingResults);
         if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
           ?.SOLIDC_DEBUG_RESULT_PROPAGATION === '1' && siblingResults
@@ -2793,6 +2823,23 @@ export class AtomicMessageBusComposition {
             ),
           }),
         };
+        if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+          ?.SOLIDC_DEBUG_ATOMIC_GRAPH === '1') {
+          console.error('atomic-lane-bind', JSON.stringify({
+            participant: participant.participant,
+            transportedChunkCount,
+            valueChunkSlots: valueChunkSlots.length,
+            selected: selectedValueChunkSlots.map((slot) => slot.offset),
+            transported: transportedValueChunks.map((candidate) => ({
+              bytes: candidate.production.value.length,
+              chunks: candidate.chunks.length,
+              digest: binToHex(sha256(candidate.production.value)).slice(0, 16),
+            })),
+            base: transportedChunkCount > 0
+              ? graph.layout.participantInputs[participant.participant] + selectedValueChunkSlots[0]!.offset
+              : undefined,
+          }));
+        }
         const localCall = contract._batchRaw(
           participant.batch.blob,
           participant.batch.routeWitnesses as FunctionArgument[],
@@ -2894,6 +2941,20 @@ export class AtomicMessageBusComposition {
         let local: TransactionBuilder;
         try {
           local = await localCall.build();
+          if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+            ?.SOLIDC_DEBUG_ATOMIC_GRAPH === '1') {
+            console.error('atomic-local-placement', JSON.stringify({
+              participant: participant.participant,
+              contract: participant.artifact.contractName,
+              base: graph.layout.participantInputs[participant.participant],
+              outputs: local.outputs.map((output, index) => ({
+                index,
+                lock: typeof output.to === 'string' ? output.to : binToHex(output.to as Uint8Array),
+                commitment: output.token?.nft?.commitment,
+                capability: output.token?.nft?.capability,
+              })),
+            }));
+          }
         const publishedLocks = (local as {
           __messageBusResourceLocks?: ReadonlyArray<readonly [string, string]>;
         }).__messageBusResourceLocks;
@@ -3442,6 +3503,36 @@ export class AtomicMessageBusComposition {
         // batch is the common canonical source used to build either shape and is what the verifier must bind.
         const batchBlob = participant.batch.blob;
         const routeContext = graphRouteContext(graph, participant.participant, upgradeStateSuffixes);
+        if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+          ?.SOLIDC_DEBUG_GRAPH_EMISSIONS === '1') {
+          const lengths = Object.fromEntries(Object.entries(routeContext).map(([key, value]) => [
+            key, value instanceof Uint8Array ? value.length
+              : typeof value === 'bigint' ? value.toString() : typeof value,
+          ]));
+          console.error('verifier-route-context', JSON.stringify({
+            participant: participant.participant, lengths,
+          }));
+          // The verifier compares each row's manifest arguments against a slice of THIS blob
+          // (`require(rowArguments == localBatch.slice(batchArgsStart, batchArgsStart + batchArgsLength))`), so the
+          // blob's own row layout must be inspected next to the manifest rows when that comparison fails.
+          const blobHex = binToHex(batchBlob);
+          console.error('verifier-batch-blob', JSON.stringify({
+            participant: participant.participant, bytes: batchBlob.length,
+          }));
+          for (let offset = 0; offset < blobHex.length; offset += 400) {
+            console.error('verifier-batch-blob-hex', `${participant.participant}:${offset / 2}:${blobHex.slice(offset, offset + 400)}`);
+          }
+          for (const [rowIndex, row] of graph.callManifest.rows.entries()) {
+            if (row.owner !== participant.participant && row.consumer !== participant.participant) continue;
+            console.error('verifier-manifest-row', JSON.stringify({
+              rowIndex, kind: row.kind, owner: row.owner, consumer: row.consumer, mode: row.mode,
+              slot: row.slot, sourceOffset: row.sourceOffset, targetOffset: row.targetOffset,
+              position: row.position, parent: row.parent, depth: row.depth, subtreeEnd: row.subtreeEnd,
+              selectorHex: row.selectorHex,
+              subjectHex: row.subjectHex, argsHex: row.argsHex, resultHex: row.resultHex, effectHex: row.effectHex,
+            }));
+          }
+        }
         const verifierGraphArgumentNames = [
           '__internal__graphFixedSize', '__internal__graphBlockSize', '__internal__graphEmissions',
           '__internal__graphCallers', '__internal__graphSettlementBoundary',
@@ -3960,7 +4051,35 @@ export class AtomicMessageBusComposition {
           'messageBus: mutable resources changed after semantic-manifest convergence; refusing a stale manifest',
         );
       }
+      if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+        ?.SOLIDC_DEBUG_FINAL_OUTPUTS === '1') {
+        console.error('message-bus-final-outputs', JSON.stringify(builder.outputs.map((output, index) => ({
+          index,
+          lock: typeof output.to === 'string' ? output.to.slice(0, 24) : binToHex(output.to).slice(0, 24),
+          commitment: (output.token?.nft as { commitment?: string } | undefined)?.commitment,
+        })).slice(120, 230)));
+      }
       preflightMessageBusTransaction(builder, finalizedByteGateOptionsForProvider(builder.provider));
+      if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+        ?.SOLIDC_DEBUG_ATOMIC_GRAPH === '1') {
+        const digests = (this.options.preparedCalls ?? []).flatMap((call) =>
+          (call.valueChunkProductions ?? []).map((production) => ({
+            call: call.functionName,
+            bytes: production.value.length,
+            digest: binToHex(sha256(production.value)),
+          })));
+        const commitments = builder.outputs.map((output) => {
+          const raw = (output.token?.nft as { commitment?: string } | undefined)?.commitment;
+          return typeof raw === 'string' ? raw : undefined;
+        });
+        console.error('atomic-production-digests', JSON.stringify(digests));
+        console.error('atomic-production-output-hits', JSON.stringify(digests.map((entry) => ({
+          call: entry.call,
+          digest: entry.digest.slice(0, 16),
+          outputs: commitments.flatMap((commitment, index) =>
+            commitment?.includes(entry.digest) ? [index] : []),
+        }))));
+      }
       return builder;
     };
     const actualSpansMatch = (

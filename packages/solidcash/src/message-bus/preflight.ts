@@ -99,6 +99,22 @@ const trailingRegionsOf = (assembly: BalancedAssembly): GraphTrailingRegion[] =>
 export const preflightMessageBusBlockAssembly = (
   builder: TransactionBuilder, options?: BalancedAssemblyOptions,
 ): BalancedAssembly | undefined => {
+  if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+    ?.SOLIDC_DEBUG_BLOCK_ASSEMBLY === '1') {
+    console.error('block-assembly-inputs', JSON.stringify(builder.inputs.map((input, index) => {
+      const abi = (input as unknown as {
+        unlocker?: { abiFunction?: { name?: string; blockLayout?: { blockSize?: number } } };
+      }).unlocker?.abiFunction;
+      const unlocker = (input as unknown as { unlocker?: { contract?: { artifact?: { contractName?: string } } } })
+        .unlocker;
+      return {
+        index, functionName: abi?.name, blockSize: abi?.blockLayout?.blockSize,
+        category: input.token?.category?.slice(0, 12),
+        contract: unlocker?.contract?.artifact?.contractName,
+        satoshis: String(input.satoshis),
+      };
+    })));
+  }
   const assembly = deriveBalancedAssemblyFromInputs(
     builder.inputs as never, builder.inputs.length,
   );
@@ -1566,12 +1582,41 @@ const evaluateEveryInput = (
             ? undefined : binToHex(hash256(hexToBin(unlockerBytecodeHex))),
           lockingBytecode: binToHex(sourceOutputs[inputIndex].lockingBytecode),
           unlockingBytecode: binToHex(transaction.inputs[inputIndex].unlockingBytecode),
+          sourceCommitment: sourceOutputs[inputIndex].token?.nft === undefined
+            ? undefined : binToHex(sourceOutputs[inputIndex].token!.nft!.commitment),
         });
+        console.error('message-bus-participant-masters', (() => {
+          const assembly = requireMessageBusBlockAssembly(builder);
+          return assembly.blocks.flatMap((block) => [0, 1, 2, 3].map((offset) => {
+            const output = sourceOutputs[block.base + offset];
+            return {
+              participant: block.participant,
+              index: block.base + offset,
+              category: output?.token === undefined ? undefined : binToHex(output.token.category),
+              capability: output?.token?.nft?.capability,
+              commitment: output?.token?.nft === undefined
+                ? undefined : binToHex(output.token.nft.commitment),
+            };
+          }));
+        })());
         console.error('message-bus-selected-source-commitments', sourceOutputs.slice(105, 114).map((output, offset) => ({
           inputIndex: offset + 105,
           commitment: output.token?.nft === undefined ? undefined : binToHex(output.token.nft.commitment),
         })));
-        if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env?.SOLIDC_DEBUG_FAILURE_RING === '1') {
+        if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+          ?.SOLIDC_DUMP_UNLOCKING_CHUNKS === '1') {
+          // The console printer truncates a long string, and the failing input's unlocking bytecode carries the
+          // composed program (and the message envelope) that the VM executes. Print it in bounded chunks so the
+          // executed body can be disassembled offline instead of only being observable through a re-run trace.
+          const unlockingHex = binToHex(transaction.inputs[inputIndex].unlockingBytecode);
+          console.error('message-bus-failing-unlocking-bytes', unlockingHex.length / 2);
+          for (let offset = 0; offset < unlockingHex.length; offset += 400) {
+            console.error('message-bus-failing-unlocking-hex',
+              `${offset / 2}:${unlockingHex.slice(offset, offset + 400)}`);
+          }
+        }
+        if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+          ?.SOLIDC_DEBUG_FAILURE_RING === '1') {
           console.error('message-bus-selected-outputs', [3, 35, 40, 42, 105, 106, 107, 108, 109].map((outputIndex) => ({
             outputIndex,
             output: transaction.outputs[outputIndex],
@@ -1618,6 +1663,8 @@ const evaluateEveryInput = (
         const largeEqualVerifies: Array<Record<string, unknown>> = [];
         const failedVerifyPoints: Array<Record<string, unknown>> = [];
         const outputCommitmentReads: Array<Record<string, unknown>> = [];
+        const outputBytecodeReads: Array<Record<string, unknown>> = [];
+        const instructionWindow: Array<string> = [];
         let body29Captured = false;
         createVirtualMachineBch2026ForProvider(builder.provider, {
           opcodes: new Set(Array.from({ length: 256 }, (_, opcode) => opcode)),
@@ -1646,7 +1693,7 @@ const evaluateEveryInput = (
                 && binToHex(debugData).toLowerCase() === debugDataHex.toLowerCase());
             const signatureMatches = (debugOpcodeIndex < 0
               || state.instructions[debugOpcodeIndex]?.opcode === debugOpcode) && dataMatches;
-            if (state.instructions.length === debugBodyLength
+            if ((debugBodyLength < 0 || state.instructions.length === debugBodyLength)
               && signatureMatches
               && state.ip >= debugBodyFrom && state.ip <= debugBodyTo) {
               // A block base is addressed by a top-relative stack index, so a one-slot model/physical
@@ -1729,6 +1776,71 @@ const evaluateEveryInput = (
               });
               if (outputCommitmentReads.length > 40) outputCommitmentReads.shift();
             }
+            if (state.instructions[state.ip]?.opcode === Op.OP_OUTPUTBYTECODE) {
+              const rawIndex = state.stack.at(-1);
+              const index = rawIndex ? Number(vmNumberToBigInt(rawIndex)) : -1;
+              outputBytecodeReads.push({
+                ip: state.ip,
+                instructionCount: state.instructions.length,
+                index,
+                lockingBytecode: index >= 0 && index < transaction.outputs.length
+                  ? binToHex(transaction.outputs[index]!.lockingBytecode) : undefined,
+              });
+              if (outputBytecodeReads.length > 400) outputBytecodeReads.shift();
+            }
+            if (state.instructions[state.ip]?.opcode === Op.OP_UTXOBYTECODE) {
+              const rawIndex = state.stack.at(-1);
+              const index = rawIndex ? Number(vmNumberToBigInt(rawIndex)) : -1;
+              outputBytecodeReads.push({
+                ip: state.ip,
+                instructionCount: state.instructions.length,
+                index,
+                lockingBytecode: index >= 0 && index < sourceOutputs.length
+                  ? binToHex(sourceOutputs[index]!.lockingBytecode) : undefined,
+                inputRead: true,
+              });
+              if (outputBytecodeReads.length > 400) outputBytecodeReads.shift();
+            }
+            if (state.instructions[state.ip]?.opcode === Op.OP_UTXOTOKENCATEGORY) {
+              const rawIndex = state.stack.at(-1);
+              const index = rawIndex ? Number(vmNumberToBigInt(rawIndex)) : -1;
+              outputBytecodeReads.push({
+                ip: state.ip,
+                instructionCount: state.instructions.length,
+                index,
+                lockingBytecode: index >= 0 && index < sourceOutputs.length
+                  ? binToHex(sourceOutputs[index]!.token?.category ?? new Uint8Array()) : undefined,
+                inputCategoryRead: true,
+              });
+              if (outputBytecodeReads.length > 400) outputBytecodeReads.shift();
+            }
+            if (state.instructions.length > 1000) {
+              const instruction = state.instructions[state.ip];
+              instructionWindow.push(`${state.ip}:${instruction?.opcode ?? -1}`
+                + `:d${state.stack.length}`
+                + `${instruction && 'data' in instruction && instruction.data.length > 0
+                  ? `:${binToHex(instruction.data.slice(0, 4))}` : ''}`);
+              if (instructionWindow.length > 60) instructionWindow.shift();
+            }
+            if (state.instructions[state.ip]?.opcode === Op.OP_PICK
+              && state.instructions.length > 1000) {
+              const rawDepth = state.stack.at(-1);
+              const depth = rawDepth ? Number(vmNumberToBigInt(rawDepth)) : -1;
+              const picked = state.stack.length >= depth + 2
+                ? state.stack[state.stack.length - 2 - depth] : undefined;
+              outputBytecodeReads.push({
+                ip: state.ip,
+                instructionCount: state.instructions.length,
+                index: depth,
+                lockingBytecode: picked === undefined ? undefined : binToHex(picked.slice(0, 8)),
+                pickDepth: true,
+                ...(depth >= 18 && {
+                  frame: state.stack.slice(-(depth + 4)).reverse()
+                    .map((item, ordinal) => `${ordinal}:${item.length}:${binToHex(item.slice(0, 6))}`),
+                }),
+              });
+              if (outputBytecodeReads.length > 400) outputBytecodeReads.shift();
+            }
             if (state.instructions[state.ip]?.opcode === Op.OP_INPUTBYTECODE) {
               const rawIndex = state.stack.at(-1);
               inputReads.push({
@@ -1752,6 +1864,8 @@ const evaluateEveryInput = (
         console.error('message-bus-large-equals', JSON.stringify(largeEqualVerifies));
         console.error('message-bus-failed-verifies', JSON.stringify(failedVerifyPoints));
         console.error('message-bus-output-commitment-reads', JSON.stringify(outputCommitmentReads));
+        console.error('message-bus-output-bytecode-reads', JSON.stringify(outputBytecodeReads));
+        console.error('message-bus-instruction-window', JSON.stringify(instructionWindow));
         const allOutputs = transaction.outputs.map((output, index) => ({
           index,
           category: binToHex(output.token?.category ?? new Uint8Array()),

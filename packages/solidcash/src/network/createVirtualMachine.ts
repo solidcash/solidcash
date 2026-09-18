@@ -483,6 +483,70 @@ function buildVirtualMachineBch2026ForProvider(
       instructionSet, provider!, limits.maximumInputBytes, observer?.onPhaseComplete,
     );
     installCachedInvokeEvaluator(instructionSet);
+
+  // Diagnostic: log the value-chunk domain preimage the covenant hashes (its last 64 hex characters are the stored
+  // value's root), so a probe's staged value can be compared against the covenant's own expectation.
+  if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+    ?.SOLIDC_DEBUG_VALUE_ROOT === '1') {
+    type DomainState = Parameters<(typeof instructionSet.operations)[number]>[0];
+    const hash256Opcode = (OpcodesBch2026 as unknown as { OP_HASH256?: number }).OP_HASH256 ?? 0xaa;
+    const originalHash = instructionSet.operations[hash256Opcode];
+    const tag = [118, 97, 108, 117, 101, 45, 99, 104, 117, 110, 107];
+    const containsTag = (bytes: Uint8Array): boolean => {
+      for (let start = 0; start + tag.length <= bytes.length; start += 1) {
+        let match = true;
+        for (let offset = 0; offset < tag.length; offset += 1) {
+          if (bytes[start + offset] !== tag[offset]) { match = false; break; }
+        }
+        if (match) return true;
+      }
+      return false;
+    };
+    instructionSet.operations[hash256Opcode] = ((state: DomainState) => {
+      const top = (state as unknown as { stack?: Uint8Array[] }).stack?.at(-1);
+      // The domain preimage is exactly the 11-byte tag followed by 20 + 32 + 32 bytes.
+      if (top !== undefined && top.length === 95 && containsTag(top)) {
+        const hex = Array.from(top).map((byte) => byte.toString(16).padStart(2, '0')).join('');
+        console.error('value-domain', JSON.stringify({ length: top.length, preimage: hex.slice(0, 240) }));
+      }
+      return (originalHash as (inner: DomainState) => unknown)(state);
+    }) as typeof originalHash;
+  }
+
+  // Companion diagnostic: the covenant's value is the PREIMAGE of a sha256 whose digest is the value root, so log
+  // every sha256 preimage of a plausible struct length; its bytes can be compared with the SDK's staged value.
+  if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+    ?.SOLIDC_DEBUG_VALUE_PREIMAGE === '1') {
+    type ShaState = Parameters<(typeof instructionSet.operations)[number]>[0];
+    const sha256Opcode = 0xa8;
+    const originalSha = instructionSet.operations[sha256Opcode];
+    instructionSet.operations[sha256Opcode] = ((state: ShaState) => {
+      const top = (state as unknown as { stack?: Uint8Array[] }).stack?.at(-1);
+      if (top !== undefined && top.length >= 150 && top.length <= 260) {
+        const hex = Array.from(top).map((byte) => byte.toString(16).padStart(2, '0')).join('');
+        console.error('value-preimage', JSON.stringify({ length: top.length, value: hex.slice(0, 420) }));
+      }
+      return (originalSha as (inner: ShaState) => unknown)(state);
+    }) as typeof originalSha;
+  }
+
+  // Companion diagnostic: the chunked-value tail is `len4 || sha256(value) || value[0..28]` (64 bytes). Logging it
+  // exposes the covenant's own value HEAD, which can be compared member-by-member with the SDK's staged value.
+  if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+    ?.SOLIDC_DEBUG_VALUE_TAIL === '1') {
+    type CatState = Parameters<(typeof instructionSet.operations)[number]>[0];
+    const catOpcode = 0x7e;
+    const originalCat = instructionSet.operations[catOpcode];
+    instructionSet.operations[catOpcode] = ((state: CatState) => {
+      const evaluated = (originalCat as (inner: CatState) => CatState)(state);
+      const top = (evaluated as unknown as { stack?: Uint8Array[] }).stack?.at(-1);
+      if (top !== undefined && top.length === 64) {
+        const hex = Array.from(top).map((byte) => byte.toString(16).padStart(2, '0')).join('');
+        console.error('value-tail', JSON.stringify({ head: hex.slice(8, 64), length: hex.slice(0, 8) }));
+      }
+      return evaluated;
+    }) as typeof originalCat;
+  }
     if (observer !== undefined && observer.recordInactiveBranches !== true) {
       installSparseProbeBranchSkips(instructionSet);
     }

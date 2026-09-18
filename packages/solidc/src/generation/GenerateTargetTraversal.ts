@@ -20757,7 +20757,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(encodeInt(5n), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_BIN2NUM, loc); // Hk# (coNext# above)
     this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_LESSTHAN, loc); this.emit(Op.OP_VERIFY, loc); // H(k) < coNext
     this.emit(Op.OP_ENDIF, loc);                                        // [.., coValue]
-    this.emitEntryOutputIndex(slotIndex, loc, 6);                       // P' outIdx -> [.., coValue, poutIdx]
+    // Five raw vmap fields are live above the tracked frame here (Hk, original address, predecessor slot/next/value);
+    // the P' verification below consumes exactly the output index it is given and leaves that working area
+    // unchanged, so the preceding NEW-address lookup at the same raw depth (emitMasterInputIndex(loc, 5)) is the
+    // authority for this offset too. Passing one more made the owner pick read an unrelated (empty) item and put
+    // the P' check on the wrong output coordinate.
+    this.emitEntryOutputIndex(slotIndex, loc, 5);                       // P' outIdx -> [.., coValue, poutIdx]
     this.emitVerifySortedValueOutput(loc, 4, 3, 5, 1, 6);               // P' = coSlot32 d3 || Hk32 d5 || coValue d1
     // Dynamic-output accounting can leave transient untracked values above this working area. Recompute the
     // collection address next to the NEW output index rather than recovering the older copy by a fragile raw depth.

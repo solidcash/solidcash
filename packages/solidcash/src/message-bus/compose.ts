@@ -3446,15 +3446,24 @@ export class AtomicMessageBusComposition {
           const masterUnlocker = local.inputs[0]?.unlocker as {
             abiFunction?: { name?: string; inputs?: readonly { name: string }[] };
             params?: unknown[];
+            syncEncodedArgsFromParams?: (onlyIndices?: readonly number[]) => void;
           } | undefined;
           const chunkIndex = masterUnlocker?.abiFunction?.inputs?.findIndex(
             (input) => input.name === '__internal__dynamicChunkInputBase',
           ) ?? -1;
           const localChunkBase = chunkIndex < 0 ? undefined : masterUnlocker?.params?.[chunkIndex];
-          // MEASURED: this object carries the participant-LOCAL index (FakeToken: 23 at base 199) and IS the one
-          // `addInputs` below copies - but neither patching its `params` in place nor rebuilding the participant's
-          // master unlocker earlier changes the published bytecode, so the unlocking script is produced from a
-          // source this object does not expose. Report the value here to keep that boundary visible.
+          // The participant resolved this witness against its own frame, but the aggregate publishes that frame at
+          // `publishedBase`, so every absolute input coordinate in it must be relocated. The unlocker documents
+          // `syncEncodedArgsFromParams` for exactly this: it re-encodes the mutated slot and drops the cached
+          // unlocking bytecode. Without the resync the edit is invisible and the published script keeps addressing
+          // the participant-local input (measured: the FakeToken route read a funder instead of its chunk NFT).
+          const rebased = publishedBase > 0 && typeof localChunkBase === 'bigint' && localChunkBase >= 0n
+            && localChunkBase < BigInt(local.inputs.length)
+            ? localChunkBase + BigInt(publishedBase) : undefined;
+          if (rebased !== undefined && masterUnlocker?.params !== undefined) {
+            masterUnlocker.params[chunkIndex] = rebased;
+            masterUnlocker.syncEncodedArgsFromParams?.([chunkIndex]);
+          }
           if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
             ?.SOLIDC_DEBUG_ATOMIC_GRAPH === '1') {
             console.error('atomic-published-unlocker', JSON.stringify({
@@ -3465,10 +3474,10 @@ export class AtomicMessageBusComposition {
               localChunkBase: localChunkBase === undefined ? undefined : String(localChunkBase),
               localFrameLength: local.inputs.length,
               params: masterUnlocker?.params?.length,
-              // Recreating the publish-time unlocker needs the participant's own Contract identity, which is what
-              // a rebase at this site would have to rebuild from.
               selector: participant.artifact.messageBus?.selector,
               constructorInputs: participant.artifact.constructorInputs.length,
+              rebased: rebased === undefined ? undefined : String(rebased),
+              resynced: rebased !== undefined,
             }));
           }
         }

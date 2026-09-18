@@ -1108,7 +1108,40 @@ const evaluateEveryInput = (
     console.error('preflight-provider-limits', builder.provider?.consensusLimits);
   }
   const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
-  const vm = createVirtualMachineBch2026ForProvider(builder.provider);
+  // Diagnostic: name the two operands a coverage/identity comparison reads. A failing OP_EQUALVERIFY reports only
+  // "failedVerify" and leaves neither operand, so `message-bus-failure-point` cannot say whether the INDEX or the
+  // EXPECTED value was wrong. The shapes that matter here read an output bytecode and then pick the expected value,
+  // so hook OP_OUTPUTBYTECODE and print both operands when the next three operations are `OP_3; OP_PICK; OP_EQUALVERIFY`.
+  const outputCompareDebug = (globalThis as { process?: { env?: Record<string, string> } }).process?.env
+    ?.SOLIDC_DEBUG_OUTPUT_COMPARE === '1';
+  const vm = createVirtualMachineBch2026ForProvider(builder.provider, outputCompareDebug ? {
+    opcodes: new Set([Op.OP_OUTPUTBYTECODE]),
+    beforeOperation: (unknownState) => {
+      const state = unknownState as unknown as {
+        ip: number;
+        stack: Uint8Array[];
+        instructions: Array<{ opcode: number }>;
+        program?: { inputIndex?: number; transaction?: { outputs?: Array<{ lockingBytecode: Uint8Array }> } };
+      };
+      const { instructions, ip, stack } = state;
+      if (ip < 2 || instructions[ip - 1]?.opcode !== Op.OP_DUP) return;
+      if (instructions[ip + 1]?.opcode !== Op.OP_3 || instructions[ip + 2]?.opcode !== Op.OP_PICK) return;
+      if (instructions[ip + 3]?.opcode !== Op.OP_EQUALVERIFY) return;
+      const indexItem = stack.at(-1);
+      const index = indexItem === undefined ? -1 : Number(vmNumberToBigInt(indexItem));
+      const expected = stack[stack.length - 1 - 3];
+      const output = state.program?.transaction?.outputs?.[index];
+      console.error('output-compare-operands', JSON.stringify({
+        inputIndex: state.program?.inputIndex,
+        ip,
+        programLength: instructions.length,
+        index,
+        actual: output === undefined ? undefined : binToHex(output.lockingBytecode),
+        expected: expected === undefined ? undefined : `${expected.length}:${binToHex(expected)}`,
+        stackDepth: stack.length,
+      }));
+    },
+  } : undefined);
   const debugOnlyInputValue = (globalThis as { process?: { env?: Record<string, string> } }).process?.env
     ?.SOLIDC_DEBUG_ONLY_PREFLIGHT_INPUT;
   const debugOnlyInput = debugOnlyInputValue === undefined ? undefined : Number(debugOnlyInputValue);

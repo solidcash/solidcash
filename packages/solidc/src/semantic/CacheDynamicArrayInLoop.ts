@@ -23,6 +23,7 @@ import {
   ArrayAssignNode,
   ArrayDeleteNode,
   MappingAccessNode,
+  StateAccessNode,
   ArrayAccessNode,
   MappingAssignNode,
   IdentifierNode,
@@ -266,11 +267,13 @@ export default class CacheDynamicArrayInLoop extends AstTraversal {
     });
   }
 
-  // The parser represents a state-array index as MappingAccessNode until semantic resolution. Once this pass
-  // redirects that state array to a local cache, retaining only the renamed node spelling is insufficient:
-  // SymbolTableTraversal correctly interprets MappingAccessNode as an entry-backed collection and rejects the
-  // compiler-owned local name. Rebuild the exact indexed expression as local ArrayAccess nodes while the source
-  // keys and locations are still available. This is structural and also covers nodes exposed by handler cloning.
+  // The parser represents a state-array read as MappingAccessNode (indexed) or StateAccessNode (bare, which is
+  // what `.length` reads through) until semantic resolution. Once this pass redirects that state array to a
+  // local cache, retaining only the state spelling is insufficient: SymbolTableTraversal resolves it against the
+  // persisted collection, which the cache has not been flushed to yet, so the read observes the pre-write array
+  // (a bare `.length` after a cached `push()` still reports the old count). Rebuild the exact read as local
+  // ArrayAccess / identifier nodes while the source keys and locations are still available. This is structural
+  // and also covers nodes exposed by handler cloning.
   private replaceIndexedReads(root: Node, name: string, local: string): void {
     const replace = (node: Node): Node => {
       for (const key of Object.keys(node)) {
@@ -284,9 +287,17 @@ export default class CacheDynamicArrayInLoop extends AstTraversal {
           }
         }
       }
-      if (!(node instanceof MappingAccessNode) || node.name !== name || node.keys.length === 0) return node;
+      if (!(node instanceof StateAccessNode || node instanceof MappingAccessNode) || node.name !== name) {
+        return node;
+      }
+      // A storage-pointer-only access selects a slot rather than reading the value (`x.slot` inline assembly), so
+      // it has to keep addressing the state variable instead of the compiler-owned cache local.
+      if (node instanceof StateAccessNode && node.storagePointerOnly === true) return node;
       const identifier = new IdentifierNode(local);
       identifier.location = node.location;
+      // A bare read (no index) means the whole array: `.length` and any direct use. Only an INDEXED read has to
+      // be rebuilt as the equivalent local ArrayAccess chain.
+      if (node instanceof StateAccessNode || node.keys.length === 0) return identifier;
       let expression: ExpressionNode = identifier;
       for (const index of node.keys) {
         const access = new ArrayAccessNode(expression, index);

@@ -7260,6 +7260,29 @@ export class StatefulTransactionBuilder {
     // With external calls, the gap between readOnly and entries breaks 1:1 correspondence,
     // so we fall through to the legacy path which both inputs and outputs follow.
     const hasExternalGroups = externalOutStateInputs.length > 0 || externalCallInputs.length > 0;
+    // Why the dense (position-indexed) placement below was or was not chosen. The legacy fallback orders both
+    // frames as master, data NFTs, readOnly, outState, external calls, low-level calls, entries..., which puts a
+    // participant block on the caller's first entry slot whenever the caller's own block is wider than its data
+    // NFTs. Measured for a mapping write plus an external call: hasBlockLayout true, blockSize 3, funders 0,
+    // hasExternalGroups true -> guard false.
+    if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+      ?.SOLIDC_DEBUG_INPUT_ORDER === '1') {
+      console.error('input-order-guard', JSON.stringify({
+        hasBlockLayout: this.blockLayout !== undefined,
+        blockSize: this.blockLayout?.blockSize,
+        funders: this.funderUtxos.length,
+        hasExternalGroups,
+        externalCallInputs: externalCallInputs.length,
+        outStateInputs: externalOutStateInputs.length,
+        entries: entryInputs.length,
+        blockhashOrdinals: this.blockhashCoSpendSlotOrdinals !== undefined,
+        compilerRouteDelegateBlock: this.compilerRouteDelegateBlock,
+        delegateEntriesAfterLowLevel: this.delegateEntriesAfterLowLevel,
+        guardPasses: this.blockLayout !== undefined && this.funderUtxos.length > 0
+          && (!hasExternalGroups || this.blockhashCoSpendSlotOrdinals !== undefined
+            || this.compilerRouteDelegateBlock || this.delegateEntriesAfterLowLevel),
+      }));
+    }
     if (this.blockLayout && this.funderUtxos.length > 0
       && (!hasExternalGroups || this.blockhashCoSpendSlotOrdinals !== undefined
         || this.compilerRouteDelegateBlock

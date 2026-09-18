@@ -5509,6 +5509,38 @@ export function compactFaithfulProbeTrace(
   return compact;
 }
 
+/** Diagnostic: dump the failing probe's program identity, instruction window and stack top. */
+function dumpProbeTerminal(
+  debugEnv: Record<string, string | undefined> | undefined,
+  state: AuthenticationProgramStateCommon | undefined,
+): void {
+  if (debugEnv?.SOLIDC_DEBUG_PROBE_FRAMES !== '1' || state === undefined) return;
+  const instructions = state.instructions as readonly { opcode: number; data?: Uint8Array }[];
+  const ip = state.ip;
+  console.error('probe-terminal', JSON.stringify({
+    error: state.error === undefined ? undefined : String(
+      typeof state.error === 'object' && state.error !== null && 'error' in state.error
+        ? (state.error as { error: unknown }).error : state.error,
+    ),
+    ip,
+    ownInstructions: instructions.length,
+    callers: state.controlStack.flatMap((frame) => (typeof frame === 'object' && frame !== null
+      ? [{
+        len: (frame as { instructions?: unknown[] }).instructions?.length,
+        ip: (frame as { ip?: number }).ip,
+      }] : [])).slice(-6),
+    window: instructions.slice(Math.max(0, ip - 8), ip + 2).map((instruction) => {
+      const data = instruction.data;
+      return data === undefined || data.length === 0
+        ? instruction.opcode
+        : `${instruction.opcode}:${binToHex(data).slice(0, 16)}`;
+    }),
+    stack: state.stack.slice(-10).map((item) => (item.length <= 16
+      ? `${item.length}:${binToHex(item)}`
+      : `${item.length}:${binToHex(item.subarray(0, 8))}..${binToHex(item.subarray(-8))}`)),
+  }));
+}
+
 /** Evaluate a probe without retaining millions of irrelevant VM states under relaxed private-network limits. */
 function evaluateProbeTrace(
   provider: NetworkProvider,
@@ -5565,8 +5597,10 @@ function evaluateProbeTrace(
       // a trace containing just the probe opcodes. A raw debug trace makes every pair look interrupted.
       if (maxIn <= 10_000 && debugEnv?.SOLIDC_DEBUG_ROUTE_CONCISE !== '1'
         && debugEnv?.SOLIDC_DEBUG_ROUTE_FULL_OPS !== '1') {
+        dumpProbeTerminal(debugEnv, full.at(-1));
         return reduceProbeTrace(full);
       }
+      dumpProbeTerminal(debugEnv, full.at(-1));
       return full;
     } catch (err) {
       // V8 arg-limit / OOM on an oversized script: fall through to the observer.
@@ -5580,6 +5614,7 @@ function evaluateProbeTrace(
   const cached = cachedProbeVm(provider);
   cached.collector.reset();
   const finalState = cached.vm.evaluate(program) as AuthenticationProgramStateCommon;
+  dumpProbeTerminal(debugEnv, finalState);
   return cached.collector.finish(finalState);
 }
 
@@ -34233,6 +34268,28 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const sourceOutputs = generateLibauthSourceOutputs(probe.inputs);
     const trace = evaluateProbeTrace(this.inner.provider, { inputIndex, sourceOutputs, transaction });
     this.lastReturnProbeFailure = this.describeReturnProbeFailure(trace, inputIndex);
+    if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+      ?.SOLIDC_DEBUG_PROBE_IO === '1') {
+      console.error('probe-outputs', JSON.stringify(transaction.outputs.map((output, index) => ({
+        index,
+        value: String((output as { valueSatoshis?: bigint }).valueSatoshis ?? 0n),
+        lock: binToHex((output as { lockingBytecode: Uint8Array }).lockingBytecode).slice(0, 22),
+        commitment: (output as { token?: { nft?: { commitment?: Uint8Array } } }).token?.nft?.commitment === undefined
+          ? undefined : binToHex((output as { token: { nft: { commitment: Uint8Array } } }).token.nft.commitment),
+      }))));
+      console.error('probe-internals', JSON.stringify(probe.inputs.map((input, index) => {
+        const unlocker = (input as {
+          unlocker?: { params?: unknown[]; abiFunction?: { inputs?: Array<{ name?: string }> } };
+        }).unlocker;
+        const names = unlocker?.abiFunction?.inputs ?? [];
+        return {
+          index,
+          internals: (unlocker?.params ?? []).flatMap((param, paramIndex) => (
+            (names[paramIndex]?.name ?? '').startsWith('__internal__')
+              ? [`${names[paramIndex]!.name}=${String(param)}`] : [])),
+        };
+      })));
+    }
     if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
       ?.SOLIDC_DEBUG_CHUNK_STAGE === '1') {
       const failing = trace.at(-1);

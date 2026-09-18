@@ -3437,6 +3437,37 @@ export class AtomicMessageBusComposition {
           };
         }
         actualSizes.push(actualSize);
+        {
+          // The aggregate publishes this participant's block at `base`, so an absolute input coordinate witness
+          // must be relocated by it. The participant's own build resolves such witnesses against its LOCAL frame
+          // (measured: the root dynamic-chunk base is the local index 23), and `addInputs` below copies that
+          // unlocker verbatim - so the published bytecode addresses an unrelated input.
+          const publishedBase = graph.layout.participantInputs[participant.participant] ?? 0;
+          const masterUnlocker = local.inputs[0]?.unlocker as {
+            abiFunction?: { name?: string; inputs?: readonly { name: string }[] };
+            params?: unknown[];
+          } | undefined;
+          const chunkIndex = masterUnlocker?.abiFunction?.inputs?.findIndex(
+            (input) => input.name === '__internal__dynamicChunkInputBase',
+          ) ?? -1;
+          const localChunkBase = chunkIndex < 0 ? undefined : masterUnlocker?.params?.[chunkIndex];
+          // MEASURED: this object carries the participant-LOCAL index (FakeToken: 23 at base 199) and IS the one
+          // `addInputs` below copies - but neither patching its `params` in place nor rebuilding the participant's
+          // master unlocker earlier changes the published bytecode, so the unlocking script is produced from a
+          // source this object does not expose. Report the value here to keep that boundary visible.
+          if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+            ?.SOLIDC_DEBUG_ATOMIC_GRAPH === '1') {
+            console.error('atomic-published-unlocker', JSON.stringify({
+              participant: participant.participant,
+              contract: participant.artifact.contractName,
+              base: publishedBase,
+              fn: masterUnlocker?.abiFunction?.name,
+              localChunkBase: localChunkBase === undefined ? undefined : String(localChunkBase),
+              localFrameLength: local.inputs.length,
+              params: masterUnlocker?.params?.length,
+            }));
+          }
+        }
         for (let localIndex = 0; localIndex < local.inputs.length; localIndex++) {
           const input = local.inputs[localIndex];
           registerAggregateInput(input, participant.participant, localIndex, 'participant block');

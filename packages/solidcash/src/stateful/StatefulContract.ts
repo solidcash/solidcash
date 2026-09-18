@@ -5249,8 +5249,17 @@ function cachedProbeVm(provider: NetworkProvider): CachedProbeVm {
       // OP_INVOKE frames: an invoked program's recorded state carries the caller's frame, so the trace tail cannot
       // show the operands a guard actually sees.
       const debugSpanInstructions = Number(debugEnv?.SOLIDC_DEBUG_SPAN_INSTRUCTIONS ?? Number.NaN);
-      if (Number.isFinite(debugSpanInstructions)
-        && state.instructions.length === debugSpanInstructions) {
+      // An outlined span executes its OWN instruction array, while the frame OP_INVOKE recorded for the caller keeps
+      // the enclosing body. Selecting by instruction count therefore cannot reach the caller's own emissions; select
+      // by the CALLER chain instead so a span's invocation site and operand tuple become visible.
+      const debugSpanCallerInstructions = Number(
+        debugEnv?.SOLIDC_DEBUG_SPAN_CALLER_INSTRUCTIONS ?? Number.NaN,
+      );
+      const spanCallerMatches = !Number.isFinite(debugSpanCallerInstructions) ? false
+        : state.controlStack.some((frame) => typeof frame === 'object' && frame !== null
+          && (frame as { instructions?: unknown[] }).instructions?.length === debugSpanCallerInstructions);
+      if ((Number.isFinite(debugSpanInstructions)
+        && state.instructions.length === debugSpanInstructions) || spanCallerMatches) {
         console.error('derive-span', JSON.stringify({
           inputIndex: state.program.inputIndex,
           ip: state.ip,

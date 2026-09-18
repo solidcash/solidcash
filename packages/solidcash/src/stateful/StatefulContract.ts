@@ -32173,8 +32173,69 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       }
       return changed;
     };
+    // The batch covenant reads `output[__internal__vmapBatchPredOut_<slot>].lockingBytecode` and requires it to
+    // equal the locking bytecode of the input its proof coordinate names. The plan computes the output coordinate as
+    // `master + trailingBase` - before the entry outputs moved into their declared block slots - so it can name an
+    // unrelated output. Only a coordinate that PROVABLY fails that covenant equality is rewritten: the planned index
+    // is kept whenever its output already carries the authenticated lock, which leaves every passing lane untouched.
+    const refreshTopLevelPredOutWitnesses = (materialized?: TransactionBuilder): boolean => {
+      if (!abiFunction || materialized === undefined) return false;
+      const masterOutpoint = derivationMasterUtxo ?? masterUtxo;
+      const masterIndex = materialized.inputs.findIndex((input) => (
+        input.txid.toLowerCase() === masterOutpoint.txid.toLowerCase() && input.vout === masterOutpoint.vout
+      ));
+      if (masterIndex < 0) return false;
+      const lockedBytecodeAt = (index: number): Uint8Array | undefined => {
+        const input = materialized.inputs[index] as { unlocker?: { generateLockingBytecode?: () => Uint8Array } };
+        return input?.unlocker?.generateLockingBytecode?.();
+      };
+      const outputLock = (index: number): Uint8Array | undefined => {
+        const output = materialized.outputs[index] as { to?: Uint8Array | string };
+        return output?.to instanceof Uint8Array ? output.to : undefined;
+      };
+      const sameLock = (left: Uint8Array | undefined, right: Uint8Array | undefined): boolean =>
+        left !== undefined && right !== undefined && left.length === right.length
+        && left.every((byte, offset) => byte === right[offset]);
+      let changed = false;
+      for (const input of abiFunction.inputs) {
+        const match = /^__internal__vmapBatchPredOut_(\d+)$/.exec(input.name);
+        if (match === null) continue;
+        const slot = match[1];
+        const position = abiFunction.inputs.findIndex((candidate) => candidate.name === input.name);
+        const proofPosition = abiFunction.inputs.findIndex((candidate) =>
+          candidate.name === `__internal__vmapBatchProof_${slot}`);
+        if (position < 0 || position >= finalArgs.length || proofPosition < 0) continue;
+        const current = finalArgs[position];
+        const proofOffset = finalArgs[proofPosition];
+        // -1 (no predecessor output) and -2 (inactive row) are topology sentinels, not coordinates.
+        if (typeof current !== 'bigint' || current < 0n) continue;
+        if (typeof proofOffset !== 'bigint' || proofOffset < 0n) continue;
+        const required = lockedBytecodeAt(masterIndex + Number(proofOffset));
+        if (required === undefined || sameLock(outputLock(Number(current)), required)) continue;
+        // Prefer the structural answer - the entry output this slot publishes - and accept it only when its content
+        // proves it is the collection resource the covenant authenticates. Never fall back to an arbitrary output
+        // with a matching lock: the same coordinate is also read for the predecessor's category and commitment.
+        const ordinal = builder.getEntryOutputSlotOrder().indexOf(Number(slot));
+        const entryOutputBase = builder.getEntryOutputBase();
+        const structural = entryOutputBase >= 0 && ordinal >= 0 ? entryOutputBase + ordinal : -1;
+        if (structural < 0 || !sameLock(outputLock(structural), required)) continue;
+        const replacement = structural;
+        finalArgs[position] = BigInt(replacement);
+        changed = true;
+        if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+          ?.SOLIDC_DEBUG_RETURN === '1') {
+          console.error('predout-witness-rebound', {
+            functionName,
+            name: input.name,
+            planned: current.toString(),
+            actual: String(replacement),
+          });
+        }
+      }
+      return changed;
+    };
     if (refreshPhysicalDelegateInputIndex || refreshTopLevelDynamicChunkInputBase
-      || topLevelReturnWitnessGroups.length > 0) {
+      || topLevelReturnWitnessGroups.length > 0 || abiFunction !== undefined) {
       if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
         ?.SOLIDC_DEBUG_FORWARD_ARGS === '1') {
         console.error('physical-input-refresher-registered', {
@@ -32188,6 +32249,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         if (refreshPhysicalDelegateInputIndex) refreshPhysicalDelegateInputIndex(builder, materialized);
         refreshTopLevelDynamicChunkInputBase?.(materialized);
         refreshTopLevelReturnWitnesses(materialized);
+        refreshTopLevelPredOutWitnesses(materialized);
         return buildStateInputUnlocker();
       });
     }

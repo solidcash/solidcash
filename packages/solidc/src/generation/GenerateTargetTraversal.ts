@@ -9312,8 +9312,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emitCollectionIterInputIndex(iterIdx, loc); // [.., idx] (untracked)
     this.emit(Op.OP_DUP, loc);
     this.emit(Op.OP_UTXOBYTECODE, loc); // [.., idx, inbc]
-    this.emit(encodeInt(BigInt(this.getStackIndex('(__iter_entryaddr)') + 2)), loc); // +2 untracked (idx, inbc)
-    this.emit(Op.OP_PICK, loc);
+    // Resolve the tracked entry address by its stable bottom ordinal: this fragment is outlined into an OP_INVOKE
+    // body, where hand-counting the untracked operands above the frame (the previous `+ 2`) picks whichever
+    // neighbouring value the span happens to carry instead of the collection's entry address.
+    this.emitPickTrackedFromBottom('(__iter_entryaddr)', loc);
     this.emit(Op.OP_EQUALVERIFY, loc); // inbc == entryAddr
     this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc); // [.., commit]
     this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); // [.., slot, rest]

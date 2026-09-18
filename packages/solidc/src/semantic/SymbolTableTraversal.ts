@@ -15152,22 +15152,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     // countOutputOnlySlotsBefore reads it), so the frames must land in the same position a flattened handler's
     // own effects would have.
     route.blockLayout = this.computeBlockLayout(route);
-    const offsetOf = (
-      kind: 'event' | 'transfer' | 'tcTransfer' | 'ecrecoverSideCar' | 'deploy', slotIndex: number,
-    ): number | undefined =>
-      route.blockLayout!.slots.find((slot) => slot.kind === kind && slot.slotIndex === slotIndex)?.offset;
-    frame.eventOffset = offsetOf('event', frame.eventBase);
-    frame.transferOffset = offsetOf('transfer', frame.transferBase);
-    frame.tokenTransferOffset = offsetOf('tcTransfer', frame.tokenTransferBase);
-    frame.ecrecoverOffset = offsetOf('ecrecoverSideCar', frame.ecrecoverBase ?? 0);
-    frame.deployOffset = offsetOf('deploy', frame.deployBase ?? 0);
-    const deployOffset = frame.deployOffset;
-    if (deployOffset !== undefined) {
-      frame.deployInputOffset = deployOffset - route.blockLayout!.slots
-        .filter((slot) => slot.offset < deployOffset
-          && ['transfer', 'tcTransfer', 'event', 'returnEvent', 'deployDataNft'].includes(slot.kind))
-        .length;
-    }
+    this.refreshGraphEffectFrameOffsets(frame, route);
     // Token-container INPUT identity lives on the route's one co-spent slot. Share that layout with the
     // OP_INVOKE handler so a `tokenContainer` OP_UTXO uses the compile-time offset, never a row-relative
     // `tcTransfer` output index.
@@ -15204,6 +15189,41 @@ export default class SymbolTableTraversal extends AstTraversal {
     return identity(left) === identity(right);
   }
 
+  /**
+   * Re-derive a shared graph-effect frame's cached block-layout offsets after the route's layout is recomputed.
+   *
+   * Codegen addresses effect sites through these offsets (`emitLoopRowEffectSlotIndex` /
+   * `emitGraphEffectSlotIndex` read `frame.eventOffset`), while the SDK materializes the SAME outputs from the
+   * published layout. A stale offset therefore makes the program verify against an output the SDK never
+   * materialized. A kind the refreshed layout does not carry KEEPS its cached offset: the frame is shared with
+   * handlers compiled against a layout that did carry it, and an unconditional overwrite left those sites
+   * addressing slot `-1`.
+   */
+  private refreshGraphEffectFrameOffsets(frame: GraphEffectFrame, route: FunctionDefinitionNode): void {
+    const layout = route.blockLayout;
+    if (!layout) return;
+    const offsetOf = (
+      kind: 'event' | 'transfer' | 'tcTransfer' | 'ecrecoverSideCar' | 'deploy', slotIndex: number,
+    ): number | undefined =>
+      layout.slots.find((slot) => slot.kind === kind && slot.slotIndex === slotIndex)?.offset;
+    const eventOffset = offsetOf('event', frame.eventBase);
+    if (eventOffset !== undefined) frame.eventOffset = eventOffset;
+    const transferOffset = offsetOf('transfer', frame.transferBase);
+    if (transferOffset !== undefined) frame.transferOffset = transferOffset;
+    const tokenTransferOffset = offsetOf('tcTransfer', frame.tokenTransferBase);
+    if (tokenTransferOffset !== undefined) frame.tokenTransferOffset = tokenTransferOffset;
+    const ecrecoverOffset = offsetOf('ecrecoverSideCar', frame.ecrecoverBase ?? 0);
+    if (ecrecoverOffset !== undefined) frame.ecrecoverOffset = ecrecoverOffset;
+    const deployOffset = offsetOf('deploy', frame.deployBase ?? 0);
+    if (deployOffset !== undefined) {
+      frame.deployOffset = deployOffset;
+      frame.deployInputOffset = deployOffset - layout.slots
+        .filter((slot) => slot.offset < deployOffset
+          && ['transfer', 'tcTransfer', 'event', 'returnEvent', 'deployDataNft'].includes(slot.kind))
+        .length;
+    }
+  }
+
   private shareRouteLayoutWithLoopEntryHandlers(contract: ContractNode): void {
     const route = contract.functions.find((fn) => fn.messageBusRoute);
     if (!route?.blockLayout) return;
@@ -15222,6 +15242,9 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (extras.length > 0) {
       route.entryAccesses = [...(route.entryAccesses ?? []), ...extras];
       route.blockLayout = this.computeBlockLayout(route);
+      // The appended lanes shift every later slot, so the shared frame's cached offsets must follow the new
+      // layout: effect sites read them at codegen while the SDK materializes from the published layout.
+      if (route.graphEffectFrame) this.refreshGraphEffectFrameOffsets(route.graphEffectFrame, route);
     }
     for (const fn of contract.functions) {
       if (fn === route || !fn.name.startsWith('__message_bus_')) continue;

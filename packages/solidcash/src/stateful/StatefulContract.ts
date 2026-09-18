@@ -28715,6 +28715,18 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             if (value === undefined) {
               throw new Error(`Could not precompute return for graph callsite ${nested.callsiteId}.`);
             }
+            if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+              ?.SOLIDC_DEBUG_RETURN === '1') {
+              // A caller that compares a call's result inside `require` depends on this value exactly: the covenant
+              // reads the return event commitment, so a wrong or zero precompute silently fails the caller's check.
+              console.error('nested-return-precompute', {
+                callee: selectedContract.inner.artifact.contractName,
+                functionName: nested.functionName,
+                callsiteId: nested.callsiteId,
+                value: typeof value === 'object' && value !== null
+                  ? `bytes:${binToHex(value as Uint8Array).slice(0, 24)}` : String(value),
+              });
+            }
             const returnType = selectedFn.outputs[0].type;
             const returnArtifact = proxyCallee
               ? proxyCallee.implementation.inner.artifact : selectedContract.inner.artifact;
@@ -34149,10 +34161,80 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         // Graph discovery can stop at an intermediate native stack value before a Solidity return is framed.
         // Such observations are useful to the legacy fixed-point repair, but an atomic seed must already match
         // the callee's complete result schema. Otherwise it changes execution mode only to fail before probing.
-        if (!canonicalSeed) continue;
+        if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+          ?.SOLIDC_DEBUG_RETURN === '1') {
+          console.error('atomic-seed-decision', {
+            functionName: node.functionName,
+            callsiteId: node.callsiteId,
+            returnTypes,
+            returnEncoding,
+            commitmentBytes: event.commitment.length,
+            commitmentHead: binToHex(event.commitment).slice(0, 32),
+            canonicalSeed,
+          });
+        }
+        // A participant's observed event is not always its return: measured on the marketplace route, the entries
+        // for IERC20.balanceOf and transferFrom carry the callee's 14-byte STATE commitment, which fails the
+        // canonical-result check. Skipping the seed then publishes the placeholder zero, and a caller that compares
+        // the result inside `require` (the OZ `balanceOf(...) > 0` idiom) fails its own covenant. Derive the value
+        // from the callee itself in that case - the same recovery the nested-call path already performs.
+        let seedCommitment: Uint8Array | undefined = canonicalSeed ? event.commitment : undefined;
+        if (seedCommitment === undefined) {
+          const deriveFromCallee = async (): Promise<Uint8Array | undefined> => {
+            if (returnTypes.length !== 1) return undefined;
+            try {
+              const value = await node.contract._deriveReturnValue(node.functionName, [...node.args]);
+              if (value === undefined) return undefined;
+              return encodeExternalReturnValue(
+                value as StateValue,
+                returnTypes[0]!,
+                returnArtifact.structs ?? returnArtifact.stateLayout?.structs,
+                returnEncoding === 'evm-abi-v1',
+                returnArtifact.enums,
+              );
+            } catch {
+              return undefined;
+            }
+          };
+          seedCommitment = await deriveFromCallee();
+          if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+            ?.SOLIDC_DEBUG_RETURN === '1') {
+            // The value lives in the callee's ENTRY NFTs, so an address-domain mismatch between the decoded call
+            // argument and the stored key shows up as a zero result. Print the keys the callee actually holds.
+            const calleeEntries = await (async (): Promise<string[]> => {
+              try {
+                const full = await (node.contract as unknown as {
+                  getFullState: () => Promise<{ entryNftUtxos?: Array<{ token?: { nft?: { commitment?: Uint8Array } } }> }>;
+                }).getFullState();
+                const wanted = (node.args ?? []).find((arg) => arg instanceof Uint8Array) as Uint8Array | undefined;
+                const wantedHex = wanted === undefined ? '' : binToHex(wanted);
+                return (full.entryNftUtxos ?? []).slice(0, 6).map((utxo) => {
+                  const hex = utxo.token?.nft?.commitment === undefined
+                    ? 'none' : binToHex(utxo.token.nft.commitment);
+                  return `${hex.slice(0, 28)}${wantedHex !== '' && hex.includes(wantedHex) ? ' <--CONTAINS-ARG' : ''}`;
+                });
+              } catch (error) {
+                return [`<unavailable:${error instanceof Error ? error.message.slice(0, 60) : String(error)}>`];
+              }
+            })();
+            console.error('atomic-seed-derived', {
+              calleeEntries,
+              functionName: node.functionName,
+              callsiteId: node.callsiteId,
+              args: (node.args ?? []).map((arg) => (arg instanceof Uint8Array
+                ? `bytes${arg.length}:${binToHex(arg).slice(0, 20)}` : String(arg))),
+              calleeCategory: (node.contract as unknown as { categoryId?: string }).categoryId?.slice(0, 16),
+              calleeAddress: (node.contract as unknown as { inner?: { address?: string } }).inner?.address,
+              observedBytes: event.commitment.length,
+              observedHead: binToHex(event.commitment).slice(0, 32),
+              derived: seedCommitment === undefined ? undefined : binToHex(seedCommitment).slice(0, 32),
+            });
+          }
+        }
+        if (seedCommitment === undefined) continue;
         preparedAtomicNodes[nodeIndex] = {
           ...node,
-          provisionalResultCommitment: event.commitment,
+          provisionalResultCommitment: seedCommitment,
         };
       }
 

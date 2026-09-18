@@ -547,6 +547,48 @@ function buildVirtualMachineBch2026ForProvider(
       return evaluated;
     }) as typeof originalCat;
   }
+
+  // Diagnostic: report every failed `OP_EQUALVERIFY` with the operands it compared and the shape of the program
+  // that ran it. A covenant's identity/commitment checks all end here, and the trace recorders can be sparse (or
+  // run on a different VM instance), so this hooks the operation itself.
+  if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+    ?.SOLIDC_DEBUG_EQUALVERIFY_FAIL === '1') {
+    type EqState = Parameters<(typeof instructionSet.operations)[number]>[0];
+    const equalVerifyOpcode = 0x88;
+    const originalEqualVerify = instructionSet.operations[equalVerifyOpcode];
+    const hexOf = (bytes: Uint8Array): string =>
+      Array.from(bytes.slice(0, 64)).map((byte) => byte.toString(16).padStart(2, '0')).join('');
+    instructionSet.operations[equalVerifyOpcode] = ((state: EqState) => {
+      const stack = (state as unknown as { stack?: Uint8Array[] }).stack ?? [];
+      const top = stack.at(-1);
+      const second = stack.at(-2);
+      if (top !== undefined && second !== undefined
+        && (top.length !== second.length
+          || top.some((byte, index) => byte !== second[index]))) {
+        const instructions = (state as unknown as { instructions?: Array<{ opcode: number }> }).instructions ?? [];
+        const controlStack = (state as unknown as { controlStack?: unknown[] }).controlStack ?? [];
+        console.error('equalverify-fail', JSON.stringify({
+          inputIndex: (state as unknown as { program?: { inputIndex?: number } }).program?.inputIndex,
+          ip: (state as unknown as { ip?: number }).ip,
+          instrLen: instructions.length,
+          head: instructions.slice(0, 6).map((instruction) => instruction.opcode).join(','),
+          stackLen: stack.length,
+          frameDepth: controlStack.length,
+          callers: controlStack.flatMap((frame) => (typeof frame === 'object' && frame !== null
+            ? [{
+              len: (frame as { instructions?: unknown[] }).instructions?.length,
+              ip: (frame as { ip?: number }).ip,
+              head: ((frame as { instructions?: Array<{ opcode: number }> }).instructions ?? [])
+                .slice(0, 4).map((instruction) => instruction.opcode).join(','),
+            }] : [])).slice(-4),
+          below: stack.slice(-8, -2).map((item) => `${item.length}:${hexOf(item)}`),
+          second: `${second.length}:${hexOf(second)}`,
+          top: `${top.length}:${hexOf(top)}`,
+        }));
+      }
+      return (originalEqualVerify as (inner: EqState) => unknown)(state);
+    }) as typeof originalEqualVerify;
+  }
     if (observer !== undefined && observer.recordInactiveBranches !== true) {
       installSparseProbeBranchSkips(instructionSet);
     }

@@ -4847,6 +4847,27 @@ function cachedFaithfulTraceVm(provider: NetworkProvider): CachedFaithfulTraceVm
   } as CachedFaithfulTraceVm;
   cached.vm = createFaithfulTraceVmForProvider(provider, (unknownState) => {
     cached.trace.push(snapshotProgramState(unknownState as AuthenticationProgramStateCommon));
+    // The faithful recorder runs on its own VM instance, so the observer in `cachedVm` never sees the operations
+    // that actually fail here. Mirror the out-lined-subprogram dump for the trace that matters.
+    const debugEnv = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env;
+    const spanInstructions = Number(debugEnv?.SOLIDC_DEBUG_SPAN_INSTRUCTIONS ?? Number.NaN);
+    const state = unknownState as AuthenticationProgramStateCommon;
+    // Match `emitPreferLockingBytecode`'s exact body (`DUP SIZE NIP…` ending in `EQUALVERIFY`): other out-lined
+    // subprograms share the same instruction count.
+    const opcodes = state.instructions.map((instruction) => instruction.opcode);
+    const guardShape = opcodes.length === 15 && opcodes[0] === 118 && opcodes[1] === 130 && opcodes[2] === 119
+      && opcodes[14] === 136;
+    if (Number.isFinite(spanInstructions) && state.instructions.length === spanInstructions && guardShape) {
+      console.error('derive-span-faithful', JSON.stringify({
+        ordinal: cached.trace.length - 1,
+        inputIndex: state.program.inputIndex,
+        ip: state.ip,
+        opcode: state.instructions[state.ip]?.opcode,
+        error: state.error === undefined ? undefined : String((state.error as { error?: unknown }).error
+          ?? state.error),
+        top: state.stack.slice(-4).map((item) => `${item.length}:${binToHex(item).slice(0, 80)}`),
+      }));
+    }
   }, (unknownState) => {
     cached.phaseExits += 1;
     cached.trace.push(snapshotProgramState(unknownState as AuthenticationProgramStateCommon));
@@ -5227,7 +5248,19 @@ function cachedProbeVm(provider: NetworkProvider): CachedProbeVm {
           inputIndex: state.program.inputIndex,
           ip: state.ip,
           opcode,
-          top: state.stack.slice(0, 4).map((item) => `${item.length}:${binToHex(item).slice(0, 80)}`),
+          own: state.instructions.length,
+          // The frames that invoked this subprogram: their instruction counts identify the enclosing scripts, and
+          // their ip/opcode name the OP_INVOKE site that handed the operand frame down.
+          callers: state.controlStack.flatMap((frame) => (typeof frame === 'object' && frame !== null
+            ? [{
+              len: (frame as { instructions?: unknown[] }).instructions?.length,
+              ip: (frame as { ip?: number }).ip,
+              op: (frame as { instructions?: Array<{ opcode?: number }>; ip?: number }).instructions
+                ?.[(frame as { ip?: number }).ip ?? -1]?.opcode,
+            }] : [])).slice(-3),
+          // libauth keeps the top of the stack at the END of the array (`useOneStackItem` pops), so the operands an
+          // operation will consume are the last items.
+          top: state.stack.slice(-4).map((item) => `${item.length}:${binToHex(item).slice(0, 80)}`),
         }));
       }
       if (debugTraceOperations
@@ -34121,6 +34154,46 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           .filter((item) => item.length >= 100 && item.length <= 300).map((item) => `${item.length}:${binToHex(item)}`)))]
           .slice(0, 3).join(' ; ')}`,
         ...transaction.outputs.map((output, index) => `out${index}=${binToHex(output.lockingBytecode)}`),
+        // External-call coordinates the probe passed: the covenant reads the callee's master bytecode at these
+        // indices and requires it to equal the address the caller named, so print the index AND the lock it names.
+        ...(() => {
+          const rows: string[] = [];
+          probe.inputs.forEach((input, index) => {
+            const unlocker = (input as {
+              unlocker?: { params?: unknown[]; abiFunction?: { inputs?: Array<{ name?: string }> } };
+            }).unlocker;
+            const names = unlocker?.abiFunction?.inputs ?? [];
+            (unlocker?.params ?? []).forEach((param, paramIndex) => {
+              const name = names[paramIndex]?.name ?? '';
+              if (!/^__internal__(?:extcall|externalCall)/.test(name)) return;
+              const lock = typeof param === 'bigint' && param >= 0n
+                ? binToHex(sourceOutputs[Number(param)]?.lockingBytecode ?? new Uint8Array())
+                : '';
+              rows.push(`ext in${index} ${name}=${String(param)}${lock === '' ? '' : ` -> ${lock}`}`);
+            });
+          });
+          return rows.slice(0, 30);
+        })(),
+        ...probe.inputs.map((input, index) => {
+          const unlocker = (input as { unlocker?: {
+            contract?: { artifact?: { contractName?: string } };
+            abiFunction?: { name?: string };
+            params?: unknown[];
+          } }).unlocker;
+          const params = unlocker?.params ?? [];
+          // A negative numeric argument is the SDK's neutral placeholder (usually -1); its VM-number encoding is
+          // `0x81`, which is what an address-typed operand looks like when no real value was resolved for it.
+          const placeholders = params.flatMap((param, paramIndex) => (
+            typeof param === 'bigint' && param < 0n ? [`${paramIndex}=${param}`] : []));
+          return `in${index}=${unlocker?.contract?.artifact?.contractName ?? '?'}`
+            + `.${unlocker?.abiFunction?.name ?? '?'}`
+            + ` n=${params.length}${placeholders.length > 0 ? ` neg[${placeholders.join(',')}]` : ''}`
+            + ` lock=${(() => {
+              const generated = (unlocker as { generateLockingBytecode?: () => Uint8Array })
+                ?.generateLockingBytecode?.();
+              return generated === undefined ? 'n/a' : binToHex(generated);
+            })()}`;
+        }),
         `programLen=${(failing?.instructions ?? []).length}`,
         `progHead=${((failing?.instructions ?? []) as Array<{ opcode?: number }>)
           .slice(0, 10).map((instruction) => instruction.opcode).join(',')}`,
@@ -34132,13 +34205,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           `${item.length}:${binToHex(item)}`)).join(' ')}`,
         `tail=${(failing?.stack ?? []).slice(-4).map((item) => (
           `${item.length}:${binToHex(item)}`)).join(' ')}`,
-        `span81=${trace.flatMap((state, ordinal) => {
+        `guardFrames=${trace.flatMap((state, ordinal) => {
           const step = state as { ip?: number; instructions?: Array<{ opcode?: number }>;
             stack?: Uint8Array[]; error?: unknown };
-          if ((step.instructions ?? []).length !== 16) return [];
-          return [`${ordinal}|ip${step.ip}|${(step.stack ?? []).slice(-4).map((item) => (
-            `${item.length}:${binToHex(item)}`)).join('~')}`];
-        }).slice(-4).join(' || ')}`,
+          if ((step.instructions ?? []).length !== 15) return [];
+          return [`${ordinal}|ip${step.ip}${step.error === undefined ? '' : '|ERR'}|`
+            + `${(step.stack ?? []).slice(-4).map((item) => (
+              `${item.length}:${binToHex(item)}`)).join('~')}`];
+        }).slice(-6).join(' || ')}`,
         `recent=${trace.slice(-6).map((state, offset) => {
           const step = state as { ip?: number; instructions?: Array<{ opcode?: number }>;
             stack?: Uint8Array[]; error?: unknown };

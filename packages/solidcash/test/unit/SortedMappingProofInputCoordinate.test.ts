@@ -103,12 +103,25 @@ describe('sorted mapping proof-input coordinate', () => {
     expect(unlocker.params[witnessIndex]).toBe(BigInt(proofInputIndex - hostInputIndex));
   });
 
-  // Reproduces the next blocker in ~0.3 s instead of ~65 s of marketplace ladder. The converged transaction is
-  // rejected at input 0 (the host master, running the route program = contract bytecode behind a 5-instruction
-  // prologue): contract bytecode instruction 181 `OP_EQUALVERIFY` fails, in the window
-  // `OP_INPUTINDEX; OP_2; OP_LSHIFTNUM; OP_DUP; OP_OUTPUTBYTECODE; OP_3; OP_PICK; OP_EQUALVERIFY;
-  // OP_DUP; OP_OUTPUTTOKENCATEGORY`. The compared pair looks like a 35-byte locking bytecode against 32 zero
-  // bytes, i.e. an unresolved witness. Enable this case once the host's block-slot output identity check passes.
+  // Reproduces the current `take job` blocker in ~0.3 s instead of ~65 s of marketplace ladder, so enable this
+  // case first and only then run the ladder.
+  //
+  // What it asserts: a converged transaction that makes an external call and writes a sorted mapping must verify.
+  // Two independent defects block it, both measured (see the handoff's SESSION CLOSE-OUT):
+  //
+  //  1. PARTICIPANT PLACEMENT. The covenant addresses the caller's own block slots as
+  //     `masterInputIndex + blockLayout slot offset` (here artifact 194-203 reads `output[activeInputIndex + 2]`,
+  //     the entry slot), but external-call participant blocks are placed *before* the caller's entry inputs/outputs
+  //     by the legacy order, so that output is the callee's. Relaxing both gates of the dense path
+  //     (`!hasExternalGroups` and `this.funderUtxos.length > 0`; the latter is over-strict - this block needs no
+  //     gap fillers) and deferring the participants removes the covenant failure entirely.
+  //  2. PREDECESSOR NODE VALUE. After that, the frame publishes the batch's target node commitment twice and never
+  //     the predecessor's, leaving exactly one node's satoshis unmatched (a 1200-sat deficit with no change output
+  //     to absorb it). `targetCommitment` is computed once per logical slot while the batch publishes two nodes, and
+  //     `batchPredCommitments` never reaches `StatefulTransactionBuilder`.
+  //
+  // Going green therefore means both fixes are in: participants after the caller's complete block, and the batch's
+  // predecessor node materialized with its own commitment (7 outputs, no duplicate commitment).
   it.skip('verifies the converged transaction that spends the bracketing entry NFT', async () => {
     const provider = createTestProvider();
     const calleeArtifact = compileString(CALLEE_SOURCE, {});

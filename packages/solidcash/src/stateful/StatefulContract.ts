@@ -5535,7 +5535,7 @@ function dumpProbeTerminal(
         ? instruction.opcode
         : `${instruction.opcode}:${binToHex(data).slice(0, 16)}`;
     }),
-    stack: state.stack.slice(-10).map((item) => (item.length <= 16
+    stack: state.stack.slice(-10).map((item) => (item.length <= 300
       ? `${item.length}:${binToHex(item)}`
       : `${item.length}:${binToHex(item.subarray(0, 8))}..${binToHex(item.subarray(-8))}`)),
   }));

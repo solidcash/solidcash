@@ -34587,6 +34587,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
    */
   async _deriveReturnValue(
     functionName: string, args: FunctionArgument[], calls?: CallInfo[], exactAbiFunction?: AbiFunction,
+    calleeCalls?: ExternalCallInfo[],
   ): Promise<StateValue> {
     const directMappingRead = directMappingReadPlan(this.inner.artifact, functionName);
     if (directMappingRead) {
@@ -34759,8 +34760,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       }
     }
     // emitReturn makes _createBuilder lay out the return-event output; the probe then extracts its commitment.
+    // `calls` is the caller's resolved graph (a return-ABI hint); `calleeCalls` are the probed function's OWN
+    // published calls, resolved against the frame it is being invoked with. The probe materializes those
+    // participants exactly like an ordinary build so its co-spent coordinates name the addresses the callee's
+    // identity checks expect instead of the sentinel that points back at the executing input.
     const builder = await this._createBuilder(
-      functionName, args, { emitReturn: true, returnProbeOnly: true, calls, abiFunction },
+      functionName, args, {
+        emitReturn: true, returnProbeOnly: true, calls, abiFunction, externalCalls: calleeCalls,
+      },
     );
     let blob = (builder as any).__derivedReturnBlob as Uint8Array | undefined;
     // A compiler route's physical result coordinate and delegate input belong to the route carrier. Falling back
@@ -35069,6 +35076,81 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         forward(name: string, args: FunctionArgument[]): StatefulFunctionCall;
       } | undefined;
     };
+    /**
+     * Resolve a callee's own published external calls against the exact argument frame the probe invokes it with.
+     *
+     * A return probe builds its own balanced transaction on the callee, so it materializes the callee's co-spent
+     * participants itself. Resolving them here is what lets that builder see the real callee instances: name-based
+     * registry lookup cannot bind a call whose target is a computed address (`IERC20(input.currency)`), and an
+     * unbound slot leaves every `__internal__extcall*` coordinate at its sentinel, so the callee's own identity
+     * check compares the named address against an unrelated input and the probe aborts before its return band.
+     *
+     * Fail closed: a slot this cannot resolve stays `undefined`, which keeps the caller's established
+     * placeholder/withExternalCall() behavior instead of silently binding a same-named deployment.
+     */
+    const calleeExternalCalls = async (
+      callee: StatefulContract,
+      fn: string,
+      fnArgs: FunctionArgument[],
+      fnInputs: readonly { name: string; type: string }[] | undefined,
+      callerState: Record<string, unknown> | undefined,
+    ): Promise<ExternalCallInfo[] | undefined> => {
+      const abi = callee._resolveCallAbi(fn, fnArgs);
+      const published = abi?.externalCalls;
+      if (!published?.length) return undefined;
+      const selfAddress = hexToBin(callee.inner.lockingBytecode);
+      const resolvedCalls: ExternalCallInfo[] = [];
+      // The call frame's own argument sources read the CALLEE's state (`input.currency`, an immutable address the
+      // constructor pinned). `callerState` describes the invoking owner and is only a fallback for the shapes that
+      // legitimately read through it; the callee's authenticated snapshot is the authority.
+      let calleeState: Record<string, unknown> | undefined;
+      if (published.some((ec) => ec.addressStateVar !== undefined
+        || ec.addressSource?.kind === 'expression')) {
+        try {
+          calleeState = await callee.getState() as Record<string, unknown>;
+        } catch {
+          calleeState = undefined;
+        }
+      }
+      const fnState = { ...(callerState ?? {}), ...(calleeState ?? {}) };
+      for (const ec of published) {
+        // A target the compiler pinned by state or literal never appears in `addressSource`; read it from the
+        // callee's own authenticated state so both provenance forms resolve to the same deployment.
+        const resolvedTarget = ec.addressSource
+          ? callee._resolveExternalArgs(
+            [ec.addressSource], fnArgs, callee.inner.artifact, fnState, fnInputs, resolved,
+            0, false, selfAddress,
+          )?.[0]
+          : ec.addressStateVar !== undefined
+            ? fnState?.[ec.addressStateVar] as FunctionArgument | undefined
+            : ec.addressLiteral;
+        const child = registeredTarget(ec.interfaceName, resolvedTarget);
+        // One unresolvable participant makes the whole frame unrepresentable: a partial list would leave that
+        // slot's coordinates at the sentinel AND shift every later participant's physical block.
+        if (!child || !(child instanceof StatefulContract)) return undefined;
+        // A low-level callsite publishes the decoded callee under a runtime selector instead of a source
+        // interface name, so its argument frame is the raw one and its function name has to be recovered from
+        // the callee's own ABI. Binding the wrong callee here would silently redirect the probe's co-spend.
+        const rawFunctionName = ec.interfaceName === '__raw__'
+          ? ec.rawFunctionName ?? (child.inner.artifact.abi as readonly AbiFunction[])
+            .find((candidate) => ec.rawSelector !== undefined
+              && candidate.selector?.toLowerCase() === ec.rawSelector.toLowerCase())?.name
+          : undefined;
+        if (ec.interfaceName === '__raw__' && rawFunctionName === undefined) return undefined;
+        const sources = ec.rawArgSources ?? ec.argSources;
+        const childArgs = callee._resolveExternalArgs(
+          sources, fnArgs, callee.inner.artifact, fnState, fnInputs, resolved,
+          0, false, selfAddress,
+        );
+        if (!childArgs) return undefined;
+        resolvedCalls.push({
+          externalContract: child,
+          functionName: rawFunctionName ?? ec.functionName,
+          args: childArgs,
+        });
+      }
+      return resolvedCalls;
+    };
     const derive = async (
       interfaceName: string,
       functionName: string,
@@ -35091,8 +35173,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             forward(name: string, args: FunctionArgument[]): StatefulFunctionCall;
           }).forward(functionName, values).staticCall() as FunctionArgument;
         }
-        return await (registered as StatefulContract)._deriveReturnValue(
-          functionName, values,
+        const callee = registered as StatefulContract;
+        const calleeAbi = callee._resolveCallAbi(functionName, values);
+        return await callee._deriveReturnValue(
+          functionName, values, undefined, calleeAbi,
+          await calleeExternalCalls(callee, functionName, values, calleeAbi?.inputs, state),
         ) as FunctionArgument;
       } catch (error) {
         if (!allowProvisional || !(error instanceof Error)

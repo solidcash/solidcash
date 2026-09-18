@@ -2310,12 +2310,20 @@ const evaluateEveryInput = (
           return `${i}${i === inputIndex ? '*FAIL' : ''}:${un.contract.name}.${un.abiFunction?.name ?? '-'}`;
         }).filter(Boolean).join(' | '));
       }
-      const failingProgram = evaluated.instructions as readonly { opcode: number }[];
+      const failingProgram = evaluated.instructions as readonly { opcode: number; data?: Uint8Array }[];
+      // The instruction that failed, the one the state points at, and the window before it: a bare "failed an
+      // OP_VERIFY" cannot be attributed without them, and re-running with an instrumented build should not be
+      // necessary to see which construct refused.
+      const windowStart = Math.max(0, evaluated.ip - 9);
       throw mapMessageBusVmFailure(builder, transaction, inputIndex, String(objection), {
         ip: evaluated.ip,
         programLength: failingProgram.length,
         opcode: failingProgram[evaluated.ip]?.opcode,
         previousOpcode: failingProgram[evaluated.ip - 1]?.opcode,
+        window: failingProgram.slice(windowStart, evaluated.ip + 1).map((instruction) => (
+          instruction.data === undefined || instruction.data.length === 0
+            ? String(instruction.opcode)
+            : `${String(instruction.opcode)}:${binToHex(instruction.data).slice(0, 12)}`)),
       });
     }
   });
@@ -2391,6 +2399,7 @@ export function mapMessageBusVmFailure(
   rawVmReason: string,
   failure?: {
     ip?: number; programLength?: number; opcode?: number; previousOpcode?: number;
+    window?: readonly string[];
   },
 ): Error {
   // libauth reports the state at the instruction that follows a failed operation, so both opcodes are named: the
@@ -2400,7 +2409,9 @@ export function mapMessageBusVmFailure(
     : ` (ip ${String(failure.ip)}`
       + `${failure.programLength === undefined ? '' : ` of ${String(failure.programLength)}`}`
       + `${failure.opcode === undefined ? '' : `, opcode ${String(failure.opcode)}`}`
-      + `${failure.previousOpcode === undefined ? '' : `, failing opcode ${String(failure.previousOpcode)}`})`;
+      + `${failure.previousOpcode === undefined ? '' : `, failing opcode ${String(failure.previousOpcode)}`}`
+      + `${failure.window === undefined || failure.window.length === 0
+        ? '' : `, window ${failure.window.join(' ')}`})`;
   const input = builder.inputs[inputIndex] as {
     unlocker?: {
       abiFunction?: { selector?: string; name?: string };

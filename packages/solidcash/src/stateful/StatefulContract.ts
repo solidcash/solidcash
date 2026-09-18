@@ -33281,18 +33281,20 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         if (group === undefined) continue;
         const position = abiFunction.inputs.findIndex((candidate) => candidate.name === input.name);
         if (position < 0 || position >= finalArgs.length) continue;
-        // The anchor band is the SDK's own record of which co-spent input carries this callee's identity, resolved
-        // from the materialized input order. For a direct route that input IS the callee master, so it outranks a
-        // planned coordinate; a proxied anchor carries the `+1_000_000` implementation marker instead of an index
-        // and is skipped.
+        // The materialized master is the authority: the caller's own identity check reads THAT input's locking
+        // bytecode against the compiled call target. An identity ANCHOR is a different co-spent resource (a
+        // permissionless logical-identity entry, not the callee's master), so it may only stand in when the
+        // callee master itself is not part of this transaction - otherwise the check authenticates the anchor's
+        // bytecode and aborts with a bare OP_VERIFY. A proxied anchor carries the `+1_000_000` implementation
+        // marker instead of an index and is skipped.
         const anchorPosition = abiFunction.inputs.findIndex((candidate) =>
           candidate.name === `__internal__extcallAnchorIdx${slot}`
           || candidate.name === '__internal__extcallAnchorIdx');
         const anchorValue = anchorPosition < 0 ? undefined : finalArgs[anchorPosition];
         const anchorIndex = typeof anchorValue === 'bigint'
           && anchorValue >= 0n && anchorValue < 1_000_000n ? Number(anchorValue) : -1;
-        const authoritative = anchorIndex >= 0
-          ? anchorIndex : builder.findMaterializedMasterInput(group.sharedGroupIndex ?? slot);
+        const materializedMaster = builder.findMaterializedMasterInput(group.sharedGroupIndex ?? slot);
+        const authoritative = materializedMaster >= 0 ? materializedMaster : anchorIndex;
         if (authoritative < 0 || finalArgs[position] === BigInt(authoritative)) continue;
         finalArgs[position] = BigInt(authoritative);
         masterWitnessesChanged = true;
@@ -34442,6 +34444,18 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         commitment: (output as { token?: { nft?: { commitment?: Uint8Array } } }).token?.nft?.commitment === undefined
           ? undefined : binToHex((output as { token: { nft: { commitment: Uint8Array } } }).token.nft.commitment),
       }))));
+      console.error('probe-input-locks', JSON.stringify(probe.inputs.map((input, index) => {
+        const source = sourceOutputs[index];
+        return {
+          index,
+          outpoint: `${input.txid.slice(0, 8)}:${input.vout}`,
+          lockLen: source?.lockingBytecode.length,
+          lockHead: binToHex(source?.lockingBytecode ?? new Uint8Array()).slice(0, 24),
+          category: source?.token?.category === undefined ? undefined
+            : binToHex(source.token.category).slice(0, 10),
+          commitLen: source?.token?.nft?.commitment?.length,
+        };
+      })));
       console.error('probe-internals', JSON.stringify(probe.inputs.map((input, index) => {
         const unlocker = (input as {
           unlocker?: { params?: unknown[]; abiFunction?: { inputs?: Array<{ name?: string }> } };

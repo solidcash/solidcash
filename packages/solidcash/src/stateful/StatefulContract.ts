@@ -34202,6 +34202,23 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             // The value lives in the callee's ENTRY NFTs, so an address-domain mismatch between the decoded call
             // argument and the stored key shows up as a zero result. Print the keys the callee actually holds.
             console.error('atomic-seed-derived', {
+              groupBlockInputs: (group.blockInputs ?? []).map((input) => {
+                const commitment = input.token?.nft?.commitment;
+                const hex = commitment === undefined ? 'none'
+                  : typeof commitment === 'string' ? commitment : binToHex(commitment);
+                const arg = (node.args ?? []).find((value) => value instanceof Uint8Array) as Uint8Array | undefined;
+                return `${input.token?.category?.slice(0, 8) ?? '-'}:${hex.slice(0, 26)}`
+                  + `${arg !== undefined && hex.includes(binToHex(arg)) ? ' <--CONTAINS-ARG' : ''}`;
+              }),
+              groupArgs: (node.args ?? []).map((value) => (value instanceof Uint8Array
+                ? `bytes${value.length}:${binToHex(value).slice(0, 20)}` : String(value))),
+              pendingReturns: returnEvents.map((candidate) => ({
+                identity: candidate.identity,
+                category: candidate.categoryId?.slice(0, 12),
+                bytes: candidate.commitment.length,
+                head: binToHex(candidate.commitment).slice(0, 24),
+                provisional: candidate.provisional === true,
+              })),
               eventIdentity: event.identity,
               groupReturnOutputIndex: group.returnOutputIndex,
               builtReturnOutputIndex: builder.getBuiltExternalCallReturnEventOutputIndex(groupIndex),

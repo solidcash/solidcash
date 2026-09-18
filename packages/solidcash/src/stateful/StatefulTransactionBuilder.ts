@@ -22825,8 +22825,10 @@ export class StatefulTransactionBuilder {
             // compared structurally.
             category: output.token === undefined ? undefined : binToHex(output.token.category).slice(0, 12),
             capability: output.token?.nft?.capability,
+            // Full commitment: the batch's two nodes differ in it, and a 20-character prefix made them
+            // indistinguishable (both began `0000..`), which is how round 89's conclusion went wrong.
             commitment: output.token?.nft === undefined
-              ? undefined : binToHex(output.token.nft.commitment).slice(0, 20),
+              ? undefined : binToHex(output.token.nft.commitment),
           })),
         }));
       }

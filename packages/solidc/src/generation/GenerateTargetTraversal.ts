@@ -1723,10 +1723,29 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     return aligned;
   }
 
+  private emitTrapWindow: number[] = [];
+
   private emit(op: OpOrData | OpOrData[], locationData: SingleLocationData): void {
     // The usage probe only needs helper-site counts and compact-id allocation. Appending discarded
     // opcodes and location records dominated throwaway body generation on large contracts.
     if (this.isSubroutineUseProbe) return;
+    if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+      ?.SOLIDC_DEBUG_EMIT_TRAP === '1') {
+      const emitted = Array.isArray(op) ? op : [op];
+      for (const item of emitted) {
+        this.emitTrapWindow.push(typeof item === 'number' ? item : -1);
+        if (this.emitTrapWindow.length > 8) this.emitTrapWindow.shift();
+        if (this.emitTrapWindow.length === 8
+          && this.emitTrapWindow.every((value, index) =>
+            value === [148, 121, 192, 147, 199, 136, 117, 116][index])) {
+          console.error('emit-trap', JSON.stringify({
+            function: this.currentFunction?.name,
+            stack: new Error('emit-trap').stack?.split('\n').slice(1, 9),
+          }));
+          this.emitTrapWindow = [];
+        }
+      }
+    }
     if (Array.isArray(op)) {
       for (let i = 0; i < op.length; i += 1) {
         this.output.push(op[i] as Op);

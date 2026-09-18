@@ -102,4 +102,31 @@ describe('sorted mapping proof-input coordinate', () => {
     // distance - a callee participant block sits between the master's data NFTs and the entry NFT here.
     expect(unlocker.params[witnessIndex]).toBe(BigInt(proofInputIndex - hostInputIndex));
   });
+
+  // Reproduces the next blocker in ~0.3 s instead of ~65 s of marketplace ladder. The converged transaction is
+  // rejected at input 0 (the host master, running the route program = contract bytecode behind a 5-instruction
+  // prologue): contract bytecode instruction 181 `OP_EQUALVERIFY` fails, in the window
+  // `OP_INPUTINDEX; OP_2; OP_LSHIFTNUM; OP_DUP; OP_OUTPUTBYTECODE; OP_3; OP_PICK; OP_EQUALVERIFY;
+  // OP_DUP; OP_OUTPUTTOKENCATEGORY`. The compared pair looks like a 35-byte locking bytecode against 32 zero
+  // bytes, i.e. an unresolved witness. Enable this case once the host's block-slot output identity check passes.
+  it.skip('verifies the converged transaction that spends the bracketing entry NFT', async () => {
+    const provider = createTestProvider();
+    const calleeArtifact = compileString(CALLEE_SOURCE, {});
+    const hostArtifact = compileString(HOST_SOURCE, {});
+    const calleeInner = new Contract(calleeArtifact, [], { provider });
+    const hostInner = new Contract(hostArtifact, [addressToLockScript(calleeInner.address)], { provider });
+    const calleeSetup = await setupStatefulUtxos(
+      provider, calleeInner, calleeArtifact.stateLayout!, { count: 0n },
+    );
+    const hostSetup = await setupStatefulUtxos(
+      provider, hostInner, hostArtifact.stateLayout!, { result: 0n },
+    );
+    const callee = StatefulContract.withCategory(calleeInner, calleeSetup.categoryId);
+    const host = StatefulContract.withCategory(hostInner, hostSetup.categoryId, {
+      externals: { ICallee: callee },
+    });
+
+    await expect(host.record(KEY, 7n).send()).resolves.toHaveProperty('txid');
+    await expect(host.getState()).resolves.toMatchObject({ result: 7n });
+  });
 });

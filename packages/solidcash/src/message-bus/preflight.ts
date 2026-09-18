@@ -1425,6 +1425,9 @@ const evaluateEveryInput = (
           inputIndex,
           ip: evaluated.ip,
           opcode: evaluated.instructions[evaluated.ip]?.opcode,
+          programLength: evaluated.instructions.length,
+          window: evaluated.instructions.slice(Math.max(0, evaluated.ip - 8), evaluated.ip + 2)
+            .map((instruction) => instruction.opcode),
           controlStack: evaluated.controlStack.map((item) => typeof item === 'object' ? {
             ip: item.ip,
             instructionCount: item.instructions.length,

@@ -18161,6 +18161,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         : overrides?.calls?.find((call): call is Extract<CallInfo, { type: 'stateful' }> =>
           call.type === 'stateful' && call.functionName === name)?.args
     );
+    // Proof (predecessor) entry UTXO per sorted-mapping slot, retained so a probe build can republish the physical
+    // input coordinate it actually assembled instead of the dense block-slot offset the covenant adds to the master.
+    const topLevelVmapProofUtxos = new Map<number, { txid: string; vout: number }>();
+
     if (!overrides?.masterUtxo && !onChainState.masterUtxo) {
       throw new Error('Master UTXO not found on-chain');
     }
@@ -20310,6 +20314,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               ? proofOwnerOffset === undefined ? -1n : BigInt((overrides?.blockBase ?? 0) + proofOwnerOffset)
               : BigInt(batchPredOutputBase + predOrdinal);
           const raw = this._rawVMapBatchWitness?.get(slotIndex);
+          if (raw?.proof === undefined && proof.utxo !== undefined) {
+            topLevelVmapProofUtxos.set(slotIndex, { txid: proof.utxo.txid, vout: proof.utxo.vout });
+          }
           batchWitnesses.push(raw?.slot ?? slot, raw?.proof ?? BigInt(offset),
             raw?.next ?? decodeEntryCommitment(out.commitment).nextKey, raw?.predOut ?? predOut,
             ...(batch.linear ? [raw?.rank ?? BigInt(linearRank.get(slotIndex)!)] : []));
@@ -33111,6 +33118,38 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         masterWitnessesChanged = true;
       }
       if (masterWitnessesChanged) {
+        stateInputUnlocker = buildStateInputUnlocker();
+        builder._setMasterUnlocker(stateInputUnlocker);
+      }
+    }
+
+    // A sorted-mapping proof witness publishes the distance from the executing master input to the co-spent entry
+    // NFT that brackets the written key, and the covenant reads the proof input at `masterInputIndex + offset`. The
+    // plan derives that distance from the collection's block slot, which equals the physical distance only while the
+    // input frame is dense - an assembled participant region can interleave callee blocks before the entry NFT. The
+    // covenant then authenticates the locking bytecode of whatever input the arithmetic names and aborts on
+    // `OP_EQUALVERIFY`, so the assembled outpoints are the only authority for the distance.
+    if (abiFunction && topLevelVmapProofUtxos.size > 0) {
+      let proofWitnessesChanged = false;
+      const masterInputIndex = builder.findInputIndexByOutpoint(masterUtxo) >= 0
+        ? builder.findInputIndexByOutpoint(masterUtxo)
+        : builder.findInputIndexByOutpoint(derivationMasterUtxo);
+      if (masterInputIndex >= 0) {
+        for (const input of abiFunction.inputs) {
+          const proofWitness = /^__internal__vmapBatchProof_(\d+)$/.exec(input.name);
+          if (proofWitness === null) continue;
+          const proofUtxo = topLevelVmapProofUtxos.get(Number(proofWitness[1]));
+          if (proofUtxo === undefined) continue;
+          const position = abiFunction.inputs.findIndex((candidate) => candidate.name === input.name);
+          if (position < 0 || position >= finalArgs.length) continue;
+          const proofInputIndex = builder.findInputIndexByOutpoint(proofUtxo);
+          const offset = proofInputIndex < 0 ? -1 : proofInputIndex - masterInputIndex;
+          if (offset < 0 || finalArgs[position] === BigInt(offset)) continue;
+          finalArgs[position] = BigInt(offset);
+          proofWitnessesChanged = true;
+        }
+      }
+      if (proofWitnessesChanged) {
         stateInputUnlocker = buildStateInputUnlocker();
         builder._setMasterUnlocker(stateInputUnlocker);
       }

@@ -5565,6 +5565,17 @@ function evaluateProbeTrace(
 ): AuthenticationProgramStateCommon[] {
   const maxIn = provider.consensusLimits?.maximumInputBytes ?? 10_000;
   const debugEnv = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env;
+  if (debugEnv?.SOLIDC_DEBUG_PROBE_SHAPE === '1') {
+    // Every probe evaluation reports its frame shape and the emitting call site: a participant-local probe driven
+    // with aggregate input coordinates is invisible otherwise.
+    console.error('probe-shape', JSON.stringify({
+      inputs: program.transaction.inputs.length,
+      outputs: program.transaction.outputs.length,
+      inputIndex: program.inputIndex,
+      frames: new Error('probe-shape').stack?.split('\n').slice(2, 6)
+        .map((frame) => frame.trim().replace('file:///Code/cashscript/.worktrees/kernel-beta-candidate/', '')),
+    }));
+  }
   // Production-sized inputs retain the faithful trace for diagnostics. Relaxed/private-network inputs always
   // use the opcode observer: libauth debug() structured-clones every intermediate state and stack, which made a
   // cold large-contract fixture spend nearly all CPU cloning and collecting a trace these derivations reduce to
@@ -15187,7 +15198,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         this.lastDerivationIterations = 0;
 	        for (let iter = 0; iter < maxIterations; iter++) {
 	          const debugIterationStartedAt = debugTargetsThisDerivation ? Date.now() : 0;
-	          const probeBuilder2 = stb.build();
+	          let probeBuilder2 = stb.build();
 	          const debugBuilderBuiltAt = debugTargetsThisDerivation ? Date.now() : 0;
 	          if (debugTargetsThisDerivation) console.error('derive-phase2-builder-built', {
 	            iter, buildMs: debugBuilderBuiltAt - debugIterationStartedAt,
@@ -15204,7 +15215,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             ? stb.insertBeforeLateValueSuffix(probeBuilder2, { to: dummyLbc, amount: 1000n }, {
               rebindReturnWitnessesOnly: probeBuilder2.outputs.length > 30,
             }) : undefined;
-	          const { transaction: transaction2, sourceOutputs: sourceOutputs2 } = probeBuilder2.buildLibauthProgram();
+	          let { transaction: transaction2, sourceOutputs: sourceOutputs2 } = probeBuilder2.buildLibauthProgram();
 	          const debugProgramBuiltAt = debugTargetsThisDerivation ? Date.now() : 0;
 	          if (debugTargetsThisDerivation) console.error('derive-phase2-program-built', {
 	            iter, programMs: debugProgramBuiltAt - debugBuilderBuiltAt,
@@ -32128,9 +32139,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         if (target !== undefined && localIndex < 0) {
           throw new Error('Selected root dynamic-storage chunk input is absent from the finalized transaction');
         }
-        finalArgs[topLevelDynamicChunkArgumentIndex] = resolveDynamicChunkInputBase(
-          localIndex, overrides?.blockBase ?? 0,
-        );
+        // The block base relocates a participant-local index into the aggregate frame. A probe that evaluates the
+        // participant-LOCAL frame cannot address the relocated index at all (measured: 222 in an 88-input frame),
+        // so keep the frame-local value there; the aggregate build re-applies the relocated one.
+        const relocated = resolveDynamicChunkInputBase(localIndex, overrides?.blockBase ?? 0);
+        const frameLength = materialized?.inputs.length;
+        const unaddressable = localIndex >= 0 && frameLength !== undefined
+          && relocated >= BigInt(frameLength);
+        finalArgs[topLevelDynamicChunkArgumentIndex] = unaddressable ? BigInt(localIndex) : relocated;
         if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
           ?.SOLIDC_DEBUG_DYNAMIC_CHUNK_ORDER === '1') {
           console.error('dynamic-chunk-root-base', JSON.stringify({

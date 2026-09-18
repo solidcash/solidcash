@@ -3465,6 +3465,10 @@ export class AtomicMessageBusComposition {
               localChunkBase: localChunkBase === undefined ? undefined : String(localChunkBase),
               localFrameLength: local.inputs.length,
               params: masterUnlocker?.params?.length,
+              // Recreating the publish-time unlocker needs the participant's own Contract identity, which is what
+              // a rebase at this site would have to rebuild from.
+              selector: participant.artifact.messageBus?.selector,
+              constructorInputs: participant.artifact.constructorInputs.length,
             }));
           }
         }

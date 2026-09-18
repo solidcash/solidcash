@@ -1426,6 +1426,12 @@ const evaluateEveryInput = (
           ip: evaluated.ip,
           opcode: evaluated.instructions[evaluated.ip]?.opcode,
           programLength: evaluated.instructions.length,
+          programHead: evaluated.instructions.slice(0, 6).map((instruction) => {
+            const data = (instruction as { data?: Uint8Array }).data;
+            return data === undefined || data.length === 0
+              ? instruction.opcode
+              : `${instruction.opcode}:${binToHex(data).slice(0, 12)}`;
+          }),
           window: evaluated.instructions.slice(Math.max(0, evaluated.ip - 24), evaluated.ip + 2)
             .map((instruction) => {
               const data = (instruction as { data?: Uint8Array }).data;

@@ -2415,19 +2415,36 @@ export function mapMessageBusVmFailure(
   // Name the source predicate when the artifact maps this instruction to one. The compiler records requires per
   // function selector; libauth reports the state after the failure, so `ip - 1` is checked first.
   const requireSite = ((): string => {
-    const artifact = input?.unlocker?.contract?.artifact;
-    const functions = artifact?.debug?.functionDebug;
-    if (!artifact || !functions) return '';
+    // A proxied call executes the implementation's body, so the delegate artifact chain is searched too - the same
+    // widening `probeRequireStatement` performs for probes.
+    const artifacts: Array<NonNullable<typeof input>['unlocker'] extends infer _T ? {
+      contractName?: string;
+      debug?: { functionDebug?: Record<string, { requires?: Array<{ ip: number; line: number; message?: string }> }> };
+      delegateArtifact?: unknown;
+    } : never> = [];
+    const seen = new Set<unknown>();
+    const add = (artifact: unknown): void => {
+      if (artifact === undefined || artifact === null || seen.has(artifact)) return;
+      seen.add(artifact);
+      const typed = artifact as (typeof artifacts)[number];
+      artifacts.push(typed);
+      add(typed.delegateArtifact);
+    };
+    add(input?.unlocker?.contract?.artifact);
     const selector = input?.unlocker?.abiFunction?.selector;
-    const selectors = selector !== undefined && functions[selector] !== undefined
-      ? [selector] : Object.keys(functions);
-    for (const candidate of selectors) {
-      const requirements = functions[candidate]?.requires ?? [];
-      const hit = requirements.find((entry) => entry.ip === (failure?.ip ?? -1) - 1)
-        ?? requirements.find((entry) => entry.ip === failure?.ip);
-      if (hit !== undefined) {
-        return `; failing require in ${artifact.contractName ?? 'contract'}:${hit.line}`
-          + `${hit.message === undefined ? '' : ` (${hit.message})`}`;
+    for (const artifact of artifacts) {
+      const functions = artifact.debug?.functionDebug;
+      if (!functions) continue;
+      const selectors = selector !== undefined && functions[selector] !== undefined
+        ? [selector] : Object.keys(functions);
+      for (const candidate of selectors) {
+        const requirements = functions[candidate]?.requires ?? [];
+        const hit = requirements.find((entry) => entry.ip === (failure?.ip ?? -1) - 1)
+          ?? requirements.find((entry) => entry.ip === failure?.ip);
+        if (hit !== undefined) {
+          return `; failing require in ${artifact.contractName ?? 'contract'}:${hit.line}`
+            + `${hit.message === undefined ? '' : ` (${hit.message})`}`;
+        }
       }
     }
     return '';

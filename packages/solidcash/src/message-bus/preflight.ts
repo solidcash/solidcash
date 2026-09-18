@@ -2310,7 +2310,13 @@ const evaluateEveryInput = (
           return `${i}${i === inputIndex ? '*FAIL' : ''}:${un.contract.name}.${un.abiFunction?.name ?? '-'}`;
         }).filter(Boolean).join(' | '));
       }
-      throw mapMessageBusVmFailure(builder, transaction, inputIndex, String(objection));
+      const failingProgram = evaluated.instructions as readonly { opcode: number }[];
+      throw mapMessageBusVmFailure(builder, transaction, inputIndex, String(objection), {
+        ip: evaluated.ip,
+        programLength: failingProgram.length,
+        opcode: failingProgram[evaluated.ip]?.opcode,
+        previousOpcode: failingProgram[evaluated.ip - 1]?.opcode,
+      });
     }
   });
   if (!narrowPreflight) {
@@ -2383,12 +2389,23 @@ export function mapMessageBusVmFailure(
   transaction: Transaction,
   inputIndex: number,
   rawVmReason: string,
+  failure?: {
+    ip?: number; programLength?: number; opcode?: number; previousOpcode?: number;
+  },
 ): Error {
+  // libauth reports the state at the instruction that follows a failed operation, so both opcodes are named: the
+  // one that failed (`ip - 1`) and the one the state points at. Without this the raw VM reason names neither the
+  // instruction nor the frame, and a bare `failed an OP_VERIFY operation` cannot be attributed.
+  const location = failure === undefined || !Number.isInteger(failure.ip) ? ''
+    : ` (ip ${String(failure.ip)}`
+      + `${failure.programLength === undefined ? '' : ` of ${String(failure.programLength)}`}`
+      + `${failure.opcode === undefined ? '' : `, opcode ${String(failure.opcode)}`}`
+      + `${failure.previousOpcode === undefined ? '' : `, failing opcode ${String(failure.previousOpcode)}`})`;
   const input = builder.inputs[inputIndex] as {
     unlocker?: { abiFunction?: { selector?: string; name?: string } }
   } | undefined;
   if (input?.unlocker?.abiFunction?.selector?.toLowerCase() !== '53434231') {
-    return new Error(`messageBus: BCH-2026 preflight failed at input ${inputIndex}: ${rawVmReason}`);
+    return new Error(`messageBus: BCH-2026 preflight failed at input ${inputIndex}${location}: ${rawVmReason}`);
   }
   const envelope = compilerRouteEnvelope(
     transaction.inputs[inputIndex]?.unlockingBytecode ?? new Uint8Array(),
@@ -2399,7 +2416,8 @@ export function mapMessageBusVmFailure(
     && envelope[4] !== 1 && envelope[4] !== 2) {
     return new MessageBusDiagnosticError(
       'L3_MESSAGE_BUS_VERSION_UNSUPPORTED',
-      `BCH-2026 preflight failed at input ${inputIndex}: message-bus batch version ${envelope[4]} is unsupported; `
+      `BCH-2026 preflight failed at input ${inputIndex}${location}: `
+        + `message-bus batch version ${envelope[4]} is unsupported; `
         + `VM: ${rawVmReason}`,
       { ...context, metadataField: 'message-bus batch.version', actual: envelope[4], expected: [1, 2] },
     );
@@ -2407,7 +2425,8 @@ export function mapMessageBusVmFailure(
   if (!envelope || !isCanonicalCompilerRouteEnvelope(envelope)) {
     return new MessageBusDiagnosticError(
       'L3_MESSAGE_BUS_ENVELOPE_MALFORMED',
-      `BCH-2026 preflight failed at input ${inputIndex}: malformed message-bus batch envelope; VM: ${rawVmReason}`,
+      `BCH-2026 preflight failed at input ${inputIndex}${location}: `
+        + `malformed message-bus batch envelope; VM: ${rawVmReason}`,
       context,
     );
   }
@@ -2416,7 +2435,7 @@ export function mapMessageBusVmFailure(
       .map((match) => Number(match[0].replace(/,/g, ''))).filter(Number.isFinite);
     return new MessageBusDiagnosticError(
       'L3_VM_RESOURCE_LIMIT',
-      `BCH-2026 preflight failed at input ${inputIndex}: ${rawVmReason}`,
+      `BCH-2026 preflight failed at input ${inputIndex}${location}: ${rawVmReason}`,
       {
         inputIndex,
         resourceIdentity: `input:${inputIndex}`,
@@ -2434,7 +2453,7 @@ export function mapMessageBusVmFailure(
     ));
     if (idxParams.length > 0) console.error('preflight-return-idx', { inputIndex, idxParams, rawVmReason });
   }
-  return new Error(`messageBus: BCH-2026 preflight failed at input ${inputIndex}: ${rawVmReason}`);
+  return new Error(`messageBus: BCH-2026 preflight failed at input ${inputIndex}${location}: ${rawVmReason}`);
 }
 
 /** Refuse any covenant failure in an exact, fully assembled transaction. */

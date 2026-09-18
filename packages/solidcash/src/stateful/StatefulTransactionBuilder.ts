@@ -22801,6 +22801,28 @@ export class StatefulTransactionBuilder {
       const txSize = BigInt(encodeTransaction(transaction).byteLength);
       const minFee = this._checkMinRelayFee ? this.computeMinFee(txSize) : 0n;
       const requiredFee = minFee;
+      if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+        ?.SOLIDC_DEBUG_FEE_BALANCE === '1') {
+        // Print both sides on EVERY finalize pass, not only when the fee is short: a layout change has to be
+        // compared between two configurations (before/after a placement change), and the short-fee throw also
+        // requires `findChangeIndex` to fail, so it never fires for the passing configuration.
+        console.error('fee-balance', JSON.stringify({
+          totalInputSats: String(totalInputSats),
+          totalOutputSats: String(totalOutputSats),
+          fee: String(fee),
+          requiredFee: String(requiredFee),
+          inputs: transaction.inputs.map((_input, index) => ({
+            index,
+            value: String(this.allInputs[index]?.satoshis ?? 0n),
+            outpoint: `${String(this.allInputs[index]?.txid ?? '').slice(0, 8)}:${this.allInputs[index]?.vout}`,
+          })),
+          outputs: transaction.outputs.map((output, index) => ({
+            index,
+            value: String(output.valueSatoshis),
+            lock: binToHex(output.lockingBytecode).slice(0, 24),
+          })),
+        }));
+      }
       if (fee >= requiredFee) return false;
       // Re-signing after a change-output adjustment can move a DER signature across a one-byte length boundary.
       // When adjustment is necessary, take a small serialization margin; transactions already at
@@ -22809,27 +22831,6 @@ export class StatefulTransactionBuilder {
       const changeIndex = findChangeIndex(reduction);
       if (changeIndex === undefined) {
         if (fee < 0n) {
-          // A layout change that adds an output without adding an input shows up here as a satoshi deficit with no
-          // change output to absorb it (`findChangeIndex` returns undefined). Print both sides so the unmatched
-          // resource is identifiable instead of only the totals.
-          if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-            ?.SOLIDC_DEBUG_FEE_BALANCE === '1') {
-            console.error('fee-balance-deficit', JSON.stringify({
-              totalInputSats: String(totalInputSats),
-              totalOutputSats: String(totalOutputSats),
-              deficit: String(totalOutputSats - totalInputSats),
-              inputs: transaction.inputs.map((_input, index) => ({
-                index,
-                value: String(this.allInputs[index]?.satoshis ?? 0n),
-                outpoint: `${String(this.allInputs[index]?.txid ?? '').slice(0, 8)}:${this.allInputs[index]?.vout}`,
-              })),
-              outputs: transaction.outputs.map((output, index) => ({
-                index,
-                value: String(output.valueSatoshis),
-                lock: binToHex(output.lockingBytecode).slice(0, 24),
-              })),
-            }));
-          }
           throw new Error(
             `Transaction outputs (${totalOutputSats} sats) exceed inputs (${totalInputSats} sats). `
             + 'This transaction is invalid. Add more funding inputs or reduce outputs.',

@@ -32217,10 +32217,16 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             blockBase: overrides?.blockBase ?? 0,
             localIndex,
             frameLength,
+            unaddressable,
             target: target === undefined ? undefined : `${target.txid.slice(0, 12)}:${target.vout}`,
             value: String(finalArgs[topLevelDynamicChunkArgumentIndex]),
             readChunks: dynamicReadChunkInputs.length,
             writeChunks: dynamicChunkInputs.length,
+            // Who materialized this frame. A participant-local frame can be either the block this build PUBLISHES
+            // or a derivation probe of it; only the caller distinguishes them, and the composed coordinate is
+            // correct for the published block while the local substitute is required for the probe.
+            stack: new Error('dynamic-chunk-root-base').stack?.split('\n').slice(2, 5)
+              .map((line) => line.trim().replace(/.*\/packages\//, 'packages/')),
           }));
         }
       };

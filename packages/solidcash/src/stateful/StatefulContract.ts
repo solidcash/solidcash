@@ -15198,7 +15198,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         this.lastDerivationIterations = 0;
 	        for (let iter = 0; iter < maxIterations; iter++) {
 	          const debugIterationStartedAt = debugTargetsThisDerivation ? Date.now() : 0;
-	          let probeBuilder2 = stb.build();
+	          const probeBuilder2 = stb.build();
 	          const debugBuilderBuiltAt = debugTargetsThisDerivation ? Date.now() : 0;
 	          if (debugTargetsThisDerivation) console.error('derive-phase2-builder-built', {
 	            iter, buildMs: debugBuilderBuiltAt - debugIterationStartedAt,
@@ -15215,7 +15215,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             ? stb.insertBeforeLateValueSuffix(probeBuilder2, { to: dummyLbc, amount: 1000n }, {
               rebindReturnWitnessesOnly: probeBuilder2.outputs.length > 30,
             }) : undefined;
-	          let { transaction: transaction2, sourceOutputs: sourceOutputs2 } = probeBuilder2.buildLibauthProgram();
+	          const { transaction: transaction2, sourceOutputs: sourceOutputs2 } = probeBuilder2.buildLibauthProgram();
 	          const debugProgramBuiltAt = debugTargetsThisDerivation ? Date.now() : 0;
 	          if (debugTargetsThisDerivation) console.error('derive-phase2-program-built', {
 	            iter, programMs: debugProgramBuiltAt - debugBuilderBuiltAt,

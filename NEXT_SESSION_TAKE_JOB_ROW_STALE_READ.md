@@ -13833,3 +13833,40 @@ operands.
 
 **Verified state (defaults)**: greens 3 passed | 63 skipped; fast fixture 1 passed | 1 skipped; artifacts rebuilt
 canonically; `SOLIDC_HANDLER_BAND_MODEL` and `SOLIDC_OWNER_ALT_ANCHOR` both opt-in.
+
+Round 364: the two fixes have DIFFERENT next blockers; band+capture does not compose
+
+**Measured matrix** (all with the title-level tests; canonical = both gates off):
+
+    canonical          stall (take job)            greens PASS
+    band model only    stall CLEARED               greens fail: outlined emission check
+                                                    (input 129, ip 3 of 6, window 121 124 127 124)
+    band + blob seed   stall CLEARED               greens fail: `EACCToken.invokeDebug[-40]`, a
+                                                    75-instruction outlined helper (ip 66 of 75,
+                                                    "stack item length: 31; requested split index: -32")
+    capture only       stall CLEARED               greens fail: the same outlined emission check
+    band + capture     stall CLEARED               greens fail: the SAME 75-instruction encoder helper
+
+So the two fixes do NOT compose, and each unmasks its own next defect:
+
+  * the 75-instruction helper is a minimal-pushdata / VM-number normalizer (its body walks OP_1NEGATE, OP_1,
+    OP_16 byte tests and splits one-byte prefixes). It fails because the value it receives is wrong, i.e. an
+    argument pushed by its CALLER - which is exactly what the band seeding perturbs, because a band seed shifts
+    EVERY bottom-ordinal pick in the body by the band size. That is the coarse-shift problem: seeds are only
+    correct when the immediate caller is the route, and round 363's controlStack evidence shows these handler
+    bodies are invoked from nested compiler-emitted bodies instead (`instructionCount: 6338 / 11117`).
+  * the outlined emission check fails only on the capture path, i.e. when the OWNER VALUE changes: its row embeds an
+    `address(this)` lane that the contract derives from the owner (emitMasterInputIndex + OP_UTXOBYTECODE), while
+    the expected emissions vector was built by the plan from the SDK's own notion of that address. A different owner
+    therefore changes one side of the comparison only.
+
+**Conclusion for the next round.** The model-seeding direction is exhausted as a global change (it cannot be
+caller-aware for a shared body). The capture direction is the viable one, and its remaining blocker is a
+plan/contract CONSISTENCY problem: the caller-side `address(this)` lane must be derived from the same value the plan
+used when it built `graphEmissions` - which is the SDK's participant identity, not whatever the owner read yields.
+That is checkable directly: dump the constructed row's target/args prefix and the plan's expected row for the same
+row index (the composer builds the latter from the prepared call: `PreparedAtomicMessageBusCall.contract` /
+`targetLockingBytecode`), and compare the `address(this)` lane first.
+
+**Verified state (defaults)**: greens 3 passed | 63 skipped; fast fixture 1 passed | 1 skipped; artifacts rebuilt
+canonically; `SOLIDC_HANDLER_BAND_MODEL` and `SOLIDC_OWNER_ALT_ANCHOR` both opt-in.

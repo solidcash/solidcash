@@ -11306,3 +11306,37 @@ batch row value / `PredOut` machinery already has the write side). Candidate sit
 `childBatchLists`/`lateBatchLists` (`StatefulContract.ts` ~:26870 and ~:28620, both compute `keySlot` and then take
 `list.find(keySlot) ?? list.predecessorOf(keySlot)`), and the builder's `entryNfts`/`entryInputBySlot` pinning that
 believes a present UTXO belongs to the slot just because the address matched.
+
+Round 300: the pin and the runtime witness disagree about the KEY TUPLE, not about the slot hashing
+
+`SOLIDC_DEBUG_ENTRY_PIN=1` prints the slot the pinning branch actually used, whether the list has it, and the
+predecessor/entry it pinned. Measured (run 309), the composed FakeToken frame:
+
+    entry-pin { functionName: 'transferFrom', collection: '_allowances', slotIndex: 1,
+                slot: '4038d902362d5b4c8a612523358ee9915572e7d77cc75e9ab714bce94ad37a63',
+                present: false,
+                pinnedSlot: 'd1534eff8dfc4ed02a1fa5809356052e2452786c6a7ccab47bddea7b7433a133' }
+
+    (route frame, same run)  slotIndex 3 -> slot d1534eff…, present true, pinnedSlot d1534eff…
+                             slotIndex 2 -> slot 80a90055…, present false, pinnedSlot 00*32 (HEAD)
+
+So the pin is internally consistent (absent key -> it co-spends `list.predecessorOf(slot)`), and the slot it uses
+(`4038d902…`) is exactly the placeholder the builder materializes (`entry-placement targets[1]`). The RUNTIME
+witness `__internal__vmapBatchSlot_1` is `00fe98d8…`, which the resolution path computes from the key tuple
+`[marketplace proxy, Unicrow]` - i.e. the semantically correct `_allowances[from][msg.sender]` for this call, and
+the key the transaction's own `approve(unicrow, …)` writes.
+
+`keyToSlotMulti` is deterministic (sha256 per key, concatenated, hashed, high bit masked), so the two values can
+only differ because the two paths feed it DIFFERENT KEY BYTES. Brute-forcing the plausible encodings offline
+(sha256/keyToSlotMulti over user1 P2PKH(25B) and its hash160, user2 P2PKH, marketplace P2SH32(35B) and its
+hash160, marketplace/Unicrow/FakeToken categories, 32 zero bytes, both key orders) does NOT reproduce
+`4038d902…`, so at least one component of the pin's key tuple is a value that is not the address at all - most
+likely a stack temporary / witness-derived value for the `expression` key source (the frame's
+`msgSenderCategory = 141000000000000000000000…`, itself a 32-byte pushdata-shaped value, is the prime suspect).
+
+Next round, one run, decisive: print the ENCODED KEY BYTES at the pin site (the branch has `access`; the key values
+are resolved a few lines above it - the generic path below uses `keyValue`/`keyValues`, so hoist or re-resolve them
+for the log) and print them at each `__internal__vmapBatchSlot_*` writer (`childBatchTargets`/`lateBatchTargets`
+fills at ~:26871 / ~:28624). The two hex strings will name the disagreeing component directly; then make the pin
+use the same key bytes the witness publishes (the witness value is the one the covenant recomputes and the one the
+in-transaction `approve` wrote), and re-run take job.

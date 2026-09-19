@@ -19442,6 +19442,21 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             const wUnlocker = createEntryNftUnlocker(
               this.inner, overrides?.blockBase ?? 0, this.categoryId, access.collection,
             );
+            if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+              ?.SOLIDC_DEBUG_ENTRY_PIN === '1') {
+              // Pin and witness are written from DIFFERENT slot computations (this one feeds the co-spent entry,
+              // `childBatchTargets`/`batchTargetPlaceholders` feed the target node). Printing both here is the only
+              // way to see them disagree inside a single build.
+              const pinned = present ? list.find(slot) : list.predecessorOf(slot);
+              console.error('entry-pin', JSON.stringify({
+                functionName, entryFunction: entryAbiFunction?.name,
+                collection: access.collection, slotIndex,
+                slot: binToHex(slot),
+                present,
+                pinnedSlot: pinned === undefined ? undefined
+                  : String(pinned.utxo?.token?.nft?.commitment ?? '').slice(0, 64),
+              }));
+            }
             if (present) {
               entryNfts.push({ ...entryBase, utxo: { ...list.find(slot)!.utxo, unlocker: wUnlocker } });
             } else if (isSoftDelete) {

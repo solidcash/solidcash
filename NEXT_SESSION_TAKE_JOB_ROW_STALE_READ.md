@@ -12358,3 +12358,24 @@ caller identity into whichever build actually pins the entries. Then `transferFr
 `hasCallerLock: true` with slot `00fe98d8…` (or its correct predecessor), matching what the `approve` probe and the
 composed route already do - and the composed `transferFrom` row should finally read the allowance the same
 transaction writes.
+
+Round 341: only ONE builder call lives in `_deriveReturnValue` - so pair the pin with its own entry log
+
+`grep _createBuilder` inside `_deriveReturnValue` (`:35660`-`:36400`) returns exactly one site, `:35972` - the probe -
+and that build receives `callerLockingBytecode` whenever the parameter is defined. So the round-340 conclusion
+("the override is dropped inside `_deriveReturnValue`") cannot be the whole story: the pin that reports
+`hasCallerLock: false` for `transferFrom` must belong to a build whose entry log I have not matched to it (several
+`transferFrom` probes run in one `take job`, and the `derive-return-value-entry` line with `hasCallerLock: false`
+may describe a different one).
+
+Next round, one run: give every probe an id at BOTH ends and pair them, exactly as round 331 paired
+`probe-failed` - add `probeId` (input count + master outpoint + `vmapBatchSlot_0`) to
+`derive-return-value-entry`, and print the same id in `entry-pin-identity`. Then read the tuple for the id that
+actually pins `4038d902…`: if its entry log shows `hasCallerLock: true`, the override reached `_deriveReturnValue` and
+is lost between the probe build and the pin (a second builder inside the probe path); if it shows
+`hasCallerLock: false`, the `_deriveReturnValue` call itself is unthreaded and the caller (the `derive` helper's
+caller) is where the identity must be supplied.
+
+Everything else is measured and stable: the `approve` probe pins the correct key (`00fe98d8…`), the composed route
+frame pins `d1534eff…` with `hasCallerLock: true`, the greens pass (fixture 1/1 skipped, `unicrow params` 2,
+`admin` 8), and the composed failure remains the `ERC20InsufficientAllowance` read at input 20.

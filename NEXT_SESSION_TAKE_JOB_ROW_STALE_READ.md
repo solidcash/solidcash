@@ -12202,3 +12202,35 @@ Next round: read the `probe-input-locks` (6 entries) and the full operand set fo
 node (in which case the NEW node's value tail is the derivation target) or the owner's BALANCE entry (the frame may
 now need its `_balances` predecessor to be the value the same transaction wrote, i.e. the same read-after-write
 question one level deeper).
+
+Round 335: the probe's 6 inputs include BOTH caller carriers; ip 29 compares the target NEW node
+
+Full record for run 348 (the probe that refuses ip 29, `probeId [6, 'ea84c562', 0]`):
+
+    probe-input-locks
+      0  ea84c562:0     aa20133a77fd…  ed78c449  (FakeToken master)
+      1  ebf904fc:3     aa203007d941…  ed78c449  64B (the _allowances HEAD predecessor)
+      2  00000000:17    76a914713f4095…            (funding)
+      3  f4a0abf1:0     aa20bbc502f0…  a3cef944  (the REAL caller master - round-320 co-spend)
+      4  00000000:0     aa20bbc502f0…  a3cef944  (the SYNTHETIC carrier - round-323 synthesis)
+      5  00000000:16    76a914713f4095…            (funding)
+
+    failure: 'probe stopped at ip 29 (opcode 118) ... failing require in FakeToken:98;
+              window 120 130 119 146 145 105 118; stack d3=128b:80a90055…'
+
+Two observations for the next round:
+
+1. Both carriers are present - the real master (from `_deriveReturnValue`) AND the synthetic one (from the
+   `_createBuilder` fallback). They are redundant and, more importantly, they mean two different build paths each
+   injected one; the synthesis should be skipped when a real carrier was supplied (the branch order already tries
+   `callerIdentityUtxos` first, so the duplicate must come from a build whose overrides carried no
+   `callerIdentityUtxos` but did carry lock+category - i.e. the emitReturn/rebuild frame - and both frames' inputs
+   end up in this probe's list).
+2. The refusal is now a VALUE check on the row the identity resolution just admitted: `d3` is the 128-byte target
+   NEW node (`80a90055…` = `slot || next || value`), so the next measurement is the full operand set at ip 29
+   (extend the `probe-failed` record to include `stack` and `compared` the way `describeReturnProbeFailure` does for
+   its window). That will say whether the mismatch is the decoded allowance (value tail of the NEW node) or the
+   owner's balance entry - the same read-after-write question one level deeper than rounds 306-333 solved.
+
+Housekeeping: the two redundant diagnostics (`read-band-merge`, `builder-construction`) and the duplicate carrier are
+candidates for cleanup once the row authenticates.

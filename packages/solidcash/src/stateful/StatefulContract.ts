@@ -39328,6 +39328,10 @@ export class StatefulFunctionCall {
         value: Object.freeze({
           hasUnresolved: (): boolean => stb.hasUnresolvedDeferredKeccakPreimages()
             || stb.hasUnresolvedDeferredEcrecoverArguments(),
+          // The composer reports a stall as one opaque sentence; the counts say whether the trace failed to expose
+          // a keccak preimage or an ecrecover (hash,v,r,s) blob, which are different causes.
+          remaining: (): ReturnType<typeof stb.getDeferredComputeRemainingForDiagnostics> =>
+            stb.getDeferredComputeRemainingForDiagnostics(),
           resolve: (
             program: ReturnType<TransactionBuilder['buildLibauthProgram']>,
             executionInput: number,

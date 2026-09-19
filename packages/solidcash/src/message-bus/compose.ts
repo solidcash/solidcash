@@ -1282,6 +1282,11 @@ const appendOnlyStateSuffix = (
 
 interface DeferredComputeController {
   hasUnresolved(): boolean;
+  /** Pending compute work, for naming what a stalled resolution could not learn. */
+  remaining?(): {
+    keccakUnresolved: number; keccakTotal: number;
+    ecrecoverUnresolved: number; ecrecoverTotal: number;
+  };
   resolve(
     program: ReturnType<TransactionBuilder['buildLibauthProgram']>, executionInput: number, inputBase: number,
     candidateExecutions?: readonly number[],
@@ -1405,6 +1410,11 @@ export function minimumActualSizeForComputedValueChunkClaims(
 
 type DeferredComputeBuilder = TransactionBuilder & {
   __messageBusDeferredCompute?: DeferredComputeController;
+  /** Counts the builder's own pending compute work, so a stall can name what stayed unresolved. */
+  getDeferredComputeRemainingForDiagnostics?: () => {
+    keccakUnresolved: number; keccakTotal: number;
+    ecrecoverUnresolved: number; ecrecoverTotal: number;
+  };
 };
 
 const graphRouteContext = (
@@ -4197,8 +4207,20 @@ export class AtomicMessageBusComposition {
                 entryLikeInputs: commitments.filter((commitment) => commitment.length >= 128).length,
               }));
             }
+            // "No progress" alone cannot distinguish a keccak preimage the trace never exposed from an ecrecover
+            // argument that stayed a placeholder, and the two have different causes. The builder already counts
+            // both, so name them in the failure.
+            const stalled = resolvableDeferredBlocks.filter((block) => block.controller.hasUnresolved())
+              .map((block) => {
+                const counter = block.controller.remaining?.();
+                return counter === undefined ? `participant ${block.participant}`
+                  : `participant ${block.participant}: keccak ${counter.keccakUnresolved}/`
+                    + `${counter.keccakTotal} unresolved, ecrecover ${counter.ecrecoverUnresolved}/`
+                    + `${counter.ecrecoverTotal} unresolved`;
+              });
             throw new Error(
-              'messageBus: complete graph did not expose arguments for all deferred compute resources',
+              'messageBus: complete graph did not expose arguments for all deferred compute resources'
+              + (stalled.length > 0 ? ` (${stalled.join('; ')})` : ''),
             );
           }
           rebalanceFeeTail(aggregate, 'resolved compute-sidecar witnesses');

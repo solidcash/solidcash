@@ -13770,3 +13770,32 @@ fix the codegen comment itself demands ("must correct the MODEL ... not the addr
 
 **Verified state (defaults)**: greens 3 passed | 63 skipped; fast fixture 1 passed | 1 skipped; artifacts rebuilt
 canonically; both `SOLIDC_HANDLER_BAND_MODEL` and `SOLIDC_OWNER_ALT_ANCHOR` remain opt-in.
+
+Round 362: THE MODEL FIX CLEARS THE TAKE-JOB STALL - both paths now converge on the outlined check
+
+**The band source is found.** The route's ABI inputs are built as a *parameter list* in `compiler.ts` (~9212,
+`routeParameterList` -> `routeParameters`), which is AFTER the clone loop - that is why stashing the band at the
+clone registry reported `routeFound:false`. Stashing the names where the list is actually built
+(`FunctionDefinitionNode.messageBusCallerBandNames`) makes the seeding live: with
+`SOLIDC_HANDLER_BAND_MODEL=1` the takeJob entry body changes shape (2408 -> 2390 instructions, many emitted pick
+constants shift), i.e. the handler frame model now contains the caller's band below the argument block.
+
+**Result: the deferred-compute stall is GONE.**
+
+    before: "messageBus: complete graph did not expose arguments for all deferred compute resources
+             (participant 0: keccak 2/2 unresolved, ecrecover 1/1 unresolved) [probe program: 472 inputs, ...]"
+    after:  composition completes; preflight runs the real transaction and fails at
+             input 129, `ip 3 of 6, failing opcode 127 (OP_SPLIT)`, window `121 124 127 124`
+
+That is exactly the outlined emission check the alt-stack capture also reached, so both independent fixes - correct
+the MODEL (band seeding) and capture the owner (alt-stack anchor) - converge on the SAME remaining defect. The stall
+was a consequence of the wrong coordinate (151 instead of 20); with the model repaired the probe's entry check
+passes and the learning completes.
+
+**Regression status.** The band seeding is NOT yet safe as a default: with it on, `close job` (both) and
+`withdraw collateral` fail at that same outlined check (they pass on the canonical build). So it stays opt-in, and
+the outlined emission check is now THE single blocker to fix - it is the next defect on both paths, and fixing it
+should let the model fix become the default and take `take job` past preflight.
+
+**Verified state (defaults)**: greens 3 passed | 63 skipped; fast fixture 1 passed | 1 skipped; artifacts rebuilt
+canonically; `SOLIDC_HANDLER_BAND_MODEL` and `SOLIDC_OWNER_ALT_ANCHOR` both opt-in.

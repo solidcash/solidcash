@@ -9210,7 +9210,7 @@ function synthesizeMessageBusRoute(
   const lifecycleReturnTransport = kernelLifecycleHandlers.size > 0;
   const verifierBinderRouteParameters = useBoundRoute
     ? ['bigint __internal__activeVerifierIndex'] : [];
-  const routeParameters = [
+  const routeParameterList = [
     'bytes batchBlob', ...verifierBinderRouteParameters, ...graphRouteParameters,
     ...lifecycleOwnerRouteParameters,
     ...(kernelUpgradeMode ? [
@@ -9218,7 +9218,21 @@ function synthesizeMessageBusRoute(
     ] : []),
     ...localCallerRouteParameters,
     ...routeSignatureParameters, ...routeKeyParameters, ...routeCounterPermParameters,
-  ].join(', ');
+  ];
+  const routeParameters = routeParameterList.join(', ');
+  // The route's ABI inputs are physically BELOW every clone's argument block (the clone is invoked with the route
+  // frame still live). Stash their names on the clones HERE, where the route's parameter list is actually built -
+  // the earlier clone loop runs before this point, which is why stashing there found no route at all
+  // (`message-bus-caller-band routeFound:false`). Codegen seeds them into the handler frame model.
+  const routeBandNames = routeParameterList
+    .map((entry) => entry.trim().split(/\s+/).pop() ?? '')
+    .filter((name) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(name));
+  if (routeBandNames.length > 0) {
+    for (const candidate of contract.functions) {
+      if (!MESSAGE_BUS_CLONE_PREFIXES.some((prefix) => candidate.name.startsWith(prefix))) continue;
+      candidate.messageBusCallerBandNames = routeBandNames;
+    }
+  }
   // Compiler-route unlockers publish the canonical batch as the first positional item after the selector for
   // both direct and delegate execution. The ordinary (reverse-pushed) ABI frame follows that positional prefix,
   // so hidden execution context cannot move this authentication boundary.

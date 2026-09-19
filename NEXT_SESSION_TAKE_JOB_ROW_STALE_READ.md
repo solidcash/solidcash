@@ -12569,3 +12569,48 @@ Next steps (in order):
    drop an earlier writer's effect (today the transaction builds and reverts at run time).
 
 Greens re-verified on this tree: fixture `1 passed | 1 skipped`, `unicrow params` 2, `admin` 8.
+
+Round 361-366: the cache footgun, and three failed attempts to break the arity deadlock
+
+**Artifact cache (fixed, commit `0d04a44be`).** The artifact cache key was `artifact-v5 || COMPILER_CACHE_BUILD_ID ||
+...` where the build id was `dist/compiler.js`'s size+mtime ALONE. An edit to any imported pass therefore left every
+cached artifact valid, and a compile reported success while serving the previous build. This invalidated three of
+this session's measurements before it was found: the runs after editing `LowerCollectionJournalHelpers.ts` /
+`LowerDynamicStateJournalHelpers.ts` reused cached artifacts (the only run that behaved differently was the one
+whose *incidental* edit to `compiler.ts` changed the id). The id now folds the file count, total size and newest
+mtime of every emitted module, and `SOLIDC_DEBUG_CACHE_ID=1` prints it. Verified: touching a nested pass module
+changes the printed id; the full marketplace compile recompiles 22/22 sources.
+
+**Where takeJob's two extra clone parameters come from (measured).** `LowerCollectionJournalHelpers` turns selected
+internal helpers into journal handlers with
+`parameters.unshift(...dynamicEntries, ...entries)` (`:504`) - one parameter per journalled dynamic array and per
+journalled entry collection. For `MarketplaceV1.takeJob` those are exactly the missing
+`(JobPost[], bool, ...)`: `jobs` is `JobPost[] public jobs` (the dynamic array) and `whitelistWorkers` is a
+`mapping(uint256 => mapping(address => bool))` (bool entries). `LowerDynamicStateJournalHelpers:121` unshifts one
+more (`valueType` of the dynamic state) - the same class of rewrite.
+
+**Three guards were tried and all fail**, which is itself the useful result:
+1. name-prefix skip of every `__message_bus_*` clone in both journal passes -> `Unicrow.sol` fails to compile:
+   `Expected variable '(__vmap_upsert_capsule)' does not exist on the stack`.
+2. the same, restricted to `__message_bus_entry_*` clones -> `Unicrow.sol` fails identically (its entry clones
+   need the journal lowering too).
+3. marking clones created by the pre-lowering route synthesis (`messageBusRouteAbiFrozen`, set at the
+   `synthesizeBatchBeforeLowering` call site) and skipping those -> `Unicrow.sol` fails identically.
+So the journal lowering is REQUIRED for these clones even when the route text was generated first. Skipping it is
+not an option; the generated route's call site must instead end up carrying the journal parameters - i.e. either
+the pass's "Rewrite call sites before changing arities" step (`LowerCollectionJournalHelpers.ts:455`) must reach
+the generated route's call node, or the route must be synthesized after this lowering for the kernel path.
+
+Next round, one run (the cache is honest now, so a pass edit is measurable):
+* Find why the call-site rewrite misses the generated route's call. `synthesizeBatchBeforeLowering` is true for
+  contracts with collection reads (`MarketplaceV1`, `Unicrow`), so the route's call node exists in
+  `node.functions` before the pass runs; the pass rewrites `fn.body` for every function, so either the route's
+  call is not a `FunctionCallNode` to the clone name (check `buildDecodeAndCall`'s generated text for
+  `__message_bus_entry_<handler>`), or the route function is added to `ast.contract.functions` only *after* the
+  pass. `SOLIDC_DUMP_ROUTE=1` prints the generated route (it did not fire in the earlier runs because route
+  generation threw - it should print for a contract that succeeds, e.g. `Unicrow`).
+* If the route text calls the clone through a name the pass does not recognise, aligning the two spellings is the
+  general fix; then rerun the marketplace compile and check `MarketplaceV1.takeJob` becomes eligible.
+
+Greens re-verified on this tree (after the cache change): fixture `1 passed | 1 skipped`, `unicrow params` 2,
+`admin` 8; full marketplace compile clean.

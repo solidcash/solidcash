@@ -39693,12 +39693,41 @@ export class StatefulFunctionCall {
                   const declared = (this.parentContract?.inner.artifact.messageBus as {
                     verifierProgram?: { inputs?: Array<{ name?: string }> };
                   } | undefined)?.verifierProgram?.inputs ?? [];
+                  // A candidate execution is not necessarily a VERIFIER input: the probe also runs the route and
+                  // the executor. Labelling a route's pushes with the verifier ABI names invents witnesses the
+                  // route never declared (measured: `localBatch` reported empty on an input whose calldata carries
+                  // a 2155-byte batch push). Report what the input IS and what its pushes actually contain.
+                  const heads: string[] = [];
+                  {
+                    let cursor = 0;
+                    while (cursor < unlocking.length && heads.length < 64) {
+                      const opcode = unlocking[cursor];
+                      if (opcode >= 1 && opcode <= 75) {
+                        heads.push(binToHex(unlocking.slice(cursor + 1, cursor + 1 + opcode)).slice(0, 32));
+                        cursor += 1 + opcode;
+                      } else if (opcode === 0x4c && cursor + 1 < unlocking.length) {
+                        const size = unlocking[cursor + 1];
+                        heads.push(binToHex(unlocking.slice(cursor + 2, cursor + 2 + size)).slice(0, 32));
+                        cursor += 2 + size;
+                      } else if (opcode === 0x00) {
+                        heads.push('');
+                        cursor += 1;
+                      } else {
+                        break;
+                      }
+                    }
+                  }
                   return {
                     count: items.length,
                     lengths: items.map((item) => item.length),
                     empty,
                     emptyNames: empty.map((index) => declared[index]?.name ?? `<${index}>`),
                     declaredNames: declared.map((input) => input.name ?? '?').slice(0, items.length + 4),
+                    inputIndex: executionInput,
+                    unlockingLength: unlocking.length,
+                    inputLock: binToHex(program.sourceOutputs?.[executionInput]?.lockingBytecode ?? new Uint8Array())
+                      .slice(0, 24),
+                    heads,
                   };
                 })(),
                 failingStack: (() => {
@@ -39749,6 +39778,81 @@ export class StatefulFunctionCall {
                   .map((instruction) => ({ op: instruction?.opcode })),
                 trailing: commitmentReads.slice(-40),
               }));
+            }
+            if (!progressed
+              && (globalThis as { process?: { env?: Record<string, string> } }).process?.env
+                ?.SOLIDC_DEBUG_PROBE_SWEEP === '1') {
+              // WHICH input can teach the deferred compute its arguments? The resolver only probes the
+              // participant's executor (and, when a caller supplies them, a few candidate executions), so a
+              // compute read that lives in a DIFFERENT script - a verifier input, a per-row clone input - is never
+              // executed and the arguments stay unresolved no matter how many rounds run. Sweep every input that
+              // carries a covenant-sized script and report the `OP_INPUTBYTECODE` reads each one exposes, with
+              // the side-car range [inputBase, inputBase + 32) marked, so the fix is either "add this input to the
+              // candidate set" or "the probe program itself is wrong".
+              const sweep: Array<Record<string, unknown>> = [];
+              // Local VM-number decode: this block must not depend on helpers that live in other diagnostics.
+              const sweepVmNumber = (bytes: Uint8Array | undefined): number => {
+                if (!bytes || bytes.length === 0) return 0;
+                const negative = (bytes[bytes.length - 1] & 0x80) !== 0;
+                const magnitude = Uint8Array.from(bytes);
+                if (negative) magnitude[magnitude.length - 1] &= 0x7f;
+                let value = 0n;
+                for (let byte = magnitude.length - 1; byte >= 0; byte -= 1) {
+                  value = (value << 8n) | BigInt(magnitude[byte]);
+                }
+                return Number(negative ? -value : value);
+              };
+              for (let candidate = 0; candidate < program.transaction.inputs.length; candidate += 1) {
+                const lock = program.sourceOutputs?.[candidate]?.lockingBytecode ?? new Uint8Array();
+                const unlockingBytes = program.transaction.inputs[candidate]?.unlockingBytecode?.length ?? 0;
+                const attempted = candidate === executionInput || candidateExecutions.includes(candidate);
+                // A covenant input's script lives in its UNLOCKING bytecode (the p2sh32 lock is 35 bytes), so the
+                // unlocking length - not the lock length - is what selects the inputs worth probing.
+                if (!attempted && unlockingBytes < 1000) continue;
+                let candidateTrace: ReturnType<typeof evaluateProbeTrace> = [];
+                try {
+                  candidateTrace = evaluateProbeTrace(provider, { ...program, inputIndex: candidate });
+                } catch (error) {
+                  sweep.push({ candidate, attempted, lockBytes: lock.length, error: String(error).slice(0, 80) });
+                  continue;
+                }
+                const reads = candidateTrace.flatMap((raw) => {
+                  const state = raw as { ip?: number; instructions?: Array<{ opcode?: number }>; stack?: Uint8Array[] };
+                  if (state.instructions?.[state.ip ?? -1]?.opcode !== Op.OP_INPUTBYTECODE
+                    || !state.stack || state.stack.length < 2) return [];
+                  const index = sweepVmNumber(state.stack[state.stack.length - 1]);
+                  return [{ ip: state.ip, index, inSidecarRange: index >= inputBase && index < inputBase + 32 }];
+                });
+                if (reads.length === 0 && !attempted) continue;
+                // Which BODIES the execution entered, keyed by frame instruction count. A route that never
+                // invokes the entry body carrying the compute read shows up here as a frame profile with no
+                // large defined body - the difference between "the row was never dispatched" and "the read is
+                // gated behind a branch the probe's data does not take".
+                const frames = new Map<number, { steps: number; maxIp: number }>();
+                for (const raw of candidateTrace) {
+                  const state = raw as { ip?: number; instructions?: unknown[] };
+                  const key = state.instructions?.length ?? 0;
+                  const entry = frames.get(key) ?? { steps: 0, maxIp: 0 };
+                  entry.steps += 1;
+                  entry.maxIp = Math.max(entry.maxIp, state.ip ?? 0);
+                  frames.set(key, entry);
+                }
+                sweep.push({
+                  frames: [...frames.entries()]
+                    .sort((left, right) => right[1].steps - left[1].steps)
+                    .slice(0, 6)
+                    .map(([frame, entry]) => ({ frame, steps: entry.steps, maxIp: entry.maxIp })),
+                  candidate,
+                  attempted,
+                  lockHead: binToHex(lock).slice(0, 24),
+                  unlockingBytes,
+                  steps: candidateTrace.length,
+                  sidecarReads: reads.filter((read) => read.inSidecarRange).slice(0, 3),
+                  reads: reads.slice(-4),
+                });
+                if (sweep.length >= 24) break;
+              }
+              console.error('deferred-probe-sweep', JSON.stringify({ inputBase, executionInput, sweep }));
             }
             if (!progressed
               && (globalThis as { process?: { env?: Record<string, string> } }).process?.env

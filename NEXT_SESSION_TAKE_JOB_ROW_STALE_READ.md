@@ -14427,3 +14427,49 @@ walk and the resolver with no read to learn from ("keccak 2/2 unresolved, ecreco
 target is unchanged - the emission-stream pick/consumer - but the acceptance test for it is now the STALL
 diagnostic above: after a fix, the probe must execute an `OP_INPUTBYTECODE` with index in [3,4) and
 `deferred-keccak-learned` must appear.
+
+Round 378: opcode-table correction, the probe never enters the takeJob entry body, and a probe sweep diagnostic
+
+CORRECTION (read this before interpreting any earlier byte dump in this file)
+- The BCH-2026 numbering used in earlier rounds was off by one across 0x7c-0x7f. Authoritative table (libauth
+  `OpcodesBch`): 0x79 OP_PICK, 0x7a OP_ROLL, 0x7b OP_ROT, 0x7c OP_SWAP, 0x7d OP_TUCK, 0x7e OP_CAT,
+  0x7f OP_SPLIT, 0x80 OP_NUM2BIN, 0x81 OP_BIN2NUM, 0x82 OP_SIZE, 0x87 OP_EQUAL, 0x88 OP_EQUALVERIFY,
+  0x89 OP_DEFINE, 0x8a OP_INVOKE, 0x93 OP_ADD, 0x94 OP_SUB, 0xca OP_INPUTBYTECODE.
+- So the abort body `79 7c 7f 7c 7b 88` is `PICK SWAP SPLIT SWAP ROT EQUALVERIFY` - the emission-stream
+  consumer's tail, exactly as the old `outlined source span 22/23` note said. Round 375/376's ATTRIBUTION and the
+  pick depth (55 + 2 = 57) therefore stand; the "CAT" in their byte-level narration was a naming error, not a
+  different body.
+- The keccak read in `__message_bus_entry_takeJob` (2 reads, ip 280 and 318) is
+  `... OP_DEPTH OP_15 OP_SUB OP_PICK  OP_3 OP_ADD  OP_(i+1) OP_SWAP  OP_INPUTBYTECODE ...`
+  = the intended `[arg, ordinal, index]` frame for deferred-preimage extraction - the compiler source, the dist and
+  a fresh cold compile all agree byte for byte. Artifacts are NOT stale; the earlier suspicion was this naming bug.
+
+New diagnostic committed: `SOLIDC_DEBUG_PROBE_SWEEP=1` (SDK, in `resolve()`'s no-progress branch)
+- Sweeps every input of the probe program whose UNLOCKING bytecode is covenant-sized (a p2sh32 lock is 35 bytes, so
+  lock length selects nothing), evaluates each, and reports the `OP_INPUTBYTECODE` reads with their indices plus a
+  frame profile (frame instruction count, steps, max ip).
+- Measured for `take job` (base 0, executionInput 129): candidates 129/216/218/306/388 plus the five ~20 KB inputs
+  466-470. NO input executes a read with an index in p0's side-car range `[0, 32)`. p0's route runs ~949 steps in a
+  315-instruction body and one 11059-instruction frame is entered once at ip 234; the 2408-instruction
+  `__message_bus_entry_takeJob` body - the one that holds the two keccak reads - is NEVER entered. By contrast p2
+  (input 218) runs a 9348-instruction body for 1907 steps, i.e. other participants really do walk their bodies.
+- `executionWitnesses` is now enriched with `inputLock`/`unlockingLength`/`heads`: the probe's input 129 IS p0's
+  route executor (`aa2099c229e490ffad2ecd39...`, unlocking 119061 bytes, first pushes `53434231`, an 86-byte blob,
+  empty, `41`, empty). Note the record names those pushes with the VERIFIER ABI (`localBatch`, `suppliedBlockSize`,
+  ...) because that ABI is what the code has to hand - a positional mislabel, not a missing witness. The composer's
+  own named record (`verifier-arguments`) is authoritative: p0 carries localBatch 86 B with expectedLocalRows 1 and
+  suppliedEmissions 997 B, so the batch is populated.
+
+Where that leaves `take job`
+- The contract CAN read the keccak side-cars (`__message_bus_entry_takeJob`, base+3) and the ecrecover A side-car
+  (`ECDSA.tryRecover`, base+1), and the probe's witnesses are populated - but p0's route never dispatches the entry
+  body for its single row, so no compute read is reached and the resolver cannot learn the arguments.
+- Two further reads in the artifact use the count-relative form `OP_TXINPUTCOUNT OP_2 OP_SUB OP_INPUTBYTECODE`
+  (route ip 9718, `__message_bus_verify_atomic` ip 3), which lands on input 470 of 472 rather than p0's side-car at
+  input 3; whether those are keccak reads or the verifier's `canonicalInput: final-participant-verifier` envelope
+  read is the next thing to settle.
+
+**Next round**: find why p0's route consumes its row without dispatching `__message_bus_entry_takeJob` (compare the
+row it walks against p2's, whose 9348-instruction body does run), using the new sweep plus
+`SOLIDC_DEBUG_GRAPH_EMISSIONS=1`. Acceptance test unchanged: the probe must execute an `OP_INPUTBYTECODE` with
+index in `[base, base + sidecars)` and `deferred-keccak-learned` must appear.

@@ -12234,3 +12234,29 @@ Two observations for the next round:
 
 Housekeeping: the two redundant diagnostics (`read-band-merge`, `builder-construction`) and the duplicate carrier are
 candidates for cleanup once the row authenticates.
+
+Round 336: full ip-29 operands measured; removing the synthetic carrier changes nothing
+
+Run 349 (wider `probe-failed` record) gives the whole state at the refusal:
+
+    window 120 130 119 146 145 105 118
+    d3 = 128b:80a90055…   (the target NEW node)
+    d2 =  33b:3e0898a5…   (the caller category || capability)
+    d1 =  35b:aa20bbc502f0… (the caller locking bytecode)
+    d0 =   1b:04          (the constant 4 - an input index)
+
+So the check walks the caller identity against INPUT 4 and verifies something on it; the probe carries six inputs
+(master, `_allowances` HEAD, funding, the real caller master `f4a0abf1:0`, a second `aa20bbc502f0…` carrier
+`00000000:0`, funding). The round-323 synthetic branch was deleted this round and the probe is UNCHANGED (same 6
+inputs, same ip-29 refusal) - so that second carrier comes from a different producer, and the synthesis was not
+needed. `tsc -b` clean.
+
+Next round, in order:
+1. Identify the producer of the second `aa20bbc502f0…` input (`00000000:0`): it is NOT the deleted synthesis and not
+   the `_deriveReturnValue` co-spend (that is `f4a0abf1:0`), so log every `externalReadUtxos.push` with the UTXO it
+   adds (`:23293`/`:23371` are the two ordinary sites) while the probe builds.
+2. Then decide which carrier the compiler's scan SHOULD pick and make the frame carry exactly that one: with `d0 =
+   4` the trace picked the second carrier, so the check that fails compares that input's token (empty commitment)
+   against something the real master would satisfy.
+3. Cleanup once the row authenticates: the round-332/333 diagnostics (`read-band-merge`, `builder-construction`) and
+   any leftover unused helper from the deleted synthesis.

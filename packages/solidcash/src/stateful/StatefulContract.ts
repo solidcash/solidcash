@@ -35172,7 +35172,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       console.error('probe-failed', JSON.stringify({
         probeId: [probe.inputs.length, String(probe.inputs[0]?.txid ?? '?').slice(0, 8), probe.inputs[0]?.vout],
         returnOutputIndex,
-        failure: String(this.lastReturnProbeFailure).slice(0, 200),
+        // Keep the whole report: it already carries the window, the operand stack and the compared pair, which is
+        // what the next step needs (a 200-char cut hides exactly those fields).
+        failure: String(this.lastReturnProbeFailure).slice(0, 900),
       }));
     }
     if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env

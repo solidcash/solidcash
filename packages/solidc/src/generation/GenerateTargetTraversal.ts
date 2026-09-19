@@ -32451,12 +32451,36 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // addressing form. See DBG-COMPUTE-BASE / SOLIDC_DEBUG_COMPUTE_BASE.
       const trackedOwnerIndex = this.getStackIndex('__internal__messageBusOwnerInput', true);
       if (trackedOwnerIndex >= 0) {
+        // A GRAPH row handler is invoked from the generated row loop, whose runtime-only operands (the authenticated
+        // caller, cursor/emitter locals and the settlement witnesses the loop keeps live) sit ABOVE the handler's
+        // ABI frame. A top-relative pick then reads a witness instead of the owner: measured at the take-job
+        // `whitelistWorkers` read, the pick popped the 32-byte entry commitment at the top of the frame and the VM
+        // refused the resulting UTXO index. The route-entry branch above answers the same shape with the stable
+        // bottom ordinal; do the same for graph row handlers, and keep the compact top-relative form for the
+        // standalone frames that depend on it (`close job`, `withdraw collateral`).
+        // A handler whose row carries COMPUTE side-cars is invoked with those witnesses still live above the ABI
+        // frame, so its owner must be recovered from the bottom; a handler without them keeps the compact
+        // top-relative form, which is what the standalone/compact frames (and the titles the global switch
+        // regressed: `close job`, `withdraw collateral`) are compiled against.
+        //
+        // The discriminator must be available BEFORE the body is emitted: `ecrecoverCompute`/`keccakPreimageParams`
+        // are filled while emitting the compute call, which can sit after the first state/entry read, so they read
+        // as empty at that point. `recoveryEffectCount`/`ecrecoverCallCount` are computed by the passes before
+        // codegen and are what codegen itself uses for exactly this kind of pre-emission decision.
+        const graphRowHandler = this.currentFunction.graphEmissionHandler === true
+          && Math.max(this.currentFunction.recoveryEffectCount ?? 0,
+            this.currentFunction.ecrecoverCallCount ?? 0) > 0;
         const ownerSite = this.debugComputeBase(
-          'owner', '__internal__messageBusOwnerInput', trackedOwnerIndex, extraStackOffset,
+          graphRowHandler ? 'owner-bottom' : 'owner', '__internal__messageBusOwnerInput',
+          trackedOwnerIndex, extraStackOffset,
         );
         this.emitComputeBaseSiteMarker(locationData, ownerSite);
-        this.emit(encodeInt(BigInt(trackedOwnerIndex + extraStackOffset)), locationData);
-        this.emit(Op.OP_PICK, locationData);
+        if (graphRowHandler) {
+          this.emitPickTrackedFromBottom('__internal__messageBusOwnerInput', locationData);
+        } else {
+          this.emit(encodeInt(BigInt(trackedOwnerIndex + extraStackOffset)), locationData);
+          this.emit(Op.OP_PICK, locationData);
+        }
       } else if (this.isSubroutineUseProbe) {
         // The call-graph probe has no physical function frame; its emitted instructions are discarded.
         this.emit(Op.OP_INPUTINDEX, locationData);

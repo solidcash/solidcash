@@ -12940,3 +12940,42 @@ is the graph row loop (the extras-above case this abort demonstrates), top-relat
 frames that `close job` and `withdraw collateral` depend on. Both populations are testable in this very suite
 (`take job`, `close job`, `withdraw collateral` are three of the 66 titles), and `DBG-COMPUTE-BASE` records make the
 selected branch auditable per site. Remember to move `.marketplace/cache` aside so the recompile is real.
+
+Round 346: the owner-base form, measured three ways (and the coherent-fix direction)
+
+`emitMasterInputIndex`'s `owner` branch is the pick that resolved to a frame witness (round 345). Three variants of
+choosing the form were compiled and run this round; all three are recorded because the comparison is the finding.
+
+**(a) Coarse - every graph emission handler uses the bottom ordinal** (`emitPickTrackedFromBottom`):
+* `take job` **escapes the deferred-compute stall** and reaches real preflight:
+  `BCH-2026 preflight failed at input 129 (ip 6 of 6, failing opcode 136, window 121 124 127 124 123 136)` -
+  the first time this transaction has got past the composer's argument learning;
+* `withdraw collateral` **regresses** with the same message (it passed before), so the coarse rule is not shippable.
+
+**(b) Narrow - only compute-carrying graph rows use the bottom ordinal** (`recoveryEffectCount`/`ecrecoverCallCount`
+> 0, which the pre-codegen passes fill; `ecrecoverCompute`/`keccakPreimageParams` are filled *during* emission and
+read as empty at the first state/entry read). Audited with `DBG-COMPUTE-BASE`:
+* **exactly one frame** switches: `__message_bus_entry_takeJob` (148 sites), everything else keeps the compact
+  top-relative form;
+* `close job before timeout`, `close job after timeout`, `withdraw collateral` **all pass**;
+* `take job` fails with the unchanged stall (`keccak 2/2, ecrecover 1/1 unresolved`, probe 472 inputs) - i.e. the
+  frame that blocks the *probe* is NOT takeJob's own entry clone.
+
+**(c) Both facts together locate the blocking frame.** With the coarse rule the stall disappears, so the pick that
+matters belongs to a NON-compute frame that the coarse rule switched and the narrow rule does not - and the
+unoptimised abort (round 344) already named that frame's contract: `MarketplaceDataV1`
+(`functionBodies['53434231']`, the 13-instruction `invokeDebug[-144]` callee-verification fragment). The takeJob
+composition's p1 is exactly `MarketplaceDataV1` (`userRegistered, eventsLength, publishJobEvent, getArbitratorFee,
+publishJobEvent`).
+
+**The coherent fix the code already points at**: `emitPickCompilerRouteFrameValue` (`:32232`) exists for "copy a
+compiler-route frame value which was invoked handlers can leave runtime-only operands above", and
+`emitComputeSidecarBlockBase` (`:32523`) already uses the bottom ordinal for its outlined context with the same
+rationale. So the frame-value form is a per-frame *property that must be applied consistently*, not per-emitter:
+switching only the owner pick (coarse) fixed one frame's owner but broke another frame's commitment parse, which is
+why `withdraw collateral` regressed.
+
+Next round, one compile + one run: add the bottom form for `MarketplaceDataV1`'s graph rows one handler at a time
+(`publishJobEvent` first), measuring `take job` (does the stall clear?) and `withdraw collateral` + `close job`
+together as the regression pair after EACH addition, rather than flipping the whole family at once. Keep the audit
+(`DBG-COMPUTE-BASE` branch labels `owner` / `owner-bottom`) so every switch is visible per site.

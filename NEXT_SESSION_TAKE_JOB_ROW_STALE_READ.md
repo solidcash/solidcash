@@ -13429,3 +13429,46 @@ clone's declared list after every injection) against `message-bus-arg-order` (th
 `__internal__messageBusOwnerInput` is the thing to eliminate. `SOLIDC_DEBUG_ARG_ORDER` currently prints the clone
 list at owner-append time, so extend it to print the FINAL list (after SymbolTableTraversal's injections) for a
 precise diff.
+
+Round 353: the clone ABI really is short - but "fixing" it breaks the consumer
+
+**New instrument.** `SOLIDC_DEBUG_ARG_ORDER=1` now also prints `message-bus-define-params`: the clone's FINAL declared
+parameter list (with the owner index) at emission time, i.e. after every injection. The old print
+(`message-bus-clone-params`) runs when the owner is appended, before SymbolTableTraversal adds its witnesses, so it
+could not show what sits after the owner.
+
+**Audit result (all 43 route clones).** Every clone declares MORE parameters than its emitted call vector passes,
+and ten of them have trailing parameters AFTER the owner:
+
+    __message_bus_entry_takeJob        params 7, vector 6, tail [owner, __internal__dynamicChunkInputBase]
+    __message_bus_entry_refund         params 7, vector 6, tail [owner, __internal__dynamicChunkInputBase]
+    __message_bus_entry_pay            params 10, vector 7, tail [owner, __internal__valueWitness_0,
+                                                                   __internal__leadingPushValue_0,
+                                                                   __internal__valueChunkOutputBase]
+    ... same shape for challenge/settle/postThreadMessage/publishJobPost/updateJobWhitelist
+
+Root cause of the short vector: `__internal__dynamicChunkInputBase` is injected by SymbolTableTraversal AFTER route
+synthesis, so the dispatch sites cannot see it in the parameter list.
+
+**Measured: "fixing" the arity is NOT the fix.** Two coordinated changes were tried and both were reverted:
+  1. symbol table: splice the chunk base BEFORE the owner (owner stays last) - alone changes nothing;
+  2. dispatch sites: pass `__internal__dynamicChunkInputBase` ahead of the owner (predicted from
+     `usesDynamicChunkInputBase`).
+With both in place the vector matches the declaration exactly (`takeJob`: 7 args ending with
+`__internal__proxyMasterIndex`), and yet `close job` (both) and `withdraw collateral` - which pass on the reverted
+tree - FAIL (`VM failed at ip 470 opcode 118: Program failed an OP_VERIFY operation`) and fail in ~100 ms rather
+than ~60 s, i.e. early. So the callee side depends on the OLD layout: the missing operand's slot is supplied by
+something else at runtime (the caller's band / the route's positional batch copy), and passing it explicitly moves
+every later operand. This is the strongest evidence yet that the DEFINE'd handler ABI is positional-by-construction
+and that the frame MODEL - not the vector - is where the coordinate error lives.
+
+**Capture status.** With the capture ON (`SOLIDC_OWNER_ALT_ANCHOR=1`) and the ABI aligned, `take job` reaches a
+DIFFERENT, later failure (`VM failed at ip 470 opcode 118: Program failed an OP_VERIFY operation`) instead of the
+deferred-compute stall - but the three green titles fail at the same ip, because a body emitted once can be invoked
+from several sites and only some of them end with the owner. Keep the capture opt-in until every call site of a
+body ends with the owner operand (or until the model is fixed).
+
+**Verified state at the end of this round** (tree committed, artifacts rebuilt canonically, capture off):
+  * `close job` before/after timeout + `withdraw collateral`: 3 passed | 63 skipped;
+  * fast fixture `SortedMappingProofInputCoordinate`: 1 passed | 1 skipped;
+  * `take job`: still the deferred-compute stall (unchanged baseline).

@@ -4448,14 +4448,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       && !node.parameters.some((parameter) => parameter.name === '__internal__dynamicChunkInputBase')) {
       const param = new ParameterNode(PrimitiveType.BIGINT, '__internal__dynamicChunkInputBase');
       param.location = node.location;
-      // Insert BEFORE the participant-owner context: the generated call passes this operand ahead of the owner, and
-      // a clone that declares it AFTER the owner makes the caller's vector one operand short of its own parameter
-      // list - measured on all 43 route clones, which shifted every bottom ordinal the frame model computes.
-      const ownerParameterIndex = node.parameters.findIndex(
-        (parameter) => parameter.name === '__internal__messageBusOwnerInput',
-      );
-      if (ownerParameterIndex < 0) node.parameters.push(param);
-      else node.parameters.splice(ownerParameterIndex, 0, param);
+      node.parameters.push(param);
       this.symbolTables[0].set(Symbol.variable(param));
       const sym = this.symbolTables[0].get('__internal__dynamicChunkInputBase');
       if (sym) sym.references.push({ name: '__internal__dynamicChunkInputBase' } as IdentifierNode);

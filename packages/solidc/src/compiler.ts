@@ -8722,9 +8722,6 @@ function synthesizeMessageBusRoute(
       const ownerContextArgs = routeOwnedCloneNames.has(invokeName) ? [routeOwnerInputExpression] : [];
       // The clone declares this hidden witness exactly when its body uses dynamic chunks; the generated call must
       // therefore pass it, in the position the clone's parameter list gives it (ahead of the owner).
-      const dynamicChunkBaseArgs = routeOwnedCloneByName.get(invokeName)?.parameters
-        .some((parameter) => parameter.name === '__internal__dynamicChunkInputBase') === true
-        ? ['__internal__dynamicChunkInputBase'] : [];
       if (fn.parameters.length === 0) {
         const logicalCaller = graphExecutionContext ? '__message_bus_graph_caller' : 'msg.sender';
         const selectedIsClone = invokeName !== fn.name;
@@ -8750,7 +8747,7 @@ function synthesizeMessageBusRoute(
         // vector one operand short leaves the callee's model with a phantom bottom parameter and shifts every
         // ordinal it computes.
         const entryOnly = [...entryKeyArguments(fn), ...blockhashRowArgs, ...callerContextArgs,
-          ...dynamicChunkBaseArgs, ...ownerContextArgs, ...blockhashBaseArgs];
+          ...ownerContextArgs, ...blockhashBaseArgs];
         const senderChecks = (fn.messageBusKeyWitnesses ?? [])
           .filter((binding) => binding.source === 'msgSender')
           .map((binding) => `require(${witnessName(binding)} == ${logicalCaller});`).join(' ');

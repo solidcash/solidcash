@@ -11521,3 +11521,40 @@ row. Once that probe passes, re-check the composed preflight (input 20) and then
 (fixture 1/1 skipped, `unicrow params` 2, `admin` 8).
 
 Everything in this round is committed; `tsc -b` is clean.
+
+Round 307: the probe's `msg.sender` key is now the CALLER; the refusal is a `ff…ff` category sentinel
+
+Measured (run 318, `SOLIDC_DEBUG_ENTRY_PIN/ENTRY_PLACEMENT/PROBE_IO=1`) on the last `approve` pin before the refusal:
+
+    entry-pin { functionName: 'approve', collection: '_allowances', slotIndex: 0,
+                slot: '80a90055d19510c2cb97d7eefec3ce1334870ca78a2f51a8f72f01c3cd63ac26',
+                keys: [ 'nullop:msg.sender(address)=aa20bbc502f00015910e6bd47a2e46b97b1d352db5d04a1f67e97155ef00b09ddf1387',
+                        'spender(address)=aa20bbc502f00015910e6bd47a2e46b97b1d352db5d04a1f67e97155ef00b09ddf1387' ],
+                present: false, pinnedSlot: '0000…0000' (HEAD) }
+
+`msg.sender` is the CALLER identity now (previously the signer) - the round-306 threading is effective. The probe
+frame itself is well formed:
+
+    probe-outputs 0 = master (ed78c449 minting)
+                  1 = P' of the predecessor: 80a90055… || d1534eff… || ff…ff00
+                  2 = data NFT
+                  3 = 51-locked return carrier (commitment 00)
+                  4 = NEW node: 00*32 || 80a90055…
+
+but the trace stops at ip 115:
+
+    failing require in FakeToken:109; window 121 129 108 118 108 136 192
+    stack d1 = 33b:ffff…ff (33 bytes of 0xff)  d0 = 32b:1af53e53d8744b6ee95b463bb9db6b273bc0e696…
+
+Decoded with the authoritative table: `OP_PICK OP_BIN2NUM OP_FROMALTSTACK OP_DUP OP_FROMALTSTACK OP_EQUALVERIFY
+OP_INPUTINDEX` - an EQUALVERIFY between a 33-byte `ff…ff` item and a 32-byte value, i.e. a CATEGORY comparison in
+which the expected side is an unresolved sentinel (`ff…ff` = the same shape the compiler uses for an unset
+category witness), not the probe's real `ed78c449…`. So the frame is refused before its return band is reachable,
+and the next question is which witness feeds that comparison - most likely the caller-category witness the new
+caller identity must also publish (`__internal__msgSenderCategory` semantics: the compiler expects the CALLER's
+category, and a frame that now has the caller's LOCKING BYTECODE for keys still needs its CATEGORY for this check).
+Action next round: dump the probe's `__internal__*` operands for the failing input (`SOLIDC_DEBUG_PROBE_IO=1`
+already prints `probe-internals`; extend it to include every internal witness, not only the ones whose name starts
+with `__internal__`) and confirm whether `__internal__msgSenderCategory` (or the frame's own category witness) is
+the `ff…ff`. If it is, publish the caller's category alongside the caller's locking bytecode (the graph edge
+already carries `callerIdentity.categoryId`, and `:30251` shows the exact encoding the compiler expects).

@@ -12417,3 +12417,31 @@ Next round, one run: print at `_deriveReturnValue` ENTRY the receiving function'
 hex) plus the stack, and print the SAME identifiers in `entry-pin-identity`; the pair then names the exact call site
 for the pin that produces `4038d902…`. Thread the identity there (it is the same two-value plumbing already used for
 `approve`) and the composed `transferFrom` row should read the allowance the transaction writes.
+
+=== CURRENT STATE (end of round 338) - read this first ===
+
+Measured, stable:
+* `take job` fails at the composed preflight, input 20 (`FakeToken.transferFrom`), ip 238:
+  `revert ERC20InsufficientAllowance(...)` - the `_allowances[from][msg.sender]` read is empty.
+* The `approve` derivation probe now succeeds end to end (rounds 306-337): caller identity (locking bytecode +
+  category) threaded, hidden witnesses materialised BY ABI NAME, read-only co-spends appended in the dense input walk,
+  duplicated synthetic carrier removed.
+* Pin slots per frame (run 353/355/356):
+    `approve` probe        -> slot `00fe98d8…`  `hasCallerLock: true`   (CORRECT: [marketplace, unicrow])
+    composed route frame   -> slot `d1534eff…`  `hasCallerLock: true`   (OLD key: [user1, marketplace])
+    `transferFrom` probe   -> slot `4038d902…`  `hasCallerLock: FALSE`  (signer-keyed - WRONG)
+* Greens: fixture `1 passed | 1 skipped`, `unicrow params` 2, `admin` 8 (re-verified serially at the round-333 state;
+  later rounds only touched gated diagnostics).
+* `.marketplace/vite-cache-marketplace` was moved to `/tmp/vite-cache-marketplace-bak-343` (regenerates on demand); the
+  earlier "stale bundle" worry was disproved - `JSON.stringify` simply omits `undefined` fields.
+
+Immediate next step (smallest useful):
+1. Find the `_deriveReturnValue` invocation that builds the `transferFrom` probe and thread the caller identity there
+   (the two-value plumbing - `callerLockingBytecode` + `callerCategoryId` - already works for `approve`). Candidates:
+   the state-getter namespace (`:7155`), `_deriveReturnValue`'s own entry, or the atomic-node probe (`:34501`); pairing
+   is needed because several `transferFrom` probes run per test (add a build id to `derive-return-value-entry` and
+   `entry-pin-identity`).
+2. Then make the COMPOSED frame's `_allowances` input follow that key: the composed route frame still materialises
+   `d1534eff…` ([user1, marketplace]) while the row addresses `00fe98d8…` ([marketplace, unicrow], written in this
+   transaction by the marketplace's `approve(unicrow, …)`). The probe result must be what the composer consumes.
+3. Re-run `take job` -> target: input 20 passes and the test reaches its assertions; then re-verify the greens.

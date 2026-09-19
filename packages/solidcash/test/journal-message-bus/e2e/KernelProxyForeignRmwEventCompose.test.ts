@@ -1,10 +1,12 @@
-import { hexToBin } from '@bitauth/libauth';
+import { bigIntToVmNumber, binToHex, hexToBin, vmNumberToBigInt } from '@bitauth/libauth';
 import { compileString } from 'solidc';
 import { describe, expect, it } from 'vitest';
 import {
   Contract, StatefulContract, messageBus, Signer, getContractFactory, upgrades,
+  SortedList, getEntryNftAddress,
 } from '../../../src/index.js';
 import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';
+import { keyToSlot } from '../../../src/stateful/SortedList.js';
 import { generateLibauthSourceOutputs } from '../../../src/utils.js';
 import type { TransactionBuilder } from '../../../src/TransactionBuilder.js';
 import { createBareP2pkhFeeFunder, setupStatefulUtxos } from '../../test-util.js';
@@ -158,11 +160,54 @@ describe('kernel proxy × foreign RMW × event compose', () => {
     });
     const builder = await composition.build();
     expect(vmAccepts(builder)).toBe(true);
+
     const callerRoute = builder.inputs.findIndex((input) => 'contract' in input.unlocker
-      && input.unlocker.contract.artifact.contractName === 'Caller');
+      && input.unlocker.contract.artifact.contractName === 'Caller'
+      && input.unlocker.abiFunction.name === callerArtifact.messageBus!.route.name);
     expect(callerRoute).toBeGreaterThanOrEqual(0);
+
+    const bankRoute = builder.inputs.findIndex((input) => 'contract' in input.unlocker
+      && input.unlocker.contract.artifact.contractName === 'Bank'
+      && input.unlocker.abiFunction.name === bankArtifact.messageBus!.route.name);
+    expect(bankRoute).toBeGreaterThanOrEqual(0);
+    const bankUnlocker = builder.inputs[bankRoute].unlocker;
+    if (!('params' in bankUnlocker)) throw new Error('bank route missing params');
+    const predOutIdx = bankArtifact.messageBus!.route.inputs.findIndex(
+      (input) => input.name === '__internal__vmapBatchPredOut_0',
+    );
+    expect(predOutIdx).toBeGreaterThanOrEqual(0);
+    const predOut = Number(bankUnlocker.params[predOutIdx] as bigint);
+    // UPDATE of seeded key: PredOut inactive or a valid absolute index.
+    expect(predOut === -1 || predOut >= 0).toBe(true);
+    if (predOut >= 0) {
+      expect(predOut).toBeLessThan(builder.buildLibauthTransaction().outputs.length);
+    }
+
+    const transaction = builder.buildLibauthTransaction();
+    const callerCategory = callerSetup.categoryId.toLowerCase();
+    const eventOutputs = transaction.outputs.filter((output) => {
+      const category = output.token?.category;
+      const hex = typeof category === 'string'
+        ? category.toLowerCase()
+        : category !== undefined ? binToHex(category).toLowerCase() : '';
+      const commitment = output.token?.nft?.commitment;
+      const commitmentLen = typeof commitment === 'string'
+        ? commitment.length / 2
+        : (commitment?.length ?? 0);
+      return hex === callerCategory
+        && output.token?.nft?.capability === 'none'
+        && commitmentLen > 0
+        && (output.valueSatoshis ?? 0n) > 0n;
+    });
+    expect(eventOutputs.length).toBeGreaterThanOrEqual(1);
+
     await expect(composition.send()).resolves.toMatchObject({
       txid: expect.stringMatching(/^[0-9a-f]{64}$/),
     });
+    const ea = getEntryNftAddress(bank.inner, bankSetup.categoryId, 'bal');
+    const entry = SortedList.fromUtxos(await provider.getUtxos(ea))
+      .find(keyToSlot(bigIntToVmNumber(2n)));
+    expect(entry).toBeDefined();
+    expect(vmNumberToBigInt(entry!.value, { requireMinimalEncoding: false })).toBe(15n);
   }, 180_000);
 });

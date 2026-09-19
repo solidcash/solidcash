@@ -11961,3 +11961,27 @@ lock. Candidates, in order:
 
 With both witnesses present the synthetic carrier is built, the ip-51 comparison resolves, and the composed
 preflight at input 20 becomes reachable.
+
+Round 324: NEGATIVE result - no build carries the caller lock WITHOUT a category
+
+The new `caller-identity-missing-category` gate (fires when `callerLockingBytecode` is set and `msgSenderCategory` is
+not) produced ZERO records in a full `take job` run. Together with round 323 that means one of two things for the
+failing frame, and the measurements now favour the second:
+
+* either the synthesis branch DID fire for it (lock + category present) and the carrier is still dropped
+  downstream, or
+* the caller-identity OVERRIDES never reach that build at all - in which case the `aa20bbc502f0…` the pin resolves
+  for `nullop:msg.sender` comes from a different authority than `overrides.callerLockingBytecode`.
+
+The second reading is consistent with everything measured so far: the failing frame is an implementation/route-row
+frame whose `msg.sender` key is bound by the ROUTE key machinery (`__message_bus_key_*` + the route's own caller
+identity, `:37259` `routeMsgSender = hexToBin(callerIdentity.lockingBytecode)`), which is also where
+`childCallerCategoryId` (`:29667`) and the route witness map come from. That path supplies the KEY correctly but not
+the `__internal__msgSenderCategory` witness the runtime comparison reads.
+
+Next round, one run, decisive: instrument the ROUTE key binding path (`:37259` and the `keyWitnessValues` /
+`batchKeyWitnesses` map that consumes `routeMsgSender`) to print, for the failing frame's rows, the caller identity
+it used (locking bytecode + categoryId) and whether that category is also written into the frame's
+`__internal__msgSenderCategory` argument vector. The fix then belongs where the route binds its caller identity:
+publish the same `callerIdentity.categoryId` as the witness (rather than leaving the ABI slot at its zero default),
+which is exactly the value the ip-51 comparison needs.

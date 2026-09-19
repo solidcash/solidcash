@@ -23272,7 +23272,19 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // appending here keeps all absolute input coordinates consistent.
     if (overrides?.callerIdentityUtxos !== undefined) {
       externalReadUtxos = [...externalReadUtxos, ...overrides.callerIdentityUtxos];
-    } else if (overrides?.callerLockingBytecode !== undefined && overrides?.msgSenderCategory !== undefined) {
+    } else if (overrides?.callerLockingBytecode !== undefined && overrides?.msgSenderCategory === undefined
+      && (globalThis as { process?: { env?: Record<string, string> } }).process?.env
+        ?.SOLIDC_DEBUG_MSG_SENDER_KEY === '1') {
+      // The caller lock arrived without its category, so no synthetic carrier can be built (the resolution scan is
+      // by category). Name the build so the annotation that supplies the lock can be extended with the category.
+      console.error('caller-identity-missing-category', JSON.stringify({
+        functionName, abiFunction: abiFunction?.name,
+        emitReturn: overrides?.emitReturn === true,
+        returnProbeOnly: overrides?.returnProbeOnly === true,
+        calls: overrides?.calls?.length ?? 0,
+      }));
+    }
+    if (overrides?.callerLockingBytecode !== undefined && overrides?.msgSenderCategory !== undefined) {
       // No real caller UTXO was supplied, but the caller's identity IS known (locking bytecode + category witness).
       // A frame resolves `msg.sender` by scanning its inputs for that category, so a synthetic minting carrier at
       // the caller's own lock gives the frame something to resolve against. Probes execute only input 0, so the

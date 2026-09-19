@@ -12091,3 +12091,19 @@ follows it - e.g. add a probe id (`probe.inputs.length`, the master outpoint and
 failing probe's OWN inputs: if the caller carrier is present, the ip-51 empty operand has a different cause (the
 carrier's token/category shape, or the comparison reading a different slot) and that becomes the new frontier; if it
 is absent, chase why the synthesis branch's `externalReadUtxos` entry is dropped for that build.
+
+Round 330: probe-id instrumentation was abandoned; tree restored from HEAD and compiling
+
+While adding the probe-id pairing (so a refusal can be attributed to its own `probe-input-locks`), a bracket-level
+edit corrupted `_deriveReturnBlob` and the file was restored from HEAD
+(`git show HEAD:packages/solidcash/src/stateful/StatefulContract.ts > ...`, per the standing rule against
+`git checkout --`/`git restore`), then one type error in the round-341 `route-caller-identity` diagnostic was fixed
+(`binToHex(routeMsgSender)` -> `String(routeMsgSender)`, since a `FunctionArgument` may be a string). `tsc -b` is
+clean again; the broken intermediate is saved at `/tmp/StatefulContract.broken.bak` if anyone wants the diff.
+
+The probe-id plan is still the right next measurement, but implement it WITHOUT touching the shape of the existing
+`console.error('probe-input-locks', JSON.stringify(probe.inputs.map(...)))` call: add a separate one-line dump
+before it (e.g. `console.error('probe-shape-id', JSON.stringify([probe.inputs.length,
+probe.inputs[0]?.txid?.slice(0, 8), probe.inputs[0]?.vout]))`) plus a `probe-failed` record right after
+`this.lastReturnProbeFailure = this.describeReturnProbeFailure(...)`, both gated by `SOLIDC_DEBUG_MSG_SENDER_KEY=1`.
+That pairs each refusal with the inputs of the probe that produced it, which is what round 329 showed is missing.

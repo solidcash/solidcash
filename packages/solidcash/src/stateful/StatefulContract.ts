@@ -37543,7 +37543,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         callee: calleeRouteArtifact.contractName,
         rows: (externalCall.batchInvocations ?? []).length,
         callerIdentity,
-        callerLockingBytecode: binToHex(routeMsgSender).slice(0, 30),
+        callerLockingBytecode: String(routeMsgSender).slice(0, 34),
         declaresMsgSenderCategory: (calleeRouteArtifact.abi ?? []).some((fn) =>
           (fn.inputs ?? []).some((input) => input.name === '__internal__msgSenderCategory')),
       }));

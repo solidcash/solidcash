@@ -11893,3 +11893,23 @@ Next round, one run: log at `_deriveReturnValue` entry (gated `SOLIDC_DEBUG_MSG_
 `callerContract` arrived, PRINT THE STACK, and match the failing probe by its `vmapBatchSlot_0 = 80a90055…` /
 `callerCategoryId = a3cef944…` signature; then pass the caller contract at that site too (each caller already has
 `this` = the calling contract in scope). With the caller input present, the ip-51 comparison should resolve.
+
+Round 321: the caller master IS resolved - the BUILDER drops it from the read band
+
+Measured (run 338): the failing probe's `_deriveReturnValue` is the threaded one, and the new
+`caller-identity-cospend` log confirms the co-spend is built:
+
+    caller-identity-cospend { callee: 'approve', caller: 'SolidCashProxy', callerCategory: 'a3cef94467ca',
+                              masterFound: true, outpoint: 'f4a0abf1:0' }
+
+`externalReadUtxos` receives it at `:23274` (immediately after its declaration, before the two `push` sites at
+`:23293` / `:23371`), yet `probe-input-locks` still lists only `[FakeToken master, _allowances HEAD entry, funding,
+funding]`. So the entry is dropped between `externalReadUtxos` and the built frame - the read-only band is filtered
+(the composed path only ever puts *data NFTs* there, `capability: 'mutable'`), and a MINTING master does not pass
+that filter.
+
+Next round: either (a) give the caller identity its own band on the builder (a new option placed right after the
+read band, with its own width contribution to `externalCallInputBase` at `:24601` and the output-base arithmetic at
+`:24709`), or (b) find the filter that rejects it and admit a minting master through the existing band. Then
+`probe-input-locks` must show the caller's `aa20bbc502f0…` input, the ip-51 comparison must resolve, and `take job`
+must reach the composed preflight at input 20. Re-verify the greens serially afterwards.

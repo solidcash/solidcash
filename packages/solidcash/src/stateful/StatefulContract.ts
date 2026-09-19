@@ -35670,6 +35670,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         functionName,
         hasCallerLock: callerLockingBytecode !== undefined,
         callerCategoryId,
+        // Whether the caller CONTRACT arrived decides if this probe can co-spend its master; the probe that fails
+        // ip 51 has no caller input, so this names the invocation that still needs the extra argument.
+        hasCallerContract: callerContract !== undefined,
         stack: new Error('drv').stack?.split('\n').slice(2, 8)
           .map((line) => line.trim().replace(/\s*\(.*/, '')),
       }));
@@ -35852,6 +35855,18 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     let callerIdentityUtxos: UnlockableUtxo[] | undefined;
     if (callerContract !== undefined) {
       const callerMaster = (await callerContract._getMasterOnlyState()).masterUtxo;
+      if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+        ?.SOLIDC_DEBUG_MSG_SENDER_KEY === '1') {
+        // A missing master is why the probe would still have no caller input even though the contract arrived.
+        console.error('caller-identity-cospend', JSON.stringify({
+          callee: functionName,
+          caller: callerContract.inner.artifact.contractName,
+          callerCategory: callerContract.categoryId.slice(0, 12),
+          masterFound: callerMaster !== undefined,
+          outpoint: callerMaster === undefined ? undefined
+            : `${String(callerMaster.txid).slice(0, 8)}:${callerMaster.vout}`,
+        }));
+      }
       if (callerMaster !== undefined) {
         const callerLock = hexToBin(callerContract.inner.lockingBytecode);
         callerIdentityUtxos = [{

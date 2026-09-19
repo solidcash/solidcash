@@ -1801,6 +1801,12 @@ export type CallInfo = {
   compilerRoute?: NonNullable<ExternalCallUtxoGroup['compilerRoute']>;
   /** For delegatecall: the proxy's master input index in the transaction. Defaults to 0. */
   proxyMasterIndex?: number;
+  /**
+   * Locking bytecode of the contract that CALLS this callee frame. The runtime resolves the frame's `msg.sender`
+   * from this identity (the same value the compiler receives as `__internal__msgSenderCategory`), so a
+   * `msg.sender`-keyed mapping inside the frame must hash it rather than the transaction origin.
+   */
+  callerLockingBytecode?: Uint8Array;
 } | {
   type: 'raw';
   utxo: UnlockableUtxo;
@@ -38542,6 +38548,11 @@ export class StatefulFunctionCall {
       functionName: compilerRoute.abiFunction.name,
       args: compilerRoute.args as FunctionArgument[],
       compilerRoute,
+      // The implementation frame this CallInfo later materializes executes for THIS call object's contract, so
+      // that contract's identity is the frame's caller - the authority its `msg.sender`-keyed mappings must hash.
+      ...(this.parentContract !== undefined && {
+        callerLockingBytecode: hexToBin(this.parentContract.inner.lockingBytecode),
+      }),
     });
     return this;
   }

@@ -11872,3 +11872,24 @@ placeholder outside the probe path.
 Verification: `probe-input-locks` gains an entry with `aa20bbc502f0…` (the marketplace proxy) and the ip-51
 comparison resolves; then `take job` reaches the composed preflight at input 20 and the greens are re-verified
 serially.
+
+Round 320: the caller co-spend plumbing is in, but the failing probe still has no caller input
+
+Landed (tsc clean, behaviour unchanged where unused):
+* overrides accept `callerIdentityUtxos`, merged into the read band right after
+  `let externalReadUtxos: UnlockableUtxo[] = []` (so every derived band width keeps its arithmetic);
+* `_deriveReturnValue(..., callerContract?: StatefulContract<Artifact>)` fetches the caller's master via
+  `_getMasterOnlyState()` and co-spends it with a lock-only placeholder unlocker (probe-safe: only input 0 executes);
+* the `derive` helper passes `this` as the caller contract.
+
+Measured (run 336): `probe-input-locks` for the failing `approve` probe is UNCHANGED -
+`[FakeToken master, _allowances HEAD entry (64B), funding, funding]`, no marketplace input - and the refusal is still
+ip 51. So this probe is launched by a DIFFERENT `_deriveReturnValue` invocation than the threaded `derive` helper.
+The unthreaded candidates remain the view-accessor path (`:7149`/`:7155`), `_refreshProjectedExternalReturns`
+(`:13353`) and the atomic-node probe (`:34501`, already threaded for identity+category but not for the caller
+contract).
+
+Next round, one run: log at `_deriveReturnValue` entry (gated `SOLIDC_DEBUG_MSG_SENDER_KEY=1`) whether
+`callerContract` arrived, PRINT THE STACK, and match the failing probe by its `vmapBatchSlot_0 = 80a90055…` /
+`callerCategoryId = a3cef944…` signature; then pass the caller contract at that site too (each caller already has
+`this` = the calling contract in scope). With the caller input present, the ip-51 comparison should resolve.

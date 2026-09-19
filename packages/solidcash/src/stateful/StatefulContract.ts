@@ -18209,6 +18209,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
        * a top-level call sent by the signer, where the signer's own address is the caller.
        */
       callerLockingBytecode?: Uint8Array;
+      /**
+       * Co-spend UTXOs that carry the CALLER's identity, added to the read-only band of a nested PROBE. The
+       * compiled frame resolves its `msg.sender` from its inputs (by category), so a probe that omits the caller
+       * compares against an empty item even when every witness is correct. Only input 0 executes in a probe, so a
+       * lock-only placeholder unlocker is sufficient here - never use one outside the probe path.
+       */
+      callerIdentityUtxos?: UnlockableUtxo[];
       drainSatoshiContainer?: boolean;
       drainTokenContainers?: string[];
       emitReturn?: boolean;
@@ -23261,6 +23268,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // Handle external state reads (cross-contract reads via interfaces)
     const externalReads = abiFunction?.externalReads;
     let externalReadUtxos: UnlockableUtxo[] = [];
+    // The caller identity co-spends join the READ band: every band width below is derived from this array, so
+    // appending here keeps all absolute input coordinates consistent.
+    if (overrides?.callerIdentityUtxos !== undefined) {
+      externalReadUtxos = [...externalReadUtxos, ...overrides.callerIdentityUtxos];
+    }
 
     if (externalReads && externalReads.length > 0) {
       const artifact = this.inner.artifact;
@@ -35644,6 +35656,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
      * `msg.sender`-derived comparison read a sentinel instead of the caller.
      */
     callerCategoryId?: string,
+    /**
+     * The contract that calls this callee. Its master UTXO is co-spent into the probe so the compiled frame can
+     * resolve `msg.sender` exactly as it will in the composed transaction.
+     */
+    callerContract?: StatefulContract<Artifact>,
   ): Promise<StateValue> {
     if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
       ?.SOLIDC_DEBUG_MSG_SENDER_KEY === '1') {
@@ -35832,9 +35849,26 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // published calls, resolved against the frame it is being invoked with. The probe materializes those
     // participants exactly like an ordinary build so its co-spent coordinates name the addresses the callee's
     // identity checks expect instead of the sentinel that points back at the executing input.
+    let callerIdentityUtxos: UnlockableUtxo[] | undefined;
+    if (callerContract !== undefined) {
+      const callerMaster = (await callerContract._getMasterOnlyState()).masterUtxo;
+      if (callerMaster !== undefined) {
+        const callerLock = hexToBin(callerContract.inner.lockingBytecode);
+        callerIdentityUtxos = [{
+          ...callerMaster,
+          // Probes execute only input 0, so the lock is all this co-spend has to contribute; a real send of the
+          // same frame materializes the caller's own unlocker elsewhere.
+          unlocker: {
+            generateLockingBytecode: () => callerLock,
+            generateUnlockingBytecode: () => new Uint8Array(),
+          },
+        }];
+      }
+    }
     const builder = await this._createBuilder(
       functionName, args, {
         emitReturn: true, returnProbeOnly: true, calls, abiFunction, externalCalls: calleeCalls,
+        ...(callerIdentityUtxos !== undefined && { callerIdentityUtxos }),
         ...(callerLockingBytecode !== undefined && { callerLockingBytecode }),
         // Wire order, as the compiler's OP_UTXOTOKENCATEGORY exposes it (see the same encoding at the handler
         // build site).
@@ -36256,6 +36290,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           // mapping slots must be pinned against that identity - not against the transaction origin.
           executionSelfAddress instanceof Uint8Array ? executionSelfAddress : undefined,
           this.categoryId,
+          this as unknown as StatefulContract<Artifact>,
         ) as FunctionArgument;
       } catch (error) {
         if (!allowProvisional || !(error instanceof Error)

@@ -12395,3 +12395,25 @@ then read the tuple for the pin that produces `4038d902…`:
   the pin (a second builder inside the probe path);
 * `hasCallerLock: false` -> that `_deriveReturnValue` call is unthreaded and its caller must supply the identity.
 This also guards every earlier measurement in this session that relied on a fresh source edit reaching the test run.
+
+Round 343: NOT a stale bundle - JSON omits undefined fields; `transferFrom`'s build has neither override
+
+Clearing `.marketplace/vite-cache-marketplace` (moved to `/tmp/vite-cache-marketplace-bak-343`) and re-running did
+NOT change the `transferFrom` pin line. The reason is mundane and important: `JSON.stringify` DROPS keys whose value
+is `undefined`, so `callerLock`/`callerCategory` are absent exactly when `hasCallerLock: false` - the new fields DO
+appear for other builds in the same log (`grep -c callerCategory` = 17, all on frames whose overrides are set). The
+"stale bundle" suspicion of round 342 is therefore disproved, and every earlier measurement in this session stands.
+
+What the line does say, unambiguously, is that the failing `transferFrom` build carries NEITHER
+`overrides.callerLockingBytecode` NOR `overrides.msgSenderCategory` (both undefined), even though its
+`derive-return-value-entry` shows `hasCallerLock: false, hasCallerContract: false` on a stack that includes `derive`.
+Since the `derive` helper now always passes `this` (the caller contract) and defaults `executionSelfAddress` to the
+executing frame's locking bytecode, that entry line cannot come from the call site at `:36147` - it must belong to
+another `_deriveReturnValue` invocation (candidates: the view-accessor path `:7149`/`:7155`, the projected-returns
+path `:13353`, or a second helper also named `derive`).
+
+Next round, one run: print at `_deriveReturnValue` ENTRY the receiving function's master outpoint and
+`vmapBatchSlot_0`-style identifiers once the probe exists (or simply log the call's `args.length` + the first arg
+hex) plus the stack, and print the SAME identifiers in `entry-pin-identity`; the pair then names the exact call site
+for the pin that produces `4038d902…`. Thread the identity there (it is the same two-value plumbing already used for
+`approve`) and the composed `transferFrom` row should read the allowance the transaction writes.

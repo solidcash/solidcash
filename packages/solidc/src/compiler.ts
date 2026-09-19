@@ -1340,8 +1340,24 @@ function attributeExternalHandlerRefusal(
   error: unknown, attribution: ExternalAdmissionAttribution,
 ): string[] {
   const candidates = attribution.spans.filter((span) => !attribution.refused.has(span.key));
-  if (candidates.length === 0) return [];
   const message = error instanceof Error ? error.message : '';
+  // The attributed refusal this produces (`handler-route-generation-unsupported`) names the handler but never the
+  // construct: the exception that gapped route generation is otherwise discarded, so a compile reports a class
+  // with no way to reach it. Publish the message with every attribution decision (each branch returns below).
+  if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+    ?.SOLIDC_DEBUG_ADMISSION_REASONS === '1') {
+    console.error('message-bus-attributed-refusal', JSON.stringify({
+      error: message.slice(0, 500),
+      errorKind: error instanceof Error ? error.constructor.name : typeof error,
+      candidates: candidates.map((span) => span.key),
+      location: (error as { node?: { location?: Location } } | undefined)?.node?.location === undefined
+        ? undefined : (() => {
+          const at = (error as { node: { location: Location } }).node.location;
+          return { line: at.start.line, column: at.start.column };
+        })(),
+    }));
+  }
+  if (candidates.length === 0) return [];
   let named: string | undefined;
   for (const prefix of MESSAGE_BUS_CLONE_PREFIXES) {
     for (const span of candidates) {
@@ -6514,7 +6530,18 @@ function synthesizeMessageBusRoute(
         // `deploy` also covers legacy/create3-style lifecycle routes with no typed child site. Only the exact
         // typed `new Child(...)` topology above has compiler-authored child metadata and a balanced graph window.
         reason = 'KERNEL_LIFECYCLE';
-      } else if (reason !== undefined) reason = kernelAdmissionReason(reason);
+      } else if (reason !== undefined) {
+        // The kernel catalog replaces the source reason, and `message-bus-admission-source` prints the value this
+        // chain already mapped, so the construct that refused the handler was unrecoverable from the artifact and
+        // from the logs. Publish the pass-local reason before it is classified.
+        if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+          ?.SOLIDC_DEBUG_ADMISSION_REASONS === '1') {
+          console.error('message-bus-admission-reason', JSON.stringify({
+            handler: fn.name, sourceReason: reason, kernelReason: kernelAdmissionReason(reason),
+          }));
+        }
+        reason = kernelAdmissionReason(reason);
+      }
     }
     fn.messageBusEligible = reason === undefined;
     fn.messageBusRejectionReason = reason;

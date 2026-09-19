@@ -12635,3 +12635,53 @@ Verified state with a forced, uncached compile of this tree: 22/22 sources, 19 a
       a position in the message-bus route generated for 'MarketplaceV2' ..."}
 
 so the diagnosis of rounds 353-366 stands on a genuinely fresh build.
+
+Round 341 (goal round 341): the compiler defect behind `takeJob` is FIXED; `take job` now fails in the composer's
+deferred-compute learning instead
+
+**The fix (commit `2679e88fd`).** `LowerCollectionJournalHelpers` refused to rewrite a call inside a body whose
+array had an unthreaded writer, but still unshifted the journal parameter and rewrote the candidate's own body -
+so the callee declared a parameter no call site passed and its body referenced journal locals nothing declared.
+Both halves are now consistent: a candidate is unshifted only when a rewritten call site actually threads it
+(`threadedSingles`/`threadedMultis`), and a candidate's own body is rewritten only when it is journaled (callers
+first, candidate bodies second - the codegen error for the other order was
+`Undefined reference to symbol __dcj___message_bus_entry_takeJob_0`).
+
+**Measured effect (forced full compile, 22/22 sources, EXIT 0):** `MarketplaceV1` 36 -> 39 eligible handlers;
+`takeJob`, `refund` and `refuseArbitration` all generate routes now. `take job` therefore takes the ATOMIC path:
+the composer batches the token's rows with per-row callers, so the missing `approve` write of round 353 is no
+longer the failure.
+
+**New failure, now precisely quantified** (commit `42f3476d4` prints it):
+
+    Error: messageBus: complete graph did not expose arguments for all deferred compute resources
+      (participant 0: keccak 2/2 unresolved, ecrecover 1/1 unresolved)
+
+i.e. the `takeJob` row needs 2 keccak side-cars plus 1 ecrecover side-car, and the SDK's trace learners never
+learned their arguments. Context measured with `SOLIDC_DEBUG_ECRECOVER_READINESS=1`:
+
+* participant 0 is the delegate/proxy frame (`executionInput` 129, `inputBase` 0) with compute offsets [3,4,5]
+  (3 = keccak mode 1, 4 and 5 = ecrecover mode 2), and the callManifest DOES carry kind-6 rows for 3, 4 and 5 -
+  so the graph side is complete and only the *values* are missing;
+* its route `__message_bus1` publishes no ecrecover/keccak arguments at all
+  (`routedUnlockers[localIndex 129] -> arguments: []`);
+* `MarketplaceV1`'s handler metadata for `takeJob` is `keccakPreimageParams: [null, null]`,
+  `ecrecoverCompute: true`, and `ecrecoverArgParams` **absent** - the handler computes both the digest
+  (`ECDSA.recover(digest, signature_)`, digest = keccak over `abi.encode(eventsLength, jobId_)`) and v/r/s from
+  `signature_`, and codegen records arg provenance on the function that emits the call (`emitEcrecoverComputeCall`
+  pushes into `this.currentFunction`), so a transitively inlined call leaves the entry point with
+  `ecrecoverCompute: true` and no arg list.
+
+Next round, one run: find why `resolveDeferredKeccakPreimage` / `resolveDeferredEcrecoverArgument` learn nothing for
+this participant. Both learn by replaying the built program and reading the compute read-sites
+(`StatefulTransactionBuilder.ts:12104` ff.; the ecrecover learner wants the 97-byte blob just below the recovery-A
+input index at OP_INPUTBYTECODE). The `resolve` hook already fills empty commitments so an early `OP_SPLIT` abort
+cannot hide the read sites - check whether that fill covers *this* participant's parse sites (the delegate frame's
+route args, `__internal__delegateInputIndex`, and the token/entry inputs of the nested participants). A cheaper
+alternative if the learner cannot reach them: publish the arg *recipes* (hash = the keccak side-car result;
+v/r/s = slices of `signature_`) so the SDK can supply the values directly, which is the same provenance idea as
+`projectConstructedKeyVectorProvenance`.
+
+Also verified this round: greens still pass with the compiler change (fixture 1/1 skipped, `unicrow params` 2,
+`admin` 8). The full `--project solidc` suite reports 225 failures; an A/B run with this pass reverted is in
+progress to establish the pre-existing baseline before treating any of them as a regression.

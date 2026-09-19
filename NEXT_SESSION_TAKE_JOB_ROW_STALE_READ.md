@@ -13902,3 +13902,43 @@ addressing after all and the search returns to the row-vs-vector positions.
 
 **Verified state (defaults)**: greens 3 passed | 63 skipped; fast fixture 1 passed | 1 skipped; artifacts rebuilt
 canonically; both gates opt-in.
+
+Round 366: the failing split's operands come from the VM, and outlining is the prime suspect
+
+The pre-state selector now prints EVERY candidate whose position matches the reported failure, because an outlined
+body is invoked many times and preflight evaluates an input in several passes. Measured for the emission check:
+
+    reported: input 129, ip 3, len 6, failing opcode 127 (OP_SPLIT)
+    candidates whose (instructions.length, ip) match `evaluated.ip - 1`: 64
+    VM message: "stack item length: 36; requested split index: 116"
+
+The count is the point: position alone cannot identify the failing invocation, and the ring's last entry belongs to a
+later pass (the report is emitted for the first failure while evaluation continues), so the dumped operands keep
+disagreeing with the VM's own numbers. The VM message stays the authority, and it says exactly:
+
+  * the split INDEX is 116 - the byte length of the emissions VECTOR (a computed size, not a byte string);
+  * the split ITEM is 36 bytes - a framed 35-byte locking bytecode, i.e. a single row's target.
+
+So the size was computed from the VECTOR while the item split is a ROW: the two values sit in the opposite order
+from what the emitter assumes (it builds the row last, so the row should be on top and the vector below). The
+caller's own sequence before the outline call (decoded from the artifact, `MarketplaceV1.invokeDebug[56]`, ip
+5210-5229) is
+
+    OP_INVOKE(0x80ae) OP_IF OP_INVOKE(0x80af) OP_NIP push 0x82 OP_INVOKE OP_NIP NIP NIP
+    OP_SIZE OP_PICK OP_CAT OP_DUP push 0xf4 OP_INVOKE push 0x3e push 0x16 OP_INVOKE
+
+i.e. the emitter's `OP_DUP OP_SIZE NIP` (its prefix-length step) is NOT contiguous with the `push idx; OP_PICK` that
+follows it - other outlined helpers (0xf4 and the 0x80ae/0x80af pair) sit between them and around them. That is
+consistent with the earlier bisect: with `SOLIDCASH_NO_OUTLINE=1` the emission check does NOT fail (the title then
+fails somewhere else, `input 3, ip 4537 of 9343, OP_EQUALVERIFY`). So the outlining pass is the prime suspect: it
+either placed the extracted boundary inside the row/prefix-length sequence or the extracted helper's own frame
+expectation differs from the inline form.
+
+**Next round**: compare the inline sequence the emitter writes for this check with the outlined decomposition for
+one concrete call site (the helper ids 0xf4 / 0x80ae / 0x80af are all visible in the artifact, and
+`SOLIDCASH_NO_OUTLINE=1` produces the inline reference), then fix whichever side lost the ordering - or make the
+outline of THIS sequence preserve it. The VM message is the acceptance test: with the fix, the index must equal the
+ROW PREFIX length (74) and the item must be the VECTOR (116 bytes).
+
+**Verified state (defaults)**: greens 3 passed | 63 skipped; fast fixture 1 passed | 1 skipped; artifacts rebuilt
+canonically; both gates opt-in.

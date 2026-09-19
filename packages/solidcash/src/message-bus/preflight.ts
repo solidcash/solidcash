@@ -1122,7 +1122,12 @@ const evaluateEveryInput = (
   // Keyed by the input the state belongs to: this one VM evaluates every input, so a single "last state" slot is
   // overwritten by whichever input runs last and would report another input's frame as the failure's operands
   // (measured: the dumped operands did not match the VM's own message for the failing split).
-  const preStateByInput = new Map<number, AuthenticationProgramStateCommon>();
+  // A short ring of recent pre-states per input. The reported failure comes from whichever pass failed LAST, so the
+  // operands must be selected by instruction position rather than by pass: the terminal state's ip is one past the
+  // failing instruction, so the entry whose `ip === evaluated.ip - 1` in the SAME instruction array is that
+  // instruction's pre-state. (Earlier attempts keyed on "last state" or "first pass" reported another frame:
+  // measured dumps at ip 22 of a 22-deep frame while the failure was ip 3 of a 6-instruction body.)
+  const preStateRingByInput = new Map<number, AuthenticationProgramStateCommon[]>();
   const vm = createVirtualMachineBch2026ForProvider(builder.provider,
     (outputCompareDebug || failurePreStateDebug) ? {
     opcodes: failurePreStateDebug
@@ -1132,7 +1137,12 @@ const evaluateEveryInput = (
       if (failurePreStateDebug) {
         const captured = unknownState as AuthenticationProgramStateCommon;
         const ownedInput = captured.program?.inputIndex;
-        if (typeof ownedInput === 'number') preStateByInput.set(ownedInput, captured);
+        if (typeof ownedInput === 'number') {
+          const ring = preStateRingByInput.get(ownedInput) ?? [];
+          ring.push(captured);
+          if (ring.length > 64) ring.splice(0, ring.length - 64);
+          preStateRingByInput.set(ownedInput, ring);
+        }
       }
       if (!outputCompareDebug) return;
       const state = unknownState as unknown as {
@@ -1518,12 +1528,26 @@ const evaluateEveryInput = (
           // program size (measured: "Worker exited unexpectedly").
           operands: (() => {
             if (!failurePreStateDebug) return undefined;
-            const preState = preStateByInput.get(inputIndex);
+            // preflight evaluates an input several times (the convergence loop re-runs it after repairing mutable
+            // resources), and an outlined body is invoked from several sites - so neither "last state" nor "first
+            // ip match" identifies the operands on its own. Print EVERY candidate whose position matches the
+            // reported failure (`evaluated` carries the error and an ip one past the failing instruction) and use
+            // the first one, i.e. the earliest pass.
+            const ring = preStateRingByInput.get(inputIndex) ?? [];
+            const candidates = ring.filter((candidate) =>
+              candidate.instructions.length === evaluated.instructions.length
+              && candidate.ip === evaluated.ip - 1);
+            const preState = candidates[0] ?? ring.at(-1);
             if (preState === undefined) return { unavailable: 'no state captured for this input' };
             return {
               ip: preState.ip,
               opcode: preState.instructions[preState.ip]?.opcode,
               depth: preState.stack.length,
+              candidateCount: candidates.length,
+              candidates: candidates.slice(0, 4).map((candidate) => ({
+                depth: candidate.stack.length,
+                top: candidate.stack.slice(-3).map((item) => `${item.length}:${binToHex(item).slice(0, 24)}`),
+              })),
               error: preState.error === undefined ? undefined : String(
                 (preState.error as { error?: unknown }).error ?? preState.error,
               ),

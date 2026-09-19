@@ -11848,3 +11848,27 @@ Search results for the implementation (no behaviour change this round):
 Verification recipe stays as recorded in round 317: `probe-input-locks` must show an input with the marketplace's
 category/locking bytecode, the ip-51 comparison must resolve, `take job` must then reach the composed preflight at
 input 20, and the greens must be re-verified serially.
+
+Round 319: concrete implementation recipe for the caller co-spend (incl. the unlocker caveat)
+
+`_getMasterOnlyState()` (`:36044`) is the accessor to use; it returns
+`{ masterUtxo?: Utxo, dataNftUtxos: [], entryNftUtxos: [], state: {} }` - i.e. the caller's minting master UTXO, no
+extra discovery. Recipe:
+
+1. `_deriveReturnValue(..., callerContract?)`: when a caller identity is present AND this build is a probe, await
+   `callerContract._getMasterOnlyState()` and keep `masterUtxo`.
+2. Pass it into the probe's `_createBuilder` overrides through a NEW option (e.g. `callerIdentityUtxos`), and merge
+   that into the builder's `readOnlyDataNftUtxos` at `:32406` (or add a sibling field the builder appends right after
+   the read band - the compiler only needs the input to EXIST so its category scan finds the caller).
+3. Pass the caller contract down from the `derive` helper (`:36147`), where `this` is the caller contract.
+
+Unlocker caveat, measured from the code path: a probe executes only input 0
+(`evaluateProbeTrace(provider, program, ...)` with `inputIndex = 0`; there is no `evaluateEveryInput` preflight on
+the probe), so a lock-only placeholder unlocker (`generateLockingBytecode: () => <the UTXO's lock>`) is sufficient
+for the resolution scan. A full send/preflight of the same frame still needs the caller's REAL unlocker (route
+witnesses and all), because `assertFinalizedTransactionCovenants` executes every input - so do not reuse the
+placeholder outside the probe path.
+
+Verification: `probe-input-locks` gains an entry with `aa20bbc502f0…` (the marketplace proxy) and the ip-51
+comparison resolves; then `take job` reaches the composed preflight at input 20 and the greens are re-verified
+serially.

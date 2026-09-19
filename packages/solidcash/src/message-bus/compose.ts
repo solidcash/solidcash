@@ -4252,6 +4252,25 @@ export class AtomicMessageBusComposition {
                     + `${counter.keccakTotal} unresolved, ecrecover ${counter.ecrecoverUnresolved}/`
                     + `${counter.ecrecoverTotal} unresolved`;
               });
+            if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+              ?.SOLIDC_DEBUG_ENTRY_COUNTS === '1') {
+              // Whether the probe program is layout-COMPLETE: every participant's block is placed from the plan, so
+              // if the aggregate is smaller than the plan's own spans, every absolute coordinate baked into a row
+              // body (callee indices, entry offsets, executor-relative families) addresses an input that does not
+              // exist yet, and the probe aborts before the compute read sites it exists to observe.
+              console.error('deferred-stall-plan-size', JSON.stringify({
+                probeInputs: aggregate.inputs.length,
+                probeOutputs: aggregate.outputs.length,
+                participants: plan.participants.map((candidate) => ({
+                  participant: candidate.participant,
+                  base: graph.layout.participantInputs[candidate.participant],
+                  blockSize: candidate.blockLayout?.blockSize ?? 0,
+                  executionKind: candidate.executionKind,
+                  executorOffset: candidate.executorOffset ?? null,
+                  invocationCount: candidate.invocations.length,
+                })),
+              }));
+            }
             throw new Error(
               'messageBus: complete graph did not expose arguments for all deferred compute resources'
               + (stalled.length > 0 ? ` (${stalled.join('; ')})` : '')

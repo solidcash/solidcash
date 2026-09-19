@@ -12895,3 +12895,48 @@ body (the `entry` offsets, the executor-relative families, the `OP_1 OP_PICK OP_
 until the end. `SOLIDC_DEBUG_ENTRY_COUNTS=1` plus the new size suffix should show whether the failing round is the
 first or a later one; if it is the first, the fix is to resolve deferred compute only after the block/tail assembly
 is layout-complete (or to pad the probe to the final layout).
+
+Round 345: the probe IS layout-complete; the abort is the owner pick landing on a frame witness
+
+1. **Staleness disproved.** `deferred-stall-plan-size` (new, gated) prints the probe's own size beside every
+   participant's span for the failing round:
+
+       probe inputs 472, outputs 472
+       p0 base=0   blockSize=131 kind=1 executorOffset=129 invocations=1
+       p1 base=131 blockSize=87  kind=1 executorOffset=85  invocations=5
+       p2 base=218 blockSize=88  kind=0
+       p3 base=306 blockSize=82  kind=0
+       p4 base=388 blockSize=78  kind=0            -> last participant ends at 466 <= 472
+
+   so the aggregate the resolver probes covers every plan span: the probe is NOT being evaluated against a growing
+   layout. (`p1 blockSize = 87` is also exactly the "Transaction UTXO count: 87" of the unoptimised abort, i.e.
+   that build resolved against a participant-local/earlier program - an artefact of the diagnostic build, not the
+   shipping path.)
+
+2. **The runtime frame is now fully visible.** `probe-terminal` prints the last 40 stack items with depth tags
+   (widened this round). At the abort (takeJob clone, ip 220, again inside the `whitelistWorkers` read):
+
+       d0  32:bac4afa31b5925f59e163c5993bc34d46d99ab4307fe5e59569dcfec21113727   <- popped as the index
+       d1  1:02, d2 225:5100511976a914…, d3/d4 0:, d5/d6/d7 35:aa20… (locks),
+       d8..d13 0:, d14 65:bedae1ac…, d15 0:, d16/d17 25:76a91447d9fe…, d18 0:, d19 1:41, d20 1:04, …
+
+   The popped index is the 32-byte commitment at the TOP of the frame, i.e. the owner pick resolved to a frame
+   witness, not the owner argument - the "extras sit ABOVE the tracked frame" case.
+
+3. **The compiler already carries both forms, and the choice is the fix.** `emitMasterInputIndex`
+   (`GenerateTargetTraversal.ts:32436`):
+   * the `owner` branch (a generated clone with `__internal__messageBusOwnerInput`) uses a TOP-relative pick, with a
+     comment recording that switching it to `emitPickTrackedFromBottom` "removes the take-job empty-item OP_SPLIT but
+     regresses `close job` (2 titles) and `withdraw collateral`";
+   * the `route-entry` branch already uses the BOTTOM ordinal for exactly our reason: "Its aggregate frame can
+     leave runtime-only operands above the tracked ABI values, so recover the witness by stable bottom ordinal
+     rather than guessing a physical distance from the executor's active input";
+   * the `define-body` branch keeps the top-relative form deliberately.
+   The takeJob clone is a DEFINE'd handler body invoked from the graph route, so it takes the `owner` branch and
+   picks top-relative - landing on the witness above it.
+
+Next round, one experiment: select the form PER FRAME instead of globally - bottom ordinal for a clone whose caller
+is the graph row loop (the extras-above case this abort demonstrates), top-relative for the standalone/compact
+frames that `close job` and `withdraw collateral` depend on. Both populations are testable in this very suite
+(`take job`, `close job`, `withdraw collateral` are three of the 66 titles), and `DBG-COMPUTE-BASE` records make the
+selected branch auditable per site. Remember to move `.marketplace/cache` aside so the recompile is real.

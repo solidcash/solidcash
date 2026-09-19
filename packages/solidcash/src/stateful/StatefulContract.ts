@@ -5557,9 +5557,13 @@ function dumpProbeTerminal(
         ? instruction.opcode
         : `${instruction.opcode}:${binToHex(data).slice(0, 16)}`;
     }),
-    stack: state.stack.slice(-10).map((item) => (item.length <= 300
-      ? `${item.length}:${binToHex(item)}`
-      : `${item.length}:${binToHex(item.subarray(0, 8))}..${binToHex(item.subarray(-8))}`)),
+    // The full frame, not the last ten items: a base that lands on a neighbouring operand is only visible when
+    // the compiler's tracked model (DBG-COMPUTE-BASE `stackTop`) can be aligned with the runtime stack - and the
+    // operands that matter sit further down. Kept bounded by the same gate.
+    stack: state.stack.slice(-40).map((item, offset, items) => (item.length <= 300
+      ? `${items.length - 1 - offset}:${item.length}:${binToHex(item)}`
+      : `${items.length - 1 - offset}:${item.length}:${binToHex(item.subarray(0, 8))}`
+        + `..${binToHex(item.subarray(-8))}`)),
   }));
 }
 

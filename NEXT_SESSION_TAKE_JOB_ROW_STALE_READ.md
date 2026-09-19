@@ -14185,3 +14185,28 @@ the contract's side is the two 74-byte prefixes in the failing pre-state, and th
 addresses with their categories (`a3cef94467ca` = participant 0, `ee643a1671fb` = participant 1). The next round can
 decide by reading which participant the state variable belongs to in the plan (`PreparedAtomicMessageBusCall.contract`
 / `targetLockingBytecode`) versus which entry the contract's state read resolved to.
+
+Round 374: the bad lane is a STATE READ of the interface-typed variable, and both values are master OUTPUT locks
+
+**The target-lane emitter's branches** (`GenerateTargetTraversal.ts` ~18952-19003): the row's target comes from
+`evaluatedTargetExpression` (`this.visit(slot.sourceCallNode.addressExpression)`), else a constructor target, else an
+`__extaddr_ll_` inlined state target, else `slot.addressParam` picked by MODEL INDEX, else a literal. A new gated
+print (`graph-target-lane`) covers the `addressParam` branch - and it NEVER FIRED for this row, so our row takes the
+EXPRESSION branch: the target is the source expression `marketplaceData`, i.e. a STATE READ of the interface-typed
+address variable.
+
+**Both lane values are master OUTPUT locks, not input locks.** From the composition dump:
+
+    plan lane    aa2008ddbbe2df1b...  category ee643a1671fb...  = participant 1's master OUTPUT lock
+    contract lane aa20178dbf211c4f... category a3cef94467ca...  = participant 0's master OUTPUT lock
+    participant 1's INPUT locks are aa202b89e5... (physical) / aa2005e29c... (logical)
+
+So the contract's state read for `marketplaceData` returned the CALLER's own master output lock instead of the
+stored interface address - i.e. reading `marketplaceData` inside the graph handler resolved to the caller's own
+identity rather than the state value.
+
+**Next round**: instrument `visitStateAccess` for this expression (print the state variable name, its
+nft/field index, the model index used and the neighbours) to see whether the read resolved to the wrong SLOT (the
+participant's own master slot instead of the stored interface field) or the right slot whose VALUE is wrong. The
+fix, whichever it is, is then local: either the state-access coordinate inside a graph handler, or the value the
+planning side stored for that interface variable.

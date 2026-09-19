@@ -12739,3 +12739,39 @@ the SDK's physical-entry materialization for a *newly admitted* row is the place
 Note for reproduction: `.marketplace/artifacts` is back to the OPTIMISED build (the unoptimised one was only used to
 resolve instruction 220); `SOLIDC_NO_OPTIMISE=1` plus a moved `.marketplace/cache` reproduces the unoptimised
 mapping.
+
+Round 342b: WHY the abort happens - the `whitelistWorkers` entry is never pinned in the composed frame
+
+`SOLIDC_DEBUG_ENTRY_PIN=1 SOLIDC_DEBUG_MSG_SENDER_KEY=1` on the failing run pins 204 entries and NOT ONE of them is
+`whitelistWorkers` (histogram: `_balances` 36, `_allowances` 34, `meceTags` 8, `escrows` 8, `jobEvents` 7,
+`escrowArbitrator` 6, `users` 2, `arbitrators` 1). By owner: FakeToken 70, SolidCashProxy 18, Unicrow 8,
+UnicrowArbitrator 6 - **no MarketplaceV1 frame is pinned at all**, although the abort is inside
+`__message_bus_entry_takeJob`, i.e. the MarketplaceV1 implementation frame.
+
+The compiler's side is complete and says what must be materialized - `MarketplaceV1.messageBus.route`:
+
+    inputs: batchBlob __internal__activeVerifierIndex … __message_bus_key_whitelistWorkers_0
+            __message_bus_key_whitelistWorkers_1 __message_bus_key_whitelistWorkers_0_alt
+            __message_bus_key_whitelistWorkers_1_alt … __internal__vmapBatchTrailingCount
+            __internal__returnOutputIdx __internal__proxyMasterIndex __internal__dynamicChunkInputBase
+    entryAccesses: slot 0 whitelistWorkers [key_0, key_1] read+write
+                   slot 1 whitelistWorkers [key_0_alt, key_1_alt] read
+                   slot 5 whitelistWorkers [ek_key_0, ek_key_1] read
+                   slot 6 whitelistWorkers [ek_key_0, ek_key_1] write
+
+So the route publishes the keys and four physical entry coordinates for this collection, and the SDK must fill the
+key witnesses and co-spend the entry. It materializes none of them, so the compiled read addresses an unmaterialized
+coordinate and the probe aborts (invalid input index) before the keccak/ecrecover read sites - which is the ONLY
+reason the deferred compute arguments stay unresolved.
+
+Topology reminder: participant 0 is a delegate participant (`executionKind 1`, `executorOffset` -> input 129), so
+the MarketplaceV1 route frame is NOT a separate participant; it is the *executor* input inside participant 0's
+block, built through `_batchRaw(... descriptor.executor ...)` in `compose.ts`. The entry pinning that covers every
+other contract (FakeToken/Unicrow/proxy) therefore never runs for that executor frame.
+
+Next round, one run: in the composer's participant loop, log the executor frame's `_batchRaw` inputs (descriptor
+artifact name, `rowArguments` handlers, `activeRouteEntryKeys`, `inactiveRouteEntrySlots`) and the resulting
+`entryKeyOverrides`/co-spent entry inputs. The question to answer is narrow: why does the *executor* frame's plan
+contain no active `whitelistWorkers` row - is the takeJob invocation missing from `participant.invocations` for that
+frame, are its `batchKeyWitnesses` absent from `activeRouteEntryKeys` (`StatefulContract.ts` ~`:7556`), or does the
+delegate build skip the pin loop entirely?

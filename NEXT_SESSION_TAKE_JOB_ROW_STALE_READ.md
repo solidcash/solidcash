@@ -14392,3 +14392,38 @@ New diagnostics committed this round
 side-car read must be `blockBase + slot.offset` (3 here), not the executor anchor, and the probe's empty preimage
 operand says the read is in a frame where the side-car value was never loaded. Fix that emission, then re-run
 `take job` and the three-title gate.
+
+Round 377 (cont.): the probe completes WITHOUT reading a compute side-car, and the record names the empty witness
+
+`SOLIDC_DEBUG_ENTRY_COUNTS=1` prints the probe's terminal state (participant 0, buildId 61):
+
+    deferred-no-progress-reads { total: 2398, failingIp: 656,
+      deferredRemaining: { keccakUnresolved: 2, keccakTotal: 2, ecrecoverUnresolved: 1, ecrecoverTotal: 1 },
+      executionWitnesses: { count: 5, lengths: [4, 86, 0, 1, 0], empty: [2, 4],
+        emptyNames: ["localBatch", "suppliedBlockSize"],
+        declaredNames: ["activeInputIndex","expectedLocalRows","localBatch","suppliedFixedSize",
+                        "suppliedBlockSize","suppliedEmissions","suppliedCallers","suppliedSettlementBoundary",
+                        "suppliedCompletionPositions"] },
+      failingStack: [ { length: 1, hex: "01" } ],
+      failingWindow: [1, 137(OP_DEFINE), 116, 140, 122, 130, 84, 157, 138(OP_INVOKE)] }
+
+So the probe at input 129 runs p0's route to the END of the program (ip 656, stack `01`) and never executes the
+keccak/ecrecover verification: only ONE `OP_INPUTBYTECODE` appears in the whole trace and it carries index 129
+(p0's own executor input), never the side-car coordinates 3/4/5. The route is being executed with an EMPTY
+`localBatch` (the row batch) and an empty `suppliedBlockSize`, i.e. the kernel row loop has no rows to walk, so the
+per-row bodies that read the compute side-cars are never entered.
+
+Layout facts from the same run (all correct, so this is NOT a layout problem):
+    p0: base 0 blockSize 131 executorOffset 129; slots 0 master, 1-2 dataNft, 3 keccakSideCar, 4-19
+        ecrecoverSideCar, 20-23 entry, 24-63 event, 64 returnEvent, 65-128 trailing, 129 lowLevelCall,
+        130 identityAnchor;  frame: sites 8, eventOffset 24, ecrecoverOffset 4, ecrecoverWidth 2
+    sidecars: p0 offset 3 in 32B -> out 64B, offsets 4/5 in 32B -> out 32B/34B (the composition publishes them)
+    deferred resolver expects a read index in [base, base + sidecars) = [3, 4) and saw only 129.
+
+This UNIFIES the two failure modes seen across builds: the emission-stream consumer mis-picks its operand (round
+375/376 evidence), so on one build the mis-split aborts (`OP_SPLIT`, 36 bytes at index 116) and on the current
+build the same defect consumes/skips the row that carries the compute effect, leaving the row loop with nothing to
+walk and the resolver with no read to learn from ("keccak 2/2 unresolved, ecrecover 1/1 unresolved"). The fix
+target is unchanged - the emission-stream pick/consumer - but the acceptance test for it is now the STALL
+diagnostic above: after a fix, the probe must execute an `OP_INPUTBYTECODE` with index in [3,4) and
+`deferred-keccak-learned` must appear.

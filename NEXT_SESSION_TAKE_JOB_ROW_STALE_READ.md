@@ -11767,3 +11767,37 @@ Next round: read ip 51 with the corrected table (`117 OP_DROP / 118 OP_DUP / 130
 entry input the probe co-spends for the `msg.sender`-keyed slot - the pin now has the right KEY, so the remaining
 question is whether the probe materializes the entry for that key (INSERT -> predecessor + NEW node) or still
 co-spends the unrelated node.
+
+Round 316: greens re-verified; the probe now carries the caller category and fails because the CALLER IS NOT CO-SPENT
+
+Greens with the name-keyed materialization fix (run serially, one marketplace run at a time - two in parallel is
+unsafe because the preset regenerates `.marketplace/project`): fixture `1 passed | 1 skipped`,
+`unicrow params` 2 passed, `admin` 8 passed.
+
+The failing probe's internals (run 335) now read:
+
+    __internal__msgSenderCategory = b32:3e0898a59579c5f6f2e6db6b855bcbaff255313f79e4616d17bfca6744f9cea3
+    __internal__vmapBatchSlot_0   = b32:80a90055d19510c2cb97d7eefec3ce1334870ca78a2f51a8f72f01c3cd63ac26
+    ... Proof_0 = 1, Next_0 = d1534eff…, PredOut_0 = 4, returnOutputIdx = 3
+
+and the refusal is now at ip 51:
+
+    window 117 118 130 119 146 105 124   (OP_DROP / OP_DUP / OP_SIZE / OP_NIP / OP_2SWAP? / OP_VERIFY / OP_SWAP)
+    d3 = 35b:aa20bbc502f00015910e6bd47a2e46b97b1d352d5…   (the CALLER's locking bytecode - resolved!)
+    d2 = 128b:80a90055…                                    (the target slot / NEW-node head)
+    d1 = 33b:3e0898a59579c5f6f2e6db6b…                     (the caller category || capability)
+    d0 = 0b:                                               (EMPTY - the value the check compares against)
+
+So the pin's key, the caller address AND the caller category are all correct now; what fails is a comparison against
+an EMPTY item, i.e. the compiler tried to resolve the caller identity against an input and found NONE. In the
+standalone PROBE the calling contract is not co-spent (it is a different participant of the composed transaction),
+so `emitMsgSender`-style resolution has nothing to match. At runtime in the composed frame the caller IS co-spent,
+so the probe must either (a) co-spend a synthetic input carrying the caller's category/locking bytecode, or (b) be
+built with the caller-identity check satisfied some other way - otherwise the probe can never authenticate the row
+it now correctly addresses.
+
+Next round: dump the probe's INPUT list (`probe-input-locks` in the same gate) and compare it with the composed
+frame's inputs; decide between (a) adding the caller identity input to the probe frame (a co-spend the SDK already
+knows how to materialize for the composed case) and (b) making the probe's expectation match the composed frame's
+resolution. The measured invariant to satisfy: every input the composed participant resolves `msg.sender` from must
+also be reachable in the probe that derives that participant's commitments.

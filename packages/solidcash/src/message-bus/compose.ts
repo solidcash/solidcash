@@ -1514,11 +1514,13 @@ const graphRouteContext = (
       // whatever the route handed it as the owner, and with the real value (0) the resulting coordinate is
       // indistinguishable from several other frame slots. With the sentinel the fragment's coordinate reads back
       // as `sentinel + 3` if the owner argument really is its base, and unchanged if the base comes from another
-      // slot. Debug only: never set outside a measured investigation.
+      // slot. The value is PER PARTICIPANT (0x11 + index) so a frame that resolves a coordinate from another
+      // participant's owner - the failure a single shared sentinel cannot distinguish from a neighbouring
+      // witness - reads back as that participant's sentinel instead. Debug only: never set outside a measurement.
       __internal__proxyMasterIndex: BigInt(
         (globalThis as { process?: { env?: Record<string, string> } }).process
           ?.env?.SOLIDC_DEBUG_OWNER_SENTINEL === '1'
-          ? 0x99 : finalized.layout.participantInputs[participant],
+          ? 0x11 + participant : finalized.layout.participantInputs[participant],
       ),
     } : {}),
     ...(blockhashSlot !== undefined && blockhashParameter !== undefined ? {

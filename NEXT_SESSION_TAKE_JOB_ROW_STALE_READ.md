@@ -13146,3 +13146,49 @@ layout the SDK does not produce - a missing/extra slot, or a different order - t
 bottom-relative owner pick address the declared witness by ROLE rather than by a fixed depth, or to push the band in
 the compiler's declared order. The measured band is printed by `SOLIDC_DEBUG_ENTRY_COUNTS=1`, the depths by
 `SOLIDC_DEBUG_DERIVE_TRACE_OPS=1 ..._INSTRUCTION_COUNT=2408 ..._STACK_DEPTH=75`.
+
+Round 350: the owner pick is an ABSOLUTE stack-bottom ordinal, and the frame is not at the bottom
+
+**The compiler's own model, printed.** `emitPickTrackedFromBottom` now records every site under the existing
+`SOLIDC_DEBUG_COMPUTE_BASE=1` gate as `DBG-BOTTOM-PICK` (function, name, topIndex, modelLength, ordinal+1,
+outputLength, model neighbours). Recompiling the marketplace project with the gate (cache moved aside - solidhat's
+project cache ignores the build id) shows the takeJob entry body's bottom picks ALL name
+`__internal__messageBusOwnerInput` and all carry the same ordinal (`bottomOrdinalPlusOne = 15`), i.e. the compiler
+reads the owner parameter at a fixed ABSOLUTE bottom ordinal (14) of its model:
+
+    stackTop (model, top-down, site 0): eventsLength, __dlcache_jobs, __rh85_target, __rh83_target,
+      __extaddr_unicrowAddress_IUnicrow, __extaddr_ll_jobs_jobId__token, __extaddr_marketplaceData,
+      __extcap_4..0, jobId_, signature_, ek_key_0, ek_key_1, logical_caller, __internal__messageBusOwnerInput,
+      __internal__dynamicChunkInputBase, __internal__outlinedRecoveryAIndex, ...
+    modelLength 32, topIndex 17 -> bottom ordinal 14
+
+`emitPickTrackedFromBottom` emits `OP_DEPTH; (modelLength - topIndex); OP_SUB; OP_PICK`, which resolves to the item
+at bottom ordinal `modelLength - topIndex - 1` - correct only when the runtime stack bottom IS the frame's bottom.
+
+**Measured runtime, same instruction (ip 226-229 of `__message_bus_entry_takeJob`, byte 292).** The picked item is
+131 (`2:8300`) at bottom ordinal 14 while p0's band supplies `__internal__proxyMasterIndex = 0` (independent
+`participant-witness-band` dump) and a one-byte 0 sits at bottom ordinal 19. So the runtime holds ~5 more items
+BELOW the modelled frame than the model knows: the caller keeps live operands under the callee's argument band
+(OP_INVOKE shares the stack). Together with the earlier finding that the top-relative form instead popped a 32-byte
+entry commitment, the frame is sandwiched: caller operands BELOW, runtime-only operands ABOVE. Absolute-bottom
+addressing cannot be right in that situation, and neither can a plain top-relative pick.
+
+**Owner sentinel, per participant now.** `SOLIDC_DEBUG_OWNER_SENTINEL=1` substitutes `0x11 + participant` for
+`__internal__proxyMasterIndex` (was a single 0x99 for every delegate, which cannot distinguish "another
+participant's owner" from "a neighbouring witness"). Effect is unchanged and reproducible: with the sentinel the
+deferred-compute learning COMPLETES, and preflight at input 129 then fails one step later, in a 23-instruction body
+(`ip 3 of 23, failing opcode 127 (OP_SPLIT), window 206 1 ...` - a token-category read split on an EMPTY value).
+That is the same failure class (a coordinate pointing at an unmaterialized slot) and is the next reachable blocker.
+
+**Fix direction (general, compiler-side, no app-specific naming).** Parameter addressing must not depend on what the
+caller leaves below the frame:
+  (a) materialize `__internal__messageBusOwnerInput` (and the other hidden parameters) into a TRACKED LOCAL at body
+      entry - at entry the callee's arguments are the last items the caller pushed, so a top-relative pick is exact
+      there - and address that local afterwards; or
+  (b) make the generated call sites invoke handler bodies with a cleaned stack (stash the caller's live operands in
+      the alt stack across the OP_INVOKE); or
+  (c) stop the SDK dispatcher from leaving operands under the callee's band.
+(a) is compiler-only and is the smallest change that is sound for both sandwiched directions.
+
+Greens/practicals: the compiler edit is diagnostic-only (gated print), the sentinel gate is debug-only; the
+marketplace artifacts stay in the optimised state (same bytecode; the last compile only added debug records).

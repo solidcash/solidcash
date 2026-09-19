@@ -32218,6 +32218,23 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private emitPickTrackedFromBottom(name: string, locationData: SingleLocationData): void {
     const topIndex = this.getStackIndex(name);
     const bottomOrdinalPlusOne = this.stack.length - topIndex;
+    if (DEBUG_COMPUTE_BASE) {
+      // The emitted ordinal counts from the bottom of the MODEL's stack, so it is only the named item's slot when the
+      // runtime leaves nothing below the frame it was modelled against. Record every site with the model's view: a
+      // pick whose runtime operand is not the named value is then attributable to a specific call site and name
+      // instead of to a byte offset in an outlined body (the higher-level emitters do not all record themselves).
+      console.error('DBG-BOTTOM-PICK', JSON.stringify({
+        function: this.currentFunction.name,
+        isDefineSubTraversal: this.isDefineSubTraversal,
+        isRoute: this.isCompilerMessageBusRoute(this.currentFunction),
+        name,
+        topIndex,
+        modelLength: this.stack.length,
+        bottomOrdinalPlusOne,
+        outputLength: this.output.length,
+        above: this.stack.slice(Math.max(0, topIndex - 2), topIndex + 3),
+      }));
+    }
     this.emit(Op.OP_DEPTH, locationData);
     this.emit(encodeInt(BigInt(bottomOrdinalPlusOne)), locationData);
     this.emit(Op.OP_SUB, locationData);

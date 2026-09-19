@@ -91,6 +91,24 @@ cp packages/utils/src/cashproof-optimisations.ts opt.equiv && sed -i '' '/`/d' o
 python <cashproof_path> opt.equiv
 ```
 
+### Debugging a VM failure with an unoptimised build
+
+`solidc` folds the generated script with a peephole/structural optimiser, which is what ships. That rewrite moves
+instructions, so an instruction pointer reported by a VM failure is only approximately attributable to a source
+line (the SDK scans a window of candidate mappings and names the first `require` it finds).
+
+For an investigation where the exact source line matters, compile with optimisation disabled:
+
+```bash
+SOLIDC_NO_OPTIMISE=1 solidhat compile      # or: solidc compile, or { optimise: false } in the compiler options
+```
+
+Every instruction then keeps the source location that produced it, so the reported instruction pointer maps to
+the exact construct and `debug.requires` / `debug.logs` pointers stay exact; failure messages mark such artifacts
+as unoptimised. The mode is a debugging aid only: the script is larger and evaluates more opcodes, so it must not
+be used for artifacts that are deployed or measured for size. The flag participates in the artifact cache key, so
+switching it back and forth recompiles instead of reusing the other mode's artifacts.
+
 ## solidcash
 
 ### Running tests

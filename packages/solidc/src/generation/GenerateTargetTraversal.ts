@@ -2551,13 +2551,20 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // that runs after code generation can never reach inside it - whatever shuffles were still in that span
     // would be frozen there. `optimiseBytecode` runs to a fixed point, so the later pass over the rewritten
     // script is a no-op on everything this already folded.
-    const optimised = optimiseBytecode(
-      this.output, this.locationData, this.consoleLogs, this.requires, this.constructorParameterCount,
-    );
-    this.output = optimised.script;
-    this.locationData = optimised.locationData;
-    this.consoleLogs = optimised.logs;
-    this.requires = optimised.requires;
+    //
+    // `optimise: false` (debug builds) keeps the generator's instructions and their one-to-one location data, so
+    // an instruction pointer names the exact source construct that produced it. Skipping it only here would not
+    // be enough: this pass is what folds the generated code, so the compiler-level pass would then have nothing
+    // left to rewrite.
+    if (this.compilerOptions.optimise !== false) {
+      const optimised = optimiseBytecode(
+        this.output, this.locationData, this.consoleLogs, this.requires, this.constructorParameterCount,
+      );
+      this.output = optimised.script;
+      this.locationData = optimised.locationData;
+      this.consoleLogs = optimised.logs;
+      this.requires = optimised.requires;
+    }
 
     this.poolTopLevelConstants(node);
 

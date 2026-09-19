@@ -24,6 +24,14 @@ export interface CompilerOptions {
    * and column-accurate failing snippets are not.
    */
   sourceMap?: boolean;
+  /**
+   * Emit the code generator's bytecode verbatim instead of the peephole/structural optimiser's output. Default
+   * true (optimise). The unoptimised script keeps a one-to-one instruction/source-map correspondence, so a VM
+   * instruction pointer names the exact source line and require that produced it instead of the approximate
+   * window an optimised map forces. Debugging only: scripts are larger and evaluate more opcodes, so it must not
+   * be used for deployed artifacts. `SOLIDC_NO_OPTIMISE=1` selects it for a whole compile run.
+   */
+  optimise?: boolean;
   /** Suppress non-fatal compiler warnings while preserving errors and ordinary command output. */
   suppressWarnings?: boolean;
   /**
@@ -711,6 +719,12 @@ export interface InvokeDebugInformation extends FunctionDebugInformation {
 
 export interface DebugInformation {
   bytecode: string; // unlike `bytecode` property above, this is a hex-encoded binary string
+  /**
+   * Present and `false` only when the artifact was compiled with `optimise: false`. The instruction stream is then
+   * the code generator's own, so `sourceMap`, `requires` and `logs` instruction pointers are exact and a VM
+   * failure can be attributed to the source construct that produced it without a correction scan.
+   */
+  optimise?: boolean;
   sourceMap: string; // see documentation for `generateSourceMap`
   logs: readonly LogEntry[]; // log entries generated from `console.log` statements
   requires: readonly RequireStatement[]; // messages for failing `require` statements

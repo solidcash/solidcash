@@ -210,6 +210,8 @@ export const DEFAULT_COMPILER_OPTIONS: CompilerOptions = {
   commitmentLimit: 128,
   chunkedArrays: true,
   chainId: 0,
+  // Explicit default so the artifact cache key records the optimisation mode that produced a cached artifact.
+  optimise: true,
   // The row-loop kernel is the production message-bus convention. An explicit false remains as a temporary
   // compatibility escape hatch for artifacts which must reproduce the historical clone/unroll ABI.
   messageBusKernel: true,
@@ -490,6 +492,34 @@ const hasExactKernelJournalDispositionMatches = (
     && expected.every((key) => matchedSet.has(key))
     && box.codegenMatchedKernelJournalDispositionRoute === true;
 };
+
+/**
+ * The script one code-generation output publishes, together with the location data its source map is built from.
+ *
+ * Optimisation is the shipping default. With `optimise: false` the traversal's own instructions and location data
+ * are emitted verbatim, so instruction N keeps the source location that produced it (and `debug.requires` /
+ * `debug.logs` instruction pointers stay exact) - the mode a VM instruction-pointer investigation needs, at the
+ * cost of a larger script. The optimiser is a pure ASM rewrite, so both outputs are semantically identical.
+ */
+function emitContractScript(
+  optimise: boolean, traversal: GenerateTargetTraversal, constructorParamLength: number,
+): ReturnType<typeof optimiseBytecode> {
+  if (optimise) {
+    return optimiseBytecode(
+      traversal.output,
+      traversal.getLocationDataForOptimisation(),
+      traversal.consoleLogs,
+      traversal.requires,
+      constructorParamLength,
+    );
+  }
+  return {
+    script: traversal.output,
+    locationData: traversal.getLocationDataForOptimisation(),
+    logs: traversal.consoleLogs,
+    requires: traversal.requires,
+  };
+}
 
 function isInternalCodegenAttemptFailure(error: unknown): boolean {
   if (error instanceof BlockLayoutUnavailableError
@@ -812,9 +842,15 @@ function normalizeCompilerOptions(options: CompilerOptions): InternalCompilerOpt
     ? 'required'
     : options.messageBus === false ? 'disabled'
       : options.messageBus === true ? 'enabled' : 'auto';
+  // Debug switch for the whole run: emitting the code generator's bytecode verbatim makes an instruction pointer
+  // name the exact source line that produced it, which is what a VM-failure investigation needs. An explicit
+  // option still wins, and the resolved value lands in the artifact cache key.
+  const optimise = options.optimise
+    ?? (globalThis as { process?: { env?: Record<string, string> } }).process?.env?.SOLIDC_NO_OPTIMISE !== '1';
   const normalized = {
     ...DEFAULT_COMPILER_OPTIONS,
     ...options,
+    optimise,
     // Auto starts enabled so semantic inference (e.g. repeated-owner batching) remains available. Once the AST
     // is parsed, compileWithExternalAdmissionFallback narrows graph-free contracts to direct-only compilation.
     messageBus: messageBusMode !== 'disabled',
@@ -12659,15 +12695,12 @@ function compileResolvedAst(
   // Bytecode optimisation. The emitted bytecode is the new optimiser's output; optimiseBytecodeOld is only a
   // backwards-compat cross-check, and it runs its own up-to-1000-pass fixpoint, prohibitively slow on very large
   // scripts (e.g. big fixed-size arrays). Skip the cross-check above a size threshold - it never changes output.
-  const optimisationResult = optimiseBytecode(
-    traversal.output,
-    traversal.getLocationDataForOptimisation(),
-    traversal.consoleLogs,
-    traversal.requires,
-    constructorParamLength,
+  const optimisationResult = emitContractScript(
+    mergedCompilerOptions.optimise !== false, traversal, constructorParamLength,
   );
 
-  if (mergedCompilerOptions.optimizeForCompilationSpeed !== true
+  if (mergedCompilerOptions.optimise !== false
+    && mergedCompilerOptions.optimizeForCompilationSpeed !== true
     && traversal.output.length <= OPTIMISER_COMPAT_CHECK_MAX_OPS
     && needsOptimiserCrossCheck(traversal.output)) {
     const optimisedBytecodeOld = optimiseBytecodeOld(traversal.output);
@@ -12688,6 +12721,8 @@ function compileResolvedAst(
 
   const debug = {
     bytecode: binToHex(scriptToBytecode(optimisationResult.script)),
+    // Marks the trace as exactly attributable: the emitted instructions are the generator's own.
+    ...(mergedCompilerOptions.optimise === false && { optimise: false }),
     sourceMap: generateSourceMap(optimisationResult.locationData, mergedCompilerOptions.sourceMap !== false),
     logs: optimisationResult.logs,
     requires: optimisationResult.requires,
@@ -15109,17 +15144,14 @@ function compileReferencedContracts(
     traversal.compiledBytecodes = compiledBytecodes;
     singleAst.accept(traversal);
 
-    const optimisationResult = optimiseBytecode(
-      traversal.output,
-      traversal.getLocationDataForOptimisation(),
-      traversal.consoleLogs,
-      traversal.requires,
-      contract.parameters.length,
+    const optimisationResult = emitContractScript(
+      compilerOptions.optimise !== false, traversal, contract.parameters.length,
     );
 
     // MD2: run the same backwards-compat cross-check on referenced/child contracts too (it was only applied to
     // the top-level contract, so an optimiser divergence in a child script would have shipped unchecked).
-    if (compilerOptions.optimizeForCompilationSpeed !== true
+    if (compilerOptions.optimise !== false
+      && compilerOptions.optimizeForCompilationSpeed !== true
       && traversal.output.length <= OPTIMISER_COMPAT_CHECK_MAX_OPS
       && needsOptimiserCrossCheck(traversal.output)) {
       const optimisedOld = optimiseBytecodeOld(traversal.output);

@@ -2484,6 +2484,8 @@ export function mapMessageBusVmFailure(
       source?: string;
       functionBodies?: Record<string, string>;
       debug?: {
+        /** `false` on an unoptimised build: instruction pointers map exactly to source locations. */
+        optimise?: boolean;
         functionDebug?: Record<string, {
           requires?: Array<{ ip: number; line: number; message?: string }>;
           sourceMap?: string;
@@ -2549,15 +2551,19 @@ export function mapMessageBusVmFailure(
         const segments = sourceMap.split(';');
         const sourceLines = (artifact.source ?? '').split('\n');
         const correction = instructions - (failure?.programLength ?? instructions);
-        for (let delta = -24; delta <= 4; delta += 1) {
+        // An unoptimised artifact emits the generator's own instructions, so the mapping at the runtime index is
+        // exact: report it whatever the line says instead of searching for a `require`-looking neighbour.
+        const exact = artifact.debug?.optimise === false;
+        const deltas = exact ? [0] : Array.from({ length: 29 }, (_unused, index) => index - 24);
+        for (const delta of deltas) {
           for (const candidateIndex of [runtimeIp + correction + delta, runtimeIp + delta]) {
             if (candidateIndex < 0 || candidateIndex >= segments.length) continue;
             const line = Number(segments[candidateIndex]?.split(':')[0]);
             if (!Number.isFinite(line) || line <= 0) continue;
             const text = sourceLines[line - 1]?.trim();
-            if (text === undefined || !/require\s*\(|revert|assert\s*\(/.test(text)) continue;
+            if (text === undefined || (!exact && !/require\s*\(|revert|assert\s*\(/.test(text))) continue;
             return `; failing instruction at ${artifact.contractName ?? 'contract'}:${line}`
-              + ` (${text.slice(0, 80)})`;
+              + `${exact ? ' (unoptimised artifact: exact mapping)' : ''} (${text.slice(0, 80)})`;
           }
         }
       }

@@ -13976,3 +13976,37 @@ Prioritisation for the next round, by expected yield:
 Also this round: the `message-bus-caller-band` diagnostic was printed at the OLD clone-loop site, where route
 synthesis has no route yet and it always reported `routeFound:false` - misleading. It now prints where the route's
 parameter list is actually built, with the real band and clone count.
+
+Round 368: the post-job group addresses an UNMATERIALIZED output (154) - and the band model regresses here too
+
+**The failing check, measured** (`post job 1`, canonical build,
+`SOLIDC_DEBUG_FAILURE_POINT=1 SOLIDC_DEBUG_FAILURE_POINT_PRE_STATE=1 SOLIDC_TRACE_INPUT=216`):
+
+    reported: input 216, ip 20589 of 22949, failing opcode 136 (OP_EQUALVERIFY)
+    window:   push 0x82, INVOKE, NIP, push 0x5b81, INVOKE, OP_3, PICK, ADD, OP_2, PICK, ADD, DUP,
+              OP_OUTPUTBYTECODE, INVOKE(0x2f), OP_15, INVOKE, INVOKE(0x33), INVOKE(0xeb), INVOKE(0xf5),
+              EQUALVERIFY, DUP, push 0x1c
+    pre-state (all 64 candidate executions agree, so these ARE the operands):
+              d1 = 000100 (256), d0 = 9a00 (154)   <- the compared pair
+              deeper: a 130-byte commitment-like blob, "DIGITAL_VIDEO", small ints
+    tailIndexedOutput: { index: 154, lockingBytecode: "51", exactInputMatches: [] }
+
+So the code computed the OUTPUT coordinate 154 (`OP_3 PICK ADD` then `OP_2 PICK ADD`, i.e. two frame reads
+added), read `outputs[154].lockingBytecode`, and got the one-byte FILLER `51` (OP_1) - an unmaterialized slot -
+with no input matching it either. The comparison then fails between 154 and 256. Same class as the take-job
+coordinate: a coordinate computed from frame reads lands on a placeholder.
+
+**The band model regresses this group as well.** With `SOLIDC_HANDLER_BAND_MODEL=1` all four titles of the group
+(`post job 1`, `post two jobs`, `post job with whitelist`, `dispute > sanity checks no arbitrator`) fail EARLIER
+(15-25 s instead of 75-106 s) at the same 75-instruction encoder helper the three green titles hit
+(`input 129, ip 66 of 75, failing opcode 127`). That is the second independent group where the band model converts a
+failure into the encoder failure, so it is confirmed unsafe as a default.
+
+**Diagnostic change this round**: the pre-state dump now prints 16 stack items instead of 8 - a failing coordinate
+is built from frame reads whose inputs sit deeper than the compared pair, and the pair alone cannot say which frame
+item was wrong (the deeper dump above is what identified the job-post commitment context).
+
+**Next round**: identify the two frame reads that build 154 and 256 (`OP_3 PICK ADD` / `OP_2 PICK ADD` over the
+output space) - the ids of the outlined helpers 0x2f/0x33/0xeb/0xf5 can be recovered by comparing a
+`SOLIDCASH_NO_OUTLINE=1` build's inline code at the same site - then decide which side is wrong: the contract's
+coordinate (154, a filler) or the expected value (256).

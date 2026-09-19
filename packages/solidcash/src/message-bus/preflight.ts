@@ -1537,7 +1537,19 @@ const evaluateEveryInput = (
             const candidates = ring.filter((candidate) =>
               candidate.instructions.length === evaluated.instructions.length
               && candidate.ip === evaluated.ip - 1);
-            const preState = candidates[0] ?? ring.at(-1);
+            // The failing operation popped its operands before failing, so the failing state's stack is the
+            // pre-state's with those operands (two for the comparisons this gate is used on) removed. Comparing the
+            // REMAINDER byte for byte identifies the right invocation among the many that share a position -
+            // selecting by position alone reported another pass's operands (measured: a 154-vs-256 pair where the
+            // VM's own message described a locking-bytecode comparison).
+            const samePrefix = (candidate: AuthenticationProgramStateCommon): boolean => {
+              if (candidate.stack.length !== evaluated.stack.length + 2) return false;
+              for (let item = 0; item < evaluated.stack.length; item += 1) {
+                if (binToHex(candidate.stack[item]) !== binToHex(evaluated.stack[item])) return false;
+              }
+              return true;
+            };
+            const preState = [...ring].reverse().find(samePrefix) ?? candidates[0] ?? ring.at(-1);
             if (preState === undefined) return { unavailable: 'no state captured for this input' };
             return {
               ip: preState.ip,
@@ -1551,7 +1563,9 @@ const evaluateEveryInput = (
               error: preState.error === undefined ? undefined : String(
                 (preState.error as { error?: unknown }).error ?? preState.error,
               ),
-              top: preState.stack.slice(-8).map((item, offset, items) => (
+              // 16 items, not 8: a failing coordinate is built from frame reads whose inputs sit deeper than the
+              // compared pair, and the compared pair alone cannot say which frame item was wrong.
+              top: preState.stack.slice(-16).map((item, offset, items) => (
                 `${items.length - 1 - offset}:${item.length}:${binToHex(item).slice(0, 96)}`
               )),
             };

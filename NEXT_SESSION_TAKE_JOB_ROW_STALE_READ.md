@@ -11801,3 +11801,29 @@ frame's inputs; decide between (a) adding the caller identity input to the probe
 knows how to materialize for the composed case) and (b) making the probe's expectation match the composed frame's
 resolution. The measured invariant to satisfy: every input the composed participant resolves `msg.sender` from must
 also be reachable in the probe that derives that participant's commitments.
+
+Round 317: the probe's input list proves the gap - the caller's master is absent
+
+`SOLIDC_DEBUG_PROBE_IO=1` (run 335) for the failing `approve` probe:
+
+    probe-input-locks [
+      { index: 0, outpoint: ea84c562:0, lock aa20133a77fd…, category ed78c449, commitLen 0 },   <- FakeToken master
+      { index: 1, outpoint: ebf904fc:3, lock aa203007d941…, category ed78c449, commitLen 64 },  <- _allowances entry
+      { index: 2, outpoint: 00000000:17, lock 76a914713f4095… },                                 <- funding (signer)
+      { index: 3, outpoint: 00000000:16, lock 76a914713f4095… } ]                                <- funding (signer)
+
+Input 1's 64-byte commitment is the HEAD node (`00*32 || next`) - i.e. the probe now co-spends exactly the
+predecessor the pin selected for the INSERT, which is the correct half of the fix from rounds 306-316. What is
+missing is the CALLER: no input carries the marketplace's category/locking bytecode, so the frame's `msg.sender`
+resolution finds nothing and the comparison at ip 51 sees the empty operand (`d0 = 0b:`) while the category witness
+(`d1 = 33b:3e0898a5…`) and the caller lock (`d3 = 35b:aa20bbc502f0…`) are already correct.
+
+Implementation next round (one coherent change):
+1. When a nested probe is built with a caller identity (the plumbing added in rounds 302-310 already carries its
+   locking bytecode and category), co-spend the caller's MASTER UTXO in the probe frame - the SDK can read it the
+   same way it does for the composed participant (`contract._getMasterOnlyState()` / the group's `masterUtxo`), and
+   `StatefulFunctionCall` already has an `extraInputs` channel (`_withExtraInput`-style) to place it.
+2. Re-run `take job`: `probe-input-locks` must list an input with the marketplace's category/locking bytecode, the
+   ip-51 comparison must resolve, and the refusal should clear - after which the composed preflight at input 20
+   becomes reachable again.
+3. Re-verify fixture `1 passed | 1 skipped`, `unicrow params` 2, `admin` 8 (serially).

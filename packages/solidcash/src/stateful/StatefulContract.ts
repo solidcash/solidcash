@@ -34645,7 +34645,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
   private lastReturnProbeFailure?: string;
 
   private describeReturnProbeFailure(
-    trace: readonly { ip: number; error?: unknown; instructions: readonly { opcode: number }[] }[],
+    trace: readonly {
+      ip: number; error?: unknown; stack?: readonly Uint8Array[];
+      instructions: readonly { opcode: number; data?: Uint8Array }[];
+    }[],
     inputIndex: number,
   ): string | undefined {
     const last = trace.at(-1);
@@ -34666,10 +34669,25 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         + `${requirement.message ? ` (${requirement.message})` : ''}`
       : undefined;
     if (detail === undefined && site === undefined) return undefined;
+    // A bare "failed an OP_VERIFY" (or a compiler-emitted guard with no source line) cannot be attributed without
+    // the instructions that produced it: report the window around the failure and the operands still on the stack,
+    // exactly as the message-bus preflight failure does.
+    const windowStart = Math.max(0, last.ip - 6);
+    const window = last.instructions.slice(windowStart, last.ip + 1).map((instruction) => {
+      const data = instruction.data;
+      return data === undefined || data.length === 0
+        ? String(instruction.opcode)
+        : `${instruction.opcode}:${binToHex(data).slice(0, 16)}`;
+    }).join(' ');
+    const operands = (last.stack ?? []).slice(-4).map((item, offset, items) => (
+      `d${items.length - 1 - offset}=${item.length}b:${binToHex(item).slice(0, 40)}`
+    )).join(' ');
     return `probe stopped at ip ${last.ip}`
       + `${opcode !== undefined ? ` (opcode ${opcode})` : ''}`
       + `${detail !== undefined ? `: ${detail}` : ''}`
       + `${site !== undefined ? `; failing require in ${site}` : ''}`
+      + `${window.length > 0 ? `; window ${window}` : ''}`
+      + `${operands.length > 0 ? `; stack ${operands}` : ''}`
       + `; probed input ${inputIndex}`;
   }
 

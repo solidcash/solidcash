@@ -1140,7 +1140,10 @@ const evaluateEveryInput = (
         if (typeof ownedInput === 'number') {
           const ring = preStateRingByInput.get(ownedInput) ?? [];
           ring.push(captured);
-          if (ring.length > 64) ring.splice(0, ring.length - 64);
+          // 256, not 64: an input can iterate a loop (or a convergence pass) more than 64 times, and at 64 the ring
+          // held only the loop's own iterations - every entry the same ip, with the coordinate instructions that
+          // built the failing operands already evicted.
+          if (ring.length > 256) ring.splice(0, ring.length - 256);
           preStateRingByInput.set(ownedInput, ring);
         }
       }

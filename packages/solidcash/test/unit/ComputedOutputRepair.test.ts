@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { hexToBin } from '@bitauth/libauth';
+import { binToHex, hexToBin } from '@bitauth/libauth';
 import { Op } from '@solidcash/utils';
 import {
   canMaterializeRepairedValueChunk,
@@ -65,6 +65,38 @@ describe('computed-output repair convergence', () => {
   it('rejects unsafe convergence surface arithmetic', () => {
     expect(() => computedOutputRepairPassLimit(1, Number.MAX_SAFE_INTEGER))
       .toThrow(/safe integer range/);
+  });
+
+  it('fails closed on a lengthening-commitment cycle within the finite pass budget', () => {
+    // Each repair pass lengthens the authenticated commitment and yields a new fingerprint.
+    // Revisiting an earlier shorter fingerprint is a cycle — never silent unbounded sweeps.
+    const passLimit = computedOutputRepairPassLimit(2, 3);
+    expect(passLimit).toBe(10);
+    const states = new Set<string>();
+    const claims = new Map<string, string>();
+    const fingerprints: string[] = [];
+    for (let pass = 0; pass < passLimit; pass += 1) {
+      const commitment = Uint8Array.from({ length: 8 + pass }, (_unused, index) => (pass + index) & 0xff);
+      const fingerprint = computedOutputConvergenceFingerprint(commitment);
+      fingerprints.push(fingerprint);
+      recordComputedOutputConvergenceState(states, fingerprint);
+      // Distinct coordinates per pass: same-coordinate lengthening is a conflicting claim (below).
+      recordComputedOutputRepairTransition(claims, 0, `${pass}:commitment`, binToHex(commitment));
+    }
+    expect(states.size).toBe(passLimit);
+    expect(claims.size).toBe(passLimit);
+    // Oscillation back to the first (shorter) commitment is a normalized-state cycle.
+    expect(() => recordComputedOutputConvergenceState(states, fingerprints[0]))
+      .toThrow(/convergence cycle in the normalized transaction state/);
+    // Lengthening the same coordinate with a longer value is a conflicting authenticated claim.
+    const lengtheningClaims = new Map<string, string>();
+    recordComputedOutputRepairTransition(lengtheningClaims, 1, '7:commitment', 'aa'.repeat(8));
+    expect(() => recordComputedOutputRepairTransition(
+      lengtheningClaims, 1, '7:commitment', 'aa'.repeat(16),
+    )).toThrow(/conflicting value/);
+    // STB fails closed with this named exhaustion string when sweeps hit the pass budget.
+    expect(`Computed-output repair convergence exhausted after ${passLimit} passes.`)
+      .toMatch(/^Computed-output repair convergence exhausted after \d+ passes\.$/);
   });
 });
 

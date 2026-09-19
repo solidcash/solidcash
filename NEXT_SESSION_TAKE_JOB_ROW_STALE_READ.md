@@ -14168,3 +14168,20 @@ The compiler's own diagnostic names the local that carries such an address: `DBG
 lists `__extaddr_marketplaceData` (an external-address local). **Next step**: find where that local is initialised
 and which message-bus argument feeds it - it must be the callee participant's authenticated address, and it is
 currently ending up as the caller's. That is a concrete, localisable defect rather than a coordinate mystery.
+
+Round 373b: that lane is a STATE-VARIABLE read
+
+`__extaddr_<name>` locals are synthesized by `SynthesizeExternalAddressLocals` from INTERFACE-TYPED STATE VARIABLES
+(`packages/solidc/src/semantic/*`: "A `__extaddr_<var>` address local is the synthesized read of an interface-typed
+state var", SynthesizeExternalAddressLocals runs after the foreign-call lowerings). So the contract's row target
+`aa20178dbf...` is the value the contract read for the state variable `marketplaceData` - participant 0's address
+instead of participant 1's. That makes the next question narrow and answerable:
+
+  * is the state variable's value wrong (the read resolved to the caller's own state / the wrong entry), or
+  * is the value right and the PLAN wrong (i.e. the SDK recorded the wrong `targetLockingBytecode` for this row)?
+
+Both sides are now printable: the plan's side is `routeParams.__internal__graphEmissions` (`2300 aa2008ddbb...`),
+the contract's side is the two 74-byte prefixes in the failing pre-state, and the composition's outputs carry both
+addresses with their categories (`a3cef94467ca` = participant 0, `ee643a1671fb` = participant 1). The next round can
+decide by reading which participant the state variable belongs to in the plan (`PreparedAtomicMessageBusCall.contract`
+/ `targetLockingBytecode`) versus which entry the contract's state read resolved to.

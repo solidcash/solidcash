@@ -13870,3 +13870,35 @@ row index (the composer builds the latter from the prepared call: `PreparedAtomi
 
 **Verified state (defaults)**: greens 3 passed | 63 skipped; fast fixture 1 passed | 1 skipped; artifacts rebuilt
 canonically; `SOLIDC_HANDLER_BAND_MODEL` and `SOLIDC_OWNER_ALT_ANCHOR` both opt-in.
+
+Round 365: the top-relative owner form still stalls (negative result, hypothesis refuted)
+
+The ABI tail fill is default now, so the round-344 measurement was re-tested: with
+`SOLIDC_DEBUG_OWNER_TOP_HANDLER=__message_bus_entry_takeJob` (top-relative owner form for that handler, everything
+else canonical) the title still stalls with the identical message (keccak 2/2, ecrecover 1/1 unresolved). So the
+earlier conclusion that the bottom form "compensates for the missing tail operand" is REFUTED - the top form does
+not become correct once the vector matches the declaration.
+
+Decoding the top-form artifact shows what it now emits at the entry-check call site:
+
+    ip 224: push 0x13 (19)
+    ip 225: OP_PICK              <- the owner read, top-relative, index 19
+    ip 226: push 0x14 (20)
+    ip 227: push 0xca80 (outline id) ; OP_INVOKE
+
+versus the canonical bottom form (`OP_DEPTH; 15; OP_SUB; OP_PICK; push 20`) - i.e. one reads frame depth 19, the
+other reads runtime depth 75, and only one of them can hold the owner. Since neither form clears the stall, at
+least one *other* input to the probe is also wrong (the outline check has several operands, and the probe also
+depends on the entry key witnesses).
+
+Next round's decisive comparison (both sides are already printable):
+  * `SOLIDC_DEBUG_GRAPH_EMISSIONS=1` prints the emissions vector the composer builds per participant
+    (`graph-emissions` records, `emissionsHex`), i.e. the plan's expected row bytes;
+  * the contract's own constructed row is visible in the failing pre-state (`message-bus-failure-point.operands`,
+    the 74-byte `9f0bb8a923 <framed lock> ...` prefix).
+Compare the FIRST LANE of both (the framed target locking bytecode) for the failing row index. If they differ, the
+plan/contract `address(this)` mismatch is confirmed; if they agree, the split/index mismatch comes from the frame
+addressing after all and the search returns to the row-vs-vector positions.
+
+**Verified state (defaults)**: greens 3 passed | 63 skipped; fast fixture 1 passed | 1 skipped; artifacts rebuilt
+canonically; both gates opt-in.

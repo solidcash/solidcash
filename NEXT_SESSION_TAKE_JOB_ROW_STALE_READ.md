@@ -12026,3 +12026,23 @@ the same build as `msgSenderCategory` (the override rounds 306-310 already carry
 signer-identity plumbing used at `:18911` to also publish `identity.categoryId`, exactly as `compose.ts` does for
 participant frames. Verification unchanged: the failing probe's name-keyed `__internal__msgSenderCategory` becomes
 non-zero, ip 51 resolves, and `take job` reaches the composed preflight at input 20.
+
+Round 327: the contract signer's source, and where its category must be published
+
+`grep "this._signer = |_logicalNonceSigner = "` shows the only setter that matters:
+`connect(signer)` at `:7929`-`:7970` sets `(sc)._signer = signer` and `(sc)._logicalNonceSigner = signer`, and it
+already carries the logical identity next to them (`(sc)._logicalAddress = this._logicalAddress`, with the comment
+that connecting a signer "changes only the runner" while the Solidity-visible identity is preserved). A
+contract-backed signer is what makes `signer.getAddress()` return `aa20bbc502f0…` for the failing frame, so the
+category that must be published as `__internal__msgSenderCategory` is exactly the identity this path already
+tracks - it is simply not carried into the frame's argument vector.
+
+Next round, two steps:
+1. Find who calls `connect(...)`/creates the contract-backed signer for a composed or derived frame (the caller is
+   the contact instance whose `.inner.lockingBytecode` equals the signer address); that call site knows the contract
+   and therefore `categoryId`.
+2. Publish that category into the same build: either pass `overrides.msgSenderCategory` there (the override path
+   rounds 306-310 already thread end to end), or widen `connect`'s identity carry (`_logicalAddress`) with the
+   category and read it in the seeding fallback at `:18559` after the `IFoo(msg.sender).m()` source.
+Then: the failing probe's name-keyed `__internal__msgSenderCategory` becomes non-zero, ip 51 resolves, `take job`
+reaches the composed preflight at input 20, and the greens are re-verified serially.

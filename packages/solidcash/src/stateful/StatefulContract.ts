@@ -34720,6 +34720,17 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const workingArea = (before?.stack ?? []).slice(-6).map((item, offset, items) => (
       `d${items.length - 1 - offset}=${item.length}b:${binToHex(item).slice(0, 44)}`
     )).join(' ');
+    // A short refusing program is a compiler-emitted guard, and its whole step sequence is the only place the
+    // operand each instruction consumed can be read: print ip, opcode and the stack top at every step.
+    const steps = trace.slice(-12).map((state) => {
+      const at = state.ip ?? -1;
+      const instruction = state.instructions[at];
+      const data = instruction?.data;
+      const top = state.stack?.at(-1);
+      return `${at}:${instruction?.opcode ?? '?'}${data === undefined || data.length === 0 ? ''
+        : `:${binToHex(data).slice(0, 10)}`}${top === undefined ? ''
+        : `@${top.length}b:${binToHex(top).slice(0, 20)}`}`;
+    }).join(' ');
     return `probe stopped at ip ${last.ip}`
       + `${opcode !== undefined ? ` (opcode ${opcode})` : ''}`
       + `${detail !== undefined ? `: ${detail}` : ''}`
@@ -34728,6 +34739,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       + `${operands.length > 0 ? `; stack ${operands}` : ''}`
       + `${compared.length > 0 ? `; compared ${compared}` : ''}`
       + `${workingArea.length > 0 ? `; area ${workingArea}` : ''}`
+      + `${steps.length > 0 ? `; steps ${steps}` : ''}`
       + `; probed input ${inputIndex}`;
   }
 

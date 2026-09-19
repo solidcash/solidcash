@@ -8735,13 +8735,13 @@ function synthesizeMessageBusRoute(
         // Keep that exact hidden ABI order: placing it before the owner operand swaps the two values and makes
         // blockhash read the graph owner index as a transaction UTXO coordinate.
         const blockhashBaseArgs = blockhashRowOffset ? ['__internal__blockhashInputIndex'] : [];
-        // The capture precondition is a property of the EMITTED vector, not of the intent: the callee may only read
-        // the owner at depth 0 when the owner expression is the vector's LAST element. Deciding from
-        // `ownerContextArgs` alone marked clones whose vector actually ends with another operand (measured: the
-        // `publishJobPost` entry body captured the dynamic-chunk base and failed an OP_UTXOBYTECODE check).
-        if (ownerContextArgs.length > 0 && blockhashBaseArgs.length === 0) {
-          const clone = routeOwnedCloneByName.get(invokeName);
-          if (clone) clone.messageBusOwnerIsLastArgument = true;
+        // The capture precondition is a property of the EMITTED vector, not of the intent, and a body emitted once
+        // can be invoked from several sites: the flag is therefore the CONJUNCTION over every site (a single
+        // assignment let one owner-last site mark a body that another site invokes without the owner last).
+        const entryOnlyClone = routeOwnedCloneByName.get(invokeName);
+        if (entryOnlyClone) {
+          entryOnlyClone.messageBusOwnerIsLastArgument =
+            (entryOnlyClone.messageBusOwnerIsLastArgument ?? true) && ownerContextArgs.length > 0;
         }
         // A route clone also declares the injected witnesses the compiler gave it (the dynamic-chunk base and the
         // oracle base). Passing them by name keeps the vector exactly as long as the callee's parameter list: a
@@ -8919,10 +8919,13 @@ function synthesizeMessageBusRoute(
       const dispatchFor = (entryArgs: string[]): string => {
         const argumentVector = [...sourceCallArgs, ...entryArgs, ...blockhashRowArgs, ...callerContextArgs,
           ...ownerContextArgs, ...blockhashBaseArgs];
-        // Only a vector that literally ends with the owner operand lets the callee capture it at depth 0.
+        // Only a vector that literally ends with the owner operand lets the callee capture it at depth 0 - and
+        // EVERY site of the body must satisfy that, so the flag is the conjunction over all of them.
         const clone = routeOwnedCloneByName.get(invokeName);
         if (clone) {
-          clone.messageBusOwnerIsLastArgument = argumentVector[argumentVector.length - 1] === routeOwnerInputExpression;
+          clone.messageBusOwnerIsLastArgument =
+            (clone.messageBusOwnerIsLastArgument ?? true)
+            && argumentVector[argumentVector.length - 1] === routeOwnerInputExpression;
         }
         if ((globalThis as { process?: { env?: Record<string, string> } }).process
           ?.env?.SOLIDC_DEBUG_ARG_ORDER === '1') {

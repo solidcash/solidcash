@@ -13506,3 +13506,35 @@ where the drop was added.
 
 **Verified state (default configuration, gate off).** `close job` before/after timeout + `withdraw collateral`:
 3 passed | 63 skipped. Fast fixture: 1 passed | 1 skipped. `take job`: deferred-compute stall (unchanged).
+
+Round 354b: the anchor precondition (conjunction over all sites) is still not sufficient
+
+Two further results, both measured with `SOLIDC_OWNER_ALT_ANCHOR=1`:
+
+  * the leak fix works as intended: the shared `publishJobPost` require no longer fires, and the failure moves on;
+  * the remaining failure is now IN an anchored body and its window shows the anchored read itself:
+    `... 1:12 121 108 118 107 199 ...` = `push 18, OP_PICK, OP_FROMALTSTACK, OP_DUP, OP_TOALTSTACK,
+    OP_UTXOBYTECODE` - i.e. the value the capture stored is not the owner for that body (input 129, ip 245 of a
+    6337-instruction body, failing opcode 199);
+  * making the precondition a CONJUNCTION over every emitted site (`messageBusOwnerIsLastArgument` ANDed at both
+    dispatch sites) did not change that, so the multisite hole is not the remaining cause.
+
+So at least one anchored body's entry top is not the owner even though its emitted vector ends with the owner
+expression. The remaining explanations, in order of likelihood:
+  1. the caller pushes runtime-only operands AFTER the argument vector (kernel-journal threading) - the same
+     mechanism the arg-order audit could not see because those operands never appear in the generated call string;
+  2. an OP_INVOKE path that is not the generic internal-call emitter (line ~11485) where the leak drop was added,
+     so an earlier nested call leaks and shifts this body's alt stack;
+  3. the alt stack already holds an item when the body starts (the route's own alt use), so the capture's item is
+     not at the depth a later read assumes - the read is `OP_FROMALTSTACK` (top of alt) so this only matters if
+     something pushes onto the alt stack between capture and read without popping.
+
+Next round's cheapest discriminator: run the failing title with the capture on and the derive-op gate aimed at the
+anchored body's first instructions (`FROM_IP=0 TO_IP=3`, `INSTRUCTION_COUNT` = the body's size, `STACK_DEPTH=0`):
+if the entry top is the owner, explanation 1/3 holds; if it is another operand, the caller really does push
+something after the arguments and that site must be found in the generated route source.
+
+**Verified state (default, gate off)**: greens 3 passed | 63 skipped, fast fixture 1 passed | 1 skipped, `take job`
+unchanged (deferred-compute stall). All anchor code is dormant unless `SOLIDC_OWNER_ALT_ANCHOR=1`; the shared
+`ownerAnchorPreconditionHolds` predicate, the per-emission flag reset and the call-site leak drop stay in the tree
+as the infrastructure the eventual fix needs.

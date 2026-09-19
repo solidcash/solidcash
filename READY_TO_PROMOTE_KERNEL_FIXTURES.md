@@ -27,6 +27,11 @@ Worktree: `.worktrees/kernel-comprehensive-fixtures`
 - **nested foreign** `KernelNestedForeignVmapCompose` — Caller→Bank nested allowance-class write under compose
 - **J1** `KernelProxyViewReturnCompose` — grafted `stored()` view sugar + delegate-eligible `bump().emitReturn()` non-OP_RETURN return NFT (pure view getters remain non-delegate)
 
+## Wave I/J expansion (post settle-list)
+- **I7** `KernelSortedUpdatePredOutCompose` — UPDATE PredOut inactive; rewritten entry content-matches slot/next/value
+- **I2** `KernelFanOutTwoCalleeCompose` — Caller.fire co-spends Emitter.ping + Registry.set
+- **J3** `KernelProxySortedInsertPredOutCompose` — deployProxy INSERT: P′ rewrite + NEW on proxy-owned outputs (compose×proxy×foreign still OP_VERIFY)
+
 ## Fence
 - No `marketplace.test.ts` / `vitest.marketplace.config.ts` in this stream
 - No Marketplace / Unicrow / job vocabulary in fixtures

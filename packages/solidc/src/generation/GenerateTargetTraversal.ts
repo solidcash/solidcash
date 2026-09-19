@@ -33296,9 +33296,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_NIP, loc);
     this.emit(Op.OP_0NOTEQUAL, loc);
     this.emit(Op.OP_BOOLAND, loc);                 // [cat, base, j, isEventCapableNft]
-    // OP_TRUE return carriers are still mintable own-category immutable NFTs. Do not exempt that locking
-    // bytecode as a class: only the exact compiler-published return indices below are authorized. Otherwise an
-    // attacker can append an arbitrary third OP_TRUE immutable beside a valid event/return pair.
     // Logical contract identity anchors use the disjoint `SCID` commitment
     // envelope. They can be relocated by return/event outputs and are not
     // event records, so do not subject them to event-slot positioning.
@@ -33313,6 +33310,20 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_EQUAL, loc);
     this.emit(Op.OP_NOT, loc);
     this.emit(Op.OP_BOOLAND, loc);                 // [cat, base, j, isSerializedEventCandidate]
+    // An anyone-can-spend (OP_TRUE) carrier is not a readable log. A log is read back at its EVENT NFT COVENANT
+    // ADDRESS - a P2SH script hash, never the single-opcode OP_TRUE lock - which is exactly the address this pin
+    // protects. Every cross-call return carrier is an OP_TRUE-locked own-category immutable of the CALLEE's
+    // category, and a composed transaction that calls one contract twice puts several of them in one transaction:
+    // the caller names each of them in its own `externalReturnOutputIdx*` ABI, while the callee frame (and any
+    // delegate frame pinning the proxy's category) cannot witness its siblings' indices at all. Excluding that
+    // class keeps the forgery refusal for every addressable own-category immutable - an appended OP_TRUE carrier
+    // is not reachable through any event address - and stops the pin from refusing the platform's own carriers.
+    this.emit(Op.OP_OVER, loc);                    // [cat, base, j, candidate, j]
+    this.emit(Op.OP_OUTPUTBYTECODE, loc);
+    this.emit(hexToBin('51'), loc);
+    this.emit(Op.OP_EQUAL, loc);
+    this.emit(Op.OP_NOT, loc);
+    this.emit(Op.OP_BOOLAND, loc);                 // [cat, base, j, isAddressableEventCandidate]
     this.emit(Op.OP_IF, loc);
     // Leave one `allowed` boolean on top of [cat, base, j], then OP_VERIFY it.
     if (allowedOffsets.length === 0) {

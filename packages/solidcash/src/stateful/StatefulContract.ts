@@ -17190,13 +17190,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 ? extractExpectedOutputCommitmentFromTrace(fullTrace2, outputIndex, actual ?? '')
                 : undefined;
               const commitment = mappedCommitment ?? fallbackCommitment;
-              const debugEventIndex = Number.parseInt(
-                (globalThis as { process?: { env?: Record<string, string> } }).process?.env
-                  ?.SOLIDC_DEBUG_EVENT_INDEX ?? '',
-                10,
-              );
-              if (debugEventIndex === outputIndex) {
+              const debugEnv = (globalThis as { process?: { env?: Record<string, string> } }).process?.env;
+              const debugEventIndex = Number.parseInt(debugEnv?.SOLIDC_DEBUG_EVENT_INDEX ?? '', 10);
+              if (debugEventIndex === outputIndex || debugEnv?.SOLIDC_DEBUG_EVENT_STAGE === '1') {
                 console.error('stateful-event-derivation', {
+                  iter,
                   outputIndex,
                   selectedOrdinal,
                   emitIndex: emitInfo.emitIndex,
@@ -17206,6 +17204,30 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   actual,
                   mappedCommitment,
                   fallbackCommitment,
+                  traceStates: fullTrace2.length,
+                  traceEnd: fullTrace2.at(-1) === undefined ? undefined : {
+                    ip: fullTrace2.at(-1)!.ip,
+                    error: String(fullTrace2.at(-1)!.error),
+                  },
+                  pinned: [...eventCommitMap.entries()],
+                  eventBase: stb.getEventOutputBase(),
+                  outputCount: transaction2.outputs.length,
+                  inputs: sourceOutputs2.slice(0, 14).map((output, index) => ({
+                    index,
+                    lock: binToHex(output.lockingBytecode).slice(0, 16),
+                    category: output.token?.category === undefined
+                      ? undefined : binToHex(output.token.category).slice(0, 10),
+                    commitmentLength: output.token?.nft?.commitment?.length,
+                  })),
+                  materialized: transaction2.outputs.slice(0, 14).map((output, index) => ({
+                    index,
+                    lock: binToHex(output.lockingBytecode).slice(0, 16),
+                    category: output.token?.category === undefined
+                      ? undefined : binToHex(output.token.category).slice(0, 10),
+                    commitmentLength: output.token?.nft?.commitment?.length,
+                    commitment: output.token?.nft?.commitment === undefined
+                      ? '~none~' : binToHex(output.token.nft.commitment).slice(0, 12),
+                  })),
                 });
               }
               if (commitment === undefined) continue;
@@ -17422,7 +17444,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             || runtimeLoopTransferCapabilitiesDerived.some((derived) => !derived)
             || stb.getValueChunkVars().length > 0
             || stb.getDynamicChunkVars().length > 0 || stb.getLoopEntryVars().length > 0;
-          if (debugTargetsThisDerivation) console.error('derive-iteration-summary', JSON.stringify({
+          if (debugTargetsThisDerivation || (globalThis as { process?: { env?: Record<string, string> } })
+            .process?.env?.SOLIDC_DEBUG_EVENT_STAGE === '1') console.error('derive-iteration-summary', JSON.stringify({
             iter,
             elapsedMs: Date.now() - debugIterationStartedAt,
             traceStates: fullTrace2.length,
@@ -31146,6 +31169,45 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // its event NFT lands in the PROXY's block (proxyMaster+offset). __forward itself has no emits, so also collect
     // the delegate impl's emits + event definitions here - the block layout is extended below to reserve the slot.
     const emitInfos = [...(abiFunction?.emits ?? [])];
+    // A kernel route publishes no emits of its own: its HANDLERS are the emitters, and the route reserves one event
+    // band per row (`rowIndex * width + emitIndex`). Without them the frame materializes no event output at all -
+    // and a probed handler's own event check can never pass, so its return value can never be derived.
+    {
+      const routeRows = (entryAbiFunction as MessageBusRuntimeAbiFunction | undefined)?.messageBusRowArguments;
+      const routeEventSlots = (entryAbiFunction?.blockLayout?.slots ?? [])
+        .filter((slot) => slot.kind === 'event');
+      const maximumRows = this.inner.artifact.messageBus?.maximumRows ?? 0;
+      const routeEventWidth = maximumRows > 0 && routeEventSlots.length % maximumRows === 0
+        ? routeEventSlots.length / maximumRows : 0;
+      const known = new Set(emitInfos.map((emitInfo) => `${emitInfo.eventSignature}@${emitInfo.emitIndex}`));
+      for (const [rowIndex, row] of (routeRows ?? []).entries()) {
+        for (const emitted of row.handler.emits ?? []) {
+          const emitIndex = routeEventWidth > 0
+            ? rowIndex * routeEventWidth + emitted.emitIndex : emitted.emitIndex;
+          if (known.has(`${emitted.eventSignature}@${emitIndex}`)) continue;
+          known.add(`${emitted.eventSignature}@${emitIndex}`);
+          emitInfos.push({ ...emitted, emitIndex });
+        }
+      }
+    }
+    if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+      ?.SOLIDC_DEBUG_EMIT_SOURCES === '1') {
+      console.error('emit-sources', JSON.stringify({
+        functionName,
+        abiFunction: abiFunction?.name,
+        entryAbiFunction: entryAbiFunction?.name,
+        abiEmits: (abiFunction?.emits ?? []).map((emitInfo) => emitInfo.eventSignature),
+        entryEmits: (entryAbiFunction?.emits ?? []).map((emitInfo) => emitInfo.eventSignature),
+        routeRows: (entryAbiFunction as MessageBusRuntimeAbiFunction | undefined)
+          ?.messageBusRowArguments?.map((row) => ({
+            handler: row.handler.name,
+            emits: (row.handler.emits ?? []).map((emitInfo) => `${emitInfo.eventSignature}@${emitInfo.emitIndex}`),
+          })),
+        eventSlots: (entryAbiFunction?.blockLayout?.slots ?? [])
+          .filter((slot) => slot.kind === 'event').map((slot) => slot.offset),
+        collected: emitInfos.map((emitInfo) => `${emitInfo.eventSignature}@${emitInfo.emitIndex}`),
+      }));
+    }
     const eventDefs = [...(this.inner.artifact.events ?? [])];
     for (const [groupIndex, g] of lowLevelCallUtxoGroups.entries()) {
       if (g.callMode !== 'delegatecall') continue;
@@ -32846,6 +32908,16 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           nNew: Math.max(plannedDynamicBand.nNew, predictedBandWidth),
         }
         : plannedDynamicBand;
+      if (trailingCapacity === 0 && predictedDynamicBand !== undefined && predictedDynamicBand.nNew > 0) {
+        // A block that publishes no trailing capacity still materializes its runtime journal / value-write
+        // records: they follow the complete fixed block. Each of those records is an OUTPUT, so the balanced 1:1
+        // model owes it a paired input exactly like an output-only block slot. The assembly takes that input from
+        // the funder pool BEFORE it walks the block's own slots, so omitting it here does not merely leave the
+        // record unbalanced - the pool runs dry one slot early, the block is compacted, and the next nested
+        // participant block slides into an offset the covenant reads as `masterInputIndex + slotOffset`.
+        const bandWidth = predictedDynamicBand.end - predictedDynamicBand.start + 1;
+        neededFunders += Math.max(predictedDynamicBand.nNew, bandWidth);
+      }
       const collidingParticipantIndex = predictedDynamicBand
         ? collidingParticipantGroupIndex(
           externalCallUtxoGroups,

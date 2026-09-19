@@ -7270,6 +7270,7 @@ export class StatefulTransactionBuilder {
     if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
       ?.SOLIDC_DEBUG_INPUT_ORDER === '1') {
       console.error('input-order-guard', JSON.stringify({
+        categoryId: this.categoryId.slice(0, 12),
         hasBlockLayout: this.blockLayout !== undefined,
         blockSize: this.blockLayout?.blockSize,
         funders: this.funderUtxos.length,
@@ -7280,9 +7281,12 @@ export class StatefulTransactionBuilder {
         blockhashOrdinals: this.blockhashCoSpendSlotOrdinals !== undefined,
         compilerRouteDelegateBlock: this.compilerRouteDelegateBlock,
         delegateEntriesAfterLowLevel: this.delegateEntriesAfterLowLevel,
+        // Must mirror the branch condition below: an external-call group is itself enough to reach the dense
+        // placement, so reporting it as a rejection here made a taken branch look like a skipped one.
         guardPasses: this.blockLayout !== undefined && this.funderUtxos.length > 0
           && (!hasExternalGroups || this.blockhashCoSpendSlotOrdinals !== undefined
-            || this.compilerRouteDelegateBlock || this.delegateEntriesAfterLowLevel),
+            || this.compilerRouteDelegateBlock || this.delegateEntriesAfterLowLevel
+            || hasExternalGroups),
       }));
     }
     if (this.blockLayout && this.funderUtxos.length > 0
@@ -18182,13 +18186,59 @@ export class StatefulTransactionBuilder {
 
     const reservedEventSlots = this.blockLayout?.slots.filter((slot) => slot.kind === 'event').length
       ?? eventOutputEntries.length;
+    if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+      ?.SOLIDC_DEBUG_EVENT_STAGE === '1') {
+      // Event placeholders are the only authority for how many event outputs this build must carry, so report the
+      // merge inputs whenever the caller asks why a covenant's own event slot is missing from the materialized frame.
+      console.error('event-materialize', JSON.stringify({
+        category: this.categoryId.slice(0, 12),
+        blockSize: this.blockLayout?.blockSize,
+        placeholders: this.pendingEventPlaceholders,
+        rawCommitments: [...this.eventRawCommitments.entries()].map(([index, commit]) => `${index}:${commit.length}`),
+        entries: eventOutputEntries.map((entry, index) => (
+          entry === undefined ? undefined : `${index}:${entry.eventSignature}:${entry.commitment.length}`)),
+        reservedEventSlots,
+        cursor: builder.outputs.length,
+        eventSlots: this.blockLayout?.slots.filter((slot) => slot.kind === 'event'),
+      }));
+    }
     for (let eventSlot = 0; eventSlot < reservedEventSlots; eventSlot += 1) {
+      // The emitting covenant resolves its own event NFT at `masterInputIndex + slotOffset`, so an event output
+      // belongs at the layout offset of its slot - not at whatever index the build cursor happens to hold. The two
+      // only agree when nothing but the owner's block was materialized before this loop; a nested participant
+      // block, a funding pad or a derived chunk in front of the band leaves the cursor past the offset, and simply
+      // appending then puts the NFT where the covenant will never look (the slot keeps its neutral pad, whose empty
+      // commitment fails the event check).
+      const eventSlots = (this.blockLayout?.slots ?? []).filter((candidate) => candidate.kind === 'event');
+      // A published event slot names the emit ordinal in `slotIndex`; a layout predating that field is read in
+      // offset order. Mixing the two would let an unindexed slot answer for an ordinal it does not own.
+      const indexedSlot = eventSlots.find((candidate) => candidate.slotIndex === eventSlot);
+      const orderedSlot = eventSlots.every((candidate) => candidate.slotIndex === undefined)
+        ? eventSlots.slice().sort((left, right) => left.offset - right.offset)[eventSlot] : undefined;
+      const slotOffset = indexedSlot?.offset ?? orderedSlot?.offset;
+      const placeEventOutput = (output: Output): void => {
+        if (slotOffset === undefined) {
+          builder.addOutput(output);
+          return;
+        }
+        while (builder.outputs.length < slotOffset) {
+          builder.addOutput({ to: Uint8Array.of(0x51), amount: 1000n });
+        }
+        const occupant = builder.outputs[slotOffset];
+        // Only a neutral (tokenless) pad may be displaced. An authenticated resource already sitting at the offset
+        // is not this event's to overwrite; appending keeps it addressable and leaves the mismatch to the covenant.
+        if (occupant !== undefined && occupant.token !== undefined) {
+          builder.addOutput(output);
+          return;
+        }
+        assignBalancedOutputAtOffset(builder.outputs, slotOffset, output);
+      };
       const eo = eventOutputEntries[eventSlot];
       if (!eo) {
         // A graph route reserves a fixed event frame. Keep every inactive site as a balanced plain output so a
         // later participant cannot slide into the gap; the route covenant separately excludes an own-category
         // NFT here, and the atomic callManifest lists only active immutable event outputs.
-        builder.addOutput({ to: Uint8Array.of(0x51), amount: 1000n });
+        placeEventOutput({ to: Uint8Array.of(0x51), amount: 1000n });
         continue;
       }
       const lockingBytecode = this.eventNftLockingBytecodes.get(eo.eventSignature);
@@ -18196,7 +18246,7 @@ export class StatefulTransactionBuilder {
         throw new Error(`No locking bytecode provided for event: ${eo.eventSignature}`);
       }
 
-      builder.addOutput({
+      placeEventOutput({
         to: lockingBytecode,
         amount: 1200n,
         token: {
@@ -22893,6 +22943,30 @@ export class StatefulTransactionBuilder {
     // attempt, including after computed-output repairs, so the successful VM receipt remains bound to the exact
     // transaction object submitted to the provider. Token conservation depends only on input/output assets.
     finalBuilder.validateTokenConservation();
+    if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+      ?.SOLIDC_DEBUG_RETURN_LAYOUT === '1') {
+      // A frame's event epilogue scans EVERY own-category immutable NFT in the transaction and admits only its own
+      // event run plus the return indices its ABI publishes. Name the materialized carriers here so a refusal can
+      // be attributed to a specific call/return slot instead of an anonymous index.
+      console.error('return-carriers', JSON.stringify({
+        pending: this.pendingReturnEventOutputs.map((event) => ({
+          identity: event.identity,
+          categoryId: event.categoryId.slice(0, 12),
+          commitmentLength: event.commitment.length,
+          commitmentHead: binToHex(event.commitment).slice(0, 16),
+          provisional: event.provisional === true,
+        })),
+        built: [...this.builtReturnEventOutputIndices.entries()],
+        outputs: finalBuilder.outputs.map((output, index) => (
+          output.token === undefined ? undefined : {
+            index,
+            lock: output.to instanceof Uint8Array ? binToHex(output.to).slice(0, 12) : String(output.to),
+            category: output.token.category.slice(0, 12),
+            capability: output.token.nft?.capability,
+            commitment: String(output.token.nft?.commitment ?? '').slice(0, 20),
+          })).filter((entry) => entry !== undefined),
+      }));
+    }
     const finalizedTransaction = this._assertConvergedFinalTransaction(
       finalBuilder,
       reassertFinalLayout,

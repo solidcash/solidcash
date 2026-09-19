@@ -11985,3 +11985,22 @@ it used (locking bytecode + categoryId) and whether that category is also writte
 `__internal__msgSenderCategory` argument vector. The fix then belongs where the route binds its caller identity:
 publish the same `callerIdentity.categoryId` as the witness (rather than leaving the ABI slot at its zero default),
 which is exactly the value the ip-51 comparison needs.
+
+Round 325: neither identity-override nor route-batch path is exercised - the key must come from entryKeyOverrides
+
+The `route-caller-identity` gate (placed at `:37259`, the route batch's caller-identity binding) produced ZERO records
+in a full `take job` run, and round 324's `caller-identity-missing-category` gate produced zero as well. So for the
+failing `approve` frame neither `withCallerIdentity` overrides nor `_buildRepeatedExternalBatch` are on the path that
+resolves `nullop:msg.sender` to `aa20bbc502f0…` (the marketplace).
+
+The remaining authority for a per-call frame's key is `overrides.entryKeyOverrides` (`withEntryKey`): the composer
+computes the entry key for the slot it materializes and passes it explicitly, which explains a CORRECT KEY with a
+ZERO `__internal__msgSenderCategory` witness - the two halves of the same identity are supplied by different
+mechanisms, and only the key half is wired for this frame.
+
+Decisive next run: log the `entryKeyOverrides` map contents (slot → key hex) alongside `functionName` at the point
+`_createBuilder` consumes them, and confirm the failing `_allowances` slot's override equals the
+`[marketplace, spender]` slot (`80a90055…` for `[marketplace, marketplace]`, `00fe98d8…` for
+`[marketplace, unicrow]`). Then the fix is one line where the composer publishes that override: publish the same
+caller `categoryId` as the frame's `__internal__msgSenderCategory` witness (the value the ip-51 comparison reads),
+i.e. pass it through the `msgSenderCategory` override that rounds 306-310 already thread end to end.

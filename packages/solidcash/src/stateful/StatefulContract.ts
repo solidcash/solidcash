@@ -37507,6 +37507,20 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const routeMsgSender = callerIdentity === undefined
       ? callerSelfAddress ?? addressToLockScript(this.target)
       : hexToBin(callerIdentity.lockingBytecode);
+    if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+      ?.SOLIDC_DEBUG_MSG_SENDER_KEY === '1') {
+      // The route binds the caller identity for its KEY witnesses here; the runtime comparison that refuses ip 51
+      // reads `__internal__msgSenderCategory` instead, so print both halves to see whether the same identity is
+      // published twice or only once.
+      console.error('route-caller-identity', JSON.stringify({
+        callee: calleeRouteArtifact.contractName,
+        rows: (externalCall.batchInvocations ?? []).length,
+        callerIdentity,
+        callerLockingBytecode: binToHex(routeMsgSender).slice(0, 30),
+        declaresMsgSenderCategory: (calleeRouteArtifact.abi ?? []).some((fn) =>
+          (fn.inputs ?? []).some((input) => input.name === '__internal__msgSenderCategory')),
+      }));
+    }
 
     const structs = calleeRouteArtifact.structs
       ?? externalContract.inner.stateLayout?.structs;

@@ -13740,3 +13740,33 @@ emission rows the plan expects versus the row the contract constructs (both are 
 **Verified state (defaults)**: greens 3 passed | 63 skipped; fast fixture 1 passed | 1 skipped; artifacts rebuilt
 canonically; capture still opt-in; the new emission-check diagnostic is gated and only fires with
 `SOLIDC_DEBUG_ARG_ORDER=1`.
+
+Round 361: band-seeding the handler frame model - wired, but its source is not reachable there
+
+**Why the band matters.** The runtime of a route handler is `[param 0 (top) ... param N-1, <caller band>, ...]`:
+the call emitter evaluates the argument vector with `for (i = parameters.length - 1; i >= 0; i--)`, so the FIRST
+parameter is pushed LAST and sits on top, while the caller's own frame - the route's ABI inputs (batch blob + 17
+witnesses), which the SDK pushes in declared order - stays BELOW the arguments. The handler's frame model seeds
+parameters (index 0 = shallowest = the first parameter, correct) but NOT the band, so a bottom-ordinal read of a band
+value, or of the owner (whose ordinal is `modelLength - topIndex - 1`), addresses a neighbouring item. Measured
+consequence: the takeJob owner pick returns `graphFixedSize`/`graphBlockSize` (131) instead of 0, turning the
+intended entry coordinate 20 into 151.
+
+**Implementation attempted (gated `SOLIDC_HANDLER_BAND_MODEL=1`).** Route synthesis stashes the route's parameter
+names on every clone (`FunctionDefinitionNode.messageBusCallerBandNames`), and codegen appends them to the handler's
+model AFTER the parameter block, skipping `batchBlob` - i.e. exactly the items that sit below the arguments, in the
+order the runtime has them.
+
+**Measured: the stash finds no route.** Under `SOLIDC_DEBUG_ARG_ORDER=1` the new `message-bus-caller-band` record
+reports `routeFound: false` for every contract (e.g. `EACCToken ... clones 8`), so the seeds never apply and the
+emitted owner ordinal is unchanged (the artifact still shows `OP_DEPTH; 15; OP_SUB; OP_PICK`). The route function is
+not identifiable at that point in route synthesis - either it is created later, or it does not yet carry the
+`batchBlob` parameter my predicate keys on.
+
+**Next round**: find the point where the route's ABI inputs actually exist (the code that builds `route.inputs` for
+the artifact, or the route function's construction) and stash the names there - then the ordinal should shift from
+15 to 15+17 and the owner read should return 0, i.e. the coordinate 20, WITHOUT the alt-stack capture. That is the
+fix the codegen comment itself demands ("must correct the MODEL ... not the addressing form").
+
+**Verified state (defaults)**: greens 3 passed | 63 skipped; fast fixture 1 passed | 1 skipped; artifacts rebuilt
+canonically; both `SOLIDC_HANDLER_BAND_MODEL` and `SOLIDC_OWNER_ALT_ANCHOR` remain opt-in.

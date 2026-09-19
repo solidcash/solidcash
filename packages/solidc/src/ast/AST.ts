@@ -466,6 +466,12 @@ export class FunctionDefinitionNode extends Node implements Named {
    */
   messageBusOwnerIsLastArgument?: boolean;
   /**
+   * The message-bus route's declared input names, in push order. A route handler shares the caller's stack, so these
+   * values are physically BELOW the handler's argument block; seeding them into the handler's frame model is what
+   * makes a deep read address the item the runtime actually has there.
+   */
+  messageBusCallerBandNames?: string[];
+  /**
    * This OP_DEFINE body captured its authenticated participant owner into the ALT STACK at entry.
    *
    * A DEFINE'd route handler shares the caller's stack, so the owner parameter's distance from the bottom depends

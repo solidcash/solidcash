@@ -1681,6 +1681,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   // True when the contract reads blockhash(n): forces it stateful (the oracle is branded to its own category).
   private currentContractUsesBlockhash: boolean = false;
   private currentContractHasMessageBus: boolean = false;
+  /**
+   * The message-bus route's declared inputs, in push order (the SDK pushes `[blob, ...routeWitnesses]`). A route
+   * handler shares the caller's stack, so these values are physically BELOW the handler's own argument block -
+   * seeding them into the handler's frame model is what makes a deep (bottom-ordinal or far top-relative) read
+   * address the item the runtime actually has there.
+   */
+  private messageBusRouteParameterNames: string[] = [];
   // SDK auto-derivation recognizes the tight verification spans emitted by routes which combine a
   // verified-map transition with dynamic-storage chunks. Moving those spans behind another OP_INVOKE changes the
   // active trace shape and can make a valid chunk region unobservable, so these contracts keep their bodies inline.
@@ -2642,6 +2649,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.currentContractIsBrandedLibrary = node.isBrandedLibrary;
     this.currentContractUsesBlockhash = node.usesBlockhash;
     this.currentContractHasMessageBus = node.functions.some((fn) => fn.messageBusRoute === true);
+    // Match the predicate codegen itself uses for a route (`currentFunctionIsMessageBusRoute`): the AST
+    // `messageBusRoute` flag is set by route synthesis, which runs AFTER this contract visit, so keying on it here
+    // silently produced an empty band (measured: the owner pick's ordinal did not move at all).
+    const messageBusRouteFunction = node.functions.find((fn) =>
+      (fn.messageBusRoute === true
+        || (fn.name.startsWith('__message_bus')
+          && fn.parameters?.some((parameter) => parameter.name === 'batchBlob') === true)));
+    this.messageBusRouteParameterNames = (messageBusRouteFunction?.parameters ?? [])
+      .map((parameter) => parameter.name);
     this.currentContractRequiresTraceStableBodies = node.functions.some((fn) =>
       (fn.dynamicWrites?.length ?? 0) > 0
       && (fn.entryAccesses?.length ?? 0) > 0);
@@ -6003,6 +6019,22 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
     } else {
       node.parameters = this.visitList(node.parameters) as ParameterNode[];
+    }
+
+    // A route handler is invoked with the caller's band still live UNDER its argument block, so seed those names
+    // into the frame model (declaration order: the first route input is the shallowest band item, exactly as the
+    // runtime has it). Without this, a bottom-ordinal read of a band value - or of the owner parameter, whose
+    // ordinal is computed from the model's bottom - addresses a neighbouring item (measured: the owner read landed
+    // on `graphFixedSize`/`graphBlockSize`, turning the intended coordinate 20 into 151).
+    const callerBandNames = node.messageBusCallerBandNames ?? this.messageBusRouteParameterNames;
+    if (this.isDefineSubTraversal && callerBandNames.length > 0
+      && node.parameters.some((parameter) => parameter.name === MESSAGE_BUS_OWNER_INPUT)
+      && (globalThis as { process?: { env?: Record<string, string> } }).process
+        ?.env?.SOLIDC_HANDLER_BAND_MODEL === '1') {
+      for (const bandName of callerBandNames) {
+        if (bandName === 'batchBlob') continue;
+        this.pushToStack(bandName, true);
+      }
     }
 
     // Message-bus unlocking bytecode retains its positional batch copy and historical reserved slot below the

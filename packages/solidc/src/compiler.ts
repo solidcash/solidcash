@@ -8554,6 +8554,28 @@ function synthesizeMessageBusRoute(
   const routeOwnedCloneByName = new Map(contract.functions
     .filter((candidate) => routeOwnedCloneNames.has(candidate.name))
     .map((candidate) => [candidate.name, candidate] as const));
+  // The route's own inputs (batch blob + witnesses) are physically below every clone's argument block, because the
+  // clone is invoked from the route with the route frame still live. Hand the names to the clones so codegen can
+  // seed them into the handler's frame model; without that, a deep read addresses a neighbouring item.
+  const messageBusRouteParameters = (contract.functions.find((candidate) =>
+    candidate.messageBusRoute === true
+    || (candidate.name.startsWith('__message_bus')
+      && candidate.parameters?.some((parameter) => parameter.name === 'batchBlob') === true))
+    ?.parameters ?? []).map((parameter) => parameter.name);
+  if (messageBusRouteParameters.length > 0) {
+    for (const clone of routeOwnedCloneByName.values()) {
+      clone.messageBusCallerBandNames = messageBusRouteParameters;
+    }
+  }
+  if ((globalThis as { process?: { env?: Record<string, string> } }).process
+    ?.env?.SOLIDC_DEBUG_ARG_ORDER === '1') {
+    console.error('message-bus-caller-band', JSON.stringify({
+      contract: contract.name,
+      routeFound: messageBusRouteParameters.length > 0,
+      band: messageBusRouteParameters,
+      clones: [...routeOwnedCloneByName.keys()].length,
+    }));
+  }
   for (const handler of contract.functions) {
     if (!routeOwnedCloneNames.has(handler.name)) continue;
     if (handler.parameters.some((parameter) => parameter.name === MESSAGE_BUS_OWNER_INPUT)) continue;

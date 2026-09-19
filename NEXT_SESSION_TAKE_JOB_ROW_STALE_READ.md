@@ -14210,3 +14210,32 @@ nft/field index, the model index used and the neighbours) to see whether the rea
 participant's own master slot instead of the stored interface field) or the right slot whose VALUE is wrong. The
 fix, whichever it is, is then local: either the state-access coordinate inside a graph handler, or the value the
 planning side stored for that interface variable.
+
+Round 375: ROOT CAUSE PINNED - the handler reads the CALLEE's state field for the caller's interface variable
+
+The new composer diagnostic (`SOLIDC_DEBUG_PARTICIPANT_STATE=1`, printing every address-typed state field of every
+participant from the PLAN's own authenticated state) gives byte-exact values:
+
+    p0 MarketplaceV1     marketplaceData (address) nft0/field0 = aa2008ddbbe2df1bce62cd385535ca6be28894acd17c...
+    p1 MarketplaceDataV1 marketplace     (address) nft0/field0 = aa20178dbf211c4f16cc3b34e6c634722d0c5df96ce2...
+
+and those are EXACTLY the two lanes:
+
+    plan's expected row lane : aa2008ddbb...  = p0.marketplaceData  -> the data contract  (CORRECT)
+    contract's built row lane: aa20178dbf...  = p1.marketplace      -> the CALLER's address (WRONG STATE)
+
+So while building the emission row for the call to `marketplaceData`, the contract read the CALLEE participant's
+state field (`marketplace`, p1's field 0, which stores the caller's address) instead of the CALLER's own field
+(`marketplaceData`, p0's field 0, which stores the callee's address). Both are field 0 of their own layouts, so the
+read used the wrong participant's STATE LANE, not a wrong field index - the handler's state cache lane for that
+variable is filled from (or addressed in) the callee's block instead of the caller's.
+
+That single defect explains the emission-row mismatch, and it is the same shape as the take-job coordinate misread
+(a frame/state value resolved to the other participant). New diagnostics this round (both committed, gated):
+`handler-state-read` (variable, slot indices, model view for every state read inside a graph emission handler) and
+`participant-state` (the plan's address-typed state per participant).
+
+**Next round**: find where that cache lane is chosen/filled - print the lane name the state read uses
+(`__dlcache_*` / `__cj_cache_*` machinery in `LowerCollectionJournalHelpers` / `state.ts`) and compare it with the
+participant whose state seeds the lane in the SDK. The fix is then local: address the lane by the CALLER participant,
+or seed it from the caller's authenticated state for that variable.

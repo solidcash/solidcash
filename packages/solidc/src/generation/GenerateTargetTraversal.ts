@@ -19378,7 +19378,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_NIP, locationData);
     this.pushToStack('(__graph_runtime_row_length)');
     const remainder = '__internal__graphEmissions';
-    this.emit(encodeInt(BigInt(this.getStackIndex(remainder))), locationData);
+    this.emit(encodeInt(BigInt(this.graphEmissionStreamSlot())), locationData);
     this.emit(Op.OP_PICK, locationData);
     this.pushToStack('(__graph_runtime_emissions)');
     this.emit(Op.OP_SWAP, locationData);
@@ -19388,7 +19388,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_EQUALVERIFY, locationData);
     this.popFromStack(3);
     this.pushToStack('(__graph_runtime_remainder)');
-    this.emitReplace(this.getStackIndex(remainder), node);
+    this.emitReplace(this.graphEmissionStreamSlot(), node);
     this.popFromStack();
     this.debugEmissionConsume('runtime-row');
     this.dischargeGraphEmissionRow();
@@ -19401,7 +19401,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_NIP, locationData);
     this.pushToStack('(__graph_emission_length)');
     const remainder = '__internal__graphEmissions';
-    this.emit(encodeInt(BigInt(this.getStackIndex(remainder))), locationData);
+    this.emit(encodeInt(BigInt(this.graphEmissionStreamSlot())), locationData);
     this.emit(Op.OP_PICK, locationData);
     this.pushToStack('(__graph_emission_stream)');
     this.emit(Op.OP_SWAP, locationData);
@@ -19411,7 +19411,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_EQUALVERIFY, locationData);
     this.popFromStack(3);
     this.pushToStack('(__graph_emission_remainder)');
-    this.emitReplace(this.getStackIndex(remainder), node);
+    this.emitReplace(this.graphEmissionStreamSlot(), node);
     this.popFromStack();
     this.debugEmissionConsume('constructed-row');
     this.dischargeGraphEmissionRow();
@@ -19422,6 +19422,25 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       throw new Error('Graph emission consumer has no constructed row to authenticate');
     }
     this.pendingGraphEmissionRows -= 1;
+  }
+
+  /**
+   * Top-relative depth of the authenticated emission stream, used by BOTH the consumer's pick and the
+   * `emitReplace` that stores the peeled remainder back into the same slot.
+   *
+   * `SOLIDC_DEBUG_STREAM_PICK_OFFSET=<n>` shifts that depth by `n` at every consumer, which is how the
+   * "one slot off" hypothesis for a mis-split emission row is measured rather than argued: a single untracked
+   * runtime operand (or one phantom tracked name) moves every top-relative read in the body by exactly one, and
+   * the direction of the shift says which of the two it is. The shift is diagnostic only - it must never be set
+   * for a shipped artifact - because a pick and the replace that follows it have to address the same slot.
+   */
+  private graphEmissionStreamSlot(): number {
+    const index = this.getStackIndex('__internal__graphEmissions');
+    const raw = (globalThis as { process?: { env?: Record<string, string> } }).process
+      ?.env?.SOLIDC_DEBUG_STREAM_PICK_OFFSET;
+    const offset = raw === undefined || raw === '' ? 0 : Number(raw);
+    if (!Number.isFinite(offset) || offset === 0) return index;
+    return Math.max(1, index + offset);
   }
 
   /**

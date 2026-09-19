@@ -14348,3 +14348,47 @@ Verification on the final tree this round: `close job` (both titles) + `withdraw
 (b) track the row loop's runtime-only operands in the model (`pushToStack` placeholders) so the top-relative
     index is correct at the source, which is the "correct the MODEL, not the addressing form" route the
     `emitMasterInputIndex` comments point at.
+
+Round 377: the two failure modes were a STALE `dist`, and the current canonical build stalls on the keccak side-car read
+
+Artifact provenance (this is the round's most important finding)
+- `/tmp/compile-canon21.log`'s artifacts (the ones every round-375 "abort" measurement used) and the current build's
+  artifacts are NOT the same program: MarketplaceV1 `debug.bytecode` was 119454 bytes with 504 outlined bodies
+  (sha256 43ca27b7...) versus 117527 bytes with 516 outlined bodies (sha256 0920b515...) now. ~1.9 KB of emitted
+  code differs, so the round-375 abort analysis describes the OLD build.
+- The compiler source delta between the two is only the 67 added lines of gated diagnostics, so the old artifacts
+  were almost certainly produced by a `dist` that lagged the source (a `tsc -b` that did not pick up pending
+  edits - the same trap hit again this round when a source edit landed while a build was running). ALWAYS confirm
+  the build actually contains a just-added marker (`grep -c <marker> packages/solidc/dist/...`) or `touch` the file
+  before `tsc -b`.
+- The current build is DETERMINISTIC: two independent cold compiles of the same tree give the identical
+  MarketplaceV1 hash, and the new `SOLIDC_DEBUG_STREAM_PICK_OFFSET` gate at its default (0) is inert (same hash as
+  the build without it). `take job` is also content-deterministic across runs (three consecutive runs: identical
+  logs apart from test durations).
+
+Current canonical `take job` = the deferred-compute stall, with a concrete coordinate
+- `SOLIDC_DEBUG_ENTRY_COUNTS=1 SOLIDC_DEBUG_KECCAK_DERIVE=1`, participant 0:
+      deferred-keccak-extract-miss { base: 3, calls: 2, sidecars: 1,
+        error: 'keccak256 preimage extraction: no side-car read found in the probe trace.',
+        reads: [ { ip: 234, index: 129, marker: 0, argumentBytes: 0, argument: '' } ] }
+  The extractor accepts an `OP_INPUTBYTECODE` read whose index lies in `[base, base + sidecars)` = `[3, 4)`, but the
+  only such read in the entire probe trace used index 129 = the participant's EXECUTOR input index (p0 block base 0
+  + executorOffset 129). So the keccak side-car coordinate is being built from the executor/owner anchor instead of
+  the participant block's side-car slot, and the preimage operand is empty at that point as well. That is the same
+  "frame-derived coordinate lands on the executor instead of the slot" shape as the emission-row pick, now with a
+  number attached.
+
+New diagnostics committed this round
+- `SOLIDC_DEBUG_STREAM_PICK_OFFSET=<n>` (compiler): shifts the authenticated emission stream's top-relative slot at
+  both consumers' pick AND the `emitReplace` that stores the remainder back. Measured: `+1` regresses all three
+  green titles and changes `take job`'s abort into `stack item length: 0; requested split index: 247`, so the drift
+  is NOT a single global slot; the offset is diagnostic-only and must never ship set.
+- `SOLIDC_DEBUG_FAILURE_POINT_STACK_FULL=1` (SDK): dumps the WHOLE failing frame, top-relative, so the runtime
+  distance of a named frame item (e.g. `__internal__graphEmissions`, 1073 bytes, prefix `2300aa2008ddbb...`) can be
+  compared with the model index a pick was baked from.
+
+**Next round**: `emitComputeSidecarBlockBase` / `captureComputeSidecarBlockBase` (the `DBG-COMPUTE-BASE`
+`compute-base-push` site) is where the keccak/ecrecover side-car coordinate is built. Follow index 129 there: the
+side-car read must be `blockBase + slot.offset` (3 here), not the executor anchor, and the probe's empty preimage
+operand says the read is in a frame where the side-car value was never loaded. Fix that emission, then re-run
+`take job` and the three-title gate.

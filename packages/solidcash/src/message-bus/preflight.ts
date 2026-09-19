@@ -1583,6 +1583,16 @@ const evaluateEveryInput = (
                   `${34 + offset}:${item.length}:${binToHex(item).slice(0, 96)}`
                 ))
                 : undefined,
+              // The whole frame, top-relative. A model-index pick that resolved to the wrong slot can be judged
+              // only against the runtime distance of the item it was MEANT to read, and that item (a route input
+              // like the authenticated emission stream) normally sits far outside both the top window and the
+              // bottom ordinals the windows above cover. Gated because a full frame is large: match the intended
+              // item by its leading bytes to read its real distance from the top.
+              stackFull: debugEnv?.SOLIDC_DEBUG_FAILURE_POINT_STACK_FULL === '1'
+                ? preState.stack.map((item, offset, items) => (
+                  `${items.length - 1 - offset}:${item.length}:${binToHex(item).slice(0, 240)}`
+                )).reverse()
+                : undefined,
               // Step through a coordinate's construction: every captured pre-state of the failing program whose ip
               // falls in the requested range, with the top of the stack at that point. A four-term coordinate is
               // only readable this way - the terminal operands alone cannot say which term was wrong.

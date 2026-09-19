@@ -13799,3 +13799,37 @@ should let the model fix become the default and take `take job` past preflight.
 
 **Verified state (defaults)**: greens 3 passed | 63 skipped; fast fixture 1 passed | 1 skipped; artifacts rebuilt
 canonically; `SOLIDC_HANDLER_BAND_MODEL` and `SOLIDC_OWNER_ALT_ANCHOR` both opt-in.
+
+Round 363: the handlers are invoked from NESTED bodies, so a fixed band seed cannot be sound
+
+**Why the band seeding regresses the greens.** The failure dump's `controlStack` names the caller frames. For the
+failing frames it is `[.., {ip:3159, instructionCount:11117}, {ip:321, instructionCount:6338}, {ip:2,
+instructionCount:7}]` - i.e. the handler is invoked from large COMPILER-EMITTED bodies (6338 / 11117 instructions),
+not from the route (which is a few hundred). So the operands physically below a handler's argument block are that
+caller's own live locals, and the route ABI inputs are further down still. Seeding only the route band therefore
+under-counts by an unbounded amount; measured symptoms after the seed:
+
+  * band WITHOUT `batchBlob`: a 32-byte token category was compared against a 35-byte locking bytecode - an
+    always-false comparison (off by exactly one, which is why the blob matters: the SDK pushes
+    `[blob, ...routeWitnesses]`, so the blob is the deepest band item and must be seeded too);
+  * band WITH `batchBlob`: the outline failure disappears and preflight instead fails at
+    `input 129, ip 66 of 75, failing opcode 127 (OP_SPLIT)`, "stack item length: 31; requested split index: -32"
+    - a negative index, i.e. a frame item read from the wrong slot again.
+
+**Conclusion.** Any *fixed* band seed is unsound for these frames; the only sound model fix would be to seed the
+caller's COMPLETE live stack, which the callee cannot know. That leaves the two value-anchored options already
+identified: (a) capture the values a body needs at its entry, where depths are exact (the alt-stack anchor, opt-in
+today), or (b) make the generated call sites invoke handler bodies with a cleaned stack, so the callee's frame really
+does start at the stack bottom.
+
+The band seeding stays opt-in (`SOLIDC_HANDLER_BAND_MODEL=1`) - it is still the change that CLEARS take-job's
+deferred-compute stall, so it remains the useful bisect tool - and it must not become the default while it regresses
+the three green titles.
+
+Also improved this round: the preflight pre-state capture is keyed by input (`preStateByInput`), so a dump can no
+longer show another input's frame. Caveat recorded: preflight may evaluate an input in several passes, so the
+captured state is the last one seen for that input; the VM's own message remains the authority for the failing
+operands.
+
+**Verified state (defaults)**: greens 3 passed | 63 skipped; fast fixture 1 passed | 1 skipped; artifacts rebuilt
+canonically; `SOLIDC_HANDLER_BAND_MODEL` and `SOLIDC_OWNER_ALT_ANCHOR` both opt-in.

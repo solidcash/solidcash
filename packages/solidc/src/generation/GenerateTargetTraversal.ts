@@ -6031,8 +6031,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       && node.parameters.some((parameter) => parameter.name === MESSAGE_BUS_OWNER_INPUT)
       && (globalThis as { process?: { env?: Record<string, string> } }).process
         ?.env?.SOLIDC_HANDLER_BAND_MODEL === '1') {
+      // Every route input is seeded, INCLUDING `batchBlob`: the SDK pushes `[blob, ...routeWitnesses]`, so the blob
+      // is physically the deepest band item. Omitting it under-counts the band by one and every deep read lands one
+      // slot off (measured: a 32-byte token category compared against a 35-byte locking bytecode - a comparison that
+      // can never hold).
       for (const bandName of callerBandNames) {
-        if (bandName === 'batchBlob') continue;
         this.pushToStack(bandName, true);
       }
     }

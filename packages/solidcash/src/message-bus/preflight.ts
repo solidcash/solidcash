@@ -1119,14 +1119,21 @@ const evaluateEveryInput = (
   // a misread coordinate actually resolved to.
   const failurePreStateDebug = (globalThis as { process?: { env?: Record<string, string> } }).process?.env
     ?.SOLIDC_DEBUG_FAILURE_POINT_PRE_STATE === '1';
-  let lastPreState: AuthenticationProgramStateCommon | undefined;
+  // Keyed by the input the state belongs to: this one VM evaluates every input, so a single "last state" slot is
+  // overwritten by whichever input runs last and would report another input's frame as the failure's operands
+  // (measured: the dumped operands did not match the VM's own message for the failing split).
+  const preStateByInput = new Map<number, AuthenticationProgramStateCommon>();
   const vm = createVirtualMachineBch2026ForProvider(builder.provider,
     (outputCompareDebug || failurePreStateDebug) ? {
     opcodes: failurePreStateDebug
       ? new Set(Array.from({ length: 256 }, (_, opcode) => opcode))
       : new Set([Op.OP_OUTPUTBYTECODE]),
     beforeOperation: (unknownState) => {
-      if (failurePreStateDebug) lastPreState = unknownState as AuthenticationProgramStateCommon;
+      if (failurePreStateDebug) {
+        const captured = unknownState as AuthenticationProgramStateCommon;
+        const ownedInput = captured.program?.inputIndex;
+        if (typeof ownedInput === 'number') preStateByInput.set(ownedInput, captured);
+      }
       if (!outputCompareDebug) return;
       const state = unknownState as unknown as {
         ip: number;
@@ -1509,18 +1516,22 @@ const evaluateEveryInput = (
           // captured by the hook below (one reference assignment per operation) - deliberately NOT re-derived with
           // `vm.debug()`, which deep-clones the OP_DEFINE body table per instruction and killed the worker on this
           // program size (measured: "Worker exited unexpectedly").
-          operands: failurePreStateDebug && lastPreState !== undefined
-            ? {
-              ip: lastPreState.ip,
-              opcode: lastPreState.instructions[lastPreState.ip]?.opcode,
-              error: lastPreState.error === undefined ? undefined : String(
-                (lastPreState.error as { error?: unknown }).error ?? lastPreState.error,
+          operands: (() => {
+            if (!failurePreStateDebug) return undefined;
+            const preState = preStateByInput.get(inputIndex);
+            if (preState === undefined) return { unavailable: 'no state captured for this input' };
+            return {
+              ip: preState.ip,
+              opcode: preState.instructions[preState.ip]?.opcode,
+              depth: preState.stack.length,
+              error: preState.error === undefined ? undefined : String(
+                (preState.error as { error?: unknown }).error ?? preState.error,
               ),
-              top: lastPreState.stack.slice(-6).map((item, offset, items) => (
+              top: preState.stack.slice(-8).map((item, offset, items) => (
                 `${items.length - 1 - offset}:${item.length}:${binToHex(item).slice(0, 96)}`
               )),
-            }
-            : undefined,
+            };
+          })(),
           // Many output-conservation loops retain their current output index at the top of the stack. Reporting
           // the referenced tuple and all exact predecessor matches makes a failed preservation check diagnosable
           // without another full VM trace. For failures with a non-index tail this remains an inert undefined row.

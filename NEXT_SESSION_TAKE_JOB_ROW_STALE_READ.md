@@ -12179,3 +12179,26 @@ chars (`'00'.repeat(30) + 'c0'`), which `validateInput` rejected; it is now 64.
 Pending verification (next round, first thing): this is a BEHAVIOURAL change in shared input assembly, so re-run the
 greens serially - fixture `1 passed | 1 skipped`, `unicrow params` 2, `admin` 8 - and only then continue from ip 29
 (measure its operands with `SOLIDC_DEBUG_PROBE_IO=1` + `probe-failed`, which now appear in the same run).
+
+Round 334: greens re-verified; the probe now carries 6 inputs and refuses at ip 29
+
+Greens after the dense-walk fix (run serially, one marketplace run at a time):
+fixture `1 passed | 1 skipped`, `unicrow params` 2 passed, `admin` 8 passed.
+
+Next measurement of the same `take job` (run 348, gates `SOLIDC_DEBUG_MSG_SENDER_KEY=1` +
+`SOLIDC_DEBUG_PROBE_IO=1`):
+
+    probe-failed { probeId: [6, 'ea84c562', 0], returnOutputIndex: 3,
+                   failure: 'probe stopped at ip 29 (opcode 118) ... failing require in FakeToken:98;
+                             window 120 130 119 146 145 105 118; stack d3=128b:80a90055…' }
+
+The probe id is now **6 inputs** (was 4) - the caller carrier and the other read co-spend are materialised, exactly
+as the round-333 fix intended. The refusal is the next check in the same `_allowances` row:
+`120 OP_OVER / 130 OP_SIZE / 119 OP_NIP / 146 / 145 / 105 OP_VERIFY / 118 OP_DUP` with `d3` = the NEW node
+(`80a90055…`, 128 bytes). `FakeToken:98` is the OZ ERC20 `balanceOf`/`_update` region.
+
+Next round: read the `probe-input-locks` (6 entries) and the full operand set for ip 29 from the same run
+(`probe-failed` pairs them now), and decide whether the failing comparison is the decoded ALLOWANCE from the NEW
+node (in which case the NEW node's value tail is the derivation target) or the owner's BALANCE entry (the frame may
+now need its `_balances` predecessor to be the value the same transaction wrote, i.e. the same read-after-write
+question one level deeper).

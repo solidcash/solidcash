@@ -12685,3 +12685,18 @@ v/r/s = slices of `signature_`) so the SDK can supply the values directly, which
 Also verified this round: greens still pass with the compiler change (fixture 1/1 skipped, `unicrow params` 2,
 `admin` 8). The full `--project solidc` suite reports 225 failures; an A/B run with this pass reverted is in
 progress to establish the pre-existing baseline before treating any of them as a regression.
+
+Round 341b: the compiler-suite A/B - my journal fix is a strict improvement, the rest is pre-existing
+
+`npx vitest run --project solidc` with the fix: **225 failed | 4844 passed**.
+The same suite with `LowerCollectionJournalHelpers.ts` restored to `876b3733e`: **228 failed | 4841 passed**.
+Diffing the failing-test NAME sets: nothing newly fails, and exactly three tests newly pass, all in the pass's own
+area:
+
+* `test/journal-message-bus/KernelMixedArrayMappingJournal.test.ts > admits independent array and entry indices without shape-specific names`
+* `test/journal-message-bus/KernelMixedArrayMappingJournal.test.ts > threads every chunk-backed array touched beside the entry journal`
+* `test/journal-message-bus/MessageBusSelection.test.ts > keeps direct mapping keys visible beside dynamic-array reads in explicit graph mode`
+
+So the 225 remaining failures are pre-existing on this branch and are not a regression from this work. (The A/B
+was run in place: the pass file was swapped with `git show 876b3733e:…`, the suite run, then restored from a copy
+in `/tmp`; `git diff` is clean afterwards.)

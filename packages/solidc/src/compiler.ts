@@ -8567,15 +8567,7 @@ function synthesizeMessageBusRoute(
       clone.messageBusCallerBandNames = messageBusRouteParameters;
     }
   }
-  if ((globalThis as { process?: { env?: Record<string, string> } }).process
-    ?.env?.SOLIDC_DEBUG_ARG_ORDER === '1') {
-    console.error('message-bus-caller-band', JSON.stringify({
-      contract: contract.name,
-      routeFound: messageBusRouteParameters.length > 0,
-      band: messageBusRouteParameters,
-      clones: [...routeOwnedCloneByName.keys()].length,
-    }));
-  }
+
   for (const handler of contract.functions) {
     if (!routeOwnedCloneNames.has(handler.name)) continue;
     if (handler.parameters.some((parameter) => parameter.name === MESSAGE_BUS_OWNER_INPUT)) continue;
@@ -9232,6 +9224,17 @@ function synthesizeMessageBusRoute(
       if (!MESSAGE_BUS_CLONE_PREFIXES.some((prefix) => candidate.name.startsWith(prefix))) continue;
       candidate.messageBusCallerBandNames = routeBandNames;
     }
+  }
+  if ((globalThis as { process?: { env?: Record<string, string> } }).process
+    ?.env?.SOLIDC_DEBUG_ARG_ORDER === '1') {
+    // Printed HERE, where the route's parameter list is actually built: the earlier site ran before route
+    // synthesis had a route and always reported routeFound:false, which made the diagnostic misleading.
+    console.error('message-bus-caller-band', JSON.stringify({
+      contract: contract.name,
+      band: routeBandNames,
+      clones: contract.functions.filter((candidate) =>
+        MESSAGE_BUS_CLONE_PREFIXES.some((prefix) => candidate.name.startsWith(prefix))).length,
+    }));
   }
   // Compiler-route unlockers publish the canonical batch as the first positional item after the selector for
   // both direct and delegate execution. The ordinary (reverse-pushed) ABI frame follows that positional prefix,

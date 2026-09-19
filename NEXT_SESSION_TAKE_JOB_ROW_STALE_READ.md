@@ -13942,3 +13942,37 @@ ROW PREFIX length (74) and the item must be the VECTOR (116 bytes).
 
 **Verified state (defaults)**: greens 3 passed | 63 skipped; fast fixture 1 passed | 1 skipped; artifacts rebuilt
 canonically; both gates opt-in.
+
+Round 367: the FULL 66-TITLE LADDER map (canonical build, all gates off)
+
+First complete run of the whole marketplace suite on the current tree:
+
+    40 passed | 26 failed (66)
+
+Failure classes, extracted per title from the run log (`/tmp/ladder-full.log`):
+
+  * 2  deferred-compute stall - `take job`, `take job multiple`
+       "complete graph did not expose arguments for all deferred compute resources ..."
+  * 4  preflight OP_VERIFY/EQUALVERIFY at the SAME site - `job posting > post job 1`, `post two jobs`,
+       `post job with whitelist`, `dispute > sanity checks no arbitrator`
+       `input 216, ip 20589 of 22949, failing opcode 136 (window 95 138 1:33 138 1:eb 138 1:f5 138 136 118)`
+       i.e. an OUTPUT-IDENTITY comparison in `MarketplaceDataV1`'s implementation body; the window shows a chain of
+       outlined helpers (ids 0x2f/0x33/0xeb/0xf5) over an `OP_OUTPUTBYTECODE` read of a coordinate built as
+       `base + 3` / `base + 4`. ONE fix here should clear four titles.
+  * 1  L3_RESOURCE_UNRESOLVED - `job updates > update job tags`
+       "message-bus batch collection witness '__message_bus_key_meceTags_0' must ide[ntify ...]"
+  * 19 other - `Expected transaction NOT to be reverted, but it reverted` (pay start job, post thread message,
+       deliver result x2, approve result x2, refund x2, dispute x3, arbitrate x4, refuse arbitration x2) plus
+       `refuse arbitration > job not taken` = "participant 1 'MarketplaceDataV1' failed to build its balanced block:
+       Kernel c[ompute ...]" and `integration test` = test timeout.
+       A revert in these tests is how an inner refusal surfaces (`composer.send()` throws), so most of these are
+       very likely downstream of the same coordinate/stall chain rather than 19 independent defects.
+
+Prioritisation for the next round, by expected yield:
+  1. the input-216 / ip-20589 output-identity check (4 titles, single site, and the pre-state dump can read both
+     operands: `SOLIDC_DEBUG_FAILURE_POINT=1 SOLIDC_DEBUG_FAILURE_POINT_PRE_STATE=1 SOLIDC_TRACE_INPUT=216`);
+  2. the deferred-compute stall chain (2 titles directly, plus whatever the 19 reverts share with it).
+
+Also this round: the `message-bus-caller-band` diagnostic was printed at the OLD clone-loop site, where route
+synthesis has no route yet and it always reported `routeFound:false` - misleading. It now prints where the route's
+parameter list is actually built, with the real band and clone count.

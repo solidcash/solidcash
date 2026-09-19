@@ -5961,8 +5961,21 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // the capture on: `take job` gets past the deferred-compute stall, while `close job` (both) and
       // `withdraw collateral` - which passed before - fail at an OP_UTXOBYTECODE check (ip 245 of 6337). Enable
       // with SOLIDC_OWNER_ALT_ANCHOR=1 only together with an owner-last ABI at EVERY call site of the body.
-      const ownerAnchorEnabled = (globalThis as { process?: { env?: Record<string, string> } })
-        .process?.env?.SOLIDC_OWNER_ALT_ANCHOR === '1';
+      const defineEnv = (globalThis as { process?: { env?: Record<string, string> } }).process?.env;
+      if (defineEnv?.SOLIDC_DEBUG_ARG_ORDER === '1') {
+        // The FINAL declared parameter list, at emission time. The route-synthesis print
+        // (`message-bus-clone-params`) runs when the owner is appended, BEFORE SymbolTableTraversal and the journal
+        // passes inject their own context operands, so it cannot show whether anything ends up after the owner -
+        // which is exactly the precondition a depth-0 capture needs.
+        console.error('message-bus-define-params', JSON.stringify({
+          function: node.name,
+          isDefineSubTraversal: this.isDefineSubTraversal,
+          isRoute: this.isCompilerMessageBusRoute(node),
+          parameters: node.parameters.map((parameter) => parameter.name),
+          ownerIndex: node.parameters.findIndex((parameter) => parameter.name === MESSAGE_BUS_OWNER_INPUT),
+        }));
+      }
+      const ownerAnchorEnabled = defineEnv?.SOLIDC_OWNER_ALT_ANCHOR === '1';
       // Depth 0 only: route synthesis reports the owner as the call's LAST argument, so the top item at entry IS
       // the owner. A model-derived index is NOT usable here - the frame model does not contain the caller's band,
       // so any index it computes addresses a different runtime item (measured: it broke the three titles that

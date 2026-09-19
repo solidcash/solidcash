@@ -8720,6 +8720,11 @@ function synthesizeMessageBusRoute(
         (handlerEntryKeys.get(handler) ?? []).map(({ base, perRow }) =>
           (perRow && rowIndex !== undefined ? `${base}_r${rowIndex}` : base));
       const ownerContextArgs = routeOwnedCloneNames.has(invokeName) ? [routeOwnerInputExpression] : [];
+      // The clone declares this hidden witness exactly when its body uses dynamic chunks; the generated call must
+      // therefore pass it, in the position the clone's parameter list gives it (ahead of the owner).
+      const dynamicChunkBaseArgs = routeOwnedCloneByName.get(invokeName)?.parameters
+        .some((parameter) => parameter.name === '__internal__dynamicChunkInputBase') === true
+        ? ['__internal__dynamicChunkInputBase'] : [];
       if (fn.parameters.length === 0) {
         const logicalCaller = graphExecutionContext ? '__message_bus_graph_caller' : 'msg.sender';
         const selectedIsClone = invokeName !== fn.name;
@@ -8740,8 +8745,12 @@ function synthesizeMessageBusRoute(
           const clone = routeOwnedCloneByName.get(invokeName);
           if (clone) clone.messageBusOwnerIsLastArgument = true;
         }
+        // A route clone also declares the injected witnesses the compiler gave it (the dynamic-chunk base and the
+        // oracle base). Passing them by name keeps the vector exactly as long as the callee's parameter list: a
+        // vector one operand short leaves the callee's model with a phantom bottom parameter and shifts every
+        // ordinal it computes.
         const entryOnly = [...entryKeyArguments(fn), ...blockhashRowArgs, ...callerContextArgs,
-          ...ownerContextArgs, ...blockhashBaseArgs];
+          ...dynamicChunkBaseArgs, ...ownerContextArgs, ...blockhashBaseArgs];
         const senderChecks = (fn.messageBusKeyWitnesses ?? [])
           .filter((binding) => binding.source === 'msgSender')
           .map((binding) => `require(${witnessName(binding)} == ${logicalCaller});`).join(' ');

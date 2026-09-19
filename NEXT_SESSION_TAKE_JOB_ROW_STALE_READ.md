@@ -12107,3 +12107,27 @@ before it (e.g. `console.error('probe-shape-id', JSON.stringify([probe.inputs.le
 probe.inputs[0]?.txid?.slice(0, 8), probe.inputs[0]?.vout]))`) plus a `probe-failed` record right after
 `this.lastReturnProbeFailure = this.describeReturnProbeFailure(...)`, both gated by `SOLIDC_DEBUG_MSG_SENDER_KEY=1`.
 That pairs each refusal with the inputs of the probe that produced it, which is what round 329 showed is missing.
+
+Round 331: probe-id pairing CONFIRMS the failing probe has 4 inputs (no caller carrier)
+
+`probe-shape-id` + `probe-failed` (run 344) tie the refusal to its own build:
+
+    probe-failed { probeId: [4, 'ea84c562', 0], returnOutputIndex: 3,
+                   failure: 'probe stopped at ip 51 ... window 117 118 130 119 146 105 124 ...' }
+
+So the failing probe is exactly the 4-input one (`4@ea84c562:0`) whose `probe-input-locks` I read in rounds 316-323:
+`[FakeToken master, _allowances HEAD entry (64B), funding, funding]`. The caller carrier is genuinely ABSENT - round
+329's suspicion that I had matched the wrong dump is disproved.
+
+Together with the earlier gates this is now a contradiction worth chasing: the same build HAS
+`overrides.callerLockingBytecode` (its key resolves to `aa20bbc502f0…`), and the round-324 gate
+(lock present, category absent) never fired, so `overrides.msgSenderCategory` should be present too - which means the
+round-323 synthesis branch should have appended a caller carrier, and round-320's `_deriveReturnValue` should have
+supplied a real one. Neither appears.
+
+Prime suspect: the merge point (`:23274`) is not on the PROBE's build path - `_createBuilder` may construct the
+builder options for `returnProbeOnly` builds somewhere else (or return early), so `externalReadUtxos` never receives
+the caller entry. Next round, one run: log inside `_createBuilder` at the merge point (gated) for
+`functionName === 'approve'` with `returnProbeOnly === true` - print `callerIdentityUtxos !== undefined`,
+`callerLockingBytecode !== undefined`, `msgSenderCategory !== undefined`, `externalReadUtxos.length` - and also log
+every place a `StatefulTransactionBuilder` is constructed for that function, so the actual options path is identified.

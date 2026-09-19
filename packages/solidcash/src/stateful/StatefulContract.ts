@@ -35145,6 +35145,15 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const sourceOutputs = generateLibauthSourceOutputs(probe.inputs);
     const trace = evaluateProbeTrace(this.inner.provider, { inputIndex, sourceOutputs, transaction });
     this.lastReturnProbeFailure = this.describeReturnProbeFailure(trace, inputIndex);
+    if (this.lastReturnProbeFailure !== undefined && (globalThis as {
+      process?: { env?: Record<string, string> };
+    }).process?.env?.SOLIDC_DEBUG_MSG_SENDER_KEY === '1') {
+      console.error('probe-failed', JSON.stringify({
+        probeId: [probe.inputs.length, String(probe.inputs[0]?.txid ?? '?').slice(0, 8), probe.inputs[0]?.vout],
+        returnOutputIndex,
+        failure: String(this.lastReturnProbeFailure).slice(0, 200),
+      }));
+    }
     if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
       ?.SOLIDC_DEBUG_PROBE_DEFINES === '1' && this.lastReturnProbeFailure !== undefined) {
       // Resolve the frame's own OP_DEFINE table: a body's `push(id) OP_INVOKE` names a definition the FRAME
@@ -35203,6 +35212,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         commitment: (output as { token?: { nft?: { commitment?: Uint8Array } } }).token?.nft?.commitment === undefined
           ? undefined : binToHex((output as { token: { nft: { commitment: Uint8Array } } }).token.nft.commitment),
       }))));
+      // One-line probe identity: several probes run per derivation and stderr interleaves, so a refusal must be
+      // attributable to the dump that belongs to its own build.
+      console.error('probe-shape-id', JSON.stringify([
+        probe.inputs.length, String(probe.inputs[0]?.txid ?? '?').slice(0, 8), probe.inputs[0]?.vout,
+      ]));
       console.error('probe-input-locks', JSON.stringify(probe.inputs.map((input, index) => {
         const source = sourceOutputs[index];
         return {

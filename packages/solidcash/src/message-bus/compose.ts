@@ -3472,14 +3472,63 @@ export class AtomicMessageBusComposition {
           }
           const publishedRelocations: Array<{ name: string; from: string; to: string }> = [];
           const resyncedIndices: number[] = [];
+          const step = (index: number, name: string, next: bigint): void => {
+            if (masterUnlocker?.params === undefined) return;
+            const from = String(masterUnlocker.params[index]);
+            if (masterUnlocker.params[index] === next) return;
+            masterUnlocker.params[index] = next;
+            resyncedIndices.push(index);
+            publishedRelocations.push({ name, from, to: String(next) });
+          };
+          // A `PredOut` witness names the output carrying the re-pointed predecessor (P') of an inserted node. The
+          // batch planner publishes it in the CONCRETE callsite's coordinate space (measured: `approve` declares 4,
+          // the first slot after its own four-slot block) while the covenant reads `tx.outputs[PredOut]` in the
+          // PHYSICAL route frame, where the same P' is materialized in the route's trailing band (measured: block
+          // offset 23). Recover the coordinate from the output that actually carries it: for an insert,
+          // P' = pred.slot || targetSlot || pred.value, where the predecessor is the entry co-spent at
+          // `master + proof`. A content match is the only evidence accepted; without one the witness is left alone.
+          const commitmentHex = (value: unknown): string => value instanceof Uint8Array ? binToHex(value)
+            : typeof value === 'string' ? value : '';
+          const predOutIndexByName = new Map<string, number>();
+          for (const [index, input] of (masterUnlocker?.abiFunction?.inputs ?? []).entries()) {
+            if (/^__internal__vmapBatchProof_\d+$/.test(input.name)) {
+              predOutIndexByName.set(input.name, index);
+            }
+          }
+          const participantCategory = participant.artifact.stateLayout === undefined
+            ? undefined : (local.inputs[0]?.token?.category ?? undefined);
           for (const candidate of relocatable) {
             const value = masterUnlocker?.params?.[candidate.index];
-            if (publishedBase <= 0 || typeof value !== 'bigint' || value < 0n
-              || value >= BigInt(candidate.limit) || masterUnlocker?.params === undefined) continue;
-            const next = value + BigInt(publishedBase);
-            masterUnlocker.params[candidate.index] = next;
-            resyncedIndices.push(candidate.index);
-            publishedRelocations.push({ name: candidate.name, from: String(value), to: String(next) });
+            if (publishedBase <= 0 || masterUnlocker?.params === undefined) continue;
+            if (typeof value !== 'bigint' || value < 0n || value >= BigInt(candidate.limit)) continue;
+            if (candidate.name === 'dynamicChunkInputBase') {
+              step(candidate.index, candidate.name, value + BigInt(publishedBase));
+              continue;
+            }
+            const slot = /(\d+)$/.exec(candidate.name)?.[1];
+            const proofIndex = slot === undefined ? undefined : predOutIndexByName.get(`__internal__vmapBatchProof_${slot}`);
+            const proof = proofIndex === undefined ? undefined : masterUnlocker.params[proofIndex];
+            const targetSlot = (() => {
+              const name = `__internal__vmapBatchSlot_${slot}`;
+              const at = masterUnlocker.abiFunction?.inputs?.findIndex((input) => input.name === name) ?? -1;
+              return at < 0 ? undefined : commitmentHex(masterUnlocker.params?.[at]);
+            })();
+            const predecessor = typeof proof === 'bigint' && proof >= 0n && proof < BigInt(local.inputs.length)
+              ? local.inputs[Number(proof)] : undefined;
+            const predecessorCommitment = commitmentHex(predecessor?.token?.nft?.commitment);
+            if (targetSlot === undefined || predecessorCommitment.length < 128) {
+              step(candidate.index, candidate.name, value + BigInt(publishedBase));
+              continue;
+            }
+            const plannedPredecessor = `${predecessorCommitment.slice(0, 64)}${targetSlot}`
+              + predecessorCommitment.slice(128);
+            const found = local.outputs.findIndex((output) => output.token?.category === participantCategory
+              && commitmentHex(output.token?.nft?.commitment).toLowerCase() === plannedPredecessor.toLowerCase());
+            if (found < 0) {
+              step(candidate.index, candidate.name, value + BigInt(publishedBase));
+              continue;
+            }
+            step(candidate.index, candidate.name, BigInt(publishedBase + found));
           }
           if (resyncedIndices.length > 0) masterUnlocker?.syncEncodedArgsFromParams?.(resyncedIndices);
           const rebased = publishedRelocations.find((entry) => entry.name === 'dynamicChunkInputBase')?.to;

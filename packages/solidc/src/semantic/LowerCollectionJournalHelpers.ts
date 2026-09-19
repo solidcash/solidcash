@@ -182,6 +182,12 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
    * the writer's own committed state.
    */
   private rewriteBlockedStates: Set<string> | undefined;
+  /** Candidates a rewritten call site actually supplies the journal value to. A candidate no call site threads
+   * must keep its direct signature: `resolveMulti` deliberately refuses to rewrite a call inside a body whose
+   * array has an unthreaded writer, and unshifting the callee's parameter anyway leaves the two sides disagreeing
+   * on the arity (`handler-route-generation-unsupported` with a parameter-list error in generated source). */
+  private threadedSingles = new Set<Candidate>();
+  private threadedMultis = new Set<MultiCandidate>();
   /** Route dispatchers load only selected-row caches; selected compiler handlers already own their resources. */
   private lazyMultiCaches = true;
 
@@ -453,8 +459,12 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
     }
 
     // Rewrite call sites before changing arities.
-    for (const fn of node.functions) {
-      if (!fn.body) continue;
+    const candidateFunctions = new Set<FunctionDefinitionNode>([
+      ...[...this.candidates.values()].map((candidate) => candidate.fn),
+      ...[...this.multiCandidates.values()].map((candidate) => candidate.fn),
+    ]);
+    const rewriteBody = (fn: FunctionDefinitionNode): void => {
+      if (!fn.body) return;
       this.current = this.resolveSingle(fn.name, fn.parameters.length);
       this.currentMulti = this.resolveMulti(fn.name, fn.parameters.length);
       this.activeMultiCaches = this.currentMulti
@@ -472,6 +482,26 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
       fn.body = this.rewriteBlock(fn.body);
       if (this.activeMultiCaches.size > 0) this.installMultiCaches(fn.body);
       if (this.activeDynamicCaches.size > 0) this.installDynamicCaches(fn.body);
+    };
+    // Callers first. A candidate's OWN body is rewritten in the same shape - its writes and reads are moved onto
+    // the journal locals its unshifted parameter carries - but whether it is journaled at all is only known once
+    // every call site has been visited (`threadedSingles`/`threadedMultis`). Rewriting a candidate body up front
+    // therefore leaves journal symbols behind in a helper whose signature stays direct, which the type checker
+    // reports as `Undefined reference to symbol __cj_/__dcj_...`: the same arity/symbol disagreement as unshifting
+    // a parameter no call site supplies.
+    for (const fn of node.functions) {
+      if (!fn.body || candidateFunctions.has(fn)) continue;
+      rewriteBody(fn);
+    }
+    for (const fn of node.functions) {
+      if (!fn.body || !candidateFunctions.has(fn)) continue;
+      const candidate = this.candidates.get(`${fn.name}/${fn.parameters.length}`);
+      const multiCandidate = this.multiCandidates.get(`${fn.name}/${fn.parameters.length}`);
+      if (candidate === undefined && multiCandidate === undefined) continue;
+      const threaded = (candidate !== undefined && this.threadedSingles.has(candidate))
+        || (multiCandidate !== undefined && this.threadedMultis.has(multiCandidate));
+      if (!threaded) continue;
+      rewriteBody(fn);
     }
     this.current = undefined;
     this.currentMulti = undefined;
@@ -483,6 +513,9 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
     // Turn each selected helper into a state-independent value handler. It is
     // now safe for normal OP_DEFINE/OP_INVOKE lowering.
     for (const candidate of this.candidates.values()) {
+      // No call site supplies this helper's journal value (every caller was blocked), so it keeps its direct
+      // signature and its own frame owns the write.
+      if (!this.threadedSingles.has(candidate)) continue;
       const valueType = candidate.valueType;
       candidate.fn.parameters.unshift(this.at(new ParameterNode(
         valueType, candidate.journalName, [],
@@ -499,6 +532,7 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
       candidate.fn.collectionJournal = true;
     }
     for (const candidate of this.multiCandidates.values()) {
+      if (!this.threadedMultis.has(candidate)) continue;
       const sourceReturn = candidate.resultTypes.length > 0
         ? candidate.fn.body!.statements!.pop() as ReturnNode : undefined;
       candidate.fn.parameters.unshift(
@@ -596,15 +630,22 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
       const multiTarget = this.resolveMulti(
         statement.call.identifier.name, statement.call.parameters.length,
       );
-      if (multiTarget) return this.rewriteMultiCall(statement.call, multiTarget);
+      if (multiTarget) {
+        this.threadedMultis.add(multiTarget);
+        return this.rewriteMultiCall(statement.call, multiTarget);
+      }
       const target = this.resolveSingle(statement.call.identifier.name, statement.call.parameters.length);
-      if (target) return this.rewriteCall(statement.call, target);
+      if (target) {
+        this.threadedSingles.add(target);
+        return this.rewriteCall(statement.call, target);
+      }
     }
     if (statement instanceof AssignNode && statement.expression instanceof FunctionCallNode) {
       const target = this.resolveMulti(
         statement.expression.identifier.name, statement.expression.parameters.length,
       );
       if (target?.resultTypes.length === 1) {
+        this.threadedMultis.add(target);
         return this.rewriteMultiResultCall(statement.expression, target, [{
           name: statement.identifier.name,
           type: target.resultTypes[0],
@@ -615,6 +656,7 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
     if (statement instanceof TupleAssignmentNode && statement.tuple instanceof FunctionCallNode) {
       const target = this.resolveMulti(statement.tuple.identifier.name, statement.tuple.parameters.length);
       if (target && target.resultTypes.length === statement.elements.length) {
+        this.threadedMultis.add(target);
         return this.rewriteMultiResultCall(statement.tuple, target, statement.elements);
       }
     }

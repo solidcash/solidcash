@@ -12379,3 +12379,19 @@ caller) is where the identity must be supplied.
 Everything else is measured and stable: the `approve` probe pins the correct key (`00fe98d8…`), the composed route
 frame pins `d1534eff…` with `hasCallerLock: true`, the greens pass (fixture 1/1 skipped, `unicrow params` 2,
 `admin` 8), and the composed failure remains the `ERC20InsufficientAllowance` read at input 20.
+
+Round 342: the new pin fields did not appear - suspect a stale Vite bundle before drawing conclusions
+
+`entry-pin-identity` was extended with `callerLock`/`callerCategory` VALUES, `tsc -b` is clean and the fields are in
+the source (verified: `grep callerLock` in `StatefulContract.ts`), yet a full `take job` run (run 355) printed the OLD
+field set (`hasCallerLock`, `signer`, `nonceSigner`, `probe`) for every pin - i.e. the test executed a bundle built
+before the edit. The marketplace test is served through the Vite dep cache (`.marketplace/vite-cache-marketplace`),
+so a rebuilt `dist` does not necessarily reach it.
+
+Next round, first: clear `.marketplace/vite-cache-marketplace` (move it aside; do NOT delete irreversibly) and re-run
+`take job` with `SOLIDC_DEBUG_MSG_SENDER_KEY=1`, confirming the new `callerLock`/`callerCategory` fields appear. Only
+then read the tuple for the pin that produces `4038d902…`:
+* `hasCallerLock: true` with a caller lock value -> the override reached the build and is lost between the probe and
+  the pin (a second builder inside the probe path);
+* `hasCallerLock: false` -> that `_deriveReturnValue` call is unthreaded and its caller must supply the identity.
+This also guards every earlier measurement in this session that relied on a fresh source edit reaching the test run.

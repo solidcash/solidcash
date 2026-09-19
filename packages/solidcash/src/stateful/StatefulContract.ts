@@ -19606,6 +19606,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 functionName, slotIndex, collection: access.collection,
                 slot: binToHex(slot), present,
                 hasCallerLock: overrides?.callerLockingBytecode !== undefined,
+                // The VALUES, not just presence: several builds pin `_allowances` in one run, and only the tuple
+                // identifies which one produced a given slot.
+                callerLock: overrides?.callerLockingBytecode === undefined ? undefined
+                  : binToHex(overrides.callerLockingBytecode).slice(0, 24),
+                callerCategory: overrides?.msgSenderCategory === undefined ? undefined
+                  : binToHex(Uint8Array.from(overrides.msgSenderCategory).reverse()).slice(0, 24),
                 signer: String(this._signer?.getAddress?.() ?? ''),
                 nonceSigner: String(this._logicalNonceSigner?.getAddress?.() ?? ''),
                 probe: overrides?.returnProbeOnly === true,

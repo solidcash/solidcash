@@ -4012,6 +4012,40 @@ export class AtomicMessageBusComposition {
           if (!progressed) {
             if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
               ?.SOLIDC_DEBUG_ENTRY_COUNTS === '1') {
+              // The EXECUTOR frame's own calldata, as raw pushes. The stalled participant's route context is not
+              // enough: a delegate participant's block belongs to the proxy while its rows run in the
+              // implementation's input, so coordinates such as `__internal__proxyMasterIndex` are relative to that
+              // owner - and a base that resolves to the executor input instead is invisible in every other dump.
+              // Deliberately NOT mapped onto declared route inputs: a delegate frame does not pack its arguments
+              // one-for-one with the route ABI (measured: the first push is the 4-byte message-bus magic, not the
+              // blob), so a positional name table would be a guess. Small numeric pushes are printed as values
+              // because that is how compiler-owned coordinates travel.
+              const executorCalldata = resolvableDeferredBlocks.map((block) => {
+                const unlocking = program.transaction.inputs[block.executionInput]?.unlockingBytecode
+                  ?? new Uint8Array();
+                const pushes: string[] = [];
+                for (let cursor = 0; cursor < unlocking.length && pushes.length < 64;) {
+                  const opcode = unlocking[cursor];
+                  let width = 0;
+                  let length = 0;
+                  if (opcode >= 1 && opcode <= 75) { width = 1; length = opcode; } else if (opcode === 0x4c) {
+                    width = 2; length = unlocking[cursor + 1] ?? 0;
+                  } else if (opcode === 0x4d) {
+                    width = 3; length = (unlocking[cursor + 1] ?? 0) | ((unlocking[cursor + 2] ?? 0) << 8);
+                  } else if (opcode === 0x00) { width = 1; length = 0; } else break;
+                  const payload = unlocking.slice(cursor + width, cursor + width + length);
+                  const numeric = length === 0 ? '0'
+                    : opcode >= 0x51 && opcode <= 0x60 ? String(opcode - 0x50)
+                      : length === 1 && payload[0] <= 16 ? String(payload[0])
+                        : undefined;
+                  pushes.push(`${cursor}:${length}b${numeric === undefined
+                    ? `:${binToHex(payload).slice(0, 24)}` : `=${numeric}`}`);
+                  cursor += width + length;
+                }
+                return { participant: block.participant, executionInput: block.executionInput,
+                  inputBase: block.inputBase, bytes: unlocking.length, pushes };
+              });
+              console.error('deferred-stall-executor-calldata', JSON.stringify(executorCalldata));
               const needle = 'bac4afa31b5925f5';
               const commitments = aggregate.inputs.map((input) =>
                 String(input?.token?.nft?.commitment ?? '').toLowerCase());

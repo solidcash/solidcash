@@ -12827,3 +12827,31 @@ trace) against the `DBG-COMPUTE-BASE` records to name the emitter that produced 
 between correcting the specific base emitter for `entry` reads in a delegate *route* frame and correcting the model
 (the owner input reaching that body), keeping in mind the two known regressions (`close job`,
 `withdraw collateral`) that the addressing-form shortcut causes.
+
+Round 343b: the executor frame's calldata, measured (new `deferred-stall-executor-calldata`)
+
+A stalled participant's executor input calldata is not decoded anywhere else, and the delegate frame does NOT pack
+its arguments one-for-one with the route ABI - so printing raw pushes (values for small numerics, lengths+head
+otherwise) is the honest form. Measured for the failing participant:
+
+    participant 0, executionInput 129, inputBase 0, 119046 bytes
+    pushes: [ '0:4b:53434231', '5:86b:534342310100017474f90200', '93:0b=0', '94:1b:41', '96:0b=0' ]
+
+The second push decodes as the batch blob `53434231 | 01 | 00 | rowCount=01 | selector 74f902 (takeJob) | …`, so
+the delegate frame executes exactly ONE row - the new `takeJob` - which also confirms nothing else was silently
+dropped. The small numeric pushes are `0`, `65 (0x41)` and `0`; **129 (the executor input index) does not appear in
+the calldata**, so the owner coordinate the SDK hands the frame is 0 (correct) and the abort's `152 = 129 + 23`
+cannot be an owner-based `entry` read picking up a wrong owner value.
+
+That reopens the question in a sharper form: offset 23 is `entry#6` in the PARTICIPANT (owner-relative) layout, but
+the same numeric offset in an IMPLEMENTATION-relative layout is a different slot family - and
+`GenerateTargetTraversal.ts:1998` deliberately builds `keccakSideCar`, `ecrecoverSideCar`, `transfer`, `tcTransfer`,
+`event` and `returnEvent` on `OP_INPUTINDEX` (the executor) while everything else (including `entry` and `state`) uses
+the owner. So the next measurement is to resolve the aborting instruction of the UNOPTIMISED probe against the
+IMPLEMENTATION-relative block layout: if offset 23 is a trailing/side-car family slot there, the read is one of the
+deliberately implementation-relative families and the defect is the *value* that family was given (or the ordering
+of the trailing band), not the owner plumbing.
+
+Reproduction: `SOLIDC_DEBUG_ENTRY_COUNTS=1` prints `deferred-stall-executor-calldata` next to
+`deferred-stall-band`/`-sidecars`/`-io-full`, so the executor layout can be read side by side with the frame's own
+calldata in ONE run.

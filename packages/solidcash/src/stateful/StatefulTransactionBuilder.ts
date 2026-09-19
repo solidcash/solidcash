@@ -7758,6 +7758,12 @@ export class StatefulTransactionBuilder {
         }
       }
       const postBlockParticipants = [
+        // Read-only co-spends the dense walk did not place in a `readOnlyDataNft` slot. Their OUTPUTS are
+        // materialized unconditionally (`build()` emits one preservation output per read-only UTXO), so leaving
+        // them out of the input list silently unbalances the frame and drops whatever identity they carry - a
+        // `msg.sender`-keyed frame then resolves against nothing. The legacy ordering appends them; do the same
+        // here instead of relying on a slot the published layout may not have.
+        ...this.readOnlyDataNftUtxos.slice(readOnlyIdx),
         ...gapInputs.slice(gapIdx),
         ...deferredExternalCallInputs,
         ...(splitActiveDelegateBand ? nestedLlcWithBlockPads : remainingLlc),

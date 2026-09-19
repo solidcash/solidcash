@@ -23331,7 +23331,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       // outpoint and the placeholder unlocker are inert; a real send materializes the caller's true UTXO instead.
       const callerCategory = binToHex(Uint8Array.from(overrides.msgSenderCategory).reverse());
       externalReadUtxos = [...externalReadUtxos, {
-        txid: `${'00'.repeat(30)}c0`, vout: 0, satoshis: 1000n,
+        txid: `${'00'.repeat(31)}c0`, vout: 0, satoshis: 1000n,
         token: {
           category: callerCategory, amount: 0n,
           nft: { capability: 'minting', commitment: '' },

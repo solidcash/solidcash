@@ -12156,3 +12156,26 @@ readOnlyDataNft slot, which is exactly why the carrier never materialises as an 
 Fix direction: give the caller carrier a slot the dense walk always visits - e.g. bind it to the frame's own
 `identityAnchor`-style slot, or extend `_buildInputs` to place leftover read-band entries after the positioned block
 (where the legacy path puts them), rather than relying on a `readOnlyDataNft` slot the frame does not publish.
+
+Round 333: FIXED - the dense walk now appends leftover read-only co-spends; the failure moves ip 51 -> ip 29
+
+General fix in `StatefulTransactionBuilder._buildInputs` (dense/position-indexed path): read-only co-spends that the
+walk did not place in a `readOnlyDataNft` slot are now appended to `postBlockParticipants`
+(`...this.readOnlyDataNftUtxos.slice(readOnlyIdx)`), exactly as the legacy ordering does. Their OUTPUTS were always
+materialized unconditionally (`build()` emits one preservation output per read-only UTXO), so omitting them from the
+input list silently unbalanced the frame and dropped whatever identity they carry. The `approve` frame (master,
+entry, event, returnEvent) publishes no `readOnlyDataNft` slot, which is why the caller carrier never became an input.
+
+Measured effect (run 347): the caller carrier now reaches the probe and the refusal MOVES:
+
+    before: 'probe stopped at ip 51 (opcode 124) … failing require in FakeToken:109'
+    after:  'probe stopped at ip 29 (opcode 118) … failing require in FakeToken:98;
+             window 120 130 119 146 145 105 11…'
+
+So the `msg.sender` identity resolution that refused ip 51 now passes, and the probe advances into the next check
+(FakeToken:98 - the OZ ERC20 balance/allowance region). Also fixed en route: the synthetic carrier's txid was 62 hex
+chars (`'00'.repeat(30) + 'c0'`), which `validateInput` rejected; it is now 64.
+
+Pending verification (next round, first thing): this is a BEHAVIOURAL change in shared input assembly, so re-run the
+greens serially - fixture `1 passed | 1 skipped`, `unicrow params` 2, `admin` 8 - and only then continue from ip 29
+(measure its operands with `SOLIDC_DEBUG_PROBE_IO=1` + `probe-failed`, which now appear in the same run).

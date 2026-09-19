@@ -12510,3 +12510,62 @@ General fix directions, in order of preference:
    callsite's rows (and each row's caller identity), not just the densest writer's layout.
 3. Only then re-check the composed `_allowances` inputs: they must be `00fe98d8…` (present as the frame's own
    insert for `approve`, read back by the `transferFrom` row), and `input 20` should pass.
+
+Round 353-360 (this session, continued): the ROOT CAUSE is a missing `approve`, and why it is missing
+
+Confirmed with the new diagnostics:
+
+1. **The failing frame is a DIRECT call, not a batch frame.** `describeMessageBusBatchRows` (new, in the failure
+   message) prints the decoded rows of a `53434231` batch blob; it returns `undefined` for input 20, i.e. input 20's
+   unlocking bytecode is an ordinary selector-dispatched `FakeToken.transferFrom` call - the frame executes exactly
+   ONE handler. (`route-inputs` agrees: `20:FakeToken.transferFrom`.)
+2. So `approve` never runs in the take-job transaction. The allowance `_allowances[marketplace][unicrow]`
+   (`00fe98d8…`) is therefore absent at the `transferFrom` read, and `ERC20InsufficientAllowance` is the *correct*
+   verdict for the transaction as built - the SDK built the wrong transaction, not a wrong read.
+3. Why it is missing: the legacy shared-physical-group handling REPLACES the earlier state-writing callsite with
+   the later one (`StatefulContract.ts` ~`:26790`):
+       if (sharedGroupIndex >= 0) { if (childWritesState && !preserveFirstConditionalWriter) {
+         primary.functionName = childFunctionName; primary.functionArgs = childFunctionArgs; ... } }
+   Measured group topology for the failing build (`SOLIDC_DEBUG_ROUTE_CONCISE=1`):
+       groupIdx 2 `transferFrom` (physical owner, blockSize 9)
+       groupIdx 3 `approve`      sharedGroupIndex 2, blockSize 1
+       groupIdx 5 `transferFrom` sharedGroupIndex 2, fused with 2, blockSize 2
+   The last writer (group 5) wins, so the frame runs `transferFrom` (caller Unicrow, `msgSenderCategory` `1410…`)
+   and the marketplace's `approve` call is retargeted onto the same frame without executing its write. Both calls
+   MUST share one physical input (one master UTXO can be spent once), so the only way to execute both is a
+   multi-ROW frame.
+4. A multi-row frame needs one caller per row. The compiler supports exactly that for graph routes
+   (`emitMsgSender` prefers `__internal__handlerMsgSender`/`__message_bus_graph_caller`; "A real graph route
+   authenticates one row per caller"), and that table is what the atomic composer publishes as
+   `__internal__graphCallers`. The legacy route frame has a single `__internal__msgSenderCategory`, so batching
+   `approve` (caller MarketplaceV1) with `transferFrom` (caller Unicrow) is not expressible on that path.
+5. Therefore the correct fix is the ATOMIC path, and its precondition is that the ROOT handler is kernel-eligible.
+   `MarketplaceV1.takeJob` is not: `eligible: false`, `rejectionReason: KERNEL_LAYOUT`. With
+   `SOLIDC_DEBUG_ADMISSION_REASONS=1` the new prints finally name it:
+       message-bus-admission-reason {"handler":"takeJob","sourceReason":"handler-route-generation-unsupported",...}
+       message-bus-attributed-refusal {"error":"Found parameters (uint256,bytes,uint256,address,address,bigint,
+         address,bigint,bigint) in call to function '__message_bus_entry_takeJob' where parameters
+         (JobPost[],bool,uint256,bytes,uint256,address,address,bigint,bigint) were expected at Line 121, Column 433
+         - a position in the message-bus route generated for 'MarketplaceV1' ... This is a compiler defect",
+         "errorKind":"InvalidParameterTypeError","candidates":[... "takeJob@662:4" ...]}
+   `refund` and `refuseArbitration` fail the same way (`__message_bus_entry_refund`,
+   `__message_bus_entry_refuseArbitration`), so this is one general compiler gap, not a marketplace quirk: the
+   generated route calls the lowered entry clone WITHOUT the hidden parameters the clone declares
+   (`JobPost[]` - the `jobs[jobId_]` state-array read, `bool` - the `whitelistWorkers[...]` read).
+   (`addReview`/`removeMeceTag`/`initialize` are refused by `untransported-chunkable-write`, `refund` additionally
+   by `incomplete-journal-disposition`; those are separate, now-named gates.)
+
+Next steps (in order):
+1. Fix the route call-site/clone parameter mismatch in the compiler (`__message_bus_entry_<handler>` call omits the
+   hidden runtime-collection/state parameters the clone declares). Search the route-synthesis pass that emits the
+   `__message_bus_entry_` call - the prefix is assembled indirectly (no `'__message_bus_entry_'` literal exists
+   outside the attribution list at `compiler.ts:1308`), most likely beside the `__message_bus_arg_*` /
+   `__message_bus_key_*` lowering in `packages/solidc/src/semantic/LowerCollectionJournalHelpers.ts`.
+   After the fix, `takeJob` (and `refund`/`refuseArbitration`) should become kernel-eligible.
+2. Re-run `take job`: the atomic composer then batches the token's rows with per-row callers
+   (`graphCallers`), the `approve` row writes `00fe98d8…`, and the `transferFrom` row reads it back in the same
+   transaction.
+3. Keep the legacy replacement path as-is but consider failing closed when a state-writing alias would silently
+   drop an earlier writer's effect (today the transaction builds and reverts at run time).
+
+Greens re-verified on this tree: fixture `1 passed | 1 skipped`, `unicrow params` 2, `admin` 8.

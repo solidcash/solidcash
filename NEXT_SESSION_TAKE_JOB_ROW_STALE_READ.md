@@ -11195,3 +11195,39 @@ Hypotheses for the next round, in order:
 3. Verify with a two-row FakeToken frame (`approve` + `transferFrom` in one route probe) whether the value read
    after the write resolves at all in the kernel row loop; if not, the read-after-write path for a *sorted*
    collection is the general gap.
+
+Round 297: the runtime `vmapBatchSlot_1` witness and the builder's own target placeholder DISAGREE
+
+`SOLIDC_DEBUG_ENTRY_PLACEMENT=1` prints the builder's per-slot batch target placeholder (its commitment prefix is
+the target slot, since an INSERT places the NEW node `target||next||value` at the fixed entry slot). Measured, the
+last `entry-placement` line before the failure is the composed `transferFrom` frame:
+
+    functionName=transferFrom  layoutEntries=["2:0","3:1","4:2"]
+    accesses=["0:_balances","1:_allowances","2:_balances"]
+    nfts=["0:_balances:present","1:_allowances:present","2:_balances:present"]
+    targets=["0:b877ad7556ae762e","2:7addf0a1cb9f999f","1:4038d902362d5b4c"]
+
+Three different values are in play for the single `_allowances` row (slot 1):
+
+    runtime witness  __internal__vmapBatchSlot_1 = 00fe98d8f4d46474a1c61e606ee1d2c45739b6292e620995637ab11c21f7373d
+    builder target placeholder (slot 1)          = 4038d902362d5b4c...
+    co-spent entry's own slot (input 23)         = d1534eff8dfc4ed02a1fa5809356052e2452786c6a7ccab47bddea7b7433a133
+
+Slots 0 and 2 AGREE between witness and placeholder (`b877ad75…`, `7addf0a1…`), so the plumbing is fine for
+`_balances` and broken only for the `_allowances` row. The runtime witness is what the covenant uses to locate the
+key; the placeholder is what the builder materializes. Whatever value it holds, the covenant's read resolves
+against the co-spent entry (slot `d1534eff…`), and `00fe98d8…` is not it, so the read yields EMPTY - the exact
+operands the `_spendAllowance` compare shows.
+
+Why this is the sharpest lead so far: it is a single-value discrepancy inside one frame, it is *not* a
+predecessor-ordering question, and it is reproducible from two debug gates (`SOLIDC_DEBUG_LAYOUT=1` prints the
+runtime byte witness, `SOLIDC_DEBUG_ENTRY_PLACEMENT=1` prints the placeholder prefix) in one `take job` run.
+
+Next round: find the writer of `childBatchTargets`/`batchTargetPlaceholders` for the `_allowances` slot of a
+*non-route* (impl) frame and compare the two maps' inputs. `StatefulContract.ts` fills
+`__internal__vmapBatchSlot_<slot>` from `childBatchTargets.get(slot)` at ~:27521/:27577 and from
+`lateBatchTargets.get(alias)` at ~:28726; the placeholder map is `batchTargetPlaceholders`. The 2-key
+`_allowances` row has key sources `param` + `expression` (the second is `msg.sender`-derived), so the likely split is
+that the two maps encode the composite key differently (a 32-byte category vs a 20/25-byte address, or a different
+key ORDER). Whichever is authoritative, both must produce the same slot and it must equal the co-spent entry's slot
+when the entry is `present`.

@@ -24,6 +24,9 @@ Waves A–F fixtures landed green on `grok/kernel-comprehensive-fixtures`. Produ
 - H3: dynamic view after foreign write → unresolved key fail closed
 - H4: oversized fixed ABI word / fat bytes32 framing SDK validation error
 
+## Next ahead-of-time waves (compose + proxy)
+See `KERNEL_AHEAD_OF_TIME_COMPOSE_PROXY.md` — Waves **I** (inter-contract communication) and **J** (proxy/delegate). Sprint order: I7 → J1 → I1 → I5 → J3 → I2 → J4 → I6/G1.
+
 ## Fence
 - No `marketplace.test.ts` / `vitest.marketplace.config.ts` runs in this stream
 - Ladder agent owns marketplace suite green on `kernel-beta-candidate`

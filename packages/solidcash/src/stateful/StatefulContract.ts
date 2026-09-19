@@ -38095,6 +38095,8 @@ export class StatefulFunctionCall {
   private readonly builderFactory?: () => Promise<StatefulTransactionBuilder>;
   private signerUtxosPromise?: Promise<Utxo[]>;
   private parentContract?: StatefulContract;
+  /** Locking bytecode of the contract calling this frame, when a composition builds a nested participant. */
+  private callerLockingBytecode?: Uint8Array;
   private functionName?: string;
   private functionArgs?: any[];
   private stateOverrides: Array<{ name: string; value: StateValueType }> = [];
@@ -38124,6 +38126,17 @@ export class StatefulFunctionCall {
   private childDeployments: Array<{
     slotOffset: number; genesisInput: UnlockableUtxo; outputs: readonly Output[];
   }> = [];
+
+  /**
+   * Declare the contract that CALLS this frame. A nested/composed frame resolves `msg.sender` from the immediate
+   * caller's identity (the value the route publishes as `__internal__msgSenderCategory`), so a `msg.sender`-keyed
+   * mapping must hash that locking bytecode - hashing the transaction origin instead keys the entry on a slot the
+   * covenant never reads. Returns the call so a composition can annotate it inline.
+   */
+  withCallerIdentity(lockingBytecode: Uint8Array): this {
+    this.callerLockingBytecode = Uint8Array.from(lockingBytecode);
+    return this;
+  }
 
   private messageBusUpgradeTarget?: PreparedAtomicMessageBusCall['upgradeTarget'];
   private tokenContainerDeposits: Array<{ tokenContainerCategoryId: string; amount: bigint }> = [];
@@ -41080,6 +41093,8 @@ export class StatefulFunctionCall {
           entryKeyOverrides: this.entryKeyOverrides.size > 0 ? this.entryKeyOverrides : undefined,
           externalEntryKeyOverrides: this.externalEntryKeyOverrides.size > 0 ? this.externalEntryKeyOverrides : undefined,
           emitReturn: this.emitReturnFlag || undefined,
+          ...(this.callerLockingBytecode !== undefined
+            && { callerLockingBytecode: this.callerLockingBytecode }),
           ...(this.compilerRoute && {
             abiFunction: this.compilerRoute.abiFunction,
             compilerRouteSelector: this.compilerRoute.selector,
@@ -41215,6 +41230,8 @@ export class StatefulFunctionCall {
           entryKeyOverrides: this.entryKeyOverrides.size > 0 ? this.entryKeyOverrides : undefined,
           externalEntryKeyOverrides: this.externalEntryKeyOverrides.size > 0 ? this.externalEntryKeyOverrides : undefined,
           drainSatoshiContainer: true,
+          ...(this.callerLockingBytecode !== undefined
+            && { callerLockingBytecode: this.callerLockingBytecode }),
           ...(this.compilerRoute && {
             abiFunction: this.compilerRoute.abiFunction,
             compilerRouteSelector: this.compilerRoute.selector,
@@ -41250,6 +41267,8 @@ export class StatefulFunctionCall {
             entryKeyOverrides: this.entryKeyOverrides.size > 0 ? this.entryKeyOverrides : undefined,
             externalEntryKeyOverrides: this.externalEntryKeyOverrides.size > 0 ? this.externalEntryKeyOverrides : undefined,
             drainSatoshiContainer: wasSatoshiDrained || undefined,
+          ...(this.callerLockingBytecode !== undefined
+            && { callerLockingBytecode: this.callerLockingBytecode }),
             drainTokenContainers: drainedTokenContainers,
             ...(this.compilerRoute && {
               abiFunction: this.compilerRoute.abiFunction,

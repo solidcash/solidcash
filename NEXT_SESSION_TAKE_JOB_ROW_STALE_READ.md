@@ -11408,3 +11408,29 @@ already publishes it as `__internal__msgSenderCategory` (`:29650`, `:30251`) and
 `_withCompilerRouteDelegatecall` build at `:7799`-`:7818` and the delegate executor build sites are the candidates),
 then re-run `take job`: the `entry-pin` slot for `_allowances` must become `00fe98d8…` (the witness) and the frame
 must co-spend the correct predecessor node.
+
+Round 303: `withCallerIdentity(...)` API landed; the composition must call it once
+
+`StatefulFunctionCall` now carries `callerLockingBytecode` and exposes `withCallerIdentity(lockingBytecode)`, which
+is forwarded into every `parentContract._createBuilder(...)` rebuild (`_applyOverrides`). Together with the
+`callerLockingBytecode` override (round 302) the whole fix is wired end to end except for ONE call site: whichever
+place builds a composed participant's frame must annotate its call, e.g.
+
+    participant.contract.call.transferFrom(...).withCallerIdentity(callerParticipantLockscript)
+
+The identity is already available where the atomic composition materializes a participant:
+`externalCallUtxoGroups[i].callerIdentity` (`:24300` direct, `:24492` transitive) and the graph edge that produced
+it; the route path publishes the same value as `__internal__msgSenderCategory` (`:29650`, `:30251`). Candidate
+sites for the annotation are the participant/executor frame construction in the atomic path (the call objects
+created around `PreparedAtomicMessageBusCall` in `StatefulContract.ts:25400-27300` and the `__forward` /
+`_withCompilerRouteDelegatecall` build at `:7799`-`:7818`), and the `_deriveReturnValue` probe (`:35692`) when it
+probes a callee on behalf of a caller.
+
+Verification after that one line: `SOLIDC_DEBUG_ENTRY_PIN=1` must print, for the composed `transferFrom` frame,
+
+    slot 00fe98d8f4d46474a1c61e606ee1d2c45739b6292e620995637ab11c21f7373d
+    keys [ from=aa20bbc502f0… , msg.sender=aa20a8cd257e… ]        (marketplace, Unicrow)
+
+instead of the signer-based `4038d902…`, and `take job` must pass input 20. All work in rounds 302-303 is
+behaviour-preserving until that line exists, so the greens (fixture 1/1 skipped, `unicrow params` 2, `admin` 8)
+are unchanged.

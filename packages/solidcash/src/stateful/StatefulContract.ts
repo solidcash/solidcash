@@ -32333,7 +32333,57 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         if (typeof current !== 'bigint' || current < 0n) continue;
         if (typeof proofOffset !== 'bigint' || proofOffset < 0n) continue;
         const required = lockedBytecodeAt(masterIndex + Number(proofOffset));
-        if (required === undefined || sameLock(outputLock(Number(current)), required)) continue;
+        if (required === undefined) continue;
+        // Lock equality alone cannot accept the planned coordinate: an insert's P' and its NEW node are published
+        // at the SAME collection address (measured: both at the `escrows` entry covenant), and the covenant
+        // verifies the P' by CONTENT - `pred.slot || target || pred.value`. Accept the plan only when the output
+        // there carries exactly that commitment.
+        const commitmentOf = (index: number): string | undefined => {
+          const token = (materialized.outputs[index] as {
+            token?: { nft?: { commitment?: Uint8Array | string } };
+          } | undefined)?.token;
+          const commitment = token?.nft?.commitment;
+          return commitment === undefined ? undefined
+            : typeof commitment === 'string' ? commitment : binToHex(commitment);
+        };
+        const slotPosition = abiFunction.inputs.findIndex((candidate) =>
+          candidate.name === `__internal__vmapBatchSlot_${slot}`);
+        const targetSlot = slotPosition < 0 || slotPosition >= finalArgs.length
+          ? undefined : finalArgs[slotPosition];
+        const predecessorCommitment = (() => {
+          const token = (materialized.inputs[masterIndex + Number(proofOffset)] as {
+            token?: { nft?: { commitment?: Uint8Array | string } };
+          } | undefined)?.token;
+          const commitment = token?.nft?.commitment;
+          return commitment === undefined ? undefined
+            : typeof commitment === 'string' ? commitment : binToHex(commitment);
+        })();
+        const expectedPredOut = targetSlot instanceof Uint8Array && targetSlot.length === 32
+          && predecessorCommitment !== undefined && predecessorCommitment.length >= 128
+          ? `${predecessorCommitment.slice(0, 64)}${binToHex(targetSlot)}${predecessorCommitment.slice(128)}`
+          : undefined;
+        if (sameLock(outputLock(Number(current)), required)
+          && (expectedPredOut === undefined
+            || commitmentOf(Number(current))?.toLowerCase() === expectedPredOut.toLowerCase())) continue;
+        // The P' is materialized elsewhere in this frame: find the output that carries it, requiring both the
+        // authenticated lock and the exact content so a same-address NEW node can never be substituted.
+        if (expectedPredOut !== undefined) {
+          const found = materialized.outputs.findIndex((_output, index) =>
+            sameLock(outputLock(index), required)
+            && commitmentOf(index)?.toLowerCase() === expectedPredOut.toLowerCase());
+          if (found >= 0) {
+            finalArgs[position] = BigInt(found);
+            changed = true;
+            if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+              ?.SOLIDC_DEBUG_RETURN === '1') {
+              console.error('predout-witness-rebound', {
+                functionName, name: input.name, planned: current.toString(), actual: String(found),
+                content: 'pred-new-commitment',
+              });
+            }
+            continue;
+          }
+        }
         // Prefer the structural answer - the entry output this slot publishes - and accept it only when its content
         // proves it is the collection resource the covenant authenticates. Never fall back to an arbitrary output
         // with a matching lock: the same coordinate is also read for the predecessor's category and commitment.

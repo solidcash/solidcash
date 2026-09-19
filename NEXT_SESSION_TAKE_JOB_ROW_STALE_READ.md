@@ -13192,3 +13192,40 @@ caller leaves below the frame:
 
 Greens/practicals: the compiler edit is diagnostic-only (gated print), the sentinel gate is debug-only; the
 marketplace artifacts stay in the optimised state (same bytecode; the last compile only added debug records).
+
+Round 350b: BOTH addressing forms fail, so the owner must be ANCHORED
+
+A new mirror gate `SOLIDC_DEBUG_OWNER_TOP_HANDLER=<substring>` forces the compact top-relative form for a named
+handler (the existing `SOLIDC_DEBUG_OWNER_BOTTOM_HANDLER` forces the bottom form). Recompiling the marketplace
+project with `SOLIDC_DEBUG_OWNER_TOP_HANDLER=__message_bus_entry_takeJob` and running the title gives the SAME
+stall (`keccak 2/2 unresolved, ecrecover 1/1 unresolved`, 472-input probe). So:
+
+    bottom ordinal  -> picked 131 (a runtime item ~5 below the owner's real slot)
+    top-relative    -> picks a different wrong item (the earlier measured 32-byte commitment)
+    sentinel owner  -> learning completes, preflight fails later on an empty token-category split
+
+Both forms address the owner POSITIONALLY, and the frame is sandwiched: caller operands below the argument band
+(the model's absolute bottom is not the frame's) and runtime-only operands above it (the model's top index is not
+the frame's top). No positional form can be right for such a frame.
+
+Next round's fix (general, compiler-side): anchor the hidden owner parameter by VALUE instead of by position.
+At body entry the callee's arguments are the last items the caller pushed, so a top-relative pick AT ENTRY is
+exact; the value must then live somewhere that does not drift. Two candidates:
+
+  (a) alt-stack anchor: at entry, materialize the owner (top-relative pick) and `OP_TOALTSTACK`; every later use
+      becomes `OP_FROMALTSTACK OP_DUP OP_TOALTSTACK` (non-destructive read). Must first verify whether an OP_INVOKE
+      made by the body gives the callee a fresh alt stack - if it does not, nested calls can interleave with it,
+      so each nested call site must stash/restore its anchor (or the anchor must be moved to a fresh slot).
+  (b) compute the frame bottom ONCE at entry (`OP_DEPTH; <parameterCount>; OP_SUB`) and keep it in the model as a
+      named local, then emit picks as `OP_DEPTH; OP_SWAP/SUB`-style frame-relative reads. This only works if the
+      model's count of the body's own pushes is exact, which the measured drift (~28 items above the owner) says it
+      currently is NOT - so (b) needs the model fixed first, while (a) does not care about the drift at all.
+
+Recommended order: implement (a) for `emitMasterInputIndex`'s owner branch only (takeJob's handler), measure the
+title and the two currently green titles that depend on the compact form (`close job` both variants, `withdraw
+collateral`), then widen if it holds.
+
+Tooling added this round (all gated, no production behaviour change): `DBG-BOTTOM-PICK` (every bottom pick with its
+model view, printed under `SOLIDC_DEBUG_COMPUTE_BASE=1` at COMPILE time), `SOLIDC_DEBUG_OWNER_TOP_HANDLER`, and the
+per-participant `SOLIDC_DEBUG_OWNER_SENTINEL` (0x11 + participant). Reminder: `DBG-*` offsets are pre-assembly, so
+they cannot be aligned with shipped body offsets - select by function name + ordinal + name, not by offset.

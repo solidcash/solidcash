@@ -32498,11 +32498,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         // the population that does need it can be bisected without editing this predicate.
         const forcedBottomHandler = (globalThis as { process?: { env?: Record<string, string> } })
           .process?.env?.SOLIDC_DEBUG_OWNER_BOTTOM_HANDLER;
-        const graphRowHandler = (this.currentFunction.graphEmissionHandler === true
+        // The mirror gate: the bottom ordinal counts from the MODEL's stack bottom, so it only reads the owner when
+        // the runtime leaves nothing under the frame. Forcing the compact top-relative form for one named handler is
+        // how the two forms are told apart on a handler that carries compute side-cars.
+        const forcedTopHandler = (globalThis as { process?: { env?: Record<string, string> } })
+          .process?.env?.SOLIDC_DEBUG_OWNER_TOP_HANDLER;
+        const graphRowHandler = ((this.currentFunction.graphEmissionHandler === true
           && Math.max(this.currentFunction.recoveryEffectCount ?? 0,
             this.currentFunction.ecrecoverCallCount ?? 0) > 0)
           || (forcedBottomHandler !== undefined && forcedBottomHandler.length > 0
-            && this.currentFunction.name.includes(forcedBottomHandler));
+            && this.currentFunction.name.includes(forcedBottomHandler)))
+          && !(forcedTopHandler !== undefined && forcedTopHandler.length > 0
+            && this.currentFunction.name.includes(forcedTopHandler));
         const ownerSite = this.debugComputeBase(
           graphRowHandler ? 'owner-bottom' : 'owner', '__internal__messageBusOwnerInput',
           trackedOwnerIndex, extraStackOffset,

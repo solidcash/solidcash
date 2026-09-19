@@ -11231,3 +11231,35 @@ Next round: find the writer of `childBatchTargets`/`batchTargetPlaceholders` for
 that the two maps encode the composite key differently (a 32-byte category vs a 20/25-byte address, or a different
 key ORDER). Whichever is authoritative, both must produce the same slot and it must equal the co-spent entry's slot
 when the entry is `present`.
+
+Round 298: the KEY-SLOT RESOLUTION agrees with the runtime witness - the builder's placeholder is the anomaly
+
+`SOLIDC_DEBUG_COLLECTION_FETCH=1` (run 305) already contained the answers. The FakeToken `_allowances` collection
+(entry address `bchtest:rvcq0k2pkllf2n4f6jn447cg846q6u6dx83a2wx5yzccuy8h8gda5mta8z8c6`, category `ed78c449…`) is
+resolved three times, each printing `keySlot` + the UTXO slots it saw:
+
+    keySlot 80a90055d19510c2cb97d7eefec3ce1334870ca78a2f51a8f72f01c3cd63ac26
+    keySlot d1534eff8dfc4ed02a1fa5809356052e2452786c6a7ccab47bddea7b7433a133
+    keySlot 00fe98d8f4d46474a1c61e606ee1d2c45739b6292e620995637ab11c21f7373d
+
+`00fe98d8…` is exactly the `__internal__vmapBatchSlot_1` witness the composed frame publishes, so the resolution
+path and the published witness AGREE. The builder's `batchTargetPlaceholders` for that same slot printed
+`4038d902…`, which matches NO resolution and NO on-chain node, so the placeholder - not the witness - is derived
+from a different key encoding.
+
+The resolution logs also show the collection's real node slots: HEAD `00*32` (next `d1534eff…`), `d1534eff…`
+(next `1e8d447f…`), `1e8d447f…` (next `80a90055…`), `80a90055…` (97-byte node with a `ff…ff00` value tail). The
+on-chain `_allowances` entry co-spent at input 23 is the `d1534eff…` node holding 1900e18, i.e. the allowance the
+test's `approve(marketplace)` created - not the key the transferFrom row addresses.
+
+Likely split (to confirm in one run): the row's 2-key access is `(param, expression)` where the expression is the
+`msg.sender`-derived spender. `keyToSlotMulti` hashes the *encoded* keys verbatim, while
+`mappingKeySlotCandidates` deliberately offers BOTH the 20-byte address and the 25-byte P2PKH locking-bytecode
+encoding. One path therefore hashes the 20-byte spender and the other the 25-byte form (or the 32-byte category
+witness), which is exactly the `4038d902…` vs `00fe98d8…` split.
+
+Next round, one run, no guessing: extend `nested-entry-resolution` to print `keys: keys.map(binToHex)` and extend
+`entry-placement` to print the encoded keys it used per slot. Then the two encodings can be compared directly, the
+authoritative one (the covenant recomputes the slot from its own runtime values, and the resolution path models
+that computation) can be chosen, and `batchTargetPlaceholders` can be made to use it. A mismatch here also explains
+why the frame marks the `_allowances` slot `present` while its co-spent entry carries a different slot.

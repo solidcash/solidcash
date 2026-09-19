@@ -13643,3 +13643,35 @@ bottom-ordinal form.
 so they land BELOW the parameter block) instead of the handler-local effect seeds, then measure with the capture on:
 the outlined emission check's pick must resolve to the long vector (36 vs 116 disappears) and `close job` /
 `withdraw collateral` must stay green.
+
+Round 358: the outlined emission check's pick, read off the runtime stack
+
+`SOLIDC_DEBUG_FAILURE_POINT=1 SOLIDC_TRACE_INPUT=129` (preflight's own failure dump, 24 stack items) on the
+capture-ON build shows exactly what the failing outlined check sees:
+
+    inputIndex 129, ip 3 (failing opcode 127 = OP_SPLIT), programLength 6
+    programHead 121 124 127 124 123 136      (OP_PICK OP_SWAP OP_SPLIT OP_SWAP OP_ROT OP_EQUALVERIFY)
+    controlStack [.., {ip:321, count:6338, opcode:1}, {ip:2, count:7, opcode:82}]
+    stack (deepest of the last 24, index:length:hex)
+      104: 33  ffffffff...ff00
+      105: 74  9f0bb8a923 aa20 178dbf...      <- constructed row prefix
+      106: 74  9f0bb8a923 aa20 178dbf...      <- its duplicate (OP_DUP)
+      107: 116 2300 aa20 08ddbb...           <- the authenticated emissions vector
+
+and the VM's own message for that split: "stack item length: 36; requested split index: 116". So:
+
+  * the split INDEX is 116 - the length of the emissions VECTOR (item 107), not of the 74-byte constructed prefix;
+  * the split ITEM is 36 bytes - a framed locking bytecode, i.e. a row's target, NOT the vector.
+
+Both facts follow from ONE misread: the outline's `OP_PICK` (ip 0) is meant to copy the emissions vector, but the
+model index it was emitted with resolved to a 36-byte band witness instead. That is the same defect as the owner
+misread and the earlier `graphFixedSize`/`graphBlockSize` pick: a caller-band witness addressed by a model index that
+does not describe the runtime frame, because the handler frame model does not contain the caller's band (it seeds
+handler-local names instead, and the band lives below the argument block on the shared stack).
+
+Also confirmed: `preflight.ts` has a dedicated failure dump (`SOLIDC_DEBUG_FAILURE_POINT=1`, plus
+`SOLIDC_TRACE_INPUT=<n>`, and `SOLIDC_DEBUG_FAILURE_POINT_FULL=1` for inputs/outputs) - use it rather than the
+probe-time `derive-op` gate, which never fires for preflight failures.
+
+**Default state re-verified**: greens 3 passed | 63 skipped; fast fixture 1 passed | 1 skipped; artifacts rebuilt
+canonically; capture still opt-in.

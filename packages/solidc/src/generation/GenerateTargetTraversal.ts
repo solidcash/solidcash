@@ -18994,6 +18994,21 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           this.visit(target);
         }
       } else {
+        if ((globalThis as { process?: { env?: Record<string, string> } }).process
+          ?.env?.SOLIDC_DEBUG_ARG_ORDER === '1') {
+          // The graph emission row's TARGET lane is read from an interface-typed state/address local by model index.
+          // When the row carries the caller's address instead of the callee's, the question is whether that index
+          // still describes the runtime frame - so print the index, the model's length and the neighbours.
+          const index = this.getStackIndex(slot.addressParam);
+          console.error('graph-target-lane', JSON.stringify({
+            function: this.currentFunction.name,
+            addressParam: slot.addressParam,
+            index,
+            modelLength: this.stack.length,
+            neighbours: this.stack.slice(Math.max(0, index - 3), index + 4),
+            outputLength: this.output.length,
+          }));
+        }
         this.emit(encodeInt(BigInt(this.getStackIndex(slot.addressParam))), locationData);
         this.emit(Op.OP_PICK, locationData);
       }

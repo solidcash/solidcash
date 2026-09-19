@@ -12309,3 +12309,28 @@ Next round: find where the composed participant's `_allowances` entry INPUT is c
 region) and feed it the same caller identity the probe now uses (`callerIdentity.lockingBytecode` +
 `callerIdentity.categoryId` from the graph edge - `externalCallUtxoGroups[i].callerIdentity`, `:24379`), so the
 composed frame co-spends the node for `00fe98d8…` (or its correct sorted predecessor) exactly like the probe does.
+
+Round 339: both paths share the same pin sites - the difference must be the build's identity source
+
+`grep entryNfts.push` puts every entry materialization in `StatefulContract._createBuilder`:
+
+    :18884  generic (key-matched) path
+    :19602  sorted UPDATE   -> list.find(slot)
+    :19607  sorted soft-delete -> list.predecessorOf(slot)
+    :19617  sorted INSERT   -> list.planInsert(slot).predecessor
+    :19758  batch/late path
+    :19784  read-only path
+
+So the composed participant and the probe run the SAME pin code; what differs is the `slot` it is handed. The probe
+now computes the correct key (`overrides.callerLockingBytecode` -> `[marketplace, unicrow]` -> `00fe98d8…`), while
+the composed frame still ends up on `[user1, marketplace]` (`d1534eff…`) - so the composed build's key source is
+still the old one (its `nullop:msg.sender` resolution falls through to `this._signer`/`_logicalNonceSigner`, which is
+whatever identity that build is connected with).
+
+Next round, one run: log at `:19602`/`:19607`/`:19617` (gated `SOLIDC_DEBUG_MSG_SENDER_KEY=1`) the tuple
+`{ functionName, slotIndex, collection, slot, present, hasCallerLock: overrides?.callerLockingBytecode !== undefined,
+signerAddress: this._signer?.getAddress(), nonceSignerAddress: this._logicalNonceSigner?.getAddress() }` and match the
+composed fake-token frame by its `_allowances` slot (`d1534eff…` for the old model, `00fe98d8…` for the fixed one).
+That names exactly which identity the composed build resolves `msg.sender` from, i.e. the last place the old model
+survives; feed it the graph edge's caller identity (`externalCallUtxoGroups[i].callerIdentity`, `:24379`) and the
+composed frame should co-spend the same node the probe now does.

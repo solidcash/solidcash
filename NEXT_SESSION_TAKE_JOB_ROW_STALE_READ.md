@@ -12614,3 +12614,24 @@ Next round, one run (the cache is honest now, so a pass edit is measurable):
 
 Greens re-verified on this tree (after the cache change): fixture `1 passed | 1 skipped`, `unicrow params` 2,
 `admin` 8; full marketplace compile clean.
+
+Round 367: how to force a REAL project recompile (solidhat's own cache ignores the build id)
+
+`npx solidhat compile` reuses artifacts from `.marketplace/cache` (327MB here) keyed on the *source* and options -
+`SOLIDC_COMPILE_CACHE_BUILD_ID` does not invalidate it. A run therefore reports
+`Compiled 22 Solidity source(s) in 0 compiler job(s) (22 cache hit(s))` and every measurement of a compiler change
+is a measurement of the previous build. Force a real recompile by moving the cache aside first:
+
+    mv .marketplace/cache /tmp/solidhat-cache-bak
+
+Verified state with a forced, uncached compile of this tree: 22/22 sources, 19 artifacts, EXIT 0,
+`MarketplaceV1` 36 eligible handlers, and `takeJob` still refused with
+
+    message-bus-admission-reason {"handler":"takeJob","sourceReason":"handler-route-generation-unsupported",
+      "kernelReason":"KERNEL_LAYOUT"}
+    message-bus-attributed-refusal {"error":"Found parameters (uint256,bytes,uint256,address,address,bigint,address,
+      bigint,bigint) in call to function '__message_bus_entry_takeJob' where parameters
+      (JobPost[],bool,uint256,bytes,uint256,address,address,bigint,bigint) were expected at Line 117, Column 433 -
+      a position in the message-bus route generated for 'MarketplaceV2' ..."}
+
+so the diagnosis of rounds 353-366 stands on a genuinely fresh build.

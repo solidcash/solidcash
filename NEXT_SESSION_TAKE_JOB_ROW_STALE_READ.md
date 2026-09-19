@@ -13675,3 +13675,36 @@ probe-time `derive-op` gate, which never fires for preflight failures.
 
 **Default state re-verified**: greens 3 passed | 63 skipped; fast fixture 1 passed | 1 skipped; artifacts rebuilt
 canonically; capture still opt-in.
+
+Round 359: the outlined check's PRE-STATE - the vector and the prefix are in the opposite order
+
+`preflight.ts` now records the state the VM held BEFORE the failing operation (one reference assignment in the
+existing `beforeOperation` hook, enabled by `SOLIDC_DEBUG_FAILURE_POINT_PRE_STATE=1`) and prints its top six items
+under `SOLIDC_DEBUG_FAILURE_POINT=1`. Deliberately NOT a second `vm.debug()` evaluation: that deep-clones the
+OP_DEFINE body table per instruction and killed the vitest worker on this program size ("Worker exited
+unexpectedly") - the first version of this diagnostic did exactly that, so it now piggybacks on the hook.
+
+With the capture on, the failing OP_SPLIT (ip 2 of the 6-instruction outline, `window 121 124 127 124`) reports:
+
+    pre-state ip 2, opcode 127 (OP_SPLIT)
+    d0: 116 bytes  2300 aa2008ddbb...   <- the authenticated emissions VECTOR
+    d1: 74 bytes   9f0bb8a923 aa2017... <- constructed row prefix (the OP_DUP copy)
+    d2: 74 bytes   9f0bb8a923 aa2017... <- the original prefix
+    d3: 33 bytes   ffffff...ff00
+    d4: 35 bytes   aa20178dbf...        <- framed locking bytecode
+    d5: 35 bytes   aa20e61fa6...        <- framed locking bytecode
+
+The emitter (`GenerateTargetTraversal.ts` ~19166) computes the size of the item ON TOP, then picks the emissions
+vector, i.e. it assumes `[vector(below), prefix(top)]`. The runtime has `[prefix(below), vector(top)]`: the size
+taken is therefore the VECTOR's length (116) instead of the prefix's (74), and the split index the VM reports is
+116 while the item under it is the 74-byte prefix. So the pick did resolve to the vector - what is wrong is its
+POSITION relative to the prefix, i.e. the stack discipline of the prefix/vector pair around that check.
+
+**Next round**: read the ~60 lines above that check (19080-19140: the argument/prefix construction ending in
+`(__graph_emission_row)`) and determine why the vector ends up ABOVE the prefix - most likely a frame-value read
+that uses a model index for `__internal__graphEmissions` while the value is physically the caller's band item, which
+is the same band-versus-model divergence already measured for the owner. Then fix the ordering (or the model) and
+re-run the four titles with the capture on.
+
+**Default state re-verified after this round's change**: greens 3 passed | 63 skipped; fast fixture 1 passed |
+1 skipped; artifacts rebuilt canonically; the capture remains opt-in.

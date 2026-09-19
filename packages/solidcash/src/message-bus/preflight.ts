@@ -1114,9 +1114,20 @@ const evaluateEveryInput = (
   // so hook OP_OUTPUTBYTECODE and print both operands when the next three operations are `OP_3; OP_PICK; OP_EQUALVERIFY`.
   const outputCompareDebug = (globalThis as { process?: { env?: Record<string, string> } }).process?.env
     ?.SOLIDC_DEBUG_OUTPUT_COMPARE === '1';
-  const vm = createVirtualMachineBch2026ForProvider(builder.provider, outputCompareDebug ? {
-    opcodes: new Set([Op.OP_OUTPUTBYTECODE]),
+  // See `operands` in the failure dump: keeping the previous state makes a refusal's consumed operands readable
+  // without a second, allocation-heavy evaluation. OP_INVOKE shares the stack, so this also shows which frame item
+  // a misread coordinate actually resolved to.
+  const failurePreStateDebug = (globalThis as { process?: { env?: Record<string, string> } }).process?.env
+    ?.SOLIDC_DEBUG_FAILURE_POINT_PRE_STATE === '1';
+  let lastPreState: AuthenticationProgramStateCommon | undefined;
+  const vm = createVirtualMachineBch2026ForProvider(builder.provider,
+    (outputCompareDebug || failurePreStateDebug) ? {
+    opcodes: failurePreStateDebug
+      ? new Set(Array.from({ length: 256 }, (_, opcode) => opcode))
+      : new Set([Op.OP_OUTPUTBYTECODE]),
     beforeOperation: (unknownState) => {
+      if (failurePreStateDebug) lastPreState = unknownState as AuthenticationProgramStateCommon;
+      if (!outputCompareDebug) return;
       const state = unknownState as unknown as {
         ip: number;
         stack: Uint8Array[];
@@ -1493,6 +1504,23 @@ const evaluateEveryInput = (
           stack: evaluated.stack.slice(-24).map((item, offset, items) => (
             `${evaluated.stack.length - items.length + offset}:${item.length}:${binToHex(item).slice(0, 70)}`
           )),
+          // A failing comparison has ALREADY popped its operands from this terminal state, so the values that
+          // explain the refusal are only in the state the VM held BEFORE the failing operation. That state is
+          // captured by the hook below (one reference assignment per operation) - deliberately NOT re-derived with
+          // `vm.debug()`, which deep-clones the OP_DEFINE body table per instruction and killed the worker on this
+          // program size (measured: "Worker exited unexpectedly").
+          operands: failurePreStateDebug && lastPreState !== undefined
+            ? {
+              ip: lastPreState.ip,
+              opcode: lastPreState.instructions[lastPreState.ip]?.opcode,
+              error: lastPreState.error === undefined ? undefined : String(
+                (lastPreState.error as { error?: unknown }).error ?? lastPreState.error,
+              ),
+              top: lastPreState.stack.slice(-6).map((item, offset, items) => (
+                `${items.length - 1 - offset}:${item.length}:${binToHex(item).slice(0, 96)}`
+              )),
+            }
+            : undefined,
           // Many output-conservation loops retain their current output index at the top of the stack. Reporting
           // the referenced tuple and all exact predecessor matches makes a failed preservation check diagnosable
           // without another full VM trace. For failures with a non-index tail this remains an inert undefined row.

@@ -14239,3 +14239,66 @@ That single defect explains the emission-row mismatch, and it is the same shape 
 (`__dlcache_*` / `__cj_cache_*` machinery in `LowerCollectionJournalHelpers` / `state.ts`) and compare it with the
 participant whose state seeds the lane in the SDK. The fix is then local: address the lane by the CALLER participant,
 or seed it from the caller's authenticated state for that variable.
+
+Round 376: `take job` is NOT stalled any more - it dies in the emission-row consumer's stream pick
+
+MEASURED on the canonical default build (`-t 'take job$'`, 53s, exit 1):
+
+    MessageBusDiagnosticError: messageBus [L3_VM_RESOURCE_LIMIT]: BCH-2026 preflight failed at input 129
+      (ip 3 of 6, opcode 124, failing opcode 127, window 121 124 127 124)
+      Program called an OP_SPLIT operation with an invalid index.
+      stack item length: 36; requested split index: 116.
+
+So the ladder's "2 deferred-compute stall" class is STALE for `take job`: the keccak/ecrecover side-cars now
+resolve and the run reaches the graph emission authentication. The abort is in an OUTLINED body, so the first job
+was to name it (see the recipe below).
+
+Recipes that made this round decidable
+- `OP_INVOKE = 0x8a`, `OP_DEFINE = 0x89` (BCH-2026; libauth `bch-2026-opcodes.js`); the id is a MINIMAL number push
+  in front of the opcode. Scan `debug.invokeDebug[*].bytecode` for `<id push> 8a` to enumerate a body's call sites.
+- The failing 6-instruction body is `debug.invokeDebug["22"]`, name `outlined source span 22`, bytecode
+  `797c7f7c7b88` = `OP_PICK OP_SPLIT OP_CAT OP_SPLIT OP_ROT OP_EQUALVERIFY`, sourceMap `219:8:219:55` =
+  `marketplaceData.publishJobEvent(jobId_, event_);` inside `MarketplaceV1.publishJobPost`. It is invoked from 37
+  sites (entry bodies AND handler bodies) - it is a shared outlined span, not an emitter.
+- The failing frame's control stack: route `__message_bus1` (11117 instructions, ip 3159) ->
+  `__message_bus_entry_publishJobPost` (ip 321) -> a 7-instruction outlined body (ip 2) -> the 6-instruction body.
+- `debug.functionDebug[<selector>].sourceMap` has one entry per instruction; `functionBodies[<selector>]` IS the
+  route body (`53434231`, 11117 instructions) for the message-bus route. `invokeDebug` body source maps are NOT
+  aligned with their remapped bodies, so read opcodes from `bytecode` and take spans from the route body only.
+
+What the operands actually were (pre-state ring, input 129, ip 2, depth 108; `--max-old-space-size` log kept at
+/tmp/round375-takejob-prestate.log)
+
+    top(0) 116B = u16le(35) || aa2008ddbbe2df1b...f81687 (p0.marketplaceData -> p1) || 00 || 9f0bb8a9 || u16le(72) || args
+    top(1)  74B = 9f0bb8a9 || 23 aa20178dbf211c4f...a49ea85e87 || 21 ff..ff 00 || ...
+    top(2)  74B = same as top(1)
+    top(3)  33B = ff..ff 00        top(4) 35B = aa20178dbf...  (the "wrong lane" of the previous round)
+    top(5)  35B = aa20e61fa6c6f5b188a0bcee4f42fd7bf0524e02ee81b9ad56bdea7d283e0d8f785687
+
+The constructed row is 116 bytes AND ITS TARGET LANE IS CORRECT (`aa2008ddbb...` = p0.marketplaceData = the data
+contract). This CORRECTS round 375: the "handler reads the callee's state field" lane came from the opt-in capture
+build, not from the canonical tree. The abort's operands are `index = 116` (the row's own length - right) against
+`item = 36 bytes` (a 1-byte-framed 35-byte lock, i.e. the target frame of a VECTOR ENTRY) - so the consumer's
+`PICK <__internal__graphEmissions>` resolved to a neighbouring slot and the `OP_SPLIT` then used the row's length
+on a vector-entry fragment. The row construction itself is correct; the STREAM PICK is what is off.
+
+New gated records (SOLIDC_DEBUG_ARG_ORDER=1), both in this round's commit
+- `graph-emission-row` at the ENTRY of `verifyGraphEmissionRow`, so EVERY disposition records its model (the
+  terminal variant only recorded the returning one). For line 219 it says: disposition `consume-vector-prefix`,
+  `hasReturnValues` ABSENT (the call returns nothing), `isDefineSubTraversal: true`, `graphEmissionHandler: true`,
+  and two expansions of the same statement at modelLength 63 / expectedIndex 55 and modelLength 75 /
+  expectedIndex 67. The stream pick at the consumer is baked from exactly that index.
+- `graph-emission-consume` after each of the two stream consumers (`consumeGraphRuntimeEmissionRow`,
+  `consumeConstructedGraphEmissionRow`), recording the last 12 emitted elements, model length/top and the stream's
+  index. This is what matches an abort body to the emitter that produced it.
+- `message-bus-arg-order` now also records the CALLEE CLONE's own declaration (`declaredParameterCount`,
+  `tailUncovered`, `declaredTail`) beside the vector, so a short argument vector (the documented 36-byte-prefix
+  signature) is ruled in or out from the compile log instead of from a VM abort.
+
+**Next round**: rebuild + `SOLIDC_DEBUG_ARG_ORDER=1 npx solidhat compile`, then match the tail record whose
+`tail` contains the pick/`SPLIT` shape of the failing fragment against line 219/`__message_bus_entry_publishJobPost`,
+and compare the recorded `expectedIndex`/`modelLength` with the runtime depth at that site (108 inside the fragment
+at ip 2, minus the fragment's caller frames). Then fix the STREAM PICK, not the row: keep the authenticated
+emission stream addressable independently of the site's top-relative depth (e.g. re-pick it by a bottom ordinal
+captured at body entry, or thread the peeled remainder back as a named handler input), rather than a model index
+baked where the row was constructed.

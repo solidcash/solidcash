@@ -18858,6 +18858,30 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     },
   ): number {
     const { disposition, parametersAreCallArguments = false } = verification;
+    if ((globalThis as { process?: { env?: Record<string, string> } }).process
+      ?.env?.SOLIDC_DEBUG_ARG_ORDER === '1') {
+      // EVERY variant of this check (returning, consuming, deferred, non-returning) builds its operands from the
+      // static model: the constructed row sits on top and the authenticated emission stream is recovered by a
+      // model-index pick. When that pick is one slot deeper than the runtime frame the check splits the WRONG item
+      // at the WRONG length (measured: a 36-byte prefix at index 116, where 116 is the emission vector's own
+      // length). The terminal variant already records itself; recording the ENTRY here covers the dispositions that
+      // do not, and pairs with the VM trace's runtime depth at the same site.
+      console.error('graph-emission-row', JSON.stringify({
+        function: handler.name,
+        line: locationData.location?.start.line,
+        disposition,
+        hasReturnValues: slot.hasReturnValues,
+        parametersAreCallArguments,
+        graphEmissionHandler: handler.graphEmissionHandler === true,
+        isDefineSubTraversal: this.isDefineSubTraversal,
+        isRoute: this.isCompilerMessageBusRoute(),
+        modelLength: this.stack.length,
+        expectedIndex: this.getStackIndex('__internal__graphEmissions', true),
+        outputLength: this.output.length,
+        stackTop: this.stack.slice(0, 6),
+        stackBottom: this.stack.slice(-6),
+      }));
+    }
     const materializeGraphExpression = (expression: ExpressionNode): ExpressionNode => {
       // A later graph edge may be parameterized by a local initialized from an earlier returning edge. Expanding
       // that local exposes the producer call, but it must never be cloned into the route: one source call has one
@@ -19366,6 +19390,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.pushToStack('(__graph_runtime_remainder)');
     this.emitReplace(this.getStackIndex(remainder), node);
     this.popFromStack();
+    this.debugEmissionConsume('runtime-row');
     this.dischargeGraphEmissionRow();
   }
 
@@ -19388,6 +19413,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.pushToStack('(__graph_emission_remainder)');
     this.emitReplace(this.getStackIndex(remainder), node);
     this.popFromStack();
+    this.debugEmissionConsume('constructed-row');
     this.dischargeGraphEmissionRow();
   }
 
@@ -19396,6 +19422,35 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       throw new Error('Graph emission consumer has no constructed row to authenticate');
     }
     this.pendingGraphEmissionRows -= 1;
+  }
+
+  /**
+   * Record the exact emission-stream consumer that was just emitted, beside the model's view of it.
+   *
+   * The optimizer outlines *shared* instruction spans, so a VM abort inside one of them names a body by byte
+   * offset, not an emitter: `PICK SPLIT CAT SPLIT ROT EQUALVERIFY` cannot be attributed to an emitter by reading
+   * the abort alone. Both consumers emit the same runtime shape (`DUP SIZE NIP`, pick the stream, `SWAP SPLIT SWAP
+   * ROT EQUALVERIFY`), so the tail below identifies which one produced a given outline body, and the recorded
+   * model (length plus the stream's top-relative index) is what the site's pick is baked from. Compare it with the
+   * VM trace's runtime depth at the same site to tell a model drift from a caller-frame extra.
+   */
+  private debugEmissionConsume(emitter: string): void {
+    if ((globalThis as { process?: { env?: Record<string, string> } }).process
+      ?.env?.SOLIDC_DEBUG_ARG_ORDER !== '1') return;
+    const describe = (element: unknown): string => (element instanceof Uint8Array
+      ? `push(${binToHex(element).slice(0, 16)})`
+      : `0x${Number(element).toString(16)}`);
+    console.error('graph-emission-consume', JSON.stringify({
+      emitter,
+      function: this.currentFunction.name,
+      outputLength: this.output.length,
+      tail: this.output.slice(-12).map(describe),
+      modelLength: this.stack.length,
+      modelTop: this.stack.slice(0, 8),
+      expectedIndex: this.getStackIndex('__internal__graphEmissions', true),
+      isDefineSubTraversal: this.isDefineSubTraversal,
+      graphEmissionHandler: this.currentFunction.graphEmissionHandler === true,
+    }));
   }
 
   /** Discharge every row deliberately deferred by the straight-line runtime producer. */

@@ -8976,12 +8976,24 @@ function synthesizeMessageBusRoute(
           // clone's own declaration is the target, and comparing against the source list reports a mismatch for
           // every route call (measured: 388 of 467 records) that is expected rather than a defect.
           const parameters = fn.parameters.map((parameter) => parameter.name);
+          // The clone's OWN declaration is what the vector binds against. Record it beside the vector so the
+          // positional alignment is checkable for the call in question: a clone whose declared tail the vector
+          // leaves unfilled has its deepest slots EMPTY, and every top-relative read in the body then addresses a
+          // neighbouring item (the measured emission-row signature is a split of the wrong item at the wrong
+          // length). The tail fill above is meant to make the two lists the same length; when it does not, the
+          // mismatch is visible here rather than inferred from a VM abort.
+          const declaredParameters = (routeOwnedCloneByName.get(invokeName)?.parameters ?? [])
+            .map((parameter) => parameter.name);
           console.error('message-bus-arg-order', JSON.stringify({
             callee: fn.name,
             invoke: invokeName,
             sourceParameterCount: parameters.length,
+            declaredParameterCount: declaredParameters.length,
             argumentCount: argumentVector.length,
+            tailUncovered: declaredParameters.length - argumentVector.length,
+            declaredTail: declaredParameters.slice(argumentVector.length),
             sourceParameters: parameters,
+            declaredParameters,
             arguments: argumentVector,
           }));
         }

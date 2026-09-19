@@ -13017,3 +13017,37 @@ Verified after the restore: full compile 22/22 clean, fixture 1/1 skipped, `unic
 A frame either clears the stall or breaks the pair; the smallest clearing set is the population the predicate must
 describe, and the reason each member needs it (operand count above the frame at the failing read) is then visible
 from `probe-terminal`'s 40-item stack for that member alone.
+
+Round 348: the learning probe dies in the takeJob frame's CALLEE-IDENTITY check
+
+**Bisect step 1 (negative, recorded).** Forcing the bottom form for
+`__message_bus_entry_publishJobEvent` (the MarketplaceDataV1 row named by round 344) makes ALL FOUR titles fail at
+**input 216** - participant 1's executor (`p1 base 131 + executorOffset 85`) - with
+`ip 154 of 207, failing opcode 136 (OP_EQUALVERIFY), window 107 108 0 121 87 2:1581 138 210 136 116`. So that frame
+must keep the compact top-relative form; the gate stays in place for the next candidate.
+
+**The learning probe's abort, now exactly located.** `SOLIDC_DEBUG_PROBE_SHAPE=1` + `SOLIDC_DEBUG_PROBE_FRAMES=1`
+pairs each probe with its program size and terminal state. The aggregate probe (472 inputs) is evaluated at several
+candidate inputs; the one that matters is **input 129** (participant 0's executor, where the takeJob row and its
+compute reads live):
+
+    472 inputs, idx 129  ->  Program failed an OP_VERIFY operation, ip 4 of 12
+      callers [{len 1688, ip 1688}, {len 11059, ip 5456}, {len 2408, ip 233}]
+      window  [147 OP_ADD, 110 OP_2DROP, 199 OP_UTXOBYTECODE, 136 OP_EQUALVERIFY, 119 OP_NIP, 207]
+
+`window` is the callee-identity verification the compiler emits before invoking a co-spent callee
+(`tx.inputs[idx].lockingBytecode == <expected>`), reached from the takeJob clone at ITS ip 233 - i.e. the first
+external call in the row's body. The check FAILS, the frame aborts there, and the trace never reaches the keccak /
+ecrecover read sites, which is the whole reason the deferred compute arguments stay unresolved. The same shape
+explains the earlier coarse/broad-rule failures ("commitment parse" at input 129).
+
+Other 472-input probe terminals, for completeness: idx 216 -> OP_VERIFY (ip 153 of 167), idx 218/306/388 -> no error
+(those frames simply contain no compute reads), idx 306 -> OP_VERIFY (ip 1 of 5).
+
+**Next round, one compile + one run**: name the callee and the index this verification compares. The first external
+call after the `whitelistWorkers` read in `takeJob` is `marketplaceData.eventsLength(jobId_)` (participant 1, whose
+master sits at the composed coordinate 131 with its executor at 216), so the suspect is the row's
+`__internal__externalCallInputBase` / `extcallMasterIdx` witness in the composed frame. Compile UNOPTIMISED
+(`SOLIDC_NO_OPTIMISE=1`, cache moved aside) and map the failing 12-instruction body's source line - the same method
+that named `whitelistWorkers[jobId_][msg.sender]` for the entry read in round 342 - then compare the expected lock
+(the pushed constant) with the aggregate input the code actually read.

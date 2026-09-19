@@ -13229,3 +13229,31 @@ Tooling added this round (all gated, no production behaviour change): `DBG-BOTTO
 model view, printed under `SOLIDC_DEBUG_COMPUTE_BASE=1` at COMPILE time), `SOLIDC_DEBUG_OWNER_TOP_HANDLER`, and the
 per-participant `SOLIDC_DEBUG_OWNER_SENTINEL` (0x11 + participant). Reminder: `DBG-*` offsets are pre-assembly, so
 they cannot be aligned with shipped body offsets - select by function name + ordinal + name, not by offset.
+
+Round 350c: the runtime band around the frame bottom, read off the depth window
+
+The 9-item depth window from round 349b, now aligned against the DECLARED route input order
+(`messageBus.route.inputs`: 0 batchBlob, 1 activeVerifierIndex, 2 graphFixedSize, 3 graphBlockSize, 4
+graphEmissions, 5 graphCallers, 6 graphSettlementBoundary, 7 graphCompletionPositions, 8 graphSettlementTable,
+9 sig rows, 10-13 keys, 14 vmapBatchTrailingCount, 15 returnOutputIdx, 16 proxyMasterIndex, 17 dynamicChunkInputBase):
+
+    bottom ordinal 17: 86 bytes, starts 53434231...   = input 0  (batchBlob)          MATCH
+    bottom ordinal 16: 2 bytes, 466                   = input 1  (activeVerifierIndex) MATCH
+    bottom ordinal 15: 2 bytes, 131                   = input 2  (graphFixedSize)      MATCH
+    bottom ordinal 14: 2 bytes, 131                   = input 3  (graphBlockSize)      MATCH  <- PICKED
+    bottom ordinal 13: 997 bytes, 23 aa202b89...      = input 4  (graphEmissions)      MATCH
+    bottom ordinal 12: 27 bytes, 19 00 76a914..88ac   = input 5  (graphCallers)        plausible
+    bottom ordinal 11: 1 byte, 12                     = input 6  (settlementBoundary)  plausible
+    bottom ordinal 18: 36 bytes, 23 aa202b89...       = above input 0 -> CALLER operand
+    bottom ordinal 19: 1 byte, 0                      = above that   -> CALLER operand
+
+So around the frame bottom the band runs in DESCENDING declared order (blob highest of the run, index 1 below it,
+and so on), with the caller's own operands ABOVE the blob. The frame's parameter band therefore does NOT start at
+the stack bottom, and the model's ordinal 14 - which `DBG-BOTTOM-PICK` shows is meant to be
+`__internal__messageBusOwnerInput` - lands on `graphBlockSize` instead. This also explains why the top-relative
+form cannot read the owner either: the caller's operands (ordinals 18-19 here, more elsewhere) sit ABOVE the band.
+
+Consequence for the fix: the owner must be anchored by VALUE. A cheap variant that fits the existing emitters: the
+caller already knows its own stack, so the generated call site can push the owner again as the LAST argument (a
+duplicate of the band entry the callee reads positionally at entry) and the callee can pick it top-relatively at
+entry - exact there - and immediately move it to the alt stack for drift-free later reads.

@@ -32341,19 +32341,21 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     }
     if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
       ?.SOLIDC_DEBUG_MSG_SENDER_KEY === '1') {
-      // The FINAL value of the frame's own caller-category witness, after every writer has run: the failing probe
-      // publishes zeros even though the seeding saw a real category, so this names the writer that overwrote it.
-      const at = (abiFunction?.inputs ?? []).findIndex((input) =>
-        input.name === '__internal__msgSenderCategory');
-      const value = at < 0 ? undefined : finalArgs[at];
+      // Zip the FINAL args with their ABI names: indexing `finalArgs` by the ABI position is unsafe for
+      // probe/route frames (hidden args are appended and reordered by name), and that mis-index is what made the
+      // earlier reading of this witness wrong. Only a name-keyed dump can be trusted.
+      const names = (abiFunction?.inputs ?? []).map((input) => input.name);
       console.error('msg-sender-category-final', JSON.stringify({
         functionName, abiFunction: abiFunction?.name,
-        value: value instanceof Uint8Array
-          ? `b${value.length}:${binToHex(value).slice(0, 32)}` : String(value),
+        argCount: finalArgs.length, abiCount: names.length,
+        args: finalArgs.map((argument, index) => [
+          names[index] ?? `#${index}`,
+          argument instanceof Uint8Array
+            ? `b${argument.length}:${binToHex(argument).slice(0, 32)}` : String(argument),
+        ]).filter(([name]) => String(name).startsWith('__internal__')),
         build: {
           returnProbeOnly: overrides?.returnProbeOnly === true,
           compilerRoute: overrides?.compilerRouteSelector !== undefined,
-          internalArgs: overrides?.abiFunction !== undefined && overrides.abiFunction !== physicalAbiFunction,
           calls: overrides?.calls?.length ?? 0,
         },
       }));

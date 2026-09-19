@@ -11708,3 +11708,29 @@ identity (its `vmapBatchSlot_0`/`Proof_0`/`Next_0`/`PredOut_0` tuple identifies 
 rounds 319-328 came from the failing probe or from an earlier one. Only then chase the ip-115 comparison again;
 suspects remain the frame's own delegate-identity category witness (the 33-byte `ff…ff` side) and the batch
 `Next`/`Slot` pair.
+
+Round 314: name-keyed proof - the failing probe's category witness IS zero, and the override is lost after seeding
+
+The final-args dump now zips `finalArgs` with `abiFunction.inputs` names (indexing by ABI position was the earlier
+mistake). Parsed from run 332:
+
+    plain | argCount 9 | msgSenderCategory b32:0000… | slot0 d1534eff8dfc4ed0
+    plain | argCount 9 | msgSenderCategory b32:0000… | slot0 1e8d447fad66976b
+    probe | argCount 9 | msgSenderCategory b32:0000… | slot0 80a90055d19510c2   <- the failing probe
+
+The probe's `slot0 = 80a90055…` matches the `probe-internals` vector of the refusing probe exactly, so this IS the
+failing frame and its caller-category witness really is 32 zero bytes - even though `derive-return-value-entry`
+measured `hasCallerLock: true, callerCategoryId: a3cef944…` for the very `_deriveReturnValue` that builds it, and
+the probe's override object at `:35822` does spread
+`...(callerCategoryId !== undefined && callerCategoryId.length > 0 && { msgSenderCategory:
+hexToBin(callerCategoryId).reverse() })`.
+
+Conclusion: the value is dropped INSIDE `_createBuilder` after the seeding at `:18559`. `usesMsgSender` is true and
+the ABI declares the param (artifact facts, round 313), so the seeding does run; something later rebuilds the
+hidden-argument vector by NAME and fills that slot from a map that does not consult `overrides.msgSenderCategory`.
+
+Next round: log every assignment/append that writes the ABI slot named `__internal__msgSenderCategory` inside
+`_createBuilder` (the seeding at `:18559`, plus any name-keyed re-assembly - grep `internalInitArgs`,
+`resolvedInternalRouteWitnesses`, `bFinalArgs`, `routeWitnesses` for writers that push by name), print the value and
+a marker for each, and make the last writer honour the override. That is the final link: with a real category the
+compiler's `msg.sender`-derived key comparison stops reading the 33-byte `ff…ff` sentinel at ip 115.

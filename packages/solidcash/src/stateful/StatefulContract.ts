@@ -19042,6 +19042,18 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               if (described !== undefined) return described;
             }
             const ov = overrides?.entryKeyOverrides?.get(slotIndex);
+            if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+              ?.SOLIDC_DEBUG_MSG_SENDER_KEY === '1') {
+              // A composer-supplied entry key is the remaining authority that can resolve `msg.sender` correctly
+              // while the frame's category witness stays zero; print it next to the collection so the two halves of
+              // one identity can be compared in a single run.
+              console.error('entry-key-override', JSON.stringify({
+                functionName, abiFunction: abiFunction?.name, slotIndex,
+                collection: access.collection,
+                override: ov === undefined ? undefined
+                  : ov instanceof Uint8Array ? `b${ov.length}:${binToHex(ov).slice(0, 24)}` : String(ov),
+              }));
+            }
               if (ov !== undefined) {
                 return ov instanceof Uint8Array ? ov
                   : typeof ov === 'bigint' ? bigIntToVmNumber(ov) : bigIntToVmNumber(ov ? 1n : 0n);

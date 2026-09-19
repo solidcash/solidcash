@@ -12004,3 +12004,25 @@ Decisive next run: log the `entryKeyOverrides` map contents (slot → key hex) a
 `[marketplace, unicrow]`). Then the fix is one line where the composer publishes that override: publish the same
 caller `categoryId` as the frame's `__internal__msgSenderCategory` witness (the value the ip-51 comparison reads),
 i.e. pass it through the `msgSenderCategory` override that rounds 306-310 already thread end to end.
+
+Round 326: all three plumbing paths eliminated - the marketplace lock comes from the frame's SIGNER
+
+`entry-key-override` (new gate at `:19044`) also produced ZERO records. So for the failing frame there are no
+`withCallerIdentity` overrides, no route-batch binding and no `entryKeyOverrides`. The only remaining source for the
+marketplace lock in the key resolution at `:18911` is its final fallback:
+
+    const senderSigner = this._signer ?? this._logicalNonceSigner;
+    return addressToLockScript(senderSigner.getAddress());
+
+i.e. the builder's SIGNER is the contract identity for this frame (a composed/derived frame is connected with the
+calling contract's own signer - which is why the key is `aa20bbc502f0…` while the signer of a user-level build is the
+EOA `76a914713f4095…`). That path has no CATEGORY to publish: `getAddress()` yields the locking bytecode only, and
+the seeding's second fallback (an `IFoo(msg.sender).m()` external-call slot) does not apply here, so
+`__internal__msgSenderCategory` stays at its zero default - exactly the ip-51 empty operand.
+
+Fix direction (single place, next round): wherever the SDK connects a frame with a CONTRACT signer (the contract's
+own identity rather than an EOA), it knows that contract - so it also knows its category. Thread that category into
+the same build as `msgSenderCategory` (the override rounds 306-310 already carry end to end), e.g. by widening the
+signer-identity plumbing used at `:18911` to also publish `identity.categoryId`, exactly as `compose.ts` does for
+participant frames. Verification unchanged: the failing probe's name-keyed `__internal__msgSenderCategory` becomes
+non-zero, ip 51 resolves, and `take job` reaches the composed preflight at input 20.

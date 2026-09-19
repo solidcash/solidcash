@@ -32333,6 +32333,25 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           `${slotIndex}:${commitment.slice(0, 16)}`),
       }));
     }
+    if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+      ?.SOLIDC_DEBUG_MSG_SENDER_KEY === '1') {
+      // The FINAL value of the frame's own caller-category witness, after every writer has run: the failing probe
+      // publishes zeros even though the seeding saw a real category, so this names the writer that overwrote it.
+      const at = (abiFunction?.inputs ?? []).findIndex((input) =>
+        input.name === '__internal__msgSenderCategory');
+      const value = at < 0 ? undefined : finalArgs[at];
+      console.error('msg-sender-category-final', JSON.stringify({
+        functionName, abiFunction: abiFunction?.name,
+        value: value instanceof Uint8Array
+          ? `b${value.length}:${binToHex(value).slice(0, 32)}` : String(value),
+        build: {
+          returnProbeOnly: overrides?.returnProbeOnly === true,
+          compilerRoute: overrides?.compilerRouteSelector !== undefined,
+          internalArgs: overrides?.abiFunction !== undefined && overrides.abiFunction !== physicalAbiFunction,
+          calls: overrides?.calls?.length ?? 0,
+        },
+      }));
+    }
     const builder = new StatefulTransactionBuilder({
       provider: this.inner.provider,
       // A relaxed mock may intentionally execute very large scripts/transactions. At the normal 1 sat/byte

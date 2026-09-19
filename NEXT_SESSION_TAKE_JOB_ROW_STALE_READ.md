@@ -11660,3 +11660,26 @@ Next round: log `childCallerCategoryId`, `child.callerIdentity` and `child.funct
 `:30311`, and make the writer fall back to the *executing* frame's caller identity (the same value the
 `callerLockingBytecode` plumbing already carries) when `callerIdentity.categoryId` is empty. Then re-check the
 refusal (ip 115) and, if it clears, the composed preflight at input 20.
+
+Round 312: the failing PROBE is the only build that still ends up zero - the emitReturn probe path
+
+`SOLIDC_DEBUG_MSG_SENDER_KEY=1` now also logs the FINAL value of the frame's own caller-category witness right
+before the builder is constructed (`msg-sender-category-final`). Measured (run 329), the last three `approve`
+builds are:
+
+    { returnProbeOnly: false, compilerRoute: false, calls: 0 }  value b32:0000…   (user-level builder, expected)
+    { returnProbeOnly: false, compilerRoute: false, calls: 0 }  value b32:0000…   (user-level builder, expected)
+    { returnProbeOnly: true,  compilerRoute: false, calls: 0 }  value b32:0000…   <- the FAILING probe
+
+So the probe that refuses ip 115 is built with `returnProbeOnly: true` and publishes zero for the caller category,
+while the seeding log in the same run shows a real category for a different `approve` build. The probe therefore
+does not come from any of the `_deriveReturnValue` call sites already threaded (those pass `callerCategoryId` and
+their builds show the override); it comes from the OTHER probe entry: the `.emitReturn()` path that calls
+`_createBuilder(..., { emitReturn: true, returnProbeOnly: true })` directly (the harness/`StatefulFunctionCall`
+emitReturn API), which threads neither the caller locking bytecode nor its category.
+
+Next round, one edit + one run: find the `.emitReturn()` builder entry (`emitReturnFlag` /
+`_withEmitReturn`, and the `_createBuilder` call it makes) and thread the same caller identity the composition
+already computes (`withCallerIdentity` on that call object, or a parameter mirroring `_deriveReturnValue`'s). Then
+the probe's `msg-sender-category-final` must be non-zero, the ip-115 sentinel comparison must clear, and the
+composed preflight at input 20 becomes reachable again.

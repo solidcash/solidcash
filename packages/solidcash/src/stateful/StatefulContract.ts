@@ -18187,6 +18187,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       entryKeyOverrides?: Map<number, bigint | boolean | Uint8Array>;
       externalEntryKeyOverrides?: Map<number, bigint | boolean | Uint8Array>;
       msgSenderCategory?: Uint8Array;
+      /**
+       * Locking bytecode of the contract that CALLS this frame, when the frame is a nested/composed participant.
+       * The runtime's `msg.sender` is the immediate caller's address (the same identity `msgSenderCategory`
+       * publishes), never the transaction origin, so a `msg.sender`-keyed mapping must hash THIS value. Absent for
+       * a top-level call sent by the signer, where the signer's own address is the caller.
+       */
+      callerLockingBytecode?: Uint8Array;
       drainSatoshiContainer?: boolean;
       drainTokenContainers?: string[];
       emitReturn?: boolean;
@@ -18907,6 +18914,15 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             // model. Without one, use a type-width placeholder (a lone entry / VM-trace derivation resolves it).
             if (source?.kind === 'expression') {
               if (/^(?:call:_msgSender\(\)|nullop:msg\.sender)$/.test(source.expressionLabel ?? '')) {
+                // A nested frame's `msg.sender` is the CALLING CONTRACT, not the transaction origin: the compiler
+                // resolves it from the caller identity the route/participant publishes, so hashing the signer here
+                // keyed the entry on a different slot than the covenant reads (measured: the allowance pin hashed
+                // [marketplace, signer] while the runtime witness and the resolution path hashed
+                // [marketplace, unicrow], the frame co-spent an unrelated key's node, and the read came back
+                // empty). The caller supplies that identity when it builds a nested frame.
+                if (overrides?.callerLockingBytecode !== undefined) {
+                  return Uint8Array.from(overrides.callerLockingBytecode);
+                }
                 const senderSigner = this._signer ?? this._logicalNonceSigner;
                 if (!senderSigner) {
                   throw new Error('A msg.sender-keyed sorted mapping requires a connected Signer.');

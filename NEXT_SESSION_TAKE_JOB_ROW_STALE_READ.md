@@ -11391,3 +11391,20 @@ Fix plan for the next round (general, no test-specific naming):
 3. Re-run `take job`; the pin slot for the `_allowances` row must then equal the witness (`00fe98d8…`) and the
    frame must co-spend the HEAD/predecessor node it actually needs.
 4. Greens to re-verify: fixture `1 passed | 1 skipped`, `unicrow params` 2, `admin` 8.
+
+Round 302: the fix hook exists - `callerLockingBytecode` override (behaviour-preserving until wired)
+
+`_createBuilder`'s overrides now accept `callerLockingBytecode`, and the `msg.sender` key source at ~:18911
+prefers it before falling back to `addressToLockScript(signer.getAddress())`. Nothing passes it yet, so every
+measured behaviour is unchanged (all diagnostics still show the signer-based slot).
+
+Remaining wiring, one step: the frame that owns the `msg.sender`-keyed row is the delegate IMPLEMENTATION frame
+(`FakeToken.transferFrom`, block 8, built as the co-spent executor of the composed participant). The caller identity
+is already known to whoever builds that executor: `externalCallUtxoGroups[i].callerIdentity` carries
+`{ categoryId, lockingBytecode }` (`:24300` for a direct call, `:24492` for a transitive one), and the route path
+already publishes it as `__internal__msgSenderCategory` (`:29650`, `:30251`) and uses
+`hexToBin(callerIdentity.lockingBytecode)` as `routeMsgSender` (`:37259`). Pass that same locking bytecode as
+`callerLockingBytecode` when the executor/impl frame's builder is created (the `__forward` /
+`_withCompilerRouteDelegatecall` build at `:7799`-`:7818` and the delegate executor build sites are the candidates),
+then re-run `take job`: the `entry-pin` slot for `_allowances` must become `00fe98d8…` (the witness) and the frame
+must co-spend the correct predecessor node.

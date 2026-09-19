@@ -13538,3 +13538,36 @@ something after the arguments and that site must be found in the generated route
 unchanged (deferred-compute stall). All anchor code is dormant unless `SOLIDC_OWNER_ALT_ANCHOR=1`; the shared
 `ownerAnchorPreconditionHolds` predicate, the per-emission flag reset and the call-site leak drop stay in the tree
 as the infrastructure the eventual fix needs.
+
+Round 355: the anchors are CONSISTENT now - all four titles fail at one shared outlined check
+
+**The capture position was wrong, and now it is right.** Reading the call emitter settles the argument order:
+`visitFunctionCall` pushes the vector with `for (let i = node.parameters.length - 1; i >= 0; i--)`, i.e. in
+REVERSE - so argument k lands at depth k at entry, exactly the order `visitParameter` seeds the model in
+(`pushToBottom` in declaration order, index 0 = top). Depth 0 therefore reads the FIRST argument, not the owner;
+the model's index is the correct anchor. Measured confirmation: with the depth-0 capture, `publishJobPost`'s body
+failed an OP_UTXOBYTECODE check whose window was literally my anchored read
+(`1:12 121 108 118 107 199` = `push 18, OP_PICK, OP_FROMALTSTACK, OP_DUP, OP_TOALTSTACK, OP_UTXOBYTECODE`).
+
+With `push <model index of owner>; OP_PICK; OP_TOALTSTACK` at entry (plus the call-site leak drop and the
+per-emission flag), all four titles now fail at ONE shared defect instead of at anchor-related checks:
+
+    input 129, `ip 3 of 6, failing opcode 127 (OP_SPLIT)`, window `121 124 127 124`,
+    "stack item length: 36; requested split index: 116"
+
+That 6-instruction body is `MarketplaceV1.invokeDebug[22]` (source span `marketplaceData.publishJobEvent(jobId_,
+event_);`), i.e. the OUTLINED external-call target authentication. Its call sites (found by scanning every body for
+`push 0x16; OP_INVOKE`) all have this shape:
+
+    ... OP_PICK(121) OP_CAT(126) OP_DUP(118) push 0xf4 OP_INVOKE(138) push <n> push 0x16(22) OP_INVOKE(138)
+
+and the outline itself is `OP_PICK OP_SWAP OP_SPLIT OP_SWAP OP_ROT OP_EQUALVERIFY`. The split index the VM reports
+(116 = 0x74) is a SELECTOR byte, not a length, so the value the outline uses as an index is being read from the
+wrong place - the same class of positional misread as the owner, now in the outlined target check.
+
+**Next round**: decode that call site's intended operand tuple from the emitter (the outline is emitted for
+`emitExternalCall...`-style target authentication; the `push <n>` operand is the frame slot to pick from) and fix
+either the outline's argument order or the index it picks, then re-run all four titles with the capture ON. With that
+fixed, `SOLIDC_OWNER_ALT_ANCHOR` can become the default and `take job` should reach its own next blocker.
+
+**Verified state (default, gate off)**: greens 3 passed | 63 skipped (re-confirmed after this round's change).

@@ -5986,14 +5986,20 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // so any index it computes addresses a different runtime item (measured: it broke the three titles that
       // previously passed while only appearing to help take job).
       if (this.ownerAnchorPreconditionHolds(defineEnv, node)) {
-        // Capture on the ALT stack: its depth cannot be shifted by anything this body pushes, which is the property
-        // both positional forms lack (measured: the bottom ordinal landed on `graphBlockSize`, a top-relative index
-        // on a frame item the runtime never pushes). The item is not dropped on the callee's exits - every call site
-        // drops it instead, right after the invoke, before any of the caller's own alt-stack rotations run.
-        const anchorLocation: SingleLocationData = { location: node.location, positionHint: PositionHint.START };
-        this.emit(Op.OP_DUP, anchorLocation);
-        this.emit(Op.OP_TOALTSTACK, anchorLocation);
-        node.messageBusOwnerAltAnchor = true;
+        // Capture the owner ONCE, here, where its depth is exact: the call emitter pushes the argument vector in
+        // REVERSE order (`for (i = parameters.length - 1; i >= 0; i--)`), so argument k lands at depth k - the same
+        // order this model seeded the parameters in - and nothing else is on the frame yet. Depth 0 would read the
+        // FIRST argument (measured: `publishJobPost` captured `jobId_` and failed an OP_UTXOBYTECODE check).
+        // Storage is the ALT stack because no main-stack push can shift its depth; the item stays for the whole
+        // body, and every call site drops the leaked copy right after the invoke, before its own alt rotations.
+        const ownerDepth = this.getStackIndex(MESSAGE_BUS_OWNER_INPUT, true);
+        if (ownerDepth >= 0) {
+          const anchorLocation: SingleLocationData = { location: node.location, positionHint: PositionHint.START };
+          this.emit(encodeInt(BigInt(ownerDepth)), anchorLocation);
+          this.emit(Op.OP_PICK, anchorLocation);
+          this.emit(Op.OP_TOALTSTACK, anchorLocation);
+          node.messageBusOwnerAltAnchor = true;
+        }
       }
     } else {
       node.parameters = this.visitList(node.parameters) as ParameterNode[];

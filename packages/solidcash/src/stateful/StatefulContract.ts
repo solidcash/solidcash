@@ -18573,6 +18573,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             .map((line) => line.trim().replace(/\s*\(.*/, '')),
         }));
       }
+      const zeroFallback = !msgSenderCategory;
       if (!msgSenderCategory) {
         // An IFoo(msg.sender).m() call: msg.sender IS the co-spent callee, so derive its 32-byte category
         // (reversed = VM order) for the covenant's emitMsgSender - else it falls back to tx.origin and the
@@ -18582,6 +18583,25 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         if (info) msgSenderCategory = hexToBin(info.externalContract.categoryId).reverse();
       }
       finalArgs = [...finalArgs, msgSenderCategory ?? new Uint8Array(32)];
+      if (zeroFallback && (globalThis as { process?: { env?: Record<string, string> } }).process?.env
+        ?.SOLIDC_DEBUG_MSG_SENDER_KEY === '1') {
+        // Which build ends up publishing a ZERO caller category: that frame's `msg.sender` comparisons read a
+        // sentinel, so this stack is the one that has to be threaded next.
+        console.error('msg-sender-category-zero', JSON.stringify({
+          functionName, abiFunction: abiFunction?.name,
+          // Which build flavour reaches the zero fallback: a V8 stack is unavailable in these synthetic builders,
+          // so the override SHAPE is what distinguishes the paths (probe vs composed participant vs user call).
+          build: {
+            returnProbeOnly: overrides?.returnProbeOnly === true,
+            omitLocalFeeTail: overrides?.omitLocalFeeTail === true,
+            emitReturn: overrides?.emitReturn === true,
+            blockBase: overrides?.blockBase,
+            externalCalls: overrides?.externalCalls?.length ?? 0,
+            calls: overrides?.calls?.length ?? 0,
+            callerLockingBytecode: overrides?.callerLockingBytecode !== undefined,
+          },
+        }));
+      }
     }
     // __internal__blockhashInputIndex: the (n->hash) co-spend's absolute input index = master(0) + the slot
     // offset (the SymbolTable injects this param right after msgSender, so it is pushed here in order).

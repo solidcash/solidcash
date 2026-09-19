@@ -11632,3 +11632,31 @@ value and the stack at BOTH remaining writers - `:30291`/`:29686` (the frame's i
 `_batchRaw`'s route-witness map (`resolvedInternalRouteWitnesses`) - and find which one fills the failing probe's
 vector. Then re-verify `unicrow params` (2) and `admin` (8), which have NOT been re-run since the round-306 identity
 threading and this round's category forwarding.
+
+Round 311: greens re-verified; the zero category comes from the graph-writer, not the seeding
+
+Greens after all the identity/category work (run separately - two marketplace-config runs in parallel is UNSAFE:
+the preset regenerates `.marketplace/project`, and a concurrent run then reports "No test files found"):
+fixture `1 passed | 1 skipped`, `unicrow params` 2 passed, `admin` 8 passed.
+
+Measured with `SOLIDC_DEBUG_MSG_SENDER_KEY=1` (run 327): every build that reaches the ZERO fallback at `:18559` is
+the plainest flavour - `returnProbeOnly=false, omitLocalFeeTail=false, emitReturn=false, externalCalls=0, calls=0,
+callerLockingBytecode=false` - i.e. an ordinary user-level `approve`/`transfer` builder, where `msg.sender` is
+tx.origin and zeros are legitimate (the category witness is only consulted for an `IFoo(msg.sender).m()` slot).
+
+The FAILING probe is not one of those: with `SOLIDC_DEBUG_PROBE_IO=1` (run 328) the internals line immediately
+before the refusal still reads
+
+    __internal__msgSenderCategory = b32:0000…0000
+    __internal__vmapBatchSlot_0 = 80a90055…, Proof_0 = 1, Next_0 = d1534eff…, PredOut_0 = 4, returnOutputIdx = 3
+
+so its whole `__internal__*` vector is assembled by a LATER writer than the seeding - the graph writer at `:29701`
+(`hexToBin(childCallerCategoryId).reverse()`, where `childCallerCategoryId = child.callerIdentity?.categoryId ??
+this.categoryId`) or the frame's internal-arg resolver at `:30311`
+(`delegateImplMsgSenderCategory(...)`). A zero there means that writer resolved an empty category for this child
+group.
+
+Next round: log `childCallerCategoryId`, `child.callerIdentity` and `child.functionName` at `:29701` (gated) and at
+`:30311`, and make the writer fall back to the *executing* frame's caller identity (the same value the
+`callerLockingBytecode` plumbing already carries) when `callerIdentity.categoryId` is empty. Then re-check the
+refusal (ip 115) and, if it clears, the composed preflight at input 20.

@@ -11459,3 +11459,29 @@ remaining step is to record the caller on the CallInfo:
 Verification stays the same: `SOLIDC_DEBUG_ENTRY_PIN=1` must print slot `00fe98d8…` with
 `keys [from=aa20bbc502f0…, msg.sender=aa20a8cd257e…]` for the composed `transferFrom` frame, and `take job` must
 clear input 20. Greens unaffected so far (the annotation only changes a frame that has not been rebuilt yet).
+
+Round 305: the caller identity is now RECORDED on the delegate CallInfo (still not forwarded)
+
+`CallInfo` (the `stateful` variant) carries `callerLockingBytecode`, and `_withCompilerRouteDelegatecall` fills it
+from the call object's own contract (`this.parentContract.inner.lockingBytecode`) - i.e. the proxy/route contract
+that is the immediate caller of the implementation frame. `tsc -b` clean; no consumer reads it yet, so behaviour is
+unchanged.
+
+The remaining link is where a `CallInfo` becomes a frame builder. Searched this round and NOT found by grepping
+`_createBuilder` / `new StatefulFunctionCall`: the composed implementation frame is not built through the public
+`contract.call.<fn>(...)` namespace (`StatefulContract.ts:7090` creates those without a caller) nor through
+`_batchRaw`. The `entry-pin` line that prints `functionName: 'transferFrom'` therefore comes from one of:
+
+* `StatefulFunctionCall._applyOverrides` (`:41056`, the three `parentContract._createBuilder(...)` rebuilds - the
+  forwarding from `callerLockingBytecode` to the builder override is already in place there), reached through a
+  `StatefulFunctionCall` whose `parentContract` is the IMPLEMENTATION contract; that object must be created
+  somewhere with `callInfo`/`preparedAtomicNodes` (search for where `preparedAtomicNodes` entries - `{ contract,
+  functionName, selector, args, executionArtifact, executor, parent, producerPath, active }`, built at
+  `~:25628-25638` - are turned into a call: the `.executor` / `.contract` pair there is the implementation);
+* or `_createBuilder('__forward' | '__message_bus1', ...)` at `:7799`/`:7812` with `delegateExecution.executor`
+  (the annotation added there in round 303 covers the ROUTE frame, which is why it changed nothing).
+
+Next round, one run: create the implementation `StatefulFunctionCall` (or the `_createBuilder` call) with
+`.withCallerIdentity(...)`, or pass `callerLockingBytecode` from the surrounding `preparedAtomicNodes` entry, and
+re-measure `SOLIDC_DEBUG_ENTRY_PIN=1`. Success = the composed `transferFrom` frame prints
+`slot 00fe98d8… keys [from=aa20bbc502f0…, msg.sender=aa20a8cd257e…]`, then `take job` must clear input 20.

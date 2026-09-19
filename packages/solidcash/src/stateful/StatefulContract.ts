@@ -34711,9 +34711,19 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     )).join(' ');
     // The failure state has already popped the compared operands when the refusing instruction is a comparison, so
     // the step BEFORE it is where those two values are still readable.
-    const before = trace.at(-2);
-    const compared = (before?.stack ?? []).slice(-2).map((item, offset, items) => (
-      `${offset === 0 ? 'left' : 'right'}=${item.length}b:${binToHex(item).slice(0, 64)}`
+    // The trace interleaves states from every program the probe executed (invoked bodies included), so the step
+    // before the failure is only meaningful when it belongs to the SAME program body: match the instruction list
+    // identity and the immediately preceding ip.
+    const before = (() => {
+      for (let at = trace.length - 2; at >= 0; at -= 1) {
+        const candidate = trace[at];
+        if (candidate.instructions !== last.instructions) continue;
+        if ((candidate.ip ?? -1) === (last.ip ?? 0) - 1) return candidate;
+      }
+      return undefined;
+    })();
+    const compared = (before?.stack ?? []).slice(-2).map((item, offset) => (
+      `${offset === 0 ? 'left' : 'right'}=${item.length}b:${binToHex(item).slice(0, 72)}`
     )).join(' ');
     // The failing comparison consumes a small working area, so the two operands alone do not show what the guard
     // addressed. Report the six values below them as well: they carry the coordinate and the vmap flags.

@@ -11827,3 +11827,24 @@ Implementation next round (one coherent change):
    ip-51 comparison must resolve, and the refusal should clear - after which the composed preflight at input 20
    becomes reachable again.
 3. Re-verify fixture `1 passed | 1 skipped`, `unicrow params` 2, `admin` 8 (serially).
+
+Round 318: the probe's co-spend channel and the exact plumbing point for the caller's master
+
+Search results for the implementation (no behaviour change this round):
+* `StatefulTransactionBuilder` has NO generic extra-input list; the read-only co-spend band is supplied as
+  `readOnlyDataNftUtxos` (`StatefulTransactionBuilder.ts:6602`) and `StatefulContract` fills it at `:32406` from
+  `externalReadUtxos` (the cross-contract read co-spends). That is the natural channel for a synthetic "caller
+  identity" input: the compiler's `emitMsgSender` resolves the caller by scanning the frame's inputs for its
+  category, which is exactly what this band contributes.
+* The caller is reachable where the probe is launched: `_resolveExternalExpressionReturns` (`:35994`) is a method on
+  the CALLER contract (`this`), and its inner `derive` helper (`:36123`) is where `executionSelfAddress` and
+  `this.categoryId` are already read for the probe. Passing `this` (or its master-only state) down through
+  `_deriveReturnValue` gives the caller's master UTXO without a new discovery step
+  (`contract._getMasterOnlyState()` is the accessor used for the composed participant's master at `:25535`).
+* Open question to settle in the same run: whether a MINTING master UTXO is accepted by the `readOnlyDataNftUtxos`
+  band (which is documented for data NFTs) or needs its own band; if it is rejected, add a dedicated
+  `callerIdentityUtxos` option next to it and materialize the same input.
+
+Verification recipe stays as recorded in round 317: `probe-input-locks` must show an input with the marketplace's
+category/locking bytecode, the ip-51 comparison must resolve, `take job` must then reach the composed preflight at
+input 20, and the greens must be re-verified serially.

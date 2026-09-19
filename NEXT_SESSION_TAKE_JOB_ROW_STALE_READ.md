@@ -12979,3 +12979,41 @@ Next round, one compile + one run: add the bottom form for `MarketplaceDataV1`'s
 (`publishJobEvent` first), measuring `take job` (does the stall clear?) and `withdraw collateral` + `close job`
 together as the regression pair after EACH addition, rather than flipping the whole family at once. Keep the audit
 (`DBG-COMPUTE-BASE` branch labels `owner` / `owner-bottom`) so every switch is visible per site.
+
+Round 347: the returns/emits widening is REFUSED by measurement; a bisect gate replaces guessing
+
+**What was tried.** Widening the bottom-ordinal predicate from "compute-carrying graph rows" to "graph rows that
+leave result/emission operands above the frame" (returns values, emits events, or carries compute side-cars; the
+body walk is memoized and answers before emission, so the `ecrecoverCompute`-filled-during-emission trap is avoided).
+`DBG-COMPUTE-BASE` audited the switch: **34 frames** across every contract, and `withdrawCollateral` / `closeJob` are
+NOT among them (so the coarse rule's known regressions were excluded by construction).
+
+**Measured verdict: refused.** With those 34 frames switched, ALL FOUR tested titles fail with the same error:
+
+    take job, close job before timeout, close job after timeout, withdraw collateral
+    -> messageBus: BCH-2026 preflight failed at input 129 (ip 6 of 6, failing opcode 136,
+       window 121 124 127 124 123 136): Program failed an OP_VERIFY operation.
+
+That is the same commitment-parse failure the coarse rule produced at the p0 executor frame, so "a row returns or
+emits" is NOT the discriminator either - something in the switched set is shared by all four transactions and needs
+the compact top-relative form.
+
+**State now.** The predicate is back to the measured-safe form (compute-carrying graph rows only; exactly one frame
+switches), and it carries a debug bisect gate:
+
+    SOLIDC_DEBUG_OWNER_BOTTOM_HANDLER=<substring>
+
+which forces the bottom form for handlers whose clone name contains the substring - compile-time, like the existing
+`SOLIDC_DEBUG_RETURN_VECTOR_CONTRACT`. Set it, move `.marketplace/cache` aside, `npx solidhat compile`, and run the
+regression pair to find the minimal population instead of widening the predicate and re-measuring the whole set.
+Verified after the restore: full compile 22/22 clean, fixture 1/1 skipped, `unicrow params` 2, `admin` 8.
+
+**Next round, the bisect.** One handler per compile, always the same three titles (`take job` for the stall, plus
+`close job`/`withdraw collateral` as the regression pair):
+1. `SOLIDC_DEBUG_OWNER_BOTTOM_HANDLER=__message_bus_entry_publishJobEvent` - the MarketplaceDataV1 row named by the
+   unoptimised abort (round 344) and present in the take-job composition's p1;
+2. then `eventsLength`, `getArbitratorFee`, `userRegistered` (the other p1 rows) - one per compile;
+3. then whatever the p0/p2..p4 frames need, one at a time.
+A frame either clears the stall or breaks the pair; the smallest clearing set is the population the predicate must
+describe, and the reason each member needs it (operand count above the frame at the failing read) is then visible
+from `probe-terminal`'s 40-item stack for that member alone.

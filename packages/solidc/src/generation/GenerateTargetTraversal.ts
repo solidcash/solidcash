@@ -32433,6 +32433,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     return site;
   }
 
+
   private emitMasterInputIndex(locationData: SingleLocationData, extraStackOffset = 0): void {
     if (this.usesMessageBusOwnerBlockBase()) {
       // Every generated route handler receives its physical participant owner as an explicit compiler argument.
@@ -32467,9 +32468,24 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         // are filled while emitting the compute call, which can sit after the first state/entry read, so they read
         // as empty at that point. `recoveryEffectCount`/`ecrecoverCallCount` are computed by the passes before
         // codegen and are what codegen itself uses for exactly this kind of pre-emission decision.
-        const graphRowHandler = this.currentFunction.graphEmissionHandler === true
+        //
+        // The discriminator must be available BEFORE the body is emitted: `ecrecoverCompute`/`keccakPreimageParams`
+        // are filled while emitting the compute call, which can sit after the first state/entry read, so they read
+        // as empty at that point. `recoveryEffectCount`/`ecrecoverCallCount` are computed by the passes before
+        // codegen and are what codegen itself uses for exactly this kind of pre-emission decision.
+        //
+        // Widening this to every returning/emitting row was measured and REFUSED: with 34 frames switched,
+        // `take job`, `close job` (both titles) and `withdraw collateral` all failed at input 129 with the same
+        // commitment parse (`ip 6 of 6, window 121 124 127 124 123 136`). So the form is not a property of a row's
+        // result/emission shape; `SOLIDC_DEBUG_OWNER_BOTTOM_HANDLER=<substring>` forces it for a named handler so
+        // the population that does need it can be bisected without editing this predicate.
+        const forcedBottomHandler = (globalThis as { process?: { env?: Record<string, string> } })
+          .process?.env?.SOLIDC_DEBUG_OWNER_BOTTOM_HANDLER;
+        const graphRowHandler = (this.currentFunction.graphEmissionHandler === true
           && Math.max(this.currentFunction.recoveryEffectCount ?? 0,
-            this.currentFunction.ecrecoverCallCount ?? 0) > 0;
+            this.currentFunction.ecrecoverCallCount ?? 0) > 0)
+          || (forcedBottomHandler !== undefined && forcedBottomHandler.length > 0
+            && this.currentFunction.name.includes(forcedBottomHandler));
         const ownerSite = this.debugComputeBase(
           graphRowHandler ? 'owner-bottom' : 'owner', '__internal__messageBusOwnerInput',
           trackedOwnerIndex, extraStackOffset,

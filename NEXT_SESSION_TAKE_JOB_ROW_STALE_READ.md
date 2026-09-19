@@ -11582,3 +11582,28 @@ at ip 115 compares a 33-byte `ff…ff` sentinel against a 32-byte category, i.e.
 `msgSenderCategory` rather than the caller's category.
 
 Unchanged greens to re-verify afterwards: fixture `1 passed | 1 skipped`, `unicrow params` 2, `admin` 8.
+
+Round 309: the caller category DOES reach the failing probe - the `ff…ff` sentinel is something else
+
+`SOLIDC_DEBUG_MSG_SENDER_KEY=1` now logs every `__internal__msgSenderCategory` seeding (`:18559`), and the LAST
+`approve` seed before the refusal is:
+
+    msg-sender-category-seed { functionName: 'approve', abiFunction: 'approve',
+      override: '32:3e0898a59579c5f6f2e6db6b…',
+      stack: [ Proxy._deriveReturnValue, derive, StatefulContract.ts:36247, resolveProducer, visit, visit ] }
+
+So round 308's plumbing IS effective: the probe that fails is built with a real 32-byte caller category (the
+earlier zero readings came from a different, earlier `approve` probe). The failure is unchanged, so the `ff…ff`
+(33 bytes) vs `1af53e53…` (32 bytes) EQUALVERIFY at ip 115 is NOT the unresolved `msgSenderCategory`.
+
+Correct reading of the failing window with the authoritative table: `121 OP_PICK / 129 OP_BIN2NUM /
+108 OP_FROMALTSTACK / 118 OP_DUP / 108 OP_FROMALTSTACK / 136 OP_EQUALVERIFY / 192 OP_INPUTINDEX`. Two alt-stack
+values are restored and compared; one is a 33-byte `ff…ff` (a category-WITH-capability shape or an all-ones
+sentinel), the other a 32-byte hash-like value. Next round: dump the probe input's whole tracked frame and the
+entries of both stacks at ip 100-120 (`SOLIDC_DEBUG_FAILURE_TRACE=1` plus the existing `probe-internals`), and name
+the witness those two operands come from; the prime suspects are the frame's own category witness (a delegate
+identity arg) and the `vmapBatchNext_0`/`vmapBatchSlot_0` pair, all of which are printed in `probe-internals` for
+this exact input.
+
+Process note: the round-322 run exposed a TDZ bug in the new diagnostic (`entryAbiFunction` is not initialized on
+that path) - fixed by logging `abiFunction` instead; `tsc -b` is clean and the gate is off by default.

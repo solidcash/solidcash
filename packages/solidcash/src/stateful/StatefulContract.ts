@@ -18558,6 +18558,21 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     if (abiFunction?.usesMsgSender
       && abiFunction.inputs.some((input) => input.name === '__internal__msgSenderCategory')) {
       let msgSenderCategory = overrides?.msgSenderCategory;
+      if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+        ?.SOLIDC_DEBUG_MSG_SENDER_KEY === '1') {
+        // Name the build that seeds this witness and whether an override arrived; the failing probe publishes
+        // zeros, so one of the `_deriveReturnValue`/`_createBuilder` entries is still unthreaded.
+        console.error('msg-sender-category-seed', JSON.stringify({
+          functionName,
+          // `entryAbiFunction` is not yet initialized on this path (the delegate entry is resolved later), so the
+          // frame's own ABI name is the only identity available here.
+          abiFunction: abiFunction?.name,
+          override: msgSenderCategory === undefined
+            ? undefined : `${msgSenderCategory.length}:${binToHex(msgSenderCategory).slice(0, 24)}`,
+          stack: new Error('seed').stack?.split('\n').slice(2, 8)
+            .map((line) => line.trim().replace(/\s*\(.*/, '')),
+        }));
+      }
       if (!msgSenderCategory) {
         // An IFoo(msg.sender).m() call: msg.sender IS the co-spent callee, so derive its 32-byte category
         // (reversed = VM order) for the covenant's emitMsgSender - else it falls back to tx.origin and the

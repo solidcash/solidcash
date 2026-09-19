@@ -18561,7 +18561,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // at ip 115 with a 33-byte `ff…ff` against the caller's real category).
     const usesMsgSenderMappingKey = (abiFunction?.entryAccesses ?? []).some((access) =>
       (access.keySources ?? []).some((source) => source.kind === 'msgSender'));
-    if ((abiFunction?.usesMsgSender || usesMsgSenderMappingKey)
+    // Hidden arguments are APPENDED, so a build that skips one of the earlier blocks shifts every later witness
+    // into the wrong ABI slot - the compiler then reads a default where a real identity belongs. Keep the value
+    // here and re-materialize it BY NAME before the builder is constructed.
+    let resolvedMsgSenderCategory: Uint8Array | undefined;
+    if (abiFunction !== undefined && (abiFunction.usesMsgSender || usesMsgSenderMappingKey)
       && abiFunction.inputs.some((input) => input.name === '__internal__msgSenderCategory')) {
       let msgSenderCategory = overrides?.msgSenderCategory;
       if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
@@ -18588,7 +18592,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         const info = msSlot && overrides?.externalCalls?.find((ec) => ec.functionName === msSlot.functionName);
         if (info) msgSenderCategory = hexToBin(info.externalContract.categoryId).reverse();
       }
-      finalArgs = [...finalArgs, msgSenderCategory ?? new Uint8Array(32)];
+      resolvedMsgSenderCategory = msgSenderCategory ?? new Uint8Array(32);
+      finalArgs = [...finalArgs, resolvedMsgSenderCategory];
       if (zeroFallback && (globalThis as { process?: { env?: Record<string, string> } }).process?.env
         ?.SOLIDC_DEBUG_MSG_SENDER_KEY === '1') {
         // Which build ends up publishing a ZERO caller category: that frame's `msg.sender` comparisons read a
@@ -32359,6 +32364,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           calls: overrides?.calls?.length ?? 0,
         },
       }));
+    }
+    if (resolvedMsgSenderCategory !== undefined && abiFunction !== undefined
+      && abiFunction.inputs.some((input) => input.name === '__internal__msgSenderCategory')) {
+      // Position it by ABI name: appends alone are only correct when every earlier hidden block ran, which a
+      // probe (returnProbeOnly) and other partial builds do not guarantee.
+      finalArgs = materializeInternalFunctionArgument(
+        finalArgs, abiFunction.inputs, '__internal__msgSenderCategory', resolvedMsgSenderCategory,
+      );
     }
     const builder = new StatefulTransactionBuilder({
       provider: this.inner.provider,

@@ -11734,3 +11734,36 @@ Next round: log every assignment/append that writes the ABI slot named `__intern
 `resolvedInternalRouteWitnesses`, `bFinalArgs`, `routeWitnesses` for writers that push by name), print the value and
 a marker for each, and make the last writer honour the override. That is the final link: with a real category the
 compiler's `msg.sender`-derived key comparison stops reading the 33-byte `ff…ff` sentinel at ip 115.
+
+Round 315: FIXED the misplaced hidden witness - the failure MOVES past ip 115
+
+Root cause of the zero category: hidden ABI arguments are APPENDED, so any build that skips one of the earlier
+hidden blocks shifts every later witness into the wrong ABI slot; the compiler then reads a default (`00*32`) where
+the caller identity belongs. Verified by the fact that the value never appeared anywhere in `finalArgs` under its
+own ABI name while `derive-return-value-entry` showed the override arriving.
+
+General fix (`StatefulContract.ts`): the resolved caller category is kept in `resolvedMsgSenderCategory` and, right
+before the builder is constructed, re-materialized BY NAME:
+
+    finalArgs = materializeInternalFunctionArgument(
+      finalArgs, abiFunction.inputs, '__internal__msgSenderCategory', resolvedMsgSenderCategory)
+
+Measured effect (run 333) - the refusal MOVES:
+
+    before: ip 115  window 121 129 108 118 108 136 192
+            d1 = 33b:ff…ff                     d0 = 32b:1af53e53…
+    after:  ip  51  window 117 118 130 119 146 105 124
+            d3 = 35b:aa20bbc502f0…   d2 = 128b:80a90055…   d1 = 33b:3e0898a59579c5f6f2e6db6b…
+            d0 = 0b:   (empty)
+
+`3e0898a59579c5f6f2e6db6b…` is exactly the caller category the plumbing carries, so the witness is now placed and
+read; the new comparison is against an EMPTY item. Note `d1` is 33 bytes (category || capability) and `d3` is the
+marketplace proxy locking bytecode - so the frame now resolves the caller but the *entry row* it compares against
+is empty.
+
+Next round: read ip 51 with the corrected table (`117 OP_DROP / 118 OP_DUP / 130 OP_SIZE / 119 OP_NIP /
+146 OP_2SWAP? / 105 OP_VERIFY / 124 OP_SWAP`) and identify which input/output the empty `d0` comes from
+(`SOLIDC_DEBUG_PROBE_IO=1` prints the probe's outputs and internals in the same run); the likely candidate is the
+entry input the probe co-spends for the `msg.sender`-keyed slot - the pin now has the right KEY, so the remaining
+question is whether the probe materializes the entry for that key (INSERT -> predecessor + NEW node) or still
+co-spends the unrelated node.

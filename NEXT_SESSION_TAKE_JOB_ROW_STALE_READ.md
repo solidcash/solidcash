@@ -14010,3 +14010,39 @@ item was wrong (the deeper dump above is what identified the job-post commitment
 output space) - the ids of the outlined helpers 0x2f/0x33/0xeb/0xf5 can be recovered by comparing a
 `SOLIDCASH_NO_OUTLINE=1` build's inline code at the same site - then decide which side is wrong: the contract's
 coordinate (154, a filler) or the expected value (256).
+
+Round 369: the post-job check's coordinate, read from the INLINE (no-outline) build
+
+With `SOLIDCASH_NO_OUTLINE=1` the outlined helpers are inlined, so the whole check is visible in
+`MarketplaceDataV1.functionBodies[53434231]` (35483 instructions). The site was located by its inline prefix and
+decodes as (ips 30859-30912):
+
+    30859 push 0x82 / INVOKE                       <- helper
+    30862 CAT
+    30863 DEPTH; OP_2; SUB; PICK                   <- BOTTOM-relative pick (3rd item from the bottom)
+    30867 push 0x15 (21); ADD                      <- + 21
+    30869 DEPTH; push 0x28 (40); SUB; PICK         <- BOTTOM-relative pick (41st from the bottom)
+    30873 ADD
+    30874 OP_3; PICK; ADD                          <- + TOP-relative pick (depth 3)
+    30877 OP_2; PICK; ADD                          <- + TOP-relative pick (depth 2)
+    30880 DUP
+    30881 OP_OUTPUTBYTECODE                        <- outputs[sum].lockingBytecode
+    30882 DEPTH; OP_2; SUB; PICK                   <- the EXPECTED value (a frame read)
+    30887 OP_15 / INVOKE, push 0x20, SWAP, CAT, OP_OVER, CAT, ...
+    30898 OP_HASH256                               <- hash it (P2SH32)
+    30899 push 0xaa20 / SWAP / CAT / push 0x87 / CAT
+    30904 EQUALVERIFY                              <- requires outputs[idx].lock == aa20 <hash256(expected)> 87
+    ... then OP_OUTPUTTOKENCATEGORY / split / EQUALVERIFY, and more
+
+So the failing comparison RECONSTRUCTS the expected P2SH32 locking bytecode from a frame value (its redeem script)
+and compares it with the addressed output's lock. The addressed output is index 154, whose lock is the one-byte
+filler `51` - an unmaterialized slot - so the COORDINATE is what is wrong, and it is a four-term sum mixing
+bottom-relative picks (3rd, 41st from the bottom) with top-relative picks (depths 3 and 2) plus the constant 21.
+That is the same frame-addressing divergence measured for the take-job owner, now in the OUTPUT space of the data
+contract's body: the bottom-relative terms are computed from the model's stack bottom, which the runtime's caller
+frame does not match.
+
+**Next round**: dump the RUNTIME values of those four terms at this site. The pre-state dump already prints 16 stack
+items; extend it to print the bottom region as well (`stack[0..8]` with ordinals) so the two bottom-relative picks
+can be read directly, then compare each term with what the model expects (the compiler can print its model at this
+site under a gate, exactly as `graph-emission-check` does for the emission path).

@@ -494,6 +494,8 @@ const KECCAK_SIDE_CAR_DETAIL: Record<string, string> = {
  */
 /** Compiler-added hidden ABI parameter carrying the authenticated participant owner of a route frame. */
 const MESSAGE_BUS_OWNER_INPUT = '__internal__messageBusOwnerInput';
+/** Tracked-local name for the entry-time copy of the participant owner (see messageBusOwnerAltAnchor). */
+const OWNER_ANCHOR_LOCAL = '(message_bus_owner)';
 
 export class ForwardedWitnessError extends SolidCashError {
   constructor(node: Node, public readonly reason: string, detail: string) {
@@ -5591,6 +5593,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   visitFunctionDefinition(node: FunctionDefinitionNode): Node {
     this.currentFunction = node;
+    // The anchor flag is per EMISSION, not per node: the same function is emitted as an entry body, as its
+    // OP_DEFINE body and as a subroutine-use probe, and only a stream that actually captured the owner may read it.
+    node.messageBusOwnerAltAnchor = false;
     this.bindTransferOnlyRawCallOrdinals(node);
     this.currentFunctionIsMessageBusRoute = node.messageBusRoute === true
       || (node.name.startsWith('__message_bus')
@@ -5980,7 +5985,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // the owner. A model-derived index is NOT usable here - the frame model does not contain the caller's band,
       // so any index it computes addresses a different runtime item (measured: it broke the three titles that
       // previously passed while only appearing to help take job).
-      if (ownerAnchorEnabled && node.messageBusOwnerIsLastArgument === true) {
+      if (this.ownerAnchorPreconditionHolds(defineEnv, node)) {
+        // Capture on the ALT stack: its depth cannot be shifted by anything this body pushes, which is the property
+        // both positional forms lack (measured: the bottom ordinal landed on `graphBlockSize`, a top-relative index
+        // on a frame item the runtime never pushes). The item is not dropped on the callee's exits - every call site
+        // drops it instead, right after the invoke, before any of the caller's own alt-stack rotations run.
         const anchorLocation: SingleLocationData = { location: node.location, positionHint: PositionHint.START };
         this.emit(Op.OP_DUP, anchorLocation);
         this.emit(Op.OP_TOALTSTACK, anchorLocation);
@@ -11476,6 +11485,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
     this.emit(encodeInt(BigInt(targetFunc.functionId!)), locationData);
     this.emit(Op.OP_INVOKE, locationData);
+    if (this.ownerAnchorPreconditionHolds((globalThis as {
+      process?: { env?: Record<string, string> };
+    }).process?.env, targetFunc)) {
+      // The callee captured the owner onto the alt stack and nothing drops it on its exits, so the caller drops the
+      // leaked copy here - before any of its own alt-stack rotations (`emitReplaceCompilerRouteFrameValue` shuttles
+      // intervening values through the alt stack immediately after the call, so a leak corrupts its frame).
+      this.emit(Op.OP_FROMALTSTACK, locationData);
+      this.emit(Op.OP_DROP, locationData);
+    }
 
     // Update stack tracking: pop the pushed arguments, push return values
     this.popFromStack(pushedArgs + hiddenContextCount);
@@ -32253,6 +32271,20 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * Delegate functions use their already-authenticated proxy-master parameter;
    * normal functions use OP_INPUTINDEX.
    */
+  /**
+   * Whether this emission of `node` captures the participant owner onto the alt stack: the caller must pass the
+   * owner operand LAST (only then is the entry top the owner, at any stack depth), and the callee must actually
+   * declare it. Call sites use the same predicate to drop the leaked copy after the invoke, so the two sides can
+   * never disagree.
+   */
+  private ownerAnchorPreconditionHolds(
+    debugEnv: Record<string, string | undefined> | undefined, node: FunctionDefinitionNode,
+  ): boolean {
+    return debugEnv?.SOLIDC_OWNER_ALT_ANCHOR === '1'
+      && node.messageBusOwnerIsLastArgument === true
+      && node.parameters.some((parameter) => parameter.name === MESSAGE_BUS_OWNER_INPUT);
+  }
+
   /** Copy a tracked frame value by its stable distance from the bottom. */
   private emitPickTrackedFromBottom(name: string, locationData: SingleLocationData): void {
     const topIndex = this.getStackIndex(name);
@@ -32512,10 +32544,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // addressing form. See DBG-COMPUTE-BASE / SOLIDC_DEBUG_COMPUTE_BASE.
       const trackedOwnerIndex = this.getStackIndex(MESSAGE_BUS_OWNER_INPUT, true);
       if (this.currentFunction.messageBusOwnerAltAnchor === true) {
-        // This body captured the owner into the alt stack at entry, where its distance from the top was exact.
-        // Re-read it non-destructively: the alt stack's depth cannot be shifted by anything this body pushes, which
-        // is the property both positional forms lack (measured: the bottom ordinal landed on `graphBlockSize`, the
-        // top-relative index on a frame item the runtime never pushes).
+        // Re-read the entry-time capture without consuming it. The flag is reset at the start of every emission of
+        // this function, so a stream that never captured the owner keeps its ordinary addressing.
         this.emit(Op.OP_FROMALTSTACK, locationData);
         this.emit(Op.OP_DUP, locationData);
         this.emit(Op.OP_TOALTSTACK, locationData);

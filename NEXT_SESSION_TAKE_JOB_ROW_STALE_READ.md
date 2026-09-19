@@ -13472,3 +13472,37 @@ body ends with the owner operand (or until the model is fixed).
   * `close job` before/after timeout + `withdraw collateral`: 3 passed | 63 skipped;
   * fast fixture `SortedMappingProofInputCoordinate`: 1 passed | 1 skipped;
   * `take job`: still the deferred-compute stall (unchanged baseline).
+
+Round 354: the alt-stack anchor leaks - diagnosed, and fixed at the call site
+
+**The leak (found and explained).** The opt-in capture stores the owner on the ALT stack at body entry and
+re-reads it non-destructively. Nothing drops it on the callee's exits, so every invocation leaked one alt item -
+and the CALLER immediately runs alt-stack rotations of its own: `emitReplaceCompilerRouteFrameValue` (called right
+after an internal `OP_INVOKE` to replace the caller-owned journal contexts) shuttles the intervening values through
+the alt stack. Measured effect: with the capture on, `close job` (both) and `withdraw collateral` failed in ~100 ms
+at ONE shared `OP_VERIFY` inside the `publishJobPost` entry body (`VM failed at ip 470 opcode 118`), because the
+caller's rotation read the leaked item. That is why the capture "broke everything" even though the anchored reads
+were correct in the bodies that captured properly.
+
+Changes made this round (all dormant unless `SOLIDC_OWNER_ALT_ANCHOR=1`):
+  * `ownerAnchorPreconditionHolds(env, node)` - ONE predicate used by both sides: the env gate, the callee declares
+    `__internal__messageBusOwnerInput`, and route synthesis marked the owner as the call's LAST argument. Call sites
+    use the same predicate to drop the leaked copy, so the two sides cannot disagree;
+  * the flag is now per EMISSION (`visitFunctionDefinition` resets `messageBusOwnerAltAnchor = false`), because the
+    same function is emitted as an entry body, as its OP_DEFINE body and as a subroutine-use probe;
+  * the capture is back on the alt stack (drift-free) and every internal call site emits
+    `OP_FROMALTSTACK OP_DROP` after the invoke when the callee anchors (the leak is dropped before the caller's own
+    rotations);
+  * route synthesis now derives the precondition from the EMITTED vector (`argumentVector.at(-1) ===
+    routeOwnerInputExpression`) instead of from the presence of `ownerContextArgs` - the latter marked clones whose
+    vector actually ends with another operand (measured: `publishJobPost` captured the dynamic-chunk base).
+
+Measured with the capture on after those fixes: the shared `publishJobPost` require is GONE and the failure moved to
+`ip 245 of 6337` (`OP_UTXOBYTECODE`, the implementation body) - i.e. the leak is closed but at least one anchored
+body still captures a value that is not the owner (or one call site still misses the drop). Two suspects, both
+checkable with existing tools: (a) a body whose vector ends with the owner but whose caller pushes runtime operands
+AFTER the arguments (kernel journal threading), (b) an invoke path that is not the generic internal-call emitter
+where the drop was added.
+
+**Verified state (default configuration, gate off).** `close job` before/after timeout + `withdraw collateral`:
+3 passed | 63 skipped. Fast fixture: 1 passed | 1 skipped. `take job`: deferred-compute stall (unchanged).

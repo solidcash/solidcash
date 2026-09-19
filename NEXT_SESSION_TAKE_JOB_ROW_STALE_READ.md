@@ -12070,3 +12070,24 @@ That names exactly which object supplied the contract address. Its creator alrea
 `overrides.msgSenderCategory` at that creator, or by extending `connect`'s identity carry with the category and
 reading it in the seeding fallback at `:18559` (after the `IFoo(msg.sender).m()` source), which is where the ip-51
 comparison's operand comes from.
+
+Round 329: CORRECTION - the signer is an HDSigner (P2PKH), so the failing frame DID get the caller override
+
+`msg-sender-signer-identity` (run 343) fires only for the plain user-level builds and reports a P2PKH EOA:
+
+    { functionName: 'approve', slotIndex: 0, signerAddress: 'bchtest:qpchst5p…', signerIsSigner: true,
+      logicalAddress: 'bchtest:r0nplfkx…', signerCtor: 'HDSigner' }
+
+So the `aa20bbc502f0…` key the failing frame resolves does NOT come from this fallback - it comes from the FIRST
+branch, `overrides.callerLockingBytecode`. Since round 324's `caller-identity-missing-category` gate stayed silent
+(no build had the lock without the category), the synthesis branch added in round 323 must have fired for that build
+too - which means the caller carrier SHOULD be among its inputs, and the `probe-input-locks` line I read (4 inputs)
+was very likely NOT the failing probe: several `_deriveReturnBlob` probes run in one `take job`, stderr lines
+interleave, and I matched the last dump rather than the one immediately preceding the error.
+
+Next round, one run, corrected method: filter the log so each `probe-input-locks` is paired with the failure that
+follows it - e.g. add a probe id (`probe.inputs.length`, the master outpoint and `vmapBatchSlot_0`) to BOTH
+`probe-input-locks` and the `derive-return-value-entry` record, and print them together with the error. Then read the
+failing probe's OWN inputs: if the caller carrier is present, the ip-51 empty operand has a different cause (the
+carrier's token/category shape, or the comparison reading a different slot) and that becomes the new frontier; if it
+is absent, chase why the synthesis branch's `externalReadUtxos` entry is dropped for that build.

@@ -19006,6 +19006,21 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 if (!senderSigner) {
                   throw new Error('A msg.sender-keyed sorted mapping requires a connected Signer.');
                 }
+                if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+                  ?.SOLIDC_DEBUG_MSG_SENDER_KEY === '1') {
+                  // Which object supplies the caller address here decides where its CATEGORY has to be published;
+                  // the frame's `__internal__msgSenderCategory` stays at its zero default on this path.
+                  const address = senderSigner.getAddress();
+                  console.error('msg-sender-signer-identity', JSON.stringify({
+                    functionName, slotIndex,
+                    signerAddress: typeof address === 'string' ? address : binToHex(address as Uint8Array),
+                    signerIsSigner: this._signer instanceof Signer,
+                    fromNonceSigner: this._signer === undefined,
+                    logicalAddress: String((this as unknown as { _logicalAddress?: unknown })._logicalAddress ?? ''),
+                    signerCtor: (senderSigner as unknown as { constructor?: { name?: string } })
+                      .constructor?.name,
+                  }));
+                }
                 return addressToLockScript(senderSigner.getAddress());
               }
               // Auto-derive a direct computed key (hash160(pk), sha256(x), ...) from its canonical label.

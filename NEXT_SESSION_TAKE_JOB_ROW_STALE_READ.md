@@ -11434,3 +11434,28 @@ Verification after that one line: `SOLIDC_DEBUG_ENTRY_PIN=1` must print, for the
 instead of the signer-based `4038d902…`, and `take job` must pass input 20. All work in rounds 302-303 is
 behaviour-preserving until that line exists, so the greens (fixture 1/1 skipped, `unicrow params` 2, `admin` 8)
 are unchanged.
+
+Round 304: the participant's ROUTE frame is annotated; the IMPL frame is built from the CallInfo path
+
+compose.ts now annotates each participant's frame call with its graph caller identity
+(`graphInvocationCallerIdentity(plan.participants, plan.invocations, invocation).lockingBytecode` ->
+`localCall.withCallerIdentity(...)`, immediately after `contract._batchRaw(...)`). Measured after the change: the
+pin for the composed `transferFrom` frame is UNCHANGED (`nullop:msg.sender = 76a914713f4095…88ac`, slot
+`4038d902…`), and input 20 still reverts with `ERC20InsufficientAllowance`.
+
+Why: the composed participant's executing input is the delegate IMPLEMENTATION frame, whose builder is not the
+`_batchRaw`/`__forward`/`__message_bus1` frame annotated above. `_withCompilerRouteDelegatecall(contract,
+compilerRoute)` (`StatefulContract.ts:38535`) records a `CallInfo { type: 'stateful', contract: <impl>,
+functionName: <route abi name>, args, compilerRoute }`, and it is *that* entry which later drives
+`<impl>._createBuilder(functionName, args, ...)` - the call that printed `functionName: 'transferFrom'` in
+`entry-pin`. The `_applyOverrides` rebuild path already forwards `callerLockingBytecode` (rounds 302-303), so the
+remaining step is to record the caller on the CallInfo:
+
+* give `CallInfo` (the `stateful` variant) an optional `callerLockingBytecode?: Uint8Array`;
+* set it in `_withCompilerRouteDelegatecall` from the call object's own contract identity (`this.parentContract`,
+  the proxy/route contract that is the immediate caller of the implementation frame);
+* forward it into the `_createBuilder` overrides wherever a CallInfo is materialized as a frame builder.
+
+Verification stays the same: `SOLIDC_DEBUG_ENTRY_PIN=1` must print slot `00fe98d8…` with
+`keys [from=aa20bbc502f0…, msg.sender=aa20a8cd257e…]` for the composed `transferFrom` frame, and `take job` must
+clear input 20. Greens unaffected so far (the annotation only changes a frame that has not been rebuilt yet).

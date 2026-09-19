@@ -2871,6 +2871,20 @@ export class AtomicMessageBusComposition {
           logicalIdentities.get(participant.participant),
           Object.freeze([...valueChunkProductions.values()]),
         );
+
+        // A frame's `msg.sender` is the identity of the participant that CALLS it - exactly the value the compiler
+        // receives as `__internal__msgSenderCategory` - never the transaction origin. A `msg.sender`-keyed mapping
+        // inside this frame must therefore hash the caller's locking bytecode; hashing the origin keys the entry
+        // on a slot no covenant reads.
+        {
+          const frameInvocation = plan.invocations[participant.invocations[0]!];
+          const frameCaller = frameInvocation === undefined || frameInvocation.caller === null
+            ? undefined
+            : graphInvocationCallerIdentity(plan.participants, plan.invocations, frameInvocation);
+          if (frameCaller !== undefined) {
+            localCall.withCallerIdentity(hexToBin(frameCaller.lockingBytecode));
+          }
+        }
         for (const deployment of materializedDeployments) {
           if (deployment.participant !== participant.participant || !deployment.active
             || !('genesis' in deployment)) continue;

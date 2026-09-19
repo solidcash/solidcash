@@ -11913,3 +11913,26 @@ read band, with its own width contribution to `externalCallInputBase` at `:24601
 `:24709`), or (b) find the filter that rejects it and admit a minting master through the existing band. Then
 `probe-input-locks` must show the caller's `aa20bbc502f0…` input, the ip-51 comparison must resolve, and `take job`
 must reach the composed preflight at input 20. Re-verify the greens serially afterwards.
+
+Round 322: the co-spend reaches the nested probe, but the FAILING build is the emitReturn rebuild
+
+Evidence assembled this round: `caller-identity-cospend` fires exactly ONCE for `approve` (the nested probe built
+inside `_deriveReturnValue`, which does receive `callerIdentityUtxos`), while the build whose `probe-input-locks`
+shows no caller input is the `.emitReturn()` frame that `StatefulFunctionCall._applyOverrides` rebuilds - the one
+whose frame carries `vmapBatch*` + `returnOutputIdx`. That rebuild forwards `callerLockingBytecode` and
+`msgSenderCategory` (rounds 303/310) but nothing about a caller CO-SPEND, so the frame gets the identity witnesses
+and no input to resolve them against - exactly the ip-51 empty operand.
+
+Wait, is there a second possibility? The builder itself does not filter the read-only band
+(`StatefulTransactionBuilder.ts:16780` registers every `readOnlyDataNftUtxos` entry as an input+output pair), and
+`_createBuilder` passes the whole array at `:32406`, so the band would have carried a 5th input had the override been
+present. The 4-input probe therefore did not receive the override at all.
+
+Fix (mirror rounds 303/310 exactly):
+1. `StatefulFunctionCall` gains `callerIdentityUtxos` (with the existing `withCallerIdentity` setter extended, or a
+   sibling setter) and all three `_applyOverrides` rebuilds forward it into the `_createBuilder` overrides.
+2. Populate it wherever the caller identity is established: `compose.ts` where `withCallerIdentity(...)` is already
+   called (the caller participant's master UTXO is reachable from the graph/descriptor), and `_deriveReturnValue`
+   for nested probes (already done).
+3. Re-run `take job`: `probe-input-locks` for the emitReturn frame must gain the caller's `aa20bbc502f0…` input, the
+   ip-51 comparison must resolve, and the composed preflight at input 20 becomes reachable.

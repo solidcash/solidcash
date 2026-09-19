@@ -12131,3 +12131,28 @@ the caller entry. Next round, one run: log inside `_createBuilder` at the merge 
 `functionName === 'approve'` with `returnProbeOnly === true` - print `callerIdentityUtxos !== undefined`,
 `callerLockingBytecode !== undefined`, `msgSenderCategory !== undefined`, `externalReadUtxos.length` - and also log
 every place a `StatefulTransactionBuilder` is constructed for that function, so the actual options path is identified.
+
+Round 332: the probe's OPTIONS carry the caller carrier - it disappears inside the builder
+
+New gates on the probe path (`overrides.returnProbeOnly === true`), run 345:
+
+    read-band-merge    { functionName: 'approve', hasCallerIdentityUtxos: true, callerIdentityUtxos: 1,
+                         hasCallerLock: true, hasMsgSenderCategory: true, externalReadUtxos: 0 }
+    builder-construction { functionName: 'approve', externalReadUtxos: 2 }
+    probe-failed       { probeId: [4, 'ea84c562', 0], returnOutputIndex: 3, failure: 'ip 51 …' }
+
+So the failing build DOES receive the caller carrier (the read band grows 0 -> 1 from `callerIdentityUtxos`, then to 2
+from the ordinary external-read resolution), the overrides carry BOTH the lock and the category, and the built probe
+still lists only four inputs (`master, _allowances HEAD entry, funding, funding`) with `probe.inputs.length === 4`.
+
+The carrier is therefore dropped between `new StatefulTransactionBuilder({ readOnlyDataNftUtxos: [...] })` and the
+probe's input list. `StatefulTransactionBuilder.build()` registers every read-band entry unconditionally
+(`:16780` inputs, `:16784` outputs), so the next question is which input-assembly path the PROBE takes: the dense
+position-indexed walk (`_buildInputs`, used when `blockLayout` and funders exist) places `readOnlyDataNftUtxos` only
+into `readOnlyDataNft` SLOTS (`:7358`), i.e. a layout without such a slot silently omits them; the legacy fallback
+path appends them (`:7891`). For the `approve` frame (master, entry, event, returnEvent) there is no
+readOnlyDataNft slot, which is exactly why the carrier never materialises as an input.
+
+Fix direction: give the caller carrier a slot the dense walk always visits - e.g. bind it to the frame's own
+`identityAnchor`-style slot, or extend `_buildInputs` to place leftover read-band entries after the positioned block
+(where the legacy path puts them), rather than relying on a `readOnlyDataNft` slot the frame does not publish.

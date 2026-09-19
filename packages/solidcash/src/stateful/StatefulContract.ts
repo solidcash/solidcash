@@ -23297,6 +23297,19 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     let externalReadUtxos: UnlockableUtxo[] = [];
     // The caller identity co-spends join the READ band: every band width below is derived from this array, so
     // appending here keeps all absolute input coordinates consistent.
+    if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+      ?.SOLIDC_DEBUG_MSG_SENDER_KEY === '1' && overrides?.returnProbeOnly === true) {
+      // Is this the build path the failing probe takes? Print the identity inputs the overrides carry and what the
+      // read band holds before the merge, so a dropped carrier is visible at its source.
+      console.error('read-band-merge', JSON.stringify({
+        functionName,
+        hasCallerIdentityUtxos: overrides?.callerIdentityUtxos !== undefined,
+        callerIdentityUtxos: overrides?.callerIdentityUtxos?.length ?? 0,
+        hasCallerLock: overrides?.callerLockingBytecode !== undefined,
+        hasMsgSenderCategory: overrides?.msgSenderCategory !== undefined,
+        externalReadUtxos: externalReadUtxos.length,
+      }));
+    }
     if (overrides?.callerIdentityUtxos !== undefined) {
       externalReadUtxos = [...externalReadUtxos, ...overrides.callerIdentityUtxos];
     } else if (overrides?.callerLockingBytecode !== undefined && overrides?.msgSenderCategory === undefined
@@ -32440,6 +32453,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       finalArgs = materializeInternalFunctionArgument(
         finalArgs, abiFunction.inputs, '__internal__msgSenderCategory', resolvedMsgSenderCategory,
       );
+    }
+    if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+      ?.SOLIDC_DEBUG_MSG_SENDER_KEY === '1' && overrides?.returnProbeOnly === true) {
+      // The options the built frame actually receives: a read band of 0 here means the caller carrier never reached
+      // this construction, whatever the merge above did.
+      console.error('builder-construction', JSON.stringify({
+        functionName, externalReadUtxos: externalReadUtxos.length,
+      }));
     }
     const builder = new StatefulTransactionBuilder({
       provider: this.inner.provider,

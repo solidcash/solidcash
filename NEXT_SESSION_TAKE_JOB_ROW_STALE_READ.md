@@ -13051,3 +13051,57 @@ master sits at the composed coordinate 131 with its executor at 216), so the sus
 (`SOLIDC_NO_OPTIMISE=1`, cache moved aside) and map the failing 12-instruction body's source line - the same method
 that named `whitelistWorkers[jobId_][msg.sender]` for the entry read in round 342 - then compare the expected lock
 (the pushed constant) with the aggregate input the code actually read.
+
+Round 349: the failing operands, the filler, and the owner-sentinel flip
+
+**The failing check's operands, measured directly.** `SOLIDC_DEBUG_PROBE_OPERANDS` (new gate) prints the state ONE
+instruction before an abort - a trace records the state BEFORE each operation, so the terminal entry has already
+consumed the operands that explain the failure. The aggregate probe (`inputIndex 129`, 472 inputs) dies in the
+12-instruction outlined body (`MarketplaceV1.invokeDebug[-202]`, source span = the `whitelistWorkers` mapping
+declaration) with, at the failing `OP_EQUALVERIFY`:
+
+    observed  aa20953ccfa596a6c6d39e5980194539124fdcff116a571455a212baed811f585ee087
+    expected  aa2016681671db84a149a06cbf5427ca859eba029d36b7e9a3d9d960208ab0cd167c87
+
+Traced back through the caller (`SOLIDC_DEBUG_DERIVE_TRACE_OPS=1` + `..._INSTRUCTION_COUNT=2408` +
+`FROM_IP=225 TO_IP=232`, which selects `__message_bus_entry_takeJob`, the 2408-instruction frame) the OP_INVOKE at
+ip 232 receives `(02, bac4afa31b5925f5…, aa2016681671db84…, 131, 20)` with invoke index `0x80ca`:
+
+* `131` is a RUNTIME witness, read by `OP_DEPTH; OP_15; OP_SUB; OP_PICK` at ip 226-229 (the bottom-relative pick).
+* `20` is the literal pushed at ip 230.
+* the outline's first instruction adds them, so the check addresses input **151 = 131 + 20**.
+
+**Why 151 is still a filler.** `SOLIDC_DEBUG_ENTRY_COUNTS=1` now also prints `deferred-stall-identities`
+(participants with their physical/logical/executor locks, every aggregate input with lock and token category, the
+plan's invocations and the prepared descriptors). Measured: p1 = MarketplaceDataV1, base 131, block 87, and the
+compiler's own `blockLayout` puts its `returnEvent` at offset 20 - while `route.entryAccesses` for the takeJob row
+declares the `whitelistWorkers` entries in the slots 0/1/5/6 of participant p0, i.e. absolute 20/21/22/23. Input 151
+holds `aa20953ccf…`, the canonical UNMATERIALIZED placeholder: the same 35-byte lock fills hundreds of aggregate
+inputs, and it is also a compiler constant (`MarketplaceV1.json` `__internal_3` pushes `23 aa20953ccf… 87`).
+
+**Neither runtime identity exists anywhere in the plan.** `aa2016681671db84…` (expected lock) and
+`bac4afa31b5925f5…` (its 32-byte companion) occur in NO artifact, NO prepared descriptor and NO participant, and
+they are not the deployed addresses either: the test's own stdout plus cashaddr decoding give Marketplace ->
+`aa20083560b686fab28b…` (p0's logical lock), MarketplaceData -> `aa2005e29c954b3950…` (p1's logical lock), FakeToken ->
+`aa20e61fa6c6f5b188a0…` (p2's logical lock). They are therefore produced by the SDK at runtime - most plausibly by
+the entry-resource plumbing (`kind=2, categoryId, lockingBytecode`) - and naming that producer is the next step.
+
+**The owner-sentinel flip (new, high-value).** Running the same title with `SOLIDC_DEBUG_OWNER_SENTINEL=1` (the
+existing gate that substitutes 0x99 for `__internal__proxyMasterIndex` in `graphRouteContext`) changes the outcome
+completely: the deferred-compute learning SUCCEEDS, the composition reaches `admit`, and preflight then fails at
+
+    input 129, ip 2 of 5, failing opcode 127 (OP_SPLIT), window 81 127 124,
+    "invalid index. stack item length: 0; requested split index: 1."
+
+The selected 5-instruction body is `OP_1 OP_SPLIT OP_SWAP <push> OP_EQUAL`, and its source spans are `return
+result;` (`MarketplaceDataV1.invokeDebug[103]`) and `return jobs[jobId_];` (`MarketplaceV1.invokeDebug[115]`): the
+RETURN ENCODER splitting an EMPTY result. So the owner witness is what pins the learning, and once it moves the
+failure becomes "the callee's result is empty at the point the caller reads it" - the same coordinate/resource
+materialization question seen from the other side.
+
+**Next round, cheapest first.** (1) Run with `SOLIDC_DEBUG_OWNER_SENTINEL=1` plus
+`SOLIDC_DEBUG_DERIVE_TRACE_OPS=1 FROM_IP=225 TO_IP=232 INSTRUCTION_COUNT=2408` and read the picked witness value:
+if it becomes 153 the frame's base really is `__internal__proxyMasterIndex`, which `graphRouteContext` sets to
+`participantInputs[participant]` - 0 for p0 - so a p0 frame receiving 131 means the witness band belongs to another
+participant. (2) Grep the SDK for the producer of the `(kind, categoryId, lockingBytecode)` entry descriptor that
+carries `aa201668…`/`bac4afa3…`, and check whether it is cached or derived per collection instead of per instance.

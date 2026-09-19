@@ -4057,6 +4057,48 @@ export class AtomicMessageBusComposition {
                 const lock = lockOf(input);
                 return lock.startsWith('76a914') && index <= graph.layout.feeInput ? [{ index, lock }] : [];
               });
+              // A runtime coordinate is only attributable when the lock an ACTUAL input carries can be matched to the
+              // participant that published it. Every owner publishes a distinct set: the physical owner lock, the
+              // logical identity lock and the delegate executor lock - which differ exactly when the block belongs to
+              // a proxy while the rows execute in its implementation.
+              console.error('deferred-stall-identities', JSON.stringify({
+                participants: plan.participants.map((candidate) => ({
+                  participant: candidate.participant,
+                  contract: candidate.artifact.contractName,
+                  executionKind: candidate.executionKind,
+                  base: graph.layout.participantInputs[candidate.participant],
+                  blockSize: candidate.blockLayout?.blockSize,
+                  logicalIdentityOffset: candidate.logicalIdentityOffset,
+                  executorOffset: candidate.executorOffset,
+                  executorInputIndex: candidate.executorInputIndex,
+                  lock: candidate.lockingBytecode.slice(0, 40),
+                  logicalLock: candidate.logicalLockingBytecode?.slice(0, 40),
+                  executorLock: candidate.executorLockingBytecode.slice(0, 40),
+                })),
+                inputLocks: aggregate.inputs.map((input, index) => {
+                  const lock = lockOf(input);
+                  const category = (input as { token?: { category?: string } })?.token?.category ?? '';
+                  return `${index}:${lock.slice(0, 14)}:${category.slice(0, 12)}`;
+                }),
+                // A frame authenticates its callee against the call expression's address, while the block it reads
+                // is the CALLEE PARTICIPANT's. When those two disagree the check can never pass, and the pair is
+                // only comparable here, where both the prepared descriptors and the finalized plan are in scope.
+                invocations: plan.invocations.map((invocation) => ({
+                  function: invocation.function,
+                  caller: invocation.caller,
+                  callee: invocation.callee,
+                  target: invocation.targetLockingBytecode.slice(0, 40),
+                  calleeContract: plan.participants[invocation.callee]?.artifact.contractName,
+                  calleeLock: plan.participants[invocation.callee]?.lockingBytecode.slice(0, 40),
+                  argsBytes: invocation.argsHex.length / 2,
+                })),
+                prepared: descriptors.map((descriptor) => ({
+                  function: descriptor.functionName,
+                  contract: descriptor.contract.inner.artifact.contractName,
+                  inner: descriptor.contract.inner.lockingBytecode.slice(0, 40),
+                  target: descriptor.targetLockingBytecode?.slice(0, 40),
+                })),
+              }));
               const describe = (item: { token?: { category?: string; nft?: { capability?: string; commitment?: string } } } | undefined, index: number): unknown => ({
                 index,
                 cat: item?.token?.category?.slice(0, 10),

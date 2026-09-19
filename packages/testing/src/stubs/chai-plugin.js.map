@@ -1,0 +1,1 @@
+{"version":3,"file":"chai-plugin.js","sourceRoot":"","sources":["chai-plugin.ts"],"names":[],"mappings":"AAAA,8DAA8D;AAC9D,MAAM,MAAM,GAAG,GAAS,EAAE,GAAE,CAAC,CAAC;AAAC,eAAe,MAAM,CAAC","sourcesContent":["// no-op chai plugin (our chai shim has the matchers built in)\nconst plugin = (): void => {}; export default plugin;\n"]}

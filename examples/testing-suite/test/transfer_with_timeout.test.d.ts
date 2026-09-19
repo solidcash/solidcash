@@ -1,0 +1,1 @@
+import 'solidcash/vitest';

@@ -5531,6 +5531,42 @@ export function compactFaithfulProbeTrace(
   return compact;
 }
 
+/** Bounds the operand dump: one probe is evaluated many times during deferred-compute learning. */
+let probeOperandDumps = 0;
+
+/**
+ * Diagnostic: report the operands of the instruction a probe failed on.
+ *
+ * A trace records the state BEFORE each operation and appends the evaluation result last, so the terminal entry has
+ * already consumed the operands that explain the abort - which is exactly the pair a mis-addressed check hides.
+ * The entry one position earlier still holds them: for an identity check emitted as `... <expected> <index> DUP
+ * UTXOBYTECODE EQUALVERIFY`, the observed locking bytecode, the expected one and the input index that was
+ * addressed are the top three items. Gated separately from the terminal dump because the observer path needs a
+ * second evaluation of the probe to recover that state.
+ */
+function dumpProbeOperands(
+  debugEnv: Record<string, string | undefined> | undefined,
+  before: AuthenticationProgramStateCommon | undefined,
+): void {
+  if (debugEnv?.SOLIDC_DEBUG_PROBE_OPERANDS !== '1' || before === undefined) return;
+  if (probeOperandDumps >= 24) return;
+  const instructions = before.instructions as readonly { opcode: number; data?: Uint8Array }[];
+  const failing = instructions[before.ip];
+  if (failing === undefined) return;
+  probeOperandDumps += 1;
+  console.error('probe-operands', JSON.stringify({
+    inputIndex: before.program.inputIndex,
+    inputs: before.program.transaction.inputs.length,
+    ip: before.ip,
+    ownInstructions: instructions.length,
+    opcode: failing.opcode,
+    data: failing.data === undefined ? undefined : binToHex(failing.data).slice(0, 96),
+    // Top of stack first, so an identity check reports (observed, expected, addressed index) in that order.
+    stack: before.stack.slice(-5).reverse().map((item, offset) => `${offset}:${item.length}:${item.length <= 300
+      ? binToHex(item) : `${binToHex(item.subarray(0, 24))}..${binToHex(item.subarray(-8))}`}`),
+  }));
+}
+
 /** Diagnostic: dump the failing probe's program identity, instruction window and stack top. */
 function dumpProbeTerminal(
   debugEnv: Record<string, string | undefined> | undefined,
@@ -5635,9 +5671,11 @@ function evaluateProbeTrace(
       if (maxIn <= 10_000 && debugEnv?.SOLIDC_DEBUG_ROUTE_CONCISE !== '1'
         && debugEnv?.SOLIDC_DEBUG_ROUTE_FULL_OPS !== '1') {
         dumpProbeTerminal(debugEnv, full.at(-1));
+        dumpProbeOperands(debugEnv, full.at(-2));
         return reduceProbeTrace(full);
       }
       dumpProbeTerminal(debugEnv, full.at(-1));
+      dumpProbeOperands(debugEnv, full.at(-2));
       return full;
     } catch (err) {
       // V8 arg-limit / OOM on an oversized script: fall through to the observer.

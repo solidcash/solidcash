@@ -1,0 +1,10 @@
+import "dotenv/config";
+import { HardhatUserConfig } from "hardhat/config";
+import "@nomicfoundation/hardhat-toolbox";
+import "@nomicfoundation/hardhat-verify";
+import "@openzeppelin/hardhat-upgrades";
+import "hardhat-contract-sizer";
+import "hardhat-ts-plugin-abi-extractor";
+import "solidity-docgen";
+import "./tasks/index";
+export declare function configWithPkey(privateKey: string): HardhatUserConfig;

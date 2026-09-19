@@ -1,0 +1,121 @@
+import { ContractFactory, StatefulContract } from 'solidcash';
+import type { ContractRunner, DeployContractOptions, DeployedContract } from 'solidcash';
+import ERC20Artifact from '../../../../../../../artifacts/solidcash/ERC20.artifact.js';
+export type CounterStruct = {
+    _value: bigint;
+};
+export type CounterStructOutput = [_value: bigint] & {
+    _value: bigint;
+};
+export type EscrowStruct = {
+    buyer: Uint8Array | string;
+    challengeExtension: bigint;
+    seller: Uint8Array | string;
+    challengePeriodStart: bigint;
+    marketplace: Uint8Array | string;
+    marketplaceFee: bigint;
+    challengePeriodEnd: bigint;
+    currency: Uint8Array | string;
+    claimed: bigint;
+    consensus: readonly bigint[];
+    split: readonly bigint[];
+    amount: bigint;
+    paymentReference: string;
+};
+export type EscrowStructOutput = [buyer: Uint8Array | string, challengeExtension: bigint, seller: Uint8Array | string, challengePeriodStart: bigint, marketplace: Uint8Array | string, marketplaceFee: bigint, challengePeriodEnd: bigint, currency: Uint8Array | string, claimed: bigint, consensus: readonly bigint[], split: readonly bigint[], amount: bigint, paymentReference: string] & {
+    buyer: Uint8Array | string;
+    challengeExtension: bigint;
+    seller: Uint8Array | string;
+    challengePeriodStart: bigint;
+    marketplace: Uint8Array | string;
+    marketplaceFee: bigint;
+    challengePeriodEnd: bigint;
+    currency: Uint8Array | string;
+    claimed: bigint;
+    consensus: readonly bigint[];
+    split: readonly bigint[];
+    amount: bigint;
+    paymentReference: string;
+};
+export type EscrowInputStruct = {
+    buyer: Uint8Array | string;
+    seller: Uint8Array | string;
+    marketplace: Uint8Array | string;
+    marketplaceFee: bigint;
+    currency: Uint8Array | string;
+    challengePeriod: bigint;
+    challengeExtension: bigint;
+    amount: bigint;
+    paymentReference: string;
+};
+export type EscrowInputStructOutput = [buyer: Uint8Array | string, seller: Uint8Array | string, marketplace: Uint8Array | string, marketplaceFee: bigint, currency: Uint8Array | string, challengePeriod: bigint, challengeExtension: bigint, amount: bigint, paymentReference: string] & {
+    buyer: Uint8Array | string;
+    seller: Uint8Array | string;
+    marketplace: Uint8Array | string;
+    marketplaceFee: bigint;
+    currency: Uint8Array | string;
+    challengePeriod: bigint;
+    challengeExtension: bigint;
+    amount: bigint;
+    paymentReference: string;
+};
+export type ArbitratorStruct = {
+    arbitrator: Uint8Array | string;
+    arbitratorFee: bigint;
+    sellerConsensus: boolean;
+    buyerConsensus: boolean;
+    arbitrated: boolean;
+};
+export type ArbitratorStructOutput = [arbitrator: Uint8Array | string, arbitratorFee: bigint, sellerConsensus: boolean, buyerConsensus: boolean, arbitrated: boolean] & {
+    arbitrator: Uint8Array | string;
+    arbitratorFee: bigint;
+    sellerConsensus: boolean;
+    buyerConsensus: boolean;
+    arbitrated: boolean;
+};
+export type SettlementStruct = {
+    latestSettlementOfferBy: Uint8Array | string;
+    latestSettlementOffer: readonly bigint[];
+};
+export type SettlementStructOutput = [latestSettlementOfferBy: Uint8Array | string, latestSettlementOffer: readonly bigint[]] & {
+    latestSettlementOfferBy: Uint8Array | string;
+    latestSettlementOffer: readonly bigint[];
+};
+export type TokenStruct = {
+    address_: Uint8Array | string;
+    decimals: bigint;
+    symbol: string;
+};
+export type TokenStructOutput = [address_: Uint8Array | string, decimals: bigint, symbol: string] & {
+    address_: Uint8Array | string;
+    decimals: bigint;
+    symbol: string;
+};
+export type DataStruct = {
+    escrow: EscrowStruct;
+    arbitrator: ArbitratorStruct;
+    settlement: SettlementStruct;
+    token: TokenStruct;
+};
+export type DataStructOutput = [escrow: EscrowStructOutput, arbitrator: ArbitratorStructOutput, settlement: SettlementStructOutput, token: TokenStructOutput] & {
+    escrow: EscrowStruct;
+    arbitrator: ArbitratorStruct;
+    settlement: SettlementStruct;
+    token: TokenStruct;
+};
+export type ERC20 = StatefulContract<typeof ERC20Artifact>;
+export type ERC20ConstructorArgs = [];
+export declare class ERC20__factory extends ContractFactory<typeof ERC20Artifact> {
+    static readonly abi: any;
+    static readonly artifact: any;
+    static createInterface(): {
+        readonly abi: any;
+        readonly events: any;
+        readonly errors: any;
+    };
+    static connect(categoryId: string, runner: ContractRunner): Promise<ERC20>;
+    constructor(runner: ContractRunner);
+}
+export interface ERC20__factory {
+    deploy(...args: [...ERC20ConstructorArgs, DeployContractOptions?]): Promise<DeployedContract<typeof ERC20Artifact>>;
+}

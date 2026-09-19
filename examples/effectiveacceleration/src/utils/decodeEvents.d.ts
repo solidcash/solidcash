@@ -1,0 +1,11 @@
+import { BytesLike } from "ethers";
+import { JobCreatedEvent, JobUpdatedEvent, JobSignedEvent, JobRatedEvent, JobDisputedEvent, JobArbitratedEvent, JobMessageEvent, JobEventType, CustomJobEvent } from "../interfaces";
+export declare const decodeJobCreatedEvent: (rawData: BytesLike) => JobCreatedEvent;
+export declare const decodeJobUpdatedEvent: (rawData: BytesLike) => JobUpdatedEvent;
+export declare const decodeJobSignedEvent: (rawData: BytesLike) => JobSignedEvent;
+export declare const decodeJobRatedEvent: (rawData: BytesLike) => JobRatedEvent;
+export declare const decodeJobDisputedEvent: (rawData: BytesLike) => JobDisputedEvent;
+export declare const decryptJobDisputedEvent: (event: JobDisputedEvent, sessionKey: string) => void;
+export declare const decodeJobArbitratedEvent: (rawData: BytesLike) => JobArbitratedEvent;
+export declare const decodeJobMessageEvent: (rawData: BytesLike) => JobMessageEvent;
+export declare const decodeCustomJobEvent: (eventType: JobEventType, rawData: BytesLike) => CustomJobEvent | undefined;

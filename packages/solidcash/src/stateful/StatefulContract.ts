@@ -23324,24 +23324,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         calls: overrides?.calls?.length ?? 0,
       }));
     }
-    if (overrides?.callerLockingBytecode !== undefined && overrides?.msgSenderCategory !== undefined) {
-      // No real caller UTXO was supplied, but the caller's identity IS known (locking bytecode + category witness).
-      // A frame resolves `msg.sender` by scanning its inputs for that category, so a synthetic minting carrier at
-      // the caller's own lock gives the frame something to resolve against. Probes execute only input 0, so the
-      // outpoint and the placeholder unlocker are inert; a real send materializes the caller's true UTXO instead.
-      const callerCategory = binToHex(Uint8Array.from(overrides.msgSenderCategory).reverse());
-      externalReadUtxos = [...externalReadUtxos, {
-        txid: `${'00'.repeat(31)}c0`, vout: 0, satoshis: 1000n,
-        token: {
-          category: callerCategory, amount: 0n,
-          nft: { capability: 'minting', commitment: '' },
-        },
-        unlocker: {
-          generateLockingBytecode: () => Uint8Array.from(overrides.callerLockingBytecode!),
-          generateUnlockingBytecode: () => new Uint8Array(),
-        },
-      }];
-    }
 
     if (externalReads && externalReads.length > 0) {
       const artifact = this.inner.artifact;

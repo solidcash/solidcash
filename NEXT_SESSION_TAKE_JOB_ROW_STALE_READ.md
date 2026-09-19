@@ -12260,3 +12260,28 @@ Next round, in order:
    against something the real master would satisfy.
 3. Cleanup once the row authenticates: the round-332/333 diagnostics (`read-band-merge`, `builder-construction`) and
    any leftover unused helper from the deleted synthesis.
+
+Round 337: BREAKTHROUGH - removing the synthetic carrier derives the probe; the failure returns to the composed frame
+
+Root cause of the round-336 "no change": two copies of the synthetic-carrier block existed (round 323's `if (false)`
+surgery left the copy at `:23330` active, and round 336's removal deleted the other one). Deleting the ACTIVE block
+(`if (overrides.callerLockingBytecode && overrides.msgSenderCategory) { ...synthetic carrier... }`) completes the fix:
+the probe then co-spends only the REAL caller master and the whole `approve` derivation succeeds.
+
+Measured (run 351): the refusal jumps from the probe straight back to the composed transaction:
+
+    messageBus: BCH-2026 preflight failed at input 20 (ip 238 of 1757, opcode 103, failing opcode 105,
+    window 99 84 121 92 121 159 99 0 105 103); failing require in FakeToken:309
+    (revert ERC20InsufficientAllowance(...))
+
+That is exactly the frontier rounds 303-305 were on - but now with the pin hashing the CALLER's identity
+(`msg.sender` = Unicrow/marketplace by key, not the signer), so the derivation chain (rounds 306-336) is complete:
+the probe derives, the composition builds, and only the composed `transferFrom` row's allowance READ remains.
+
+Next round: back on the composed frame. The row addresses `_allowances[marketplace][unicrow]` (slot `00fe98d8…`),
+whose node is created IN THIS TRANSACTION by the marketplace's `approve(unicrow, …)` (the FakeToken route reaches
+`balanceOf`, `approve`, `transferFrom`; no approve participant exists in the composed frame, so that call runs inside
+another participant's frame). So the remaining question is the read-after-write: the `transferFrom` row must read the
+value the in-transaction `approve` writes (its PredOut / batch row), not its co-spent HEAD/predecessor node's value.
+Measure with `SOLIDC_DEBUG_LAYOUT=1` + `SOLIDC_DEBUG_PREFLIGHT_ROUTE=1` on input 20 and compare the row's
+`vmapBatchPredOut_*`/`vmapBatchNext_*` witnesses with the outputs the approve frame materializes.

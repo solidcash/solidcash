@@ -11340,3 +11340,54 @@ for the log) and print them at each `__internal__vmapBatchSlot_*` writer (`child
 fills at ~:26871 / ~:28624). The two hex strings will name the disagreeing component directly; then make the pin
 use the same key bytes the witness publishes (the witness value is the one the covenant recomputes and the one the
 in-transaction `approve` wrote), and re-run take job.
+
+Round 301: ROOT CAUSE - the pin resolves a `msg.sender` key as the SIGNER, the runtime uses the CALLER
+
+`entry-pin` now prints the resolved key bytes and the ABI arg behind each key. Measured (run 310), the composed
+FakeToken frame:
+
+    entry-pin { functionName: 'transferFrom', collection: '_allowances', slotIndex: 1,
+      slot: '4038d902362d5b4c8a612523358ee9915572e7d77cc75e9ab714bce94ad37a63',
+      keys: [ 'from(address)=aa20bbc502f00015910e6bd47a2e46b97b1d352db5d04a1f67e97155ef00b09ddf1387',
+              'nullop:msg.sender(address)=76a914713f4095da08547d9691a511d08f81477253ee5988ac' ],
+      present: false, pinnedSlot: 'd1534eff8dfc4ed02a1fa5809356052e2452786c6a7ccab47bddea7b7433a133' }
+    entry-pin { functionName: 'approve', ...,
+      keys: [ 'nullop:msg.sender(address)=76a914713f4095da…88ac',
+              'spender(address)=aa20a8cd257e3018c1611cf3ae581150766ae10305828e0ef097b363c3e27eef0d5d87' ] }
+
+So the pin hashes `[marketplace proxy, 76a914713f4095…88ac]`, i.e. it models `msg.sender` as the SIGNER's P2PKH -
+the same fallback in both frames. The runtime witness (`00fe98d8…`) and the resolution path both use
+`[marketplace proxy, Unicrow instance]`, the immediate CALLER's locking bytecode. `76a914713f4095…88ac` is the
+funder/signer address, which is exactly what `StatefulContract.ts` line ~18911 returns:
+
+    if (/^(?:call:_msgSender\(\)|nullop:msg\.sender)$/.test(source.expressionLabel ?? '')) {
+      const senderSigner = this._signer ?? this._logicalNonceSigner;
+      return addressToLockScript(senderSigner.getAddress());
+    }
+
+That is correct for a top-level call made by the EOA and WRONG for every nested/composed frame. The same file
+already models the right rule twice:
+
+* `:37259` `routeMsgSender = callerIdentity === undefined ? callerSelfAddress ?? addressToLockScript(this.target)
+   : hexToBin(callerIdentity.lockingBytecode)` - "so mapping-key planning and runtime msg.sender cannot split
+  across different identities" (the comment above it says exactly that);
+* `:24492` a transitive call stores `callerIdentity = { categoryId: <parent>.categoryId,
+  lockingBytecode: <parent>.inner.lockingBytecode }`, and `:30251` publishes that parent identity as
+  `__internal__msgSenderCategory`.
+
+Consequence chain (all measured): the pin co-spends the `d1534eff…` node (`_allowances[user1][marketplace]`, 1900e18)
+as the `_allowances` proof of a row whose key is `00fe98d8…` (`_allowances[marketplace][unicrow]`), the covenant's
+read finds no node for its key and yields EMPTY, and `_spendAllowance` reverts with
+`ERC20InsufficientAllowance`. The node it should read is the one this transaction's own `approve(unicrow, …)`
+writes, so the pin must agree with the witness before any read-after-write question can even be asked.
+
+Fix plan for the next round (general, no test-specific naming):
+1. Thread the enclosing call's identity into the frame builder: `_createBuilder` already receives `overrides`;
+   the external call group carries `callerIdentity: { categoryId, lockingBytecode }` (`:24300`, `:24492`). Pass
+   `callerIdentity.lockingBytecode` down as the frame's `msg.sender` authority (a new override field or the
+   builder option `callerIdentity` already declared at `StatefulTransactionBuilder.ts:6277`).
+2. At `~18911`, prefer that authority over `this._signer.getAddress()`, keeping the signer fallback only when the
+   frame has no enclosing contract (a direct EOA call) - which is exactly the case the current code was written for.
+3. Re-run `take job`; the pin slot for the `_allowances` row must then equal the witness (`00fe98d8…`) and the
+   frame must co-spend the HEAD/predecessor node it actually needs.
+4. Greens to re-verify: fixture `1 passed | 1 skipped`, `unicrow params` 2, `admin` 8.

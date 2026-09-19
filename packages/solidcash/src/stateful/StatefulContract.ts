@@ -19448,10 +19448,29 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               // `childBatchTargets`/`batchTargetPlaceholders` feed the target node). Printing both here is the only
               // way to see them disagree inside a single build.
               const pinned = present ? list.find(slot) : list.predecessorOf(slot);
+              // The slot above and the `__internal__vmapBatchSlot_<n>` witness the covenant consumes are computed
+              // by different paths from different argument sources. Print the pin's resolved key BYTES next to its
+              // name/type so a disagreement names the component instead of the hash.
+              const pinKeys = (() => {
+                try {
+                  return keyNames.map((name, index) => {
+                    const keyType = keyTypes[index] ?? collection.keyType;
+                    const abiName = name.startsWith('__message_bus_ek_')
+                      ? name.slice('__message_bus_ek_'.length) : name;
+                    const at = entryAbiFunction?.inputs.findIndex((inp) =>
+                      inp.name === name || inp.name === abiName) ?? -1;
+                    return `${name}(${keyType})=${binToHex(
+                      encodeKey(name, keyType, index))}:arg=${String(entryArgs[at])}`;
+                  });
+                } catch (error) {
+                  return [`ERR:${String(error).slice(0, 80)}`];
+                }
+              })();
               console.error('entry-pin', JSON.stringify({
                 functionName, entryFunction: entryAbiFunction?.name,
                 collection: access.collection, slotIndex,
                 slot: binToHex(slot),
+                keys: pinKeys,
                 present,
                 pinnedSlot: pinned === undefined ? undefined
                   : String(pinned.utxo?.token?.nft?.commitment ?? '').slice(0, 64),

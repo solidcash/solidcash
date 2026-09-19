@@ -11485,3 +11485,39 @@ Next round, one run: create the implementation `StatefulFunctionCall` (or the `_
 `.withCallerIdentity(...)`, or pass `callerLockingBytecode` from the surrounding `preparedAtomicNodes` entry, and
 re-measure `SOLIDC_DEBUG_ENTRY_PIN=1`. Success = the composed `transferFrom` frame prints
 `slot 00fe98d8… keys [from=aa20bbc502f0…, msg.sender=aa20a8cd257e…]`, then `take job` must clear input 20.
+
+Round 306: the caller identity now REACHES the probe - and the failure moves to the `approve` insert
+
+A stack trace from the `msg.sender` fallback (`SOLIDC_DEBUG_MSG_SENDER_KEY=1`) named the exact chain:
+
+    entry-key resolution -> Array.map -> _createBuilder -> _deriveReturnValue -> _createBuilder
+      -> _deriveReturnValue -> derive
+
+i.e. the pin runs in a probe built by `_deriveReturnValue`, which is itself launched from
+`_resolveExternalExpressionReturns`' inner `derive` helper (`:36123`). That helper already has the executing
+frame's identity as `executionSelfAddress`, so `_deriveReturnValue` now takes an optional
+`callerLockingBytecode` and that call site passes it (`:36147`); the nested probe call sites inside `_createBuilder`
+and the atomic-node probe (`:34501`, parent node's contract identity) pass it too, and `_batchRaw` forwards it into
+its initial `__forward` / `__message_bus1` build (compose passes the graph caller identity).
+
+Measured effect (run 317): the pin is no longer signer-based for that frame - and the failure MOVES EARLIER, from
+the composed preflight (input 20) to derivation itself:
+
+    Could not derive the return value of 'approve' for .emitReturn(). Probe detail: probe stopped at ip 115
+    (opcode 192): ... failing require in FakeToken:109; window 121 129 108 118 108 136 192;
+    stack d1=33b:ffff...ffff d0=32b:1af53e53d8744b6ee95b463bb9db6b273bc0e696
+
+So the probe now pins `_allowances[marketplace][unicrow]` - the semantically correct key for
+`fakeToken.approve(unicrow, amount)` - which does NOT exist on chain before the transaction and is therefore an
+INSERT whose predecessor must be the sorted node (HEAD when the target sorts first) and whose NEW node has to be
+materialized for the trace to authenticate. The probe refuses at that step (`FakeToken:109`).
+
+Next round: treat this as the *insert-into-absent-key* case in a probe. Check the three inputs the failing probe
+pins: the target slot (now correct), the predecessor selected (`list.predecessorOf(slot)`), and whether the NEW node
+is materialized in the probe frame at all (`entry-pin` + `entry-placement targets` + `SOLIDC_DEBUG_PROBE_IO=1`
+dumps both in one run). The vmap INSERT contract is: P' at the entry coordinate, NEW minted trailing with
+`slot||next||value`; a probe that co-spends the wrong predecessor or skips the NEW node cannot authenticate the
+row. Once that probe passes, re-check the composed preflight (input 20) and then the greens
+(fixture 1/1 skipped, `unicrow params` 2, `admin` 8).
+
+Everything in this round is committed; `tsc -b` is clean.

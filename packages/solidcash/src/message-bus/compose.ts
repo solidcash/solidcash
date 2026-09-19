@@ -2840,6 +2840,15 @@ export class AtomicMessageBusComposition {
               : undefined,
           }));
         }
+        // A frame's `msg.sender` is the identity of the participant that CALLS it - exactly the value the compiler
+        // receives as `__internal__msgSenderCategory` - never the transaction origin. A `msg.sender`-keyed mapping
+        // inside this frame must therefore hash the caller's locking bytecode; hashing the origin keys the entry
+        // on a slot no covenant reads. Passed INTO the build (not annotated afterwards) because only the initial
+        // build carries the delegate executor this participant executes as.
+        const frameInvocation = plan.invocations[participant.invocations[0]!];
+        const frameCaller = frameInvocation === undefined || frameInvocation.caller === null
+          ? undefined
+          : graphInvocationCallerIdentity(plan.participants, plan.invocations, frameInvocation);
         const localCall = contract._batchRaw(
           participant.batch.blob,
           participant.batch.routeWitnesses as FunctionArgument[],
@@ -2870,21 +2879,12 @@ export class AtomicMessageBusComposition {
           }),
           logicalIdentities.get(participant.participant),
           Object.freeze([...valueChunkProductions.values()]),
+          frameCaller === undefined ? undefined : hexToBin(frameCaller.lockingBytecode),
         );
-
-        // A frame's `msg.sender` is the identity of the participant that CALLS it - exactly the value the compiler
-        // receives as `__internal__msgSenderCategory` - never the transaction origin. A `msg.sender`-keyed mapping
-        // inside this frame must therefore hash the caller's locking bytecode; hashing the origin keys the entry
-        // on a slot no covenant reads.
-        {
-          const frameInvocation = plan.invocations[participant.invocations[0]!];
-          const frameCaller = frameInvocation === undefined || frameInvocation.caller === null
-            ? undefined
-            : graphInvocationCallerIdentity(plan.participants, plan.invocations, frameInvocation);
-          if (frameCaller !== undefined) {
-            localCall.withCallerIdentity(hexToBin(frameCaller.lockingBytecode));
-          }
-        }
+        // `_withChildDeployment` / `_withCompilerTransfer*` below force `StatefulFunctionCall._applyOverrides` to
+        // REBUILD the frame, and that rebuild carries the call object's identity - so record it on the call too,
+        // not only in the initial build above.
+        if (frameCaller !== undefined) localCall.withCallerIdentity(hexToBin(frameCaller.lockingBytecode));
         for (const deployment of materializedDeployments) {
           if (deployment.participant !== participant.participant || !deployment.active
             || !('genesis' in deployment)) continue;

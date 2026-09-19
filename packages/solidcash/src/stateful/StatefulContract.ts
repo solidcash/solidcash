@@ -7274,6 +7274,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     rowArguments?: readonly RouteExpressionKeyRow[],
     logicalIdentity?: ResolvedLogicalIdentity,
     valueChunkProductions?: NonNullable<PreparedAtomicMessageBusCall['valueChunkProductions']>,
+    /**
+     * Locking bytecode of the contract that calls this route frame. The frame's `msg.sender` is that identity (the
+     * compiler receives it as `__internal__msgSenderCategory`), so a `msg.sender`-keyed mapping inside the frame
+     * must hash it. Required at INITIAL build time: a caller that only annotates the returned call reaches the
+     * rebuild path, not this one.
+     */
+    callerLockingBytecode?: Uint8Array,
   ): StatefulFunctionCall {
     const executionArtifact = delegateExecution?.artifact ?? this.inner.artifact;
     const capability = executionArtifact.messageBus;
@@ -7804,6 +7811,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       return attachCompilerTransfers(new StatefulFunctionCall(
         this._createBuilder('__forward', [routeSelector], {
           blockBase, emitReturn, returnBlob, omitLocalFeeTail, logicalIdentity, valueChunkProductions,
+          ...(callerLockingBytecode !== undefined && { callerLockingBytecode }),
         }),
         this as unknown as StatefulContract, '__forward', [routeSelector],
         // `routeSelector` is calldata for the co-spent implementation, not a selector for the single-entry
@@ -7824,6 +7832,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         omitLocalFeeTail,
         logicalIdentity,
         valueChunkProductions,
+        ...(callerLockingBytecode !== undefined && { callerLockingBytecode }),
       }),
       this as unknown as StatefulContract, '__message_bus1', routeArgs,
       {
@@ -18929,6 +18938,17 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 if (overrides?.callerLockingBytecode !== undefined) {
                   return Uint8Array.from(overrides.callerLockingBytecode);
                 }
+                if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+                  ?.SOLIDC_DEBUG_MSG_SENDER_KEY === '1') {
+                  // Which build reached this fallback decides where the caller identity has to be plumbed; a stack
+                  // answers that in one run, where guessing at call sites costs a run per attempt.
+                  console.error('msg-sender-key-fallback', JSON.stringify({
+                    functionName, entryFunction: entryAbiFunction?.name, slotIndex,
+                    hasOverride: overrides?.callerLockingBytecode !== undefined,
+                    stack: new Error('msg-sender-key').stack?.split('\n').slice(2, 9)
+                      .map((line) => line.trim().replace(/\s*\(.*/, '')),
+                  }));
+                }
                 const senderSigner = this._signer ?? this._logicalNonceSigner;
                 if (!senderSigner) {
                   throw new Error('A msg.sender-keyed sorted mapping requires a connected Signer.');
@@ -26333,7 +26353,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 }
                 return proxyCallee
                   ? proxyCallee.forward(fn.name, readArgs).staticCall() as Promise<FunctionArgument>
-                  : callee._deriveReturnValue(fn.name, readArgs) as Promise<FunctionArgument>;
+                  : callee._deriveReturnValue(fn.name, readArgs, undefined, undefined, undefined,
+                    publicSelfAddress) as Promise<FunctionArgument>;
               };
               if (childCompilerRoute && nested.hasReturnValues && !sharedCompilerRouteCoversCall) {
                 const firstWrite = childCompilerRoute.rowArguments.findIndex(
@@ -26451,7 +26472,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                       return undefined;
                     }
                   }
-                  return callee._deriveReturnValue(childFunctionName, childFunctionArgs);
+                  return callee._deriveReturnValue(childFunctionName, childFunctionArgs, undefined, undefined,
+                    undefined, publicSelfAddress);
                 };
                 const value = nested.callsiteId === undefined
                   ? await evaluateReturn()
@@ -26513,7 +26535,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                           ? await (publicMethod as (...args: FunctionArgument[]) => Promise<StateValue>)(...nextArgs)
                           : await proxyCallee.forward(nested.functionName, nextArgs).staticCall();
                       } else {
-                        nextValue = await callee._deriveReturnValue(nested.functionName, nextArgs);
+                        nextValue = await callee._deriveReturnValue(nested.functionName, nextArgs, undefined,
+                          undefined, undefined, publicSelfAddress);
                       }
                     } catch {
                       nextValue = returnType === 'bool' ? false : '';
@@ -28888,7 +28911,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           if (nested.hasReturnValues && selectedFn.writesState !== true && selectedFn.outputs?.length === 1) {
             const evaluateReturn = (): Promise<FunctionArgument | undefined> => proxyCallee
               ? proxyCallee.forward(nested.functionName, childArgs).staticCall() as Promise<FunctionArgument>
-              : callee._deriveReturnValue(nested.functionName, childArgs) as Promise<FunctionArgument>;
+              : callee._deriveReturnValue(nested.functionName, childArgs, undefined, undefined, undefined,
+                publicSelfAddress) as Promise<FunctionArgument>;
             const value = nested.callsiteId === undefined
               ? await evaluateReturn()
               : await memoizeGraphPlanningProducerResult(
@@ -34485,7 +34509,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           const deriveFromCallee = async (): Promise<Uint8Array | undefined> => {
             if (returnTypes.length !== 1) return undefined;
             try {
-              const value = await node.contract._deriveReturnValue(node.functionName, [...node.args]);
+              // The probe materializes the frame the final composition reuses, including which entry UTXO each
+              // `msg.sender`-keyed slot co-spends. A node's caller is its parent node's authenticated identity -
+              // the proxy/state owner for a delegate edge - never the transaction origin.
+              const parentNode = node.parent === null ? undefined : preparedAtomicNodes?.[node.parent];
+              const nodeCaller = parentNode === undefined ? undefined
+                : hexToBin(parentNode.contract.inner.lockingBytecode);
+              const value = await node.contract._deriveReturnValue(node.functionName, [...node.args], undefined,
+                undefined, undefined, nodeCaller);
               if (value === undefined) return undefined;
               return encodeExternalReturnValue(
                 value as StateValue,
@@ -35519,6 +35550,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
   async _deriveReturnValue(
     functionName: string, args: FunctionArgument[], calls?: CallInfo[], exactAbiFunction?: AbiFunction,
     calleeCalls?: ExternalCallInfo[],
+    /**
+     * Locking bytecode of the contract that calls this callee. The probe materializes the callee frame the final
+     * composition reuses - including which entry UTXO each `msg.sender`-keyed mapping slot co-spends - so the
+     * caller identity has to reach it here; the signer is only the caller of a top-level EOA call.
+     */
+    callerLockingBytecode?: Uint8Array,
   ): Promise<StateValue> {
     const directMappingRead = directMappingReadPlan(this.inner.artifact, functionName);
     if (directMappingRead) {
@@ -35698,6 +35735,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const builder = await this._createBuilder(
       functionName, args, {
         emitReturn: true, returnProbeOnly: true, calls, abiFunction, externalCalls: calleeCalls,
+        ...(callerLockingBytecode !== undefined && { callerLockingBytecode }),
       },
     );
     let blob = (builder as any).__derivedReturnBlob as Uint8Array | undefined;
@@ -36109,6 +36147,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         return await callee._deriveReturnValue(
           functionName, values, undefined, calleeAbi,
           await calleeExternalCalls(callee, functionName, values, calleeAbi?.inputs, state),
+          // `executionSelfAddress` is THIS frame's identity, i.e. the contract that calls `callee`. The probe it
+          // launches materializes the callee frame the composition reuses, so the callee's `msg.sender`-keyed
+          // mapping slots must be pinned against that identity - not against the transaction origin.
+          executionSelfAddress instanceof Uint8Array ? executionSelfAddress : undefined,
         ) as FunctionArgument;
       } catch (error) {
         if (!allowProvisional || !(error instanceof Error)

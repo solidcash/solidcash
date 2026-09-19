@@ -19603,6 +19603,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               // Which identity this build resolved `msg.sender` from: the probe and the composed participant share
               // this pin code, so the tuple below is what still differs between them.
               console.error('entry-pin-identity', JSON.stringify({
+                // The derive sequence that is currently executing (see `derive-return-value-entry`): pairing the two
+                // records by this number names the call site that built the frame which pinned this slot.
+                deriveSeq: (this as unknown as { _deriveSeq?: number })._deriveSeq,
+                owner: this.inner.artifact.contractName,
                 functionName, slotIndex, collection: access.collection,
                 slot: binToHex(slot), present,
                 hasCallerLock: overrides?.callerLockingBytecode !== undefined,
@@ -24434,8 +24438,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               precomputeArtifact.enums,
             );
             try {
+              // This frame is the CALLER of `callInfo.externalContract`, so the callee's `msg.sender` is exactly
+              // this frame's authenticated identity. Without it the nested probe keys every `msg.sender`-derived
+              // mapping slot on the transaction origin (measured: a `transferFrom` allowance probe pinned the
+              // signer-keyed slot while the composed transaction reads the caller-keyed one), and the returned
+              // value the composition reuses describes a frame the transaction never builds.
               const precomputeValue = await callInfo.externalContract._deriveReturnValue(
-                precomputeName, callInfo.args,
+                precomputeName, callInfo.args, undefined, precomputeAbi, undefined,
+                publicSelfAddress, this.categoryId, this as unknown as StatefulContract<Artifact>,
               );
               if (precomputeValue !== undefined) directPrecomputedReturn = encode(precomputeValue as StateValue);
             } catch {
@@ -35761,15 +35771,27 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       ?.SOLIDC_DEBUG_MSG_SENDER_KEY === '1') {
       // Which caller threaded the identity into this probe: an unthreaded site leaves the probe's caller category
       // at zero and its `msg.sender` comparisons read a sentinel.
+      (this as unknown as { _deriveSeq?: number })._deriveSeq =
+        ((this as unknown as { _deriveSeq?: number })._deriveSeq ?? 0) + 1;
       console.error('derive-return-value-entry', JSON.stringify({
+        seq: (this as unknown as { _deriveSeq?: number })._deriveSeq,
+        owner: this.inner.artifact.contractName,
         functionName,
         hasCallerLock: callerLockingBytecode !== undefined,
         callerCategoryId,
         // Whether the caller CONTRACT arrived decides if this probe can co-spend its master; the probe that fails
         // ip 51 has no caller input, so this names the invocation that still needs the extra argument.
         hasCallerContract: callerContract !== undefined,
-        stack: new Error('drv').stack?.split('\n').slice(2, 8)
+        // Every frame of the call chain, innermost first, including the frame that logged this line: several
+        // closures are named `derive`/`visit`, so a stack that hides its own innermost frame cannot be paired with
+        // the enclosing derivation (measured: two nested `transferFrom`/`balanceOf` frames were indistinguishable).
+        stack: new Error('drv').stack?.split('\n')
+          .filter((line) => line.trim().startsWith('at ')).slice(0, 18)
           .map((line) => line.trim().replace(/\s*\(.*/, '')),
+        // Argument digest: pairs a nested derivation with the runtime call its outer probe build triggered.
+        args: args.map((argument) => argument instanceof Uint8Array
+          ? `b${argument.length}:${binToHex(argument).slice(0, 16)}`
+          : typeof argument === 'bigint' ? argument.toString() : String(argument).slice(0, 24)),
       }));
     }
     const directMappingRead = directMappingReadPlan(this.inner.artifact, functionName);
@@ -36378,27 +36400,78 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       const registered = registeredTarget(interfaceName, target);
       if (!registered) return undefined;
       try {
+        // The frame that MAKES this call is the callee's caller: its locking bytecode and category are exactly the
+        // identity the compiler resolves `msg.sender` from, and the probe built below is reused by the composition.
+        const callerLock = hexToBin(this.inner.lockingBytecode);
+        const debugIdentity = (globalThis as { process?: { env?: Record<string, string> } }).process?.env
+          ?.SOLIDC_DEBUG_MSG_SENDER_KEY === '1';
+        const annotate = <T>(call: T): T => {
+          const withIdentity = (call as unknown as {
+            withCallerIdentity?: (lockingBytecode: Uint8Array, categoryId?: string) => unknown;
+          }).withCallerIdentity;
+          if (debugIdentity) {
+            // An annotation that silently misses the call object is indistinguishable from no annotation at all:
+            // record whether the returned value actually exposes `withCallerIdentity` (and what it is).
+            console.error('derive-annotate', JSON.stringify({
+              functionName,
+              ctor: (call as unknown as { constructor?: { name?: string } } | undefined)?.constructor?.name,
+              hasMethod: typeof withIdentity === 'function',
+              lock: binToHex(callerLock).slice(0, 24),
+            }));
+          }
+          if (typeof withIdentity === 'function') withIdentity.call(call, callerLock, this.categoryId);
+          return call;
+        };
+        if (debugIdentity) {
+          console.error('derive-branch', JSON.stringify({
+            interfaceName,
+            functionName,
+            isObject: typeof registered === 'object' && registered !== null,
+            hasProxy: typeof registered === 'object' && 'proxy' in (registered as object),
+            hasForward: typeof registered === 'object' && 'forward' in (registered as object),
+            ctor: (registered as unknown as { constructor?: { name?: string } } | undefined)?.constructor?.name,
+          }));
+        }
         if (typeof registered === 'object' && 'proxy' in registered) {
           const publicMethod = (registered as Record<string, unknown>)[functionName];
           if (typeof publicMethod === 'function') {
-            return await (publicMethod as (...args: FunctionArgument[]) => Promise<FunctionArgument>)(...values);
+            return await annotate((publicMethod as (...args: FunctionArgument[]) => Promise<FunctionArgument>)(...values));
           }
         }
         if (typeof registered === 'object' && 'forward' in registered
           && typeof (registered as { forward?: unknown }).forward === 'function') {
-          return await (registered as {
+          return await annotate((registered as {
             forward(name: string, args: FunctionArgument[]): StatefulFunctionCall;
-          }).forward(functionName, values).staticCall() as FunctionArgument;
+          }).forward(functionName, values)).staticCall() as FunctionArgument;
         }
         const callee = registered as StatefulContract;
         const calleeAbi = callee._resolveCallAbi(functionName, values);
+        if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+          ?.SOLIDC_DEBUG_MSG_SENDER_KEY === '1') {
+          // Pair with the callee's own `derive-return-value-entry` record: if this fires with a lock while the
+          // callee logs `hasCallerLock: false`, the two are in different code copies (stale bundle), not the same
+          // call.
+          const lock = executionSelfAddress instanceof Uint8Array
+            ? executionSelfAddress : hexToBin(this.inner.lockingBytecode);
+          console.error('derive-call-identity', JSON.stringify({
+            callee: callee.inner.artifact.contractName, functionName,
+            caller: this.inner.artifact.contractName,
+            lock: binToHex(lock).slice(0, 24), category: this.categoryId.slice(0, 24),
+          }));
+        }
         return await callee._deriveReturnValue(
           functionName, values, undefined, calleeAbi,
           await calleeExternalCalls(callee, functionName, values, calleeAbi?.inputs, state),
           // `executionSelfAddress` is THIS frame's identity, i.e. the contract that calls `callee`. The probe it
           // launches materializes the callee frame the composition reuses, so the callee's `msg.sender`-keyed
           // mapping slots must be pinned against that identity - not against the transaction origin.
-          executionSelfAddress instanceof Uint8Array ? executionSelfAddress : undefined,
+          // The frame that MAKES the call is the callee's caller, whether or not the caller passed its own
+          // identity in: this method runs on that frame, so its locking bytecode is exactly the value the
+          // compiler resolves `msg.sender` from. Leaving it undefined keyed a nested probe by the
+          // transaction origin (measured: the `transferFrom` probe pinned `4038d902…` - signer-keyed -
+          // while the transaction addresses `00fe98d8…`).
+          executionSelfAddress instanceof Uint8Array
+            ? executionSelfAddress : hexToBin(this.inner.lockingBytecode),
           this.categoryId,
           this as unknown as StatefulContract<Artifact>,
         ) as FunctionArgument;
@@ -41394,7 +41467,11 @@ export class StatefulFunctionCall {
     // Auto-wiring can append library calls after the first pass. Validate those frames before any builder work.
     validatePreparedFrames();
     const needsRebuild = (this.externalCallInfos.length > 0 || this.callInfos.length > 0
-      || this.entryKeyOverrides.size > 0 || this.externalEntryKeyOverrides.size > 0 || this.emitReturnFlag)
+      || this.entryKeyOverrides.size > 0 || this.externalEntryKeyOverrides.size > 0 || this.emitReturnFlag
+      // A declared caller identity is itself a reason to rebuild: the initial build (the namespace factory) never
+      // receives it, so without this the annotation silently does nothing for a plain call - measured: the
+      // `transferFrom` probe kept pinning the signer-keyed slot even after `withCallerIdentity` was called.
+      || this.callerLockingBytecode !== undefined)
       && this.parentContract && this.functionName && this.functionArgs;
     if (needsRebuild) await this.parentContract!._ensureResolved();
     const signerUtxos = needsRebuild && this.functionName === '__forward'

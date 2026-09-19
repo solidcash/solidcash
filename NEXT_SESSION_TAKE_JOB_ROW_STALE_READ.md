@@ -13571,3 +13571,38 @@ either the outline's argument order or the index it picks, then re-run all four 
 fixed, `SOLIDC_OWNER_ALT_ANCHOR` can become the default and `take job` should reach its own next blocker.
 
 **Verified state (default, gate off)**: greens 3 passed | 63 skipped (re-confirmed after this round's change).
+
+Round 356: the route call's ABI tail is the missing operand - safe to fill, but not sufficient
+
+**The real shape of the arity gap.** The call emitter pushes the argument vector in REVERSE (`for i =
+params.length - 1; i >= 0; i--`), so the vector's LAST element is the DEEPEST frame item. A clone that declares
+parameters the vector does not pass (the injected `__internal__dynamicChunkInputBase`, value witnesses, ...) is
+therefore missing its DEEPEST slots, and every remaining parameter sits one depth shallower than the model says -
+which is exactly the condition under which a top-relative model index picks a neighbouring item.
+
+New opt-in `SOLIDC_ROUTE_ABI_TAIL=1` appends the uncovered DECLARED tail to the END of the vector (deepest), leaving
+the declaration untouched. Measured:
+  * `close job` (both) + `withdraw collateral`: 3 passed | 63 skipped - the fill is SAFE, unlike the earlier attempt
+    that inserted the witness BEFORE the owner (which moved every existing depth and broke these titles);
+  * `take job` with the fill alone: still the deferred-compute stall (its owner read uses the bottom-ordinal form,
+    which the caller band - not the parameter depths - breaks).
+
+**Capture + tail fill**: the greens fail at the SAME shared 6-instruction outlined emission check as before
+(`input 129, ip 3 of 6, window 121 124 127 124`), so the capture still perturbs that frame's inputs even when the
+frame matches its declaration. New evidence on that check from the emitter (`GenerateTargetTraversal.ts` ~19168):
+it computes `(__graph_prefix_length) = len(emission)` with `OP_DUP OP_SIZE OP_NIP`, picks `expected` by model index,
+then `OP_SWAP OP_SPLIT OP_SWAP OP_ROT OP_EQUALVERIFY`. In the failing run the item split is 36 bytes while the
+requested index is 116 - i.e. the split lands on the framed single-row value while the index came from the longer
+vector. So the two operands at that OP_SPLIT are ordered for the *working* (positional) owner value and become
+inconsistent when the owner is read correctly.
+
+**Where that leaves the fix**: the working configuration relies on a positional read whose VALUE the rest of the
+codegen is calibrated to; a correct owner value unmasks the ordering assumption in the outlined emission check. The
+next round should therefore fix that outlined check (split the long vector at the prefix length, then compare the
+peeled prefix against the short expected row) *before* promoting the capture - or, equivalently, verify which of the
+two items that OP_SPLIT is supposed to consume by decoding the model (`pushToStack('(__graph_prefix_length)')` and
+`pushToStack('(__graph_expected_emissions)')` are adjacent in the model, so the emitted order can be read off the
+tracked stack at that site with `SOLIDC_DEBUG_EMIT_TRAP=1`).
+
+**Verified state (defaults: both gates off)**: greens 3 passed | 63 skipped; fast fixture 1 passed | 1 skipped;
+`take job` unchanged; artifacts rebuilt canonically; tree clean.

@@ -8916,9 +8916,26 @@ function synthesizeMessageBusRoute(
       // IDENTIFIER, so LowerCollectionJournalHelpers uses one cache and preserves Solidity's sequential lvalue
       // semantics. The distinct arm retains its own physical entry slot. Later semantic metadata gates that slot
       // off when one of these equality arms is taken.
+      // A clone declares the injected witnesses the compiler gives it (the dynamic-chunk base, value witnesses,
+      // the leading-push value, the value-chunk output base) AFTER the operands the generated call passes. The
+      // call emitter pushes the vector in REVERSE, so the vector's last element is the DEEPEST frame item - which
+      // means a declared parameter the vector omits leaves every remaining parameter one depth shallower than the
+      // model says, and every top-relative pick in the body then addresses a neighbouring item (measured: the
+      // owner read landed on `graphBlockSize`, and the outlined emission check split a 36-byte prefix at a selector
+      // byte). Append the uncovered declared tail so the callee's frame matches its own declaration. Opt-in while
+      // the trailing witnesses' caller-side scope is verified per contract.
+      const abiTailEnabled = (globalThis as { process?: { env?: Record<string, string> } })
+        .process?.env?.SOLIDC_ROUTE_ABI_TAIL === '1';
+      const declaredTailForVector = (vectorLength: number): string[] => {
+        if (!abiTailEnabled) return [];
+        const declared = routeOwnedCloneByName.get(invokeName)?.parameters ?? [];
+        return declared.slice(vectorLength).map((parameter) => parameter.name);
+      };
       const dispatchFor = (entryArgs: string[]): string => {
         const argumentVector = [...sourceCallArgs, ...entryArgs, ...blockhashRowArgs, ...callerContextArgs,
-          ...ownerContextArgs, ...blockhashBaseArgs];
+          ...ownerContextArgs, ...blockhashBaseArgs, ...declaredTailForVector(
+          sourceCallArgs.length + entryArgs.length + blockhashRowArgs.length + callerContextArgs.length
+            + ownerContextArgs.length + blockhashBaseArgs.length)];
         // Only a vector that literally ends with the owner operand lets the callee capture it at depth 0 - and
         // EVERY site of the body must satisfy that, so the flag is the conjunction over all of them.
         const clone = routeOwnedCloneByName.get(invokeName);

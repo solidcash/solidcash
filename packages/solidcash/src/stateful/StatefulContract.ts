@@ -17680,7 +17680,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               lock: output?.to instanceof Uint8Array ? binToHex(output.to).slice(0, 24)
                 : typeof output?.to === 'string' ? output.to.slice(0, 24) : String(output?.to ?? ''),
               cap: output?.token?.nft?.capability,
-              commit: String(output?.token?.nft?.commitment ?? '').slice(0, 24),
+              commit: String(output?.token?.nft?.commitment ?? '').slice(0, 72),
               hasToken: !!output?.token,
             })),
             headInputs: failInputs.slice(0, 12).map((input, index) => ({
@@ -17692,7 +17692,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 return lock ? binToHex(lock).slice(0, 24) : undefined;
               })(),
               cap: input.token?.nft?.capability,
-              commit: String(input.token?.nft?.commitment ?? '').slice(0, 24),
+              commit: String(input.token?.nft?.commitment ?? '').slice(0, 72),
               hasToken: !!input.token,
             })),
             outputCount: failOutputs.length,

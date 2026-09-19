@@ -17945,6 +17945,23 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   visitStateAccess(node: StateAccessNode): Node {
     const locationData = { location: node.location, positionHint: PositionHint.START };
+    if (this.currentFunction?.graphEmissionHandler === true
+      && (globalThis as { process?: { env?: Record<string, string> } }).process
+        ?.env?.SOLIDC_DEBUG_ARG_ORDER === '1') {
+      // A state read inside a graph emission handler is served from the handler's pre-allocated cache lane, which the
+      // route fills and the call threads through. When such a read yields the CALLER's identity instead of the stored
+      // value, the question is which slot/lane the read resolved to - so record the variable, its slot indices, the
+      // model position of any lane it picks and the model's neighbours.
+      console.error('handler-state-read', JSON.stringify({
+        function: this.currentFunction.name,
+        variable: node.name,
+        nftIndex: node.stateVariable?.nftIndex,
+        fieldIndex: node.stateVariable?.fieldIndex,
+        type: node.stateVariable?.type?.toString(),
+        modelLength: this.stack.length,
+        stackTop: this.stack.slice(0, 6),
+      }));
+    }
 
     // this.category - expose the contract's own category in display byte order. CashTokens introspection
     // returns the native little-endian category followed by an optional capability byte, so first retain the

@@ -2992,6 +2992,27 @@ export class AtomicMessageBusComposition {
           );
           const supplied = descriptors[invocationIndex];
           const authenticatedState = await stateOf(contract) as Readonly<Record<string, FunctionArgument>>;
+          if ((globalThis as { process?: { env?: Record<string, string> } }).process
+            ?.env?.SOLIDC_DEBUG_PARTICIPANT_STATE === '1') {
+            // Address-typed state fields are the identities a graph row publishes: the contract reads them from its
+            // own cache lane and the plan builds the expected emission rows from the same values. Printing the plan's
+            // values per participant is what decides whether a mismatching row lane is a plan defect or a read defect.
+            const stateLayout = participant.artifact.stateLayout;
+            const addressFields = (stateLayout?.variables ?? []).filter(
+              (variable) => /address|bytes20|bytes32/.test(String(variable.type)),
+            );
+            console.error('participant-state', JSON.stringify({
+              participant: participant.participant,
+              contract: participant.artifact.contractName,
+              fields: addressFields.map((variable) => ({
+                name: variable.name,
+                type: String(variable.type),
+                nftIndex: variable.nftIndex,
+                fieldIndex: variable.fieldIndex,
+                value: String(authenticatedState[variable.name] ?? '(undefined)').slice(0, 80),
+              })),
+            }));
+          }
           for (const transfer of handler?.transfers ?? []) {
             if (transfer.condition === null) {
               throw new Error(

@@ -12775,3 +12775,55 @@ artifact name, `rowArguments` handlers, `activeRouteEntryKeys`, `inactiveRouteEn
 contain no active `whitelistWorkers` row - is the takeJob invocation missing from `participant.invocations` for that
 frame, are its `batchKeyWitnesses` absent from `activeRouteEntryKeys` (`StatefulContract.ts` ~`:7556`), or does the
 delegate build skip the pin loop entirely?
+
+Round 343: the plan and the compile-time model are both right; the runtime base is not
+
+Three measurements this round narrow the take-job abort to ONE thing.
+
+1. **The SDK's plan KNOWS about the entry.** `SOLIDC_DEBUG_COLLECTION_FETCH=1` prints the route entry plan for the
+   frame that carries the new row (`contract SolidCashProxy`, because the delegate frame is built on the proxy):
+
+       reached ["takeJob"]
+       activeKeys [__message_bus_key_whitelistWorkers_0, _0_alt, _1, _1_alt]
+       inactive []
+
+   i.e. every `whitelistWorkers` coordinate is ACTIVE (`StatefulContract.ts` ~`:7547`: `activeRouteEntryKeys` /
+   `inactiveRouteEntrySlots`). So "the row is missing from the plan" is DISPROVED - the earlier reading ("no
+   `whitelistWorkers` pin") only means the pin LOG did not fire for this frame, not that the plan ignores it.
+
+2. **The compiler's model is consistent.** `SOLIDC_DEBUG_COMPUTE_BASE=1` on a full compile emits `DBG-COMPUTE-BASE`
+   records with the tracked stack index, what actually sits there (`resolvedName`) and the neighbouring hidden
+   parameters. For the new clones the owner base resolves exactly as it does for the working handlers:
+
+       __message_bus_entry_takeJob           branch=owner idx=17 resolved=__internal__messageBusOwnerInput
+         neighbours [dynamicChunkInputBase=18, messageBusOwnerInput=17]
+       __message_bus_entry_publishJobPost    branch=owner idx=26 resolved=__internal__messageBusOwnerInput
+         neighbours [dynamicChunkInputBase=27, messageBusOwnerInput=26]
+
+   `message-bus-clone-params` (`SOLIDC_DEBUG_ARG_ORDER=1`) shows both clones carrying the owner input appended after
+   the entry-key aliases and the logical caller, matching the generated vector's `[.., entryKeys, caller, owner,
+   oracleBase]` order.
+
+3. **The composed route context passes the right owner.** `SOLIDC_DEBUG_GRAPH_EMISSIONS=1` ->
+   `verifier-route-context`: `participant 0: __internal__proxyMasterIndex = 0` (participant 1: `131`).
+
+So the *values* are all correct, and the abort's index is the smoking gun: in the unoptimised probe the failing
+`OP_UTXOBYTECODE` reads index **152 = 129 + 23**, where 129 is the delegate EXECUTOR input and 23 is exactly
+`p0:entry#6` in the participant block (`deferred-stall-band`: `entry#0@20, entry#1@21, entry#5@22, entry#6@23`).
+The read therefore used `OP_INPUTINDEX` (the executing delegate input) as its base instead of the participant owner
+(0). In the optimised probe the same site consumed a 35-byte `aa20...` lock as the index, i.e. the tracked slot held
+a neighbouring operand.
+
+That is precisely the hazard the codegen already documents at `GenerateTargetTraversal.ts:32436-32451`:
+
+    MEASURED: switching this branch to the bottom-ordinal form ... removes the take-job empty-item OP_SPLIT but
+    regresses `close job` (2 titles) and `withdraw collateral` ... A fix for the take-job coordinate must therefore
+    correct the MODEL (or the specific base emitter), not the addressing form. See DBG-COMPUTE-BASE.
+
+Next round, one compile + one run: compile UNOPTIMISED with `SOLIDC_DEBUG_COMPUTE_BASE=1` and match the aborting
+body (13 instructions, parent 22949, failing ip 5 -> `outputLength` 5 in the parent emission is 48/1640 in that
+trace) against the `DBG-COMPUTE-BASE` records to name the emitter that produced it (`branch`, `resolvedName`,
+`neighbours`, `bodyIndex`). The records carry `outputLength` and `bodyIndex` for exactly this purpose. Then decide
+between correcting the specific base emitter for `entry` reads in a delegate *route* frame and correcting the model
+(the owner input reaching that body), keeping in mind the two known regressions (`close job`,
+`withdraw collateral`) that the addressing-form shortcut causes.

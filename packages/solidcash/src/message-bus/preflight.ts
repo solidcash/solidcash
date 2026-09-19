@@ -1370,6 +1370,19 @@ const evaluateEveryInput = (
           )),
         }));
       }
+      if (debugEnv?.SOLIDC_DEBUG_FAILURE_TRACE === '1'
+        && (requestedTraceInput === undefined || requestedTraceInput === inputIndex)) {
+        // A failing comparison has already popped its operands from `evaluated.stack`. The preceding trace states
+        // are the only place the two values (and the index a coordinate resolved to) can still be read.
+        const trace = vm.debug({ inputIndex, sourceOutputs, transaction });
+        console.error('message-bus-failure-trace', JSON.stringify(trace.slice(-4).map((state, offset, states) => ({
+          step: offset - states.length,
+          ip: state.ip,
+          opcode: state.instructions[state.ip]?.opcode,
+          error: state.error,
+          stackTail: state.stack.slice(-6).map((item) => binToHex(item)),
+        }))));
+      }
       if (debugEnv?.SOLIDC_DEBUG_CATEGORY_COUNTS === '1'
         && (requestedTraceInput === undefined || requestedTraceInput === inputIndex)) {
         const category = sourceOutputs[inputIndex]?.token?.category;
@@ -1599,6 +1612,17 @@ const evaluateEveryInput = (
       }
       const failureDebugEnv = (globalThis as { process?: { env?: Record<string, string> } }).process?.env;
       const failureDebugInput = Number(failureDebugEnv?.SOLIDC_DEBUG_ROUTE_INPUT_INDEX ?? inputIndex);
+      if (failureDebugEnv?.SOLIDC_DUMP_UNLOCKING_CHUNKS === '1' && failureDebugInput === inputIndex) {
+        // The failing input's unlocking bytecode carries the composed program and the message envelope the VM
+        // executed. Dump it on request alone: the ring dump below rebuilds the block assembly and can abort on an
+        // assembly that the ordinary preflight never reaches.
+        const unlockingHex = binToHex(transaction.inputs[inputIndex].unlockingBytecode);
+        console.error('message-bus-failing-unlocking-bytes', unlockingHex.length / 2);
+        for (let offset = 0; offset < unlockingHex.length; offset += 400) {
+          console.error('message-bus-failing-unlocking-hex',
+            `${offset / 2}:${unlockingHex.slice(offset, offset + 400)}`);
+        }
+      }
       if (failureDebugEnv?.SOLIDC_DEBUG_FAILURE_RING === '1' && failureDebugInput === inputIndex) {
         const unlockingInstructions = decodeAuthenticationInstructions(transaction.inputs[inputIndex].unlockingBytecode);
         const redeemBytecode = (unlockingInstructions.at(-1) as { data?: Uint8Array } | undefined)?.data;
@@ -1650,18 +1674,6 @@ const evaluateEveryInput = (
           inputIndex: offset + 105,
           commitment: output.token?.nft === undefined ? undefined : binToHex(output.token.nft.commitment),
         })));
-        if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-          ?.SOLIDC_DUMP_UNLOCKING_CHUNKS === '1') {
-          // The console printer truncates a long string, and the failing input's unlocking bytecode carries the
-          // composed program (and the message envelope) that the VM executes. Print it in bounded chunks so the
-          // executed body can be disassembled offline instead of only being observable through a re-run trace.
-          const unlockingHex = binToHex(transaction.inputs[inputIndex].unlockingBytecode);
-          console.error('message-bus-failing-unlocking-bytes', unlockingHex.length / 2);
-          for (let offset = 0; offset < unlockingHex.length; offset += 400) {
-            console.error('message-bus-failing-unlocking-hex',
-              `${offset / 2}:${unlockingHex.slice(offset, offset + 400)}`);
-          }
-        }
         if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
           ?.SOLIDC_DEBUG_FAILURE_RING === '1') {
           console.error('message-bus-selected-outputs', [3, 35, 40, 42, 105, 106, 107, 108, 109].map((outputIndex) => ({
@@ -2119,10 +2131,18 @@ const evaluateEveryInput = (
           lastOutputCategoryIndex?: number;
           lastOutputCategory?: string;
           lastOutputBytecodeIndex?: number;
+          lastInputBytecodeIndex?: number;
+          lastInputSourceLock?: string;
+          lastInputUnlockerLock?: string;
         } | undefined;
         let lastOutputCategoryIndex: number | undefined;
         let lastOutputCategory: string | undefined;
         let lastOutputBytecodeIndex: number | undefined;
+        // Input-side counterpart: a block/entry guard compares `tx.inputs[OP_INPUTINDEX + n].lockingBytecode`
+        // against an expected lock, so the index it resolved is the coordinate under test. Captured at the
+        // OP_UTXOBYTECODE that reads it, because the comparison itself has already popped both operands.
+        let lastInputBytecodeIndex: number | undefined;
+        let inputGuardOperands: Array<{ depth: number; bytes: number; hex: string }> | undefined;
         createVirtualMachineBch2026ForProvider(builder.provider, {
           opcodes: new Set([
             Op.OP_VERIFY, Op.OP_EQUAL, Op.OP_EQUALVERIFY, Op.OP_NUMEQUAL, Op.OP_NUMEQUALVERIFY,
@@ -2174,6 +2194,20 @@ const evaluateEveryInput = (
                   : []).slice(-4).map((item) => binToHex(item).slice(0, 40)),
               });
             }
+            if (state.instructions[state.ip]?.opcode === Op.OP_UTXOBYTECODE) {
+              const indexBytes = state.stack.at(-1);
+              lastInputBytecodeIndex = indexBytes === undefined ? undefined
+                : Number(vmNumberToBigInt(indexBytes));
+              if (state.instructions.length <= 12) {
+                // A short compiler-generated guard: its whole operand window is the only place the coordinate and
+                // the expected value can be read, so keep the top of the stack at the read.
+                inputGuardOperands = state.stack.slice(-8).map((item, offset, items) => ({
+                  depth: items.length - 1 - offset,
+                  bytes: item.length,
+                  hex: binToHex(item).slice(0, 80),
+                }));
+              }
+            }
             if (state.instructions[state.ip]?.opcode === Op.OP_OUTPUTBYTECODE) {
               const indexBytes = state.stack.at(-1);
               lastOutputBytecodeIndex = indexBytes === undefined ? undefined
@@ -2209,6 +2243,15 @@ const evaluateEveryInput = (
               lastOutputCategoryIndex,
               lastOutputCategory,
               lastOutputBytecodeIndex,
+              lastInputBytecodeIndex,
+              // The VM's own view of the input the guard read, next to what that input's unlocker would generate.
+              // A mismatch between the two is a stale source list; agreement means the guard's EXPECTATION is wrong.
+              lastInputSourceLock: lastInputBytecodeIndex === undefined ? undefined
+                : binToHex(sourceOutputs[lastInputBytecodeIndex]?.lockingBytecode ?? new Uint8Array()),
+              lastInputUnlockerLock: lastInputBytecodeIndex === undefined ? undefined
+                : binToHex((builder.inputs[lastInputBytecodeIndex] as unknown as {
+                  unlocker?: { generateLockingBytecode?: () => Uint8Array };
+                })?.unlocker?.generateLockingBytecode?.() ?? new Uint8Array()),
             };
           },
         }).evaluate({ inputIndex, sourceOutputs, transaction });
@@ -2274,6 +2317,7 @@ const evaluateEveryInput = (
           })),
         });
         console.error('message-bus-preflight-failure', {
+          inputGuardOperands,
           inputIndex,
           ip: evaluated.ip,
           opcode: evaluated.instructions[evaluated.ip]?.opcode,
@@ -2575,9 +2619,138 @@ export function mapMessageBusVmFailure(
 /** Refuse any covenant failure in an exact, fully assembled transaction. */
 export const assertFinalizedTransactionCovenants = (
   builder: TransactionBuilder, transaction: Transaction,
-): void => evaluateEveryInput(
-  builder, transaction,
-);
+): void => {
+  logComposedTransactionLayout(builder, transaction, 'converged');
+  return evaluateEveryInput(
+    builder, transaction,
+  );
+};
+
+/**
+ * Print the composed transaction's physical layout under `SOLIDC_DEBUG_LAYOUT=1`: every input and output with its
+ * participant block slot kind, its owning contract/function, its token identity, and the COORDINATE witnesses its
+ * unlocker supplies.
+ *
+ * The derivation system knows the exact layout it built, but that knowledge is spread across the block layouts, the
+ * per-input unlockers and the assembled slots - so answering "what is at input N, and what does its covenant think
+ * is there" otherwise costs a retrace per question. Slot kinds come from the compiler-published
+ * `blockLayout` of each participant master, so the labels are the compiler's own vocabulary (master, dataNft,
+ * entry, event, returnEvent, trailing, ...), not a re-derivation.
+ */
+export const logComposedTransactionLayout = (
+  builder: TransactionBuilder, transaction: Transaction, origin = 'finalized',
+): void => {
+  if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+    ?.SOLIDC_DEBUG_LAYOUT !== '1') return;
+  // The dump must never preempt the gate it describes: a rejected assembly is exactly the case where the layout is
+  // worth reading, so fall back to the per-input unlocker metadata instead of propagating the refusal.
+  let assembly: BalancedAssembly | undefined;
+  try {
+    assembly = preflightMessageBusBlockAssembly(builder);
+  } catch {
+    assembly = undefined;
+  }
+  const blockAt = (index: number): string => {
+    for (const block of assembly?.blocks ?? []) {
+      const local = index - block.base;
+      if (local < 0 || local >= block.blockLayout.blockSize) continue;
+      const slot = block.blockLayout.slots.find((candidate) => candidate.offset === local);
+      return `p${block.participant}+${local}:${slot === undefined ? '?' : slot.kind}${
+        slot?.slotIndex === undefined ? '' : `#${slot.slotIndex}`}`;
+    }
+    if (assembly?.verifierInputs.includes(index) === true) return 'verifier';
+    if (assembly?.feeInput === index) return 'fee';
+    if (assembly?.changeOutput === index) return 'change';
+    return 'outside';
+  };
+  const unlockerOf = (index: number): {
+    contract?: string; fn?: string; params?: readonly unknown[];
+    names?: readonly string[]; blockSize?: number;
+  } => {
+    const unlocker = (builder.inputs[index] as unknown as {
+      unlocker?: {
+        contract?: { artifact?: { contractName?: string } };
+        abiFunction?: { name?: string; inputs?: readonly { name: string }[]; blockLayout?: { blockSize: number } };
+        params?: readonly unknown[];
+      };
+    })?.unlocker;
+    return {
+      contract: unlocker?.contract?.artifact?.contractName,
+      fn: unlocker?.abiFunction?.name,
+      params: unlocker?.params,
+      names: unlocker?.abiFunction?.inputs?.map((input) => input.name),
+      blockSize: unlocker?.abiFunction?.blockLayout?.blockSize,
+    };
+  };
+  const asHex = (value: Uint8Array | string | undefined): string => {
+    if (value === undefined) return '-';
+    const hex = typeof value === 'string' ? value : binToHex(value);
+    return hex.length === 0 ? '-' : hex;
+  };
+  const tokenOf = (token: {
+    category?: Uint8Array | string; amount?: bigint;
+    nft?: { capability?: string; commitment?: Uint8Array | string };
+  } | undefined): string => {
+    if (token === undefined) return '-';
+    const category = asHex(token.category).slice(0, 8);
+    const capability = token.nft?.capability ?? 'ft';
+    const commitment = token.nft === undefined ? '' : `:${(asHex(token.nft.commitment).length / 2)}b`;
+    return `${category}/${capability}${commitment}`;
+  };
+  console.error('transaction-layout-participants', JSON.stringify({
+    origin,
+    builderInputs: builder.inputs.length,
+    transactionInputs: transaction.inputs.length,
+    transactionOutputs: transaction.outputs.length,
+    blocks: (assembly?.blocks ?? []).map((block) => ({
+      participant: block.participant,
+      base: block.base,
+      blockSize: block.blockLayout.blockSize,
+      slots: block.blockLayout.slots.map((slot) => `${slot.offset}:${slot.kind}${
+        slot.slotIndex === undefined ? '' : `#${slot.slotIndex}`}`).join(' '),
+    })),
+  }));
+  // The VM sees `generateLibauthSourceOutputs(builder.inputs)`, so print THAT locking bytecode - a UTXO whose
+  // generated lock differs from the one its own unlocker produces is a stale/placeholder input, and comparing the
+  // two is what turns that into a one-line observation instead of a trace.
+  const vmSourceOutputs = generateLibauthSourceOutputs(
+    builder.inputs as unknown as Parameters<typeof generateLibauthSourceOutputs>[0],
+  );
+  console.error('transaction-layout-inputs', JSON.stringify(builder.inputs.map((input, index) => {
+    const owner = unlockerOf(index);
+    const builderInput = input as unknown as {
+      satoshis: bigint;
+      token?: { category?: Uint8Array; amount?: bigint; nft?: { capability?: string; commitment?: Uint8Array } };
+      unlocker?: { generateLockingBytecode?: () => Uint8Array };
+    };
+    const coordinates = (owner.names ?? []).flatMap((name, position) => {
+      const value = owner.params?.[position];
+      if (!name.startsWith('__internal__')) return [];
+      if (typeof value === 'bigint') return [`${name.replace('__internal__', '')}=${value}`];
+      if (value instanceof Uint8Array) return value.length === 0 ? [] : [`${name.replace('__internal__', '')}=b${value.length}`];
+      return [`${name.replace('__internal__', '')}=${String(value)}`];
+    });
+    return [
+      `${index} ${blockAt(index)} ${owner.contract ?? '-'}.${owner.fn ?? '-'}`,
+      `lock=${asHex(vmSourceOutputs[index]?.lockingBytecode).slice(0, 12)}`,
+      `unlockerLock=${asHex(builderInput.unlocker?.generateLockingBytecode?.()).slice(0, 12)}`,
+      `outpoint=${String((input as unknown as { txid?: string }).txid ?? '?').slice(0, 8)}:${
+        String((input as unknown as { vout?: number }).vout ?? '?')}`,
+      `sat=${builderInput.satoshis}`,
+      `token=${tokenOf(builderInput.token)}`,
+      `commit=${asHex(builderInput.token?.nft?.commitment).slice(0, 20)}`,
+      `block=${owner.blockSize ?? '-'}`,
+      coordinates.length === 0 ? 'witnesses=-' : `witnesses=${coordinates.join(',')}`,
+    ].join(' | ');
+  })));
+  console.error('transaction-layout-outputs', JSON.stringify(transaction.outputs.map((output, index) => [
+    `${index} ${blockAt(index)}`,
+    `lock=${asHex(output.lockingBytecode).slice(0, 12)}`,
+    `sat=${String(output.valueSatoshis)}`,
+    `token=${tokenOf(output.token)}`,
+    `commit=${asHex(output.token?.nft?.commitment).slice(0, 20)}`,
+  ].join(' | '))));
+};
 
 /**
  * Evaluate every input of a fully assembled message bus transaction on the BCH-2026 VM, then decide its finalized
@@ -2594,6 +2767,7 @@ export const preflightMessageBusTransaction = (
   // Structural gate first: a malformed or unbalanced block assembly is rejected before any signature is taken.
   const assembly = requireMessageBusBlockAssembly(builder);
   const transaction = builder.buildLibauthTransaction();
+  logComposedTransactionLayout(builder, transaction, 'finalized');
   assertCanonicalMessageEnvelopePush(transaction, assembly);
   evaluateEveryInput(builder, transaction);
   // Byte rules LAST, so a transaction that cannot execute reports its semantic cause rather than whichever

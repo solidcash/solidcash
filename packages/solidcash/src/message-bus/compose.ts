@@ -3452,18 +3452,37 @@ export class AtomicMessageBusComposition {
             (input) => input.name === '__internal__dynamicChunkInputBase',
           ) ?? -1;
           const localChunkBase = chunkIndex < 0 ? undefined : masterUnlocker?.params?.[chunkIndex];
-          // The participant resolved this witness against its own frame, but the aggregate publishes that frame at
-          // `publishedBase`, so every absolute input coordinate in it must be relocated. The unlocker documents
-          // `syncEncodedArgsFromParams` for exactly this: it re-encodes the mutated slot and drops the cached
-          // unlocking bytecode. Without the resync the edit is invisible and the published script keeps addressing
-          // the participant-local input (measured: the FakeToken route read a funder instead of its chunk NFT).
-          const rebased = publishedBase > 0 && typeof localChunkBase === 'bigint' && localChunkBase >= 0n
-            && localChunkBase < BigInt(local.inputs.length)
-            ? localChunkBase + BigInt(publishedBase) : undefined;
-          if (rebased !== undefined && masterUnlocker?.params !== undefined) {
-            masterUnlocker.params[chunkIndex] = rebased;
-            masterUnlocker.syncEncodedArgsFromParams?.([chunkIndex]);
+          // The participant resolved these witnesses against its own frame, but the aggregate publishes that frame
+          // at `publishedBase`, so a witness the covenant addresses in TRANSACTION coordinates must be relocated.
+          // The unlocker documents `syncEncodedArgsFromParams` for exactly this: it re-encodes the mutated slot and
+          // drops the cached unlocking bytecode. Without the resync the edit is invisible and the published script
+          // keeps addressing the participant-local coordinate.
+          //   `__internal__dynamicChunkInputBase`  - read with OP_UTXOBYTECODE (measured: a funder instead of the
+          //                                          chunk NFT).
+          //   `__internal__vmapBatchPredOut_<slot>` - read with OP_OUTPUTBYTECODE (measured: the displaced
+          //                                          predecessor's P' output instead of this participant's).
+          // Sentinel values stay untouched: they are negative by construction (-1 no predecessor, -2 inactive or
+          // same-target alias), and a value outside this frame's extent cannot be a participant-local coordinate.
+          const relocatable: Array<{ index: number; name: string; limit: number }> = [];
+          if (chunkIndex >= 0) relocatable.push({ index: chunkIndex, name: 'dynamicChunkInputBase', limit: local.inputs.length });
+          for (const [index, input] of (masterUnlocker?.abiFunction?.inputs ?? []).entries()) {
+            if (/^__internal__vmapBatchPredOut_\d+$/.test(input.name)) {
+              relocatable.push({ index, name: input.name.replace('__internal__', ''), limit: local.outputs.length });
+            }
           }
+          const publishedRelocations: Array<{ name: string; from: string; to: string }> = [];
+          const resyncedIndices: number[] = [];
+          for (const candidate of relocatable) {
+            const value = masterUnlocker?.params?.[candidate.index];
+            if (publishedBase <= 0 || typeof value !== 'bigint' || value < 0n
+              || value >= BigInt(candidate.limit) || masterUnlocker?.params === undefined) continue;
+            const next = value + BigInt(publishedBase);
+            masterUnlocker.params[candidate.index] = next;
+            resyncedIndices.push(candidate.index);
+            publishedRelocations.push({ name: candidate.name, from: String(value), to: String(next) });
+          }
+          if (resyncedIndices.length > 0) masterUnlocker?.syncEncodedArgsFromParams?.(resyncedIndices);
+          const rebased = publishedRelocations.find((entry) => entry.name === 'dynamicChunkInputBase')?.to;
           if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
             ?.SOLIDC_DEBUG_ATOMIC_GRAPH === '1') {
             console.error('atomic-published-unlocker', JSON.stringify({
@@ -3476,8 +3495,9 @@ export class AtomicMessageBusComposition {
               params: masterUnlocker?.params?.length,
               selector: participant.artifact.messageBus?.selector,
               constructorInputs: participant.artifact.constructorInputs.length,
-              rebased: rebased === undefined ? undefined : String(rebased),
-              resynced: rebased !== undefined,
+              rebased,
+              relocations: publishedRelocations,
+              resynced: resyncedIndices.length > 0,
             }));
           }
         }

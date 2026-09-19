@@ -1568,6 +1568,18 @@ const evaluateEveryInput = (
               top: preState.stack.slice(-16).map((item, offset, items) => (
                 `${items.length - 1 - offset}:${item.length}:${binToHex(item).slice(0, 96)}`
               )),
+              // The BOTTOM region too: coordinates are built with `OP_DEPTH; <n>; OP_SUB; OP_PICK` terms as well,
+              // and those address ordinals counted from the bottom - the very slots this gate exists to check.
+              bottom: preState.stack.slice(0, 8).map((item, ordinal) => (
+                `${ordinal}:${item.length}:${binToHex(item).slice(0, 96)}`
+              )),
+              // Deep bottom ordinals too: a coordinate term can be a bottom pick far from the ends (measured: a
+              // term that reads the 41st item from the bottom, invisible in both the top window and the bottom 8).
+              bottomDeep: preState.stack.length > 40
+                ? preState.stack.slice(34, 46).map((item, offset) => (
+                  `${34 + offset}:${item.length}:${binToHex(item).slice(0, 96)}`
+                ))
+                : undefined,
             };
           })(),
           // Many output-conservation loops retain their current output index at the top of the stack. Reporting

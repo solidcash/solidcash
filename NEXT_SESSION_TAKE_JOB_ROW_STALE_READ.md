@@ -14046,3 +14046,34 @@ frame does not match.
 items; extend it to print the bottom region as well (`stack[0..8]` with ordinals) so the two bottom-relative picks
 can be read directly, then compare each term with what the model expects (the compiler can print its model at this
 site under a gate, exactly as `graph-emission-check` does for the emission path).
+
+Round 370: both stack regions of the post-job failure (and an honest open question)
+
+The pre-state dump now prints the top 16 items AND both bottom windows (`bottom` ordinals 0-7, `bottomDeep`
+ordinals 34-45). Measured at `post job 1`, input 216, ip 20588 (all 64 position-matching executions agree):
+
+    depth 78
+    top   d0 = 2:9a00 (154), d1 = 3:000100 (256), then job-post fields ("DIGITAL_VIDEO", a 130-byte blob, zeros)
+    bottom 0: 2:9800 (152)   1: 2:8300 (131)   2: 2:9700 (151)   3: 2:d600 (214)   4-7: empty
+    bottomDeep 34: 32-byte hash, 35: 9800 (152), 36: 32 zeros, 37: 03, 38: e3b0c442... (SHA256 of empty),
+               39: 01, 40: empty, 41: empty, 42: 76a914...88ac (P2PKH), 43: aa202c4b... (35-byte lock),
+               44: 4456, 45: aa2058c7... (35-byte lock)
+
+So the frame's BOTTOM region holds AGGREGATE LAYOUT COORDINATES (152, 131, 151, 214 - 131 is participant 1's
+base and 151 is its `returnEvent` slot, the very coordinate the take-job read landed on), while the top holds the
+job-post's own fields. The inline form of the check (previous round) builds the output coordinate as
+`pick_bottom(ordinal 2) + 21 + pick_bottom(ordinal 40) + pick_top(3) + pick_top(2)`; with the measured values that
+would be 151 + 21 + 0 + 1 + 0 = 173, but the output the diagnostic reports as addressed is 154 - so either the
+term-to-slot mapping or the identification of the compared pair is still wrong. (The VM message is only
+"Program failed an OP_VERIFY operation", so the pair cannot be confirmed from it.)
+
+**Next round**: single-step the coordinate ops in a build where this site is both REACHABLE and FAILING - i.e. keep
+the canonical build but aim the failure-point dump at the OUTLINED helper that contains the comparison (its
+instruction count and head identify it; `message-bus-failure-point.programLength` says the failing frame is 22949 -
+the data contract's body itself, so the check is inline there and the coordinate ops are at 20570-20588). Print the
+stack at each of those instructions (`SOLIDC_DEBUG_FAILURE_POINT` already prints a 26-instruction window; the
+per-instruction values are what is missing) to read the four terms as they are summed.
+
+**Verified state (defaults)**: greens 3 passed | 63 skipped (re-verified this round before the dump changes);
+fast fixture 1 passed | 1 skipped; artifacts canonical; the dump changes are gated by
+SOLIDC_DEBUG_FAILURE_POINT_PRE_STATE.

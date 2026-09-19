@@ -13708,3 +13708,35 @@ re-run the four titles with the capture on.
 
 **Default state re-verified after this round's change**: greens 3 passed | 63 skipped; fast fixture 1 passed |
 1 skipped; artifacts rebuilt canonically; the capture remains opt-in.
+
+Round 360: the emission check's MODEL (shipped stream) and the no-outline test
+
+`graph-emission-check` (new, compile-time gate `SOLIDC_DEBUG_ARG_ORDER=1`) now prints the model at the emission check
+for SHIPPED emissions only (`this.output.length > 0`; the first version printed the scratch subroutine-use-probe
+stream, whose positions address nothing that ships - the codebase warns about exactly that). For
+`__message_bus_entry_takeJob`, shipped records:
+
+    out 100  model 32  expectedIdx 23  top (__graph_emission_row), __dlcache_jobs, __rh85_target, ...
+    out 1786 model 43  expectedIdx 34  top (__graph_emission_row), __rh82_data, __inl47_approvalCall, ...
+    out 2078 model 50  expectedIdx 41  top (__graph_emission_row), __rh84_value, __rh83_data, ...
+    out 2331 model 59  expectedIdx 50  top (__graph_emission_row), __rh86_value, __rh85_data, ...
+    out 3025 model 52  expectedIdx 43  top (__graph_emission_row), (__graph_args), (__graph_target_selector), ...
+
+So the model DOES hold the constructed row on top with `__internal__graphEmissions` 23-50 slots deep, i.e. the
+emission order the code assumes is what the model says. The runtime pre-state from the previous round shows the
+116-byte VECTOR on top at the failing split, which is exactly what the outline's own `OP_PICK` pushes - so the
+outline's argument (a frame index) resolved to the vector, and the item the SWAP moves below it (the split index)
+is the 74-byte prefix rather than a computed length.
+
+**Outlining is not the culprit.** With the capture on AND outlining disabled (`SOLIDCASH_NO_OUTLINE=1`, the
+documented escape hatch) the three titles still fail - at a DIFFERENT place:
+`input 3, ip 4537 of 9343, failing opcode 136 (OP_EQUALVERIFY), window 138 126 192 83 148 81 147`. So the capture's
+incompatibility is not (only) the outlined check: with a correctly captured owner the flow reaches other checks that
+then fail, which means the *plan side* (the SDK's expected rows / participant identities) is calibrated to the value
+the positional read produced. That is the next thing to compare: run a build with the capture on and dump the
+emission rows the plan expects versus the row the contract constructs (both are available: the row is built in
+`GenerateTargetTraversal` ~19090-19145, the expectation comes from `graphEmissions` / the composer's row tables).
+
+**Verified state (defaults)**: greens 3 passed | 63 skipped; fast fixture 1 passed | 1 skipped; artifacts rebuilt
+canonically; capture still opt-in; the new emission-check diagnostic is gated and only fires with
+`SOLIDC_DEBUG_ARG_ORDER=1`.

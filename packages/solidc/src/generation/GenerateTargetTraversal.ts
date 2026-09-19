@@ -19164,6 +19164,23 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (returnTypes.length === 0) {
       throw new Error('Graph result metadata declares a return without a result type');
     }
+    if (this.output.length > 0
+      && (globalThis as { process?: { env?: Record<string, string> } }).process
+        ?.env?.SOLIDC_DEBUG_ARG_ORDER === '1') {
+      // The sibling of the phantom-slot fix documented above the selector path: this check reads the item on TOP
+      // as the constructed prefix and then picks the emissions vector. A model that is even ONE slot deeper than
+      // the runtime makes the size come from the vector instead of the prefix (measured: index 116 = the vector's
+      // length against a 74-byte prefix). Printing the model beside the runtime depth is what makes that
+      // countable rather than inferred - compare with the failing pre-state's stack length.
+      console.error('graph-emission-check', JSON.stringify({
+        function: this.currentFunction.name,
+        modelLength: this.stack.length,
+        expectedIndex: this.getStackIndex('__internal__graphEmissions', true),
+        outputLength: this.output.length,
+        stackTop: this.stack.slice(0, 8),
+        stackBottom: this.stack.slice(-8),
+      }));
+    }
     // Split the authenticated emission at the compiler-constructed target/selector/args prefix.
     this.emit(Op.OP_DUP, locationData);
     this.emit(Op.OP_SIZE, locationData);

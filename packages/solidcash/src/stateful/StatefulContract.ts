@@ -13073,6 +13073,17 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         }
 
         let eventCommitments: string[] = [];
+        if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+          ?.SOLIDC_DEBUG_EVENT_DERIVE === '1') {
+          console.error('event-derive', JSON.stringify({
+            functionName,
+            eventOutputCount,
+            entryOutputCount,
+            containerOutputCount,
+            hasStateCommitments: !!commitmentHexes,
+            extracted: eventCommitments.length,
+          }));
+        }
         if (eventOutputCount > 0 && commitmentHexes && extraOutputs) {
           const eventExtraStart = entryOutputCount + containerOutputCount;
           const eventBase = 1 + requiredNftIndices.length + bhProbeCoSpends.length
@@ -13084,6 +13095,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           for (let i = 0; i < eventCommitments.length; i++) {
             const output = extraOutputs[eventExtraStart + i];
             if (output?.token?.nft) output.token.nft.commitment = eventCommitments[i];
+          }
+          if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+            ?.SOLIDC_DEBUG_EVENT_DERIVE === '1') {
+            console.error('event-derive-extracted', JSON.stringify({
+              functionName, eventOutputCount, commitments: eventCommitments.map((c) => c.slice(0, 24)),
+            }));
           }
         }
 
@@ -13175,8 +13192,17 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         );
       }
     } catch (e) {
-      // Only swallow AutoDerivationError - let all other errors propagate.
+      // Only swallow AutoDerivationError - let all other errors propagate. A swallowed failure otherwise leaves no
+      // trace of WHY the frame's state/entry/event commitments were never derived, which is exactly the question a
+      // refused probe raises.
       if (e instanceof AutoDerivationError) {
+        if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+          ?.SOLIDC_DEBUG_DERIVE_SWALLOW === '1') {
+          console.error('derive-swallowed', JSON.stringify({
+            functionName,
+            message: e.message.slice(0, 400),
+          }));
+        }
         return { state: undefined, entryCommitments: [], childCommitments: [] };
       }
       throw e;

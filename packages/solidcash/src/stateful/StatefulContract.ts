@@ -17696,6 +17696,33 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               hasToken: !!input.token,
             })),
             outputCount: failOutputs.length,
+            // The identity-anchor witnesses are INPUT coordinates the covenant verifies in place, so the frame the
+            // probe evaluated is only readable if each one is paired with what actually sits there.
+            executedAnchorArgs: executedUnlocker?.abiFunction?.inputs.flatMap((input, index) => (
+              /extcallAnchorIdx/i.test(input.name)
+                ? [{
+                  name: input.name,
+                  value: String(executedUnlocker.params?.[index]),
+                  inputAt: (() => {
+                    const raw = executedUnlocker.params?.[index];
+                    const at = typeof raw === 'bigint' ? Number(raw)
+                      : typeof raw === 'number' ? raw
+                        : typeof raw === 'string' && raw !== '' ? Number(raw) : -1;
+                    if (at < 0 || at >= failInputs.length) return undefined;
+                    const unlocker = (failInputs[at] as {
+                      unlocker?: { generateLockingBytecode?: () => Uint8Array };
+                    }).unlocker;
+                    const lock = unlocker?.generateLockingBytecode?.();
+                    return {
+                      index: at,
+                      lock: lock ? binToHex(lock).slice(0, 24) : undefined,
+                      cap: failInputs[at]?.token?.nft?.capability,
+                      commit: String(failInputs[at]?.token?.nft?.commitment ?? '').slice(0, 32),
+                    };
+                  })(),
+                }]
+                : []
+            )),
             executedReturnOutputArgs: executedUnlocker?.abiFunction?.inputs.flatMap((input, index) => (
               /ReturnOutputIdx/i.test(input.name)
                 ? [{

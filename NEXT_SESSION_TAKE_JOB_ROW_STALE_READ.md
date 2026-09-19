@@ -12855,3 +12855,43 @@ of the trailing band), not the owner plumbing.
 Reproduction: `SOLIDC_DEBUG_ENTRY_COUNTS=1` prints `deferred-stall-executor-calldata` next to
 `deferred-stall-band`/`-sidecars`/`-io-full`, so the executor layout can be read side by side with the frame's own
 calldata in ONE run.
+
+Round 344: the unoptimised probe dies in a MarketplaceDataV1 fragment, and the probe program has 472 inputs
+
+Two new identifications, both from artifacts already on disk plus the existing flags.
+
+1. **The UNOPTIMISED aborting body is identified exactly.** `probe-terminal` reported `ownInstructions: 2378`? no -
+   for the unoptimised run it reported `ownInstructions: 13`, `callers [{len:1640, ip:1640}, {len:22949, ip:48}]`,
+   failing ip 5 with window `[0x51,0x79,0x93,0x76,0xc7,0x55,0x79]`. Scanning every compiled artifact for a
+   13-instruction body with that signature gives exactly ONE hit:
+
+       MarketplaceDataV1.json  invokeDebug[-144]
+       0:0x51 OP_1  1:0x79 OP_PICK  2:0x93 OP_ADD  3:0x76 OP_DUP  4:0xc7 OP_UTXOBYTECODE
+       5:0x55 OP_5  6:0x79 OP_PICK  7:0x88 OP_EQUALVERIFY  8:0x76 OP_DUP
+       9:0xce OP_UTXOTOKENCATEGORY 10:0x76 OP_DUP 11:0x01… push 12:0x8a OP_INVOKE
+
+   i.e. the "verify the co-spent callee (lock + category) then OP_INVOKE it" pattern, reading a UTXO index it
+   computed itself (`OP_1 OP_PICK OP_ADD`). Its parent frame is `MarketplaceDataV1.functionBodies['53434231']`
+   (22949 instructions - the only body in the whole artifact set of that size), so in the unoptimised build the
+   probe dies inside the **MarketplaceDataV1 participant frame**, NOT in the takeJob clone. The optimised build
+   dies elsewhere (`__message_bus_entry_takeJob` ip 220, the `whitelistWorkers` read). Two different fragments die
+   depending on optimisation, which points at the composed coordinate space rather than one emitter.
+
+2. **The stall error now reports the probe program's own size** (commit in this round):
+
+       messageBus: complete graph did not expose arguments for all deferred compute resources
+         (participant 0: keccak 2/2 unresolved, ecrecover 1/1 unresolved)
+         [probe program: 472 inputs, 472 outputs]
+
+   Measured sizes differ between builds: 472 inputs in the optimised run, while the unoptimised probe aborted with
+   "Transaction UTXO count: 87; requested index: 152". So the aggregate the resolver probes is not the same shape in
+   both builds, and a coordinate that is valid in one (152 < 472) can be past the end in the other (152 > 87) - the
+   same generated read, two different verdicts. That is now visible in the failure itself.
+
+Next round, one run: with the probe size in hand, check whether resolution happens at a point where the aggregate is
+still growing. The composer's rounds rebuild the assembly, and `deferredComputeCache` is keyed on a graph digest; if
+the probe is evaluated against an aggregate that later gains inputs, every *absolute* coordinate baked into a row
+body (the `entry` offsets, the executor-relative families, the `OP_1 OP_PICK OP_ADD` callee index above) is stale
+until the end. `SOLIDC_DEBUG_ENTRY_COUNTS=1` plus the new size suffix should show whether the failing round is the
+first or a later one; if it is the first, the fix is to resolve deferred compute only after the block/tail assembly
+is layout-complete (or to pad the probe to the final layout).

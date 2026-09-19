@@ -4254,7 +4254,11 @@ export class AtomicMessageBusComposition {
               });
             throw new Error(
               'messageBus: complete graph did not expose arguments for all deferred compute resources'
-              + (stalled.length > 0 ? ` (${stalled.join('; ')})` : ''),
+              + (stalled.length > 0 ? ` (${stalled.join('; ')})` : '')
+              // The probe is built from this aggregate, and its own coordinate space is what a generated read
+              // addresses. A coordinate past the end aborts the probe before the compute read sites - which is
+              // indistinguishable from "the graph did not expose the arguments" without these counts.
+              + ` [probe program: ${aggregate.inputs.length} inputs, ${aggregate.outputs.length} outputs]`,
             );
           }
           rebalanceFeeTail(aggregate, 'resolved compute-sidecar witnesses');

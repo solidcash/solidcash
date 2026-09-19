@@ -13105,3 +13105,44 @@ if it becomes 153 the frame's base really is `__internal__proxyMasterIndex`, whi
 `participantInputs[participant]` - 0 for p0 - so a p0 frame receiving 131 means the witness band belongs to another
 participant. (2) Grep the SDK for the producer of the `(kind, categoryId, lockingBytecode)` entry descriptor that
 carries `aa201668…`/`bac4afa3…`, and check whether it is cached or derived per collection instead of per instance.
+
+Round 349b: p0's witness band is correct, and the frame picks a DIFFERENT witness
+
+`SOLIDC_DEBUG_ENTRY_COUNTS=1` now also prints `participant-witness-band` (the hidden witnesses each participant's own
+batch is built with). Measured, once per participant:
+
+    p0 MarketplaceV1      kind 1 base 0   execOff 129 proxyMasterIndex 0    activeVerifier 466 returnOutputIdx -1
+    p1 MarketplaceDataV1  kind 1 base 131 execOff  85 proxyMasterIndex 131  activeVerifier 467 returnOutputIdx 151
+    p2 FakeToken          kind 0 base 218           proxyMasterIndex -    activeVerifier 468 returnOutputIdx 240
+    p3 Unicrow            kind 0 base 306                                   activeVerifier 469 returnOutputIdx 322
+    p4 UnicrowArbitrator  kind 0 base 388                                   activeVerifier 470 returnOutputIdx -1
+
+So p0's `__internal__proxyMasterIndex` really is 0 and 131 only appears in p1's band - yet the p0 frame added
+131 to the literal 20. `SOLIDC_DEBUG_DERIVE_TRACE_STACK_DEPTH=75` on the same call site shows which item the
+bottom-relative pick actually consumed (depths counted from the top, at ip 229 and again at the OP_INVOKE ip 232):
+
+    71: 1:00                      <- a one-byte 0, i.e. some participant's master index
+    72: 36:23aa202b89...          <- framed locking bytecode (23 + 35 bytes) of p1
+    73: 86:534342310100017474f9... <- the batch blob (magic 53434231)
+    74: 2:d201   = 466            <- p0's __internal__activeVerifierIndex
+    75: 2:8300   = 131            <- PICKED BY THE FRAME
+    76: 2:8300   = 131
+    77: 997:2300aa202b89...       <- __internal__graphEmissions (starts with framed p1 lock = a call target)
+    78: 27:190076a91447d9fe...88ac<- a framed signature row
+
+`131` is p0's own BLOCK SIZE (`graphFixedSize`/`graphBlockSize` of a 131-slot block), not a base: the frame's
+bottom-relative pick resolved to a neighbouring witness instead of its owner master index (the `1:00` one slot
+further up), which is exactly the +131 shift - 151 instead of the 20 that `route.entryAccesses` declares for the
+takeJob row's `whitelistWorkers` entries (participant p0, slots 0/1/5/6 = absolute 20/21/22/23).
+
+Why the owner sentinel still changes the outcome even though the pick is not `proxyMasterIndex`: the deferred
+resolver iterates `[executionInput, ...candidateExecutions]` and breaks on FIRST progress, so shifting p1's band
+(131 -> 153 under the sentinel) is enough to make some candidate probe succeed and let the learning finish - the
+p0 frame's own broken read stays broken and preflight then dies on it (empty return encoding, see the round above).
+
+**Next round**: reconstruct the compiler's expected witness stack order for `__message_bus_entry_takeJob` (route ABI
+order + the SDK's push order) and compare it with the measured band above. If the compiler's pick depth assumes a
+layout the SDK does not produce - a missing/extra slot, or a different order - the general fix is to make the
+bottom-relative owner pick address the declared witness by ROLE rather than by a fixed depth, or to push the band in
+the compiler's declared order. The measured band is printed by `SOLIDC_DEBUG_ENTRY_COUNTS=1`, the depths by
+`SOLIDC_DEBUG_DERIVE_TRACE_OPS=1 ..._INSTRUCTION_COUNT=2408 ..._STACK_DEPTH=75`.

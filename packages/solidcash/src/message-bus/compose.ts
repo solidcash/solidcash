@@ -2892,6 +2892,32 @@ export class AtomicMessageBusComposition {
             }),
           }));
         }
+        if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+          ?.SOLIDC_DEBUG_ENTRY_COUNTS === '1') {
+          // The hidden witnesses ARE the coordinates a frame computes its block slots from. Printing the band each
+          // participant's own batch receives is the only way to tell a frame that was handed another participant's
+          // base from one whose own slot offset is wrong.
+          const band = (name: string): string => {
+            const value = (internalRouteWitnesses as Record<string, unknown>)[name];
+            return value instanceof Uint8Array
+              ? `${value.length}b:${binToHex(value).slice(0, 24)}` : String(value);
+          };
+          console.error('participant-witness-band', JSON.stringify({
+            participant: participant.participant,
+            contract: participant.artifact.contractName,
+            executionKind: participant.executionKind,
+            base: graph.layout.participantInputs[participant.participant],
+            executorOffset: participant.executorOffset,
+            proxyMasterIndex: band('__internal__proxyMasterIndex'),
+            activeVerifierIndex: band('__internal__activeVerifierIndex'),
+            returnOutputIdx: band('__internal__returnOutputIdx'),
+            dynamicChunkInputBase: band('__internal__dynamicChunkInputBase'),
+            calls: participant.invocations.map((invocationIndex) => ({
+              function: plan.invocations[invocationIndex]?.function,
+              callee: plan.invocations[invocationIndex]?.callee,
+            })),
+          }));
+        }
         const localCall = contract._batchRaw(
           participant.batch.blob,
           participant.batch.routeWitnesses as FunctionArgument[],

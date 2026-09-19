@@ -34742,6 +34742,35 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const trace = evaluateProbeTrace(this.inner.provider, { inputIndex, sourceOutputs, transaction });
     this.lastReturnProbeFailure = this.describeReturnProbeFailure(trace, inputIndex);
     if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+      ?.SOLIDC_DEBUG_PROBE_DEFINES === '1' && this.lastReturnProbeFailure !== undefined) {
+      // Resolve the frame's own OP_DEFINE table: a body's `push(id) OP_INVOKE` names a definition the FRAME
+      // installed, which is the only authority for what that callable does (the artifact's `invokeDebug` uses the
+      // same numbering by construction, but a mismatch here is otherwise indistinguishable from a wrong operand).
+      const definitions: string[] = [];
+      try {
+        const instructions = bytecodeToScript(
+          transaction.inputs[inputIndex]?.unlockingBytecode ?? new Uint8Array(),
+        );
+        if (Array.isArray(instructions)) {
+          for (let at = 0; at < instructions.length; at += 1) {
+            if (instructions[at] !== 0x89) continue;
+            const body = instructions[at - 1];
+            const id = instructions[at - 2];
+            if (!(body instanceof Uint8Array) || !(id instanceof Uint8Array)) continue;
+            definitions.push(`${binToHex(id)}:${body.length}b:${binToHex(body).slice(0, 24)}`);
+          }
+        }
+      } catch {
+        definitions.push('undecodable');
+      }
+      console.error('probe-frame-defines', JSON.stringify({
+        inputIndex,
+        count: definitions.length,
+        shortest: definitions.slice().sort((left, right) =>
+          Number(left.split(':')[1].replace('b', '')) - Number(right.split(':')[1].replace('b', ''))).slice(0, 12),
+      }));
+    }
+    if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
       ?.SOLIDC_DEBUG_PROBE_IO === '1') {
       console.error('probe-return-slot', JSON.stringify({
         returnOutputIndex,

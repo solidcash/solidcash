@@ -13257,3 +13257,51 @@ Consequence for the fix: the owner must be anchored by VALUE. A cheap variant th
 caller already knows its own stack, so the generated call site can push the owner again as the LAST argument (a
 duplicate of the band entry the callee reads positionally at entry) and the callee can pick it top-relatively at
 entry - exact there - and immediately move it to the alt stack for drift-free later reads.
+
+Round 351: the frame's entry stack proves the MODEL is wrong, not the addressing form
+
+**The call site is consistent.** With `SOLIDC_DEBUG_ARG_ORDER=1` (compile-time gate, cache moved aside) the two ends
+of the takeJob call agree one for one:
+
+    clone `__message_bus_entry_takeJob` parameters (at owner-append time):
+      jobId_, signature_, __message_bus_ek___message_bus_key_whitelistWorkers_0,
+      __message_bus_ek___message_bus_key_whitelistWorkers_1, __message_bus_logical_caller,
+      __internal__messageBusOwnerInput
+    generated call vector (dispatchFor): jobId_, signature_, key_whitelistWorkers_0,
+      key_whitelistWorkers_1, __message_bus_graph_caller, __internal__proxyMasterIndex
+
+so the owner parameter is fed from the SDK's `__internal__proxyMasterIndex` witness - 0 for participant 0 - exactly
+as intended, and the arity matches. (The audit comment above the clone-parameter append warns that witnesses
+injected LATER are spliced BEFORE the owner, which is what makes a positional call fragile; here the injection
+landed before the owner, i.e. deeper, and the call is fine.)
+
+**The entry stack, measured** (`SOLIDC_DEBUG_DERIVE_TRACE_OPS=1 ..._INSTRUCTION_COUNT=2408 FROM_IP=0 TO_IP=3
+STACK_DEPTH=0`). Instruction 0 of `__message_bus_entry_takeJob` is `OP_2`; the depth window at ip 1 therefore shows
+that push plus the entry stack underneath:
+
+    depth 0: 1:02      <- the body's own OP_2
+    depth 1: 0:        <- ENTRY TOP: an empty item, i.e. 0 = the window's own master index for p0
+    depth 2: 65 bytes  <- signature_
+    depth 3: 0:        <- jobId_ (0 in this title)
+    depth 4: 25 bytes 76a91447d9fe...88ac  <- the logical caller / graph caller address
+
+So at entry the runtime frame's TOP is the owner (the last argument of the vector), then the caller, then the
+entry keys, then the source args - i.e. the caller pushes the argument vector in declaration order, exactly as the
+call site says.
+
+**Therefore the model is the defect.** `DBG-BOTTOM-PICK` reports the owner at `topIndex = modelLength - 15`, i.e.
+15+ items BELOW the model's top and at bottom ordinal 14, while the runtime has it at depth 0. That single
+divergence explains both measured misreads: the bottom ordinal (14) lands on `graphFixedSize`/`graphBlockSize` and
+the top-relative index lands on another frame item - which is why forcing either form
+(`SOLIDC_DEBUG_OWNER_TOP_HANDLER`) leaves the title stalling.
+
+**Next round (concrete).** Fix the model rather than the pick: a frame parameter's tracked position must be where
+the caller's argument vector actually leaves it. Two candidate spellings, both testable with the same tools:
+  (1) emit the owner read as a DEPTH-0 pick at body entry (the argument vector's last element is on top) and copy
+      it into a tracked local that every later read addresses; or
+  (2) correct the parameter positions the compiler seeds into the frame model for route clones (compare
+      `message-bus-clone-params` + `message-bus-arg-order` against the entry stack above), then keep the ordinary
+      compact top-relative form.
+Verification for either: the title must stop aborting at the 12-instruction outlined body (probe operand pair
+`observed aa20953ccf...` vs `expected aa201668...`) and the coordinate must become 20 (participant 0's entry slot
+0) instead of 151; then re-run the two compact-form titles (`close job` both variants, `withdraw collateral`).

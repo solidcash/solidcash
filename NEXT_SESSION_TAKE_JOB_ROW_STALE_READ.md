@@ -14114,3 +14114,57 @@ the output coordinate is the wrong one.
 
 **Verified state (defaults)**: fast fixture 1 passed | 1 skipped; greens 3 passed | 63 skipped (verified earlier this
 round on the same build); artifacts canonical; all new prints gated.
+
+Round 372: the outlined emission check - inline passes, outlined fails (same data), and the coherent cause
+
+Measurements this round (capture build = `SOLIDC_OWNER_ALT_ANCHOR=1`, where the check reproduces):
+
+  * failing frame: 6 instructions (the outline), window `121 124 127 124 123`;
+  * control stack: `{ip:1652, count:1652}, {ip:3159, count:11117}, {ip:321, count:6338}, {ip:2, count:7}` - so the
+    check is reached through a THREE-level outlining chain (11117 -> 6338 -> 7 -> 6);
+  * with outlining DISABLED the same build does NOT fail at this check (the failure moves to
+    `input 3, ip 4537 of 9343, failing opcode 136`);
+  * canonically (no capture, outlined) the check PASSES.
+
+The new `SOLIDC_DEBUG_FAILURE_POINT_TRACE_ANY=1` makes the ip-range trace frame-agnostic (the coordinate/size
+instructions live in the CALLER frame, so the default same-frame filter showed nothing); the trace still reports only
+the failing ip because the ring's window never contains the earlier ips of the failing pass.
+
+**Coherent cause.** The check rebuilds/compares the emission row's `address(this)` lane. With the positional owner the
+lane is one value and the comparison passes; with the anchored (correct) owner the lane's LENGTH changes (a 1-byte
+owner value vs a 35-byte locking bytecode), so the contract's row and the plan's expected row (`graphEmissions`,
+built by the composer from the prepared call's arguments) disagree on that lane. Inline, a different-length prefix
+makes the split itself legal so the failure surfaces later (at the comparison); outlined, the split sees the
+mismatched lengths and fails first. That explains every observation: same data, different failure site; canonical
+pass (both sides use the positional value); capture fail (only the contract's side changes).
+
+**Next round's concrete check (plan/contract lane equality)**: print, in the composer, for one invocation: the
+prepared call's argument list, `descriptor.targetLockingBytecode`, the participant's owner/master locking bytecode and
+its `stateCategory`, then compare the `address(this)` lane the contract derives (`emitMasterInputIndex` +
+`OP_UTXOBYTECODE` = the owner input's locking bytecode) with the value the plan put in `graphEmissions`. If they
+differ, the fix belongs on the plan side: derive that lane from the owner input's locking bytecode (the same source
+the contract uses), not from the SDK's own notion of the contract address.
+
+Round 373: CONFIRMED - the contract's emission row carries the CALLER's address, not the callee's
+
+The capture build's failing stack holds both structures at once (pre-state of the OP_SPLIT, input 129):
+
+    d1/d2 (the contract's constructed row prefix, 74 bytes, duplicated by OP_DUP):
+        9f0bb8a9 23 aa20178dbf211c4f16cc3b34e6c634722d0c5df96ce2a6247c0618910275a49ea85e87 21 ...
+    d0 (the plan's expected vector, 116 bytes):
+        2300 aa2008ddbbe2df1bce62cd385535ca6be28894acd17c8b15fef743fa09d20164f81687 00 9f0bb8a9 48 00 23 ...
+
+`SOLIDC_DEBUG_FAILURE_POINT_FULL=1` places both addresses in the composition:
+
+    output lock aa20178dbf211c4f...  category a3cef94467ca...   <- participant 0's own output
+    output lock aa2008ddbbe2df1b...  category ee643a1671fb...   <- participant 1's (MarketplaceDataV1) output
+
+and `routeParams.__internal__graphEmissions` starts with `2300 aa2008ddbbe2df1b...`, i.e. the PLAN expects this row's
+target to be participant 1 (correct: the row is the `marketplaceData.publishJobEvent(...)` call), while the CONTRACT
+built the row with participant 0's address. So the contract-side lane is wrong - a callee-identity read that
+resolved to the CALLER's address.
+
+The compiler's own diagnostic names the local that carries such an address: `DBG-COMPUTE-BASE` for the takeJob body
+lists `__extaddr_marketplaceData` (an external-address local). **Next step**: find where that local is initialised
+and which message-bus argument feeds it - it must be the callee participant's authenticated address, and it is
+currently ending up as the caller's. That is a concrete, localisable defect rather than a coordinate mystery.

@@ -14302,3 +14302,49 @@ at ip 2, minus the fragment's caller frames). Then fix the STREAM PICK, not the 
 emission stream addressable independently of the site's top-relative depth (e.g. re-pick it by a bottom ordinal
 captured at body entry, or thread the peeled remainder back as a named handler input), rather than a model index
 baked where the row was constructed.
+
+Round 376 (cont.): the failing outlined body IS the emission-stream consumer, and its PICK depth is 57
+
+Attribution, without guessing at the emitter
+- The two `graph-emission-consume` records for line 219 (`__message_bus_entry_publishJobPost`) read
+  `modelLength 63 / expectedIndex 55` and `modelLength 75 / expectedIndex 67`. The consumer pushes
+  `(__graph_runtime_row_length)` BEFORE the stream pick, so the depth constant it emits is `expectedIndex + 2`
+  = 57 for the first expansion.
+- The outlined body's call site in that entry body pushes exactly 57 (`push 57; push 23; INVOKE` under
+  `SOLIDCASH_NO_OUTLINE=1` inline form), so the fragment that aborts belongs to that site.
+- With `SOLIDCASH_NO_OUTLINE=1` the fragment's inline form is visible: `push <d>; OP_PICK; OP_SPLIT; OP_CAT;
+  OP_SPLIT; OP_ROT; OP_EQUALVERIFY`. `__message_bus_entry_publishJobPost` contains 10 such sites, and the
+  consumer records report 10 positive `outputLength` positions whose inter-site deltas track the inline sites'
+  deltas (measured 291 vs 291 and 251 vs 252 elements). The fragment is therefore the optimised form of the
+  consumer's `DUP SIZE NIP; PICK; SWAP SPLIT SWAP ROT EQUALVERIFY`, i.e. the SPLIT/CAT pair is the
+  split-and-rejoin of the optimiser, not a separate emitter.
+
+What that means for the abort
+- `PICK 57` must copy `__internal__graphEmissions`, but at runtime the item 57 below the top was a 36-byte
+  1-byte-framed lock (`23 aa20178dbf...`), i.e. the target frame of a VECTOR ENTRY; the row's own length (116)
+  then became the split index and `OP_SPLIT` aborted. The ROW CONSTRUCTION IS CORRECT - the ip-2 runtime state
+  shows the 116-byte row on top with the right lane (`aa2008ddbb...`) and the two 74-byte vector entries below
+  it. The defect is the STREAM PICK being off relative to the runtime frame, not the row.
+- The drift is one-sided and small (one slot is enough to land on that lock), which is the same failure shape the
+  file already documents for the X2 phantom slot ("every later name lookup read one item too deep and the graph
+  emission row split the wrong stack value").
+
+Gotchas measured this round (both cost real time)
+- `.marketplace/cache` does NOT key on `SOLIDCASH_NO_OUTLINE`. A canonical `npx solidhat compile` right after a
+  no-outline compile reports 22/22 cache hits and leaves the NON-outline artifacts on disk. Always
+  `mv .marketplace/cache /tmp/...` before the canonical rebuild. Done here: the tree is canonical again (cold
+  22-job compile, 516 `invokeDebug` entries, `outlined source span 23` present).
+- `artifact.bytecode` is ASM text (with hex fragments), NOT hex. Hex lives in `artifact.debug.bytecode`,
+  `artifact.functionBodies[*]` and `debug.invokeDebug[*].bytecode`. Several earlier rounds' "byte offset"
+  searches against `artifact.bytecode` were searching text.
+
+Verification on the final tree this round: `close job` (both titles) + `withdraw collateral` = 3 passed |
+63 skipped; `take job` = 1 failed | 65 skipped with the same `stack item length: 36; requested split index: 116`.
+
+**Next round**: fix the STREAM PICK, generally. Two shapes to measure, in this order:
+(a) runtime frame anchor - capture `OP_DEPTH` in the body prologue into a tracked frame slot and derive
+    frame-relative reads from it (`entryDepth - (entryModelLength - index)`), so nothing pushed above the frame
+    can shift a pick;
+(b) track the row loop's runtime-only operands in the model (`pushToStack` placeholders) so the top-relative
+    index is correct at the source, which is the "correct the MODEL, not the addressing form" route the
+    `emitMasterInputIndex` comments point at.

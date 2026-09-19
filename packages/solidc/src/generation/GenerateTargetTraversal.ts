@@ -28840,6 +28840,23 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
 
     // Encode the category, then compute the tagged 256-bit chunk domain from the tracked slot/root.
+    if ((globalThis as { process?: { env?: Record<string, string> } }).process
+      ?.env?.SOLIDC_DEBUG_ARG_ORDER === '1') {
+      // This reconstruction builds an ENTRY ADDRESS from two tracked frame values and then compares it with an
+      // output's locking bytecode. When that comparison fails, the question is which of the two picks resolved to
+      // the wrong item - which needs the model's view (index, neighbours, how many untracked operands sit above it)
+      // beside the runtime stack the pre-state dump prints.
+      console.error('value-chunk-p2sh32', JSON.stringify({
+        function: this.currentFunction.name,
+        slotName,
+        slotIndex: this.getStackIndex(slotName, true),
+        rootName,
+        rootIndex: this.getStackIndex(rootName, true),
+        modelLength: this.stack.length,
+        stackTop: this.stack.slice(0, 6),
+        functionId: this.currentFunction.functionId,
+      }));
+    }
     this.emit(hexToBin('20'), locationData); this.emit(Op.OP_SWAP, locationData); this.emit(Op.OP_CAT, locationData);
     this.emit(Uint8Array.from([...VALUE_CHUNK_DOMAIN_TAG, ...collectionHash]), locationData);
     this.emit(encodeInt(BigInt(this.getStackIndex(slotName) + 1)), locationData); this.emit(Op.OP_PICK, locationData);

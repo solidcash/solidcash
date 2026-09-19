@@ -13606,3 +13606,40 @@ tracked stack at that site with `SOLIDC_DEBUG_EMIT_TRAP=1`).
 
 **Verified state (defaults: both gates off)**: greens 3 passed | 63 skipped; fast fixture 1 passed | 1 skipped;
 `take job` unchanged; artifacts rebuilt canonically; tree clean.
+
+Round 357: the outlined emission check decoded - it is the same model/frame divergence
+
+**The check, decoded.** `GenerateTargetTraversal.ts` ~19130-19180 builds the *actual* emission row
+(target || selector || args, with `__graph_emission_row` / `__graph_prefix_length` tracked names) and then, when the
+row has return values, emits exactly the 6 instructions that get outlined:
+
+    OP_DUP OP_SIZE OP_NIP            -> prefix length of the row (model: (__graph_prefix_length))
+    <push slot> OP_PICK              -> the authenticated emissions vector (model: (__graph_expected_emissions))
+    OP_SWAP OP_SPLIT OP_SWAP OP_ROT OP_EQUALVERIFY
+    (model: pop 3, push (__graph_result_frame))
+
+Semantics per the code: split the EXPECTED emissions vector at the length of the constructed prefix, and compare the
+peeled prefix with the constructed one. That is correct *provided the pick resolves to the emissions vector*. In the
+capture+tail run it did not: the split item was 36 bytes (a framed 35-byte locking bytecode) while the requested
+index was 116 (the full prefix length), i.e. the pick landed on a single-row value instead of the long vector.
+
+**Why that matters: one root cause for both misreads.** The callee's frame model places the route's band witnesses
+(`__internal__graphEmissions`, ...) in its BOTTOM region - the `DBG-BOTTOM-PICK.stackBottom` dump shows
+`__internal__graphEmissions` among the last 14 model entries for the takeJob body - while the emitted call vector
+does not pass them at all: at runtime they are the CALLER's band, sitting BELOW the argument band on the shared
+stack. A top-relative read of such a name therefore uses a model index that does not describe the runtime depth
+(measured: it fetched a 36-byte row instead of the vector), and a bottom-relative read is off by the difference
+between the model's seeded bottom items and the caller's real band (measured earlier: it fetched
+`graphFixedSize`/`graphBlockSize`). A correct handler frame model must seed the CALLER's band in its true order and
+count, not the handler-local effect items, which the runtime pushes later (or never).
+
+**Change landed this round**: the route ABI tail fill is now DEFAULT ON (`SOLIDC_ROUTE_ABI_TAIL=0` opts out). It is
+verified safe - `close job` (both) + `withdraw collateral`: 3 passed | 63 skipped; fast fixture: 1 passed | 1 skipped
+- and it removes a real defect (a clone whose declared tail the vector omits no longer leaves its deepest slots
+unfilled). `take job` is unchanged (deferred-compute stall), as expected while its owner read still uses the
+bottom-ordinal form.
+
+**Next round**: seed the handler frame model with the caller's band (the route ABI inputs in the caller's push order,
+so they land BELOW the parameter block) instead of the handler-local effect seeds, then measure with the capture on:
+the outlined emission check's pick must resolve to the long vector (36 vs 116 disappears) and `close job` /
+`withdraw collateral` must stay green.

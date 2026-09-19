@@ -8924,8 +8924,12 @@ function synthesizeMessageBusRoute(
       // owner read landed on `graphBlockSize`, and the outlined emission check split a 36-byte prefix at a selector
       // byte). Append the uncovered declared tail so the callee's frame matches its own declaration. Opt-in while
       // the trailing witnesses' caller-side scope is verified per contract.
+      // Default ON: measured safe (all three previously green titles still pass) and it closes a real ABI gap -
+      // a clone whose declared tail the vector omits leaves its DEEPEST slots unfilled, so every parameter sits one
+      // depth shallower than the callee's own declaration says. Set SOLIDC_ROUTE_ABI_TAIL=0 to restore the old
+      // (short) vectors for an A/B measurement.
       const abiTailEnabled = (globalThis as { process?: { env?: Record<string, string> } })
-        .process?.env?.SOLIDC_ROUTE_ABI_TAIL === '1';
+        .process?.env?.SOLIDC_ROUTE_ABI_TAIL !== '0';
       const declaredTailForVector = (vectorLength: number): string[] => {
         if (!abiTailEnabled) return [];
         const declared = routeOwnedCloneByName.get(invokeName)?.parameters ?? [];

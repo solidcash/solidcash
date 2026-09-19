@@ -12046,3 +12046,27 @@ Next round, two steps:
    category and read it in the seeding fallback at `:18559` after the `IFoo(msg.sender).m()` source.
 Then: the failing probe's name-keyed `__internal__msgSenderCategory` becomes non-zero, ip 51 resolves, `take job`
 reaches the composed preflight at input 20, and the greens are re-verified serially.
+
+Round 328: the contract signer is not created by any internal connect() - identify it at the fallback itself
+
+`grep "\.connect("` over the stateful/message-bus sources lists only user-facing connect sites
+(`ContractBundle:94`, `SplitContractBundle:121/270/278`, the `StatefulContract.connect` doc at `:7940`) - none of
+them builds a contract-backed signer for a composed/derived frame. So the value `signer.getAddress()` returns for the
+failing frame (`aa20bbc502f0…`) comes from a signer the SDK constructs elsewhere, and the cheapest way to name it is
+at the point of use rather than by searching creators.
+
+Next round, one run: extend the `msg-sender` branch of the key resolution (`:18911`) - under
+`SOLIDC_DEBUG_MSG_SENDER_KEY=1` - to log, for the failing frame, both identities and their kinds:
+
+    signerAddress: this._signer?.getAddress(),
+    signerIsSigner: this._signer instanceof Signer,
+    nonceSignerAddress: this._logicalNonceSigner?.getAddress(),
+    nonceSignerIsSigner: this._logicalNonceSigner instanceof Signer,
+    logicalAddress: this._logicalAddress,
+    callerLockingBytecode: overrides?.callerLockingBytecode && binToHex(...)
+
+That names exactly which object supplied the contract address. Its creator already knows the contract (and therefore
+`categoryId`), so the fix is then to publish that category into the same build - either by passing
+`overrides.msgSenderCategory` at that creator, or by extending `connect`'s identity carry with the category and
+reading it in the seeding fallback at `:18559` (after the `IFoo(msg.sender).m()` source), which is where the ip-51
+comparison's operand comes from.

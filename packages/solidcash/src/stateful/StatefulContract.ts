@@ -39790,6 +39790,18 @@ export class StatefulFunctionCall {
               // the side-car range [inputBase, inputBase + 32) marked, so the fix is either "add this input to the
               // candidate set" or "the probe program itself is wrong".
               const sweep: Array<Record<string, unknown>> = [];
+              // The participant's OWN block inputs are the other place its code can run: the master/logical
+              // identity input executes the participant's row bodies, while the executor input (already in the
+              // candidate list) verifies. Address them by slot so the sweep covers the inputs the row dispatcher
+              // actually runs in, not just the `base + executorOffset` candidates the resolver knows about.
+              const blockProbeInputs = new Set<number>();
+              try {
+                for (const slot of stb.getBlockLayoutSlotsForDiagnostics()) {
+                  if (!['master', 'identityAnchor', 'lowLevelCall'].includes(slot.kind)) continue;
+                  blockProbeInputs.add(inputBase + slot.offset);
+                }
+              } catch { /* layout unavailable */ }
+              blockProbeInputs.add(inputBase);
               // Local VM-number decode: this block must not depend on helpers that live in other diagnostics.
               const sweepVmNumber = (bytes: Uint8Array | undefined): number => {
                 if (!bytes || bytes.length === 0) return 0;
@@ -39808,7 +39820,7 @@ export class StatefulFunctionCall {
                 const attempted = candidate === executionInput || candidateExecutions.includes(candidate);
                 // A covenant input's script lives in its UNLOCKING bytecode (the p2sh32 lock is 35 bytes), so the
                 // unlocking length - not the lock length - is what selects the inputs worth probing.
-                if (!attempted && unlockingBytes < 1000) continue;
+                if (!attempted && unlockingBytes < 1000 && !blockProbeInputs.has(candidate)) continue;
                 let candidateTrace: ReturnType<typeof evaluateProbeTrace> = [];
                 try {
                   candidateTrace = evaluateProbeTrace(provider, { ...program, inputIndex: candidate });

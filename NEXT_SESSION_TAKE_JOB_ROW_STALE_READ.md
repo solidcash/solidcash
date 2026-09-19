@@ -14473,3 +14473,36 @@ Where that leaves `take job`
 row it walks against p2's, whose 9348-instruction body does run), using the new sweep plus
 `SOLIDC_DEBUG_GRAPH_EMISSIONS=1`. Acceptance test unchanged: the probe must execute an `OP_INPUTBYTECODE` with
 index in `[base, base + sidecars)` and `deferred-keccak-learned` must appear.
+
+Round 379: the route's entry dispatch is behind one predicate, and that predicate is false in the probe
+
+Composition facts (take job, participant 0, `SOLIDC_DEBUG_GRAPH_EMISSIONS=1`)
+- p0's rows: row 0 = kind 0, parent 65535 (ROOT), owner 0, consumer 0, `takeJob`, args 67 B, result 0 B; rows 1-6 and
+  11 = kind 0 calls to p1/p2/p3; rows 12-17 = kind 1 state transitions (parent 65535, owner 0, consumer 0).
+- p0's EMISSIONS = kind 0 rows with a non-root parent and owner 0 = rows 1-6 + 11 = 7 rows / 997 B, matching the
+  stall record's `suppliedEmissions: 997`. p0's BATCH = 1 local row = row 0, the takeJob root call (86 B).
+- So the executor is expected to EXECUTE row 0 (which is where the keccak/ecrecover reads live) and to CONSTRUCT
+  the 7 emission rows for its child calls.
+
+Who can run the entry body
+- Only the ROUTE body invokes the entries: `013b 8a` (`__message_bus_entry_takeJob`) at route ips 5454 and 5790,
+  `0138 8a` (`__message_bus_entry_publishJobPost`) at ip 3134, `0154 8a` (`__message_bus_verify_atomic`) at ip 477.
+- The takeJob dispatch is CONDITIONAL: the route invokes a helper (`push 5d81; OP_INVOKE`, id 33117) at ip 5430 and
+  the entry invoke at 5454 sits inside `OP_IF` (ip 5432). In the probe that predicate is false, so the entry body -
+  and with it both keccak side-car reads - never executes. That is the concrete gate to explain next.
+
+Candidate-execution generalisation (kept, measured insufficient)
+- `compose.ts` now appends every participant block input that can execute participant code (`master`,
+  `identityAnchor`, `lowLevelCall` slots, plus the block base) to the resolver's candidate executions, because a
+  kernel participant publishes more than one executable input and only `base + executorOffset` was probed.
+- Measured: `take job` still stalls with the same `keccak 2/2, ecrecover 1/1 unresolved`; the three green titles
+  still pass (3 passed | 63 skipped) and the fast fixture stays green (1 passed | 1 skipped). The probe sweep now
+  shows p0's block input 0 executing a 155-instruction script for 957 steps (reads at index 0 and 129), i.e. block
+  inputs really do run participant code - they just do not reach the compute reads either.
+
+**Next round**: explain the predicate. Helper id 33117 has no `invokeDebug` record, so disassemble it from the
+program: locate the DEFINE'd body for id 33117 (scan the route program for `<id push> OP_DEFINE`), read what it
+compares (row selector? kind? owner? args length?), and check it against the probe's row data. Two outcomes: the
+predicate is right and the probe's batch row is wrong (fix the probe/composer data), or the predicate is wrong
+(fix the emitter). Either way the acceptance test stays: an `OP_INPUTBYTECODE` read in `[base, base + sidecars)`
+plus `deferred-keccak-learned` in the trace.

@@ -4031,6 +4031,26 @@ export class AtomicMessageBusComposition {
               return candidate.executionKind === 1 && candidate.executorOffset !== null
                 ? base + candidate.executorOffset : base;
             });
+            // The deferred-argument probe can only learn from an input whose SCRIPT executes the read site, and a
+            // kernel participant publishes more than one such input: its block's master/logical identity and its
+            // identity anchor run the participant's own row/verifier bodies, while `base + executorOffset` runs the
+            // executor. Probing only the executor left the compute reads unreached (measured on the marketplace
+            // corpus: participant 0's executor executes 955 steps and never enters the 2408-instruction row body
+            // that carries both keccak preimage reads, while its own block input executes a 155-instruction body for
+            // 957 steps). Try every block input that can execute participant code; a trace that teaches nothing is
+            // discarded by the resolver, and a learned value is re-checked against the authenticated expectation.
+            const ownedBlockExecutions = plan.participants.flatMap((candidate) => {
+              const base = graph.layout.participantInputs[candidate.participant];
+              const offsets = new Set<number>([0]);
+              for (const slot of candidate.blockLayout?.slots ?? []) {
+                if (slot.kind === 'master' || slot.kind === 'identityAnchor'
+                  || slot.kind === 'lowLevelCall') offsets.add(slot.offset);
+              }
+              return [...offsets].map((offset) => base + offset);
+            });
+            for (const owned of ownedBlockExecutions) {
+              if (!candidateExecutions.includes(owned)) candidateExecutions.push(owned);
+            }
             if (!block.controller.resolve(
               program, block.executionInput, block.inputBase, candidateExecutions,
             )) continue;

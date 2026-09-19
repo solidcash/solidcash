@@ -1,6 +1,6 @@
 import { createHash } from 'crypto';
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'fs';
-import { join } from 'path';
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'fs';
+import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import {
   BailErrorStrategy, CharStream, CommonTokenStream, DefaultErrorStrategy, LexerATNSimulator,
@@ -339,9 +339,45 @@ function importClosureFingerprint(
   return digest.digest('hex');
 }
 
-const compilerModuleStat = statSync(fileURLToPath(import.meta.url));
+/**
+ * Identity of the compiler implementation that produced a cached artifact.
+ *
+ * Keying this on the entry module alone (its size and mtime) misses every edit to the passes it imports: the
+ * artifact cache then keeps serving artifacts from the previous build, and a debugging loop measures code that no
+ * longer exists. Measured: three consecutive edits to the journal lowering passes changed no artifact, while the
+ * one edit to this file invalidated all of them. Fold every emitted module of the package into the id instead.
+ */
+const compilerBuildFingerprint = (): string => {
+  const entry = fileURLToPath(import.meta.url);
+  let files = 0;
+  let bytes = 0;
+  let latest = 0;
+  try {
+    const directory = dirname(entry);
+    for (const entryName of readdirSync(directory, { recursive: true, withFileTypes: true })) {
+      if (!entryName.isFile() || !entryName.name.endsWith('.js')) continue;
+      const stat = statSync(join(entryName.parentPath ?? directory, entryName.name));
+      files += 1;
+      bytes += stat.size;
+      latest = Math.max(latest, stat.mtimeMs);
+    }
+  } catch {
+    // A single-module deployment (bundled dist, restricted filesystem) keeps the entry-module identity.
+  }
+  if (files === 0) {
+    const stat = statSync(entry);
+    return `${stat.size}:${stat.mtimeMs}`;
+  }
+  return `${files}:${bytes}:${latest}`;
+};
 const COMPILER_CACHE_BUILD_ID = process.env.SOLIDC_COMPILE_CACHE_BUILD_ID
-  ?? `${compilerModuleStat.size}:${compilerModuleStat.mtimeMs}`;
+  ?? compilerBuildFingerprint();
+if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+  ?.SOLIDC_DEBUG_CACHE_ID === '1') {
+  // The artifact cache key is opaque, and a wrong one silently serves the previous build's artifacts. Print the
+  // identity a compile actually used.
+  console.error('solidc-cache-build-id', COMPILER_CACHE_BUILD_ID);
+}
 
 /** Apply lifecycle placement rules again after custom modifier bodies have been inserted into functions. */
 function validateExpandedSelfdestructs(contract: ContractNode): void {
@@ -7318,6 +7354,18 @@ function synthesizeMessageBusRoute(
       if (process.env.SOLIDC_DEBUG_ADMISSION_REASONS === '1') {
         console.error('message-bus-admission-source', JSON.stringify({
           handler: fn.name, sourceReason: fn.messageBusRejectionReason,
+        }));
+      }
+      // A handler demoted by a later rule (route uniformity, the visibility guard) can arrive here with no reason
+      // at all; the artifact then reports it as `not-examined-by-route-synthesis`, which the catalog maps onto
+      // `KERNEL_LAYOUT`, so a real gate looks like an unexamined handler and its construct is unrecoverable.
+      // Name that gap instead of leaving it to the reader.
+      if (fn.messageBusEligible === false && fn.messageBusRejectionReason === undefined
+        && (globalThis as { process?: { env?: Record<string, string> } }).process?.env
+          ?.SOLIDC_DEBUG_ADMISSION_REASONS === '1') {
+        console.error('message-bus-admission-unstated', JSON.stringify({
+          handler: fn.name, visibility: fn.visibility, entryPoint: fn.isEntryPoint,
+          reasonUnset: true,
         }));
       }
       if (!fn.messageBusRejectionReason.startsWith('KERNEL_')) {

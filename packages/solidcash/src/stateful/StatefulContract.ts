@@ -34715,6 +34715,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const compared = (before?.stack ?? []).slice(-2).map((item, offset, items) => (
       `${offset === 0 ? 'left' : 'right'}=${item.length}b:${binToHex(item).slice(0, 64)}`
     )).join(' ');
+    // The failing comparison consumes a small working area, so the two operands alone do not show what the guard
+    // addressed. Report the six values below them as well: they carry the coordinate and the vmap flags.
+    const workingArea = (before?.stack ?? []).slice(-6).map((item, offset, items) => (
+      `d${items.length - 1 - offset}=${item.length}b:${binToHex(item).slice(0, 44)}`
+    )).join(' ');
     return `probe stopped at ip ${last.ip}`
       + `${opcode !== undefined ? ` (opcode ${opcode})` : ''}`
       + `${detail !== undefined ? `: ${detail}` : ''}`
@@ -34722,6 +34727,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       + `${window.length > 0 ? `; window ${window}` : ''}`
       + `${operands.length > 0 ? `; stack ${operands}` : ''}`
       + `${compared.length > 0 ? `; compared ${compared}` : ''}`
+      + `${workingArea.length > 0 ? `; area ${workingArea}` : ''}`
       + `; probed input ${inputIndex}`;
   }
 

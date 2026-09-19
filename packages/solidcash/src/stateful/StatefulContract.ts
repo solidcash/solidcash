@@ -34709,12 +34709,19 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const operands = (last.stack ?? []).slice(-4).map((item, offset, items) => (
       `d${items.length - 1 - offset}=${item.length}b:${binToHex(item).slice(0, 40)}`
     )).join(' ');
+    // The failure state has already popped the compared operands when the refusing instruction is a comparison, so
+    // the step BEFORE it is where those two values are still readable.
+    const before = trace.at(-2);
+    const compared = (before?.stack ?? []).slice(-2).map((item, offset, items) => (
+      `${offset === 0 ? 'left' : 'right'}=${item.length}b:${binToHex(item).slice(0, 64)}`
+    )).join(' ');
     return `probe stopped at ip ${last.ip}`
       + `${opcode !== undefined ? ` (opcode ${opcode})` : ''}`
       + `${detail !== undefined ? `: ${detail}` : ''}`
       + `${site !== undefined ? `; failing require in ${site}` : ''}`
       + `${window.length > 0 ? `; window ${window}` : ''}`
       + `${operands.length > 0 ? `; stack ${operands}` : ''}`
+      + `${compared.length > 0 ? `; compared ${compared}` : ''}`
       + `; probed input ${inputIndex}`;
   }
 

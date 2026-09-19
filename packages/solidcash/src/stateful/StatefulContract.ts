@@ -26354,7 +26354,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 return proxyCallee
                   ? proxyCallee.forward(fn.name, readArgs).staticCall() as Promise<FunctionArgument>
                   : callee._deriveReturnValue(fn.name, readArgs, undefined, undefined, undefined,
-                    publicSelfAddress) as Promise<FunctionArgument>;
+                    publicSelfAddress, this.categoryId) as Promise<FunctionArgument>;
               };
               if (childCompilerRoute && nested.hasReturnValues && !sharedCompilerRouteCoversCall) {
                 const firstWrite = childCompilerRoute.rowArguments.findIndex(
@@ -26473,7 +26473,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                     }
                   }
                   return callee._deriveReturnValue(childFunctionName, childFunctionArgs, undefined, undefined,
-                    undefined, publicSelfAddress);
+                    undefined, publicSelfAddress, this.categoryId);
                 };
                 const value = nested.callsiteId === undefined
                   ? await evaluateReturn()
@@ -26536,7 +26536,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                           : await proxyCallee.forward(nested.functionName, nextArgs).staticCall();
                       } else {
                         nextValue = await callee._deriveReturnValue(nested.functionName, nextArgs, undefined,
-                          undefined, undefined, publicSelfAddress);
+                          undefined, undefined, publicSelfAddress, this.categoryId);
                       }
                     } catch {
                       nextValue = returnType === 'bool' ? false : '';
@@ -28912,7 +28912,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             const evaluateReturn = (): Promise<FunctionArgument | undefined> => proxyCallee
               ? proxyCallee.forward(nested.functionName, childArgs).staticCall() as Promise<FunctionArgument>
               : callee._deriveReturnValue(nested.functionName, childArgs, undefined, undefined, undefined,
-                publicSelfAddress) as Promise<FunctionArgument>;
+                publicSelfAddress, this.categoryId) as Promise<FunctionArgument>;
             const value = nested.callsiteId === undefined
               ? await evaluateReturn()
               : await memoizeGraphPlanningProducerResult(
@@ -34516,7 +34516,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               const nodeCaller = parentNode === undefined ? undefined
                 : hexToBin(parentNode.contract.inner.lockingBytecode);
               const value = await node.contract._deriveReturnValue(node.functionName, [...node.args], undefined,
-                undefined, undefined, nodeCaller);
+                undefined, undefined, nodeCaller, parentNode?.contract.categoryId);
               if (value === undefined) return undefined;
               return encodeExternalReturnValue(
                 value as StateValue,
@@ -35079,9 +35079,16 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         const names = unlocker?.abiFunction?.inputs ?? [];
         return {
           index,
-          internals: (unlocker?.params ?? []).flatMap((param, paramIndex) => (
-            (names[paramIndex]?.name ?? '').startsWith('__internal__')
-              ? [`${names[paramIndex]!.name}=${String(param)}`] : [])),
+          internals: (unlocker?.params ?? []).flatMap((param, paramIndex) => {
+            const name = names[paramIndex]?.name ?? `#${paramIndex}`;
+            if (!name.startsWith('__internal__')) return [];
+            // Byte witnesses are where an unresolved sentinel hides (`ff…ff` categories, length-only prints); print
+            // the bytes, not `String(Uint8Array)`, so a sentinel is visible in the record itself.
+            const value = param instanceof Uint8Array
+              ? `b${param.length}:${binToHex(param).slice(0, 72)}`
+              : String(param);
+            return [`${name}=${value}`];
+          }),
         };
       })));
     }
@@ -35556,6 +35563,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
      * caller identity has to reach it here; the signer is only the caller of a top-level EOA call.
      */
     callerLockingBytecode?: Uint8Array,
+    /**
+     * Category of the contract that calls this callee. The compiler resolves the frame's `msg.sender` address by
+     * matching this category against the co-spent inputs, so a probe that leaves it unset makes every
+     * `msg.sender`-derived comparison read a sentinel instead of the caller.
+     */
+    callerCategoryId?: string,
   ): Promise<StateValue> {
     const directMappingRead = directMappingReadPlan(this.inner.artifact, functionName);
     if (directMappingRead) {
@@ -35736,6 +35749,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       functionName, args, {
         emitReturn: true, returnProbeOnly: true, calls, abiFunction, externalCalls: calleeCalls,
         ...(callerLockingBytecode !== undefined && { callerLockingBytecode }),
+        // Wire order, as the compiler's OP_UTXOTOKENCATEGORY exposes it (see the same encoding at the handler
+        // build site).
+        ...(callerCategoryId !== undefined && callerCategoryId.length > 0
+          && { msgSenderCategory: hexToBin(callerCategoryId).reverse() }),
       },
     );
     let blob = (builder as any).__derivedReturnBlob as Uint8Array | undefined;
@@ -36151,6 +36168,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           // launches materializes the callee frame the composition reuses, so the callee's `msg.sender`-keyed
           // mapping slots must be pinned against that identity - not against the transaction origin.
           executionSelfAddress instanceof Uint8Array ? executionSelfAddress : undefined,
+          this.categoryId,
         ) as FunctionArgument;
       } catch (error) {
         if (!allowProvisional || !(error instanceof Error)

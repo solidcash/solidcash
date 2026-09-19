@@ -11558,3 +11558,27 @@ already prints `probe-internals`; extend it to include every internal witness, n
 with `__internal__`) and confirm whether `__internal__msgSenderCategory` (or the frame's own category witness) is
 the `ff…ff`. If it is, publish the caller's category alongside the caller's locking bytecode (the graph edge
 already carries `callerIdentity.categoryId`, and `:30251` shows the exact encoding the compiler expects).
+
+Round 308: the caller CATEGORY plumbing is in place; the failing probe still publishes ZEROS
+
+`_deriveReturnValue` now also takes `callerCategoryId` and seeds the probe's `msgSenderCategory` as
+`hexToBin(categoryId).reverse()` (the wire order the compiler's OP_UTXOTOKENCATEGORY exposes, same encoding as
+`:30251`); every probe call site passes the calling contract's category (`this.categoryId`, and the parent node's
+contract for the atomic-node probe). Measured (runs 320/321): the failing `approve` probe's internals are
+UNCHANGED and still show
+
+    __internal__msgSenderCategory = b32:0000000000000000000000000000000000000000000000000000000000000000
+
+so something writes that witness AFTER the overrides this round threads: either the frame's own internal-arg
+resolver (`:29650` / `:30251`, which fills `__internal__msgSenderCategory` for the frame's outgoing calls), or the
+route witness map `_batchRaw` builds (`resolvedInternalRouteWitnesses` fills every hidden ABI value by name,
+including that one, with a typed default of 32 zero bytes).
+
+Next round, one run: instrument the *last* writer of `__internal__msgSenderCategory` for the frame being built
+(log at `:30251`, `:29650` and in `_batchRaw`'s witness map, printing `functionName` + the value), then make it
+prefer the caller category this round's parameters carry. That is the remaining link between "the pin now hashes the
+correct `msg.sender` key" (measured in round 307) and "the probe's own trace can authenticate the row" - the check
+at ip 115 compares a 33-byte `ff…ff` sentinel against a 32-byte category, i.e. it is reading the unresolved
+`msgSenderCategory` rather than the caller's category.
+
+Unchanged greens to re-verify afterwards: fixture `1 passed | 1 skipped`, `unicrow params` 2, `admin` 8.

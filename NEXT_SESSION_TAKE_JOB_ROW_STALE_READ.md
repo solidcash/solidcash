@@ -11263,3 +11263,46 @@ Next round, one run, no guessing: extend `nested-entry-resolution` to print `key
 authoritative one (the covenant recomputes the slot from its own runtime values, and the resolution path models
 that computation) can be chosen, and `batchTargetPlaceholders` can be made to use it. A mismatch here also explains
 why the frame marks the `_allowances` slot `present` while its co-spent entry carries a different slot.
+
+Round 299: DECISIVE - the pinned `_allowances` entry belongs to a DIFFERENT key than the row addresses
+
+`nested-entry-resolution` now prints the encoded keys. Measured (run 308), all three resolutions of the FakeToken
+`_allowances` collection:
+
+    keySlot d1534eff8dfc4ed02a1fa5809356052e2452786c6a7ccab47bddea7b7433a133
+      keys = [ 76a91471782e8159265ed94bd35b8e699c08f53a6f38c688ac , 
+               aa20bbc502f00015910e6bd47a2e46b97b1d352db5d04a1f67e97155ef00b09ddf1387 ]
+           = [ user1 P2PKH(25B) , marketplace proxy P2SH32(35B) ]      <- the test's approve(marketplace) entry
+    keySlot 80a90055d19510c2cb97d7eefec3ce1334870ca78a2f51a8f72f01c3cd63ac26
+      keys = [ marketplace proxy , marketplace proxy ]
+    keySlot 00fe98d8f4d46474a1c61e606ee1d2c45739b6292e620995637ab11c21f7373d     <- the composed witness
+      keys = [ aa20bbc502f00015910e6bd47a2e46b97b1d352db5d04a1f67e97155ef00b09ddf1387 ,
+               aa20a8cd257e3018c1611cf3ae581150766ae10305828e0ef097b363c3e27eef0d5d87 ]
+           = [ marketplace proxy , Unicrow instance ]                  <- _allowances[marketplace][unicrow]
+
+Input 23 - the entry the composed frame marks `1:_allowances:present` and co-spends - is the `d1534eff…` node, i.e.
+`_allowances[user1][marketplace]` (1900e18), NOT the `[marketplace][unicrow]` key the row addresses. Every measured
+value now fits without further hypotheses:
+
+* the runtime witness (`00fe98d8…`) IS the row's target key slot, and the resolution path computes the same slot
+  from the same key tuple, so the SDK's key model is consistent;
+* the pinned entry has a different slot, so the covenant's read finds no node for `00fe98d8…` and yields EMPTY -
+  exactly the operands the failing `_spendAllowance` compare shows;
+* the missing node is created IN THIS TRANSACTION by the marketplace's `approve(unicrow, …)` (the FakeToken route
+  derivation reaches `balanceOf`, `approve`, `transferFrom`; the composed frame has no approve participant, so that
+  call executes inside another participant's frame - a low-level call on the shared FakeToken master at input 20).
+
+So the defect is NOT the event/pin work and NOT the key encoding: the batch row's co-spent entry (its "proof") was
+selected as *any* UTXO of the `_allowances` collection instead of the node for the requested key (or that key's
+correct sorted predecessor when absent), and the row's `Proof_1 = 3 -> input 23` therefore points at an unrelated
+key's node. `entry-placement` marked the slot `present` because a UTXO existed, never because its commitment's slot
+matched.
+
+Next round: make the entry selection for a batch row slot-verified - the pinned entry's commitment prefix must equal
+the target key slot (`00fe98d8…`) for a `present` read/UPDATE, and for an absent key it must be the sorted
+predecessor of the target slot (HEAD when the target sorts before the first node). The FakeToken frame needs the
+HEAD/predecessor of `00fe98d8…`, and the value it must observe is the one this transaction's approve writes (the
+batch row value / `PredOut` machinery already has the write side). Candidate sites: the entry list lookup that fills
+`childBatchLists`/`lateBatchLists` (`StatefulContract.ts` ~:26870 and ~:28620, both compute `keySlot` and then take
+`list.find(keySlot) ?? list.predecessorOf(keySlot)`), and the builder's `entryNfts`/`entryInputBySlot` pinning that
+believes a present UTXO belongs to the slot just because the address matched.

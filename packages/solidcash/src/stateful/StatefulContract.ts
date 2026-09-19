@@ -26854,6 +26854,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                             collection: access.collection,
                             address,
                             categoryId: callee.categoryId,
+                            // The encoded keys matter as much as the slot they hash to: an `address` key has both a
+                            // 20-byte and a 25-byte (P2PKH) encoding, and two SDK paths disagreeing about which one
+                            // is authoritative is indistinguishable from a wrong key when only the slot is printed.
+                            keys: keys.map((key) => binToHex(key)),
                             keySlot: binToHex(keyToSlotMulti(keys)),
                             slots: addressUtxos.map((utxo) => ({
                               bytes: (utxo.token?.nft?.commitment?.length ?? 0) / 2,

@@ -13305,3 +13305,35 @@ the caller's argument vector actually leaves it. Two candidate spellings, both t
 Verification for either: the title must stop aborting at the 12-instruction outlined body (probe operand pair
 `observed aa20953ccf...` vs `expected aa201668...`) and the coordinate must become 20 (participant 0's entry slot
 0) instead of 151; then re-run the two compact-form titles (`close job` both variants, `withdraw collateral`).
+
+Round 351b: the model's PARAMETER ORDER is right - the count BELOW it is wrong
+
+Reading the seeding mechanics settles the direction of the error:
+
+  * `pushToStack(value, pushToBottom)` -> `stack.push` for `true`, `stack.unshift` otherwise, and `getStackIndex`
+    is a raw `indexOf`, so index 0 is the TOP of the model.
+  * `visitParameter` seeds every parameter with `pushToBottom = true`, i.e. declaration order appended DOWNWARD:
+    the model's order is [.., jobId_, signature_, key0, key1, logical_caller, owner] from the top, so the owner is
+    the DEEPEST declared parameter and `jobId_` sits six slots above it.
+  * The measured entry stack agrees exactly: pre-body top-down = [0 (owner), 65-byte signature_, 0 (jobId_),
+    25-byte P2PKH (key1 = msg.sender)], i.e. the caller pushes the vector in REVERSE declaration order and the
+    model's parameter layout matches it one for one. `message-bus-clone-params` + `message-bus-arg-order` also
+    agree index for index (owner parameter fed from `__internal__proxyMasterIndex` = 0 for participant 0).
+
+So the layout is right and only the DEPTH BELOW the picked value is wrong: at the failing pick the model reports the
+owner at bottom ordinal 14, while the runtime measurement puts it at depth 71 of a 90-item stack, i.e. **19 items
+below it** - a discrepancy of exactly 5. The model's bottom region is seeded with synthetic entries
+(`visitParameter` bottom pushes plus `pushToStack(name, true)` for outlined bases, `constructorCaptures`,
+`OUTLINED_TRAILING_BASE` / `OUTLINED_COMPUTE_BLOCK_BASE` / `OUTLINED_RECOVERY_A_INDEX`) and the runtime frame has
+the route band plus the batch copy instead - so the bottom-relative ordinal addresses a NEIGHBOURING route witness
+(`graphFixedSize`/`graphBlockSize` = 131 in this frame) rather than the parameter. That is the whole failure.
+
+`DBG-BOTTOM-PICK` now also prints `stackBottom` (the last 14 model entries) so the next run NAMES the model's
+bottom items and shows which of them the runtime never pushes.
+
+**Next round, first action**: recompile with `SOLIDC_DEBUG_COMPUTE_BASE=1` (move `.marketplace/cache` aside; the
+project cache ignores the build id), take the `__message_bus_entry_takeJob` `DBG-BOTTOM-PICK` records and compare
+`stackBottom` with the runtime frame: the fix is to seed the DEFINE'd route handler's frame model with the items the
+caller actually leaves below the argument band (or to drop the synthetic entries the shipped body never pushes), so
+the ordinal and the runtime agree. Then re-run the title and confirm the coordinate becomes 20 (participant 0's
+entry slot 0) instead of 151, and re-run `close job` (both) + `withdraw collateral`.

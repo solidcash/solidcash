@@ -32233,6 +32233,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         bottomOrdinalPlusOne,
         outputLength: this.output.length,
         above: this.stack.slice(Math.max(0, topIndex - 2), topIndex + 3),
+        // The BOTTOM region is what an ordinal addresses, and a DEFINE'd handler frame is seeded with synthetic
+        // bottom entries (outlined bases, constructor captures) that the runtime may never push. Printing it names
+        // those items and shows how many the model counts below the picked value.
+        stackBottom: this.stack.slice(-14),
       }));
     }
     this.emit(Op.OP_DEPTH, locationData);

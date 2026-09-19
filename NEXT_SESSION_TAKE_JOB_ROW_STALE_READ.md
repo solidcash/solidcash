@@ -12445,3 +12445,68 @@ Immediate next step (smallest useful):
    `d1534eff…` ([user1, marketplace]) while the row addresses `00fe98d8…` ([marketplace, unicrow], written in this
    transaction by the marketplace's `approve(unicrow, …)`). The probe result must be what the composer consumes.
 3. Re-run `take job` -> target: input 20 passes and the test reaches its assertions; then re-verify the greens.
+
+Round 344-352 (this session): SOLVED the probe's identity, then located the real disagreement in the FRAME PLAN
+
+Two capabilities landed first (both committed / in the tree):
+
+1. **`optimise: false` compile mode** (`SOLIDC_NO_OPTIMISE=1`), commit `d5e853748`. The traversal's own pre-sharing
+   peephole is gated too, the optimiser cross-check is skipped, and the artifact records `debug.optimise: false`;
+   the SDK then reports the mapped source line directly and marks the trace as exactly mapped. Verified over
+   `packages/solidc/test/valid-contract-files`: 182/296 fixtures emit larger unoptimised scripts, the rest are
+   already minimal, and `debug.requires` names the failing require in both modes.
+   Use it when a failing instruction window must be read against the source.
+
+2. **The unthreaded probe site is found and fixed**: `_createBuilder`'s `returnProbeOnly` precompute
+   (`StatefulContract.ts` ~`:24441`) called `callInfo.externalContract._deriveReturnValue(precomputeName,
+   callInfo.args)` with NO caller identity. That is the invocation behind the `transferFrom` probe: its call chain
+   is `_createBuilder -> _resolveExternalExpressionReturns -> derive -> Unicrow._deriveReturnValue(pay) ->
+   Unicrow._createBuilder(probe) -> FakeToken._deriveReturnValue(transferFrom)`. Threaded the frame's own identity
+   (`publicSelfAddress`, `this.categoryId`, `this`) and the probe now pins the CORRECT slot:
+   `transferFrom` -> `00fe98d8…` ([marketplace, unicrow]) with `callerLock aa20a8cd…` (Unicrow) and
+   `caller-identity-cospend caller=Unicrow master f83aadb0:0`. No `derive` early branch is involved at all
+   (`derive-branch` shows only `__raw__ approve` and `IUnicrow pay`, both plain `StatefulContract`s).
+
+New diagnostics (all gated, all failure-proof - a diagnostic must never fail a build):
+* `participant-rows` (`SOLIDC_DEBUG_PARTICIPANT_ROWS=1`, `compose.ts`): per participant, every batched row and the
+  caller it resolves. Measured for the atomic composer pass that builds the token participant:
+  `FakeToken: frameCaller MarketplaceV1:aa20bbc502f0…, rows [balanceOf, approve, transferFrom] all caller
+  MarketplaceV1`. (`graphInvocationCallerIdentity` throws for a root invocation - the diagnostic must catch it.)
+* `entry-pin` (`SOLIDC_DEBUG_ENTRY_PIN=1`, pre-existing) prints each pinned entry's resolved KEY BYTES per
+  component. This is what finally separated plan from witness:
+
+      composed route frame `__message_bus1` (blockBase 199, compilerRoute true, callerLock aa20bbc502f0…):
+        _balances   slot0 keys [__message_bus_key__balances_0 = 76a9147178… (user1)]      -> e2a4aac2… present
+        _balances   slot1 keys [__message_bus_key__balances_0_row = aa20bbc5… (caller)]  -> 7addf0a1… absent
+        _allowances slot2 keys [__message_bus_key__allowances_0 = aa20bbc5…, _1 = aa20bbc5…] -> 80a90055…
+        _allowances slot3 keys [_0_alt = 76a9147178… (user1), _1_alt = aa20bbc5…]         -> d1534eff… present
+      approve probe      : keys [nullop:msg.sender = aa20bbc5…, spender = aa20a8cd…]      -> 00fe98d8…  CORRECT
+      transferFrom probe : keys [from = aa20bbc5…, nullop:msg.sender = aa20a8cd…]         -> 00fe98d8…  CORRECT
+
+So the *probes* (one call, one caller each) agree on `00fe98d8…`, while the composed route frame's own plan
+resolves the union route key shapes (`route.entryAccesses` slot 2 = [`_0`,`_1`], slot 3 = [`_0_alt`,`_1_alt`]) with
+ONE frame-level caller (`overrides.callerLockingBytecode` = MarketplaceV1) and leaves the `_alt` shape unfilled
+(`_buildRepeatedExternalBatch` fills only `binding.routeInput`, never `binding.alternateRouteInput`).
+
+The frame is a real multi-caller frame: `FakeToken.transferFrom`'s caller is Unicrow (`Unicrow.pay` calls
+`SafeERC20.safeTransferFrom(IERC20(input.currency), sender=marketplace, address(this), amount)`, `.marketplace/contracts/unicrow/Unicrow.sol:155`),
+while `approve(unicrow, MAX)` is called by the marketplace (`MarketplaceV1.takeJob` -> `SafeERC20.forceApprove`).
+Both rows address `_allowances[marketplace][unicrow]` = `00fe98d8…` (owner/spender swap), which is exactly the
+read-after-write this transaction performs, and the composed plan addresses neither.
+
+Decisive fact still missing (next measurement): **which rows the composed token frame actually carries**. The
+failing input's witnesses describe a single `transferFrom` row (3 entry accesses: `b877ad75…`, `00fe98d8…`,
+`7addf0a1…`, trailing 2) with `msgSenderCategory` = `1410…` (= Unicrow's `000…1014` category, wire order). If the
+`approve` row is absent from the frame, the allowance is never written and the `InsufficientAllowance` revert is
+simply correct behaviour for a transaction missing a row. The blob is the first push of the input's unlocking
+bytecode (`53434231 || 01 || valueMode || rowCount || rows[selector||…]`, see `_buildRepeatedExternalBatch`), so
+`SOLIDC_DEBUG_ROUTE_CONCISE=1` (prints push heads, run 371) or a direct decode of that push names the row set.
+
+General fix directions, in order of preference:
+1. Fill the route key witnesses per row AND per shape (both `binding.routeInput` and `binding.alternateRouteInput`,
+   `msgSender` taken from THAT row's caller), and let the frame's entry-plan/pin resolution consume those values
+   instead of re-deriving them from one frame-level caller.
+2. Do the same for the merged physical group: a callee master shared by several callsites must carry every
+   callsite's rows (and each row's caller identity), not just the densest writer's layout.
+3. Only then re-check the composed `_allowances` inputs: they must be `00fe98d8…` (present as the frame's own
+   insert for `approve`, read back by the `transferFrom` row), and `input 20` should pass.

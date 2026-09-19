@@ -8018,7 +8018,28 @@ export default class SymbolTableTraversal extends AstTraversal {
         if (expression instanceof IdentifierNode) {
           const definition = expression.definition?.definition;
           if (definition instanceof VariableDefinitionNode
-            && definitionDependsOnProducer(definition)) unresolvedProducerAlias = true;
+            && definitionDependsOnProducer(definition)) {
+            unresolvedProducerAlias = true;
+            // `serializedProgramLocals` is a NAME set shared with the pure helper currently being serialized, so
+            // this refusal can come from an unrelated helper local that merely shares a name. Name the construct:
+            // a refusal that reports only the handler cannot distinguish the two cases.
+            if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+              ?.SOLIDC_DEBUG_ADMISSION_REASONS === '1') {
+              console.error('message-bus-producer-alias', JSON.stringify({
+                handler: this.currentFunction?.name,
+                local: expression.name,
+                preservedLocal,
+                helperLocals: serializedProgramLocals === undefined ? 0 : serializedProgramLocals.size,
+                declaration: definition.location === undefined ? undefined : {
+                  line: definition.location.start.line, column: definition.location.start.column,
+                },
+                declaredType: definition.type?.toString?.(),
+                initializer: definition.expression?.constructor?.name,
+                initializerIsProducerCall: definition.expression instanceof ExternalFunctionCallNode
+                  && definition.expression.callInfo?.hasReturnValues === true,
+              }));
+            }
+          }
         }
         if (expression instanceof IntLiteralNode) {
           return { kind: 'literal', type: 'bigint', value: expression.value.toString() };

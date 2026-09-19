@@ -2449,6 +2449,37 @@ export function mapMessageBusVmFailure(
   // libauth reports the state at the instruction that follows a failed operation, so both opcodes are named: the
   // one that failed (`ip - 1`) and the one the state points at. Without this the raw VM reason names neither the
   // instruction nor the frame, and a bare `failed an OP_VERIFY operation` cannot be attributed.
+/**
+ * Name the rows a failing message-bus frame executes. A frame batches one row per logical call, so "which call was
+ * this input running" is the first question a participant failure raises - and it cannot be answered from the
+ * selector the unlocker reports (that names the frame, not its rows). The blob is the first push of the enclosing
+ * unlocking bytecode: `53434231 || version || valueMode || rowCount || rows[selector||index||..||argsLength||args]`.
+ * Returns undefined for an ordinary selector-dispatched frame.
+ */
+function describeMessageBusBatchRows(
+  unlockingBytecode: Uint8Array, artifact: { messageBus?: { handlers?: readonly { name?: string; selector?: string }[] } }
+    | undefined,
+): string | undefined {
+  if (unlockingBytecode.length < 7) return undefined;
+  if (binToHex(unlockingBytecode.slice(0, 4)) !== '53434231') return undefined;
+  const valueMode = unlockingBytecode[4 + 1] === 1;
+  const rowCount = unlockingBytecode[6];
+  const handlers = artifact?.messageBus?.handlers ?? [];
+  const rows: string[] = [];
+  let offset = 7;
+  for (let row = 0; row < rowCount; row += 1) {
+    if (offset + 12 > unlockingBytecode.length) break;
+    const selector = binToHex(unlockingBytecode.slice(offset, offset + 4));
+    const logicalIndex = unlockingBytecode[offset + 4] | (unlockingBytecode[offset + 5] << 8)
+      | (unlockingBytecode[offset + 6] << 16) | (unlockingBytecode[offset + 7] << 24);
+    const argsLength = unlockingBytecode[offset + 10] | (unlockingBytecode[offset + 11] << 8);
+    const name = handlers.find((handler) => handler.selector?.toLowerCase() === selector)?.name;
+    rows.push(`${name ?? selector}@${String(logicalIndex)}${argsLength === 0 ? '' : `/${String(argsLength)}b`}`);
+    offset += 12 + argsLength + (valueMode ? 8 : 0);
+  }
+  return ` (batch rows ${String(rowCount)}: ${rows.join(', ')})`;
+}
+
   const location = failure === undefined || !Number.isInteger(failure.ip) ? ''
     : ` (ip ${String(failure.ip)}`
       + `${failure.programLength === undefined ? '' : ` of ${String(failure.programLength)}`}`
@@ -2464,6 +2495,7 @@ export function mapMessageBusVmFailure(
           contractName?: string;
           source?: string;
           functionBodies?: Record<string, string>;
+          messageBus?: { handlers?: readonly { name?: string; selector?: string }[] };
           debug?: {
             functionDebug?: Record<string, {
               requires?: Array<{ ip: number; line: number; message?: string }>;
@@ -2571,7 +2603,13 @@ export function mapMessageBusVmFailure(
     return '';
   })();
   if (input?.unlocker?.abiFunction?.selector?.toLowerCase() !== '53434231') {
-    return new Error(`messageBus: BCH-2026 preflight failed at input ${inputIndex}${location}: ${rawVmReason}${requireSite}`);
+    const batchRows = describeMessageBusBatchRows(
+      transaction.inputs[inputIndex]?.unlockingBytecode ?? new Uint8Array(), input?.unlocker?.contract?.artifact,
+    );
+    return new Error(
+      `messageBus: BCH-2026 preflight failed at input ${inputIndex}${location}${batchRows ?? ''}: `
+      + `${rawVmReason}${requireSite}`,
+    );
   }
   const envelope = compilerRouteEnvelope(
     transaction.inputs[inputIndex]?.unlockingBytecode ?? new Uint8Array(),

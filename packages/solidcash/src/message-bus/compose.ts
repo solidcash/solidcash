@@ -2849,6 +2849,39 @@ export class AtomicMessageBusComposition {
         const frameCaller = frameInvocation === undefined || frameInvocation.caller === null
           ? undefined
           : graphInvocationCallerIdentity(plan.participants, plan.invocations, frameInvocation);
+        if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+          ?.SOLIDC_DEBUG_PARTICIPANT_ROWS === '1') {
+          // One participant frame batches several rows, and each row's `msg.sender` is the identity of the
+          // participant that called THAT row - a frame-level caller is only the first row's. A row whose
+          // `msg.sender`-keyed mapping was pinned against the frame caller instead of its own is otherwise
+          // invisible: print every row with the caller it will actually resolve.
+          console.error('participant-rows', JSON.stringify({
+            participant: participant.participant,
+            contract: participant.artifact.contractName,
+            frameCaller: frameCaller === undefined ? undefined
+              : `${frameInvocation?.caller === null ? 'root' : plan.participants[frameInvocation!.caller!]
+                ?.artifact.contractName}:${frameCaller.lockingBytecode.slice(0, 16)}`,
+            rows: participant.invocations.map((invocationIndex) => {
+              const planned = plan.invocations[invocationIndex];
+              const descriptor = descriptors[invocationIndex];
+              const caller = planned?.caller === null || planned?.caller === undefined
+                ? undefined : plan.participants[planned.caller];
+              // A root invocation has no participant caller, and the resolver rejects that case. A diagnostic must
+              // never turn a composition that would otherwise succeed into a failure.
+              let resolved: { lockingBytecode: string } | undefined;
+              try {
+                resolved = planned === undefined ? undefined
+                  : graphInvocationCallerIdentity(plan.participants, plan.invocations, planned);
+              } catch { resolved = undefined; }
+              return {
+                function: descriptor?.functionName,
+                localRow: planned?.localRow,
+                caller: caller?.artifact.contractName,
+                callerLock: resolved?.lockingBytecode.slice(0, 16),
+              };
+            }),
+          }));
+        }
         const localCall = contract._batchRaw(
           participant.batch.blob,
           participant.batch.routeWitnesses as FunctionArgument[],

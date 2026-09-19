@@ -2810,6 +2810,13 @@ const KERNEL_ADMISSION_REASONS = new Set([
   'KERNEL_LIFECYCLE',
 ]);
 
+/** Name the gate that refused a handler: `KERNEL_LAYOUT` alone cannot say which construct to fix. */
+function noteKernelLayoutGate(fn: { name: string }, gate: string, detail?: Record<string, unknown>): void {
+  if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+    ?.SOLIDC_DEBUG_ADMISSION_REASONS !== '1') return;
+  console.error('message-bus-layout-gate', JSON.stringify({ handler: fn.name, gate, ...detail }));
+}
+
 /** Map an admission reason onto the frozen kernel catalog. Unknown leftovers become KERNEL_LAYOUT. */
 function kernelAdmissionReason(reason: string): string {
   if (KERNEL_ADMISSION_REASONS.has(reason)) return reason;
@@ -4987,6 +4994,7 @@ function synthesizeMessageBusRoute(
       continue;
     }
     if (compilerOptions.messageBusKernel === true && fn.unloweredVaryingRecursiveMappingRead === true) {
+      noteKernelLayoutGate(fn, 'unlowered-varying-recursive-mapping-read');
       fn.messageBusEligible = false;
       fn.messageBusRejectionReason = 'KERNEL_LAYOUT';
       continue;
@@ -5055,6 +5063,7 @@ function synthesizeMessageBusRoute(
         && (!hasCounterJournalTransport || hasUntransportedWrite)) {
         // A route may invoke this handler repeatedly. Until its completed entry descriptor is represented in the
         // authenticated compact journal ABI, every row would independently pin a terminal continuation family.
+        noteKernelLayoutGate(fn, 'untransported-chunkable-write');
         fn.messageBusEligible = false;
         fn.messageBusRejectionReason = 'KERNEL_LAYOUT';
         continue;
@@ -5258,10 +5267,12 @@ function synthesizeMessageBusRoute(
     fn.usesMsgValue = routeUsesMsgValue;
     let reason: string | undefined;
     if (compilerOptions.messageBusKernel === true && fn.kernelJournalContextUnsafeCall === true) {
+      noteKernelLayoutGate(fn, 'journal-context-unsafe-call');
       reason = 'KERNEL_LAYOUT';
     }
     if (compilerOptions.messageBusKernel === true
       && fn.kernelConstructorCapturedHelperGraphEffect === true) {
+      noteKernelLayoutGate(fn, 'constructor-captured-helper-graph-effect');
       reason = 'KERNEL_LAYOUT';
     }
     // In auto mode the message bus is an optional capability. One entry point with an unsupported low-level
@@ -6195,10 +6206,13 @@ function synthesizeMessageBusRoute(
     } else if (!reason && compilerOptions.messageBusKernel === true
       && footprint.effects.includes('events')
       && (!namedClosureShape.acyclic || hasUnplannedRuntimeEvent(fn))) {
+      noteKernelLayoutGate(fn, 'events-require-planned-closure');
       reason = 'KERNEL_LAYOUT';
     } else if (!reason && compilerOptions.messageBusKernel === true && hasUnsupportedFixedTransferRecipe) {
+      noteKernelLayoutGate(fn, 'unsupported-fixed-transfer-recipe');
       reason = 'KERNEL_LAYOUT';
     } else if (!reason && compilerOptions.messageBusKernel === true && hasUnsupportedFixedTransferActivation) {
+      noteKernelLayoutGate(fn, 'unsupported-fixed-transfer-activation');
       reason = 'KERNEL_LAYOUT';
     } else if (!reason && statefulExternalCall && !graphTailCallEligible) {
       reason = 'batched-handler-forward-call-not-enabled';
@@ -6493,6 +6507,7 @@ function synthesizeMessageBusRoute(
         reason = 'KERNEL_UNBOUNDED_KEY';
       } else if (deploys && !kernelDeploySupported
         && (reason === undefined || kernelAdmissionReason(reason) === 'KERNEL_LAYOUT')) {
+        noteKernelLayoutGate(fn, 'deploy-requires-kernel-deploy-support');
         reason = 'KERNEL_LAYOUT';
       } else if (reason === undefined && fn.modifiers.includes(FunctionModifier.DEPLOY)
         && !kernelDeploySupported) {
@@ -6891,6 +6906,7 @@ function synthesizeMessageBusRoute(
       // A direct, nonrecursive dynamic struct array follows the ordinary authenticated dynamic-read run: its
       // count comes from the state NFT and every ordered chunk input is verified before the recursive result
       // codec sees one bounded blob. Keep other unresolved/indirect state provenance behind the layout fence.
+      noteKernelLayoutGate(fn, 'unresolved-indirect-state-provenance');
       fn.messageBusEligible = false;
       fn.messageBusRejectionReason = 'KERNEL_LAYOUT';
     } else if (compilerOptions.messageBusKernel === true
@@ -6910,6 +6926,7 @@ function synthesizeMessageBusRoute(
         !fixedSelfFunctionPointerResult(index) && !kernelResultEncodable(type))) {
       // Result concatenation uses `abi.encode` in the generated wrapper. Keep only types for which that encoder
       // has a complete runtime representation; scalar enums encode through the `int` locals below.
+      noteKernelLayoutGate(fn, 'result-type-not-kernel-encodable');
       fn.messageBusEligible = false;
       fn.messageBusRejectionReason = 'KERNEL_LAYOUT';
     }
@@ -13065,6 +13082,7 @@ function compileResolvedAst(
           && !transportedChunkableWrites.some((transport) => transport.collection === access.collection
             && transport.varyingArrayParam === access.varyingArrayParam));
       if (hasIncompleteChunkableTransport) {
+        noteKernelLayoutGate(fn, 'incomplete-chunkable-transport');
         fn.messageBusEligible = false;
         fn.messageBusRejectionReason = 'KERNEL_LAYOUT';
         continue;
@@ -13212,6 +13230,9 @@ function compileResolvedAst(
       if (hasIndependentKernelLayoutFence
         || hasIncompatibleJournalDispositionPhases
       ) {
+        noteKernelLayoutGate(fn, 'journal-disposition-or-layout-fence', {
+          hasIndependentKernelLayoutFence, hasIncompatibleJournalDispositionPhases,
+        });
         fn.messageBusEligible = false;
         fn.messageBusRejectionReason = 'KERNEL_LAYOUT';
         continue;
@@ -13219,6 +13240,7 @@ function compileResolvedAst(
       if (!incomplete) {
         continue;
       }
+      noteKernelLayoutGate(fn, 'incomplete-journal-disposition');
       fn.messageBusEligible = false;
       fn.messageBusRejectionReason = 'KERNEL_LAYOUT';
     }

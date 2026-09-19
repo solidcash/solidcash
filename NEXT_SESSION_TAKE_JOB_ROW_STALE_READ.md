@@ -13337,3 +13337,42 @@ project cache ignores the build id), take the `__message_bus_entry_takeJob` `DBG
 caller actually leaves below the argument band (or to drop the synthetic entries the shipped body never pushes), so
 the ordinal and the runtime agree. Then re-run the title and confirm the coordinate becomes 20 (participant 0's
 entry slot 0) instead of 151, and re-run `close job` (both) + `withdraw collateral`.
+
+Round 351c: the model's bottom region is handler-local, the runtime's is the caller's band
+
+`DBG-BOTTOM-PICK.stackBottom` (last 14 model entries, deepest first) for every takeJob owner pick, identical at every
+model length:
+
+    __internal__dynamicChunkInputBase, __internal__outlinedRecoveryAIndex, __internal__handlerEffectSite,
+    __internal__handlerStaticDirty, __internal__handlerStaticMode, __internal__graphEmissions,
+    __internal__state_write_marketplaceData, __internal__state_write_jobs, __internal__dynwrite_value_jobs,
+    __internal__state_write_unicrowAddress, __internal__state_write_treasuryAddress,
+    __internal__state_write_unicrowMarketplaceFee, __internal__state_write_PausableStorage___paused,
+    __internal__graphHandlerCallerDepth
+
+and the owner sits immediately ABOVE that block (ordinal 14 = the block's size). So the model seeds the handler's
+own pending-effect locals BELOW its parameters - items that, at runtime, the handler pushes later into its working
+region (or never, on an inactive branch). The runtime's below-owner region is instead the CALLER's band copy:
+measured depths 71-89 of the 90-item frame (ordinals 0-18) are `graphSettlementBoundary`, framed `graphCallers`,
+997-byte `graphEmissions`, `graphFixedSize`, `graphBlockSize`, `activeVerifierIndex`, the batch blob, a framed lock
+and the caller's own 0 - i.e. exactly the published route inputs, in descending index order, with the owner (0) on
+top of them.
+
+Consequences, all measured:
+  * the model's frame (31-58 items) is far smaller than the runtime frame (90), so ~39 items the body pushes are
+    untracked as well - positional addressing of ANY kind (bottom ordinal or top index) cannot be right for these
+    DEFINE'd handler frames;
+  * that is exactly why `SOLIDC_DEBUG_OWNER_TOP_HANDLER=__message_bus_entry_takeJob` changes nothing: the pick still
+    addresses a position the runtime does not share;
+  * the ordinal lands on `graphFixedSize`/`graphBlockSize` (131) - a caller band item - which the outlined entry
+    check then turns into the coordinate `131 + 20 = 151` (participant 1's `returnEvent` slot, a filler input).
+
+So the fix is confirmed to be VALUE anchoring rather than position: read the owner once at handler entry (it is the
+TOP item there - measured pre-body top = empty item = 0 = participant 0's `__internal__proxyMasterIndex`) and keep
+it in the alt stack for drift-free re-reads (`OP_FROMALTSTACK OP_DUP OP_TOALTSTACK`). OP_INVOKE shares both stacks
+(`opInvoke` in libauth only swaps `instructions`/`ip` and pushes a control frame), so the anchor must be balanced
+across nested invokes the body makes - the compiler's own alt use is already to/from balanced, which the takeJob
+title will confirm.
+
+Tooling state: `SOLIDC_DEBUG_COMPUTE_BASE=1` at COMPILE time now yields both DBG-COMPUTE-BASE and DBG-BOTTOM-PICK
+(with `stackBottom`); the marketplace artifacts are rebuilt canonically afterwards.

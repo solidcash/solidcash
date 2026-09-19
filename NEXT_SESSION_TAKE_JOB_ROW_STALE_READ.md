@@ -12700,3 +12700,42 @@ area:
 So the 225 remaining failures are pre-existing on this branch and are not a regression from this work. (The A/B
 was run in place: the pass file was swapped with `git show 876b3733e:…`, the suite run, then restored from a copy
 in `/tmp`; `git diff` is clean afterwards.)
+
+Round 342: the deferred-compute stall is ONE abort in the new takeJob clone, at the journaled mapping read
+
+With `SOLIDC_DEBUG_PROBE_FRAMES=1` the probe's terminal state is printed, and it names the whole thing:
+
+    probe-terminal {"error":"Program attempted to read from an invalid transaction UTXO index.
+      Transaction UTXO count: 131; requested index: -279527255002386135176507740840559155600835843272656742033782.",
+      "ip":220,"ownInstructions":2378,
+      "callers":[{"len":1688,"ip":1688},{"len":11059,"ip":5456}],
+      "window":[168,96,121,"2:a080",138,"1:11",121,206,"1:ac",138], ...}
+
+* the aborting body is `invokeDebug[59]` = **`__message_bus_entry_takeJob`** (2378 instructions; identified by counting
+  instructions of every `invokeDebug` body against the reported `ownInstructions`);
+* in the UNOPTIMISED artifact (`SOLIDC_NO_OPTIMISE=1` compile, 1:1 source map) instruction 220 resolves to
+  **`MarketplaceV1.sol:682` - `whitelistWorkers[jobId_][msg.sender]`**, i.e. the mapping read this clone newly
+  journals. The sequence there is `OP_PICK; OP_UTXOTOKENCATEGORY; push; OP_INVOKE` - the entry read helper;
+* the index operand is garbage: a 35-byte `aa20...` LOCK in the optimised probe (high bit set -> that huge negative
+  number), and in the unoptimised probe the same helper pushes the literal `2:9800` = 152, past the probe
+  transaction's 87 inputs. So the helper is invoked with a *resource identity* (lock) or with a *final-layout
+  coordinate* where a participant-local input index belongs.
+
+`SOLIDC_DEBUG_KECCAK_DERIVE=1` confirms the consequence: the probe trace contains exactly one OP_INPUTBYTECODE read
+(`{ip:234, index:129}` = the delegate input), so neither the keccak side-car read (`base: 3`) nor the ecrecover A
+read is ever reached, and the learner reports
+`keccak256 preimage extraction: no side-car read found in the probe trace` (14 times, 2 keccak + 1 ecrecover
+unresolved). Fixing this one abort is therefore the whole remaining blocker for the learning step.
+
+Next round, one run: name the witness that feeds that helper's index. The route publishes
+`batchBlob` + `__internal__activeVerifierIndex=4` for participant 0 with no empty argument
+(`deferred-stall-io-full`), and the clone is invoked from the 11059-instruction `__message_bus1` route body; dump the
+route's own call vector for `__message_bus_entry_takeJob` (the physical-entry witnesses the SWAP/OP_INVOKE sequence
+consumes: `__internal__valueWitness_*`, `__internal__vmapBatch*`, `physicalEntrySlots`) and compare with what the
+composer materializes for the row. `Missing physical entry argument '__internal__valueWitness_3' while invoking
+'__message_bus_handler_getAllEscrowData'` (seen in the earlier guard experiment) is the same family of witness, so
+the SDK's physical-entry materialization for a *newly admitted* row is the place to look first.
+
+Note for reproduction: `.marketplace/artifacts` is back to the OPTIMISED build (the unoptimised one was only used to
+resolve instruction 220); `SOLIDC_NO_OPTIMISE=1` plus a moved `.marketplace/cache` reproduces the unoptimised
+mapping.

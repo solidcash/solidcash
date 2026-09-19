@@ -11607,3 +11607,28 @@ this exact input.
 
 Process note: the round-322 run exposed a TDZ bug in the new diagnostic (`entryAbiFunction` is not initialized on
 that path) - fixed by logging `abiFunction` instead; `tsc -b` is clean and the gate is off by default.
+
+Round 310: category forwarding added on every nested-build path; the failing probe still shows zeros
+
+Changes this round (`tsc -b` clean, fixture `1 passed | 1 skipped` re-verified):
+* `StatefulFunctionCall` carries `callerCategoryId`; `withCallerIdentity(lockingBytecode, categoryId?)` records it,
+  and all three `_applyOverrides` rebuilds forward it as `msgSenderCategory: hexToBin(categoryId).reverse()`
+  (the compiler's wire order) so a REBUILT frame keeps the caller's category.
+* `compose.ts` passes the caller participant's descriptor category alongside the locking bytecode.
+
+Measured (run 325): the failing `approve` probe's internals are STILL
+
+    __internal__msgSenderCategory = b32:0000…0000
+    __internal__vmapBatchSlot_0 = 80a90055…, Proof_0 = 1, Next_0 = d1534eff…, PredOut_0 = 4, returnOutputIdx = 3
+
+and the refusal is unchanged (ip 115, `FakeToken:109`, `33b:ff…ff` vs `32b:1af53e53…`). The zero therefore comes
+from a build path that sets the whole `__internal__*` vector at once (a route/internal-witness map, or the
+delegate-executor frame build), not from the per-frame seeding at `:18559` - note that the seeding log DOES fire
+with a real category for another `approve` build in the same run, so the two builds differ in how their args are
+assembled.
+
+Next round (do this first, it is one run): log `functionName`, `abiFunction.name`, the `__internal__msgSenderCategory`
+value and the stack at BOTH remaining writers - `:30291`/`:29686` (the frame's internal-arg resolver) and
+`_batchRaw`'s route-witness map (`resolvedInternalRouteWitnesses`) - and find which one fills the failing probe's
+vector. Then re-verify `unicrow params` (2) and `admin` (8), which have NOT been re-run since the round-306 identity
+threading and this round's category forwarding.

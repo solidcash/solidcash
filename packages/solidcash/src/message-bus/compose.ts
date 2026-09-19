@@ -2884,7 +2884,17 @@ export class AtomicMessageBusComposition {
         // `_withChildDeployment` / `_withCompilerTransfer*` below force `StatefulFunctionCall._applyOverrides` to
         // REBUILD the frame, and that rebuild carries the call object's identity - so record it on the call too,
         // not only in the initial build above.
-        if (frameCaller !== undefined) localCall.withCallerIdentity(hexToBin(frameCaller.lockingBytecode));
+        // The category of the participant that CALLS this frame (the compiler resolves `msg.sender` from it).
+        if (frameCaller !== undefined) {
+          const callerParticipant = frameInvocation?.caller === null || frameInvocation?.caller === undefined
+            ? undefined : plan.participants[frameInvocation.caller];
+          const callerDescriptor = callerParticipant === undefined
+            ? undefined : descriptors[callerParticipant.invocations[0]!];
+          localCall.withCallerIdentity(
+            hexToBin(frameCaller.lockingBytecode),
+            callerDescriptor?.contract.categoryId,
+          );
+        }
         for (const deployment of materializedDeployments) {
           if (deployment.participant !== participant.participant || !deployment.active
             || !('genesis' in deployment)) continue;

@@ -38178,6 +38178,8 @@ export class StatefulFunctionCall {
   private parentContract?: StatefulContract;
   /** Locking bytecode of the contract calling this frame, when a composition builds a nested participant. */
   private callerLockingBytecode?: Uint8Array;
+  /** Category of that same caller: the compiler resolves `msg.sender` from it, so nested probes need both. */
+  private callerCategoryId?: string;
   private functionName?: string;
   private functionArgs?: any[];
   private stateOverrides: Array<{ name: string; value: StateValueType }> = [];
@@ -38214,8 +38216,9 @@ export class StatefulFunctionCall {
    * mapping must hash that locking bytecode - hashing the transaction origin instead keys the entry on a slot the
    * covenant never reads. Returns the call so a composition can annotate it inline.
    */
-  withCallerIdentity(lockingBytecode: Uint8Array): this {
+  withCallerIdentity(lockingBytecode: Uint8Array, categoryId?: string): this {
     this.callerLockingBytecode = Uint8Array.from(lockingBytecode);
+    if (categoryId !== undefined && categoryId.length > 0) this.callerCategoryId = categoryId;
     return this;
   }
 
@@ -41181,6 +41184,8 @@ export class StatefulFunctionCall {
           emitReturn: this.emitReturnFlag || undefined,
           ...(this.callerLockingBytecode !== undefined
             && { callerLockingBytecode: this.callerLockingBytecode }),
+          ...(this.callerCategoryId !== undefined
+            && { msgSenderCategory: hexToBin(this.callerCategoryId).reverse() }),
           ...(this.compilerRoute && {
             abiFunction: this.compilerRoute.abiFunction,
             compilerRouteSelector: this.compilerRoute.selector,
@@ -41318,6 +41323,8 @@ export class StatefulFunctionCall {
           drainSatoshiContainer: true,
           ...(this.callerLockingBytecode !== undefined
             && { callerLockingBytecode: this.callerLockingBytecode }),
+          ...(this.callerCategoryId !== undefined
+            && { msgSenderCategory: hexToBin(this.callerCategoryId).reverse() }),
           ...(this.compilerRoute && {
             abiFunction: this.compilerRoute.abiFunction,
             compilerRouteSelector: this.compilerRoute.selector,
@@ -41355,6 +41362,8 @@ export class StatefulFunctionCall {
             drainSatoshiContainer: wasSatoshiDrained || undefined,
           ...(this.callerLockingBytecode !== undefined
             && { callerLockingBytecode: this.callerLockingBytecode }),
+          ...(this.callerCategoryId !== undefined
+            && { msgSenderCategory: hexToBin(this.callerCategoryId).reverse() }),
             drainTokenContainers: drainedTokenContainers,
             ...(this.compilerRoute && {
               abiFunction: this.compilerRoute.abiFunction,

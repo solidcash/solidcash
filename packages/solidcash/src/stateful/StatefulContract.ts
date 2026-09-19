@@ -19598,6 +19598,20 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   : String(pinned.utxo?.token?.nft?.commitment ?? '').slice(0, 64),
               }));
             }
+            if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+              ?.SOLIDC_DEBUG_MSG_SENDER_KEY === '1') {
+              // Which identity this build resolved `msg.sender` from: the probe and the composed participant share
+              // this pin code, so the tuple below is what still differs between them.
+              console.error('entry-pin-identity', JSON.stringify({
+                functionName, slotIndex, collection: access.collection,
+                slot: binToHex(slot), present,
+                hasCallerLock: overrides?.callerLockingBytecode !== undefined,
+                signer: String(this._signer?.getAddress?.() ?? ''),
+                nonceSigner: String(this._logicalNonceSigner?.getAddress?.() ?? ''),
+                probe: overrides?.returnProbeOnly === true,
+                blockBase: overrides?.blockBase,
+              }));
+            }
             if (present) {
               entryNfts.push({ ...entryBase, utxo: { ...list.find(slot)!.utxo, unlocker: wUnlocker } });
             } else if (isSoftDelete) {

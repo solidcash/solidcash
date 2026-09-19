@@ -12334,3 +12334,27 @@ composed fake-token frame by its `_allowances` slot (`d1534eff…` for the old m
 That names exactly which identity the composed build resolves `msg.sender` from, i.e. the last place the old model
 survives; feed it the graph edge's caller identity (`externalCallUtxoGroups[i].callerIdentity`, `:24379`) and the
 composed frame should co-spend the same node the probe now does.
+
+Round 340: the pin identity log names the gap exactly - `transferFrom`'s pin still has NO caller lock
+
+`entry-pin-identity` (run 353) for the three `_allowances` pins:
+
+    __message_bus1  slot d1534eff…  hasCallerLock TRUE   probe false  blockBase 199   (composed route frame)
+    approve         slot 00fe98d8…  hasCallerLock TRUE   probe true                    (correct, threaded)
+    transferFrom    slot 4038d902…  hasCallerLock FALSE  probe true                    (signer-keyed - WRONG)
+
+and `derive-return-value-entry` for `transferFrom` confirms it: `hasCallerLock: false, hasCallerContract: false`
+with the stack `_createBuilder -> _deriveReturnValue -> derive -> resolveProducer -> visit`.
+
+Defaulting `executionSelfAddress` to the executing frame's own locking bytecode inside `_resolveExternalExpressionReturns`
+(run 354) did NOT change it - the `transferFrom` pin still reports `hasCallerLock: false` and still lands on
+`4038d902…`. So the identity override is dropped *inside* `_deriveReturnValue` for that call: the function passes
+`callerLockingBytecode` only into its FIRST `_createBuilder`, while the return-slot path below it (the
+`physicalReturnSlot` / `delegatedReturn` handling around `:35700`+) can rebuild the frame without it.
+
+Next round, one run: log at every `_createBuilder` call inside `_deriveReturnValue` (the probe at `:35822` and any
+rebuild after it) the tuple `{ returnProbeOnly, hasCallerLock, hasCallerContract, functionName }`, and thread the
+caller identity into whichever build actually pins the entries. Then `transferFrom`'s pin must show
+`hasCallerLock: true` with slot `00fe98d8…` (or its correct predecessor), matching what the `approve` probe and the
+composed route already do - and the composed `transferFrom` row should finally read the allowance the same
+transaction writes.

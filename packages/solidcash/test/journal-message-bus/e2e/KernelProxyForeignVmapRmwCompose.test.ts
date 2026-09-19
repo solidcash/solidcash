@@ -2,11 +2,14 @@ import { bigIntToVmNumber, hexToBin, vmNumberToBigInt } from '@bitauth/libauth';
 import { compileString } from 'solidc';
 import { describe, expect, it } from 'vitest';
 import {
-  Contract, StatefulContract, getContractFactory, upgrades, Signer,
+  Contract, StatefulContract, messageBus, getContractFactory, upgrades, Signer,
   SortedList, getEntryNftAddress,
 } from '../../../src/index.js';
+import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';
 import { keyToSlot } from '../../../src/stateful/SortedList.js';
-import { setupStatefulUtxos } from '../../test-util.js';
+import { generateLibauthSourceOutputs } from '../../../src/utils.js';
+import type { TransactionBuilder } from '../../../src/TransactionBuilder.js';
+import { createBareP2pkhFeeFunder, setupStatefulUtxos } from '../../test-util.js';
 import { createMessageBusCapstoneTestProvider } from './message-bus-semantic-profile.js';
 
 const KERNEL = {
@@ -17,13 +20,22 @@ const KERNEL = {
   suppressWarnings: true,
 } as const;
 
-/** Criterion 3a: deployProxy path performs foreign vmap RMW via withExternalCall (shipped SDK). */
+const vmAccepts = (builder: TransactionBuilder): boolean => {
+  const transaction = builder.buildLibauthTransaction();
+  const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+  const vm = createVirtualMachineBch2026ForProvider(builder.provider);
+  return transaction.inputs.every((_input, inputIndex) => vm.stateSuccess(
+    vm.evaluate({ inputIndex, sourceOutputs, transaction }),
+  ) === true);
+};
+
+/** Criterion 3a: deployProxy × foreign vmap RMW under messageBus.compose + executionArtifact (event optional). */
 describe('kernel proxy × foreign vmap RMW compose', () => {
-  it('settles deployProxy poke that credits a foreign Bank', async () => {
+  it('settles deployProxy poke→Bank.credit under compose with executionArtifact', async () => {
     const provider = createMessageBusCapstoneTestProvider();
     const privateKey = new Uint8Array(32).fill(0x42);
     const signer = new Signer(privateKey, provider);
-    for (let index = 0; index < 32; index += 1) {
+    for (let index = 0; index < 40; index += 1) {
       await provider.addUtxo(signer.getAddress(), {
         txid: (index + 1).toString(16).padStart(64, '0'),
         vout: 0,
@@ -46,6 +58,7 @@ describe('kernel proxy × foreign vmap RMW compose', () => {
     );
     await bank.call.seed(2n, 10n).send();
 
+    // Slim: foreign credit + scalar write only — no event (M1a three-axis remains characterization).
     const implArtifact = compileString(`pragma solidcash >=0.8.0;
       interface IBank { function credit(int k, int v) external; }
       contract Coordinator() {
@@ -56,16 +69,65 @@ describe('kernel proxy × foreign vmap RMW compose', () => {
           this.count = this.count + 1;
         }
       }`, KERNEL);
-    expect(implArtifact.delegateArtifact).toBeDefined();
+    const delegate = implArtifact.delegateArtifact!;
+    expect(delegate).toBeDefined();
+    expect(delegate.messageBus?.handlers.find((h) => h.name === 'poke'))
+      .toMatchObject({ eligible: true });
 
-    const deployed = await upgrades.deployProxy(getContractFactory(implArtifact, signer), []);
-    // Foreign targets must be registered on the implementation (not only withExternalCall on the dispatch handle).
+    const deployed = await upgrades.deployProxy(
+      getContractFactory(implArtifact, signer),
+      [],
+    );
     deployed.implementation._registerResolvedExternal('IBank', bank);
-    const tx = await (deployed as any).poke(bank.inner.lockingBytecode, 2n, 5n)
-      .withExternalCall(bank, 'credit', [2n, 5n])
-      .send();
-    expect(tx.txid).toMatch(/^[0-9a-f]{64}$/);
+    const callsite = delegate.abi.find((entry) => entry.name === 'poke')?.externalCalls?.[0];
+    expect(callsite).toMatchObject({
+      functionName: 'credit',
+      interfaceName: 'IBank',
+    });
 
+    const funder = await createBareP2pkhFeeFunder(provider, 500_000n);
+    const composition = messageBus.compose({
+      preparedCalls: [{
+        contract: deployed.proxy,
+        functionName: 'poke',
+        args: [bank.inner.lockingBytecode, 2n, 5n],
+        executionArtifact: deployed.implementation.inner.artifact,
+        executor: deployed.implementation,
+      }, {
+        contract: bank,
+        functionName: 'credit',
+        args: [2n, 5n],
+        callsiteId: callsite!.callsiteId,
+      }],
+      funder,
+      changeAddress: funder.unlocker.generateLockingBytecode(),
+    });
+
+    const builder = await composition.build();
+    expect(vmAccepts(builder)).toBe(true);
+
+    const bankRouteName = bankArtifact.messageBus!.route.name;
+    const bankRoute = builder.inputs.findIndex((input) => 'contract' in input.unlocker
+      && input.unlocker.contract.artifact.contractName === 'Bank'
+      && input.unlocker.abiFunction.name === bankRouteName);
+    expect(bankRoute).toBeGreaterThanOrEqual(0);
+    const bankUnlocker = builder.inputs[bankRoute].unlocker;
+    if (!('params' in bankUnlocker)) throw new Error('bank route missing params');
+    const predOutIdx = bankArtifact.messageBus!.route.inputs.findIndex(
+      (input) => input.name === '__internal__vmapBatchPredOut_0',
+    );
+    expect(predOutIdx).toBeGreaterThanOrEqual(0);
+    const predOut = Number(bankUnlocker.params[predOutIdx] as bigint);
+    // UPDATE of seeded key: PredOut inactive or a valid absolute index.
+    expect(predOut === -1 || predOut >= 0).toBe(true);
+
+    const executorInput = builder.inputs.findIndex((input) => 'contract' in input.unlocker
+      && input.unlocker.contract.address === deployed.implementation.inner.address);
+    expect(executorInput).toBeGreaterThanOrEqual(0);
+
+    await expect(composition.send()).resolves.toMatchObject({
+      txid: expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
     const ea = getEntryNftAddress(bank.inner, bankSetup.categoryId, 'bal');
     const entry = SortedList.fromUtxos(await provider.getUtxos(ea))
       .find(keyToSlot(bigIntToVmNumber(2n)));

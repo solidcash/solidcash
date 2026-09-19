@@ -20,10 +20,10 @@ Worktree: `.worktrees/kernel-comprehensive-fixtures`
 - **K14** `KernelLocalKeyVmapRmwCompose` — local-key `+=` under KERNEL
 
 ## Follow-up settle (goal stream)
-- **3a** `KernelProxyForeignVmapRmwCompose` — `deployProxy` poke + `_registerResolvedExternal('IBank')` + `withExternalCall`; Bank bal 10→15 readback
+- **3a** `KernelProxyForeignVmapRmwCompose` — `messageBus.compose` + `executionArtifact` + `_registerResolvedExternal('IBank')`; unlocker PredOut + VM + Bank bal 10→15 (event omitted; M1a three-axis still characterization)
 - **3b** `KernelReturningStaticcallCompose` — value-returning foreign view under compose + SDK `.staticCall()`
 - **self RMW** `KernelSelfVmapRmwCompose` — self mapping UPDATE + INSERT-on-absent `+=`
-- **proxy-owned RMW** `KernelProxyOwnedVmapRmwCompose` — Acc mapping UPDATE through `__forward` on proxy category
+- **proxy-owned RMW** `KernelProxyOwnedVmapRmwCompose` — Acc mapping UPDATE through `__forward`; unlocker+VM + bal readback
 - **nested foreign** `KernelNestedForeignVmapCompose` — Caller→Bank nested allowance-class write under compose
 - **J1** `KernelProxyViewReturnCompose` — grafted `stored()` view sugar + delegate-eligible `bump().emitReturn()` non-OP_RETURN return NFT (pure view getters remain non-delegate)
 

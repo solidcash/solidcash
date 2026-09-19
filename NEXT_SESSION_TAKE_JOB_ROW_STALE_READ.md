@@ -12285,3 +12285,27 @@ another participant's frame). So the remaining question is the read-after-write:
 value the in-transaction `approve` writes (its PredOut / batch row), not its co-spent HEAD/predecessor node's value.
 Measure with `SOLIDC_DEBUG_LAYOUT=1` + `SOLIDC_DEBUG_PREFLIGHT_ROUTE=1` on input 20 and compare the row's
 `vmapBatchPredOut_*`/`vmapBatchNext_*` witnesses with the outputs the approve frame materializes.
+
+Round 338: the composed frame still co-spends the OLD allowance node - the composer needs the same key model
+
+`SOLIDC_DEBUG_LAYOUT=1` on the composed transaction (run 352), inputs 20-24:
+
+    20 FakeToken.transferFrom  block=8
+       witnesses: msgSenderCategory=b32:141000000000000000000000…,
+                  vmapBatchSlot_0=b877ad75…, Proof_0=2, Next_0=21c513b0…, PredOut_0=28, Rank_0=0
+    22 EntryNft aa203deb5c48  64B  slot 00*32 || 21c513b0…      (_balances[from])
+    23 EntryNft aa203007d941  73B  slot d1534eff… || 1e8d447f…  (_allowances[user1][marketplace] = 1900e18)
+    24 EntryNft aa203deb5c48  73B  slot 7addf0a1… || e3b0c442…  (_balances[to])
+
+The row the frame executes addresses `_allowances[marketplace][unicrow]` (slot `00fe98d8…`, created in this
+transaction by the marketplace's `approve(unicrow, …)`), but the composed participant still co-spends the
+`d1534eff…` node - the key the PRE-FIX model produced. The probe path now pins the right key (rounds 306-337); the
+COMPOSED path's entry materialization is fed by the composer, which still derives `msg.sender` keys from the old
+model (note its `msgSenderCategory = 141000000000000000000000…`, which is neither the caller's reversed category nor
+zeros - a third value that needs identifying).
+
+Next round: find where the composed participant's `_allowances` entry INPUT is chosen (the graph/compose materializes
+`blockInputs`/entry UTXOs for the participant; the probe's fix lives in `_createBuilder`'s entry loop at `:19044`
+region) and feed it the same caller identity the probe now uses (`callerIdentity.lockingBytecode` +
+`callerIdentity.categoryId` from the graph edge - `externalCallUtxoGroups[i].callerIdentity`, `:24379`), so the
+composed frame co-spends the node for `00fe98d8…` (or its correct sorted predecessor) exactly like the probe does.

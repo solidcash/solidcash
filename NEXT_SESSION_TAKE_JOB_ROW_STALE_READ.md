@@ -13413,3 +13413,19 @@ default. Two concrete steps:
 Then re-measure: `take job` must fail at the `publishJobEvent` target check (not at the compute stall) and
 `close job`/`withdraw collateral` must stay green; if the target check is reached, that 6-instruction body is the
 next defect to fix (`MarketplaceV1.invokeDebug[22]`, split index 116).
+
+Round 352b: prime suspect for "something after the owner"
+
+The three titles that broke with the capture ON are exactly the ones whose handlers carry kernel-JOURNAL context: the
+LowerCollectionJournalHelpers pass *threads* extra witnesses into a rewritten call site ("a candidate is unshifted
+only when a rewritten call site actually threads it"), and those threaded operands are appended to the clone's
+parameter list and to the emitted call vector. If any of them lands AFTER the owner operand, the depth-0 capture
+reads that witness instead of the owner - which is what the OP_UTXOBYTECODE failure at input 129 (ip 245 of 6337)
+looks like.
+
+So the next round's first measurement is: compile with `SOLIDC_DEBUG_ARG_ORDER=1` (move `.marketplace/cache` aside
+first; the project cache ignores the build id) and diff, for each affected clone, `message-bus-clone-params` (the
+clone's declared list after every injection) against `message-bus-arg-order` (the emitted vector) - the tail AFTER
+`__internal__messageBusOwnerInput` is the thing to eliminate. `SOLIDC_DEBUG_ARG_ORDER` currently prints the clone
+list at owner-append time, so extend it to print the FINAL list (after SymbolTableTraversal's injections) for a
+precise diff.

@@ -1590,11 +1590,16 @@ const evaluateEveryInput = (
                 const from = Number(debugEnv?.SOLIDC_DEBUG_FAILURE_POINT_TRACE_FROM ?? Number.NaN);
                 const to = Number(debugEnv?.SOLIDC_DEBUG_FAILURE_POINT_TRACE_TO ?? Number.NaN);
                 if (!Number.isFinite(from) || !Number.isFinite(to)) return undefined;
+                // By default only the failing frame; with TRACE_ANY=1 every frame. A coordinate is usually built in
+                // the CALLER of the body that fails (measured: the failure is ip 3 of a 6-instruction outlined body
+                // while the size/pick instructions that fed it live in the 6338-instruction caller).
+                const anyFrame = debugEnv?.SOLIDC_DEBUG_FAILURE_POINT_TRACE_ANY === '1';
                 return ring.filter((candidate) =>
-                  candidate.instructions.length === evaluated.instructions.length
+                  (anyFrame || candidate.instructions.length === evaluated.instructions.length)
                   && candidate.ip >= from && candidate.ip <= to)
                   .map((candidate) => ({
                     ip: candidate.ip,
+                    instructions: candidate.instructions.length,
                     opcode: candidate.instructions[candidate.ip]?.opcode,
                     depth: candidate.stack.length,
                     top: candidate.stack.slice(-5).map((item) => `${item.length}:${binToHex(item).slice(0, 40)}`),

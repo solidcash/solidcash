@@ -1580,6 +1580,23 @@ const evaluateEveryInput = (
                   `${34 + offset}:${item.length}:${binToHex(item).slice(0, 96)}`
                 ))
                 : undefined,
+              // Step through a coordinate's construction: every captured pre-state of the failing program whose ip
+              // falls in the requested range, with the top of the stack at that point. A four-term coordinate is
+              // only readable this way - the terminal operands alone cannot say which term was wrong.
+              trace: (() => {
+                const from = Number(debugEnv?.SOLIDC_DEBUG_FAILURE_POINT_TRACE_FROM ?? Number.NaN);
+                const to = Number(debugEnv?.SOLIDC_DEBUG_FAILURE_POINT_TRACE_TO ?? Number.NaN);
+                if (!Number.isFinite(from) || !Number.isFinite(to)) return undefined;
+                return ring.filter((candidate) =>
+                  candidate.instructions.length === evaluated.instructions.length
+                  && candidate.ip >= from && candidate.ip <= to)
+                  .map((candidate) => ({
+                    ip: candidate.ip,
+                    opcode: candidate.instructions[candidate.ip]?.opcode,
+                    depth: candidate.stack.length,
+                    top: candidate.stack.slice(-5).map((item) => `${item.length}:${binToHex(item).slice(0, 40)}`),
+                  }));
+              })(),
             };
           })(),
           // Many output-conservation loops retain their current output index at the top of the stack. Reporting

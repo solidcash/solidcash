@@ -14077,3 +14077,40 @@ per-instruction values are what is missing) to read the four terms as they are s
 **Verified state (defaults)**: greens 3 passed | 63 skipped (re-verified this round before the dump changes);
 fast fixture 1 passed | 1 skipped; artifacts canonical; the dump changes are gated by
 SOLIDC_DEBUG_FAILURE_POINT_PRE_STATE.
+
+Round 371: full failure dump - the composed layout, and the emitter family behind the post-job check
+
+**New gate**: `SOLIDC_DEBUG_FAILURE_POINT_TRACE_FROM/_TO` prints every captured pre-state whose ip falls in the
+range, with the stack top at that point (`message-bus-failure-point.operands.trace`). Measured limitation: the ring
+holds only the last 64 pre-states per input, and the failing instruction here sits in a LOOP - all 64 entries are
+the same ip (20588) with identical operands, so the earlier coordinate instructions were pushed out. The trace gate
+is still the right tool for a site that is not loop-saturated (or with a larger ring).
+
+**`SOLIDC_DEBUG_FAILURE_POINT_FULL=1` gives the composed layout** (this is the most useful output of the round):
+
+    functionName __message_bus1, selector 53434231 (the batch magic)
+    routeParams: __internal__graphFixedSize = 87, __internal__graphBlockSize = 87, __internal__graphEmissions = "",
+                 __internal__graphCallers = 2300 aa2019da... (framed participant locks)
+    outputs 150-157: ALL one-byte `51` fillers (150,151 also carry a category `ee643a1671fb...`; 152/153 are the
+                 real P2SH32 outputs aa2047362c... and aa20e755f2...)
+    inputs 130: token input, lock aa20083560... (Marketplace logical address), 150-byte commitment
+    inputs 131: `SolidCashProxy` `__forward`, category ee643a1671fb... (participant 1's master)
+    focus.inputs 214/215: lock aa20953ccf... (the FILLER lock), unlocking 0151
+
+So the addressed output 154 is a plain filler while the real outputs sit at 152/153 - i.e. the coordinate is off by
+a couple of slots, not wildly wrong, and `graphBlockSize`/`graphFixedSize` = 87 is participant 1's block size.
+
+**Emitter family identified**: the check is an instance of the P2SH32 ENTRY/collection address builder - the inline
+form matches `GenerateTargetTraversal.ts` ~28840-28905 (`20 SWAP CAT` + VALUE_CHUNK_DOMAIN_TAG + collectionHash +
+`PICK/CAT` for the slot and root names + `OP_HASH256` + `aa20 SWAP CAT` + `87 CAT`, and its sibling
+`emitP2sh32FromCovenant`), which derives an address from a CATEGORY plus a collection hash plus the tracked
+slot/root names. The failing comparison is between that derived address and the addressed output's lock, so the
+wrong part is the tracked slot/root pick or the output coordinate feeding it.
+
+**Next round**: instrument that emitter (a gated model print of the slot/root names and their `getStackIndex`
+values, exactly like `graph-emission-check`) and compare with the runtime values (the pre-state dump's bottom
+windows already show the neighbouring layout coordinates 131/151/152/214); then decide whether the slot/root pick or
+the output coordinate is the wrong one.
+
+**Verified state (defaults)**: fast fixture 1 passed | 1 skipped; greens 3 passed | 63 skipped (verified earlier this
+round on the same build); artifacts canonical; all new prints gated.

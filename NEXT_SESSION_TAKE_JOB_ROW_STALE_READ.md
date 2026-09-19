@@ -11683,3 +11683,28 @@ Next round, one edit + one run: find the `.emitReturn()` builder entry (`emitRet
 already computes (`withCallerIdentity` on that call object, or a parameter mirroring `_deriveReturnValue`'s). Then
 the probe's `msg-sender-category-final` must be non-zero, the ip-115 sentinel comparison must clear, and the
 composed preflight at input 20 becomes reachable again.
+
+Round 313: `usesMsgSender` is already true - the "final value" log was reading the WRONG ABI slot
+
+Artifact facts (FakeToken, from the compiled artifact):
+
+    approve      usesMsgSender=true  entryAccesses [_allowances: keys [expression 'nullop:msg.sender', param]]
+    transferFrom usesMsgSender=true  entryAccesses [_balances, _allowances: keys [param, expression
+                                     'nullop:msg.sender'], _balances]
+
+So the seeding block at `:18559` IS entered for these frames (its condition is `abiFunction.usesMsgSender &&
+inputs include __internal__msgSenderCategory`), and the `msg-sender-category-zero` gate fired only for the plain
+user-level builds - i.e. the failing PROBE does receive the override, exactly as `derive-return-value-entry` showed
+(`hasCallerLock: true`, `callerCategoryId: a3cef944…`).
+
+That makes the round-312 "final value" reading suspect: `msg-sender-category-final` indexes `finalArgs[at]` with
+`at` = the index inside `abiFunction.inputs`, while `finalArgs` for a probe/route frame can be reordered or partly
+built (the earlier rounds shifted hidden args by name for exactly this reason). The zeros it printed for the probe
+are therefore not evidence about the witness the trace actually sees.
+
+Next round, before any further fix: make that log dump the WHOLE `finalArgs` next to `abiFunction.inputs.map(name)`
+(zip them), so the witness finally has one unambiguous value, and re-read `probe-internals` for the SAME probe
+identity (its `vmapBatchSlot_0`/`Proof_0`/`Next_0`/`PredOut_0` tuple identifies it) to confirm whether the zeros in
+rounds 319-328 came from the failing probe or from an earlier one. Only then chase the ip-115 comparison again;
+suspects remain the frame's own delegate-identity category witness (the 33-byte `ff…ff` side) and the batch
+`Next`/`Slot` pair.

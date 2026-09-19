@@ -18555,7 +18555,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       // block layout are known. Without an `emit` the two offsets coincide, which is why a plain returning
       // delegate settles on this offset alone.
     }
-    if (abiFunction?.usesMsgSender
+    // A `msg.sender`-KEYED MAPPING needs the witness too, even when the function never compares msg.sender as an
+    // address: the compiler resolves the entry key from this category, so leaving it zero makes every
+    // `msg.sender`-derived key comparison read a sentinel (measured: the `approve` probe refused its own entry row
+    // at ip 115 with a 33-byte `ff…ff` against the caller's real category).
+    const usesMsgSenderMappingKey = (abiFunction?.entryAccesses ?? []).some((access) =>
+      (access.keySources ?? []).some((source) => source.kind === 'msgSender'));
+    if ((abiFunction?.usesMsgSender || usesMsgSenderMappingKey)
       && abiFunction.inputs.some((input) => input.name === '__internal__msgSenderCategory')) {
       let msgSenderCategory = overrides?.msgSenderCategory;
       if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
@@ -35624,6 +35630,18 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
      */
     callerCategoryId?: string,
   ): Promise<StateValue> {
+    if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+      ?.SOLIDC_DEBUG_MSG_SENDER_KEY === '1') {
+      // Which caller threaded the identity into this probe: an unthreaded site leaves the probe's caller category
+      // at zero and its `msg.sender` comparisons read a sentinel.
+      console.error('derive-return-value-entry', JSON.stringify({
+        functionName,
+        hasCallerLock: callerLockingBytecode !== undefined,
+        callerCategoryId,
+        stack: new Error('drv').stack?.split('\n').slice(2, 8)
+          .map((line) => line.trim().replace(/\s*\(.*/, '')),
+      }));
+    }
     const directMappingRead = directMappingReadPlan(this.inner.artifact, functionName);
     if (directMappingRead) {
       const keyCandidates = directMappingRead.keyArgumentIndices.reduce<Array<Array<string | Uint8Array>>>(

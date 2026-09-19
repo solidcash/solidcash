@@ -11142,3 +11142,56 @@ Next step candidates (in order):
 
 Greens with everything above (verified after the compiler was rebuilt with `npx solidhat compile`):
 fixture `1 passed | 1 skipped`, `unicrow params` 2 passed, `admin` 8 passed. Commit: `0eab0d90f`.
+
+Round 296: the `_allowances` read is keyed on a slot the co-spent entry does NOT carry
+
+The layout dump now prints witness bytes (`transaction-layout-inputs` -> `name=b32:<hex>`) and full entry
+commitments. Measured for the composed FakeToken participant (input 20, `FakeToken.transferFrom`, block 8):
+
+    vmapBatchSlot_0 = b877ad7556ae762e8001bd55...   Proof_0 = 2 -> input 22   Next_0 = 21c513b0c2661060bc5c9ddd...
+    vmapBatchSlot_1 = 00fe98d8f4d46474a1c61e60...   Proof_1 = 3 -> input 23   Next_1 = 1e8d447fad66976b532d02cc...
+    vmapBatchSlot_2 = 7addf0a1cb9f999f5d836a57...   Proof_2 = 4 -> input 24   Next_2 = e3b0c44298fc1c149afb...
+    vmapBatchRows__balances = b128 starting b877ad7556ae762e8001bd55...
+    msgSenderCategory = 141000000000000000000000...
+
+    input 22 (_balances, 64B) = 00*32 || 21c513b0c2661060bc5c9ddd6640b03c5e4e9d3976f1d0e60cc9f197f96dac32
+    input 23 (_allowances, 73B) = d1534eff8dfc4ed02a1fa5809356052e2452786c6a7ccab47bddea7b7433a133
+                                || 1e8d447fad66976b532d02cc3b80eeae3588609d54853e3bd3e535e7e8b0f974
+                                || 0000305a5efdcbff66
+    input 24 (_balances, 73B) = 7addf0a1cb9f999f5d836a575710ef5c8eddae68fc023af91972a1457e0e4e39
+                                || e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 || 000010632d5ec76b05
+
+So a node's commitment is `slot(32) || nextKey(32) || value`, and each `vmapBatchNext_N` matches the co-spent
+entry's `nextKey` (`Next_0` = 21c513... = input 22's next; `Next_1` = 1e8d447f... = input 23's next), while
+`vmapBatchSlot_N` is the TARGET key of the row's write. Two facts stand out:
+
+* Input 23 IS the on-chain allowance entry and holds a real value: `0000305a5efdcbff66` little-endian =
+  0x66ffcbfd5e5a300000 = 1.9e21 = 1900e18 - i.e. `_allowances[user1][<approved spender>]` after the earlier
+  100e18 job creation (the test approves 2000e18 at marketplace.test.ts:185).
+* The frame's target slot for that row (`00fe98d8...`) is NOT the co-spent entry's slot (`d1534eff...`). A sorted
+  read of a key whose slot never appears among the co-spent entries yields EMPTY - exactly the operands the failing
+  `_spendAllowance` compare shows. (Ordering also rules out "predecessor": 0xd1 > 0x00, so `d1534eff` cannot be the
+  predecessor of `00fe98d8` in an ascending sorted list.)
+
+The composed transaction contains NO `approve` participant and no FakeToken route participant (participants:
+MarketplaceV1 proxy+`takeJob`, MarketplaceData proxy+`publishJobEvent`, `FakeToken.transferFrom`,
+`Unicrow.pay`, `UnicrowArbitrator.setArbitrator`), while the FakeToken ROUTE derivation probe
+(`SOLIDC_DEBUG_COLLECTION_FETCH=1`) reaches `balanceOf`, `approve` AND `transferFrom` and binds `_allowances` to
+`__message_bus_key__allowances_0/_1` plus `_alt` alternates.
+
+Hypotheses for the next round, in order:
+1. The approve call that creates `_allowances[user1][spender]` is executed inside another participant's frame
+   (outlined `lowLevelCall`), so its NEW node is an OUTPUT of that frame; the `transferFrom` frame then reads a key
+   whose node exists only as an output and must resolve it through the batch row/`PredOut` witnesses - but the
+   target slot it computes (`00fe98d8...`) matches neither the co-spent entry nor (apparently) any materialized
+   output. Dump the SDK's own key->slot computation for this row (`SOLIDC_DEBUG_ENTRY_PLACEMENT=1` gives
+   `targets: slotIndex:commitmentPrefix` and `nfts: slotIndex:collection:present|absent`) and compare with the
+   runtime witness; the derived and the runtime key encodings must be the same value (a 32-byte category vs a
+   20/25-byte address is the classic mismatch here - `msgSenderCategory` is a 32-byte witness, while the on-chain
+   entry was written by an `approve` whose spender key came from an `address`-typed argument).
+2. If the encodings agree, the batch predecessor selection is wrong for this row (proof chosen by
+   `max(slot < target)` over the wrong collection) - then the fix belongs in the plan that picks `Proof_N`, not in
+   the pin.
+3. Verify with a two-row FakeToken frame (`approve` + `transferFrom` in one route probe) whether the value read
+   after the write resolves at all in the kernel row loop; if not, the read-after-write path for a *sorted*
+   collection is the general gap.

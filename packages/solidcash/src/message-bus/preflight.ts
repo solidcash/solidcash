@@ -2727,7 +2727,12 @@ export const logComposedTransactionLayout = (
       const value = owner.params?.[position];
       if (!name.startsWith('__internal__')) return [];
       if (typeof value === 'bigint') return [`${name.replace('__internal__', '')}=${value}`];
-      if (value instanceof Uint8Array) return value.length === 0 ? [] : [`${name.replace('__internal__', '')}=b${value.length}`];
+      // Keep the size (a wrong-length witness is a distinct failure) and add the leading bytes: slot/next-key
+      // witnesses are the only way to compare the key a frame ADDRESSES with the key the co-spent entry carries.
+      if (value instanceof Uint8Array) {
+        return value.length === 0 ? []
+          : [`${name.replace('__internal__', '')}=b${value.length}:${asHex(value).slice(0, 24)}`];
+      }
       return [`${name.replace('__internal__', '')}=${String(value)}`];
     });
     return [
@@ -2738,7 +2743,7 @@ export const logComposedTransactionLayout = (
         String((input as unknown as { vout?: number }).vout ?? '?')}`,
       `sat=${builderInput.satoshis}`,
       `token=${tokenOf(builderInput.token)}`,
-      `commit=${asHex(builderInput.token?.nft?.commitment).slice(0, 20)}`,
+      `commit=${asHex(builderInput.token?.nft?.commitment)}`,
       `block=${owner.blockSize ?? '-'}`,
       coordinates.length === 0 ? 'witnesses=-' : `witnesses=${coordinates.join(',')}`,
     ].join(' | ');

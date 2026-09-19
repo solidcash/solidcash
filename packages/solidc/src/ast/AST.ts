@@ -460,6 +460,20 @@ export class FunctionDefinitionNode extends Node implements Named {
   messageBusPhysicalEntrySlotAlternatives?: number[][];
   /** Kernel route whose selected upgrade rows may replace the participant master locking bytecode. */
   messageBusUpgradeRoute?: boolean;
+  /**
+   * Route synthesis pushed this clone's owner operand as the call's LAST argument, so at body entry it is the top
+   * item (depth 0) and can be captured without depending on any frame-model position.
+   */
+  messageBusOwnerIsLastArgument?: boolean;
+  /**
+   * This OP_DEFINE body captured its authenticated participant owner into the ALT STACK at entry.
+   *
+   * A DEFINE'd route handler shares the caller's stack, so the owner parameter's distance from the bottom depends
+   * on what the caller leaves under the argument band - which the frame model does not know. The owner's distance
+   * from the TOP is exact at entry (the caller pushes the argument vector last), so the value is read once there
+   * and re-read from the alt stack, whose depth no main-stack push can shift.
+   */
+  messageBusOwnerAltAnchor?: boolean;
   /** The exact named-call closure can execute CHECKSIG/CHECKMULTISIG (excluding data signatures). */
   messageBusUsesTransactionSignature?: boolean;
   /** Direct scalar or one-dimensional signature-array parameters constrained to SIGHASH_ALL by the route. */

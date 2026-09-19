@@ -8551,6 +8551,9 @@ function synthesizeMessageBusRoute(
   const routeOwnedCloneNames = new Set(contract.functions
     .filter((candidate) => MESSAGE_BUS_CLONE_PREFIXES.some((prefix) => candidate.name.startsWith(prefix)))
     .map((candidate) => candidate.name));
+  const routeOwnedCloneByName = new Map(contract.functions
+    .filter((candidate) => routeOwnedCloneNames.has(candidate.name))
+    .map((candidate) => [candidate.name, candidate] as const));
   for (const handler of contract.functions) {
     if (!routeOwnedCloneNames.has(handler.name)) continue;
     if (handler.parameters.some((parameter) => parameter.name === MESSAGE_BUS_OWNER_INPUT)) continue;
@@ -8730,6 +8733,13 @@ function synthesizeMessageBusRoute(
         // Keep that exact hidden ABI order: placing it before the owner operand swaps the two values and makes
         // blockhash read the graph owner index as a transaction UTXO coordinate.
         const blockhashBaseArgs = blockhashRowOffset ? ['__internal__blockhashInputIndex'] : [];
+        if (ownerContextArgs.length > 0 && blockhashBaseArgs.length === 0) {
+          // The owner operand is the call's LAST argument, which is the only case where the callee can read it at
+          // depth 0 at entry. With an oracle-base operand after it the position is one deeper; leave that frame on
+          // its previous addressing form rather than guessing.
+          const clone = routeOwnedCloneByName.get(invokeName);
+          if (clone) clone.messageBusOwnerIsLastArgument = true;
+        }
         const entryOnly = [...entryKeyArguments(fn), ...blockhashRowArgs, ...callerContextArgs,
           ...ownerContextArgs, ...blockhashBaseArgs];
         const senderChecks = (fn.messageBusKeyWitnesses ?? [])
@@ -8866,6 +8876,10 @@ function synthesizeMessageBusRoute(
       ];
       const blockhashRowArgs = blockhashRowOffset ? [blockhashRowOffset] : [];
       const blockhashBaseArgs = blockhashRowOffset ? ['__internal__blockhashInputIndex'] : [];
+      if (ownerContextArgs.length > 0 && blockhashBaseArgs.length === 0) {
+        const clone = routeOwnedCloneByName.get(invokeName);
+        if (clone) clone.messageBusOwnerIsLastArgument = true;
+      }
       const physicalEntryArgs = entryKeyArguments(fn);
       const selectedIsClone = invokeName !== fn.name;
       const callerContextArgs = selectedIsClone

@@ -492,6 +492,9 @@ const KECCAK_SIDE_CAR_DETAIL: Record<string, string> = {
  * Fires only where the internal invariant already threw: nothing is emitted before the check, so no program
  * that compiled stops compiling and no emitted byte changes.
  */
+/** Compiler-added hidden ABI parameter carrying the authenticated participant owner of a route frame. */
+const MESSAGE_BUS_OWNER_INPUT = '__internal__messageBusOwnerInput';
+
 export class ForwardedWitnessError extends SolidCashError {
   constructor(node: Node, public readonly reason: string, detail: string) {
     super(node, `${reason}: ${detail}`);
@@ -1913,7 +1916,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   /** Whether this physical invocation frame carries an authenticated participant-block owner. */
   private hasMessageBusParticipantOwner(node: FunctionDefinitionNode = this.currentFunction): boolean {
     return node?.parameters?.some((parameter) =>
-      parameter.name === '__internal__messageBusOwnerInput') === true;
+      parameter.name === MESSAGE_BUS_OWNER_INPUT) === true;
   }
 
   /**
@@ -5946,6 +5949,29 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
       if (node.functionId !== undefined && this.outlinedRecoveryInputFunctionIds.has(node.functionId)) {
         this.pushToStack(GenerateTargetTraversalWithLocation.OUTLINED_RECOVERY_A_INDEX, true);
+      }
+      // A DEFINE'd route handler shares the caller's stack, so the authenticated owner parameter's distance from
+      // the BOTTOM depends on what the caller left under the argument band - the frame model cannot know it, and
+      // measured bottom ordinals landed on a neighbouring route witness (`graphFixedSize`/`graphBlockSize`).
+      // Its distance from the TOP is exact here, before this body pushes anything (the caller pushes the argument
+      // vector last), so read it once and keep the value in the alt stack: no main-stack push can shift that depth,
+      // and every later read re-reads it non-destructively.
+      // OPT-IN while the ABI precondition is not yet guaranteed: a body emitted once can be invoked from more than
+      // one call site, and only a site whose LAST argument is the owner supports a depth-0 capture. Measured with
+      // the capture on: `take job` gets past the deferred-compute stall, while `close job` (both) and
+      // `withdraw collateral` - which passed before - fail at an OP_UTXOBYTECODE check (ip 245 of 6337). Enable
+      // with SOLIDC_OWNER_ALT_ANCHOR=1 only together with an owner-last ABI at EVERY call site of the body.
+      const ownerAnchorEnabled = (globalThis as { process?: { env?: Record<string, string> } })
+        .process?.env?.SOLIDC_OWNER_ALT_ANCHOR === '1';
+      // Depth 0 only: route synthesis reports the owner as the call's LAST argument, so the top item at entry IS
+      // the owner. A model-derived index is NOT usable here - the frame model does not contain the caller's band,
+      // so any index it computes addresses a different runtime item (measured: it broke the three titles that
+      // previously passed while only appearing to help take job).
+      if (ownerAnchorEnabled && node.messageBusOwnerIsLastArgument === true) {
+        const anchorLocation: SingleLocationData = { location: node.location, positionHint: PositionHint.START };
+        this.emit(Op.OP_DUP, anchorLocation);
+        this.emit(Op.OP_TOALTSTACK, anchorLocation);
+        node.messageBusOwnerAltAnchor = true;
       }
     } else {
       node.parameters = this.visitList(node.parameters) as ParameterNode[];
@@ -32471,8 +32497,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // untracked operands ABOVE the tracked frame, the top-relative form when the extras sit BELOW it. A fix
       // for the take-job coordinate must therefore correct the MODEL (or the specific base emitter), not the
       // addressing form. See DBG-COMPUTE-BASE / SOLIDC_DEBUG_COMPUTE_BASE.
-      const trackedOwnerIndex = this.getStackIndex('__internal__messageBusOwnerInput', true);
-      if (trackedOwnerIndex >= 0) {
+      const trackedOwnerIndex = this.getStackIndex(MESSAGE_BUS_OWNER_INPUT, true);
+      if (this.currentFunction.messageBusOwnerAltAnchor === true) {
+        // This body captured the owner into the alt stack at entry, where its distance from the top was exact.
+        // Re-read it non-destructively: the alt stack's depth cannot be shifted by anything this body pushes, which
+        // is the property both positional forms lack (measured: the bottom ordinal landed on `graphBlockSize`, the
+        // top-relative index on a frame item the runtime never pushes).
+        this.emit(Op.OP_FROMALTSTACK, locationData);
+        this.emit(Op.OP_DUP, locationData);
+        this.emit(Op.OP_TOALTSTACK, locationData);
+        this.pushToStack('(value)');
+      } else if (trackedOwnerIndex >= 0) {
         // A GRAPH row handler is invoked from the generated row loop, whose runtime-only operands (the authenticated
         // caller, cursor/emitter locals and the settlement witnesses the loop keeps live) sit ABOVE the handler's
         // ABI frame. A top-relative pick then reads a witness instead of the owner: measured at the take-job

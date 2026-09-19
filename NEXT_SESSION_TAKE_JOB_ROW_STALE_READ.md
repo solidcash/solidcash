@@ -13376,3 +13376,40 @@ title will confirm.
 
 Tooling state: `SOLIDC_DEBUG_COMPUTE_BASE=1` at COMPILE time now yields both DBG-COMPUTE-BASE and DBG-BOTTOM-PICK
 (with `stackBottom`); the marketplace artifacts are rebuilt canonically afterwards.
+
+Round 352: the alt-stack owner anchor - mechanism works, capture position needs an owner-last ABI
+
+Implemented (committed, OPT-IN via `SOLIDC_OWNER_ALT_ANCHOR=1`):
+
+  * `FunctionDefinitionNode.messageBusOwnerAltAnchor` / `.messageBusOwnerIsLastArgument`;
+  * route synthesis marks a clone when the generated call's LAST argument is the owner operand
+    (i.e. `ownerContextArgs` present and no `blockhashBaseArgs` after it);
+  * the DEFINE'd body captures the owner into the ALT STACK at entry and every owner read becomes
+    `OP_FROMALTSTACK OP_DUP OP_TOALTSTACK` - drift-free, because nothing the body pushes can shift the alt depth.
+
+MEASURED with the capture ON (`SOLIDC_OWNER_ALT_ANCHOR=1`, artifacts rebuilt):
+
+  * `take job`: the deferred-compute stall DISAPPEARS - composition completes and preflight now runs the real
+    transaction, failing instead at a pre-existing target-authentication defect: input 129, `ip 3 of 6, failing
+    opcode 127 (OP_SPLIT)`, window `121 124 127 124`, "stack item length: 36; requested split index: 116". That
+    6-instruction body is `MarketplaceV1.invokeDebug[22]` (span `marketplaceData.publishJobEvent(jobId_, event_);`),
+    i.e. the outlined check that authenticates an external call's target; 116 (0x74) is the first byte of a
+    selector, not a length. So the anchor does its job and the next blocker is a DIFFERENT positional read.
+  * `close job` (both) and `withdraw collateral`, which passed before, FAIL with the same helper (200-570 s each,
+    `ip 245 of 6337, failing opcode 199 (OP_UTXOBYTECODE)` in the second variant) - so for those frames the captured
+    value is NOT the owner.
+
+With the capture OFF (default) all three titles pass again (verified: `3 passed | 63 skipped`), and `take job`
+returns to its stall. The mechanism is sound; the CAPTURE POSITION is what needs a guarantee:
+
+**Next round**: make the owner operand the LAST argument at EVERY call site of a clone, then turn the capture on by
+default. Two concrete steps:
+  1. enumerate all call sites of the affected clones (`dispatchFor` sites and any direct handler invocation) and
+     check their vectors with `SOLIDC_DEBUG_ARG_ORDER=1`;
+  2. where a site appends the oracle-base operand after the owner (`blockhashBaseArgs`), reorder it to keep the
+     owner last - and move the corresponding entry in the clone's declared parameter list (the oracle-base
+     parameter is appended by SymbolTableTraversal AFTER the owner today, see the comment at compiler.ts
+     `blockhashBaseArgs`) so the callee's order matches the vector again.
+Then re-measure: `take job` must fail at the `publishJobEvent` target check (not at the compute stall) and
+`close job`/`withdraw collateral` must stay green; if the target check is reached, that 6-instruction body is the
+next defect to fix (`MarketplaceV1.invokeDebug[22]`, split index 116).

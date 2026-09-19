@@ -11936,3 +11936,28 @@ Fix (mirror rounds 303/310 exactly):
    for nested probes (already done).
 3. Re-run `take job`: `probe-input-locks` for the emitReturn frame must gain the caller's `aa20bbc502f0…` input, the
    ip-51 comparison must resolve, and the composed preflight at input 20 becomes reachable.
+
+Round 323: synthesis needs a CATEGORY - and the failing emitReturn build has only the caller LOCK
+
+The synthetic-caller-input branch (fires when `callerLockingBytecode` AND `msgSenderCategory` overrides are both
+present) did not change the failing probe: `probe-input-locks` is still the same four inputs and ip 51 still refuses.
+Combined with the earlier measurements this pins the missing piece: that build receives the caller LOCK (its
+`nullop:msg.sender` key resolves to `aa20bbc502f0…`, which is exactly `overrides.callerLockingBytecode`) but NOT a
+caller CATEGORY - which is also why its `__internal__msgSenderCategory` reads zeros in the name-keyed dump and why
+the resolution scan has nothing to match against. A synthetic carrier cannot be built from a lock alone: the scan is
+by category.
+
+Next round, one run: log at the failing build (gated) the two overrides and the build flavour
+(`callerLockingBytecode !== undefined`, `msgSenderCategory !== undefined`, `emitReturn`, `returnProbeOnly`,
+`calls.length`) plus `functionName`; then thread the caller CATEGORY into the same path that already threads the
+lock. Candidates, in order:
+1. `compose.ts`'s `withCallerIdentity(lock, category)` call may not cover this call object (it is the
+   user/harness `.emitReturn()` frame, not the participant's `_batchRaw` frame);
+2. `_applyOverrides`' rebuild already forwards `msgSenderCategory` when `this.callerCategoryId` is set - so the
+   question is who sets the call object's identity at all for this frame (the same annotation that supplies the
+   lock must supply the category; `graphInvocationCallerIdentity` returns only `{ lockingBytecode, offset }`, so the
+   category has to come from the caller PARTICIPANT descriptor, which is what round 310's compose change does for
+   participant frames - extend it to whatever call object this one is).
+
+With both witnesses present the synthetic carrier is built, the ip-51 comparison resolves, and the composed
+preflight at input 20 becomes reachable.

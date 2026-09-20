@@ -18,8 +18,10 @@ const KERNEL = {
 /**
  * Event-only Solidity implementation behind deployProxy: no impl state vars, so the grafted proxy has
  * dataNftCount 0. The default proxy no longer hardcodes a data NFT at master+1 (that collided with
- * event pads in the impl route). Dispatch `.send()` settles; compose+executionArtifact×Probe remains
- * MessageBusVerifier-fail-closed after proxy/Acc accept.
+ * event pads in the impl route). Dispatch `.send()` settles. Compose+executionArtifact×Probe is an
+ * honest MessageBusVerifier fence after proxy/Acc accept: none-cap event at offset 1 under
+ * zero-dataNft geometry fails verifier cardinality (empty vs 01); state-holding Coordinators remain
+ * the compose settle proofs.
  */
 describe('kernel proxy event-only under composition', () => {
   it('settles deployProxy Ping via dispatch send with no proxy dataNft', async () => {

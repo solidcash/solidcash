@@ -70,9 +70,9 @@ Legend: **S** = settle fixture · **F** = honest fence · **—** = deferred / t
 |---|---|---|---|---|---|---|---|
 | self | S `KernelSelfVmapRmwCompose` | S `KernelMixedBytesMappingJournal` | S `KernelLoopCompose` (note) | S `KernelSelfStructStateWriteCompose` (compose×Probe) | S `KernelPooledDynamicArrayWriter` | S `KernelDualRuntimeKeccakCompose` Ping | S upgrade `KernelUpgradeCompose`; F split/merge skip; F selfdestruct |
 | proxy-self | S `KernelProxyOwnedVmapRmwCompose` | S `KernelProxyBytesStateCompose` | S `KernelProxyStringStateCompose` | — (nested leaf assign compile fence; self covers write) | — | S EventFunder / EventOnly / UnusedStateEvent | S/F `KernelProxyUpgradeThenCompose` |
-| self→foreign | S `KernelForeignVmapRmwCompose` | — (deferred thin) | thin return/string | S `KernelWholeStructStateGetterCompose` | S `KernelRepeatedPooledAppendParity` | S fan-out / funder-gap | S `KernelTypedYulCreateCompose` |
-| self→proxy | S `KernelSelfToProxyVmapRmwCompose` | — | — | — | — | — (proxy-self events cover callee emit) | — |
-| proxy→foreign | S `KernelProxyForeignVmapRmwCompose` | F adjacent `KernelDelegateInactiveDynamicWrite` | — | — | — | S `KernelProxyForeignRmwEventCompose` | F density `KernelDensityBoundedCompose` |
+| self→foreign | S `KernelForeignVmapRmwCompose` | S empty→append `KernelForeignBytesRmwCompose` / F nonempty RMW | thin return/string | S `KernelWholeStructStateGetterCompose` | S `KernelRepeatedPooledAppendParity` | S fan-out / funder-gap | S `KernelTypedYulCreateCompose` |
+| self→proxy | S `KernelSelfToProxyVmapRmwCompose` | — | — | — | — | S `KernelSelfToProxyEventCompose` | — |
+| proxy→foreign | S `KernelProxyForeignVmapRmwCompose` | S empty→append `KernelProxyForeignBytesCompose` (+ dormant F `KernelDelegateInactiveDynamicWrite`) | — | — | — | S `KernelProxyForeignRmwEventCompose` | F density `KernelDensityBoundedCompose` |
 | proxy→foreign-proxy | S `KernelProxyToProxyVmapRmwCompose` | — | — | — | — | — | — |
 
 Peers already settled: fan-in/out, nested callsite, sidecar self/foreign/proxy/proxy×foreign, DirectSend entry order. DualRuntimeSet-width × keccak = inherent density fence in `KernelDualRuntimeKeccakCompose`.
@@ -101,7 +101,8 @@ Peers already settled: fan-in/out, nested callsite, sidecar self/foreign/proxy/p
 
 ## Still open / fence
 - DualRuntimeSet-width density wall (inherent)
-- Deferred thin matrix cells (acceptable after core settle): self→foreign bytes RMW, proxy→foreign positive chunk write, proxy-self nested struct leaf assign (compile fence), optional lifecycle green beyond upgrade/create
+- Foreign bytes append onto **already-chunked** non-empty payload under compose (honest fence in `KernelForeignBytesRmwCompose`; empty→first-write settles)
+- proxy-self nested fixed-int struct leaf assign (compile fence); optional lifecycle green beyond upgrade/create
 
 ## Fence
 - No `marketplace.test.ts` / `vitest.marketplace.config.ts` in this stream

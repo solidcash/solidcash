@@ -45,8 +45,9 @@ Worktree: `.worktrees/kernel-comprehensive-fixtures`
 - **K3b** `KernelProxyEcrecoverSidecarCompose` — deployProxy `__forward` recover settle + compose characterization
 - **K4a** `KernelProxyForeignKeccakCompose` — proxy×foreign×keccak **characterized** fail-closed (__forward + compose); settle blocked at keccak require
 - **K4b** `KernelProxyForeignEcrecoverCompose` — proxy×foreign×ecrecover **characterized** fail-closed
+- **K5** `KernelEcrecoverEvmKeccakSidecarCompose` — structural: `ecrecoverEvm` publishes `keccakSideCar` beside `ecrecoverSideCar` under KERNEL (compose settle deferred)
 - Marketplace touchpoints (docs only): ECDSA.recover + keccak digest prep under proxy/facade → K1b then K4b; facade hash→foreign → K3a/K4a
-- **Open SDK gap:** deferred sidecar placement under proxy+foreign (K4) — not tests-only; needs compose/STB owner-base fix before settle
+- **Open SDK gaps:** (1) deferred sidecar placement under proxy+foreign (K4); (2) `ecrecoverEvm` compose input-index under messageBusKernel (K5 settle)
 
 ## Fence
 - No `marketplace.test.ts` / `vitest.marketplace.config.ts` in this stream

@@ -16,15 +16,14 @@ const KERNEL = {
 } as const;
 
 /**
- * Event-only Solidity implementation behind deployProxy: no impl state vars, so the grafted proxy has
- * dataNftCount 0. The default proxy no longer hardcodes a data NFT at master+1 (that collided with
- * event pads in the impl route). Dispatch `.send()` settles. Compose+executionArtifact×Probe is an
- * honest MessageBusVerifier fence after proxy/Acc accept: none-cap event at offset 1 under
- * zero-dataNft geometry fails verifier cardinality (empty vs 01); state-holding Coordinators remain
- * the compose settle proofs.
+ * Event-only Solidity implementation behind deployProxy (no user state vars). The compiler injects a public
+ * `__messageBusHold` data NFT and an eligible `initialize()` that writes it so compose MessageBusVerifier
+ * census matches write+emit geometry (dataNft@1, events@2+). Default SolidCashProxy has no hardcoded
+ * master+1 data NFT. Dispatch `.send()` and compose+executionArtifact×Probe both settle Ping onto the
+ * proxy category.
  */
 describe('kernel proxy event-only under composition', () => {
-  it('settles deployProxy Ping via dispatch send with no proxy dataNft', async () => {
+  it('settles deployProxy Ping via dispatch send for event-only impl', async () => {
     const provider = createMessageBusCapstoneTestProvider();
     const signer = new Signer(new Uint8Array(32).fill(0x5d), provider);
     for (let index = 0; index < 16; index += 1) {
@@ -43,18 +42,20 @@ describe('kernel proxy event-only under composition', () => {
           require(true);
         }
       }`, { ...KERNEL, solidityImportCompat: true });
-    expect(implArtifact.stateLayout?.dataNftCount ?? 0).toBe(0);
-    expect(implArtifact.delegateArtifact?.messageBus?.route.blockLayout?.slots.some(
+    expect(implArtifact.stateLayout?.dataNftCount).toBe(1);
+    expect(implArtifact.stateLayout?.variables?.some((variable) => variable.name === '__messageBusHold'))
+      .toBe(true);
+    expect(implArtifact.delegateArtifact?.messageBus?.route.blockLayout?.slots.find(
       (slot) => slot.kind === 'dataNft',
-    )).toBe(false);
-    expect(implArtifact.delegateArtifact?.messageBus?.route.blockLayout?.slots.some(
+    )?.offset).toBe(1);
+    expect(implArtifact.delegateArtifact?.messageBus?.route.blockLayout?.slots.find(
       (slot) => slot.kind === 'event',
-    )).toBe(true);
+    )?.offset).toBe(2);
 
     const deployed = await upgrades.deployProxy(
       getContractFactory(implArtifact, signer), {}, { initializer: false },
     );
-    expect(deployed.proxy.inner.artifact.stateLayout?.dataNftCount ?? 0).toBe(0);
+    expect(deployed.proxy.inner.artifact.stateLayout?.dataNftCount).toBe(1);
 
     const tx = await (deployed as { ping: (value: bigint) => { send: () => Promise<{ txid: string }> } })
       .ping(7n).send();
@@ -77,7 +78,7 @@ describe('kernel proxy event-only under composition', () => {
     if (outputs.length > 0) expect(eventOut).toBeDefined();
   }, 180_000);
 
-  it('characterizes event-only compose+executionArtifact×Probe: MessageBusVerifier OP_VERIFY', async () => {
+  it('settles event-only compose+executionArtifact×Probe with Ping on proxy category', async () => {
     const provider = createMessageBusCapstoneTestProvider();
     const signer = new Signer(new Uint8Array(32).fill(0x5e), provider);
     for (let index = 0; index < 40; index += 1) {
@@ -110,7 +111,7 @@ describe('kernel proxy event-only under composition', () => {
           require(true);
         }
       }`, { ...KERNEL, solidityImportCompat: true });
-    expect(implArtifact.stateLayout?.dataNftCount ?? 0).toBe(0);
+    expect(implArtifact.stateLayout?.dataNftCount).toBe(1);
 
     const deployed = await upgrades.deployProxy(
       getContractFactory(implArtifact, signer), {}, { initializer: false },
@@ -136,8 +137,25 @@ describe('kernel proxy event-only under composition', () => {
       changeAddress: fee.unlocker.generateLockingBytecode(),
     });
 
-    // Proxy __forward and Acc route accept; MessageBusVerifier still fails closed for zero-dataNft
-    // proxy geometry under compose (distinct from the old master+1 dataNft EQUALVERIFY).
-    await expect(composition.build()).rejects.toThrow(/BCH-2026 preflight failed|OP_VERIFY/);
+    const builder = await composition.build();
+    const transaction = builder.buildLibauthTransaction();
+    const proxyCategory = String(deployed.proxy.categoryId).toLowerCase();
+    const eventOutputs = transaction.outputs.filter((output) => {
+      const category = output.token?.category;
+      const hex = typeof category === 'string'
+        ? category.toLowerCase()
+        : category !== undefined ? binToHex(category).toLowerCase() : '';
+      const commitment = output.token?.nft?.commitment;
+      const len = typeof commitment === 'string' ? commitment.length / 2 : commitment?.length ?? 0;
+      return hex === proxyCategory && output.token?.nft?.capability === 'none' && len > 0
+        && !binToHex(
+          typeof commitment === 'string' ? hexToBin(commitment) : commitment ?? new Uint8Array(),
+        ).toLowerCase().startsWith('5343494401');
+    });
+    expect(eventOutputs.length).toBeGreaterThanOrEqual(1);
+
+    await expect(composition.send()).resolves.toMatchObject({
+      txid: expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
   }, 300_000);
 });

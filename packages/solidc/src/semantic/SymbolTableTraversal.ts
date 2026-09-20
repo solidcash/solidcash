@@ -1346,6 +1346,9 @@ export default class SymbolTableTraversal extends AstTraversal {
       this.visitUsingForDirective(ufd);
     }
 
+    // Event-only hold+initialize injection runs in synthesizeMessageBusRoute (before admission examines entry
+    // points). A late inject here would publish initialize as not-examined-by-route-synthesis → KERNEL_LAYOUT.
+
     // Register state variables with bin-packing layout computation
     const commitmentLimit = this.compilerOptions.commitmentLimit ?? 128;
     let nftIndex = 0;

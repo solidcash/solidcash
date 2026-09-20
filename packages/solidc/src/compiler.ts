@@ -3875,6 +3875,38 @@ function injectChunkableEntryWitnesses(ast: Ast): void {
   inject(ast.contract.receiveDef);
 }
 
+/**
+ * Event-only contracts (events, no state/collections) need a data NFT ahead of event slots so compose
+ * MessageBusVerifier census matches write+emit geometry, plus an eligible state-writing `initialize` sibling.
+ * Matrix: initialize that assigns hold settles emit-only compose; empty require(true) initialize and no-init
+ * both MessageBusVerifier-fail. Must run before route synthesis examines entry points — a late inject is
+ * published as `not-examined-by-route-synthesis` → KERNEL_LAYOUT and never joins the eligible set.
+ */
+function injectMessageBusEventOnlyHold(ast: Ast, compilerOptions: CompilerOptions): void {
+  if (!(compilerOptions.messageBus || compilerOptions.messageBusKernel)) return;
+  const contract = ast.contract;
+  if (contract.eventDefinitions.length === 0
+    || contract.stateVariables.length > 0
+    || contract.collections.length > 0) return;
+  const hold = new StateVariableNode(new IntType(false, 256), '__messageBusHold');
+  hold.location = contract.location;
+  hold.visibility = StateVariableVisibility.PUBLIC;
+  hold.visibilityExplicit = true;
+  contract.stateVariables.push(hold);
+  if (!contract.functions.some((fn) => fn.name === 'initialize')) {
+    const zero = new IntLiteralNode(0n);
+    zero.location = contract.location;
+    const assign = new StateAssignNode('__messageBusHold', zero);
+    assign.location = contract.location;
+    const body = new BlockNode([assign]);
+    body.location = contract.location;
+    const initialize = new FunctionDefinitionNode('initialize', [], body);
+    initialize.location = contract.location;
+    initialize.modifiers.push(FunctionModifier.PUBLIC);
+    contract.functions.push(initialize);
+  }
+}
+
 function synthesizeMessageBusRoute(
   ast: Ast, compilerOptions: CompilerOptions, admitExternalHandlers = true,
   normalizeBareEntries = true, relaxResultRouteEffects = true, admitMixedScalarHandlers = true,
@@ -3882,6 +3914,7 @@ function synthesizeMessageBusRoute(
   attribution?: ExternalAdmissionAttribution,
 ): void {
   if (!compilerOptions.messageBus) return;
+  injectMessageBusEventOnlyHold(ast, compilerOptions);
   const cheapAdmission = (compilerOptions as InternalCompilerOptions).__cheapAdmissionCodegen === true;
   const synthesizeStarted = Date.now();
   const contract = ast.contract;
@@ -10288,8 +10321,13 @@ function synthesizeMessageBusRoute(
           if (outputSlot != activeReturnOutput && tx.outputs[outputSlot].tokenCategory == activeCategory
             && tx.inputs[slot].tokenCategory != activeCategory
             // Event rows always carry their encoded effect. Empty immutable NFTs are reserved frame/resource
-            // endpoints, not emitted events, even when they use the participant's category.
+            // endpoints, not emitted events, even when they use the participant's category. CREATE/proxy
+            // logical-identity anchors (SCID v1: magic||version) are also not callManifest event rows; counting
+            // them as physical events breaks event-only (no dataNft) compose when the identity is minted onto a
+            // previously tokenless pad while kind-2 only records the real emit.
             && tx.outputs[outputSlot].nftCommitment.length > 0
+            && (tx.outputs[outputSlot].nftCommitment.length < 5
+              || tx.outputs[outputSlot].nftCommitment.slice(0, 5) != hex"5343494401")
             && tx.outputs[outputSlot].tokenAmount == 0) {
             physicalEventOutputs = physicalEventOutputs + 1;
           }
@@ -10299,6 +10337,8 @@ function synthesizeMessageBusRoute(
           if (outputSlot != activeReturnOutput && tx.inputs[slot].tokenCategory == activeCategory
             && tx.outputs[outputSlot].tokenCategory != activeCategory
             && tx.inputs[slot].nftCommitment.length > 0
+            && (tx.inputs[slot].nftCommitment.length < 5
+              || tx.inputs[slot].nftCommitment.slice(0, 5) != hex"5343494401")
             && tx.inputs[slot].tokenAmount == 0) {
             physicalEventOutputs = physicalEventOutputs - 1;
           }

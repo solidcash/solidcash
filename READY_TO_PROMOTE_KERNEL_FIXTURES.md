@@ -58,7 +58,7 @@ Worktree: `.worktrees/kernel-comprehensive-fixtures`
 - `KernelProxyUpgradeThenCompose` — published `upgrades.upgradeProxy` param-mode V1→V2 settle (same address); baked `SolidCashProxy` refuses upgradeProxy; baked compose executor retarget fails closed (`Compiler-authenticated delegate forwarding target is not materialized`)
 - `KernelProxyForeignRmwEventCompose` — deployProxy poke→Bank.credit+Ping via `withExternalCall` **and** `messageBus.compose`+`executionArtifact` settle; fan-out Caller×Bank×Ping under compose settles
 - `KernelDualRuntimeKeccakCompose` — Ping emit + keccak settles; single-key mapping RMW + keccak settles; **fixed dual-key add+remove under compose settles**; DualRuntimeSet-width arrays+keccak inherent density fence
-- `KernelProxyEventOnlyCompose` — event-only Solidity deployProxy (dataNftCount 0): dispatch `.send()` Ping settles; compose+`executionArtifact`×Probe deepened MessageBusVerifier fence (see Still open)
+- `KernelProxyEventOnlyCompose` — event-only Solidity deployProxy: compiler injects `__messageBusHold` dataNft + state-writing `initialize`; dispatch `.send()` **and** compose+`executionArtifact`×Probe settle Ping on proxy category
 - `KernelDirectSendExternalEntryOrder` — plain `.send()` mapping RMW / dual-key add+remove + Probe: entry NFTs stay immediately after master/data; callee deferred past the caller's block
 
 ## Product gaps closed this stream
@@ -68,6 +68,7 @@ Worktree: `.worktrees/kernel-comprehensive-fixtures`
 - **DualRuntimeSet-width × keccak density:** closed as an **inherent** BCH-2026 density fence (`trailingCapacity≈130`); not relaxed. Closable dual-runtime×sidecar proof is single-key mapping×keccak above.
 - **Event-only default proxy:** regenerated `SolidCashProxy` without hardcoded `__proxySlot` dataNft at master+1 (collided with event pads when impl `dataNftCount=0`). Dispatch settle in `KernelProxyEventOnlyCompose`.
 - **Plain `.send()` external-call entry ordering:** dense input placement no longer requires auto-funders when external groups exist; callees defer past the caller's entry slots (`StatefulTransactionBuilder`). Settles in `KernelDirectSendExternalEntryOrder`.
+- **Event-only compose MessageBusVerifier:** before route synthesis, inject public `__messageBusHold` (dataNft@1 / events@2+) and eligible `initialize() { this.__messageBusHold = 0; }` when a message-bus contract has events but no state/collections. Emit-only handlers alone fail verifier census; a state-writing initialize sibling (even unused under `initializer: false`) matches write+emit geometry. SCID v1 commitments excluded from physical event census. Settles in `KernelProxyEventOnlyCompose`.
 
 ## Product gap closed: proxy×event and proxy×foreign×event compose
 - **Root cause:** atomic `omitLocalFeeTail` layout pads used a bare P2PKH as the first structural funder so probes could establish `tx.origin`. With output-only event slots that pad sits before the canonical fee tail and **becomes** authenticated `tx.origin`, so MessageBusVerifier `require(rowSubject == tx.origin)` OP_VERIFYs.
@@ -78,7 +79,7 @@ Worktree: `.worktrees/kernel-comprehensive-fixtures`
 
 ## Still open / fence
 - DualRuntimeSet-width density wall (inherent)
-- Event-only Solidity proxy compose+`executionArtifact`×Probe (`KernelProxyEventOnlyCompose`): **honest fence, not a missing-event bug**. Dispatch settles; compose places none-cap event NFT (effect `57`) at offset 1 and Acc/`__forward` accept, then `MessageBusVerifier_00000000` OP_VERIFYs via NUMEQUAL empty vs `01` (cardinality 0==1). Contrast settling `KernelProxyEventFunderCompose`: dataNft @1 shifts events to @2..9 (blockSize 12 vs 11); funder manifest has kind1 mode0 dataNft + kind1 mode4 Acc-executor + kind2 @2, while event-only has only kind1 mode4 Acc-executor @9 + kind2 @1. `tx.origin`/suppliedCallers is the fee-tail P2PKH. Residual product gap is verifier cardinality under zero-dataNft event-at-1 geometry — state-holding Coordinators remain the compose settle proofs.
+- Unused-state emit-only without a state-writing `initialize` (hand-written `int unused` + emit, no init / empty init) still MessageBusVerifier-fails under compose; event-only path is closed via synthetic hold+writing-init. Prefer declaring `initialize` that touches state, or a write in the emit path.
 
 ## Fence
 - No `marketplace.test.ts` / `vitest.marketplace.config.ts` in this stream

@@ -109,8 +109,8 @@ export {
   type LogicalIdentityCommitment, type ResolvedLogicalIdentity, type ResolvedSplitLogicalIdentity,
 } from './logical-identity.js';
 export {
-  upgrades, deployProxy, ProxyContract, mockProxyDensityReserveBytes,
-  type DeployProxyOptions, type ProxyInitialState,
+  upgrades, deployProxy, upgradeProxy, ProxyContract, mockProxyDensityReserveBytes,
+  type DeployProxyOptions, type UpgradeProxyOptions, type ProxyInitialState,
 } from './upgrades.js';
 export {
   StatefulFunctionCall,

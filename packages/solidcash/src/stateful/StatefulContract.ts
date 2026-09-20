@@ -31401,12 +31401,18 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       const delegatedKeccak = executingGroup !== undefined;
       delegateComputeResources ||= delegatedKeccak;
       const keccakArgs = keccakAbiFunction === entryAbiFunction ? entryArgs : args;
+      // Graph-owned routes force keccak preimages to null so learning comes from the full authenticated
+      // transcript. Mirror ecrecover: defer the isolated probe — mapping entry gates abort before
+      // OP_INPUTBYTECODE on the sidecar, so a minimal master+dataNft probe never sees a side-car read.
+      const graphOwnedKeccak = (keccakAbiFunction as MessageBusRuntimeAbiFunction)
+        .messageBusGraphExecution === true;
       const resolution = await this._resolveKeccakComputeCoSpends(keccakAbiFunction, keccakArgs, {
         masterUtxo: derivationMasterUtxo, stateInputUnlocker,
         dataNftUtxos: filteredDataNftUtxos, dataNftUnlockers,
         frontRegionInputs: keccakFrontRegion, locktime: maxBhLocktime,
         ecrecoverPreimages: ecrecoverEvmPreimages,
-        ...((delegatedKeccak || ecrecoverEvmPreimages.some((preimage) => preimage === null)) && {
+        ...((delegatedKeccak || graphOwnedKeccak
+          || ecrecoverEvmPreimages.some((preimage) => preimage === null)) && {
           deferUnresolved: true,
         }),
         ...(delegatedKeccak && {

@@ -204,8 +204,10 @@ export class ProxyContract<TImpl extends Artifact = Artifact> {
   constructor(
     readonly proxy: DeployedContract,
     readonly implementation: DeployedContract<TImpl>,
-    private readonly forwardShape: ForwardShape,
-    private readonly auth: (signer: Signer) => FunctionArgument[],
+    /** Forwarding convention detected at deploy (`baked` / `param` / `fallback`). */
+    readonly forwardShape: ForwardShape,
+    /** Builds trailing auth args for param-mode forwarders from the connected signer. */
+    readonly auth: (signer: Signer) => FunctionArgument[],
     readonly runner: ContractRunner,
   ) {}
 
@@ -845,5 +847,104 @@ export async function deployProxy<TImpl extends Artifact>(
   }
 }
 
+export interface UpgradeProxyOptions {
+  /** Runner for the new implementation deploy and the returned handle. Defaults to the existing proxy runner. */
+  runner?: ContractRunner;
+  /** Deploy overrides for the new implementation genesis. */
+  implementationOverrides?: DeployContractOptions;
+}
+
+/**
+ * Assert proxy-held state layout stays append-only when retargeting to a new implementation (OZ storage
+ * layout discipline adapted to NFT commitment fields).
+ */
+function assertAppendOnlyProxyLayout(previous: Artifact, next: Artifact): void {
+  const prevLayout = previous.stateLayout;
+  const nextLayout = next.stateLayout;
+  if (!prevLayout || !nextLayout) return;
+  for (const oldVar of prevLayout.variables) {
+    const newVar = nextLayout.variables.find((variable) => variable.name === oldVar.name);
+    if (!newVar) {
+      throw new Error(
+        `Upgrade layout incompatibility: state variable '${oldVar.name}' exists in the old contract `
+        + 'but is missing in the new contract. State layouts must be append-only - '
+        + 'existing variables cannot be removed.',
+      );
+    }
+    if (newVar.nftIndex !== oldVar.nftIndex || newVar.fieldIndex !== oldVar.fieldIndex) {
+      throw new Error(
+        `Upgrade layout incompatibility: state variable '${oldVar.name}' changed position `
+        + `(old: nft=${oldVar.nftIndex}/field=${oldVar.fieldIndex}, `
+        + `new: nft=${newVar.nftIndex}/field=${newVar.fieldIndex}). `
+        + 'State layouts must be append-only - existing variables cannot be reordered.',
+      );
+    }
+    if (newVar.type !== oldVar.type) {
+      throw new Error(
+        `Upgrade layout incompatibility: state variable '${oldVar.name}' changed type `
+        + `(old: ${oldVar.type}, new: ${newVar.type}). `
+        + 'State variable types cannot change during upgrade.',
+      );
+    }
+  }
+}
+
+/**
+ * OZ-shaped `upgrades.upgradeProxy(proxy, NewImplFactory)` for **param-mode** proxies (implementation is a
+ * call argument). Re-wraps the same state-holding proxy with a newly deployed implementation; no on-chain
+ * proxy mutation. Default baked `SolidCashProxy` refuses — its implementation lock is a constructor pin, so
+ * same-address upgrade requires a new P2SH (migrate) or a param-mode custom proxy.
+ */
+export async function upgradeProxy<TImpl extends Artifact>(
+  proxy: ProxyContract,
+  newImplementationFactory: ContractFactory<TImpl>,
+  options: UpgradeProxyOptions = {},
+): Promise<ProxyContract<TImpl>> {
+  if (proxy.forwardShape.mode !== 'param') {
+    throw new Error(
+      `upgrades.upgradeProxy only supports param-mode proxies (forwarder takes address impl). `
+      + `This proxy uses '${proxy.forwardShape.mode}' mode with a constructor-baked implementation pin; `
+      + 'deploy a new proxy and migrate state, or use a custom param-mode proxy.',
+    );
+  }
+
+  const runner = options.runner ?? proxy.runner;
+  const sourceArtifact = newImplementationFactory.artifact;
+  const implArtifact = sourceArtifact.delegateArtifact
+    ?? (sourceArtifact.abi.some((fn) => fn.modifiers?.includes('delegate')) ? sourceArtifact : undefined);
+  if (!implArtifact) {
+    throw new Error(
+      `Implementation '${sourceArtifact.contractName}' has no inferred delegate variant and cannot be `
+      + 'deployed behind a proxy. It needs an externally-callable function that mutates proxy-owned state.',
+    );
+  }
+
+  // Param-mode keeps the proxy's own state layout (not grafted). Compare new impl fields against the
+  // live proxy holder so append-only discipline still applies to shared commitment slots.
+  assertAppendOnlyProxyLayout(proxy.proxy.inner.artifact, implArtifact);
+  assertAppendOnlyProxyLayout(proxy.implementation.inner.artifact, implArtifact);
+
+  const delegateFactory = new ContractFactory(implArtifact as TImpl, runner);
+  const implementation = await delegateFactory.deploy({
+    ...(options.implementationOverrides ?? {}),
+    logicalNonce: false,
+  }) as DeployedContract<TImpl>;
+
+  const handle = wrapDispatch(new ProxyContract<TImpl>(
+    proxy.proxy,
+    implementation,
+    proxy.forwardShape,
+    proxy.auth,
+    runner,
+  ));
+  registerDeployment(proxy.proxy.inner.provider, {
+    contractName: implArtifact.contractName,
+    address: handle.address,
+    lockingBytecode: proxy.proxy.inner.lockingBytecode,
+    contract: handle,
+  });
+  return handle;
+}
+
 /** The ethers/hardhat `upgrades` namespace. */
-export const upgrades = { deployProxy };
+export const upgrades = { deployProxy, upgradeProxy };

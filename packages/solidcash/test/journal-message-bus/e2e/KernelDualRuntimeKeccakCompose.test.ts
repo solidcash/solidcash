@@ -1,12 +1,13 @@
-import { binToHex, hexToBin } from '@bitauth/libauth';
+import { bigIntToVmNumber, binToHex, hexToBin, vmNumberToBigInt } from '@bitauth/libauth';
 import { keccakComputeLockingBytecode } from '@solidcash/utils';
 import { keccak_256 } from '@noble/hashes/sha3.js';
 import { compileString } from 'solidc';
 import { describe, expect, it } from 'vitest';
 import {
-  Contract, Signer, StatefulContract, messageBus,
+  Contract, Signer, StatefulContract, messageBus, SortedList, getEntryNftAddress,
 } from '../../../src/index.js';
 import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';
+import { keyToSlot } from '../../../src/stateful/SortedList.js';
 import { generateLibauthSourceOutputs, randomUtxo } from '../../../src/utils.js';
 import type { TransactionBuilder } from '../../../src/TransactionBuilder.js';
 import { createBareP2pkhFeeFunder, setupStatefulUtxos } from '../../test-util.js';
@@ -50,11 +51,11 @@ async function fundKeccakSidecars(
 }
 
 /**
- * DualRuntimeSet-width / dual-key membership co-settled with keccak (and event) under compose.
+ * Dual-runtime / mapping × keccak under compose.
  *
- * Settles: scalar event emit + keccak sidecar (no mapping RMW) under compose.
- * Fences: DualRuntimeSet array-stream width + keccak hits the density wall; fixed dual-key
- * membership + keccak fails closed at keccak probe-trace extraction (mapping RMW × sidecar).
+ * Settles: scalar event emit + keccak; single-key mapping RMW + keccak (graph-owned deferred
+ * preimage learning). Fixed dual-key add+remove in one handler remains OP_VERIFY under compose
+ * (with or without keccak). DualRuntimeSet array-stream width + keccak remains an inherent density fence.
  */
 describe('kernel dual-runtime / event / keccak under composition', () => {
   it('settles Ping emit + keccak256 under compose (no mapping RMW)', async () => {
@@ -157,7 +158,7 @@ describe('kernel dual-runtime / event / keccak under composition', () => {
     expect((await acc.getState()).counter).toBe(1n);
   }, 300_000);
 
-  it('characterizes fixed dual-key membership + keccak under compose: probe-trace fence', async () => {
+  it('settles single-key mapping RMW + keccak under compose', async () => {
     const provider = createMessageBusCapstoneTestProvider();
     const probeArtifact = compileString(`pragma solidcash >=0.8.0;
       contract Probe() { function touch() public { require(true); } }`, {
@@ -166,23 +167,22 @@ describe('kernel dual-runtime / event / keccak under composition', () => {
     const accArtifact = compileString(`pragma solidcash >=0.8.0;
       interface IProbe { function touch() external; }
       contract Acc() {
-        mapping(int => bool) membership;
-        function seed(int who) public { this.membership[who] = true; require(true); }
-        function update(
+        mapping(int => int) bal;
+        function seed(int k, int v) public { this.bal[k] = v; require(true); }
+        function credit(
           address probe,
-          int addKey,
-          int removeKey,
+          int k,
+          int v,
           bytes32 preimage,
           bytes32 expected
         ) public {
           require(keccak256(preimage) == expected);
-          this.membership[addKey] = true;
-          this.membership[removeKey] = false;
+          this.bal[k] = this.bal[k] + v;
           IProbe(probe).touch();
           require(true);
         }
       }`, { ...KERNEL, solidityImportCompat: false });
-    expect(accArtifact.messageBus?.handlers.find((handler) => handler.name === 'update'))
+    expect(accArtifact.messageBus?.handlers.find((handler) => handler.name === 'credit'))
       .toMatchObject({ eligible: true });
     expect(accArtifact.messageBus?.route.blockLayout?.slots.some(
       (slot) => slot.kind === 'keccakSideCar',
@@ -203,20 +203,20 @@ describe('kernel dual-runtime / event / keccak under composition', () => {
       accBase.withCategory(hexToBin(accSetup.categoryId)), accSetup.categoryId,
     );
     acc._registerResolvedExternal('IProbe', probe);
-    await acc.call.seed(7n).send();
+    await acc.call.seed(2n, 10n).send();
     await fundKeccakSidecars(provider, accSetup.categoryId);
 
     const preimage = hexToBin('cd'.repeat(32));
     const expected = keccak_256(preimage);
-    const callsite = accArtifact.abi.find((entry) => entry.name === 'update')!
+    const callsite = accArtifact.abi.find((entry) => entry.name === 'credit')!
       .externalCalls!.find((call) => call.functionName === 'touch')!.callsiteId!;
     const fee = await createBareP2pkhFeeFunder(provider, 1_000_000n);
     const composition = messageBus.compose({
       preparedCalls: [
         {
           contract: acc,
-          functionName: 'update',
-          args: [probe.inner.lockingBytecode, 3n, 7n, preimage, expected],
+          functionName: 'credit',
+          args: [probe.inner.lockingBytecode, 2n, 5n, preimage, expected],
         },
         {
           contract: probe,
@@ -229,11 +229,82 @@ describe('kernel dual-runtime / event / keccak under composition', () => {
       changeAddress: fee.unlocker.generateLockingBytecode(),
     });
 
-    // Mapping RMW × keccak: balanced-block build never sees a side-car OP_INPUTBYTECODE in the probe.
-    await expect(composition.build()).rejects.toThrow(
-      /no side-car read found in the probe trace|failed to build its balanced block/,
+    const canonical = await composition.build();
+    expect(vmAccepts(canonical)).toBe(true);
+    const sidecarOffset = accArtifact.messageBus!.route.blockLayout!.slots.find(
+      (slot) => slot.kind === 'keccakSideCar',
+    )?.offset;
+    expect(sidecarOffset).toBeDefined();
+    expect(canonical.buildLibauthTransaction().outputs[sidecarOffset!]?.token?.nft?.capability)
+      .toBe('mutable');
+
+    await expect(composition.send()).resolves.toMatchObject({
+      txid: expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
+    const entryAddress = getEntryNftAddress(acc.inner, accSetup.categoryId, 'bal');
+    const entry = SortedList.fromUtxos(await provider.getUtxos(entryAddress))
+      .find(keyToSlot(bigIntToVmNumber(2n)));
+    expect(entry).toBeDefined();
+    expect(vmNumberToBigInt(entry!.value, { requireMinimalEncoding: false })).toBe(15n);
+  }, 300_000);
+
+  it('characterizes fixed dual-key add+remove under compose: OP_VERIFY', async () => {
+    // Dual batch-key witnesses in one handler still fail closed under compose (keccak-independent).
+    const provider = createMessageBusCapstoneTestProvider();
+    const probeArtifact = compileString(`pragma solidcash >=0.8.0;
+      contract Probe() { function touch() public { require(true); } }`, {
+      ...KERNEL, solidityImportCompat: false, messageBusGraphContext: true,
+    });
+    const accArtifact = compileString(`pragma solidcash >=0.8.0;
+      interface IProbe { function touch() external; }
+      contract Acc() {
+        mapping(int => bool) membership;
+        function seed(int who) public { this.membership[who] = true; require(true); }
+        function update(address probe, int addKey, int removeKey) public {
+          this.membership[addKey] = true;
+          this.membership[removeKey] = false;
+          IProbe(probe).touch();
+          require(true);
+        }
+      }`, { ...KERNEL, solidityImportCompat: false });
+    const probeBase = new Contract(probeArtifact, [], { provider });
+    const probeSetup = await setupStatefulUtxos(
+      provider, probeBase, probeArtifact.stateLayout!, {}, { saltContract: true },
     );
-  }, 240_000);
+    const probe = StatefulContract.withCategory(
+      probeBase.withCategory(hexToBin(probeSetup.categoryId)), probeSetup.categoryId,
+    );
+    const accBase = new Contract(accArtifact, [], { provider });
+    const accSetup = await setupStatefulUtxos(
+      provider, accBase, accArtifact.stateLayout!, {}, { saltContract: true },
+    );
+    const acc = StatefulContract.withCategory(
+      accBase.withCategory(hexToBin(accSetup.categoryId)), accSetup.categoryId,
+    );
+    acc._registerResolvedExternal('IProbe', probe);
+    await acc.call.seed(7n).send();
+    const callsite = accArtifact.abi.find((entry) => entry.name === 'update')!
+      .externalCalls!.find((call) => call.functionName === 'touch')!.callsiteId!;
+    const fee = await createBareP2pkhFeeFunder(provider, 1_000_000n);
+    const composition = messageBus.compose({
+      preparedCalls: [
+        {
+          contract: acc,
+          functionName: 'update',
+          args: [probe.inner.lockingBytecode, 3n, 7n],
+        },
+        {
+          contract: probe,
+          functionName: 'touch',
+          args: [],
+          callsiteId: callsite,
+        },
+      ],
+      funder: fee,
+      changeAddress: fee.unlocker.generateLockingBytecode(),
+    });
+    await expect(composition.build()).rejects.toThrow(/BCH-2026 preflight failed|OP_VERIFY/);
+  }, 180_000);
 
   it('characterizes DualRuntimeSet-width arrays + keccak under compose: density wall', async () => {
     const provider = createMessageBusCapstoneTestProvider();

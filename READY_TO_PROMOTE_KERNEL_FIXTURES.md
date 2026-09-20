@@ -59,7 +59,23 @@ Worktree: `.worktrees/kernel-comprehensive-fixtures`
 - `KernelProxyForeignRmwEventCompose` — deployProxy poke→Bank.credit+Ping via `withExternalCall` **and** `messageBus.compose`+`executionArtifact` settle; fan-out Caller×Bank×Ping under compose settles
 - `KernelDualRuntimeKeccakCompose` — Ping emit + keccak settles; single-key mapping RMW + keccak settles; **fixed dual-key add+remove under compose settles**; DualRuntimeSet-width arrays+keccak inherent density fence
 - `KernelProxyEventOnlyCompose` — event-only Solidity deployProxy: compiler injects `__messageBusHold` dataNft + state-writing `initialize`; dispatch `.send()` **and** compose+`executionArtifact`×Probe settle Ping on proxy category
+- `KernelProxyUnusedStateEventCompose` — unused scalar + emit-only (no writing `initialize`) under deployProxy compose×Probe **settles** after MessageBusVerifier `resourceVerificationMode` includes contracts that own state/collections
 - `KernelDirectSendExternalEntryOrder` — plain `.send()` mapping RMW / dual-key add+remove + Probe: entry NFTs stay immediately after master/data; callee deferred past the caller's block
+
+## Topology × resource matrix (core cells)
+
+Legend: **S** = settle fixture · **F** = honest fence · **—** = deferred / thin coverage elsewhere · DualRuntimeSet-width density remains **inherent F** (not relaxed).
+
+| Topology \\ Resource | vmaps | chunks | strings | structs | chunked structs | events | lifecycle |
+|---|---|---|---|---|---|---|---|
+| self | S `KernelSelfVmapRmwCompose` | S `KernelMixedBytesMappingJournal` | S `KernelLoopCompose` (note) | landing / adjacent foreign struct | S `KernelPooledDynamicArrayWriter` | S `KernelDualRuntimeKeccakCompose` Ping | S upgrade `KernelUpgradeCompose`; F split/merge skip; F selfdestruct |
+| proxy-self | S `KernelProxyOwnedVmapRmwCompose` | landing | landing | landing | — | S EventFunder / EventOnly / UnusedStateEvent | S/F `KernelProxyUpgradeThenCompose` |
+| self→foreign | S `KernelForeignVmapRmwCompose` | — | thin return/string | S `KernelWholeStructStateGetterCompose` | S `KernelRepeatedPooledAppendParity` | S fan-out / funder-gap | S `KernelTypedYulCreateCompose` |
+| self→proxy | landing `KernelSelfToProxyVmapRmwCompose` | — | — | — | — | — | — |
+| proxy→foreign | S `KernelProxyForeignVmapRmwCompose` | F adjacent `KernelDelegateInactiveDynamicWrite` | — | — | — | S `KernelProxyForeignRmwEventCompose` | F density `KernelDensityBoundedCompose` |
+| proxy→foreign-proxy | landing `KernelProxyToProxyVmapRmwCompose` | — | — | — | — | — | — |
+
+Peers already settled: fan-in/out, nested callsite, sidecar self/foreign/proxy/proxy×foreign, DirectSend entry order. DualRuntimeSet-width × keccak = inherent density fence in `KernelDualRuntimeKeccakCompose`.
 
 ## Product gaps closed this stream
 - **Mapping RMW × keccak:** graph-owned keccak now sets `deferUnresolved` like ecrecover (`StatefulContract` `_createBuilder`); single-key `bal[k]+=v` + keccak under compose settles (`KernelDualRuntimeKeccakCompose`).
@@ -69,6 +85,7 @@ Worktree: `.worktrees/kernel-comprehensive-fixtures`
 - **Event-only default proxy:** regenerated `SolidCashProxy` without hardcoded `__proxySlot` dataNft at master+1 (collided with event pads when impl `dataNftCount=0`). Dispatch settle in `KernelProxyEventOnlyCompose`.
 - **Plain `.send()` external-call entry ordering:** dense input placement no longer requires auto-funders when external groups exist; callees defer past the caller's entry slots (`StatefulTransactionBuilder`). Settles in `KernelDirectSendExternalEntryOrder`.
 - **Event-only compose MessageBusVerifier:** before route synthesis, inject public `__messageBusHold` (dataNft@1 / events@2+) and eligible `initialize() { this.__messageBusHold = 0; }` when a message-bus contract has events but no state/collections. Emit-only handlers alone fail verifier census; a state-writing initialize sibling (even unused under `initializer: false`) matches write+emit geometry. SCID v1 commitments excluded from physical event census. Settles in `KernelProxyEventOnlyCompose`.
+- **Unused-state emit-only compose MessageBusVerifier:** `resourceVerificationMode` now includes contracts that own state variables or collections, not only handlers whose footprint reads/writes. Physical mutable dataNft endpoints were always counted; without resource mode, SDK kind1 mode0 preservation rows were ignored (`activeResourceEndpoints` stayed 0 → 0==2 OP_VERIFY). Settles in `KernelProxyUnusedStateEventCompose`.
 
 ## Product gap closed: proxy×event and proxy×foreign×event compose
 - **Root cause:** atomic `omitLocalFeeTail` layout pads used a bare P2PKH as the first structural funder so probes could establish `tx.origin`. With output-only event slots that pad sits before the canonical fee tail and **becomes** authenticated `tx.origin`, so MessageBusVerifier `require(rowSubject == tx.origin)` OP_VERIFYs.
@@ -79,7 +96,7 @@ Worktree: `.worktrees/kernel-comprehensive-fixtures`
 
 ## Still open / fence
 - DualRuntimeSet-width density wall (inherent)
-- Unused-state emit-only without a state-writing `initialize` (hand-written `int unused` + emit, no init / empty init) still MessageBusVerifier-fails under compose; event-only path is closed via synthetic hold+writing-init. Prefer declaring `initialize` that touches state, or a write in the emit path.
+- Matrix landing cells still in flight / thin: self→proxy, proxy→foreign-proxy, proxy-self chunks/strings/structs, self fixed-struct write, self→foreign bytes RMW, proxy→foreign positive chunk write (see matrix table)
 
 ## Fence
 - No `marketplace.test.ts` / `vitest.marketplace.config.ts` in this stream

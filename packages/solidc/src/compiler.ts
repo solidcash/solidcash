@@ -9209,11 +9209,17 @@ function synthesizeMessageBusRoute(
     }));
   // An in-place append upgrade authenticates the complete old state prefix even when its source body does not
   // read or write a field. Its manifest therefore carries preservation rows which the specialized verifier must
-  // parse and count just like rows inferred from an ordinary handler footprint.
+  // parse and count just like rows inferred from an ordinary handler footprint. The same applies to unused
+  // state/collections: physicalResourceEndpoints always counts co-spent mutable data NFTs, while
+  // activeResourceEndpoints only increments inside resourceVerificationMode. Emit-only handlers with an unused
+  // scalar (no eligible state-writing sibling) previously left resourceVerificationMode false → 0==2 OP_VERIFY
+  // at MessageBusVerifier despite SDK kind1 mode0 preservation rows. Enable whenever the contract owns state
+  // or collections that materialize those endpoints.
   const resourceVerificationMode = kernelUpgradeMode || eligible.some((fn) => {
     const footprint = eligibleFootprint(fn);
     return footprint.reads.length > 0 || footprint.writes.length > 0;
-  }) || valueEffectMode || tokenContainerMode;
+  }) || valueEffectMode || tokenContainerMode
+    || contract.stateVariables.length > 0 || contract.collections.length > 0;
   const sidecarVerificationMode = graphBlockhashReads.size > 0 || eligible.some((fn) => {
     let found = false;
     walkInvocationAst(fn.body, (node) => {

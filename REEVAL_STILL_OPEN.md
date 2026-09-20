@@ -11,6 +11,10 @@ Branch: `grok/kernel-comprehensive-fixtures`
 | self→proxy × fixed structs | `KernelSelfToProxyStructCompose` | settle |
 | self→proxy × chunks / strings / chunked structs | `KernelSelfToProxyBytesCompose`, `KernelSelfToProxyStringCompose`, `KernelSelfToProxyChunkedStructCompose` | honest fence after compose attempt (MessageBusVerifier ~input 67) |
 | proxy→foreign-proxy × vmaps | `KernelProxyToProxyVmapRmwCompose` | settle |
+| proxy→foreign-proxy × events | `KernelProxyToProxyEventCompose` | settle |
+| proxy→foreign-proxy × structs | `KernelProxyToProxyStructCompose` | settle |
+| proxy→foreign-proxy × chunks/strings | `KernelProxyToProxyBytesCompose` / `StringCompose` | honest fence (dual-proxy chunk OP_VERIFY) |
+| proxy→foreign-proxy × chunked structs | `KernelProxyToProxyChunkedStructCompose` | F Item[] non-delegate; F int[] compose |
 | proxy-self × strings / chunks | String/Bytes StateCompose | settle |
 | self × fixed struct write | `KernelSelfStructStateWriteCompose` (compose×Probe) | `5e00c83fa` |
 | self→foreign × chunks (first write) | `KernelForeignBytesRmwCompose` empty→append | settle |

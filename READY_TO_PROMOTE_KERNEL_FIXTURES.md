@@ -73,7 +73,7 @@ Legend: **S** = settle fixture · **F** = honest fence · **—** = deferred / t
 | self→foreign | S `KernelForeignVmapRmwCompose` | S empty→append `KernelForeignBytesRmwCompose` / F nonempty RMW | thin return/string | S `KernelWholeStructStateGetterCompose` | S `KernelRepeatedPooledAppendParity` | S fan-out / funder-gap | S `KernelTypedYulCreateCompose` |
 | self→proxy | S `KernelSelfToProxyVmapRmwCompose` | F `KernelSelfToProxyBytesCompose` (empty→append) | F `KernelSelfToProxyStringCompose` (set/append) | S `KernelSelfToProxyStructCompose` | F `KernelSelfToProxyChunkedStructCompose` | S `KernelSelfToProxyEventCompose` | — |
 | proxy→foreign | S `KernelProxyForeignVmapRmwCompose` | S empty→append `KernelProxyForeignBytesCompose` (+ dormant F `KernelDelegateInactiveDynamicWrite`) | — | — | — | S `KernelProxyForeignRmwEventCompose` | F density `KernelDensityBoundedCompose` |
-| proxy→foreign-proxy | S `KernelProxyToProxyVmapRmwCompose` | — | — | — | — | — | — |
+| proxy→foreign-proxy | S `KernelProxyToProxyVmapRmwCompose` | F empty→append `KernelProxyToProxyBytesCompose` | F empty→append `KernelProxyToProxyStringCompose` | S `KernelProxyToProxyStructCompose` | F Item[] non-delegate + int[] compose `KernelProxyToProxyChunkedStructCompose` | S `KernelProxyToProxyEventCompose` | — |
 
 Peers already settled: fan-in/out, nested callsite, sidecar self/foreign/proxy/proxy×foreign, DirectSend entry order. DualRuntimeSet-width × keccak = inherent density fence in `KernelDualRuntimeKeccakCompose`.
 

@@ -403,7 +403,7 @@ describe('atomic compiled invocation graph', () => {
     expect(fenced.invocations[1].producerPath).toBe(fenced.invocations[2].producerPath);
   });
 
-  it('fails closed for a resource-free lifecycle row until the advertised protocol can compose it', () => {
+  it('plans a resource-free split row once the verifier advertises selector-derived lifecycle authority', () => {
     const compiled = compileString(`contract LifecycleProtocolBoundary() {
       function divide(int count) public split(count) {
         require(count > 0);
@@ -413,16 +413,16 @@ describe('atomic compiled invocation graph', () => {
       forceStateful: true, messageBus: true, messageBusKernel: true, maximumInputBytes: 1_000_000,
     });
     expect(compiled.messageBus?.handlers.find((handler) => handler.name === 'divide')).toMatchObject({
-      eligible: false,
-      rejectionReason: 'KERNEL_LIFECYCLE',
+      eligible: true,
       lifecycleTopology: { kind: 'split' },
     });
-    // The compiler publishes the refusal on the selected handler, so callers can diagnose the unsupported
-    // protocol before attempting composition.
-    expect(() => messageBus.planCompiledGraph([
+    expect(compiled.messageBus?.verifierProgram?.lifecycle).toBe(true);
+    const planned = messageBus.planCompiledGraph([
       { artifact: compiled, lockingBytecode: '51'.repeat(64) },
-    ], [{ parent: null, callee: 0, function: 'divide', args: [2n] }]))
-      .toThrow(/lifecycle participant .* does not advertise selector-derived authority|not message-bus eligible/);
+    ], [{ parent: null, callee: 0, function: 'divide', args: [2n] }]);
+    expect(planned.participants[0].lifecycle).toMatchObject({
+      kind: 'split', count: 2, balancedSpan: 3,
+    });
   });
 
   it('cannot plan compiler-fenced lifecycle rows carrying detached signature leaves', () => {

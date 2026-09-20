@@ -5159,14 +5159,15 @@ function synthesizeMessageBusRoute(
         : fn.modifiers.includes(FunctionModifier.MERGE) ? 'merge' as const : undefined;
     const lifecycleHasDetachedTransactionSignature = kernelLifecycleKind !== undefined
       && fn.parameters.some((parameter) => (transactionSignatureLeaves(parameter.type)?.length ?? 0) > 0);
-    // The V3 lifecycle manifest and its V4 successor are not yet accepted coherently by every detached verifier:
-    // V4 currently requires the participant lifecycle suffix to be neutral, while the SDK correctly refuses a
-    // graph that combines V4 provenance with lifecycle geometry. Do not publish a split/merge route merely
-    // because its body has no resources: that used to defer a compiler-admitted handler to an SDK-only failure.
-    // Keep the specialized signature diagnostic where a detached `sig` value is the immediate missing protocol;
-    // all other participant-changing lifecycle forms remain KERNEL_LIFECYCLE until one authenticated frame binds
-    // both its geometry and row provenance.
-    if (kernelLifecycleKind) {
+    // Resource-free split/merge rows use selector-derived lifecycle authority on ordinary V1/V2 block
+    // geometry: the specialized verifier derives mode/count from the one-row batch, and the SDK does not
+    // serialize a caller-authored lifecycle transcript into the global manifest. Detached `sig` leaves keep
+    // the specialized signature diagnostic. State, effects, or unknown footprints still need one
+    // authenticated frame that binds geometry with journal provenance, so they remain KERNEL_LIFECYCLE.
+    // Combining lifecycle with V4 transaction-signature provenance stays an SDK fence.
+    if (kernelLifecycleKind && (footprint.unknown || footprint.reads.length > 0 || footprint.writes.length > 0
+      || footprint.effects.length > 0 || lifecycleHasDetachedTransactionSignature
+      || fn.messageBusUsesTransactionSignature === true)) {
       fn.messageBusEligible = false;
       fn.messageBusRejectionReason = lifecycleHasDetachedTransactionSignature
         || fn.messageBusUsesTransactionSignature === true

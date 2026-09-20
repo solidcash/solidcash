@@ -2,7 +2,11 @@ import { hexToBin } from '@bitauth/libauth';
 import { type Artifact } from '@solidcash/utils';
 import { compileStringMulti } from 'solidc';
 import { describe, expect, it } from 'vitest';
-import { Contract, StatefulContract, messageBus } from '../../../src/index.js';
+import {
+  Contract, StatefulContract, messageBus, type TransactionBuilder,
+} from '../../../src/index.js';
+import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';
+import { generateLibauthSourceOutputs } from '../../../src/utils.js';
 import { createBareP2pkhFeeFunder, setupStatefulUtxos } from '../../test-util.js';
 import { createMessageBusCapstoneTestProvider } from './message-bus-semantic-profile.js';
 
@@ -10,13 +14,25 @@ const KERNEL = {
   forceStateful: true, messageBus: true, messageBusKernel: true, maximumInputBytes: 1_000_000,
 } as const;
 
+const vmAccepts = (builder: TransactionBuilder): boolean => {
+  try {
+    const transaction = builder.buildLibauthTransaction();
+    const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+    const vm = createVirtualMachineBch2026ForProvider(builder.provider);
+    return transaction.inputs.every((_input, inputIndex) => vm.stateSuccess(
+      vm.evaluate({ inputIndex, sourceOutputs, transaction }),
+    ) === true);
+  } catch {
+    return false;
+  }
+};
+
 /**
- * Atomic split changes participant cardinality. The compiler publishes diagnostic
- * `lifecycleTopology` metadata but keeps the handler ineligible (`KERNEL_LIFECYCLE`) until an
- * authenticated row protocol binds geometry and provenance, so compose fails closed before VM.
+ * Resource-free split rows publish selector-derived lifecycle authority. Compose authenticates
+ * funding/created-master cardinality without serializing a V3 lifecycle transcript into the manifest.
  */
-describe('kernel atomic split lifecycle compose fence', () => {
-  it('compiles topology metadata then refuses messageBus.compose for split', async () => {
+describe('kernel atomic split lifecycle compose', () => {
+  it('admits and settles split(2) under messageBus.compose with observable created masters', async () => {
     const provider = createMessageBusCapstoneTestProvider();
     const artifacts = compileStringMulti(`
       interface IThreads { function forkThreads(string label, int count); }
@@ -41,10 +57,11 @@ describe('kernel atomic split lifecycle compose fence', () => {
 
     const fork = artifacts.Threads.messageBus?.handlers.find((handler) => handler.name === 'forkThreads');
     expect(fork).toMatchObject({
-      eligible: false,
-      rejectionReason: 'KERNEL_LIFECYCLE',
+      eligible: true,
       lifecycleTopology: { version: 2, kind: 'split' },
     });
+    expect(artifacts.Threads.messageBus?.verifierProgram?.lifecycle).toBe(true);
+    expect(artifacts.Threads.messageBus?.atomicMessageBus?.protocolVersions).not.toContain(3);
     expect(artifacts.Threads.messageBus?.handlers.find((handler) => handler.name === 'callerBound'))
       .toMatchObject({ eligible: true });
 
@@ -64,7 +81,7 @@ describe('kernel atomic split lifecycle compose fence', () => {
     const fee = await createBareP2pkhFeeFunder(provider, 500_000n);
     const first = await createBareP2pkhFeeFunder(provider, 2_000n);
     const second = await createBareP2pkhFeeFunder(provider, 3_000n);
-    await expect(messageBus.compose({
+    const canonical = await messageBus.compose({
       preparedCalls: [
         { contract: coordinator.contract, functionName: 'run', args: [2n] },
         { contract: threads.contract, functionName: 'forkThreads', args: ['run', 2n] },
@@ -74,9 +91,19 @@ describe('kernel atomic split lifecycle compose fence', () => {
       lifecycleSplits: [{
         invocationIndex: 1, funders: [first, second], createdValues: [1_000n, 1_500n],
       }],
-    }).build()).rejects.toThrow(
-      /no compiled route|does not advertise selector-derived authority|KERNEL_LIFECYCLE/,
-    );
+    }).build();
+    expect(vmAccepts(canonical)).toBe(true);
+
+    // Created masters are empty-commitment minting NFTs funded at the declared values. The preserved
+    // master may also carry an empty commitment, so pin by funded satoshi amounts.
+    const createdAmounts = canonical.outputs
+      .filter((output) => output.token?.category === threads.category
+        && output.token.nft?.capability === 'minting'
+        && (output.token.nft.commitment ?? '') === ''
+        && (output.amount === 1_000n || output.amount === 1_500n))
+      .map((output) => output.amount)
+      .sort((left, right) => Number(left - right));
+    expect(createdAmounts).toEqual([1_000n, 1_500n]);
 
     const neutralFee = await createBareP2pkhFeeFunder(provider, 500_000n);
     await expect(messageBus.compose({
@@ -107,10 +134,10 @@ describe('kernel atomic split lifecycle compose fence', () => {
     for (const name of ['forkA', 'forkB'] as const) {
       const artifact = name === 'forkA' ? artifacts.A : artifacts.B;
       expect(artifact.messageBus?.handlers.find((handler) => handler.name === name)).toMatchObject({
-        eligible: false,
-        rejectionReason: 'KERNEL_LIFECYCLE',
+        eligible: true,
         lifecycleTopology: { kind: 'split' },
       });
+      expect(artifact.messageBus?.verifierProgram?.lifecycle).toBe(true);
     }
 
     const connect = async (artifact: Artifact, args: readonly unknown[] = []): Promise<StatefulContract> => {
@@ -137,8 +164,6 @@ describe('kernel atomic split lifecycle compose fence', () => {
         { invocationIndex: 1, funders: [shared], createdValues: [1_000n] },
         { invocationIndex: 2, funders: [shared], createdValues: [1_000n] },
       ],
-    }).build()).rejects.toThrow(
-      /no compiled route|does not advertise selector-derived authority|KERNEL_LIFECYCLE/,
-    );
+    }).build()).rejects.toThrow(/unique|duplicate|shared|outpoint/i);
   }, 180_000);
 });

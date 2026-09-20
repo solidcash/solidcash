@@ -68,7 +68,7 @@ Legend: **S** = settle fixture · **F** = honest fence · **—** = deferred / t
 
 | Topology \\ Resource | vmaps | chunks | strings | structs | chunked structs | events | lifecycle |
 |---|---|---|---|---|---|---|---|
-| self | S `KernelSelfVmapRmwCompose` | S `KernelMixedBytesMappingJournal` | S `KernelLoopCompose` (note) | S `KernelSelfStructStateWriteCompose` | S `KernelPooledDynamicArrayWriter` | S `KernelDualRuntimeKeccakCompose` Ping | F split/merge/selfdestruct · S upgrade/create |
+| self | S `KernelSelfVmapRmwCompose` | S `KernelMixedBytesMappingJournal` | S `KernelLoopCompose` (note) | S `KernelSelfStructStateWriteCompose` | S `KernelPooledDynamicArrayWriter` | S `KernelDualRuntimeKeccakCompose` Ping | S split/merge/upgrade/create · F selfdestruct |
 | proxy-self | S `KernelProxyOwnedVmapRmwCompose` | S `KernelProxyBytesStateCompose` | S `KernelProxyStringStateCompose` | S `KernelProxyStructStateCompose` | S `KernelProxyChunkedStructCompose` | S EventFunder / EventOnly / UnusedStateEvent | S `KernelProxyUpgradeThenCompose` |
 | self→foreign | S `KernelForeignVmapRmwCompose` | S `KernelForeignBytesRmwCompose` | S `KernelForeignStringRmwCompose` | S `KernelWholeStructStateGetterCompose` | S `KernelRepeatedPooledAppendParity` | S fan-out / funder-gap | F (same admission) |
 | self→proxy | S `KernelSelfToProxyVmapRmwCompose` | S `KernelSelfToProxyBytesCompose` | S `KernelSelfToProxyStringCompose` | S `KernelSelfToProxyStructCompose` | S `KernelSelfToProxyChunkedStructCompose` | S `KernelSelfToProxyEventCompose` | — |

@@ -10,7 +10,7 @@ const KERNEL = {
 } as const;
 
 describe('kernel lifecycle transaction-signature boundary', () => {
-  it('classifies unsigned split and merge under the lifecycle fence while retaining the signature boundary', () => {
+  it('admits unsigned resource-free split/merge while fencing detached signature leaves', () => {
     const artifact = compileString(`contract Threads(pubkey authority) {
       function signedSplit(int count, sig proof) public split(count) {
         require(checkSig(proof, authority));
@@ -37,15 +37,14 @@ describe('kernel lifecycle transaction-signature boundary', () => {
       expect(handler(name)).not.toHaveProperty('transactionSignaturePolicy');
     }
     expect(handler('openSplit')).toMatchObject({
-      eligible: false,
-      rejectionReason: 'KERNEL_LIFECYCLE',
+      eligible: true,
       lifecycleTopology: { kind: 'split' },
     });
     expect(handler('openMerge')).toMatchObject({
-      eligible: false,
-      rejectionReason: 'KERNEL_LIFECYCLE',
+      eligible: true,
       lifecycleTopology: { kind: 'merge' },
     });
+    expect(artifact.messageBus?.verifierProgram?.lifecycle).toBe(true);
   });
 
   it('finds detached signature leaves by finite ABI shape while leaving data signatures in-row', () => {
@@ -67,15 +66,14 @@ describe('kernel lifecycle transaction-signature boundary', () => {
     });
     expect(handler('nested')).not.toHaveProperty('transactionSignaturePolicy');
     expect(handler('dataOnly')).toMatchObject({
-      eligible: false,
-      rejectionReason: 'KERNEL_LIFECYCLE',
+      eligible: true,
       lifecycleTopology: { kind: 'split' },
     });
     expect(artifact.messageBus?.route.inputs.some((input) => input.name.includes('__message_bus_sig_')))
       .toBe(false);
   });
 
-  it('retains exact SIGHASH_ALL provenance for an ordinary signed sibling while lifecycle stays fenced', () => {
+  it('retains exact SIGHASH_ALL provenance for an ordinary signed sibling beside an admitted lifecycle row', () => {
     const artifact = compileString(`contract Threads(pubkey authority) {
       function divide(int count) public split(count) { require(count > 0); }
       function signed(sig proof) public { require(checkSig(proof, authority)); }
@@ -93,11 +91,11 @@ describe('kernel lifecycle transaction-signature boundary', () => {
       type: 'sig[]',
     }));
     expect(artifact.messageBus?.handlers.find((entry) => entry.name === 'divide')).toMatchObject({
-      eligible: false,
-      rejectionReason: 'KERNEL_LIFECYCLE',
+      eligible: true,
       lifecycleTopology: { kind: 'split' },
     });
     expect(artifact.messageBus?.handlers.find((entry) => entry.name === 'open'))
       .toMatchObject({ eligible: true });
+    expect(artifact.messageBus?.verifierProgram?.lifecycle).toBe(true);
   });
 });

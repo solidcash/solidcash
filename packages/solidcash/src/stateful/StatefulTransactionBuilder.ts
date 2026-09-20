@@ -7257,22 +7257,25 @@ export class StatefulTransactionBuilder {
     externalCallInputs: UnlockableUtxo[],
     lowLevelCallInputs: UnlockableUtxo[],
   ): UnlockableUtxo[] {
-    // When funders are provided and no external calls (which add gap outputs),
-    // use offset-indexed ordering so input[offset] matches OP_INPUTINDEX + offset.
-    // With external calls, the gap between readOnly and entries breaks 1:1 correspondence,
-    // so we fall through to the legacy path which both inputs and outputs follow.
+    // Dense (position-indexed) placement keeps the caller's own resources at published slot offsets so
+    // `masterInputIndex + slotOffset` reads (entry NFT EQUALVERIFY, etc.) see the right UTXO. Legacy order puts
+    // external-call participants between the master/data region and the caller's entry slots whenever the dense
+    // path is skipped — Acc then OP_EQUALVERIFYs Probe's bytecode at INPUTINDEX+1.
+    //
+    // Funders are required only to hold output-only holes open. A mapping writer + external call often needs none
+    // (no event/transfer pads), so requiring `funderUtxos.length > 0` forced the legacy order and the covenant
+    // failure above. External groups themselves are enough reason to take the dense path and defer participants
+    // past the caller's complete block (compose already does this; plain `.send()` must match).
     const hasExternalGroups = externalOutStateInputs.length > 0 || externalCallInputs.length > 0;
-    // Why the dense (position-indexed) placement below was or was not chosen. The legacy fallback orders both
-    // frames as master, data NFTs, readOnly, outState, external calls, low-level calls, entries..., which puts a
-    // participant block on the caller's first entry slot whenever the caller's own block is wider than its data
-    // NFTs. Measured for a mapping write plus an external call: hasBlockLayout true, blockSize 3, funders 0,
-    // hasExternalGroups true -> guard false.
+    const denseBlockLayout = this.blockLayout;
+    const useDensePlacement = denseBlockLayout !== undefined
+      && (this.funderUtxos.length > 0 || hasExternalGroups);
     if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
       ?.SOLIDC_DEBUG_INPUT_ORDER === '1') {
       console.error('input-order-guard', JSON.stringify({
         categoryId: this.categoryId.slice(0, 12),
-        hasBlockLayout: this.blockLayout !== undefined,
-        blockSize: this.blockLayout?.blockSize,
+        hasBlockLayout: denseBlockLayout !== undefined,
+        blockSize: denseBlockLayout?.blockSize,
         funders: this.funderUtxos.length,
         hasExternalGroups,
         externalCallInputs: externalCallInputs.length,
@@ -7281,26 +7284,13 @@ export class StatefulTransactionBuilder {
         blockhashOrdinals: this.blockhashCoSpendSlotOrdinals !== undefined,
         compilerRouteDelegateBlock: this.compilerRouteDelegateBlock,
         delegateEntriesAfterLowLevel: this.delegateEntriesAfterLowLevel,
-        // Must mirror the branch condition below: an external-call group is itself enough to reach the dense
-        // placement, so reporting it as a rejection here made a taken branch look like a skipped one.
-        guardPasses: this.blockLayout !== undefined && this.funderUtxos.length > 0
-          && (!hasExternalGroups || this.blockhashCoSpendSlotOrdinals !== undefined
-            || this.compilerRouteDelegateBlock || this.delegateEntriesAfterLowLevel
-            || hasExternalGroups),
+        guardPasses: useDensePlacement,
       }));
     }
-    if (this.blockLayout && this.funderUtxos.length > 0
-      && (!hasExternalGroups || this.blockhashCoSpendSlotOrdinals !== undefined
-        || this.compilerRouteDelegateBlock
-        || this.delegateEntriesAfterLowLevel
-        // Any build whose funder pool can reserve the owner's output-only slots may use the dense placement: the
-        // caller's own resources then occupy their published slot offsets, which is what the covenant's
-        // `masterInputIndex + slotOffset` reads require. The pool is populated by the SDK's auto-funder before this
-        // runs, so a block with output-only slots always arrives funded (round 200's census: `pay` needs two).
-        || hasExternalGroups)) {
+    if (useDensePlacement && denseBlockLayout) {
       const funderPool = [...this.funderUtxos];
       // Position-indexed array: each element goes at its slot.offset
-      const positioned: (UnlockableUtxo | undefined)[] = new Array(this.blockLayout.blockSize);
+      const positioned: (UnlockableUtxo | undefined)[] = new Array(denseBlockLayout.blockSize);
       let dataNftIdx = 0, readOnlyIdx = 0, tcIdx = 0;
       let llcIdx = 0; // low-level call input index
       let bhIdx = 0; // blockhash co-spend index
@@ -7335,7 +7325,7 @@ export class StatefulTransactionBuilder {
       let trailingIdx = 0;
       let trailingDisposalIdx = 0;
       const trailingDisposalOffsets = new Set(
-        this.trailingDisposalInputs.length === 0 ? [] : this.blockLayout.slots
+        this.trailingDisposalInputs.length === 0 ? [] : denseBlockLayout.slots
           .filter((slot) => slot.kind === 'trailing')
           .map((slot) => slot.offset)
           .sort((left, right) => left - right)
@@ -7348,7 +7338,7 @@ export class StatefulTransactionBuilder {
         this.entryNfts.filter((e) => e.exists && e.utxo).map((e) => [e.slotIndex, e.utxo!]),
       );
 
-      for (const slot of this.blockLayout.slots) {
+      for (const slot of denseBlockLayout.slots) {
         switch (slot.kind) {
           case 'master': positioned[slot.offset] = this.masterUtxo; break;
           case 'dataNft':
@@ -7395,7 +7385,7 @@ export class StatefulTransactionBuilder {
                 provided: [...entryInputBySlot.keys()],
                 entries: this.entryNfts.map((info) => [info.slotIndex, info.exists, info.utxo !== undefined,
                   Object.keys(info)]),
-                declared: this.blockLayout.slots.filter((candidate) => candidate.kind === 'entry')
+                declared: denseBlockLayout.slots.filter((candidate) => candidate.kind === 'entry')
                   .map((candidate) => [candidate.offset, candidate.slotIndex, candidate.conditional === true]),
               }));
             }
@@ -7466,13 +7456,13 @@ export class StatefulTransactionBuilder {
           default: break;
         }
       }
-      if (this.blockLayout.trailingCapacity !== undefined
+      if (denseBlockLayout.trailingCapacity !== undefined
         && (trailingIdx !== trailingInputs.length
           || trailingDisposalIdx !== this.trailingDisposalInputs.length)) {
         throw new Error(
           'Runtime resource inputs exceed balanced trailing capacity '
           + `(${trailingInputs.length + this.trailingDisposalInputs.length} `
-          + `> ${this.blockLayout.trailingCapacity ?? 0})`,
+          + `> ${denseBlockLayout.trailingCapacity ?? 0})`,
         );
       }
 
@@ -7510,10 +7500,10 @@ export class StatefulTransactionBuilder {
 
       if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env?.SOLIDC_DEBUG_INPUTS === '1') {
         console.error('balanced-positioned-inputs', {
-          blockSize: this.blockLayout.blockSize,
+          blockSize: denseBlockLayout.blockSize,
           missing: Array.from({ length: positioned.length }, (_, offset) => positioned[offset] === undefined ? [{
             offset,
-            slot: this.blockLayout?.slots.find((candidate) => candidate.offset === offset),
+            slot: denseBlockLayout.slots.find((candidate) => candidate.offset === offset),
           }] : []).flat(),
           fundersProvided: this.funderUtxos.length,
           fundersRemaining: funderPool.length,
@@ -7789,20 +7779,20 @@ export class StatefulTransactionBuilder {
           isP2PKHUnlocker(input.unlocker) && input.token === undefined
         ));
         console.error('insert-band-geometry', {
-          blockSize: this.blockLayout.blockSize,
+          blockSize: denseBlockLayout.blockSize,
           hasReturnEventPad: returnEventPad !== undefined,
           hasNewNodePad: newNodePad !== undefined,
           hasTokenFreeP2pkh,
           jobsBand: jobsBand.length,
           llcBeforeJobs: llcBeforeJobs.length,
           nestedLlcAfter: nestedLlcAfterInsertBand.length,
-          slotsHaveReturnEvent: this.blockLayout.slots.some((slot) => slot.kind === 'returnEvent'),
+          slotsHaveReturnEvent: denseBlockLayout.slots.some((slot) => slot.kind === 'returnEvent'),
           remainingLlc: remainingLlc.length,
           positionedLen: positioned.length,
           positionedDefined: positioned.filter((input) => input !== undefined).length,
           resultLen: result.length,
           preserveWidth: this.preserveBlockLayoutWidth,
-          slots: this.blockLayout.slots.map((slot) => ({ kind: slot.kind, offset: slot.offset })),
+          slots: denseBlockLayout.slots.map((slot) => ({ kind: slot.kind, offset: slot.offset })),
           preds: earlyInsertPredecessors.length,
           postBlock: postBlockParticipants.length,
           llcRemaining: this.compilerRouteDelegateBlock ? 0 : lowLevelCallInputs.length - llcIdx,
@@ -7815,8 +7805,8 @@ export class StatefulTransactionBuilder {
         });
       }
       const blockPadFunders: UnlockableUtxo[] = [];
-      if (this.dynamicChunkInputs.some((input) => jobsBand.includes(input)) && this.blockLayout) {
-        const targetWidth = this.blockLayout.blockSize
+      if (this.dynamicChunkInputs.some((input) => jobsBand.includes(input))) {
+        const targetWidth = denseBlockLayout.blockSize
           + (this.compilerRouteDelegateBlock ? lowLevelCallInputs.length : 0)
           + llcBeforeJobs.length;
         const currentWidth = result.length
@@ -17230,13 +17220,11 @@ export class StatefulTransactionBuilder {
     for (let groupIndex = 0; groupIndex < this.externalCallUtxoGroups.length; groupIndex++) {
       const group = this.externalCallUtxoGroups[groupIndex];
       if (group.sharedGroupIndex !== undefined) continue;
-      if (group.blockLayout) {
-        // Physical master after the 4-wide input swap (typically 26). Emitting the
-        // 8-slot token block there puts the return event at master+7 (33) so
-        // updateJobPost's OUTPUTTOKENCATEGORY/SPLIT-32 sees a 32-byte category.
-        const masterInputIndex = this.getExternalCallMasterInputIndex(groupIndex);
-        if (masterInputIndex >= 0) this._padOutputsToIndex(builder, masterInputIndex);
-      }
+      // Align each callee's output block with its assembled input master index. Dense input placement defers
+      // participants past the caller's entry slots; without this pad a layout-less Probe would append immediately
+      // after master/data and land on the caller's entry output coordinate (or be overwritten by it).
+      const masterInputIndex = this.getExternalCallMasterInputIndex(groupIndex);
+      if (masterInputIndex >= 0) this._padOutputsToIndex(builder, masterInputIndex);
       const groupOutputStart = builder.outputs.length;
       // B's master output: preserved unchanged
       const bMaster = group.masterUtxo as UnlockableUtxo;

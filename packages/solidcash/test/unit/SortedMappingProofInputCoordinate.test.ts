@@ -9,11 +9,9 @@ import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 // A sorted-mapping (vmap) write publishes `__internal__vmapBatchProof_<slot>`: the distance from the executing
 // master input to the co-spent entry NFT that brackets the written key. The covenant reads the proof input at
 // `masterInputIndex + offset` and authenticates its locking bytecode against the collection's entry address, so the
-// witness is only correct while it names the ASSEMBLED distance. Deriving it from the collection's block slot
-// instead only works while the input frame is dense: a callee participant block placed between the master's data
-// NFTs and the entry NFT moves the entry further along, and the covenant then authenticates a callee's bytecode and
-// aborts on `OP_EQUALVERIFY`. The external call below is what makes the frame non-dense, which is why this case
-// needs a contracting pair rather than a lone mapping writer.
+// witness must name the ASSEMBLED distance. Plain `.send()` with an external call used to place the callee between
+// the master's data NFTs and the entry NFT (legacy order); dense placement now keeps the caller's own block contiguous
+// and defers the callee, matching `masterInputIndex + blockLayout slot offset`.
 
 const CALLEE_SOURCE = `contract Callee() {
   bigint count;
@@ -98,48 +96,68 @@ describe('sorted mapping proof-input coordinate', () => {
       && input.vout === sentinelEntry!.vout);
     expect(proofInputIndex).toBeGreaterThanOrEqual(0);
 
-    // The covenant reads the proof input at `masterInputIndex + offset`, so the witness must publish the assembled
-    // distance - a callee participant block sits between the master's data NFTs and the entry NFT here.
+    // Dense placement keeps the entry immediately after the caller's own block; the witness is that distance.
     expect(unlocker.params[witnessIndex]).toBe(BigInt(proofInputIndex - hostInputIndex));
+    const entrySlotOffset = recordFunction.blockLayout?.slots.find((slot) => slot.kind === 'entry')?.offset;
+    expect(entrySlotOffset).toBeDefined();
+    expect(proofInputIndex - hostInputIndex).toBe(entrySlotOffset);
+    const calleeMasterIndex = built.inputs.findIndex(
+      (input) => input.txid === calleeSetup.masterUtxo.txid && input.vout === calleeSetup.masterUtxo.vout,
+    );
+    expect(calleeMasterIndex).toBeGreaterThan(proofInputIndex);
   });
 
-  // Reproduces the current `take job` blocker in ~0.3 s instead of ~65 s of marketplace ladder, so enable this
-  // case first and only then run the ladder.
-  //
-  // What it asserts: a converged transaction that makes an external call and writes a sorted mapping must verify.
-  // Two independent defects block it, both measured (see the handoff's SESSION CLOSE-OUT):
-  //
-  //  1. PARTICIPANT PLACEMENT. The covenant addresses the caller's own block slots as
-  //     `masterInputIndex + blockLayout slot offset` (here artifact 194-203 reads `output[activeInputIndex + 2]`,
-  //     the entry slot), but external-call participant blocks are placed *before* the caller's entry inputs/outputs
-  //     by the legacy order, so that output is the callee's. Relaxing both gates of the dense path
-  //     (`!hasExternalGroups` and `this.funderUtxos.length > 0`; the latter is over-strict - this block needs no
-  //     gap fillers) and deferring the participants removes the covenant failure entirely.
-  //  2. PREDECESSOR NODE VALUE. After that, the frame publishes the batch's target node commitment twice and never
-  //     the predecessor's, leaving exactly one node's satoshis unmatched (a 1200-sat deficit with no change output
-  //     to absorb it). `targetCommitment` is computed once per logical slot while the batch publishes two nodes, and
-  //     `batchPredCommitments` never reaches `StatefulTransactionBuilder`.
-  //
-  // Going green therefore means both fixes are in: participants after the caller's complete block, and the batch's
-  // predecessor node materialized with its own commitment (7 outputs, no duplicate commitment).
-  it.skip('verifies the converged transaction that spends the bracketing entry NFT', async () => {
+  // UPDATE of an already-present key + external call under the kernel compile profile used by the e2e settle.
+  // Plain `.send()` must keep the entry immediately after the caller's block (see KernelDirectSendExternalEntryOrder).
+  it('verifies plain send for an existing-key mapping update with an external call', async () => {
     const provider = createTestProvider();
-    const calleeArtifact = compileString(CALLEE_SOURCE, {});
-    const hostArtifact = compileString(HOST_SOURCE, {});
+    const kernel = {
+      forceStateful: true,
+      messageBus: true,
+      messageBusKernel: true,
+      suppressWarnings: true,
+    } as const;
+    const calleeArtifact = compileString(`pragma solidcash >=0.8.0;
+contract Callee() {
+  int count;
+  function bump() public { this.count = this.count + 1; require(true); }
+}`, { ...kernel, solidityImportCompat: false, messageBusGraphContext: true });
+    const hostArtifact = compileString(`pragma solidcash >=0.8.0;
+interface ICallee { function bump() external; }
+contract Host() {
+  int result;
+  mapping(bytes20 => int) balances;
+  function seed(bytes20 user, int amount) public {
+    this.balances[user] = amount;
+    this.result = amount;
+    require(true);
+  }
+  function record(address callee, bytes20 user, int amount) public {
+    ICallee(callee).bump();
+    this.balances[user] = amount;
+    this.result = amount;
+    require(true);
+  }
+}`, { ...kernel, solidityImportCompat: false });
     const calleeInner = new Contract(calleeArtifact, [], { provider });
-    const hostInner = new Contract(hostArtifact, [addressToLockScript(calleeInner.address)], { provider });
+    const hostInner = new Contract(hostArtifact, [], { provider });
     const calleeSetup = await setupStatefulUtxos(
-      provider, calleeInner, calleeArtifact.stateLayout!, { count: 0n },
+      provider, calleeInner, calleeArtifact.stateLayout!, { count: 0n }, { saltContract: true },
     );
     const hostSetup = await setupStatefulUtxos(
-      provider, hostInner, hostArtifact.stateLayout!, { result: 0n },
+      provider, hostInner, hostArtifact.stateLayout!, { result: 0n }, { saltContract: true },
     );
-    const callee = StatefulContract.withCategory(calleeInner, calleeSetup.categoryId);
-    const host = StatefulContract.withCategory(hostInner, hostSetup.categoryId, {
-      externals: { ICallee: callee },
-    });
+    const callee = StatefulContract.withCategory(
+      calleeInner.withCategory(hexToBin(calleeSetup.categoryId)), calleeSetup.categoryId,
+    );
+    const host = StatefulContract.withCategory(
+      hostInner.withCategory(hexToBin(hostSetup.categoryId)), hostSetup.categoryId,
+    );
+    host._registerResolvedExternal('ICallee', callee);
 
-    await expect(host.record(KEY, 7n).send()).resolves.toHaveProperty('txid');
+    await expect(host.call.seed(KEY, 3n).send()).resolves.toHaveProperty('txid');
+    await expect(host.call.record(callee.inner.lockingBytecode, KEY, 7n).send())
+      .resolves.toHaveProperty('txid');
     await expect(host.getState()).resolves.toMatchObject({ result: 7n });
   });
 });

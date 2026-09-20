@@ -56,7 +56,7 @@ Worktree: `.worktrees/kernel-comprehensive-fixtures`
 - `KernelForeignTokenTransferCompose` — Caller→Token FT transfer under compose; remainder + tamper fail-closed
 - `KernelProxyNestedCallsiteCompose` — deployProxy scalar write + Probe.touch via compose+`executionArtifact` settle
 - `KernelProxyUpgradeThenCompose` — published `upgrades.upgradeProxy` param-mode V1→V2 settle (same address); baked `SolidCashProxy` refuses upgradeProxy; baked compose executor retarget fails closed (`Compiler-authenticated delegate forwarding target is not materialized`)
-- `KernelProxyForeignRmwEventCompose` — deployProxy poke→Bank.credit+Ping via `withExternalCall` settles (bal readback via SortedList); full three-axis `messageBus.compose` fail-closed; fan-out Caller×Bank×Ping under compose settles
+- `KernelProxyForeignRmwEventCompose` — deployProxy poke→Bank.credit+Ping via `withExternalCall` **and** `messageBus.compose`+`executionArtifact` settle; fan-out Caller×Bank×Ping under compose settles
 - `KernelDualRuntimeKeccakCompose` — Ping emit + keccak settles; single-key mapping RMW + keccak settles (graph-owned deferred preimages); fixed dual-key add+remove OP_VERIFY; DualRuntimeSet-width arrays+keccak inherent density fence
 
 ## Product gaps closed this stream
@@ -64,13 +64,17 @@ Worktree: `.worktrees/kernel-comprehensive-fixtures`
 - **`upgrades.upgradeProxy`:** published for **param-mode** proxies (re-wrap same state holder + append-only layout check); baked `SolidCashProxy` refuses with a clear pin/migration error (`KernelProxyUpgradeThenCompose`).
 - **DualRuntimeSet-width × keccak density:** closed as an **inherent** BCH-2026 density fence (`trailingCapacity≈130`); not relaxed. Closable dual-runtime×sidecar proof is single-key mapping×keccak above.
 
-## Product gap closed: proxy×event compose
+## Product gap closed: proxy×event and proxy×foreign×event compose
 - **Root cause:** atomic `omitLocalFeeTail` layout pads used a bare P2PKH as the first structural funder so probes could establish `tx.origin`. With output-only event slots that pad sits before the canonical fee tail and **becomes** authenticated `tx.origin`, so MessageBusVerifier `require(rowSubject == tx.origin)` OP_VERIFYs.
 - **Fix:** all structural pads under `omitLocalFeeTail` use the OP_TRUE dummy covenant; only the composition fee tail is bare P2PKH (`StatefulContract` funder install).
-- **Settles:** `KernelProxyEventFunderCompose` compose+`executionArtifact` Ping (event NFT on proxy category + counter readback).
+- **Settles:**
+  - `KernelProxyEventFunderCompose` compose+`executionArtifact` Ping
+  - `KernelProxyForeignRmwEventCompose` deployProxy poke→Bank.credit+Ping under compose (bal=15 + count + event NFT)
 
 ## Still open / fence
-- **Proxy×foreign×event under `messageBus.compose`:** still fails at `SolidCashProxy.__forward` (input 0, short forwarder script) — distinct from the event-pad `tx.origin` bug. Dispatch `withExternalCall` + fan-out compose remain the settle paths (`KernelProxyForeignRmwEventCompose`).
+- Dual-key add+remove in one handler under compose remains OP_VERIFY (keccak-independent)
+- DualRuntimeSet-width density wall (inherent)
+- Event-only Solidity proxy shapes without proxy-owned state (no dataNft) were not re-promoted; settle proofs use state-holding Coordinators
 
 ## Fence
 - No `marketplace.test.ts` / `vitest.marketplace.config.ts` in this stream

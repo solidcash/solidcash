@@ -32,8 +32,8 @@ const vmAccepts = (builder: TransactionBuilder): boolean => {
 
 /**
  * Proxy executor × foreign mapping RMW × event.
- * Dispatch `withExternalCall` and fan-out compose settle. Full deployProxy×foreign×event under
- * messageBus.compose still fails at SolidCashProxy.__forward (separate from the event-pad tx.origin fix).
+ * Dispatch `withExternalCall`, fan-out compose, and deployProxy `messageBus.compose`+`executionArtifact`
+ * all settle the three axes (after structural pads stopped stealing tx.origin from the fee tail).
  */
 describe('kernel proxy × foreign RMW × event compose', () => {
   it('settles deployProxy poke→Bank.credit with Ping via withExternalCall', async () => {
@@ -94,13 +94,23 @@ describe('kernel proxy × foreign RMW × event compose', () => {
     expect((await deployed.proxy.getState()).count).toBe(1n);
   }, 300_000);
 
-  it('characterizes full deployProxy×foreign×event under messageBus.compose: fails closed at preflight', async () => {
+  it('settles deployProxy poke→Bank.credit with Ping under messageBus.compose', async () => {
     const provider = createMessageBusCapstoneTestProvider();
-    const bankArtifact = compileString(`pragma solidity ^0.8.0;
-      contract Bank {
-        mapping(uint256 => uint256) bal;
-        function credit(uint256 k, uint256 v) public { bal[k] += v; require(true); }
-        function seed(uint256 k, uint256 v) public { bal[k] = v; require(true); }
+    const privateKey = new Uint8Array(32).fill(0x41);
+    const signer = new Signer(privateKey, provider);
+    for (let index = 0; index < 40; index += 1) {
+      await provider.addUtxo(signer.getAddress(), {
+        txid: (index + 1).toString(16).padStart(64, '0'),
+        vout: 0,
+        satoshis: 1_000_000n,
+      });
+    }
+
+    const bankArtifact = compileString(`pragma solidcash >=0.8.0;
+      contract Bank() {
+        mapping(int => int) bal;
+        function seed(int k, int v) public { bal[k] = v; }
+        function credit(int k, int v) public { bal[k] = bal[k] + v; }
       }`, KERNEL);
     const bankBase = new Contract(bankArtifact, [], { provider });
     const bankSetup = await setupStatefulUtxos(
@@ -111,37 +121,25 @@ describe('kernel proxy × foreign RMW × event compose', () => {
     );
     await bank.call.seed(2n, 10n).send();
 
-    const implSource = `pragma solidity ^0.8.0;
-      interface IBank { function credit(uint256 k, uint256 v) external; }
-      contract Coordinator {
-        event Ping(uint256 value);
-        function poke(address bank, uint256 k, uint256 v) public {
+    const implArtifact = compileString(`pragma solidcash >=0.8.0;
+      interface IBank { function credit(int k, int v) external; }
+      contract Coordinator() {
+        int count;
+        event Ping(int value);
+        function initialize() public { this.count = 0; }
+        function poke(address bank, int k, int v) public {
           emit Ping(v);
           IBank(bank).credit(k, v);
-          require(true);
+          this.count = this.count + 1;
         }
-      }`;
-    const implArtifact = compileString(implSource, KERNEL);
+      }`, KERNEL);
     const delegate = implArtifact.delegateArtifact!;
     expect(delegate).toBeDefined();
     expect(delegate.messageBus?.convention).toBe('kernel-row-loop');
-    expect(delegate.messageBus?.handlers.find((h) => h.name === 'poke'))
+    expect(delegate.messageBus?.handlers.find((handler) => handler.name === 'poke'))
       .toMatchObject({ eligible: true });
 
-    const privateKey = new Uint8Array(32).fill(0x41);
-    const signer = new Signer(privateKey, provider);
-    for (let index = 0; index < 24; index += 1) {
-      await provider.addUtxo(signer.getAddress(), {
-        txid: (index + 1).toString(16).padStart(64, '0'),
-        vout: 0,
-        satoshis: 1_000_000n,
-      });
-    }
-    const deployed = await upgrades.deployProxy(
-      getContractFactory(implArtifact, signer),
-      {},
-      { initializer: false },
-    );
+    const deployed = await upgrades.deployProxy(getContractFactory(implArtifact, signer), []);
     deployed.implementation._registerResolvedExternal('IBank', bank);
     const callsite = delegate.abi.find((entry) => entry.name === 'poke')?.externalCalls?.[0];
     expect(callsite).toMatchObject({
@@ -167,9 +165,31 @@ describe('kernel proxy × foreign RMW × event compose', () => {
       changeAddress: funder.unlocker.generateLockingBytecode(),
     });
 
-    // Full three-axis deployProxy graph currently OP_VERIFYs at the proxy route; fail closed, no hang.
-    await expect(composition.build()).rejects.toThrow(/BCH-2026 preflight failed|operation cost density limit/);
-  }, 180_000);
+    const builder = await composition.build();
+    expect(vmAccepts(builder)).toBe(true);
+    const transaction = builder.buildLibauthTransaction();
+    const proxyCategory = String(deployed.proxy.categoryId).toLowerCase();
+    const eventOutputs = transaction.outputs.filter((output) => {
+      const category = output.token?.category;
+      const hex = typeof category === 'string'
+        ? category.toLowerCase()
+        : category !== undefined ? binToHex(category).toLowerCase() : '';
+      const commitment = output.token?.nft?.commitment;
+      const len = typeof commitment === 'string' ? commitment.length / 2 : commitment?.length ?? 0;
+      return hex === proxyCategory && output.token?.nft?.capability === 'none' && len > 0;
+    });
+    expect(eventOutputs.length).toBeGreaterThanOrEqual(1);
+
+    await expect(composition.send()).resolves.toMatchObject({
+      txid: expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
+    const entryAddress = getEntryNftAddress(bank.inner, bankSetup.categoryId, 'bal');
+    const entry = SortedList.fromUtxos(await provider.getUtxos(entryAddress))
+      .find(keyToSlot(bigIntToVmNumber(2n)));
+    expect(entry).toBeDefined();
+    expect(vmNumberToBigInt(entry!.value, { requireMinimalEncoding: false })).toBe(15n);
+    expect((await deployed.proxy.getState()).count).toBe(1n);
+  }, 300_000);
 
   it('settles foreign RMW × event via fan-out: Caller emits Ping and credits Bank in one compose', async () => {
     // Slim twin isolating foreign RMW × event (proxy executor still characterized above).

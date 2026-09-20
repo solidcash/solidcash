@@ -33332,12 +33332,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
       if (neededFunders > 0) {
         if (this._signer && overrides?.omitLocalFeeTail && (this.inner.provider as any).addUtxo) {
-          // An isolated atomic probe needs at most one signer input to establish tx.origin. Every remaining
-          // position is structural balance, so use the canonical OP_TRUE covenant filler: signing dozens of
-          // unrelated P2PKH padding inputs made each graph pass needlessly expensive and made inactive output-only
-          // slots look like value-bearing wallet spends rather than neutral coordinates. The complete composition
-          // retains its independently authenticated fee tail.
-          const originLockingBytecode = addressToLockScript(this._signer.getAddress());
+          // Atomic composition joins participant blocks before a canonical bare-P2PKH fee tail. Every structural
+          // pad here (including output-only event slots) must use the OP_TRUE dummy covenant: a bare P2PKH pad
+          // becomes authenticated tx.origin (first non-token input) and breaks `rowSubject == tx.origin` on the
+          // MessageBusVerifier when the fee tail is later. The complete composition's fee funder alone carries
+          // origin; signing dozens of wallet pads is also needlessly expensive.
           const layoutFunders: UnlockableUtxo[] = [];
           for (let i = 0; i < neededFunders; i++) {
             const seed = new TextEncoder().encode(
@@ -33345,12 +33344,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               + `:${overrides?.blockBase ?? 0}:${i}`,
             );
             const dummy: Utxo = { txid: binToHex(sha256Sync(seed)), vout: 0, satoshis: 5000n };
-            const carriesOrigin = i === 0;
-            const lockingBytecode = carriesOrigin ? originLockingBytecode : DUMMY_FUNDER_LOCKING_BYTECODE;
-            await (this.inner.provider as any).addUtxo(binToHex(lockingBytecode), dummy);
+            await (this.inner.provider as any).addUtxo(binToHex(DUMMY_FUNDER_LOCKING_BYTECODE), dummy);
             layoutFunders.push({
               ...dummy,
-              unlocker: carriesOrigin ? this._signer.unlockP2PKH() : {
+              unlocker: {
                 generateLockingBytecode: () => DUMMY_FUNDER_LOCKING_BYTECODE,
                 generateUnlockingBytecode: () => DUMMY_FUNDER_UNLOCKING_BYTECODE,
               },

@@ -16,8 +16,8 @@ const KERNEL = {
 } as const;
 
 /**
- * Proxy event funder: dispatch-proxy `.send()` settles emit onto the proxy category.
- * `messageBus.compose` + `executionArtifact` for the same shape remains OP_VERIFY (atomic verifier).
+ * Proxy event funder: dispatch-proxy `.send()` and `messageBus.compose`+`executionArtifact` both settle
+ * emit onto the proxy category (structural pads use OP_TRUE dummies so the fee tail alone is tx.origin).
  */
 describe('kernel proxy event funder under composition', () => {
   it('settles deployProxy Ping via dispatch send with none-cap event NFT on proxy category', async () => {
@@ -67,7 +67,7 @@ describe('kernel proxy event funder under composition', () => {
     if (outputs.length > 0) expect(eventOut).toBeDefined();
   }, 180_000);
 
-  it('characterizes deployProxy Ping via compose+executionArtifact: OP_VERIFY at preflight', async () => {
+  it('settles deployProxy Ping via compose+executionArtifact with event NFT on proxy category', async () => {
     const provider = createMessageBusCapstoneTestProvider();
     const signer = new Signer(new Uint8Array(32).fill(0x4b), provider);
     for (let index = 0; index < 24; index += 1) {
@@ -126,8 +126,23 @@ describe('kernel proxy event funder under composition', () => {
       changeAddress: fee.unlocker.generateLockingBytecode(),
     });
 
-    await expect(composition.build()).rejects.toThrow(
-      /messageBus: BCH-2026 preflight failed.*Program failed an OP_VERIFY operation/,
-    );
+    const builder = await composition.build();
+    const transaction = builder.buildLibauthTransaction();
+    const proxyCategory = String(deployed.proxy.categoryId).toLowerCase();
+    const eventOutputs = transaction.outputs.filter((output) => {
+      const category = output.token?.category;
+      const hex = typeof category === 'string'
+        ? category.toLowerCase()
+        : category !== undefined ? binToHex(category).toLowerCase() : '';
+      const commitment = output.token?.nft?.commitment;
+      const len = typeof commitment === 'string' ? commitment.length / 2 : commitment?.length ?? 0;
+      return hex === proxyCategory && output.token?.nft?.capability === 'none' && len > 0;
+    });
+    expect(eventOutputs.length).toBeGreaterThanOrEqual(1);
+
+    await expect(composition.send()).resolves.toMatchObject({
+      txid: expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
+    expect((await deployed.proxy.getState()).counter).toBe(1n);
   }, 300_000);
 });

@@ -52,7 +52,7 @@ Worktree: `.worktrees/kernel-comprehensive-fixtures`
 
 ## Leftovers landed this stream (descriptive names only in fixtures)
 - `KernelRefusedBatchSlot` — repeated selector drop vs refused-handler compose fail-closed (`KERNEL_OPAQUE_EFFECT`)
-- `KernelProxyEventFunderCompose` — deployProxy Ping via dispatch `.send()` settles none-cap event NFT on proxy category; `messageBus.compose`+`executionArtifact` characterized OP_VERIFY
+- `KernelProxyEventFunderCompose` — deployProxy Ping via dispatch `.send()` **and** `messageBus.compose`+`executionArtifact` settle none-cap event NFT on proxy category (event-pad `tx.origin` fix)
 - `KernelForeignTokenTransferCompose` — Caller→Token FT transfer under compose; remainder + tamper fail-closed
 - `KernelProxyNestedCallsiteCompose` — deployProxy scalar write + Probe.touch via compose+`executionArtifact` settle
 - `KernelProxyUpgradeThenCompose` — published `upgrades.upgradeProxy` param-mode V1→V2 settle (same address); baked `SolidCashProxy` refuses upgradeProxy; baked compose executor retarget fails closed (`Compiler-authenticated delegate forwarding target is not materialized`)
@@ -64,8 +64,13 @@ Worktree: `.worktrees/kernel-comprehensive-fixtures`
 - **`upgrades.upgradeProxy`:** published for **param-mode** proxies (re-wrap same state holder + append-only layout check); baked `SolidCashProxy` refuses with a clear pin/migration error (`KernelProxyUpgradeThenCompose`).
 - **DualRuntimeSet-width × keccak density:** closed as an **inherent** BCH-2026 density fence (`trailingCapacity≈130`); not relaxed. Closable dual-runtime×sidecar proof is single-key mapping×keccak above.
 
+## Product gap closed: proxy×event compose
+- **Root cause:** atomic `omitLocalFeeTail` layout pads used a bare P2PKH as the first structural funder so probes could establish `tx.origin`. With output-only event slots that pad sits before the canonical fee tail and **becomes** authenticated `tx.origin`, so MessageBusVerifier `require(rowSubject == tx.origin)` OP_VERIFYs.
+- **Fix:** all structural pads under `omitLocalFeeTail` use the OP_TRUE dummy covenant; only the composition fee tail is bare P2PKH (`StatefulContract` funder install).
+- **Settles:** `KernelProxyEventFunderCompose` compose+`executionArtifact` Ping (event NFT on proxy category + counter readback).
+
 ## Still open / fence
-- **Proxy×event / proxy×foreign×event under `messageBus.compose`:** still OP_VERIFY at proxy-branded `MessageBusVerifier` (input ~13). Diagnosis: kind-2 row + physical event census **match** (subject/effect/category); failure is elsewhere (next suspects: `suppliedEmissions` / graph emission bookkeeping, or empty 8-wide event frame stress). Dispatch / `withExternalCall` / fan-out settle.
+- **Proxy×foreign×event under `messageBus.compose`:** still fails at `SolidCashProxy.__forward` (input 0, short forwarder script) — distinct from the event-pad `tx.origin` bug. Dispatch `withExternalCall` + fan-out compose remain the settle paths (`KernelProxyForeignRmwEventCompose`).
 
 ## Fence
 - No `marketplace.test.ts` / `vitest.marketplace.config.ts` in this stream

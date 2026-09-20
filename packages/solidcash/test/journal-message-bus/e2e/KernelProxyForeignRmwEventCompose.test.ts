@@ -32,7 +32,8 @@ const vmAccepts = (builder: TransactionBuilder): boolean => {
 
 /**
  * Proxy executor × foreign mapping RMW × event.
- * Compose under messageBus remains fail-closed; dispatch `withExternalCall` settles the three axes.
+ * Dispatch `withExternalCall` and fan-out compose settle. Full deployProxy×foreign×event under
+ * messageBus.compose still fails at SolidCashProxy.__forward (separate from the event-pad tx.origin fix).
  */
 describe('kernel proxy × foreign RMW × event compose', () => {
   it('settles deployProxy poke→Bank.credit with Ping via withExternalCall', async () => {

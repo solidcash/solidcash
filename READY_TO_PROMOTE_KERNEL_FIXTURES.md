@@ -48,6 +48,7 @@ Worktree: `.worktrees/kernel-comprehensive-fixtures`
 - **K5** `KernelEcrecoverEvmKeccakSidecarCompose` — compose settle: A/B + keccak sidecar recreate + wrong-keccak fail-closed + Acc.counter readback (product-default cells stay PubKey)
 - Marketplace touchpoints (docs only): ECDSA.recover + keccak digest prep under proxy/facade → K1b then K4b; facade hash→foreign → K3a/K4a
 - **SDK fixes landed this stream:** (1) `__forward` promotes impl ABI keccak/ecrecover/`ecrecoverEvmFlags` so compute co-spends are not empty; (2) message-bus `ecrecoverEvm` handlers keep top-relative owner pick (bottom ordinal mis-read bytes32 as input index)
+- **Open compose fence (K3b/K4b) diagnosis:** `SOLIDC_DEBUG_ROUTE_INPUTS` attributes the fail to `MessageBusVerifier` (proxy path ~input 85; Acc executor + Probe already succeed). Self ecrecover compose settles at ~22 inputs; proxy+`executionArtifact` preserves full `blockSize` 82 (16 ecrecover slots for `maximumRows=8`, ~78 funder pads) vs keccak proxy `blockSize` 3. Replacing inactive ecrecover P2PKH pads with bare OP_TRUE pads regresses self compose at the same verifier IP — not a safe fix. Next: verifier admission of inactive conditional `ecrecoverSideCar` under `compilerRouteDelegateBlock` full-width layout.
 
 
 ## Fence

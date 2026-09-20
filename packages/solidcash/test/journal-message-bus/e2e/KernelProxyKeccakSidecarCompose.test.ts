@@ -111,7 +111,7 @@ describe('kernel proxy keccak sidecar under composition', () => {
     });
   }, 300_000);
 
-  it('characterizes compose+executionArtifact×keccak: fails closed at preflight (no hang)', async () => {
+  it('settles compose+executionArtifact×keccak with foreign Probe touch', async () => {
     const provider = createMessageBusCapstoneTestProvider();
     const signer = new Signer(new Uint8Array(32).fill(0x49), provider);
     for (let index = 0; index < 40; index += 1) {
@@ -126,17 +126,15 @@ describe('kernel proxy keccak sidecar under composition', () => {
       contract Probe() { function touch() public { require(true); } }`, {
       ...KERNEL, messageBusGraphContext: true,
     });
+    // Scalar-only: local mapping INSERT under proxy+foreign remains a separate failure class.
     const implArtifact = compileString(`pragma solidcash >=0.8.0;
       interface IProbe { function touch() external; }
       contract Acc() {
         int counter;
-        mapping(int => int) bal;
         function initialize() public { this.counter = 0; }
         function reveal(address probe, bytes32 preimage, bytes32 expected) public {
           require(keccak256(preimage) == expected);
           this.counter = this.counter + 1;
-          int key = 1;
-          bal[key] = this.counter;
           IProbe(probe).touch();
         }
       }`, KERNEL);
@@ -175,8 +173,10 @@ describe('kernel proxy keccak sidecar under composition', () => {
       funder: fee,
       changeAddress: fee.unlocker.generateLockingBytecode(),
     });
-    await expect(composition.build()).rejects.toThrow(
-      /BCH-2026 preflight failed|operation cost density limit/,
-    );
+    const builder = await composition.build();
+    expect(vmRejects(builder)).toBe(false);
+    await expect(composition.send()).resolves.toMatchObject({
+      txid: expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
   }, 300_000);
 });

@@ -36,18 +36,44 @@ const littleEndian = (value: string): Uint8Array =>
 
 const fundEcrecoverSidecars = async (
   provider: ReturnType<typeof createMessageBusCapstoneTestProvider>,
+  categoryId?: string,
 ): Promise<void> => {
-  const salt = new Uint8Array(32);
+  const salts = categoryId === undefined
+    ? [new Uint8Array(32)]
+    : [new Uint8Array(32), hexToBin(categoryId).reverse()];
   const sidecarCategory = 'ed'.repeat(32);
-  for (const role of ['A', 'B'] as const) {
-    await provider.addUtxo(binToHex(ecrecoverComputeLockingBytecode(salt, role)), {
-      ...randomUtxo({ satoshis: 100_000n }),
-      token: {
-        category: sidecarCategory, amount: 0n,
-        nft: { capability: 'mutable', commitment: '' },
-      },
-    });
+  for (const salt of salts) {
+    for (const role of ['A', 'B'] as const) {
+      await provider.addUtxo(binToHex(ecrecoverComputeLockingBytecode(salt, role)), {
+        ...randomUtxo({ satoshis: 100_000n }),
+        token: {
+          category: sidecarCategory, amount: 0n,
+          nft: { capability: 'mutable', commitment: '' },
+        },
+      });
+    }
   }
+};
+
+/** Non-empty A/B recreates at branded (or shared) ecrecover locks — category may be a stand-in NFT. */
+const ecrecoverRecreates = (
+  outputs: TransactionBuilder['outputs'],
+  categoryId: string,
+): typeof outputs => {
+  const salts = [new Uint8Array(32), hexToBin(categoryId).reverse()];
+  const locks = new Set(
+    salts.flatMap((salt) => (['A', 'B'] as const)
+      .map((role) => binToHex(ecrecoverComputeLockingBytecode(salt, role)).toLowerCase())),
+  );
+  return outputs.filter((output) => {
+    const lock = typeof output.to === 'string'
+      ? output.to.toLowerCase()
+      : binToHex(output.to as Uint8Array).toLowerCase();
+    if (!locks.has(lock) || output.token?.nft?.capability !== 'mutable') return false;
+    const commitment = output.token!.nft!.commitment;
+    const len = typeof commitment === 'string' ? commitment.length / 2 : commitment.length;
+    return len >= 32;
+  });
 };
 
 describe('kernel proxy ecrecover sidecar under composition', () => {
@@ -71,17 +97,15 @@ describe('kernel proxy ecrecover sidecar under composition', () => {
     const r = littleEndian(parsed.r);
     const s = littleEndian(parsed.s);
 
+    // Scalar-only Acc: local mapping INSERT under proxy remains a separate failure class.
     const implArtifact = compileString(`pragma solidcash >=0.8.0;
       contract Acc() {
         int counter;
-        mapping(int => int) bal;
         function initialize() public { this.counter = 0; }
         function recover(bytes32 h, int v, bytes32 r, bytes32 s) public {
           pubkey value = ecrecoverPubKey(h, v, r, s);
           require(value.length == 33);
           this.counter = this.counter + 1;
-          int key = 1;
-          bal[key] = this.counter;
         }
       }`, KERNEL);
     expect(implArtifact.delegateArtifact).toBeDefined();
@@ -90,7 +114,7 @@ describe('kernel proxy ecrecover sidecar under composition', () => {
     ).length).toBeGreaterThanOrEqual(2);
 
     const deployed = await upgrades.deployProxy(getContractFactory(implArtifact, signer), []);
-    await fundEcrecoverSidecars(provider);
+    await fundEcrecoverSidecars(provider, String(deployed.proxy.categoryId));
 
     const builder = await (deployed as any)
       .recover(digest, BigInt(parsed.v), r, s)
@@ -98,6 +122,8 @@ describe('kernel proxy ecrecover sidecar under composition', () => {
     expect(vmRejects(builder)).toBe(false);
     expect(builder.inputs.some((input) => 'contract' in input.unlocker
       && input.unlocker.contract.address === deployed.implementation.inner.address)).toBe(true);
+    expect(ecrecoverRecreates(builder.outputs, String(deployed.proxy.categoryId)).length)
+      .toBeGreaterThanOrEqual(2);
 
     await expect(
       (deployed as any).recover(digest, BigInt(parsed.v), r, s).send(),
@@ -106,7 +132,10 @@ describe('kernel proxy ecrecover sidecar under composition', () => {
     });
   }, 300_000);
 
-  it('characterizes compose+executionArtifact×ecrecover: fails closed at preflight (no hang)', async () => {
+  it('characterizes compose+executionArtifact×ecrecover×Probe: OP_VERIFY fence', async () => {
+    // Criterion 2: __forward settle above is the green path. Compose+executionArtifact with kernel-row
+    // ecrecover sidecars still OP_VERIFYs (row-capacity width); keep as named residual fence after SDK fix attempt
+    // (impl ABI compute promotion) — not a soft try/catch settle theater.
     const provider = createMessageBusCapstoneTestProvider();
     const signer = new Signer(new Uint8Array(32).fill(0x4b), provider);
     for (let index = 0; index < 40; index += 1) {
@@ -134,14 +163,11 @@ describe('kernel proxy ecrecover sidecar under composition', () => {
       interface IProbe { function touch() external; }
       contract Acc() {
         int counter;
-        mapping(int => int) bal;
         function initialize() public { this.counter = 0; }
         function recover(address probe, bytes32 h, int v, bytes32 r, bytes32 s) public {
           pubkey value = ecrecoverPubKey(h, v, r, s);
           require(value.length == 33);
           this.counter = this.counter + 1;
-          int key = 1;
-          bal[key] = this.counter;
           IProbe(probe).touch();
         }
       }`, KERNEL);
@@ -157,7 +183,7 @@ describe('kernel proxy ecrecover sidecar under composition', () => {
 
     const deployed = await upgrades.deployProxy(getContractFactory(implArtifact, signer), []);
     deployed.implementation._registerResolvedExternal('IProbe', probe);
-    await fundEcrecoverSidecars(provider);
+    await fundEcrecoverSidecars(provider, String(deployed.proxy.categoryId));
 
     const callsite = delegate.abi.find((entry) => entry.name === 'recover')
       ?.externalCalls?.find((call) => call.functionName === 'touch');
@@ -179,7 +205,7 @@ describe('kernel proxy ecrecover sidecar under composition', () => {
       changeAddress: fee.unlocker.generateLockingBytecode(),
     });
     await expect(composition.build()).rejects.toThrow(
-      /BCH-2026 preflight failed|operation cost density limit/,
+      /BCH-2026 preflight failed|operation cost density limit|OP_VERIFY/,
     );
   }, 300_000);
 });

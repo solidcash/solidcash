@@ -18695,10 +18695,16 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           ?? (ci.contract.inner.artifact.abi as readonly AbiFunction[]).find((f) => f.name === ci.functionName);
         // Dynamic mapping writes (including mapping(K => V[]).push()) may have no fixed entryAccesses at all.
         // They still own the trailing entry-NFT region, so promote their ABI metadata just like a fixed access.
+        // Compute sidecars (keccak/ecrecover) are also published only on the implementation ABI: without
+        // promoting that metadata, a keccak/ecrecover-only delegate under __forward leaves
+        // keccakComputeCoSpendUtxos empty and parks a funder pad in the keccakSideCar slot.
         if (implFn && ((implFn.entryAccesses?.length ?? 0) > 0 || (implFn.entryLoopWrites?.length ?? 0) > 0
           || (implFn.sortedInsertLoopInfo?.length ?? 0) > 0 || (implFn.sortedUpsertLoopInfo?.length ?? 0) > 0
           || (implFn.sortedBatchInfo?.length ?? 0) > 0
-          || (implFn.dynamicWrites?.length ?? 0) > 0)) {
+          || (implFn.dynamicWrites?.length ?? 0) > 0
+          || implFn.keccakCompute === true
+          || implFn.ecrecoverCompute === true
+          || implFn.ecrecoverEvmFlags?.some(Boolean) === true)) {
           entryAccesses = implFn.entryAccesses;
           entryAbiFunction = implFn;
           entryArtifact = ci.contract.inner.artifact;

@@ -41,13 +41,14 @@ Worktree: `.worktrees/kernel-comprehensive-fixtures`
 - **K1b** `KernelForeignEcrecoverSidecarCompose` — Caller→Sink.ecrecoverPubKey A/B pair recreate + wrong-commitment fail-closed
 - **K2a** `KernelSelfKeccakSidecarCompose` — Acc.reveal under compose (Probe co-spend); branded Acc sidecar
 - **K2b** `KernelSelfEcrecoverSidecarCompose` — Acc.recover under compose; A/B on Acc category
-- **K3a** `KernelProxyKeccakSidecarCompose` — deployProxy `__forward` reveal settle + compose×executionArtifact characterization
-- **K3b** `KernelProxyEcrecoverSidecarCompose` — deployProxy `__forward` recover settle + compose characterization
-- **K4a** `KernelProxyForeignKeccakCompose` — proxy×foreign×keccak **characterized** fail-closed (__forward + compose); settle blocked at keccak require
-- **K4b** `KernelProxyForeignEcrecoverCompose` — proxy×foreign×ecrecover **characterized** fail-closed
-- **K5** `KernelEcrecoverEvmKeccakSidecarCompose` — structural: `ecrecoverEvm` publishes `keccakSideCar` beside `ecrecoverSideCar` under KERNEL (compose settle deferred)
+- **K3a** `KernelProxyKeccakSidecarCompose` — deployProxy `__forward` reveal settle + compose+`executionArtifact`×keccak×Probe settle
+- **K3b** `KernelProxyEcrecoverSidecarCompose` — deployProxy `__forward` recover settle with non-empty A/B recreate; compose+`executionArtifact`×ecrecover×Probe is a named OP_VERIFY fence (criterion 2 via `__forward`)
+- **K4a** `KernelProxyForeignKeccakCompose` — deployProxy poke settle (keccak→foreign Sink) + compose+`executionArtifact`×keccak×Sink settle
+- **K4b** `KernelProxyForeignEcrecoverCompose` — deployProxy poke settle (ecrecoverPubKey→foreign Sink via `withExternalCall`) with non-empty A/B recreate + Sink.seen; compose+`executionArtifact`×ecrecover×foreign remains a named row-width OP_VERIFY fence
+- **K5** `KernelEcrecoverEvmKeccakSidecarCompose` — compose settle: A/B + keccak sidecar recreate + wrong-keccak fail-closed + Acc.counter readback (product-default cells stay PubKey)
 - Marketplace touchpoints (docs only): ECDSA.recover + keccak digest prep under proxy/facade → K1b then K4b; facade hash→foreign → K3a/K4a
-- **Open SDK gaps:** (1) deferred sidecar placement under proxy+foreign (K4); (2) `ecrecoverEvm` compose input-index under messageBusKernel (K5 settle)
+- **SDK fixes landed this stream:** (1) `__forward` promotes impl ABI keccak/ecrecover/`ecrecoverEvmFlags` so compute co-spends are not empty; (2) message-bus `ecrecoverEvm` handlers keep top-relative owner pick (bottom ordinal mis-read bytes32 as input index)
+
 
 ## Fence
 - No `marketplace.test.ts` / `vitest.marketplace.config.ts` in this stream

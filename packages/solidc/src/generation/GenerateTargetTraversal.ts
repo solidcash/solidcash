@@ -10381,9 +10381,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     } else if (isEvm) {
       // Read the co-spent keccak side-car's preimage P (the uncompressed key), BIND compress(P) == Q (so the keccak is
       // over the genuinely-recovered key), integrity-check the keccak side-car, and take keccak256(P)[12:] as the addr.
-      // In a loop the recovered Q (pubkey33) is an untracked stack item during the preimage read, so keccakIdx's
-      // counter PICK is one deeper (extra = 1); after the compress bind consumes Q it is back to extra = 0.
-      keccakIdx(false, loop ? 1 : 0); this.emit(Op.OP_INPUTBYTECODE, loc);    // [Q, U_k]
+      // Track Q while the keccak side-car index is resolved: message-bus owner / outlined compute bases use
+      // top-relative OP_PICK, and an untracked pubkey33 made those picks read a bytes32 as the input index
+      // (invalid transaction input index under compose). Loop counter PICKs previously compensated with extra=1;
+      // with Q tracked, getStackIndex already accounts for it so extra stays 0.
+      this.pushToStack('(value)'); // recovered Q stays live until compress(P) == Q
+      keccakIdx(false, 0); this.emit(Op.OP_INPUTBYTECODE, loc);    // [Q, U_k]
       this.emitGenericPushdataDecode(raw, loc); this.emit(Op.OP_NIP, loc);    // [Q, restK]  (drop the budget pad)
       if (statefulEvmKeccak) {
         // The recovery preimage is appended after all ordinary keccak calls and shares their 3-way batch. Decode
@@ -10419,6 +10422,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(encodeInt(1n), loc); this.emit(Op.OP_NUM2BIN, loc);          // [Q, X, parity_byte(0x02/0x03)]
       this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_CAT, loc);                 // [Q, parity_byte||X = compress]
       this.emit(Op.OP_EQUALVERIFY, loc);                                     // bind compress(P) == Q -> []
+      this.popFromStack(1); // Q consumed by the compress bind
       if (loop) {
         // Keccak side-car integrity via OP_UTXOBYTECODE == baked shared STATEFUL keccak lock (loop keccak side-cars
         // self-preserve). Cheap 35-byte compare, no per-iteration covenant hashing, unambiguous stateless-vs-stateful.
@@ -32766,9 +32770,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         // how the two forms are told apart on a handler that carries compute side-cars.
         const forcedTopHandler = (globalThis as { process?: { env?: Record<string, string> } })
           .process?.env?.SOLIDC_DEBUG_OWNER_TOP_HANDLER;
+        // ecrecoverEvm appends a keccak side-car after the A/B pair. Measured under message-bus compose, the
+        // bottom-ordinal owner pick (correct for plain PubKey recovery row handlers whose compute witnesses sit
+        // above the ABI frame) resolves a bytes32 as the UTXO index for those EVM handlers; the compact
+        // top-relative form settles. Keep PubKey on the bottom form; force EVM (and explicit TOP debug) off it.
+        const evmProjection = (this.currentFunction.ecrecoverEvmCallCount ?? 0) > 0
+          || (this.currentFunction.ecrecoverClosureEvmFlags?.some(Boolean) ?? false);
         const graphRowHandler = ((this.currentFunction.graphEmissionHandler === true
           && Math.max(this.currentFunction.recoveryEffectCount ?? 0,
-            this.currentFunction.ecrecoverCallCount ?? 0) > 0)
+            this.currentFunction.ecrecoverCallCount ?? 0) > 0
+          && !evmProjection)
           || (forcedBottomHandler !== undefined && forcedBottomHandler.length > 0
             && this.currentFunction.name.includes(forcedBottomHandler)))
           && !(forcedTopHandler !== undefined && forcedTopHandler.length > 0

@@ -81,6 +81,7 @@ describe('kernel beta admission invariants', () => {
       {
         reason: 'KERNEL_LIFECYCLE',
         source: `contract Unit() {
+          int stored;
           function candidate() selfdestruct { require(true); }
           function control() public { require(true); }
         }`,

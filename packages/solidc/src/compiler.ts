@@ -3985,6 +3985,9 @@ function synthesizeMessageBusRoute(
     // authenticated by the detached verifier; merge tail inputs take a verifier-authorized non-dispatch route.
     disallowedModifiers.delete(FunctionModifier.SPLIT);
     disallowedModifiers.delete(FunctionModifier.MERGE);
+    // Resource-free modifier-only selfdestruct retires the sole master under selector-derived authority. Statement
+    // form stays fenced (single-output pin), as do contracts with fixed state/collections/events.
+    disallowedModifiers.delete(FunctionModifier.SELFDESTRUCT);
     // unsafe(2) is topology-preserving: semantic validation already forbids writes, entries, transfers, calls,
     // deployment, and events, while codegen preserves the master, minting uniqueness, and participant value.
     // The narrower unsafe tiers deliberately remain lifecycle fences below.
@@ -3996,7 +3999,11 @@ function synthesizeMessageBusRoute(
   const graphBareTailHandlers = new Set<FunctionDefinitionNode>();
   const graphMsgValueHandlers = new Set<FunctionDefinitionNode>();
   const kernelDeploymentHandlers = new Set<FunctionDefinitionNode>();
-  const kernelLifecycleHandlers = new Map<FunctionDefinitionNode, 'split' | 'merge'>();
+  const kernelLifecycleHandlers = new Map<FunctionDefinitionNode, 'split' | 'merge' | 'selfdestruct'>();
+  const masterOnlyLifecycleContract = contract.stateVariables.length === 0
+    && contract.collections.length === 0
+    && contract.eventDefinitions.length === 0
+    && !contract.usesBlockhash;
   const kernelDeploymentSiteCounts = new Map<FunctionDefinitionNode, number>();
   const kernelDeploymentSiteWidths = new Map<FunctionDefinitionNode, number[]>();
   const kernelDeploymentSiteDescriptorDigests = new Map<FunctionDefinitionNode, string[]>();
@@ -5156,18 +5163,30 @@ function synthesizeMessageBusRoute(
     }
     const kernelLifecycleKind = compilerOptions.messageBusKernel !== true ? undefined
       : fn.modifiers.includes(FunctionModifier.SPLIT) ? 'split' as const
-        : fn.modifiers.includes(FunctionModifier.MERGE) ? 'merge' as const : undefined;
+        : fn.modifiers.includes(FunctionModifier.MERGE) ? 'merge' as const
+          : fn.modifiers.includes(FunctionModifier.SELFDESTRUCT) ? 'selfdestruct' as const : undefined;
     const lifecycleHasDetachedTransactionSignature = kernelLifecycleKind !== undefined
       && fn.parameters.some((parameter) => (transactionSignatureLeaves(parameter.type)?.length ?? 0) > 0);
-    // Resource-free split/merge rows use selector-derived lifecycle authority on ordinary V1/V2 block
-    // geometry: the specialized verifier derives mode/count from the one-row batch, and the SDK does not
+    // Resource-free split/merge/selfdestruct rows use selector-derived lifecycle authority on ordinary V1/V2
+    // block geometry: the specialized verifier derives mode/count from the one-row batch, and the SDK does not
     // serialize a caller-authored lifecycle transcript into the global manifest. Detached `sig` leaves keep
-    // the specialized signature diagnostic. State, effects, or unknown footprints still need one
-    // authenticated frame that binds geometry with journal provenance, so they remain KERNEL_LIFECYCLE.
-    // Combining lifecycle with V4 transaction-signature provenance stays an SDK fence.
+    // the specialized signature diagnostic. State, effects, unknown footprints, statement-form selfdestruct
+    // (single-output pin), or non-master-only retirement still need one authenticated frame that binds geometry
+    // with journal provenance, so they remain KERNEL_LIFECYCLE. Combining lifecycle with V4 transaction-signature
+    // provenance stays an SDK fence.
+    const hasSelfdestructStatement = kernelLifecycleKind === 'selfdestruct'
+      && (fn.impliedSelfdestruct === true || (() => {
+        let found = false;
+        walkInvocationAst(fn.body, (node) => {
+          if (node instanceof SelfdestructStatementNode) found = true;
+        });
+        return found;
+      })());
+    const selfdestructNeedsRetirementGeometry = kernelLifecycleKind === 'selfdestruct'
+      && (hasSelfdestructStatement || !masterOnlyLifecycleContract);
     if (kernelLifecycleKind && (footprint.unknown || footprint.reads.length > 0 || footprint.writes.length > 0
       || footprint.effects.length > 0 || lifecycleHasDetachedTransactionSignature
-      || fn.messageBusUsesTransactionSignature === true)) {
+      || fn.messageBusUsesTransactionSignature === true || selfdestructNeedsRetirementGeometry)) {
       fn.messageBusEligible = false;
       fn.messageBusRejectionReason = lifecycleHasDetachedTransactionSignature
         || fn.messageBusUsesTransactionSignature === true
@@ -8949,13 +8968,16 @@ function synthesizeMessageBusRoute(
         : -1;
       const outStateBoundaryChecks = '';
       const lifecycleKind = kernelLifecycleHandlers.get(fn);
-      const lifecycleCountName = lifecycleKind === 'split' ? fn.splitCountParam : fn.mergeCountParam;
-      const lifecycleAuthorization = lifecycleKind
-        ? `require(__message_bus_active_lifecycle_mode == ${lifecycleKind === 'split' ? 1 : 2}
+      const lifecycleCountName = lifecycleKind === 'split' ? fn.splitCountParam
+        : lifecycleKind === 'merge' ? fn.mergeCountParam : undefined;
+      const lifecycleAuthorization = lifecycleKind === 'selfdestruct'
+        ? 'require(__message_bus_active_lifecycle_mode == 3 && __message_bus_active_lifecycle_count == 1);'
+        : lifecycleKind
+          ? `require(__message_bus_active_lifecycle_mode == ${lifecycleKind === 'split' ? 1 : 2}
           && __message_bus_active_lifecycle_count == ${decodedName(
     fn.parameters.findIndex((parameter) => parameter.name === lifecycleCountName),
   )});`
-        : kernelLifecycleHandlers.size > 0 ? 'require(__message_bus_active_lifecycle_mode == 0);' : '';
+          : kernelLifecycleHandlers.size > 0 ? 'require(__message_bus_active_lifecycle_mode == 0);' : '';
       const decode = declarations.length === 0
         ? 'require(rowArgs.length == 0);'
         : `${declarations.join('; ')}; ${signatureReconstruction.join(' ')}`;
@@ -9426,6 +9448,20 @@ function synthesizeMessageBusRoute(
       .map((parameter, parameterIndex) => ({ parameter, parameterIndex }))
       .filter(({ parameter }) => !isEntireTransactionSignatureType(parameter.type)
         && !parameter.name.startsWith('__internal__'));
+    if (kind === 'selfdestruct') {
+      const schema = decodedParameters.map(({ parameter }) => parameter.type.toString()).join(', ');
+      const locals = decodedParameters.map(({ parameter }, parameterIndex) =>
+        `${parameter.type.toString()} __message_bus_lifecycle_${index}_${parameterIndex}`);
+      const decode = locals.length === 0 ? 'require(activeLifecycleArgs.length == 0);'
+        : locals.length === 1
+          ? `${locals[0]} = abi.decode(activeLifecycleArgs, (${schema}));`
+          : `(${locals.join(', ')}) = abi.decode(activeLifecycleArgs, (${schema}));`;
+      return `${index === 0 ? 'if' : 'else if'} (activeLifecycleSelector == hex"${sourceFunctionSelectorHex(fn)}") {
+      ${decode}
+      activeLifecycleMode = 3;
+      activeLifecycleCount = 1;
+    }`;
+    }
     const countName = kind === 'split' ? fn.splitCountParam : fn.mergeCountParam;
     const countParameter = decodedParameters.findIndex(({ parameter }) => parameter.name === countName);
     if (countParameter < 0) throw new Error(`lifecycle handler '${fn.name}' has no transported count parameter`);
@@ -9466,20 +9502,8 @@ function synthesizeMessageBusRoute(
         if (activeLifecycleMode > 0) {
           activeOutputBase = activeBase;
           require(expectedLocalRows == 1 && activeFixedSize == 1
-            && activeBlockSize == activeLifecycleCount + 1
-            && activeMaximumSize == activeBlockSize
             && activeReturnOutput == 65535
-            && activeLifecycleCount > 0 && activeLifecycleCount < 32768);
-          require(tx.outputs[activeBase].lockingBytecode == tx.inputs[activeBase].lockingBytecode
-            && tx.outputs[activeBase].tokenCategory == tx.inputs[activeBase].tokenCategory
-            && tx.outputs[activeBase].nftCommitment == tx.inputs[activeBase].nftCommitment
-            && tx.outputs[activeBase].value == tx.inputs[activeBase].value);
-          if (activeLifecycleMode == 1) {
-            require(tx.outputs[activeBase].tokenAmount == tx.inputs[activeBase].tokenAmount);
-          } else {
-            require(activeLifecycleMode == 2
-              && tx.outputs[activeBase].tokenAmount >= tx.inputs[activeBase].tokenAmount);
-          }
+            && activeLifecycleCount > 0 && activeLifecycleCount < 32767);
           bigint lifecycleCategoryInputs = 0;
           bigint lifecycleCategoryOutputs = 0;
           for (bigint lifecycleInput = 0; lifecycleInput < tx.inputs.length;
@@ -9498,26 +9522,45 @@ function synthesizeMessageBusRoute(
               lifecycleCategoryOutputs = lifecycleCategoryOutputs + 1;
             }
           }
-          require((activeLifecycleMode == 1
-              && lifecycleCategoryInputs == 1
-              && lifecycleCategoryOutputs == activeLifecycleCount + 1)
-            || (activeLifecycleMode == 2
-              && lifecycleCategoryInputs == activeLifecycleCount + 1
-              && lifecycleCategoryOutputs == 1));
-          for (bigint lifecycleOffset = 1; lifecycleOffset <= activeLifecycleCount;
-            lifecycleOffset = lifecycleOffset + 1) {
-            bigint lifecycleSlot = activeBase + lifecycleOffset;
+          if (activeLifecycleMode == 3) {
+            require(activeBlockSize == 1 && activeMaximumSize == 1 && activeLifecycleCount == 1);
+            require(tx.outputs[activeBase].tokenCategory.length == 0
+              && tx.outputs[activeBase].value == tx.inputs[activeBase].value);
+            require(lifecycleCategoryInputs == 1 && lifecycleCategoryOutputs == 0);
+          } else {
+            require(activeBlockSize == activeLifecycleCount + 1
+              && activeMaximumSize == activeBlockSize);
+            require(tx.outputs[activeBase].lockingBytecode == tx.inputs[activeBase].lockingBytecode
+              && tx.outputs[activeBase].tokenCategory == tx.inputs[activeBase].tokenCategory
+              && tx.outputs[activeBase].nftCommitment == tx.inputs[activeBase].nftCommitment
+              && tx.outputs[activeBase].value == tx.inputs[activeBase].value);
             if (activeLifecycleMode == 1) {
-              require(tx.inputs[lifecycleSlot].tokenCategory.length == 0
-                && tx.outputs[lifecycleSlot].lockingBytecode == activeParticipantLbc
-                && tx.outputs[lifecycleSlot].tokenCategory == bytes.concat(activeCategory, hex"02")
-                && tx.outputs[lifecycleSlot].nftCommitment.length == 0
-                && tx.outputs[lifecycleSlot].tokenAmount == 0
-                && tx.outputs[lifecycleSlot].value > 0);
+              require(tx.outputs[activeBase].tokenAmount == tx.inputs[activeBase].tokenAmount);
             } else {
-              require(tx.inputs[lifecycleSlot].lockingBytecode == activeParticipantLbc
-                && tx.inputs[lifecycleSlot].tokenCategory == bytes.concat(activeCategory, hex"02")
-                && tx.outputs[lifecycleSlot].tokenCategory.length == 0);
+              require(activeLifecycleMode == 2
+                && tx.outputs[activeBase].tokenAmount >= tx.inputs[activeBase].tokenAmount);
+            }
+            require((activeLifecycleMode == 1
+                && lifecycleCategoryInputs == 1
+                && lifecycleCategoryOutputs == activeLifecycleCount + 1)
+              || (activeLifecycleMode == 2
+                && lifecycleCategoryInputs == activeLifecycleCount + 1
+                && lifecycleCategoryOutputs == 1));
+            for (bigint lifecycleOffset = 1; lifecycleOffset <= activeLifecycleCount;
+              lifecycleOffset = lifecycleOffset + 1) {
+              bigint lifecycleSlot = activeBase + lifecycleOffset;
+              if (activeLifecycleMode == 1) {
+                require(tx.inputs[lifecycleSlot].tokenCategory.length == 0
+                  && tx.outputs[lifecycleSlot].lockingBytecode == activeParticipantLbc
+                  && tx.outputs[lifecycleSlot].tokenCategory == bytes.concat(activeCategory, hex"02")
+                  && tx.outputs[lifecycleSlot].nftCommitment.length == 0
+                  && tx.outputs[lifecycleSlot].tokenAmount == 0
+                  && tx.outputs[lifecycleSlot].value > 0);
+              } else {
+                require(tx.inputs[lifecycleSlot].lockingBytecode == activeParticipantLbc
+                  && tx.inputs[lifecycleSlot].tokenCategory == bytes.concat(activeCategory, hex"02")
+                  && tx.outputs[lifecycleSlot].tokenCategory.length == 0);
+              }
             }
           }
         }
@@ -9594,11 +9637,16 @@ function synthesizeMessageBusRoute(
           bigint participantOutputBase = -1;
           if (${atomicManifestOutputIdentityExpression}) {
             participantOutputBase = base;
-            require(tx.outputs[participantOutputBase].lockingBytecode == participantOutputLbc
-              && tx.outputs[participantOutputBase].tokenCategory == tx.inputs[base].tokenCategory
-              && tx.outputs[participantOutputBase].nftCommitment == tx.inputs[base].nftCommitment
-              && tx.outputs[participantOutputBase].tokenAmount == tx.inputs[base].tokenAmount
-              && tx.outputs[participantOutputBase].value == tx.inputs[base].value);
+            if (${[...kernelLifecycleHandlers.values()].includes('selfdestruct')
+    ? 'tx.outputs[base].tokenCategory.length == 0' : 'false'}) {
+              require(tx.outputs[base].value == tx.inputs[base].value);
+            } else {
+              require(tx.outputs[participantOutputBase].lockingBytecode == participantOutputLbc
+                && tx.outputs[participantOutputBase].tokenCategory == tx.inputs[base].tokenCategory
+                && tx.outputs[participantOutputBase].nftCommitment == tx.inputs[base].nftCommitment
+                && tx.outputs[participantOutputBase].tokenAmount == tx.inputs[base].tokenAmount
+                && tx.outputs[participantOutputBase].value == tx.inputs[base].value);
+            }
           } else {
             for (bigint participantOutput = 0; participantOutput < tx.outputs.length;
               participantOutput = participantOutput + 1) {
@@ -9607,6 +9655,12 @@ function synthesizeMessageBusRoute(
                 participantOutputBase = participantOutput;
               }
             }
+            ${[...kernelLifecycleHandlers.values()].includes('selfdestruct')
+    ? `if (participantOutputBase < 0) {
+              require(tx.outputs[base].tokenCategory.length == 0
+                && tx.outputs[base].value == tx.inputs[base].value);
+              participantOutputBase = base;
+            }` : ''}
           }
           require(participantOutputBase >= 0);
           bigint returnOutput = returnOffset == 65535 ? 65535 : participantOutputBase + returnOffset;
@@ -9660,7 +9714,9 @@ function synthesizeMessageBusRoute(
         );
         if (activeLifecycleMode > 0) {
           bigint activeLifecycleCode = activeLifecycleCount;
-          if (activeLifecycleMode == 2) {
+          if (activeLifecycleMode == 3) {
+            activeLifecycleCode = -32767;
+          } else if (activeLifecycleMode == 2) {
             activeLifecycleCode = -activeLifecycleCode;
           }
           activeVerifierCommitment = bytes.concat(
@@ -10461,7 +10517,10 @@ function synthesizeMessageBusRoute(
             bigint __message_bus_active_lifecycle_code = int(
               __internal__atomicBindingDigest.slice(64, 66)
             );
-            if (__message_bus_active_lifecycle_code < 0) {
+            if (__message_bus_active_lifecycle_code == -32767) {
+              __message_bus_active_lifecycle_mode = 3;
+              __message_bus_active_lifecycle_count = 1;
+            } else if (__message_bus_active_lifecycle_code < 0) {
               __message_bus_active_lifecycle_mode = 2;
               __message_bus_active_lifecycle_count = -__message_bus_active_lifecycle_code;
             } else if (__message_bus_active_lifecycle_code > 0) {
@@ -12807,14 +12866,38 @@ function compileResolvedAst(
   NonNullable<Artifact['messageBus']>['handlers'][number]['lifecycleTopology']
   > | undefined => {
     const kind = fn.modifiers.includes(FunctionModifier.SPLIT) ? 'split' as const
-      : fn.modifiers.includes(FunctionModifier.MERGE) ? 'merge' as const : undefined;
-    const countName = kind === 'split' ? fn.splitCountParam
-      : kind === 'merge' ? fn.mergeCountParam : undefined;
-    if (!kind || !countName) return undefined;
+      : fn.modifiers.includes(FunctionModifier.MERGE) ? 'merge' as const
+        : fn.modifiers.includes(FunctionModifier.SELFDESTRUCT) && fn.messageBusEligible === true
+          ? 'selfdestruct' as const : undefined;
+    if (!kind) return undefined;
+    const fixedOne = { source: 'fixed' as const, value: 1 };
+    const consumedMaster = {
+      lockingBytecode: 'participant' as const, tokenCategory: 'participant' as const,
+      nftCapability: 'minting' as const, nftCommitment: 'unconstrained' as const,
+      tokenAmount: 'unconstrained' as const, satoshis: 'reclaim' as const,
+    };
+    if (kind === 'selfdestruct') {
+      return {
+        version: 2 as const,
+        kind,
+        coordinate: 'participant' as const,
+        categoryCensus: {
+          tokenCategory: 'participant' as const,
+          nftCapability: 'minting' as const,
+          inputCount: fixedOne,
+          outputCount: { source: 'fixed' as const, value: 0 },
+        },
+        inputSpans: [
+          { mode: 'consume' as const, offset: 0, count: fixedOne, identity: consumedMaster },
+        ],
+        outputSpans: [],
+      };
+    }
+    const countName = kind === 'split' ? fn.splitCountParam : fn.mergeCountParam;
+    if (!countName) return undefined;
     const visible = fn.parameters.filter((parameter) => !parameter.name.startsWith('__internal__'));
     const parameterIndex = visible.findIndex((parameter) => parameter.name === countName);
     if (parameterIndex < 0) return undefined;
-    const fixedOne = { source: 'fixed' as const, value: 1 };
     const parameterCount = { source: 'parameter' as const, parameterIndex, addend: 0 };
     const parameterCountPlusOne = { source: 'parameter' as const, parameterIndex, addend: 1 };
     const preservedMaster = {
@@ -12822,11 +12905,6 @@ function compileResolvedAst(
       nftCapability: 'minting' as const, nftCommitment: 'preserve' as const,
       tokenAmount: kind === 'split' ? 'preserve' as const : 'nondecrease' as const,
       satoshis: 'preserve' as const,
-    };
-    const consumedMaster = {
-      lockingBytecode: 'participant' as const, tokenCategory: 'participant' as const,
-      nftCapability: 'minting' as const, nftCommitment: 'unconstrained' as const,
-      tokenAmount: 'unconstrained' as const, satoshis: 'reclaim' as const,
     };
     const createdMaster = {
       lockingBytecode: 'participant' as const, tokenCategory: 'participant' as const,

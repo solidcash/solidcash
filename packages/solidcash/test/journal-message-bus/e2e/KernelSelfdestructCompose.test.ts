@@ -1,8 +1,12 @@
-import { hexToBin } from '@bitauth/libauth';
+import { binToHex, hexToBin } from '@bitauth/libauth';
 import { type Artifact } from '@solidcash/utils';
 import { compileStringMulti } from 'solidc';
 import { describe, expect, it } from 'vitest';
-import { Contract, StatefulContract, messageBus } from '../../../src/index.js';
+import {
+  Contract, StatefulContract, messageBus, type TransactionBuilder,
+} from '../../../src/index.js';
+import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';
+import { generateLibauthSourceOutputs } from '../../../src/utils.js';
 import { createBareP2pkhFeeFunder, setupStatefulUtxos } from '../../test-util.js';
 import { createMessageBusCapstoneTestProvider } from './message-bus-semantic-profile.js';
 
@@ -10,13 +14,31 @@ const KERNEL = {
   forceStateful: true, messageBus: true, messageBusKernel: true, maximumInputBytes: 1_000_000,
 } as const;
 
+const vmAccepts = (builder: TransactionBuilder): boolean => {
+  try {
+    const transaction = builder.buildLibauthTransaction();
+    const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+    const vm = createVirtualMachineBch2026ForProvider(builder.provider);
+    return transaction.inputs.every((_input, inputIndex) => vm.stateSuccess(
+      vm.evaluate({ inputIndex, sourceOutputs, transaction }),
+    ) === true);
+  } catch {
+    return false;
+  }
+};
+
+const lockingHex = (value: string | Uint8Array): string => (
+  typeof value === 'string' && !/^(?:[0-9a-fA-F]{2})+$/.test(value)
+    ? value
+    : binToHex(typeof value === 'string' ? hexToBin(value) : value).toLowerCase()
+);
+
 /**
- * Selfdestruct permanently destroys participant topology. Kernel admission refuses the handler as
- * `KERNEL_LIFECYCLE` (no diagnostic lifecycleTopology spans), and messageBus.compose fails closed
- * at batch eligibility before any VM evaluation.
+ * Resource-free modifier-only selfdestruct publishes retirement topology. Compose reclaims the master
+ * satoshis to an explicit recipient and leaves no minting NFT for the retired category.
  */
-describe('kernel selfdestruct compose fence', () => {
-  it('compiles KERNEL_LIFECYCLE refusal then refuses messageBus.compose for selfdestruct', async () => {
+describe('kernel selfdestruct compose', () => {
+  it('admits and settles kill() under messageBus.compose with retired category and recipient reclaim', async () => {
     const provider = createMessageBusCapstoneTestProvider();
     const artifacts = compileStringMulti(`
       interface IVictim {
@@ -41,38 +63,58 @@ describe('kernel selfdestruct compose fence', () => {
 
     const kill = artifacts.Victim.messageBus?.handlers.find((handler) => handler.name === 'kill');
     expect(kill).toMatchObject({
-      eligible: false,
-      rejectionReason: 'KERNEL_LIFECYCLE',
+      eligible: true,
+      lifecycleTopology: { version: 2, kind: 'selfdestruct' },
     });
-    expect(kill).not.toHaveProperty('lifecycleTopology');
+    expect(artifacts.Victim.messageBus?.verifierProgram?.lifecycle).toBe(true);
+    expect(artifacts.Victim.messageBus?.atomicMessageBus?.protocolVersions).not.toContain(3);
     expect(artifacts.Victim.messageBus?.handlers.find((handler) => handler.name === 'idle'))
       .toMatchObject({ eligible: true });
 
-    const connect = async (artifact: Artifact, args: readonly unknown[] = []): Promise<StatefulContract> => {
+    const connect = async (artifact: Artifact, args: readonly unknown[] = []): Promise<{
+      contract: StatefulContract; category: string; masterSats: bigint;
+    }> => {
       const base = new Contract(artifact, args as never[], { provider });
       const setup = await setupStatefulUtxos(provider, base, artifact.stateLayout!, {}, { saltContract: true });
-      return StatefulContract.withCategory(base.withCategory(hexToBin(setup.categoryId)), setup.categoryId);
+      return {
+        contract: StatefulContract.withCategory(base.withCategory(hexToBin(setup.categoryId)), setup.categoryId),
+        category: setup.categoryId,
+        masterSats: setup.masterUtxo.satoshis,
+      };
     };
     const victim = await connect(artifacts.Victim);
-    const coordinator = await connect(artifacts.Coordinator, [hexToBin(victim.inner.lockingBytecode)]);
+    const coordinator = await connect(artifacts.Coordinator, [hexToBin(victim.contract.inner.lockingBytecode)]);
     const fee = await createBareP2pkhFeeFunder(provider, 500_000n);
+    const recipient = fee.unlocker.generateLockingBytecode();
+    const recipientHex = lockingHex(recipient);
 
-    await expect(messageBus.compose({
+    const canonical = await messageBus.compose({
       preparedCalls: [
-        { contract: coordinator, functionName: 'run', args: [] },
-        { contract: victim, functionName: 'kill', args: [] },
+        { contract: coordinator.contract, functionName: 'run', args: [] },
+        { contract: victim.contract, functionName: 'kill', args: [] },
       ],
       funder: fee,
-      changeAddress: fee.unlocker.generateLockingBytecode(),
-    }).build()).rejects.toThrow(/Handler 'kill' is not batch eligible: KERNEL_LIFECYCLE/);
+      changeAddress: recipient,
+      lifecycleSelfdestructs: [{ invocationIndex: 1, recipient }],
+    }).build();
+    expect(vmAccepts(canonical)).toBe(true);
+
+    expect(canonical.outputs.every((output) =>
+      !(output.token?.category === victim.category && output.token.nft?.capability === 'minting'))).toBe(true);
+
+    const reclaim = canonical.outputs.find((output) =>
+      output.token === undefined
+      && lockingHex(output.to).toLowerCase() === recipientHex
+      && output.amount === victim.masterSats);
+    expect(reclaim).toBeDefined();
 
     await expect(messageBus.compose({
       preparedCalls: [
-        { contract: coordinator, functionName: 'rest', args: [] },
-        { contract: victim, functionName: 'idle', args: [] },
+        { contract: coordinator.contract, functionName: 'rest', args: [] },
+        { contract: victim.contract, functionName: 'idle', args: [] },
       ],
       funder: await createBareP2pkhFeeFunder(provider, 500_000n),
-      changeAddress: fee.unlocker.generateLockingBytecode(),
+      changeAddress: recipient,
     }).build()).resolves.toBeTruthy();
   }, 180_000);
 });

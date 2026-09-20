@@ -6879,13 +6879,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           this.emitMintingNftUniqueness(node);
         }
       } else if (!this.functionHasDelegatecall && hasAnyStatefulAccess && isSelfdestruct) {
-        // Selfdestruct: skip master self-preservation (contract is being destroyed)
-        // but enforce minting NFT uniqueness to prevent duplication
-        this.emitMintingNftUniqueness(node);
+        // Selfdestruct: skip master self-preservation (contract is being destroyed).
+        // Kernel bus rows authenticate retirement census in the detached verifier; keep the minting
+        // uniqueness guard only for direct (non-bus) spends.
+        if (!this.currentFunctionIsMessageBusRoute && node.messageBusEligible !== true) {
+          this.emitMintingNftUniqueness(node);
+        }
       } else if (!this.functionHasDelegatecall && isStatefulContract && isSelfdestruct && !hasAnyStatefulAccess) {
-        // Selfdestruct without state access: still verify minting NFT uniqueness
-        // to prevent minting NFT duplication during destruction (M6 fix)
-        this.emitMintingNftUniqueness(node);
+        // Selfdestruct without state access: direct spends still verify minting uniqueness (M6).
+        // Message-bus eligible handlers defer category census to selector-derived lifecycle mode 3.
+        if (!this.currentFunctionIsMessageBusRoute && node.messageBusEligible !== true) {
+          this.emitMintingNftUniqueness(node);
+        }
       } else if (!this.functionHasDelegatecall && isStatefulContract && !isSelfdestruct) {
         // Guarded: basic covenant checks for non-stateful functions in stateful contracts
         // Includes commitment preservation to prevent state corruption via non-stateful functions
@@ -6919,7 +6924,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (!this.functionHasDelegatecall && !this.currentFunctionIsDelegate && isStatefulContract
         && !isSelfdestruct && !isUpgrade && !hasEntryAccess && !hasTokenContainerAccess
         && !hasTokenContainerTransfers && this.pendingDynamicWrites.size === 0 && !hasDeploys) {
+        const skipRetirement = this.beginAtomicSelfdestructExclusion(
+          { location: node.body.location, positionHint: PositionHint.END },
+        );
         this.emitOwnCategoryMutableNftConservation(node);
+        if (skipRetirement) {
+          this.emit(Op.OP_ENDIF, { location: node.body.location, positionHint: PositionHint.END });
+        }
       }
       // SEC-10/SEC-11: an own-category IMMUTABLE (0x00) NFT output - what an event NFT is - may only sit at an
       // event block-layout offset (or the witnessed return-event index). Without this any spender mints forged
@@ -32345,12 +32356,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   private emitMasterSelfPreservation(node: FunctionDefinitionNode): void {
     const locationData = { location: node.body.location, positionHint: PositionHint.END };
+    const skipRetirement = this.beginAtomicSelfdestructExclusion(locationData);
     const mergeTail = this.beginAtomicMergeTailExclusion(locationData);
 
     // Shared as a subroutine for non-delegate functions; delegate (altstack proxy index) inlines.
     if (!this.currentFunctionIsDelegate && this.invokeSubroutineIfDefined(
       GenerateTargetTraversalWithLocation.MASTER_SELF_PRES_SUBROUTINE_ID, locationData)) {
       if (mergeTail) this.emit(Op.OP_ENDIF, locationData);
+      if (skipRetirement) this.emit(Op.OP_ENDIF, locationData);
       return;
     }
 
@@ -32374,6 +32387,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_EQUALVERIFY, locationData);
     this.popFromStack(2);
     if (mergeTail) this.emit(Op.OP_ENDIF, locationData);
+    if (skipRetirement) this.emit(Op.OP_ENDIF, locationData);
   }
 
   /**
@@ -32383,6 +32397,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    */
   private emitMasterCommitmentPreservation(node: FunctionDefinitionNode): void {
     const locationData = { location: node.body.location, positionHint: PositionHint.END };
+    const skipRetirement = this.beginAtomicSelfdestructExclusion(locationData);
     const mergeTail = this.beginAtomicMergeTailExclusion(locationData);
     this.emitMasterInputIndex(locationData);
     this.emit(Op.OP_UTXOTOKENCOMMITMENT, locationData);
@@ -32393,6 +32408,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_EQUALVERIFY, locationData);
     this.popFromStack(2);
     if (mergeTail) this.emit(Op.OP_ENDIF, locationData);
+    if (skipRetirement) this.emit(Op.OP_ENDIF, locationData);
   }
 
   /**
@@ -32400,10 +32416,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * stack-neutral; shared as a subroutine for non-delegate functions (delegate inlines).
    */
   private emitMasterValuePreservation(locationData: SingleLocationData): void {
+    const skipRetirement = this.beginAtomicSelfdestructExclusion(locationData);
     const mergeTail = this.beginAtomicMergeTailExclusion(locationData);
     if (!this.currentFunctionIsDelegate && this.invokeSubroutineIfDefined(
       GenerateTargetTraversalWithLocation.MASTER_VALUE_PRES_SUBROUTINE_ID, locationData)) {
       if (mergeTail) this.emit(Op.OP_ENDIF, locationData);
+      if (skipRetirement) this.emit(Op.OP_ENDIF, locationData);
       return;
     }
 
@@ -32430,6 +32448,19 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_VERIFY, locationData);
     this.popFromStack();
     if (mergeTail) this.emit(Op.OP_ENDIF, locationData);
+    if (skipRetirement) this.emit(Op.OP_ENDIF, locationData);
+  }
+
+  /** Skip ordinary master-output preservation when selector-derived retirement destroyed the master. */
+  private beginAtomicSelfdestructExclusion(locationData: SingleLocationData): boolean {
+    const lifecycleModeIndex = this.currentFunctionIsMessageBusRoute
+      ? this.getStackIndex('__message_bus_active_lifecycle_mode', true) : -1;
+    if (lifecycleModeIndex < 0) return false;
+    this.emitPickTrackedFromBottom('__message_bus_active_lifecycle_mode', locationData);
+    this.emit(encodeInt(3n), locationData);
+    this.emit(Op.OP_NUMNOTEQUAL, locationData);
+    this.emit(Op.OP_IF, locationData);
+    return true;
   }
 
   /** Skip ordinary master-output preservation only for verifier-authorized merge tail inputs. */

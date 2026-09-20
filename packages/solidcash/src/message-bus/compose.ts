@@ -102,6 +102,11 @@ export interface ComposeAtomicMessageBusOptions {
     invocationIndex: number;
     consumedMasters: readonly Utxo[];
   }[];
+  /** Recipient locking bytecode for one compiler-authenticated resource-free selfdestruct invocation. */
+  lifecycleSelfdestructs?: readonly {
+    invocationIndex: number;
+    recipient: string | Uint8Array;
+  }[];
 }
 
 export interface PreparedAtomicMessageBusCall {
@@ -1957,6 +1962,41 @@ export class AtomicMessageBusComposition {
         throw new Error(`messageBus: merge participant ${participant.participant} lacks explicit consumed masters`);
       }
     }
+    const suppliedSelfdestructs = this.options.lifecycleSelfdestructs ?? [];
+    const selfdestructByParticipant = new Map<number, {
+      invocationIndex: number; recipient: string | Uint8Array;
+    }>();
+    for (const supplied of suppliedSelfdestructs) {
+      const invocation = plan.invocations[supplied.invocationIndex];
+      if (!invocation) {
+        throw new Error(`messageBus: selfdestruct invocation ${supplied.invocationIndex} is absent`);
+      }
+      const participant = plan.participants[invocation.callee];
+      if (participant.lifecycle?.kind !== 'selfdestruct'
+        || participant.invocations.length !== 1 || participant.invocations[0] !== supplied.invocationIndex) {
+        throw new Error(
+          `messageBus: invocation ${supplied.invocationIndex} is not one exact selfdestruct participant`,
+        );
+      }
+      if (selfdestructByParticipant.has(invocation.callee)) {
+        throw new Error(`messageBus: participant ${invocation.callee} has duplicate selfdestruct recipient`);
+      }
+      const recipient = supplied.recipient;
+      if (typeof recipient === 'string' ? recipient.length === 0 : recipient.length === 0) {
+        throw new Error(`messageBus: selfdestruct participant ${invocation.callee} recipient is empty`);
+      }
+      selfdestructByParticipant.set(invocation.callee, {
+        invocationIndex: supplied.invocationIndex, recipient,
+      });
+    }
+    for (const participant of plan.participants) {
+      if (participant.lifecycle?.kind === 'selfdestruct'
+        && !selfdestructByParticipant.has(participant.participant)) {
+        throw new Error(
+          `messageBus: selfdestruct participant ${participant.participant} lacks an explicit recipient`,
+        );
+      }
+    }
     for (const [index, descriptor] of descriptors.entries()) {
       if (!descriptor.upgradeTarget) continue;
       const invocation = plan.invocations[index];
@@ -3153,6 +3193,17 @@ export class AtomicMessageBusComposition {
             token: { ...masterOutput.token, amount: mergedTokenAmount },
           };
         }
+        const retired = selfdestructByParticipant.get(participant.participant);
+        if (retired) {
+          const masterInput = local.inputs[0];
+          if (!masterInput?.token?.nft || masterInput.token.nft.capability !== 'minting'
+            || masterInput.token.category.toLowerCase() !== categories[participant.participant].toLowerCase()) {
+            throw new Error(
+              `messageBus: selfdestruct participant ${participant.participant} lacks its retired master`,
+            );
+          }
+          local.outputs[0] = { to: retired.recipient, amount: masterInput.satoshis };
+        }
         const authenticatedOutputLockingBytecode = participant.outputLockingBytecode?.toLowerCase();
         if (authenticatedOutputLockingBytecode !== undefined) {
           const masterInput = local.inputs[0];
@@ -3866,8 +3917,13 @@ export class AtomicMessageBusComposition {
               commitment: `${verifier.token!.nft!.commitment.slice(0, 12)}${binToHex(bindingDigest)}`
                 + (verifierProgram.lifecycle === true || verifierProgram.splitLifecycle === true
                   ? (() => {
-                    const code = participant.lifecycle?.kind === 'merge'
-                      ? -BigInt(participant.lifecycle.count) : BigInt(participant.lifecycle?.count ?? 0);
+                    // Prefer explicit compose supply for retirement: graph planning can omit lifecycle on a
+                    // nested callee while lifecycleSelfdestructs still names this participant.
+                    const code = selfdestructByParticipant.has(participant.participant)
+                      || participant.lifecycle?.kind === 'selfdestruct'
+                      ? -32767n
+                      : participant.lifecycle?.kind === 'merge'
+                        ? -BigInt(participant.lifecycle.count) : BigInt(participant.lifecycle?.count ?? 0);
                     return binToHex(fixedVmNumber(code, 2));
                   })()
                   : ''),

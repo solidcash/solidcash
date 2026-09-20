@@ -132,7 +132,7 @@ The conservative beta boundary currently keeps these shapes frozen:
 | `KERNEL_TX_SIGNATURE` | Transaction-signature values or `checkSig` / `checkMultiSig` execution in a row when the signature cannot be detached and finalized without circularity |
 | `KERNEL_OPAQUE_EFFECT` | Yul or native `assembly { OP_* }` whose stack and effects have no complete static summary |
 | `KERNEL_FOREIGN_DELEGATE` | A foreign `delegatecall` executing as the participant owner |
-| `KERNEL_LIFECYCLE` | `selfdestruct`, state/effect-bearing `split`/`merge`, or `unsafe` tiers without required preservation guarantees as a bus row without explicit authenticated lifecycle geometry |
+| `KERNEL_LIFECYCLE` | Statement-form or state-bearing `selfdestruct`, state/effect-bearing `split`/`merge`, or `unsafe` tiers without required preservation guarantees as a bus row without explicit authenticated lifecycle geometry |
 
 This table defines the beta release boundary, not a claim that every other program is implemented. Section 5
 remains the normative meaning of each refusal category; uncertain or unrepresented cases fail closed.
@@ -243,7 +243,7 @@ Do not add a new code without changing this document and every kernel toy.
 
 | Code | Means | Not this |
 | --- | --- | --- |
-| `KERNEL_LIFECYCLE` | A lifecycle operation whose participant topology or conservation rule has no authenticated row representation, currently including state/effect-bearing `split`/`merge` rows, `selfdestruct`, unsafe tiers without the required preservation guarantees, a deploy route with no materializable typed child site, or an `upgrade` whose replacement identity/state suffix cannot use the authenticated in-place append layout | Resource-free `split`/`merge` with selector-derived lifecycle authority; replayable typed child deployments with compiler-owned child geometry; an in-place append `upgrade` with compiler-authored replacement bytecode/state-suffix channels; topology-preserving `unsafe(2)`; implementation functions that run in this participant's delegate/proxy frame |
+| `KERNEL_LIFECYCLE` | A lifecycle operation whose participant topology or conservation rule has no authenticated row representation, currently including state/effect-bearing `split`/`merge` rows, statement-form or state-bearing `selfdestruct`, unsafe tiers without the required preservation guarantees, a deploy route with no materializable typed child site, or an `upgrade` whose replacement identity/state suffix cannot use the authenticated in-place append layout | Resource-free `split`/`merge` with selector-derived lifecycle authority; resource-free modifier-only `selfdestruct` retirement geometry (consume master, reclaim sats, no created masters); replayable typed child deployments with compiler-owned child geometry; an in-place append `upgrade` with compiler-authored replacement bytecode/state-suffix channels; topology-preserving `unsafe(2)`; implementation functions that run in this participant's delegate/proxy frame |
 | `KERNEL_TX_SIGNATURE` | A transaction-signature check with no signature parameter that can be finalized and bound outside the committed message blob, a participant-changing lifecycle row with any detached `sig` leaf, or a returned signature leaf whose value participates in signing this transaction and would therefore circularly change its own signed output preimage | Any finite input `sig` shape on an ordinary row (one aligned outer row dimension per detached leaf, preserving nested array dimensions and the non-signature fields of struct/ABI tuples); a `datasig` row value; a data-only `sig` constructed from ordinary bytes, including inside an array, struct/ABI tuple, or multi-result tuple; `ecrecover` / ECDSA over **data** |
 | `KERNEL_UNBOUNDED_KEY` | A locally constructed key array whose length is not derivable within the bounded replay model; a counter-keyed mapping loop whose exact iteration domain is not one of the canonical forms; mutation of its counter or a bound mutation which cannot be reduced to a finite source expression; nested-loop control flow or a predicate with unsupported/mutated provenance | Parameter-keyed, `msg.sender`-keyed, expression-keyed (`m[records.length-1]`), parameter-array loop (`m[k][xs[i]]`), bounded locally constructed arrays whose replayable dominating writes reduce to direct authenticated key expressions, canonical ascending `for (int i = S; i < n; i = i + D)` / `i = D + i` / `i <= n` and descending `for (int i = S; i > n; i = i - D)` / `i >= n` domains for positive constant or replayable runtime `D`, plus `i != n` when the signed step reaches the endpoint exactly (also through replayable straight-line or finite conditional bound assignments, and with either comparison operand orientation), or equivalent canonical source `while` and `do-while` forms over `m[i]` / nested `m[k][i]`, multiple sequential loops whose runtime keys are disjoint (including loops over one physical collection), fixed-key reads from independent collections, a stable depth-one scalar entry keyed by a public parameter/literal/`msg.sender`/`tx.origin` or a pure expression over public arguments beside those counter writes, or those rewrites beneath serializable outer and inner `if`/`else`/`switch`/`continue`/`break`/`return` paths and the reachable body of `try`/`catch`; loop predicates may consume scalar state updated by replayable straight-line, finite `if`/`else`, or finite `switch` assignments before the loop; typed calls and supported path-predicated effects remain in source order |
 | `KERNEL_FOREIGN_DELEGATE` | `delegatecall` to a foreign executor treated as this participant's owner | `delegate` on this contract's own implementation |
@@ -261,12 +261,12 @@ admitted clone-owned layouts; it is not a general fallback for a kernel refusal.
 compilation never silently emits the legacy unroll: if an admitted survivor cannot use the row loop, that is an
 internal compiler invariant violation.
 
-Selfdestruct remains a topology fence rather than an admission shortcut. The statement form commits the whole
-transaction to exactly one recipient output, while an atomic graph preserves several participant/verifier blocks.
-The modifier form also retires the master and fixed state NFTs, which the balanced participant model deliberately
-requires to survive. Supporting either form therefore needs an explicit retirement geometry with an authenticated
-recipient and fixed-resource deletion metadata; substituting balanced public or burn outputs would change the
-language operation rather than implement it.
+Resource-free modifier-only `selfdestruct` on a master-only contract publishes retirement topology: consume the
+sole minting master, reclaim its satoshis to a compose-supplied recipient, and leave no category minting outputs.
+The detached verifier authenticates that census under selector-derived lifecycle mode 3. Statement-form
+`selfdestruct(addr)` remains fenced: it pins the whole transaction to exactly one recipient output, which cannot
+coexist with multi-participant/verifier atomic blocks. State-bearing retirement (fixed data NFTs, collections,
+events) likewise stays behind `KERNEL_LIFECYCLE` until deletion metadata binds those resources.
 
 If a toy needs a capability that is not in this table, change **this spec** and the toys. Do not add
 `__message_bus_*` clone families or admission-ladder flags.

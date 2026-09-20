@@ -58,14 +58,14 @@ const frame = (bytes: Uint8Array, field: string): Uint8Array =>
 
 export interface AtomicParticipantLifecycle {
   version: 1;
-  kind: 'split' | 'merge';
-  /** Number of masters created or consumed, excluding the preserved master. */
+  kind: 'split' | 'merge' | 'selfdestruct';
+  /** Number of masters created or consumed, excluding the preserved master. Selfdestruct uses 1. */
   count: number;
   /** Semantic input/output spans. The balanced span includes the opposite side's explicit padding. */
   inputSpan: number;
   outputSpan: number;
   balancedSpan: number;
-  inputTail: 'funding' | 'consumed-masters';
+  inputTail: 'funding' | 'consumed-masters' | 'retired-master';
   outputTail: 'created-masters' | 'reclaim';
 }
 
@@ -218,21 +218,27 @@ export function encodeAtomicMessageBusCallManifest(callManifest: AtomicMessageBu
     }
     if (lifecycle !== undefined) {
       const split = lifecycle.kind === 'split';
-      const expected = {
-        version: 1, kind: lifecycle.kind, count: lifecycle.count,
+      const retired = lifecycle.kind === 'selfdestruct';
+      const expected = retired ? {
+        version: 1 as const, kind: 'selfdestruct' as const, count: 1,
+        inputSpan: 1, outputSpan: 1, balancedSpan: 1,
+        inputTail: 'retired-master' as const, outputTail: 'reclaim' as const,
+      } : {
+        version: 1 as const, kind: lifecycle.kind, count: lifecycle.count,
         inputSpan: split ? 1 : lifecycle.count + 1,
         outputSpan: split ? lifecycle.count + 1 : 1,
         balancedSpan: lifecycle.count + 1,
-        inputTail: split ? 'funding' : 'consumed-masters',
-        outputTail: split ? 'created-masters' : 'reclaim',
-      } as const;
+        inputTail: split ? 'funding' as const : 'consumed-masters' as const,
+        outputTail: split ? 'created-masters' as const : 'reclaim' as const,
+      };
       if (!Number.isSafeInteger(lifecycle.count) || lifecycle.count < 1 || lifecycle.count >= 0xffff
         || Object.entries(expected).some(([key, value]) =>
           lifecycle[key as keyof AtomicParticipantLifecycle] !== value)) {
         throw new Error(`messageBus: participant ${index} has non-canonical lifecycle geometry`);
       }
+      const expectedTrailing = retired ? 0 : lifecycle.count;
       if (participant.fixedSize !== 1 || participant.actualSize !== expected.balancedSpan
-        || participant.maximumSize !== expected.balancedSpan || participant.trailingUsed !== lifecycle.count
+        || participant.maximumSize !== expected.balancedSpan || participant.trailingUsed !== expectedTrailing
         || participant.returnOffset !== 0xffff) {
         throw new Error(`messageBus: participant ${index} lifecycle does not occupy its exact balanced span`);
       }
@@ -269,7 +275,9 @@ export function encodeAtomicMessageBusCallManifest(callManifest: AtomicMessageBu
       uint(participant.trailingUsed, 2, 'participant trailing use'),
       uint(participant.returnOffset, 2, 'return output offset'),
       ...(version >= 3 ? [
-        uint(lifecycle === undefined ? 0 : lifecycle.kind === 'split' ? 1 : 2, 1, 'lifecycle mode'),
+        uint(lifecycle === undefined ? 0
+          : lifecycle.kind === 'split' ? 1
+            : lifecycle.kind === 'merge' ? 2 : 3, 1, 'lifecycle mode'),
         uint(lifecycle?.count ?? 0, 2, 'lifecycle count'),
       ] : []),
     );
@@ -344,20 +352,26 @@ export function decodeAtomicMessageBusCallManifest(bytes: Uint8Array): AtomicMes
     const returnOffset = reader.uint(2, `participant ${index}.returnOffset`);
     const lifecycleMode = version >= 3 ? reader.uint(1, `participant ${index}.lifecycleMode`) : 0;
     const lifecycleCount = version >= 3 ? reader.uint(2, `participant ${index}.lifecycleCount`) : 0;
-    if (lifecycleMode > 2 || (lifecycleMode === 0) !== (lifecycleCount === 0)) {
+    if (lifecycleMode > 3 || (lifecycleMode === 0) !== (lifecycleCount === 0)
+      || (lifecycleMode === 3 && lifecycleCount !== 1)) {
       throw new Error(`messageBus: participant ${index} has non-canonical lifecycle geometry`);
     }
     const lifecycle = lifecycleMode === 0 ? undefined : lifecycleMode === 1 ? {
       version: 1 as const, kind: 'split' as const, count: lifecycleCount,
       inputSpan: 1, outputSpan: lifecycleCount + 1, balancedSpan: lifecycleCount + 1,
       inputTail: 'funding' as const, outputTail: 'created-masters' as const,
-    } : {
+    } : lifecycleMode === 2 ? {
       version: 1 as const, kind: 'merge' as const, count: lifecycleCount,
       inputSpan: lifecycleCount + 1, outputSpan: 1, balancedSpan: lifecycleCount + 1,
       inputTail: 'consumed-masters' as const, outputTail: 'reclaim' as const,
+    } : {
+      version: 1 as const, kind: 'selfdestruct' as const, count: 1,
+      inputSpan: 1, outputSpan: 1, balancedSpan: 1,
+      inputTail: 'retired-master' as const, outputTail: 'reclaim' as const,
     };
     if (lifecycle !== undefined && (fixedSize !== 1 || actualSize !== lifecycle.balancedSpan
-      || maximumSize !== lifecycle.balancedSpan || trailingUsed !== lifecycle.count
+      || maximumSize !== lifecycle.balancedSpan
+      || trailingUsed !== (lifecycle.kind === 'selfdestruct' ? 0 : lifecycle.count)
       || returnOffset !== 0xffff)) {
       throw new Error(`messageBus: participant ${index} lifecycle does not occupy its exact balanced span`);
     }

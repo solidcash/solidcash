@@ -2001,20 +2001,31 @@ export function planCompiledGraph(
       const topology = planKernelLifecycleTopology(
         selected.handler.lifecycleTopology, selected.invocation.args ?? [],
       );
-      const count = topology.kind === 'split'
-        ? topology.categoryCensus.outputCount - 1 : topology.categoryCensus.inputCount - 1;
-      if (count < 1 || count >= 0x8000) {
-        throw new Error(`messageBus: lifecycle participant ${owner} count does not fit its balanced span`);
+      if (topology.kind === 'selfdestruct') {
+        if (topology.categoryCensus.inputCount !== 1 || topology.categoryCensus.outputCount !== 0) {
+          throw new Error(`messageBus: lifecycle participant ${owner} retirement census is not canonical`);
+        }
+        lifecycle = Object.freeze({
+          version: 1 as const, kind: 'selfdestruct' as const, count: 1,
+          inputSpan: 1, outputSpan: 1, balancedSpan: 1,
+          inputTail: 'retired-master' as const, outputTail: 'reclaim' as const,
+        });
+      } else {
+        const count = topology.kind === 'split'
+          ? topology.categoryCensus.outputCount - 1 : topology.categoryCensus.inputCount - 1;
+        if (count < 1 || count >= 32767) {
+          throw new Error(`messageBus: lifecycle participant ${owner} count does not fit its balanced span`);
+        }
+        const split = topology.kind === 'split';
+        lifecycle = Object.freeze({
+          version: 1 as const, kind: topology.kind, count,
+          inputSpan: split ? 1 : count + 1,
+          outputSpan: split ? count + 1 : 1,
+          balancedSpan: count + 1,
+          inputTail: split ? 'funding' as const : 'consumed-masters' as const,
+          outputTail: split ? 'created-masters' as const : 'reclaim' as const,
+        });
       }
-      const split = topology.kind === 'split';
-      lifecycle = Object.freeze({
-        version: 1 as const, kind: topology.kind, count,
-        inputSpan: split ? 1 : count + 1,
-        outputSpan: split ? count + 1 : 1,
-        balancedSpan: count + 1,
-        inputTail: split ? 'funding' as const : 'consumed-masters' as const,
-        outputTail: split ? 'created-masters' as const : 'reclaim' as const,
-      });
     }
     if (!Number.isInteger(logicalIdentityOffset)
       || logicalIdentityOffset < 0 || logicalIdentityOffset >= participantBlockSize) {

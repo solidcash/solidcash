@@ -90,8 +90,28 @@ const mergeFrame = () => ({
   outputs: [point()],
 });
 
+const selfdestructTopology = () => ({
+  version: 2,
+  kind: 'selfdestruct',
+  coordinate: 'participant',
+  categoryCensus: {
+    tokenCategory: 'participant', nftCapability: 'minting',
+    inputCount: fixedOne, outputCount: { source: 'fixed', value: 0 },
+  },
+  inputSpans: [
+    { mode: 'consume', offset: 0, count: fixedOne, identity: consumedIdentity },
+  ],
+  outputSpans: [],
+});
+
 describe('kernel lifecycle topology planning prerequisite', () => {
-  it('resolves canonical split and merge participant spans', () => {
+  it('resolves canonical split, merge, and selfdestruct participant spans', () => {
+    expect(planKernelLifecycleTopology(selfdestructTopology(), [])).toEqual({
+      kind: 'selfdestruct',
+      categoryCensus: { inputCount: 1, outputCount: 0 },
+      inputSpans: [{ mode: 'consume', offset: 0, count: 1 }],
+      outputSpans: [],
+    });
     expect(planKernelLifecycleTopology(splitTopology(), [2n])).toEqual({
       kind: 'split',
       categoryCensus: { inputCount: 1, outputCount: 3 },

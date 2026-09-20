@@ -12,7 +12,7 @@ export interface ResolvedKernelLifecycleSpan {
 }
 
 export interface ResolvedKernelLifecycleTopology {
-  kind: 'split' | 'merge';
+  kind: 'split' | 'merge' | 'selfdestruct';
   categoryCensus: { inputCount: number; outputCount: number };
   inputSpans: readonly ResolvedKernelLifecycleSpan[];
   outputSpans: readonly ResolvedKernelLifecycleSpan[];
@@ -113,11 +113,12 @@ const resolveCount = (
   expectedParameterIndex: number,
   expectedAddend: number,
   label: string,
+  expectedFixedValue = 1,
 ): number => {
   if (!isRecord(count)) throw new Error(`${label}.count must be an object`);
   if (expectedSource === 'fixed') {
-    exactRecord(count, { source: 'fixed', value: 1 }, `${label}.count`);
-    return 1;
+    exactRecord(count, { source: 'fixed', value: expectedFixedValue }, `${label}.count`);
+    return expectedFixedValue;
   }
   exactRecord(count, {
     source: 'parameter', parameterIndex: expectedParameterIndex, addend: expectedAddend,
@@ -169,11 +170,37 @@ export function planKernelLifecycleTopology(
   if (topology.version !== 2 || topology.coordinate !== 'participant') {
     throw new Error('unsupported lifecycle topology version or coordinate system');
   }
-  if (topology.kind !== 'split' && topology.kind !== 'merge') {
+  if (topology.kind !== 'split' && topology.kind !== 'merge' && topology.kind !== 'selfdestruct') {
     throw new Error('unsupported lifecycle topology kind');
   }
   if (!Array.isArray(topology.inputSpans) || !Array.isArray(topology.outputSpans)) {
     throw new Error('lifecycle topology spans must be arrays');
+  }
+  if (!isRecord(topology.categoryCensus)) throw new Error('categoryCensus must be an object');
+  const censusKeys = Object.keys(topology.categoryCensus).sort();
+  if (censusKeys.join(',') !== 'inputCount,nftCapability,outputCount,tokenCategory'
+    || topology.categoryCensus.tokenCategory !== 'participant'
+    || topology.categoryCensus.nftCapability !== 'minting') {
+    throw new Error('categoryCensus is not canonical');
+  }
+
+  if (topology.kind === 'selfdestruct') {
+    if (topology.inputSpans.length !== 1 || topology.outputSpans.length !== 0) {
+      throw new Error('selfdestruct lifecycle topology has non-canonical span cardinality');
+    }
+    const fixedParameterIndex = 0;
+    return {
+      kind: 'selfdestruct',
+      categoryCensus: {
+        inputCount: resolveCount(topology.categoryCensus.inputCount, parameters, 'fixed', fixedParameterIndex, 0,
+          'categoryCensus.inputCount', 1),
+        outputCount: resolveCount(topology.categoryCensus.outputCount, parameters, 'fixed', fixedParameterIndex, 0,
+          'categoryCensus.outputCount', 0),
+      },
+      inputSpans: [resolveSpan(topology.inputSpans[0], parameters, 'consume', 0,
+        consumedIdentity, 'fixed', fixedParameterIndex, 'inputSpans[0]')],
+      outputSpans: [],
+    };
   }
 
   const parameterCounts = [...topology.inputSpans, ...topology.outputSpans]
@@ -184,13 +211,6 @@ export function planKernelLifecycleTopology(
     throw new Error('lifecycle topology must use one canonical count parameter');
   }
   const parameterIndex = parameterCounts[0]!;
-  if (!isRecord(topology.categoryCensus)) throw new Error('categoryCensus must be an object');
-  const censusKeys = Object.keys(topology.categoryCensus).sort();
-  if (censusKeys.join(',') !== 'inputCount,nftCapability,outputCount,tokenCategory'
-    || topology.categoryCensus.tokenCategory !== 'participant'
-    || topology.categoryCensus.nftCapability !== 'minting') {
-    throw new Error('categoryCensus is not canonical');
-  }
   const categoryCensus = topology.kind === 'split' ? {
     inputCount: resolveCount(topology.categoryCensus.inputCount, parameters, 'fixed', parameterIndex, 0,
       'categoryCensus.inputCount'),
@@ -245,6 +265,9 @@ export function bindKernelLifecycleTransaction(
   frame: KernelLifecycleTransactionFrame,
 ): BoundKernelLifecycleTransaction {
   const plan = planKernelLifecycleTopology(topology, parameters);
+  if (plan.kind === 'selfdestruct') {
+    throw new Error('selfdestruct lifecycle uses selector-derived authority without a V3 transcript bind');
+  }
   const owner = canonicalHex(frame.participantLockingBytecode, undefined, 'participant locking bytecode');
   const category = canonicalHex(frame.participantTokenCategory, 32, 'participant token category');
   const inputBase = coordinate(frame.inputBase, 'lifecycle input base');

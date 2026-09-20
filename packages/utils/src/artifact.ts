@@ -1515,11 +1515,11 @@ export interface Artifact {
       /** Compiler-authored lifecycle authority. Append-v1 preserves the existing state geometry and permits
        * only a canonical fixed-field suffix in the final existing data NFT. */
       lifecycle?: { kind: 'upgrade'; layout: 'same' | 'in-place-append-v1' };
-      /** Participant-local lifecycle planning metadata. Authenticated split handlers may consume this topology;
-       * unsupported lifecycle kinds (including merge) remain fenced from kernel admission. */
+      /** Participant-local lifecycle planning metadata. Authenticated split/merge/selfdestruct handlers may
+       * consume this topology; state/effect-bearing lifecycle rows remain fenced from kernel admission. */
       lifecycleTopology?: {
         version: 2;
-        kind: 'split' | 'merge';
+        kind: 'split' | 'merge' | 'selfdestruct';
         coordinate: 'participant';
         /** Exact transaction-wide census for the participant's minting NFT category. */
         categoryCensus: {

@@ -101,7 +101,35 @@ describe('kernel lifecycle topology metadata', () => {
     });
   });
 
-  it('does not invent bounded spans for other lifecycle modes', () => {
+  it('admits resource-free modifier-only selfdestruct retirement topology', () => {
+    const { artifact, handler } = selected(`contract Terminal() {
+      function close() public selfdestruct { require(true); }
+      function inspect() public { require(true); }
+    }`, 'close');
+    expect(artifact.messageBus?.verifierProgram?.lifecycle).toBe(true);
+    expect(handler).toMatchObject({
+      eligible: true,
+      lifecycleTopology: {
+        version: 2,
+        kind: 'selfdestruct',
+        coordinate: 'participant',
+        categoryCensus: {
+          tokenCategory: 'participant', nftCapability: 'minting',
+          inputCount: { source: 'fixed', value: 1 },
+          outputCount: { source: 'fixed', value: 0 },
+        },
+        inputSpans: [
+          {
+            mode: 'consume', offset: 0, count: { source: 'fixed', value: 1 },
+            identity: consumedMaster,
+          },
+        ],
+        outputSpans: [],
+      },
+    });
+  });
+
+  it('keeps statement-form selfdestruct behind the retirement fence', () => {
     const { handler } = selected(`contract Terminal(address recipient) {
       function close() public selfdestruct { selfdestruct(recipient); }
       function inspect() public { require(true); }

@@ -68,7 +68,7 @@ Legend: **S** = settle fixture · **F** = honest fence · **—** = deferred / t
 
 | Topology \\ Resource | vmaps | chunks | strings | structs | chunked structs | events | lifecycle |
 |---|---|---|---|---|---|---|---|
-| self | S `KernelSelfVmapRmwCompose` | S `KernelMixedBytesMappingJournal` | S `KernelLoopCompose` (note) | S `KernelSelfStructStateWriteCompose` | S `KernelPooledDynamicArrayWriter` | S `KernelDualRuntimeKeccakCompose` Ping | S split/merge/upgrade/create · F selfdestruct |
+| self | S `KernelSelfVmapRmwCompose` | S `KernelMixedBytesMappingJournal` | S `KernelLoopCompose` (note) | S `KernelSelfStructStateWriteCompose` | S `KernelPooledDynamicArrayWriter` | S `KernelDualRuntimeKeccakCompose` Ping | S split/merge/selfdestruct/upgrade/create |
 | proxy-self | S `KernelProxyOwnedVmapRmwCompose` | S `KernelProxyBytesStateCompose` | S `KernelProxyStringStateCompose` | S `KernelProxyStructStateCompose` | S `KernelProxyChunkedStructCompose` | S EventFunder / EventOnly / UnusedStateEvent | S `KernelProxyUpgradeThenCompose` |
 | self→foreign | S `KernelForeignVmapRmwCompose` | S `KernelForeignBytesRmwCompose` | S `KernelForeignStringRmwCompose` | S `KernelWholeStructStateGetterCompose` | S `KernelRepeatedPooledAppendParity` | S fan-out / funder-gap | F (same admission) |
 | self→proxy | S `KernelSelfToProxyVmapRmwCompose` | S `KernelSelfToProxyBytesCompose` | S `KernelSelfToProxyStringCompose` | S `KernelSelfToProxyStructCompose` | S `KernelSelfToProxyChunkedStructCompose` | S `KernelSelfToProxyEventCompose` | — |
@@ -78,8 +78,8 @@ Legend: **S** = settle fixture · **F** = honest fence · **—** = deferred / t
 Peers already settled: fan-in/out, nested callsite, sidecar self/foreign/proxy/proxy×foreign, DirectSend entry order. DualRuntimeSet-width × keccak = inherent density fence in `KernelDualRuntimeKeccakCompose`.
 
 ### Lifecycle column
-- **Settle (S):** upgrade (`KernelUpgradeCompose`, `KernelProxyUpgradeThenCompose`), Yul create (`KernelTypedYulCreateCompose`), resource-free split (`KernelAtomicSplitLifecycle`), resource-free merge (`KernelAtomicMergeLifecycle`).
-- **Honest fence (F), active compose attempt:** selfdestruct (`KernelSelfdestructCompose`) refuses at batch eligibility (`Handler 'kill' is not batch eligible: KERNEL_LIFECYCLE`); no topology spans. State/effect-bearing split/merge remain `KERNEL_LIFECYCLE` until geometry binds with journal provenance. Lifecycle + V4 signature provenance remains an SDK fence.
+- **Settle (S):** upgrade (`KernelUpgradeCompose`, `KernelProxyUpgradeThenCompose`), Yul create (`KernelTypedYulCreateCompose`), resource-free split (`KernelAtomicSplitLifecycle`), resource-free merge (`KernelAtomicMergeLifecycle`), resource-free selfdestruct (`KernelSelfdestructCompose`).
+- **Honest fence (F):** statement-form / state-bearing selfdestruct and state/effect-bearing split/merge remain `KERNEL_LIFECYCLE` until geometry binds with journal provenance. Lifecycle + V4 signature provenance remains an SDK fence.
 
 ## Product gaps closed this stream
 - **Mapping RMW × keccak:** graph-owned keccak now sets `deferUnresolved` like ecrecover (`StatefulContract` `_createBuilder`); single-key `bal[k]+=v` + keccak under compose settles (`KernelDualRuntimeKeccakCompose`).

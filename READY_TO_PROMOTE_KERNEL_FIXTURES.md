@@ -36,6 +36,13 @@ Worktree: `.worktrees/kernel-comprehensive-fixtures`
 - **J4** `KernelProxyBytecodePinRefuseForeign` — honest pin settles; foreign co-spend refused at proxy input 0
 - **I8** `KernelLowLevelCallCompose` — `address.call(payload)` / `__raw__` under kernel compose + unlocker/VM
 
+## Sidecar interaction matrix (ecrecover × keccak)
+- **K1a** `KernelForeignKeccakSidecarCompose` — Caller keccak256 → Sink.accept; branded sidecar recreate + tamper/omit/duplicate
+- **K1b** `KernelForeignEcrecoverSidecarCompose` — Caller→Sink.ecrecoverPubKey A/B pair recreate + wrong-commitment fail-closed
+- **K2a** `KernelSelfKeccakSidecarCompose` — Acc.reveal under compose (Probe co-spend); branded Acc sidecar
+- **K2b** `KernelSelfEcrecoverSidecarCompose` — Acc.recover under compose; A/B on Acc category
+- Marketplace touchpoints (docs only): `takeJob` ECDSA.recover / keccak digest prep → K1b then K4b; facade hash→foreign → K3a/K4a
+
 ## Fence
 - No `marketplace.test.ts` / `vitest.marketplace.config.ts` in this stream
 - No Marketplace / Unicrow / job vocabulary in fixtures

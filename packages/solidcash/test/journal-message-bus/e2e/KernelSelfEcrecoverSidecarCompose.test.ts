@@ -117,7 +117,8 @@ describe('kernel self ecrecover sidecar under composition', () => {
     const offsets = accArtifact.messageBus!.route.blockLayout!.slots
       .filter((slot) => slot.kind === 'ecrecoverSideCar')
       .map((slot) => slot.offset);
-    expect(offsets.length).toBe(accArtifact.messageBus!.maximumRows! * 2);
+    // One A/B pair per syntactic recovery call (not maximumRows×2 kernel capacity padding).
+    expect(offsets.length).toBe(2);
     expect(vmRejects(canonical)).toBe(false);
 
     const wrongRecreation = await composition.build();

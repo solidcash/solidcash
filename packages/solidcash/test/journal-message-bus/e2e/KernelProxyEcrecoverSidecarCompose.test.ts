@@ -132,10 +132,7 @@ describe('kernel proxy ecrecover sidecar under composition', () => {
     });
   }, 300_000);
 
-  it('characterizes compose+executionArtifact×ecrecover×Probe: OP_VERIFY fence', async () => {
-    // Criterion 2: __forward settle above is the green path. Compose+executionArtifact with kernel-row
-    // ecrecover sidecars still OP_VERIFYs (row-capacity width); keep as named residual fence after SDK fix attempt
-    // (impl ABI compute promotion) — not a soft try/catch settle theater.
+  it('settles compose+executionArtifact×ecrecover with foreign Probe touch', async () => {
     const provider = createMessageBusCapstoneTestProvider();
     const signer = new Signer(new Uint8Array(32).fill(0x4b), provider);
     for (let index = 0; index < 40; index += 1) {
@@ -204,8 +201,12 @@ describe('kernel proxy ecrecover sidecar under composition', () => {
       funder: fee,
       changeAddress: fee.unlocker.generateLockingBytecode(),
     });
-    await expect(composition.build()).rejects.toThrow(
-      /BCH-2026 preflight failed|operation cost density limit|OP_VERIFY/,
-    );
+    const builder = await composition.build();
+    expect(vmRejects(builder)).toBe(false);
+    expect(ecrecoverRecreates(builder.outputs, String(deployed.proxy.categoryId)).length)
+      .toBeGreaterThanOrEqual(2);
+    await expect(composition.send()).resolves.toMatchObject({
+      txid: expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
   }, 300_000);
 });

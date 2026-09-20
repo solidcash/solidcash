@@ -15053,9 +15053,12 @@ export default class SymbolTableTraversal extends AstTraversal {
       const sites = this.listDeploySiteDataNftCounts(fn.body);
       return sites.reduce((width, dataNfts) => width + 1 + dataNfts, 0);
     };
+    // Keep ecrecoverPubKey off this gate: including it forces kernel `sites=maximumRows` ecrecover frames
+    // (16 sidecars + often 64 trailing → blockSize 82) and MessageBusVerifier rejects proxy compose.
+    // Per-call A/B slots still come from `ecrecoverCallCount` in `computeBlockLayout`.
     const handlers = contract.functions.filter((fn) => fn.graphEmissionHandler
       && ((fn.emitInfos?.length ?? 0) > 0 || (fn.transferInfos?.length ?? 0) > 0
-        || tokenTransferCount(fn) > 0 || (fn.ecrecoverCompute && (fn.ecrecoverCallCount ?? 0) > 0)
+        || tokenTransferCount(fn) > 0
         || deployWidth(fn) > 0)
       && this.framesSettleEveryTransfer(fn));
     if (handlers.length === 0) return;
@@ -15581,6 +15584,11 @@ export default class SymbolTableTraversal extends AstTraversal {
       parameter.name.startsWith('__internal__vmapRuntimeInputCount_')).length;
     const fallbackCounterStreamCapacity = runtimeCounterOutputCapacity === 0
       ? fallbackPermutationCount * fallbackCollectionCount * (BALANCED_TRAILING_CAPACITY + 1) : 0;
+    // ecrecoverLoopReads on the hidden route is often true only because the kernel row-while invokes a
+    // recovery handler (callIntoRecoveryLoop), not because the source has a variable-N ecrecover loop.
+    // Reserving BALANCED_TRAILING_CAPACITY (64) for that false positive made ecrecover Acc blockSize 68–82
+    // while keccak stayed at 3 and MessageBusVerifier rejected proxy compose. Keep the wide trailing band
+    // for source handlers that actually loop over recovery; the route uses fixed A/B sidecars instead.
     const needsNonCounterWideTrailingRegion = touchesDynamicState
       || writesChunkableCollection
       || (node.dynamicReads?.length ?? 0) > 0
@@ -15590,7 +15598,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       || (node.sortedInsertLoops?.length ?? 0) > 0
       || node.keccakInLoop === true
       || node.keccakLoopReads === true
-      || node.ecrecoverLoopReads === true;
+      || (node.ecrecoverLoopReads === true && node.messageBusRoute !== true);
     const needsWideTrailingRegion = needsNonCounterWideTrailingRegion
       || runtimeCounterOutputCapacity > 0;
     const needsTrailingRegion = node.name === '__message_bus1'

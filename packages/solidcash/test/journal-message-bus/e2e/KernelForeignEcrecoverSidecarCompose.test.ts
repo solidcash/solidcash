@@ -110,7 +110,8 @@ describe('kernel foreign ecrecover sidecar under composition', () => {
     const offsets = sinkArtifact.messageBus!.route.blockLayout!.slots
       .filter((slot) => slot.kind === 'ecrecoverSideCar')
       .map((slot) => sinkBaseOffset + slot.offset);
-    expect(offsets.length).toBe(sinkArtifact.messageBus!.maximumRows! * 2);
+    // One A/B pair per syntactic recovery call (not maximumRows×2 kernel capacity padding).
+    expect(offsets.length).toBe(2);
     expect(vmRejects(canonical)).toBe(false);
 
     const sinkRoute = canonical.inputs.findIndex((input) => 'contract' in input.unlocker

@@ -12555,8 +12555,12 @@ function compileResolvedAst(
     const maximumCalls = Math.max(...ecrecoverHandlers.map((fn) => fn.ecrecoverCallCount!));
     const existingSidecars = messageBusRoute.blockLayout.slots
       .filter((slot) => slot.kind === 'ecrecoverSideCar').length;
-    const rows = messageBusRoute.messageBusMaximumRows ?? MAX_MESSAGE_BUS_ROWS;
-    const requiredSidecars = maximumCalls * 2 * rows;
+    // Reserve one A/B pair per syntactic recovery call. Multiplying by messageBusMaximumRows (kernel
+    // capacity) previously forced 16 sidecars + a 64-wide trailing band (blockSize 82) onto every
+    // ecrecover route; proxy+executionArtifact compose then OP_VERIFYd in MessageBusVerifier while
+    // keccak stayed at blockSize 3. Multi-row batches that need per-row pairs still grow via
+    // planGraphEffectFrames when emits/transfers already require a graphEffectFrame.
+    const requiredSidecars = maximumCalls * 2;
     const missingSidecars = Math.max(0, requiredSidecars - existingSidecars);
     const firstOffset = messageBusRoute.blockLayout.blockSize;
     messageBusRoute.ecrecoverCompute = true;

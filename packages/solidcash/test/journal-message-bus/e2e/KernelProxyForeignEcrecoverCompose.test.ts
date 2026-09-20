@@ -153,9 +153,7 @@ describe('kernel proxy × foreign × ecrecover under composition', () => {
     expect((await sink.getState()).seen).toBe(1n);
   }, 300_000);
 
-  it('characterizes compose+executionArtifact×ecrecover×foreign: ecrecover row-width OP_VERIFY', async () => {
-    // __forward settle above covers criterion 1. Compose+executionArtifact with kernel-row ecrecover
-    // sidecars still OP_VERIFYs at high input index (row-capacity width); keep as named fence.
+  it('settles compose+executionArtifact×ecrecover×foreign Sink', async () => {
     const provider = createMessageBusCapstoneTestProvider();
     const signer = new Signer(new Uint8Array(32).fill(0x4d), provider);
     for (let index = 0; index < 48; index += 1) {
@@ -229,8 +227,13 @@ describe('kernel proxy × foreign × ecrecover under composition', () => {
       funder: fee,
       changeAddress: fee.unlocker.generateLockingBytecode(),
     });
-    await expect(composition.build()).rejects.toThrow(
-      /BCH-2026 preflight failed|operation cost density limit|OP_VERIFY/,
-    );
+    const builder = await composition.build();
+    expect(vmRejects(builder)).toBe(false);
+    expect(ecrecoverRecreates(builder.outputs, String(deployed.proxy.categoryId)).length)
+      .toBeGreaterThanOrEqual(2);
+    await expect(composition.send()).resolves.toMatchObject({
+      txid: expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
+    expect((await sink.getState()).seen).toBe(1n);
   }, 300_000);
 });

@@ -2169,9 +2169,10 @@ describe('messageBus.compose atomic transaction', () => {
     const offsets = sinkArtifact.messageBus!.route.blockLayout!.slots
       .filter((slot) => slot.kind === 'ecrecoverSideCar')
       .map((slot) => sinkBaseOffset + slot.offset);
-    // Each possible kernel row owns an independent A/B pair. Sharing one pair across repeated recovery rows
-    // would let distinct arguments alias one computed result; this one-row envelope activates the first pair.
-    expect(offsets).toHaveLength(sinkArtifact.messageBus!.maximumRows * 2);
+    // One A/B pair per syntactic recovery call. Kernel maximumRows no longer pads unused pairs into the
+    // route block (that forced blockSize ~82 and broke proxy×ecrecover MessageBusVerifier compose).
+    // Multi-row recovery batches that also emit/transfer still grow via graphEffectFrame.
+    expect(offsets).toHaveLength(2);
     expect(vmRejects(canonical)).toBe(false);
     const wrongRecreation = await composition.build();
     wrongRecreation.outputs[offsets[1]] = {

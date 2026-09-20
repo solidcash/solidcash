@@ -1,16 +1,15 @@
-# Re-eval: closed work vs follow-ups
+# Re-eval
 
 Branch: `grok/kernel-comprehensive-fixtures`
 
-## Non-lifecycle matrix status
-Every topology × {vmaps, chunks, strings, structs, chunked structs, events} cell is either **settle (S)** or **honest fence (F)** after a real compose attempt. Lifecycle column deferred.
+## Closed
+- All non-lifecycle topology×resource cells **settle** (former dynamic honest fences fixed via foreign chunk RMW restage + proxy-callee ChunkNft mint).
+- Lifecycle: upgrade + Yul create **settle**; split/merge/selfdestruct **active honest fences** (`KERNEL_LIFECYCLE` admission — no published route until cardinality protocol).
 
-## Residual fences (not missing)
+## Residual
 - DualRuntimeSet-width × keccak density — inherent
-- Foreign nonempty bytes/string append under compose
-- self→proxy bytes/string/chunked-struct compose
-- proxy→foreign-proxy bytes/string/chunked-struct compose
-- Nested fixed-int leaf assign — compile fence (Detail rebuild used instead)
+- Split/merge/selfdestruct product admit/settle — blocked on authenticated lifecycle cardinality protocol (not fixture-only)
+- proxy→foreign-proxy variable-width Item[] — non-delegate eligibility fence (int[] settles)
 
 ## Out of scope
-Marketplace / `requiredKernelProofs` / plan-wave labels / chipnet / lifecycle green
+Marketplace / `requiredKernelProofs` / plan-wave labels / chipnet

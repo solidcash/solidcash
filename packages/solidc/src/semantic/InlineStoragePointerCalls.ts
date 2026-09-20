@@ -8,6 +8,7 @@ import {
   FunctionCallStatementNode,
   VariableDefinitionNode,
   IdentifierNode,
+  FieldAccessNode,
   IntLiteralNode,
   ExpressionNode,
   BranchNode,
@@ -998,6 +999,12 @@ export default class InlineStoragePointerCalls extends AstTraversal {
     this.walk(root, (n) => {
       if (n instanceof IdentifierNode) {
         n.name = rn(n.name);
+      } else if (n instanceof FieldAccessNode) {
+        // n.name is a STRUCT FIELD MEMBER, never a variable - never rename it. The base `expression` is still
+        // walked as a child, so a renamed receiver is applied there. Without this guard, an inlined local that
+        // shares a struct field's name (`string label` vs `items[id].label`) corrupts the field access to
+        // `items[id].__message_bus_arg_*` / `__spN_label` -> "Struct has no field ...", which then fails the
+        // autoDelegate variant build for pooled Item[] writers that use parameter names matching fields.
       } else if (n instanceof TupleAssignmentNode) {
         // Tuple lvalues are plain element descriptors rather than
         // IdentifierNodes. Keep an existing-variable capture aligned with

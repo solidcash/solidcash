@@ -73,14 +73,13 @@ Legend: **S** = settle fixture · **F** = honest fence · **—** = deferred / t
 | self→foreign | S `KernelForeignVmapRmwCompose` | S `KernelForeignBytesRmwCompose` | S `KernelForeignStringRmwCompose` | S `KernelWholeStructStateGetterCompose` | S `KernelRepeatedPooledAppendParity` | S fan-out / funder-gap | F (same admission) |
 | self→proxy | S `KernelSelfToProxyVmapRmwCompose` | S `KernelSelfToProxyBytesCompose` | S `KernelSelfToProxyStringCompose` | S `KernelSelfToProxyStructCompose` | S `KernelSelfToProxyChunkedStructCompose` | S `KernelSelfToProxyEventCompose` | — |
 | proxy→foreign | S `KernelProxyForeignVmapRmwCompose` | S `KernelProxyForeignBytesCompose` | S `KernelProxyForeignStringCompose` | S `KernelProxyForeignStructCompose` | S `KernelProxyForeignChunkedStructCompose` | S `KernelProxyForeignRmwEventCompose` | — |
-| proxy→foreign-proxy | S `KernelProxyToProxyVmapRmwCompose` | S `KernelProxyToProxyBytesCompose` | S `KernelProxyToProxyStringCompose` | S `KernelProxyToProxyStructCompose` | S `KernelProxyToProxyChunkedStructCompose` (int[]; Item[] non-delegate F) | S `KernelProxyToProxyEventCompose` | — |
+| proxy→foreign-proxy | S `KernelProxyToProxyVmapRmwCompose` | S `KernelProxyToProxyBytesCompose` | S `KernelProxyToProxyStringCompose` | S `KernelProxyToProxyStructCompose` | S `KernelProxyToProxyChunkedStructCompose` (int[] + Item[]) | S `KernelProxyToProxyEventCompose` | — |
 
 Peers already settled: fan-in/out, nested callsite, sidecar self/foreign/proxy/proxy×foreign, DirectSend entry order. DualRuntimeSet-width × keccak = inherent density fence in `KernelDualRuntimeKeccakCompose`.
 
 ### Lifecycle column
-- **Settle (S):** upgrade (`KernelUpgradeCompose`, `KernelProxyUpgradeThenCompose`), Yul create (`KernelTypedYulCreateCompose`).
-- **Honest fence (F), active compose attempt:** split (`KernelAtomicSplitLifecycle`) and merge (`KernelAtomicMergeLifecycle`) compile `lifecycleTopology` then refuse `messageBus.compose` with selector-derived-authority / no-compiled-route / `KERNEL_LIFECYCLE` (admission, not OP_VERIFY). Selfdestruct (`KernelSelfdestructCompose`) refuses at batch eligibility (`Handler 'kill' is not batch eligible: KERNEL_LIFECYCLE`); no topology spans.
-- Product admit/settle for participant-changing lifecycle remains deferred until an authenticated row protocol binds geometry + provenance (compiler early-continue at `KERNEL_LIFECYCLE`).
+- **Settle (S):** upgrade (`KernelUpgradeCompose`, `KernelProxyUpgradeThenCompose`), Yul create (`KernelTypedYulCreateCompose`), resource-free split (`KernelAtomicSplitLifecycle`), resource-free merge (`KernelAtomicMergeLifecycle`).
+- **Honest fence (F), active compose attempt:** selfdestruct (`KernelSelfdestructCompose`) refuses at batch eligibility (`Handler 'kill' is not batch eligible: KERNEL_LIFECYCLE`); no topology spans. State/effect-bearing split/merge remain `KERNEL_LIFECYCLE` until geometry binds with journal provenance. Lifecycle + V4 signature provenance remains an SDK fence.
 
 ## Product gaps closed this stream
 - **Mapping RMW × keccak:** graph-owned keccak now sets `deferUnresolved` like ecrecover (`StatefulContract` `_createBuilder`); single-key `bal[k]+=v` + keccak under compose settles (`KernelDualRuntimeKeccakCompose`).
@@ -101,8 +100,9 @@ Peers already settled: fan-in/out, nested callsite, sidecar self/foreign/proxy/p
 
 ## Still open / fence
 - DualRuntimeSet-width density wall (inherent)
-- Lifecycle split/merge/selfdestruct remain admission fences (`KERNEL_LIFECYCLE`); upgrade/create settled
-- proxy→foreign-proxy variable-width Item[] remains non-delegate compile/eligibility fence (int[] settles)
+- Selfdestruct + state/effect-bearing split/merge remain `KERNEL_LIFECYCLE`; resource-free split/merge + upgrade/create settled
+- ~~proxy→foreign-proxy variable-width Item[] remains non-delegate compile/eligibility fence (int[] settles)~~
+  settled via FieldAccess rename guard in `InlineStoragePointerCalls`
 
 ## Fence
 - No `marketplace.test.ts` / `vitest.marketplace.config.ts` in this stream

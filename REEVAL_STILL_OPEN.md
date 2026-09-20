@@ -1,32 +1,16 @@
-# Re-eval: closed work vs follow-ups (complete the scope)
+# Re-eval: closed work vs follow-ups
 
 Branch: `grok/kernel-comprehensive-fixtures`
 
-## Closed this stream (do not reopen)
+## Non-lifecycle matrix status
+Every topology × {vmaps, chunks, strings, structs, chunked structs, events} cell is either **settle (S)** or **honest fence (F)** after a real compose attempt. Lifecycle column deferred.
 
-| Gap | Evidence | Note |
-|-----|----------|------|
-| Event-only / unused-state compose × Probe | EventOnly + UnusedStateEvent | `c60eab5a8`, `953f6d397` |
-| self→proxy × vmaps / events | `KernelSelfToProxyVmapRmwCompose`, `KernelSelfToProxyEventCompose` | settle |
-| self→proxy × fixed structs | `KernelSelfToProxyStructCompose` | settle |
-| self→proxy × chunks / strings / chunked structs | `KernelSelfToProxyBytesCompose`, `KernelSelfToProxyStringCompose`, `KernelSelfToProxyChunkedStructCompose` | honest fence after compose attempt (MessageBusVerifier ~input 67) |
-| proxy→foreign-proxy × vmaps | `KernelProxyToProxyVmapRmwCompose` | settle |
-| proxy→foreign-proxy × events | `KernelProxyToProxyEventCompose` | settle |
-| proxy→foreign-proxy × structs | `KernelProxyToProxyStructCompose` | settle |
-| proxy→foreign-proxy × chunks/strings | `KernelProxyToProxyBytesCompose` / `StringCompose` | honest fence (dual-proxy chunk OP_VERIFY) |
-| proxy→foreign-proxy × chunked structs | `KernelProxyToProxyChunkedStructCompose` | F Item[] non-delegate; F int[] compose |
-| proxy-self × strings / chunks | String/Bytes StateCompose | settle |
-| self × fixed struct write | `KernelSelfStructStateWriteCompose` (compose×Probe) | `5e00c83fa` |
-| self→foreign × chunks (first write) | `KernelForeignBytesRmwCompose` empty→append | settle |
-| proxy→foreign × chunks (first write) | `KernelProxyForeignBytesCompose` empty→append | settle |
+## Residual fences (not missing)
+- DualRuntimeSet-width × keccak density — inherent
+- Foreign nonempty bytes/string append under compose
+- self→proxy bytes/string/chunked-struct compose
+- proxy→foreign-proxy bytes/string/chunked-struct compose
+- Nested fixed-int leaf assign — compile fence (Detail rebuild used instead)
 
-## Still open — classification
-
-### A. Honest fences / thin residuals
-- Foreign bytes **nonempty** append under compose (chunk OP_EQUALVERIFY ~ip 5/13) — fenced in `KernelForeignBytesRmwCompose`
-- DualRuntimeSet-width × keccak density — **inherent**
-- proxy-self nested fixed-int leaf assign — compile fence
-- Optional lifecycle green beyond upgrade/create — deferred
-
-### B. Out of scope
-Marketplace / `requiredKernelProofs` / plan-wave labels in `.ts` / chipnet promotion
+## Out of scope
+Marketplace / `requiredKernelProofs` / plan-wave labels / chipnet / lifecycle green

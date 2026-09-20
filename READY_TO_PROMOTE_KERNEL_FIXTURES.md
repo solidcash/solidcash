@@ -68,12 +68,12 @@ Legend: **S** = settle fixture · **F** = honest fence · **—** = deferred / t
 
 | Topology \\ Resource | vmaps | chunks | strings | structs | chunked structs | events | lifecycle |
 |---|---|---|---|---|---|---|---|
-| self | S `KernelSelfVmapRmwCompose` | S `KernelMixedBytesMappingJournal` | S `KernelLoopCompose` (note) | S `KernelSelfStructStateWriteCompose` (compose×Probe) | S `KernelPooledDynamicArrayWriter` | S `KernelDualRuntimeKeccakCompose` Ping | S upgrade `KernelUpgradeCompose`; F split/merge skip; F selfdestruct |
-| proxy-self | S `KernelProxyOwnedVmapRmwCompose` | S `KernelProxyBytesStateCompose` | S `KernelProxyStringStateCompose` | — (nested leaf assign compile fence; self covers write) | — | S EventFunder / EventOnly / UnusedStateEvent | S/F `KernelProxyUpgradeThenCompose` |
-| self→foreign | S `KernelForeignVmapRmwCompose` | S empty→append `KernelForeignBytesRmwCompose` / F nonempty RMW | thin return/string | S `KernelWholeStructStateGetterCompose` | S `KernelRepeatedPooledAppendParity` | S fan-out / funder-gap | S `KernelTypedYulCreateCompose` |
-| self→proxy | S `KernelSelfToProxyVmapRmwCompose` | F `KernelSelfToProxyBytesCompose` (empty→append) | F `KernelSelfToProxyStringCompose` (set/append) | S `KernelSelfToProxyStructCompose` | F `KernelSelfToProxyChunkedStructCompose` | S `KernelSelfToProxyEventCompose` | — |
-| proxy→foreign | S `KernelProxyForeignVmapRmwCompose` | S empty→append `KernelProxyForeignBytesCompose` (+ dormant F `KernelDelegateInactiveDynamicWrite`) | — | — | — | S `KernelProxyForeignRmwEventCompose` | F density `KernelDensityBoundedCompose` |
-| proxy→foreign-proxy | S `KernelProxyToProxyVmapRmwCompose` | F empty→append `KernelProxyToProxyBytesCompose` | F empty→append `KernelProxyToProxyStringCompose` | S `KernelProxyToProxyStructCompose` | F Item[] non-delegate + int[] compose `KernelProxyToProxyChunkedStructCompose` | S `KernelProxyToProxyEventCompose` | — |
+| self | S `KernelSelfVmapRmwCompose` | S `KernelMixedBytesMappingJournal` | S `KernelLoopCompose` (note) | S `KernelSelfStructStateWriteCompose` | S `KernelPooledDynamicArrayWriter` | S `KernelDualRuntimeKeccakCompose` Ping | deferred (upgrade covered elsewhere) |
+| proxy-self | S `KernelProxyOwnedVmapRmwCompose` | S `KernelProxyBytesStateCompose` | S `KernelProxyStringStateCompose` | S `KernelProxyStructStateCompose` | S `KernelProxyChunkedStructCompose` | S EventFunder / EventOnly / UnusedStateEvent | deferred |
+| self→foreign | S `KernelForeignVmapRmwCompose` | S/F `KernelForeignBytesRmwCompose` (empty S; nonempty F) | S/F `KernelForeignStringRmwCompose` (empty S; nonempty F) | S `KernelWholeStructStateGetterCompose` | S `KernelRepeatedPooledAppendParity` | S fan-out / funder-gap | deferred |
+| self→proxy | S `KernelSelfToProxyVmapRmwCompose` | F `KernelSelfToProxyBytesCompose` | F `KernelSelfToProxyStringCompose` | S `KernelSelfToProxyStructCompose` | F `KernelSelfToProxyChunkedStructCompose` | S `KernelSelfToProxyEventCompose` | deferred |
+| proxy→foreign | S `KernelProxyForeignVmapRmwCompose` | S `KernelProxyForeignBytesCompose` | S `KernelProxyForeignStringCompose` | S `KernelProxyForeignStructCompose` | S `KernelProxyForeignChunkedStructCompose` | S `KernelProxyForeignRmwEventCompose` | deferred |
+| proxy→foreign-proxy | S `KernelProxyToProxyVmapRmwCompose` | F `KernelProxyToProxyBytesCompose` | F `KernelProxyToProxyStringCompose` | S `KernelProxyToProxyStructCompose` | F `KernelProxyToProxyChunkedStructCompose` | S `KernelProxyToProxyEventCompose` | deferred |
 
 Peers already settled: fan-in/out, nested callsite, sidecar self/foreign/proxy/proxy×foreign, DirectSend entry order. DualRuntimeSet-width × keccak = inherent density fence in `KernelDualRuntimeKeccakCompose`.
 
@@ -101,8 +101,9 @@ Peers already settled: fan-in/out, nested callsite, sidecar self/foreign/proxy/p
 
 ## Still open / fence
 - DualRuntimeSet-width density wall (inherent)
-- Foreign bytes append onto **already-chunked** non-empty payload under compose (honest fence in `KernelForeignBytesRmwCompose`; empty→first-write settles)
-- proxy-self nested fixed-int struct leaf assign (compile fence); optional lifecycle green beyond upgrade/create
+- Nonempty foreign chunk/string RMW under compose (honest fences; empty→first-write settles)
+- self→proxy and proxy→foreign-proxy **dynamic** cells (bytes/string/chunked-struct) honest-fence after compose attempt (MessageBusVerifier / chunk covenant)
+- Lifecycle green beyond upgrade/create — deferred by request
 
 ## Fence
 - No `marketplace.test.ts` / `vitest.marketplace.config.ts` in this stream

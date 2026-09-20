@@ -68,12 +68,12 @@ Legend: **S** = settle fixture · **F** = honest fence · **—** = deferred / t
 
 | Topology \\ Resource | vmaps | chunks | strings | structs | chunked structs | events | lifecycle |
 |---|---|---|---|---|---|---|---|
-| self | S `KernelSelfVmapRmwCompose` | S `KernelMixedBytesMappingJournal` | S `KernelLoopCompose` (note) | S `KernelSelfStructStateWriteCompose` | S `KernelPooledDynamicArrayWriter` | S `KernelDualRuntimeKeccakCompose` Ping | deferred (upgrade covered elsewhere) |
-| proxy-self | S `KernelProxyOwnedVmapRmwCompose` | S `KernelProxyBytesStateCompose` | S `KernelProxyStringStateCompose` | S `KernelProxyStructStateCompose` | S `KernelProxyChunkedStructCompose` | S EventFunder / EventOnly / UnusedStateEvent | deferred |
-| self→foreign | S `KernelForeignVmapRmwCompose` | S/F `KernelForeignBytesRmwCompose` (empty S; nonempty F) | S/F `KernelForeignStringRmwCompose` (empty S; nonempty F) | S `KernelWholeStructStateGetterCompose` | S `KernelRepeatedPooledAppendParity` | S fan-out / funder-gap | deferred |
-| self→proxy | S `KernelSelfToProxyVmapRmwCompose` | F `KernelSelfToProxyBytesCompose` | F `KernelSelfToProxyStringCompose` | S `KernelSelfToProxyStructCompose` | F `KernelSelfToProxyChunkedStructCompose` | S `KernelSelfToProxyEventCompose` | deferred |
-| proxy→foreign | S `KernelProxyForeignVmapRmwCompose` | S `KernelProxyForeignBytesCompose` | S `KernelProxyForeignStringCompose` | S `KernelProxyForeignStructCompose` | S `KernelProxyForeignChunkedStructCompose` | S `KernelProxyForeignRmwEventCompose` | deferred |
-| proxy→foreign-proxy | S `KernelProxyToProxyVmapRmwCompose` | F `KernelProxyToProxyBytesCompose` | F `KernelProxyToProxyStringCompose` | S `KernelProxyToProxyStructCompose` | F `KernelProxyToProxyChunkedStructCompose` | S `KernelProxyToProxyEventCompose` | deferred |
+| self | S `KernelSelfVmapRmwCompose` | S `KernelMixedBytesMappingJournal` | S `KernelLoopCompose` (note) | S `KernelSelfStructStateWriteCompose` | S `KernelPooledDynamicArrayWriter` | S `KernelDualRuntimeKeccakCompose` Ping | landing |
+| proxy-self | S `KernelProxyOwnedVmapRmwCompose` | S `KernelProxyBytesStateCompose` | S `KernelProxyStringStateCompose` | S `KernelProxyStructStateCompose` | S `KernelProxyChunkedStructCompose` | S EventFunder / EventOnly / UnusedStateEvent | landing |
+| self→foreign | S `KernelForeignVmapRmwCompose` | S `KernelForeignBytesRmwCompose` | S `KernelForeignStringRmwCompose` | S `KernelWholeStructStateGetterCompose` | S `KernelRepeatedPooledAppendParity` | S fan-out / funder-gap | landing |
+| self→proxy | S `KernelSelfToProxyVmapRmwCompose` | S `KernelSelfToProxyBytesCompose` | S `KernelSelfToProxyStringCompose` | S `KernelSelfToProxyStructCompose` | S `KernelSelfToProxyChunkedStructCompose` | S `KernelSelfToProxyEventCompose` | landing |
+| proxy→foreign | S `KernelProxyForeignVmapRmwCompose` | S `KernelProxyForeignBytesCompose` | S `KernelProxyForeignStringCompose` | S `KernelProxyForeignStructCompose` | S `KernelProxyForeignChunkedStructCompose` | S `KernelProxyForeignRmwEventCompose` | landing |
+| proxy→foreign-proxy | S `KernelProxyToProxyVmapRmwCompose` | S `KernelProxyToProxyBytesCompose` | S `KernelProxyToProxyStringCompose` | S `KernelProxyToProxyStructCompose` | S `KernelProxyToProxyChunkedStructCompose` (int[]; Item[] non-delegate F) | S `KernelProxyToProxyEventCompose` | landing |
 
 Peers already settled: fan-in/out, nested callsite, sidecar self/foreign/proxy/proxy×foreign, DirectSend entry order. DualRuntimeSet-width × keccak = inherent density fence in `KernelDualRuntimeKeccakCompose`.
 
@@ -101,9 +101,8 @@ Peers already settled: fan-in/out, nested callsite, sidecar self/foreign/proxy/p
 
 ## Still open / fence
 - DualRuntimeSet-width density wall (inherent)
-- Nonempty foreign chunk/string RMW under compose (honest fences; empty→first-write settles)
-- self→proxy and proxy→foreign-proxy **dynamic** cells (bytes/string/chunked-struct) honest-fence after compose attempt (MessageBusVerifier / chunk covenant)
-- Lifecycle green beyond upgrade/create — deferred by request
+- Lifecycle column landing (split/merge were describe.skip; selfdestruct thin; upgrade/create already covered)
+- proxy→foreign-proxy variable-width Item[] remains non-delegate compile/eligibility fence (int[] settles)
 
 ## Fence
 - No `marketplace.test.ts` / `vitest.marketplace.config.ts` in this stream

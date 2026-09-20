@@ -82,6 +82,7 @@ Peers already settled: fan-in/out, nested callsite, sidecar self/foreign/proxy/p
 - **Honest fence (F):** statement-form / state-bearing selfdestruct and state/effect-bearing split/merge remain `KERNEL_LIFECYCLE` until geometry binds with journal provenance. Lifecycle + V4 signature provenance remains an SDK fence.
 
 ## Product gaps closed this stream
+- **Resource-free selfdestruct under compose:** offloaded `compactAtomicBinder` soft-binds token-free reclaim at the participant base; zero-parameter lifecycle handlers require mode 3 (not blanket mode 0). `KernelSelfdestructCompose` settles kill()+recipient reclaim with retired minting category.
 - **Mapping RMW × keccak:** graph-owned keccak now sets `deferUnresolved` like ecrecover (`StatefulContract` `_createBuilder`); single-key `bal[k]+=v` + keccak under compose settles (`KernelDualRuntimeKeccakCompose`).
 - **Fixed dual-key add+remove under compose:** `singleTargetRowBatch` incorrectly treated distinct-key multi-slot writes as alias-arm inserts (P′/NEW collision). Gate on `uniqueBatchTargets.size === 1` so distinct-key add+remove keeps the trailing-predecessor model (`KernelDualRuntimeKeccakCompose`).
 - **`upgrades.upgradeProxy`:** published for **param-mode** proxies (re-wrap same state holder + append-only layout check); baked `SolidCashProxy` refuses with a clear pin/migration error (`KernelProxyUpgradeThenCompose`).
@@ -100,7 +101,7 @@ Peers already settled: fan-in/out, nested callsite, sidecar self/foreign/proxy/p
 
 ## Still open / fence
 - DualRuntimeSet-width density wall (inherent)
-- Selfdestruct + state/effect-bearing split/merge remain `KERNEL_LIFECYCLE`; resource-free split/merge + upgrade/create settled
+- State/effect-bearing split/merge and statement-form / state-bearing selfdestruct remain `KERNEL_LIFECYCLE`; resource-free split/merge/selfdestruct + upgrade/create settled
 - ~~proxy→foreign-proxy variable-width Item[] remains non-delegate compile/eligibility fence (int[] settles)~~
   settled via FieldAccess rename guard in `InlineStoragePointerCalls`
 

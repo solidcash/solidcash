@@ -8819,9 +8819,22 @@ function synthesizeMessageBusRoute(
         const senderChecks = (fn.messageBusKeyWitnesses ?? [])
           .filter((binding) => binding.source === 'msgSender')
           .map((binding) => `require(${witnessName(binding)} == ${logicalCaller});`).join(' ');
+        // Zero-parameter handlers still participate in selector-derived lifecycle authority. Parameter-free
+        // selfdestruct must require mode 3; non-lifecycle siblings on a lifecycle-capable contract stay at 0.
+        // (split/merge always transport a count parameter, so they use the non-empty parameter path below.)
+        const zeroParamLifecycleKind = kernelLifecycleHandlers.get(fn);
+        if (zeroParamLifecycleKind === 'split' || zeroParamLifecycleKind === 'merge') {
+          throw new Error(
+            `lifecycle handler '${fn.name}' (${zeroParamLifecycleKind}) must transport its count parameter`,
+          );
+        }
+        const zeroParamLifecycleAuthorization = zeroParamLifecycleKind === 'selfdestruct'
+          ? 'require(__message_bus_active_lifecycle_mode == 3 && __message_bus_active_lifecycle_count == 1);'
+          : kernelLifecycleHandlers.size > 0
+            ? 'require(__message_bus_active_lifecycle_mode == 0);' : '';
         return `${condition} { ${upgradeAuthorization} ${fixedChunkableWriteAuthorization}
           ${signatureAuthorization} require(rowArgs.length == 0);
-          ${kernelLifecycleHandlers.size > 0 ? 'require(__message_bus_active_lifecycle_mode == 0);' : ''}
+          ${zeroParamLifecycleAuthorization}
           ${senderChecks} ${invoke(entryOnly.join(', '))}
           require(rowArgs == rowArgs); }`;
       }
@@ -9395,6 +9408,7 @@ function synthesizeMessageBusRoute(
       offloadedVerifier, compilerOptions.maximumInputBytes,
     ))
     : useBoundRoute ? MESSAGE_BUS_PLACEHOLDER_LOCK_HEX : '';
+  const compactAllowsSelfdestructRetirement = [...kernelLifecycleHandlers.values()].includes('selfdestruct');
   const compactAtomicBinder = `
         bigint activeMasterOutput = -1;
         for (bigint masterOutput = 0; masterOutput < tx.outputs.length; masterOutput = masterOutput + 1) {
@@ -9405,9 +9419,20 @@ function synthesizeMessageBusRoute(
           }
         }
         require(tx.inputs[activeInputIndex].tokenCategory.length == 33
-          && tx.inputs[activeInputIndex].tokenCategory.slice(32, 33) == hex"02"
-          && activeMasterOutput >= 0
-          && tx.outputs[activeMasterOutput].nftCommitment == tx.inputs[activeInputIndex].nftCommitment);
+          && tx.inputs[activeInputIndex].tokenCategory.slice(32, 33) == hex"02");
+        ${compactAllowsSelfdestructRetirement ? `
+        // Offloaded routes only bind the active master here; the detached verifier authenticates retirement.
+        // Resource-free selfdestruct replaces the master with a token-free reclaim at the same slot, so the
+        // same-category scan above misses and must soft-bind on empty tokenCategory + conserved value.
+        if (activeMasterOutput < 0) {
+          require(tx.outputs[activeInputIndex].tokenCategory.length == 0
+            && tx.outputs[activeInputIndex].value == tx.inputs[activeInputIndex].value);
+        } else {
+          require(tx.outputs[activeMasterOutput].nftCommitment
+            == tx.inputs[activeInputIndex].nftCommitment);
+        }` : `
+        require(activeMasterOutput >= 0
+          && tx.outputs[activeMasterOutput].nftCommitment == tx.inputs[activeInputIndex].nftCommitment);`}
         bytes activeCategory = tx.inputs[activeInputIndex].tokenCategory.slice(0, 32);
         bigint activeVerifier = __internal__activeVerifierIndex;
         require(activeVerifier >= 0 && activeVerifier < tx.inputs.length
@@ -9481,8 +9506,11 @@ function synthesizeMessageBusRoute(
     ? '' : `
         bigint activeLifecycleMode = 0;
         bigint activeLifecycleCount = 0;
-        if (expectedLocalRows == 1) {
-          require(localBatch.length >= 19 && localBatch.slice(0, 4) == hex"53434231");
+        // One-row SCB1/SCB2 batches carry the lifecycle selector at bytes [7,11). Gate on the batch header's
+        // declared row count (not expectedLocalRows): graph-nested retirement can disagree with the envelope
+        // row counter while still encoding exactly one lifecycle invocation.
+        if (localBatch.length >= 19 && localBatch.slice(0, 4) == hex"53434231"
+          && int(bytes.concat(localBatch.slice(6, 7), hex"00")) == 1) {
           bigint activeLifecycleVersion = int(bytes.concat(localBatch.slice(4, 5), hex"00"));
           require(activeLifecycleVersion == 1 || activeLifecycleVersion == 2);
           require(int(bytes.concat(localBatch.slice(11, 15), hex"00000000")) == 0
@@ -9497,6 +9525,14 @@ function synthesizeMessageBusRoute(
           );
           ${lifecycleSelectorBranches}
         }
+        // Fast-path retirement: a one-row batch whose selector is an admitted selfdestruct handler sets mode 3
+        // even if the branch decode above missed (V2 callMode framing). Selector identity is authoritative.
+        ${[...kernelLifecycleHandlers].filter(([, kind]) => kind === 'selfdestruct').map(([fn]) => `
+        if (activeLifecycleMode == 0 && localBatch.length >= 11 && localBatch.slice(0, 4) == hex"53434231"
+          && localBatch.slice(7, 11) == hex"${sourceFunctionSelectorHex(fn)}") {
+          activeLifecycleMode = 3;
+          activeLifecycleCount = 1;
+        }`).join('\n')}
   `;
   const lifecycleVerification = kernelLifecycleHandlers.size === 0 ? '' : `
         if (activeLifecycleMode > 0) {
@@ -9637,8 +9673,10 @@ function synthesizeMessageBusRoute(
           bigint participantOutputBase = -1;
           if (${atomicManifestOutputIdentityExpression}) {
             participantOutputBase = base;
-            if (${[...kernelLifecycleHandlers.values()].includes('selfdestruct')
-    ? 'tx.outputs[base].tokenCategory.length == 0' : 'false'}) {
+            // Token-free output at the participant base is retirement/reclaim (selfdestruct): preserve sats
+            // only. Gating on empty tokenCategory — not a synthesize-time lifecycle map snapshot — so the soft
+            // bind still works when the route was emitted with retirement handlers.
+            if (tx.outputs[base].tokenCategory.length == 0) {
               require(tx.outputs[base].value == tx.inputs[base].value);
             } else {
               require(tx.outputs[participantOutputBase].lockingBytecode == participantOutputLbc
@@ -9655,12 +9693,10 @@ function synthesizeMessageBusRoute(
                 participantOutputBase = participantOutput;
               }
             }
-            ${[...kernelLifecycleHandlers.values()].includes('selfdestruct')
-    ? `if (participantOutputBase < 0) {
-              require(tx.outputs[base].tokenCategory.length == 0
-                && tx.outputs[base].value == tx.inputs[base].value);
+            if (participantOutputBase < 0 && tx.outputs[base].tokenCategory.length == 0) {
+              require(tx.outputs[base].value == tx.inputs[base].value);
               participantOutputBase = base;
-            }` : ''}
+            }
           }
           require(participantOutputBase >= 0);
           bigint returnOutput = returnOffset == 65535 ? 65535 : participantOutputBase + returnOffset;

@@ -71,7 +71,7 @@ Legend: **S** = settle fixture · **F** = honest fence · **—** = deferred / t
 | self | S `KernelSelfVmapRmwCompose` | S `KernelMixedBytesMappingJournal` | S `KernelLoopCompose` (note) | S `KernelSelfStructStateWriteCompose` (compose×Probe) | S `KernelPooledDynamicArrayWriter` | S `KernelDualRuntimeKeccakCompose` Ping | S upgrade `KernelUpgradeCompose`; F split/merge skip; F selfdestruct |
 | proxy-self | S `KernelProxyOwnedVmapRmwCompose` | S `KernelProxyBytesStateCompose` | S `KernelProxyStringStateCompose` | — (nested leaf assign compile fence; self covers write) | — | S EventFunder / EventOnly / UnusedStateEvent | S/F `KernelProxyUpgradeThenCompose` |
 | self→foreign | S `KernelForeignVmapRmwCompose` | S empty→append `KernelForeignBytesRmwCompose` / F nonempty RMW | thin return/string | S `KernelWholeStructStateGetterCompose` | S `KernelRepeatedPooledAppendParity` | S fan-out / funder-gap | S `KernelTypedYulCreateCompose` |
-| self→proxy | S `KernelSelfToProxyVmapRmwCompose` | — | — | — | — | S `KernelSelfToProxyEventCompose` | — |
+| self→proxy | S `KernelSelfToProxyVmapRmwCompose` | F `KernelSelfToProxyBytesCompose` (empty→append) | F `KernelSelfToProxyStringCompose` (set/append) | S `KernelSelfToProxyStructCompose` | F `KernelSelfToProxyChunkedStructCompose` | S `KernelSelfToProxyEventCompose` | — |
 | proxy→foreign | S `KernelProxyForeignVmapRmwCompose` | S empty→append `KernelProxyForeignBytesCompose` (+ dormant F `KernelDelegateInactiveDynamicWrite`) | — | — | — | S `KernelProxyForeignRmwEventCompose` | F density `KernelDensityBoundedCompose` |
 | proxy→foreign-proxy | S `KernelProxyToProxyVmapRmwCompose` | — | — | — | — | — | — |
 

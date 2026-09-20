@@ -8,6 +8,8 @@ Branch: `grok/kernel-comprehensive-fixtures`
 |-----|----------|------|
 | Event-only / unused-state compose × Probe | EventOnly + UnusedStateEvent | `c60eab5a8`, `953f6d397` |
 | self→proxy × vmaps / events | `KernelSelfToProxyVmapRmwCompose`, `KernelSelfToProxyEventCompose` | settle |
+| self→proxy × fixed structs | `KernelSelfToProxyStructCompose` | settle |
+| self→proxy × chunks / strings / chunked structs | `KernelSelfToProxyBytesCompose`, `KernelSelfToProxyStringCompose`, `KernelSelfToProxyChunkedStructCompose` | honest fence after compose attempt (MessageBusVerifier ~input 67) |
 | proxy→foreign-proxy × vmaps | `KernelProxyToProxyVmapRmwCompose` | settle |
 | proxy-self × strings / chunks | String/Bytes StateCompose | settle |
 | self × fixed struct write | `KernelSelfStructStateWriteCompose` (compose×Probe) | `5e00c83fa` |

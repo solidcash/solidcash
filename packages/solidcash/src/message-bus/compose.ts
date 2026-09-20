@@ -56,6 +56,7 @@ import {
   convergeMessageBusComputedResourceOutputs, finalizedByteGateOptionsForProvider, preflightMessageBusTransaction,
 } from './preflight.js';
 import { convergeMessageBusComputedValueChunkOutputs } from './computed-value-chunks.js';
+import { convergeMessageBusComputedDynamicChunkOutputs } from './computed-dynamic-chunks.js';
 import { deriveCompiledGraphPlan, type WorklistParticipant } from './worklist.js';
 import {
   canonicalValueChunkProducerIdentity, canonicalValueChunkProducerPathContext,
@@ -4406,7 +4407,9 @@ export class AtomicMessageBusComposition {
     const admit = (builder: TransactionBuilder): TransactionBuilder => {
       const convergence = convergeMessageBusComputedResourceOutputs(builder);
       const valueChunkConvergence = convergeMessageBusComputedValueChunkOutputs(builder);
-      if (convergence.repairs > 0 || valueChunkConvergence.repairs > 0) {
+      const dynamicChunkConvergence = convergeMessageBusComputedDynamicChunkOutputs(builder);
+      if (convergence.repairs > 0 || valueChunkConvergence.repairs > 0
+        || dynamicChunkConvergence.repairs > 0) {
         throw new Error(
           'messageBus: mutable resources changed after semantic-manifest convergence; refusing a stale manifest',
         );
@@ -4737,10 +4740,14 @@ export class AtomicMessageBusComposition {
         // State derived by a delegated or cross-participant call is unknowable to the isolated local builders.
         // Converge it on the complete graph before reading resource effects, so the next manifest authenticates
         // the repaired commitment rather than treating the late write as an unclaimed output mutation.
+        // Top-level dynamic chunk RMW is the same class: local probes freeze the prior chunk commitment while the
+        // route already authenticates the concat-derived replacement (aa→aabb) on the complete graph.
         const resourceConvergence = convergeMessageBusComputedResourceOutputs(provisional);
         const valueChunkConvergence = convergeMessageBusComputedValueChunkOutputs(provisional);
+        const dynamicChunkConvergence = convergeMessageBusComputedDynamicChunkOutputs(provisional);
         if (seededComputedResource || seededComputedValueChunk
-          || resourceConvergence.repairs > 0 || valueChunkConvergence.repairs > 0) {
+          || resourceConvergence.repairs > 0 || valueChunkConvergence.repairs > 0
+          || dynamicChunkConvergence.repairs > 0) {
           rebalanceFeeTail(provisional, 'converged mutable resource outputs');
         }
         // Independent semantic effects share one complete-graph observation pass. Record mutations monotonically,

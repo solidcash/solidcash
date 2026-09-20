@@ -21,8 +21,8 @@ const asBytes = (value: unknown): Uint8Array => {
 
 /**
  * self→foreign × chunks: Caller.poke → Store.append under messageBus.compose.
- * Empty→first-write settles. Append onto an already-chunked non-empty payload fails closed
- * (chunk covenant OP_EQUALVERIFY ~ip 5/13 on Store route input) — honest fence after attempt.
+ * Empty→first-write and nonempty RMW (seeded aa→aabb) both settle; compose restages the
+ * top-level dynamic chunk commitment from the route's concat-derived replacement.
  */
 describe('kernel foreign bytes RMW under composition', () => {
   it('settles Caller→Store empty→append first write under messageBus.compose', async () => {
@@ -94,7 +94,7 @@ describe('kernel foreign bytes RMW under composition', () => {
     expect(binToHex(asBytes((await store.getState()).payload))).toBe('bb');
   }, 300_000);
 
-  it('refuses Caller→Store append onto seeded non-empty chunks under compose (honest fence)', async () => {
+  it('settles Caller→Store append onto seeded non-empty chunks under compose (RMW)', async () => {
     const provider = createMessageBusCapstoneTestProvider();
 
     const storeArtifact = compileString(`pragma solidcash >=0.8.0;
@@ -150,7 +150,9 @@ describe('kernel foreign bytes RMW under composition', () => {
       funder: fee,
       changeAddress: fee.unlocker.generateLockingBytecode(),
     });
-    // Measured: Store chunk/input path OP_EQUALVERIFY (~ip 5 of 13) after genuine compose attempt.
-    await expect(composition.send()).rejects.toThrow(/OP_VERIFY|preflight failed at input/);
+    await expect(composition.send()).resolves.toMatchObject({
+      txid: expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
+    expect(binToHex(asBytes((await store.getState()).payload))).toBe('aabb');
   }, 300_000);
 });

@@ -34,6 +34,7 @@ Worktree: `.worktrees/kernel-comprehensive-fixtures`
 - **I3** `KernelFanInSharedCalleeCompose` — two callers sequentially poke shared Registry; entries consistent
 - **I4** `KernelSiblingOutStateCompose` — Mid projects Leaf.outState after Leaf.write
 - **J4** `KernelProxyBytecodePinRefuseForeign` — honest pin settles; foreign co-spend refused at proxy input 0
+- **I8** `KernelLowLevelCallCompose` — `address.call(payload)` / `__raw__` under kernel compose + unlocker/VM
 
 ## Fence
 - No `marketplace.test.ts` / `vitest.marketplace.config.ts` in this stream

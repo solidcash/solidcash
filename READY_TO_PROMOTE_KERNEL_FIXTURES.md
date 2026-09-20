@@ -78,10 +78,12 @@ Legend: **S** = settle fixture · **F** = honest fence · **—** = deferred / t
 Peers already settled: fan-in/out, nested callsite, sidecar self/foreign/proxy/proxy×foreign, DirectSend entry order. DualRuntimeSet-width × keccak = inherent density fence in `KernelDualRuntimeKeccakCompose`.
 
 ### Lifecycle column
-- **Settle (S):** upgrade (`KernelUpgradeCompose`, `KernelProxyUpgradeThenCompose`), Yul create (`KernelTypedYulCreateCompose`), resource-free split (`KernelAtomicSplitLifecycle`), resource-free merge (`KernelAtomicMergeLifecycle`), resource-free selfdestruct (`KernelSelfdestructCompose`).
-- **Honest fence (F):** statement-form / state-bearing selfdestruct and state/effect-bearing split/merge remain `KERNEL_LIFECYCLE` until geometry binds with journal provenance. Lifecycle + V4 signature provenance remains an SDK fence.
+- **Settle (S):** upgrade (`KernelUpgradeCompose`, `KernelProxyUpgradeThenCompose`), Yul create (`KernelTypedYulCreateCompose`), resource-free split (`KernelAtomicSplitLifecycle`), resource-free merge (`KernelAtomicMergeLifecycle`), resource-free + statement-form master-only selfdestruct (`KernelSelfdestructCompose`, `KernelSelfdestructStatementCompose`), lifecycle+V4 KTS (`KernelLifecycleV4SignatureCompose`).
+- **Honest fence (F):** state/effect-bearing split/merge/selfdestruct remain `KERNEL_LIFECYCLE` until journal-bound geometry; detached `sig` on lifecycle handlers remains `KERNEL_TX_SIGNATURE`.
 
 ## Product gaps closed this stream
+- **Statement-form selfdestruct(addr) under compose:** master-only contracts with constructor-bound recipients pin `outputs[INPUTINDEX]` under `messageBus: true`; standalone keeps whole-tx pin + fee floor. `KernelSelfdestructStatementCompose`.
+- **Lifecycle + V4 transaction-signature provenance:** remove SDK/verifier mutual exclusion; V4 suffix stays neutral while selector-derived lifecycle coexists with KTS siblings. `KernelLifecycleV4SignatureCompose`.
 - **Resource-free selfdestruct under compose:** offloaded `compactAtomicBinder` soft-binds token-free reclaim at the participant base; zero-parameter lifecycle handlers require mode 3 (not blanket mode 0). `KernelSelfdestructCompose` settles kill()+recipient reclaim with retired minting category.
 - **Mapping RMW × keccak:** graph-owned keccak now sets `deferUnresolved` like ecrecover (`StatefulContract` `_createBuilder`); single-key `bal[k]+=v` + keccak under compose settles (`KernelDualRuntimeKeccakCompose`).
 - **Fixed dual-key add+remove under compose:** `singleTargetRowBatch` incorrectly treated distinct-key multi-slot writes as alias-arm inserts (P′/NEW collision). Gate on `uniqueBatchTargets.size === 1` so distinct-key add+remove keeps the trailing-predecessor model (`KernelDualRuntimeKeccakCompose`).
@@ -101,7 +103,7 @@ Peers already settled: fan-in/out, nested callsite, sidecar self/foreign/proxy/p
 
 ## Still open / fence
 - DualRuntimeSet-width density wall (inherent)
-- State/effect-bearing split/merge and statement-form / state-bearing selfdestruct remain `KERNEL_LIFECYCLE`; resource-free split/merge/selfdestruct + upgrade/create settled
+- State/effect-bearing split/merge/selfdestruct remain `KERNEL_LIFECYCLE`; resource-free + statement-form master-only selfdestruct, split/merge, upgrade/create, and lifecycle+V4 KTS settled
 - ~~proxy→foreign-proxy variable-width Item[] remains non-delegate compile/eligibility fence (int[] settles)~~
   settled via FieldAccess rename guard in `InlineStoragePointerCalls`
 

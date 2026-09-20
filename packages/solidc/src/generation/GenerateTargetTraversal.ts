@@ -14664,13 +14664,31 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   // `selfdestruct(addr)`: the implied selfdestruct modifier collapses all state UTXOs (no recreation); here we
-  // pin the freed balance to addr. Two checks: (1) tx.outputs[0].lockingBytecode == addr (the destination), and
-  // (2) tx has exactly one output, so the collapsed value can only land at addr (or be left as miner fee) - it
-  // cannot be siphoned to a second recipient. So the contract's end-of-life value reaches addr, whoever spends.
+  // pin the freed balance to addr.
+  // Standalone: (1) tx.outputs[0].lockingBytecode == addr, (2) exactly one output, (3) fee floor < 2000.
+  // Kernel message-bus: multi-participant + verifier + fee tails make the whole-tx pin impossible. Pin the
+  // active master slot instead (OP_INPUTINDEX): token-free reclaim at that index with conserved sats and the
+  // stated recipient. Mode-3 verifier census still authenticates category retirement.
   visitSelfdestructStatement(node: SelfdestructStatementNode): Node {
     const locationData = { location: node.location, positionHint: PositionHint.END };
-    // (1) Address pin: tx.outputs[0].lockingBytecode == addr
+    // messageBusKernel defaults on for ordinary compiles, and `currentContractHasMessageBus` is still false
+    // during the first contract visit (route synthesis sets messageBusRoute afterward). Key the pin fork on
+    // the explicit user-facing `messageBus: true` request instead. Standalone selfdestruct keeps the whole-tx
+    // single-output + fee-floor covenant.
+    const kernelMessageBusRetirement = this.compilerOptions.messageBus === true
+      && this.compilerOptions.messageBusKernel === true
+      && this.currentFunction?.modifiers.includes(FunctionModifier.SELFDESTRUCT) === true;
     node.recipient = this.visit(node.recipient);          // [recipient_lb]
+    if (kernelMessageBusRetirement) {
+      // Recipient pin only: mode-3 verifier census already requires token-free reclaim + conserved sats.
+      this.emit(Op.OP_INPUTINDEX, locationData);          // [recipient_lb, base]
+      this.pushToStack('(value)');
+      this.emit(Op.OP_OUTPUTBYTECODE, locationData);      // [recipient_lb, output_base_lb]
+      this.emit(Op.OP_EQUALVERIFY, locationData);         // []
+      this.popFromStack(2);
+      return node;
+    }
+    // (1) Address pin: tx.outputs[0].lockingBytecode == addr
     this.emit(encodeInt(0n), locationData);               // [recipient_lb, 0]
     this.pushToStack('(value)');
     this.emit(Op.OP_OUTPUTBYTECODE, locationData);        // [recipient_lb, output0_lb]

@@ -570,16 +570,15 @@ describe('atomic compiled invocation graph', () => {
       legacyPeer, ['aa'.repeat(32), 'bb'.repeat(32)], { 1: '2a' },
     )).toThrow(/protocol 4/);
 
-    const lifecycle = messageBus.planCompiledGraph([
-      { artifact: lifecycleArtifact('split', [1, 2, 3, 4]), lockingBytecode: '51'.repeat(64) },
-    ], [{ parent: null, callee: 0, function: 'split', args: [2n] }]).participants[0].lifecycle!;
-    for (const lifecycleParticipant of [0, 1]) {
-      const unsupportedCombination = structuredClone(signedPlan);
-      unsupportedCombination.participants[lifecycleParticipant].lifecycle = lifecycle;
-      expect(() => messageBus.finalizeAtomicInvocationGraph(
-        unsupportedCombination, ['aa'.repeat(32), 'bb'.repeat(32)], { 1: '2a' },
-      )).toThrow(/transaction-signature provenance cannot yet be combined with participant lifecycle geometry/);
-    }
+    // Resource-free lifecycle may share a V4 manifest with KTS siblings: the V4 participant suffix stays
+    // neutral (mode=0,count=0) while selector-derived authority authenticates split/merge/selfdestruct.
+    // End-to-end coverage lives in KernelLifecycleV4SignatureCompose; the previous early refuse is gone.
+    const lifecycleV4 = messageBus.planCompiledGraph([
+      { artifact: lifecycleArtifact('split', [1, 2, 4]), lockingBytecode: '51'.repeat(64) },
+    ], [{ parent: null, callee: 0, function: 'split', args: [2n] }]);
+    expect(lifecycleV4.participants[0].lifecycle?.kind).toBe('split');
+    expect(lifecycleV4.participants[0].artifact.messageBus?.atomicMessageBus?.protocolVersions)
+      .toEqual(expect.arrayContaining([4]));
   });
 
   it('projects forwarded and constructed signature arrays out of child invocation bytes', () => {

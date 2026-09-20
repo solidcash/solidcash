@@ -11,14 +11,18 @@ Branch: `grok/kernel-comprehensive-fixtures`
 
 ## Residual
 - DualRuntimeSet-width × keccak density — inherent (probe: max trailing 130; salt cannot clear margin)
-- State/effect-bearing split/merge — still `KERNEL_LIFECYCLE` until geometry binds with journal provenance
-- Statement-form `selfdestruct(addr)` / state-bearing selfdestruct — still `KERNEL_LIFECYCLE`
-- Lifecycle + V4 transaction-signature provenance combination — SDK fence
+- State/effect-bearing split/merge/selfdestruct — still `KERNEL_LIFECYCLE` (graph requires master-only
+  `blockSize===1`; needs journal-bound topology + verifier census beyond mode-1/2/3 master-only arms)
+- Detached `sig` leaves on lifecycle handlers — still `KERNEL_TX_SIGNATURE` (honest)
 - ~~proxy→foreign-proxy variable-width Item[] — non-delegate eligibility fence (int[] settles)~~
   **SETTLED**: `InlineStoragePointerCalls.applyRename` now skips `FieldAccessNode` member names
   (same guard as IRSH/IECH). `KernelProxyToProxyChunkedStructCompose` emits `delegateArtifact` for
   bare Item[] field-fill and settles dual-proxy Item[] empty→push compose alongside int[].
 - ~~Selfdestruct product admit/settle~~ **SETTLED** (resource-free modifier-only)
+- ~~Statement-form `selfdestruct(addr)`~~ **SETTLED** on master-only contracts under compose
+  (`KernelSelfdestructStatementCompose`) — kernel pin uses active master slot; standalone keeps whole-tx pin
+- ~~Lifecycle + V4 KTS~~ **SETTLED** (`KernelLifecycleV4SignatureCompose`) — V4 suffix stays neutral
+  `mode=0,count=0`; selector-derived lifecycle beside signed siblings
 
 ## Out of scope
 Marketplace / `requiredKernelProofs` / plan-wave labels / chipnet

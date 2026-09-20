@@ -503,7 +503,6 @@ export function finalizeAtomicInvocationGraph(
   const outputIdentityV2 = plan.participants.some((participant) =>
     participant.outputLockingBytecode !== undefined
       && participant.outputLockingBytecode.toLowerCase() !== participant.lockingBytecode.toLowerCase());
-  const hasLifecycle = plan.participants.some((participant) => participant.lifecycle !== undefined);
   const transactionSignatureFrames = plan.invocations.map((invocation) => {
     const participant = plan.participants[invocation.callee];
     return participant.artifact.messageBus?.atomicMessageBus?.protocolVersions?.includes(4)
@@ -514,16 +513,11 @@ export function finalizeAtomicInvocationGraph(
     signatureFrame.length > 0
       && plan.participants[plan.invocations[invocationIndex].callee]
         .artifact.messageBus?.atomicMessageBus?.protocolVersions?.includes(4));
-  // V4 carries the V3 participant suffix so the wire remains extensible, but the generated V4 verifier currently
-  // accepts only its neutral lifecycle spelling. Fail before manifest/transaction construction rather than
-  // publishing a composition which every participant covenant must reject. This fence is intentionally about
-  // semantic capabilities, independent of participant ordering or whether the signed row belongs to the
-  // lifecycle participant itself.
-  if (signatureV4 && hasLifecycle) {
-    throw new Error(
-      'messageBus: atomic transaction-signature provenance cannot yet be combined with participant lifecycle geometry',
-    );
-  }
+  // V4 carries the V3 participant suffix for wire extensibility. Resource-free lifecycle authority stays
+  // selector-derived from the one-row local batch (and the verifier commitment lifecycle code); the V4 suffix
+  // remains the neutral `mode=0,count=0` spelling. Signed non-lifecycle siblings may therefore share a V4
+  // manifest with a lifecycle participant. Detached `sig` leaves on the lifecycle handler itself remain a
+  // compiler `KERNEL_TX_SIGNATURE` fence.
   if (outputIdentityV2) {
     const legacy = plan.participants.findIndex((participant) =>
       !participant.artifact.messageBus?.atomicMessageBus?.protocolVersions?.includes(2));

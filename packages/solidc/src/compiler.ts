@@ -5174,16 +5174,11 @@ function synthesizeMessageBusRoute(
     // (single-output pin), or non-master-only retirement still need one authenticated frame that binds geometry
     // with journal provenance, so they remain KERNEL_LIFECYCLE. Combining lifecycle with V4 transaction-signature
     // provenance stays an SDK fence.
-    const hasSelfdestructStatement = kernelLifecycleKind === 'selfdestruct'
-      && (fn.impliedSelfdestruct === true || (() => {
-        let found = false;
-        walkInvocationAst(fn.body, (node) => {
-          if (node instanceof SelfdestructStatementNode) found = true;
-        });
-        return found;
-      })());
+    // Statement-form `selfdestruct(addr)` on a master-only contract is admitted under kernel: codegen pins the
+    // active master reclaim slot (not whole-tx single-output). State-bearing retirement still needs deletion
+    // metadata, so !masterOnlyLifecycleContract remains KERNEL_LIFECYCLE.
     const selfdestructNeedsRetirementGeometry = kernelLifecycleKind === 'selfdestruct'
-      && (hasSelfdestructStatement || !masterOnlyLifecycleContract);
+      && !masterOnlyLifecycleContract;
     if (kernelLifecycleKind && (footprint.unknown || footprint.reads.length > 0 || footprint.writes.length > 0
       || footprint.effects.length > 0 || lifecycleHasDetachedTransactionSignature
       || fn.messageBusUsesTransactionSignature === true || selfdestructNeedsRetirementGeometry)) {
@@ -10452,8 +10447,9 @@ function synthesizeMessageBusRoute(
           && settledDeploymentParents.length * 41 == activeDeploymentParents.length * 4);
         require(activeSidecarRows * 2 == activeSidecarTargets.length);
         require(!(${atomicManifestV4Expression}) || transactionSignatureRows > 0);
-        ${kernelLifecycleHandlers.size > 0
-    ? 'require(activeLifecycleMode == 0 || transactionSignatureRows == 0);' : ''}
+        // Selector-derived lifecycle (activeLifecycleMode from the local batch) is independent of V4 KTS row
+        // frames. The V4 participant suffix stays neutral (mode=0,count=0); non-zero wire lifecycle remains
+        // refused at the V4 cursor above. Detached sig leaves on lifecycle handlers stay KERNEL_TX_SIGNATURE.
         require(cursor == callManifest.length && consumedLocalRows == expectedLocalRows
           && batchCursor == localBatch.length);
         ${!graphExecutionContext ? '' : `

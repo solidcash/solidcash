@@ -52,15 +52,18 @@ Worktree: `.worktrees/kernel-comprehensive-fixtures`
 
 ## Leftovers landed this stream (descriptive names only in fixtures)
 - `KernelRefusedBatchSlot` — repeated selector drop vs refused-handler compose fail-closed (`KERNEL_OPAQUE_EFFECT`)
-- `KernelProxyEventFunderCompose` — deployProxy emit under `messageBus.compose` characterized OP_VERIFY (compose path; same class as proxy×foreign×event)
+- `KernelProxyEventFunderCompose` — deployProxy Ping via dispatch `.send()` settles none-cap event NFT on proxy category; `messageBus.compose`+`executionArtifact` characterized OP_VERIFY
 - `KernelForeignTokenTransferCompose` — Caller→Token FT transfer under compose; remainder + tamper fail-closed
 - `KernelProxyNestedCallsiteCompose` — deployProxy scalar write + Probe.touch via compose+`executionArtifact` settle
-- `KernelProxyUpgradeThenCompose` — fence: retargeting compose executor to a distinct V2 impl fails closed (`Compiler-authenticated delegate forwarding target is not materialized`; SolidCashProxy bakes V1 lock)
+- `KernelProxyUpgradeThenCompose` — param-mode `PinnedProxy` settles V1 then V2 via `ProxyContract` retarget (`bigint` layout); baked SolidCashProxy compose executor retarget fails closed (`Compiler-authenticated delegate forwarding target is not materialized`). No published `upgrades.upgradeProxy` / setImpl API
+- `KernelProxyForeignRmwEventCompose` — deployProxy poke→Bank.credit+Ping via `withExternalCall` settles (bal readback via SortedList); full three-axis `messageBus.compose` fail-closed; fan-out Caller×Bank×Ping under compose settles
+- `KernelDualRuntimeKeccakCompose` — Ping emit + keccak sidecar under compose settles (no mapping RMW); fixed dual-key membership×keccak compose fails closed at keccak probe-trace extraction; DualRuntimeSet-width arrays+keccak hits density / balanced-block wall
 
-## Still open / fence
-- Proxy×foreign×event under compose (`KernelProxyForeignRmwEventCompose` characterization; fan-out without proxy settles)
-- Proxy emit under compose (above); DualRuntimeSet-width + event + sidecar co-settle
-- Published `upgrades.upgradeProxy` / setImpl path for upgrade-then-compose settle (fence above)
+## Still open / fence (honest product gaps — proofs landed above)
+- Proxy×event and proxy×foreign×event under `messageBus.compose` remain OP_VERIFY (dispatch / `withExternalCall` / fan-out settle instead)
+- Mapping RMW × keccak under compose: no side-car read in probe trace (scalar event×keccak settles)
+- DualRuntimeSet-width × keccak: density wall (same class as density-bounded DualRuntimeSet compose)
+- No published `upgrades.upgradeProxy` / setImpl; param-mode proxy retarget is the settle path
 
 ## Fence
 - No `marketplace.test.ts` / `vitest.marketplace.config.ts` in this stream

@@ -10,7 +10,7 @@ Branch: `grok/kernel-comprehensive-fixtures`
   lifecycle authorization (mode 3) on offloaded routes; detached verifier keeps mode-3 census.
 
 ## Residual
-- DualRuntimeSet-width × keccak density — inherent (probe in progress)
+- DualRuntimeSet-width × keccak density — inherent (probe: max trailing 130; salt cannot clear margin)
 - State/effect-bearing split/merge — still `KERNEL_LIFECYCLE` until geometry binds with journal provenance
 - Statement-form `selfdestruct(addr)` / state-bearing selfdestruct — still `KERNEL_LIFECYCLE`
 - Lifecycle + V4 transaction-signature provenance combination — SDK fence

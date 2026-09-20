@@ -41,6 +41,8 @@ Worktree: `.worktrees/kernel-comprehensive-fixtures`
 - **K1b** `KernelForeignEcrecoverSidecarCompose` — Caller→Sink.ecrecoverPubKey A/B pair recreate + wrong-commitment fail-closed
 - **K2a** `KernelSelfKeccakSidecarCompose` — Acc.reveal under compose (Probe co-spend); branded Acc sidecar
 - **K2b** `KernelSelfEcrecoverSidecarCompose` — Acc.recover under compose; A/B on Acc category
+- **K3a** `KernelProxyKeccakSidecarCompose` — deployProxy `__forward` reveal settle + compose×executionArtifact characterization
+- **K3b** `KernelProxyEcrecoverSidecarCompose` — deployProxy `__forward` recover settle + compose characterization
 - Marketplace touchpoints (docs only): `takeJob` ECDSA.recover / keccak digest prep → K1b then K4b; facade hash→foreign → K3a/K4a
 
 ## Fence

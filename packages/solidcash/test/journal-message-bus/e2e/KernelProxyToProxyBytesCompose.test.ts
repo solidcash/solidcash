@@ -1,4 +1,4 @@
-import { hexToBin } from '@bitauth/libauth';
+import { binToHex, hexToBin } from '@bitauth/libauth';
 import { compileString } from 'solidc';
 import { describe, expect, it } from 'vitest';
 import {
@@ -15,14 +15,19 @@ const KERNEL = {
   suppressWarnings: true,
 } as const;
 
+const asBytes = (value: unknown): Uint8Array => {
+  if (value instanceof Uint8Array) return value;
+  if (typeof value === 'string') return hexToBin(value.startsWith('0x') ? value.slice(2) : value);
+  throw new Error(`unexpected bytes state: ${typeof value}`);
+};
+
 /**
  * proxy→foreign-proxy × chunks: deployProxy Acc.poke → deployProxy Store.append under compose with
- * dual executionArtifact/executor. Empty→first-write fails closed (chunk covenant OP_EQUALVERIFY on
- * a short structural input) — honest fence after attempt. Contrast KernelProxyForeignBytesCompose
- * (proxy→foreign non-proxy Store) which settles the same empty→append shape.
+ * dual executionArtifact/executor. Empty→first-write settles with ChunkNft mint into each proxy
+ * callee trailing band.
  */
 describe('kernel proxy → foreign-proxy bytes under composition', () => {
-  it('refuses deployProxy poke→deployProxy Store empty→append under compose (honest fence)', async () => {
+  it('settles deployProxy poke→deployProxy Store empty→append under compose', async () => {
     const provider = createMessageBusCapstoneTestProvider();
     const signer = new Signer(new Uint8Array(32).fill(0x48), provider);
     for (let index = 0; index < 60; index += 1) {
@@ -92,7 +97,10 @@ describe('kernel proxy → foreign-proxy bytes under composition', () => {
       changeAddress: funder.unlocker.generateLockingBytecode(),
     });
 
-    // Measured: dual-proxy chunk mint path OP_EQUALVERIFY (short structural input ~ip 1/12).
-    await expect(composition.send()).rejects.toThrow(/OP_VERIFY|preflight failed/);
+    await expect(composition.send()).resolves.toMatchObject({
+      txid: expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
+    expect(binToHex(asBytes((await store.proxy.getState()).payload))).toBe('22');
+    expect((await caller.proxy.getState()).count).toBe(1n);
   }, 300_000);
 });

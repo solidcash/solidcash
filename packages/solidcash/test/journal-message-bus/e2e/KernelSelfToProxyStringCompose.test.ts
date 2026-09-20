@@ -17,12 +17,11 @@ const KERNEL = {
 
 /**
  * self→proxy × strings: non-proxy Caller.poke → deployProxy Acc.setNote/append under compose with
- * executionArtifact/executor on the proxy callee. Empty→set and empty→append fail closed at
- * MessageBusVerifier after a genuine compose attempt — honest fence. Proxy-self string writes under
- * compose remain covered by KernelProxyStringStateCompose.
+ * executionArtifact/executor on the proxy callee. Empty→set and empty→append settle with ChunkNft mint
+ * into the proxy trailing band.
  */
 describe('kernel self→proxy string compose', () => {
-  it('refuses Caller.poke→deployProxy Acc setNote under compose (honest fence)', async () => {
+  it('settles Caller.poke→deployProxy Acc setNote then append under compose', async () => {
     const provider = createMessageBusCapstoneTestProvider();
     const signer = new Signer(new Uint8Array(32).fill(0x74), provider);
     for (let index = 0; index < 40; index += 1) {
@@ -105,8 +104,10 @@ describe('kernel self→proxy string compose', () => {
       funder,
       changeAddress: funder.unlocker.generateLockingBytecode(),
     });
-    // Measured: MessageBusVerifier OP_VERIFY (~input 67) after genuine compose attempt.
-    await expect(setComposition.send()).rejects.toThrow(/OP_VERIFY|preflight failed at input/);
+    await expect(setComposition.send()).resolves.toMatchObject({
+      txid: expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
+    expect((await deployed.proxy.getState()).note).toBe('alpha');
 
     const appendCallsite = callerArtifact.abi.find((entry) => entry.name === 'pokeAppend')
       ?.externalCalls?.find((call) => call.functionName === 'append');
@@ -128,6 +129,9 @@ describe('kernel self→proxy string compose', () => {
       funder: appendFunder,
       changeAddress: appendFunder.unlocker.generateLockingBytecode(),
     });
-    await expect(appendComposition.send()).rejects.toThrow(/OP_VERIFY|preflight failed at input/);
+    await expect(appendComposition.send()).resolves.toMatchObject({
+      txid: expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
+    expect((await deployed.proxy.getState()).note).toBe('alpha-beta');
   }, 300_000);
 });

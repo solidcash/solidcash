@@ -73,6 +73,7 @@ import {
   parseArrayTypeString,
   isFixedWidthType,
   unpackFixedWidthArray,
+  packFixedWidthArray,
   decodePackedEventArray,
   scriptToBytecode,
   BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX,
@@ -31592,7 +31593,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       const selectedWrites = g.compilerRoute?.rowArguments
         ? [...new Set(g.compilerRoute.rowArguments.flatMap((row) => row.handler.dynamicWrites ?? []))]
         : routeWrites;
-      for (const name of selectedWrites) activeDynamicWrites.add(name);
+      // Row-handler metadata may omit dynamicWrites (message-bus handlers historically do). Fall back to the
+      // route-authenticated write set so proxy-callee empty first-writes still receive speculative ChunkNft pads.
+      const effectiveSelectedWrites = selectedWrites.length > 0 ? selectedWrites : routeWrites;
+      for (const name of effectiveSelectedWrites) activeDynamicWrites.add(name);
       for (const name of routeWrites) {
         delegateDynamicWrites.add(name);
         if (!dynamicWrites.includes(name)) dynamicWrites.push(name);
@@ -32921,7 +32925,15 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // Break the first-probe ordering cycle when a scalar vmap INSERT follows newly-written dynamic state chunks:
     // reserve one chunk candidate so NEW is placed after the dynamic region and the VM can reach both commitment
     // checks. Derivation replaces it with the exact count/commitments (or removes it for an empty final value).
-    if (sortedInserts.length > 0 || usesComposedDelegateDynamicTail || computedValueChunkRuns.length > 0) {
+    // Compiler-route proxy callees (compose executionArtifact/executor) publish trailingCapacity for ChunkNft
+    // co-spends, but empty first-writes have no pre-state chunks. Without a speculative placeholder the trailing
+    // band stays OP_TRUE density pads and the executor EQUALVERIFYs ChunkNft P2SH32 against 0x51.
+    const compilerRouteEmptyDynamicMint = compilerRouteDelegateLayout !== undefined
+      && dynamicChunkVars.some((variable) => variable.delegate === true
+        && activeDynamicWrites.has(variable.name)
+        && (oldDynamicChunkCounts.get(variable.name) ?? 0) === 0);
+    if (sortedInserts.length > 0 || usesComposedDelegateDynamicTail || computedValueChunkRuns.length > 0
+      || compilerRouteEmptyDynamicMint) {
       for (const dv of builder.getDynamicChunkVars()) {
         // The route-wide layout can contain an inactive sibling's dynamic write. Its empty pre-state is already
         // the exact zero-width run; a speculative chunk could never be pinned because no authenticated row
@@ -32934,7 +32946,52 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           // seed that floor up front — speculative growth cannot fix it.
           const seedFloor = dv.delegateSuffix === true || usesComposedDelegateDynamicTail ? 2 : 1;
           const seedCount = Math.max(oldDynamicChunkCounts.get(dv.name) ?? 0, seedFloor);
-          builder.setChunkRawCommitments(dv.name, Array.from({ length: seedCount }, () => '00'));
+          // Empty first-writes of fixed-width T[] under a compiler-route proxy callee often never expose an
+          // OTC pin for graph convergence (unlike bytes/string). When the pre-state is empty and the selected
+          // row's visible args are exactly one element, seed the packed one-element array commitment directly.
+          const currentValue = (onChainState as unknown as Record<string, unknown>)[dv.name];
+          const emptyPrestate = currentValue === undefined || currentValue === ''
+            || (currentValue instanceof Uint8Array && currentValue.length === 0)
+            || (Array.isArray(currentValue) && currentValue.length === 0);
+          const array = emptyPrestate ? parseArrayTypeString(dv.type) : undefined;
+          const exactFromPush = emptyPrestate && array && isFixedWidthType(array.elementType)
+            ? selectedDynamicRows.flatMap((row) => {
+              const visible = row.handler.inputs.filter((input) => !input.name.startsWith('__internal__'));
+              if (visible.length < 1 || row.args.length < 1) return [];
+              // Prefer the last visible arg whose type matches the element (push(amount)).
+              const elementIndex = [...visible.entries()].reverse()
+                .find(([, input]) => input.type === array.elementType
+                  || ((input.type === 'int' || input.type === 'uint' || input.type === 'bigint')
+                    && (array.elementType.startsWith('int') || array.elementType.startsWith('uint')
+                      || array.elementType === 'bigint')))?.[0];
+              if (elementIndex === undefined) return [];
+              try {
+                const element = row.args[elementIndex];
+                if (typeof element !== 'bigint' && typeof element !== 'boolean'
+                  && !(element instanceof Uint8Array)) return [];
+                const blob = packFixedWidthArray([element], array.elementType);
+                if (blob.length === 0) return [];
+                return [{
+                  element,
+                  commitments: splitValueIntoChunks(blob).map((chunk, index) => buildChunkCommitment(
+                    index, chunk, this.inner.provider.consensusLimits?.maximumNftCommitmentBytes,
+                  )),
+                }];
+              } catch {
+                return [];
+              }
+            })[0]
+            : undefined;
+          if (exactFromPush && exactFromPush.commitments.length > 0) {
+            builder.setChunkRawCommitments(dv.name, exactFromPush.commitments);
+            // Keep the data-NFT A$len header aligned with the packed blob the chunks commit to.
+            builder.setState(dv.name, [exactFromPush.element]);
+          } else {
+            builder.setChunkRawCommitments(
+              dv.name,
+              Array.from({ length: seedCount }, () => '00'),
+            );
+          }
         }
       }
     }

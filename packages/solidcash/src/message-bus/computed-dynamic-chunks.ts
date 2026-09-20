@@ -84,6 +84,23 @@ export function convergeMessageBusComputedDynamicChunkOutputs(
   }
 
   const ownedOutputs = [...owners.keys()].sort((a, b) => a - b);
+  if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+    ?.SOLIDC_DEBUG_DYNAMIC_CHUNK_CONVERGE === '1') {
+    console.error('dynamic-chunk-converge-owners', JSON.stringify({
+      blocks: assembly.blocks.map((block) => ({
+        base: block.base,
+        blockSize: block.blockLayout.blockSize,
+        trailingBase: block.blockLayout.trailingBase,
+        trailingCapacity: block.blockLayout.trailingCapacity,
+      })),
+      ownedOutputs,
+      placeholders: ownedOutputs.map((outputIndex) => ({
+        outputIndex,
+        commitment: builder.outputs[outputIndex]?.token?.nft?.commitment ?? '',
+        category: String(builder.outputs[outputIndex]?.token?.category ?? '').slice(0, 16),
+      })),
+    }));
+  }
   if (owners.size === 0) return { repairs: 0, rounds: 0, ownedOutputs, outputs: [] };
 
   const changedOutputs = new Set<number>();
@@ -133,6 +150,18 @@ export function convergeMessageBusComputedDynamicChunkOutputs(
       vm.evaluate({ inputIndex, sourceOutputs, transaction });
     }
 
+    if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+      ?.SOLIDC_DEBUG_DYNAMIC_CHUNK_CONVERGE === '1') {
+      console.error('dynamic-chunk-converge-round', JSON.stringify({
+        round,
+        observers: [...inputIndices],
+        proposals: [...commitmentProposals.entries()].map(([outputIndex, expected]) => ({
+          outputIndex,
+          expected: binToHex(expected),
+          current: builder.outputs[outputIndex]?.token?.nft?.commitment ?? '',
+        })),
+      }));
+    }
     let changed = false;
     for (const [outputIndex, expected] of commitmentProposals) {
       const output = builder.outputs[outputIndex];
@@ -156,4 +185,22 @@ export function convergeMessageBusComputedDynamicChunkOutputs(
   throw new Error(
     `messageBus: dynamic-chunk outputs did not converge after ${maximumRounds} complete-graph passes`,
   );
+}
+
+/**
+ * Local participant builders report incomplete dynamic chunks from frozen `00` probe placeholders. Complete-graph
+ * OTC convergence may already have replaced those commitments on `builder`; only treat the graph as incomplete
+ * when a placeholder remains in the owned trailing chunk run (or no owned run was found at all).
+ */
+export function dynamicChunkPlaceholdersRemain(
+  builder: TransactionBuilder,
+  convergence: ComputedDynamicChunkConvergence,
+  incomplete: readonly { participant: number; variable: string; resolved: number; total: number }[],
+): boolean {
+  if (incomplete.length === 0) return false;
+  if (convergence.ownedOutputs.length === 0) return true;
+  return convergence.ownedOutputs.some((outputIndex) => {
+    const commitment = builder.outputs[outputIndex]?.token?.nft?.commitment ?? '';
+    return commitment === '' || commitment === '00';
+  });
 }

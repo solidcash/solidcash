@@ -16,11 +16,11 @@ const KERNEL = {
 
 /**
  * proxy→foreign-proxy × strings: deployProxy Acc.poke → deployProxy Store.append under compose with
- * dual executionArtifact/executor. Empty→first-write fails closed (same dual-proxy chunk covenant
- * fence as KernelProxyToProxyBytesCompose) — honest fence after attempt.
+ * dual executionArtifact/executor. Empty→first-write settles with ChunkNft mint into the Store proxy
+ * trailing band.
  */
 describe('kernel proxy → foreign-proxy string under composition', () => {
-  it('refuses deployProxy poke→deployProxy Store empty→append under compose (honest fence)', async () => {
+  it('settles deployProxy poke→deployProxy Store empty→append under compose', async () => {
     const provider = createMessageBusCapstoneTestProvider();
     const signer = new Signer(new Uint8Array(32).fill(0x49), provider);
     for (let index = 0; index < 60; index += 1) {
@@ -90,7 +90,10 @@ describe('kernel proxy → foreign-proxy string under composition', () => {
       changeAddress: funder.unlocker.generateLockingBytecode(),
     });
 
-    // Measured: dual-proxy string/chunk mint path OP_EQUALVERIFY under compose.
-    await expect(composition.send()).rejects.toThrow(/OP_VERIFY|preflight failed/);
+    await expect(composition.send()).resolves.toMatchObject({
+      txid: expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
+    expect((await store.proxy.getState()).note).toBe('hi');
+    expect((await caller.proxy.getState()).count).toBe(1n);
   }, 300_000);
 });

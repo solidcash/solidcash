@@ -56,7 +56,10 @@ import {
   convergeMessageBusComputedResourceOutputs, finalizedByteGateOptionsForProvider, preflightMessageBusTransaction,
 } from './preflight.js';
 import { convergeMessageBusComputedValueChunkOutputs } from './computed-value-chunks.js';
-import { convergeMessageBusComputedDynamicChunkOutputs } from './computed-dynamic-chunks.js';
+import {
+  convergeMessageBusComputedDynamicChunkOutputs,
+  dynamicChunkPlaceholdersRemain,
+} from './computed-dynamic-chunks.js';
 import { deriveCompiledGraphPlan, type WorklistParticipant } from './worklist.js';
 import {
   canonicalValueChunkProducerIdentity, canonicalValueChunkProducerPathContext,
@@ -5149,7 +5152,11 @@ export class AtomicMessageBusComposition {
               + [...missingReturnParticipants].join(', '),
             );
           }
-          if (assembled.incompleteDynamicChunks.length > 0) {
+          // Local builders freeze `00` placeholders; complete-graph OTC convergence above may already have
+          // replaced them. Only fail closed when a placeholder still remains on the owned trailing chunk run.
+          if (dynamicChunkPlaceholdersRemain(
+            provisional, dynamicChunkConvergence, assembled.incompleteDynamicChunks,
+          )) {
             const detail = assembled.incompleteDynamicChunks.map((item) =>
               `${item.participant}:${item.variable} (${item.resolved}/${item.total})`).join(', ');
             throw new Error(`messageBus: stable graph retains incomplete dynamic chunks: ${detail}`);
@@ -5194,7 +5201,10 @@ export class AtomicMessageBusComposition {
         throw new Error('messageBus: participant spans did not converge after compact assembly');
       }
     }
-    if (assembled.incompleteDynamicChunks.length > 0) {
+    const finalDynamicChunkConvergence = convergeMessageBusComputedDynamicChunkOutputs(assembled.builder);
+    if (dynamicChunkPlaceholdersRemain(
+      assembled.builder, finalDynamicChunkConvergence, assembled.incompleteDynamicChunks,
+    )) {
       const detail = assembled.incompleteDynamicChunks.map((item) =>
         `${item.participant}:${item.variable} (${item.resolved}/${item.total})`).join(', ');
       throw new Error(`messageBus: final graph retains incomplete dynamic chunks: ${detail}`);

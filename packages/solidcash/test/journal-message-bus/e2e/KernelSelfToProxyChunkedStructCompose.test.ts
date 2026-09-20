@@ -16,13 +16,12 @@ const KERNEL = {
 } as const;
 
 /**
- * self→proxy × chunked structs: non-proxy Caller.poke → deployProxy Acc.append (Item[] whole-element
- * push) under compose with executionArtifact/executor. Whole-element push keeps the handler
- * delegate-eligible; the compose path still fails closed after a genuine attempt — honest fence.
- * Pure-self pooled Item[] writes remain covered by KernelPooledDynamicArrayWriter.
+ * self→proxy × chunked structs: non-proxy Caller.poke → deployProxy Acc.append (Item[] pooled
+ * field fill + nested Probe, the product shape that emits delegateArtifact for Item[]+string)
+ * under compose with executionArtifact/executor. Empty→first-write settles with ChunkNft mint.
  */
 describe('kernel self→proxy chunked-struct compose', () => {
-  it('refuses Caller.poke→deployProxy Acc Item[] append under compose (honest fence)', async () => {
+  it('settles Caller.poke→deployProxy Acc Item[] append under compose', async () => {
     const provider = createMessageBusCapstoneTestProvider();
     const signer = new Signer(new Uint8Array(32).fill(0x76), provider);
     for (let index = 0; index < 40; index += 1) {
@@ -33,15 +32,31 @@ describe('kernel self→proxy chunked-struct compose', () => {
       });
     }
 
+    const probeArtifact = compileString(`pragma solidcash >=0.8.0;
+      contract Probe() { function touch() public { require(true); } }`, {
+      ...KERNEL, messageBusGraphContext: true,
+    });
+    const probeBase = new Contract(probeArtifact, [], { provider });
+    const probeSetup = await setupStatefulUtxos(
+      provider, probeBase, probeArtifact.stateLayout!, {}, { saltContract: true },
+    );
+    const probe = StatefulContract.withCategory(
+      probeBase.withCategory(hexToBin(probeSetup.categoryId)), probeSetup.categoryId,
+    );
+
     const implArtifact = compileString(`pragma solidcash >=0.8.0;
+      interface IProbe { function touch() external; }
       struct Item { int amount; string label; bool active; }
       contract Acc() {
         Item[] items;
         function initialize() public { require(true); }
-        function append(int amount, string label) public {
-          // Whole-element push keeps the handler delegate-eligible (field-by-field
-          // fill after bare push() drops delegateArtifact for deployProxy).
-          this.items.push(Item(amount, label, true));
+        function append(address probe, int amount, string label) public {
+          this.items.push();
+          int id = this.items.length - 1;
+          this.items[id].amount = amount;
+          this.items[id].label = label;
+          this.items[id].active = true;
+          IProbe(probe).touch();
           require(true);
         }
       }`, KERNEL);
@@ -51,12 +66,13 @@ describe('kernel self→proxy chunked-struct compose', () => {
       .toMatchObject({ eligible: true });
 
     const deployed = await upgrades.deployProxy(getContractFactory(implArtifact, signer), []);
+    deployed.implementation._registerResolvedExternal('IProbe', probe);
 
     const callerArtifact = compileString(`pragma solidcash >=0.8.0;
-      interface IAcc { function append(int amount, string label) external; }
+      interface IAcc { function append(address probe, int amount, string label) external; }
       contract Caller() {
-        function poke(address acc, int amount, string label) public {
-          IAcc(acc).append(amount, label);
+        function poke(address acc, address probe, int amount, string label) public {
+          IAcc(acc).append(probe, amount, label);
           require(true);
         }
       }`, KERNEL);
@@ -74,26 +90,38 @@ describe('kernel self→proxy chunked-struct compose', () => {
     const callsite = callerArtifact.abi.find((entry) => entry.name === 'poke')
       ?.externalCalls?.find((call) => call.functionName === 'append');
     expect(callsite?.callsiteId).toBeDefined();
+    const probeCallsite = delegate.abi.find((entry) => entry.name === 'append')
+      ?.externalCalls?.find((call) => call.functionName === 'touch');
+    expect(probeCallsite?.callsiteId).toBeDefined();
 
     const funder = await createBareP2pkhFeeFunder(provider, 500_000n);
     const composition = messageBus.compose({
       preparedCalls: [{
         contract: caller,
         functionName: 'poke',
-        args: [deployed.proxy.inner.lockingBytecode, 7n, 'first'],
+        args: [deployed.proxy.inner.lockingBytecode, probe.inner.lockingBytecode, 7n, 'first'],
       }, {
         contract: deployed.proxy,
         functionName: 'append',
-        args: [7n, 'first'],
+        args: [probe.inner.lockingBytecode, 7n, 'first'],
         callsiteId: callsite!.callsiteId,
         executionArtifact: deployed.implementation.inner.artifact,
         executor: deployed.implementation,
+      }, {
+        contract: probe,
+        functionName: 'touch',
+        args: [],
+        callsiteId: probeCallsite!.callsiteId,
       }],
       funder,
       changeAddress: funder.unlocker.generateLockingBytecode(),
     });
 
-    // Measured: MessageBusVerifier / chunk path OP_VERIFY (~input 67) after genuine compose attempt.
-    await expect(composition.send()).rejects.toThrow(/OP_VERIFY|preflight failed at input/);
+    await expect(composition.send()).resolves.toMatchObject({
+      txid: expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
+    expect((await deployed.proxy.getState()).items).toEqual([
+      { amount: 7n, label: 'first', active: true },
+    ]);
   }, 300_000);
 });

@@ -1,4 +1,4 @@
-import { hexToBin } from '@bitauth/libauth';
+import { binToHex, hexToBin } from '@bitauth/libauth';
 import { compileString } from 'solidc';
 import { describe, expect, it } from 'vitest';
 import {
@@ -15,15 +15,19 @@ const KERNEL = {
   suppressWarnings: true,
 } as const;
 
+const asBytes = (value: unknown): Uint8Array => {
+  if (value instanceof Uint8Array) return value;
+  if (typeof value === 'string') return hexToBin(value.startsWith('0x') ? value.slice(2) : value);
+  throw new Error(`unexpected bytes state: ${typeof value}`);
+};
+
 /**
  * self→proxy × chunks: non-proxy Caller.poke → deployProxy Acc.append under compose with
- * executionArtifact/executor on the proxy callee. Empty→first-write (and seeded append) fail closed
- * at MessageBusVerifier / chunk path after a genuine compose attempt — honest fence. Proxy-self
- * chunk writes under compose remain covered by KernelProxyBytesStateCompose; foreign empty→append
- * by KernelForeignBytesRmwCompose.
+ * executionArtifact/executor on the proxy callee. Empty→first-write settles with ChunkNft mint into
+ * the proxy trailing band (same product path as root proxy STB dynamicWrites promotion).
  */
 describe('kernel self→proxy bytes chunk compose', () => {
-  it('refuses Caller.poke→deployProxy Acc empty→append under compose (honest fence)', async () => {
+  it('settles Caller.poke→deployProxy Acc empty→append under compose', async () => {
     const provider = createMessageBusCapstoneTestProvider();
     const signer = new Signer(new Uint8Array(32).fill(0x73), provider);
     for (let index = 0; index < 40; index += 1) {
@@ -94,7 +98,9 @@ describe('kernel self→proxy bytes chunk compose', () => {
       changeAddress: funder.unlocker.generateLockingBytecode(),
     });
 
-    // Measured: MessageBusVerifier / chunk path OP_VERIFY (~input 67) after genuine compose attempt.
-    await expect(composition.send()).rejects.toThrow(/OP_VERIFY|preflight failed at input/);
+    await expect(composition.send()).resolves.toMatchObject({
+      txid: expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
+    expect(binToHex(asBytes((await deployed.proxy.getState()).payload))).toBe('bb');
   }, 300_000);
 });

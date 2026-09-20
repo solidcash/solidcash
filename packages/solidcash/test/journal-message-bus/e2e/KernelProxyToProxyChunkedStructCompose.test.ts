@@ -1,9 +1,10 @@
+import { hexToBin } from '@bitauth/libauth';
 import { compileString } from 'solidc';
 import { describe, expect, it } from 'vitest';
 import {
-  messageBus, getContractFactory, upgrades, Signer,
+  Contract, StatefulContract, messageBus, getContractFactory, upgrades, Signer,
 } from '../../../src/index.js';
-import { createBareP2pkhFeeFunder } from '../../test-util.js';
+import { createBareP2pkhFeeFunder, setupStatefulUtxos } from '../../test-util.js';
 import { createMessageBusCapstoneTestProvider } from './message-bus-semantic-profile.js';
 
 const KERNEL = {
@@ -16,10 +17,10 @@ const KERNEL = {
 
 /**
  * proxy→foreign-proxy × chunked structs:
- * - Variable-width Item[] (string field) is message-bus eligible but has no inferred delegate variant
+ * - Variable-width Item[] (string field) without a nested callsite has no inferred delegate variant
  *   (honest deployProxy admission fence).
- * - Fixed-width int[] is deployProxy-eligible; dual-proxy Acc.poke→Store.append under compose fails
- *   closed on chunk OP_VERIFY — same honest fence class as KernelProxyToProxyBytesCompose.
+ * - Fixed-width int[] with nested Probe (product shape that settles Item[] under deployProxy compose)
+ *   settles dual-proxy Acc.poke→Store.append empty→first-write with ChunkNft mint.
  */
 describe('kernel proxy → foreign-proxy chunked-struct under composition', () => {
   it('fences variable-width Item[] as non-delegate (no deployProxy Store)', () => {
@@ -43,7 +44,7 @@ describe('kernel proxy → foreign-proxy chunked-struct under composition', () =
     expect(artifact.delegateArtifact).toBeUndefined();
   });
 
-  it('refuses deployProxy poke→deployProxy Store int[] append under compose (honest fence)', async () => {
+  it('settles deployProxy poke→deployProxy Store int[] append under compose', async () => {
     const provider = createMessageBusCapstoneTestProvider();
     const signer = new Signer(new Uint8Array(32).fill(0x4b), provider);
     for (let index = 0; index < 60; index += 1) {
@@ -54,13 +55,27 @@ describe('kernel proxy → foreign-proxy chunked-struct under composition', () =
       });
     }
 
+    const probeArtifact = compileString(`pragma solidcash >=0.8.0;
+      contract Probe() { function touch() public { require(true); } }`, {
+      ...KERNEL, messageBusGraphContext: true,
+    });
+    const probeBase = new Contract(probeArtifact, [], { provider });
+    const probeSetup = await setupStatefulUtxos(
+      provider, probeBase, probeArtifact.stateLayout!, {}, { saltContract: true },
+    );
+    const probe = StatefulContract.withCategory(
+      probeBase.withCategory(hexToBin(probeSetup.categoryId)), probeSetup.categoryId,
+    );
+
     const storeArtifact = compileString(`pragma solidcash >=0.8.0;
+      interface IProbe { function touch() external; }
       contract Store() {
         int hold;
         int[] items;
         function initialize() public { this.hold = 0; }
-        function append(int amount) public {
+        function append(address probe, int amount) public {
           this.items.push(amount);
+          IProbe(probe).touch();
           require(true);
         }
       }`, KERNEL);
@@ -69,14 +84,15 @@ describe('kernel proxy → foreign-proxy chunked-struct under composition', () =
       .toMatchObject({ eligible: true });
 
     const store = await upgrades.deployProxy(getContractFactory(storeArtifact, signer), []);
+    store.implementation._registerResolvedExternal('IProbe', probe);
 
     const callerArtifact = compileString(`pragma solidcash >=0.8.0;
-      interface IStore { function append(int amount) external; }
+      interface IStore { function append(address probe, int amount) external; }
       contract Acc() {
         int count;
         function initialize() public { this.count = 0; }
-        function poke(address store, int amount) public {
-          IStore(store).append(amount);
+        function poke(address store, address probe, int amount) public {
+          IStore(store).append(probe, amount);
           this.count = this.count + 1;
           require(true);
         }
@@ -90,28 +106,39 @@ describe('kernel proxy → foreign-proxy chunked-struct under composition', () =
     const callsite = delegate.abi.find((entry) => entry.name === 'poke')
       ?.externalCalls?.find((call) => call.functionName === 'append');
     expect(callsite?.callsiteId).toBeDefined();
+    const probeCallsite = storeArtifact.delegateArtifact!.abi.find((entry) => entry.name === 'append')
+      ?.externalCalls?.find((call) => call.functionName === 'touch');
+    expect(probeCallsite?.callsiteId).toBeDefined();
 
     const funder = await createBareP2pkhFeeFunder(provider, 500_000n);
     const composition = messageBus.compose({
       preparedCalls: [{
         contract: caller.proxy,
         functionName: 'poke',
-        args: [store.proxy.inner.lockingBytecode, 7n],
+        args: [store.proxy.inner.lockingBytecode, probe.inner.lockingBytecode, 7n],
         executionArtifact: caller.implementation.inner.artifact,
         executor: caller.implementation,
       }, {
         contract: store.proxy,
         functionName: 'append',
-        args: [7n],
+        args: [probe.inner.lockingBytecode, 7n],
         callsiteId: callsite!.callsiteId,
         executionArtifact: store.implementation.inner.artifact,
         executor: store.implementation,
+      }, {
+        contract: probe,
+        functionName: 'touch',
+        args: [],
+        callsiteId: probeCallsite!.callsiteId,
       }],
       funder,
       changeAddress: funder.unlocker.generateLockingBytecode(),
     });
 
-    // Measured: dual-proxy int[] chunk path OP_VERIFY (~input 70).
-    await expect(composition.send()).rejects.toThrow(/OP_VERIFY|preflight failed/);
+    await expect(composition.send()).resolves.toMatchObject({
+      txid: expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
+    expect((await store.proxy.getState()).items).toEqual([7n]);
+    expect((await caller.proxy.getState()).count).toBe(1n);
   }, 300_000);
 });

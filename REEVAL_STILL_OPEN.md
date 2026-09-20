@@ -11,8 +11,10 @@ Branch: `grok/kernel-comprehensive-fixtures`
 
 ## Residual
 - DualRuntimeSet-width × keccak density — inherent (probe: max trailing 130; salt cannot clear margin)
-- State/effect-bearing split/merge/selfdestruct — still `KERNEL_LIFECYCLE` (graph requires master-only
-  `blockSize===1`; needs journal-bound topology + verifier census beyond mode-1/2/3 master-only arms)
+- State-bearing selfdestruct / read-bearing split-merge — still `KERNEL_LIFECYCLE`
+  (graph+verifier require master-only `blockSize===1`; deletion/journal binding missing).
+  Note: split/merge **writes/events/transfers/calls** are refused earlier by language rule
+  (`InvalidModifierCombinationError`), not only by the bus fence.
 - Detached `sig` leaves on lifecycle handlers — still `KERNEL_TX_SIGNATURE` (honest)
 - ~~proxy→foreign-proxy variable-width Item[] — non-delegate eligibility fence (int[] settles)~~
   **SETTLED**: `InlineStoragePointerCalls.applyRename` now skips `FieldAccessNode` member names

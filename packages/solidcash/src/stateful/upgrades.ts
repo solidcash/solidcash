@@ -596,7 +596,8 @@ function resolveInitializer(opt: string | false | undefined, impl: Artifact): st
 }
 
 // Graft an implementation's state layout onto the layout-independent default proxy: its bytecode never reads its
-// own state fields, so it holds any implementation's state. Keep the proxy's own constructorInputs (`implementation`).
+// own state fields (and ships with dataNftCount 0), so event-only and state-holding implementations both fit.
+// Keep the proxy's own constructorInputs (`implementation`).
 function graftDefaultProxy(impl: Artifact): Artifact {
   const dataNftCount = impl.stateLayout?.dataNftCount ?? 0;
   const requiredNftIndices = Array.from({ length: dataNftCount }, (_, index) => index);
@@ -606,6 +607,7 @@ function graftDefaultProxy(impl: Artifact): Artifact {
       ...entry,
       requiredNftIndices,
       blockLayout: {
+        // Executor follows the grafted data band. Event/resource slots come from the impl route at compose time.
         blockSize: 1 + dataNftCount,
         slots: [
           { kind: 'master' as const, offset: 0 },

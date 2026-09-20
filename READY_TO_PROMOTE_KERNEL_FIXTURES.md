@@ -57,12 +57,15 @@ Worktree: `.worktrees/kernel-comprehensive-fixtures`
 - `KernelProxyNestedCallsiteCompose` — deployProxy scalar write + Probe.touch via compose+`executionArtifact` settle
 - `KernelProxyUpgradeThenCompose` — published `upgrades.upgradeProxy` param-mode V1→V2 settle (same address); baked `SolidCashProxy` refuses upgradeProxy; baked compose executor retarget fails closed (`Compiler-authenticated delegate forwarding target is not materialized`)
 - `KernelProxyForeignRmwEventCompose` — deployProxy poke→Bank.credit+Ping via `withExternalCall` **and** `messageBus.compose`+`executionArtifact` settle; fan-out Caller×Bank×Ping under compose settles
-- `KernelDualRuntimeKeccakCompose` — Ping emit + keccak settles; single-key mapping RMW + keccak settles (graph-owned deferred preimages); fixed dual-key add+remove OP_VERIFY; DualRuntimeSet-width arrays+keccak inherent density fence
+- `KernelDualRuntimeKeccakCompose` — Ping emit + keccak settles; single-key mapping RMW + keccak settles; **fixed dual-key add+remove under compose settles**; DualRuntimeSet-width arrays+keccak inherent density fence
+- `KernelProxyEventOnlyCompose` — event-only Solidity deployProxy (dataNftCount 0): dispatch `.send()` Ping settles; compose+`executionArtifact`×Probe characterized MessageBusVerifier OP_VERIFY
 
 ## Product gaps closed this stream
-- **Mapping RMW × keccak:** graph-owned keccak now sets `deferUnresolved` like ecrecover (`StatefulContract` `_createBuilder`); single-key `bal[k]+=v` + keccak under compose settles (`KernelDualRuntimeKeccakCompose`). Fixed dual-key add+remove in one handler remains OP_VERIFY (keccak-independent).
+- **Mapping RMW × keccak:** graph-owned keccak now sets `deferUnresolved` like ecrecover (`StatefulContract` `_createBuilder`); single-key `bal[k]+=v` + keccak under compose settles (`KernelDualRuntimeKeccakCompose`).
+- **Fixed dual-key add+remove under compose:** `singleTargetRowBatch` incorrectly treated distinct-key multi-slot writes as alias-arm inserts (P′/NEW collision). Gate on `uniqueBatchTargets.size === 1` so distinct-key add+remove keeps the trailing-predecessor model (`KernelDualRuntimeKeccakCompose`).
 - **`upgrades.upgradeProxy`:** published for **param-mode** proxies (re-wrap same state holder + append-only layout check); baked `SolidCashProxy` refuses with a clear pin/migration error (`KernelProxyUpgradeThenCompose`).
 - **DualRuntimeSet-width × keccak density:** closed as an **inherent** BCH-2026 density fence (`trailingCapacity≈130`); not relaxed. Closable dual-runtime×sidecar proof is single-key mapping×keccak above.
+- **Event-only default proxy:** regenerated `SolidCashProxy` without hardcoded `__proxySlot` dataNft at master+1 (collided with event pads when impl `dataNftCount=0`). Dispatch settle in `KernelProxyEventOnlyCompose`.
 
 ## Product gap closed: proxy×event and proxy×foreign×event compose
 - **Root cause:** atomic `omitLocalFeeTail` layout pads used a bare P2PKH as the first structural funder so probes could establish `tx.origin`. With output-only event slots that pad sits before the canonical fee tail and **becomes** authenticated `tx.origin`, so MessageBusVerifier `require(rowSubject == tx.origin)` OP_VERIFYs.
@@ -72,9 +75,9 @@ Worktree: `.worktrees/kernel-comprehensive-fixtures`
   - `KernelProxyForeignRmwEventCompose` deployProxy poke→Bank.credit+Ping under compose (bal=15 + count + event NFT)
 
 ## Still open / fence
-- Dual-key add+remove in one handler under compose remains OP_VERIFY (keccak-independent)
 - DualRuntimeSet-width density wall (inherent)
-- Event-only Solidity proxy shapes without proxy-owned state (no dataNft) were not re-promoted; settle proofs use state-holding Coordinators
+- Event-only Solidity proxy compose+`executionArtifact`×Probe: MessageBusVerifier OP_VERIFY after proxy/`__forward` and Acc accept (`KernelProxyEventOnlyCompose` characterization). State-holding Coordinators remain the compose settle proofs.
+- Plain `.send()` + external call can still place the callee between master and entry slots (compose layout is fine; separate direct-call ordering issue)
 
 ## Fence
 - No `marketplace.test.ts` / `vitest.marketplace.config.ts` in this stream

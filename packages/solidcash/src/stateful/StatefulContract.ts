@@ -20396,9 +20396,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         }
         // One source row can reach a sorted collection through several alias arms (the route's conditional write
         // lanes). The compiler then emits that statement as a single INSERT: the predecessor is verified at its
-        // fixed entry coordinate (`predOut = -1`) and the one shared trailing lane carries the batch TARGET node.
+        // fixed entry coordinate and the one shared trailing lane carries the batch TARGET node.
         // Publishing the predecessor there displaces the node the route checks at `trailingBase`, and naming a
         // trailing coordinate with `predOut` makes one coordinate carry two contradictory expectations.
+        // Distinct-key writes in one handler (add+remove) also have `slotIndices.length > 1` and one source row,
+        // but they need the trailing-predecessor model: each key keeps its own fixed TARGET and P' trails.
+        // Gate on a single unique sorted target so only alias-arm / same-key lanes take the insert-special path.
         // A batch fed by SEVERAL rows is a genuine batch and keeps the trailing-predecessor model even when the
         // rows happen to resolve to the same key at runtime (measured: FakeToken `_allowances`, approve +
         // transferFrom, equal target slots, trailing predecessor required).
@@ -20406,8 +20409,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           handler: { entryAccesses?: readonly { collection: string }[] };
         }[] }).messageBusRowArguments ?? []).filter((row) =>
           (row.handler.entryAccesses ?? []).some((access) => access.collection === batch.collection));
+        const uniqueBatchTargets = new Set(
+          batch.slotIndices
+            .filter((slotIndex) => !batchAliasSkips.has(slotIndex) && !inactiveBatchSlots.has(slotIndex))
+            .map((slotIndex) => binToHex(batchTargetSlots.get(slotIndex) ?? new Uint8Array())),
+        );
         const singleTargetRowBatch = predOutputs.length > 0 && batch.slotIndices.length > 1
-          && batchSourceRows.length === 1;
+          && batchSourceRows.length === 1
+          && uniqueBatchTargets.size === 1;
         const linearRows = batch.linear ? batch.slotIndices
           .filter((slotIndex) => !batchAliasSkips.has(slotIndex))
           .map((slotIndex) => {

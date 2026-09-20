@@ -57,7 +57,8 @@ implementation's address as an **immutable constructor arg**:
 ```solidity
 pragma solidcash >=0.8.0;
 contract SolidCashProxy(address implementation) {   // implementation baked at genesis (immutable)
-  bigint __proxySlot;                               // placeholder; layout grafted from the implementation
+  // No placeholder state: forceStateful at regenerate time. Layout is grafted from the implementation;
+  // the delegate authorizes state via _proxyMasterIndex (event-only impls need no dataNft at master+1).
   function __forward(bytes input) {
     implementation.delegatecall(input);             // forwards; the delegate authorizes the state
     require(input.length > 0);

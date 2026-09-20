@@ -7,7 +7,9 @@
 // from the same compiler invocation; never patch only one generated field.
 import { Artifact } from '@solidcash/utils';
 
-export const DEFAULT_PROXY_SOURCE = "pragma solidcash >=0.8.0;\ncontract SolidCashProxy(address implementation) {\n  bigint __proxySlot;\n  function __forward(bytes input) {\n    implementation.delegatecall(input);\n    require(input.length > 0);\n  }\n}\n";
+// No placeholder state var: one bytecode must serve event-only and state-holding implementations. The delegate
+// authorizes grafted state via _proxyMasterIndex; forceStateful is supplied by the regenerate script.
+export const DEFAULT_PROXY_SOURCE = "pragma solidcash >=0.8.0;\ncontract SolidCashProxy(address implementation) {\n  function __forward(bytes input) {\n    implementation.delegatecall(input);\n    require(input.length > 0);\n  }\n}\n";
 
 export const defaultProxyArtifact: Artifact = {
   "contractName": "SolidCashProxy",
@@ -32,9 +34,6 @@ export const defaultProxyArtifact: Artifact = {
         }
       ],
       "writesState": true,
-      "requiredNftIndices": [
-        0
-      ],
       "sourceEffectOrder": "linear",
       "lowLevelCalls": [
         {
@@ -69,50 +68,38 @@ export const defaultProxyArtifact: Artifact = {
         "terminalRequire": true
       },
       "blockLayout": {
-        "blockSize": 3,
+        "blockSize": 2,
         "slots": [
           {
             "kind": "master",
             "offset": 0
           },
           {
-            "kind": "dataNft",
-            "offset": 1,
-            "nftIndex": 0
-          },
-          {
             "kind": "lowLevelCall",
-            "offset": 2,
+            "offset": 1,
             "slotIndex": 0
           }
         ]
       }
     }
   ],
-  "bytecode": "00c38c6576009f6375516776ce537987637c8b7c688c006866c48c OP_1 OP_DEFINE 8263517f7c760100876375007c6776014f8763754f7c677681760151a27c0160a19a638101509451807c6776014c876375517f7c01007e817f6776014d876375527f7c01007e817f67817f686868686867007c68 OP_1NEGATE OP_DEFINE OP_DEPTH OP_1SUB OP_PICK OP_UTXOBYTECODE OP_EQUALVERIFY OP_INPUTINDEX OP_INPUTBYTECODE OP_1NEGATE OP_INVOKE OP_SWAP OP_BIN2NUM OP_DROP OP_1NEGATE OP_INVOKE OP_DROP OP_DEPTH OP_1SUB OP_PICK OP_INPUTBYTECODE OP_1 OP_SPLIT OP_NIP OP_OVER OP_SIZE OP_NIP OP_SPLIT OP_DROP OP_EQUALVERIFY OP_SIZE OP_NIP OP_0 OP_GREATERTHAN OP_VERIFY OP_INPUTINDEX OP_UTXOBYTECODE OP_INPUTINDEX OP_OUTPUTBYTECODE OP_EQUALVERIFY OP_INPUTINDEX OP_UTXOTOKENCATEGORY OP_INPUTINDEX OP_OUTPUTTOKENCATEGORY OP_EQUALVERIFY OP_INPUTINDEX OP_UTXOTOKENCATEGORY OP_1 OP_INVOKE OP_BEGIN OP_DUP OP_0 OP_LESSTHAN OP_IF OP_DROP OP_1 OP_ELSE OP_DUP OP_OUTPUTTOKENCATEGORY OP_SIZE 21 OP_NUMEQUAL OP_IF OP_3 OP_PICK OP_EQUAL OP_ELSE OP_DROP OP_0 OP_ENDIF OP_IF OP_SWAP OP_1SUB OP_SWAP OP_ENDIF OP_1SUB OP_0 OP_ENDIF OP_UNTIL OP_0 OP_GREATERTHANOREQUAL OP_VERIFY OP_DROP OP_INPUTINDEX OP_UTXOVALUE OP_INPUTINDEX OP_OUTPUTVALUE OP_EQUALVERIFY OP_INPUTINDEX OP_UTXOTOKENAMOUNT OP_INPUTINDEX OP_OUTPUTTOKENAMOUNT OP_LESSTHANOREQUAL OP_VERIFY OP_INPUTINDEX OP_1ADD OP_UTXOVALUE OP_INPUTINDEX OP_1ADD OP_OUTPUTVALUE OP_EQUALVERIFY OP_INPUTINDEX OP_1ADD OP_UTXOTOKENAMOUNT OP_INPUTINDEX OP_1ADD OP_OUTPUTTOKENAMOUNT OP_LESSTHANOREQUAL OP_VERIFY OP_INPUTINDEX OP_UTXOTOKENCATEGORY 20 OP_SPLIT OP_DROP OP_1 OP_CAT OP_1 OP_INVOKE OP_BEGIN OP_DUP OP_0 OP_LESSTHAN OP_IF OP_DROP OP_1 OP_ELSE OP_DUP OP_OUTPUTTOKENCATEGORY OP_3 OP_PICK OP_EQUAL OP_IF OP_SWAP OP_1SUB OP_SWAP OP_ENDIF OP_1SUB OP_0 OP_ENDIF OP_UNTIL OP_0 OP_NUMEQUALVERIFY OP_2DROP OP_1",
-  "source": "pragma solidcash >=0.8.0;\ncontract SolidCashProxy(address implementation) {\n  bigint __proxySlot;\n  function __forward(bytes input) {\n    implementation.delegatecall(input);\n    require(input.length > 0);\n  }\n}\n",
+  "bytecode": "00c38c6576009f6375516776ce537987637c8b7c688c006866c48c OP_2 OP_DEFINE 7681760151a27c0160a19a OP_3 OP_DEFINE OP_DEPTH OP_1SUB OP_PICK OP_UTXOBYTECODE OP_EQUALVERIFY OP_INPUTINDEX OP_INPUTBYTECODE OP_SIZE OP_IF OP_1 OP_SPLIT OP_SWAP OP_DUP 00 OP_EQUAL OP_IF OP_DROP OP_0 OP_SWAP OP_ELSE OP_DUP 4f OP_EQUAL OP_IF OP_DROP OP_1NEGATE OP_SWAP OP_ELSE OP_3 OP_INVOKE OP_IF OP_BIN2NUM 50 OP_SUB OP_SWAP OP_ELSE OP_DUP 4c OP_EQUAL OP_IF OP_DROP OP_1 OP_SPLIT OP_SWAP 00 OP_CAT OP_BIN2NUM OP_SPLIT OP_SWAP OP_BIN2NUM OP_SWAP OP_ELSE OP_DUP 4d OP_EQUAL OP_IF OP_DROP OP_2 OP_SPLIT OP_SWAP 00 OP_CAT OP_BIN2NUM OP_SPLIT OP_SWAP OP_BIN2NUM OP_SWAP OP_ELSE OP_BIN2NUM OP_SPLIT OP_SWAP OP_BIN2NUM OP_SWAP OP_ENDIF OP_ENDIF OP_ENDIF OP_ENDIF OP_ENDIF OP_ELSE OP_0 OP_SWAP OP_ENDIF OP_NIP OP_SIZE OP_IF OP_1 OP_SPLIT OP_SWAP OP_DUP 00 OP_EQUAL OP_IF OP_DROP OP_0 OP_SWAP OP_ELSE OP_DUP 4f OP_EQUAL OP_IF OP_DROP OP_1NEGATE OP_SWAP OP_ELSE OP_3 OP_INVOKE OP_IF OP_BIN2NUM 50 OP_SUB OP_1 OP_NUM2BIN OP_SWAP OP_ELSE OP_DUP 4c OP_EQUAL OP_IF OP_DROP OP_1 OP_SPLIT OP_SWAP 00 OP_CAT OP_BIN2NUM OP_SPLIT OP_ELSE OP_DUP 4d OP_EQUAL OP_IF OP_DROP OP_2 OP_SPLIT OP_SWAP 00 OP_CAT OP_BIN2NUM OP_SPLIT OP_ELSE OP_BIN2NUM OP_SPLIT OP_ENDIF OP_ENDIF OP_ENDIF OP_ENDIF OP_ENDIF OP_ELSE OP_0 OP_SWAP OP_ENDIF OP_DROP OP_DEPTH OP_1SUB OP_PICK OP_INPUTBYTECODE OP_1 OP_SPLIT OP_NIP OP_OVER OP_SIZE OP_NIP OP_SPLIT OP_DROP OP_EQUALVERIFY OP_SIZE OP_NIP OP_0 OP_GREATERTHAN OP_VERIFY OP_INPUTINDEX OP_UTXOBYTECODE OP_INPUTINDEX OP_OUTPUTBYTECODE OP_EQUALVERIFY OP_INPUTINDEX OP_UTXOTOKENCATEGORY OP_INPUTINDEX OP_OUTPUTTOKENCATEGORY OP_EQUALVERIFY OP_INPUTINDEX OP_UTXOTOKENCATEGORY OP_2 OP_INVOKE OP_BEGIN OP_DUP OP_0 OP_LESSTHAN OP_IF OP_DROP OP_1 OP_ELSE OP_DUP OP_OUTPUTTOKENCATEGORY OP_SIZE 21 OP_NUMEQUAL OP_IF OP_3 OP_PICK OP_EQUAL OP_ELSE OP_DROP OP_0 OP_ENDIF OP_IF OP_SWAP OP_1SUB OP_SWAP OP_ENDIF OP_1SUB OP_0 OP_ENDIF OP_UNTIL OP_0 OP_GREATERTHANOREQUAL OP_VERIFY OP_DROP OP_INPUTINDEX OP_UTXOVALUE OP_INPUTINDEX OP_OUTPUTVALUE OP_EQUALVERIFY OP_INPUTINDEX OP_UTXOTOKENAMOUNT OP_INPUTINDEX OP_OUTPUTTOKENAMOUNT OP_LESSTHANOREQUAL OP_VERIFY OP_INPUTINDEX OP_UTXOTOKENCATEGORY 20 OP_SPLIT OP_DROP OP_1 OP_CAT OP_2 OP_INVOKE OP_BEGIN OP_DUP OP_0 OP_LESSTHAN OP_IF OP_DROP OP_1 OP_ELSE OP_DUP OP_OUTPUTTOKENCATEGORY OP_3 OP_PICK OP_EQUAL OP_IF OP_SWAP OP_1SUB OP_SWAP OP_ENDIF OP_1SUB OP_0 OP_ENDIF OP_UNTIL OP_0 OP_NUMEQUALVERIFY OP_2DROP OP_1",
+  "source": "pragma solidcash >=0.8.0;\ncontract SolidCashProxy(address implementation) {\n  function __forward(bytes input) {\n    implementation.delegatecall(input);\n    require(input.length > 0);\n  }\n}\n",
   "debug": {
-    "bytecode": "1b00c38c6576009f6375516776ce537987637c8b7c688c006866c48c51894c548263517f7c760100876375007c6776014f8763754f7c677681760151a27c0160a19a638101509451807c6776014c876375517f7c01007e817f6776014d876375527f7c01007e817f67817f686868686867007c684f89748c79c788c0ca4f8a7c81754f8a75748c79ca517f777882777f7588827700a069c0c7c0cd88c0cec0d188c0ce518a6576009f6375516776d18201219c6353798767750068637c8c7c688c00686600a26975c0c6c0cc88c0d0c0d3a169c08bc6c08bcc88c08bd0c08bd3a169c0ce01207f75517e518a6576009f6375516776d1537987637c8c7c688c006866009d6d51",
-    "sourceMap": "1::8:1;;;2;;;5:4:5:38;;;;;;;;;;;;;;;;;;;;;;;;;;;;6:12:6:24:1;;:27::28:0;:12:::1;:4::30;4:2:7:3;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;",
+    "bytecode": "1b00c38c6576009f6375516776ce537987637c8b7c688c006866c48c52890b7681760151a27c0160a19a5389748c79c788c0ca8263517f7c760100876375007c6776014f8763754f7c67538a63810150947c6776014c876375517f7c01007e817f7c817c6776014d876375527f7c01007e817f7c817c67817f7c817c686868686867007c68778263517f7c760100876375007c6776014f8763754f7c67538a638101509451807c6776014c876375517f7c01007e817f6776014d876375527f7c01007e817f67817f686868686867007c6875748c79ca517f777882777f7588827700a069c0c7c0cd88c0cec0d188c0ce528a6576009f6375516776d18201219c6353798767750068637c8c7c688c00686600a26975c0c6c0cc88c0d0c0d3a169c0ce01207f75517e528a6576009f6375516776d1537987637c8c7c688c006866009d6d51",
+    "sourceMap": "1::7:1;;;;;;4:4:4:38;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;5:12:5:24:1;;:27::28:0;:12:::1;:4::30;3:2:6:3;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;",
     "logs": [],
     "requires": [
       {
-        "ip": 39,
-        "line": 6
+        "ip": 176,
+        "line": 5
       }
     ]
   },
-  "fingerprint": "9ee5238ef80bf6aba5b0f477bef8b22ddedbbcb8acab009f02edaee49fbb9e39",
+  "fingerprint": "b74c27581de47217b2c5f04337d82984847e3920c1b12daf0c32c7f290e0a3e8",
   "stateLayout": {
-    "variables": [
-      {
-        "name": "__proxySlot",
-        "type": "bigint",
-        "nftIndex": 0,
-        "fieldIndex": 0
-      }
-    ],
-    "dataNftCount": 1,
+    "variables": [],
+    "dataNftCount": 0,
     "commitmentLimit": 128
   },
   "compiler": {
@@ -152,20 +139,15 @@ export const defaultProxyArtifact: Artifact = {
         "bounded": true,
         "maximumDirectInvocations": 0,
         "blockLayout": {
-          "blockSize": 3,
+          "blockSize": 2,
           "slots": [
             {
               "kind": "master",
               "offset": 0
             },
             {
-              "kind": "dataNft",
-              "offset": 1,
-              "nftIndex": 0
-            },
-            {
               "kind": "lowLevelCall",
-              "offset": 2,
+              "offset": 1,
               "slotIndex": 0
             }
           ]

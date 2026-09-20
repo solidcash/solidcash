@@ -54,8 +54,8 @@ async function fundKeccakSidecars(
  * Dual-runtime / mapping × keccak under compose.
  *
  * Settles: scalar event emit + keccak; single-key mapping RMW + keccak (graph-owned deferred
- * preimage learning). Fixed dual-key add+remove in one handler remains OP_VERIFY under compose
- * (with or without keccak). DualRuntimeSet array-stream width + keccak remains an inherent density fence.
+ * preimage learning); fixed dual-key add+remove in one handler under compose. DualRuntimeSet
+ * array-stream width + keccak remains an inherent density fence.
  */
 describe('kernel dual-runtime / event / keccak under composition', () => {
   it('settles Ping emit + keccak256 under compose (no mapping RMW)', async () => {
@@ -248,8 +248,7 @@ describe('kernel dual-runtime / event / keccak under composition', () => {
     expect(vmNumberToBigInt(entry!.value, { requireMinimalEncoding: false })).toBe(15n);
   }, 300_000);
 
-  it('characterizes fixed dual-key add+remove under compose: OP_VERIFY', async () => {
-    // Dual batch-key witnesses in one handler still fail closed under compose (keccak-independent).
+  it('settles fixed dual-key add+remove under compose', async () => {
     const provider = createMessageBusCapstoneTestProvider();
     const probeArtifact = compileString(`pragma solidcash >=0.8.0;
       contract Probe() { function touch() public { require(true); } }`, {
@@ -303,7 +302,19 @@ describe('kernel dual-runtime / event / keccak under composition', () => {
       funder: fee,
       changeAddress: fee.unlocker.generateLockingBytecode(),
     });
-    await expect(composition.build()).rejects.toThrow(/BCH-2026 preflight failed|OP_VERIFY/);
+    const canonical = await composition.build();
+    expect(vmAccepts(canonical)).toBe(true);
+    await expect(composition.send()).resolves.toMatchObject({
+      txid: expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
+    const entryAddress = getEntryNftAddress(acc.inner, accSetup.categoryId, 'membership');
+    const entries = SortedList.fromUtxos(await provider.getUtxos(entryAddress));
+    expect(entries.find(keyToSlot(bigIntToVmNumber(3n)))).toBeDefined();
+    expect(binToHex(entries.find(keyToSlot(bigIntToVmNumber(3n)))!.value)).toBe('01');
+    const removed = entries.find(keyToSlot(bigIntToVmNumber(7n)));
+    expect(removed).toBeDefined();
+    expect(removed!.value.length === 0
+      || vmNumberToBigInt(removed!.value, { requireMinimalEncoding: false }) === 0n).toBe(true);
   }, 180_000);
 
   it('characterizes DualRuntimeSet-width arrays + keccak under compose: density wall', async () => {

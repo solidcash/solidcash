@@ -50,7 +50,20 @@ Worktree: `.worktrees/kernel-comprehensive-fixtures`
 - **SDK fixes landed this stream:** (1) `__forward` promotes impl ABI keccak/ecrecover/`ecrecoverEvmFlags` so compute co-spends are not empty; (2) message-bus `ecrecoverEvm` handlers keep top-relative owner pick (bottom ordinal mis-read bytes32 as input index); (3) ecrecover route layouts reserve one A/B pair per syntactic call (not `maximumRows×2`) and do not treat kernel-row `ecrecoverLoopReads` as a 64-slot trailing trigger — shrinks Acc from blockSize 82→4 so proxy compose MessageBusVerifier settles
 
 
+## Leftovers landed this stream (descriptive names only in fixtures)
+- `KernelRefusedBatchSlot` — repeated selector drop vs refused-handler compose fail-closed (`KERNEL_OPAQUE_EFFECT`)
+- `KernelProxyEventFunderCompose` — deployProxy emit under `messageBus.compose` characterized OP_VERIFY (compose path; same class as proxy×foreign×event)
+- `KernelForeignTokenTransferCompose` — Caller→Token FT transfer under compose; remainder + tamper fail-closed
+- `KernelProxyNestedCallsiteCompose` — deployProxy scalar write + Probe.touch via compose+`executionArtifact` settle
+- `KernelProxyUpgradeThenCompose` — fence: retargeting compose executor to a distinct V2 impl fails closed (`Compiler-authenticated delegate forwarding target is not materialized`; SolidCashProxy bakes V1 lock)
+
+## Still open / fence
+- Proxy×foreign×event under compose (`KernelProxyForeignRmwEventCompose` characterization; fan-out without proxy settles)
+- Proxy emit under compose (above); DualRuntimeSet-width + event + sidecar co-settle
+- Published `upgrades.upgradeProxy` / setImpl path for upgrade-then-compose settle (fence above)
+
 ## Fence
 - No `marketplace.test.ts` / `vitest.marketplace.config.ts` in this stream
 - No Marketplace / Unicrow / job vocabulary in fixtures
 - Do not edit `scripts/kernel-beta-manifest.json` `requiredKernelProofs` until review
+- Fixture source comments must not use plan-wave shorthand (I/J/K/L/M numbered cells); keep those labels in this tracking doc only

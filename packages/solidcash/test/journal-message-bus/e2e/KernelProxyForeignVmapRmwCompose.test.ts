@@ -58,7 +58,7 @@ describe('kernel proxy × foreign vmap RMW compose', () => {
     );
     await bank.call.seed(2n, 10n).send();
 
-    // Slim: foreign credit + scalar write only — no event (M1a three-axis remains characterization).
+    // Slim: foreign credit + scalar write only — no event (proxy×foreign×event remains characterization).
     const implArtifact = compileString(`pragma solidcash >=0.8.0;
       interface IBank { function credit(int k, int v) external; }
       contract Coordinator() {

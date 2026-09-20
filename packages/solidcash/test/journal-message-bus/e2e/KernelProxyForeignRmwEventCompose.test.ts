@@ -31,7 +31,7 @@ const vmAccepts = (builder: TransactionBuilder): boolean => {
 };
 
 /**
- * M1a cross-product: proxy executor × foreign mapping RMW × event.
+ * Proxy executor × foreign mapping RMW × event: proxy executor × foreign mapping RMW × event.
  * Slimmed to one foreign credit + one Ping so density stays below DualRuntimeSet's two-stream wall.
  */
 describe('kernel proxy × foreign RMW × event compose', () => {
@@ -112,7 +112,7 @@ describe('kernel proxy × foreign RMW × event compose', () => {
     await expect(composition.build()).rejects.toThrow(/BCH-2026 preflight failed|operation cost density limit/);
   }, 180_000);
 
-  it('settles M1a axes via fan-out: Caller emits Ping and credits Bank in one compose', async () => {
+  it('settles foreign RMW × event via fan-out: Caller emits Ping and credits Bank in one compose', async () => {
     // Slim twin isolating foreign RMW × event (proxy executor still characterized above).
     const provider = createMessageBusCapstoneTestProvider();
     const bankArtifact = compileString(`pragma solidity ^0.8.0;

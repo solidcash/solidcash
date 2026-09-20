@@ -68,14 +68,19 @@ Legend: **S** = settle fixture · **F** = honest fence · **—** = deferred / t
 
 | Topology \\ Resource | vmaps | chunks | strings | structs | chunked structs | events | lifecycle |
 |---|---|---|---|---|---|---|---|
-| self | S `KernelSelfVmapRmwCompose` | S `KernelMixedBytesMappingJournal` | S `KernelLoopCompose` (note) | landing / adjacent foreign struct | S `KernelPooledDynamicArrayWriter` | S `KernelDualRuntimeKeccakCompose` Ping | S upgrade `KernelUpgradeCompose`; F split/merge skip; F selfdestruct |
-| proxy-self | S `KernelProxyOwnedVmapRmwCompose` | landing | landing | landing | — | S EventFunder / EventOnly / UnusedStateEvent | S/F `KernelProxyUpgradeThenCompose` |
-| self→foreign | S `KernelForeignVmapRmwCompose` | — | thin return/string | S `KernelWholeStructStateGetterCompose` | S `KernelRepeatedPooledAppendParity` | S fan-out / funder-gap | S `KernelTypedYulCreateCompose` |
-| self→proxy | landing `KernelSelfToProxyVmapRmwCompose` | — | — | — | — | — | — |
+| self | S `KernelSelfVmapRmwCompose` | S `KernelMixedBytesMappingJournal` | S `KernelLoopCompose` (note) | S `KernelSelfStructStateWriteCompose` | S `KernelPooledDynamicArrayWriter` | S `KernelDualRuntimeKeccakCompose` Ping | S upgrade `KernelUpgradeCompose`; F split/merge skip; F selfdestruct |
+| proxy-self | S `KernelProxyOwnedVmapRmwCompose` | S `KernelProxyBytesStateCompose` | S `KernelProxyStringStateCompose` | — (nested leaf assign compile fence; self covers write) | — | S EventFunder / EventOnly / UnusedStateEvent | S/F `KernelProxyUpgradeThenCompose` |
+| self→foreign | S `KernelForeignVmapRmwCompose` | — (deferred thin) | thin return/string | S `KernelWholeStructStateGetterCompose` | S `KernelRepeatedPooledAppendParity` | S fan-out / funder-gap | S `KernelTypedYulCreateCompose` |
+| self→proxy | S `KernelSelfToProxyVmapRmwCompose` | — | — | — | — | — (proxy-self events cover callee emit) | — |
 | proxy→foreign | S `KernelProxyForeignVmapRmwCompose` | F adjacent `KernelDelegateInactiveDynamicWrite` | — | — | — | S `KernelProxyForeignRmwEventCompose` | F density `KernelDensityBoundedCompose` |
-| proxy→foreign-proxy | landing `KernelProxyToProxyVmapRmwCompose` | — | — | — | — | — | — |
+| proxy→foreign-proxy | S `KernelProxyToProxyVmapRmwCompose` | — | — | — | — | — | — |
 
 Peers already settled: fan-in/out, nested callsite, sidecar self/foreign/proxy/proxy×foreign, DirectSend entry order. DualRuntimeSet-width × keccak = inherent density fence in `KernelDualRuntimeKeccakCompose`.
+
+### Lifecycle (optional) — explicit deferral
+- **Covered:** upgrade (`KernelUpgradeCompose`, `KernelProxyUpgradeThenCompose`), Yul create (`KernelTypedYulCreateCompose`).
+- **Honest fence / skipped:** atomic split/merge (`KernelAtomicSplitLifecycle`, `KernelAtomicMergeLifecycle` describe.skip); selfdestruct remains `KERNEL_LIFECYCLE` refusal characterization.
+- Further lifecycle green is **deferred** (not required for this matrix pass).
 
 ## Product gaps closed this stream
 - **Mapping RMW × keccak:** graph-owned keccak now sets `deferUnresolved` like ecrecover (`StatefulContract` `_createBuilder`); single-key `bal[k]+=v` + keccak under compose settles (`KernelDualRuntimeKeccakCompose`).
@@ -96,7 +101,7 @@ Peers already settled: fan-in/out, nested callsite, sidecar self/foreign/proxy/p
 
 ## Still open / fence
 - DualRuntimeSet-width density wall (inherent)
-- Matrix landing cells still in flight / thin: self→proxy, proxy→foreign-proxy, proxy-self chunks/strings/structs, self fixed-struct write, self→foreign bytes RMW, proxy→foreign positive chunk write (see matrix table)
+- Deferred thin matrix cells (acceptable after core settle): self→foreign bytes RMW, proxy→foreign positive chunk write, proxy-self nested struct leaf assign (compile fence), optional lifecycle green beyond upgrade/create
 
 ## Fence
 - No `marketplace.test.ts` / `vitest.marketplace.config.ts` in this stream

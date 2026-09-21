@@ -76,6 +76,61 @@ export function resolveMessageBusHandler(
   return matches[0];
 }
 
+/** Framing fields a mixed-handler / multi-row consumer needs to slice one row's calldata from `blob`. */
+export type MessageBatchRowCalldataFrame = {
+  /** Absolute byte offset of this row's argument payload inside `blob`. */
+  calldataStart?: number;
+  /** Authoritative argument payload length in bytes. */
+  calldataLength?: number;
+  /** Exact pushdata-encoded ABI argument vector; when present must match the sliced bytes. */
+  argsHex?: string;
+  /** Optional row index for error attribution. */
+  row?: number;
+};
+
+/**
+ * Slice one row's authenticated calldata from a message-bus batch blob using published framing.
+ * Fail-closes when `calldataStart`/`calldataLength` are missing or non-integer, the slice walks past
+ * `blob`, or (when `argsHex` is published) the slice disagrees with that hex.
+ */
+export function sliceMessageBatchRowCalldata(
+  blob: Uint8Array,
+  row: MessageBatchRowCalldataFrame,
+): Uint8Array {
+  const label = row.row === undefined ? 'row' : `row ${row.row}`;
+  const { calldataStart, calldataLength } = row;
+  if (calldataStart === undefined || calldataLength === undefined) {
+    throw new Error(`message-bus batch ${label} is unframed: missing calldataStart/Length`);
+  }
+  if (!Number.isInteger(calldataStart) || !Number.isInteger(calldataLength)
+    || calldataStart < 0 || calldataLength < 0) {
+    throw new Error(
+      `message-bus batch ${label} framing is malformed: `
+      + `calldataStart=${String(calldataStart)} calldataLength=${String(calldataLength)}`,
+    );
+  }
+  if (calldataStart + calldataLength > blob.length) {
+    throw new Error(
+      `message-bus batch ${label} unframed split walked past authenticated blob bounds `
+      + `(start ${calldataStart} + length ${calldataLength} > ${blob.length})`,
+    );
+  }
+  const slice = blob.subarray(calldataStart, calldataStart + calldataLength);
+  if (row.argsHex !== undefined) {
+    const expectedLength = row.argsHex.length / 2;
+    if (calldataLength !== expectedLength) {
+      throw new Error(
+        `message-bus batch ${label} row framing mismatch: published calldataLength ${calldataLength} `
+        + `≠ argsHex byte length ${expectedLength}`,
+      );
+    }
+    if (binToHex(slice) !== row.argsHex.toLowerCase()) {
+      throw new Error(`message-bus batch ${label} calldata frame does not match encoded arguments`);
+    }
+  }
+  return slice;
+}
+
 export interface EncodedMessageBatch {
   /** Exact message-bus batch blob consumed by the compiler-owned route. */
   blob: Uint8Array;
@@ -972,7 +1027,8 @@ export function encodeMessageBatch(
     throw new Error(`message-bus batch blob is ${blob.length} bytes; maximum is ${capability.maximumBlobBytes}`);
   }
   // Publish absolute argument bounds so mixed-handler / multi-row consumers slice without re-deriving
-  // schema walks that can OP_SPLIT past a shorter sibling row's payload.
+  // schema walks that can OP_SPLIT past a shorter sibling row's payload. The same helper consumers use
+  // (`sliceMessageBatchRowCalldata`) verifies each published frame before it leaves encode.
   let rowCursor = blobHeader.length;
   const framedRows = projectedRows.map((row, index) => {
     const rowBytes = rows[index]!;
@@ -981,10 +1037,9 @@ export function encodeMessageBatch(
       throw new Error(`message-bus batch row ${index} argument length exceeds its encoded frame`);
     }
     const calldataStart = rowCursor + (rowBytes.length - calldataLength);
-    const slice = blob.subarray(calldataStart, calldataStart + calldataLength);
-    if (binToHex(slice) !== row.argsHex.toLowerCase()) {
-      throw new Error(`message-bus batch row ${index} calldata frame does not match encoded arguments`);
-    }
+    sliceMessageBatchRowCalldata(blob, {
+      row: index, calldataStart, calldataLength, argsHex: row.argsHex,
+    });
     rowCursor += rowBytes.length;
     return {
       ...row,

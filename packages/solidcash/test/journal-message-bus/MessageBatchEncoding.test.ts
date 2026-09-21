@@ -151,12 +151,39 @@ describe('messageBus.encodeMessageBatch', () => {
     for (const row of encoded.rows) {
       expect(row.calldataStart).toBeGreaterThanOrEqual(7); // magic+flags+count
       expect(row.calldataLength).toBe(row.argsHex.length / 2);
-      expect(binToHex(encoded.blob.subarray(row.calldataStart, row.calldataStart + row.calldataLength)))
+      expect(binToHex(messageBus.sliceMessageBatchRowCalldata(encoded.blob, row)))
         .toBe(row.argsHex.toLowerCase());
       expect(row.calldataStart).toBeGreaterThanOrEqual(cursor);
       cursor = row.calldataStart + row.calldataLength;
     }
     expect(cursor).toBeLessThanOrEqual(encoded.blob.length);
+  });
+
+  it('sliceMessageBatchRowCalldata fail-closes unframed rows and hostile length walks', () => {
+    const encoded = messageBus.encodeMessageBatch(artifact, [
+      { function: 'add', args: [5n] },
+      { function: 'clear' },
+      { function: 'add', args: [3n] },
+    ]);
+    const clear = encoded.rows[1]!;
+    expect(clear.calldataLength).toBe(0);
+    expect(binToHex(messageBus.sliceMessageBatchRowCalldata(encoded.blob, clear))).toBe('');
+
+    const { calldataStart: _start, calldataLength: _length, ...missingBounds } = clear;
+    expect(() => messageBus.sliceMessageBatchRowCalldata(encoded.blob, missingBounds))
+      .toThrow(/unframed: missing calldataStart\/Length/);
+    expect(() => messageBus.sliceMessageBatchRowCalldata(encoded.blob, {
+      ...clear, calldataStart: 1.5, calldataLength: 0,
+    })).toThrow(/framing is malformed/);
+    expect(() => messageBus.sliceMessageBatchRowCalldata(encoded.blob, {
+      ...clear, calldataStart: encoded.blob.length, calldataLength: 1,
+    })).toThrow(/walked past authenticated blob bounds/);
+    // Hostile: keep clear's start but borrow the following add row's non-zero length.
+    const forgedLength = encoded.rows[2]!.calldataLength;
+    expect(forgedLength).toBeGreaterThan(0);
+    expect(() => messageBus.sliceMessageBatchRowCalldata(encoded.blob, {
+      ...clear, calldataLength: forgedLength,
+    })).toThrow(/row framing mismatch|does not match encoded arguments/);
   });
 
   it('enforces an aggregate fixed chunkable-write occurrence policy before encoding', () => {

@@ -2,7 +2,7 @@ import { binToHex, hexToBin } from '@bitauth/libauth';
 import { compileString } from 'solidc';
 import { describe, expect, it } from 'vitest';
 import { Contract, StatefulContract, messageBus } from '../../../src/index.js';
-import { encodeMessageBatch } from '../../../src/message-bus/message-bus.js';
+import { encodeMessageBatch, sliceMessageBatchRowCalldata } from '../../../src/message-bus/message-bus.js';
 import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';
 import type { TransactionBuilder } from '../../../src/TransactionBuilder.js';
 import { generateLibauthSourceOutputs } from '../../../src/utils.js';
@@ -156,43 +156,23 @@ describe('kernel mixed-handler row framing under composition', () => {
       { function: 'clear' },
       { function: 'add', args: [3n] },
     ]);
-    // Every mixed-handler row must publish absolute calldata bounds; unframed rows are not admitted.
+    // Shipped encode path already verified each row through sliceMessageBatchRowCalldata.
     for (const row of framed.rows) {
-      expect(row.calldataStart).toEqual(expect.any(Number));
-      expect(row.calldataLength).toEqual(expect.any(Number));
-      expect(Number.isInteger(row.calldataStart)).toBe(true);
-      expect(Number.isInteger(row.calldataLength)).toBe(true);
-      expect(row.calldataStart).toBeGreaterThanOrEqual(0);
-      expect(row.calldataLength).toBeGreaterThanOrEqual(0);
+      expect(binToHex(sliceMessageBatchRowCalldata(framed.blob, row))).toBe(row.argsHex.toLowerCase());
     }
     const clearRow = framed.rows[1]!;
     expect(clearRow.calldataLength).toBe(0);
-    // Hostile unframed walk: pretend the zero-arg clear row carries the next add's payload length.
+    // Hostile walk: reuse clear's start with the next add's length — shipped helper refuses.
     const forgedLength = framed.rows[2]!.calldataLength;
     expect(forgedLength).toBeGreaterThan(0);
-    expect(() => {
-      const start = clearRow.calldataStart;
-      const hostile = framed.blob.subarray(start, start + forgedLength);
-      if (hostile.length !== forgedLength) {
-        throw new Error('unframed split walked past authenticated clear-row bounds');
-      }
-      // Even if the slice fits the blob, published framing forbids treating clear as an add-sized row.
-      if (clearRow.calldataLength !== forgedLength) {
-        throw new Error(
-          `row framing mismatch: published calldataLength ${clearRow.calldataLength} `
-          + `≠ hostile schema walk ${forgedLength}`,
-        );
-      }
-    }).toThrow(/row framing mismatch|unframed split/);
+    expect(() => sliceMessageBatchRowCalldata(framed.blob, {
+      ...clearRow,
+      calldataLength: forgedLength,
+    })).toThrow(/row framing mismatch|does not match encoded arguments/);
 
-    // Explicit residual: a row stripped of calldataStart/Length must not be treated as framed.
-    const unframed = { ...clearRow } as { calldataStart?: number; calldataLength?: number; argsHex: string };
-    delete unframed.calldataStart;
-    delete unframed.calldataLength;
-    expect(() => {
-      if (unframed.calldataStart === undefined || unframed.calldataLength === undefined) {
-        throw new Error('unframed row missing calldataStart/Length');
-      }
-    }).toThrow(/unframed row missing calldataStart\/Length/);
+    // Unframed residual: strip published bounds — shipped helper refuses before any slice.
+    const { calldataStart: _s, calldataLength: _l, ...unframed } = clearRow;
+    expect(() => sliceMessageBatchRowCalldata(framed.blob, unframed))
+      .toThrow(/unframed: missing calldataStart\/Length/);
   });
 });

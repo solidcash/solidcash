@@ -4,6 +4,7 @@ import {
   EnumType, StructType, ExternalLibraryAbi, BUILTIN_LIBRARIES, resolveLibraries, sidecarCodeRange, isChunkableValueType,
   ValueProvenance, ValueProvenanceKind,
   abiTypeString, ChildDeploymentValueRecipe, FixedBchTransferAbi, ExternalResultConsumerAbi,
+  ATOMIC_MESSAGE_BUS_MAX_ROWS,
 } from '@solidcash/utils';
 import { binToHex } from '@bitauth/libauth';
 import { version } from '../index.js';
@@ -12,14 +13,14 @@ import {
   StructDefinitionNode, FunctionDefinitionNode, FunctionModifier, Node, ContractNode,
   ExpressionNode, TransferStatementNode, AddressTransferStatementNode, AddressSendExpressionNode,
   BlockNode, WhileNode, VariableDefinitionNode,
-  BinaryOpNode, IdentifierNode, AssignNode, TupleAssignmentNode, ArrayAssignNode, ReturnNode,
+  BinaryOpNode, IdentifierNode, AssignNode, TupleAssignmentNode, ArrayAssignNode, ReturnNode, IntLiteralNode,
   ArrayNode, NewArrayNode, CastNode, FunctionCallNode, LiteralNode, LowLevelCallNode,
   LowLevelCallStatementNode, StateAccessNode, RequireNode, ExternalFunctionCallNode,
   StateAssignNode, MappingAssignNode, MappingFieldAssignNode, StateArrayAssignNode,
   MappingAccessNode, ArrayAccessNode, FieldAccessNode, ExternalCallExpression, ExternalCallArgSource,
   ExternalCallStatement, EmitStatementNode, TernaryOpNode, TokenContainerMethodStatementNode,
   UnaryOpNode, BranchNode, BoolLiteralNode,
-  SwitchNode, TryCatchNode, InstantiationNode,
+  SwitchNode, TryCatchNode, InstantiationNode, UncheckedNode,
   EntryAccessInfo,
 } from '../ast/AST.js';
 import { BinaryOperator, UnaryOperator } from '../ast/Operator.js';
@@ -79,7 +80,7 @@ export const sourceEffectOrderForArtifact = (
  * the call result is written into that exact array and that exact array is returned.
  */
 export const resultArrayOutputOf = (
-  body: BlockNode | undefined, target: ExternalFunctionCallNode | undefined,
+  body: BlockNode | undefined, target: ExpressionNode | undefined,
 ): number | undefined => {
   if (!body || !target || !body.statements) return undefined;
   const containsTarget = (value: unknown, seen = new Set<object>()): boolean => {
@@ -109,7 +110,7 @@ export const resultArrayOutputOf = (
       const candidateVariable = statements[index - 1];
       if (!(candidateLoop instanceof WhileNode) || !(candidateVariable instanceof VariableDefinitionNode)) continue;
       const directAssignments = (candidateLoop.block.statements ?? []).filter((statement): statement is ArrayAssignNode =>
-        statement instanceof ArrayAssignNode && statement.value === target);
+        statement instanceof ArrayAssignNode && containsTarget(statement.value));
       if (directAssignments.length !== 1) continue;
       if (assignment) return undefined;
       [assignment] = directAssignments;
@@ -287,6 +288,328 @@ export const occurrenceInfoOf = (
     ...(minimumOccurrences !== undefined && { minimumOccurrences }),
     ...(literalBound ? { occurrenceBoundSource: 'literal' as const } : {}),
   };
+};
+
+/**
+ * Publish the exact recurrence of one canonical pre-test external-call loop.
+ *
+ * This is intentionally a small forward interpreter, not an initializer lookup. A local or parameter can be
+ * assigned several times before the loop, and an if-without-else joins the assigned arm with the incoming value.
+ * Every identifier used by the recurrence is therefore replaced with its value at the loop entry. The only
+ * identifier left live is the induction counter itself. Returning external calls are represented by their
+ * already-assigned physical result identity; this metadata never clones an executable call node.
+ */
+const externalCallIterationDomains = (
+  fn: FunctionDefinitionNode, compilerOptions: CompilerOptions,
+): ReadonlyMap<number, {
+  counterName: string;
+  initialValue: ExternalCallExpression;
+  stepValue: ExternalCallExpression;
+  continueCondition: ExternalCallExpression;
+  maximumIterations: number;
+}> => {
+  if (!fn.body || !fn.externalCalls?.length) return new Map();
+  type Binding = ExternalCallExpression | undefined;
+  type ReplayState = { bindings: Map<object | string, Binding> };
+  const visible = fn.parameters.filter((parameter) => !parameter.name.startsWith('__internal__'));
+  const initial: ReplayState = { bindings: new Map() };
+  visible.forEach((parameter, index) => {
+    initial.bindings.set(parameter, { kind: 'source', source: { kind: 'forward', paramIndex: index } });
+    initial.bindings.set(`name:${parameter.name}`, {
+      kind: 'source', source: { kind: 'forward', paramIndex: index },
+    });
+  });
+  const clone = (state: ReplayState): ReplayState => ({ bindings: new Map(state.bindings) });
+  const same = (left: Binding, right: Binding): boolean =>
+    left !== undefined && right !== undefined && JSON.stringify(left) === JSON.stringify(right);
+  const definitionKey = (identifier: IdentifierNode): object | string => {
+    const definition = identifier.definition?.definition;
+    return definition && typeof definition === 'object' ? definition : `name:${identifier.name}`;
+  };
+  const callByNode = new Map<Node, number>(fn.externalCalls
+    .filter((call) => call.sourceCallNode !== undefined)
+    .map((call) => [call.sourceCallNode!, call.slotIndex] as const));
+  const skip = new Set([
+    'location', 'resolvedFunction', 'functionReference', 'definition', 'symbolTable',
+    'referencedContract', 'stateVariable', 'collection', 'sourceCallNode',
+  ]);
+  const contains = (root: unknown, target: Node, seen = new Set<object>()): boolean => {
+    if (root === target) return true;
+    if (!(root instanceof Node) || seen.has(root)) return false;
+    seen.add(root);
+    for (const [key, child] of Object.entries(root)) {
+      if (skip.has(key)) continue;
+      if (child instanceof Node && contains(child, target, seen)) return true;
+      if (Array.isArray(child) && child.some((item) => contains(item, target, seen))) return true;
+    }
+    return false;
+  };
+  type LoopContext = { block: BlockNode; index: number; loop: WhileNode };
+  const loopContexts = new Map<number, readonly LoopContext[]>();
+  const indexLoopContexts = (
+    value: unknown, stack: readonly LoopContext[] = [], ancestors = new Set<object>(),
+  ): void => {
+    if (!(value instanceof Node) || ancestors.has(value)) return;
+    ancestors = new Set(ancestors).add(value);
+    const callsiteId = callByNode.get(value);
+    if (callsiteId !== undefined) loopContexts.set(callsiteId, stack);
+    if (value instanceof BlockNode) {
+      for (const [index, statement] of (value.statements ?? []).entries()) {
+        if (statement instanceof WhileNode) {
+          // A call in the pre-test condition is not a body occurrence and therefore has no affine body domain.
+          indexLoopContexts(statement.condition, stack, ancestors);
+          indexLoopContexts(statement.block, [...stack, { block: value, index, loop: statement }], ancestors);
+        } else {
+          indexLoopContexts(statement, stack, ancestors);
+        }
+      }
+      return;
+    }
+    for (const [key, child] of Object.entries(value)) {
+      if (skip.has(key)) continue;
+      if (child instanceof Node) indexLoopContexts(child, stack, ancestors);
+      else if (Array.isArray(child)) child.forEach((item) => indexLoopContexts(item, stack, ancestors));
+    }
+  };
+  indexLoopContexts(fn.body);
+  const serialize = (
+    expression: ExpressionNode, state: ReplayState, counter?: VariableDefinitionNode,
+    seen = new Set<Node>(),
+  ): ExternalCallExpression | undefined => {
+    if (seen.has(expression)) return undefined;
+    seen = new Set(seen).add(expression);
+    if (expression instanceof IdentifierNode) {
+      const definition = expression.definition?.definition;
+      if (counter && (definition === counter || (!definition && expression.name === counter.name))) {
+        return { kind: 'identifier', name: counter.name };
+      }
+      const byDefinition = definition && typeof definition === 'object'
+        ? state.bindings.get(definition) : undefined;
+      return byDefinition ?? state.bindings.get(`name:${expression.name}`);
+    }
+    if (expression instanceof IntLiteralNode) {
+      return { kind: 'literal', type: 'bigint', value: expression.value.toString() };
+    }
+    if (expression instanceof BoolLiteralNode) {
+      return { kind: 'literal', type: 'bool', value: expression.value };
+    }
+    if (expression instanceof LiteralNode) {
+      const value = expression.value instanceof Uint8Array ? binToHex(expression.value) : String(expression.value);
+      return { kind: 'literal', value, ...(expression.type && { type: expression.type.toString() }) };
+    }
+    if (expression instanceof StateAccessNode) return { kind: 'state', name: expression.name };
+    if (expression instanceof CastNode) {
+      const inner = serialize(expression.expression, state, counter, seen);
+      return inner && { kind: 'cast', type: expression.type.toString(), expression: inner };
+    }
+    if (expression instanceof UnaryOpNode) {
+      const inner = serialize(expression.expression, state, counter, seen);
+      return inner && { kind: 'unary', operator: expression.operator, expression: inner };
+    }
+    if (expression instanceof BinaryOpNode) {
+      const left = serialize(expression.left, state, counter, seen);
+      const right = serialize(expression.right, state, counter, seen);
+      return left && right && { kind: 'binary', operator: expression.operator, left, right };
+    }
+    if (expression instanceof TernaryOpNode) {
+      const condition = serialize(expression.condition, state, counter, seen);
+      const ifTrue = serialize(expression.ifTrue, state, counter, seen);
+      const ifFalse = serialize(expression.ifFalse, state, counter, seen);
+      return condition && ifTrue && ifFalse && { kind: 'ternary', condition, ifTrue, ifFalse };
+    }
+    if (expression instanceof ExternalFunctionCallNode) {
+      const callsiteId = expression.callInfo?.externalCallSlotIndex ?? callByNode.get(expression);
+      if (callsiteId === undefined || callsiteId < 0 || expression.callInfo?.hasReturnValues !== true
+        || expression.callInfo.returnTypes?.length !== 1) return undefined;
+      return {
+        kind: 'producerResult', callsiteId, resultIndex: 0,
+        ...(expression.type && { type: expression.type.toString() }),
+      };
+    }
+    return undefined;
+  };
+  const join = (condition: Binding, ifValue: Binding, elseValue: Binding): Binding => {
+    if (same(ifValue, elseValue)) return ifValue;
+    return condition && ifValue && elseValue
+      ? { kind: 'ternary', condition, ifTrue: ifValue, ifFalse: elseValue } : undefined;
+  };
+  const processBlock = (block: BlockNode, state: ReplayState): boolean => {
+    for (const statement of block.statements ?? []) {
+      if (statement instanceof VariableDefinitionNode) {
+        const value = statement.expression ? serialize(statement.expression, state) : undefined;
+        state.bindings.set(statement, value);
+        state.bindings.set(`name:${statement.name}`, value);
+      } else if (statement instanceof AssignNode) {
+        const value = serialize(statement.expression, state);
+        const key = definitionKey(statement.identifier);
+        state.bindings.set(key, value);
+        state.bindings.set(`name:${statement.identifier.name}`, value);
+      } else if (statement instanceof TupleAssignmentNode) {
+        const callsiteId = statement.tuple instanceof ExternalFunctionCallNode
+          ? statement.tuple.callInfo?.externalCallSlotIndex ?? callByNode.get(statement.tuple)
+          : undefined;
+        const returnTypes = statement.tuple instanceof ExternalFunctionCallNode
+          ? statement.tuple.callInfo?.returnTypes : undefined;
+        for (const [index, element] of statement.elements.entries()) {
+          if (element.skip || !element.name) continue;
+          const tupleValue = statement.tupleExpressions?.[index]
+            ? serialize(statement.tupleExpressions[index], state)
+            : callsiteId !== undefined && callsiteId >= 0 && returnTypes?.[index]
+              ? {
+                kind: 'producerResult' as const, callsiteId, resultIndex: index,
+                type: returnTypes[index].toString(),
+              }
+              : undefined;
+          state.bindings.set(`name:${element.name}`, tupleValue);
+        }
+      } else if (statement instanceof BranchNode) {
+        const condition = serialize(statement.condition, state);
+        const before = clone(state);
+        const ifState = clone(state);
+        const elseState = clone(state);
+        if (!processBlock(statement.ifBlock, ifState)
+          || (statement.elseBlock && !processBlock(statement.elseBlock, elseState))) return false;
+        for (const key of before.bindings.keys()) {
+          state.bindings.set(key, join(condition, ifState.bindings.get(key), elseState.bindings.get(key)));
+        }
+      } else if (statement instanceof BlockNode || statement instanceof UncheckedNode) {
+        if (!processBlock(statement instanceof BlockNode ? statement : statement.block, state)) return false;
+      } else if (statement instanceof WhileNode || statement instanceof TryCatchNode
+        || statement instanceof SwitchNode || /^(ReturnNode|BreakNode|ContinueNode|RevertNode)$/.test(
+        statement.constructor.name,
+      )) {
+        return false;
+      }
+    }
+    return true;
+  };
+  const replayBefore = (block: BlockNode, target: Node, state: ReplayState): boolean => {
+    for (const statement of block.statements ?? []) {
+      if (statement === target) return true;
+      if (!contains(statement, target)) {
+        if (!processBlock(new BlockNode([statement]), state)) return false;
+        continue;
+      }
+      if (statement instanceof BlockNode) return replayBefore(statement, target, state);
+      if (statement instanceof UncheckedNode) return replayBefore(statement.block, target, state);
+      if (statement instanceof BranchNode) {
+        if (contains(statement.ifBlock, target)) return replayBefore(statement.ifBlock, target, state);
+        if (statement.elseBlock && contains(statement.elseBlock, target)) {
+          return replayBefore(statement.elseBlock, target, state);
+        }
+      }
+      return false;
+    }
+    return false;
+  };
+  const assignedIn = (root: Node, dependency: object | string, counter: VariableDefinitionNode): boolean => {
+    let assigned = false;
+    const visit = (value: unknown, seen = new Set<object>()): void => {
+      if (assigned || !(value instanceof Node) || seen.has(value)) return;
+      seen.add(value);
+      if (value instanceof AssignNode) {
+        const key = definitionKey(value.identifier);
+        const isCounterUpdate = key === counter
+          || (typeof key === 'string' && key === `name:${counter.name}`);
+        if (!isCounterUpdate && key === dependency) { assigned = true; return; }
+      }
+      for (const [key, child] of Object.entries(value)) {
+        if (skip.has(key)) continue;
+        if (child instanceof Node) visit(child, seen);
+        else if (Array.isArray(child)) child.forEach((item) => visit(item, seen));
+      }
+    };
+    visit(root);
+    return assigned;
+  };
+  const dependencies = (root: ExpressionNode, counter: VariableDefinitionNode): Set<object | string> => {
+    const result = new Set<object | string>();
+    const visit = (value: unknown, seen = new Set<object>()): void => {
+      if (!(value instanceof Node) || seen.has(value)) return;
+      seen.add(value);
+      if (value instanceof IdentifierNode) {
+        const key = definitionKey(value);
+        if (key !== counter && key !== `name:${counter.name}`) result.add(key);
+      }
+      for (const [key, child] of Object.entries(value)) {
+        if (skip.has(key)) continue;
+        if (child instanceof Node) visit(child, seen);
+        else if (Array.isArray(child)) child.forEach((item) => visit(item, seen));
+      }
+    };
+    visit(root);
+    return result;
+  };
+
+  const result = new Map<number, {
+    counterName: string;
+    initialValue: ExternalCallExpression;
+    stepValue: ExternalCallExpression;
+    continueCondition: ExternalCallExpression;
+    maximumIterations: number;
+  }>();
+  for (const call of fn.externalCalls) {
+    const target = call.sourceCallNode;
+    if (!target) continue;
+    const enclosing = loopContexts.get(call.slotIndex) ?? [];
+    // One affine domain cannot describe a Cartesian product of nested source loops.
+    if (enclosing.length !== 1) continue;
+    const [{ block, index, loop }] = enclosing;
+    const counter = block.statements?.[index - 1];
+    if (!(counter instanceof VariableDefinitionNode) || !counter.isLoopVariable || !counter.expression
+      || loop.forLoopUpdateCount !== 1 || loopCanExitEarly(loop)) continue;
+    const update = loop.block.statements?.at(-1);
+    if (!(update instanceof AssignNode) || update.identifier.name !== counter.name
+      || !(update.expression instanceof BinaryOpNode)
+      || ![BinaryOperator.PLUS, BinaryOperator.MINUS].includes(update.expression.operator)) continue;
+    const counterOnLeft = update.expression.left instanceof IdentifierNode
+      && update.expression.left.name === counter.name;
+    const counterOnRight = update.expression.operator === BinaryOperator.PLUS
+      && update.expression.right instanceof IdentifierNode
+      && update.expression.right.name === counter.name;
+    if (!counterOnLeft && !counterOnRight) continue;
+    let counterAssignments = 0;
+    const countCounterAssignments = (value: unknown, seen = new Set<object>()): void => {
+      if (!(value instanceof Node) || seen.has(value)) return;
+      seen.add(value);
+      if (value instanceof AssignNode) {
+        const key = definitionKey(value.identifier);
+        if (key === counter || key === `name:${counter.name}`) counterAssignments += 1;
+      }
+      for (const [key, child] of Object.entries(value)) {
+        if (skip.has(key)) continue;
+        if (child instanceof Node) countCounterAssignments(child, seen);
+        else if (Array.isArray(child)) child.forEach((item) => countCounterAssignments(item, seen));
+      }
+    };
+    countCounterAssignments(loop.block);
+    if (counterAssignments !== 1) continue;
+    const magnitude = counterOnLeft ? update.expression.right : update.expression.left;
+    const deps = new Set([...dependencies(loop.condition, counter), ...dependencies(magnitude, counter)]);
+    if ([...deps].some((dependency) => assignedIn(loop.block, dependency, counter))) continue;
+    const state = clone(initial);
+    if (!replayBefore(fn.body, counter, state)) continue;
+    const initialValue = serialize(counter.expression, state);
+    // The declaration starts the live induction binding only after its initializer is evaluated.
+    state.bindings.set(counter, { kind: 'identifier', name: counter.name });
+    state.bindings.set(`name:${counter.name}`, { kind: 'identifier', name: counter.name });
+    const continueCondition = serialize(loop.condition, state, counter);
+    const serializedMagnitude = serialize(magnitude, state, counter);
+    const stepValue = serializedMagnitude && update.expression.operator === BinaryOperator.MINUS
+      ? {
+        kind: 'binary' as const, operator: BinaryOperator.MINUS,
+        left: { kind: 'literal' as const, type: 'bigint', value: '0' }, right: serializedMagnitude,
+      }
+      : serializedMagnitude;
+    const maximumIterations = fixedForMaximum(counter, loop)
+      ?? loop.compilerAuthenticatedMaximumIterations
+      ?? (compilerOptions.messageBusKernel === true ? ATOMIC_MESSAGE_BUS_MAX_ROWS : undefined);
+    if (!initialValue || !stepValue || !continueCondition || maximumIterations === undefined) continue;
+    result.set(call.slotIndex, {
+      counterName: counter.name, initialValue, stepValue, continueCondition, maximumIterations,
+    });
+  }
+  return result;
 };
 
 const expressionSource = (
@@ -1094,6 +1417,7 @@ function buildFunctionAbiMetadata(
   interfaces: readonly InterfaceNode[] = [], compilerOptions: CompilerOptions = {},
 ): Partial<AbiFunction> {
   const dynamicWriteSources = dynamicWriteSourcesOf(func, contract);
+  const iterationDomains = externalCallIterationDomains(func, compilerOptions);
   const possibleSelectorTargets = (
     interfaceName: string, parameters: readonly ExpressionNode[],
   ): readonly { functionName: string; selector: string }[] => {
@@ -1364,7 +1688,7 @@ function buildFunctionAbiMetadata(
     const canonicalize = (
       expression: ExternalCallExpression,
       consumerCallsiteId: number,
-      lane: number | 'condition',
+      lane: number | 'condition' | 'iterationDomain',
       dominanceCallsiteId = consumerCallsiteId,
     ): ExternalCallExpression => {
       const rewrite = (child: ExternalCallExpression | undefined): ExternalCallExpression | undefined =>
@@ -1377,6 +1701,7 @@ function buildFunctionAbiMetadata(
         };
       const rewriteStatement = (statement: ExternalCallStatement): ExternalCallStatement => ({
         ...statement,
+        ...(statement.index && { index: rewrite(statement.index) }),
         ...(statement.expression && { expression: rewrite(statement.expression) }),
         ...(statement.condition && { condition: rewrite(statement.condition) }),
         ...(statement.statements && { statements: statement.statements.map(rewriteStatement) }),
@@ -1415,7 +1740,9 @@ function buildFunctionAbiMetadata(
         + `:${normalized.sourceCallsiteId ?? ''}`;
       result.set(key, {
         consumerCallsiteId,
-        ...(lane === 'condition' ? { condition: true as const } : { argument: lane }),
+        ...(lane === 'condition' ? { condition: true as const }
+          : lane === 'iterationDomain' ? { iterationDomain: true as const }
+            : { argument: lane }),
         producerCallsiteId: producerCallsiteId!,
         ...(normalized.sourceCallsiteId !== undefined && {
           producerSourceCallsiteId: normalized.sourceCallsiteId,
@@ -1455,6 +1782,14 @@ function buildFunctionAbiMetadata(
       canonicalizeSources(slot.rawArgSources, slot.slotIndex);
       if (slot.condition) {
         slot.condition = canonicalize(slot.condition, slot.slotIndex, 'condition');
+      }
+      const domain = iterationDomains.get(slot.slotIndex);
+      if (domain) {
+        domain.initialValue = canonicalize(domain.initialValue, slot.slotIndex, 'iterationDomain');
+        domain.stepValue = canonicalize(domain.stepValue, slot.slotIndex, 'iterationDomain');
+        domain.continueCondition = canonicalize(
+          domain.continueCondition, slot.slotIndex, 'iterationDomain',
+        );
       }
       for (const row of slot.batchInvocations ?? []) {
         // A repeated-owner batch has one physical consumer lane, but each row retains its exact source position.
@@ -2023,7 +2358,11 @@ function buildFunctionAbiMetadata(
           ? { occurrence: 'once' as const }
           : occurrenceInfoOf(func, ec.sourceCallNode);
         const resultArrayOutput = !ec.condition && occurrenceInfo.occurrence === 'loop'
-          ? resultArrayOutputOf(func.body, ec.sourceCallNode) : undefined;
+          ? ec.resultArrayOutput ?? ec.sourceCallNode?.resultArrayOutput
+            ?? resultArrayOutputOf(func.body, ec.sourceCallNode) : undefined;
+        if (ec.callerIdentity === undefined && compilerOptions.messageBusKernel === true) {
+          throw new Error(`Kernel callsite ${func.name}:${ec.slotIndex} lacks caller identity metadata`);
+        }
         return {
           callsiteId: ec.slotIndex,
           ...(ec.sourceEffectOrdinal !== undefined && { sourceEffectOrdinal: ec.sourceEffectOrdinal }),
@@ -2035,13 +2374,13 @@ function buildFunctionAbiMetadata(
           }),
           ...occurrenceInfo,
           ...(ec.condition && { condition: ec.condition }),
+          ...(iterationDomains.get(ec.slotIndex) && {
+            iterationDomain: iterationDomains.get(ec.slotIndex)!,
+          }),
           ...(resultArrayOutput !== undefined && { resultArrayOutput }),
           interfaceName: ec.interfaceName,
           functionName: ec.functionName,
-          // Default authenticated subject is the physical state-owner master. Absence means a legacy artifact.
-          callerIdentity: ec.callerIdentity ?? {
-            version: 1 as const, role: 'owner' as const, auth: 'input-bytecode' as const, authOffset: 0,
-          },
+          ...(ec.callerIdentity !== undefined && { callerIdentity: ec.callerIdentity }),
           ...(ec.addressParam && { addressParam: ec.addressParam }),
           ...(ec.addressStateVar && { addressStateVar: ec.addressStateVar }),
           ...(ec.addressLiteral && { addressLiteral: ec.addressLiteral }),

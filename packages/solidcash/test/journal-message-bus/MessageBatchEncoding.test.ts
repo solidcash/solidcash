@@ -80,6 +80,11 @@ contract FixedTupleCollectionEncoding {
   }
 }`;
 
+const REPEATED_READ_COLLECTION_SOURCE = `pragma solidity ^0.8.0;
+contract RepeatedReadCollectionEncoding {
+  mapping(string => string) public labels;
+}`;
+
 const SHARED_LITERAL_COLLECTION_SOURCE = `pragma solidcash ^0.13.0;
 contract SharedLiteralCollectionEncoding() {
   mapping(int => int) source;
@@ -421,6 +426,34 @@ describe('messageBus.encodeMessageBatch', () => {
       messageBus.inactiveMessageBusRouteWitness('address'),
     );
     expect(witness('__message_bus_key_balances_0_row_r1')).toEqual(destination);
+  });
+
+  it('binds two distinct repeated read keys to compiler-published fixed tuple lanes', () => {
+    const routed = compileString(REPEATED_READ_COLLECTION_SOURCE, {
+      forceStateful: true, messageBus: true, messageBusKernel: true,
+      solidityImportCompat: true, suppressWarnings: true,
+    });
+    const handler = routed.messageBus!.handlers.find((candidate) => candidate.name === 'labels')!;
+    expect(handler.batchKeyWitnesses?.[0]).toMatchObject({
+      source: 'argument', inputIndex: 0,
+      entryTupleGroup: expect.any(Number),
+      alternateRouteInput: '__message_bus_key_labels_0_alt',
+    });
+    const encoded = messageBus.encodeMessageBatch(routed, [
+      { function: 'labels', args: ['alpha'] },
+      { function: 'labels', args: ['beta'] },
+    ]);
+    const visible = routed.messageBus!.route.inputs
+      .filter((input) => input.name !== 'batchBlob' && !input.name.startsWith('__internal__'));
+    const witness = (name: string): unknown => encoded.routeWitnesses[visible
+      .findIndex((input) => input.name === name)];
+    expect(witness('__message_bus_key_labels_0')).toBe('alpha');
+    expect(witness('__message_bus_key_labels_0_alt')).toBe('beta');
+    expect(() => messageBus.encodeMessageBatch(routed, [
+      { function: 'labels', args: ['alpha'] },
+      { function: 'labels', args: ['beta'] },
+      { function: 'labels', args: ['gamma'] },
+    ])).toThrow(/exceeds two physical entries/);
   });
 
   it('encodes a row whose shared collection key is the caller identity', () => {

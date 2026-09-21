@@ -1091,7 +1091,7 @@ describe('atomic compiled invocation graph', () => {
         abi: [{
           name: 'run', selector: '11111111', inputs: [{ name: 'values', type: 'int[]' }], outputs: [],
           externalCalls: [{
-            callsiteId: 7, occurrence: 'loop' as const, maximumOccurrences: 3,
+            callsiteId: 7, sourceEffectOrdinal: 4, occurrence: 'loop' as const, maximumOccurrences: 3,
             interfaceName: 'ISink', functionName: 'ping',
             argSources: [{ kind: 'arrayElement' as const, paramIndex: 0, indexValue: 0 }],
           }],
@@ -1109,12 +1109,45 @@ describe('atomic compiled invocation graph', () => {
     expect(planned.invocations.slice(1).map((invocation) => ({
       physical: invocation.consumerCallsiteId,
       source: invocation.sourceCallsiteId,
+      logical: invocation.sourceLogicalIndex,
       occurrence: invocation.occurrenceIndex,
     }))).toEqual([
-      { physical: 7, source: 7, occurrence: 0 },
-      { physical: 7, source: 7, occurrence: 1 },
-      { physical: 7, source: 7, occurrence: 2 },
+      { physical: 7, source: 7, logical: undefined, occurrence: 0 },
+      { physical: 7, source: 7, logical: undefined, occurrence: 1 },
+      { physical: 7, source: 7, logical: undefined, occurrence: 2 },
     ]);
+    const first = planned.invocations[1];
+    expect(first.producerPath.status).toBe('complete');
+    expect(() => messageBus.assertPreparedInvocationIdentity({
+      contract: {} as never,
+      functionName: 'ping',
+      args: [1n],
+      callsiteId: 7,
+      sourceCallsiteId: 7,
+      occurrenceIndex: 0,
+      sourceEffectOrdinal: 4,
+      producerPath: first.producerPath,
+    }, first, 1)).not.toThrow();
+    if (first.producerPath.status !== 'complete') throw new Error('expected a complete producer path');
+    expect(() => messageBus.assertPreparedInvocationIdentity({
+      contract: {} as never,
+      functionName: 'ping',
+      args: [1n],
+      callsiteId: 7,
+      sourceCallsiteId: 7,
+      sourceLogicalIndex: 0,
+      occurrenceIndex: 0,
+      sourceEffectOrdinal: 4,
+      producerPath: {
+        status: 'complete',
+        context: {
+          version: 1,
+          sourcePath: first.producerPath.context.sourcePath.map((site) => ({
+            ...site, sourceLogicalIndex: 0,
+          })),
+        },
+      },
+    }, first, 1)).toThrow(/producer path disagrees/);
   });
 
   it('uses the authenticated physical owner identity for nested callers', () => {
@@ -1254,6 +1287,68 @@ describe('atomic compiled invocation graph', () => {
       ['aa'.repeat(32), 'bb'.repeat(32)], { 1: '2a' },
     );
     expect(finalized.callManifest.rows[1]).toMatchObject({ subjectHex: '54', sourceOffset: 1 });
+  });
+
+  it('resolves active caller identity from the authenticated physical or logical parent target', () => {
+    const activeCaller = plan();
+    activeCaller.participants[0] = {
+      ...activeCaller.participants[0],
+      artifact: {
+        ...activeCaller.participants[0].artifact,
+        messageBus: {
+          ...activeCaller.participants[0].artifact.messageBus!,
+          convention: 'kernel-row-loop',
+        },
+        abi: [{
+          name: 'run', selector: '11111111', inputs: [{ name: 'n', type: 'int' }], outputs: [],
+          externalCalls: [{
+            callsiteId: 7, interfaceName: 'IPeer', functionName: 'run', occurrence: 'once',
+            callerIdentity: {
+              version: 1, role: 'active', auth: 'input-bytecode', authOffset: 0xffff,
+            },
+          }],
+        }],
+      },
+      logicalLockingBytecode: '54',
+      logicalIdentityOffset: 1,
+      blockLayout: {
+        blockSize: 2,
+        slots: [{ kind: 'master', offset: 0 }, { kind: 'identityAnchor', offset: 1 }],
+      },
+    };
+    const physical = messageBus.graphInvocationCallerIdentity(
+      activeCaller.participants, activeCaller.invocations, activeCaller.invocations[1],
+    );
+    expect(physical).toMatchObject({ role: 'active', lockingBytecode: '51'.repeat(64), offset: 0 });
+
+    activeCaller.invocations[0] = {
+      ...activeCaller.invocations[0], targetLockingBytecode: '54', targetIdentityOffset: 1,
+    };
+    const logical = messageBus.graphInvocationCallerIdentity(
+      activeCaller.participants, activeCaller.invocations, activeCaller.invocations[1],
+    );
+    expect(logical).toMatchObject({ role: 'active', lockingBytecode: '54', offset: 1 });
+
+    const published = activeCaller.participants[0].artifact.abi[0].externalCalls![0].callerIdentity!;
+    Object.assign(published, { version: 2 });
+    expect(() => messageBus.graphInvocationCallerIdentity(
+      activeCaller.participants, activeCaller.invocations, activeCaller.invocations[1],
+    )).toThrow(/unsupported callsite callerIdentity version 2/);
+    Object.assign(published, { version: 1 });
+
+    const missingAnchor = activeCaller.participants.map((participant, index) => index === 0
+      ? { ...participant, logicalIdentityOffset: undefined }
+      : participant);
+    expect(() => messageBus.graphInvocationCallerIdentity(
+      missingAnchor, activeCaller.invocations, activeCaller.invocations[1],
+    )).toThrow(/does not match the authenticated parent target/);
+
+    activeCaller.invocations[0] = {
+      ...activeCaller.invocations[0], targetIdentityOffset: 0,
+    };
+    expect(() => messageBus.graphInvocationCallerIdentity(
+      activeCaller.participants, activeCaller.invocations, activeCaller.invocations[1],
+    )).toThrow(/does not match the authenticated parent target/);
   });
 
   it('refuses to treat a delegate executor as caller when publication says owner', () => {

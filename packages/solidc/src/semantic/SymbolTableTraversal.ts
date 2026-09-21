@@ -1913,6 +1913,8 @@ export default class SymbolTableTraversal extends AstTraversal {
       || node.name.startsWith('__internal__leadingPushValue_')
       || node.name.startsWith('__internal__collectionIter')
       || compilerOwnedJournalSegment
+      || (node.name === '__internal__msgSenderAnchorIdx'
+        && (node.syntheticallyUsed || generatedOriginOf(node.location) !== undefined))
       || [
         '__internal__msgData',
         '__internal__msgSig',
@@ -1932,10 +1934,12 @@ export default class SymbolTableTraversal extends AstTraversal {
         '__internal__blockhashInputIndex',
         '__internal__blockhashRowOffset',
         '__internal__messageBusOwnerInput',
+        // The participant's own block base, published as a route ABI input so a graph handler can read its owner
+        // from the band (the one stack region nothing can move) instead of measuring a drifting frame.
+        '__internal__messageBusOwnerBandInput',
         '__internal__kernelJournalAccessStreams',
         '__internal__kernelJournalRecords',
         '__internal__vmapBatchTrailingCount',
-        '__internal__valueChunkOutputBase',
       ].includes(node.name);
     if (node.name.startsWith('__internal__') && !compilerOwnedParameter) {
       throw new Error(`Identifier '${node.name}' uses reserved prefix '__internal__'`);
@@ -3136,6 +3140,15 @@ export default class SymbolTableTraversal extends AstTraversal {
           const sym = this.symbolTables[0].get('__internal__msgSenderCategory');
           if (sym) sym.references.push({ name: '__internal__msgSenderCategory' } as IdentifierNode);
           this.pushToStack(categoryParam);
+          if (this.compilerOptions.solidityImportCompat || this.compilerOptions.evmCompat) {
+            const anchorParam = new ParameterNode(PrimitiveType.BIGINT, '__internal__msgSenderAnchorIdx');
+            anchorParam.location = node.location;
+            anchorParam.syntheticallyUsed = true;
+            node.parameters.push(anchorParam);
+            this.symbolTables[0].set(Symbol.variable(anchorParam));
+            this.symbolTables[0].get(anchorParam.name)?.references.push({ name: anchorParam.name } as IdentifierNode);
+            this.pushToStack(anchorParam);
+          }
         }
       }
     }
@@ -3417,12 +3430,6 @@ export default class SymbolTableTraversal extends AstTraversal {
                 const routeLeading = new ParameterNode(new BytesType(), lname);
                 routeLeading.location = routeFn.location;
                 routeFn.parameters.push(routeLeading);
-              }
-              if (coll?.sorted && vt && isChunkableValueType(vt)
-                && !routeFn.parameters.some((parameter) => parameter.name === '__internal__valueChunkOutputBase')) {
-                const routeChunkBase = new ParameterNode(PrimitiveType.BIGINT, '__internal__valueChunkOutputBase');
-                routeChunkBase.location = routeFn.location;
-                routeFn.parameters.push(routeChunkBase);
               }
             }
           }
@@ -3781,13 +3788,7 @@ export default class SymbolTableTraversal extends AstTraversal {
             && expression.callsiteId !== undefined
             && expression.callsiteId >= 0) {
             const logicalProducer = logicalCallSlots[expression.callsiteId];
-            if (logicalProducer) {
-              // Keep the pre-collapse source identity; physical lane alone cannot name a batch row.
-              if (expression.sourceCallsiteId === undefined) {
-                expression.sourceCallsiteId = expression.callsiteId;
-              }
-              expression.callsiteId = logicalProducer.slotIndex;
-            }
+            if (logicalProducer) expression.callsiteId = logicalProducer.slotIndex;
           }
           for (const child of [expression.target, expression.expression, expression.left, expression.right,
             expression.condition, expression.ifTrue, expression.ifFalse, ...(expression.args ?? [])]) {
@@ -8033,6 +8034,11 @@ export default class SymbolTableTraversal extends AstTraversal {
         if (resolved !== expression) return serializeExpression(resolved, seen);
         if (expression instanceof IdentifierNode) {
           const definition = expression.definition?.definition;
+          const constant = definition instanceof ConstantDefinitionNode
+            ? definition : this.constantMap.get(expression.name);
+          if (constant && constant.expression !== expression) {
+            return serializeExpression(constant.expression, seen);
+          }
           if (definition instanceof VariableDefinitionNode
             && definitionDependsOnProducer(definition)) {
             unresolvedProducerAlias = true;
@@ -8539,6 +8545,13 @@ export default class SymbolTableTraversal extends AstTraversal {
                   const value = serializeExpression(statement.expression);
                   if (!value || !localNames.has(statement.identifier.name)) return undefined;
                   serialized.push({ kind: 'assign', name: statement.identifier.name, expression: value });
+                } else if (statement instanceof ArrayAssignNode) {
+                  const index = serializeExpression(statement.index);
+                  const value = serializeExpression(statement.value);
+                  if (!index || !value || !localNames.has(statement.name)) return undefined;
+                  serialized.push({
+                    kind: 'arrayAssign', name: statement.name, index, expression: value,
+                  });
                 } else if (statement instanceof WhileNode) {
                   const condition = serializeExpression(statement.condition);
                   const body = serializeBlock(statement.block);
@@ -8734,10 +8747,19 @@ export default class SymbolTableTraversal extends AstTraversal {
       slots.push({
         interfaceName: node.callInfo.interfaceName,
         functionName: node.callInfo.functionName,
-        // Outgoing CALL/staticcall edges authenticate the physical state-owner master. CREATE/proxy/executor
-        // subjects are published only when a later pass proves the call expression uses that identity.
+        // Ordinary CALL/staticcall edges continue from the exact authenticated identity through which this
+        // participant entered. Delegate execution instead calls as its proxy/state owner, never its executor.
+        // `active` deliberately publishes a policy rather than guessing whether a future instance has a CREATE
+        // identity anchor; graph planning resolves it from the authenticated parent target.
         callerIdentity: {
-          version: 1, role: 'owner', auth: 'input-bytecode', authOffset: 0,
+          version: 1,
+          role: this.compilerOptions.autoDelegate === true
+            || this.currentFunction?.modifiers.includes(FunctionModifier.DELEGATE) === true
+            ? 'owner' : 'active',
+          auth: 'input-bytecode',
+          authOffset: this.compilerOptions.autoDelegate === true
+            || this.currentFunction?.modifiers.includes(FunctionModifier.DELEGATE) === true
+            ? 0 : 0xffff,
         },
         ...(node.sourceEffectOrdinal !== undefined && {
           sourceEffectOrdinal: node.sourceEffectOrdinal,
@@ -14385,6 +14407,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         const callNode = new ExternalFunctionCallNode(
           iface.name, addressExpr, functionName, parameters,
         );
+        callNode.resultArrayOutput = node.resultArrayOutput;
         callNode.sourceEffectOrdinal = node.sourceEffectOrdinal;
         callNode.callMode = callMode;
         callNode.callOptions = node.callOptions;
@@ -14505,6 +14528,7 @@ export default class SymbolTableTraversal extends AstTraversal {
             );
           }
           const inert = new ExternalFunctionCallNode(iface.name, addressExpr, node.methodName, parameters);
+          inert.resultArrayOutput = node.resultArrayOutput;
           inert.sourceEffectOrdinal = node.sourceEffectOrdinal;
           inert.callInfo = { interfaceName: iface.name, functionName: node.methodName, externalCallSlotIndex: -1 };
           inert.foldedIntoDeploy = true;
@@ -14519,6 +14543,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         const callNode = new ExternalFunctionCallNode(
           iface.name, addressExpr, node.methodName, parameters,
         );
+        callNode.resultArrayOutput = node.resultArrayOutput;
         callNode.sourceEffectOrdinal = node.sourceEffectOrdinal;
         callNode.callOptions = node.callOptions;
         callNode.valueTransferIndex = node.valueTransferIndex;
@@ -14593,6 +14618,7 @@ export default class SymbolTableTraversal extends AstTraversal {
           && (!node.callOptions || graphRawValueCall)) {
           const mode = node.methodName === 'staticcall' ? ExternalCallMode.STATICCALL : ExternalCallMode.REGULAR;
           const callNode = new ExternalFunctionCallNode('__raw__', node.object as ExpressionNode, '__raw__', [data]);
+          callNode.resultArrayOutput = node.resultArrayOutput;
           callNode.sourceEffectOrdinal = node.sourceEffectOrdinal;
           callNode.sourceActivationConditions = node.sourceActivationConditions;
           callNode.opaqueReturn = true;
@@ -14663,6 +14689,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         }
         const parameters = this.visitList(node.parameters) as ExpressionNode[];
         const callNode = new ExternalFunctionCallNode(calleeName, visitedVar, node.methodName, parameters);
+        callNode.resultArrayOutput = node.resultArrayOutput;
         callNode.sourceEffectOrdinal = node.sourceEffectOrdinal;
         callNode.callOptions = node.callOptions;
         callNode.valueTransferIndex = node.valueTransferIndex;
@@ -14722,6 +14749,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         const addressExpr = this.visit(node.object) as ExpressionNode;
         const parameters = this.visitList(node.parameters) as ExpressionNode[];
         const callNode = new ExternalFunctionCallNode(calleeName, addressExpr, node.methodName, parameters);
+        callNode.resultArrayOutput = node.resultArrayOutput;
         callNode.sourceEffectOrdinal = node.sourceEffectOrdinal;
         callNode.callOptions = node.callOptions;
         callNode.valueTransferIndex = node.valueTransferIndex;

@@ -1666,6 +1666,7 @@ export function resolveGraphAbiFunction(
 type GraphCallerParticipant = {
   artifact: Artifact;
   lockingBytecode: string;
+  executionKind?: 'owner' | 'delegate' | 0 | 1;
   logicalLockingBytecode?: string;
   logicalIdentityOffset?: number;
   executorLockingBytecode?: string;
@@ -1673,9 +1674,59 @@ type GraphCallerParticipant = {
 };
 
 type GraphCallerInvocation = (
-  Pick<CompiledGraphInvocation, 'parent' | 'callee' | 'function' | 'consumerCallsiteId' | 'selector'>
-  | Pick<PlannedGraphInvocation, 'parent' | 'callee' | 'function' | 'consumerCallsiteId' | 'callerIdentity'>
+  Pick<CompiledGraphInvocation,
+  'parent' | 'callee' | 'function' | 'consumerCallsiteId' | 'selector' | 'targetLockingBytecode'>
+  | Pick<PlannedGraphInvocation,
+  'parent' | 'callee' | 'function' | 'consumerCallsiteId' | 'callerIdentity' | 'targetLockingBytecode'
+  | 'targetIdentityOffset'>
 ) & { selectorHex?: string };
+
+const resolveActiveCallerIdentity = (
+  caller: GraphCallerParticipant,
+  parent: GraphCallerInvocation,
+  published: CallsiteCallerIdentityAbi,
+): ResolvedGraphCallerIdentity => {
+  if (published.version !== 1) {
+    throw new Error(`messageBus: unsupported callsite callerIdentity version ${published.version}`);
+  }
+  if (published.auth !== 'input-bytecode' || published.authOffset !== 0xffff) {
+    throw new Error('messageBus: active callerIdentity requires input-bytecode auth at the derived offset');
+  }
+  const delegate = caller.executionKind === 'delegate' || caller.executionKind === 1;
+  if (delegate) {
+    return {
+      version: 1, role: 'active', auth: 'input-bytecode', authOffset: 0,
+      lockingBytecode: caller.lockingBytecode.toLowerCase(), offset: 0,
+      sourceCallsiteProvenance: 'compiler',
+    };
+  }
+  const physical = caller.lockingBytecode.toLowerCase();
+  const logical = caller.logicalLockingBytecode?.toLowerCase();
+  // `planCompiledGraph` resolves target aliases after it has encoded local rows. Mirror that exact default for
+  // the earlier row build: the transaction root is necessarily physical, while a nested invocation defaults to
+  // its authenticated public identity when one exists. An explicit target remains authoritative.
+  const entered = parent.targetLockingBytecode?.toLowerCase()
+    ?? (parent.parent === null ? physical : logical ?? physical);
+  const offset = 'targetIdentityOffset' in parent
+    ? parent.targetIdentityOffset
+    : entered === logical ? caller.logicalIdentityOffset : 0;
+  if (entered === physical && (offset === undefined || offset === 0)) {
+    return {
+      version: 1, role: 'active', auth: 'input-bytecode', authOffset: 0,
+      lockingBytecode: physical, offset: 0, sourceCallsiteProvenance: 'compiler',
+    };
+  }
+  const logicalOffset = caller.logicalIdentityOffset;
+  if (logical !== undefined && entered === logical
+    && typeof logicalOffset === 'number' && Number.isInteger(logicalOffset) && logicalOffset > 0
+    && (offset === undefined || offset === logicalOffset)) {
+    return {
+      version: 1, role: 'active', auth: 'input-bytecode', authOffset: logicalOffset,
+      lockingBytecode: logical, offset: logicalOffset, sourceCallsiteProvenance: 'compiler',
+    };
+  }
+  throw new Error('messageBus: active callerIdentity does not match the authenticated parent target');
+};
 
 const publishedCallsiteCallerIdentity = (
   parentParticipant: GraphCallerParticipant,
@@ -1799,6 +1850,9 @@ export function graphInvocationCallerIdentity(
   const caller = participants[parentInvocation.callee];
   const published = publishedCallsiteCallerIdentity(caller, parentInvocation, invocation);
   if (published !== undefined) {
+    if (published.role === 'active') {
+      return resolveActiveCallerIdentity(caller, parentInvocation, published);
+    }
     return resolvePublishedCallerIdentity(caller, published, 'compiler');
   }
   // Kernel routes require an explicit publication; legacy artifacts keep today's owner@0 fallback.

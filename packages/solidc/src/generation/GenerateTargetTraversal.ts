@@ -349,6 +349,9 @@ const GRAPH_CONDITIONAL_DEPLOY_REACHED = '__internal__handlerConditionalDeployRe
 const GRAPH_TOKEN_SITE = '__internal__graphTokenSite';
 /** Physical stack depth below an outlined graph handler's invocation frame. */
 const GRAPH_HANDLER_CALLER_DEPTH = '__internal__graphHandlerCallerDepth';
+/** Tracked copies used only by opt-in graph-row assembly diagnostics. */
+const GRAPH_ROW_TARGET_COPY = '(__graph_row_target_copy)';
+const GRAPH_ROW_ASSERT_COPY = '(__graph_row_assert_copy)';
 
 // Locking bytecode template fragments - correspond to libauth's
 // encodeLockingBytecodeP2pkh / P2sh20 / P2sh32 but used as partial
@@ -6519,8 +6522,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (!this.isDefineSubTraversal && this.isCompilerMessageBusRoute(node)
       && this.stack.includes('__internal__graphEmissions')) {
       const loc = { location: node.body.location, positionHint: PositionHint.END };
-      this.emit(encodeInt(BigInt(this.getStackIndex('__internal__graphEmissions'))), loc);
-      this.emit(Op.OP_PICK, loc);
+      this.emitGraphEmissionStreamRead(loc);
       this.emit(Op.OP_SIZE, loc);
       this.emit(Op.OP_NIP, loc);
       this.emit(Op.OP_0, loc);
@@ -6694,7 +6696,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (this.graphStraightRuntimeMode) {
         this.emit(Op.OP_0, { location: node.body.location, positionHint: PositionHint.END });
         this.pushToStack('(__graph_exhausted)');
-        this.emitReplace(this.getStackIndex('__internal__graphEmissions'), node);
+        this.emitReplaceGraphEmissionStream(node);
         this.popFromStack();
       }
       return node;
@@ -11286,9 +11288,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       hiddenContextCount += 1;
     }
     if (targetFunc.graphRuntimeEmissionHandler && !targetFunc.graphRuntimeEmissionThreaded) {
-      const expected = '__internal__graphEmissions';
-      this.emit(encodeInt(BigInt(this.getStackIndex(expected))), locationData);
-      this.emit(Op.OP_PICK, locationData);
+      this.emitGraphEmissionStreamRead(locationData);
       this.pushToStack(`(__graph_emissions_arg_${targetFunc.functionId})`);
       hiddenContextCount += 1;
     }
@@ -11390,8 +11390,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           }
           if (!slot.hasReturnValues) this.consumeConstructedGraphEmissionRow(node, locationData);
         }
-        this.emit(encodeInt(BigInt(this.getStackIndex('__internal__graphEmissions'))), locationData);
-        this.emit(Op.OP_PICK, locationData);
+        this.emitGraphEmissionStreamRead(locationData);
         this.emit(Op.OP_0, locationData);
         this.emit(Op.OP_EQUALVERIFY, locationData);
       }
@@ -19138,6 +19137,34 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
     if (evaluatedTargetExpression) this.stack[0] = '(__graph_target)';
     else this.pushToStack('(__graph_target)');
+    // Imported-Solidity producer results carry addresses as 20-byte identities. The authenticated graph transcript
+    // is deliberately native and names the full target locking bytecode. Recover that full value from the current
+    // rooted emission row, prove its canonical projection equals the runtime value, and then frame the full value.
+    // Reading the row avoids a fixed external-call input coordinate: graph callees are located by the settlement
+    // plan, and the later complete-row assertion independently consumes this same authenticated stream position.
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(Op.OP_SIZE, locationData);
+    this.emit(Op.OP_NIP, locationData);
+    this.emit(encodeInt(20n), locationData);
+    this.emit(Op.OP_NUMEQUAL, locationData);
+    this.emit(Op.OP_IF, locationData);
+    this.emitGraphEmissionStreamRead(locationData);
+    this.pushToStack('(__graph_target_stream)');
+    this.emit(encodeInt(2n), locationData);
+    this.emit(Op.OP_SPLIT, locationData);
+    this.emit(Op.OP_SWAP, locationData);
+    this.emit(Op.OP_BIN2NUM, locationData);
+    this.emit(Op.OP_SPLIT, locationData);
+    this.emit(Op.OP_DROP, locationData);
+    this.emit(Op.OP_DUP, locationData);
+    for (const operation of compileAddressToEvmIdentity()) this.emit(operation, locationData);
+    this.emit(encodeInt(2n), locationData);
+    this.emit(Op.OP_PICK, locationData);
+    this.emit(Op.OP_EQUALVERIFY, locationData);
+    this.emit(Op.OP_NIP, locationData);
+    this.popFromStack(2);
+    this.pushToStack('(__graph_target)');
+    this.emit(Op.OP_ENDIF, locationData);
     this.emit(Op.OP_DUP, locationData);
     this.emit(Op.OP_SIZE, locationData);
     this.emit(Op.OP_NIP, locationData);
@@ -19234,6 +19261,19 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const callManifestArgumentParameters = argumentParameters
       .map((parameter, sourceIndex) => ({ parameter, sourceIndex }))
       .filter(({ parameter }) => !this.typeIsEntireTransactionSignature(parameter.type!));
+    const materializeGraphArgumentValue = (expression: ExpressionNode): void => {
+      if (expression instanceof ArrayNode) {
+        expression.blobEncoded = true;
+        // Type checking normally propagates value encoding into nested literals before code generation. Graph
+        // materialization can introduce this requirement later, so preserve the same invariant recursively.
+        for (const element of expression.elements) materializeGraphArgumentValue(element);
+      } else if (expression instanceof TernaryOpNode) {
+        materializeGraphArgumentValue(expression.ifTrue);
+        materializeGraphArgumentValue(expression.ifFalse);
+      } else if (expression instanceof CastNode) {
+        materializeGraphArgumentValue(expression.expression);
+      }
+    };
     if (rawCall && !canonicalRawParameters) {
       if (!callManifestArgumentParameters[0]) {
         throw new Error('Raw graph call lacks its canonical calldata argument');
@@ -19261,6 +19301,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           this.emit(Op.OP_UTXOBYTECODE, locationData);
           this.pushToStack('(__graph_arg_value)');
         } else if (evaluateArgument) {
+          // An inline array normally uses the expression-stack representation (elements plus count). A graph
+          // emission row, however, carries each call argument as exactly one canonical value, just like an array
+          // local or ABI parameter. Materialize the literal in that value representation before visiting it;
+          // otherwise the row encoder consumes only the count and strands the elements above the target/selector,
+          // corrupting this row and every later callsite in the same handler.
+          materializeGraphArgumentValue(parameter);
           parameter = this.visit(parameter);
           callManifestArgumentParameters[i].parameter = parameter;
         } else {
@@ -19304,6 +19350,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.popFromStack(2);
     this.pushToStack('(__graph_emission_row)');
     const expected = '__internal__graphEmissions';
+    this.debugRowAssembly('row-without-result');
+    this.emitRowHeadCheck(locationData);
+    // The prefix (row without its result frame) is what the returning path compares against the stream; asserting
+    // it here covers both dispositions.
+    this.emitRowAgainstStreamAssert(locationData);
     if (!slot.hasReturnValues) {
       this.emit(Uint8Array.of(0, 0), locationData);
       this.pushToStack('(__graph_empty_result)');
@@ -19318,8 +19369,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.pendingGraphEmissionRows += 1;
         return 0;
       }
-      this.emit(encodeInt(BigInt(this.getStackIndex(expected))), locationData);
-      this.emit(Op.OP_PICK, locationData);
+      this.emitGraphEmissionStreamRead(locationData);
       this.pushToStack('(__graph_expected_emissions)');
       this.emit(Op.OP_EQUALVERIFY, locationData);
       this.popFromStack(2);
@@ -19355,8 +19405,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_SIZE, locationData);
     this.emit(Op.OP_NIP, locationData);
     this.pushToStack('(__graph_prefix_length)');
-    this.emit(encodeInt(BigInt(this.getStackIndex(expected))), locationData);
-    this.emit(Op.OP_PICK, locationData);
+    this.emitGraphEmissionStreamRead(locationData);
     this.pushToStack('(__graph_expected_emissions)');
     this.emit(Op.OP_SWAP, locationData);
     this.emit(Op.OP_SPLIT, locationData);
@@ -19381,7 +19430,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.popFromStack(2);
       this.pushToStack('(__graph_result_blob)');
       this.pushToStack('(__graph_runtime_remainder)');
-      this.emitReplace(this.getStackIndex(expected), handler);
+      this.emitReplaceGraphEmissionStream(handler);
       this.popFromStack();
     } else {
       // The remainder must be exactly resultLength:u16le || result.
@@ -19459,9 +19508,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_SIZE, locationData);
     this.emit(Op.OP_NIP, locationData);
     this.pushToStack('(__graph_runtime_row_length)');
-    const remainder = '__internal__graphEmissions';
-    this.emit(encodeInt(BigInt(this.graphEmissionStreamSlot())), locationData);
-    this.emit(Op.OP_PICK, locationData);
+    this.emitGraphEmissionStreamRead(locationData);
     this.pushToStack('(__graph_runtime_emissions)');
     this.emit(Op.OP_SWAP, locationData);
     this.emit(Op.OP_SPLIT, locationData);
@@ -19482,9 +19529,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_SIZE, locationData);
     this.emit(Op.OP_NIP, locationData);
     this.pushToStack('(__graph_emission_length)');
-    const remainder = '__internal__graphEmissions';
-    this.emit(encodeInt(BigInt(this.graphEmissionStreamSlot())), locationData);
-    this.emit(Op.OP_PICK, locationData);
+    this.emitGraphEmissionStreamRead(locationData);
     this.pushToStack('(__graph_emission_stream)');
     this.emit(Op.OP_SWAP, locationData);
     this.emit(Op.OP_SPLIT, locationData);
@@ -19499,6 +19544,104 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.dischargeGraphEmissionRow();
   }
 
+  /**
+   * Record the model at one stage of the emission-row assembly.
+   *
+   * The row is built by a chain of CATs (framed target -> mode -> selector -> framed args -> framed result) and the
+   * failure that matters is a row whose head is MISSING: the consumer then splits the authenticated stream by a
+   * length that is short by exactly the width of the dropped stage, and every later row is misaligned. Printing the
+   * model's top beside the stage name is what says which CAT lost its operand, instead of inferring it from the
+   * assembled bytes.
+   */
+  /**
+   * Drop runtime-only operands above the model before the row's CAT chain consumes its operands.
+   *
+   * The row is assembled by CAT-ing tracked items, so any operand the argument evaluation left above the model
+   * makes the chain concatenate a neighbour instead of the intended stage - measured as a row that starts with its
+   * SELECTOR rather than its framed target (74 B instead of 148 B), which then short-splits the authenticated
+   * stream for every later consumer.
+   */
+  private rowStackCleanEnabled(): boolean {
+    return (globalThis as { process?: { env?: Record<string, string> } }).process
+      ?.env?.SOLIDC_ROW_STACK_CLEAN === '1';
+  }
+
+  /**
+   * Compare the just-assembled row against the authenticated stream AT THE ASSEMBLY, non-destructively.
+   *
+   * The consumer does the same comparison later, but by then the stream may already be misaligned by an earlier
+   * short split, so a failure there cannot say whether THIS row was wrong at birth. Here the row is on top and the
+   * stream is read from the band (an exact constant coordinate), so the answer is unambiguous - and no model index
+   * is involved, which is what made the earlier head assertion unreliable.
+   */
+  private rowAssemblyAssertEnabled(): boolean {
+    return (globalThis as { process?: { env?: Record<string, string> } }).process
+      ?.env?.SOLIDC_ROW_ASSERT === '1';
+  }
+
+  private emitRowAgainstStreamAssert(locationData: SingleLocationData): void {
+    if (!this.rowAssemblyAssertEnabled()) return;
+    // Read the same stable route-band cell as the production cursor accessors, without consuming it.
+    const bandOrdinal = this.declaredBandOrdinal('__internal__graphEmissions');
+    if (bandOrdinal === undefined) return;
+    this.emit(Op.OP_DUP, locationData);                              // [row, rowCopy]
+    this.pushToStack(GRAPH_ROW_ASSERT_COPY);
+    this.emit(Op.OP_DUP, locationData);                              // [row, rowCopy, rowCopy]
+    this.emit(Op.OP_SIZE, locationData); this.emit(Op.OP_NIP, locationData); // [row, rowCopy, rowLen]
+    this.emit(Op.OP_DEPTH, locationData);                            // [row, rowCopy, rowLen, depth]
+    this.emit(encodeInt(BigInt(bandOrdinal)), locationData);
+    this.emit(Op.OP_SUB, locationData);                              // [row, rowCopy, rowLen, k]
+    this.emit(Op.OP_PICK, locationData);                             // [row, rowCopy, rowLen, stream]
+    this.emit(Op.OP_SWAP, locationData);                             // [row, rowCopy, stream, rowLen]
+    this.emit(Op.OP_SPLIT, locationData);                            // [row, rowCopy, head, tail]
+    this.emit(Op.OP_SWAP, locationData);                             // [row, rowCopy, tail, head]
+    this.emit(Op.OP_ROT, locationData);                              // [row, tail, head, rowCopy]
+    this.emit(Op.OP_EQUALVERIFY, locationData);                      // [row, tail]
+    this.emit(Op.OP_DROP, locationData);                             // [row]
+    this.removeFromStack(this.getStackIndex(GRAPH_ROW_ASSERT_COPY, true));
+  }
+
+  private rowHeadCheckEnabled(): boolean {
+    return (globalThis as { process?: { env?: Record<string, string> } }).process
+      ?.env?.SOLIDC_ROW_HEAD_CHECK === '1';
+  }
+
+  /**
+   * Require that the assembled row still STARTS with the framed target, and leave the row untouched.
+   *
+   * The consumer compares a whole row against the authenticated stream, so a row whose head is missing (measured:
+   * `[selector][framed arg][framed result]`, 74 B, where the plan's row is 148 B) makes every later split short by
+   * the missing head's width. This check fails AT THE ASSEMBLY instead, which is where the cause has to be fixed.
+   */
+  private emitRowHeadCheck(locationData: SingleLocationData): void {
+    if (!this.rowHeadCheckEnabled()) return;
+    const copyIndex = this.getStackIndex(GRAPH_ROW_TARGET_COPY, true);
+    if (copyIndex < 0) return;
+    this.emit(Op.OP_DUP, locationData);                              // [row, row]
+    this.emit(encodeInt(BigInt(this.getStackIndex(GRAPH_ROW_TARGET_COPY))), locationData);
+    this.emit(Op.OP_PICK, locationData);                             // [row, row, target]
+    this.emit(Op.OP_DUP, locationData);                              // [row, row, target, target]
+    this.emit(Op.OP_SIZE, locationData); this.emit(Op.OP_NIP, locationData); // [row, row, target, len]
+    this.emit(Op.OP_SPLIT, locationData);                            // [row, target, head, tail]
+    this.emit(Op.OP_DROP, locationData);                             // [row, target, head]
+    this.emit(Op.OP_SWAP, locationData);                             // [row, head, target]
+    this.emit(Op.OP_EQUALVERIFY, locationData);                      // [row]
+    this.removeFromStack(this.getStackIndex(GRAPH_ROW_TARGET_COPY, true));
+  }
+
+  private debugRowAssembly(stage: string): void {
+    if ((globalThis as { process?: { env?: Record<string, string> } }).process
+      ?.env?.SOLIDC_DEBUG_ROW_ASSEMBLY !== '1') return;
+    console.error('graph-row-assembly', JSON.stringify({
+      stage,
+      function: this.currentFunction.name,
+      outputLength: this.output.length,
+      modelLength: this.stack.length,
+      modelTop: this.stack.slice(0, 6),
+      modelBottom: this.stack.slice(-4),
+    }));
+  }
+
   private dischargeGraphEmissionRow(): void {
     if (this.pendingGraphEmissionRows === 0) {
       throw new Error('Graph emission consumer has no constructed row to authenticate');
@@ -19510,12 +19653,56 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * Top-relative depth of the authenticated emission stream, used by BOTH the consumer's pick and the
    * `emitReplace` that stores the peeled remainder back into the same slot.
    *
-   * `SOLIDC_DEBUG_STREAM_PICK_OFFSET=<n>` shifts that depth by `n` at every consumer, which is how the
-   * "one slot off" hypothesis for a mis-split emission row is measured rather than argued: a single untracked
-   * runtime operand (or one phantom tracked name) moves every top-relative read in the body by exactly one, and
-   * the direction of the shift says which of the two it is. The shift is diagnostic only - it must never be set
-   * for a shipped artifact - because a pick and the replace that follows it have to address the same slot.
+   * `SOLIDC_DEBUG_STREAM_PICK_OFFSET=<n>` shifts the fallback frame depth in non-route graph bodies. It does not
+   * affect compiler-owned routes, whose paired cursor accessors use the stable route-band coordinate. The shift is
+   * diagnostic only and must never be set for a shipped artifact.
    */
+  /** Read the authenticated emission stream for one consumer. */
+  private emitGraphEmissionStreamRead(locationData: SingleLocationData): void {
+    const bandOrdinal = this.bandEmissionOrdinal();
+    if (bandOrdinal !== undefined) {
+      // The band item carries the stream, and every write-back puts the peeled remainder back into the same band
+      // slot, so this read form is exact for the WHOLE body - no frame slot, no model index, no drift.
+      this.emit(Op.OP_DEPTH, locationData);
+      this.emit(encodeInt(BigInt(bandOrdinal)), locationData);
+      this.emit(Op.OP_SUB, locationData);
+      this.emit(Op.OP_PICK, locationData);
+      return;
+    }
+    this.emit(encodeInt(BigInt(this.graphEmissionStreamSlot())), locationData);
+    this.emit(Op.OP_PICK, locationData);
+  }
+
+  /**
+   * Stable storage coordinate of the mutable authenticated-emission cursor.
+   *
+   * Compiler-owned route clones execute with the route ABI band below their OP_INVOKE frame. Every graph row
+   * consumer must address the same band cell: mixing this coordinate with a model-relative frame PICK lets
+   * returning rows advance one copy while a later void row rereads the pristine vector. A non-route graph body
+   * has no published band coordinate and retains its explicitly threaded frame slot.
+   */
+  private bandEmissionOrdinal(): number | undefined {
+    return this.declaredBandOrdinal('__internal__graphEmissions');
+  }
+
+  /**
+   * Store the peeled stream remainder (on top) back into the slot the next consumer reads.
+   *
+   * For compiler-owned routes that slot is the band item itself, replaced in place at its constant bottom ordinal;
+   * the band keeps its layout, so every other ordinal stays valid. Non-route graph bodies retain the explicitly
+   * threaded model-index replacement.
+   */
+  private emitReplaceGraphEmissionStream(node: Node): void {
+    const bandOrdinal = this.bandEmissionOrdinal();
+    if (bandOrdinal === undefined) {
+      this.emitReplace(this.graphEmissionStreamSlot(), node);
+      return;
+    }
+    this.emitReplaceAtBottomOrdinal(
+      bandOrdinal, { location: node.location, positionHint: PositionHint.END },
+    );
+  }
+
   private graphEmissionStreamSlot(): number {
     const index = this.getStackIndex('__internal__graphEmissions');
     const raw = (globalThis as { process?: { env?: Record<string, string> } }).process
@@ -31063,27 +31250,31 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * Top is a candidate address. Empty or 20-byte HASH160 is not locking bytecode
-   * (p2sh20=23, p2pkh=25, p2sh32=35). Replace it with the item beneath (physical
-   * or identity lock already pushed for this identity check).
+   * Authenticate an expected address against the candidate locking bytecode beneath it.
+   * A 20-byte imported-Solidity identity is the canonical projection of that candidate, never a placeholder
+   * which may be discarded. The empty legacy sentinel continues to select the already-authenticated candidate.
    */
   private emitPreferLockingBytecode(locationData: SingleLocationData): void {
     this.emit(Op.OP_DUP, locationData);
     this.emit(Op.OP_SIZE, locationData);
     this.emit(Op.OP_NIP, locationData);
-    this.emit(Op.OP_DUP, locationData);
-    this.emit(encodeInt(0n), locationData);
-    this.emit(Op.OP_NUMEQUAL, locationData);
-    this.emit(Op.OP_SWAP, locationData);
     this.emit(encodeInt(20n), locationData);
     this.emit(Op.OP_NUMEQUAL, locationData);
-    this.emit(Op.OP_BOOLOR, locationData);
+    this.emit(Op.OP_IF, locationData);
+    // [candidateLbc, expected20] -> [expected20, projectedCandidate]. The caller's EQUALVERIFY binds them.
+    this.emit(Op.OP_SWAP, locationData);
+    for (const operation of compileAddressToEvmIdentity()) this.emit(operation, locationData);
+    this.emit(Op.OP_ELSE, locationData);
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(Op.OP_SIZE, locationData);
+    this.emit(Op.OP_NIP, locationData);
+    this.emit(encodeInt(0n), locationData);
+    this.emit(Op.OP_NUMEQUAL, locationData);
     this.emit(Op.OP_IF, locationData);
     this.emit(Op.OP_DROP, locationData);
-    // After DROP the top is the already-pushed locking bytecode (physical master or
-    // CREATE-anchor identity). DUP it. OVER would copy the index beneath that lock
-    // and EQUALVERIFY lock vs index.
+    // After DROP the top is the already-pushed locking bytecode (physical master or identity lock).
     this.emit(Op.OP_DUP, locationData);
+    this.emit(Op.OP_ENDIF, locationData);
     this.emit(Op.OP_ENDIF, locationData);
   }
 
@@ -32660,6 +32851,69 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(encodeInt(BigInt(bottomOrdinalPlusOne)), locationData);
     this.emit(Op.OP_SUB, locationData);
     this.emit(Op.OP_PICK, locationData);
+  }
+
+  /** Resolve a compiler-published route-band item to its stable one-based bottom ordinal. */
+  private declaredBandOrdinal(name: string): number | undefined {
+    const names = this.currentFunction.messageBusCallerBandNames;
+    if (names === undefined) return undefined;
+    const index = names.indexOf(name);
+    // The SDK pushes route inputs in reverse declaration order, so declaration index i is always
+    // one-based bottom ordinal `names.length - i` while the route and invoked handlers execute.
+    return index < 0 ? undefined : names.length - index;
+  }
+
+  /** Replace the item at a known one-based bottom ordinal with the value currently on top. */
+  private emitReplaceAtBottomOrdinal(
+    bottomOrdinalPlusOne: number, locationData: SingleLocationData,
+  ): void {
+    this.emit(Op.OP_DEPTH, locationData);
+    this.emit(encodeInt(BigInt(bottomOrdinalPlusOne)), locationData);
+    this.emit(Op.OP_SUB, locationData);
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(Op.OP_1ADD, locationData);
+    this.emit(Op.OP_ROLL, locationData);
+    this.emit(Op.OP_DROP, locationData);
+    this.emit(Op.OP_1SUB, locationData);
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(Op.OP_0NOTEQUAL, locationData);
+    this.emit(Op.OP_IF, locationData);
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(Op.OP_ROT, locationData);
+    this.emit(Op.OP_BEGIN, locationData);
+    this.emit(Op.OP_OVER, locationData);
+    this.emit(Op.OP_0NOTEQUAL, locationData);
+    this.emit(Op.OP_IF, locationData);
+    this.emit(encodeInt(3n), locationData);
+    this.emit(Op.OP_ROLL, locationData);
+    this.emit(Op.OP_TOALTSTACK, locationData);
+    this.emit(Op.OP_SWAP, locationData);
+    this.emit(Op.OP_1SUB, locationData);
+    this.emit(Op.OP_SWAP, locationData);
+    this.emit(Op.OP_0, locationData);
+    this.emit(Op.OP_ELSE, locationData);
+    this.emit(Op.OP_1, locationData);
+    this.emit(Op.OP_ENDIF, locationData);
+    this.emit(Op.OP_UNTIL, locationData);
+    this.emit(Op.OP_SWAP, locationData);
+    this.emit(Op.OP_DROP, locationData);
+    this.emit(Op.OP_SWAP, locationData);
+    this.emit(Op.OP_BEGIN, locationData);
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(Op.OP_0NOTEQUAL, locationData);
+    this.emit(Op.OP_IF, locationData);
+    this.emit(Op.OP_FROMALTSTACK, locationData);
+    this.emit(Op.OP_SWAP, locationData);
+    this.emit(Op.OP_1SUB, locationData);
+    this.emit(Op.OP_0, locationData);
+    this.emit(Op.OP_ELSE, locationData);
+    this.emit(Op.OP_1, locationData);
+    this.emit(Op.OP_ENDIF, locationData);
+    this.emit(Op.OP_UNTIL, locationData);
+    this.emit(Op.OP_DROP, locationData);
+    this.emit(Op.OP_ELSE, locationData);
+    this.emit(Op.OP_DROP, locationData);
+    this.emit(Op.OP_ENDIF, locationData);
   }
 
   /**

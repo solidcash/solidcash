@@ -26,7 +26,9 @@ import {
   KernelJournalDispositionsAbi,
   messageBusVerifierLockingBytecode, childStateLayoutDigest, abiTypeString, implicitlyCastableSignature,
 } from '@solidcash/utils';
-import { generateArtifact, generateDeclarationArtifact, occurrenceInfoOf } from './artifact/Artifact.js';
+import {
+  generateArtifact, generateDeclarationArtifact, occurrenceInfoOf, resultArrayOutputOf,
+} from './artifact/Artifact.js';
 import {
   Ast, AssignNode, BinaryOpNode, BlockNode, BoolLiteralNode, ContractNode, ContractReferenceNode, EmitStatementNode,
   ExpressionNode, FieldAccessNode, LiteralNode,
@@ -7609,6 +7611,7 @@ function synthesizeMessageBusRoute(
   }
   if (compilerOptions.messageBusKernel === true) {
     let tupleGroup = 0;
+    const tupleHandlers = new Set<FunctionDefinitionNode>();
     const primaryByCollection = new Map<string, Array<{ routeInput: string; keyIndex: number }>>();
     for (const [routeInput, coordinate] of routeKeyWitnessCoordinates) {
       if (coordinate.alternativeIndex !== 0) continue;
@@ -7637,13 +7640,25 @@ function synthesizeMessageBusRoute(
           `${binding.source}:${binding.inputIndex}:${binding.expressionLabel ?? ''}`).join('|');
         return [{ fn, bindings: complete, signature }];
       });
-      if (new Set(handlerTuples.map(({ signature }) => signature)).size <= 1) continue;
-      // One independently-oriented tuple keeps dispatch and cache selection linear. A second collection would
-      // require either a product of branch orientations or a general indexed cache selector; leave it on the
-      // existing deterministic resource-conflict fence until that representation exists.
-      if (tupleGroup > 0) continue;
+      const hasMultipleOrientations = new Set(handlerTuples.map(({ signature }) => signature)).size > 1;
+      // A read-only fixed entry can safely expose the route's existing two-lane tuple even when every handler
+      // spells its key through the same ABI position. This gives repeated rows two authenticated physical entry
+      // identities without `_rN` parameters or maximum-row-sized code. More than two concrete identities still
+      // fail closed in the encoder.
+      const repeatedReadTuples = handlerTuples.filter(({ fn }) => {
+        const handlerFootprint = analyseFunctionFootprint(fn, byName, footprintCache);
+        const prefix = `collection:${collection}:`;
+        return [...handlerFootprint.reads].some((resource) => resource.startsWith(prefix))
+          && ![...handlerFootprint.writes].some((resource) => resource.startsWith(prefix));
+      });
+      const orientedTuples = hasMultipleOrientations ? handlerTuples : repeatedReadTuples;
+      if (orientedTuples.length === 0) continue;
+      // Independent tuple groups remain linear when their handler populations are disjoint. A handler present in
+      // two groups would require a product of physical orientations, so retain the existing fail-closed boundary.
+      if (orientedTuples.some(({ fn }) => tupleHandlers.has(fn))) continue;
       const group = tupleGroup++;
-      for (const { bindings } of handlerTuples) {
+      for (const { fn, bindings } of orientedTuples) {
+        tupleHandlers.add(fn);
         bindings.forEach((binding, keyComponentIndex) => {
           const alternateRouteInput = `${binding.routeInput}_alt`;
           binding.entryTupleGroup = group;
@@ -8287,13 +8302,6 @@ function synthesizeMessageBusRoute(
       .some((resource) => resource.startsWith('collection:tokens:'));
     if (touchesTokenContainer) continue;
     if (graphTailHandlers.has(sourceHandler) && !kernelLoopDispatch) continue;
-    if (compilerOptions.messageBusKernel === true
-      && sourceHandler.returnTypes.length > 0
-      && !eligibleFootprint(sourceHandler).writes.some((resource) => resource.startsWith('collection:'))
-      && !collectionByName.has(sourceHandler.name)
-      && !contract.stateVariables.some((state) => state.name === sourceHandler.name)) {
-      continue;
-    }
     const handler = cloneMessageBusHandler(sourceHandler, cheapAdmission);
     nameMessageBusClone(handler, 'entry', sourceHandler);
     handler.modifiers = [FunctionModifier.INTERNAL];
@@ -11018,9 +11026,7 @@ function synthesizeMessageBusRoute(
         // consumes a copy directly, so this source-level final reference prevents last-use stack relocation.
         ${!graphExecutionContext
     ? ''
-    : `${allGraphEmissionHandlersRuntime
-      ? 'require(__internal__graphEmissions.length == 0);'
-      : 'require(__internal__graphEmissions == __internal__graphEmissions);'}
+    : `require(__internal__graphEmissions == __internal__graphEmissions);
         require(__internal__graphCallers == __internal__graphCallers);`}
         ${returnStatement}
       }
@@ -11780,6 +11786,25 @@ function compileResolvedAst(
     });
     throw error;
   };
+  // Capture this relation on the parsed source tree. Later reference and memory lowerings replace an array write
+  // with shared-buffer operations, but retain the external call node itself through the pipeline.
+  for (const fn of ast.contract.functions) {
+    const seen = new Set<object>();
+    const visit = (value: unknown): void => {
+      if (!(value instanceof Node) || seen.has(value)) return;
+      seen.add(value);
+      if (value instanceof ExternalFunctionCallNode || value instanceof MethodCallNode) {
+        value.resultArrayOutput = resultArrayOutputOf(fn.body, value);
+      }
+      for (const [key, child] of Object.entries(value)) {
+        if (['location', 'definition', 'resolvedFunction', 'functionReference', 'symbolTable',
+          'referencedContract', 'stateVariable', 'collection'].includes(key)) continue;
+        if (child instanceof Node) visit(child);
+        else if (Array.isArray(child)) child.forEach(visit);
+      }
+    };
+    visit(fn.body);
+  }
   // A library file compiled directly: if its primary library has explicitly public/external functions, lower
   // it to a stateless contract artifact (docs/library-contracts.md Phase 2). A library with only inline
   // (internal/unmarked) functions has no entry point and cannot be compiled standalone.
@@ -12984,6 +13009,23 @@ function compileResolvedAst(
               return fn.messageBusKeyWitnesses
                 ?.find((binding) => binding.source === 'msgSender'
                   && binding.routeInput.startsWith(witnessPrefix))?.routeInput;
+            }
+            // Modifier expansion can leave a direct reference to an entry-point parameter classified as an
+            // expression because the cloned modifier parameter is no longer itself in the function parameter
+            // table. Its canonical identity is still exact, so resolve it through the same argument witness as
+            // the source parameter. This is semantic parameter lineage, not a source-name special case.
+            const expressionParameter = source.kind === 'expression' && source.canonical.startsWith('id:')
+              ? source.canonical.slice('id:'.length) : undefined;
+            if (expressionParameter !== undefined) {
+              const inputIndex = fn.parameters
+                .filter((parameter) => !parameter.name.startsWith('__internal__'))
+                .findIndex((parameter) => parameter.name === expressionParameter);
+              if (inputIndex >= 0) {
+                const argumentWitness = fn.messageBusKeyWitnesses
+                  ?.find((binding) => binding.source === 'argument' && binding.inputIndex === inputIndex
+                    && binding.routeInput.startsWith(witnessPrefix))?.routeInput;
+                if (argumentWitness !== undefined) return argumentWitness;
+              }
             }
             // A literal key has no source ABI parameter, but admission publishes its
             // compiler-owned key witness exactly like an expression key.  In a

@@ -304,6 +304,44 @@ describe('inferred message-bus batching for repeated external callees', () => {
     });
   });
 
+  it('publishes fixed-array element assignments in pure-helper programs', () => {
+    const artifact = compileString(`
+      pragma solidity >=0.8.0;
+      uint constant FIRST = 0;
+      uint constant SECOND = 1;
+      uint constant LAST = 2;
+      uint constant SCALE = 100;
+      function distribute(uint amount, uint16[3] splits) pure returns (uint[3]) {
+        uint[3] values;
+        values[FIRST] = uint(splits[FIRST]) * amount / SCALE;
+        values[SECOND] = uint(splits[SECOND]) * amount / SCALE;
+        values[LAST] = amount - values[FIRST] - values[SECOND];
+        return values;
+      }
+      interface ISink { function publish(uint value) external; }
+      contract Caller(address sink) {
+        function run(uint amount, uint16[3] splits) public {
+          uint[3] memory values = distribute(amount, splits);
+          ISink(sink).publish(values[0]);
+          ISink(sink).publish(values[1]);
+          require(amount >= 0);
+        }
+      }
+    `, { solidityImportCompat: true });
+    const expression = artifact.abi.find((candidate) => candidate.name === 'run')
+      ?.externalCalls?.[0].batchInvocations?.[0].argSources?.[0].expression;
+    const program = expression?.kind === 'arrayAccess' ? expression.left : undefined;
+
+    expect(program).toMatchObject({ kind: 'call', parameters: ['amount', 'splits'] });
+    expect(program?.statements).toMatchObject([
+      { kind: 'variable', name: 'values', type: 'uint256[3]' },
+      { kind: 'arrayAssign', name: 'values', index: { kind: 'literal', value: '0' }, expression: {} },
+      { kind: 'arrayAssign', name: 'values', index: { kind: 'literal', value: '1' }, expression: {} },
+      { kind: 'arrayAssign', name: 'values', index: { kind: 'literal', value: '2' }, expression: {} },
+      { kind: 'return', expression: { kind: 'identifier', name: 'values' } },
+    ]);
+  });
+
   it('leaves an ungrouped single external call byte-identical to the explicit opt-out', () => {
     const source = `
       interface ICounter { function add(int amount) external; }

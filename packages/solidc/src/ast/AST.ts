@@ -2662,6 +2662,8 @@ export interface CallOptions {
 
 export class ExternalFunctionCallNode extends ExpressionNode {
   callInfo?: ExternalFunctionCallInfo;
+  /** Source-level returned-array link captured before memory lowering rewrites the assignment. */
+  resultArrayOutput?: number;
   /** Ordered row identity within one inferred repeated-callee message-bus batch. */
   externalBatchLogicalIndex?: number;
   /** Function-local program point shared with mapping-write effects. */
@@ -2750,9 +2752,10 @@ export interface ExternalCallExpression {
 }
 
 export interface ExternalCallStatement {
-  kind: 'variable' | 'assign' | 'while' | 'branch' | 'return' | 'expression' | 'block';
+  kind: 'variable' | 'assign' | 'arrayAssign' | 'while' | 'branch' | 'return' | 'expression' | 'block';
   name?: string;
   type?: string;
+  index?: ExternalCallExpression;
   expression?: ExternalCallExpression;
   condition?: ExternalCallExpression;
   statements?: ExternalCallStatement[];
@@ -2768,7 +2771,7 @@ export interface ExternalCallSlot {
    */
   callerIdentity?: {
     version: 1;
-    role: 'origin' | 'owner' | 'create' | 'proxy' | 'executor';
+    role: 'origin' | 'active' | 'owner' | 'create' | 'proxy' | 'executor';
     auth: 'input-bytecode' | 'category' | 'literal';
     authOffset: number;
     subjectLockingBytecode?: string;
@@ -2924,6 +2927,8 @@ export interface ExternalOutStateSlot {
 }
 
 export class MethodCallNode extends ExpressionNode {
+  /** Source-level returned-array link copied if this resolves to an external graph call. */
+  resultArrayOutput?: number;
   /** Pre-semantic source program point copied if this lowers to an external graph call. */
   sourceEffectOrdinal?: number;
   /** Lexical predicates captured before helper/control-flow lowering. */

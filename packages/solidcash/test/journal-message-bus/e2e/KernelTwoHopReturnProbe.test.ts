@@ -37,6 +37,65 @@ const commitmentNonEmpty = (commitment: Uint8Array | string | undefined): boolea
 };
 
 describe('kernel two-hop return probe', () => {
+  it('derives zero, one, and two looped getter results from an authenticated scalar result', async () => {
+    const provider = createMessageBusCapstoneTestProvider();
+    const sourceArtifact = compileString(`pragma solidity ^0.8.0;
+      contract NumberSource {
+        mapping(uint256 => uint256) public values;
+        function size() public pure returns (uint256) { return 2; }
+        function seed(uint256 index, uint256 value) public { values[index] = value; require(true); }
+        function read(uint256 index) public view returns (uint256) { return values[index]; }
+      }`, { ...KERNEL, messageBusGraphContext: true });
+    const sourceBase = new Contract(sourceArtifact, [], { provider });
+    const sourceSetup = await setupStatefulUtxos(
+      provider, sourceBase, sourceArtifact.stateLayout!, {}, { saltContract: true },
+    );
+    const source = StatefulContract.withCategory(
+      sourceBase.withCategory(hexToBin(sourceSetup.categoryId)), sourceSetup.categoryId,
+    );
+    await expect(source.call.seed(1n, 11n).send()).resolves.toBeDefined();
+    await expect(source.call.seed(0n, 10n).send()).resolves.toBeDefined();
+    expect(sourceArtifact.abi.find((fn) => fn.name === 'read')?.entryAccesses).toEqual([
+      expect.objectContaining({ collection: 'values', operations: ['read'] }),
+    ]);
+    expect(sourceArtifact.messageBus?.handlers.find((fn) => fn.name === 'read'))
+      .toMatchObject({ physicalEntrySlotAlternatives: [[expect.any(Number), expect.any(Number)]] });
+
+    const collectorArtifact = compileString(`pragma solidity ^0.8.0;
+      interface INumberSource {
+        function size() external view returns (uint256);
+        function read(uint256 index) external view returns (uint256);
+      }
+      contract NumberCollector(address source) {
+        function collect(uint256 offset) public view returns (uint256[] memory) {
+          uint256 length = INumberSource(source).size() - offset;
+          uint256[] memory result = new uint256[](length);
+          for (uint256 index = 0; index < length; index++) {
+            result[index] = INumberSource(source).read(index + offset);
+          }
+          return result;
+        }
+      }`, { ...KERNEL, messageBusGraphContext: true });
+    expect(collectorArtifact.messageBus?.convention).toBe('kernel-row-loop');
+    expect(collectorArtifact.bytecode.replace(/\s+/gu, '')).toContain('OP_INVOKE');
+    expect(collectorArtifact.abi.find((fn) => fn.name === 'collect')?.externalCalls?.[1])
+      .toMatchObject({ callsiteId: 1, functionName: 'read', resultArrayOutput: 0 });
+    const collectorBase = new Contract(
+      collectorArtifact, [source.inner.lockingBytecode], { provider },
+    );
+    const collectorSetup = await setupStatefulUtxos(
+      provider, collectorBase, collectorArtifact.stateLayout!, {}, { saltContract: true },
+    );
+    const collector = StatefulContract.withCategory(
+      collectorBase.withCategory(hexToBin(collectorSetup.categoryId)), collectorSetup.categoryId,
+      { externals: { INumberSource: source } },
+    );
+
+    await expect(collector.call.collect(2n).staticCall()).resolves.toEqual([]);
+    await expect(collector.call.collect(1n).staticCall()).resolves.toEqual([11n]);
+    await expect(collector.call.collect(0n).staticCall()).resolves.toEqual([10n, 11n]);
+  }, 120_000);
+
   it('materializes authenticated non-empty return commitments across Leaf→Root compose', async () => {
     const provider = createMessageBusCapstoneTestProvider();
     const leafArtifact = compileString(`pragma solidity ^0.8.0;

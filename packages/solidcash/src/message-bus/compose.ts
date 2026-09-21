@@ -167,6 +167,8 @@ export interface PreparedAtomicMessageBusCall {
   resolveArgsFromResults?: (
     results: ReadonlyMap<number, FunctionArgument>,
   ) => readonly FunctionArgument[] | undefined;
+  /** Parent-frame callsites actually read while resolving this occurrence's selected expression path. */
+  resultProducerCallsiteIds?: readonly number[];
 }
 
 /** Validate one prepared compiler edge against the planner's canonical producer occurrence. */
@@ -4671,6 +4673,8 @@ export class AtomicMessageBusComposition {
             resultTypes: owned.flatMap((invocation) => plan.invocations[invocation].resultTypes),
             resultTypeGroups: owned.map((invocation) => plan.invocations[invocation].resultTypes),
             resultEncodings: owned.map((invocation) => plan.invocations[invocation].resultEncoding!),
+            structs: participant.artifact.structs,
+            enums: participant.artifact.enums,
           },
         );
         if (!blob) {

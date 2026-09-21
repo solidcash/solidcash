@@ -181,6 +181,16 @@ export interface RuntimeLoopIterationDomainAbi {
   maximumIterations: number;
 }
 
+/** Exact bounded recurrence for a pre-test loop containing one external graph callsite. */
+export interface ExternalCallIterationDomainAbi {
+  counterName: string;
+  initialValue: ExternalCallExpression;
+  stepValue: ExternalCallExpression;
+  continueCondition: ExternalCallExpression;
+  /** Independent compiler ceiling; consumers must also enforce their own actual-row limit. */
+  maximumIterations: number;
+}
+
 /** One repeated BCH-transfer segment produced by a runtime counter loop. */
 export interface RuntimeLoopTransferAbi {
   permutationParam: string;
@@ -1071,6 +1081,7 @@ export type ExternalResultConsumerAbi = {
 } & (
   | { argument: number; condition?: never }
   | { condition: true; argument?: never }
+  | { iterationDomain: true; argument?: never; condition?: never }
 );
 
 /**
@@ -1137,9 +1148,10 @@ export interface AffineRecursiveFrameV1Abi {
 }
 
 export interface ExternalCallStatement {
-  kind: 'variable' | 'assign' | 'while' | 'branch' | 'return' | 'expression' | 'block';
+  kind: 'variable' | 'assign' | 'arrayAssign' | 'while' | 'branch' | 'return' | 'expression' | 'block';
   name?: string;
   type?: string;
+  index?: ExternalCallExpression;
   expression?: ExternalCallExpression;
   condition?: ExternalCallExpression;
   statements?: readonly ExternalCallStatement[];
@@ -1155,12 +1167,14 @@ export interface CallsiteCallerIdentityAbi {
   /**
    * Role of the authenticated caller subject for this edge.
    * - origin: transaction-origin / root (subject empty or rootCaller; authOffset 0xffff)
+   * - active: exact authenticated identity through which the calling participant entered; delegate execution
+   *   resolves to its state owner rather than its executor
    * - owner: physical state-owner master of the calling participant
    * - create: CREATE / getAddress() logical identity of the calling participant
    * - proxy: proxy-facing public identity when distinct from owner
    * - executor: co-spent implementation input (rare; only when the edge literally authenticates the executor)
    */
-  role: 'origin' | 'owner' | 'create' | 'proxy' | 'executor';
+  role: 'origin' | 'active' | 'owner' | 'create' | 'proxy' | 'executor';
   /**
    * How the covenant authenticates the subject bytes.
    * - input-bytecode: subject == lockingBytecode of caller participant input at authOffset
@@ -1199,6 +1213,9 @@ export interface ExternalCallAbi {
   occurrence?: 'once' | 'conditional' | 'loop';
   /** Runtime predicate guarding this callsite, serialized from its enclosing source branches. */
   condition?: ExternalCallExpression;
+  /** Exact affine pre-test loop recurrence which reaches this callsite. Unlike `maximumOccurrences`, this
+   * describes the runtime iteration domain rather than only publishing a protocol ceiling. */
+  iterationDomain?: ExternalCallIterationDomainAbi;
   /** ABI output array directly populated by this loop call (`result[i] = call(); return result`). */
   resultArrayOutput?: number;
   /** Compiler-proven ceiling on reached rows. Absent means no ceiling was proven for this callsite. */

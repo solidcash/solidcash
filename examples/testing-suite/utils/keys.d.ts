@@ -1,8 +1,0 @@
-export declare const alicePub: Uint8Array;
-export declare const alicePriv: Uint8Array<ArrayBufferLike>;
-export declare const alicePkh: Uint8Array<ArrayBufferLike>;
-export declare const aliceAddress: string;
-export declare const bobPub: Uint8Array;
-export declare const bobPriv: Uint8Array<ArrayBufferLike>;
-export declare const bobPkh: Uint8Array<ArrayBufferLike>;
-export declare const bobAddress: string;

@@ -167,8 +167,6 @@ export interface PreparedAtomicMessageBusCall {
   resolveArgsFromResults?: (
     results: ReadonlyMap<number, FunctionArgument>,
   ) => readonly FunctionArgument[] | undefined;
-  /** Parent-frame callsites actually read while resolving this occurrence's selected expression path. */
-  resultProducerCallsiteIds?: readonly number[];
 }
 
 /** Validate one prepared compiler edge against the planner's canonical producer occurrence. */
@@ -1509,34 +1507,6 @@ const graphRouteContext = (
       `messageBus: participant ${participant} requires per-row caller context for multiple physical callers`,
     );
   }
-  if ((globalThis as { process?: { env?: Record<string, string> } }).process
-    ?.env?.SOLIDC_DEBUG_LOCK_FAMILIES === '1') {
-    // The compiler's per-row require chain compares a row's CALLER IDENTITY against a settlement-table entry.
-    // Both are built from `plan.participants[...].lockingBytecode`, but a participant whose published (logical)
-    // identity differs from its state lock carries `logicalLockingBytecode` as well, so the families can differ
-    // per participant. Print both families beside the row subjects actually published, which is the only way to
-    // tell "the table lists the wrong family" from "the chain compares two different participants".
-    console.error('lock-families', JSON.stringify({
-      participant,
-      participants: finalized.plan.participants.map((owner) => ({
-        participant: owner.participant,
-        contract: owner.artifact.contractName,
-        lockingBytecode: owner.lockingBytecode,
-        logicalLockingBytecode: owner.logicalLockingBytecode,
-        logicalIdentityOffset: owner.logicalIdentityOffset,
-        settlementBoundary: owner.settlementBoundary,
-        baseInput: finalized.layout.participantInputs[owner.participant],
-        executorOffset: owner.executorOffset ?? null,
-      })),
-      rows: finalized.callManifest.rows.map((row, index) => ({
-        index,
-        kind: row.kind,
-        owner: row.owner,
-        consumer: row.consumer,
-        subjectHex: row.subjectHex,
-      })).filter((row) => row.kind === 0),
-    }));
-  }
   const settlementTable = finalized.plan.participants.flatMap((owner) => [
     framed(hexToBin(owner.lockingBytecode)),
     uint16(finalized.layout.participantInputs[owner.participant]),
@@ -1547,19 +1517,10 @@ const graphRouteContext = (
   return Object.freeze({
     __internal__activeVerifierIndex: BigInt(finalized.layout.verifierInputs[participant]),
     __internal__graphFixedSize: BigInt(finalized.callManifest.participants[participant].fixedSize),
-    // A participant whose return NFT is not consumed by any co-spent input still publishes an offset here, and the
-    // contract then verifies "the input at my return slot is the expected covenant" - measured: that input holds the
-    // canonical unmaterialized placeholder (`aa20953ccfa596`, no token category) while every ENTRY slot is
-    // materialized, so the check aborts the deferred walk before it reaches the compute reads. `-1` is the published
-    // encoding for "no return slot" (the same sentinel the 0xffff case uses), so this gate measures whether the walk
-    // resolves once the return coordinate disappears.
     __internal__returnOutputIdx: BigInt(
-      (globalThis as { process?: { env?: Record<string, string> } }).process
-        ?.env?.SOLIDC_RETURN_OUTPUT_IDX_DISABLE === '1'
-        ? -1
-        : finalized.callManifest.participants[participant].returnOffset === 0xffff
-          ? -1 : finalized.layout.participantInputs[participant]
-            + finalized.callManifest.participants[participant].returnOffset,
+      finalized.callManifest.participants[participant].returnOffset === 0xffff
+        ? -1 : finalized.layout.participantInputs[participant]
+          + finalized.callManifest.participants[participant].returnOffset,
     ),
     __internal__graphBlockSize: BigInt(finalized.callManifest.participants[participant].maximumSize),
     __internal__graphEmissions: concat(...emissions),
@@ -1570,12 +1531,6 @@ const graphRouteContext = (
     __internal__lifecycleOwnerInput: BigInt(finalized.layout.participantInputs[participant]),
     ...(needsScalarCaller ? {
       __internal__msgSenderCategory: hexToBin(scalarCallerCategories[0] ?? '00'.repeat(32)),
-      __internal__msgSenderAnchorIdx: -1n,
-    } : {}),
-    ...(needsUpgradeBytecode ? {
-      __internal__upgradeBytecode: hexToBin(execution.outputLockingBytecode ?? execution.lockingBytecode),
-      __internal__upgradeStateSuffix: upgradeStateSuffixes.get(execution.lockingBytecode.toLowerCase())
-        ?? new Uint8Array(),
     } : {}),
     ...(needsUpgradeBytecode ? {
       __internal__upgradeBytecode: hexToBin(execution.outputLockingBytecode ?? execution.lockingBytecode),
@@ -1614,19 +1569,6 @@ export class AtomicMessageBusComposition {
   ) {}
 
   private async _build(): Promise<TransactionBuilder> {
-    const timingEnabled = (globalThis as { process?: { env?: Record<string, string> } }).process?.env
-      ?.SOLIDC_DEBUG_COMPOSE_TIMING === '1';
-    const timingStartedAt = timingEnabled ? Date.now() : 0;
-    let lastTimingAt = timingStartedAt;
-    let assemblyCount = 0;
-    const reportTiming = (stage: string, detail?: Record<string, number>): void => {
-      if (!timingEnabled) return;
-      const now = Date.now();
-      console.error('message-bus-compose-timing', {
-        stage, deltaMs: now - lastTimingAt, totalMs: now - timingStartedAt, ...detail,
-      });
-      lastTimingAt = now;
-    };
     const descriptors: CallDescriptor[] = this.options.preparedCalls
       ? this.options.preparedCalls.map((call) => ({
         ...call,
@@ -2788,19 +2730,13 @@ export class AtomicMessageBusComposition {
     const assemble = async (
       graph: ReturnType<typeof finalizeAtomicInvocationGraph>,
       results: Readonly<Record<number, string>>,
-      observedValueChunkClaims: readonly ComputedValueChunkValueClaim[] = [],
     ): Promise<{
       builder: TransactionBuilder;
       actualSizes: readonly number[];
       incompleteDynamicChunks: readonly {
         participant: number; variable: string; resolved: number; total: number;
       }[];
-      unresolvedValueChunkWrites: readonly {
-        inputIndex: number; participant: number; write: ValueChunkWriteDescriptor;
-      }[];
     }> => {
-      assemblyCount += 1;
-      const assemblyStartedAt = timingEnabled ? Date.now() : 0;
       // A computed argument may read any authenticated graph value: nested return bytes, an effect output,
       // participant span, or an absolute transaction coordinate. Cache only within the exact finalized graph
       // transcript; participant identity alone would retain witnesses learned from provisional semantic claims.
@@ -2823,9 +2759,6 @@ export class AtomicMessageBusComposition {
       const actualSizes: number[] = [];
       const incompleteDynamicChunks: Array<{
         participant: number; variable: string; resolved: number; total: number;
-      }> = [];
-      const unresolvedValueChunkWrites: Array<{
-        inputIndex: number; participant: number; write: ValueChunkWriteDescriptor;
       }> = [];
       const aggregateOutpoints = new Map<string, { participant: number; localIndex: number }>();
       const registerAggregateInput = (
@@ -3642,24 +3575,6 @@ export class AtomicMessageBusComposition {
             ...variable,
           });
         }
-        const localValueWrites = (local as TransactionBuilder & {
-          __messageBusValueChunkWrites?: readonly ValueChunkWriteDescriptor[];
-          __messageBusOwnComputedValueChunkWrites?: readonly ValueChunkWriteDescriptor[];
-        });
-        const unresolvedLocalValueWrites = [
-          ...(localValueWrites.__messageBusValueChunkWrites ?? []),
-          ...(localValueWrites.__messageBusOwnComputedValueChunkWrites ?? []),
-        ];
-        const executionOffset = participant.executionKind === 1 && participant.executorOffset !== null
-          ? participant.executorOffset : 0;
-        for (const write of unresolvedLocalValueWrites) {
-          if (write.outputBase >= 0 && write.outputCount > 0) continue;
-          unresolvedValueChunkWrites.push({
-            inputIndex: graph.layout.participantInputs[participant.participant] + executionOffset,
-            participant: participant.participant,
-            write,
-          });
-        }
         if (participant.executionKind === 1 && participant.executorOffset !== null) {
           const executorInput = local.inputs[participant.executorOffset];
           if (!executorInput) throw new Error('messageBus: delegate executor input is absent from its published slot');
@@ -3946,9 +3861,7 @@ export class AtomicMessageBusComposition {
       const spansMatch = actualSizes.every(
         (size, participant) => size === graph.callManifest.participants[participant].actualSize,
       );
-      if (!spansMatch) return {
-        builder: aggregate, actualSizes, incompleteDynamicChunks, unresolvedValueChunkWrites,
-      };
+      if (!spansMatch) return { builder: aggregate, actualSizes, incompleteDynamicChunks };
 
       const verifierDomain = binToHex(MESSAGE_BUS_VERIFIER_COMMITMENT_DOMAIN);
       const messageEnvelope = encodeAtomicMessageEnvelope(graph.callManifest);
@@ -4677,14 +4590,9 @@ export class AtomicMessageBusComposition {
           );
         }
       }
-      if (timingEnabled) reportTiming('assembly-complete', {
-        assembly: assemblyCount, assemblyMs: Date.now() - assemblyStartedAt,
-        inputs: aggregate.inputs.length, outputs: aggregate.outputs.length,
-      });
-      return { builder: aggregate, actualSizes, incompleteDynamicChunks, unresolvedValueChunkWrites };
+      return { builder: aggregate, actualSizes, incompleteDynamicChunks };
     };
     const admit = (builder: TransactionBuilder): TransactionBuilder => {
-      reportTiming('admission-start', { inputs: builder.inputs.length, outputs: builder.outputs.length });
       const convergence = convergeMessageBusComputedResourceOutputs(builder);
       const valueChunkConvergence = convergeMessageBusComputedValueChunkOutputs(builder);
       const dynamicChunkConvergence = convergeMessageBusComputedDynamicChunkOutputs(builder);
@@ -4887,7 +4795,6 @@ export class AtomicMessageBusComposition {
       let claimedTokenEffects: readonly AtomicTokenSlotEffect[] = provisionalTokenEffects;
       let claimedSidecarEffects: readonly AtomicSidecarSlotEffect[] = provisionalSidecarEffects;
       let claimedComputedValueChunks: readonly ComputedValueChunkClaim[] = [];
-      let claimedComputedValueChunkValues: readonly ComputedValueChunkValueClaim[] = [];
       // Every value below is a claim which can feed a later assembly pass. The old
       // `invocations + 5` heuristic counted effect *classes*, so a resource-heavy graph could exhaust the
       // allowance even though another pass reached a valid fixed point. Allow one discovery pass per mutable
@@ -4899,7 +4806,6 @@ export class AtomicMessageBusComposition {
       const maximumPasses = mutableClaimCount + 2;
       const seenClaimStates = new Set<string>();
       for (let pass = 0; pass < maximumPasses; pass += 1) {
-        reportTiming('semantic-pass-start', { pass, maximumPasses });
         const claimState = semanticJson({
           results: claimedResults,
           events: claimedEventEffects,
@@ -4908,7 +4814,6 @@ export class AtomicMessageBusComposition {
           tokens: claimedTokenEffects,
           sidecars: claimedSidecarEffects,
           computedValueChunks: claimedComputedValueChunks,
-          computedValueChunkValues: claimedComputedValueChunkValues,
         });
         if (seenClaimStates.has(claimState)) {
           throw new Error('messageBus: semantic derivation entered a repeated non-final claim state');
@@ -4921,70 +4826,19 @@ export class AtomicMessageBusComposition {
           undefined,
           deploymentEffects,
         );
-        let assembled = await assemble(finalized, claimedResults, claimedComputedValueChunkValues);
+        let assembled = await assemble(finalized, claimedResults);
         if (!actualSpansMatch(finalized, assembled.actualSizes)) {
           finalized = finalizeAtomicInvocationGraph(
             plan, categories, claimedResults, claimedEventEffects, claimedResourceEffects, claimedValueEffects,
             claimedTokenEffects, claimedSidecarEffects, assembled.actualSizes,
             deploymentEffects,
           );
-          assembled = await assemble(finalized, claimedResults, claimedComputedValueChunkValues);
+          assembled = await assemble(finalized, claimedResults);
           if (!actualSpansMatch(finalized, assembled.actualSizes)) {
             throw new Error('messageBus: participant spans did not converge after compact assembly');
           }
         }
         const provisional = assembled.builder;
-        const valueChunkObservations = hasComputedValueChunks
-          ? discoverMessageBusComputedValueChunkValues(provisional, assembled.unresolvedValueChunkWrites)
-          : [];
-        const newlyObservedValueChunkValues = valueChunkObservations.map((observation) => {
-          const resource = valueChunkWriteResourceIdentity(observation.write);
-          const owners = new Set(assembled.unresolvedValueChunkWrites
-            .filter((target) => target.inputIndex === observation.inputIndex
-              && valueChunkWriteResourceIdentity(target.write) === resource)
-            .map((target) => target.participant));
-          if (owners.size !== 1) {
-            throw new Error(`messageBus: computed continuation resource '${resource}' has ambiguous frame ownership`);
-          }
-          return {
-            participant: [...owners][0],
-            write: observation.write,
-            valueHex: binToHex(observation.value),
-            lockingBytecodeHex: binToHex(observation.lockingBytecode),
-            chunkCount: observation.chunkCount,
-          };
-        });
-        // A later provisional graph can stop at an earlier guard before it reaches the same chunk-count scan.
-        // Absence of an observation is not a contradictory value: retain the exact prior resource claim until a
-        // new observation replaces it or final BCH preflight proves it wrong. Dropping it oscillates between a
-        // seeded and unseeded participant, even though the computed bytes themselves never changed.
-        const valueClaimKey = (claim: Pick<ComputedValueChunkValueClaim, 'participant' | 'write'>): string =>
-          `${claim.participant}:${valueChunkWriteResourceIdentity(claim.write)}`;
-        const availableValueTargets = new Set(assembled.unresolvedValueChunkWrites.map(valueClaimKey));
-        const valueClaimsByResource = new Map(claimedComputedValueChunkValues
-          .filter((claim) => availableValueTargets.has(valueClaimKey(claim)))
-          .map((claim) => [valueClaimKey(claim), claim]));
-        for (const claim of newlyObservedValueChunkValues) valueClaimsByResource.set(valueClaimKey(claim), claim);
-        const derivedComputedValueChunkValues = [...valueClaimsByResource.values()]
-          .sort((left, right) => left.participant - right.participant
-            || valueChunkWriteResourceIdentity(left.write).localeCompare(valueChunkWriteResourceIdentity(right.write)));
-        if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-          ?.SOLIDC_DEBUG_COMPUTED_VALUE_DISCOVERY === '1') {
-          console.error('atomic-computed-value-discovery', JSON.stringify({
-            pass,
-            targets: assembled.unresolvedValueChunkWrites.map((target) => ({
-              participant: target.participant,
-              inputIndex: target.inputIndex,
-              resource: valueChunkWriteResourceIdentity(target.write),
-            })),
-            observations: valueChunkObservations.map((observation) => ({
-              resource: valueChunkWriteResourceIdentity(observation.write),
-              bytes: observation.value.length,
-              chunks: observation.chunkCount,
-              lock: binToHex(observation.lockingBytecode),
-            })),
-          }));
-        }
         // Return values are upstream of state/resource derivation. If a pass discovers a new return vector,
         // rebuild immediately before validating outputs which may still contain unresolved chunk placeholders.
         const incompleteParticipants = new Set(
@@ -4994,7 +4848,6 @@ export class AtomicMessageBusComposition {
         const derivedResults = deriveReturnResults(
           finalized, provisional, claimedResults, missingReturnParticipants,
         );
-        reportTiming('returns-derived', { pass, missingReturns: missingReturnParticipants.size });
         if (returning.some((invocation) =>
           derivedResults[invocation.index] !== claimedResults[invocation.index])) {
           // Some compiler-authored arguments contain an earlier invocation's result inside a larger expression
@@ -5337,7 +5190,6 @@ export class AtomicMessageBusComposition {
           apply: (observed) => { claimedSidecarEffects = observed as AtomicSidecarSlotEffect[]; },
         });
         const derivedEventEffects: AtomicEventSlotEffect[] = [];
-        reportTiming('effects-derived', { pass });
         const eventProgram = provisional.buildLibauthProgram();
         const discoveredEvents = new Map<number, { commitment: string; lockingBytecode?: string }>();
         for (const participant of plan.participants) {
@@ -5348,16 +5200,10 @@ export class AtomicMessageBusComposition {
           const executionInput = participant.executionKind === 1 && participant.executorOffset !== null
             ? participantBase + participant.executorOffset : participantBase;
           const contract = byLockingBytecode.get(participant.lockingBytecode.toLowerCase())!;
-          const eventTraceStartedAt = timingEnabled ? Date.now() : 0;
           for (const [outputIndex, expectation] of contract._messageBusEventCommitmentsFromTransaction(
             provisional, eventIndices, executionInput, eventProgram,
           )) discoveredEvents.set(outputIndex, expectation);
-          if (timingEnabled && eventIndices.length > 0) console.error('message-bus-event-trace-timing', {
-            pass, participant: participant.participant, executionInput,
-            eventSlots: eventIndices.length, ms: Date.now() - eventTraceStartedAt,
-          });
         }
-        reportTiming('events-traced', { pass, discoveredEvents: discoveredEvents.size });
         // The route's unrolled dispatcher owns the physical event site. A compact local probe initially places
         // reached events by logical row, but those coordinates can differ when several selector arms share the
         // route. The complete trace above is the compiler's authority: relocate the SDK's artifact-derived event
@@ -5521,7 +5367,6 @@ export class AtomicMessageBusComposition {
               })),
             });
           }
-          reportTiming('semantic-converged', { pass, assemblyCount });
           return admit(provisional);
         }
         claimedResults = derivedResults;

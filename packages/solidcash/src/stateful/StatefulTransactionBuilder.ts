@@ -70,7 +70,7 @@ import {
   assertFinalizedTransactionBytes, assertFinalizedTransactionCovenants,
   finalizedByteGateOptionsForProvider, inputSubjectsOfBuilder,
 } from '../message-bus/preflight.js';
-import { parseEventCommitment, valuesEqual as stateValuesEqual } from './StateReader.js';
+import { parseEventCommitment } from './StateReader.js';
 import {
   Utxo, UnlockableUtxo, TransactionDetails, isContractUnlocker, isP2PKHUnlocker, Unlocker,
 } from '../interfaces.js';
@@ -6803,20 +6803,6 @@ export function lowLevelCallImmutableEventDestinations(
   return destinations;
 }
 
-/** Resolve a CREATE anchor from physical inputs; a category cannot nominate two logical senders. */
-export function findScidAnchorInputIndex(inputs: readonly Pick<Utxo, 'token'>[], categoryId: string): number {
-  let found = -1;
-  for (let index = 0; index < inputs.length; index += 1) {
-    const token = inputs[index].token;
-    if (token?.category.toLowerCase() !== categoryId.toLowerCase()
-      || token.nft?.capability !== 'none'
-      || !isScidIdentityCommitment(token.nft.commitment)) continue;
-    if (found >= 0) throw new Error(`Ambiguous CREATE identity anchors for category ${categoryId}.`);
-    found = index;
-  }
-  return found;
-}
-
 /**
  * A transaction builder that wraps TransactionBuilder with the stateful
  * contract input/output convention:
@@ -6948,15 +6934,7 @@ export class StatefulTransactionBuilder {
   private externalCallEntryOutputsByIndex: Map<number, { categoryId: string; commitment: string }> = new Map();
   // Trailing NEW entry nodes minted for a cross-contract callee INSERT (per group: address lbc + commitment hex),
   // placed right after the group's block (B's covenant mints the NEW at masterInputIndex + blockSize).
-  private externalCallEntryInserts: Array<{
-    ownerGroupIndex: number;
-    categoryId: string;
-    to: Uint8Array;
-    targetSlot: string;
-    commitment: string;
-    active: boolean;
-  }> = [];
-  private externalCallEntryInsertHandleByIdentity = new Map<string, number>();
+  private externalCallEntryInserts: Array<{ categoryId: string; to: Uint8Array; commitment: string }> = [];
 
   private pendingReturnEventOutputs: Array<{
     categoryId: string; commitment: Uint8Array; identity: string; provisional?: boolean;
@@ -7043,10 +7021,6 @@ export class StatefulTransactionBuilder {
   }
 
   private lateValueChunkOutputs: Array<{ to: string | Uint8Array; amount: bigint; token?: Utxo['token'] }> = [];
-  /** Complete compiler-identified computed runs inserted before the reverse-indexed suffix. */
-  private computedValueChunkContinuations = new Map<string, Array<{
-    to: Uint8Array; amount: bigint; token: NonNullable<Utxo['token']>;
-  }>>();
   // P5b (computed values): collections whose value chunks are DERIVED from the trace (the SDK has no value param to
   // build them). The covenant pins them, so their commitments come from auto-derivation like dynamicChunkVars.
   private valueChunkVars: Map<string, {
@@ -7236,9 +7210,8 @@ export class StatefulTransactionBuilder {
     debugInputAssembly('minting-band-relocated');
     this._placeJobEventsPredecessorInputs(this.pendingJobEventsPredecessors);
     debugInputAssembly('predecessors-placed');
-    // Keep external CREATE anchors in a stable band before this contract's own anchor. Witnesses must resolve
-    // their actual input positions after assembly; neither band order nor a last-input assumption authenticates
-    // an identity on its own.
+    // Callee anchors precede the caller's own: emitLogicalMsgSenderAnchorResolution resolves the caller's
+    // identity from the LAST input, so that tail position must stay the caller's.
     this.allInputs.push(...this.externalIdentityAnchorUtxos);
     if (this.logicalIdentityUtxo) this.allInputs.push(this.logicalIdentityUtxo);
     debugInputAssembly('identity-anchors-appended');
@@ -12646,9 +12619,6 @@ export class StatefulTransactionBuilder {
     value: StateValue,
   ): this {
     let updates = this.externalCallStateUpdates.get(categoryId);
-    if (updates?.has(name) && stateValuesEqual(updates.get(name)!, value)) return this;
-    const group = this.externalCallUtxoGroups.find((candidate) => candidate.categoryId === categoryId);
-    const nftIndex = group && stateVariableForUpdateKey(group.stateLayout, name)?.nftIndex;
     if (!updates) {
       updates = new Map();
       this.externalCallStateUpdates.set(categoryId, updates);
@@ -12868,64 +12838,20 @@ export class StatefulTransactionBuilder {
     }
   }
 
-  /** Ensure one exact trailing NEW node without duplicating it across derivation passes. */
-  ensureExternalCallEntryInsert(
-    ownerGroupIndex: number,
-    categoryId: string,
-    to: Uint8Array,
-    targetSlot: string,
-    placeholderCommitment: string,
-  ): number {
-    const owner = this.externalCallUtxoGroups[ownerGroupIndex];
-    const normalizedCategory = categoryId.toLowerCase();
-    const normalizedSlot = targetSlot.toLowerCase();
-    if (!owner || owner.sharedGroupIndex !== undefined || owner.categoryId.toLowerCase() !== normalizedCategory) {
-      throw new Error(`External entry insert has invalid physical owner ${ownerGroupIndex}.`);
-    }
-    if (!/^[0-9a-f]{64}$/.test(normalizedSlot) || to.length === 0) {
-      throw new Error('External entry insert requires an exact target slot and collection lock.');
-    }
-    const identity = `${ownerGroupIndex}:${binToHex(to)}:${normalizedSlot}`;
-    const existingHandle = this.externalCallEntryInsertHandleByIdentity.get(identity);
-    if (existingHandle !== undefined) {
-      const existing = this.externalCallEntryInserts[existingHandle];
-      if (!existing || existing.ownerGroupIndex !== ownerGroupIndex
-        || existing.categoryId.toLowerCase() !== normalizedCategory
-        || !binsAreEqual(existing.to, to) || existing.targetSlot !== normalizedSlot) {
-        throw new Error(`External entry insert identity collision at '${identity}'.`);
-      }
-      if (!existing.active) {
-        existing.active = true;
-        existing.commitment = placeholderCommitment;
-      }
-      return existingHandle;
-    }
-    const handle = this.externalCallEntryInserts.push({
-      ownerGroupIndex,
-      categoryId: normalizedCategory,
-      to: to.slice(),
-      targetSlot: normalizedSlot,
-      commitment: placeholderCommitment,
-      active: true,
-    }) - 1;
-    this.externalCallEntryInsertHandleByIdentity.set(identity, handle);
-    return handle;
+  /** A trailing NEW entry node for a cross-contract callee INSERT (minted after B's block). Returns its handle. */
+  addExternalCallEntryInsert(categoryId: string, to: Uint8Array, commitmentHex: string): number {
+    return this.externalCallEntryInserts.push({ categoryId, to, commitment: commitmentHex }) - 1;
   }
 
   /** Replace a trailing NEW node's commitment (the placeholder set for the 2nd-pass probe). */
   setExternalCallEntryInsertCommitment(handle: number, commitmentHex: string): this {
-    const insert = this.externalCallEntryInserts[handle];
-    if (insert?.active) insert.commitment = commitmentHex;
+    if (this.externalCallEntryInserts[handle]) this.externalCallEntryInserts[handle].commitment = commitmentHex;
     return this;
   }
 
   /** Drop a trailing NEW node placeholder (the write turned out to be an UPDATE, not an INSERT). */
   removeExternalCallEntryInsert(handle: number): this {
-    const insert = this.externalCallEntryInserts[handle];
-    if (insert?.active) {
-      insert.active = false;
-      insert.commitment = '';
-    }
+    if (this.externalCallEntryInserts[handle]) this.externalCallEntryInserts[handle] = { categoryId: '', to: new Uint8Array(), commitment: '' };
     return this;
   }
 
@@ -13427,255 +13353,6 @@ export class StatefulTransactionBuilder {
   addValueChunkOutput(output: { to: string | Uint8Array; amount: bigint; token?: Utxo['token'] }): this {
     this.valueChunkOutputs.push(output);
     return this;
-  }
-
-  stageComputedValueChunkContinuation(
-    resourceIdentity: string,
-    categoryId: string,
-    chunks: readonly { lockingBytecode: Uint8Array; commitment: string }[],
-  ): boolean {
-    if (chunks.length === 0) return false;
-    const next = chunks.map((chunk) => ({
-      to: chunk.lockingBytecode.slice(), amount: 1200n,
-      token: { category: categoryId, amount: 0n,
-        nft: { capability: 'mutable' as const, commitment: chunk.commitment } },
-    }));
-    const prior = this.computedValueChunkContinuations.get(resourceIdentity);
-    if (prior) {
-      if (prior.length !== next.length || prior.some((chunk, index) => (
-        binToHex(chunk.to) !== binToHex(next[index].to)
-        || chunk.token.nft?.commitment !== next[index].token.nft?.commitment
-        || chunk.token.category !== next[index].token.category
-      ))) {
-        throw new Error(`Conflicting authenticated computed continuation for '${resourceIdentity}'.`);
-      }
-      return false;
-    }
-    this.computedValueChunkContinuations.set(resourceIdentity, next);
-    this.dynamicLayoutRevision += 1;
-    return true;
-  }
-
-  /**
-   * Identity-scan pins name a redeem lock, not a slot. Replace any previously staged
-   * outputs for that lock so derivation iterations do not duplicate the run.
-   */
-  stageValueChunkOutputs(
-    lockingBytecode: Uint8Array,
-    outputs: Array<{ to: string | Uint8Array; amount: bigint; token?: Utxo['token'] }>,
-  ): this {
-    const sameDestination = (left: string | Uint8Array, right: string | Uint8Array): boolean => (
-      typeof left === 'string' || typeof right === 'string'
-        ? typeof left === 'string' && typeof right === 'string' && left === right
-        : binToHex(left) === binToHex(right)
-    );
-    const sameToken = (left: Utxo['token'] | undefined, right: Utxo['token'] | undefined): boolean => (
-      left === right || (!!left && !!right
-        && left.category?.toLowerCase() === right.category?.toLowerCase()
-        && (left.amount ?? 0n) === (right.amount ?? 0n)
-        && left.nft?.capability === right.nft?.capability
-        && String(left.nft?.commitment ?? '').toLowerCase()
-          === String(right.nft?.commitment ?? '').toLowerCase())
-    );
-    const identical = this.valueChunkOutputsLock !== undefined
-      && binToHex(this.valueChunkOutputsLock) === binToHex(lockingBytecode)
-      && this.valueChunkOutputs.length === outputs.length
-      && outputs.every((output, index) => {
-        const existing = this.valueChunkOutputs[index];
-        return existing !== undefined
-          && sameDestination(existing.to, output.to)
-          && existing.amount === output.amount
-          && sameToken(existing.token, output.token);
-      });
-    if (identical) return this;
-    // A valueWitness update changes sha256(value) and therefore the chunk P2SH32.
-    // Drop every previously staged run so stale locks cannot dilute the identity scan.
-    this.valueChunkOutputs = [...outputs];
-    this.valueChunkOutputsLock = Uint8Array.from(lockingBytecode);
-    this.dynamicLayoutRevision += 1;
-    return this;
-  }
-
-  hasStagedValueChunkOutputs(): boolean {
-    return this.valueChunkOutputs.length > 0;
-  }
-
-  /**
-   * Identity-scan staging appends trailing redeem-lock NFTs. Later band/surplus passes can
-   * convert those copies into OP_TRUE when the persist band collides with another participant.
-   * Re-append any missing staged locks so the kernel count pin still observes them.
-   */
-  /**
-   * A provisional empty-root NEW EntryNft can remain alongside the learned commitment at
-   * another index with the same collection lock. The covenant's first lock match then
-   * EQUALVERIFYs the empty commitment. Demote empty duplicates to OP_TRUE pads.
-   */
-  private _stripEmptyDuplicateEntryLocks(builder: TransactionBuilder): number {
-    // Only demote empties for locks we explicitly pinned via fixedIndex derivation
-    // (publishJobEvent NEW). Initialize/meceTags also share collection locks and must
-    // not lose provisional siblings.
-    const pinnedLocks = new Set(
-      [...this.derivedChunkOutputs.values()]
-        .filter((chunk) => chunk.fixedIndex && chunk.lockingBytecode.length === 35)
-        .map((chunk) => binToHex(chunk.lockingBytecode)),
-    );
-    if (pinnedLocks.size === 0) return 0;
-    // keyToSlot(vm(0)) === sha256("") — a real jobId=0 slot, not an "empty" sibling.
-    const byLock = new Map<string, number[]>();
-    for (const [index, output] of builder.outputs.entries()) {
-      const lock = output.to instanceof Uint8Array ? output.to : undefined;
-      if (!lock || lock.length !== 35 || lock[0] !== 0xaa) continue;
-      if (output.token?.nft?.capability !== 'mutable') continue;
-      const lockHex = binToHex(lock);
-      if (!pinnedLocks.has(lockHex)) continue;
-      const group = byLock.get(lockHex) ?? [];
-      group.push(index);
-      byLock.set(lockHex, group);
-    }
-    let stripped = 0;
-    for (const indices of byLock.values()) {
-      if (indices.length < 2) continue;
-      const learned = indices.filter((index) => {
-        const commitment = String(builder.outputs[index]?.token?.nft?.commitment ?? '').toLowerCase();
-        // HEAD (slot 0) is not a learned NEW; jobId=0 (emptyRoot prefix) is a valid learned row.
-        return commitment.length >= 128
-          && !commitment.startsWith('0'.repeat(64));
-      });
-      if (learned.length === 0) continue;
-      const source = builder.outputs[learned[0]]!;
-      for (const index of indices) {
-        if (learned.includes(index)) continue;
-        const commitment = String(builder.outputs[index]?.token?.nft?.commitment ?? '').toLowerCase();
-        const empty = commitment.length === 0
-          || commitment === '00'
-          || commitment.startsWith('0'.repeat(64));
-        if (!empty) continue;
-        // Copy the learned NEW commitment onto empty siblings. Demoting them to
-        // OP_TRUE leaves the covenant's introspected index (often the lower one)
-        // without a token commitment.
-        builder.outputs[index] = {
-          to: source.to,
-          amount: source.amount ?? 1200n,
-          token: source.token ? {
-            amount: source.token.amount ?? 0n,
-            category: source.token.category!,
-            nft: {
-              capability: 'mutable',
-              commitment: String(source.token.nft?.commitment ?? ''),
-            },
-          } : undefined,
-        };
-        stripped += 1;
-      }
-    }
-    return stripped;
-  }
-
-  private _reassertStagedValueChunkOutputs(builder: TransactionBuilder): number {
-    if (this.valueChunkOutputs.length === 0) return 0;
-    const lockHex = (to: string | Uint8Array | undefined): string | undefined => {
-      if (to instanceof Uint8Array) return binToHex(to);
-      if (typeof to === 'string') {
-        try { return binToHex(addressToLockScript(to)); } catch { return undefined; }
-      }
-      return undefined;
-    };
-    const band = this.getPublishJobEventsBand();
-    // Only relocate when a prior append parked staged chunk locks before the band
-    // (publishJobEvent dataNft slots). Do not rewrite a healthy full-width layout.
-    const stagedLocks = new Set(
-      this.valueChunkOutputs.map((staged) => lockHex(staged.to)).filter((hex): hex is string => !!hex),
-    );
-    const earlyFalseAppends: number[] = [];
-    if (band) {
-      for (let index = 0; index < band.start && index < builder.outputs.length; index += 1) {
-        const hex = lockHex(builder.outputs[index]?.to);
-        if (!hex || !stagedLocks.has(hex)) continue;
-        if (builder.outputs[index]?.token?.nft?.capability !== 'mutable') continue;
-        earlyFalseAppends.push(index);
-      }
-    }
-    if (band && earlyFalseAppends.length > 0) {
-      let added = 0;
-      for (const [offset, staged] of this.valueChunkOutputs.entries()) {
-        if (offset >= band.nNew) break;
-        const outputIndex = band.start + offset;
-        this._padOutputsToIndex(builder, outputIndex);
-        const chunkOutput = { ...staged };
-        chunkOutput.amount = BigInt(Math.max(1200, calculateDust(chunkOutput)));
-        if (builder.outputs.length === outputIndex) builder.addOutput(chunkOutput);
-        else builder.outputs[outputIndex] = chunkOutput;
-        added += 1;
-      }
-      for (const index of earlyFalseAppends) {
-        const occupant = this.allInputs[index];
-        builder.outputs[index] = occupant?.unlocker
-          ? {
-            to: occupant.unlocker.generateLockingBytecode(),
-            amount: occupant.satoshis,
-            ...(occupant.token ? { token: cloneToken(occupant.token) } : {}),
-          }
-          : { to: Uint8Array.of(0x51), amount: BALANCED_SLOT_SATOSHIS };
-      }
-      if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-        ?.SOLIDC_DEBUG_VALUE_CHUNKS === '1') {
-        console.error('reassert-staged-value-chunks', JSON.stringify({
-          mode: 'relocate-early-appends',
-          bandStart: band.start,
-          earlyFalseAppends,
-          staged: this.valueChunkOutputs.length,
-          added,
-          outputCount: builder.outputs.length,
-        }));
-      }
-      return added;
-    }
-    const present = new Map<string, number>();
-    for (const output of builder.outputs) {
-      const hex = lockHex(output.to);
-      if (!hex) continue;
-      present.set(hex, (present.get(hex) ?? 0) + 1);
-    }
-    const needed = new Map<string, Array<typeof this.valueChunkOutputs[number]>>();
-    for (const staged of this.valueChunkOutputs) {
-      const hex = lockHex(staged.to);
-      if (!hex) continue;
-      const group = needed.get(hex) ?? [];
-      group.push(staged);
-      needed.set(hex, group);
-    }
-    let added = 0;
-    for (const [hex, staged] of needed) {
-      const missing = staged.length - (present.get(hex) ?? 0);
-      for (let index = 0; index < missing; index += 1) {
-        const template = staged[Math.min(index, staged.length - 1)];
-        const chunkOutput = { ...template };
-        chunkOutput.amount = BigInt(Math.max(1200, calculateDust(chunkOutput)));
-        builder.addOutput(chunkOutput);
-        added += 1;
-      }
-    }
-    if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-      ?.SOLIDC_DEBUG_VALUE_CHUNKS === '1') {
-      const after = new Map<string, number>();
-      for (const output of builder.outputs) {
-        const hex = lockHex(output.to);
-        if (!hex) continue;
-        after.set(hex, (after.get(hex) ?? 0) + 1);
-      }
-      console.error('reassert-staged-value-chunks', JSON.stringify({
-        staged: this.valueChunkOutputs.length,
-        added,
-        outputCount: builder.outputs.length,
-        needed: [...needed.entries()].map(([hex, group]) => ({
-          lock: hex.slice(0, 20),
-          want: group.length,
-          before: present.get(hex) ?? 0,
-          after: after.get(hex) ?? 0,
-        })),
-      }));
-    }
-    return added;
   }
 
   /**
@@ -14921,21 +14598,6 @@ export class StatefulTransactionBuilder {
           .map(([, chunk]) => chunk))
         : [];
 
-      // A complete resource-keyed run may be emitted after another writer's earlier continuation. Its probe
-      // coordinate can remain in derivedChunkOutputs even though the physical run moved. Match the staged bytes
-      // and root-addressed lock, never just a same-category chunk index at the new position.
-      if (expected.length === 0) {
-        const identities = new Set((carrier.valueChunkWrites ?? []).map(valueChunkWriteResourceIdentity));
-        if (identities.size === 1) {
-          const staged = this.computedValueChunkContinuations.get([...identities][0]);
-          if (staged) expected = staged.map((output) => ({
-            commitment: output.token.nft!.commitment,
-            lockingBytecode: output.to,
-            categoryId: output.token.category,
-          }));
-        }
-      }
-
       if (expected.length === 0) {
         const abiFunction = carrier.compilerRoute?.abiFunction
           ?? (carrier.externalContract?.inner.artifact.abi as readonly AbiFunction[] | undefined)
@@ -15011,17 +14673,6 @@ export class StatefulTransactionBuilder {
         materializedBase = candidate;
         break;
       }
-      if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-        ?.SOLIDC_DEBUG_VALUE_CHUNKS === '1') {
-        console.error('value-chunk-witness-reconcile', JSON.stringify({
-          categoryId: outputCategoryIds.get(carrier), currentBase,
-          expectedCount: expectedRuns.get(carrier)?.length,
-          outputCount: carrier.valueChunkOutputCount,
-          exactResourceStarts, candidates: candidates.slice(0, 8),
-          occupied: candidates.slice(0, 8).filter((candidate) => occupiedBases.has(candidate)),
-          materializedBase,
-        }));
-      }
       if (materializedBase < 0) continue;
       occupiedBases.delete(currentBase);
       occupiedBases.add(materializedBase);
@@ -15047,28 +14698,6 @@ export class StatefulTransactionBuilder {
     }
     if (changedCarriers.size === 0) return false;
     this._syncRefreshedCarrierMasters(builder, changedCarriers);
-    if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-      ?.SOLIDC_DEBUG_VALUE_CHUNKS === '1') {
-      const witness = (input: UnlockableUtxo | undefined): string | undefined => {
-        const unlocker = input?.unlocker as {
-          abiFunction?: { inputs?: Array<{ name: string }> }; params?: unknown[];
-        } | undefined;
-        const index = unlocker?.abiFunction?.inputs?.findIndex((arg) => (
-          arg.name === '__internal__valueChunkOutputBase'
-        )) ?? -1;
-        return index < 0 ? undefined : String(unlocker?.params?.[index]);
-      };
-      for (const carrier of changedCarriers) {
-        const built = builder.inputs.find((input) => input.txid === carrier.masterUtxo.txid
-          && input.vout === carrier.masterUtxo.vout);
-        console.error('value-chunk-witness-rebound', JSON.stringify({
-          categoryId: carrier.categoryId,
-          base: carrier.valueChunkOutputBase,
-          master: witness(carrier.masterUtxo as UnlockableUtxo),
-          built: witness(built),
-        }));
-      }
-    }
     return true;
   }
 
@@ -15847,13 +15476,6 @@ export class StatefulTransactionBuilder {
   setReturnEventOutput(
     categoryId: string, commitment: Uint8Array, identity = categoryId, provisional = false,
   ): this {
-    if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-      ?.SOLIDC_DEBUG_RETURN_CAPTURE === '1') {
-      console.error('return-capture-install', JSON.stringify({
-        identity, categoryId, provisional, commitment: binToHex(commitment).slice(0, 96),
-        origin: new Error().stack?.split('\n').slice(2, 5),
-      }));
-    }
     if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env?.SOLIDC_DEBUG_FAILURE_RING === '1') {
       console.error('set-return-event-output', {
         identity, categoryId, commitment: binToHex(commitment),
@@ -16878,11 +16500,11 @@ export class StatefulTransactionBuilder {
           outputCursor = patchDelegate(groupIndex, outputCursor);
         }
       });
-      this.externalCallUtxoGroups.forEach((group, groupIndex) => {
+      this.externalCallUtxoGroups.forEach((group) => {
         if (group.sharedGroupIndex !== undefined) return;
         outputCursor += group.blockInputs?.length ?? 1 + group.dataNftUtxos.length;
         outputCursor += this.externalCallEntryInserts.filter((insert, handle) => (
-          insert.ownerGroupIndex === groupIndex && insert.active && insert.commitment !== ''
+          insert.categoryId === group.categoryId && insert.commitment !== ''
           && !group.plannedEntryInsertHandles?.includes(handle)
         )).length;
         if (group.delegateCallGroupIndex !== undefined) {
@@ -17577,7 +17199,7 @@ export class StatefulTransactionBuilder {
       }
       for (const lv of delegateLoopVars) {
         const emittedByExternalInsert = this.externalCallEntryInserts.some((insert) => (
-          insert.active && insert.commitment !== ''
+          insert.commitment !== ''
           && insert.categoryId === lv.categoryId
           && insert.to.length === lv.lockingBytecode.length
           && insert.to.every((byte, index) => byte === lv.lockingBytecode[index])
@@ -18204,7 +17826,7 @@ export class StatefulTransactionBuilder {
       // Trailing NEW entry nodes for a cross-contract callee INSERT (docs/deferrals.md #1): B's covenant mints the
       // NEW at masterInputIndex + blockSize, right after B's block. Placed here in group order (skip cleared handles).
       for (const ins of this.externalCallEntryInserts) {
-        if (ins.ownerGroupIndex !== groupIndex || !ins.active || ins.commitment === '') continue;
+        if (ins.categoryId !== group.categoryId || ins.commitment === '') continue;
         const handle = this.externalCallEntryInserts.indexOf(ins);
         if (group.plannedEntryInsertHandles?.includes(handle)) continue;
         builder.addOutput({
@@ -19845,9 +19467,6 @@ export class StatefulTransactionBuilder {
     }
     debugAtomicOutputStage('nested-state-restoration');
 
-    for (const run of this.computedValueChunkContinuations.values()) {
-      for (const output of run) builder.addOutput({ ...output });
-    }
     if (this.delegateEntriesAfterLowLevel || this.delegateDynamicChunksAtSuffix) appendDynamicChunks();
     debugAtomicOutputStage('deferred-dynamic-chunks');
 
@@ -21540,6 +21159,7 @@ export class StatefulTransactionBuilder {
         (globalThis as { process?: { env?: Record<string, string> } }).process?.env?.SOLIDC_TRACE_COMMITMENT ?? '24',
       );
       for (const idx of candidates) {
+        let helper54: Array<{ opcode: number; data?: Uint8Array }> | undefined;
         let pendingInvokeId: string | undefined;
         const invokedBodies = new Map<number, Set<string>>();
         let pendingOutputBytecodeIndex: number | undefined;
@@ -21587,6 +21207,7 @@ export class StatefulTransactionBuilder {
             if (instruction?.opcode === 0x8a) {
               pendingInvokeId = binToHex(state.stack[state.stack.length - 1] ?? new Uint8Array());
             }
+            if (!helper54 && state.instructions.length === 54) helper54 = state.instructions;
             ring.push({
               ip: state.ip,
               opcode: instruction?.opcode ?? 0,
@@ -21608,6 +21229,15 @@ export class StatefulTransactionBuilder {
           error?: string; stack?: Uint8Array[];
         };
         if (!finalState.error) continue;
+        if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+          ?.SOLIDC_DEBUG_INPUTS === '1') {
+          // eslint-disable-next-line no-console
+          console.error(`[srcOutputs 100-126] ${sourceOutputs.slice(100, 127)
+            .map((so, k) => `${100 + k}:`
+              + `${so.token
+                ? `nft=${so.token.nft?.commitment ? binToHex(so.token.nft.commitment) : '(none)'}`
+                : 'PLAIN'}`).join('  ')}`);
+        }
         const finalStack = (finalState.stack ?? []).map((item, itemIndex) => {
           const hex = binToHex(item);
           return `    [${itemIndex}] ${hex.length > 80 ? `${hex.slice(0, 80)}..(${item.length}B)` : hex}`;
@@ -21681,6 +21311,8 @@ export class StatefulTransactionBuilder {
           ?.SOLIDC_TRACE_BYTECODE === '1';
         const bytecodeDetails = verboseBytecode
           ? `\nunlocking=${binToHex(transaction.inputs[idx].unlockingBytecode)}`
+            + `\nprobeUnlocking105=${binToHex(transaction.inputs[105]?.unlockingBytecode ?? new Uint8Array())}`
+            + `\nprobeUnlocking106=${binToHex(transaction.inputs[106]?.unlockingBytecode ?? new Uint8Array())}`
           : '';
         const ringText = ring.map((step, stepIndex) => (
           `  ip=${step.ip} op=0x${step.opcode.toString(16).padStart(2, '0')}`
@@ -21743,7 +21375,7 @@ export class StatefulTransactionBuilder {
               inputs: peerIndices(sourceOutputs), outputs: peerIndices(transaction.outputs),
             })}`);
         } else {
-          console.error(`[covenant VM trace] input ${idx}: ${finalState.error}${bytecodeDetails}\ninvokedBodies=${JSON.stringify([...invokedBodies].map(([length, ids]) => [length, [...ids]]))}\noutputBytecodeMatches=${JSON.stringify(outputBytecodeMatches.filter((entry) => entry.matches))}\n${ringText}\nfinal stack:\n${finalStack}\ninputs=\n${sourceOutputs.map((input, inputIndex) => (
+          console.error(`[covenant VM trace] input ${idx}: ${finalState.error}${bytecodeDetails}\ninvokedBodies=${JSON.stringify([...invokedBodies].map(([length, ids]) => [length, [...ids]]))}\noutputBytecodeMatches=${JSON.stringify(outputBytecodeMatches.filter((entry) => entry.matches))}\nhelper54=${helper54?.map((instruction) => instruction.data === undefined ? instruction.opcode.toString(16).padStart(2, '0') : `${instruction.opcode.toString(16).padStart(2, '0')}(${binToHex(instruction.data)})`).join(' ')}\n${ringText}\nfinal stack:\n${finalStack}\ninputs=\n${sourceOutputs.map((input, inputIndex) => (
             `  ${inputIndex}:${binToHex(input.lockingBytecode).slice(0, 80)}:${input.token?.nft?.capability ?? '-'}:`
             + `${binToHex(input.token?.category ?? new Uint8Array()).slice(0, 16)}:`
             + `${binToHex(input.token?.nft?.commitment ?? new Uint8Array()).slice(0, commitmentWidth)}`
@@ -23226,57 +22858,6 @@ export class StatefulTransactionBuilder {
     this._enforceDeclaredCollectionOutputCardinality(finalBuilder);
     this._syncBuilderUnlockers(finalBuilder);
     sendTiming('final-materialization');
-    if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-      ?.SOLIDC_DEBUG_VALUE_CHUNKS === '1') {
-      console.error('final-return-ownership', JSON.stringify({
-        groups: this.externalCallUtxoGroups.map((group, index) => ({
-          index, functionName: group.functionName, categoryId: group.categoryId,
-          returnOutputIndex: group.returnOutputIndex,
-          returnEventInBlock: group.returnEventInBlock,
-          precomputed: group.precomputedReturnCommitment === undefined
-            ? undefined : binToHex(group.precomputedReturnCommitment).slice(0, 80),
-        })),
-        pending: this.pendingReturnEventOutputs.map((event) => ({
-          identity: event.identity, categoryId: event.categoryId,
-          provisional: event.provisional, commitment: binToHex(event.commitment).slice(0, 80),
-        })),
-      }));
-    }
-    if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-      ?.SOLIDC_DEBUG_VALUE_CHUNKS === '1') {
-      console.error('value-chunk-final-input-bases', JSON.stringify(finalBuilder.inputs.flatMap((input, index) => {
-        const unlocker = input.unlocker as {
-          abiFunction?: { inputs?: Array<{ name: string }> }; params?: unknown[];
-        } | undefined;
-        const param = unlocker?.abiFunction?.inputs?.findIndex((arg) => (
-          arg.name === '__internal__valueChunkOutputBase'
-        )) ?? -1;
-        return param < 0 ? [] : [{ index, base: String(unlocker?.params?.[param]) }];
-      })));
-      if (this.computedValueChunkContinuations.size > 0) {
-        console.error('value-chunk-final-staged-runs', JSON.stringify([
-          ...this.computedValueChunkContinuations.entries(),
-        ].map(([resource, chunks]) => ({
-          resource,
-          matches: finalBuilder.outputs.flatMap((_, start) => (
-            chunks.every((chunk, offset) => {
-              const output = finalBuilder.outputs[start + offset];
-              const lock = output?.to instanceof Uint8Array
-                ? output.to : output?.to !== undefined ? addressToLockScript(output.to) : undefined;
-              return lock !== undefined && binToHex(lock) === binToHex(chunk.to)
-                && output.token?.category === chunk.token.category
-                && output.token?.nft?.commitment === chunk.token.nft?.commitment;
-            }) ? [start] : []
-          )),
-          tail: finalBuilder.outputs.slice(-12).map((output, offset) => ({
-            index: finalBuilder.outputs.length - 12 + offset,
-            category: output.token?.category?.slice(0, 16),
-            commitment: output.token?.nft?.commitment?.slice(0, 16),
-            lock: output.to instanceof Uint8Array ? binToHex(output.to).slice(0, 16) : undefined,
-          })),
-        }))));
-      }
-    }
     if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
       ?.SOLIDC_DEBUG_EXTERNAL_ARGS === '1') {
       console.error('preflight-return-outputs', finalBuilder.outputs.flatMap((output, index) => (

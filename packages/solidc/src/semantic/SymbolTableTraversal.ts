@@ -3136,15 +3136,6 @@ export default class SymbolTableTraversal extends AstTraversal {
           const sym = this.symbolTables[0].get('__internal__msgSenderCategory');
           if (sym) sym.references.push({ name: '__internal__msgSenderCategory' } as IdentifierNode);
           this.pushToStack(categoryParam);
-          if (this.compilerOptions.solidityImportCompat || this.compilerOptions.evmCompat) {
-            const anchorParam = new ParameterNode(PrimitiveType.BIGINT, '__internal__msgSenderAnchorIdx');
-            anchorParam.location = node.location;
-            anchorParam.syntheticallyUsed = true;
-            node.parameters.push(anchorParam);
-            this.symbolTables[0].set(Symbol.variable(anchorParam));
-            this.symbolTables[0].get(anchorParam.name)?.references.push({ name: anchorParam.name } as IdentifierNode);
-            this.pushToStack(anchorParam);
-          }
         }
       }
     }
@@ -8548,13 +8539,6 @@ export default class SymbolTableTraversal extends AstTraversal {
                   const value = serializeExpression(statement.expression);
                   if (!value || !localNames.has(statement.identifier.name)) return undefined;
                   serialized.push({ kind: 'assign', name: statement.identifier.name, expression: value });
-                } else if (statement instanceof ArrayAssignNode) {
-                  const index = serializeExpression(statement.index);
-                  const value = serializeExpression(statement.value);
-                  if (!index || !value || !localNames.has(statement.name)) return undefined;
-                  serialized.push({
-                    kind: 'arrayAssign', name: statement.name, index, expression: value,
-                  });
                 } else if (statement instanceof WhileNode) {
                   const condition = serializeExpression(statement.condition);
                   const body = serializeBlock(statement.block);

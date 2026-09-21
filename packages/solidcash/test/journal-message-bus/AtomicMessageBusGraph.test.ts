@@ -733,11 +733,10 @@ describe('atomic compiled invocation graph', () => {
         name: '__message_bus1', selector: '53434231', inputs: [], outputs: [],
         blockLayout: delegated
           ? {
-            blockSize: 3,
+            blockSize: 2,
             slots: [
               { kind: 'master' as const, offset: 0 },
               { kind: 'lowLevelCall' as const, offset: 1 },
-              { kind: 'identityAnchor' as const, offset: 2 },
             ],
           }
           : { blockSize: 1, slots: [{ kind: 'master' as const, offset: 0 }] },
@@ -780,7 +779,6 @@ describe('atomic compiled invocation graph', () => {
       } as unknown as Artifact,
       lockingBytecode: '52',
       logicalLockingBytecode: '54',
-      logicalIdentityOffset: 2,
       executionKind: 'delegate' as const,
       executorLockingBytecode: '56',
     };
@@ -1119,106 +1117,9 @@ describe('atomic compiled invocation graph', () => {
     ]);
   });
 
-  it('assigns canonical occurrences to a non-batched runtime callsite', () => {
-    const inputs = [{ name: 'value', type: 'int' }];
-    const capability = (
-      name: string, selector: string, handlerInputs: readonly { name: string; type: string }[] = inputs,
-    ) => ({
-      version: 1 as const,
-      selector: '53434231' as const,
-      maximumRows: 4,
-      maximumBlobBytes: 256,
-      route: {
-        name: '__message_bus1', selector: '53434231', inputs: [], outputs: [],
-        blockLayout: { blockSize: 1, slots: [{ kind: 'master' as const, offset: 0 }] },
-      },
-      handlers: [{ name, selector, inputs: handlerInputs, outputs: [], eligible: true }],
-    });
-    const sink = {
-      artifact: {
-        contractName: 'OccurrenceSink',
-        abi: [{ name: 'ping', selector: '01020304', inputs, outputs: [] }],
-        messageBus: capability('ping', '01020304'),
-        invocationAnalysis: { version: 1, protocolVersions: [1], functions: [], components: [] },
-      } as unknown as Artifact,
-      lockingBytecode: '51',
-    };
-    const root = {
-      artifact: {
-        contractName: 'OccurrenceRoot',
-        abi: [{
-          name: 'run', selector: '11111111', inputs: [{ name: 'values', type: 'int[]' }], outputs: [],
-          externalCalls: [{
-            callsiteId: 7, sourceEffectOrdinal: 4, occurrence: 'loop' as const, maximumOccurrences: 3,
-            interfaceName: 'ISink', functionName: 'ping',
-            argSources: [{ kind: 'arrayElement' as const, paramIndex: 0, indexValue: 0 }],
-          }],
-        }],
-        messageBus: capability('run', '11111111', [{ name: 'values', type: 'int[]' }]),
-        invocationAnalysis: { version: 1, protocolVersions: [1], functions: [], components: [] },
-      } as unknown as Artifact,
-      lockingBytecode: '52',
-    };
-    const planned = messageBus.deriveCompiledGraphPlan({
-      root, function: 'run', args: [[1n, 2n, 3n]], targets: { ISink: sink },
-      occurrence: () => 3,
-      expressionArgument: ({ occurrence }) => BigInt(occurrence + 1),
-    });
-    expect(planned.invocations.slice(1).map((invocation) => ({
-      physical: invocation.consumerCallsiteId,
-      source: invocation.sourceCallsiteId,
-      logical: invocation.sourceLogicalIndex,
-      occurrence: invocation.occurrenceIndex,
-    }))).toEqual([
-      { physical: 7, source: 7, logical: undefined, occurrence: 0 },
-      { physical: 7, source: 7, logical: undefined, occurrence: 1 },
-      { physical: 7, source: 7, logical: undefined, occurrence: 2 },
-    ]);
-    const first = planned.invocations[1];
-    expect(first.producerPath.status).toBe('complete');
-    expect(() => messageBus.assertPreparedInvocationIdentity({
-      contract: {} as never,
-      functionName: 'ping',
-      args: [1n],
-      callsiteId: 7,
-      sourceCallsiteId: 7,
-      occurrenceIndex: 0,
-      sourceEffectOrdinal: 4,
-      producerPath: first.producerPath,
-    }, first, 1)).not.toThrow();
-    if (first.producerPath.status !== 'complete') throw new Error('expected a complete producer path');
-    expect(() => messageBus.assertPreparedInvocationIdentity({
-      contract: {} as never,
-      functionName: 'ping',
-      args: [1n],
-      callsiteId: 7,
-      sourceCallsiteId: 7,
-      sourceLogicalIndex: 0,
-      occurrenceIndex: 0,
-      sourceEffectOrdinal: 4,
-      producerPath: {
-        status: 'complete',
-        context: {
-          version: 1,
-          sourcePath: first.producerPath.context.sourcePath.map((site) => ({
-            ...site, sourceLogicalIndex: 0,
-          })),
-        },
-      },
-    }, first, 1)).toThrow(/producer path disagrees/);
-  });
-
-  it('uses the authenticated public identity for ordinary nested callers', () => {
+  it('uses the authenticated physical owner identity for nested callers', () => {
     const withLogicalCaller = plan();
-    withLogicalCaller.participants[0] = {
-      ...withLogicalCaller.participants[0],
-      logicalLockingBytecode: '54',
-      logicalIdentityOffset: 1,
-      blockLayout: {
-        blockSize: 2,
-        slots: [{ kind: 'master', offset: 0 }, { kind: 'identityAnchor', offset: 1 }],
-      },
-    };
+    withLogicalCaller.participants[0].logicalLockingBytecode = '54';
     withLogicalCaller.participants[1] = {
       ...withLogicalCaller.participants[1],
       logicalLockingBytecode: '55',
@@ -1230,9 +1131,6 @@ describe('atomic compiled invocation graph', () => {
     };
     withLogicalCaller.invocations[1] = {
       ...withLogicalCaller.invocations[1], targetLockingBytecode: '55', targetIdentityOffset: 1,
-    };
-    withLogicalCaller.invocations[0] = {
-      ...withLogicalCaller.invocations[0], targetLockingBytecode: '54', targetIdentityOffset: 1,
     };
     const finalized = messageBus.finalizeAtomicInvocationGraph(
       withLogicalCaller, ['aa'.repeat(32), 'bb'.repeat(32)], { 1: '2a' },
@@ -1261,17 +1159,18 @@ describe('atomic compiled invocation graph', () => {
         }],
       },
       logicalLockingBytecode: '54',
-      logicalIdentityOffset: 1,
+      logicalIdentityOffset: 0,
+      executionKind: 1,
+      executorOffset: 1,
+      executorInputIndex: 1,
+      executorLockingBytecode: '56',
       blockLayout: {
         blockSize: 2,
-        slots: [{ kind: 'master', offset: 0 }, { kind: 'identityAnchor', offset: 1 }],
+        slots: [{ kind: 'master', offset: 0 }, { kind: 'lowLevelCall', offset: 1 }],
       },
     };
-    withLogicalCaller.invocations[0] = {
-      ...withLogicalCaller.invocations[0], targetLockingBytecode: '51'.repeat(64), targetIdentityOffset: 0,
-    };
     const finalized = messageBus.finalizeAtomicInvocationGraph(
-      withLogicalCaller, ['aa'.repeat(32), 'bb'.repeat(32)], { 1: '2a' },
+      delegatedCaller, ['aa'.repeat(32), 'bb'.repeat(32)], { 1: '2a' },
     );
     // Publication says owner: executor lock 0x56 must not become msg.sender.
     expect(finalized.callManifest.rows[1]).toMatchObject({ subjectHex: '51'.repeat(64), sourceOffset: 0 });
@@ -1298,6 +1197,7 @@ describe('atomic compiled invocation graph', () => {
         }],
       },
       logicalLockingBytecode: '54',
+      logicalIdentityOffset: 0,
       executionKind: 1,
       executorOffset: 1,
       executorInputIndex: 1,
@@ -1307,45 +1207,10 @@ describe('atomic compiled invocation graph', () => {
         slots: [{ kind: 'master', offset: 0 }, { kind: 'lowLevelCall', offset: 1 }],
       },
     };
-    const resolved = messageBus.graphInvocationCallerIdentity(
-      delegatedCaller.participants, delegatedCaller.invocations, delegatedCaller.invocations[1],
+    const finalized = messageBus.finalizeAtomicInvocationGraph(
+      delegatedCaller, ['aa'.repeat(32), 'bb'.repeat(32)], { 1: '2a' },
     );
-    expect(resolved.lockingBytecode).toBe('51'.repeat(64));
-    expect(resolved.lockingBytecode).not.toBe('56');
-    expect(resolved.role).toBe('owner');
-  });
-
-  it('refuses a kernel callsite that omits callerIdentity', () => {
-    const kernelCaller = plan();
-    kernelCaller.participants[0] = {
-      ...kernelCaller.participants[0],
-      artifact: {
-        ...kernelCaller.participants[0].artifact,
-        messageBus: {
-          ...kernelCaller.participants[0].artifact.messageBus!,
-          convention: 'kernel-row-loop',
-        },
-        abi: [{
-          name: 'run', selector: '11111111', inputs: [{ name: 'n', type: 'int' }], outputs: [],
-          externalCalls: [{
-            callsiteId: 7, interfaceName: 'IPeer', functionName: 'run', occurrence: 'once',
-          }],
-        }],
-      },
-    };
-    expect(() => messageBus.graphInvocationCallerIdentity(
-      kernelCaller.participants, kernelCaller.invocations, kernelCaller.invocations[1],
-    )).toThrow(/missing compiler-published callerIdentity/);
-  });
-
-  it('keeps legacy owner@0 when callerIdentity is absent outside kernel convention', () => {
-    const legacy = plan();
-    expect(messageBus.graphInvocationCallerIdentity(
-      legacy.participants, legacy.invocations, legacy.invocations[1],
-    )).toMatchObject({
-      role: 'owner', lockingBytecode: '51'.repeat(64), offset: 0,
-      sourceCallsiteProvenance: 'legacy-logical',
-    });
+    expect(finalized.callManifest.rows[1]).toMatchObject({ subjectHex: '51'.repeat(64), sourceOffset: 0 });
   });
 
   it('resolves a published CREATE caller identity at the identity-anchor offset', () => {

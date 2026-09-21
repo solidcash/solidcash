@@ -26,9 +26,7 @@ import {
   KernelJournalDispositionsAbi,
   messageBusVerifierLockingBytecode, childStateLayoutDigest, abiTypeString, implicitlyCastableSignature,
 } from '@solidcash/utils';
-import {
-  generateArtifact, generateDeclarationArtifact, occurrenceInfoOf, resultArrayOutputOf,
-} from './artifact/Artifact.js';
+import { generateArtifact, generateDeclarationArtifact, occurrenceInfoOf } from './artifact/Artifact.js';
 import {
   Ast, AssignNode, BinaryOpNode, BlockNode, BoolLiteralNode, ContractNode, ContractReferenceNode, EmitStatementNode,
   ExpressionNode, FieldAccessNode, LiteralNode,
@@ -1353,15 +1351,6 @@ const MESSAGE_BUS_CLONE_PREFIXES = [
  * explicitly rather than letting an internal OP_INVOKE body infer it from OP_INPUTINDEX.
  */
 const MESSAGE_BUS_OWNER_INPUT = '__internal__messageBusOwnerInput';
-/**
- * The participant's own block base, published as a ROUTE ABI input.
- *
- * A handler needs its participant owner for every block-relative coordinate, and everything it can reach inside its
- * own frame drifts: the handler frame's distance from the stack bottom depends on what the caller left live, and the
- * handler's own untracked pushes move a top-relative index. The route ABI band is the one region nothing can move,
- * so the owner is passed there and read by a baked ordinal.
- */
-const MESSAGE_BUS_OWNER_BAND_INPUT = '__internal__messageBusOwnerBandInput';
 
 const withinSpan = (location: Location, point: Point): boolean => {
   const after = point.line > location.start.line
@@ -6403,8 +6392,7 @@ function synthesizeMessageBusRoute(
       && statefulExternalCall
       && boundedNamedClosure
       && !graphHasDelegatecall;
-    if (!reason && (consumesLowLevelReturn || (compilerOptions.messageBusKernel !== true
-      && fn.returnTypes.length > 0 && contractConsumesLowLevelReturn))
+    if (!reason && (consumesLowLevelReturn || (fn.returnTypes.length > 0 && contractConsumesLowLevelReturn))
       && !authenticatedBoundedLowLevelConsumer
       && (fn.returnTypes.length > 0
         || footprint.writes.length > 0
@@ -9148,9 +9136,7 @@ function synthesizeMessageBusRoute(
         ? (logicalCallerCloneNames.has(invokeName) ? [logicalCaller] : [])
         : logicalMsgSenderHandlers.has(fn)
           && !graphTailHandlers.has(fn) && !localEffectFrameHandlers.has(fn)
-          ? ['__internal__msgSenderCategory',
-            ...(compilerOptions.solidityImportCompat || compilerOptions.evmCompat
-              ? ['__internal__msgSenderAnchorIdx'] : [])] : [];
+          ? ['__internal__msgSenderCategory'] : [];
       const entryShape = handlerEntryKeys.get(fn);
       const varyingEntryIndex = entryShape?.findIndex((entry) => entry.perRow
         && entryShape.some((candidate) => !candidate.perRow
@@ -11032,7 +11018,9 @@ function synthesizeMessageBusRoute(
         // consumes a copy directly, so this source-level final reference prevents last-use stack relocation.
         ${!graphExecutionContext
     ? ''
-    : `require(__internal__graphEmissions == __internal__graphEmissions);
+    : `${allGraphEmissionHandlersRuntime
+      ? 'require(__internal__graphEmissions.length == 0);'
+      : 'require(__internal__graphEmissions == __internal__graphEmissions);'}
         require(__internal__graphCallers == __internal__graphCallers);`}
         ${returnStatement}
       }
@@ -11792,25 +11780,6 @@ function compileResolvedAst(
     });
     throw error;
   };
-  // Capture this relation on the parsed source tree. Later reference and memory lowerings replace an array write
-  // with shared-buffer operations, but retain the external call node itself through the pipeline.
-  for (const fn of ast.contract.functions) {
-    const seen = new Set<object>();
-    const visit = (value: unknown): void => {
-      if (!(value instanceof Node) || seen.has(value)) return;
-      seen.add(value);
-      if (value instanceof ExternalFunctionCallNode || value instanceof MethodCallNode) {
-        value.resultArrayOutput = resultArrayOutputOf(fn.body, value);
-      }
-      for (const [key, child] of Object.entries(value)) {
-        if (['location', 'definition', 'resolvedFunction', 'functionReference', 'symbolTable',
-          'referencedContract', 'stateVariable', 'collection'].includes(key)) continue;
-        if (child instanceof Node) visit(child);
-        else if (Array.isArray(child)) child.forEach(visit);
-      }
-    };
-    visit(fn.body);
-  }
   // A library file compiled directly: if its primary library has explicitly public/external functions, lower
   // it to a stateless contract artifact (docs/library-contracts.md Phase 2). A library with only inline
   // (internal/unmarked) functions has no entry point and cannot be compiled standalone.
@@ -14110,22 +14079,6 @@ function compileResolvedAst(
   }
   const messageBusRouteAbi = artifact.abi.find((fn) => fn.name === '__message_bus1');
   if (messageBusRouteAbi) artifact.abi = artifact.abi.filter((fn) => fn !== messageBusRouteAbi);
-  // The band ordinals baked into every clone read must describe the ABI the SDK actually packs. This compares the
-  // list the clones were recorded with against the published route ABI, so a future pass that drops or reorders a
-  // route parameter makes the mismatch loud instead of silently shifting every band read by one slot.
-  if (messageBusRouteAbi
-    && (globalThis as { process?: { env?: Record<string, string> } }).process?.env?.SOLIDC_DEBUG_ARG_ORDER === '1') {
-    const stashed = ast.contract.functions.find(
-      (fn) => fn.messageBusCallerBandNames !== undefined,
-    )?.messageBusCallerBandNames ?? [];
-    const published = (messageBusRouteAbi.inputs ?? []).map((input) => input.name);
-    const mismatched = stashed.length !== published.length
-      || stashed.some((name, index) => name !== published[index]);
-    console.error('message-bus-band-vs-abi', JSON.stringify({
-      stashedCount: stashed.length, publishedCount: published.length, mismatched,
-      ...(mismatched && { stashed, published }),
-    }));
-  }
   // Message-bus graph expansion reads the source shape of a bounded pointer table: one dispatch site whose
   // reached-row count is runtime with an explicit compiler-proven ceiling. Publish that shape only for a
   // graph-route compilation, so ordinary direct dispatch keeps one ABI row per physical callsite.

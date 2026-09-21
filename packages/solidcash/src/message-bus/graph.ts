@@ -30,9 +30,9 @@ export interface CompiledGraphParticipant {
   /**
    * Authenticated public target identity when it differs from the physical state owner, as it does for a
    * proxy/delegate execution or a contract with a published logical CREATE identity. This is the address a
-   * source-level call targets. An ordinary CREATE identity is also the caller address observed by a nested callee;
-   * delegate execution instead keeps the proxy/state owner as its outgoing caller context. The physical state
-   * owner remains the settlement participant in both cases.
+   * source-level call targets. Source-level `address(this)` still reads the exact active input returned by
+   * OP_UTXOBYTECODE; an outgoing call identifies its caller by the authenticated state owner, independently of
+   * whether the source encoded that call through an interface or a low-level address operation.
    */
   logicalLockingBytecode?: string;
   /**

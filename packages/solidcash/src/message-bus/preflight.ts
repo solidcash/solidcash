@@ -1,7 +1,6 @@
 /* eslint-disable max-len */
 import {
-  binToHex, decodeAuthenticationInstructions, decodeTransactionUnsafe, encodeAuthenticationInstruction,
-  encodeTransaction, encodeTransactionOutput, hash256, hexToBin,
+  binToHex, decodeAuthenticationInstructions, decodeTransactionUnsafe, encodeTransaction, encodeTransactionOutput, hash256, hexToBin,
   vmNumberToBigInt, type AuthenticationProgramStateCommon, type Output, type Transaction,
 } from '@bitauth/libauth';
 import { ConsensusBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-consensus.js';
@@ -1101,11 +1100,6 @@ export function assertFinalizedBytesWithCovenant(
  * CONSTRUCTED, not sampled. The mock provider refuses the constructed shape on its own, so this only moves the
  * refusal earlier and never disagrees with the network.
  */
-/** Snapshot a mutable VM callback state before its next instruction changes the stack or ip. */
-export function snapshotPreflightDiagnosticState<T extends { stack: Uint8Array[] }>(state: T): T {
-  return { ...state, stack: state.stack.map((item) => item.slice()) };
-}
-
 const evaluateEveryInput = (
   builder: TransactionBuilder, transaction: Transaction,
 ): void => {
@@ -1363,6 +1357,17 @@ const evaluateEveryInput = (
         ...(objection === true ? {} : { objection: String(objection) }),
       });
     }
+    if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+      ?.SOLIDC_DEBUG_OUTLINE_COMPARE === '1' && inputIndex === 3) {
+      const trace = vm.debug({ inputIndex, sourceOutputs, transaction });
+      console.error('outline-compare-nine', trace.flatMap((state, traceIndex) => (
+        state.instructions.length === 9 ? [{
+          traceIndex, ip: state.ip, opcode: state.instructions[state.ip]?.opcode,
+          error: state.error,
+          stack: state.stack.slice(-8).map((item) => binToHex(item)),
+        }] : []
+      )));
+    }
     if (objection !== true) {
       const debugEnv = (globalThis as { process?: { env?: Record<string, string> } }).process?.env;
       const requestedTraceInput = debugEnv?.SOLIDC_TRACE_INPUT === undefined
@@ -1495,8 +1500,6 @@ const evaluateEveryInput = (
         const tailCommitment = tailOutput?.token?.nft && binToHex(tailOutput.token.nft.commitment);
         console.error('message-bus-failure-point', JSON.stringify({
           inputIndex,
-          inputCount: transaction.inputs.length,
-          outputCount: transaction.outputs.length,
           ip: evaluated.ip,
           opcode: evaluated.instructions[evaluated.ip]?.opcode,
           programLength: evaluated.instructions.length,
@@ -1517,36 +1520,7 @@ const evaluateEveryInput = (
             ip: item.ip,
             instructionCount: item.instructions.length,
             opcode: item.instructions[item.ip]?.opcode,
-            data: (item.instructions[item.ip] as { data?: Uint8Array } | undefined)?.data === undefined
-              ? undefined : binToHex((item.instructions[item.ip] as { data: Uint8Array }).data),
           } : item),
-          frameSources: (() => {
-            const artifact = (builder.inputs[inputIndex] as unknown as {
-              unlocker?: { contract?: { artifact?: { functionBodies?: Record<string, string>; debug?: { invokeDebug?: Record<string, {
-                bytecode: string; name?: string; sourceMap?: string;
-              }>; functionDebug?: Record<string, { sourceMap?: string }> } } } };
-            }).unlocker?.contract?.artifact;
-            const invokeDebug = artifact?.debug?.invokeDebug;
-            if (!artifact) return undefined;
-            const identify = (instructions: typeof evaluated.instructions, ip: number) => {
-              const hex = binToHex(Uint8Array.from(instructions.flatMap(
-                (instruction) => [...encodeAuthenticationInstruction(instruction)],
-              )));
-              return [
-                ...Object.entries(invokeDebug ?? {}).filter(([, debug]) => debug.bytecode === hex)
-                  .map(([id, debug]) => ({ id, name: debug.name, ip,
-                    source: debug.sourceMap?.split(';')[ip] })),
-                ...Object.entries(artifact.functionBodies ?? {}).filter(([, body]) => body === hex)
-                  .map(([id]) => ({ id, name: 'function body', ip,
-                    source: artifact.debug?.functionDebug?.[id]?.sourceMap?.split(';')[ip] })),
-              ];
-            };
-            return [
-              ...evaluated.controlStack.flatMap((item) => typeof item === 'object'
-                ? identify(item.instructions, item.ip) : []),
-              ...identify(evaluated.instructions, evaluated.ip),
-            ];
-          })(),
           stack: evaluated.stack.slice(-24).map((item, offset, items) => (
             `${evaluated.stack.length - items.length + offset}:${item.length}:${binToHex(item).slice(0, 70)}`
           )),
@@ -1729,7 +1703,6 @@ const evaluateEveryInput = (
               index,
               category: input.token?.category,
               commitmentLength: input.token?.nft?.commitment.length,
-              commitmentHead: input.token?.nft?.commitment.slice(0, 24),
               lockLen: sourceOutputs[index]?.lockingBytecode.length,
               lockHead: sourceOutputs[index] && binToHex(sourceOutputs[index].lockingBytecode).slice(0, 16),
               tokenCatLen: sourceOutputs[index]?.token?.category.length,
@@ -1929,6 +1902,12 @@ const evaluateEveryInput = (
               recent.length = 0;
             }
             lastInstructionCount = state.instructions.length;
+            if (!body29Captured && inputIndex === 105 && state.instructions.length === 29 && state.ip === 0) {
+              body29Captured = true;
+              console.error('message-bus-body29-entry', JSON.stringify(state.stack.map((item, index) => ({
+                index, fromTop: state.stack.length - index - 1, value: binToHex(item),
+              }))));
+            }
             if (state.controlStack.every((item) => item !== false)) {
               recent.push({
                 ip: state.ip,

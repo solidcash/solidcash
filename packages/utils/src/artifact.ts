@@ -1137,10 +1137,9 @@ export interface AffineRecursiveFrameV1Abi {
 }
 
 export interface ExternalCallStatement {
-  kind: 'variable' | 'assign' | 'arrayAssign' | 'while' | 'branch' | 'return' | 'expression' | 'block';
+  kind: 'variable' | 'assign' | 'while' | 'branch' | 'return' | 'expression' | 'block';
   name?: string;
   type?: string;
-  index?: ExternalCallExpression;
   expression?: ExternalCallExpression;
   condition?: ExternalCallExpression;
   statements?: readonly ExternalCallStatement[];
@@ -1200,9 +1199,6 @@ export interface ExternalCallAbi {
   occurrence?: 'once' | 'conditional' | 'loop';
   /** Runtime predicate guarding this callsite, serialized from its enclosing source branches. */
   condition?: ExternalCallExpression;
-  /** Exact affine pre-test loop recurrence which reaches this callsite. Unlike `maximumOccurrences`, this
-   * describes the runtime iteration domain rather than only publishing a protocol ceiling. */
-  iterationDomain?: ExternalCallIterationDomainAbi;
   /** ABI output array directly populated by this loop call (`result[i] = call(); return result`). */
   resultArrayOutput?: number;
   /** Compiler-proven ceiling on reached rows. Absent means no ceiling was proven for this callsite. */

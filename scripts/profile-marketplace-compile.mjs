@@ -14,7 +14,7 @@ import { performance } from 'node:perf_hooks';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
-import { cleanCompilerEnvironment } from './clean-compiler-env.mjs';
+import { compileFileMulti } from 'solidc';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const hasLegacy = process.argv.includes('--legacy');

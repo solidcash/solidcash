@@ -2662,8 +2662,6 @@ export interface CallOptions {
 
 export class ExternalFunctionCallNode extends ExpressionNode {
   callInfo?: ExternalFunctionCallInfo;
-  /** Source-level returned-array link captured before memory lowering rewrites the assignment. */
-  resultArrayOutput?: number;
   /** Ordered row identity within one inferred repeated-callee message-bus batch. */
   externalBatchLogicalIndex?: number;
   /** Function-local program point shared with mapping-write effects. */
@@ -2752,10 +2750,9 @@ export interface ExternalCallExpression {
 }
 
 export interface ExternalCallStatement {
-  kind: 'variable' | 'assign' | 'arrayAssign' | 'while' | 'branch' | 'return' | 'expression' | 'block';
+  kind: 'variable' | 'assign' | 'while' | 'branch' | 'return' | 'expression' | 'block';
   name?: string;
   type?: string;
-  index?: ExternalCallExpression;
   expression?: ExternalCallExpression;
   condition?: ExternalCallExpression;
   statements?: ExternalCallStatement[];

@@ -39,7 +39,6 @@ type PredicateEvaluator = {
     occurrenceIndex?: number,
     stateIncludesPriorWrites?: boolean,
     executionSelfAddress?: FunctionArgument,
-    executionMsgSender?: FunctionArgument,
   ) => FunctionArgument[] | undefined;
 };
 
@@ -166,15 +165,6 @@ describe('compiler-published external-call predicate evaluation', () => {
       [{ kind: 'selfAddress' }], [], artifact, undefined, undefined, undefined, 0, false,
       executionAddress,
     )).toEqual([executionAddress]);
-  });
-
-  it('resolves msg.sender from the authenticated execution frame independently of address(this)', () => {
-    const executionAddress = Uint8Array.of(0xaa, 0x20, ...new Uint8Array(32).fill(0x42), 0x87);
-    const executionSender = Uint8Array.of(0x76, 0xa9, 0x14, ...new Uint8Array(20).fill(0x24), 0x88, 0xac);
-    expect(evaluator._resolveExternalArgs(
-      [{ kind: 'msgSender' }, { kind: 'selfAddress' }], [], artifact,
-      undefined, undefined, undefined, 0, false, executionAddress, executionSender,
-    )).toEqual([executionSender, executionAddress]);
   });
 
   it('uses the physical active input rather than a logical deployment identity by default', () => {

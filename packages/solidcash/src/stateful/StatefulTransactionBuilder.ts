@@ -69,7 +69,7 @@ import {
   assertFinalizedTransactionBytes, assertFinalizedTransactionCovenants,
   finalizedByteGateOptionsForProvider, inputSubjectsOfBuilder,
 } from '../message-bus/preflight.js';
-import { parseEventCommitment } from './StateReader.js';
+import { parseEventCommitment, valuesEqual as stateValuesEqual } from './StateReader.js';
 import {
   Utxo, UnlockableUtxo, TransactionDetails, isContractUnlocker, isP2PKHUnlocker, Unlocker,
 } from '../interfaces.js';
@@ -6946,7 +6946,15 @@ export class StatefulTransactionBuilder {
   private externalCallEntryOutputsByIndex: Map<number, { categoryId: string; commitment: string }> = new Map();
   // Trailing NEW entry nodes minted for a cross-contract callee INSERT (per group: address lbc + commitment hex),
   // placed right after the group's block (B's covenant mints the NEW at masterInputIndex + blockSize).
-  private externalCallEntryInserts: Array<{ categoryId: string; to: Uint8Array; commitment: string }> = [];
+  private externalCallEntryInserts: Array<{
+    ownerGroupIndex: number;
+    categoryId: string;
+    to: Uint8Array;
+    targetSlot: string;
+    commitment: string;
+    active: boolean;
+  }> = [];
+  private externalCallEntryInsertHandleByIdentity = new Map<string, number>();
 
   private pendingReturnEventOutputs: Array<{
     categoryId: string; commitment: Uint8Array; identity: string; provisional?: boolean;
@@ -12615,6 +12623,9 @@ export class StatefulTransactionBuilder {
     value: StateValue,
   ): this {
     let updates = this.externalCallStateUpdates.get(categoryId);
+    if (updates?.has(name) && stateValuesEqual(updates.get(name)!, value)) return this;
+    const group = this.externalCallUtxoGroups.find((candidate) => candidate.categoryId === categoryId);
+    const nftIndex = group && stateVariableForUpdateKey(group.stateLayout, name)?.nftIndex;
     if (!updates) {
       updates = new Map();
       this.externalCallStateUpdates.set(categoryId, updates);
@@ -12622,8 +12633,6 @@ export class StatefulTransactionBuilder {
     updates.set(name, value);
     // A caller changing an override after derivation invalidates the exact
     // commitment previously authenticated for that participant.
-    const group = this.externalCallUtxoGroups.find((candidate) => candidate.categoryId === categoryId);
-    const nftIndex = group && stateVariableForUpdateKey(group.stateLayout, name)?.nftIndex;
     if (nftIndex !== undefined) this.externalCallStateRawCommitments.get(categoryId)?.delete(nftIndex);
     return this;
   }
@@ -12834,20 +12843,64 @@ export class StatefulTransactionBuilder {
     }
   }
 
-  /** A trailing NEW entry node for a cross-contract callee INSERT (minted after B's block). Returns its handle. */
-  addExternalCallEntryInsert(categoryId: string, to: Uint8Array, commitmentHex: string): number {
-    return this.externalCallEntryInserts.push({ categoryId, to, commitment: commitmentHex }) - 1;
+  /** Ensure one exact trailing NEW node without duplicating it across derivation passes. */
+  ensureExternalCallEntryInsert(
+    ownerGroupIndex: number,
+    categoryId: string,
+    to: Uint8Array,
+    targetSlot: string,
+    placeholderCommitment: string,
+  ): number {
+    const owner = this.externalCallUtxoGroups[ownerGroupIndex];
+    const normalizedCategory = categoryId.toLowerCase();
+    const normalizedSlot = targetSlot.toLowerCase();
+    if (!owner || owner.sharedGroupIndex !== undefined || owner.categoryId.toLowerCase() !== normalizedCategory) {
+      throw new Error(`External entry insert has invalid physical owner ${ownerGroupIndex}.`);
+    }
+    if (!/^[0-9a-f]{64}$/.test(normalizedSlot) || to.length === 0) {
+      throw new Error('External entry insert requires an exact target slot and collection lock.');
+    }
+    const identity = `${ownerGroupIndex}:${binToHex(to)}:${normalizedSlot}`;
+    const existingHandle = this.externalCallEntryInsertHandleByIdentity.get(identity);
+    if (existingHandle !== undefined) {
+      const existing = this.externalCallEntryInserts[existingHandle];
+      if (!existing || existing.ownerGroupIndex !== ownerGroupIndex
+        || existing.categoryId.toLowerCase() !== normalizedCategory
+        || !binsAreEqual(existing.to, to) || existing.targetSlot !== normalizedSlot) {
+        throw new Error(`External entry insert identity collision at '${identity}'.`);
+      }
+      if (!existing.active) {
+        existing.active = true;
+        existing.commitment = placeholderCommitment;
+      }
+      return existingHandle;
+    }
+    const handle = this.externalCallEntryInserts.push({
+      ownerGroupIndex,
+      categoryId: normalizedCategory,
+      to: to.slice(),
+      targetSlot: normalizedSlot,
+      commitment: placeholderCommitment,
+      active: true,
+    }) - 1;
+    this.externalCallEntryInsertHandleByIdentity.set(identity, handle);
+    return handle;
   }
 
   /** Replace a trailing NEW node's commitment (the placeholder set for the 2nd-pass probe). */
   setExternalCallEntryInsertCommitment(handle: number, commitmentHex: string): this {
-    if (this.externalCallEntryInserts[handle]) this.externalCallEntryInserts[handle].commitment = commitmentHex;
+    const insert = this.externalCallEntryInserts[handle];
+    if (insert?.active) insert.commitment = commitmentHex;
     return this;
   }
 
   /** Drop a trailing NEW node placeholder (the write turned out to be an UPDATE, not an INSERT). */
   removeExternalCallEntryInsert(handle: number): this {
-    if (this.externalCallEntryInserts[handle]) this.externalCallEntryInserts[handle] = { categoryId: '', to: new Uint8Array(), commitment: '' };
+    const insert = this.externalCallEntryInserts[handle];
+    if (insert?.active) {
+      insert.active = false;
+      insert.commitment = '';
+    }
     return this;
   }
 
@@ -16619,11 +16672,11 @@ export class StatefulTransactionBuilder {
           outputCursor = patchDelegate(groupIndex, outputCursor);
         }
       });
-      this.externalCallUtxoGroups.forEach((group) => {
+      this.externalCallUtxoGroups.forEach((group, groupIndex) => {
         if (group.sharedGroupIndex !== undefined) return;
         outputCursor += group.blockInputs?.length ?? 1 + group.dataNftUtxos.length;
         outputCursor += this.externalCallEntryInserts.filter((insert, handle) => (
-          insert.categoryId === group.categoryId && insert.commitment !== ''
+          insert.ownerGroupIndex === groupIndex && insert.active && insert.commitment !== ''
           && !group.plannedEntryInsertHandles?.includes(handle)
         )).length;
         if (group.delegateCallGroupIndex !== undefined) {
@@ -17318,7 +17371,7 @@ export class StatefulTransactionBuilder {
       }
       for (const lv of delegateLoopVars) {
         const emittedByExternalInsert = this.externalCallEntryInserts.some((insert) => (
-          insert.commitment !== ''
+          insert.active && insert.commitment !== ''
           && insert.categoryId === lv.categoryId
           && insert.to.length === lv.lockingBytecode.length
           && insert.to.every((byte, index) => byte === lv.lockingBytecode[index])
@@ -17945,7 +17998,7 @@ export class StatefulTransactionBuilder {
       // Trailing NEW entry nodes for a cross-contract callee INSERT (docs/deferrals.md #1): B's covenant mints the
       // NEW at masterInputIndex + blockSize, right after B's block. Placed here in group order (skip cleared handles).
       for (const ins of this.externalCallEntryInserts) {
-        if (ins.categoryId !== group.categoryId || ins.commitment === '') continue;
+        if (ins.ownerGroupIndex !== groupIndex || !ins.active || ins.commitment === '') continue;
         const handle = this.externalCallEntryInserts.indexOf(ins);
         if (group.plannedEntryInsertHandles?.includes(handle)) continue;
         builder.addOutput({
@@ -20332,7 +20385,7 @@ export class StatefulTransactionBuilder {
   /** Linear in-block sorted batches expect exactly their compiler-owned entry nodes. Trailing clones which reuse
    * those locks (misdetected P' nextKey changes) break output cardinality. */
   private _stripSurplusLinearBatchEntryClones(builder: TransactionBuilder): void {
-    for (const group of this.externalCallUtxoGroups) {
+    for (const [groupIndex, group] of this.externalCallUtxoGroups.entries()) {
       if (group.sharedGroupIndex !== undefined || !group.categoryId) continue;
       const fnName = group.logicalFunctionName ?? group.functionName;
       const trailingCountRaw = group.internalArgs?.__internal__vmapBatchTrailingCount
@@ -20380,11 +20433,9 @@ export class StatefulTransactionBuilder {
       // Drop matching trailing insert placeholders so later builds do not recreate them.
       for (let handle = 0; handle < this.externalCallEntryInserts.length; handle++) {
         const insert = this.externalCallEntryInserts[handle];
-        if (!insert || insert.categoryId !== group.categoryId || insert.commitment === '') continue;
+        if (!insert || insert.ownerGroupIndex !== groupIndex || !insert.active || insert.commitment === '') continue;
         if (group.plannedEntryInsertHandles?.includes(handle)) continue;
-        this.externalCallEntryInserts[handle] = {
-          categoryId: '', to: new Uint8Array(), commitment: '',
-        };
+        this.removeExternalCallEntryInsert(handle);
       }
     }
   }

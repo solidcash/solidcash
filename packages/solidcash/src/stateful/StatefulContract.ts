@@ -14131,7 +14131,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         // A structural-layout restart deliberately skips the expensive external-state derivation below, but it
         // still creates a fresh transaction builder. Recreate every planned cold-insert placeholder on that fresh
         // builder so the restarted transaction retains the same authenticated resource shape.
-        for (const group of externalCallUtxoGroups) {
+        for (const [groupIndex, group] of externalCallUtxoGroups.entries()) {
           if (!group.plannedEntryInserts?.length || group.sharedGroupIndex !== undefined) continue;
           group.plannedEntryInsertHandles = group.plannedEntryInserts.map((insert) => {
             const input = group.blockInputs?.[insert.blockSlot];
@@ -14146,9 +14146,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 + `(${(group.blockLayout?.slots ?? []).map((slot) => `${slot.kind}@${slot.offset}`).join(', ')}).`,
               );
             }
-            return stb.addExternalCallEntryInsert(
+            return stb.ensureExternalCallEntryInsert(
+              groupIndex,
               group.categoryId,
               input.unlocker.generateLockingBytecode(),
+              insert.newCommitment?.slice(0, 64) ?? '',
               insert.commitment ?? '00',
             );
           });
@@ -14768,8 +14770,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 && !(linearInBlock && plannedIndex < 0)) {
                 const handle = plannedIndex >= 0
                   ? group.plannedEntryInsertHandles![plannedIndex]
-                  : stb.addExternalCallEntryInsert(
-                    group.categoryId, input.unlocker.generateLockingBytecode(), commit,
+                  : stb.ensureExternalCallEntryInsert(
+                    groupIdx, group.categoryId, input.unlocker.generateLockingBytecode(),
+                    commit.slice(64, 128), commit,
                   );
                 insertHandles.push({
                   handle,

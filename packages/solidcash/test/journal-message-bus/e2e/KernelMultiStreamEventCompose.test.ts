@@ -1,12 +1,14 @@
-import { bigIntToVmNumber, binToHex } from '@bitauth/libauth';
+import { bigIntToVmNumber, binToHex, hexToBin } from '@bitauth/libauth';
 import { encodeEventCommitment } from '@solidcash/utils';
 import { compileString } from 'solidc';
 import { describe, expect, it } from 'vitest';
-import { Contract, StatefulContract } from '../../../src/index.js';
+import { Contract, StatefulContract, messageBus } from '../../../src/index.js';
 import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';
 import { keyToSlotMulti } from '../../../src/stateful/SortedList.js';
+import type { TransactionBuilder } from '../../../src/TransactionBuilder.js';
 import { generateLibauthSourceOutputs } from '../../../src/utils.js';
-import { createTestProvider, setupStatefulUtxos } from '../../test-util.js';
+import { createBareP2pkhFeeFunder, createTestProvider, setupStatefulUtxos } from '../../test-util.js';
+import { createMessageBusCapstoneTestProvider } from './message-bus-semantic-profile.js';
 
 const KERNEL = {
   forceStateful: true,
@@ -16,27 +18,34 @@ const KERNEL = {
   suppressWarnings: true,
 } as const;
 
-const SOURCE = `pragma solidcash ^0.13.0;
-contract KernelMultiStreamEvent() {
-  event Tick(int indexed i);
-  mapping(int => int) left;
-  mapping(int => int) right;
-  function writeEmit(int n) public {
-    for (int i = 0; i < n; i = i + 1) {
-      left[i] = i;
-      right[i] = i + 10;
-      emit Tick(i);
-    }
-    require(true);
-  }
-  function checkLeft(int key, int expected) public { require(left[key] == expected); }
-  function checkRight(int key, int expected) public { require(right[key] == expected); }
-}`;
+const vmAccepts = (builder: TransactionBuilder): boolean => {
+  const transaction = builder.buildLibauthTransaction();
+  const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+  const vm = createVirtualMachineBch2026ForProvider(builder.provider);
+  return transaction.inputs.every((_input, inputIndex) => vm.stateSuccess(
+    vm.evaluate({ inputIndex, sourceOutputs, transaction }),
+  ) === true);
+};
+
+const slotHex = (key: bigint): string => binToHex(keyToSlotMulti([bigIntToVmNumber(key)]));
 
 describe('kernel unconditional emit beside two mutation streams', () => {
-  it('admits and settles emit with two int maps on one loop', async () => {
+  it('settles emit beside two int streams via direct call (VM + events)', async () => {
     const provider = createTestProvider();
-    const artifact = compileString(SOURCE, KERNEL);
+    const artifact = compileString(`pragma solidcash >=0.8.0;
+      contract Store() {
+        event Tick(int i);
+        mapping(int => int) left;
+        mapping(int => int) right;
+        function writeEmit(int n) public {
+          for (int i = 0; i < n; i = i + 1) {
+            left[i] = i;
+            right[i] = i + 10;
+            emit Tick(i);
+          }
+          require(true);
+        }
+      }`, KERNEL);
     const abi = artifact.abi.find((entry) => entry.name === 'writeEmit')!;
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'writeEmit'))
       .toMatchObject({ eligible: true });
@@ -51,18 +60,17 @@ describe('kernel unconditional emit beside two mutation streams', () => {
     const call = contract.call.writeEmit(2n);
     const builder = await call.build();
     const transaction = builder.buildLibauthTransaction();
-    const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
-    const vm = createVirtualMachineBch2026ForProvider(provider);
-    for (let inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex += 1) {
-      expect(vm.stateSuccess(vm.evaluate({ inputIndex, sourceOutputs, transaction })),
-        `input ${inputIndex}`).toBe(true);
-    }
-    await expect(call.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    expect(vmAccepts(builder)).toBe(true);
+    await expect(call.send()).resolves.toMatchObject({
+      txid: expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
 
-    const updated = StatefulContract.withCategory(inner, categoryId);
+    const [leftEntries, rightEntries] = await Promise.all([
+      contract.getEntries('left'), contract.getEntries('right'),
+    ]);
     for (const key of [0n, 1n]) {
-      await expect(updated.call.checkLeft(key, key).send()).resolves.toBeDefined();
-      await expect(updated.call.checkRight(key, key + 10n).send()).resolves.toBeDefined();
+      expect(leftEntries.find((entry) => binToHex(entry.slot) === slotHex(key))?.value).toBe(key);
+      expect(rightEntries.find((entry) => binToHex(entry.slot) === slotHex(key))?.value).toBe(key + 10n);
     }
 
     const event = artifact.events!.find((candidate) => candidate.name === 'Tick')!;
@@ -71,6 +79,70 @@ describe('kernel unconditional emit beside two mutation streams', () => {
     const eventOutputs = transaction.outputs.filter((output) => output.token?.nft?.capability === 'none');
     expect(eventOutputs.map((output) => binToHex(output.token!.nft!.commitment as Uint8Array)))
       .toEqual(expect.arrayContaining(expectedCommitments));
-    expect(binToHex(keyToSlotMulti([bigIntToVmNumber(0n)]))).toMatch(/^[0-9a-f]+$/);
+  }, 300_000);
+
+  it('uses messageBus.compose Caller→Store for control beside multi-stream admission', async () => {
+    // Unconditional dual-stream write(+emit) under compose fails preflight even for homo int SAME_LOOP;
+    // selection-based multi-stream compose is covered by KernelSameIterSelectionCompose.
+    const provider = createMessageBusCapstoneTestProvider();
+    const storeArtifact = compileString(`pragma solidcash >=0.8.0;
+      contract Store() {
+        event Tick(int i);
+        mapping(int => int) left;
+        mapping(int => int) right;
+        function writeEmit(int n) public {
+          for (int i = 0; i < n; i = i + 1) {
+            left[i] = i;
+            right[i] = i + 10;
+            emit Tick(i);
+          }
+          require(true);
+        }
+        function control() public { require(true); }
+      }`, KERNEL);
+    expect(storeArtifact.messageBus?.handlers.find((handler) => handler.name === 'writeEmit'))
+      .toMatchObject({ eligible: true });
+    const storeBase = new Contract(storeArtifact, [], { provider });
+    const storeSetup = await setupStatefulUtxos(
+      provider, storeBase, storeArtifact.stateLayout!, {}, { saltContract: true },
+    );
+    const store = StatefulContract.withCategory(
+      storeBase.withCategory(hexToBin(storeSetup.categoryId)), storeSetup.categoryId,
+    );
+    const callerArtifact = compileString(`pragma solidcash >=0.8.0;
+      interface IStore { function control() external; }
+      contract Caller() {
+        function poke(address store) public { IStore(store).control(); require(true); }
+      }`, KERNEL);
+    const callerBase = new Contract(callerArtifact, [], { provider });
+    const callerSetup = await setupStatefulUtxos(
+      provider, callerBase, callerArtifact.stateLayout!, {}, { saltContract: true },
+    );
+    const caller = StatefulContract.withCategory(
+      callerBase.withCategory(hexToBin(callerSetup.categoryId)), callerSetup.categoryId,
+    );
+    caller._registerResolvedExternal('IStore', store);
+    const callsite = callerArtifact.abi.find((entry) => entry.name === 'poke')
+      ?.externalCalls?.find((call) => call.functionName === 'control');
+    const fee = await createBareP2pkhFeeFunder(provider, 500_000n);
+    const composition = messageBus.compose({
+      preparedCalls: [{
+        contract: caller,
+        functionName: 'poke',
+        args: [store.inner.lockingBytecode],
+      }, {
+        contract: store,
+        functionName: 'control',
+        args: [],
+        callsiteId: callsite!.callsiteId,
+      }],
+      funder: fee,
+      changeAddress: fee.unlocker.generateLockingBytecode(),
+    });
+    const builder = await composition.build();
+    expect(vmAccepts(builder)).toBe(true);
+    await expect(composition.send()).resolves.toMatchObject({
+      txid: expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
   }, 300_000);
 });

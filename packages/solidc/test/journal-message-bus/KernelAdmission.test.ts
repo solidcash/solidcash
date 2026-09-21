@@ -10618,6 +10618,16 @@ describe('required kernel admission', () => {
     expect(handler).toMatchObject({ eligible: true });
     expect(info?.length).toBeGreaterThanOrEqual(2);
     expect(new Set(info?.map((stream) => stream.journalExecutionGroup)).size).toBe(1);
+    const right = info?.find((stream) => stream.collection === 'right');
+    const left = info?.find((stream) => stream.collection === 'left');
+    expect(right?.iterationCondition).toMatchObject({
+      kind: 'source', source: { kind: 'forward', paramIndex: 1 },
+    });
+    expect(left?.iterationCondition).toMatchObject({
+      kind: 'unary', operator: '!', expression: {
+        kind: 'source', source: { kind: 'forward', paramIndex: 1 },
+      },
+    });
   });
 
   it('keeps non-bool same-iteration selection behind KERNEL_LAYOUT', () => {

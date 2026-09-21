@@ -5074,8 +5074,10 @@ export class AtomicMessageBusComposition {
             throw new Error(`messageBus: fixed resource slot ${slot.participant}:${slot.offset} is not preserved`);
           }
           const activeToken = inputMutable ? inputToken : outputToken!;
+          // Trailing value-chunk slots rewrite commitments and may re-dust satoshis; category must still match.
           if (activeToken.amount !== 0n || (inputMutable && outputMutable
-            && (inputToken.category !== outputToken!.category || input.satoshis !== output.amount))) {
+            && (inputToken.category !== outputToken!.category
+              || (slot.kind !== 'trailing' && input.satoshis !== output.amount)))) {
             throw new Error(`messageBus: resource slot ${slot.participant}:${slot.offset} has an invalid NFT transition`);
           }
           const resourceLockingBytecode = inputMutable ? inputLockingBytecode : outputLockingBytecode;

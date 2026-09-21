@@ -1,9 +1,13 @@
+import { bigIntToVmNumber, binToHex, hexToBin } from '@bitauth/libauth';
 import { compileString } from 'solidc';
 import { describe, expect, it } from 'vitest';
-import { Contract, StatefulContract } from '../../../src/index.js';
+import { Contract, StatefulContract, messageBus } from '../../../src/index.js';
 import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';
+import { keyToSlotMulti } from '../../../src/stateful/SortedList.js';
+import type { TransactionBuilder } from '../../../src/TransactionBuilder.js';
 import { generateLibauthSourceOutputs } from '../../../src/utils.js';
-import { createTestProvider, setupStatefulUtxos } from '../../test-util.js';
+import { createBareP2pkhFeeFunder, setupStatefulUtxos } from '../../test-util.js';
+import { createMessageBusCapstoneTestProvider } from './message-bus-semantic-profile.js';
 
 const KERNEL = {
   forceStateful: true,
@@ -13,57 +17,108 @@ const KERNEL = {
   suppressWarnings: true,
 } as const;
 
-const SOURCE = `pragma solidcash ^0.13.0;
-contract KernelSameIterSelection() {
-  mapping(int => int) left;
-  mapping(int => int) right;
-  function choose(int n, bool pickRight) public {
-    for (int i = 0; i < n; i = i + 1) {
-      if (pickRight) {
-        this.right[i] = i + 1;
-      } else {
-        this.left[i] = i + 1;
-      }
-    }
-    require(true);
-  }
-  function checkLeft(int key, int expected) public { require(this.left[key] == expected); }
-  function checkRight(int key, int expected) public { require(this.right[key] == expected); }
-  function missingLeft(int key) public { require(this.left[key] == 0); }
-  function missingRight(int key) public { require(this.right[key] == 0); }
-}`;
+const vmAccepts = (builder: TransactionBuilder): boolean => {
+  const transaction = builder.buildLibauthTransaction();
+  const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+  const vm = createVirtualMachineBch2026ForProvider(builder.provider);
+  return transaction.inputs.every((_input, inputIndex) => vm.stateSuccess(
+    vm.evaluate({ inputIndex, sourceOutputs, transaction }),
+  ) === true);
+};
+
+const slotHex = (key: bigint): string => binToHex(keyToSlotMulti([bigIntToVmNumber(key)]));
 
 describe('kernel same-iteration bool selection under composition', () => {
-  it.each([false, true])('settles pickRight=%s for n>=2', async (pickRight) => {
-    const provider = createTestProvider();
-    const artifact = compileString(SOURCE, KERNEL);
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'choose'))
+  it.each([false, true])('settles pickRight=%s via messageBus.compose with only selected map written', async (pickRight) => {
+    const provider = createMessageBusCapstoneTestProvider();
+
+    const storeArtifact = compileString(`pragma solidcash >=0.8.0;
+      contract Store() {
+        mapping(int => int) left;
+        mapping(int => int) right;
+        function choose(int n, bool pickRight) public {
+          for (int i = 0; i < n; i = i + 1) {
+            if (pickRight) {
+              right[i] = i + 1;
+            } else {
+              left[i] = i + 1;
+            }
+          }
+          require(true);
+        }
+      }`, KERNEL);
+    expect(storeArtifact.messageBus?.handlers.find((handler) => handler.name === 'choose'))
       .toMatchObject({ eligible: true });
-    expect(artifact.abi.find((entry) => entry.name === 'choose')?.sortedUpsertLoopInfo?.length)
+    expect(storeArtifact.abi.find((entry) => entry.name === 'choose')?.sortedUpsertLoopInfo?.length)
       .toBeGreaterThanOrEqual(2);
 
-    const inner = new Contract(artifact, [], { provider });
-    const { categoryId } = await setupStatefulUtxos(
-      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+    const storeBase = new Contract(storeArtifact, [], { provider });
+    const storeSetup = await setupStatefulUtxos(
+      provider, storeBase, storeArtifact.stateLayout!, {}, { saltContract: true },
     );
-    const contract = StatefulContract.withCategory(inner, categoryId);
-    const call = contract.call.choose(2n, pickRight);
-    const builder = await call.build();
-    const transaction = builder.buildLibauthTransaction();
-    const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
-    const vm = createVirtualMachineBch2026ForProvider(provider);
-    for (let inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex += 1) {
-      expect(vm.stateSuccess(vm.evaluate({ inputIndex, sourceOutputs, transaction })),
-        `input ${inputIndex}`).toBe(true);
-    }
-    await expect(call.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    const store = StatefulContract.withCategory(
+      storeBase.withCategory(hexToBin(storeSetup.categoryId)), storeSetup.categoryId,
+    );
 
-    const updated = StatefulContract.withCategory(inner, categoryId);
-    for (const key of [0n, 1n]) {
-      if (pickRight) {
-        await expect(updated.call.checkRight(key, key + 1n).send()).resolves.toBeDefined();
-      } else {
-        await expect(updated.call.checkLeft(key, key + 1n).send()).resolves.toBeDefined();
+    const callerArtifact = compileString(`pragma solidcash >=0.8.0;
+      interface IStore {
+        function choose(int n, bool pickRight) external;
+      }
+      contract Caller() {
+        function poke(address store, int n, bool pickRight) public {
+          IStore(store).choose(n, pickRight);
+          require(true);
+        }
+      }`, KERNEL);
+    const callerBase = new Contract(callerArtifact, [], { provider });
+    const callerSetup = await setupStatefulUtxos(
+      provider, callerBase, callerArtifact.stateLayout!, {}, { saltContract: true },
+    );
+    const caller = StatefulContract.withCategory(
+      callerBase.withCategory(hexToBin(callerSetup.categoryId)), callerSetup.categoryId,
+    );
+    caller._registerResolvedExternal('IStore', store);
+
+    const callsite = callerArtifact.abi.find((entry) => entry.name === 'poke')
+      ?.externalCalls?.find((call) => call.functionName === 'choose');
+    expect(callsite?.callsiteId).toBeDefined();
+
+    const fee = await createBareP2pkhFeeFunder(provider, 500_000n);
+    const composition = messageBus.compose({
+      preparedCalls: [{
+        contract: caller,
+        functionName: 'poke',
+        args: [store.inner.lockingBytecode, 2n, pickRight],
+      }, {
+        contract: store,
+        functionName: 'choose',
+        args: [2n, pickRight],
+        callsiteId: callsite!.callsiteId,
+      }],
+      funder: fee,
+      changeAddress: fee.unlocker.generateLockingBytecode(),
+    });
+
+    const builder = await composition.build();
+    expect(vmAccepts(builder)).toBe(true);
+    await expect(composition.send()).resolves.toMatchObject({
+      txid: expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
+
+    const [leftEntries, rightEntries] = await Promise.all([
+      store.getEntries('left'), store.getEntries('right'),
+    ]);
+    if (pickRight) {
+      expect(leftEntries).toHaveLength(0);
+      for (const key of [0n, 1n]) {
+        expect(rightEntries.find((entry) => binToHex(entry.slot) === slotHex(key))?.value)
+          .toBe(key + 1n);
+      }
+    } else {
+      expect(rightEntries).toHaveLength(0);
+      for (const key of [0n, 1n]) {
+        expect(leftEntries.find((entry) => binToHex(entry.slot) === slotHex(key))?.value)
+          .toBe(key + 1n);
       }
     }
   }, 300_000);

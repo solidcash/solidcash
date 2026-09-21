@@ -10835,4 +10835,119 @@ describe('required kernel admission', () => {
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'touch'))
       .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_OPAQUE_EFFECT' });
   });
+
+  // Phase 1 / item 5: multi-producer fan-in publishes producer-ID resultConsumers (not cloned call AST).
+  it('admits multi-producer fan-in that binds sink args to producer callsite IDs', () => {
+    const artifact = compileString(`pragma solidcash >=0.8.0;
+      interface IReader { function read(uint id) external returns (uint value); }
+      interface ISink { function write(uint left, uint right) external; }
+      contract Coordinator(address left, address right, address sink) {
+        function apply(uint id) public {
+          uint leftValue = IReader(left).read(id);
+          uint rightValue = IReader(right).read(id + 1);
+          ISink(sink).write(leftValue, rightValue);
+          require(true);
+        }
+      }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'apply'))
+      .toMatchObject({ eligible: true });
+    const apply = artifact.abi.find((entry) => entry.name === 'apply');
+    expect(apply?.externalCalls?.map((call) => ({
+      callsiteId: call.callsiteId,
+      functionName: call.functionName,
+      returnTypes: call.returnTypes,
+    }))).toEqual([
+      { callsiteId: 0, functionName: 'read', returnTypes: ['uint256'] },
+      { callsiteId: 1, functionName: 'read', returnTypes: ['uint256'] },
+      { callsiteId: 2, functionName: 'write', returnTypes: undefined },
+    ]);
+    expect(apply?.resultConsumers).toEqual([
+      {
+        consumerCallsiteId: 2, argument: 0,
+        producerCallsiteId: 0, producerSourceCallsiteId: 0, resultIndex: 0,
+      },
+      {
+        consumerCallsiteId: 2, argument: 1,
+        producerCallsiteId: 1, producerSourceCallsiteId: 1, resultIndex: 0,
+      },
+    ]);
+    expect(apply?.externalCalls?.[2]?.argSources).toEqual([
+      {
+        kind: 'expression',
+        expression: {
+          kind: 'producerResult', callsiteId: 0, sourceCallsiteId: 0, resultIndex: 0, type: 'uint256',
+        },
+      },
+      {
+        kind: 'expression',
+        expression: {
+          kind: 'producerResult', callsiteId: 1, sourceCallsiteId: 1, resultIndex: 0, type: 'uint256',
+        },
+      },
+    ]);
+  });
+
+  // Phase 1 / item 5 residual: unused returning producers stay eligible without inventing resultConsumers.
+  it('does not invent resultConsumers when producer results are unused', () => {
+    const artifact = compileString(`pragma solidcash >=0.8.0;
+      interface IReader { function read(uint id) external returns (uint value); }
+      contract Coordinator(address left) {
+        function apply(uint id) public {
+          IReader(left).read(id);
+          require(true);
+        }
+      }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'apply'))
+      .toMatchObject({ eligible: true });
+    const apply = artifact.abi.find((entry) => entry.name === 'apply');
+    expect(apply?.resultConsumers ?? []).toEqual([]);
+    expect(apply?.externalCalls).toEqual([
+      expect.objectContaining({
+        callsiteId: 0, functionName: 'read', returnTypes: ['uint256'],
+      }),
+    ]);
+  });
+
+  // Phase 1 / item 6: one participant writes two distinct collections under a shared key.
+  it('admits multi-collection journaled writes under one shared key', () => {
+    const artifact = compileString(`pragma solidcash >=0.8.0;
+      contract Store() {
+        mapping(int => int) scores;
+        mapping(int => int) bonuses;
+        function setBoth(int key, int a, int b) public {
+          this.scores[key] = a;
+          this.bonuses[key] = b;
+          require(true);
+        }
+        function control() public { require(true); }
+      }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'setBoth'))
+      .toMatchObject({ eligible: true, physicalEntrySlots: [0, 1] });
+    const setBoth = artifact.abi.find((entry) => entry.name === 'setBoth');
+    expect(setBoth?.entryAccesses?.map((access) => ({
+      collection: access.collection, slotIndex: access.slotIndex,
+    }))).toEqual([
+      { collection: 'scores', slotIndex: 0 },
+      { collection: 'bonuses', slotIndex: 1 },
+    ]);
+  });
+
+  // Phase 1 / item 6 residual: multi-collection beside unbounded nested mapping stays fenced.
+  it('keeps multi-collection writes beside an unbounded nested mapping loop behind KERNEL_UNBOUNDED_KEY', () => {
+    const artifact = compileString(`pragma solidcash >=0.8.0;
+      contract Store() {
+        mapping(int => mapping(int => int)) nested;
+        mapping(int => int) bonuses;
+        function setBoth(int n, int key, int a, int b) public {
+          for (int i = 0; i < n; i = i + 1) {
+            nested[key][i] = a;
+            bonuses[key] = b;
+          }
+          require(true);
+        }
+        function control() public { require(true); }
+      }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'setBoth'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_UNBOUNDED_KEY' });
+  });
 });

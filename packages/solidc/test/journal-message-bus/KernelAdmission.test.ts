@@ -10568,7 +10568,7 @@ describe('required kernel admission', () => {
       .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
   });
 
-  // Family 1 wedge A: heterogeneous value kinds on one shared counter-key schedule.
+  // Family 1 wedge A / Phase 0: hetero int+bytes loop with trailing band for ≥61B external chunks.
   it('admits a bounded loop writing int and bytes maps on one key schedule', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) scores;
@@ -10594,6 +10594,11 @@ describe('required kernel admission', () => {
       }),
     ]);
     expect(new Set(info?.map((stream) => stream.varyingArrayParam)).size).toBe(1);
+    // Trailing continuation band + valueChunkOutputBase let compose settle loop-nested ≥61B payloads.
+    expect(artifact.messageBus?.route.blockLayout?.trailingCapacity).toBeGreaterThanOrEqual(61);
+    expect(artifact.messageBus?.route.inputs?.some(
+      (input) => input.name === '__internal__valueChunkOutputBase',
+    )).toBe(true);
   });
 
   // Family 1 wedge B: bool-param same-iteration selection inside a bounded loop.

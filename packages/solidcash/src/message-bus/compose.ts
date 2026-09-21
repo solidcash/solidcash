@@ -2999,44 +2999,46 @@ export class AtomicMessageBusComposition {
               : undefined,
           }));
         }
-        // A frame's `msg.sender` is the identity of the participant that CALLS it - exactly the value the compiler
-        // receives as `__internal__msgSenderCategory` - never the transaction origin. A `msg.sender`-keyed mapping
-        // inside this frame must therefore hash the caller's locking bytecode; hashing the origin keys the entry
-        // on a slot no covenant reads. Passed INTO the build (not annotated afterwards) because only the initial
-        // build carries the delegate executor this participant executes as.
+        // Each row's `msg.sender` is the compiler-published caller identity of the participant that CALLS that
+        // row - never the transaction origin, and never inferred from proxy/delegate executor geometry. The
+        // `__internal__graphCallers` stream already carries per-row subjects from finalization; the frame probe
+        // annotation below uses the shared subject only when every local row publishes the same one.
+        const graphCallers = participant.invocations.map((invocationIndex) => {
+          const planned = plan.invocations[invocationIndex];
+          if (planned === undefined || planned.caller === null) return undefined;
+          return planned.callerIdentity
+            ?? graphInvocationCallerIdentity(plan.participants, plan.invocations, planned);
+        });
+        const sharedCallerLocks = [...new Set(graphCallers
+          .filter((identity): identity is NonNullable<typeof identity> => identity !== undefined)
+          .map((identity) => identity.lockingBytecode.toLowerCase()))];
         const frameInvocation = plan.invocations[participant.invocations[0]!];
-        const frameCaller = frameInvocation === undefined || frameInvocation.caller === null
-          ? undefined
-          : graphInvocationCallerIdentity(plan.participants, plan.invocations, frameInvocation);
+        const frameCaller = sharedCallerLocks.length === 1
+          ? graphCallers.find((identity) => identity !== undefined)
+          : undefined;
         if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
           ?.SOLIDC_DEBUG_PARTICIPANT_ROWS === '1') {
           // One participant frame batches several rows, and each row's `msg.sender` is the identity of the
-          // participant that called THAT row - a frame-level caller is only the first row's. A row whose
-          // `msg.sender`-keyed mapping was pinned against the frame caller instead of its own is otherwise
-          // invisible: print every row with the caller it will actually resolve.
+          // participant that called THAT row - a frame-level caller is only valid when every row agrees.
           console.error('participant-rows', JSON.stringify({
             participant: participant.participant,
             contract: participant.artifact.contractName,
             frameCaller: frameCaller === undefined ? undefined
               : `${frameInvocation?.caller === null ? 'root' : plan.participants[frameInvocation!.caller!]
                 ?.artifact.contractName}:${frameCaller.lockingBytecode.slice(0, 16)}`,
-            rows: participant.invocations.map((invocationIndex) => {
+            rows: participant.invocations.map((invocationIndex, rowIndex) => {
               const planned = plan.invocations[invocationIndex];
               const descriptor = descriptors[invocationIndex];
               const caller = planned?.caller === null || planned?.caller === undefined
                 ? undefined : plan.participants[planned.caller];
-              // A root invocation has no participant caller, and the resolver rejects that case. A diagnostic must
-              // never turn a composition that would otherwise succeed into a failure.
-              let resolved: { lockingBytecode: string } | undefined;
-              try {
-                resolved = planned === undefined ? undefined
-                  : graphInvocationCallerIdentity(plan.participants, plan.invocations, planned);
-              } catch { resolved = undefined; }
+              const resolved = graphCallers[rowIndex];
               return {
                 function: descriptor?.functionName,
                 localRow: planned?.localRow,
                 caller: caller?.artifact.contractName,
                 callerLock: resolved?.lockingBytecode.slice(0, 16),
+                callerRole: resolved?.role,
+                authOffset: resolved?.authOffset,
               };
             }),
           }));

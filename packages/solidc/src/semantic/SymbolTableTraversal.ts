@@ -8735,6 +8735,11 @@ export default class SymbolTableTraversal extends AstTraversal {
       slots.push({
         interfaceName: node.callInfo.interfaceName,
         functionName: node.callInfo.functionName,
+        // Outgoing CALL/staticcall edges authenticate the physical state-owner master. CREATE/proxy/executor
+        // subjects are published only when a later pass proves the call expression uses that identity.
+        callerIdentity: {
+          version: 1, role: 'owner', auth: 'input-bytecode', authOffset: 0,
+        },
         ...(node.sourceEffectOrdinal !== undefined && {
           sourceEffectOrdinal: node.sourceEffectOrdinal,
         }),

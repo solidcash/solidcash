@@ -32,11 +32,11 @@
 - [x] **1c** Item 5 multi-producer result dependencies (`KernelMultiProducerResultCompose`)
 - [x] **1d** Item 6 multiple computed writes / ordered claims (`KernelMultiCollectionWriteCompose` + multi-continuation chunkable)
 - [x] **2** Path/effect: bool-param-selected emit beside journal settled (`KernelSelectedEventCompose`); both-arms/non-bool remain KERNEL_LAYOUT; break/continue sharper residual (no compose admit claimed)
-- [ ] **3** Bounded constructed-key domain settle
-- [ ] **4** Mixed dynamic+collection spans; relocatable trailing bands
-- [ ] **5** Aggregate / recursive mapping admits+settle
-- [ ] **6** Broader deploy + write-bearing lifecycle subset
-- [ ] **7** Bounded sig + typed assembly expansions
+- [x] **3** Bounded constructed-key domain settle (`KernelConstructedKeyCompose` hash160 pubkey key)
+- [x] **4** Mixed dynamic+collection spans (`KernelMixedBytesMappingJournal` chunk-backed+mapping); relocatable multi-span beyond admitted trailing band remains #17 residual
+- [x] **5** Aggregate / recursive mapping (`KernelNestedForeignVmapCompose`, `KernelReturnAggregateCompose`)
+- [x] **6** Broader deploy + lifecycle subset (`KernelTypedYulCreateCompose`; existing V4/lifecycle compose suite)
+- [x] **7** Bounded sig + typed assembly (`KernelDataOnlySignatureResultCompose`, `KernelSafeNativeAssemblyCompose`)
 - [ ] Docs/inventory/fence/`message-bus-kernel.md` updated per phase; `yarn build`; GREP_CLEAN
 
 ## Already green (regression anchors)

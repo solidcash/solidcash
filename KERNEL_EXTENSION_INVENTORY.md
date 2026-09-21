@@ -73,13 +73,13 @@ Authoritative gate/fixture map: [`FENCE_MAP_7_18.md`](./FENCE_MAP_7_18.md). Do n
 | # | Catalog | Primary negative fixture(s) |
 |---|---|---|
 | 7 | `KERNEL_UNBOUNDED_KEY` | `KernelEscapeControlPredicates` runtime-selected / reachable non-progressing `continue` |
-| 8 | `KERNEL_UNBOUNDED_KEY` / `KERNEL_LAYOUT` | `KernelRuntimeArrayFillKeys`, `ConstructedArrayFiniteHelperBound`, `FixedLocalArrayKeyVector`, `ConstructedArrayTailReplacement` |
-| 9 | `KERNEL_LAYOUT` | `KernelAdmission` conditional / early-return / untransported chunkable mixed streams |
-| 10 | `KERNEL_LAYOUT` / `KERNEL_TX_SIGNATURE` | `KernelReturnAggregateAdmission`, `KernelNestedDynamicAggregateResults`, `KernelWholeStructStateGetter` |
-| 11 | `KERNEL_LAYOUT` | `AffineRecursiveMappingStreams`, `KernelRecursiveDerivedInvariantKeys` |
-| 12 | `KERNEL_LAYOUT` / `KERNEL_LIFECYCLE` | `KernelAdmission` runtime-count deploy loop; `KernelSwitchTryFixedEffects`; `PureChildDeploymentRecipes` |
-| 13 | `KERNEL_TX_SIGNATURE` | `KernelTransactionSignatures`, `KernelMultisigPolicy`, `KernelLifecycleTransactionSignatureBoundary` |
-| 14 | `KERNEL_OPAQUE_EFFECT` | `KernelAdmission` opaque native / stack-divergent assembly; `CallManifestIneligibilityMatrixV1` |
+| 8 | `KERNEL_UNBOUNDED_KEY` / `KERNEL_LAYOUT` | Runtime fill / multi-arm residuals: `KernelRuntimeArrayFillKeys`, … Admitted settle: hash160 constructed-key UPDATE (`KernelConstructedKeyCompose`) |
+| 9 | `KERNEL_LAYOUT` | Conditional / early-return / untransported chunkable mixed streams. Admitted: independently indexed bytes+mapping journal (`KernelMixedBytesMappingJournal`) |
+| 10 | `KERNEL_LAYOUT` / `KERNEL_TX_SIGNATURE` | Residual aggregate getters. Admitted settle: mixed nested ABI returns (`KernelReturnAggregateCompose`) |
+| 11 | `KERNEL_LAYOUT` | Residual recursive derived invariants. Admitted settle: nested foreign vmap (`KernelNestedForeignVmapCompose`) |
+| 12 | `KERNEL_LAYOUT` / `KERNEL_LIFECYCLE` | Residual runtime-count deploy loops. Admitted settle: typed Yul CREATE (`KernelTypedYulCreateCompose`) |
+| 13 | `KERNEL_TX_SIGNATURE` | Residual circular / lifecycle sig. Admitted settle: data-only sig result (`KernelDataOnlySignatureResultCompose`) |
+| 14 | `KERNEL_OPAQUE_EFFECT` | Residual opaque/divergent assembly. Admitted settle: closed pure assembly (`KernelSafeNativeAssemblyCompose`) |
 | 15 | `KERNEL_FOREIGN_DELEGATE` | `KernelAdmission` `refuses foreign delegatecall as KERNEL_FOREIGN_DELEGATE` |
 | 16 | `KERNEL_LIFECYCLE` | `KernelLifecycleTopology` collection-bearing + statement-form state selfdestruct; `KernelAdmission` unsafe(0/1) |
 | 17 | `KERNEL_LAYOUT` | Relocatable multi-span blocks; loop-nested external value-chunk trailing slots under atomic compose. Admitted: unconditional/bool-param multi-resource fixed chunkable; hetero loop streams with compose inline ≤60B **and ≥61B** + batch long chunks (`KernelHeteroLoopStreamsCompose`); bool-param same-iter selection (`KernelSameIterSelectionCompose`) |

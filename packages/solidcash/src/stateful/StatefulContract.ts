@@ -6189,6 +6189,31 @@ export function physicalExternalCallGroupIndexByMasterOutpoint(
   return existing < 0 ? -1 : (groups[existing].sharedGroupIndex ?? existing);
 }
 
+/**
+ * Select the optional SCID input which represents a nested call's authenticated caller subject.
+ *
+ * A category can have both a physical minting master and one or more immutable SCID records. Category presence
+ * alone therefore cannot select `msg.sender`: an owner call uses the physical master's locking bytecode even when
+ * an SCID for that category is co-spent. A logical caller uses the one anchor whose own locking bytecode is the
+ * compiler-resolved subject. Anything else is ambiguous or unauthenticated and must fail closed.
+ */
+export function callerIdentityAnchorBand(
+  callerSubjectLockingBytecode: string,
+  physicalCallerLockingBytecode: string,
+  anchors: readonly { band: number; lockingBytecode: string }[],
+): number | undefined {
+  const subject = callerSubjectLockingBytecode.toLowerCase();
+  const physical = physicalCallerLockingBytecode.toLowerCase();
+  if (subject === physical) return undefined;
+  const matches = anchors.filter((anchor) => anchor.lockingBytecode.toLowerCase() === subject);
+  if (matches.length !== 1) {
+    throw new Error(
+      `Nested caller identity requires exactly one SCID anchor for ${subject}; found ${matches.length}.`,
+    );
+  }
+  return matches[0]!.band;
+}
+
 type PhysicalSelectorGroup = {
   sharedGroupIndex?: number;
   delegateCallGroupIndex?: number;
@@ -30334,6 +30359,24 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           ?? (childParentGroupIndex !== undefined && childParentGroupIndex >= 0
             ? externalCallUtxoGroups[childParentGroupIndex]?.categoryId ?? this.categoryId
             : this.categoryId);
+        const childPhysicalCallerLockingBytecode = childParentGroupIndex !== undefined
+          && childParentGroupIndex >= 0
+          ? externalCallUtxoGroups[childParentGroupIndex]?.externalContract.inner.lockingBytecode
+            ?? binToHex(publicSelfAddress)
+          : binToHex(publicSelfAddress);
+        const childCallerSubjectLockingBytecode = child.callerIdentity?.lockingBytecode
+          ?? childPhysicalCallerLockingBytecode;
+        const childMsgSenderAnchorBand = childFn.inputs.some((input) =>
+          input.name === '__internal__msgSenderAnchorIdx')
+          ? callerIdentityAnchorBand(
+            childCallerSubjectLockingBytecode,
+            childPhysicalCallerLockingBytecode,
+            identityAnchors.map((anchor, band) => ({
+              band,
+              lockingBytecode: binToHex(anchor.unlocker.generateLockingBytecode()),
+            })),
+          )
+          : undefined;
         const encoded = childFn.inputs.map((input, inputIndex) => {
           if (!input.name.startsWith('__internal__')) {
             // A compiler route has its own visible ABI (`batchBlob` plus route witnesses), distinct from the
@@ -30392,10 +30435,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             return hexToBin(childCallerCategoryId).reverse();
           }
           if (input.name === '__internal__msgSenderAnchorIdx') {
-            childAnchorFillPositions.push({
-              argIndex: inputIndex, name: input.name, categoryId: childCallerCategoryId,
-              proxyRoute: false,
-            });
+            if (childMsgSenderAnchorBand !== undefined) {
+              childAnchorFillPositions.push({
+                argIndex: inputIndex, name: input.name, band: childMsgSenderAnchorBand,
+                proxyRoute: false,
+              });
+            }
             return -1n;
           }
           if (input.name === '__internal__delegateInputIndex') {

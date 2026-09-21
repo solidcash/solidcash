@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, hash160, hexToBin } from '@bitauth/libauth';
 import { AbiCoder } from 'ethers';
-import { decodePushdataValue, encodePushdataValue, type StructDefinitionInfo } from '@solidcash/utils';
+import { decodePushdataValue, encodePushdataValue, sha256, type StructDefinitionInfo } from '@solidcash/utils';
 import {
   decodeEvmReturnValue, encodeExternalReturnValue, encodeExternalReturnValues, encodeLeadingRouteArrayPushes,
   encodeStructArgument,
@@ -224,6 +224,30 @@ describe('encodeExternalReturnValue', () => {
     )).toBe(binToHex(result));
     expect(decodeEvmReturnValue(result.slice(0, 96), 'string')).toBe('DIGITAL_VIDEO');
     expect(decodeEvmReturnValue(result.slice(96), 'bool')).toBe(true);
+  });
+
+  it('validates a framed named-struct sequence with the producing artifact schema', () => {
+    const resultStructs: StructDefinitionInfo[] = [{
+      name: 'Record',
+      fields: [
+        { name: 'stable', type: 'uint256' },
+        { name: 'phase', type: 'uint256' },
+        { name: 'tail', type: 'string' },
+      ],
+    }];
+    const vector = encodeEvmInvocationResult(
+      [{ stable: 11n, phase: 20n, tail: 'row-epoch-payload' }], ['Record'], resultStructs,
+    );
+    const framed = encodePushdataValue(vector, 'bytes');
+    const digest = sha256(framed);
+
+    expect(isCanonicalEvmReturnSequence(vector, [['Record']])).toBe(false);
+    expect(isCanonicalEvmReturnSequence(vector, [['Record']], resultStructs)).toBe(true);
+    expect(isCanonicalEvmReturnBlob(framed, [['Record']], resultStructs)).toBe(true);
+    expect(isCanonicalEvmReturnBlob(digest, [['Record']], resultStructs)).toBe(false);
+    expect(selectEvmReturnCommitment(
+      [digest, framed], [['Record']], false, resultStructs,
+    )).toBe(binToHex(vector));
   });
 
   it('rejects non-canonical dynamic offsets and non-zero tail padding', () => {

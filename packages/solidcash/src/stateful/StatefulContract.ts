@@ -3871,9 +3871,18 @@ export function isCanonicalEvmReturnVector(
 /** Validate concatenated Solidity ABI invocation results without flattening their independent tuple offsets. */
 export function isCanonicalEvmReturnSequence(
   value: Uint8Array, expectedTypeGroups: readonly (readonly string[])[],
+  structs?: Artifact['structs'], enums?: Artifact['enums'],
 ): boolean {
   let cursor = 0;
   for (const expectedTypes of expectedTypeGroups) {
+    if (structs !== undefined || enums !== undefined) {
+      const decoded = decodeEvmInvocationResultPrefix(
+        value.slice(cursor), expectedTypes, structs, enums,
+      );
+      if (decoded === undefined) return false;
+      cursor += decoded.bytesConsumed;
+      continue;
+    }
     const length = canonicalEvmReturnVectorLength(value, cursor, expectedTypes);
     if (length === undefined) return false;
     cursor += length;
@@ -3884,12 +3893,13 @@ export function isCanonicalEvmReturnSequence(
 /** Validate the compiler-authored one-push wrapper around concatenated Solidity ABI invocation results. */
 export function isCanonicalEvmReturnBlob(
   candidate: Uint8Array, expectedTypeGroups: readonly (readonly string[])[],
+  structs?: Artifact['structs'], enums?: Artifact['enums'],
 ): boolean {
   try {
     const outer = decodePushdataValue(candidate, 0, 'bytes');
     return outer.value instanceof Uint8Array
       && outer.bytesConsumed === candidate.length
-      && isCanonicalEvmReturnSequence(outer.value, expectedTypeGroups);
+      && isCanonicalEvmReturnSequence(outer.value, expectedTypeGroups, structs, enums);
   } catch {
     return false;
   }
@@ -3898,13 +3908,16 @@ export function isCanonicalEvmReturnBlob(
 /** Select a compiler-framed mixed Solidity return, falling back to raw words only for all-static schemas. */
 export function selectEvmReturnCommitment(
   candidates: readonly Uint8Array[], expectedTypeGroups: readonly (readonly string[])[], allowRaw = true,
+  structs?: Artifact['structs'], enums?: Artifact['enums'],
 ): string | undefined {
   for (const candidate of candidates) {
     if (peekPushdataEncodedLength(candidate) !== candidate.length) continue;
     try {
       const outer = decodePushdataValue(candidate, 0, 'bytes');
       if (!(outer.value instanceof Uint8Array) || outer.bytesConsumed !== candidate.length) continue;
-      if (isCanonicalEvmReturnSequence(outer.value, expectedTypeGroups)) return binToHex(outer.value);
+      if (isCanonicalEvmReturnSequence(outer.value, expectedTypeGroups, structs, enums)) {
+        return binToHex(outer.value);
+      }
     } catch {
       // Ordinary route-frame items are not canonical outer bytes fields.
     }
@@ -3918,6 +3931,7 @@ export function selectEvmReturnCommitment(
 function extractEvmReturnCommitment(
   fullTrace: AuthenticationProgramStateCommon[],
   expectedTypeGroups: readonly (readonly string[])[], allowRaw = true,
+  structs?: Artifact['structs'], enums?: Artifact['enums'],
 ): string | undefined {
   if (expectedTypeGroups.length === 0) return undefined;
   const candidates: Uint8Array[] = [];
@@ -3927,7 +3941,7 @@ function extractEvmReturnCommitment(
       candidates.push(stack[stackIndex]);
     }
   }
-  return selectEvmReturnCommitment(candidates, expectedTypeGroups, allowRaw);
+  return selectEvmReturnCommitment(candidates, expectedTypeGroups, allowRaw, structs, enums);
 }
 
 /** Recover a Solidity ABI value which is live immediately before a return-output comparison. */
@@ -36091,6 +36105,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       resultTypes: readonly string[];
       resultTypeGroups: readonly (readonly string[])[];
       resultEncodings: readonly ExternalResultEncoding[];
+      structs?: Artifact['structs'];
+      enums?: Artifact['enums'];
     },
   ): Uint8Array | undefined {
     const { transaction, sourceOutputs } = program;
@@ -36105,7 +36121,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       (encoding) => encoding === 'compact-pushdata-v1',
     ) === true;
     if (commitment !== undefined && allEvmResults
-      && !isCanonicalEvmReturnBlob(hexToBin(commitment), resultSchema.resultTypeGroups)) {
+      && !isCanonicalEvmReturnBlob(
+        hexToBin(commitment), resultSchema.resultTypeGroups, resultSchema.structs, resultSchema.enums,
+      )) {
       commitment = undefined;
     }
     const materializedReturn = transaction.outputs[returnOutputIndex]?.token?.nft?.commitment;
@@ -36123,6 +36141,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         const inner = extractEvmReturnCommitment(
           candidateTrace, resultSchema.resultTypeGroups,
           isConstrainedEvmResultVector(resultSchema.resultTypeGroups),
+          resultSchema.structs, resultSchema.enums,
         );
         return inner === undefined ? undefined : binToHex(scriptToBytecode([hexToBin(inner)]));
       }

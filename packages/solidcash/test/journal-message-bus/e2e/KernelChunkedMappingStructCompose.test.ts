@@ -1,7 +1,6 @@
 import { hexToBin } from '@bitauth/libauth';
 import { encodePushdataValue } from '@solidcash/utils';
 import { compileString, compileStringMulti } from 'solidc';
-import { ethers } from 'ethers';
 import { describe, expect, it } from 'vitest';
 import { Contract, StatefulContract, messageBus } from '../../../src/index.js';
 import { createBareP2pkhFeeFunder, setupStatefulUtxos } from '../../test-util.js';
@@ -16,7 +15,7 @@ const KERNEL = {
 } as const;
 
 describe('kernel chunked mapping struct composition', () => {
-  it('returns the mapping struct at the intermediate row epoch', async () => {
+  it('derives the mapping struct at the intermediate row epoch', async () => {
     const provider = createMessageBusCapstoneTestProvider();
     const tail = 'row-epoch-payload';
     const artifacts = compileStringMulti(`pragma solidity ^0.8.0;
@@ -80,9 +79,6 @@ describe('kernel chunked mapping struct composition', () => {
     const inspectCalls = artifacts.Observer.abi.find((entry) => entry.name === 'inspect')!.externalCalls!;
     const readCallsite = inspectCalls.find((call) => call.functionName === 'read')!.callsiteId!;
     const finishCallsite = inspectCalls.find((call) => call.functionName === 'finish')!.callsiteId!;
-    const intermediate = hexToBin(ethers.AbiCoder.defaultAbiCoder().encode(
-      ['tuple(uint256,uint256,string)'], [[11n, 20n, tail]],
-    ).slice(2));
     const funder = await createBareP2pkhFeeFunder(provider, 500_000n);
     const composition = messageBus.compose({
       preparedCalls: [
@@ -102,7 +98,6 @@ describe('kernel chunked mapping struct composition', () => {
           functionName: 'read',
           args: [7n],
           callsiteId: readCallsite,
-          provisionalResultCommitment: intermediate,
         },
         {
           contract: store,

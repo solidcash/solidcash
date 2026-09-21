@@ -4908,6 +4908,8 @@ export class AtomicMessageBusComposition {
             resultTypes: owned.flatMap((invocation) => plan.invocations[invocation].resultTypes),
             resultTypeGroups: owned.map((invocation) => plan.invocations[invocation].resultTypes),
             resultEncodings: owned.map((invocation) => plan.invocations[invocation].resultEncoding!),
+            structs: participant.artifact.structs,
+            enums: participant.artifact.enums,
           },
         );
         if (!blob) {

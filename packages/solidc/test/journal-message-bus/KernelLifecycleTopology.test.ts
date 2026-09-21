@@ -129,12 +129,71 @@ describe('kernel lifecycle topology metadata', () => {
     });
   });
 
-  it('keeps statement-form selfdestruct behind the retirement fence', () => {
-    const { handler } = selected(`contract Terminal(address recipient) {
-      function close() public selfdestruct { selfdestruct(recipient); }
+  it('admits statement-form selfdestruct on master-only contracts', () => {
+    const { handler } = selected(`contract Terminal(address payable recipient) {
+      function close() public {
+        require(true);
+        selfdestruct(recipient);
+      }
       function inspect() public { require(true); }
     }`, 'close');
-    expect(handler).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LIFECYCLE' });
-    expect(handler).not.toHaveProperty('lifecycleTopology');
+    expect(handler).toMatchObject({
+      eligible: true,
+      lifecycleTopology: { version: 2, kind: 'selfdestruct' },
+    });
+  });
+
+  it('publishes preserve resourcePrefix for read-only fixed-state split', () => {
+    const { handler } = selected(`contract Threads() {
+      int public marker;
+      function divide(int count) public split(count) {
+        require(this.marker > 0 && count > 0);
+      }
+    }`, 'divide');
+    expect(handler).toMatchObject({
+      eligible: true,
+      lifecycleTopology: {
+        version: 2,
+        kind: 'split',
+        resourcePrefix: { mode: 'preserve', dataNftCount: 1, nftIndices: [0] },
+        outputSpans: [
+          { mode: 'preserve', offset: 0 },
+          { mode: 'create', offset: 2 },
+        ],
+      },
+    });
+  });
+
+  it('publishes consume resourcePrefix for modifier-only fixed-state selfdestruct', () => {
+    const { handler } = selected(`contract Victim() {
+      int public dust;
+      function close() public selfdestruct { require(true); }
+      function inspect() public { require(true); }
+    }`, 'close');
+    expect(handler).toMatchObject({
+      eligible: true,
+      lifecycleTopology: {
+        version: 2,
+        kind: 'selfdestruct',
+        resourcePrefix: { mode: 'consume', dataNftCount: 1, nftIndices: [0] },
+      },
+    });
+  });
+
+  it('keeps collection-bearing and statement-form state selfdestruct behind KERNEL_LIFECYCLE', () => {
+    const mapping = selected(`contract MappingVictim() {
+      mapping(bytes20 => int) public balances;
+      function close() public selfdestruct { require(true); }
+    }`, 'close');
+    expect(mapping.handler).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LIFECYCLE' });
+
+    const statementState = selected(`contract StatementVictim(address payable recipient) {
+      int public dust;
+      function close() public {
+        require(true);
+        selfdestruct(recipient);
+      }
+    }`, 'close');
+    expect(statementState.handler).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LIFECYCLE' });
   });
 });

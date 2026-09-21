@@ -219,25 +219,33 @@ export function encodeAtomicMessageBusCallManifest(callManifest: AtomicMessageBu
     if (lifecycle !== undefined) {
       const split = lifecycle.kind === 'split';
       const retired = lifecycle.kind === 'selfdestruct';
+      const fixedSize = participant.fixedSize;
+      if (!Number.isSafeInteger(lifecycle.count) || lifecycle.count < 1 || lifecycle.count >= 0xffff
+        || lifecycle.version !== 1
+        || (retired && lifecycle.count !== 1)
+        || !Number.isSafeInteger(fixedSize) || fixedSize < 1
+        || lifecycle.inputTail !== (retired ? 'retired-master' : split ? 'funding' : 'consumed-masters')
+        || lifecycle.outputTail !== (split ? 'created-masters' : 'reclaim')) {
+        throw new Error(`messageBus: participant ${index} has non-canonical lifecycle geometry`);
+      }
       const expected = retired ? {
         version: 1 as const, kind: 'selfdestruct' as const, count: 1,
-        inputSpan: 1, outputSpan: 1, balancedSpan: 1,
+        inputSpan: fixedSize, outputSpan: fixedSize, balancedSpan: fixedSize,
         inputTail: 'retired-master' as const, outputTail: 'reclaim' as const,
       } : {
         version: 1 as const, kind: lifecycle.kind, count: lifecycle.count,
-        inputSpan: split ? 1 : lifecycle.count + 1,
-        outputSpan: split ? lifecycle.count + 1 : 1,
-        balancedSpan: lifecycle.count + 1,
+        inputSpan: split ? fixedSize : fixedSize + lifecycle.count,
+        outputSpan: split ? fixedSize + lifecycle.count : fixedSize,
+        balancedSpan: fixedSize + lifecycle.count,
         inputTail: split ? 'funding' as const : 'consumed-masters' as const,
         outputTail: split ? 'created-masters' as const : 'reclaim' as const,
       };
-      if (!Number.isSafeInteger(lifecycle.count) || lifecycle.count < 1 || lifecycle.count >= 0xffff
-        || Object.entries(expected).some(([key, value]) =>
-          lifecycle[key as keyof AtomicParticipantLifecycle] !== value)) {
+      if (Object.entries(expected).some(([key, value]) =>
+        lifecycle[key as keyof AtomicParticipantLifecycle] !== value)) {
         throw new Error(`messageBus: participant ${index} has non-canonical lifecycle geometry`);
       }
       const expectedTrailing = retired ? 0 : lifecycle.count;
-      if (participant.fixedSize !== 1 || participant.actualSize !== expected.balancedSpan
+      if (participant.actualSize !== expected.balancedSpan
         || participant.maximumSize !== expected.balancedSpan || participant.trailingUsed !== expectedTrailing
         || participant.returnOffset !== 0xffff) {
         throw new Error(`messageBus: participant ${index} lifecycle does not occupy its exact balanced span`);
@@ -358,18 +366,18 @@ export function decodeAtomicMessageBusCallManifest(bytes: Uint8Array): AtomicMes
     }
     const lifecycle = lifecycleMode === 0 ? undefined : lifecycleMode === 1 ? {
       version: 1 as const, kind: 'split' as const, count: lifecycleCount,
-      inputSpan: 1, outputSpan: lifecycleCount + 1, balancedSpan: lifecycleCount + 1,
+      inputSpan: fixedSize, outputSpan: fixedSize + lifecycleCount, balancedSpan: fixedSize + lifecycleCount,
       inputTail: 'funding' as const, outputTail: 'created-masters' as const,
     } : lifecycleMode === 2 ? {
       version: 1 as const, kind: 'merge' as const, count: lifecycleCount,
-      inputSpan: lifecycleCount + 1, outputSpan: 1, balancedSpan: lifecycleCount + 1,
+      inputSpan: fixedSize + lifecycleCount, outputSpan: fixedSize, balancedSpan: fixedSize + lifecycleCount,
       inputTail: 'consumed-masters' as const, outputTail: 'reclaim' as const,
     } : {
       version: 1 as const, kind: 'selfdestruct' as const, count: 1,
-      inputSpan: 1, outputSpan: 1, balancedSpan: 1,
+      inputSpan: fixedSize, outputSpan: fixedSize, balancedSpan: fixedSize,
       inputTail: 'retired-master' as const, outputTail: 'reclaim' as const,
     };
-    if (lifecycle !== undefined && (fixedSize !== 1 || actualSize !== lifecycle.balancedSpan
+    if (lifecycle !== undefined && (fixedSize < 1 || actualSize !== lifecycle.balancedSpan
       || maximumSize !== lifecycle.balancedSpan
       || trailingUsed !== (lifecycle.kind === 'selfdestruct' ? 0 : lifecycle.count)
       || returnOffset !== 0xffff)) {

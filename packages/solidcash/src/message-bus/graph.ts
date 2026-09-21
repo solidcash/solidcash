@@ -558,10 +558,13 @@ export function finalizeAtomicInvocationGraph(
       throw new Error(`messageBus: participant ${index} master category must be 32-byte hex`);
     }
     const maximumSize = participant.lifecycle?.balancedSpan ?? participant.blockLayout!.blockSize;
+    const lifecyclePrefix = participant.lifecycle === undefined ? 0
+      : (participant.blockLayout?.slots.filter((slot) =>
+        slot.kind === 'dataNft' || slot.kind === 'readOnlyDataNft').length ?? 0);
     const fixedSize = participant.lifecycle === undefined
       ? (participant.blockLayout!.fixedSuffix
         ? maximumSize : participant.blockLayout!.trailingBase ?? maximumSize)
-      : 1;
+      : 1 + lifecyclePrefix;
     const actualSize = spans[index];
     const returnSlot = participant.blockLayout!.slots.find((slot) => slot.kind === 'returnEvent');
     const publishesResult = participant.invocations.some((invocation) =>
@@ -655,11 +658,15 @@ export function finalizeAtomicInvocationGraph(
       // through the same fully-authenticated input/output token row as a source-level token container; the SDK
       // additionally requires exact preservation, and the executor's own master covenant independently binds it.
       const tokenContainer = slot.kind === 'tokenContainer' || slot.kind === 'lowLevelCall';
+      const lifecycleConsume = effect.mode === 2
+        && (slot.kind === 'dataNft' || slot.kind === 'readOnlyDataNft')
+        && plan.participants[effect.participant]?.lifecycle?.kind === 'selfdestruct';
       if (effect.mode < 0 || effect.mode > 5
         || (satoshiContainer ? effect.mode !== 3 : effect.mode === 3)
         || (tokenContainer ? effect.mode !== 4 : effect.mode === 4)
         || (!satoshiContainer && !tokenContainer
-          && slot.kind !== 'entry' && slot.kind !== 'trailing' && effect.mode !== 0)) {
+          && slot.kind !== 'entry' && slot.kind !== 'trailing' && effect.mode !== 0
+          && !lifecycleConsume)) {
         throw new Error(`messageBus: participant ${effect.participant} resource slot ${effect.offset} has invalid mode`);
       }
       for (const [field, value] of [
@@ -1977,12 +1984,17 @@ export function planCompiledGraph(
           `messageBus: lifecycle participant ${owner} must execute exactly one lifecycle invocation`,
         );
       }
+      const layoutSlots = participant.artifact.messageBus?.route.blockLayout?.slots ?? [];
+      const dataNftSlots = layoutSlots.filter((slot) =>
+        slot.kind === 'dataNft' || slot.kind === 'readOnlyDataNft');
+      const disallowedLifecycleSlots = layoutSlots.some((slot) =>
+        slot.kind !== 'master' && slot.kind !== 'dataNft' && slot.kind !== 'readOnlyDataNft');
       if (executionKind !== 0 || participant.outputLockingBytecode !== undefined
-        || participantBlockSize !== 1
-        || participant.artifact.messageBus?.route.blockLayout?.slots.length !== 1
-        || participant.artifact.messageBus.route.blockLayout.slots[0].kind !== 'master') {
+        || layoutSlots.length < 1 || layoutSlots[0]?.kind !== 'master'
+        || disallowedLifecycleSlots
+        || participantBlockSize !== 1 + dataNftSlots.length) {
         throw new Error(
-          `messageBus: lifecycle participant ${owner} requires one direct master-only balanced block`,
+          `messageBus: lifecycle participant ${owner} requires one direct master[+dataNft] balanced block`,
         );
       }
       const selected = selectedLifecycle[0];
@@ -1995,13 +2007,25 @@ export function planCompiledGraph(
       const topology = planKernelLifecycleTopology(
         selected.handler.lifecycleTopology, selected.invocation.args ?? [],
       );
+      const prefix = topology.resourcePrefix?.dataNftCount ?? 0;
+      if (prefix !== dataNftSlots.length
+        || (topology.resourcePrefix !== undefined
+          && topology.resourcePrefix.nftIndices.length !== prefix)) {
+        throw new Error(
+          `messageBus: lifecycle participant ${owner} resourcePrefix does not match its block layout`,
+        );
+      }
+      const fixedSize = 1 + prefix;
       if (topology.kind === 'selfdestruct') {
         if (topology.categoryCensus.inputCount !== 1 || topology.categoryCensus.outputCount !== 0) {
           throw new Error(`messageBus: lifecycle participant ${owner} retirement census is not canonical`);
         }
+        if (topology.resourcePrefix !== undefined && topology.resourcePrefix.mode !== 'consume') {
+          throw new Error(`messageBus: lifecycle participant ${owner} retirement prefix mode is not consume`);
+        }
         lifecycle = Object.freeze({
           version: 1 as const, kind: 'selfdestruct' as const, count: 1,
-          inputSpan: 1, outputSpan: 1, balancedSpan: 1,
+          inputSpan: fixedSize, outputSpan: fixedSize, balancedSpan: fixedSize,
           inputTail: 'retired-master' as const, outputTail: 'reclaim' as const,
         });
       } else {
@@ -2010,12 +2034,16 @@ export function planCompiledGraph(
         if (count < 1 || count >= 32767) {
           throw new Error(`messageBus: lifecycle participant ${owner} count does not fit its balanced span`);
         }
+        if (topology.resourcePrefix !== undefined && topology.resourcePrefix.mode !== 'preserve') {
+          throw new Error(`messageBus: lifecycle participant ${owner} split/merge prefix mode is not preserve`);
+        }
         const split = topology.kind === 'split';
+        const balancedSpan = fixedSize + count;
         lifecycle = Object.freeze({
           version: 1 as const, kind: topology.kind, count,
-          inputSpan: split ? 1 : count + 1,
-          outputSpan: split ? count + 1 : 1,
-          balancedSpan: count + 1,
+          inputSpan: split ? fixedSize : balancedSpan,
+          outputSpan: split ? balancedSpan : fixedSize,
+          balancedSpan,
           inputTail: split ? 'funding' as const : 'consumed-masters' as const,
           outputTail: split ? 'created-masters' as const : 'reclaim' as const,
         });

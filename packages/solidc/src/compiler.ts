@@ -5167,20 +5167,39 @@ function synthesizeMessageBusRoute(
           : fn.modifiers.includes(FunctionModifier.SELFDESTRUCT) ? 'selfdestruct' as const : undefined;
     const lifecycleHasDetachedTransactionSignature = kernelLifecycleKind !== undefined
       && fn.parameters.some((parameter) => (transactionSignatureLeaves(parameter.type)?.length ?? 0) > 0);
-    // Resource-free split/merge/selfdestruct rows use selector-derived lifecycle authority on ordinary V1/V2
-    // block geometry: the specialized verifier derives mode/count from the one-row batch, and the SDK does not
-    // serialize a caller-authored lifecycle transcript into the global manifest. Detached `sig` leaves keep
-    // the specialized signature diagnostic. State, effects, unknown footprints, statement-form selfdestruct
-    // (single-output pin), or non-master-only retirement still need one authenticated frame that binds geometry
-    // with journal provenance, so they remain KERNEL_LIFECYCLE. Combining lifecycle with V4 transaction-signature
-    // provenance stays an SDK fence.
-    // Statement-form `selfdestruct(addr)` on a master-only contract is admitted under kernel: codegen pins the
-    // active master reclaim slot (not whole-tx single-output). State-bearing retirement still needs deletion
-    // metadata, so !masterOnlyLifecycleContract remains KERNEL_LIFECYCLE.
+    // Resource-free and read-only fixed-scalar split/merge, plus resource-free and modifier-only fixed-scalar
+    // selfdestruct, use selector-derived lifecycle authority on ordinary V1/V2 block geometry with an optional
+    // fixed dataNft resourcePrefix. Detached `sig` leaves keep the specialized signature diagnostic. Writes,
+    // effects, collection/event/blockhash-bearing retirement, and statement-form selfdestruct on state-bearing
+    // contracts remain KERNEL_LIFECYCLE until journal-bound deletion geometry exists.
+    const isFixedScalarStateRead = (resource: string): boolean => {
+      if (!resource.startsWith('state:')) return false;
+      const name = resource.slice('state:'.length);
+      return !dynamicState.has(name) && contract.stateVariables.some((state) => state.name === name);
+    };
+    const lifecycleFootprintDisallowed = footprint.unknown
+      || footprint.writes.length > 0
+      || footprint.effects.length > 0
+      || footprint.reads.some((resource) => !isFixedScalarStateRead(resource));
+    const fixedStateOnlyContract = contract.collections.length === 0
+      && contract.eventDefinitions.length === 0
+      && !contract.usesBlockhash;
+    const hasSelfdestructStatement = fn.impliedSelfdestruct === true || (() => {
+      if (kernelLifecycleKind !== 'selfdestruct') return false;
+      let found = false;
+      walkInvocationAst(fn.body, (node) => {
+        if (node instanceof SelfdestructStatementNode) found = true;
+      });
+      return found;
+    })();
+    const admitsFixedStateSelfdestruct = kernelLifecycleKind === 'selfdestruct'
+      && !hasSelfdestructStatement
+      && fixedStateOnlyContract
+      && !lifecycleFootprintDisallowed;
     const selfdestructNeedsRetirementGeometry = kernelLifecycleKind === 'selfdestruct'
-      && !masterOnlyLifecycleContract;
-    if (kernelLifecycleKind && (footprint.unknown || footprint.reads.length > 0 || footprint.writes.length > 0
-      || footprint.effects.length > 0 || lifecycleHasDetachedTransactionSignature
+      && !masterOnlyLifecycleContract
+      && !admitsFixedStateSelfdestruct;
+    if (kernelLifecycleKind && (lifecycleFootprintDisallowed || lifecycleHasDetachedTransactionSignature
       || fn.messageBusUsesTransactionSignature === true || selfdestructNeedsRetirementGeometry)) {
       fn.messageBusEligible = false;
       fn.messageBusRejectionReason = lifecycleHasDetachedTransactionSignature
@@ -9532,34 +9551,53 @@ function synthesizeMessageBusRoute(
   const lifecycleVerification = kernelLifecycleHandlers.size === 0 ? '' : `
         if (activeLifecycleMode > 0) {
           activeOutputBase = activeBase;
-          require(expectedLocalRows == 1 && activeFixedSize == 1
+          require(expectedLocalRows == 1 && activeFixedSize >= 1
             && activeReturnOutput == 65535
             && activeLifecycleCount > 0 && activeLifecycleCount < 32767);
-          bigint lifecycleCategoryInputs = 0;
-          bigint lifecycleCategoryOutputs = 0;
+          bigint lifecycleMintingInputs = 0;
+          bigint lifecycleMintingOutputs = 0;
+          bigint lifecycleMutableInputs = 0;
+          bigint lifecycleMutableOutputs = 0;
           for (bigint lifecycleInput = 0; lifecycleInput < tx.inputs.length;
             lifecycleInput = lifecycleInput + 1) {
             if (lifecycleInput != activeVerifier
-              && tx.inputs[lifecycleInput].tokenCategory.length >= 32
+              && tx.inputs[lifecycleInput].tokenCategory.length == 33
               && tx.inputs[lifecycleInput].tokenCategory.slice(0, 32) == activeCategory) {
-              lifecycleCategoryInputs = lifecycleCategoryInputs + 1;
+              if (tx.inputs[lifecycleInput].tokenCategory.slice(32, 33) == hex"02") {
+                lifecycleMintingInputs = lifecycleMintingInputs + 1;
+              } else if (tx.inputs[lifecycleInput].tokenCategory.slice(32, 33) == hex"01") {
+                lifecycleMutableInputs = lifecycleMutableInputs + 1;
+              }
             }
           }
           for (bigint lifecycleOutput = 0; lifecycleOutput < tx.outputs.length;
             lifecycleOutput = lifecycleOutput + 1) {
             if (lifecycleOutput != activeVerifierOutput
-              && tx.outputs[lifecycleOutput].tokenCategory.length >= 32
+              && tx.outputs[lifecycleOutput].tokenCategory.length == 33
               && tx.outputs[lifecycleOutput].tokenCategory.slice(0, 32) == activeCategory) {
-              lifecycleCategoryOutputs = lifecycleCategoryOutputs + 1;
+              if (tx.outputs[lifecycleOutput].tokenCategory.slice(32, 33) == hex"02") {
+                lifecycleMintingOutputs = lifecycleMintingOutputs + 1;
+              } else if (tx.outputs[lifecycleOutput].tokenCategory.slice(32, 33) == hex"01") {
+                lifecycleMutableOutputs = lifecycleMutableOutputs + 1;
+              }
             }
           }
           if (activeLifecycleMode == 3) {
-            require(activeBlockSize == 1 && activeMaximumSize == 1 && activeLifecycleCount == 1);
+            require(activeBlockSize == activeFixedSize && activeMaximumSize == activeFixedSize
+              && activeLifecycleCount == 1);
             require(tx.outputs[activeBase].tokenCategory.length == 0
               && tx.outputs[activeBase].value == tx.inputs[activeBase].value);
-            require(lifecycleCategoryInputs == 1 && lifecycleCategoryOutputs == 0);
+            require(lifecycleMintingInputs == 1 && lifecycleMintingOutputs == 0);
+            require(lifecycleMutableInputs == activeFixedSize - 1 && lifecycleMutableOutputs == 0);
+            for (bigint prefixOffset = 1; prefixOffset < activeFixedSize;
+              prefixOffset = prefixOffset + 1) {
+              bigint prefixSlot = activeBase + prefixOffset;
+              require(tx.inputs[prefixSlot].tokenCategory == bytes.concat(activeCategory, hex"01")
+                && tx.outputs[prefixSlot].tokenCategory.length == 0
+                && tx.outputs[prefixSlot].value == tx.inputs[prefixSlot].value);
+            }
           } else {
-            require(activeBlockSize == activeLifecycleCount + 1
+            require(activeBlockSize == activeLifecycleCount + activeFixedSize
               && activeMaximumSize == activeBlockSize);
             require(tx.outputs[activeBase].lockingBytecode == tx.inputs[activeBase].lockingBytecode
               && tx.outputs[activeBase].tokenCategory == tx.inputs[activeBase].tokenCategory
@@ -9571,15 +9609,25 @@ function synthesizeMessageBusRoute(
               require(activeLifecycleMode == 2
                 && tx.outputs[activeBase].tokenAmount >= tx.inputs[activeBase].tokenAmount);
             }
+            for (bigint prefixOffset = 1; prefixOffset < activeFixedSize;
+              prefixOffset = prefixOffset + 1) {
+              bigint prefixSlot = activeBase + prefixOffset;
+              require(tx.outputs[prefixSlot].lockingBytecode == tx.inputs[prefixSlot].lockingBytecode
+                && tx.outputs[prefixSlot].tokenCategory == tx.inputs[prefixSlot].tokenCategory
+                && tx.outputs[prefixSlot].nftCommitment == tx.inputs[prefixSlot].nftCommitment
+                && tx.outputs[prefixSlot].tokenAmount == tx.inputs[prefixSlot].tokenAmount
+                && tx.outputs[prefixSlot].value == tx.inputs[prefixSlot].value
+                && tx.inputs[prefixSlot].tokenCategory == bytes.concat(activeCategory, hex"01"));
+            }
             require((activeLifecycleMode == 1
-                && lifecycleCategoryInputs == 1
-                && lifecycleCategoryOutputs == activeLifecycleCount + 1)
+                && lifecycleMintingInputs == 1
+                && lifecycleMintingOutputs == activeLifecycleCount + 1)
               || (activeLifecycleMode == 2
-                && lifecycleCategoryInputs == activeLifecycleCount + 1
-                && lifecycleCategoryOutputs == 1));
-            for (bigint lifecycleOffset = 1; lifecycleOffset <= activeLifecycleCount;
+                && lifecycleMintingInputs == activeLifecycleCount + 1
+                && lifecycleMintingOutputs == 1));
+            for (bigint lifecycleOffset = 0; lifecycleOffset < activeLifecycleCount;
               lifecycleOffset = lifecycleOffset + 1) {
-              bigint lifecycleSlot = activeBase + lifecycleOffset;
+              bigint lifecycleSlot = activeBase + activeFixedSize + lifecycleOffset;
               if (activeLifecycleMode == 1) {
                 require(tx.inputs[lifecycleSlot].tokenCategory.length == 0
                   && tx.outputs[lifecycleSlot].lockingBytecode == activeParticipantLbc
@@ -12908,6 +12956,13 @@ function compileResolvedAst(
       nftCapability: 'minting' as const, nftCommitment: 'unconstrained' as const,
       tokenAmount: 'unconstrained' as const, satoshis: 'reclaim' as const,
     };
+    const nftIndices = [...(fn.requiredNftIndices ?? [])].sort((left, right) => left - right);
+    const resourcePrefix = nftIndices.length === 0 ? undefined : {
+      dataNftCount: nftIndices.length,
+      mode: (kind === 'selfdestruct' ? 'consume' : 'preserve') as 'preserve' | 'consume',
+      nftIndices,
+    };
+    const trailingOffset = 1 + (resourcePrefix?.dataNftCount ?? 0);
     if (kind === 'selfdestruct') {
       return {
         version: 2 as const,
@@ -12919,6 +12974,7 @@ function compileResolvedAst(
           inputCount: fixedOne,
           outputCount: { source: 'fixed' as const, value: 0 },
         },
+        ...(resourcePrefix && { resourcePrefix }),
         inputSpans: [
           { mode: 'consume' as const, offset: 0, count: fixedOne, identity: consumedMaster },
         ],
@@ -12953,16 +13009,23 @@ function compileResolvedAst(
         inputCount: kind === 'split' ? fixedOne : parameterCountPlusOne,
         outputCount: kind === 'split' ? parameterCountPlusOne : fixedOne,
       },
+      ...(resourcePrefix && { resourcePrefix }),
       inputSpans: kind === 'split'
         ? [{ mode: 'preserve' as const, offset: 0, count: fixedOne, identity: preservedMaster }]
         : [
           { mode: 'preserve' as const, offset: 0, count: fixedOne, identity: preservedMaster },
-          { mode: 'consume' as const, offset: 1, count: parameterCount, identity: consumedMaster },
+          {
+            mode: 'consume' as const, offset: trailingOffset, count: parameterCount,
+            identity: consumedMaster,
+          },
         ],
       outputSpans: kind === 'split'
         ? [
           { mode: 'preserve' as const, offset: 0, count: fixedOne, identity: preservedMaster },
-          { mode: 'create' as const, offset: 1, count: parameterCount, identity: createdMaster },
+          {
+            mode: 'create' as const, offset: trailingOffset, count: parameterCount,
+            identity: createdMaster,
+          },
         ]
         : [{ mode: 'preserve' as const, offset: 0, count: fixedOne, identity: preservedMaster }],
     };

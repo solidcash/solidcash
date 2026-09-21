@@ -21,6 +21,14 @@ export interface CompilerOptions {
      * and column-accurate failing snippets are not.
      */
     sourceMap?: boolean;
+    /**
+     * Emit the code generator's bytecode verbatim instead of the peephole/structural optimiser's output. Default
+     * true (optimise). The unoptimised script keeps a one-to-one instruction/source-map correspondence, so a VM
+     * instruction pointer names the exact source line and require that produced it instead of the approximate
+     * window an optimised map forces. Debugging only: scripts are larger and evaluate more opcodes, so it must not
+     * be used for deployed artifacts. `SOLIDC_NO_OPTIMISE=1` selects it for a whole compile run.
+     */
+    optimise?: boolean;
     /** Suppress non-fatal compiler warnings while preserving errors and ordinary command output. */
     suppressWarnings?: boolean;
     /**
@@ -167,6 +175,8 @@ export type LibraryCallArg = {
 export interface AbiOutput {
     type: string;
 }
+/** Versioned tuple-wide wire representation for authenticated external-call results. */
+export type ExternalResultEncoding = 'evm-abi-v1' | 'compact-pushdata-v1';
 /** Kinds of slots in the 1:1 block layout. */
 export type BlockSlotKind = 'master' | 'dataNft' | 'readOnlyDataNft' | 'blockhashOracle' | 'keccakSideCar' | 'ecrecoverSideCar' | 'entry' | 'satoshiContainer' | 'tokenContainer' | 'transfer' | 'tcTransfer' | 'event' | 'returnEvent' | 'deploy'
 /** Child data-NFT genesis outputs that follow a `deploy` slot (factory createPair-style). */
@@ -407,6 +417,8 @@ export interface AbiFunction {
     selector?: string;
     inputs: readonly AbiInput[];
     outputs?: readonly AbiOutput[];
+    /** Tuple-wide wire representation used for typed external results. */
+    resultEncoding?: ExternalResultEncoding;
     modifiers?: readonly string[];
     requiredNftIndices?: readonly number[];
     /**
@@ -465,6 +477,8 @@ export interface AbiFunction {
         deployInputOffset?: number;
     };
     entryAccesses?: readonly EntryAccessAbi[];
+    /** Compiler proof that source-effect ordinals form one straight-line order. */
+    sourceEffectOrder?: 'linear' | 'unsupported-flow';
     /** Compiler proof that the complete function body is exactly `return mapping[keys...]`, with each key a
      * direct visible parameter. SDKs may use this to answer the read without executing a derivation transaction. */
     directMappingReturn?: {
@@ -474,13 +488,7 @@ export interface AbiFunction {
     externalReads?: readonly ExternalReadAbi[];
     externalCalls?: readonly ExternalCallAbi[];
     /** Local call-result values forwarded as arguments into later external callsites. */
-    resultConsumers?: readonly {
-        consumerCallsiteId: number;
-        argument: number;
-        producerCallsiteId: number;
-        /** Exact component selected from the producer's canonical return tuple. */
-        resultIndex?: number;
-    }[];
+    resultConsumers?: readonly ExternalResultConsumerAbi[];
     externalOutStateReads?: readonly ExternalOutStateAbi[];
     emits?: readonly EmitAbi[];
     runtimeLoopEvents?: readonly RuntimeLoopEventAbi[];
@@ -664,6 +672,12 @@ export interface InvokeDebugInformation extends FunctionDebugInformation {
 }
 export interface DebugInformation {
     bytecode: string;
+    /**
+     * Present and `false` only when the artifact was compiled with `optimise: false`. The instruction stream is then
+     * the code generator's own, so `sourceMap`, `requires` and `logs` instruction pointers are exact and a VM
+     * failure can be attributed to the source construct that produced it without a correction scan.
+     */
+    optimise?: boolean;
     sourceMap: string;
     logs: readonly LogEntry[];
     requires: readonly RequireStatement[];
@@ -881,6 +895,8 @@ export interface EntryAccessAbi {
     keyParams: string[];
     keySources?: readonly KeySourceAbi[];
     operations: readonly string[];
+    /** Compiler-authored mutation identities; not a control-flow reachability or terminality proof. */
+    mutationEffectOrdinals?: readonly number[];
     /** Compiler proof that this entry stores a dynamic-array value in authenticated continuation chunks. */
     chunkableArrayValue?: true;
     aliasCondDeleteSlot?: number;
@@ -888,6 +904,15 @@ export interface EntryAccessAbi {
     valueParam?: string;
     /** Canonical expression for a whole-value write when it is not a direct parameter (e.g. `lit:hello`). */
     valueSource?: string;
+    /** Compiler-authenticated, typed source of the element appended by one exact chunkable-array mutation. */
+    storedElementSource?: {
+        version: 1;
+        mutationEffectOrdinal: number;
+        elementType: string;
+        expression: ExternalCallExpression;
+    };
+    /** Exact collection-array mutation represented by this access. */
+    arrayMutation?: 'push' | 'pop' | 'indexed' | 'mixed';
 }
 export interface ExternalReadAbi {
     interfaceName: string;
@@ -902,6 +927,7 @@ export interface ArgSource {
     paramIndex?: number;
     indexParamIndex?: number;
     indexValue?: number;
+    indexStepValue?: number;
     initialValue?: string;
     stepValue?: string;
     stepExpression?: ExternalCallExpression;
@@ -936,6 +962,19 @@ export interface ExternalCallExpression {
     /** Bounded statement program for a compiler-published pure helper body. */
     statements?: readonly ExternalCallStatement[];
 }
+/** One authenticated use of an earlier graph call's result. */
+export type ExternalResultConsumerAbi = {
+    consumerCallsiteId: number;
+    producerCallsiteId: number;
+    /** Exact component selected from the producer's canonical return tuple. */
+    resultIndex?: number;
+} & ({
+    argument: number;
+    condition?: never;
+} | {
+    condition: true;
+    argument?: never;
+});
 /**
  * A compiler-authored, finite proof program for a locally constructed mapping-key vector.
  *
@@ -1012,6 +1051,8 @@ export interface ExternalCallStatement {
 export interface ExternalCallAbi {
     /** Stable compiler-assigned physical callsite/slot identifier within the containing function. */
     callsiteId?: number;
+    /** Compiler-authored function-local program point of this call effect. */
+    sourceEffectOrdinal?: number;
     /** Source start of the call expression, retained for deterministic SDK derivation diagnostics. */
     sourceLocation?: {
         line: number;
@@ -1057,6 +1098,8 @@ export interface ExternalCallAbi {
     requiredDataNftIndices: number[];
     hasReturnValues?: boolean;
     returnTypes?: readonly string[];
+    /** Tuple-wide result representation expected by this compiler-authored callsite. */
+    resultEncoding?: ExternalResultEncoding;
     returnEventSignature?: string;
     computedOffset?: number;
     callMode?: 'call' | 'staticcall' | 'delegatecall';
@@ -1067,6 +1110,10 @@ export interface ExternalCallAbi {
     rawArgSources?: readonly ArgSource[];
     batchInvocations?: readonly {
         selector: string;
+        /** Compiler-stable callsite before repeated-owner rows are collapsed into one physical callsite. */
+        sourceCallsiteId?: number;
+        /** Compiler-authored program point of the source row before physical batching. */
+        sourceEffectOrdinal?: number;
         logicalIndex: number;
         inputs: readonly AbiInput[];
         argSources?: readonly ArgSource[];
@@ -1177,15 +1224,10 @@ export interface InvocationAnalysisFunction {
     resultDependencies?: readonly {
         callsiteId: number;
         returnTypes: readonly string[];
+        resultEncoding?: ExternalResultEncoding;
         opaque: boolean;
     }[];
-    resultConsumers?: readonly {
-        consumerCallsiteId: number;
-        argument: number;
-        producerCallsiteId: number;
-        /** Exact component selected from the producer's canonical return tuple. */
-        resultIndex?: number;
-    }[];
+    resultConsumers?: readonly ExternalResultConsumerAbi[];
     /**
      * True only when every external-call occurrence is statically singular. Conditional and loop callsites
      * require a runtime occurrence proof and therefore remain explicitly unbounded in this summary.
@@ -1294,6 +1336,14 @@ export interface Artifact {
         minimumRows?: number;
         maximumRows: number;
         maximumBlobBytes: number;
+        /** Direct chunkable whole-entry writes whose handler-local continuation pin is sound only when the complete
+         * participant route selects at most `maximumRows` rows from this selector family. The covenant enforces the
+         * aggregate bound; SDK encoders mirror it for deterministic preflight diagnostics. */
+        fixedChunkableWritePolicy?: {
+            version: 1;
+            maximumRows: 1;
+            selectors: readonly string[];
+        };
         /** Compiler-published admission and message-envelope contract for atomic composition. */
         atomicMessageBus?: {
             domain: typeof ATOMIC_MESSAGE_BUS_DOMAIN_HEX;
@@ -1360,6 +1410,8 @@ export interface Artifact {
             selector: string;
             inputs: AbiInput[];
             outputs?: AbiOutput[];
+            /** Tuple-wide result representation produced by this exact handler. */
+            resultEncoding?: ExternalResultEncoding;
             usesMsgValue?: boolean;
             emits?: readonly EmitAbi[];
             runtimeLoopEvents?: readonly RuntimeLoopEventAbi[];
@@ -1385,11 +1437,11 @@ export interface Artifact {
                 kind: 'upgrade';
                 layout: 'same' | 'in-place-append-v1';
             };
-            /** Participant-local lifecycle planning metadata. Authenticated split handlers may consume this topology;
-             * unsupported lifecycle kinds (including merge) remain fenced from kernel admission. */
+            /** Participant-local lifecycle planning metadata. Authenticated split/merge/selfdestruct handlers may
+             * consume this topology; write/effect/collection-bearing lifecycle rows remain fenced from kernel admission. */
             lifecycleTopology?: {
                 version: 2;
-                kind: 'split' | 'merge';
+                kind: 'split' | 'merge' | 'selfdestruct';
                 coordinate: 'participant';
                 /** Exact transaction-wide census for the participant's minting NFT category. */
                 categoryCensus: {
@@ -1411,6 +1463,15 @@ export interface Artifact {
                         parameterIndex: number;
                         addend: number;
                     };
+                };
+                /**
+                 * Fixed master+dataNft prefix beside the minting lifecycle tail.
+                 * `preserve` = read-bearing split/merge; `consume` = fixed-scalar selfdestruct.
+                 */
+                resourcePrefix?: {
+                    dataNftCount: number;
+                    mode: 'preserve' | 'consume';
+                    nftIndices: readonly number[];
                 };
                 inputSpans: readonly {
                     mode: 'preserve' | 'consume';
@@ -1489,10 +1550,18 @@ export interface Artifact {
                 perRow?: boolean;
                 /** This key and its `_row` sibling may exchange the shared/row-local physical entry for this invocation. */
                 swappable?: boolean;
+                /** Opaque compiler identity shared by every component of one fixed collection-key tuple. */
+                entryTupleGroup?: number;
+                /** Component ordinal within the complete tuple. */
+                keyComponentIndex?: number;
+                /** Corresponding component in the fixed alternate physical tuple lane. */
+                alternateRouteInput?: string;
             }[];
             /** Route entry-slot ordinals which can be consumed by this selected handler. Used by composers to leave
              * every other union-route entry coordinate as an inactive balanced slot. */
             physicalEntrySlots?: readonly number[];
+            /** Fixed physical route-slot choices aligned one-to-one with the handler's direct entry accesses. */
+            physicalEntrySlotAlternatives?: readonly (readonly number[])[];
         }[];
     };
     diagnostics?: readonly {

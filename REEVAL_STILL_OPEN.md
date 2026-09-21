@@ -11,10 +11,10 @@ Branch: `grok/kernel-comprehensive-fixtures`
 
 ## Residual
 - DualRuntimeSet-width × keccak density — inherent (probe: max trailing 130; salt cannot clear margin)
-- State-bearing selfdestruct / read-bearing split-merge — still `KERNEL_LIFECYCLE`
-  (graph+verifier require master-only `blockSize===1`; deletion/journal binding missing).
-  Note: split/merge **writes/events/transfers/calls** are refused earlier by language rule
-  (`InvalidModifierCombinationError`), not only by the bus fence.
+- Read-bearing **merge** compose — admitted with preserve `resourcePrefix`, but consumed-master
+  tails still re-enter the handler body (unsafe for NFT state reads). Split-read compose is the
+  settled proof of the preserve prefix (`KernelAtomicSplitReadLifecycle`).
+- Collection/event/blockhash-bearing selfdestruct — still `KERNEL_LIFECYCLE`
 - Detached `sig` leaves on lifecycle handlers — still `KERNEL_TX_SIGNATURE` (honest)
 - ~~proxy→foreign-proxy variable-width Item[] — non-delegate eligibility fence (int[] settles)~~
   **SETTLED**: `InlineStoragePointerCalls.applyRename` now skips `FieldAccessNode` member names
@@ -25,6 +25,9 @@ Branch: `grok/kernel-comprehensive-fixtures`
   (`KernelSelfdestructStatementCompose`) — kernel pin uses active master slot; standalone keeps whole-tx pin
 - ~~Lifecycle + V4 KTS~~ **SETTLED** (`KernelLifecycleV4SignatureCompose`) — V4 suffix stays neutral
   `mode=0,count=0`; selector-derived lifecycle beside signed siblings
+- ~~Fixed-scalar state-bearing selfdestruct~~ **SETTLED** (`KernelSelfdestructStateCompose`)
+  — consume dataNft prefix + destroy unlockers + token-free reclaim pads
+- ~~Read-bearing split~~ **SETTLED** (`KernelAtomicSplitReadLifecycle`) — preserve dataNft prefix
 
 ## Out of scope
 Marketplace / `requiredKernelProofs` / plan-wave labels / chipnet

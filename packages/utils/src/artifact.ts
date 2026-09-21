@@ -1516,7 +1516,7 @@ export interface Artifact {
        * only a canonical fixed-field suffix in the final existing data NFT. */
       lifecycle?: { kind: 'upgrade'; layout: 'same' | 'in-place-append-v1' };
       /** Participant-local lifecycle planning metadata. Authenticated split/merge/selfdestruct handlers may
-       * consume this topology; state/effect-bearing lifecycle rows remain fenced from kernel admission. */
+       * consume this topology; write/effect/collection-bearing lifecycle rows remain fenced from kernel admission. */
       lifecycleTopology?: {
         version: 2;
         kind: 'split' | 'merge' | 'selfdestruct';
@@ -1529,6 +1529,15 @@ export interface Artifact {
           | { source: 'parameter'; parameterIndex: number; addend: number };
           outputCount: { source: 'fixed'; value: number }
           | { source: 'parameter'; parameterIndex: number; addend: number };
+        };
+        /**
+         * Fixed master+dataNft prefix beside the minting lifecycle tail.
+         * `preserve` = read-bearing split/merge; `consume` = fixed-scalar selfdestruct.
+         */
+        resourcePrefix?: {
+          dataNftCount: number;
+          mode: 'preserve' | 'consume';
+          nftIndices: readonly number[];
         };
         inputSpans: readonly {
           mode: 'preserve' | 'consume';

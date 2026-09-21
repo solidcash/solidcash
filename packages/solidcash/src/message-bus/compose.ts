@@ -18,6 +18,7 @@ import type { ConstructorArgument, FunctionArgument } from '../Argument.js';
 import type {
   ContractUnlocker, Output, TokenDetails, TransactionDetails, UnlockableUtxo, Unlocker, Utxo,
 } from '../interfaces.js';
+import { isContractUnlocker } from '../interfaces.js';
 import { TransactionBuilder } from '../TransactionBuilder.js';
 import { Contract } from '../Contract.js';
 import { addressToLockScript, scriptToLockingBytecode } from '../utils.js';
@@ -36,9 +37,9 @@ import {
 } from '../stateful/logical-identity.js';
 import { canApplyRepairedNftCommitment } from '../stateful/computed-output-repair.js';
 import { tryParseEventCommitment } from '../stateful/StateReader.js';
-import { getDataNftAddress, getEntryNftLockingBytecode } from '../stateful/covenant-helpers.js';
 import {
-  createMessageBusVerifierUnlocker, getMessageBusVerifierLockingBytecodeForArtifact,
+  createDestroyDataNftUnlocker, createMessageBusVerifierUnlocker, getDataNftAddress,
+  getEntryNftLockingBytecode, getMessageBusVerifierLockingBytecodeForArtifact,
 } from '../stateful/covenant-helpers.js';
 import { encodeAtomicMessageBusCallManifest, encodeAtomicMessageEnvelope } from './atomic.js';
 import { peekBuilderBuildId } from '../stateful/StatefulContract.js';
@@ -3203,6 +3204,31 @@ export class AtomicMessageBusComposition {
             );
           }
           local.outputs[0] = { to: retired.recipient, amount: masterInput.satoshis };
+          const dataNftCount = participant.artifact.stateLayout?.dataNftCount ?? 0;
+          const publishedBase = graph.layout.participantInputs[participant.participant] ?? 0;
+          if (!isContractUnlocker(masterInput.unlocker)) {
+            throw new Error(
+              `messageBus: selfdestruct participant ${participant.participant} master unlocker is not a contract unlocker`,
+            );
+          }
+          const masterContract = masterInput.unlocker.contract;
+          for (let nftOffset = 1; nftOffset <= dataNftCount; nftOffset += 1) {
+            const nftInput = local.inputs[nftOffset];
+            if (!nftInput || nftInput.token?.nft?.capability !== 'mutable'
+              || nftInput.token.category.toLowerCase() !== categories[participant.participant].toLowerCase()) {
+              throw new Error(
+                `messageBus: selfdestruct participant ${participant.participant} lacks dataNft ${nftOffset - 1}`,
+              );
+            }
+            local.outputs[nftOffset] = { to: retired.recipient, amount: nftInput.satoshis };
+            // Preserve unlockers require category recreation; retirement pads are token-free.
+            local.inputs[nftOffset] = {
+              ...nftInput,
+              unlocker: createDestroyDataNftUnlocker(
+                masterContract, publishedBase, categories[participant.participant],
+              ),
+            };
+          }
         }
         const authenticatedOutputLockingBytecode = participant.outputLockingBytecode?.toLowerCase();
         if (authenticatedOutputLockingBytecode !== undefined) {
@@ -3590,10 +3616,14 @@ export class AtomicMessageBusComposition {
               ? { ...slot, conditional: true }
               : slot);
           const lifecycleTailCount = split?.funders.length ?? merge?.consumedMasters.length ?? 0;
+          const lifecyclePrefix = participant.lifecycle === undefined ? 0
+            : (effectiveLayout.slots.filter((slot) =>
+              slot.kind === 'dataNft' || slot.kind === 'readOnlyDataNft').length);
+          const lifecycleTrailingBase = 1 + lifecyclePrefix;
           const lifecycleTailSlots = Array.from(
             { length: lifecycleTailCount }, (_, index) => ({
               kind: merge === undefined ? 'trailing' as const : 'lifecycleMaster' as const,
-              offset: index + 1,
+              offset: lifecycleTrailingBase + index,
             }),
           );
           stateInputUnlocker.abiFunction = {
@@ -3602,7 +3632,7 @@ export class AtomicMessageBusComposition {
               ...effectiveLayout,
               blockSize: actualSize,
               slots: [...effectiveSlots, ...lifecycleTailSlots],
-              ...(lifecycleTailCount === 0 ? {} : { trailingBase: 1 }),
+              ...(lifecycleTailCount === 0 ? {} : { trailingBase: lifecycleTrailingBase }),
               trailingCapacity: actualSize - fixedSize,
             },
           };
@@ -4921,7 +4951,11 @@ export class AtomicMessageBusComposition {
           const lockingBytecodeChanges = inputMutable && outputMutable
             && binToHex(inputLockingBytecode) !== binToHex(outputLockingBytecode);
           const mode = inputMutable ? (outputMutable ? (lockingBytecodeChanges ? 5 : 0) : 2) : 1;
-          if (slot.kind !== 'entry' && slot.kind !== 'trailing' && mode !== 0) {
+          const retirementConsume = mode === 2
+            && (slot.kind === 'dataNft' || slot.kind === 'readOnlyDataNft')
+            && (selfdestructByParticipant.has(slot.participant)
+              || plan.participants[slot.participant]?.lifecycle?.kind === 'selfdestruct');
+          if (slot.kind !== 'entry' && slot.kind !== 'trailing' && mode !== 0 && !retirementConsume) {
             if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
               ?.SOLIDC_DEBUG_ATOMIC_GRAPH === '1') {
               console.error('atomic-fixed-resource-not-preserved', {

@@ -11,9 +11,16 @@ export interface ResolvedKernelLifecycleSpan {
   count: number;
 }
 
+export interface ResolvedKernelLifecycleResourcePrefix {
+  dataNftCount: number;
+  mode: 'preserve' | 'consume';
+  nftIndices: readonly number[];
+}
+
 export interface ResolvedKernelLifecycleTopology {
   kind: 'split' | 'merge' | 'selfdestruct';
   categoryCensus: { inputCount: number; outputCount: number };
+  resourcePrefix?: ResolvedKernelLifecycleResourcePrefix;
   inputSpans: readonly ResolvedKernelLifecycleSpan[];
   outputSpans: readonly ResolvedKernelLifecycleSpan[];
 }
@@ -157,6 +164,34 @@ const resolveSpan = (
   return { mode, offset, count };
 };
 
+const resolveResourcePrefix = (
+  value: unknown,
+  kind: ResolvedKernelLifecycleTopology['kind'],
+): ResolvedKernelLifecycleResourcePrefix | undefined => {
+  if (value === undefined) return undefined;
+  if (!isRecord(value)) throw new Error('resourcePrefix must be an object');
+  const keys = Object.keys(value).sort();
+  if (keys.join(',') !== 'dataNftCount,mode,nftIndices') {
+    throw new Error('resourcePrefix has an unsupported schema');
+  }
+  const expectedMode = kind === 'selfdestruct' ? 'consume' : 'preserve';
+  if (value.mode !== expectedMode) throw new Error('resourcePrefix.mode is not canonical');
+  if (!Number.isSafeInteger(value.dataNftCount) || (value.dataNftCount as number) < 1
+    || (value.dataNftCount as number) > 0xffff) {
+    throw new Error('resourcePrefix.dataNftCount must be a positive uint16');
+  }
+  if (!Array.isArray(value.nftIndices) || value.nftIndices.length !== value.dataNftCount
+    || value.nftIndices.some((index, position) => !Number.isSafeInteger(index) || (index as number) < 0
+      || (index as number) > 0xffff || (index as number) !== position)) {
+    throw new Error('resourcePrefix.nftIndices must be compact 0..D-1');
+  }
+  return {
+    dataNftCount: value.dataNftCount as number,
+    mode: expectedMode,
+    nftIndices: Object.freeze([...(value.nftIndices as number[])]),
+  };
+};
+
 /** Resolve only the exact lifecycle layouts currently published by the compiler. */
 export function planKernelLifecycleTopology(
   topology: unknown,
@@ -164,7 +199,9 @@ export function planKernelLifecycleTopology(
 ): ResolvedKernelLifecycleTopology {
   if (!isRecord(topology)) throw new Error('lifecycle topology must be an object');
   const keys = Object.keys(topology).sort();
-  if (keys.join(',') !== 'categoryCensus,coordinate,inputSpans,kind,outputSpans,version') {
+  const allowed = keys.join(',') === 'categoryCensus,coordinate,inputSpans,kind,outputSpans,version'
+    || keys.join(',') === 'categoryCensus,coordinate,inputSpans,kind,outputSpans,resourcePrefix,version';
+  if (!allowed) {
     throw new Error('lifecycle topology has an unsupported schema');
   }
   if (topology.version !== 2 || topology.coordinate !== 'participant') {
@@ -183,6 +220,8 @@ export function planKernelLifecycleTopology(
     || topology.categoryCensus.nftCapability !== 'minting') {
     throw new Error('categoryCensus is not canonical');
   }
+  const resourcePrefix = resolveResourcePrefix(topology.resourcePrefix, topology.kind);
+  const trailingOffset = 1 + (resourcePrefix?.dataNftCount ?? 0);
 
   if (topology.kind === 'selfdestruct') {
     if (topology.inputSpans.length !== 1 || topology.outputSpans.length !== 0) {
@@ -197,6 +236,7 @@ export function planKernelLifecycleTopology(
         outputCount: resolveCount(topology.categoryCensus.outputCount, parameters, 'fixed', fixedParameterIndex, 0,
           'categoryCensus.outputCount', 0),
       },
+      ...(resourcePrefix && { resourcePrefix }),
       inputSpans: [resolveSpan(topology.inputSpans[0], parameters, 'consume', 0,
         consumedIdentity, 'fixed', fixedParameterIndex, 'inputSpans[0]')],
       outputSpans: [],
@@ -230,12 +270,13 @@ export function planKernelLifecycleTopology(
     return {
       kind: 'split',
       categoryCensus,
+      ...(resourcePrefix && { resourcePrefix }),
       inputSpans: [resolveSpan(topology.inputSpans[0], parameters, 'preserve', 0,
         splitPreservedIdentity, 'fixed', parameterIndex, 'inputSpans[0]')],
       outputSpans: [
         resolveSpan(topology.outputSpans[0], parameters, 'preserve', 0,
           splitPreservedIdentity, 'fixed', parameterIndex, 'outputSpans[0]'),
-        resolveSpan(topology.outputSpans[1], parameters, 'create', 1,
+        resolveSpan(topology.outputSpans[1], parameters, 'create', trailingOffset,
           createdIdentity, 'parameter', parameterIndex, 'outputSpans[1]'),
       ],
     };
@@ -247,10 +288,11 @@ export function planKernelLifecycleTopology(
   return {
     kind: 'merge',
     categoryCensus,
+    ...(resourcePrefix && { resourcePrefix }),
     inputSpans: [
       resolveSpan(topology.inputSpans[0], parameters, 'preserve', 0,
         preservedIdentity, 'fixed', parameterIndex, 'inputSpans[0]'),
-      resolveSpan(topology.inputSpans[1], parameters, 'consume', 1,
+      resolveSpan(topology.inputSpans[1], parameters, 'consume', trailingOffset,
         consumedIdentity, 'parameter', parameterIndex, 'inputSpans[1]'),
     ],
     outputSpans: [resolveSpan(topology.outputSpans[0], parameters, 'preserve', 0,

@@ -82,6 +82,8 @@ Peers already settled: fan-in/out, nested callsite, sidecar self/foreign/proxy/p
 - **Honest fence (F):** state/effect-bearing split/merge/selfdestruct remain `KERNEL_LIFECYCLE` until journal-bound geometry; detached `sig` on lifecycle handlers remains `KERNEL_TX_SIGNATURE`.
 
 ## Product gaps closed this stream
+- **Fixed-scalar state-bearing selfdestruct:** modifier-only `kill()` with `int` dataNft under compose; destroy unlockers + token-free reclaim pads (`KernelSelfdestructStateCompose`).
+- **Read-bearing split:** `require(this.marker > 0)` under `split(count)` preserves dataNft prefix (`KernelAtomicSplitReadLifecycle`). Merge admits the same prefix; compose settle for merge tails pending.
 - **Statement-form selfdestruct(addr) under compose:** master-only contracts with constructor-bound recipients pin `outputs[INPUTINDEX]` under `messageBus: true`; standalone keeps whole-tx pin + fee floor. `KernelSelfdestructStatementCompose`.
 - **Lifecycle + V4 transaction-signature provenance:** remove SDK/verifier mutual exclusion; V4 suffix stays neutral while selector-derived lifecycle coexists with KTS siblings. `KernelLifecycleV4SignatureCompose`.
 - **Resource-free selfdestruct under compose:** offloaded `compactAtomicBinder` soft-binds token-free reclaim at the participant base; zero-parameter lifecycle handlers require mode 3 (not blanket mode 0). `KernelSelfdestructCompose` settles kill()+recipient reclaim with retired minting category.
@@ -103,7 +105,8 @@ Peers already settled: fan-in/out, nested callsite, sidecar self/foreign/proxy/p
 
 ## Still open / fence
 - DualRuntimeSet-width density wall (inherent)
-- State/effect-bearing split/merge/selfdestruct remain `KERNEL_LIFECYCLE`; resource-free + statement-form master-only selfdestruct, split/merge, upgrade/create, and lifecycle+V4 KTS settled
+- Collection/event selfdestruct and merge-tail state-read compose remain open; fixed-scalar state selfdestruct,
+  read-bearing split, resource-free lifecycle, statement-form master-only selfdestruct, and lifecycle+V4 KTS settled
 - ~~proxy→foreign-proxy variable-width Item[] remains non-delegate compile/eligibility fence (int[] settles)~~
   settled via FieldAccess rename guard in `InlineStoragePointerCalls`
 

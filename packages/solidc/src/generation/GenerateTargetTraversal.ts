@@ -5770,7 +5770,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Upgrade/unsafe(0)/selfdestruct modifiers need ALL data NFTs regardless of body accesses,
     // because the modifier-injected code operates on the full set of data NFTs.
     // unsafe(1)/unsafe(2) use accessedNftIndices only (body reads allowed, writes forbidden).
-    // split/merge: empty [] (no data NFTs - purely minting NFT lifecycle).
+    // split/merge: preserve accessed read-only data NFTs; resource-free bodies keep empty [].
     const isSplitOrMerge = node.modifiers.includes(FunctionModifier.SPLIT)
       || node.modifiers.includes(FunctionModifier.MERGE);
     const isConstructor = node.name === '__construct';
@@ -5784,7 +5784,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const hasDelegatecall = node.lowLevelCalls?.some((lc) => lc.callMode === 'delegatecall') ?? false;
     const hasInternalCall = this.collectInvokedFunctionIds(node.body).size > 0;
     if (isSplitOrMerge && this.dataNftCount > 0) {
-      node.requiredNftIndices = [];
+      node.requiredNftIndices = accessedNftIndices;
     } else if (
       // Genesis mints the complete state layout. Even untouched/default fields must be covenant-authenticated:
       // otherwise a hostile deployment can seed arbitrary commitments in NFTs the constructor does not access.
@@ -6727,8 +6727,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Split/merge: dedicated covenant verification (handled in later steps)
     if (isSplit) {
       this.emitSplitCovenantVerification(node);
+      if ((node.requiredNftIndices?.length ?? 0) > 0) {
+        this.emitAutoCovenantVerification(node);
+      }
     } else if (isMerge) {
       this.emitMergeCovenantVerification(node);
+      if ((node.requiredNftIndices?.length ?? 0) > 0) {
+        this.emitAutoCovenantVerification(node);
+      }
     } else if (unsafeTier !== null && unsafeTier >= 1) {
       // Tiered unsafe: emit only the checks for this tier
       this.emitMasterSelfPreservation(node);
@@ -33957,18 +33963,19 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   /**
    * Emit merge covenant verification: verifies N consumed master inputs are merged into 1.
    * Dual-path: surviving master (INPUTINDEX==0) vs consumed master (INPUTINDEX>0).
-   * Transaction shape: [master_surviving, consumed_1..N, funding...] -> [master_preserved, change]
+   * Transaction shape: [master_surviving, dataNft*D?, consumed_1..N, funding...] -> [master_preserved, dataNft*D?, change]
    */
   private emitMergeCovenantVerification(node: FunctionDefinitionNode): void {
     const locationData: SingleLocationData = { location: node.body.location, positionHint: PositionHint.END };
+    const lifecyclePrefixSize = node.requiredNftIndices?.length ?? 0;
 
-    // Dual-path dispatch based on INPUTINDEX
+    // Dual-path dispatch: surviving master at the participant owner index vs consumed masters after the prefix.
     this.emit(Op.OP_INPUTINDEX, locationData);
-    this.emit(encodeInt(0n), locationData);
+    this.emitMasterInputIndex(locationData);
     this.emit(Op.OP_NUMEQUAL, locationData);
     this.emit(Op.OP_IF, locationData);
 
-    // === Path A: Surviving master (INPUTINDEX == 0) ===
+    // === Path A: Surviving master ===
 
     // 1. Master self-preservation (LBC + category + capability)
     this.emitMasterSelfPreservation(node);
@@ -34013,7 +34020,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.pushToStack('(master_lbc)');
     // Stack: [..., merge_n, master_cat_cap, master_lbc]
 
-    // 4. Loop i = N down to 1: verify consumed inputs
+    // 4. Loop i = N down to 1: verify consumed inputs at D+i (after the fixed dataNft prefix)
     // Pick N: pos = master_lbc(0), cat_cap(1), merge_n(2)
     this.emit(encodeInt(2n), locationData);
     this.emit(Op.OP_PICK, locationData);
@@ -34022,16 +34029,20 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     this.emit(Op.OP_BEGIN, locationData);
 
-    // input[i] category+capability - must be minting + same category
+    // input[D+i] category+capability - must be minting + same category
     this.emit(Op.OP_DUP, locationData);                 // [.., lbc, i, i]
+    this.emit(encodeInt(BigInt(lifecyclePrefixSize)), locationData);
+    this.emit(Op.OP_ADD, locationData);                 // [.., lbc, i, D+i]
     this.emit(Op.OP_UTXOTOKENCATEGORY, locationData);   // [.., lbc, i, cat_cap_i]
     // Pick master_cat_cap (pos: cat_cap_i=0, i=1, lbc=2, cat_cap=3)
     this.emit(encodeInt(3n), locationData);
     this.emit(Op.OP_PICK, locationData);
     this.emit(Op.OP_EQUALVERIFY, locationData);          // full 33-byte match (category + minting cap)
 
-    // input[i] locking bytecode - must match master
+    // input[D+i] locking bytecode - must match master
     this.emit(Op.OP_DUP, locationData);                  // [.., lbc, i, i]
+    this.emit(encodeInt(BigInt(lifecyclePrefixSize)), locationData);
+    this.emit(Op.OP_ADD, locationData);
     this.emit(Op.OP_UTXOBYTECODE, locationData);         // [.., lbc, i, lbc_i]
     // Pick master_lbc (pos: lbc_i=0, i=1, lbc=2)
     this.emit(encodeInt(2n), locationData);
@@ -34076,38 +34087,49 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.popFromStack(2);
 
     // input[0] LBC must match ours (same contract)
-    this.emit(encodeInt(0n), locationData);
-    this.emit(Op.OP_UTXOBYTECODE, locationData);          // input[0].lbc
-    this.pushToStack('(input0_lbc)');
+    this.emitMasterInputIndex(locationData);
+    this.emit(Op.OP_UTXOBYTECODE, locationData);          // surviving master lbc
+    this.pushToStack('(master_lbc_b)');
     this.emit(Op.OP_INPUTINDEX, locationData);
     this.emit(Op.OP_UTXOBYTECODE, locationData);           // self.lbc
     this.pushToStack('(self_lbc)');
     this.emit(Op.OP_EQUALVERIFY, locationData);
     this.popFromStack(2);
 
-    // FT conservation: surviving output[0] must hold at least as many FTs as consumed input
-    // (input[self].ft <= output[0].ft)
+    // FT conservation: surviving master output must hold at least as many FTs as this consumed input
     this.emit(Op.OP_INPUTINDEX, locationData);
     this.emit(Op.OP_UTXOTOKENAMOUNT, locationData);
     this.pushToStack('(self_ft)');
-    this.emit(encodeInt(0n), locationData);
+    this.emitMasterInputIndex(locationData);
     this.emit(Op.OP_OUTPUTTOKENAMOUNT, locationData);
-    this.pushToStack('(out0_ft)');
+    this.pushToStack('(out_master_ft)');
     this.emit(Op.OP_LESSTHANOREQUAL, locationData);
     this.emit(Op.OP_VERIFY, locationData);
     this.popFromStack(2);
 
-    // Verify INPUTINDEX <= N (within merge range)
+    // Verify owner+D < INPUTINDEX <= owner+D+N (consumed masters after the fixed dataNft prefix)
     this.emit(Op.OP_INPUTINDEX, locationData);
     this.pushToStack('(input_idx)');
-    // Pick merge count param from the stack
+    this.emitMasterInputIndex(locationData);
+    this.emit(encodeInt(BigInt(lifecyclePrefixSize)), locationData);
+    this.emit(Op.OP_ADD, locationData);
+    this.pushToStack('(prefix_end)');
+    this.emit(Op.OP_GREATERTHAN, locationData);
+    this.emit(Op.OP_VERIFY, locationData);
+    this.popFromStack(2);
+    this.emit(Op.OP_INPUTINDEX, locationData);
+    this.pushToStack('(input_idx_b)');
     const mergeIdxB = this.getStackIndex(node.mergeCountParam!);
     this.emit(encodeInt(BigInt(mergeIdxB)), locationData);
     this.emit(Op.OP_PICK, locationData);
     this.pushToStack('(merge_n_b)');
+    this.emitMasterInputIndex(locationData, 1);
+    this.emit(Op.OP_ADD, locationData);
+    this.emit(encodeInt(BigInt(lifecyclePrefixSize)), locationData);
+    this.emit(Op.OP_ADD, locationData);
     this.emit(Op.OP_LESSTHANOREQUAL, locationData);
     this.emit(Op.OP_VERIFY, locationData);
-    this.popFromStack(2); // input_idx and merge_n_b
+    this.popFromStack(2);
 
     this.emit(Op.OP_ENDIF, locationData);
   }
@@ -34183,10 +34205,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   /**
    * Emit split covenant verification: verifies the minting NFT is split into N new outputs.
-   * Transaction shape: [master] -> [master_preserved, new_minting_1..N, change]
+   * Transaction shape: [master, dataNft*D?] -> [master_preserved, dataNft*D?, new_minting_1..N, change]
    */
   private emitSplitCovenantVerification(node: FunctionDefinitionNode): void {
     const locationData: SingleLocationData = { location: node.body.location, positionHint: PositionHint.END };
+    const lifecyclePrefixSize = node.requiredNftIndices?.length ?? 0;
 
     // 1. Master self-preservation (LBC + category + capability)
     this.emitMasterSelfPreservation(node);
@@ -34248,11 +34271,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     this.emit(Op.OP_BEGIN, locationData);
 
-    // output[master input index + i] category+capability. In an atomic transaction this participant may start
-    // after earlier participant blocks, so the loop counter is a participant-local offset, not an absolute vout.
+    // output[master + D + i] category+capability. Created masters sit after the fixed dataNft prefix.
+    // In an atomic transaction this participant may start after earlier blocks, so the counter is local.
     this.emit(Op.OP_DUP, locationData);                // [.., lbc, i, i]
-    this.emitMasterInputIndex(locationData);            // [.., lbc, i, i, base]
-    this.emit(Op.OP_ADD, locationData);                 // [.., lbc, i, base+i]
+    this.emit(encodeInt(BigInt(lifecyclePrefixSize)), locationData);
+    this.emit(Op.OP_ADD, locationData);                 // [.., lbc, i, i+D]
+    this.emitMasterInputIndex(locationData);            // [.., lbc, i, i+D, base]
+    this.emit(Op.OP_ADD, locationData);                 // [.., lbc, i, base+D+i]
     this.emit(Op.OP_OUTPUTTOKENCATEGORY, locationData); // [.., lbc, i, cat_cap_i]
     this.emit(encodeInt(32n), locationData);
     this.emit(Op.OP_SPLIT, locationData);               // [.., lbc, i, cat_32_i, cap_i]
@@ -34264,8 +34289,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_PICK, locationData);                 // [.., lbc, i, cat_32_i, master_cat_32]
     this.emit(Op.OP_EQUALVERIFY, locationData);          // [.., lbc, i]
 
-    // output[i] locking bytecode
+    // output[D+i] locking bytecode
     this.emit(Op.OP_DUP, locationData);                  // [.., lbc, i, i]
+    this.emit(encodeInt(BigInt(lifecyclePrefixSize)), locationData);
+    this.emit(Op.OP_ADD, locationData);
     this.emitMasterInputIndex(locationData);
     this.emit(Op.OP_ADD, locationData);
     this.emit(Op.OP_OUTPUTBYTECODE, locationData);       // [.., lbc, i, lbc_i]
@@ -34274,16 +34301,20 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_PICK, locationData);
     this.emit(Op.OP_EQUALVERIFY, locationData);          // [.., lbc, i]
 
-    // output[i] commitment must be empty (new threads start with no state)
+    // output[D+i] commitment must be empty (new threads start with no state)
     this.emit(Op.OP_DUP, locationData);                  // [.., lbc, i, i]
+    this.emit(encodeInt(BigInt(lifecyclePrefixSize)), locationData);
+    this.emit(Op.OP_ADD, locationData);
     this.emitMasterInputIndex(locationData);
     this.emit(Op.OP_ADD, locationData);
     this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, locationData); // [.., lbc, i, commitment_i]
     this.emit(encodeInt(0n), locationData);               // [.., lbc, i, commitment_i, empty]
     this.emit(Op.OP_EQUALVERIFY, locationData);           // [.., lbc, i]
 
-    // output[i] FT amount must be 0
+    // output[D+i] FT amount must be 0
     this.emit(Op.OP_DUP, locationData);                   // [.., lbc, i, i]
+    this.emit(encodeInt(BigInt(lifecyclePrefixSize)), locationData);
+    this.emit(Op.OP_ADD, locationData);
     this.emitMasterInputIndex(locationData);
     this.emit(Op.OP_ADD, locationData);
     this.emit(Op.OP_OUTPUTTOKENAMOUNT, locationData);     // [.., lbc, i, amount_i]

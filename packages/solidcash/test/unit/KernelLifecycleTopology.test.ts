@@ -132,6 +132,38 @@ describe('kernel lifecycle topology planning prerequisite', () => {
     });
   });
 
+  it('resolves preserve and consume resourcePrefix beside minting spans', () => {
+    const splitPrefixed = clone(splitTopology()) as ReturnType<typeof splitTopology> & {
+      resourcePrefix?: { dataNftCount: number; mode: string; nftIndices: number[] };
+    };
+    splitPrefixed.resourcePrefix = { dataNftCount: 1, mode: 'preserve', nftIndices: [0] };
+    splitPrefixed.outputSpans[1]!.offset = 2;
+    expect(planKernelLifecycleTopology(splitPrefixed, [2n])).toMatchObject({
+      kind: 'split',
+      resourcePrefix: { dataNftCount: 1, mode: 'preserve', nftIndices: [0] },
+      outputSpans: [
+        { mode: 'preserve', offset: 0, count: 1 },
+        { mode: 'create', offset: 2, count: 2 },
+      ],
+    });
+
+    const retiredPrefixed = clone(selfdestructTopology()) as ReturnType<typeof selfdestructTopology> & {
+      resourcePrefix?: { dataNftCount: number; mode: string; nftIndices: number[] };
+    };
+    retiredPrefixed.resourcePrefix = { dataNftCount: 1, mode: 'consume', nftIndices: [0] };
+    expect(planKernelLifecycleTopology(retiredPrefixed, [])).toMatchObject({
+      kind: 'selfdestruct',
+      resourcePrefix: { dataNftCount: 1, mode: 'consume', nftIndices: [0] },
+    });
+
+    const mismatched = clone(splitPrefixed);
+    mismatched.resourcePrefix = { dataNftCount: 1, mode: 'consume', nftIndices: [0] };
+    expect(() => planKernelLifecycleTopology(mismatched, [2n])).toThrow(/resourcePrefix\.mode/);
+    const sparse = clone(splitPrefixed);
+    sparse.resourcePrefix = { dataNftCount: 1, mode: 'preserve', nftIndices: [1] };
+    expect(() => planKernelLifecycleTopology(sparse, [2n])).toThrow(/nftIndices/);
+  });
+
   it('rejects missing, extra, shifted, and inconsistent spans', () => {
     const missing = clone(splitTopology());
     missing.outputSpans.pop();

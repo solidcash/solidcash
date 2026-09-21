@@ -50,6 +50,7 @@ import {
   TokenContainerMethodStatementNode, SelfdestructStatementNode,
   AssemblyStatementNode, CastNode, IntLiteralNode, TryCatchNode,
   WhileNode, DoWhileNode, TernaryOpNode, UnaryOpNode, BreakNode, ContinueNode,
+  ExternalCallExpression,
   BranchNode, UncheckedNode, SwitchNode, StateVariableNode, StateVariableVisibility,
 } from './ast/AST.js';
 import AstBuilder from './ast/AstBuilder.js';
@@ -3655,19 +3656,85 @@ function hasUntransportedChunkableWrite(
   return unsupported;
 }
 
+type FixedChunkableResourceWrite = {
+  node: MappingAssignNode | ArrayAssignNode;
+  activation?: ExternalCallExpression;
+};
+
 /**
- * Prove the narrow whole-entry shape which the route's typed collection pool can carry across selected rows.
- * The proof deliberately excludes push/pop/element mutation, conditional effects, helper-hidden writes, and
- * multiple resources. Every admitted handler is cloned into the same route-owned collection journal: identical
- * collection/key identities reuse one pending value and all distinct identities flush exactly once after the row
- * loop. The direct source entry point retains its ordinary standalone continuation handling.
+ * Bool-parameter activation recipes for fixed-chunkable path selection. v1 admits only a direct boolean
+ * handler parameter or its logical NOT — enough for resource-indexed presence without opening general
+ * path/effect schedules.
  */
-function pooledChunkableWholeEntryWrite(
+function fixedChunkableBoolParamActivation(
+  expression: ExpressionNode,
+  fn: FunctionDefinitionNode,
+): ExternalCallExpression | undefined {
+  const visible = fn.parameters.filter((parameter) => !parameter.name.startsWith('__internal__'));
+  if (expression instanceof IdentifierNode) {
+    const parameterIndex = visible.findIndex((parameter) => parameter.name === expression.name);
+    if (parameterIndex < 0) return undefined;
+    if (visible[parameterIndex]!.type !== PrimitiveType.BOOL) return undefined;
+    return { kind: 'source', source: { kind: 'forward', paramIndex: parameterIndex } };
+  }
+  if (expression instanceof UnaryOpNode && expression.operator === UnaryOperator.NOT) {
+    const inner = fixedChunkableBoolParamActivation(expression.expression, fn);
+    return inner === undefined ? undefined : { kind: 'unary', operator: '!', expression: inner };
+  }
+  return undefined;
+}
+
+const nodeContainsChunkableWrite = (
+  root: Node,
+  chunkableNames: ReadonlySet<string>,
+  footprintNames: ReadonlySet<string>,
+  locallyBound: ReadonlySet<string>,
+): boolean => {
+  let found = false;
+  const walk = (node: Node): void => {
+    if (found) return;
+    if (node instanceof MappingAssignNode && chunkableNames.has(node.name) && footprintNames.has(node.name)) {
+      found = true;
+      return;
+    }
+    if (node instanceof ArrayAssignNode && footprintNames.has(node.name) && !locallyBound.has(node.name)) {
+      found = true;
+      return;
+    }
+    for (const [field, value] of Object.entries(node)) {
+      if (['location', 'resolvedFunction', 'functionReference', 'definition', 'collection', 'symbolTable',
+        'stateVariable', 'type'].includes(field)) continue;
+      if (value instanceof Node) walk(value);
+      else if (Array.isArray(value)) {
+        for (const item of value) if (item instanceof Node) walk(item);
+      }
+    }
+  };
+  walk(root);
+  return found;
+};
+
+/**
+ * Prove the fixed-row continuation shape whose handler-local chunk pins are sound when the enclosing route
+ * admits at most one such row. The proof excludes push/pop/element mutation, helper-hidden writes, and general
+ * control-flow effects. Multiple distinct storage resources are allowed: the SDK publishes ordered
+ * continuation-resource claims so each band is authenticated independently under the scalar band[0] witness.
+ * A write may also sit behind a single bool-parameter BranchNode (empty else); its activation recipe is
+ * published on the entry access so inactive resources omit continuation bands without shifting entry layout.
+ * A route-level aggregate selector counter still supplies the missing terminality fact across rows.
+ */
+function fixedChunkableWriteWithSingleOccurrenceBound(
   fn: FunctionDefinitionNode,
   collections: ReadonlyMap<string, CollectionNode>,
   functionsByName: Map<string, FunctionDefinitionNode[]>,
   footprintCache: ReturnType<typeof createFootprintAnalysisCache>,
-): { collection: string; effectOrdinal: number } | undefined {
+): {
+  collection: string;
+  collections: string[];
+  effectOrdinal: number;
+  effectOrdinals: number[];
+  resources: Array<{ collection: string; effectOrdinal: number; activation?: ExternalCallExpression }>;
+} | undefined {
   if (!fn.body) return undefined;
   const chunkableNames = new Set([...collections].flatMap(([name, collection]) => (
     collection.sorted && isChunkableValueType(collection.innermostValueType) ? [name] : []
@@ -3679,21 +3746,44 @@ function pooledChunkableWholeEntryWrite(
       const name = resource.slice('collection:'.length).split(':', 1)[0];
       return chunkableNames.has(name) ? [name] : [];
     }));
-  if (footprintNames.size !== 1) return undefined;
-  const [collection] = [...footprintNames];
+  if (footprintNames.size === 0) return undefined;
   const locallyBound = new Set(fn.parameters.map((parameter) => parameter.name));
   walkInvocationAst(fn.body, (node) => {
     if (node instanceof VariableDefinitionNode) locallyBound.add(node.name);
   });
-  const direct: Array<MappingAssignNode | ArrayAssignNode> = [];
+  const direct: FixedChunkableResourceWrite[] = [];
   let unsupported = false;
-  const scan = (node: Node, conditional: boolean): void => {
+  const scan = (node: Node, activation: ExternalCallExpression | undefined): void => {
     if (unsupported) return;
-    const nestedConditional = conditional || node instanceof BranchNode || node instanceof WhileNode
+    if (node instanceof BranchNode) {
+      const branchActivation = fixedChunkableBoolParamActivation(node.condition, fn);
+      if (branchActivation === undefined) {
+        unsupported = true;
+        return;
+      }
+      if (node.elseBlock !== undefined
+        && nodeContainsChunkableWrite(node.elseBlock, chunkableNames, footprintNames, locallyBound)) {
+        // Writes in both arms are same-iteration resource selection — still fenced.
+        unsupported = true;
+        return;
+      }
+      const combined: ExternalCallExpression = activation === undefined
+        ? branchActivation
+        : { kind: 'binary', operator: '&&', left: activation, right: branchActivation };
+      scan(node.ifBlock, combined);
+      return;
+    }
+    const nestedUnsupported = node instanceof WhileNode
       || node instanceof DoWhileNode || node instanceof SwitchNode || node instanceof TryCatchNode
       || node instanceof CollectionIterationNode || node instanceof TernaryOpNode
       || (node instanceof BinaryOpNode
         && (node.operator === BinaryOperator.AND || node.operator === BinaryOperator.OR));
+    if (nestedUnsupported) {
+      if (nodeContainsChunkableWrite(node, chunkableNames, footprintNames, locallyBound)) {
+        unsupported = true;
+      }
+      return;
+    }
     if (node instanceof ReturnNode && direct.length === 0) {
       // A successful early return can bypass a later top-level write even though the write itself has no
       // conditional ancestor. Final or post-write returns remain compatible with the exactly-once proof.
@@ -3701,18 +3791,21 @@ function pooledChunkableWholeEntryWrite(
       return;
     }
     if (node instanceof MappingAssignNode && chunkableNames.has(node.name)) {
-      if (node.name !== collection || node.arrayIndex || node.arrayPush || node.arrayPop
-        || node.messageBusJournalTransport || nestedConditional) {
+      if (!footprintNames.has(node.name) || node.arrayIndex || node.arrayPush || node.arrayPop
+        || node.messageBusJournalTransport) {
         unsupported = true;
       } else {
-        direct.push(node);
+        direct.push({ node, ...(activation && { activation }) });
       }
-    } else if (node instanceof ArrayAssignNode && node.name === collection && !locallyBound.has(node.name)) {
+      return;
+    }
+    if (node instanceof ArrayAssignNode && footprintNames.has(node.name)
+      && !locallyBound.has(node.name)) {
       // Solidity-compatible imports can retain a bare `m[k] = value` as ArrayAssign until the route clone's
       // collection normalization. It is the same whole mapping write because `collection` is compiler-resolved
       // above; an actual state array cannot appear in this collection map.
-      if (nestedConditional) unsupported = true;
-      else direct.push(node);
+      direct.push({ node, ...(activation && { activation }) });
+      return;
     }
     if ((node instanceof MappingFieldAssignNode || node instanceof MappingDeleteNode)
       && chunkableNames.has(node.name)) {
@@ -3730,20 +3823,37 @@ function pooledChunkableWholeEntryWrite(
     for (const [field, value] of Object.entries(node)) {
       if (['location', 'resolvedFunction', 'functionReference', 'definition', 'collection', 'symbolTable',
         'stateVariable', 'type'].includes(field)) continue;
-      if (value instanceof Node) scan(value, nestedConditional);
+      if (value instanceof Node) scan(value, activation);
       else if (Array.isArray(value)) {
-        for (const item of value) if (item instanceof Node) scan(item, nestedConditional);
+        for (const item of value) if (item instanceof Node) scan(item, activation);
       }
     }
   };
-  scan(fn.body, false);
-  if (unsupported || direct.length !== 1) return undefined;
-  // Unsupported global flow deliberately has no general source-effect ordering. This exact capability has only
-  // one unconditional chunkable mutation, so ordinal zero is a stable selector-scoped occurrence identity. The
-  // completed ABI gate below requires the lowered access to retain this exact value.
-  const effectOrdinal = direct[0].sourceEffectOrdinal;
-  if (effectOrdinal === undefined) return undefined;
-  return { collection, effectOrdinal };
+  scan(fn.body, undefined);
+  if (unsupported || direct.length === 0) return undefined;
+  const writtenCollections = new Set(direct.map((entry) => entry.node.name));
+  if ([...footprintNames].some((name) => !writtenCollections.has(name))) return undefined;
+  const resources = direct.map((entry) => {
+    const effectOrdinal = entry.node.sourceEffectOrdinal;
+    if (effectOrdinal === undefined) return undefined;
+    return {
+      collection: entry.node.name,
+      effectOrdinal,
+      ...(entry.activation && { activation: entry.activation }),
+    };
+  });
+  if (resources.some((resource) => resource === undefined)) return undefined;
+  const definedResources = resources as Array<{
+    collection: string; effectOrdinal: number; activation?: ExternalCallExpression;
+  }>;
+  const orderedCollections = [...footprintNames];
+  return {
+    collection: orderedCollections[0]!,
+    collections: orderedCollections,
+    effectOrdinal: definedResources[definedResources.length - 1]!.effectOrdinal,
+    effectOrdinals: definedResources.map((resource) => resource.effectOrdinal),
+    resources: definedResources,
+  };
 }
 
 /**
@@ -3759,7 +3869,7 @@ function pooledChunkableArrayPushCollection(
   functionsByName: Map<string, FunctionDefinitionNode[]>,
   footprintCache: ReturnType<typeof createFootprintAnalysisCache>,
 ): string | undefined {
-  if (!fn.body) return undefined;
+  if (!fn.body || fn.sourceEffectOrder !== 'linear') return undefined;
   const chunkableArrays = new Set([...collections].flatMap(([name, collection]) => (
     collection.sorted && collection.innermostValueType instanceof ArrayType
       && isChunkableValueType(collection.innermostValueType) ? [name] : []
@@ -3779,12 +3889,6 @@ function pooledChunkableArrayPushCollection(
     if (unsupported) return;
     const nestedConditional = conditional || node instanceof BranchNode || node instanceof WhileNode
       || node instanceof DoWhileNode || node instanceof SwitchNode || node instanceof TryCatchNode;
-    if (node instanceof ReturnNode && direct.length === 0) {
-      // A successful early return can bypass a later top-level append even though the append itself has no
-      // conditional ancestor. Final and post-append returns do not weaken the exactly-once proof.
-      unsupported = true;
-      return;
-    }
     if (node instanceof MappingAssignNode && chunkableArrays.has(node.name)) {
       if (node.name !== collection || !node.arrayPush || node.arrayPop || node.arrayIndex
         || node.messageBusJournalTransport || node.sourceEffectOrdinal === undefined || nestedConditional
@@ -4027,6 +4131,7 @@ function synthesizeMessageBusRoute(
   const kernelConditionalDeploymentSites = new Map<FunctionDefinitionNode, boolean[]>();
   const logicalMsgSenderHandlers = new Set<FunctionDefinitionNode>();
   const localEffectFrameHandlers = new Set<FunctionDefinitionNode>();
+  const fixedChunkableWriteCollectionByHandler = new Map<FunctionDefinitionNode, string>();
   let resourceShapedHandler: FunctionDefinitionNode | undefined;
   // A resource-shaped handler is lowered to a value-threaded collection journal. The journal's return tuple is
   // reserved for pending entry values, so a source ABI result cannot share that subroutine return frame. A
@@ -5136,19 +5241,36 @@ function synthesizeMessageBusRoute(
       resource.startsWith('state:') && dynamicState.has(resource.slice('state:'.length)))) {
       fn.usesDynamicChunkInputBase = true;
     }
-    const pooledChunkableWholeEntry = compilerOptions.messageBusKernel === true
-      ? pooledChunkableWholeEntryWrite(
+    const fixedChunkableWrite = compilerOptions.messageBusKernel === true
+      ? fixedChunkableWriteWithSingleOccurrenceBound(
         fn, collectionByName, signatureClosureByName, footprintCache,
       ) : undefined;
-    const pooledChunkableWholeEntryCollection = pooledChunkableWholeEntry?.collection;
+    const fixedChunkableWriteCollection = fixedChunkableWrite?.collection;
     const pooledChunkableArrayPush = compilerOptions.messageBusKernel === true
       ? pooledChunkableArrayPushCollection(
         fn, collectionByName, signatureClosureByName, footprintCache,
       ) : undefined;
-    fn.messageBusPooledChunkableWholeEntryWrite = pooledChunkableWholeEntryCollection === undefined
-      ? undefined : true;
-    fn.messageBusPooledChunkableWholeEntryWriteEffectOrdinal = pooledChunkableWholeEntry?.effectOrdinal;
+    fn.messageBusFixedChunkableWriteMaxRows = fixedChunkableWriteCollection === undefined ? undefined : 1;
+    fn.messageBusFixedChunkableWriteEffectOrdinal = fixedChunkableWrite?.effectOrdinal;
     fn.messageBusPooledChunkableArrayPush = pooledChunkableArrayPush === undefined ? undefined : true;
+    if (fixedChunkableWriteCollection !== undefined) {
+      fixedChunkableWriteCollectionByHandler.set(fn, fixedChunkableWriteCollection);
+      fn.messageBusFixedChunkableResources = fixedChunkableWrite?.resources.map((resource) => ({
+        collection: resource.collection,
+        effectOrdinal: resource.effectOrdinal,
+        ...(resource.activation && { activation: resource.activation }),
+      }));
+      // Also stamp onto live entry accesses when ordinals are already present (Artifact republishes from
+      // messageBusFixedChunkableResources as the authoritative source).
+      for (const resource of fixedChunkableWrite?.resources ?? []) {
+        if (resource.activation === undefined) continue;
+        for (const access of fn.entryAccesses ?? []) {
+          if (access.collection !== resource.collection) continue;
+          if (!access.mutationEffectOrdinals?.includes(resource.effectOrdinal)) continue;
+          access.activation = resource.activation;
+        }
+      }
+    }
     if (compilerOptions.messageBusKernel === true) {
       const chunkableWrites = [...footprint.writes].some((resource) => {
         if (!resource.startsWith('collection:')) return false;
@@ -5165,8 +5287,34 @@ function synthesizeMessageBusRoute(
       const hasUntransportedWrite = hasUntransportedChunkableWrite(
         fn, chunkableCollections, signatureClosureByName, footprintCache,
       );
-      if (chunkableWrites && pooledChunkableWholeEntryCollection === undefined
-        && pooledChunkableArrayPush === undefined
+      // Counter-keyed chunkable writes are transported by LowerVMapCounterLoops after this speculative pass.
+      // Defer their admission to the completed-ABI check so we do not permanently fence a later-proven stream.
+      let hasCounterKeyedChunkableCandidate = false;
+      if (fn.body && chunkableWrites) {
+        const scan = (node: Node, inLoop: boolean): void => {
+          if (hasCounterKeyedChunkableCandidate) return;
+          const nestedLoop = inLoop || node instanceof WhileNode || node instanceof DoWhileNode
+            || node instanceof CollectionIterationNode
+            || (node instanceof BlockNode && (node.statements?.some((statement) =>
+              statement instanceof WhileNode || statement instanceof DoWhileNode) ?? false));
+          if ((node instanceof MappingAssignNode || node instanceof ArrayAssignNode)
+            && chunkableCollections.has(node.name) && nestedLoop) {
+            hasCounterKeyedChunkableCandidate = true;
+            return;
+          }
+          for (const [field, value] of Object.entries(node)) {
+            if (['location', 'resolvedFunction', 'functionReference', 'definition', 'collection', 'symbolTable',
+              'stateVariable', 'type'].includes(field)) continue;
+            if (value instanceof Node) scan(value, nestedLoop);
+            else if (Array.isArray(value)) {
+              for (const item of value) if (item instanceof Node) scan(item, nestedLoop);
+            }
+          }
+        };
+        scan(fn.body, false);
+      }
+      if (chunkableWrites && fixedChunkableWriteCollection === undefined && pooledChunkableArrayPush === undefined
+        && !hasCounterKeyedChunkableCandidate
         && (!hasCounterJournalTransport || hasUntransportedWrite)) {
         // A route may invoke this handler repeatedly. Until its completed entry descriptor is represented in the
         // authenticated compact journal ABI, every row would independently pin a terminal continuation family.
@@ -7401,6 +7549,9 @@ function synthesizeMessageBusRoute(
     resourceShapedHandler = undefined;
   }
   eligible = selection.survivors;
+  const fixedChunkableWriteHandlers = new Set(eligible.filter((fn) =>
+    fn.messageBusFixedChunkableWriteMaxRows === 1
+    && fixedChunkableWriteCollectionByHandler.has(fn)));
   // Cheap admission deliberately skips the journal-lowering passes and stubs generated handler bodies. A
   // disposition manifest derived from that representation cannot authorize a final body whose admitted call
   // closure reads or writes a collection: lowering can introduce its physical access streams only in the full
@@ -7470,7 +7621,6 @@ function synthesizeMessageBusRoute(
   }
   if (compilerOptions.messageBusKernel === true) {
     let tupleGroup = 0;
-    const tupleHandlers = new Set<FunctionDefinitionNode>();
     const primaryByCollection = new Map<string, Array<{ routeInput: string; keyIndex: number }>>();
     for (const [routeInput, coordinate] of routeKeyWitnessCoordinates) {
       if (coordinate.alternativeIndex !== 0) continue;
@@ -7499,25 +7649,13 @@ function synthesizeMessageBusRoute(
           `${binding.source}:${binding.inputIndex}:${binding.expressionLabel ?? ''}`).join('|');
         return [{ fn, bindings: complete, signature }];
       });
-      const hasMultipleOrientations = new Set(handlerTuples.map(({ signature }) => signature)).size > 1;
-      // A read-only fixed entry can safely expose the route's existing two-lane tuple even when every handler
-      // spells its key through the same ABI position. This gives repeated rows two authenticated physical entry
-      // identities without `_rN` parameters or maximum-row-sized code. More than two concrete identities still
-      // fail closed in the encoder.
-      const repeatedReadTuples = handlerTuples.filter(({ fn }) => {
-        const handlerFootprint = analyseFunctionFootprint(fn, byName, footprintCache);
-        const prefix = `collection:${collection}:`;
-        return [...handlerFootprint.reads].some((resource) => resource.startsWith(prefix))
-          && ![...handlerFootprint.writes].some((resource) => resource.startsWith(prefix));
-      });
-      const orientedTuples = hasMultipleOrientations ? handlerTuples : repeatedReadTuples;
-      if (orientedTuples.length === 0) continue;
-      // Independent tuple groups remain linear when their handler populations are disjoint. A handler present in
-      // two groups would require a product of physical orientations, so retain the existing fail-closed boundary.
-      if (orientedTuples.some(({ fn }) => tupleHandlers.has(fn))) continue;
+      if (new Set(handlerTuples.map(({ signature }) => signature)).size <= 1) continue;
+      // One independently-oriented tuple keeps dispatch and cache selection linear. A second collection would
+      // require either a product of branch orientations or a general indexed cache selector; leave it on the
+      // existing deterministic resource-conflict fence until that representation exists.
+      if (tupleGroup > 0) continue;
       const group = tupleGroup++;
-      for (const { fn, bindings } of orientedTuples) {
-        tupleHandlers.add(fn);
+      for (const { bindings } of handlerTuples) {
         bindings.forEach((binding, keyComponentIndex) => {
           const alternateRouteInput = `${binding.routeInput}_alt`;
           binding.entryTupleGroup = group;
@@ -8161,6 +8299,13 @@ function synthesizeMessageBusRoute(
       .some((resource) => resource.startsWith('collection:tokens:'));
     if (touchesTokenContainer) continue;
     if (graphTailHandlers.has(sourceHandler) && !kernelLoopDispatch) continue;
+    if (compilerOptions.messageBusKernel === true
+      && sourceHandler.returnTypes.length > 0
+      && !eligibleFootprint(sourceHandler).writes.some((resource) => resource.startsWith('collection:'))
+      && !collectionByName.has(sourceHandler.name)
+      && !contract.stateVariables.some((state) => state.name === sourceHandler.name)) {
+      continue;
+    }
     const handler = cloneMessageBusHandler(sourceHandler, cheapAdmission);
     nameMessageBusClone(handler, 'entry', sourceHandler);
     handler.modifiers = [FunctionModifier.INTERNAL];
@@ -8649,13 +8794,8 @@ function synthesizeMessageBusRoute(
       && candidate.parameters?.some((parameter) => parameter.name === 'batchBlob') === true))
     ?.parameters ?? []).map((parameter) => parameter.name);
   if (messageBusRouteParameters.length > 0) {
-    // The SDK pushes the route inputs in REVERSE declaration order (so the first parameter ends up on top of the
-    // band), which makes declared index i physically bottom index (n - 1 - i) - a constant, because the band sits
-    // below every frame the route or its handlers later build.
-    const bandOrdinals = messageBusRouteParameters.map((_name, index) => messageBusRouteParameters.length - index);
     for (const clone of routeOwnedCloneByName.values()) {
       clone.messageBusCallerBandNames = messageBusRouteParameters;
-      clone.messageBusCallerBandOrdinals = bandOrdinals;
     }
   }
 
@@ -8698,6 +8838,9 @@ function synthesizeMessageBusRoute(
       const upgradeAuthorization = kernelUpgradeMode && fn.modifiers.includes(FunctionModifier.UPGRADE)
         ? `__message_bus_upgrade_count = __message_bus_upgrade_count + 1;
           __message_bus_upgrade_position = ${rowExpression};` : '';
+      const fixedChunkableWriteAuthorization = fixedChunkableWriteHandlers.has(fn)
+        ? `__message_bus_fixed_chunkable_write_count = __message_bus_fixed_chunkable_write_count + 1;
+          require(__message_bus_fixed_chunkable_write_count <= 1);` : '';
       const parameterSignatureLeaves = signatureLeavesByHandler.get(fn)!;
       const allOutputSignatureParameters = kernelAllOutputSignatureParameters.get(fn) ?? [];
       const signatureAuthorization = allOutputSignatureParameters.length > 0
@@ -8831,9 +8974,7 @@ function synthesizeMessageBusRoute(
           ? (logicalCallerCloneNames.has(invokeName) ? [logicalCaller] : [])
           : logicalMsgSenderHandlers.has(fn)
             && !graphTailHandlers.has(fn) && !localEffectFrameHandlers.has(fn)
-            ? ['__internal__msgSenderCategory',
-              ...(compilerOptions.solidityImportCompat || compilerOptions.evmCompat
-                ? ['__internal__msgSenderAnchorIdx'] : [])] : [];
+            ? ['__internal__msgSenderCategory'] : [];
         const blockhashRowArgs = blockhashRowOffset ? [blockhashRowOffset] : [];
         // SymbolTableTraversal appends the physical oracle-base witness after every route-owned clone context.
         // Keep that exact hidden ABI order: placing it before the owner operand swaps the two values and makes
@@ -8869,7 +9010,7 @@ function synthesizeMessageBusRoute(
           ? 'require(__message_bus_active_lifecycle_mode == 3 && __message_bus_active_lifecycle_count == 1);'
           : kernelLifecycleHandlers.size > 0
             ? 'require(__message_bus_active_lifecycle_mode == 0);' : '';
-        return `${condition} { ${upgradeAuthorization}
+        return `${condition} { ${upgradeAuthorization} ${fixedChunkableWriteAuthorization}
           ${signatureAuthorization} require(rowArgs.length == 0);
           ${zeroParamLifecycleAuthorization}
           ${senderChecks} ${invoke(entryOnly.join(', '))}
@@ -8993,7 +9134,8 @@ function synthesizeMessageBusRoute(
                 if (parameter.name.startsWith('__internal__collectionIter')
                   || parameter.name.startsWith('__internal__valueWitness_')
                   || parameter.name.startsWith('__internal__leadingPushValue_')
-                  || parameter.name === '__internal__vmapBatchTrailingCount') return parameter.name;
+                  || parameter.name === '__internal__vmapBatchTrailingCount'
+                  || parameter.name === '__internal__valueChunkOutputBase') return parameter.name;
                 return tokenCategoryInputByHandler.get(fn)?.get(i)
                   ?? witnessByInput.get(i) ?? decodedName(i);
               })()),
@@ -9228,7 +9370,7 @@ function synthesizeMessageBusRoute(
       const wrappedDispatch = markDispatch
         ? `require(${MB_DISPATCH_SENTINEL}); ${effectiveDispatch} require(${MB_DISPATCH_SENTINEL});`
         : effectiveDispatch;
-      return `${condition} { ${upgradeAuthorization}
+      return `${condition} { ${upgradeAuthorization} ${fixedChunkableWriteAuthorization}
         ${signatureAuthorization} ${decode} ${keyChecks} ${outStateBoundaryChecks} ${lifecycleAuthorization} ${wrappedDispatch}
         require(rowArgs == rowArgs); }`;
     }).join(' ');
@@ -9281,7 +9423,8 @@ function synthesizeMessageBusRoute(
         && !parameter.name.startsWith('__internal__collectionIter')
         && !parameter.name.startsWith('__internal__valueWitness_')
         && !parameter.name.startsWith('__internal__leadingPushValue_')
-        && parameter.name !== '__internal__vmapBatchTrailingCount') return false;
+        && parameter.name !== '__internal__vmapBatchTrailingCount'
+        && parameter.name !== '__internal__valueChunkOutputBase') return false;
       if (declaredPermNames.has(parameter.name)) return false;
       declaredPermNames.add(parameter.name);
       return true;
@@ -9336,19 +9479,15 @@ function synthesizeMessageBusRoute(
     ? ['bigint __internal__lifecycleOwnerInput'] : [];
   const localCallerRouteParameters = !graphExecutionContext
     && eligible.some((fn) => logicalMsgSenderHandlers.has(fn))
-    ? ['bytes32 __internal__msgSenderCategory',
-      ...(compilerOptions.solidityImportCompat || compilerOptions.evmCompat
-        ? ['bigint __internal__msgSenderAnchorIdx'] : [])] : [];
+    ? ['bytes32 __internal__msgSenderCategory'] : [];
   const offloadedVerifier = compilerOptions.__messageBusVerifierProgram;
   const useBoundRoute = !!offloadedVerifier
     || (compilerOptions as InternalCompilerOptions).__synthesizeBoundRoutePlaceholder === true;
   const lifecycleReturnTransport = kernelLifecycleHandlers.size > 0;
   const verifierBinderRouteParameters = useBoundRoute
     ? ['bigint __internal__activeVerifierIndex'] : [];
-  const ownerBandRouteParameters = graphExecutionContext
-    ? [`bigint ${MESSAGE_BUS_OWNER_BAND_INPUT}`] : [];
   const routeParameterList = [
-    'bytes batchBlob', ...ownerBandRouteParameters, ...verifierBinderRouteParameters, ...graphRouteParameters,
+    'bytes batchBlob', ...verifierBinderRouteParameters, ...graphRouteParameters,
     ...lifecycleOwnerRouteParameters,
     ...(kernelUpgradeMode ? [
       'bytes __internal__upgradeBytecode', 'bytes __internal__upgradeStateSuffix',
@@ -9365,13 +9504,9 @@ function synthesizeMessageBusRoute(
     .map((entry) => entry.trim().split(/\s+/).pop() ?? '')
     .filter((name) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(name));
   if (routeBandNames.length > 0) {
-    // Physical push order is the reverse of the declaration (the SDK pushes the route inputs back to front), so a
-    // declared name's bottom ordinal is `n - index` - constant, because the band stays below every later frame.
-    const routeBandOrdinals = routeBandNames.map((_name, index) => routeBandNames.length - index);
     for (const candidate of contract.functions) {
       if (!MESSAGE_BUS_CLONE_PREFIXES.some((prefix) => candidate.name.startsWith(prefix))) continue;
       candidate.messageBusCallerBandNames = routeBandNames;
-      candidate.messageBusCallerBandOrdinals = routeBandOrdinals;
     }
   }
   if ((globalThis as { process?: { env?: Record<string, string> } }).process
@@ -9450,6 +9585,8 @@ function synthesizeMessageBusRoute(
         ${parseOneRow('__message_bus_row')}
       }`;
   const resultDeclarations = resultMode ? 'bytes __message_bus_results = hex\"\";' : '';
+  const fixedChunkableWriteDeclaration = fixedChunkableWriteHandlers.size > 0
+    ? 'bigint __message_bus_fixed_chunkable_write_count = 0;' : '';
   const returnDeclaration = resultMode
     ? ' returns (bytes)'
     : '';
@@ -10861,6 +10998,7 @@ function synthesizeMessageBusRoute(
         bigint cursor = 7;
         ${!graphExecutionContext ? '' : 'bigint __message_bus_graph_caller_cursor = 0;'}
         ${resultDeclarations}
+        ${fixedChunkableWriteDeclaration}
         require(__MB_ROWS__);
         require(cursor == batchBlob.length);
         ${kernelUpgradeMode
@@ -13156,35 +13294,6 @@ function compileResolvedAst(
   // structural-helper probe plus exact-span outliner retained 50KB. Both paths emit the same unoptimized
   // semantics and the whole-program optimiser below still runs. Canonicalize kernel codegen onto the compact
   // path so bytecode size does not depend on the front-end compilation-speed preference.
-  // The route ABI band's PHYSICAL order is the SDK's push order: the published route inputs, reversed (the SDK
-  // pushes them back to front so the first declared parameter ends up on top of the band). The ordinals are baked
-  // into band reads, so they must be computed from the FINAL parameter list - record them here, after every
-  // lowering and semantic pass has appended its handler-only parameters (`__internal__returnOutputIdx`,
-  // `__internal__proxyMasterIndex`, `__internal__dynamicChunkInputBase`). An earlier stash used the synthesized
-  // source list, which is shorter, and every band ordinal then landed short of its item by that difference.
-  if (mergedCompilerOptions.messageBusKernel === true) {
-    const routeFunction = ast.contract.functions.find((fn) => fn.name === '__message_bus1'
-      && fn.parameters?.some((parameter) => parameter.name === 'batchBlob'));
-    const bandNames = (routeFunction?.parameters ?? []).map((parameter) => parameter.name);
-    // The BAND is the PUBLISHED route ABI, not `__message_bus1`'s surviving parameter list: the owner band input is
-    // read only by the handler clones, so a pass that drops unused parameters removes it from the route body while
-    // the ABI (and the SDK's push order) keeps it. Every ordinal after that position would then be short by one -
-    // measured as the owner read returning a neighbouring band item (p0's `graphBlockSize` 131 instead of its base
-    // 0). The gate publishes the owner directly after `batchBlob`, so restore it there when the route body lost it.
-    if (messageBusGraphMode
-      && bandNames.length > 0 && !bandNames.includes(MESSAGE_BUS_OWNER_BAND_INPUT)) {
-      const blobIndex = bandNames.indexOf('batchBlob');
-      bandNames.splice(blobIndex < 0 ? 1 : blobIndex + 1, 0, MESSAGE_BUS_OWNER_BAND_INPUT);
-    }
-    if (bandNames.length > 0) {
-      const bandOrdinals = bandNames.map((_name, index) => bandNames.length - index);
-      for (const fn of ast.contract.functions) {
-        if (!MESSAGE_BUS_CLONE_PREFIXES.some((prefix) => fn.name.startsWith(prefix))) continue;
-        fn.messageBusCallerBandNames = bandNames;
-        fn.messageBusCallerBandOrdinals = bandOrdinals;
-      }
-    }
-  }
   const traversal = new GenerateTargetTraversal(mergedCompilerOptions.messageBusKernel === true
     ? { ...mergedCompilerOptions, optimizeForCompilationSpeed: true }
     : mergedCompilerOptions);
@@ -13421,20 +13530,23 @@ function compileResolvedAst(
           && access.settlementIdentity.settlementRole === 'mutation-settlement'
           && access.settlementIdentity.settlementOwnership === 'last-mutating-access',
       ));
-      const pooledChunkableWholeEntryAccesses = (abi?.entryAccesses ?? []).filter((access) =>
+      const fixedChunkableAccesses = (abi?.entryAccesses ?? []).filter((access) =>
         access.operations.includes('write') && chunkableWriteCollections.has(access.collection));
-      const pooledChunkableWholeEntryCollection = chunkableWriteCollections.size === 1
-        ? [...chunkableWriteCollections][0] : undefined;
-      const hasCompletePooledChunkableWholeEntryTransport = fn.messageBusDispatched === true
-        && fn.messageBusPooledChunkableWholeEntryWrite === true
-        && pooledChunkableWholeEntryCollection !== undefined
-        && pooledChunkableWholeEntryAccesses.length === 1
-        && pooledChunkableWholeEntryAccesses[0].collection === pooledChunkableWholeEntryCollection
-        && pooledChunkableWholeEntryAccesses[0].mutationEffectOrdinals?.length === 1
-        && pooledChunkableWholeEntryAccesses[0].mutationEffectOrdinals[0]
-          === fn.messageBusPooledChunkableWholeEntryWriteEffectOrdinal
+      // Provisional admission already proved the fixed-row shape (including multi-resource bands). Re-check that
+      // every chunkable write collection retained at least one mutation ordinal and stayed off the compact journal.
+      const fixedChunkableWriteCollections = fn.messageBusFixedChunkableWriteMaxRows === 1
+        ? chunkableWriteCollections : new Set<string>();
+      const hasCompleteFixedChunkableOccurrenceTransport = fn.messageBusDispatched === true
+        && fn.messageBusFixedChunkableWriteMaxRows === 1
+        && fixedChunkableWriteCollections.size > 0
+        && [...fixedChunkableWriteCollections].every((collection) => {
+          const accesses = fixedChunkableAccesses.filter((access) => access.collection === collection);
+          if (accesses.length === 0) return false;
+          const ordinals = accesses.flatMap((access) => access.mutationEffectOrdinals ?? []);
+          return ordinals.length > 0 && ordinals.every((ordinal) => Number.isSafeInteger(ordinal));
+        })
         && runtimeJournalAccesses.every((access) => access.op === 'read'
-          || access.collection !== pooledChunkableWholeEntryCollection);
+          || !fixedChunkableWriteCollections.has(access.collection));
       // A direct linear mapping-array push uses the route's typed collection journal, not the compact runtime
       // mutation stream and not an SDK-replayed byte value. Every row key is compared to one global argument
       // witness before its OP_INVOKE; the returned whole-array cache is threaded into the next row and flushed
@@ -13543,6 +13655,7 @@ function compileResolvedAst(
       })();
       const hasCompletePooledChunkableArrayPushTransport = fn.messageBusDispatched === true
         && fn.messageBusPooledChunkableArrayPush === true
+        && abi?.sourceEffectOrder === 'linear'
         && pooledChunkableArrayPushCollection !== undefined
         && chunkableWriteCollections.size === 1
         && pooledChunkableArrayPushAccesses.length === 1
@@ -13556,20 +13669,44 @@ function compileResolvedAst(
         && hasValidStoredElementSource
         && runtimeJournalAccesses.every((access) => access.op === 'read'
           || access.collection !== pooledChunkableArrayPushCollection);
+      // Counter-loop journal streams publish authenticated settlement on the completed ABI even when the
+      // speculative AST walk did not stamp messageBusJournalTransport (common for chunkable value carriers).
+      const journalAuthenticatedChunkableAccess = (
+        collection: string, varyingArrayParam?: string,
+      ): boolean => runtimeJournalAccesses.some((access) => access.collection === collection
+        && access.op !== 'read'
+        && (varyingArrayParam === undefined || access.varyingArrayParam === varyingArrayParam)
+        && Number.isSafeInteger(access.journalAccessStreamIndex)
+        && access.settlementIdentity?.accessStreamIndex === access.journalAccessStreamIndex
+        && access.settlementIdentity.recordOrdinalScope === 'global-journal'
+        && access.settlementIdentity.accessOrdinalSource === 'access-program-order'
+        && access.settlementIdentity.settlementRole === 'mutation-settlement'
+        && access.settlementIdentity.settlementOwnership === 'last-mutating-access');
       const hasIncompleteChunkableTransport = [...chunkableWriteCollections].some((collection) => (
-        !(hasCompletePooledChunkableWholeEntryTransport
-          && collection === pooledChunkableWholeEntryCollection)
+        !(hasCompleteFixedChunkableOccurrenceTransport && fixedChunkableWriteCollections.has(collection))
         && !(hasCompletePooledChunkableArrayPushTransport && collection === pooledChunkableArrayPushCollection)
         && !transportedChunkableWrites.some((transport) => transport.collection === collection)
-      )) || exactTransportMatches.some((matches) => matches.length !== 1)
+        && !journalAuthenticatedChunkableAccess(collection)
+      )) || exactTransportMatches.some((matches, index) => {
+        if (matches.length === 1) return false;
+        if (matches.length > 1) return true;
+        // Speculative AST transport without a matching ABI stream is recoverable when the completed journal
+        // already authenticates that collection's mutation stream (varying-param identity may differ across
+        // clone/lowering boundaries).
+        const transport = transportedChunkableWrites[index];
+        return transport === undefined
+          || (!journalAuthenticatedChunkableAccess(transport.collection, transport.varyingArrayParam)
+            && !journalAuthenticatedChunkableAccess(transport.collection));
+      })
         || runtimeJournalAccesses.some((access) => chunkableWriteCollections.has(access.collection)
           && access.op !== 'read'
-          && !(hasCompletePooledChunkableWholeEntryTransport
-            && access.collection === pooledChunkableWholeEntryCollection)
+          && !(hasCompleteFixedChunkableOccurrenceTransport
+            && fixedChunkableWriteCollections.has(access.collection))
           && !(hasCompletePooledChunkableArrayPushTransport
             && access.collection === pooledChunkableArrayPushCollection)
           && !transportedChunkableWrites.some((transport) => transport.collection === access.collection
-            && transport.varyingArrayParam === access.varyingArrayParam));
+            && transport.varyingArrayParam === access.varyingArrayParam)
+          && !journalAuthenticatedChunkableAccess(access.collection, access.varyingArrayParam));
       if (hasIncompleteChunkableTransport) {
         noteKernelLayoutGate(fn, 'incomplete-chunkable-transport');
         fn.messageBusEligible = false;
@@ -13595,8 +13732,20 @@ function compileResolvedAst(
           const homogeneousOperation = mutations.every((mutation) => mutation.op === first.op);
           const distinctCollections = new Set(mutations.map((mutation) => mutation.collectionHash)).size
             === mutations.length;
+          const boolParamActivation = (
+            expression: { kind?: string; operator?: string; source?: { kind?: string }; expression?: unknown } | undefined,
+          ): boolean => {
+            if (expression === undefined) return true;
+            if (expression.kind === 'source' && expression.source?.kind === 'forward') return true;
+            if (expression.kind === 'unary' && expression.operator === '!'
+              && boolParamActivation(expression.expression as typeof expression)) return true;
+            return false;
+          };
+          const boolParamSelection = mutations.every((mutation) =>
+            boolParamActivation(mutation.iterationCondition as { kind?: string } | undefined)
+            && mutation.iterationCondition !== undefined);
           const sharedKeyDomain = mutations.every((mutation) =>
-            mutation.varyingArrayParam === first.varyingArrayParam
+            (mutation.varyingArrayParam === first.varyingArrayParam || boolParamSelection)
             && JSON.stringify(mutation.fixedKeySources ?? []) === JSON.stringify(first.fixedKeySources ?? [])
             && JSON.stringify(collectionByName.get(mutation.collection)?.allKeyTypes.map((type) => type.toString()))
               === JSON.stringify(firstCollection?.allKeyTypes.map((type) => type.toString())));
@@ -13604,18 +13753,29 @@ function compileResolvedAst(
             mutation.settlementIdentity?.recordOrdinalScope === 'global-journal'
             && mutation.settlementIdentity.settlementRole === 'mutation-settlement'
             && mutation.settlementIdentity.settlementOwnership === 'last-mutating-access');
-          const fixedWidthScalarValues = mutations.every((mutation) => {
+          // Resource-indexed streams may carry heterogeneous value kinds on one shared key schedule: fixed-width
+          // scalars of differing types, and chunkable values whose journal stream already publishes settlement.
+          const supportedStreamValueKinds = mutations.every((mutation) => {
             const type = collectionByName.get(mutation.collection)?.innermostValueType;
-            return type !== undefined && isFixedWidthType(type)
-              && !(type instanceof ArrayType || type instanceof StructType || type instanceof TupleType)
-              && type.toString() === firstCollection?.innermostValueType.toString();
+            if (type === undefined) return false;
+            if (type instanceof ArrayType || type instanceof StructType || type instanceof TupleType) {
+              return false;
+            }
+            if (isChunkableValueType(type)) {
+              return Number.isSafeInteger(mutation.journalAccessStreamIndex)
+                && mutation.settlementIdentity?.accessStreamIndex === mutation.journalAccessStreamIndex
+                && mutation.settlementIdentity.recordOrdinalScope === 'global-journal'
+                && mutation.settlementIdentity.settlementRole === 'mutation-settlement'
+                && mutation.settlementIdentity.settlementOwnership === 'last-mutating-access';
+            }
+            return isFixedWidthType(type);
           });
-          // The first general multi-stream family deliberately shares one unconditional compiler-owned
-          // permutation. Ranged/selected domains, structural value mutation, and replay traces retain the beta
-          // fence until their transaction geometry has an equally exact proof.
+          // Shared compiler-owned schedule across streams. Bool-param iterationCondition is the authenticated
+          // selection bit for same-iteration resource choice; other ranged/selected domains stay fenced.
           const simpleSharedSchedule = mutations.every((mutation) =>
             mutation.condition === undefined
-            && mutation.iterationCondition === undefined
+            && (mutation.iterationCondition === undefined
+              || boolParamActivation(mutation.iterationCondition as { kind?: string } | undefined))
             && mutation.iterationBreakCondition === undefined
             && mutation.iterationBound === undefined
             && mutation.iterationStep === undefined
@@ -13628,7 +13788,6 @@ function compileResolvedAst(
             && mutation.keyDecodeTupleTypes === undefined
             && mutation.mutation === undefined
             && mutation.valueRuntimeLocal === undefined
-            && mutation.valueTraceWitnessParam === undefined
             && mutation.prefixCountWitnessParam === undefined
             && mutation.constructedKeyReplay !== true
             && mutation.multiArmConstructedKeyReplay !== true
@@ -13636,7 +13795,7 @@ function compileResolvedAst(
             && mutation.nestedHelperReturnReplay !== true
             && mutation.sameIterationMutableSelectionReplay !== true);
           return !(homogeneousOperation && distinctCollections && sharedKeyDomain
-            && globallyOwnedSettlements && fixedWidthScalarValues && simpleSharedSchedule);
+            && globallyOwnedSettlements && supportedStreamValueKinds && simpleSharedSchedule);
         });
       // Bounded symbolic replay can reconstruct keys read from a locally constructed array, but that provenance
       // currently has no authenticated old/absence carrier identity in the kernel settlement protocol. Preserve
@@ -13667,12 +13826,20 @@ function compileResolvedAst(
         && runtimeJournalAccesses.some((access) => access.op !== 'read'
           && access.valueArrayParam !== undefined && access.valueArrayIndexParam !== undefined
           && chunkableCollections.has(access.collection));
-      // Event output ordinals currently bind to one mutation journal stream. A handler with sequential or
-      // otherwise distinct mutation streams cannot publish one authenticated event settlement geometry, even
-      // when each stream is independently replayable. One stream with any number of event sites remains valid.
-      const hasDistinctEventMutationStreams = (abi?.runtimeLoopEvents?.length ?? 0) > 0
-        && new Set(runtimeJournalAccesses.filter((access) => access.op !== 'read')
-          .map((access) => access.journalAccessStreamIndex)).size > 1;
+      // Unconditional runtime events may share a row with multiple authenticated mutation streams when every
+      // stream already publishes settlement identity. Selected/early-terminated events stay fenced separately.
+      const mutationStreams = runtimeJournalAccesses.filter((access) => access.op !== 'read');
+      const distinctMutationStreamCount = new Set(mutationStreams.map((access) =>
+        access.journalAccessStreamIndex)).size;
+      const hasUnauthenticatedMultiStreamEvents = (abi?.runtimeLoopEvents?.length ?? 0) > 0
+        && distinctMutationStreamCount > 1
+        && (hasSelectedRuntimeEvent
+          || mutationStreams.some((access) =>
+            !(Number.isSafeInteger(access.journalAccessStreamIndex)
+              && access.settlementIdentity?.accessStreamIndex === access.journalAccessStreamIndex
+              && access.settlementIdentity.recordOrdinalScope === 'global-journal'
+              && access.settlementIdentity.settlementRole === 'mutation-settlement')));
+      const hasDistinctEventMutationStreams = hasUnauthenticatedMultiStreamEvents;
       let hasScalarStateMutationInClosure = false;
       for (const name of collectNamedFunctionClosure(fn, completedFunctionsByName)) {
         for (const candidate of completedFunctionsByName.get(name) ?? []) {
@@ -14076,6 +14243,14 @@ function compileResolvedAst(
     const messageBusRouteFn = ast.contract.functions.find((fn) => fn.messageBusRoute);
     const messageBusMaximumRows = messageBusRouteFn?.messageBusMaximumRows ?? MAX_MESSAGE_BUS_ROWS;
     const extractedVerifierProgram = detachedVerifierProgram;
+    const fixedChunkableWriteSelectors = [
+      ...ast.contract.functions,
+      ast.contract.fallbackDef,
+      ast.contract.receiveDef,
+    ].filter((fn): fn is FunctionDefinitionNode => !!fn && !fn.messageBusRoute
+      && fn.isEntryPoint && fn.messageBusEligible === true
+      && fn.messageBusFixedChunkableWriteMaxRows === 1 && fn.functionSelector !== undefined)
+      .map((fn) => binToHex(fn.functionSelector!)).sort();
     artifact.messageBus = {
       version: 1,
       selector: MESSAGE_BUS_SELECTOR_HEX,
@@ -14087,6 +14262,13 @@ function compileResolvedAst(
         && { minimumRows: RESOURCE_SHAPED_BATCH_ROWS }),
       maximumRows: messageBusMaximumRows,
       maximumBlobBytes: MAX_MESSAGE_BUS_BLOB_BYTES,
+      ...(fixedChunkableWriteSelectors.length > 0 && {
+        fixedChunkableWritePolicy: {
+          version: 1 as const,
+          maximumRows: 1 as const,
+          selectors: fixedChunkableWriteSelectors,
+        },
+      }),
       atomicMessageBus: {
         domain: ATOMIC_MESSAGE_BUS_DOMAIN_HEX,
         protocolVersions: mergedCompilerOptions.messageBusKernel === true && detachedVerifierProgram

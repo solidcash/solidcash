@@ -181,16 +181,6 @@ export interface RuntimeLoopIterationDomainAbi {
   maximumIterations: number;
 }
 
-/** Exact bounded recurrence for a pre-test loop containing one external graph callsite. */
-export interface ExternalCallIterationDomainAbi {
-  counterName: string;
-  initialValue: ExternalCallExpression;
-  stepValue: ExternalCallExpression;
-  continueCondition: ExternalCallExpression;
-  /** Independent compiler ceiling; consumers must also enforce their own actual-row limit. */
-  maximumIterations: number;
-}
-
 /** One repeated BCH-transfer segment produced by a runtime counter loop. */
 export interface RuntimeLoopTransferAbi {
   permutationParam: string;
@@ -996,6 +986,11 @@ export interface EntryAccessAbi {
   };
   /** Exact collection-array mutation represented by this access. */
   arrayMutation?: 'push' | 'pop' | 'indexed' | 'mixed';
+  /**
+   * Optional fixed-chunkable activation recipe. Absent means the write is unconditional. When present, the SDK
+   * evaluates it against authenticated row arguments and omits continuation bands / write planning when false.
+   */
+  activation?: ExternalCallExpression;
 }
 
 export interface ExternalReadAbi {
@@ -1026,8 +1021,17 @@ export interface ArgSource {
 export interface ExternalCallExpression {
   kind: string;
   name?: string;
-  /** Compiler-stable producer identity within the containing function. */
+  /**
+   * Physical producer/consumer lane within the containing function after repeated-owner collapse.
+   * For `producerResult` / `externalCall`, pair with `sourceCallsiteId` when the producer was batched.
+   */
   callsiteId?: number;
+  /**
+   * Pre-collapse source callsite of the producer. Distinct from `callsiteId` for collapsed batch rows;
+   * equals `callsiteId` for ordinary (non-batched) edges. Kernel artifacts publish this whenever the
+   * expression names a producer that participated in repeated-owner collapse.
+   */
+  sourceCallsiteId?: number;
   /** Zero-based ABI result position selected from the producer (also explicit for a sole result). */
   resultIndex?: number;
   /** Authenticated receiver expression for a returning external call. */
@@ -1050,16 +1054,23 @@ export interface ExternalCallExpression {
   statements?: readonly ExternalCallStatement[];
 }
 
-/** One authenticated use of an earlier graph call's result. */
+/**
+ * One authenticated use of an earlier graph call's result.
+ *
+ * `consumerCallsiteId` / `producerCallsiteId` are physical lanes. When the producer was a collapsed
+ * batch row, `producerSourceCallsiteId` carries the pre-collapse source identity so result consumption
+ * can address that specific source row inside the physical batch.
+ */
 export type ExternalResultConsumerAbi = {
   consumerCallsiteId: number;
   producerCallsiteId: number;
+  /** Pre-collapse source identity of the producer when it differs from the physical lane (batched). */
+  producerSourceCallsiteId?: number;
   /** Exact component selected from the producer's canonical return tuple. */
   resultIndex?: number;
 } & (
   | { argument: number; condition?: never }
   | { condition: true; argument?: never }
-  | { iterationDomain: true; argument?: never; condition?: never }
 );
 
 /**
@@ -1145,14 +1156,12 @@ export interface CallsiteCallerIdentityAbi {
   /**
    * Role of the authenticated caller subject for this edge.
    * - origin: transaction-origin / root (subject empty or rootCaller; authOffset 0xffff)
-   * - active: exact authenticated identity through which the calling participant entered; delegate execution
-   *   resolves to its state owner rather than its executor
    * - owner: physical state-owner master of the calling participant
    * - create: CREATE / getAddress() logical identity of the calling participant
    * - proxy: proxy-facing public identity when distinct from owner
    * - executor: co-spent implementation input (rare; only when the edge literally authenticates the executor)
    */
-  role: 'origin' | 'active' | 'owner' | 'create' | 'proxy' | 'executor';
+  role: 'origin' | 'owner' | 'create' | 'proxy' | 'executor';
   /**
    * How the covenant authenticates the subject bytes.
    * - input-bytecode: subject == lockingBytecode of caller participant input at authOffset
@@ -1166,6 +1175,20 @@ export interface CallsiteCallerIdentityAbi {
   subjectLockingBytecode?: string;
 }
 
+/**
+ * One compiler-authored outgoing call edge.
+ *
+ * Callsite identity is a four-tuple carried through discovery → composition → result consumption:
+ * - **Physical callsite ID** (`callsiteId`): post-collapse co-spend / consumer lane.
+ * - **Source callsite ID** (`batchInvocations[].sourceCallsiteId`): pre-collapse syntactic edge.
+ * - **Batch logical index** (`batchInvocations[].logicalIndex`): ordered row inside one physical batch.
+ * - **Occurrence** (`occurrence` / runtime `occurrenceIndex`): reach index of that source row.
+ *
+ * Non-batched calls: physical === source; logical index absent; occurrence 0 unless loop/conditional.
+ * Batched calls (kernel): physical ≠ source in general; every row publishes `sourceCallsiteId` +
+ * `logicalIndex`; runtime occurrence is required and monotone per `(sourceCallsiteId, logicalIndex)`.
+ * Do not invent source identity from proxy/delegate/locking bytecode.
+ */
 export interface ExternalCallAbi {
   /** Stable compiler-assigned physical callsite/slot identifier within the containing function. */
   callsiteId?: number;
@@ -1234,10 +1257,14 @@ export interface ExternalCallAbi {
   rawArgSources?: readonly ArgSource[];
   batchInvocations?: readonly {
     selector: string;
-    /** Compiler-stable callsite before repeated-owner rows are collapsed into one physical callsite. */
+    /**
+     * Pre-collapse source callsite. Required on kernel-convention artifacts for every batch row;
+     * absence is legacy-only and must be admitted via explicit `sourceCallsiteProvenance: 'legacy-logical'`.
+     */
     sourceCallsiteId?: number;
     /** Compiler-authored program point of the source row before physical batching. */
     sourceEffectOrdinal?: number;
+    /** Ordered row inside this physical batch template (0..n-1, dense). */
     logicalIndex: number;
     inputs: readonly AbiInput[];
     argSources?: readonly ArgSource[];

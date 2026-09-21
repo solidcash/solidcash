@@ -6,7 +6,6 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { cleanCompilerEnvironment } from './clean-compiler-env.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const manifestPath = resolve(root, 'scripts/kernel-beta-manifest.json');
@@ -257,7 +256,9 @@ const verifyRequiredProofInventory = () => {
 };
 
 const profile = (entry, mode) => {
-  const coldEnv = cleanCompilerEnvironment();
+  const coldEnv = { ...process.env };
+  delete coldEnv.SOLIDC_COMPILE_CACHE;
+  delete coldEnv.SOLIDC_COMPILE_CACHE_DIR;
   const captured = run(process.execPath, [
     '--max-old-space-size=8192',
     resolve(root, 'scripts/profile-marketplace-compile.mjs'),

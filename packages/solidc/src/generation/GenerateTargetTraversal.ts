@@ -349,16 +349,6 @@ const GRAPH_CONDITIONAL_DEPLOY_REACHED = '__internal__handlerConditionalDeployRe
 const GRAPH_TOKEN_SITE = '__internal__graphTokenSite';
 /** Physical stack depth below an outlined graph handler's invocation frame. */
 const GRAPH_HANDLER_CALLER_DEPTH = '__internal__graphHandlerCallerDepth';
-/**
- * Tracked frame value holding the number of runtime items that stayed BELOW an invoked body's frame (the caller's
- * live stack). A bottom-ordinal read inside such a body has to add it, because the body's model numbers its
- * ordinals from the frame's bottom while the runtime numbers them from the stack's.
- */
-const FRAME_BELOW_COUNT = '__internal__frameBelowCount';
-/** Tracked copy of an emission row's framed target, used by the gated row-head assertion. */
-const GRAPH_ROW_TARGET_COPY = '(__graph_row_target_copy)';
-/** Tracked copy of an emission row, used by the gated assembly-side row-vs-stream assertion. */
-const GRAPH_ROW_ASSERT_COPY = '(__graph_row_assert_copy)';
 
 // Locking bytecode template fragments - correspond to libauth's
 // encodeLockingBytecodeP2pkh / P2sh20 / P2sh32 but used as partial
@@ -504,15 +494,6 @@ const KECCAK_SIDE_CAR_DETAIL: Record<string, string> = {
  */
 /** Compiler-added hidden ABI parameter carrying the authenticated participant owner of a route frame. */
 const MESSAGE_BUS_OWNER_INPUT = '__internal__messageBusOwnerInput';
-/**
- * The participant's own block base, published as a route ABI input (compiler.ts `MESSAGE_BUS_OWNER_BAND_INPUT`).
- *
- * A graph handler cannot trust any in-frame source for its owner: the frame's distance from the stack bottom depends
- * on what the caller left live, and the handler's own untracked pushes move a top-relative index. The route ABI band
- * is pushed by the SDK before the route body runs, so its ordinals are constant for the whole transaction - the only
- * coordinate a handler can read without measuring anything.
- */
-const MESSAGE_BUS_OWNER_BAND_INPUT = '__internal__messageBusOwnerBandInput';
 /** Tracked-local name for the entry-time copy of the participant owner (see messageBusOwnerAltAnchor). */
 const OWNER_ANCHOR_LOCAL = '(message_bus_owner)';
 
@@ -2127,6 +2108,146 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // combination - not either operand - is what has to be attributed).
       this.emit(encodeInt(BigInt(4096 + this.slotSiteOrdinal)), locationData);
     }
+  }
+
+  /** Push the vout-0 genesis input owned by the current kernel row. */
+  private emitGraphDeployInputIndex(deployIndex: number, locationData: SingleLocationData): boolean {
+    const frame = this.currentFunction.graphEffectFrame;
+    if (!frame || !this.currentFunction.graphEmissionHandler || (frame.deployWidth ?? 0) === 0) return false;
+    const siteName = this.stack.includes(GRAPH_EFFECT_SITE) ? GRAPH_EFFECT_SITE
+      : this.stack.includes('__message_bus_row') ? '__message_bus_row' : GRAPH_EFFECT_SITE;
+    this.emit(encodeInt(BigInt(this.getStackIndex(siteName))), locationData);
+    this.emit(Op.OP_PICK, locationData);
+    const width = frame.deployWidth ?? 0;
+    if (width > 1) {
+      this.emit(encodeInt(BigInt(width)), locationData);
+      this.emit(Op.OP_MUL, locationData);
+    }
+    const siteOffset = this.graphConditionalDeployReachActive
+      ? (this.functionDeploySites[deployIndex]?.spanOffset ?? 0)
+      : this.pendingDeploys.slice(0, deployIndex).reduce(
+        (offset, deploy) => offset + 1 + deploy.node.deployedDataNftCount
+          + deploy.node.deployedEntryNftCount, 0,
+      );
+    const inputOffset = this.getBlockSlotOffset('deploy', frame.deployBase ?? 0) + siteOffset;
+    if (inputOffset > 0) {
+      this.emit(encodeInt(BigInt(inputOffset)), locationData);
+      this.emit(Op.OP_ADD, locationData);
+    }
+    this.emitMasterInputIndex(locationData, 1);
+    this.emit(Op.OP_ADD, locationData);
+    return true;
+  }
+
+  /** Push an output in the child-deployment span owned by the current kernel row. */
+  private emitGraphDeployOutputIndex(extra: number, locationData: SingleLocationData): boolean {
+    const frame = this.currentFunction.graphEffectFrame;
+    const width = frame?.deployWidth ?? 0;
+    if (!frame || !this.currentFunction.graphEmissionHandler || width === 0) return false;
+    const siteName = this.stack.includes(GRAPH_EFFECT_SITE) ? GRAPH_EFFECT_SITE
+      : this.stack.includes('__message_bus_row') ? '__message_bus_row' : GRAPH_EFFECT_SITE;
+    this.emit(encodeInt(BigInt(this.getStackIndex(siteName))), locationData);
+    this.emit(Op.OP_PICK, locationData);
+    if (width > 1) {
+      this.emit(encodeInt(BigInt(width)), locationData);
+      this.emit(Op.OP_MUL, locationData);
+    }
+    const constant = this.getBlockSlotOffset('deploy', frame.deployBase ?? 0) + extra;
+    if (constant > 0) {
+      this.emit(encodeInt(BigInt(constant)), locationData);
+      this.emit(Op.OP_ADD, locationData);
+    }
+    this.emitMasterInputIndex(locationData, 1);
+    this.emit(Op.OP_ADD, locationData);
+    return true;
+  }
+
+  /** Require one unused member of the reached row's deployment frame to remain a neutral balanced slot. */
+  private emitInactiveGraphDeployOutput(extra: number, locationData: SingleLocationData): void {
+    if (!this.emitGraphDeployOutputIndex(extra, locationData)) {
+      throw new Error('Inactive graph deployment output has no row-relative frame');
+    }
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(Op.OP_UTXOBYTECODE, locationData);
+    this.emit(hexToBin(BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX), locationData);
+    this.emit(Op.OP_EQUALVERIFY, locationData);
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(Op.OP_UTXOTOKENCATEGORY, locationData);
+    this.emit(Op.OP_SIZE, locationData);
+    this.emit(Op.OP_NIP, locationData);
+    this.emit(Op.OP_0, locationData);
+    this.emit(Op.OP_NUMEQUALVERIFY, locationData);
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(Op.OP_OUTPUTBYTECODE, locationData);
+    this.emit(new Uint8Array([Op.OP_1]), locationData);
+    this.emit(Op.OP_EQUALVERIFY, locationData);
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(Op.OP_OUTPUTTOKENCATEGORY, locationData);
+    this.emit(Op.OP_SIZE, locationData);
+    this.emit(Op.OP_NIP, locationData);
+    this.emit(Op.OP_0, locationData);
+    this.emit(Op.OP_NUMEQUALVERIFY, locationData);
+    this.emit(Op.OP_OUTPUTVALUE, locationData);
+    this.emit(encodeInt(1000n), locationData);
+    this.emit(Op.OP_NUMEQUALVERIFY, locationData);
+  }
+
+  /** A selected conditional handler owns its row window whether or not source control flow executes `new`. */
+  private emitConditionalGraphDeployBinding(node: FunctionDefinitionNode): void {
+    const frame = node.graphEffectFrame;
+    if (!this.graphConditionalDeployReachActive || !frame || (frame.deployWidth ?? 0) === 0) return;
+    const locationData = { location: node.body.location, positionHint: PositionHint.END };
+    for (const [siteIndex, site] of this.functionDeploySites.entries()) {
+      const reachedName = `${GRAPH_CONDITIONAL_DEPLOY_REACHED}_${siteIndex}`;
+      if (!this.stack.includes(reachedName)) continue;
+      this.emit(encodeInt(BigInt(this.getStackIndex(reachedName))), locationData);
+      this.emit(Op.OP_PICK, locationData);
+      this.emit(Op.OP_NOT, locationData);
+      this.emit(Op.OP_IF, locationData);
+      for (let member = 0; member < site.spanWidth; member += 1) {
+        this.emitInactiveGraphDeployOutput(site.spanOffset + member, locationData);
+      }
+      this.emit(Op.OP_ENDIF, locationData);
+    }
+    const ownedWidth = this.functionDeploySites.reduce((width, site) => width + site.spanWidth, 0);
+    for (let member = ownedWidth; member < frame.deployWidth!; member += 1) {
+      this.emitInactiveGraphDeployOutput(member, locationData);
+    }
+  }
+
+  /**
+   * Kernel row loop: push `master + frameOffset + row * width + slotIndex` using the live `row` iterator.
+   * The unrolled path instead bakes a compile-time `graphEffectSite` into the slot index.
+   */
+  private emitLoopRowEffectSlotIndex(
+    kind: 'event' | 'transfer' | 'tcTransfer',
+    slotIndex: number,
+    frame: NonNullable<FunctionDefinitionNode['graphEffectFrame']>,
+    locationData: SingleLocationData,
+  ): void {
+    const width = kind === 'event' ? frame.eventWidth
+      : kind === 'transfer' ? frame.transferWidth : frame.tokenTransferWidth;
+    const routeOffset = kind === 'event' ? frame.eventOffset
+      : kind === 'transfer' ? frame.transferOffset : frame.tokenTransferOffset;
+    const base = kind === 'event' ? frame.eventBase
+      : kind === 'transfer' ? frame.transferBase : frame.tokenTransferBase;
+    const constant = (routeOffset ?? this.getBlockSlotOffset(kind, base)) + slotIndex;
+    const rowIndex = this.getStackIndex('__message_bus_row');
+    if (rowIndex < 0) {
+      throw new Error("Runtime effect slot missing loop variable '__message_bus_row'");
+    }
+    this.emit(encodeInt(BigInt(rowIndex)), locationData);
+    this.emit(Op.OP_PICK, locationData);
+    if (width > 1) {
+      this.emit(encodeInt(BigInt(width)), locationData);
+      this.emit(Op.OP_MUL, locationData);
+    }
+    if (constant > 0) {
+      this.emit(encodeInt(BigInt(constant)), locationData);
+      this.emit(Op.OP_ADD, locationData);
+    }
+    this.emitMasterInputIndex(locationData, 1);
+    this.emit(Op.OP_ADD, locationData);
   }
 
   /** Push the vout-0 genesis input owned by the current kernel row. */
@@ -5712,9 +5833,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // The anchor flag is per EMISSION, not per node: the same function is emitted as an entry body, as its
     // OP_DEFINE body and as a subroutine-use probe, and only a stream that actually captured the owner may read it.
     node.messageBusOwnerAltAnchor = false;
-    // The caller-frame anchor is captured once per emitted body (frameAnchorEnabled), so a stream that did not
-    // capture it must never read it - the same per-emission rule as the owner anchor above.
-    this.frameAnchorActive = false;
     this.bindTransferOnlyRawCallOrdinals(node);
     this.currentFunctionIsMessageBusRoute = node.messageBusRoute === true
       || (node.name.startsWith('__message_bus')
@@ -6267,39 +6385,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // The caller pushes this before every other hidden operand, so it is the deepest item in the local frame.
       // It lets epilogue cleanup distinguish runtime-only temporaries from the still-live caller frame below it.
       this.pushToStack(GRAPH_HANDLER_CALLER_DEPTH, true);
-      // A bottom-ordinal read inside an invoked body counts from the MODEL's bottom, which is only the stack's
-      // bottom while nothing of the caller stays live underneath. Measure that caller remainder once, here, where
-      // it is exact - this body has not pushed anything yet, so `OP_DEPTH` minus the items the caller already
-      // supplied IS the caller's live frame. Later reads then count from the frame's bottom the way the model
-      // numbers its ordinals, instead of from a stack bottom that the caller's frame moved.
-      if (this.frameAnchorEnabled()) {
-        const frameAnchorLocation: SingleLocationData = {
-          location: node.location, positionHint: PositionHint.START,
-        };
-        this.emit(Op.OP_DEPTH, frameAnchorLocation);
-        this.emit(encodeInt(BigInt(this.stack.length)), frameAnchorLocation);
-        this.emit(Op.OP_SUB, frameAnchorLocation);
-        // The value goes to the ALT stack, not into the frame: a frame slot would have to be re-found by a
-        // top-relative pick, which is the very quantity untracked runtime operands above the frame perturb
-        // (measured: the model index resolved to an empty item, so the anchor read back as 0 and every anchored
-        // coordinate degenerated to the unanchored one). Depth from the top of the main stack cannot shift it.
-        // Every read re-reads it non-destructively (`FROMALTSTACK DUP TOALTSTACK`), exactly like the owner anchor.
-        this.emit(Op.OP_TOALTSTACK, frameAnchorLocation);
-        this.frameAnchorActive = true;
-      }
-    } else if (this.isDefineSubTraversal && this.frameAnchorAllEnabled()) {
-      // The declared frame is complete here for every body, not only the context-threaded ones, so the same
-      // measurement is available: `OP_DEPTH - modelLength` at this point IS the caller's live below-frame count.
-      const frameAnchorLocation: SingleLocationData = {
-        location: node.location, positionHint: PositionHint.START,
-      };
-      this.emit(Op.OP_DEPTH, frameAnchorLocation);
-      this.emit(encodeInt(BigInt(this.stack.length)), frameAnchorLocation);
-      this.emit(Op.OP_SUB, frameAnchorLocation);
-      this.emit(Op.OP_TOALTSTACK, frameAnchorLocation);
-      this.frameAnchorActive = true;
     }
-    this.debugDeclaredHandlerFrame(node);
     // Only ABI entry frames contain attacker-supplied raw stack values. An OP_DEFINE subroutine is reachable
     // exclusively through compiler-emitted typed calls (including function-pointer dispatch), whose operands have
     // already been checked at their external boundary and after every bounded operation/cast. Rechecking every
@@ -18754,9 +18840,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         + `slots ${this.externalCallSlots.map((slot) => `${slot.interfaceName}.${slot.functionName}`).join(', ')})`,
       );
       if (this.graphStraightRuntimeMode) {
-        this.verifyGraphEmissionRow(graphEmissionSlot, this.currentFunction, node.parameters, locationData, {
-          disposition: 'defer-whole-vector', parametersAreCallArguments: true,
-        });
+        {
+          const emissionSelector = this.graphEmissionSelectorForCall(physicalSlot, node);
+          this.verifyGraphEmissionRow(physicalSlot, this.currentFunction, node.parameters, locationData, {
+            disposition: 'defer-whole-vector', parametersAreCallArguments: true,
+            ...(emissionSelector !== undefined && { emissionSelector }),
+          });
+        }
         const rowName = `(__graph_straight_row_${this.graphStraightRuntimeRows.length})`;
         this.stack[0] = rowName;
         this.graphStraightRuntimeRows.push(rowName);
@@ -19089,6 +19179,21 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     return `__internal__graphResult${slot.returnSlotIndex ?? 0}_${field}`;
   }
 
+
+  /**
+   * Selector for one collapsed batch row's graph-emission transcript.
+   * Mixed-handler batches share one physical slot whose compileTimeSelector is the first row; each source
+   * callsite must still authenticate with its own row selector or the emission stream EQUALVERIFY fails.
+   */
+  private graphEmissionSelectorForCall(
+    slot: ExternalCallSlot,
+    call: ExternalFunctionCallNode,
+  ): Uint8Array | undefined {
+    if (call.externalBatchLogicalIndex === undefined || !slot.batchInvocations) return undefined;
+    const row = slot.batchInvocations.find((candidate) => candidate.logicalIndex === call.externalBatchLogicalIndex);
+    return row?.selector;
+  }
+
   /** Verify one source-executed call against the compiler-owned participant emission frame. */
   private verifyGraphEmissionRow(
     slot: ExternalCallSlot,
@@ -19098,9 +19203,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     verification: {
       disposition: GraphEmissionRowDisposition;
       parametersAreCallArguments?: boolean;
+      /** Per-row selector for a collapsed mixed-handler batch; defaults to the physical slot selector. */
+      emissionSelector?: Uint8Array;
     },
   ): number {
-    const { disposition, parametersAreCallArguments = false } = verification;
+    const { disposition, parametersAreCallArguments = false, emissionSelector } = verification;
     if ((globalThis as { process?: { env?: Record<string, string> } }).process
       ?.env?.SOLIDC_DEBUG_ARG_ORDER === '1') {
       // EVERY variant of this check (returning, consuming, deferred, non-returning) builds its operands from the
@@ -19129,8 +19236,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // A later graph edge may be parameterized by a local initialized from an earlier returning edge. Expanding
       // that local exposes the producer call, but it must never be cloned into the route: one source call has one
       // stable identity. Replace it with the authenticated hidden-frame result while cloning instead.
-      const currentOrdinal = handler.externalCalls?.findIndex((candidate) =>
-        candidate.slotIndex === slot.slotIndex) ?? -1;
+      const currentOrdinal = handler.externalCalls?.indexOf(slot) ?? -1;
       const projectProducerResult = (
         producerNode: ExternalFunctionCallNode, resultIndex: number,
       ): IdentifierNode => {
@@ -19406,7 +19512,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.visit(slot.runtimeSelector);
       }
     } else {
-      this.emit(slot.compileTimeSelector!, locationData);
+      this.emit(emissionSelector ?? slot.compileTimeSelector!, locationData);
     }
     // The raw branch already models both OP_SPLIT results above (and moves the
     // argument tail to the alt stack). Other branches push only the selector.
@@ -19437,19 +19543,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const callManifestArgumentParameters = argumentParameters
       .map((parameter, sourceIndex) => ({ parameter, sourceIndex }))
       .filter(({ parameter }) => !this.typeIsEntireTransactionSignature(parameter.type!));
-    const materializeGraphArgumentValue = (expression: ExpressionNode): void => {
-      if (expression instanceof ArrayNode) {
-        expression.blobEncoded = true;
-        // Type checking normally propagates value encoding into nested literals before code generation. Graph
-        // materialization can introduce this requirement later, so preserve the same invariant recursively.
-        for (const element of expression.elements) materializeGraphArgumentValue(element);
-      } else if (expression instanceof TernaryOpNode) {
-        materializeGraphArgumentValue(expression.ifTrue);
-        materializeGraphArgumentValue(expression.ifFalse);
-      } else if (expression instanceof CastNode) {
-        materializeGraphArgumentValue(expression.expression);
-      }
-    };
     if (rawCall && !canonicalRawParameters) {
       if (!callManifestArgumentParameters[0]) {
         throw new Error('Raw graph call lacks its canonical calldata argument');
@@ -19477,12 +19570,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           this.emit(Op.OP_UTXOBYTECODE, locationData);
           this.pushToStack('(__graph_arg_value)');
         } else if (evaluateArgument) {
-          // An inline array normally uses the expression-stack representation (elements plus count). A graph
-          // emission row, however, carries each call argument as exactly one canonical value, just like an array
-          // local or ABI parameter. Materialize the literal in that value representation before visiting it;
-          // otherwise the row encoder consumes only the count and strands the elements above the target/selector,
-          // corrupting this row and every later callsite in the same handler.
-          materializeGraphArgumentValue(parameter);
           parameter = this.visit(parameter);
           callManifestArgumentParameters[i].parameter = parameter;
         } else {
@@ -19675,15 +19762,21 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     node: Node,
     locationData: SingleLocationData,
   ): void {
+    const emissionSelector = node instanceof ExternalFunctionCallNode
+      ? this.graphEmissionSelectorForCall(slot, node)
+      : undefined;
     const returned = this.verifyGraphEmissionRow(slot, this.currentFunction, parameters, locationData, {
       disposition: 'consume-vector-prefix', parametersAreCallArguments: true,
+      ...(emissionSelector !== undefined && { emissionSelector }),
     });
     if (returned > 0) return;
     this.emit(Op.OP_DUP, locationData);
     this.emit(Op.OP_SIZE, locationData);
     this.emit(Op.OP_NIP, locationData);
     this.pushToStack('(__graph_runtime_row_length)');
-    this.emitGraphEmissionStreamRead(locationData);
+    const remainder = '__internal__graphEmissions';
+    this.emit(encodeInt(BigInt(this.graphEmissionStreamSlot())), locationData);
+    this.emit(Op.OP_PICK, locationData);
     this.pushToStack('(__graph_runtime_emissions)');
     this.emit(Op.OP_SWAP, locationData);
     this.emit(Op.OP_SPLIT, locationData);
@@ -19692,7 +19785,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_EQUALVERIFY, locationData);
     this.popFromStack(3);
     this.pushToStack('(__graph_runtime_remainder)');
-    this.emitReplaceGraphEmissionStream(node);
+    this.emitReplace(this.graphEmissionStreamSlot(), node);
     this.popFromStack();
     this.debugEmissionConsume('runtime-row');
     this.dischargeGraphEmissionRow();
@@ -19704,7 +19797,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_SIZE, locationData);
     this.emit(Op.OP_NIP, locationData);
     this.pushToStack('(__graph_emission_length)');
-    this.emitGraphEmissionStreamRead(locationData);
+    const remainder = '__internal__graphEmissions';
+    this.emit(encodeInt(BigInt(this.graphEmissionStreamSlot())), locationData);
+    this.emit(Op.OP_PICK, locationData);
     this.pushToStack('(__graph_emission_stream)');
     this.emit(Op.OP_SWAP, locationData);
     this.emit(Op.OP_SPLIT, locationData);
@@ -19713,7 +19808,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_EQUALVERIFY, locationData);
     this.popFromStack(3);
     this.pushToStack('(__graph_emission_remainder)');
-    this.emitReplaceGraphEmissionStream(node);
+    this.emitReplace(this.graphEmissionStreamSlot(), node);
     this.popFromStack();
     this.debugEmissionConsume('constructed-row');
     this.dischargeGraphEmissionRow();
@@ -19828,56 +19923,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * Top-relative depth of the authenticated emission stream, used by BOTH the consumer's pick and the
    * `emitReplace` that stores the peeled remainder back into the same slot.
    *
-   * `SOLIDC_DEBUG_STREAM_PICK_OFFSET=<n>` shifts the fallback frame depth in non-route graph bodies. It does not
-   * affect compiler-owned routes, whose paired cursor accessors use the stable route-band coordinate. The shift is
-   * diagnostic only and must never be set for a shipped artifact.
+   * `SOLIDC_DEBUG_STREAM_PICK_OFFSET=<n>` shifts that depth by `n` at every consumer, which is how the
+   * "one slot off" hypothesis for a mis-split emission row is measured rather than argued: a single untracked
+   * runtime operand (or one phantom tracked name) moves every top-relative read in the body by exactly one, and
+   * the direction of the shift says which of the two it is. The shift is diagnostic only - it must never be set
+   * for a shipped artifact - because a pick and the replace that follows it have to address the same slot.
    */
-  /** Read the authenticated emission stream for one consumer. */
-  private emitGraphEmissionStreamRead(locationData: SingleLocationData): void {
-    const bandOrdinal = this.bandEmissionOrdinal();
-    if (bandOrdinal !== undefined) {
-      // The band item carries the stream, and every write-back puts the peeled remainder back into the same band
-      // slot, so this read form is exact for the WHOLE body - no frame slot, no model index, no drift.
-      this.emit(Op.OP_DEPTH, locationData);
-      this.emit(encodeInt(BigInt(bandOrdinal)), locationData);
-      this.emit(Op.OP_SUB, locationData);
-      this.emit(Op.OP_PICK, locationData);
-      return;
-    }
-    this.emit(encodeInt(BigInt(this.graphEmissionStreamSlot())), locationData);
-    this.emit(Op.OP_PICK, locationData);
-  }
-
-  /**
-   * Stable storage coordinate of the mutable authenticated-emission cursor.
-   *
-   * Compiler-owned route clones execute with the route ABI band below their OP_INVOKE frame. Every graph row
-   * consumer must address the same band cell: mixing this coordinate with a model-relative frame PICK lets
-   * returning rows advance one copy while a later void row rereads the pristine vector. A non-route graph body
-   * has no published band coordinate and retains its explicitly threaded frame slot.
-   */
-  private bandEmissionOrdinal(): number | undefined {
-    return this.declaredBandOrdinal('__internal__graphEmissions');
-  }
-
-  /**
-   * Store the peeled stream remainder (on top) back into the slot the next consumer reads.
-   *
-   * For compiler-owned routes that slot is the band item itself, replaced in place at its constant bottom ordinal;
-   * the band keeps its layout, so every other ordinal stays valid. Non-route graph bodies retain the explicitly
-   * threaded model-index replacement.
-   */
-  private emitReplaceGraphEmissionStream(node: Node): void {
-    const bandOrdinal = this.bandEmissionOrdinal();
-    if (bandOrdinal === undefined) {
-      this.emitReplace(this.graphEmissionStreamSlot(), node);
-      return;
-    }
-    this.emitReplaceAtBottomOrdinal(
-      bandOrdinal, { location: node.location, positionHint: PositionHint.END },
-    );
-  }
-
   private graphEmissionStreamSlot(): number {
     const index = this.getStackIndex('__internal__graphEmissions');
     const raw = (globalThis as { process?: { env?: Record<string, string> } }).process
@@ -19911,13 +19962,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       modelLength: this.stack.length,
       modelTop: this.stack.slice(0, 8),
       expectedIndex: this.getStackIndex('__internal__graphEmissions', true),
-      // The names AROUND the stream slot: a consumer that picks the wrong item picks one of these instead, and the
-      // failing pre-state then shows which one it was (measured: a consumer picked a 114-byte
-      // `[framed target][mode][selector][framed args]` prefix while the model named the slot `graphEmissions`).
-      modelAroundExpected: ((): string[] => {
-        const index = this.getStackIndex('__internal__graphEmissions', true);
-        return index < 0 ? [] : this.stack.slice(Math.max(0, index - 2), index + 3);
-      })(),
       isDefineSubTraversal: this.isDefineSubTraversal,
       graphEmissionHandler: this.currentFunction.graphEmissionHandler === true,
     }));
@@ -23513,31 +23557,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // constructs (fixed block slot, batch proof, delegate base, runtime loop), so a wrong index is only
       // actionable once the emitting call site is known.
       const frames = new Error().stack?.split('\n').slice(2, 5).map((line) => line.trim()) ?? [];
-      // The BASE path is the load-bearing part of this record: an entry coordinate is `base + layout offset`, and
-      // the three branches below take their base from three different places (runtime-loop trailing base plus
-      // counter, a vmap batch proof witness, or the block slot's own base). Without naming the branch a coordinate
-      // like `151 = 131 + 20` cannot be attributed - measured: no function emits an entry/returnEvent slot read at
-      // offset 20 at all, so the offset comes from one of these non-layout bases.
       console.error('DBG-ENTRY-INPUT-INDEX', JSON.stringify({
         function: this.currentFunction.name,
         functionId: this.currentFunction.functionId,
         slotIndex,
         extraStackOffset,
-        basePath: entry === undefined ? 'no-entry-metadata'
-          : (entry.inLoop && this.sortedUpsertLoopActive && this.sortedUpsertLoopCollection === entry.collection
-            ? 'runtime-loop'
-            : (this.currentFunction.sortedBatchInfo?.some((b) => b.slotIndices.includes(slotIndex))
-              ? 'vmap-batch-proof' : 'block-slot')),
-        inLoop: entry?.inLoop === true,
-        sortedUpsertLoopActive: this.sortedUpsertLoopActive === true,
-        hasSortedBatchInfo: this.currentFunction.sortedBatchInfo !== undefined,
-        blockSlotOffset: (() => {
-          try { return this.getBlockSlotOffset('entry', slotIndex); } catch { return undefined; }
-        })(),
-        blockBaseHint: this.currentFunction.blockLayout === undefined ? undefined : {
-          blockSize: this.currentFunction.blockLayout.blockSize,
-          trailingBase: this.currentFunction.blockLayout.trailingBase,
-        },
         collection: entry?.collection,
         outputLength: this.output.length,
         stackTop: this.stack.slice(0, 12),
@@ -25085,6 +25109,25 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         valueConst = valueRight.value.toString();                      // loop-invariant int literal
       } else if (valueRight instanceof BoolLiteralNode) {
         valueConst = valueRight.value ? '1' : '0';                     // bool literal: true=0x01, false=empty (int 1/0)
+      } else if (valueArrayParam === undefined && valueScalarParam === undefined && valueConst === undefined
+        && valueRuntimeLocal === undefined && !mutation && varyingArrayParam !== undefined) {
+        // Counter-affine `i` / `i+K` (possibly lowered to __internal__vmapCounterLogical_*): keep the
+        // runtime expression in script, but record valueArrayOffset so the SDK can materialize concrete
+        // commitment tails without OTC derivation — required for mixed int+bytes compose settlement.
+        const counterName = this.currentFunction.runtimeCounterLoopCounters?.get(varyingArrayParam)?.name;
+        const isCounterValueId = (node: Node): boolean => node instanceof IdentifierNode && (
+          (counterName !== undefined && node.name === counterName)
+          || node.name.startsWith('__internal__vmapCounterLogical_')
+        );
+        if (isCounterValueId(valueRight)) {
+          valueArrayOffset = '0';
+        } else if (valueRight instanceof BinaryOpNode && valueRight.operator === BinaryOperator.PLUS
+          && isCounterValueId(valueRight.left) && valueRight.right instanceof IntLiteralNode) {
+          valueArrayOffset = valueRight.right.value.toString();
+        } else if (valueRight instanceof BinaryOpNode && valueRight.operator === BinaryOperator.PLUS
+          && isCounterValueId(valueRight.right) && valueRight.left instanceof IntLiteralNode) {
+          valueArrayOffset = valueRight.left.value.toString();
+        }
       }
     }
     // 'delete' has no value; every other op needs exactly one value source. All need the varying key array.
@@ -25929,16 +25972,43 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private kernelJournalCanSettleScalar(
     node: MappingAssignNode | MappingDeleteNode, isRawbytes: boolean, isChunkable: boolean,
   ): boolean {
-    return this.sortedUpsertLoopJournalAccessStreamIndex !== undefined
-      && this.hasKernelJournalRecordCarrier()
-      && this.getStackIndex(this.sortedUpsertLoopJournalCursorName, true) >= 0
-      && this.getStackIndex(GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_JOURNAL_COUNT, true) >= 0
-      && (node instanceof MappingAssignNode || node instanceof MappingDeleteNode)
-      && (this.sortedUpsertLoopOp === 'set' || this.sortedUpsertLoopOp === '+'
+    if (this.sortedUpsertLoopJournalAccessStreamIndex === undefined
+      || !this.hasKernelJournalRecordCarrier()
+      || this.getStackIndex(this.sortedUpsertLoopJournalCursorName, true) < 0
+      || this.getStackIndex(GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_JOURNAL_COUNT, true) < 0
+      || !(node instanceof MappingAssignNode || node instanceof MappingDeleteNode)
+      || !(this.sortedUpsertLoopOp === 'set' || this.sortedUpsertLoopOp === '+'
         || this.sortedUpsertLoopOp === 'delete')
-      && !isRawbytes && !isChunkable
-      && (node instanceof MappingDeleteNode
-        || (node.arrayIndex === undefined && !node.arrayPush && !node.arrayPop));
+      || isRawbytes || isChunkable
+      || (!(node instanceof MappingDeleteNode)
+        && (node.arrayIndex !== undefined || node.arrayPush || node.arrayPop))) {
+      return false;
+    }
+    // Scalar journal settlement dirties the route carrier and forces the final flush. Sibling rawbytes /
+    // chunkable streams in the same execution group still mint per-row and leave clean old records, so that
+    // flush EQUALVERIFYs stale tails against new outputs. Keep the whole mixed group on the per-row path
+    // until rawbytes journal settlement exists.
+    if (this.kernelJournalExecutionGroupHasRawbytesSibling(
+      this.sortedUpsertLoopJournalAccessStreamIndex,
+    )) {
+      return false;
+    }
+    return true;
+  }
+
+  /** True when another stream in this execution group stores a rawbytes / chunkable value. */
+  private kernelJournalExecutionGroupHasRawbytesSibling(streamIndex: number): boolean {
+    const infos = this.currentFunction.sortedUpsertLoopInfo ?? [];
+    const self = infos.find((info) => info.journalAccessStreamIndex === streamIndex);
+    if (!self) return false;
+    return infos.some((info) => {
+      if (info.journalExecutionGroup !== self.journalExecutionGroup) return false;
+      if (info.journalAccessStreamIndex === streamIndex) return false;
+      const collection = this.collectionDefinitions.find((candidate) => candidate.name === info.collection);
+      if (!collection) return false;
+      const valueType = collection.innermostValueType;
+      return this.sortedValueKind(valueType) === 'rawbytes' || this.isChunkableValue(valueType);
+    });
   }
 
   /** Leave true iff the current access tuple is an existing-entry mutation (flags low nibble 0b1011). */
@@ -32994,13 +33064,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         topIndex,
         modelLength: this.stack.length,
         bottomOrdinalPlusOne,
-        // Whether this body could correct the ordinal at all, and where the caller's own below-frame count lives.
-        // Measured: the takeJob clone's base read is `OP_DEPTH 75 OP_SUB PICK` on a 91-item stack, i.e. physical
-        // bottom index 15, which in the route band is declared index 4 - `__internal__graphBlockSize` (131) - so the
-        // coordinate that should be the participant base reads the participant's BLOCK SIZE. A site that reports
-        // frameAnchorActive false (or no caller-depth operand) is a site the anchored form cannot reach.
-        frameAnchorActive: this.frameAnchorActive,
-        callerDepthModelIndex: this.getStackIndex(GRAPH_HANDLER_CALLER_DEPTH, true),
         outputLength: this.output.length,
         above: this.stack.slice(Math.max(0, topIndex - 2), topIndex + 3),
         // The BOTTOM region is what an ordinal addresses, and a DEFINE'd handler frame is seeded with synthetic
@@ -33008,182 +33071,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         // those items and shows how many the model counts below the picked value.
         stackBottom: this.stack.slice(-14),
       }));
-    }
-    // A body invoked through OP_INVOKE shares the caller's stack, so the runtime item a bottom ordinal addresses is
-    // `callerFrameItems + (modelLength - topIndex) - 1` only while the caller's frame is EMPTY - the same
-    // precondition the model cannot check. `SOLIDC_DEBUG_BOTTOM_PICK_SHIFT=<n>` therefore shifts the ordinal at
-    // every bottom-ordinal read, which measures the drift instead of arguing about it: the direction and size of a
-    // shift that makes a failing coordinate correct say whether the runtime frame is deeper or shallower than the
-    // model. Diagnostic only - a shifted pick no longer agrees with the paired `emitDropTrackedFromBottom`, so it
-    // must never ship.
-    // The last read-form candidate for every bottom-ordinal site (not just the owner): with a complete model
-    // the named item's depth from the top IS `topIndex`, and the ordinal form's extra `callerFrameItems` term is
-    // what lands on a neighbouring value inside an invoked body. Gated, because a body with untracked operands
-    // above its frame does need the bottom form. Measured on `take job multiple` it changes neither the stall
-    // nor the guard's coordinate, which moved the suspicion to the OFFSET side: offset 20 is p0's entry slot
-    // while 131 is p1's base, so a shared body may mix one participant's layout with another's base.
-    if ((globalThis as { process?: { env?: Record<string, string> } }).process
-      ?.env?.SOLIDC_BOTTOM_PICK_FRAME === '1' && this.isDefineSubTraversal) {
-      this.emit(encodeInt(BigInt(topIndex)), locationData);
-      this.emit(Op.OP_PICK, locationData);
-      return;
-    }
-    const rawShift = (globalThis as { process?: { env?: Record<string, string> } }).process
-      ?.env?.SOLIDC_DEBUG_BOTTOM_PICK_SHIFT;
-    // Only a body reached through OP_INVOKE has a caller frame under its own; a top-level route (and every direct
-    // entry point) really does start at the stack bottom, so its ordinals must stay untouched.
-    const shift = rawShift === undefined || rawShift === '' || !this.isDefineSubTraversal
-      ? 0 : Number(rawShift);
-    const ordinal = Number.isFinite(shift) && shift !== 0
-      ? Math.max(1, bottomOrdinalPlusOne + Math.trunc(shift)) : bottomOrdinalPlusOne;
-    if (DEBUG_COMPUTE_BASE && rawShift !== undefined && rawShift !== '') {
-      console.error('DBG-BOTTOM-PICK-SHIFT', JSON.stringify({
-        function: this.currentFunction.name, name, bottomOrdinalPlusOne, ordinal,
-      }));
-    }
-    this.emitBottomOrdinalStackRead(name, ordinal, locationData, Op.OP_PICK);
-  }
-
-  /**
-   * Whether this body measured the caller's live frame at its own entry (see FRAME_BELOW_COUNT).
-   *
-   * A body invoked through OP_INVOKE shares the caller's stack, so `OP_DEPTH - ordinal` addresses the caller's own
-   * items whenever the caller keeps anything live under the argument vector. The measured anchor turns the model's
-   * frame-relative ordinal into a stack-relative depth, which is what the VM actually consumes.
-   */
-  private frameBelowCountIndex(): number {
-    if (!this.isDefineSubTraversal) return -1;
-    return this.getStackIndex(FRAME_BELOW_COUNT, true);
-  }
-
-  /** True while the caller-frame count captured at this body's entry sits on the alt stack (frameAnchorEnabled). */
-  private frameAnchorActive = false;
-  /**
-   * Ordinal of the next bottom-ordinal read, emitted into the bytecode under `SOLIDC_DEBUG_BOTTOM_PICK_SITE=1`.
-   *
-   * A read whose index is computed at runtime (`OP_DEPTH … OP_PICK` with the index loaded from the stack) cannot be
-   * attributed by the artifact's byte pattern - measured: the pattern a baked 75 would leave
-   * (`74 01 4b 94 79`) occurs nowhere in the artifact, yet the failing pick's window shows 75 on top. Pushing the
-   * site ordinal immediately before the read makes the marker visible in a VM trace at that ip, and the matching
-   * `bottom-pick-site` record carries the emitter's name, model length and outputLength.
-   */
-  private bottomPickSiteOrdinal = 0;
-  /**
-   * Ordinal of the next block-slot coordinate, emitted into the bytecode under `SOLIDC_DEBUG_SLOT_SITE=1`.
-   *
-   * The failing guard's base operand (131) is not attributable to any coordinate emitter by inspection: no
-   * `DBG-ENTRY-INPUT-INDEX` record resolves an entry at its offset, no plan witness or row argument carries it, and the
-   * read's index is computed at runtime. Pushing a marker immediately before the coordinate makes the emitting site
-   * visible in a VM trace (`block-slot-site` carries function/kind/slotIndex/offset/outputLength).
-   */
-  private slotSiteOrdinal = 0;
-
-  /** Whether `name` is one of the route ABI inputs the caller's band physically provides (see the stash above). */
-  private isCallerBandName(name: string): boolean {
-    const band = this.currentFunction.messageBusCallerBandNames;
-    return band !== undefined && band.includes(name);
-  }
-
-  /**
-   * The baked bottom ordinal of a route ABI input, whenever the route published the whole band order.
-   *
-   * Unlike `callerBandOrdinal` this is not behind the band-ordinals gate: a caller that publishes a value in the
-   * band has already made the band the only sound source for it, so its reads must use the band unconditionally.
-   */
-  /**
-   * Calibration shift for every route ABI band ordinal (`SOLIDC_BAND_ORIGIN`).
-   *
-   * An ordinal counts from the PHYSICAL stack bottom, which is the band's own origin only when the reading body
-   * starts there. Measured on the delegate kernel composition it does not: the declared-index 18/17 tail sits at
-   * physical indices 2/3 while the batch blob sits at 17, so a baked ordinal addresses an item a fixed distance
-   * from its target. This knob moves every band ordinal by one amount, so the origin is calibrated by measurement
-   * (one rebuild per candidate) rather than argued: a correct shift makes the owner read return the participant's
-   * own base, which is the value the deferred-compute walk needs.
-   */
-  private bandOriginShift(): number {
-    const raw = (globalThis as { process?: { env?: Record<string, string> } }).process
-      ?.env?.SOLIDC_BAND_ORIGIN;
-    if (raw === undefined || raw === '') return 0;
-    const value = Number(raw);
-    return Number.isFinite(value) ? Math.trunc(value) : 0;
-  }
-
-  private declaredBandOrdinal(name: string): number | undefined {
-    const band = this.currentFunction.messageBusCallerBandNames;
-    const ordinals = this.currentFunction.messageBusCallerBandOrdinals;
-    if (band === undefined || ordinals === undefined || band.length !== ordinals.length) return undefined;
-    const index = band.indexOf(name);
-    return index < 0 ? undefined : ordinals[index] + this.bandOriginShift();
-  }
-
-  /**
-   * The baked bottom ordinal of a route ABI band item, when the band's physical order is known
-   * (`messageBusCallerBandOrdinals`, recorded at route synthesis) and the band-ordinal read is enabled.
-   *
-   * The band is pushed by the SDK before the route body runs, so nothing of the route or its handlers can move it:
-   * a band item's distance from the stack bottom is fixed for the whole transaction. Reads of these names inside an
-   * invoked body are therefore exact, unlike a frame item's, which is why they take this form.
-   */
-  private callerBandOrdinal(name: string): number | undefined {
-    if ((globalThis as { process?: { env?: Record<string, string> } }).process
-      ?.env?.SOLIDC_BAND_ORDINALS !== '1') return undefined;
-    const band = this.currentFunction.messageBusCallerBandNames;
-    const ordinals = this.currentFunction.messageBusCallerBandOrdinals;
-    if (band === undefined || ordinals === undefined || band.length !== ordinals.length) return undefined;
-    const index = band.indexOf(name);
-    return index < 0 ? undefined : ordinals[index] + this.bandOriginShift();
-  }
-
-  private frameAnchorEnabled(): boolean {
-    return (globalThis as { process?: { env?: Record<string, string> } }).process
-      ?.env?.SOLIDC_FRAME_ANCHOR === '1';
-  }
-
-  /**
-   * Capture the entry frame anchor for EVERY OP_INVOKE-reached body (`SOLIDC_FRAME_ANCHOR_ALL=1`).
-   *
-   * Measured: the takeJob clone's bottom-ordinal reads (`__internal__proxyMasterIndex`, `__internal__extcallMasterIdx*`,
-   * the dynamic-chunk coordinates) all report `frameAnchorActive false` and have no caller-depth operand, because the
-   * capture lives inside the context-threaded branch - so every one of them reads `modelLength - topIndex` and lands
-   * `callerFrameItems` slots away from its target. That is the defect behind the base read that returns the
-   * participant's block size. Gated because the anchor occupies the alt stack for the whole body.
-   */
-  private frameAnchorAllEnabled(): boolean {
-    return (globalThis as { process?: { env?: Record<string, string> } }).process
-      ?.env?.SOLIDC_FRAME_ANCHOR_ALL === '1';
-  }
-
-  /**
-   * Emit a bottom-ordinal read of a tracked frame value.
-   *
-   * Without the entry anchor this is the historical `OP_DEPTH <ordinal> OP_SUB OP_PICK`, which is exact only when
-   * the body starts at the stack's bottom. With the anchor both terms are frame-relative:
-   * `k = OP_DEPTH + 1 - belowCount - ordinal`, i.e. the caller's own frame is skipped instead of being counted as
-   * part of this body's frame.
-   */
-  /**
-   * Emit `OP_DEPTH <ordinal> OP_SUB <opcode>` for a name the route publishes in its ABI band.
-   *
-   * One helper for every band read, because these reads were emitted inline at several sites and a diagnostic marker
-   * placed at only some of them missed the failing one entirely (measured: the marker build's artifact had no marker
-   * adjacent to the owner read that the byte fingerprint `74 01 12 94 79` identifies).
-   */
-  private emitBandOrdinalStackRead(
-    ordinal: number, locationData: SingleLocationData, opcode: Op, label: string,
-  ): void {
-    if ((globalThis as { process?: { env?: Record<string, string> } }).process
-      ?.env?.SOLIDC_DEBUG_SLOT_SITE === '1') {
-      const site = this.slotSiteOrdinal++;
-      console.error('band-read-site', JSON.stringify({
-        site,
-        label,
-        ordinal,
-        function: this.currentFunction.name,
-        modelLength: this.stack.length,
-        outputLength: this.output.length,
-        isDefineSubTraversal: this.isDefineSubTraversal,
-      }));
-      this.emit(encodeInt(BigInt(site)), locationData);
     }
     this.emit(Op.OP_DEPTH, locationData);
     this.emit(encodeInt(BigInt(ordinal)), locationData);
@@ -33494,9 +33381,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * Report how a participant/compute block base was resolved (see DEBUG_COMPUTE_BASE). The interesting datum is
    * which NEIGHBOUR of the resolved index holds a different frame authority: an off-by-one index reads it.
    */
-  private debugComputeBase(
-    branch: string, name: string, index: number, extraStackOffset: number, readForm?: string,
-  ): number {
+  private debugComputeBase(branch: string, name: string, index: number, extraStackOffset: number): number {
     if (!DEBUG_COMPUTE_BASE) return -1;
     const site = this.computeBaseSiteOrdinal++;
     const neighbours = new Map<string, number>();
@@ -33519,7 +33404,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       name,
       index,
       extraStackOffset,
-      ...(readForm !== undefined && { readForm }),
       modelLength: this.stack.length,
       // Emission position of this site. The marker build exists to recover exactly this mapping, but it re-runs
       // the outlining heuristic, so the marked program no longer contains the shipped bodies (measured: the
@@ -33606,8 +33490,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         // how the two forms are told apart on a handler that carries compute side-cars.
         const forcedTopHandler = (globalThis as { process?: { env?: Record<string, string> } })
           .process?.env?.SOLIDC_DEBUG_OWNER_TOP_HANDLER;
-        // EVM recovery appends a keccak sidecar to the frame, so its owner is not at the
-        // graph-row bottom even when the handler contains a recovery effect.
+        // ecrecoverEvm appends a keccak side-car after the A/B pair. Measured under message-bus compose, the
+        // bottom-ordinal owner pick (correct for plain PubKey recovery row handlers whose compute witnesses sit
+        // above the ABI frame) resolves a bytes32 as the UTXO index for those EVM handlers; the compact
+        // top-relative form settles. Keep PubKey on the bottom form; force EVM (and explicit TOP debug) off it.
         const evmProjection = (this.currentFunction.ecrecoverEvmCallCount ?? 0) > 0
           || (this.currentFunction.ecrecoverClosureEvmFlags?.some(Boolean) ?? false);
         const graphRowHandler = ((this.currentFunction.graphEmissionHandler === true
@@ -33618,67 +33504,22 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
             && this.currentFunction.name.includes(forcedBottomHandler)))
           && !(forcedTopHandler !== undefined && forcedTopHandler.length > 0
             && this.currentFunction.name.includes(forcedTopHandler));
-        // Which of the three reads is emitted is itself diagnostic: the band ordinal, the model-relative frame index
-        // and the model-bottom ordinal are all candidates for the owner, and a wrong one is only visible if the built
-        // artifact says which form ran. `SOLIDC_OWNER_FRAME_FIRST=1` prefers the FRAME operand (the value the caller
-        // actually pushed into this body) over both absolute forms - measured on the delegate kernel composition it
-        // changes nothing for `take job multiple` (see the round-418 section), so it stays opt-in.
-        const ownerFrameFirst = (globalThis as { process?: { env?: Record<string, string> } })
-          .process?.env?.SOLIDC_OWNER_FRAME_FIRST === '1';
-        const trackedOwnerFrameIndex = ownerFrameFirst
-          ? this.getStackIndex(ownerName, true) : -1;
-        const bandOwnerOrdinal = trackedOwnerFrameIndex < 0 && ownerName === MESSAGE_BUS_OWNER_INPUT
-          ? this.declaredBandOrdinal(MESSAGE_BUS_OWNER_BAND_INPUT) : undefined;
-        // This read is emitted INLINE (three branches below) rather than through emitBottomOrdinalStackRead or
-        // emitBlockSlotIndex, so neither site marker covers it - which is why the marker traces never showed a marker
-        // at the failing read. Mark it here too: the marker value identifies the branch, and the byte fingerprint of
-        // the site (OP_DEPTH <ordinal> OP_SUB OP_PICK; push; push; OP_INVOKE) is already known.
-        if ((globalThis as { process?: { env?: Record<string, string> } }).process
-          ?.env?.SOLIDC_DEBUG_SLOT_SITE === '1') {
-          const site = this.slotSiteOrdinal++;
-          console.error('owner-read-site', JSON.stringify({
-            site,
-            function: this.currentFunction.name,
-            bandOwnerOrdinal,
-            ownerFrameFirst,
-            trackedOwnerFrameIndex,
-            graphRowHandler,
-            readForm: bandOwnerOrdinal !== undefined ? 'band'
-              : (trackedOwnerFrameIndex >= 0 ? 'frame' : (graphRowHandler ? 'bottom' : 'frame-default')),
-            modelLength: this.stack.length,
-            outputLength: this.output.length,
-            isDefineSubTraversal: this.isDefineSubTraversal,
-          }));
-          this.emit(encodeInt(BigInt(site)), locationData);
-        }
         const ownerSite = this.debugComputeBase(
           graphRowHandler ? 'owner-bottom' : 'owner', ownerName,
           trackedOwnerIndex, extraStackOffset,
-          ownerFrameFirst && trackedOwnerFrameIndex >= 0 ? 'frame'
-            : (trackedOwnerFrameIndex < 0 && this.declaredBandOrdinal(MESSAGE_BUS_OWNER_BAND_INPUT) !== undefined
-              ? 'band' : (graphRowHandler ? 'bottom' : 'frame')),
         );
         this.emitComputeBaseSiteMarker(locationData, ownerSite);
-        if (bandOwnerOrdinal !== undefined) {
-          // The route publishes the participant owner in its own ABI band, whose ordinals nothing can move.
-          this.emitBandOrdinalStackRead(
-            bandOwnerOrdinal, locationData, Op.OP_PICK, '__internal__messageBusOwnerBandInput',
-          );
-        } else if (trackedOwnerFrameIndex >= 0) {
-          // The owner is a live operand of THIS frame: read it at the model's own index. This is the form every
-          // handler with an owner operand takes, including the compute-side-car handlers the model-bottom form was
-          // introduced for - that form is what resolved to a neighbouring band value, so it is now only a fallback
-          // for a body whose owner operand is not in the model.
-          this.emit(encodeInt(BigInt(trackedOwnerIndex + extraStackOffset)), locationData);
-          this.emit(Op.OP_PICK, locationData);
-        } else if (graphRowHandler || ownerName === '__internal__lifecycleOwnerInput') {
-          // Lifecycle merge tails share the survivor's unlocker under a growing route frame. Their owner is the
-          // stable participant base, not a transient top-relative operand.
+        if (graphRowHandler) {
           this.emitPickTrackedFromBottom(ownerName, locationData);
         } else {
-          // Default compact form: the owner is a live operand of this frame, read at the model's own index.
-          this.emit(encodeInt(BigInt(trackedOwnerIndex + extraStackOffset)), locationData);
-          this.emit(Op.OP_PICK, locationData);
+          // Merge-capable routes keep `__internal__lifecycleOwnerInput` under a growing row frame; pick it by
+          // stable bottom ordinal. Ordinary handler owners keep the compact top-relative form.
+          if (ownerName === '__internal__lifecycleOwnerInput' || this.isCompilerMessageBusRoute()) {
+            this.emitPickTrackedFromBottom(ownerName, locationData);
+          } else {
+            this.emit(encodeInt(BigInt(trackedOwnerIndex + extraStackOffset)), locationData);
+            this.emit(Op.OP_PICK, locationData);
+          }
         }
       } else if (this.isSubroutineUseProbe) {
         // The call-graph probe has no physical function frame; its emitted instructions are discarded.

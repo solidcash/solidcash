@@ -67,6 +67,17 @@ describe('inferred message-bus batching for repeated external callees', () => {
     }]);
   });
 
+  it('keeps physical lane distinct from every non-representative source callsite', () => {
+    const call = compileString(SOURCE, { forceStateful: true, messageBusKernel: true })
+      .abi.find((fn) => fn.name === 'run')?.externalCalls?.[0];
+    expect(call?.callsiteId).toBe(0);
+    expect(call?.batchInvocations).toHaveLength(2);
+    expect(call?.batchInvocations?.map((row) => row.sourceCallsiteId)).toEqual([0, 1]);
+    expect(call?.batchInvocations?.map((row) => row.logicalIndex)).toEqual([0, 1]);
+    // Second syntactic edge shares the physical lane but must not lose its source identity.
+    expect(call?.batchInvocations?.[1].sourceCallsiteId).not.toBe(call?.callsiteId);
+  });
+
   it('publishes one shared source-effect order for entry writes and graph calls', () => {
     const artifact = compileString(`
       interface ISink { function put(int value) external; }

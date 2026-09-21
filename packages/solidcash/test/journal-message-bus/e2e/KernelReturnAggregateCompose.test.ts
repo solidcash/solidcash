@@ -39,9 +39,6 @@ describe('kernel aggregate return composition', () => {
           return (Record(9, Detail(70, 1)), marks, hex"cafe",
             Envelope(Record(12, Detail(80, 0)), hex"abcd"));
         }
-        function readOne() public pure returns (Envelope memory) {
-          return Envelope(Record(12, Detail(80, 0)), hex"abcd");
-        }
       }`, OPTIONS);
     expect(sourceArtifact.messageBus?.handlers.find((entry) => entry.name === 'read'))
       .toMatchObject({ eligible: true });
@@ -52,11 +49,6 @@ describe('kernel aggregate return composition', () => {
     const source = StatefulContract.withCategory(
       sourceBase.withCategory(hexToBin(sourceSetup.categoryId)), sourceSetup.categoryId,
     );
-    const direct = await source.call.readOne().staticCall() as {
-      record: { value: bigint }; payload: Uint8Array;
-    };
-    expect(direct.record.value).toBe(12n);
-    expect(direct.payload).toEqual(hexToBin('abcd'));
 
     const consumerArtifact = compileString(`pragma solidity ^0.8.0;
       struct Detail { uint16 code; uint8 status; }

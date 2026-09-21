@@ -1,4 +1,4 @@
-import { bigIntToVmNumber, binToHex, binToUtf8, decodeAuthenticationInstructions, hexToBin, sha1, utf8ToBin, vmNumberToBigInt } from '@bitauth/libauth';
+import { bigIntToVmNumber, binToHex, binToUtf8, hexToBin, sha1, utf8ToBin, vmNumberToBigInt } from '@bitauth/libauth';
 import {
   BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX, decodePushdataValue, encodePushdataValue, scriptToBytecode,
   MESSAGE_BUS_VERIFIER_COMMITMENT_DOMAIN, sha256, ripemd160, hash160, hash256, buildEventNftCovenantScript,
@@ -56,18 +56,19 @@ import {
 import {
   convergeMessageBusComputedResourceOutputs, finalizedByteGateOptionsForProvider, preflightMessageBusTransaction,
 } from './preflight.js';
-import {
-  convergeMessageBusComputedValueChunkOutputs, discoverMessageBusComputedValueChunkValues,
-} from './computed-value-chunks.js';
+import { convergeMessageBusComputedValueChunkOutputs } from './computed-value-chunks.js';
 import {
   convergeMessageBusComputedDynamicChunkOutputs,
   dynamicChunkPlaceholdersRemain,
 } from './computed-dynamic-chunks.js';
 import { deriveCompiledGraphPlan, type WorklistParticipant } from './worklist.js';
 import {
+  buildTransportedContinuationResourceClaim,
   canonicalValueChunkProducerIdentity, canonicalValueChunkProducerPathContext,
   canonicalValueChunkProducerResourceClaim,
   canonicalValueChunkProducerResourceIdentity, canonicalValueChunkStateOwner,
+  orderTransportedContinuationResourceClaims,
+  type TransportedContinuationResourceClaim,
   type ValueChunkProducerPathDisposition, type ValueChunkProducerResourceClaim,
 } from '../stateful/ValueChunkProducerIdentity.js';
 
@@ -218,9 +219,28 @@ export function assertPreparedInvocationIdentity(
     && descriptor.occurrenceIndex !== descriptor.batchOccurrenceIndex) {
     throw new Error(`messageBus: prepared invocation ${index} has conflicting occurrence identities`);
   }
-  const sourceCallsiteId = descriptor.sourceCallsiteId ?? descriptor.callsiteId;
+  const isBatched = invocation.sourceLogicalIndex !== undefined
+    || descriptor.sourceLogicalIndex !== undefined
+    || descriptor.batchLogicalIndex !== undefined;
+  if (isBatched) {
+    // Batched edges must carry the full four-tuple; never invent source identity from the physical lane.
+    if (descriptor.sourceCallsiteId === undefined) {
+      throw new Error(`messageBus: prepared invocation ${index} omits its source callsite identity`);
+    }
+    if (descriptor.sourceLogicalIndex === undefined && descriptor.batchLogicalIndex === undefined) {
+      throw new Error(`messageBus: prepared invocation ${index} omits its source logical row`);
+    }
+    if (descriptor.occurrenceIndex === undefined && descriptor.batchOccurrenceIndex === undefined) {
+      throw new Error(`messageBus: prepared invocation ${index} omits its source occurrence`);
+    }
+  }
+  const sourceCallsiteId = isBatched
+    ? descriptor.sourceCallsiteId!
+    : (descriptor.sourceCallsiteId ?? descriptor.callsiteId);
   const sourceLogicalIndex = descriptor.sourceLogicalIndex ?? descriptor.batchLogicalIndex;
-  const occurrenceIndex = descriptor.occurrenceIndex ?? descriptor.batchOccurrenceIndex ?? 0;
+  const occurrenceIndex = isBatched
+    ? (descriptor.occurrenceIndex ?? descriptor.batchOccurrenceIndex)!
+    : (descriptor.occurrenceIndex ?? descriptor.batchOccurrenceIndex ?? 0);
   if (descriptor.callsiteId !== invocation.consumerCallsiteId) {
     throw new Error(`messageBus: prepared invocation ${index} physical callsite disagrees with the compiled graph`);
   }
@@ -1316,14 +1336,6 @@ interface ComputedValueChunkClaim {
   commitment: string;
 }
 
-interface ComputedValueChunkValueClaim {
-  participant: number;
-  write: ValueChunkWriteDescriptor;
-  valueHex: string;
-  lockingBytecodeHex: string;
-  chunkCount: number;
-}
-
 export interface ComputedValueChunkSpanClaim {
   offset: number;
   resourceIdentity?: string;
@@ -1556,13 +1568,14 @@ const graphRouteContext = (
     __internal__graphCompletionPositions: concat(...completions),
     __internal__graphSettlementTable: concat(...settlementTable),
     __internal__lifecycleOwnerInput: BigInt(finalized.layout.participantInputs[participant]),
-    // The participant's own block base, published as a route ABI input for handlers that need their owner for a
-    // block-relative coordinate. The band is pushed before the route body runs, so a handler reads it by a baked
-    // ordinal instead of measuring a frame whose distance from the stack bottom depends on its caller.
-    __internal__messageBusOwnerBandInput: BigInt(finalized.layout.participantInputs[participant]),
     ...(needsScalarCaller ? {
       __internal__msgSenderCategory: hexToBin(scalarCallerCategories[0] ?? '00'.repeat(32)),
       __internal__msgSenderAnchorIdx: -1n,
+    } : {}),
+    ...(needsUpgradeBytecode ? {
+      __internal__upgradeBytecode: hexToBin(execution.outputLockingBytecode ?? execution.lockingBytecode),
+      __internal__upgradeStateSuffix: upgradeStateSuffixes.get(execution.lockingBytecode.toLowerCase())
+        ?? new Uint8Array(),
     } : {}),
     ...(needsUpgradeBytecode ? {
       __internal__upgradeBytecode: hexToBin(execution.outputLockingBytecode ?? execution.lockingBytecode),
@@ -1836,12 +1849,14 @@ export class AtomicMessageBusComposition {
         const descriptor = descriptors[next];
         if (!descriptor) return undefined;
         if (descriptor.callsiteId !== undefined && descriptor.callsiteId !== callsiteId) return undefined;
+        const descriptorLogical = descriptor.sourceLogicalIndex ?? descriptor.batchLogicalIndex;
+        const descriptorOccurrence = descriptor.occurrenceIndex ?? descriptor.batchOccurrenceIndex;
         if (batchLogicalIndex !== undefined
-          && descriptor.batchLogicalIndex !== undefined
-          && descriptor.batchLogicalIndex !== batchLogicalIndex) return undefined;
+          && descriptorLogical !== undefined
+          && descriptorLogical !== batchLogicalIndex) return undefined;
         if (batchLogicalIndex !== undefined
-          && descriptor.batchOccurrenceIndex !== undefined
-          && descriptor.batchOccurrenceIndex !== occurrence) return undefined;
+          && descriptorOccurrence !== undefined
+          && descriptorOccurrence !== occurrence) return undefined;
         next += 1;
         return {
           participant: workParticipants[next - 1],
@@ -1855,9 +1870,22 @@ export class AtomicMessageBusComposition {
         const reached: number[] = [];
         for (let cursor = next; cursor < descriptors.length; cursor += 1) {
           const descriptor = descriptors[cursor];
+          const descriptorLogical = descriptor.sourceLogicalIndex ?? descriptor.batchLogicalIndex;
+          const descriptorOccurrence = descriptor.occurrenceIndex ?? descriptor.batchOccurrenceIndex;
           if (descriptor.callsiteId !== callsiteId
-            || descriptor.batchLogicalIndex !== batchLogicalIndex) break;
-          reached.push(descriptor.batchOccurrenceIndex ?? reached.length);
+            || descriptorLogical !== batchLogicalIndex) break;
+          if (descriptorOccurrence === undefined) {
+            // Transparent promotion always stamps occurrence; positional fallback is legacy `calls:` only.
+            if (this.options.requirePreparedIdentity === true) {
+              throw new Error(
+                `messageBus: prepared batched callsite ${callsiteId} row ${batchLogicalIndex} `
+                + 'omits its source occurrence',
+              );
+            }
+            reached.push(reached.length);
+            continue;
+          }
+          reached.push(descriptorOccurrence);
         }
         return reached.length > 0 || this.options.preparedCalls ? reached : undefined;
       },
@@ -2920,67 +2948,92 @@ export class AtomicMessageBusComposition {
             throw new Error('messageBus: transported value production has no continuation covenant');
           }
           return {
-            write: production.write,
-            value: production.value,
-            categoryId: production.stateOwner.categoryId,
+            production,
             chunks: chunksFromValue(production.value, {
               lockingBytecode, write: production.write, categoryId: production.stateOwner.categoryId,
             }),
           };
         });
-        const observedValueChunks = observedValueChunkClaims
-          .filter((claim) => claim.participant === participant.participant)
-          .map((claim) => {
-            const value = hexToBin(claim.valueHex);
-            const lockingBytecode = persistValueChunkLock(claim.write.categoryId, value, claim.write);
-            if (!lockingBytecode || binToHex(lockingBytecode) !== claim.lockingBytecodeHex) {
-              throw new Error('messageBus: computed continuation claim disagrees with its resource lock');
-            }
-            const chunks = chunksFromValue(value, {
-              lockingBytecode, write: claim.write, categoryId: claim.write.categoryId,
-            });
-            if (chunks.length !== claim.chunkCount) {
-              throw new Error('messageBus: computed continuation claim disagrees with its chunk count');
-            }
-            return { write: claim.write, value, categoryId: claim.write.categoryId, chunks };
-          });
-        const continuationByResource = new Map<string, typeof transportedValueChunks[number]>();
-        for (const candidate of [...transportedValueChunks, ...observedValueChunks]) {
-          const resource = valueChunkWriteResourceIdentity(candidate.write);
-          const prior = continuationByResource.get(resource);
-          if (prior && binToHex(prior.value) !== binToHex(candidate.value)) {
-            throw new Error(`messageBus: computed continuation conflicts with transported resource '${resource}'`);
-          }
-          if (!prior) continuationByResource.set(resource, candidate);
-        }
-        const continuationValueChunks = [...continuationByResource.values()];
-        const continuationChunkCount = continuationValueChunks.reduce(
+        const transportedChunkCount = transportedValueChunks.reduce(
           (count, candidate) => count + candidate.chunks.length, 0,
         );
-        if (continuationChunkCount > valueChunkSlots.length) {
+        if (transportedChunkCount > valueChunkSlots.length) {
           throw new Error(
-            `messageBus: participant ${participant.participant} needs ${continuationChunkCount} continuation `
+            `messageBus: participant ${participant.participant} needs ${transportedChunkCount} continuation `
             + `slots but publishes ${valueChunkSlots.length}`,
           );
         }
-        // After the terminal selection above, each storage resource contributes exactly one lane. The routed
-        // builder's `selectSingletonValueChunkProducer` accepts one terminal claim per resource, and
-        // `carrier.valueChunkStateOwner` is a single owner, so a participant may still not publish lanes for
-        // several distinct resources.
-        if (continuationValueChunks.length > 1) {
-          throw new Error('messageBus: one routed participant cannot publish multiple continuation resource lanes');
+        // After terminal-per-resource selection, each distinct storage resource contributes one lane. Multiple
+        // lanes are packed as consecutive trailing bands under one owner; the scalar
+        // `__internal__valueChunkOutputBase` remains band[0], and ordered continuationResourceClaims authenticate
+        // every later band. Multi-owner productions on one carrier remain refused downstream.
+        const ownerKeys = new Set(transportedValueChunks.map((candidate) => (
+          canonicalValueChunkStateOwner(candidate.production.stateOwner)
+        )));
+        if (ownerKeys.has(undefined) || ownerKeys.size > 1) {
+          throw new Error('One routed execution carrier cannot own value productions from multiple state owners.');
         }
-        let selectedValueChunkSlots = continuationChunkCount === 0
-          ? [] : valueChunkSlots.slice(-continuationChunkCount);
+        const selectedValueChunkSlots = transportedChunkCount === 0
+          ? [] : valueChunkSlots.slice(-transportedChunkCount);
         if (selectedValueChunkSlots.some((slot, index) => index > 0
           && slot.offset !== selectedValueChunkSlots[index - 1]!.offset + 1)) {
-          throw new Error('messageBus: continuation slots are not one consecutive trailing run');
+          throw new Error('messageBus: transported continuation slots are not one consecutive trailing run');
+        }
+        const participantInputBase = graph.layout.participantInputs[participant.participant];
+        let bandCursor = 0;
+        const continuationResourceClaims: TransportedContinuationResourceClaim[] = [];
+        for (const candidate of transportedValueChunks) {
+          const chunkCount = candidate.chunks.length;
+          if (chunkCount === 0) {
+            throw new Error('messageBus: transported value production published an empty continuation band');
+          }
+          const bandOffset = selectedValueChunkSlots[bandCursor]!.offset;
+          const absoluteBase = participantInputBase + bandOffset;
+          const write = {
+            ...candidate.production.write,
+            outputBase: absoluteBase,
+            outputCount: chunkCount,
+          };
+          // Productions arriving from graph promotion are frozen; replace the map entry rather than mutate.
+          const nextProduction = Object.freeze({
+            ...candidate.production,
+            write: Object.freeze({ ...write }),
+          });
+          const producerIdentity = canonicalValueChunkProducerIdentity(nextProduction.claim.producer);
+          const resourceIdentity = canonicalValueChunkProducerResourceIdentity(
+            valueChunkWriteResourceIdentity(write),
+          );
+          if (!producerIdentity || !resourceIdentity) {
+            throw new Error('messageBus: transported continuation production lost its canonical identity');
+          }
+          valueChunkProductions.set(JSON.stringify([resourceIdentity, producerIdentity]), nextProduction);
+          candidate.production = nextProduction;
+          const claim = buildTransportedContinuationResourceClaim({
+            owner: nextProduction.stateOwner,
+            collectionSignature: write.collectionSignature,
+            collectionHash: write.collectionHash,
+            keySlot: write.keySlot,
+            digest: binToHex(sha256(nextProduction.value)),
+            chunkCount,
+            bandOffset,
+            producerClaim: nextProduction.claim,
+          });
+          if (!claim) {
+            throw new Error('messageBus: transported continuation resource claim is not canonical');
+          }
+          continuationResourceClaims.push(claim);
+          bandCursor += chunkCount;
+        }
+        const orderedContinuationClaims = continuationResourceClaims.length === 0
+          ? [] : orderTransportedContinuationResourceClaims(continuationResourceClaims);
+        if (continuationResourceClaims.length > 0 && orderedContinuationClaims === undefined) {
+          throw new Error('messageBus: transported continuation resource claims are not an ordered band list');
         }
         const internalRouteWitnesses = {
           ...graphRouteContext(graph, participant.participant, upgradeStateSuffixes),
-          ...(continuationChunkCount > 0 && {
+          ...(transportedChunkCount > 0 && {
             __internal__valueChunkOutputBase: BigInt(
-              graph.layout.participantInputs[participant.participant] + selectedValueChunkSlots[0]!.offset,
+              participantInputBase + selectedValueChunkSlots[0]!.offset,
             ),
           }),
         };
@@ -2988,16 +3041,23 @@ export class AtomicMessageBusComposition {
           ?.SOLIDC_DEBUG_ATOMIC_GRAPH === '1') {
           console.error('atomic-lane-bind', JSON.stringify({
             participant: participant.participant,
-            continuationChunkCount,
+            transportedChunkCount,
             valueChunkSlots: valueChunkSlots.length,
             selected: selectedValueChunkSlots.map((slot) => slot.offset),
-            transported: continuationValueChunks.map((candidate) => ({
-              bytes: candidate.value.length,
-              chunks: candidate.chunks.length,
-              digest: binToHex(sha256(candidate.value)).slice(0, 16),
+            claims: (orderedContinuationClaims ?? []).map((claim) => ({
+              resource: claim.producerClaim.resourceIdentity,
+              bandOffset: claim.bandOffset,
+              chunkCount: claim.chunkCount,
+              digest: claim.digest.slice(0, 16),
             })),
-            base: continuationChunkCount > 0
-              ? graph.layout.participantInputs[participant.participant] + selectedValueChunkSlots[0]!.offset
+            transported: transportedValueChunks.map((candidate) => ({
+              bytes: candidate.production.value.length,
+              chunks: candidate.chunks.length,
+              digest: binToHex(sha256(candidate.production.value)).slice(0, 16),
+              outputBase: candidate.production.write.outputBase,
+            })),
+            base: transportedChunkCount > 0
+              ? participantInputBase + selectedValueChunkSlots[0]!.offset
               : undefined,
           }));
         }
@@ -3055,84 +3115,6 @@ export class AtomicMessageBusComposition {
             return value instanceof Uint8Array
               ? `${value.length}b:${binToHex(value).slice(0, 24)}` : String(value);
           };
-          // Every coordinate a participant's own route context publishes must lie inside THAT participant's block:
-          // the contract derives block-relative reads from these values, so a witness carrying another participant's
-          // base (measured: 131 = p1's base, which is also p0's block size) makes the contract address a slot of the
-          // wrong block and its entry guard then compares against an unmaterialized placeholder. This audit names the
-          // offending witness and both spans instead of leaving it to a preflight abort.
-          if ((globalThis as { process?: { env?: Record<string, string> } }).process
-            ?.env?.SOLIDC_DEBUG_COORDINATE_SPANS === '1') {
-            const spans = plan.participants.map((candidate) => {
-              const base = graph.layout.participantInputs[candidate.participant];
-              const blockSize = candidate.blockLayout?.blockSize ?? 0;
-              const outOfSpan: Array<{ name: string; value: string; span: string }> = [];
-              // Each participant's OWN context: using the enclosing loop's witness object paired one participant's
-              // values with every participant's span, which reads as "p0 publishes p1's base" when it is only the
-              // audit that mis-paired them (measured: the same 131/151 witnesses produced no outlier for the span
-              // [131,218) they actually belong to).
-              const ownWitnesses = graphRouteContext(graph, candidate.participant, upgradeStateSuffixes);
-              for (const [name, value] of Object.entries(ownWitnesses)) {
-                if (typeof value !== 'bigint' || value < 0n) continue;
-                if (!/Index|Base|Idx|Proof|Slot|Output|Boundary|Positions/i.test(name)) continue;
-                const numeric = Number(value);
-                if (!Number.isFinite(numeric)) continue;
-                if (numeric < base || numeric >= base + blockSize) {
-                  outOfSpan.push({ name, value: value.toString(), span: `[${base},${base + blockSize})` });
-                }
-              }
-              return { participant: candidate.participant, base, blockSize, outOfSpan };
-            });
-            console.error('coordinate-spans', JSON.stringify(spans));
-          }
-          // Every witness value that could be an INPUT INDEX, resolved to the input it addresses. A witness-indexed
-          // read inside the contract (measured: the failing guard's read is `OP_DEPTH; <data>; OP_PICK`, so both its
-          // depth and the value it lands on come from data) can only be attributed here, where the plan's values and
-          // the composed inputs are both in scope.
-          if ((globalThis as { process?: { env?: Record<string, string> } }).process
-            ?.env?.SOLIDC_DEBUG_WITNESS_TARGETS === '1') {
-            const targets = plan.participants.map((candidate) => {
-              const own = graphRouteContext(graph, candidate.participant, upgradeStateSuffixes);
-              const rows = candidate.batch?.routeWitnesses ?? [];
-              const described = (name: string, value: unknown): Record<string, unknown> => {
-                const numeric = typeof value === 'bigint' ? Number(value) : Number.NaN;
-                const isIndex = Number.isInteger(numeric) && numeric >= 0 && numeric < aggregate.inputs.length;
-                const input = isIndex ? aggregate.inputs[numeric] : undefined;
-                return {
-                  name,
-                  value: typeof value === 'bigint' ? value.toString()
-                    : value instanceof Uint8Array ? `${value.length}b` : String(value),
-                  ...(isIndex && {
-                    addresses: numeric,
-                    targetLock: input === undefined ? undefined
-                      : binToHex((input as { unlocker?: { generateLockingBytecode: () => Uint8Array } })
-                        .unlocker?.generateLockingBytecode() ?? new Uint8Array()).slice(0, 14),
-                    targetCommitmentBytes: ((input as { token?: { nft?: { commitment?: string } } })
-                      ?.token?.nft?.commitment?.length ?? 0) / 2,
-                  }),
-                };
-              };
-              const slots = candidate.blockLayout?.slots ?? [];
-              return {
-                participant: candidate.participant,
-                base: graph.layout.participantInputs[candidate.participant],
-                // Absolute coordinates of this participant's OWN slots. The failing operand pair (131, 20) is exactly
-                // (p1.base, p1.returnEvent offset) and p0's entry-0 offset, so printing both participants' absolute
-                // slots settles WHOSE frame the failing check belongs to instead of inferring it from the values.
-                absoluteSlots: slots
-                  .filter((slot) => slot.kind === 'entry' || slot.kind === 'returnEvent')
-                  .map((slot) => `${slot.kind}${slot.slotIndex ?? ''}@${graph.layout.participantInputs[
-                    candidate.participant] + slot.offset}`),
-                context: Object.entries(own)
-                  .filter(([, value]) => typeof value === 'bigint')
-                  .map(([name, value]) => described(name, value))
-                  .filter((entry) => entry.addresses !== undefined),
-                routeWitnesses: rows.map((value: unknown, index: number) => described(
-                  candidate.routeInputs?.[index]?.name ?? `#${index}`, value,
-                )).filter((entry) => entry.addresses !== undefined),
-              };
-            });
-            console.error('witness-targets', JSON.stringify(targets));
-          }
           console.error('participant-witness-band', JSON.stringify({
             participant: participant.participant,
             contract: participant.artifact.contractName,
@@ -3181,9 +3163,6 @@ export class AtomicMessageBusComposition {
           Object.freeze([...valueChunkProductions.values()]),
           frameCaller === undefined ? undefined : hexToBin(frameCaller.lockingBytecode),
         );
-        localCall._withGraphObservedValueChunks(observedValueChunkClaims
-          .filter((claim) => claim.participant === participant.participant)
-          .map((claim) => ({ write: claim.write, value: hexToBin(claim.valueHex) })));
         // `_withChildDeployment` / `_withCompilerTransfer*` below force `StatefulFunctionCall._applyOverrides` to
         // REBUILD the frame, and that rebuild carries the call object's identity - so record it on the call too,
         // not only in the initial build above.
@@ -3320,70 +3299,17 @@ export class AtomicMessageBusComposition {
             { cause: error },
           );
         }
-        // A local row may already derive the exact continuation from its own authenticated trace. Publishing
-        // another copy in the route's maximum trailing suffix makes the covenant scan past the value's end.
-        // Reuse only one complete, consecutive run matching every compiler-described chunk byte-for-byte.
-        if (continuationValueChunks.length === 1) {
-          const candidate = continuationValueChunks[0];
-          const trailingOffsets = new Set(valueChunkSlots.map((slot) => slot.offset));
-          const matches = valueChunkSlots.flatMap((slot) => {
-            const run = candidate.chunks.map((chunk, chunkIndex) => {
-              const offset = slot.offset + chunkIndex;
-              if (!trailingOffsets.has(offset)) return undefined;
-              const output = local.outputs[offset];
-              const lock = output === undefined ? undefined
-                : typeof output.to === 'string' ? addressToLockScript(output.to) : output.to;
-              return output?.token?.category === (chunk.categoryId ?? candidate.categoryId)
-                && output.token.nft?.capability === 'mutable'
-                && output.token.nft.commitment === chunk.commitment
-                && lock !== undefined && binToHex(lock) === binToHex(chunk.lockingBytecode)
-                ? valueChunkSlots.find((entry) => entry.offset === offset) : undefined;
-            });
-            return run.every((entry) => entry !== undefined) ? [run as typeof valueChunkSlots] : [];
-          });
-          if (matches.length > 1) {
-            throw new Error('messageBus: computed continuation has multiple locally materialized runs');
-          }
-          if (matches.length === 1) {
-            selectedValueChunkSlots = matches[0];
-            const outputBase = BigInt(
-              graph.layout.participantInputs[participant.participant] + selectedValueChunkSlots[0]!.offset,
-            );
-            for (const input of local.inputs) {
-              const unlocker = input.unlocker as {
-                abiFunction?: { inputs?: readonly { name: string }[] };
-                params?: unknown[];
-                syncEncodedArgsFromParams?: (indices?: readonly number[]) => void;
-              };
-              const index = unlocker.abiFunction?.inputs?.findIndex(
-                (entry) => entry.name === '__internal__valueChunkOutputBase',
-              ) ?? -1;
-              if (index < 0 || !unlocker.params || unlocker.params[index] === outputBase) continue;
-              unlocker.params[index] = outputBase;
-              unlocker.syncEncodedArgsFromParams?.([index]);
-            }
-          }
-        }
         let transportedChunkIndex = 0;
-        for (const candidate of continuationValueChunks) {
+        for (const candidate of transportedValueChunks) {
           for (const chunk of candidate.chunks) {
             const slot = selectedValueChunkSlots[transportedChunkIndex++];
-            if (!slot) throw new Error('messageBus: continuation slot allocation overflowed');
-            const existing = local.outputs[slot.offset];
-            const existingLock = existing === undefined ? undefined
-              : typeof existing.to === 'string' ? addressToLockScript(existing.to) : existing.to;
-            if (existing?.token?.category === (chunk.categoryId ?? candidate.categoryId)
-              && existing.token.nft?.capability === 'mutable'
-              && existing.token.nft.commitment === chunk.commitment
-              && existingLock !== undefined && binToHex(existingLock) === binToHex(chunk.lockingBytecode)) {
-              continue;
-            }
+            if (!slot) throw new Error('messageBus: transported continuation slot allocation overflowed');
             const input = local.inputs[slot.offset];
-            const chunkCategoryId = chunk.categoryId ?? candidate.categoryId;
+            const chunkCategoryId = chunk.categoryId ?? candidate.production.stateOwner.categoryId;
             if (!canOwnTransportedContinuationSlot(input, {
               categoryId: chunkCategoryId, commitment: chunk.commitment,
             })) {
-              throw new Error('messageBus: continuation output does not own a balanced trailing slot');
+              throw new Error('messageBus: transported continuation output does not own a balanced trailing slot');
             }
             local.outputs[slot.offset] = {
               to: chunk.lockingBytecode,
@@ -3678,33 +3604,6 @@ export class AtomicMessageBusComposition {
           }
         }
         if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-          ?.SOLIDC_DEBUG_RETURN_INPUT === '1') {
-          // The covenant's preservation guard reads an INPUT at `<participantBase> + <returnEvent offset>` and
-          // requires its locking bytecode to equal a runtime-derived return-event address (measured on the
-          // take-job corpus: base 131 + offset 20 = 151, expected lock aa2016681671db84a1...). Print what the
-          // composition actually co-spends at that slot, beside its neighbours, to see whether the pad funder is
-          // what the covenant is rejecting.
-          const slot = participant.blockLayout!.slots.find((candidate) => candidate.kind === 'returnEvent');
-          const lockOf = (item: { unlocker?: { generateLockingBytecode?: () => Uint8Array } } | undefined): string => {
-            try {
-              return binToHex(item?.unlocker?.generateLockingBytecode?.() ?? new Uint8Array()).slice(0, 44);
-            } catch {
-              return '<locked>';
-            }
-          };
-          console.error('return-slot-input', JSON.stringify({
-            participant: participant.participant,
-            contract: participant.artifact.contractName,
-            base: graph.layout.participantInputs[participant.participant],
-            returnOffset: slot?.offset,
-            returnInputLock: slot === undefined ? undefined : lockOf(local.inputs[slot.offset]),
-            neighbours: (slot === undefined ? [] : [-2, -1, 0, 1, 2]
-              .map((delta) => slot.offset + delta)
-              .filter((offset) => offset >= 0 && offset < local.inputs.length)
-              .map((offset) => ({ offset, lock: lockOf(local.inputs[offset]) }))),
-          }));
-        }
-        if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
           ?.SOLIDC_DEBUG_RETURN_LAYOUT === '1') {
           const returnSlot = participant.blockLayout!.slots.find((slot) => slot.kind === 'returnEvent');
           const returnOutput = returnSlot ? local.outputs[returnSlot.offset] : undefined;
@@ -3835,7 +3734,7 @@ export class AtomicMessageBusComposition {
             + `slots, expected balanced block size ${blockSize}`,
           );
         }
-        const fixedSize = continuationChunkCount > 0
+        const fixedSize = transportedChunkCount > 0
           ? participant.blockLayout!.trailingBase ?? blockSize
           : participant.blockLayout!.fixedSuffix
           ? blockSize : participant.blockLayout!.trailingBase ?? blockSize;
@@ -3874,18 +3773,6 @@ export class AtomicMessageBusComposition {
               resourceIdentity: claim.resourceIdentity,
               resourcePart: claim.resourcePart,
             })),
-            // The covenant reads a co-spent chunk resource at a coordinate derived from the COMPILER-planned write
-            // window, so a coordinate disagreement is only visible when the planned window and the claims the SDK
-            // actually materialized are printed together.
-            plannedWrites: participant.invocations.flatMap((invocationIndex) =>
-              (descriptors[invocationIndex]?.valueChunkProductions ?? []).map((production) => ({
-                invocationIndex,
-                collection: production.write.collection,
-                keySlot: production.write.keySlot,
-                operation: production.write.operation,
-                outputBase: production.write.outputBase,
-                outputCount: production.write.outputCount,
-              }))),
           });
         }
         let actualSize = blockSize;
@@ -4040,9 +3927,6 @@ export class AtomicMessageBusComposition {
               localChunkBase: localChunkBase === undefined ? undefined : String(localChunkBase),
               localFrameLength: local.inputs.length,
               params: masterUnlocker?.params?.length,
-              predOuts: (masterUnlocker?.abiFunction?.inputs ?? []).flatMap((input, index) =>
-                /^__internal__vmapBatchPredOut_\d+$/.test(input.name)
-                  ? [{ name: input.name, value: String(masterUnlocker?.params?.[index]) }] : []),
               selector: participant.artifact.messageBus?.selector,
               constructorInputs: participant.artifact.constructorInputs.length,
               rebased,
@@ -4507,39 +4391,6 @@ export class AtomicMessageBusComposition {
                   inputBase: block.inputBase, bytes: unlocking.length, pushes };
               });
               console.error('deferred-stall-executor-calldata', JSON.stringify(executorCalldata));
-              if ((globalThis as { process?: { env?: Record<string, string> } }).process
-                ?.env?.SOLIDC_DEBUG_BAND_PUSHES === '1') {
-                // The band's PHYSICAL order is what every baked band ordinal depends on, and the hand-rolled decoder
-                // above broke on the first non-push opcode (measured: it stopped after five of the executor's
-                // pushes). libauth's own instruction decoder walks the whole unlocking bytecode, so this lists every
-                // push with its length and the route input name it must correspond to if the SDK packs the declared
-                // list back-to-front (`declared[n - 1 - index]`).
-                const pushes = resolvableDeferredBlocks.map((block) => {
-                  const unlocking = program.transaction.inputs[block.executionInput]?.unlockingBytecode
-                    ?? new Uint8Array();
-                  let decoded: ReturnType<typeof decodeAuthenticationInstructions>;
-                  try {
-                    decoded = decodeAuthenticationInstructions(unlocking);
-                  } catch (error) {
-                    return { participant: block.participant, error: String(error).slice(0, 80) };
-                  }
-                  const declared = (plan.participants[block.participant]?.artifact.messageBus
-                    ?.route?.inputs ?? []).map((input) => input.name);
-                  const items = decoded.flatMap((instruction, index) => {
-                    const data = (instruction as { data?: Uint8Array }).data;
-                    if (data === undefined) return [];
-                    const name = declared.length === 0 ? undefined : declared[declared.length - 1 - index];
-                    return [{
-                      push: index,
-                      bytes: data.length,
-                      head: binToHex(data.slice(0, 12)),
-                      declaredName: name,
-                    }];
-                  });
-                  return { participant: block.participant, executionInput: block.executionInput, items };
-                });
-                console.error('band-pushes', JSON.stringify(pushes));
-              }
               const needle = 'bac4afa31b5925f5';
               const commitments = aggregate.inputs.map((input) =>
                 String(input?.token?.nft?.commitment ?? '').toLowerCase());
@@ -4912,8 +4763,6 @@ export class AtomicMessageBusComposition {
             resultTypes: owned.flatMap((invocation) => plan.invocations[invocation].resultTypes),
             resultTypeGroups: owned.map((invocation) => plan.invocations[invocation].resultTypes),
             resultEncodings: owned.map((invocation) => plan.invocations[invocation].resultEncoding!),
-            structs: participant.artifact.structs,
-            enums: participant.artifact.enums,
           },
         );
         if (!blob) {
@@ -5231,48 +5080,15 @@ export class AtomicMessageBusComposition {
         const resourceConvergence = convergeMessageBusComputedResourceOutputs(provisional);
         const valueChunkConvergence = convergeMessageBusComputedValueChunkOutputs(provisional);
         const dynamicChunkConvergence = convergeMessageBusComputedDynamicChunkOutputs(provisional);
-        reportTiming('resources-converged', { pass,
-          resourceRepairs: resourceConvergence.repairs, valueChunkRepairs: valueChunkConvergence.repairs,
-          dynamicChunkRepairs: dynamicChunkConvergence.repairs });
         if (seededComputedResource || seededComputedValueChunk
           || resourceConvergence.repairs > 0 || valueChunkConvergence.repairs > 0
           || dynamicChunkConvergence.repairs > 0) {
           rebalanceFeeTail(provisional, 'converged mutable resource outputs');
         }
-        // A provisional return can be hidden behind an earlier mutable-resource guard. Once the complete graph
-        // has repaired that resource, trace the return again before declaring the claim state stable: the route
-        // may now expose a result different from the placeholder already published in its return-event output.
-        if (hasComputedValueChunks && (claimedComputedValueChunkValues.length > 0
-          || resourceConvergence.repairs > 0 || valueChunkConvergence.repairs > 0)) {
-          const postResourceMissingReturns = new Set<number>();
-          const postResourceResults = deriveReturnResults(
-            finalized, provisional, claimedResults, postResourceMissingReturns,
-          );
-          if (returning.some((invocation) =>
-            postResourceResults[invocation.index] !== claimedResults[invocation.index])) {
-            const propagation = propagateResultDependentArguments(postResourceResults);
-            if (propagation.propagated) {
-              if (this.resultPropagationDepth >= descriptors.length) {
-                throw new Error('messageBus: authenticated result arguments did not converge');
-              }
-              return new AtomicMessageBusComposition(
-                { ...this.options, preparedCalls: propagation.calls },
-                this.resultPropagationDepth + 1,
-              )._build();
-            }
-            claimedResults = postResourceResults;
-            continue;
-          }
-        }
         // Independent semantic effects share one complete-graph observation pass. Record mutations monotonically,
         // but do not restart until fixed resource/value/token/sidecar/event observations have also been collected;
         // otherwise an earlier provisional class can permanently starve a later class which it needs to pass.
         const semanticObservations: SemanticClaimObservation[] = [];
-        semanticObservations.push({
-          previous: claimedComputedValueChunkValues,
-          observed: derivedComputedValueChunkValues,
-          apply: (observed) => { claimedComputedValueChunkValues = observed as ComputedValueChunkValueClaim[]; },
-        });
         const derivedComputedValueChunks: ComputedValueChunkClaim[] = [];
         for (const absolute of valueChunkConvergence.ownedOutputs) {
           let participant = -1;
@@ -5405,8 +5221,10 @@ export class AtomicMessageBusComposition {
             throw new Error(`messageBus: fixed resource slot ${slot.participant}:${slot.offset} is not preserved`);
           }
           const activeToken = inputMutable ? inputToken : outputToken!;
+          // Trailing value-chunk slots rewrite commitments and may re-dust satoshis; category must still match.
           if (activeToken.amount !== 0n || (inputMutable && outputMutable
-            && (inputToken.category !== outputToken!.category || input.satoshis !== output.amount))) {
+            && (inputToken.category !== outputToken!.category
+              || (slot.kind !== 'trailing' && input.satoshis !== output.amount)))) {
             throw new Error(`messageBus: resource slot ${slot.participant}:${slot.offset} has an invalid NFT transition`);
           }
           const resourceLockingBytecode = inputMutable ? inputLockingBytecode : outputLockingBytecode;
@@ -5670,7 +5488,6 @@ export class AtomicMessageBusComposition {
           }
         }
         const semanticClaimsChanged = applySemanticClaimObservationPass(semanticObservations);
-        reportTiming('events-settled', { pass });
         let stable = !semanticClaimsChanged;
         if (JSON.stringify(derivedEventEffects) !== JSON.stringify(claimedEventEffects)) stable = false;
         if (stable) {

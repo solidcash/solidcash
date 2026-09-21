@@ -5,10 +5,12 @@ import {
   ValueChunkWriteStagingSession,
   advanceValueChunkProducerArgumentEpoch,
   bindValueChunkProducerClaimAliases,
+  buildTransportedContinuationResourceClaim,
   canonicalValueChunkProducerResourceClaim,
   canonicalValueChunkProducerIdentity,
   deriveValueChunkProducerChildPath,
   createValueChunkProducerArgumentEpoch,
+  orderTransportedContinuationResourceClaims,
   selectSingletonValueChunkProducer,
   terminalValueChunkProducerClaim,
   valueChunkProducerClaimFromRouteRow,
@@ -439,5 +441,54 @@ describe('hierarchical value-chunk producer identity', () => {
     expect(bindValueChunkProducerClaimAliases(
       [{ valueChunkStateOwner: producer().stateOwner }], [null as never],
     )).toBe(false);
+  });
+
+  it('orders contiguous continuation-resource bands under one owner', () => {
+    const collectionHash = binToHex(computeCollectionHash(collectionSignature));
+    const secondSignature = 'payloads:mapping(uint256 => bytes)';
+    const secondHash = binToHex(computeCollectionHash(secondSignature));
+    const secondResource = `${categoryId}:${secondHash}:${'43'.repeat(32)}`;
+    const first = buildTransportedContinuationResourceClaim({
+      owner: producer().stateOwner,
+      collectionSignature,
+      collectionHash,
+      keySlot: '42'.repeat(32),
+      digest: 'aa'.repeat(32),
+      chunkCount: 2,
+      bandOffset: 5,
+      producerClaim: claim(),
+    });
+    const second = buildTransportedContinuationResourceClaim({
+      owner: producer().stateOwner,
+      collectionSignature: secondSignature,
+      collectionHash: secondHash,
+      keySlot: '43'.repeat(32),
+      digest: 'bb'.repeat(32),
+      chunkCount: 3,
+      bandOffset: 7,
+      producerClaim: { producer: producer(1), resourceIdentity: secondResource },
+    });
+    expect(first).toBeDefined();
+    expect(second).toBeDefined();
+    expect(orderTransportedContinuationResourceClaims([first!, second!])).toEqual([first, second]);
+    expect(orderTransportedContinuationResourceClaims([first!, { ...second!, bandOffset: 8 }]))
+      .toBeUndefined();
+    expect(orderTransportedContinuationResourceClaims([first!, {
+      ...second!,
+      owner: { ...producer().stateOwner, lockingBytecode: 'aa20' + '52'.repeat(32) + '87' },
+      producerClaim: {
+        producer: {
+          ...producer(1),
+          stateOwner: { ...producer().stateOwner, lockingBytecode: 'aa20' + '52'.repeat(32) + '87' },
+        },
+        resourceIdentity: secondResource,
+      },
+    }])).toBeUndefined();
+    expect(selectSingletonValueChunkProducer(
+      [claim(), claim(1)], resourceIdentity, producer().stateOwner,
+    )).toMatchObject({ status: 'multiple' });
+    expect(selectSingletonValueChunkProducer(
+      [claim()], resourceIdentity, producer().stateOwner,
+    )).toMatchObject({ status: 'exact' });
   });
 });

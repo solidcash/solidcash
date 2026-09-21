@@ -11,7 +11,6 @@ export interface ComputedDynamicChunkConvergence {
   rounds: number;
   ownedOutputs: readonly number[];
   outputs: readonly number[];
-  authenticatedOutputs: readonly number[];
 }
 
 const isP2sh32 = (bytecode: Uint8Array | undefined): bytecode is Uint8Array => !!bytecode
@@ -42,10 +41,9 @@ export function convergeMessageBusComputedDynamicChunkOutputs(
   builder: TransactionBuilder,
 ): ComputedDynamicChunkConvergence {
   const assembly = preflightMessageBusBlockAssembly(builder);
-  if (!assembly) return { repairs: 0, rounds: 0, ownedOutputs: [], outputs: [], authenticatedOutputs: [] };
+  if (!assembly) return { repairs: 0, rounds: 0, ownedOutputs: [], outputs: [] };
 
   const owners = new Map<number, Set<number>>();
-  const ordinals = new Map<number, number>();
   for (const block of assembly.blocks) {
     const trailingBase = block.blockLayout.trailingBase;
     if (trailingBase === undefined || trailingBase >= block.blockLayout.blockSize) continue;
@@ -60,7 +58,6 @@ export function convergeMessageBusComputedDynamicChunkOutputs(
     }
 
     let runStart = -1;
-    let runLock = '';
     for (let outputIndex = trailingStart; outputIndex < trailingEnd; outputIndex += 1) {
       const output = builder.outputs[outputIndex];
       const lock = output?.to instanceof Uint8Array ? output.to
@@ -72,10 +69,6 @@ export function convergeMessageBusComputedDynamicChunkOutputs(
         if (runStart >= 0) break;
         continue;
       }
-      const lockHex = binToHex(lock);
-      // Adjacent dynamic variables can share a category while using different chunk covenants. Their chunk
-      // indices each begin at zero; adjacency alone is not a storage-resource identity.
-      if (runStart >= 0 && lockHex !== runLock) runStart = -1;
       const commitment = output.token.nft.commitment ?? '';
       const ordinal = runStart < 0 ? 0 : outputIndex - runStart;
       const placeholder = commitment === '' || commitment === '00';
@@ -83,11 +76,7 @@ export function convergeMessageBusComputedDynamicChunkOutputs(
         if (runStart >= 0) break;
         continue;
       }
-      if (runStart < 0) {
-        runStart = outputIndex;
-        runLock = lockHex;
-      }
-      ordinals.set(outputIndex, ordinal);
+      if (runStart < 0) runStart = outputIndex;
       const inputs = owners.get(outputIndex) ?? new Set<number>();
       for (const inputIndex of observerInputs) inputs.add(inputIndex);
       owners.set(outputIndex, inputs);
@@ -109,14 +98,10 @@ export function convergeMessageBusComputedDynamicChunkOutputs(
         outputIndex,
         commitment: builder.outputs[outputIndex]?.token?.nft?.commitment ?? '',
         category: String(builder.outputs[outputIndex]?.token?.category ?? '').slice(0, 16),
-        outputLock: builder.outputs[outputIndex]?.to instanceof Uint8Array
-          ? binToHex(builder.outputs[outputIndex].to as Uint8Array).slice(0, 32) : '',
       })),
     }));
   }
-  if (owners.size === 0) return {
-    repairs: 0, rounds: 0, ownedOutputs, outputs: [], authenticatedOutputs: [],
-  };
+  if (owners.size === 0) return { repairs: 0, rounds: 0, ownedOutputs, outputs: [] };
 
   const changedOutputs = new Set<number>();
   const maximumRounds = owners.size * 2 + 1;
@@ -148,9 +133,11 @@ export function convergeMessageBusComputedDynamicChunkOutputs(
           const expected = state.stack[state.stack.length - 2];
           if (expected.length === 0 || expected.length > 128) return;
           const expectedHex = binToHex(expected);
+          // Ordinal is relative to the contiguous owned run that contains this output.
+          let ordinalStart = outputIndex;
+          while (ordinalStart > 0 && owners.has(ordinalStart - 1)) ordinalStart -= 1;
           // Reject non-chunk OTC pairs (scalar data-NFT lengths, empty pads) before they poison the run.
-          // The ordinal was measured within the same locking-bytecode run, not across adjacent variables.
-          if (!isDynamicChunkCommitmentAtIndex(expectedHex, ordinals.get(outputIndex)!)) return;
+          if (!isDynamicChunkCommitmentAtIndex(expectedHex, outputIndex - ordinalStart)) return;
           const prior = commitmentProposals.get(outputIndex);
           if (prior && binToHex(prior) !== expectedHex) {
             throw new Error(
@@ -192,7 +179,6 @@ export function convergeMessageBusComputedDynamicChunkOutputs(
         rounds: round,
         ownedOutputs,
         outputs: [...changedOutputs].sort((a, b) => a - b),
-        authenticatedOutputs: [...commitmentProposals.keys()].sort((a, b) => a - b),
       };
     }
   }
@@ -203,9 +189,8 @@ export function convergeMessageBusComputedDynamicChunkOutputs(
 
 /**
  * Local participant builders report incomplete dynamic chunks from frozen `00` probe placeholders. Complete-graph
- * OTC convergence may already have replaced those commitments on `builder`. Only a placeholder whose chunk
- * equality actually ran is an incomplete active write; an unselected route arm may reserve a `00` pad without
- * executing its write. Final BCH preflight remains the authority when a prior covenant prevents observation.
+ * OTC convergence may already have replaced those commitments on `builder`; only treat the graph as incomplete
+ * when a placeholder remains in the owned trailing chunk run (or no owned run was found at all).
  */
 export function dynamicChunkPlaceholdersRemain(
   builder: TransactionBuilder,
@@ -214,7 +199,7 @@ export function dynamicChunkPlaceholdersRemain(
 ): boolean {
   if (incomplete.length === 0) return false;
   if (convergence.ownedOutputs.length === 0) return true;
-  return convergence.authenticatedOutputs.some((outputIndex) => {
+  return convergence.ownedOutputs.some((outputIndex) => {
     const commitment = builder.outputs[outputIndex]?.token?.nft?.commitment ?? '';
     return commitment === '' || commitment === '00';
   });

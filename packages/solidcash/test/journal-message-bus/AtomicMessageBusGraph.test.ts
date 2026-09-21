@@ -149,6 +149,26 @@ describe('atomic compiled invocation graph', () => {
       ...descriptor,
       batchOccurrenceIndex: 4,
     }, invocation, 1)).toThrow(/conflicting occurrence identities/);
+    // Batched edges must not silently alias source identity from the physical lane or invent occurrence 0.
+    expect(() => messageBus.assertPreparedInvocationIdentity({
+      ...base,
+      callsiteId: 7,
+      sourceLogicalIndex: 2,
+      occurrenceIndex: 3,
+    }, invocation, 1)).toThrow(/omits its source callsite identity/);
+    expect(() => messageBus.assertPreparedInvocationIdentity({
+      ...base,
+      callsiteId: 7,
+      sourceCallsiteId: 11,
+      sourceLogicalIndex: 2,
+    }, invocation, 1)).toThrow(/omits its source occurrence/);
+    expect(() => messageBus.assertPreparedInvocationIdentity({
+      ...base,
+      callsiteId: 7,
+      sourceCallsiteId: 7,
+      sourceLogicalIndex: 2,
+      occurrenceIndex: 3,
+    }, invocation, 1)).toThrow(/source callsite disagrees/);
     const rebuilt = messageBus.rebuildPreparedInvocation(descriptor, [1n], '01');
     expect(rebuilt).toMatchObject({
       callsiteId: 7,
@@ -698,7 +718,7 @@ describe('atomic compiled invocation graph', () => {
     }])).toThrow(/does not identify ABI function 'apply'/);
   });
 
-  it('uses the physical state owner for a delegated outgoing raw edge', () => {
+  it('uses one state-owner identity for a delegated outgoing raw edge', () => {
     const capability = (
       name: string,
       selector: string,
@@ -1027,6 +1047,76 @@ describe('atomic compiled invocation graph', () => {
       { physical: 4, source: 4, logical: 1, provenance: 'legacy-logical' },
       { physical: 4, source: 4, logical: 1, provenance: 'legacy-logical' },
     ]);
+
+    const kernelRoot = structuredClone(root) as typeof root;
+    kernelRoot.artifact.messageBus = {
+      ...kernelRoot.artifact.messageBus!,
+      convention: 'kernel-row-loop',
+    };
+    for (const row of kernelRoot.artifact.abi[0].externalCalls![0].batchInvocations!) {
+      delete (row as { sourceCallsiteId?: number }).sourceCallsiteId;
+    }
+    expect(() => messageBus.deriveCompiledGraphPlan({
+      root: kernelRoot, function: 'run', args: [[2n]], targets: {},
+      target: () => sink,
+      expressionArgument: ({ occurrence }) => BigInt(occurrence + 2),
+    })).toThrow(/kernel batched callsite .* omits sourceCallsiteId/);
+  });
+
+  it('assigns canonical occurrences to a non-batched runtime callsite', () => {
+    const inputs = [{ name: 'value', type: 'int' }];
+    const capability = (
+      name: string, selector: string, handlerInputs: readonly { name: string; type: string }[] = inputs,
+    ) => ({
+      version: 1 as const,
+      selector: '53434231' as const,
+      maximumRows: 4,
+      maximumBlobBytes: 256,
+      route: {
+        name: '__message_bus1', selector: '53434231', inputs: [], outputs: [],
+        blockLayout: { blockSize: 1, slots: [{ kind: 'master' as const, offset: 0 }] },
+      },
+      handlers: [{ name, selector, inputs: handlerInputs, outputs: [], eligible: true }],
+    });
+    const sink = {
+      artifact: {
+        contractName: 'OccurrenceSink',
+        abi: [{ name: 'ping', selector: '01020304', inputs, outputs: [] }],
+        messageBus: capability('ping', '01020304'),
+        invocationAnalysis: { version: 1, protocolVersions: [1], functions: [], components: [] },
+      } as unknown as Artifact,
+      lockingBytecode: '51',
+    };
+    const root = {
+      artifact: {
+        contractName: 'OccurrenceRoot',
+        abi: [{
+          name: 'run', selector: '11111111', inputs: [{ name: 'values', type: 'int[]' }], outputs: [],
+          externalCalls: [{
+            callsiteId: 7, occurrence: 'loop' as const, maximumOccurrences: 3,
+            interfaceName: 'ISink', functionName: 'ping',
+            argSources: [{ kind: 'arrayElement' as const, paramIndex: 0, indexValue: 0 }],
+          }],
+        }],
+        messageBus: capability('run', '11111111', [{ name: 'values', type: 'int[]' }]),
+        invocationAnalysis: { version: 1, protocolVersions: [1], functions: [], components: [] },
+      } as unknown as Artifact,
+      lockingBytecode: '52',
+    };
+    const planned = messageBus.deriveCompiledGraphPlan({
+      root, function: 'run', args: [[1n, 2n, 3n]], targets: { ISink: sink },
+      occurrence: () => 3,
+      expressionArgument: ({ occurrence }) => BigInt(occurrence + 1),
+    });
+    expect(planned.invocations.slice(1).map((invocation) => ({
+      physical: invocation.consumerCallsiteId,
+      source: invocation.sourceCallsiteId,
+      occurrence: invocation.occurrenceIndex,
+    }))).toEqual([
+      { physical: 7, source: 7, occurrence: 0 },
+      { physical: 7, source: 7, occurrence: 1 },
+      { physical: 7, source: 7, occurrence: 2 },
+    ]);
   });
 
   it('assigns canonical occurrences to a non-batched runtime callsite', () => {
@@ -1154,27 +1244,7 @@ describe('atomic compiled invocation graph', () => {
     expect(finalized.callManifest.rows[1].targetOffset).toBe(1);
   });
 
-  it('keeps the physical caller identity when the parent entered through its state owner', () => {
-    const withLogicalCaller = plan();
-    withLogicalCaller.participants[0] = {
-      ...withLogicalCaller.participants[0],
-      logicalLockingBytecode: '54',
-      logicalIdentityOffset: 1,
-      blockLayout: {
-        blockSize: 2,
-        slots: [{ kind: 'master', offset: 0 }, { kind: 'identityAnchor', offset: 1 }],
-      },
-    };
-    withLogicalCaller.invocations[0] = {
-      ...withLogicalCaller.invocations[0], targetLockingBytecode: '51'.repeat(64), targetIdentityOffset: 0,
-    };
-    const finalized = messageBus.finalizeAtomicInvocationGraph(
-      withLogicalCaller, ['aa'.repeat(32), 'bb'.repeat(32)], { 1: '2a' },
-    );
-    expect(finalized.callManifest.rows[1]).toMatchObject({ subjectHex: '51'.repeat(64), sourceOffset: 0 });
-  });
-
-  it('uses the authenticated state owner as the nested delegate caller identity', () => {
+  it('uses the authenticated state owner as the nested high-level caller identity', () => {
     const delegatedCaller = plan();
     delegatedCaller.participants[0] = {
       ...delegatedCaller.participants[0],
@@ -1191,22 +1261,17 @@ describe('atomic compiled invocation graph', () => {
         }],
       },
       logicalLockingBytecode: '54',
-      logicalIdentityOffset: 2,
-      executionKind: 1,
-      executorOffset: 1,
-      executorInputIndex: 1,
-      executorLockingBytecode: '56',
+      logicalIdentityOffset: 1,
       blockLayout: {
-        blockSize: 3,
-        slots: [
-          { kind: 'master', offset: 0 },
-          { kind: 'lowLevelCall', offset: 1 },
-          { kind: 'identityAnchor', offset: 2 },
-        ],
+        blockSize: 2,
+        slots: [{ kind: 'master', offset: 0 }, { kind: 'identityAnchor', offset: 1 }],
       },
     };
+    withLogicalCaller.invocations[0] = {
+      ...withLogicalCaller.invocations[0], targetLockingBytecode: '51'.repeat(64), targetIdentityOffset: 0,
+    };
     const finalized = messageBus.finalizeAtomicInvocationGraph(
-      delegatedCaller, ['aa'.repeat(32), 'bb'.repeat(32)], { 1: '2a' },
+      withLogicalCaller, ['aa'.repeat(32), 'bb'.repeat(32)], { 1: '2a' },
     );
     // Publication says owner: executor lock 0x56 must not become msg.sender.
     expect(finalized.callManifest.rows[1]).toMatchObject({ subjectHex: '51'.repeat(64), sourceOffset: 0 });
@@ -1215,7 +1280,7 @@ describe('atomic compiled invocation graph', () => {
     )).toMatchObject({ role: 'owner', lockingBytecode: '51'.repeat(64), offset: 0 });
   });
 
-  it('uses the authenticated state owner as caller for a nested delegate raw call', () => {
+  it('uses the authenticated state owner as caller for a nested raw call', () => {
     const delegatedCaller = plan();
     delegatedCaller.participants[0] = {
       ...delegatedCaller.participants[0],
@@ -1233,24 +1298,54 @@ describe('atomic compiled invocation graph', () => {
         }],
       },
       logicalLockingBytecode: '54',
-      logicalIdentityOffset: 2,
       executionKind: 1,
       executorOffset: 1,
       executorInputIndex: 1,
       executorLockingBytecode: '56',
       blockLayout: {
-        blockSize: 3,
-        slots: [
-          { kind: 'master', offset: 0 },
-          { kind: 'lowLevelCall', offset: 1 },
-          { kind: 'identityAnchor', offset: 2 },
-        ],
+        blockSize: 2,
+        slots: [{ kind: 'master', offset: 0 }, { kind: 'lowLevelCall', offset: 1 }],
       },
     };
-    const finalized = messageBus.finalizeAtomicInvocationGraph(
-      delegatedCaller, ['aa'.repeat(32), 'bb'.repeat(32)], { 1: '2a' },
+    const resolved = messageBus.graphInvocationCallerIdentity(
+      delegatedCaller.participants, delegatedCaller.invocations, delegatedCaller.invocations[1],
     );
-    expect(finalized.callManifest.rows[1]).toMatchObject({ subjectHex: '51'.repeat(64), sourceOffset: 0 });
+    expect(resolved.lockingBytecode).toBe('51'.repeat(64));
+    expect(resolved.lockingBytecode).not.toBe('56');
+    expect(resolved.role).toBe('owner');
+  });
+
+  it('refuses a kernel callsite that omits callerIdentity', () => {
+    const kernelCaller = plan();
+    kernelCaller.participants[0] = {
+      ...kernelCaller.participants[0],
+      artifact: {
+        ...kernelCaller.participants[0].artifact,
+        messageBus: {
+          ...kernelCaller.participants[0].artifact.messageBus!,
+          convention: 'kernel-row-loop',
+        },
+        abi: [{
+          name: 'run', selector: '11111111', inputs: [{ name: 'n', type: 'int' }], outputs: [],
+          externalCalls: [{
+            callsiteId: 7, interfaceName: 'IPeer', functionName: 'run', occurrence: 'once',
+          }],
+        }],
+      },
+    };
+    expect(() => messageBus.graphInvocationCallerIdentity(
+      kernelCaller.participants, kernelCaller.invocations, kernelCaller.invocations[1],
+    )).toThrow(/missing compiler-published callerIdentity/);
+  });
+
+  it('keeps legacy owner@0 when callerIdentity is absent outside kernel convention', () => {
+    const legacy = plan();
+    expect(messageBus.graphInvocationCallerIdentity(
+      legacy.participants, legacy.invocations, legacy.invocations[1],
+    )).toMatchObject({
+      role: 'owner', lockingBytecode: '51'.repeat(64), offset: 0,
+      sourceCallsiteProvenance: 'legacy-logical',
+    });
   });
 
   it('resolves a published CREATE caller identity at the identity-anchor offset', () => {
@@ -1294,68 +1389,6 @@ describe('atomic compiled invocation graph', () => {
       ['aa'.repeat(32), 'bb'.repeat(32)], { 1: '2a' },
     );
     expect(finalized.callManifest.rows[1]).toMatchObject({ subjectHex: '54', sourceOffset: 1 });
-  });
-
-  it('resolves active caller identity from the authenticated physical or logical parent target', () => {
-    const activeCaller = plan();
-    activeCaller.participants[0] = {
-      ...activeCaller.participants[0],
-      artifact: {
-        ...activeCaller.participants[0].artifact,
-        messageBus: {
-          ...activeCaller.participants[0].artifact.messageBus!,
-          convention: 'kernel-row-loop',
-        },
-        abi: [{
-          name: 'run', selector: '11111111', inputs: [{ name: 'n', type: 'int' }], outputs: [],
-          externalCalls: [{
-            callsiteId: 7, interfaceName: 'IPeer', functionName: 'run', occurrence: 'once',
-            callerIdentity: {
-              version: 1, role: 'active', auth: 'input-bytecode', authOffset: 0xffff,
-            },
-          }],
-        }],
-      },
-      logicalLockingBytecode: '54',
-      logicalIdentityOffset: 1,
-      blockLayout: {
-        blockSize: 2,
-        slots: [{ kind: 'master', offset: 0 }, { kind: 'identityAnchor', offset: 1 }],
-      },
-    };
-    const physical = messageBus.graphInvocationCallerIdentity(
-      activeCaller.participants, activeCaller.invocations, activeCaller.invocations[1],
-    );
-    expect(physical).toMatchObject({ role: 'active', lockingBytecode: '51'.repeat(64), offset: 0 });
-
-    activeCaller.invocations[0] = {
-      ...activeCaller.invocations[0], targetLockingBytecode: '54', targetIdentityOffset: 1,
-    };
-    const logical = messageBus.graphInvocationCallerIdentity(
-      activeCaller.participants, activeCaller.invocations, activeCaller.invocations[1],
-    );
-    expect(logical).toMatchObject({ role: 'active', lockingBytecode: '54', offset: 1 });
-
-    const published = activeCaller.participants[0].artifact.abi[0].externalCalls![0].callerIdentity!;
-    Object.assign(published, { version: 2 });
-    expect(() => messageBus.graphInvocationCallerIdentity(
-      activeCaller.participants, activeCaller.invocations, activeCaller.invocations[1],
-    )).toThrow(/unsupported callsite callerIdentity version 2/);
-    Object.assign(published, { version: 1 });
-
-    const missingAnchor = activeCaller.participants.map((participant, index) => index === 0
-      ? { ...participant, logicalIdentityOffset: undefined }
-      : participant);
-    expect(() => messageBus.graphInvocationCallerIdentity(
-      missingAnchor, activeCaller.invocations, activeCaller.invocations[1],
-    )).toThrow(/does not match the authenticated parent target/);
-
-    activeCaller.invocations[0] = {
-      ...activeCaller.invocations[0], targetIdentityOffset: 0,
-    };
-    expect(() => messageBus.graphInvocationCallerIdentity(
-      activeCaller.participants, activeCaller.invocations, activeCaller.invocations[1],
-    )).toThrow(/does not match the authenticated parent target/);
   });
 
   it('refuses to treat a delegate executor as caller when publication says owner', () => {

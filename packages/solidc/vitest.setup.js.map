@@ -1,0 +1,1 @@
+{"version":3,"file":"vitest.setup.js","sourceRoot":"","sources":["vitest.setup.ts"],"names":[],"mappings":"AAAA,OAAO,EAAE,OAAO,EAAE,MAAM,MAAM,CAAC;AAC/B,OAAO,CAAC,cAAc,CAAC,KAAK,GAAG,EAAE,CAAC","sourcesContent":["import { inspect } from 'util';\ninspect.defaultOptions.depth = 10;\n"]}

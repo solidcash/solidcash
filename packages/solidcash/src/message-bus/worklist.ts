@@ -217,9 +217,10 @@ const resolveArguments = (
     }
   }
   if (source.kind === 'selfAddress') {
-    // `selfAddress` is the compiler's active-state-owner projection. It is distinct from the public identity a
-    // nested callee observes as msg.sender when that participant publishes an identity anchor. Preserve the exact
-    // source bytes here; graphInvocationCallerIdentity independently authenticates the caller-facing identity.
+    // This source is emitted on an outgoing CALL edge. The implementation input authenticates delegate execution,
+    // but the participant master is the Solidity-visible state owner and therefore the exact identity observed by
+    // the callee as `msg.sender`. Keeping the owner bytecode here also keeps address(this)-derived arguments and
+    // the finalized call-manifest caller subject identical.
     if (!sourceParticipant.lockingBytecode) {
       throw new Error('messageBus: participant has no authenticated state-owner locking bytecode');
     }
@@ -681,6 +682,13 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
                 `messageBus: batched callsite ${call.callsiteId} selector ${row.selector} is absent from its target`,
               );
             }
+            const isKernel = participant.artifact.messageBus?.convention === 'kernel-row-loop';
+            if (isKernel && row.sourceCallsiteId === undefined) {
+              throw new Error(
+                `messageBus: kernel batched callsite ${call.callsiteId} row ${row.logicalIndex} `
+                + 'omits sourceCallsiteId',
+              );
+            }
             expand(
               target,
               targetFunction.name,
@@ -701,6 +709,7 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
               call.callsiteId,
               resolvedTarget.targetLockingBytecode,
               {
+                // Kernel rows must publish source identity; legacy may alias physical only explicitly above.
                 sourceCallsiteId: row.sourceCallsiteId ?? call.callsiteId!,
                 sourceLogicalIndex: row.logicalIndex,
                 occurrenceIndex: occurrence,

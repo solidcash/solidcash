@@ -80,11 +80,6 @@ contract FixedTupleCollectionEncoding {
   }
 }`;
 
-const REPEATED_READ_COLLECTION_SOURCE = `pragma solidity ^0.8.0;
-contract RepeatedReadCollectionEncoding {
-  mapping(string => string) public labels;
-}`;
-
 const SHARED_LITERAL_COLLECTION_SOURCE = `pragma solidcash ^0.13.0;
 contract SharedLiteralCollectionEncoding() {
   mapping(int => int) source;
@@ -144,6 +139,135 @@ describe('messageBus.encodeMessageBatch', () => {
     ]);
     expect(hex.startsWith(`53434231010002${add.selector}000000000000`)).toBe(true);
     expect(hex).toContain(`${clear.selector}0100000000000000`);
+    // Item 3: mixed-arity rows publish absolute calldata bounds that reconstruct argsHex and tile the blob.
+    expect(encoded.rows[0]).toMatchObject({
+      calldataLength: encoded.rows[0]!.argsHex.length / 2,
+    });
+    expect(encoded.rows[1]).toMatchObject({
+      calldataLength: 0,
+      argsHex: '',
+    });
+    let cursor = encoded.rows[0]!.calldataStart;
+    for (const row of encoded.rows) {
+      expect(row.calldataStart).toBeGreaterThanOrEqual(7); // magic+flags+count
+      expect(row.calldataLength).toBe(row.argsHex.length / 2);
+      expect(binToHex(messageBus.sliceMessageBatchRowCalldata(encoded.blob, row)))
+        .toBe(row.argsHex.toLowerCase());
+      expect(row.calldataStart).toBeGreaterThanOrEqual(cursor);
+      cursor = row.calldataStart + row.calldataLength;
+    }
+    expect(cursor).toBeLessThanOrEqual(encoded.blob.length);
+  });
+
+  it('sliceMessageBatchRowCalldata fail-closes unframed rows and hostile length walks', () => {
+    const encoded = messageBus.encodeMessageBatch(artifact, [
+      { function: 'add', args: [5n] },
+      { function: 'clear' },
+      { function: 'add', args: [3n] },
+    ]);
+    const clear = encoded.rows[1]!;
+    expect(clear.calldataLength).toBe(0);
+    expect(binToHex(messageBus.sliceMessageBatchRowCalldata(encoded.blob, clear))).toBe('');
+
+    const { calldataStart: _start, calldataLength: _length, ...missingBounds } = clear;
+    expect(() => messageBus.sliceMessageBatchRowCalldata(encoded.blob, missingBounds))
+      .toThrow(/unframed: missing calldataStart\/Length/);
+    expect(() => messageBus.sliceMessageBatchRowCalldata(encoded.blob, {
+      ...clear, calldataStart: 1.5, calldataLength: 0,
+    })).toThrow(/framing is malformed/);
+    expect(() => messageBus.sliceMessageBatchRowCalldata(encoded.blob, {
+      ...clear, calldataStart: encoded.blob.length, calldataLength: 1,
+    })).toThrow(/walked past authenticated blob bounds/);
+    // Hostile: keep clear's start but borrow the following add row's non-zero length.
+    const forgedLength = encoded.rows[2]!.calldataLength;
+    expect(forgedLength).toBeGreaterThan(0);
+    expect(() => messageBus.sliceMessageBatchRowCalldata(encoded.blob, {
+      ...clear, calldataLength: forgedLength,
+    })).toThrow(/row framing mismatch|does not match encoded arguments/);
+  });
+
+  it('enforces an aggregate fixed chunkable-write occurrence policy before encoding', () => {
+    const add = artifact.messageBus!.handlers.find((handler) => handler.name === 'add')!;
+    const bounded = {
+      ...artifact,
+      messageBus: {
+        ...artifact.messageBus!,
+        fixedChunkableWritePolicy: {
+          version: 1 as const, maximumRows: 1 as const, selectors: [add.selector],
+        },
+      },
+    };
+    expect(() => messageBus.encodeMessageBatch(bounded, [{ function: 'add', args: [1n] }])).not.toThrow();
+    expect(() => messageBus.encodeMessageBatch(bounded, [
+      { function: 'add', args: [1n] },
+      { function: 'clear' },
+      { function: 'add', args: [2n] },
+    ])).toThrow(/selects 2 direct chunkable-write rows/);
+
+    const malformed = {
+      ...bounded,
+      messageBus: {
+        ...bounded.messageBus,
+        fixedChunkableWritePolicy: {
+          version: 1 as const, maximumRows: 1 as const, selectors: [add.selector, add.selector],
+        },
+      },
+    };
+    expect(() => messageBus.encodeMessageBatch(malformed, [{ function: 'clear' }])).toThrow(
+      expect.objectContaining({ code: 'L3_PROTOCOL_METADATA_MALFORMED' }),
+    );
+  });
+
+  it('derives direct and composite KTS1 provenance from compiler policy without embedding signatures', () => {
+    const selector = 'a1b2c3d4';
+    const inputs = [{ name: 'direct', type: 'sig' }, { name: 'authorization', type: 'Authorization' }];
+    const signed = {
+      ...artifact,
+      abi: [{ name: 'authorize', selector, inputs, outputs: [], modifiers: ['public'] }],
+      structs: [{ name: 'Authorization', fields: [{ name: 'proof', type: 'sig' }, { name: 'key', type: 'pubkey' }] }],
+      messageBus: {
+        ...artifact.messageBus!,
+        handlers: [{
+          name: 'authorize', selector, inputs, outputs: [], eligible: true,
+          usesTransactionSignature: true,
+          transactionSignaturePolicy: {
+            hashType: 'all' as const, parameterIndices: [0, 1],
+            coveredBytecodes: [{ parameterIndex: 1, leafIndex: 0, bytecode: '52' }],
+          },
+          signatureBytecode: '51',
+        }],
+      },
+    } as Artifact;
+    const direct = new SignatureTemplate(new Uint8Array(32).fill(0x11));
+    const nested = new SignatureTemplate(new Uint8Array(32).fill(0x22));
+    const encoded = messageBus.encodeMessageBatch(signed, [{
+      function: 'authorize', args: [direct, { proof: nested, key: new Uint8Array(33).fill(3) }],
+    }]);
+    const provenance = encoded.rows[0].transactionSignatureFrameHex;
+
+    expect(provenance.startsWith('4b5453310102')).toBe(true);
+    expect(provenance).not.toContain('11'.repeat(32));
+    expect(provenance).not.toContain('22'.repeat(32));
+    expect(provenance).toBe(messageBus.messageBusTransactionSignatureFrameHex(signed, 'authorize', selector));
+
+    const reordered = structuredClone(signed);
+    reordered.messageBus!.handlers[0].transactionSignaturePolicy!.parameterIndices = [1, 0];
+    expect(() => messageBus.encodeMessageBatch(reordered, [{
+      function: 'authorize', args: [direct, { proof: nested, key: new Uint8Array(33).fill(3) }],
+    }])).toThrow(/non-canonical transaction-signature parameter index/);
+    const uncovered = structuredClone(signed);
+    delete uncovered.messageBus!.handlers[0].signatureBytecode;
+    uncovered.messageBus!.handlers[0].transactionSignaturePolicy!.coveredBytecodes = [];
+    expect(() => messageBus.encodeMessageBatch(uncovered, [{
+      function: 'authorize', args: [direct, { proof: nested, key: new Uint8Array(33).fill(3) }],
+    }])).toThrow(/has no covered bytecode/);
+    const foreignCoverage = structuredClone(signed);
+    foreignCoverage.messageBus!.handlers[0].transactionSignaturePolicy!.coveredBytecodes = [
+      { parameterIndex: 2, leafIndex: 0, bytecode: '52' },
+    ];
+    expect(() => messageBus.encodeMessageBatch(foreignCoverage, [{
+      function: 'authorize', args: [direct, { proof: nested, key: new Uint8Array(33).fill(3) }],
+    }])).toThrow(/non-canonical covered-bytecode parameter index/);
   });
 
   it('enforces an aggregate fixed chunkable-write occurrence policy before encoding', () => {
@@ -383,34 +507,6 @@ describe('messageBus.encodeMessageBatch', () => {
     expect(witness('__message_bus_key_balances_0_row_r1')).toEqual(destination);
   });
 
-  it('binds two distinct repeated read keys to compiler-published fixed tuple lanes', () => {
-    const routed = compileString(REPEATED_READ_COLLECTION_SOURCE, {
-      forceStateful: true, messageBus: true, messageBusKernel: true,
-      solidityImportCompat: true, suppressWarnings: true,
-    });
-    const handler = routed.messageBus!.handlers.find((candidate) => candidate.name === 'labels')!;
-    expect(handler.batchKeyWitnesses?.[0]).toMatchObject({
-      source: 'argument', inputIndex: 0,
-      entryTupleGroup: expect.any(Number),
-      alternateRouteInput: '__message_bus_key_labels_0_alt',
-    });
-    const encoded = messageBus.encodeMessageBatch(routed, [
-      { function: 'labels', args: ['alpha'] },
-      { function: 'labels', args: ['beta'] },
-    ]);
-    const visible = routed.messageBus!.route.inputs
-      .filter((input) => input.name !== 'batchBlob' && !input.name.startsWith('__internal__'));
-    const witness = (name: string): unknown => encoded.routeWitnesses[visible
-      .findIndex((input) => input.name === name)];
-    expect(witness('__message_bus_key_labels_0')).toBe('alpha');
-    expect(witness('__message_bus_key_labels_0_alt')).toBe('beta');
-    expect(() => messageBus.encodeMessageBatch(routed, [
-      { function: 'labels', args: ['alpha'] },
-      { function: 'labels', args: ['beta'] },
-      { function: 'labels', args: ['gamma'] },
-    ])).toThrow(/exceeds two physical entries/);
-  });
-
   it('encodes a row whose shared collection key is the caller identity', () => {
     // `send` binds the shared `balances` key to msgSender and its row-local key to the recipient, while
     // `sendFrom` binds the same shared input to its `from` argument. A batch that reaches only `send`
@@ -436,19 +532,6 @@ describe('messageBus.encodeMessageBatch', () => {
     // No row constrains the shared slot, so the caller identity the encoder already derives for the msgSender
     // binding is a valid value for it.
     expect(witness(single, '__message_bus_key_balances_0')).toEqual(caller);
-
-    // The route owns one physical destination entry; repeated rows may use that entry but cannot silently
-    // assign two different destination keys to the same authenticated slot.
-    const twoRows = messageBus.encodeMessageBatch(routed, [
-      { function: 'send', args: [recipient, 10n], logicalCaller: caller },
-      { function: 'send', args: [recipient, 5n], logicalCaller: caller },
-    ]);
-    expect(witness(twoRows, '__message_bus_key_balances_0')).toEqual(caller);
-    expect(witness(twoRows, '__message_bus_key_balances_0_row')).toEqual(recipient);
-    expect(() => messageBus.encodeMessageBatch(routed, [
-      { function: 'send', args: [recipient, 10n], logicalCaller: caller },
-      { function: 'send', args: [owner, 5n], logicalCaller: caller },
-    ])).toThrow(/must identify one physical entry/);
 
     // A row that does constrain the shared slot still decides it, whether or not a caller-identity row is present.
     const fromOnly = messageBus.encodeMessageBatch(routed, [

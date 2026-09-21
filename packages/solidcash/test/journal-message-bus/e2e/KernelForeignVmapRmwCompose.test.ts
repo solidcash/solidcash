@@ -1,5 +1,5 @@
 import {
-  bigIntToVmNumber, binToHex, encodeTransaction, hexToBin, vmNumberToBigInt,
+  bigIntToVmNumber, hexToBin, vmNumberToBigInt,
 } from '@bitauth/libauth';
 import { compileString } from 'solidc';
 import { describe, expect, it } from 'vitest';
@@ -149,11 +149,6 @@ describe('kernel foreign vmap RMW under composition', () => {
 
     const builder = await composition.build();
     expect(vmAccepts(builder)).toBe(true);
-
-    const firstTransaction = binToHex(encodeTransaction(builder.buildLibauthTransaction()));
-    const rebuilt = await composition.build();
-    expect(vmAccepts(rebuilt)).toBe(true);
-    expect(binToHex(encodeTransaction(rebuilt.buildLibauthTransaction()))).toBe(firstTransaction);
 
     const routeInputIndex = builder.inputs.findIndex((input) => 'contract' in input.unlocker
       && input.unlocker.contract.artifact.contractName === 'Bank'

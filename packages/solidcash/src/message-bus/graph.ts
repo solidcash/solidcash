@@ -1666,7 +1666,6 @@ export function resolveGraphAbiFunction(
 type GraphCallerParticipant = {
   artifact: Artifact;
   lockingBytecode: string;
-  executionKind?: 'owner' | 'delegate' | 0 | 1;
   logicalLockingBytecode?: string;
   logicalIdentityOffset?: number;
   executorLockingBytecode?: string;
@@ -1674,59 +1673,9 @@ type GraphCallerParticipant = {
 };
 
 type GraphCallerInvocation = (
-  Pick<CompiledGraphInvocation,
-  'parent' | 'callee' | 'function' | 'consumerCallsiteId' | 'selector' | 'targetLockingBytecode'>
-  | Pick<PlannedGraphInvocation,
-  'parent' | 'callee' | 'function' | 'consumerCallsiteId' | 'callerIdentity' | 'targetLockingBytecode'
-  | 'targetIdentityOffset'>
+  Pick<CompiledGraphInvocation, 'parent' | 'callee' | 'function' | 'consumerCallsiteId' | 'selector'>
+  | Pick<PlannedGraphInvocation, 'parent' | 'callee' | 'function' | 'consumerCallsiteId' | 'callerIdentity'>
 ) & { selectorHex?: string };
-
-const resolveActiveCallerIdentity = (
-  caller: GraphCallerParticipant,
-  parent: GraphCallerInvocation,
-  published: CallsiteCallerIdentityAbi,
-): ResolvedGraphCallerIdentity => {
-  if (published.version !== 1) {
-    throw new Error(`messageBus: unsupported callsite callerIdentity version ${published.version}`);
-  }
-  if (published.auth !== 'input-bytecode' || published.authOffset !== 0xffff) {
-    throw new Error('messageBus: active callerIdentity requires input-bytecode auth at the derived offset');
-  }
-  const delegate = caller.executionKind === 'delegate' || caller.executionKind === 1;
-  if (delegate) {
-    return {
-      version: 1, role: 'active', auth: 'input-bytecode', authOffset: 0,
-      lockingBytecode: caller.lockingBytecode.toLowerCase(), offset: 0,
-      sourceCallsiteProvenance: 'compiler',
-    };
-  }
-  const physical = caller.lockingBytecode.toLowerCase();
-  const logical = caller.logicalLockingBytecode?.toLowerCase();
-  // `planCompiledGraph` resolves target aliases after it has encoded local rows. Mirror that exact default for
-  // the earlier row build: the transaction root is necessarily physical, while a nested invocation defaults to
-  // its authenticated public identity when one exists. An explicit target remains authoritative.
-  const entered = parent.targetLockingBytecode?.toLowerCase()
-    ?? (parent.parent === null ? physical : logical ?? physical);
-  const offset = 'targetIdentityOffset' in parent
-    ? parent.targetIdentityOffset
-    : entered === logical ? caller.logicalIdentityOffset : 0;
-  if (entered === physical && (offset === undefined || offset === 0)) {
-    return {
-      version: 1, role: 'active', auth: 'input-bytecode', authOffset: 0,
-      lockingBytecode: physical, offset: 0, sourceCallsiteProvenance: 'compiler',
-    };
-  }
-  const logicalOffset = caller.logicalIdentityOffset;
-  if (logical !== undefined && entered === logical
-    && typeof logicalOffset === 'number' && Number.isInteger(logicalOffset) && logicalOffset > 0
-    && (offset === undefined || offset === logicalOffset)) {
-    return {
-      version: 1, role: 'active', auth: 'input-bytecode', authOffset: logicalOffset,
-      lockingBytecode: logical, offset: logicalOffset, sourceCallsiteProvenance: 'compiler',
-    };
-  }
-  throw new Error('messageBus: active callerIdentity does not match the authenticated parent target');
-};
 
 const publishedCallsiteCallerIdentity = (
   parentParticipant: GraphCallerParticipant,
@@ -1850,9 +1799,6 @@ export function graphInvocationCallerIdentity(
   const caller = participants[parentInvocation.callee];
   const published = publishedCallsiteCallerIdentity(caller, parentInvocation, invocation);
   if (published !== undefined) {
-    if (published.role === 'active') {
-      return resolveActiveCallerIdentity(caller, parentInvocation, published);
-    }
     return resolvePublishedCallerIdentity(caller, published, 'compiler');
   }
   // Kernel routes require an explicit publication; legacy artifacts keep today's owner@0 fallback.
@@ -2016,21 +1962,6 @@ export function planCompiledGraph(
   const globalByOwner: number[][] = participants.map(() => []);
   const subtreeEnds = invocations.map((_invocation, index) => index);
   const active: number[] = [];
-  const encodedCallMode = (invocation: CompiledGraphInvocation): 'call' | 'staticcall' => {
-    if (invocation.parent === null) return 'call';
-    if (invocation.callMode === 'staticcall') return 'staticcall';
-    if (invocation.callMode !== undefined) return 'call';
-    const parentInvocation = invocations[invocation.parent];
-    const parentFunction = resolveGraphAbiFunction(
-      participants[parentInvocation.callee].artifact, parentInvocation.function, parentInvocation.selector,
-    );
-    const modes = [...new Set((parentFunction?.externalCalls ?? [])
-      .filter((call) => invocation.consumerCallsiteId !== undefined
-        ? call.callsiteId === invocation.consumerCallsiteId
-        : call.functionName === invocation.function)
-      .map((call) => call.callMode ?? 'call'))];
-    return modes.length === 1 && modes[0] === 'staticcall' ? 'staticcall' : 'call';
-  };
   invocations.forEach((invocation, index) => {
     if (!Number.isInteger(invocation.callee)
       || invocation.callee < 0 || invocation.callee >= participants.length) {
@@ -2085,7 +2016,9 @@ export function planCompiledGraph(
       // their (possibly conditional) negative delta from the same authenticated recipes used by composition.
       ...(invocation.parent !== null && rowHandler?.usesMsgValue
         && (rowHandler.transfers?.length ?? 0) === 0 && { msgValue: 0n }),
-      ...(invocation.parent !== null && { callMode: encodedCallMode(invocation) }),
+      // Do not put `callMode` on the batch wire here. The parent covenant accumulates a version-1 SCB1 blob in
+      // `appendExternalBatchRow` (no per-row mode byte). Setting callMode flips encodeMessageBatch to version 2
+      // and breaks EQUALVERIFY against that expected blob for mixed-selector nested batches.
       ...(invocation.parent === null
         ? (invocation.logicalCaller === undefined ? {} : { logicalCaller: invocation.logicalCaller })
         : {
@@ -2504,6 +2437,13 @@ export function planCompiledGraph(
             );
           }
           if (row.sourceCallsiteId === undefined) {
+            // Kernel artifacts must publish source identity on every batch row; legacy aliasing is opt-in only.
+            if (parentArtifact.messageBus?.convention === 'kernel-row-loop') {
+              throw new Error(
+                `messageBus: kernel batched callsite ${callsite.callsiteId} omits sourceCallsiteId `
+                + `on row ${sourceLogicalIndex}`,
+              );
+            }
             sourceCallsiteProvenance = 'legacy-logical';
             if (sourceCallsiteId !== undefined && sourceCallsiteId !== callsite.callsiteId) {
               throw new Error(

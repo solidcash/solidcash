@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, hash160, hexToBin } from '@bitauth/libauth';
 import { AbiCoder } from 'ethers';
-import { decodePushdataValue, encodePushdataValue, sha256, type StructDefinitionInfo } from '@solidcash/utils';
+import { decodePushdataValue, encodePushdataValue, type StructDefinitionInfo } from '@solidcash/utils';
 import {
   decodeEvmReturnValue, encodeExternalReturnValue, encodeExternalReturnValues, encodeLeadingRouteArrayPushes,
   encodeStructArgument,

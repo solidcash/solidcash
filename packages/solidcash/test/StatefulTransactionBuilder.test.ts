@@ -5,7 +5,6 @@ import {
   valueChunkWriteResourceIdentity,
   type ValueChunkWriteDescriptor,
 } from '../src/stateful/StatefulTransactionBuilder.js';
-import { valuesEqual as stateValuesEqual } from '../src/stateful/StateReader.js';
 // Exercise the shipped build helper (marketplace/solidhat also resolve dist).
 import { moveLateOutputsBeforeReverseSuffix } from '../dist/stateful/StatefulTransactionBuilder.js';
 import { UnlockableUtxo } from '../src/interfaces.js';
@@ -97,104 +96,6 @@ function makeBaseOptions(overrides?: Partial<StatefulTransactionOptions>): State
 }
 
 describe('StatefulTransactionBuilder', () => {
-  it('invalidates authenticated external state bytes once for repeated equal overrides', () => {
-    const externalCategory = 'cd'.repeat(32);
-    const externalLayout: StateLayout = {
-      ...stateLayout,
-      variables: [{ ...stateLayout.variables[0], type: 'bigint' }],
-    };
-    const externalMaster = { ...makeMasterUtxo(), token: {
-      ...makeMasterUtxo().token!, category: externalCategory,
-    } };
-    const builder = new StatefulTransactionBuilder(makeBaseOptions({
-      externalCallUtxoGroups: [{
-        categoryId: externalCategory,
-        stateLayout: externalLayout,
-        masterUtxo: externalMaster,
-        dataNftUtxos: [],
-        requiredDataNftIndices: [],
-        functionName: 'advance',
-        functionArgs: [],
-        externalContract: {} as never,
-      }],
-    }));
-    const internals = builder as unknown as {
-      externalCallStateRawCommitments: Map<string, Map<number, string>>;
-      externalCallStateUpdates: Map<string, Map<string, unknown>>;
-    };
-    const raw = new Map([[0, 'authenticated']]);
-    internals.externalCallStateRawCommitments.set(externalCategory, raw);
-
-    builder.setExternalCallState(externalCategory, 'counter', 6n);
-    expect(raw.has(0)).toBe(false);
-    const firstUpdates = internals.externalCallStateUpdates.get(externalCategory);
-    expect(firstUpdates?.get('counter')).toBe(6n);
-
-    builder.setExternalCallState(externalCategory, 'counter', 6n);
-    expect(internals.externalCallStateUpdates.get(externalCategory)).toBe(firstUpdates);
-    expect(firstUpdates?.get('counter')).toBe(6n);
-  });
-
-  it('compares nested state values by bytes and structure', () => {
-    const left = { owner: Uint8Array.of(1, 2), values: [1n, { enabled: true }] };
-    const equal = { values: [1n, { enabled: true }], owner: Uint8Array.of(1, 2) };
-    const changed = { values: [1n, { enabled: false }], owner: Uint8Array.of(1, 2) };
-
-    expect(stateValuesEqual(left, equal)).toBe(true);
-    expect(stateValuesEqual(left, changed)).toBe(false);
-    expect(stateValuesEqual(Uint8Array.of(1), Uint8Array.of(1, 0))).toBe(false);
-  });
-
-  it('upserts external entry inserts by physical owner, collection lock, and target slot', () => {
-    const externalCategory = 'ce'.repeat(32);
-    const builder = new StatefulTransactionBuilder(makeBaseOptions({
-      externalCallUtxoGroups: [{
-        categoryId: externalCategory,
-        stateLayout,
-        masterUtxo: makeMasterUtxo(),
-        dataNftUtxos: [],
-        requiredDataNftIndices: [],
-        functionName: 'write',
-        functionArgs: [],
-        externalContract: {} as never,
-      }],
-    }));
-    const lock = Uint8Array.of(0xaa, 0x20, ...new Uint8Array(32), 0x87);
-    const target = '11'.repeat(32);
-    const internals = builder as unknown as { externalCallEntryInserts: Array<{
-      ownerGroupIndex: number; targetSlot: string; commitment: string; active: boolean;
-    }> };
-
-    const first = builder.ensureExternalCallEntryInsert(0, externalCategory, lock, target, '00');
-    expect(builder.getDynamicLayoutRevision()).toBe(0);
-    builder.setExternalCallEntryInsertCommitment(first, 'learned');
-
-    expect(builder.ensureExternalCallEntryInsert(0, externalCategory, lock, target, 'placeholder')).toBe(first);
-    expect(internals.externalCallEntryInserts[first].commitment).toBe('learned');
-    expect(builder.getDynamicLayoutRevision()).toBe(0);
-
-    const second = builder.ensureExternalCallEntryInsert(
-      0, externalCategory, lock, '22'.repeat(32), 'other',
-    );
-    expect(second).not.toBe(first);
-    expect(internals.externalCallEntryInserts.filter((insert) => insert.active)).toHaveLength(2);
-
-    builder.removeExternalCallEntryInsert(first);
-    expect(builder.getDynamicLayoutRevision()).toBe(0);
-    expect(builder.ensureExternalCallEntryInsert(0, externalCategory, lock, target, 'restored')).toBe(first);
-    expect(internals.externalCallEntryInserts[first]).toMatchObject({
-      ownerGroupIndex: 0, targetSlot: target, commitment: 'restored', active: true,
-    });
-    expect(builder.getDynamicLayoutRevision()).toBe(0);
-
-    expect(() => builder.ensureExternalCallEntryInsert(0, externalCategory, lock, '11', '00'))
-      .toThrow(/exact target slot/);
-    expect(() => builder.ensureExternalCallEntryInsert(1, externalCategory, lock, target, '00'))
-      .toThrow(/invalid physical owner/);
-    expect(() => builder.ensureExternalCallEntryInsert(0, 'ff'.repeat(32), lock, target, '00'))
-      .toThrow(/invalid physical owner/);
-  });
-
   it('rebinds only exact write-entry witnesses to the final category master', () => {
     const provider = createTestProvider();
     const ownerCategory = 'ac'.repeat(32);

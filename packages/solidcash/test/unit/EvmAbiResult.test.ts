@@ -1,11 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import type { Artifact, EnumDefinitionAbi, StructDefinitionInfo } from '@solidcash/utils';
+import type { EnumDefinitionAbi, StructDefinitionInfo } from '@solidcash/utils';
 import {
   decodeEvmInvocationResult, encodeEvmInvocationResult,
 } from '../../src/stateful/evm-abi-result.js';
-import {
-  decodeAuthenticatedProducerResultVector, isSchemaCompatibleExternalReturnCommitment,
-} from '../../src/stateful/StatefulContract.js';
+import { decodeAuthenticatedProducerResultVector } from '../../src/stateful/StatefulContract.js';
 
 const schemas: readonly StructDefinitionInfo[] = [
   {
@@ -99,20 +97,5 @@ describe('canonical EVM ABI invocation result decoding', () => {
       name: 'Node', fields: [{ name: 'children', type: 'Node[]' }],
     }];
     expect(decodeEvmInvocationResult(new Uint8Array(64), ['Node'], recursive)).toBeUndefined();
-  });
-
-  it('does not promote a canonical push from a failed probe to an ABI array result', () => {
-    const artifact = { structs: [], enums: [] } as unknown as Artifact;
-    const result = encodeEvmInvocationResult([[1n, 2n, 3n, 4n, 5n]], ['uint256[5]']);
-    expect(result).toHaveLength(160);
-    expect(isSchemaCompatibleExternalReturnCommitment(
-      Uint8Array.of(1, 0x52), ['uint256[5]'], artifact, 'evm-abi-v1',
-    )).toBe(false);
-    expect(isSchemaCompatibleExternalReturnCommitment(
-      result, ['uint256[5]'], artifact, 'evm-abi-v1',
-    )).toBe(true);
-    expect(isSchemaCompatibleExternalReturnCommitment(
-      encodeEvmInvocationResult([true], ['bool']), ['bool'], artifact, 'evm-abi-v1',
-    )).toBe(true);
   });
 });

@@ -38,10 +38,11 @@ const source = path.resolve(optionValue('--source')
 const contractName = optionValue('--contract') ?? 'MarketplaceV1';
 const compileAllDeclarations = process.argv.includes('--all-declarations');
 
-// Strip switches before importing compiler modules: some codegen flags are read at module initialization.
-const cleanEnv = cleanCompilerEnvironment();
-for (const name of Object.keys(process.env)) if (!(name in cleanEnv)) delete process.env[name];
-const { compileFileMulti } = await import('solidc');
+// Both cache layers are opt-in environment features. Remove them as well as
+// passing the explicit compiler option so this command remains cold when it is
+// launched from a cache-enabled test or development shell.
+delete process.env.SOLIDC_COMPILE_CACHE;
+delete process.env.SOLIDC_COMPILE_CACHE_DIR;
 
 const options = {
   solidityImportCompat: true,

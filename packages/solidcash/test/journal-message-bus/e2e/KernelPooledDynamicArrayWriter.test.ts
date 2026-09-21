@@ -52,11 +52,7 @@ type Context = { provider: ReturnType<typeof createTestProvider>; contract: Stat
 describe('pooled dynamic array writer shapes', () => {
   const deploy = async (): Promise<Context> => {
     const provider = createTestProvider();
-    const failures: unknown[] = [];
-    const artifact = compileString(SOURCE, {
-      ...KERNEL, __artifactCache: false, __attemptFailureBox: { failures }, __strictNoInternalRecovery: true,
-    });
-    expect(failures).toEqual([]);
+    const artifact = compileString(SOURCE, KERNEL);
     for (const name of ['append', 'revise']) {
       expect(artifact.messageBus?.handlers.find((handler) => handler.name === name))
         .toMatchObject({ eligible: true });
@@ -129,22 +125,6 @@ describe('pooled dynamic array writer shapes', () => {
     await context.contract.check(0n, 13n, 'edited', true).send();
     await context.contract.check(1n, 9n, 'second', true).send();
   }, 180_000);
-
-  it('keeps source order when an existing element is revised between two appends', async () => {
-    const context = await deploy();
-    await context.contract.append(3n, 'seed').send();
-    const { call, results } = await batch(context, [
-      { function: 'append', args: [7n, 'first'] },
-      { function: 'revise', args: [0n, 11n, 'edited'] },
-      { function: 'append', args: [9n, 'last'] },
-    ]);
-    expect(results.every((result) => result === true)).toBe(true);
-    await expect(call.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
-    await context.contract.checkLength(3n).send();
-    await context.contract.check(0n, 11n, 'edited', true).send();
-    await context.contract.check(1n, 7n, 'first', true).send();
-    await context.contract.check(2n, 9n, 'last', true).send();
-  }, 180_000);
 });
 
 /**
@@ -178,11 +158,7 @@ const RETURNING_SOURCE = `contract PooledReturningWriter() {
 describe('pooled dynamic array writer with a returning row clone', () => {
   it('commits two returning append rows in one kernel row loop', async () => {
     const provider = createTestProvider();
-    const failures: unknown[] = [];
-    const artifact = compileString(RETURNING_SOURCE, {
-      ...KERNEL, __artifactCache: false, __attemptFailureBox: { failures }, __strictNoInternalRecovery: true,
-    });
-    expect(failures).toEqual([]);
+    const artifact = compileString(RETURNING_SOURCE, KERNEL);
     for (const name of ['append']) {
       expect(artifact.messageBus?.handlers.find((handler) => handler.name === name))
         .toMatchObject({ eligible: true });

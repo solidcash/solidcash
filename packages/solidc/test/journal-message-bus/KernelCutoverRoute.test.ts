@@ -42,32 +42,6 @@ const assertKernelRoute = (source: string, handlerName: string): ReturnType<type
 };
 
 describe('message-bus kernel cutover route', () => {
-  it('publishes active-entry callers for ordinary routes and owner callers for delegate routes', () => {
-    const source = `
-pragma solidcash ^0.13.0;
-interface ISink { function ping() external; }
-contract Caller(address sink) {
-  int marker;
-  function fire() public {
-    ISink(sink).ping();
-    this.marker = 1;
-  }
-}`;
-    const ordinary = compileString(source, OPTIONS);
-    expect(ordinary.abi.find((entry) => entry.name === 'fire')?.externalCalls?.[0]?.callerIdentity)
-      .toEqual({ version: 1, role: 'active', auth: 'input-bytecode', authOffset: 0xffff });
-
-    const delegated = compileString(source, { ...OPTIONS, autoDelegate: true });
-    expect(delegated.abi.find((entry) => entry.name === 'fire')?.externalCalls?.[0]?.callerIdentity)
-      .toEqual({ version: 1, role: 'owner', auth: 'input-bytecode', authOffset: 0 });
-
-    const explicitDelegate = compileString(
-      source.replace('function fire() public {', 'function fire() public delegate {'), OPTIONS,
-    );
-    expect(explicitDelegate.abi.find((entry) => entry.name === 'fire')?.externalCalls?.[0]?.callerIdentity)
-      .toEqual({ version: 1, role: 'owner', auth: 'input-bytecode', authOffset: 0 });
-  });
-
   it('journals a parameter-keyed mapping helper on the runtime row loop', () => {
     const artifact = assertKernelRoute(`
 pragma solidcash ^0.13.0;
@@ -116,21 +90,6 @@ contract Token() {
 `, 'credit');
     const credit = artifact.messageBus?.handlers.find((handler) => handler.name === 'credit');
     expect(credit?.outputs?.some((output) => output.type.includes('bool'))).toBe(true);
-  });
-
-  it('pools an explicit read-only mapping result wrapper with sibling writers', () => {
-    const artifact = assertKernelRoute(`
-pragma solidcash ^0.13.0;
-struct Record { uint256 stable; uint256 phase; string tail; }
-contract Store {
-  mapping(uint256 => Record) private records;
-  function mutate(uint256 key, uint256 phase) public { records[key].phase = phase; }
-  function read(uint256 key) public view returns (Record memory) { return records[key]; }
-  function finish(uint256 key, uint256 phase) public { records[key].phase = phase; }
-}
-`, 'read');
-    expect(artifact.invocationAnalysis?.functions.some((fn) => fn.name === '__message_bus_entry_read'))
-      .toBe(true);
   });
 
   it('journals an expression-keyed mapping write on the runtime row loop', () => {

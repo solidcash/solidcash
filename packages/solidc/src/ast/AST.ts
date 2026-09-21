@@ -291,6 +291,11 @@ export interface EntryAccessInfo {
   };
   /** Exact collection-array mutation represented by this access. */
   arrayMutation?: 'push' | 'pop' | 'indexed' | 'mixed';
+  /**
+   * Optional fixed-chunkable activation recipe. Absent means the write is unconditional. When present, the SDK
+   * evaluates it against authenticated row arguments and omits continuation bands / write planning when false.
+   */
+  activation?: ExternalCallExpression;
 }
 
 export interface TokenContainerAccessInfo {
@@ -471,14 +476,6 @@ export class FunctionDefinitionNode extends Node implements Named {
    * makes a deep read address the item the runtime actually has there.
    */
   messageBusCallerBandNames?: string[];
-  /**
-   * Bottom ordinals of `messageBusCallerBandNames`, one per name, in the same order.
-   *
-   * The route ABI band is physically the DEEPEST part of the stack (the SDK pushes the route inputs before the
-   * route body runs), so an item of the band is addressed by a constant that no later push can move - the caller's
-   * own frame sits ABOVE the band, and a deep read inside an invoked body otherwise counts from the wrong bottom.
-   */
-  messageBusCallerBandOrdinals?: number[];
   /**
    * This OP_DEFINE body captured its authenticated participant owner into the ALT STACK at entry.
    *
@@ -821,12 +818,19 @@ export class FunctionDefinitionNode extends Node implements Named {
   messageBusRejectionReason?: string;
   /** This source handler was included in the synthesized route dispatch. Late fences may still demote it. */
   messageBusDispatched?: boolean;
-  /** This handler owns one direct, unconditional chunkable whole-entry transition. Route lowering threads the
-   * pending entry through the shared typed collection pool and flushes its continuation exactly once after all
-   * selected rows, so sibling writes observe source-order state rather than independently pinning outputs. */
-  messageBusPooledChunkableWholeEntryWrite?: true;
-  /** Exact mutation identity retained across the pooled whole-entry lowering boundary. */
-  messageBusPooledChunkableWholeEntryWriteEffectOrdinal?: number;
+  /** This handler owns one direct chunkable whole-entry transition family (unconditional and/or bool-param
+   * activated). The generated participant route authenticates that at most one row from the complete marked
+   * selector family executes, so its body is the unique terminal continuation producer. This is an occurrence
+   * bound, not permission to chain mutations. */
+  messageBusFixedChunkableWriteMaxRows?: 1;
+  /** Exact mutation identity in the selector-scoped fixed-chunkable occurrence domain. */
+  messageBusFixedChunkableWriteEffectOrdinal?: number;
+  /** Per-resource fixed-chunkable descriptors, including optional bool-param activation recipes. */
+  messageBusFixedChunkableResources?: Array<{
+    collection: string;
+    effectOrdinal: number;
+    activation?: ExternalCallExpression;
+  }>;
   /** This handler owns one unconditional direct push into a chunkable sorted mapping-array entry. Kernel route
    * lowering threads the typed pending array through every selected OP_INVOKE row and flushes it exactly once,
    * so repeated same-key rows compose without intermediate continuation outputs. */
@@ -2723,8 +2727,10 @@ export interface ExternalCallArgSource {
 export interface ExternalCallExpression {
   kind: string;
   name?: string;
-  /** Compiler-stable producer identity within the containing function. */
+  /** Physical producer/consumer lane after repeated-owner collapse. */
   callsiteId?: number;
+  /** Pre-collapse source callsite; distinct from `callsiteId` for batched producers. */
+  sourceCallsiteId?: number;
   /** Zero-based ABI result position selected from the producer (also explicit for a sole result). */
   resultIndex?: number;
   /** Authenticated receiver expression for a returning external call. */
@@ -2765,7 +2771,7 @@ export interface ExternalCallSlot {
    */
   callerIdentity?: {
     version: 1;
-    role: 'origin' | 'active' | 'owner' | 'create' | 'proxy' | 'executor';
+    role: 'origin' | 'owner' | 'create' | 'proxy' | 'executor';
     auth: 'input-bytecode' | 'category' | 'literal';
     authOffset: number;
     subjectLockingBytecode?: string;
@@ -2921,8 +2927,6 @@ export interface ExternalOutStateSlot {
 }
 
 export class MethodCallNode extends ExpressionNode {
-  /** Source-level returned-array link copied if this resolves to an external graph call. */
-  resultArrayOutput?: number;
   /** Pre-semantic source program point copied if this lowers to an external graph call. */
   sourceEffectOrdinal?: number;
   /** Lexical predicates captured before helper/control-flow lowering. */

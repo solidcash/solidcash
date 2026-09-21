@@ -24,7 +24,7 @@ const encoded = (types: readonly string[], values: readonly unknown[]): Uint8Arr
 
 describe('recursive EVM message-bus result layout', () => {
   it('seeds and splits named struct arrays and enum arrays without source-name assumptions', () => {
-    const seed = hexToBin(provisionalInvocationResult(artifact, ['Rec[]', 'Status[]'], 'evm-abi-v1'));
+    const seed = hexToBin(provisionalInvocationResult(artifact, ['Rec[]', 'Status[]']));
     expect(seed).toEqual(encoded(['tuple(uint256,uint8)[]', 'uint8[]'], [[], []]));
 
     const result = encoded(

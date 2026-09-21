@@ -49,35 +49,11 @@ contract StoreCoordinator(address source) {
   }
 }`;
 
-const SINK = `pragma solidity ^0.8.0;
-struct ForwardedValue { bytes data; uint timestamp; }
-contract ScalarSink {
-  bytes public received;
-  function accept(ForwardedValue memory value) public {
-    this.received = value.data;
-    require(true);
-  }
-}`;
-
-const FORWARDING_COORDINATOR = `pragma solidity ^0.8.0;
-struct ForwardedValue { bytes data; uint timestamp; }
-interface IScalarSource { function read(uint seed) external returns (uint); }
-interface IScalarSink { function accept(ForwardedValue memory value) external; }
-
-contract StoreAndForward(address source, address sink) {
-  uint public stored;
-  function apply(uint seed) public {
-    uint next = IScalarSource(source).read(seed);
-    this.stored = next;
-    IScalarSink(sink).accept(ForwardedValue({data: abi.encodePacked(this.stored), timestamp: 0}));
-    require(true);
-  }
-}`;
-
 /**
  * A caller which keeps an authenticated callee result in its OWN state (rather than only forwarding it as
- * another call's argument) must publish that state under both conventions. The structured forwarding case
- * also checks that a later call can read, pack, and authenticate the field after the write.
+ * another call's argument) must publish that state under both conventions. The forwarding case is covered by
+ * KernelMultiResultGraphParity; this is the store-only case, which is the shape the marketplace `take job`
+ * graph needs for `jobs[jobId].escrowId`.
  */
 describe('result-dependent state write parity', () => {
   it('stores an authenticated producer result in the caller state', async () => {
@@ -90,73 +66,6 @@ describe('result-dependent state write parity', () => {
 
   it('stores a discovered producer result in a chunkable caller value', async () => {
     await expect(runCase(false, true)).resolves.toBeUndefined();
-  }, 180_000);
-
-  it('packs a stored producer result into a later structured graph call', async () => {
-    const observations: Array<{ convention: string; stored: bigint; received: string }> = [];
-    for (const messageBusKernel of [true, false]) {
-      const provider = createMessageBusCapstoneTestProvider();
-      const options = { ...OPTIONS, messageBusKernel };
-      const sourceArtifact = compileString(PRODUCER, options);
-      const sourceBase = new Contract(sourceArtifact, [], { provider });
-      const sourceSetup = await setupStatefulUtxos(
-        provider, sourceBase, sourceArtifact.stateLayout!, {}, { saltContract: true },
-      );
-      const source = StatefulContract.withCategory(
-        sourceBase.withCategory(hexToBin(sourceSetup.categoryId)), sourceSetup.categoryId,
-      );
-      const sinkArtifact = compileString(SINK, options);
-      const sinkBase = new Contract(sinkArtifact, [], { provider });
-      const sinkSetup = await setupStatefulUtxos(
-        provider, sinkBase, sinkArtifact.stateLayout!, {}, { saltContract: true },
-      );
-      const sink = StatefulContract.withCategory(
-        sinkBase.withCategory(hexToBin(sinkSetup.categoryId)), sinkSetup.categoryId,
-      );
-      const coordinatorArtifact = compileString(FORWARDING_COORDINATOR, options);
-      expect(coordinatorArtifact.messageBus?.convention)
-        .toBe(messageBusKernel ? 'kernel-row-loop' : 'legacy-unroll');
-      const coordinatorBase = new Contract(
-        coordinatorArtifact, [source.inner.lockingBytecode, sink.inner.lockingBytecode], { provider },
-      );
-      const coordinatorSetup = await setupStatefulUtxos(
-        provider, coordinatorBase, coordinatorArtifact.stateLayout!, { stored: 0n }, { saltContract: true },
-      );
-      const coordinator = StatefulContract.withCategory(
-        coordinatorBase.withCategory(hexToBin(coordinatorSetup.categoryId)), coordinatorSetup.categoryId,
-        { externals: { IScalarSource: source, IScalarSink: sink } },
-      );
-      const funder = await createBareP2pkhFeeFunder(provider, 500_000n);
-      const call = messageBus.compose({
-        preparedCalls: [
-          { contract: coordinator, functionName: 'apply', args: [5n] },
-          { contract: source, functionName: 'read', args: [5n], callsiteId: 0 },
-          { contract: sink, functionName: 'accept', args: [{
-            data: hexToBin(ethers.solidityPacked(['uint256'], [16n]).slice(2)), timestamp: 0n,
-          }], callsiteId: 1 },
-        ],
-        funder,
-        changeAddress: funder.unlocker.generateLockingBytecode(),
-      });
-      const builder = await call.build();
-      const transaction = builder.buildLibauthTransaction();
-      const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
-      const vm = createVirtualMachineBch2026ForProvider(provider);
-      for (let inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex += 1) {
-        expect(vm.stateSuccess(vm.evaluate({ inputIndex, sourceOutputs, transaction })),
-          `${coordinatorArtifact.messageBus?.convention} input ${inputIndex}`).toBe(true);
-      }
-      await expect(call.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
-      observations.push({
-        convention: coordinatorArtifact.messageBus?.convention ?? 'unknown',
-        stored: (await coordinator.getState()).stored as bigint,
-        received: binToHex((await sink.getState()).received as Uint8Array),
-      });
-    }
-    expect(observations).toEqual([
-      { convention: 'kernel-row-loop', stored: 16n, received: `${'00'.repeat(31)}10` },
-      { convention: 'legacy-unroll', stored: 16n, received: `${'00'.repeat(31)}10` },
-    ]);
   }, 180_000);
 });
 

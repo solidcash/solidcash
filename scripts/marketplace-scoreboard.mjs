@@ -11,7 +11,6 @@ import { spawnSync } from 'node:child_process';
 import { performance } from 'node:perf_hooks';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
-import { cleanCompilerEnvironment } from './clean-compiler-env.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const sourceAt = process.argv.indexOf('--source');
@@ -23,7 +22,9 @@ if (sourceAt >= 0 && (!sourceArgs[1] || sourceArgs[1].startsWith('--'))) {
 const declarationArgs = process.argv.includes('--all-declarations') ? ['--all-declarations'] : [];
 
 const run = (mode) => {
-  const coldEnv = cleanCompilerEnvironment();
+  const coldEnv = { ...process.env };
+  delete coldEnv.SOLIDC_COMPILE_CACHE;
+  delete coldEnv.SOLIDC_COMPILE_CACHE_DIR;
   const started = performance.now();
   const child = spawnSync(process.execPath, [
     '--max-old-space-size=8192',
@@ -34,7 +35,11 @@ const run = (mode) => {
   ], {
     cwd: root,
     encoding: 'utf8',
-    env: coldEnv,
+    env: {
+      ...coldEnv,
+      SOLIDC_PROFILE: '1',
+      SOLIDC_DEBUG_OUTLINE_TIMING: '1',
+    },
     maxBuffer: 64 * 1024 * 1024,
   });
   const wallMs = performance.now() - started;

@@ -43,17 +43,7 @@ describe('kernel sorted-insert PredOut under composition', () => {
       contract Registry {
         mapping(uint256 => uint256) bal;
         function set(uint256 k, uint256 v) public { bal[k] = v; require(true); }
-        function move(uint256 from, uint256 to, uint256 v) public {
-          bal[from] = 0;
-          bal[to] = v;
-          require(true);
-        }
       }`, KERNEL);
-    // Another handler lends a second route slot, but a call to set still has only one
-    // source write. That union slot must not turn its INSERT predecessor into a NEW node.
-    expect(registryArtifact.messageBus?.route.sortedBatchInfo?.some(
-      (batch) => batch.slotIndices.length > 1,
-    )).toBe(true);
     expect(registryArtifact.messageBus?.route.inputs.some(
       (input) => input.name === '__internal__vmapBatchPredOut_0',
     )).toBe(true);

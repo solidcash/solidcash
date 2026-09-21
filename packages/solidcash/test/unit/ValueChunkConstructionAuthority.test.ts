@@ -45,7 +45,7 @@ describe('value-chunk construction authority', () => {
 
   it('constructs generic chunks from an exact compiler descriptor', () => {
     const expectedLock = getValueChunkLockingBytecode(
-      categoryId, exactWrite.collection, Uint8Array.from({ length: 32 }, () => 0x22), sha256(value),
+      categoryId, collectionSignature, Uint8Array.from({ length: 32 }, () => 0x22), sha256(value),
     );
     const chunks = chunksFromValue(value, { write: exactWrite });
 

@@ -493,12 +493,12 @@ class EmitAssertion implements PromiseLike<void> {
    * Negated continuation: `.to.emit(...).withArgs(...).and.not.to.emit(...)`. Chai carries an assertion's polarity
    * in `negate` and an emit chain is an assertion like any other, so the language chain must expose it here too -
    * without it `.and.not` is `undefined` and the following `.to` throws a TypeError instead of checking anything.
-   * The copy keeps this assertion's polarity intact; only the next `.to.emit` receives the negation.
+   * The copy (rather than a mutation) keeps the shared receipt and the already-scheduled prior checks while
+   * leaving this assertion's own polarity intact for a later `.and.to.emit` in the same chain.
    */
   get not(): EmitAssertion {
     return new EmitAssertion(
-      this.actual, this.contract, this.event, this.negate, this.prior, this.expectedArgs, this.shared,
-      !(this.nextNegate ?? this.negate),
+      this.actual, this.contract, this.event, !this.negate, this.prior, this.expectedArgs, this.shared,
     );
   }
 

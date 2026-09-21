@@ -94,11 +94,11 @@ describe('value-chunk descriptor authority', () => {
     const firstValue = new Uint8Array(100).fill(0x31);
     const secondValue = new Uint8Array(112).fill(0x52);
     const firstLock = getValueChunkLockingBytecode(
-      categoryId, first.collection, Uint8Array.from({ length: 32 }, () => 1),
+      categoryId, first.collectionSignature, Uint8Array.from({ length: 32 }, () => 1),
       sha256Sync(firstValue),
     );
     const secondLock = getValueChunkLockingBytecode(
-      categoryId, second.collection, Uint8Array.from({ length: 32 }, () => 2),
+      categoryId, second.collectionSignature, Uint8Array.from({ length: 32 }, () => 2),
       sha256Sync(secondValue),
     );
 
@@ -128,13 +128,13 @@ describe('value-chunk descriptor authority', () => {
     const thirdValue = new Uint8Array(116).fill(0x64);
     const legacyCategoryValue = new Uint8Array(124).fill(0x73);
     const firstLock = getValueChunkLockingBytecode(
-      categoryId, first.collection, new Uint8Array(32).fill(1), sha256Sync(firstValue),
+      categoryId, first.collectionSignature, new Uint8Array(32).fill(1), sha256Sync(firstValue),
     );
     const secondLock = getValueChunkLockingBytecode(
-      categoryId, second.collection, new Uint8Array(32).fill(1), sha256Sync(secondValue),
+      categoryId, second.collectionSignature, new Uint8Array(32).fill(1), sha256Sync(secondValue),
     );
     const thirdLock = getValueChunkLockingBytecode(
-      categoryId, third.collection, new Uint8Array(32).fill(2), sha256Sync(thirdValue),
+      categoryId, third.collectionSignature, new Uint8Array(32).fill(2), sha256Sync(thirdValue),
     );
 
     expect(stageValueChunkWrite(first, firstValue)).toBe(true);

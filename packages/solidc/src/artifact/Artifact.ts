@@ -4,7 +4,6 @@ import {
   EnumType, StructType, ExternalLibraryAbi, BUILTIN_LIBRARIES, resolveLibraries, sidecarCodeRange, isChunkableValueType,
   ValueProvenance, ValueProvenanceKind,
   abiTypeString, ChildDeploymentValueRecipe, FixedBchTransferAbi, ExternalResultConsumerAbi,
-  ATOMIC_MESSAGE_BUS_MAX_ROWS,
 } from '@solidcash/utils';
 import { binToHex } from '@bitauth/libauth';
 import { version } from '../index.js';
@@ -13,14 +12,14 @@ import {
   StructDefinitionNode, FunctionDefinitionNode, FunctionModifier, Node, ContractNode,
   ExpressionNode, TransferStatementNode, AddressTransferStatementNode, AddressSendExpressionNode,
   BlockNode, WhileNode, VariableDefinitionNode,
-  BinaryOpNode, IdentifierNode, AssignNode, TupleAssignmentNode, ArrayAssignNode, ReturnNode, IntLiteralNode,
+  BinaryOpNode, IdentifierNode, AssignNode, TupleAssignmentNode, ArrayAssignNode, ReturnNode,
   ArrayNode, NewArrayNode, CastNode, FunctionCallNode, LiteralNode, LowLevelCallNode,
   LowLevelCallStatementNode, StateAccessNode, RequireNode, ExternalFunctionCallNode,
   StateAssignNode, MappingAssignNode, MappingFieldAssignNode, StateArrayAssignNode,
   MappingAccessNode, ArrayAccessNode, FieldAccessNode, ExternalCallExpression, ExternalCallArgSource,
   ExternalCallStatement, EmitStatementNode, TernaryOpNode, TokenContainerMethodStatementNode,
   UnaryOpNode, BranchNode, BoolLiteralNode,
-  SwitchNode, TryCatchNode, InstantiationNode, UncheckedNode,
+  SwitchNode, TryCatchNode, InstantiationNode,
   EntryAccessInfo,
 } from '../ast/AST.js';
 import { BinaryOperator, UnaryOperator } from '../ast/Operator.js';
@@ -1417,7 +1416,6 @@ function buildFunctionAbiMetadata(
   interfaces: readonly InterfaceNode[] = [], compilerOptions: CompilerOptions = {},
 ): Partial<AbiFunction> {
   const dynamicWriteSources = dynamicWriteSourcesOf(func, contract);
-  const iterationDomains = externalCallIterationDomains(func, compilerOptions);
   const possibleSelectorTargets = (
     interfaceName: string, parameters: readonly ExpressionNode[],
   ): readonly { functionName: string; selector: string }[] => {
@@ -1688,7 +1686,7 @@ function buildFunctionAbiMetadata(
     const canonicalize = (
       expression: ExternalCallExpression,
       consumerCallsiteId: number,
-      lane: number | 'condition' | 'iterationDomain',
+      lane: number | 'condition',
       dominanceCallsiteId = consumerCallsiteId,
     ): ExternalCallExpression => {
       const rewrite = (child: ExternalCallExpression | undefined): ExternalCallExpression | undefined =>
@@ -1701,7 +1699,6 @@ function buildFunctionAbiMetadata(
         };
       const rewriteStatement = (statement: ExternalCallStatement): ExternalCallStatement => ({
         ...statement,
-        ...(statement.index && { index: rewrite(statement.index) }),
         ...(statement.expression && { expression: rewrite(statement.expression) }),
         ...(statement.condition && { condition: rewrite(statement.condition) }),
         ...(statement.statements && { statements: statement.statements.map(rewriteStatement) }),
@@ -1736,18 +1733,23 @@ function buildFunctionAbiMetadata(
         || resultIndex < 0 || resultIndex >= producer.returnTypes.length) {
         throw new Error(`Result dependency in '${func.name}' selects an invalid producer result`);
       }
-      const key = `${consumerCallsiteId}:${lane}:${producerCallsiteId}:${resultIndex}`;
+      const key = `${consumerCallsiteId}:${lane}:${producerCallsiteId}:${resultIndex}`
+        + `:${normalized.sourceCallsiteId ?? ''}`;
       result.set(key, {
         consumerCallsiteId,
-        ...(lane === 'condition' ? { condition: true as const }
-          : lane === 'iterationDomain' ? { iterationDomain: true as const }
-            : { argument: lane }),
+        ...(lane === 'condition' ? { condition: true as const } : { argument: lane }),
         producerCallsiteId: producerCallsiteId!,
+        ...(normalized.sourceCallsiteId !== undefined && {
+          producerSourceCallsiteId: normalized.sourceCallsiteId,
+        }),
         resultIndex,
       });
       return {
         kind: 'producerResult',
         callsiteId: producerCallsiteId,
+        ...(normalized.sourceCallsiteId !== undefined && {
+          sourceCallsiteId: normalized.sourceCallsiteId,
+        }),
         resultIndex,
         ...(normalized.type && { type: normalized.type }),
       };
@@ -1775,14 +1777,6 @@ function buildFunctionAbiMetadata(
       canonicalizeSources(slot.rawArgSources, slot.slotIndex);
       if (slot.condition) {
         slot.condition = canonicalize(slot.condition, slot.slotIndex, 'condition');
-      }
-      const domain = iterationDomains.get(slot.slotIndex);
-      if (domain) {
-        domain.initialValue = canonicalize(domain.initialValue, slot.slotIndex, 'iterationDomain');
-        domain.stepValue = canonicalize(domain.stepValue, slot.slotIndex, 'iterationDomain');
-        domain.continueCondition = canonicalize(
-          domain.continueCondition, slot.slotIndex, 'iterationDomain',
-        );
       }
       for (const row of slot.batchInvocations ?? []) {
         // A repeated-owner batch has one physical consumer lane, but each row retains its exact source position.
@@ -2291,6 +2285,16 @@ function buildFunctionAbiMetadata(
           },
         }),
         ...(ea.arrayMutation !== undefined && { arrayMutation: ea.arrayMutation }),
+        ...((() => {
+          const stamped = ea.activation
+            ?? func.messageBusFixedChunkableResources?.find((resource) =>
+              resource.collection === ea.collection
+              && (ea.mutationEffectOrdinals?.includes(resource.effectOrdinal) ?? false))
+              ?.activation;
+          return stamped !== undefined
+            ? { activation: cloneExternalCallExpression(stamped) }
+            : {};
+        })()),
       })),
     }),
     ...(publishedSourceEffectOrder !== undefined && { sourceEffectOrder: publishedSourceEffectOrder }),
@@ -2363,7 +2367,10 @@ function buildFunctionAbiMetadata(
           ...(resultArrayOutput !== undefined && { resultArrayOutput }),
           interfaceName: ec.interfaceName,
           functionName: ec.functionName,
-          ...(ec.callerIdentity !== undefined && { callerIdentity: ec.callerIdentity }),
+          // Default authenticated subject is the physical state-owner master. Absence means a legacy artifact.
+          callerIdentity: ec.callerIdentity ?? {
+            version: 1 as const, role: 'owner' as const, auth: 'input-bytecode' as const, authOffset: 0,
+          },
           ...(ec.addressParam && { addressParam: ec.addressParam }),
           ...(ec.addressStateVar && { addressStateVar: ec.addressStateVar }),
           ...(ec.addressLiteral && { addressLiteral: ec.addressLiteral }),

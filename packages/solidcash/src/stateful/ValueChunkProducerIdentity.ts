@@ -471,3 +471,108 @@ export function selectSingletonValueChunkProducer(
     ? { status: 'exact', claim: [...canonical.values()][0] }
     : { status: 'multiple', claims: [...canonical.values()] };
 }
+
+/**
+ * One authenticated continuation band for a distinct storage resource.
+ *
+ * `bandOffset` is participant-local (absolute = participantInputs[p] + bandOffset). The scalar
+ * `__internal__valueChunkOutputBase` witness remains band[0]'s absolute coordinate; later bands are
+ * authenticated by this ordered claim list rather than by inventing additional scalar witnesses.
+ */
+export interface TransportedContinuationResourceClaim {
+  version: 1;
+  owner: { categoryId: string; lockingBytecode: string };
+  collectionSignature: string;
+  collectionHash: string;
+  keySlot: string;
+  digest: string;
+  chunkCount: number;
+  bandOffset: number;
+  producerClaim: ValueChunkProducerResourceClaim;
+}
+
+export function canonicalTransportedContinuationResourceClaim(
+  claim: TransportedContinuationResourceClaim,
+): TransportedContinuationResourceClaim | undefined {
+  if (!claim || typeof claim !== 'object' || claim.version !== 1) return undefined;
+  const owner = canonicalValueChunkStateOwner(claim.owner);
+  const collectionHash = canonicalHex(claim.collectionHash, 20);
+  const keySlot = canonicalHex(claim.keySlot, 32);
+  const digest = canonicalHex(claim.digest, 32);
+  const producerClaim = canonicalValueChunkProducerResourceClaim(claim.producerClaim);
+  if (!owner || !collectionHash || !keySlot || !digest || !producerClaim
+    || typeof claim.collectionSignature !== 'string' || claim.collectionSignature.length === 0
+    || !safeOrdinal(claim.chunkCount) || claim.chunkCount < 1
+    || !safeOrdinal(claim.bandOffset)
+    || producerClaim.resourceIdentity !== `${owner.split(':')[0]}:${collectionHash}:${keySlot}`
+    || canonicalValueChunkStateOwner(producerClaim.producer.stateOwner) !== owner) {
+    return undefined;
+  }
+  return Object.freeze({
+    version: 1 as const,
+    owner: Object.freeze({
+      categoryId: claim.owner.categoryId.toLowerCase(),
+      lockingBytecode: claim.owner.lockingBytecode.toLowerCase(),
+    }),
+    collectionSignature: claim.collectionSignature,
+    collectionHash,
+    keySlot,
+    digest,
+    chunkCount: claim.chunkCount,
+    bandOffset: claim.bandOffset,
+    producerClaim,
+  });
+}
+
+/** Build one ordered continuation-band claim from an authenticated production and its participant-local offset. */
+export function buildTransportedContinuationResourceClaim(options: {
+  owner: { categoryId: string; lockingBytecode: string };
+  collectionSignature: string;
+  collectionHash: string;
+  keySlot: string;
+  digest: string;
+  chunkCount: number;
+  bandOffset: number;
+  producerClaim: ValueChunkProducerResourceClaim;
+}): TransportedContinuationResourceClaim | undefined {
+  return canonicalTransportedContinuationResourceClaim({
+    version: 1,
+    owner: options.owner,
+    collectionSignature: options.collectionSignature,
+    collectionHash: options.collectionHash,
+    keySlot: options.keySlot,
+    digest: options.digest,
+    chunkCount: options.chunkCount,
+    bandOffset: options.bandOffset,
+    producerClaim: options.producerClaim,
+  });
+}
+
+/**
+ * Order continuation-resource claims by source/mutation order already present in `claims`, failing closed on
+ * overlapping bands, duplicate resources, or mixed owners. Callers must still run
+ * `selectSingletonValueChunkProducer` per resource before publishing.
+ */
+export function orderTransportedContinuationResourceClaims(
+  claims: readonly TransportedContinuationResourceClaim[],
+): readonly TransportedContinuationResourceClaim[] | undefined {
+  if (!Array.isArray(claims) || claims.length === 0) return undefined;
+  const ordered: TransportedContinuationResourceClaim[] = [];
+  const resources = new Set<string>();
+  const owners = new Set<string>();
+  let nextOffset: number | undefined;
+  for (const claim of claims) {
+    const canonical = canonicalTransportedContinuationResourceClaim(claim);
+    if (!canonical) return undefined;
+    const resource = canonical.producerClaim.resourceIdentity;
+    const owner = canonicalValueChunkStateOwner(canonical.owner);
+    if (!owner || resources.has(resource)) return undefined;
+    if (nextOffset !== undefined && canonical.bandOffset !== nextOffset) return undefined;
+    resources.add(resource);
+    owners.add(owner);
+    ordered.push(canonical);
+    nextOffset = canonical.bandOffset + canonical.chunkCount;
+  }
+  if (owners.size !== 1) return undefined;
+  return Object.freeze(ordered);
+}

@@ -1,9 +1,9 @@
-import { hexToBin, utf8ToBin } from '@bitauth/libauth';
+import { hash160, hexToBin, utf8ToBin } from '@bitauth/libauth';
 import {
   getDefaultStateValue, parseArrayTypeString, type EnumDefinitionAbi, type StateValue,
   type StructDefinitionInfo,
 } from '@solidcash/utils';
-import { lockingBytecodeToSolidityAddressPayload, tryCashAddressToLockScript } from '../utils.js';
+import { tryCashAddressToLockScript } from '../utils.js';
 
 interface EncodedEvmValue {
   bytes: Uint8Array;
@@ -62,8 +62,15 @@ const addressPayload = (value: StateValue): Uint8Array => {
   // SolidCash VM values use the minimal empty vector for numeric/address zero. Solidity ABI requires the same
   // value to occupy the canonical right-aligned 20-byte address payload.
   if (bytes.length === 0) return new Uint8Array(20);
-  const payload = lockingBytecodeToSolidityAddressPayload(bytes);
-  if (payload !== undefined) return payload;
+  if (bytes.length === 20) return bytes;
+  // Match the compiler's explicit address-to-20 narrowing: preserve 20-byte hash payloads and HASH160 the
+  // complete P2SH32 locking bytecode, whose 32-byte script hash cannot fit an EVM address.
+  if (bytes.length === 25 && bytes[0] === 0x76 && bytes[1] === 0xa9 && bytes[2] === 0x14
+    && bytes[23] === 0x88 && bytes[24] === 0xac) return bytes.slice(3, 23);
+  if (bytes.length === 23 && bytes[0] === 0xa9 && bytes[1] === 0x14 && bytes[22] === 0x87) {
+    return bytes.slice(2, 22);
+  }
+  if (bytes.length === 35 && bytes[0] === 0xaa && bytes[1] === 0x20 && bytes[34] === 0x87) return hash160(bytes);
   throw new Error(`EVM ABI address requires exactly 20 payload bytes, got ${bytes.length}`);
 };
 

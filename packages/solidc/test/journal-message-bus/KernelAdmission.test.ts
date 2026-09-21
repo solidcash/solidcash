@@ -16,21 +16,6 @@ ReturnType<typeof compileString>['messageBus']
 };
 
 describe('required kernel admission', () => {
-  it('publishes a stable participant-owner band for graph handlers', () => {
-    const artifact = compileString(`contract C() {
-      mapping(uint => int) values;
-      function set(uint key, int value) public {
-        this.values[key] = value;
-        require(true);
-      }
-    }`, { ...KERNEL, messageBusGraphContext: true });
-    expect(artifact.messageBus?.convention).toBe('kernel-row-loop');
-    expect(artifact.messageBus?.route?.inputs.slice(0, 2)).toEqual([
-      { name: 'batchBlob', type: 'bytes' },
-      { name: '__internal__messageBusOwnerBandInput', type: 'bigint' },
-    ]);
-  });
-
   it('admits one unconditional chunkable replacement beside unrelated conditional effects', () => {
     const artifact = compileString(`contract C() {
       mapping(uint => bytes) values;
@@ -47,7 +32,9 @@ describe('required kernel admission', () => {
     const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'set');
     const abi = artifact.abi.find((candidate) => candidate.name === 'set');
     expect(handler).toMatchObject({ eligible: true });
-    expect(artifact.messageBus?.fixedChunkableWritePolicy).toBeUndefined();
+    expect(artifact.messageBus?.fixedChunkableWritePolicy).toEqual({
+      version: 1, maximumRows: 1, selectors: [handler?.selector],
+    });
     expect(abi?.sourceEffectOrder).toBe('unsupported-flow');
     expect(abi?.entryAccesses).toEqual([
       expect.objectContaining({
@@ -56,7 +43,7 @@ describe('required kernel admission', () => {
     ]);
   });
 
-  it('refuses a chunkable replacement reached only through conditional control', () => {
+  it('admits a chunkable replacement reached only through bool-param empty-else control', () => {
     const artifact = compileString(`contract C() {
       mapping(uint => bytes) values;
       function set(uint key, bytes value, bool take) public {
@@ -65,8 +52,15 @@ describe('required kernel admission', () => {
       }
       function control() public { require(true); }
     }`, KERNEL);
-    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'set'))
-      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+    const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'set');
+    const access = artifact.abi.find((candidate) => candidate.name === 'set')?.entryAccesses?.[0];
+    expect(handler).toMatchObject({ eligible: true });
+    expect(artifact.messageBus?.fixedChunkableWritePolicy?.selectors).toContain(handler?.selector);
+    expect(access).toMatchObject({
+      collection: 'values',
+      operations: ['write'],
+      activation: { kind: 'source', source: { kind: 'forward', paramIndex: 2 } },
+    });
   });
 
   it('refuses a top-level chunkable replacement bypassed by a successful early return', () => {
@@ -96,14 +90,14 @@ describe('required kernel admission', () => {
     const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'replace');
     const abi = artifact.abi.find((candidate) => candidate.name === 'replace');
     expect(handler).toMatchObject({ eligible: true });
-    expect(artifact.messageBus?.fixedChunkableWritePolicy).toBeUndefined();
+    expect(artifact.messageBus?.fixedChunkableWritePolicy?.selectors).toContain(handler?.selector);
     expect(abi?.entryAccesses).toEqual([expect.objectContaining({
       collection: 'records', operations: ['write'], valueSource: 'id:next',
       mutationEffectOrdinals: [expect.any(Number)],
     })]);
   });
 
-  it('admits a direct linear chunkable whole-entry transition through the typed route pool', () => {
+  it('admits one direct linear chunkable whole-entry transition behind an authenticated occurrence bound', () => {
     const artifact = compileString(`pragma solidity ^0.8.0;
       struct Record {
         address owner;
@@ -130,7 +124,9 @@ describe('required kernel admission', () => {
     expect(artifact.messageBus?.convention).toBe('kernel-row-loop');
     expect(collection?.chunkableValue).toBe(true);
     expect(handler).toMatchObject({ eligible: true });
-    expect(artifact.messageBus?.fixedChunkableWritePolicy).toBeUndefined();
+    expect(artifact.messageBus?.fixedChunkableWritePolicy).toEqual({
+      version: 1, maximumRows: 1, selectors: [handler?.selector],
+    });
     expect(abi?.entryAccesses).toEqual([
       expect.objectContaining({
         collection: 'records', operations: ['read', 'write'],
@@ -169,25 +165,8 @@ describe('required kernel admission', () => {
     ]);
   });
 
-  it('keeps an unconditional pooled append after unrelated short-circuit validation', () => {
-    const artifact = compileString(`contract C() {
-      mapping(uint => bytes32[]) values;
-      function appendEntry(uint key, bytes32 value, int score) public {
-        require(score >= 1 && score <= 5);
-        this.values[key].push(value);
-        require(true);
-      }
-      function control() public { require(true); }
-    }`, KERNEL);
-    const abi = artifact.abi.find((candidate) => candidate.name === 'appendEntry');
-    expect(abi?.sourceEffectOrder).toBe('unsupported-flow');
-    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'appendEntry'))
-      .toMatchObject({ eligible: true });
-  });
-
   it.each([
     ['a conditional push', 'if (take) this.values[key].push(value);', 'bool take'],
-    ['a push bypassed by an early return', 'if (take) return; this.values[key].push(value);', 'bool take'],
     ['two pushes', 'this.values[key].push(value); this.values[key].push(value);', ''],
     ['push and pop', 'this.values[key].push(value); this.values[key].pop();', ''],
   ])('keeps %s outside the pooled direct-push capability', (_label, mutation, extraParameter) => {
@@ -10527,5 +10506,453 @@ describe('required kernel admission', () => {
       function control() public { require(true); }
     }`, KERNEL);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'place')?.eligible).not.toBe(true);
+  });
+
+  // Handoff family 1 / inventory #2: unconditional multi-resource fixed chunkable writes are admitted.
+  // Ordered continuation-resource claims authenticate each band; the old single-lane KERNEL_LAYOUT
+  // residual no longer applies to this straight-line shape.
+  it('admits multiple unconditional fixed chunkable writes in one participant', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => bytes) left;
+      mapping(int => bytes) right;
+      function work(int key, bytes first, bytes second) public {
+        left[key] = first;
+        right[key] = second;
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'work'))
+      .toMatchObject({ eligible: true });
+  });
+
+  // Family 1: bool-param-activated second fixed-chunkable resource is admitted with a published activation.
+  it('admits a bool-param-activated second chunkable write in one participant', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => bytes) left;
+      mapping(int => bytes) right;
+      function work(int key, bytes first, bytes second, bool writeRight) public {
+        left[key] = first;
+        if (writeRight) {
+          right[key] = second;
+        }
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+    const work = artifact.abi.find((entry) => entry.name === 'work');
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'work'))
+      .toMatchObject({ eligible: true });
+    expect(work?.entryAccesses?.find((access) => access.collection === 'right')?.activation)
+      .toMatchObject({ kind: 'source', source: { kind: 'forward', paramIndex: 3 } });
+    expect(work?.entryAccesses?.find((access) => access.collection === 'left')?.activation)
+      .toBeUndefined();
+  });
+
+  // Family 1 residual: writes in both arms are same-iteration resource selection (non-loop).
+  it('keeps chunkable writes in both branch arms behind KERNEL_LAYOUT', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => bytes) left;
+      mapping(int => bytes) right;
+      function work(int key, bytes first, bytes second, bool pickRight) public {
+        if (pickRight) {
+          right[key] = second;
+        } else {
+          left[key] = first;
+        }
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'work'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+  });
+
+  // Family 1 wedge A / Phase 0: hetero int+bytes loop with trailing band for ≥61B external chunks.
+  it('admits a bounded loop writing int and bytes maps on one key schedule', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) scores;
+      mapping(int => bytes) payloads;
+      function writeBoth(int n, bytes payload) public {
+        for (int i = 0; i < n; i = i + 1) {
+          scores[i] = i;
+          payloads[i] = payload;
+        }
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+    const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'writeBoth');
+    const info = artifact.abi.find((candidate) => candidate.name === 'writeBoth')?.sortedUpsertLoopInfo;
+    expect(handler).toMatchObject({ eligible: true });
+    expect(info).toEqual([
+      expect.objectContaining({
+        collection: 'scores', journalAccessStreamIndex: 0, journalExecutionGroup: 0, op: 'set',
+      }),
+      expect.objectContaining({
+        collection: 'payloads', journalAccessStreamIndex: 1, journalExecutionGroup: 0, op: 'set',
+      }),
+    ]);
+    expect(new Set(info?.map((stream) => stream.varyingArrayParam)).size).toBe(1);
+    // Trailing continuation band + valueChunkOutputBase let compose settle loop-nested ≥61B payloads.
+    expect(artifact.messageBus?.route.blockLayout?.trailingCapacity).toBeGreaterThanOrEqual(61);
+    expect(artifact.messageBus?.route.inputs?.some(
+      (input) => input.name === '__internal__valueChunkOutputBase',
+    )).toBe(true);
+  });
+
+  // Family 1 wedge B: bool-param same-iteration selection inside a bounded loop.
+  it('admits same-iteration bool-param selection across two int maps in one loop', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) left;
+      mapping(int => int) right;
+      function choose(int n, bool pickRight) public {
+        for (int i = 0; i < n; i = i + 1) {
+          if (pickRight) {
+            right[i] = i + 1;
+          } else {
+            left[i] = i + 1;
+          }
+        }
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+    const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'choose');
+    const info = artifact.abi.find((candidate) => candidate.name === 'choose')?.sortedUpsertLoopInfo;
+    expect(handler).toMatchObject({ eligible: true });
+    expect(info?.length).toBeGreaterThanOrEqual(2);
+    expect(new Set(info?.map((stream) => stream.journalExecutionGroup)).size).toBe(1);
+    const right = info?.find((stream) => stream.collection === 'right');
+    const left = info?.find((stream) => stream.collection === 'left');
+    expect(right?.iterationCondition).toMatchObject({
+      kind: 'source', source: { kind: 'forward', paramIndex: 1 },
+    });
+    expect(left?.iterationCondition).toMatchObject({
+      kind: 'unary', operator: '!', expression: {
+        kind: 'source', source: { kind: 'forward', paramIndex: 1 },
+      },
+    });
+  });
+
+  it('keeps non-bool same-iteration selection behind KERNEL_LAYOUT', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) left;
+      mapping(int => int) right;
+      function choose(int n, int which) public {
+        for (int i = 0; i < n; i = i + 1) {
+          if (which == 0) {
+            left[i] = i;
+          } else {
+            right[i] = i;
+          }
+        }
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'choose'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+  });
+
+  // Family 1 wedge C: unconditional emit beside two mutation streams.
+  it('admits unconditional emit beside two int mutation streams in one loop', () => {
+    const artifact = compileString(`contract C() {
+      event Tick(int indexed i);
+      mapping(int => int) left;
+      mapping(int => int) right;
+      function writeEmit(int n) public {
+        for (int i = 0; i < n; i = i + 1) {
+          left[i] = i;
+          right[i] = i + 10;
+          emit Tick(i);
+        }
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+    const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'writeEmit');
+    const abi = artifact.abi.find((candidate) => candidate.name === 'writeEmit');
+    expect(handler).toMatchObject({ eligible: true });
+    expect(abi?.sortedUpsertLoopInfo).toHaveLength(2);
+    expect(abi?.runtimeLoopEvents?.length).toBeGreaterThan(0);
+  });
+
+  // Phase 2: bool-param-selected emit beside a journaled write (SelectedEventCompose).
+  it('admits bool-param-selected emit beside a fixed-key int mapping write', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) values;
+      event Touched(int indexed key, int value);
+      function set(int key, int value, bool emitIt) public {
+        values[key] = value;
+        if (emitIt) { emit Touched(key, value); }
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'set'))
+      .toMatchObject({ eligible: true });
+  });
+
+  it('keeps early-return-bypassed selected emit behind KERNEL_LAYOUT', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) values;
+      event Touched(int indexed key);
+      function set(int key, int value, bool skip) public {
+        if (skip) return;
+        values[key] = value;
+        emit Touched(key);
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'set'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+  });
+
+  // Phase 3: bounded constructed-key (hash160) admit + residual multi-arm constructed join.
+  it('admits a hash160(pubkey) constructed key write', () => {
+    const artifact = compileString(`contract C() {
+      mapping(bytes20 => int) balances;
+      function credit(pubkey pk, int n) public {
+        bytes20 who = hash160(pk);
+        balances[who] = balances[who] + n;
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'credit'))
+      .toMatchObject({ eligible: true });
+  });
+
+  // Phase 4 residual: dynamic bytes + mapping is admitted; token-container co-layout stays fenced.
+  it('admits independently indexed bytes state beside an int mapping write', () => {
+    const artifact = compileString(`contract C() {
+      bytes note;
+      mapping(int => int) scores;
+      function set(bytes n, int k, int v) public {
+        note = n;
+        scores[k] = v;
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'set'))
+      .toMatchObject({ eligible: true });
+  });
+
+  it('locks dynamic-bytes + token-container co-layout as a #9 residual (missing tokenContainer block slot)', () => {
+    // Codegen fails closed while compiling the message-bus route when dynamic bytes shares a handler with
+    // tokens[category] access — the residual until non-overlapping span descriptors publish a tokenContainer slot.
+    expect(() => compileString(`contract ParallelTokenJournal() {
+      bytes payload;
+      function append(bytes32 category, bytes suffix) public {
+        this.payload = bytes.concat(this.payload, suffix);
+        bytes commitment = this.tokens[category].nftCommitment;
+        require(this.tokens[category].tokenAmount >= 0);
+        require(commitment == commitment);
+      }
+      function control() public { require(true); }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 })).toThrow(/tokenContainer\[0\]/);
+  });
+
+  // Phase 5: nested mapping admit + residual unbounded recursive key walk.
+  it('admits a depth-two nested mapping write', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => mapping(int => int)) grid;
+      function set(int a, int b, int v) public {
+        grid[a][b] = v;
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'set'))
+      .toMatchObject({ eligible: true });
+  });
+
+  it('keeps an unbounded while-walk over mapping keys behind KERNEL_UNBOUNDED_KEY', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) m;
+      function walk(int start) public {
+        int k = start;
+        while (k != 0) { m[k] = k; k = m[k - 1]; }
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'walk'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_UNBOUNDED_KEY' });
+  });
+
+  // Phase 6: replayable typed child deploy admit + residual runtime-count deploy loop.
+  it('admits a straight-line typed child deployment site', () => {
+    const artifact = compileStringMulti(`
+      contract Child(int x) { int public v; constructor() { v = x; } }
+      contract Parent() {
+        function spawn(int x) public deploy {
+          new Child(x);
+          require(true);
+        }
+        function control() public { require(true); }
+      }
+    `, KERNEL).Parent;
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'spawn'))
+      .toMatchObject({ eligible: true });
+  });
+
+  it('keeps a runtime-count child deployment loop behind KERNEL_LAYOUT', () => {
+    const artifact = compileStringMulti(`
+      contract Child(int x) { int public v; constructor() { v = x; } }
+      contract Parent() {
+        function spawnMany(int n) public deploy {
+          for (int i = 0; i < n; i = i + 1) { new Child(i); }
+          require(true);
+        }
+        function control() public { require(true); }
+      }
+    `, KERNEL).Parent;
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'spawnMany'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+  });
+
+  // Phase 7: bounded detached-sig / safe assembly admit + residual opaque assembly.
+  it('admits a data-only sig constructed from ordinary bytes', () => {
+    const artifact = compileString(`contract C() {
+      function echo(bytes value) public pure returns (sig) {
+        return sig(value);
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'echo'))
+      .toMatchObject({ eligible: true });
+  });
+
+  it('keeps stack-divergent native assembly behind KERNEL_OPAQUE_EFFECT', () => {
+    const artifact = compileString(`contract C() {
+      int public x;
+      function touch() public {
+        assembly { OP_DUP }
+        x = 1;
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'touch'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_OPAQUE_EFFECT' });
+  });
+
+  // Phase 1 / item 5: multi-producer fan-in publishes producer-ID resultConsumers (not cloned call AST).
+  it('admits multi-producer fan-in that binds sink args to producer callsite IDs', () => {
+    const artifact = compileString(`pragma solidcash >=0.8.0;
+      interface IReader { function read(uint id) external returns (uint value); }
+      interface ISink { function write(uint left, uint right) external; }
+      contract Coordinator(address left, address right, address sink) {
+        function apply(uint id) public {
+          uint leftValue = IReader(left).read(id);
+          uint rightValue = IReader(right).read(id + 1);
+          ISink(sink).write(leftValue, rightValue);
+          require(true);
+        }
+      }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'apply'))
+      .toMatchObject({ eligible: true });
+    const apply = artifact.abi.find((entry) => entry.name === 'apply');
+    expect(apply?.externalCalls?.map((call) => ({
+      callsiteId: call.callsiteId,
+      functionName: call.functionName,
+      returnTypes: call.returnTypes,
+    }))).toEqual([
+      { callsiteId: 0, functionName: 'read', returnTypes: ['uint256'] },
+      { callsiteId: 1, functionName: 'read', returnTypes: ['uint256'] },
+      { callsiteId: 2, functionName: 'write', returnTypes: undefined },
+    ]);
+    expect(apply?.resultConsumers).toEqual([
+      {
+        consumerCallsiteId: 2, argument: 0,
+        producerCallsiteId: 0, producerSourceCallsiteId: 0, resultIndex: 0,
+      },
+      {
+        consumerCallsiteId: 2, argument: 1,
+        producerCallsiteId: 1, producerSourceCallsiteId: 1, resultIndex: 0,
+      },
+    ]);
+    expect(apply?.externalCalls?.[2]?.argSources).toEqual([
+      {
+        kind: 'expression',
+        expression: {
+          kind: 'producerResult', callsiteId: 0, sourceCallsiteId: 0, resultIndex: 0, type: 'uint256',
+        },
+      },
+      {
+        kind: 'expression',
+        expression: {
+          kind: 'producerResult', callsiteId: 1, sourceCallsiteId: 1, resultIndex: 0, type: 'uint256',
+        },
+      },
+    ]);
+  });
+
+  // Phase 1 / item 5 residual: unused returning producers stay eligible without inventing resultConsumers.
+  it('does not invent resultConsumers when producer results are unused', () => {
+    const artifact = compileString(`pragma solidcash >=0.8.0;
+      interface IReader { function read(uint id) external returns (uint value); }
+      contract Coordinator(address left) {
+        function apply(uint id) public {
+          IReader(left).read(id);
+          require(true);
+        }
+      }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'apply'))
+      .toMatchObject({ eligible: true });
+    const apply = artifact.abi.find((entry) => entry.name === 'apply');
+    expect(apply?.resultConsumers ?? []).toEqual([]);
+    expect(apply?.externalCalls).toEqual([
+      expect.objectContaining({
+        callsiteId: 0, functionName: 'read', returnTypes: ['uint256'],
+      }),
+    ]);
+  });
+
+  // Phase 1 / item 6: one participant writes two distinct collections under a shared key.
+  it('admits multi-collection journaled writes under one shared key', () => {
+    const artifact = compileString(`pragma solidcash >=0.8.0;
+      contract Store() {
+        mapping(int => int) scores;
+        mapping(int => int) bonuses;
+        function setBoth(int key, int a, int b) public {
+          this.scores[key] = a;
+          this.bonuses[key] = b;
+          require(true);
+        }
+        function control() public { require(true); }
+      }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'setBoth'))
+      .toMatchObject({ eligible: true, physicalEntrySlots: [0, 1] });
+    const setBoth = artifact.abi.find((entry) => entry.name === 'setBoth');
+    expect(setBoth?.entryAccesses?.map((access) => ({
+      collection: access.collection, slotIndex: access.slotIndex,
+    }))).toEqual([
+      { collection: 'scores', slotIndex: 0 },
+      { collection: 'bonuses', slotIndex: 1 },
+    ]);
+  });
+
+  // Phase 1 / item 6 residual: multi-collection beside unbounded nested mapping stays fenced.
+  it('keeps multi-collection writes beside an unbounded nested mapping loop behind KERNEL_UNBOUNDED_KEY', () => {
+    const artifact = compileString(`pragma solidcash >=0.8.0;
+      contract Store() {
+        mapping(int => mapping(int => int)) nested;
+        mapping(int => int) bonuses;
+        function setBoth(int n, int key, int a, int b) public {
+          for (int i = 0; i < n; i = i + 1) {
+            nested[key][i] = a;
+            bonuses[key] = b;
+          }
+          require(true);
+        }
+        function control() public { require(true); }
+      }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'setBoth'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_UNBOUNDED_KEY' });
   });
 });

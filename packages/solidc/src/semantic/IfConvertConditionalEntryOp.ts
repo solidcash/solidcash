@@ -25,7 +25,7 @@ import {
   DoWhileNode,
 } from '../ast/AST.js';
 import {
-  Type, MappingType, ArrayType, StructType, PrimitiveType,
+  Type, MappingType, ArrayType, StructType, PrimitiveType, isChunkableValueType,
 } from '@solidcash/utils';
 import { UnaryOperator } from '../ast/Operator.js';
 import AstTraversal from '../ast/AstTraversal.js';
@@ -331,7 +331,9 @@ export default class IfConvertConditionalEntryOp extends AstTraversal {
   }
 
   // The innermost value type of a plain state mapping after `keyCount` index levels, if it is a scalar we can
-  // build a default for (not array/struct/string/nested-mapping). undefined for anything else.
+  // build a default for (not array/struct/string/unbounded-bytes/nested-mapping). undefined for anything else.
+  // Chunkable values must keep their source BranchNode: predicating them into `cond ? v : m[k]` still emits
+  // trailing continuation NFTs on the preserve arm (see BranchNode.preserveConditionalEntryWrites).
   private scalarMappingValueType(name: string, keyCount: number): Type | undefined {
     const coll = this.mappings.get(name);
     if (!coll) return undefined;
@@ -341,7 +343,7 @@ export default class IfConvertConditionalEntryOp extends AstTraversal {
       t = t.valueType;
     }
     if (t instanceof MappingType || t instanceof ArrayType || t instanceof StructType) return undefined;
-    if (t === PrimitiveType.STRING) return undefined; // dynamic (chunked) - not a simple scalar entry
+    if (isChunkableValueType(t)) return undefined;
     return t;
   }
 

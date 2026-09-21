@@ -1120,8 +1120,6 @@ const evaluateEveryInput = (
   // so hook OP_OUTPUTBYTECODE and print both operands when the next three operations are `OP_3; OP_PICK; OP_EQUALVERIFY`.
   const outputCompareDebug = (globalThis as { process?: { env?: Record<string, string> } }).process?.env
     ?.SOLIDC_DEBUG_OUTPUT_COMPARE === '1';
-  const tokenCompareDebug = (globalThis as { process?: { env?: Record<string, string> } }).process?.env
-    ?.SOLIDC_DEBUG_OUTPUT_TOKEN_COMPARE === '1';
   // See `operands` in the failure dump: keeping the previous state makes a refusal's consumed operands readable
   // without a second, allocation-heavy evaluation. OP_INVOKE shares the stack, so this also shows which frame item
   // a misread coordinate actually resolved to.
@@ -1137,54 +1135,22 @@ const evaluateEveryInput = (
   // measured dumps at ip 22 of a 22-deep frame while the failure was ip 3 of a 6-instruction body.)
   const preStateRingByInput = new Map<number, AuthenticationProgramStateCommon[]>();
   const vm = createVirtualMachineBch2026ForProvider(builder.provider,
-    (outputCompareDebug || tokenCompareDebug || failurePreStateDebug) ? {
+    (outputCompareDebug || failurePreStateDebug) ? {
     opcodes: failurePreStateDebug
       ? new Set(Array.from({ length: 256 }, (_, opcode) => opcode))
-      : new Set([Op.OP_OUTPUTBYTECODE, Op.OP_OUTPUTTOKENCOMMITMENT]),
+      : new Set([Op.OP_OUTPUTBYTECODE]),
     beforeOperation: (unknownState) => {
       if (failurePreStateDebug) {
         const captured = unknownState as AuthenticationProgramStateCommon;
         const ownedInput = captured.program?.inputIndex;
-        const requestedInput = Number((globalThis as { process?: { env?: Record<string, string> } })
-          .process?.env?.SOLIDC_TRACE_INPUT ?? Number.NaN);
-        if (typeof ownedInput === 'number' && (!Number.isFinite(requestedInput) || ownedInput === requestedInput)) {
+        if (typeof ownedInput === 'number') {
           const ring = preStateRingByInput.get(ownedInput) ?? [];
-          // VM callbacks may receive the same mutable state object at successive opcodes. Retaining that object
-          // turns every ring entry into the final ip/stack and makes a reported pre-state fictitious.
-          ring.push(snapshotPreflightDiagnosticState(captured));
+          ring.push(captured);
           // 256, not 64: an input can iterate a loop (or a convergence pass) more than 64 times, and at 64 the ring
           // held only the loop's own iterations - every entry the same ip, with the coordinate instructions that
           // built the failing operands already evicted.
           if (ring.length > 256) ring.splice(0, ring.length - 256);
           preStateRingByInput.set(ownedInput, ring);
-        }
-      }
-      if (tokenCompareDebug) {
-        const state = unknownState as AuthenticationProgramStateCommon;
-        const debugEnv = (globalThis as { process?: { env?: Record<string, string> } }).process?.env;
-        const wantedInput = Number(debugEnv?.SOLIDC_DEBUG_ROUTE_INPUT_INDEX ?? state.program?.inputIndex);
-        const wantedIp = Number(debugEnv?.SOLIDC_DEBUG_OUTPUT_TOKEN_COMPARE_IP ?? -1);
-        if (state.ip === wantedIp && state.instructions[state.ip]?.opcode === Op.OP_OUTPUTTOKENCOMMITMENT) {
-          console.error('output-token-compare-state', JSON.stringify({
-            inputIndex: state.program?.inputIndex, ip: state.ip,
-            nextOpcode: state.instructions[state.ip + 1]?.opcode,
-            top: state.stack.slice(-3).map((item) => binToHex(item)),
-          }));
-        }
-        if (state.program?.inputIndex === wantedInput
-          && state.instructions[state.ip]?.opcode === Op.OP_OUTPUTTOKENCOMMITMENT
-          && state.instructions[state.ip + 1]?.opcode === Op.OP_EQUALVERIFY
-          && state.stack.length >= 2) {
-          try {
-            const outputIndex = Number(vmNumberToBigInt(state.stack.at(-1)!));
-            const expected = binToHex(state.stack.at(-2)!);
-            const actual = transaction.outputs[outputIndex]?.token?.nft?.commitment;
-            const actualHex = actual === undefined ? '' : binToHex(actual);
-            if (expected !== actualHex) console.error('output-token-compare-mismatch', JSON.stringify({
-              inputIndex: state.program.inputIndex, ip: state.ip, outputIndex,
-              expected, actual: actualHex,
-            }));
-          } catch { /* A non-index operand is diagnosed by ordinary preflight. */ }
         }
       }
       if (!outputCompareDebug) return;
@@ -1621,44 +1587,20 @@ const evaluateEveryInput = (
               candidateCount: candidates.length,
               candidates: candidates.slice(0, 4).map((candidate) => ({
                 depth: candidate.stack.length,
-                // FULL items, not a prefix: the compared pair is often two ROWS, and a row's layout is only
-                // readable when the whole item is there - a 24-hex-char prefix cannot say whether the frame
-                // header, the mode byte or the selector is the field that disagrees.
-                top: candidate.stack.slice(-3).map((item) => `${item.length}:${binToHex(item)}`),
+                top: candidate.stack.slice(-3).map((item) => `${item.length}:${binToHex(item).slice(0, 24)}`),
               })),
               error: preState.error === undefined ? undefined : String(
                 (preState.error as { error?: unknown }).error ?? preState.error,
               ),
-              // The compared pair at the failing opcode, with the byte where it first disagrees. A row-vs-stream
-              // mismatch is usually ONE missing field at the head or tail, and the byte index says which - the two
-              // full items alone leave that to be counted by eye.
-              comparedPair: ((): Record<string, unknown> | undefined => {
-                const right = preState.stack.at(-1);
-                const left = preState.stack.at(-2);
-                if (right === undefined || left === undefined) return undefined;
-                const limit = Math.min(left.length, right.length);
-                let firstDifference = -1;
-                for (let index = 0; index < limit; index += 1) {
-                  if (left[index] !== right[index]) { firstDifference = index; break; }
-                }
-                return {
-                  leftLength: left.length,
-                  rightLength: right.length,
-                  firstDifference,
-                  firstDifferenceHex: firstDifference < 0 ? undefined
-                    : `${binToHex(left.slice(firstDifference, firstDifference + 12))} vs `
-                      + `${binToHex(right.slice(firstDifference, firstDifference + 12))}`,
-                };
-              })(),
               // 16 items, not 8: a failing coordinate is built from frame reads whose inputs sit deeper than the
               // compared pair, and the compared pair alone cannot say which frame item was wrong.
               top: preState.stack.slice(-16).map((item, offset, items) => (
-                `${items.length - 1 - offset}:${item.length}:${binToHex(item)}`
+                `${items.length - 1 - offset}:${item.length}:${binToHex(item).slice(0, 96)}`
               )),
               // The BOTTOM region too: coordinates are built with `OP_DEPTH; <n>; OP_SUB; OP_PICK` terms as well,
               // and those address ordinals counted from the bottom - the very slots this gate exists to check.
               bottom: preState.stack.slice(0, 8).map((item, ordinal) => (
-                `${ordinal}:${item.length}:${binToHex(item)}`
+                `${ordinal}:${item.length}:${binToHex(item).slice(0, 96)}`
               )),
               // Deep bottom ordinals too: a coordinate term can be a bottom pick far from the ends (measured: a
               // term that reads the 41st item from the bottom, invisible in both the top window and the bottom 8).
@@ -1671,12 +1613,10 @@ const evaluateEveryInput = (
               // only against the runtime distance of the item it was MEANT to read, and that item (a route input
               // like the authenticated emission stream) normally sits far outside both the top window and the
               // bottom ordinals the windows above cover. Gated because a full frame is large: match the intended
-              // item by its leading bytes to read its real distance from the top. Include the tail too: a
-              // read-after-write bug can change only a late struct field while the front of both blobs agrees.
+              // item by its leading bytes to read its real distance from the top.
               stackFull: debugEnv?.SOLIDC_DEBUG_FAILURE_POINT_STACK_FULL === '1'
                 ? preState.stack.map((item, offset, items) => (
-                  `${items.length - 1 - offset}:${item.length}:${binToHex(item).slice(0, 120)}`
-                  + `${item.length > 60 ? `…${binToHex(item).slice(-120)}` : ''}`
+                  `${items.length - 1 - offset}:${item.length}:${binToHex(item).slice(0, 240)}`
                 )).reverse()
                 : undefined,
               // Step through a coordinate's construction: every captured pre-state of the failing program whose ip
@@ -1777,13 +1717,7 @@ const evaluateEveryInput = (
             if (!input.name.startsWith('__internal__graph')
               && !input.name.startsWith('__internal__vmapBatch')
               && !input.name.startsWith('__internal__valueWitness')
-              && !input.name.startsWith('__internal__leadingPushValue')
-              && !input.name.startsWith('__internal__externalCallInputBase')
-              && !input.name.startsWith('__internal__extcallMasterIdx')
-              && !input.name.startsWith('__internal__extcallAnchorIdx')
-              && !input.name.startsWith('__internal__externalReturnOutputIdx')
-              && input.name !== '__internal__msgSenderCategory'
-              && input.name !== '__internal__valueChunkOutputBase') return [];
+              && !input.name.startsWith('__internal__leadingPushValue')) return [];
             const value = failedUnlocker.params?.[index];
             return [{
               name: input.name,
@@ -1887,6 +1821,31 @@ const evaluateEveryInput = (
             };
           }));
         })());
+        console.error('message-bus-selected-source-commitments', sourceOutputs.slice(105, 114).map((output, offset) => ({
+          inputIndex: offset + 105,
+          commitment: output.token?.nft === undefined ? undefined : binToHex(output.token.nft.commitment),
+        })));
+        if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+          ?.SOLIDC_DEBUG_FAILURE_RING === '1') {
+          console.error('message-bus-selected-outputs', [3, 35, 40, 42, 105, 106, 107, 108, 109].map((outputIndex) => ({
+            outputIndex,
+            output: transaction.outputs[outputIndex],
+          })));
+          console.error('message-bus-output-summary', transaction.outputs.slice(100, 140).map((output, offset) => ({
+            outputIndex: offset + 100,
+            lockingLength: output.lockingBytecode.length,
+            category: output.token === undefined ? undefined : Array.from(output.token.category, (byte) => byte.toString(16).padStart(2, '0')).join(''),
+            capability: output.token?.nft?.capability,
+            commitment: output.token?.nft === undefined ? undefined : Array.from(output.token.nft.commitment, (byte) => byte.toString(16).padStart(2, '0')).join(''),
+          })));
+          console.error('message-bus-loop-output-summary', transaction.outputs.map((output, outputIndex) => ({
+            outputIndex,
+            lockingBytecode: binToHex(output.lockingBytecode),
+            category: output.token === undefined ? undefined : binToHex(output.token.category),
+            commitment: output.token?.nft === undefined ? undefined : binToHex(output.token.nft.commitment),
+          })).filter((output) => output.lockingBytecode
+            === 'aa2020a1837b930aebaba6eb9e9300138a50768a4cd1b72771f674c6d9503ebcc28f87'));
+        }
         const lockingGroups = new Map<string, { inputs: number[]; outputs: number[]; contracts: string[] }>();
         sourceOutputs.forEach((source, index) => {
           const locking = binToHex(source.lockingBytecode);
@@ -1916,6 +1875,7 @@ const evaluateEveryInput = (
         const outputCommitmentReads: Array<Record<string, unknown>> = [];
         const outputBytecodeReads: Array<Record<string, unknown>> = [];
         const instructionWindow: Array<string> = [];
+        let body29Captured = false;
         createVirtualMachineBch2026ForProvider(builder.provider, {
           opcodes: new Set(Array.from({ length: 256 }, (_, opcode) => opcode)),
           beforeOperation: (unknownState) => {
@@ -2127,6 +2087,7 @@ const evaluateEveryInput = (
             commitLen: output.commitment.length,
             commitHead: output.commitment.slice(0, 64),
           })));
+        console.error('message-bus-return-band', allOutputs.slice(24, 34));
       }
       if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
         ?.SOLIDC_DEBUG_ROUTE_CONCISE === '1') {
@@ -2839,10 +2800,7 @@ function describeMessageBusBatchRows(
       /returnOutputIdx/i.test(input.name)
         ? [{ name: input.name, value: String(unlockerParams.params?.[i]) }] : []
     ));
-    if (idxParams.length > 0 && (globalThis as { process?: { env?: Record<string, string> } })
-      .process?.env?.SOLIDC_DEBUG_RETURN_IDX === '1') {
-      console.error('preflight-return-idx', { inputIndex, idxParams, rawVmReason });
-    }
+    if (idxParams.length > 0) console.error('preflight-return-idx', { inputIndex, idxParams, rawVmReason });
   }
   return new Error(`messageBus: BCH-2026 preflight failed at input ${inputIndex}${location}: ${rawVmReason}${requireSite}`);
 }

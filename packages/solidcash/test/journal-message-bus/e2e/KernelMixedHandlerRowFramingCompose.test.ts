@@ -2,7 +2,6 @@ import { binToHex, hexToBin } from '@bitauth/libauth';
 import { compileString } from 'solidc';
 import { describe, expect, it } from 'vitest';
 import { Contract, StatefulContract, messageBus } from '../../../src/index.js';
-import { encodeMessageBatch, sliceMessageBatchRowCalldata } from '../../../src/message-bus/message-bus.js';
 import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';
 import type { TransactionBuilder } from '../../../src/TransactionBuilder.js';
 import { generateLibauthSourceOutputs } from '../../../src/utils.js';
@@ -45,7 +44,7 @@ describe('kernel mixed-handler row framing under composition', () => {
     expect(storeArtifact.messageBus?.handlers.find((handler) => handler.name === 'clear'))
       .toMatchObject({ eligible: true });
 
-    const framed = encodeMessageBatch(storeArtifact, [
+    const framed = messageBus.encodeMessageBatch(storeArtifact, [
       { function: 'add', args: [5n] },
       { function: 'clear' },
       { function: 'add', args: [3n] },
@@ -55,7 +54,7 @@ describe('kernel mixed-handler row framing under composition', () => {
     expect(framed.rows[1]).toMatchObject({ calldataLength: 0, argsHex: '' });
     for (const row of framed.rows) {
       expect(row.calldataLength).toBe(row.argsHex.length / 2);
-      expect(binToHex(framed.blob.subarray(row.calldataStart, row.calldataStart + row.calldataLength)))
+      expect(binToHex(messageBus.sliceMessageBatchRowCalldata(framed.blob, row)))
         .toBe(row.argsHex.toLowerCase());
     }
 
@@ -151,37 +150,32 @@ describe('kernel mixed-handler row framing under composition', () => {
         function add(int n) public { this.counter = this.counter + n; require(n >= 0); }
         function clear() public { this.counter = 0; require(true); }
       }`, KERNEL);
-    const framed = encodeMessageBatch(storeArtifact, [
+    // encodeMessageBatch publishes framed rows and verifies each via sliceMessageBatchRowCalldata.
+    const framed = messageBus.encodeMessageBatch(storeArtifact, [
       { function: 'add', args: [5n] },
       { function: 'clear' },
       { function: 'add', args: [3n] },
     ]);
-    // Shipped encode path already verified each row through sliceMessageBatchRowCalldata.
     for (const row of framed.rows) {
-      expect(binToHex(sliceMessageBatchRowCalldata(framed.blob, row))).toBe(row.argsHex.toLowerCase());
+      expect(binToHex(messageBus.sliceMessageBatchRowCalldata(framed.blob, row)))
+        .toBe(row.argsHex.toLowerCase());
     }
     const clearRow = framed.rows[1]!;
     expect(clearRow.calldataLength).toBe(0);
 
-    // Unframed: missing bounds — shipped helper refuses before any slice.
-    expect(() => sliceMessageBatchRowCalldata(framed.blob, {
+    // Item 3 residual: shipped public API fail-closes unframed / hostile consumer walks.
+    expect(() => messageBus.sliceMessageBatchRowCalldata(framed.blob, {
       row: clearRow.row,
       argsHex: clearRow.argsHex,
     })).toThrow(/unframed: missing calldataStart\/Length/);
-
-    // Hostile OOB walk with no argsHex oracle — shipped helper refuses past blob bounds.
-    expect(() => sliceMessageBatchRowCalldata(framed.blob, {
+    expect(() => messageBus.sliceMessageBatchRowCalldata(framed.blob, {
       row: clearRow.row,
       calldataStart: clearRow.calldataStart,
       calldataLength: framed.blob.length + 1,
     })).toThrow(/walked past authenticated blob bounds/);
-
-    // Hostile length that disagrees with published argsHex — shipped helper refuses.
-    const forgedLength = framed.rows[2]!.calldataLength;
-    expect(forgedLength).toBeGreaterThan(0);
-    expect(() => sliceMessageBatchRowCalldata(framed.blob, {
+    expect(() => messageBus.sliceMessageBatchRowCalldata(framed.blob, {
       ...clearRow,
-      calldataLength: forgedLength,
+      calldataLength: framed.rows[2]!.calldataLength,
     })).toThrow(/row framing mismatch|does not match encoded arguments/);
   });
 });

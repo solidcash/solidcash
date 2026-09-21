@@ -1124,6 +1124,34 @@ export interface ExternalCallStatement {
   elseStatements?: readonly ExternalCallStatement[];
 }
 
+/**
+ * Compiler-published caller authentication for one callsite edge.
+ * Do not infer the subject from proxy/delegate execution geometry; resolve the published role.
+ */
+export interface CallsiteCallerIdentityAbi {
+  version: 1;
+  /**
+   * Role of the authenticated caller subject for this edge.
+   * - origin: transaction-origin / root (subject empty or rootCaller; authOffset 0xffff)
+   * - owner: physical state-owner master of the calling participant
+   * - create: CREATE / getAddress() logical identity of the calling participant
+   * - proxy: proxy-facing public identity when distinct from owner
+   * - executor: co-spent implementation input (rare; only when the edge literally authenticates the executor)
+   */
+  role: 'origin' | 'owner' | 'create' | 'proxy' | 'executor';
+  /**
+   * How the covenant authenticates the subject bytes.
+   * - input-bytecode: subject == lockingBytecode of caller participant input at authOffset
+   * - category: subject derived from state-token category (legacy scalar msgSenderCategory path)
+   * - literal: subject is compile-time constant lock bytes
+   */
+  auth: 'input-bytecode' | 'category' | 'literal';
+  /** Participant-local input offset that authenticates the caller subject (0xffff when none). */
+  authOffset: number;
+  /** Optional compile-time subject lock hex when auth === 'literal'. */
+  subjectLockingBytecode?: string;
+}
+
 export interface ExternalCallAbi {
   /** Stable compiler-assigned physical callsite/slot identifier within the containing function. */
   callsiteId?: number;
@@ -1152,6 +1180,11 @@ export interface ExternalCallAbi {
    * is published.
    */
   occurrenceBoundSource?: 'literal' | 'guard' | 'structural';
+  /**
+   * Authenticated caller subject for this outgoing edge. Kernel artifacts publish this for every callsite;
+   * absence is legacy and may fall back to owner@0 only outside `kernel-row-loop`.
+   */
+  callerIdentity?: CallsiteCallerIdentityAbi;
   interfaceName: string;
   functionName: string;
   addressParam?: string;

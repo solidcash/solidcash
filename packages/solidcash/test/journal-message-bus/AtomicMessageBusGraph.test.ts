@@ -780,7 +780,9 @@ describe('atomic compiled invocation graph', () => {
     const nestedCaller = messageBus.graphInvocationCallerIdentity(
       reached.participants, reached.invocations, reached.invocations[1],
     );
-    expect(nestedCaller).toEqual({ lockingBytecode: '52', offset: 0 });
+    expect(nestedCaller).toMatchObject({
+      lockingBytecode: '52', offset: 0, role: 'owner',
+    });
     expect(reached.invocations[1].argsHex)
       .toBe(`01${nestedCaller.lockingBytecode}`);
   });
@@ -1100,6 +1102,7 @@ describe('atomic compiled invocation graph', () => {
       withLogicalCaller, ['aa'.repeat(32), 'bb'.repeat(32)], { 1: '2a' },
     );
     expect(finalized.callManifest.participants[0].lockingBytecode).toBe('51'.repeat(64));
+    // Legacy fallback: absent callerIdentity keeps owner@0 even when the callee target is a logical alias.
     expect(finalized.callManifest.rows[1].subjectHex).toBe('51'.repeat(64));
     expect(finalized.plan.invocations[1].targetLockingBytecode).toBe('55');
     expect(finalized.callManifest.rows[1].targetOffset).toBe(1);
@@ -1109,6 +1112,18 @@ describe('atomic compiled invocation graph', () => {
     const delegatedCaller = plan();
     delegatedCaller.participants[0] = {
       ...delegatedCaller.participants[0],
+      artifact: {
+        ...delegatedCaller.participants[0].artifact,
+        abi: [{
+          name: 'run', selector: '11111111', inputs: [{ name: 'n', type: 'int' }], outputs: [],
+          externalCalls: [{
+            callsiteId: 7, interfaceName: 'IPeer', functionName: 'run', occurrence: 'once',
+            callerIdentity: {
+              version: 1, role: 'owner', auth: 'input-bytecode', authOffset: 0,
+            },
+          }],
+        }],
+      },
       logicalLockingBytecode: '54',
       logicalIdentityOffset: 0,
       executionKind: 1,
@@ -1123,7 +1138,11 @@ describe('atomic compiled invocation graph', () => {
     const finalized = messageBus.finalizeAtomicInvocationGraph(
       delegatedCaller, ['aa'.repeat(32), 'bb'.repeat(32)], { 1: '2a' },
     );
+    // Publication says owner: executor lock 0x56 must not become msg.sender.
     expect(finalized.callManifest.rows[1]).toMatchObject({ subjectHex: '51'.repeat(64), sourceOffset: 0 });
+    expect(messageBus.graphInvocationCallerIdentity(
+      delegatedCaller.participants, delegatedCaller.invocations, delegatedCaller.invocations[1],
+    )).toMatchObject({ role: 'owner', lockingBytecode: '51'.repeat(64), offset: 0 });
   });
 
   it('uses the authenticated state owner as caller for a nested raw call', () => {
@@ -1133,10 +1152,13 @@ describe('atomic compiled invocation graph', () => {
       artifact: {
         ...delegatedCaller.participants[0].artifact,
         abi: [{
-          name: 'run', inputs: [{ name: 'n', type: 'int' }], outputs: [],
+          name: 'run', selector: '11111111', inputs: [{ name: 'n', type: 'int' }], outputs: [],
           externalCalls: [{
             callsiteId: 7, interfaceName: '__raw__', functionName: '__raw__',
             rawSelector: '22222222', occurrence: 'once',
+            callerIdentity: {
+              version: 1, role: 'owner', auth: 'input-bytecode', authOffset: 0,
+            },
           }],
         }],
       },
@@ -1155,6 +1177,120 @@ describe('atomic compiled invocation graph', () => {
       delegatedCaller, ['aa'.repeat(32), 'bb'.repeat(32)], { 1: '2a' },
     );
     expect(finalized.callManifest.rows[1]).toMatchObject({ subjectHex: '51'.repeat(64), sourceOffset: 0 });
+  });
+
+  it('resolves a published CREATE caller identity at the identity-anchor offset', () => {
+    const createCaller = plan();
+    createCaller.participants[0] = {
+      ...createCaller.participants[0],
+      artifact: {
+        ...createCaller.participants[0].artifact,
+        abi: [{
+          name: 'run', selector: '11111111', inputs: [{ name: 'n', type: 'int' }], outputs: [],
+          externalCalls: [{
+            callsiteId: 7, interfaceName: 'IPeer', functionName: 'run', occurrence: 'once',
+            callerIdentity: {
+              version: 1, role: 'create', auth: 'input-bytecode', authOffset: 1,
+            },
+          }],
+        }],
+      },
+      logicalLockingBytecode: '54',
+      logicalIdentityOffset: 1,
+      blockLayout: {
+        blockSize: 2,
+        slots: [{ kind: 'master', offset: 0 }, { kind: 'identityAnchor', offset: 1 }],
+      },
+    };
+    const resolved = messageBus.graphInvocationCallerIdentity(
+      createCaller.participants, createCaller.invocations, createCaller.invocations[1],
+    );
+    expect(resolved).toMatchObject({
+      role: 'create', lockingBytecode: '54', offset: 1, authOffset: 1,
+      sourceCallsiteProvenance: 'compiler',
+    });
+    const finalized = messageBus.finalizeAtomicInvocationGraph(
+      {
+        ...createCaller,
+        invocations: [
+          createCaller.invocations[0],
+          { ...createCaller.invocations[1], callerIdentity: resolved },
+        ],
+      },
+      ['aa'.repeat(32), 'bb'.repeat(32)], { 1: '2a' },
+    );
+    expect(finalized.callManifest.rows[1]).toMatchObject({ subjectHex: '54', sourceOffset: 1 });
+  });
+
+  it('refuses to treat a delegate executor as caller when publication says owner', () => {
+    const delegatedCaller = plan();
+    delegatedCaller.participants[0] = {
+      ...delegatedCaller.participants[0],
+      artifact: {
+        ...delegatedCaller.participants[0].artifact,
+        messageBus: {
+          ...delegatedCaller.participants[0].artifact.messageBus!,
+          convention: 'kernel-row-loop',
+        },
+        abi: [{
+          name: 'run', selector: '11111111', inputs: [{ name: 'n', type: 'int' }], outputs: [],
+          externalCalls: [{
+            callsiteId: 7, interfaceName: 'IPeer', functionName: 'run', occurrence: 'once',
+            callerIdentity: {
+              version: 1, role: 'owner', auth: 'input-bytecode', authOffset: 0,
+            },
+          }],
+        }],
+      },
+      logicalLockingBytecode: '54',
+      executionKind: 1,
+      executorOffset: 1,
+      executorInputIndex: 1,
+      executorLockingBytecode: '56',
+      blockLayout: {
+        blockSize: 2,
+        slots: [{ kind: 'master', offset: 0 }, { kind: 'lowLevelCall', offset: 1 }],
+      },
+    };
+    const resolved = messageBus.graphInvocationCallerIdentity(
+      delegatedCaller.participants, delegatedCaller.invocations, delegatedCaller.invocations[1],
+    );
+    expect(resolved.lockingBytecode).toBe('51'.repeat(64));
+    expect(resolved.lockingBytecode).not.toBe('56');
+    expect(resolved.role).toBe('owner');
+  });
+
+  it('refuses a kernel callsite that omits callerIdentity', () => {
+    const kernelCaller = plan();
+    kernelCaller.participants[0] = {
+      ...kernelCaller.participants[0],
+      artifact: {
+        ...kernelCaller.participants[0].artifact,
+        messageBus: {
+          ...kernelCaller.participants[0].artifact.messageBus!,
+          convention: 'kernel-row-loop',
+        },
+        abi: [{
+          name: 'run', selector: '11111111', inputs: [{ name: 'n', type: 'int' }], outputs: [],
+          externalCalls: [{
+            callsiteId: 7, interfaceName: 'IPeer', functionName: 'run', occurrence: 'once',
+          }],
+        }],
+      },
+    };
+    expect(() => messageBus.graphInvocationCallerIdentity(
+      kernelCaller.participants, kernelCaller.invocations, kernelCaller.invocations[1],
+    )).toThrow(/missing compiler-published callerIdentity/);
+  });
+
+  it('keeps legacy owner@0 when callerIdentity is absent outside kernel convention', () => {
+    const legacy = plan();
+    expect(messageBus.graphInvocationCallerIdentity(
+      legacy.participants, legacy.invocations, legacy.invocations[1],
+    )).toMatchObject({
+      role: 'owner', lockingBytecode: '51'.repeat(64), offset: 0,
+      sourceCallsiteProvenance: 'legacy-logical',
+    });
   });
 
   it('derives participant bases, identities, policies, and exact invocation rows', () => {

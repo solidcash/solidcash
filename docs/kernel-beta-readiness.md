@@ -20,8 +20,9 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   not evidence that the 66-title beta gate or the previously observed shared-owner callback cycle is resolved.
 - Internally consumed repeated returns now use compact carriers only for a dense zero-based reached prefix; sparse
   source iterations and downstream graph consumers remain fail-closed without occurrence-qualified identities.
-  The focused invalid-tag Marketplace title advances through that check and now stops at an unresolved physical
-  mapping-entry witness. Treat that resource-resolution error as the next investigation, not as return support.
+  Read-only argument-keyed entry handlers publish two authenticated fixed tuple lanes, independent of the route's
+  maximum row count; a third distinct identity remains fail-closed. The focused invalid-tag Marketplace title and
+  its adjacent unregistered-arbitrator title pass unchanged after a fresh four-job compile.
 
 ## Gate before the next leap
 

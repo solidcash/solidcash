@@ -77,4 +77,38 @@ describe('kernel cross-handler nested-mapping tuple metadata', () => {
       expect(artifact.messageBus?.route.inputs.some((input) => /_r\d+$/.test(input.name))).toBe(false);
     },
   );
+
+  it('publishes independent two-entry lanes for repeated read-only mapping handlers', () => {
+    const artifact = compileString(`pragma solidity ^0.8.0;
+      contract ReadOnlyLedger {
+        mapping(string => string) public labels;
+        mapping(uint256 => uint256) public scores;
+      }
+    `, {
+      forceStateful: true, solidityImportCompat: true,
+      messageBus: true, messageBusKernel: true,
+      maximumInputBytes: 10_000_000, suppressWarnings: true,
+    });
+
+    const handlers = ['labels', 'scores'].map((name) => {
+      const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === name);
+      expect(handler).toMatchObject({
+        eligible: true,
+        batchKeyWitnesses: [expect.objectContaining({
+          source: 'argument', inputIndex: 0,
+          entryTupleGroup: expect.any(Number),
+          alternateRouteInput: expect.stringMatching(/_alt$/),
+        })],
+        physicalEntrySlotAlternatives: [[expect.any(Number), expect.any(Number)]],
+      });
+      return handler!;
+    });
+    expect(new Set(handlers.map((handler) =>
+      handler.batchKeyWitnesses?.[0].entryTupleGroup)).size).toBe(2);
+    for (const collection of ['labels', 'scores']) {
+      expect(artifact.messageBus?.route.entryAccesses?.filter((access) =>
+        access.collection === collection)).toHaveLength(2);
+    }
+    expect(artifact.messageBus?.route.inputs.some((input) => /_r\d+$/.test(input.name))).toBe(false);
+  });
 });

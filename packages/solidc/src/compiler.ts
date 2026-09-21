@@ -7470,6 +7470,7 @@ function synthesizeMessageBusRoute(
   }
   if (compilerOptions.messageBusKernel === true) {
     let tupleGroup = 0;
+    const tupleHandlers = new Set<FunctionDefinitionNode>();
     const primaryByCollection = new Map<string, Array<{ routeInput: string; keyIndex: number }>>();
     for (const [routeInput, coordinate] of routeKeyWitnessCoordinates) {
       if (coordinate.alternativeIndex !== 0) continue;
@@ -7498,13 +7499,25 @@ function synthesizeMessageBusRoute(
           `${binding.source}:${binding.inputIndex}:${binding.expressionLabel ?? ''}`).join('|');
         return [{ fn, bindings: complete, signature }];
       });
-      if (new Set(handlerTuples.map(({ signature }) => signature)).size <= 1) continue;
-      // One independently-oriented tuple keeps dispatch and cache selection linear. A second collection would
-      // require either a product of branch orientations or a general indexed cache selector; leave it on the
-      // existing deterministic resource-conflict fence until that representation exists.
-      if (tupleGroup > 0) continue;
+      const hasMultipleOrientations = new Set(handlerTuples.map(({ signature }) => signature)).size > 1;
+      // A read-only fixed entry can safely expose the route's existing two-lane tuple even when every handler
+      // spells its key through the same ABI position. This gives repeated rows two authenticated physical entry
+      // identities without `_rN` parameters or maximum-row-sized code. More than two concrete identities still
+      // fail closed in the encoder.
+      const repeatedReadTuples = handlerTuples.filter(({ fn }) => {
+        const handlerFootprint = analyseFunctionFootprint(fn, byName, footprintCache);
+        const prefix = `collection:${collection}:`;
+        return [...handlerFootprint.reads].some((resource) => resource.startsWith(prefix))
+          && ![...handlerFootprint.writes].some((resource) => resource.startsWith(prefix));
+      });
+      const orientedTuples = hasMultipleOrientations ? handlerTuples : repeatedReadTuples;
+      if (orientedTuples.length === 0) continue;
+      // Independent tuple groups remain linear when their handler populations are disjoint. A handler present in
+      // two groups would require a product of physical orientations, so retain the existing fail-closed boundary.
+      if (orientedTuples.some(({ fn }) => tupleHandlers.has(fn))) continue;
       const group = tupleGroup++;
-      for (const { bindings } of handlerTuples) {
+      for (const { fn, bindings } of orientedTuples) {
+        tupleHandlers.add(fn);
         bindings.forEach((binding, keyComponentIndex) => {
           const alternateRouteInput = `${binding.routeInput}_alt`;
           binding.entryTupleGroup = group;

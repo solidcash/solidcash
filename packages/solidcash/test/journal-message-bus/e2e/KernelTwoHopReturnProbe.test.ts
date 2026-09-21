@@ -41,8 +41,10 @@ describe('kernel two-hop return probe', () => {
     const provider = createMessageBusCapstoneTestProvider();
     const sourceArtifact = compileString(`pragma solidity ^0.8.0;
       contract NumberSource {
+        mapping(uint256 => uint256) public values;
         function size() public pure returns (uint256) { return 2; }
-        function read(uint256 index) public pure returns (uint256) { return 10 + index; }
+        function seed(uint256 index, uint256 value) public { values[index] = value; require(true); }
+        function read(uint256 index) public view returns (uint256) { return values[index]; }
       }`, { ...KERNEL, messageBusGraphContext: true });
     const sourceBase = new Contract(sourceArtifact, [], { provider });
     const sourceSetup = await setupStatefulUtxos(
@@ -51,6 +53,13 @@ describe('kernel two-hop return probe', () => {
     const source = StatefulContract.withCategory(
       sourceBase.withCategory(hexToBin(sourceSetup.categoryId)), sourceSetup.categoryId,
     );
+    await expect(source.call.seed(1n, 11n).send()).resolves.toBeDefined();
+    await expect(source.call.seed(0n, 10n).send()).resolves.toBeDefined();
+    expect(sourceArtifact.abi.find((fn) => fn.name === 'read')?.entryAccesses).toEqual([
+      expect.objectContaining({ collection: 'values', operations: ['read'] }),
+    ]);
+    expect(sourceArtifact.messageBus?.handlers.find((fn) => fn.name === 'read'))
+      .toMatchObject({ physicalEntrySlotAlternatives: [[expect.any(Number), expect.any(Number)]] });
 
     const collectorArtifact = compileString(`pragma solidity ^0.8.0;
       interface INumberSource {

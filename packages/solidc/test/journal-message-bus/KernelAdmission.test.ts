@@ -10500,4 +10500,22 @@ describe('required kernel admission', () => {
     }`, KERNEL);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'place')?.eligible).not.toBe(true);
   });
+
+  // Inventory #17 residual: one participant cannot publish multiple variable-width continuation
+  // lanes. Composer cousin is inventory #2 (`multiple continuation resource lanes`); do not treat
+  // that SDK Error as this compiler fence.
+  it('keeps multiple chunkable writes in one participant behind KERNEL_LAYOUT', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => bytes) left;
+      mapping(int => bytes) right;
+      function work(int key, bytes first, bytes second) public {
+        left[key] = first;
+        right[key] = second;
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'work'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+  });
 });

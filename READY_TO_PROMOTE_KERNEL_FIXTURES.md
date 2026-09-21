@@ -110,6 +110,9 @@ Peers already settled: fan-in/out, nested callsite, sidecar self/foreign/proxy/p
 - Detached `sig` on lifecycle handlers (`KERNEL_TX_SIGNATURE`)
 - ~~proxy→foreign-proxy variable-width Item[] remains non-delegate compile/eligibility fence (int[] settles)~~
   settled via FieldAccess rename guard in `InlineStoragePointerCalls`
+- Inventory **7–18** post-beta admissions locked as honest fences — [`FENCE_MAP_7_18.md`](./FENCE_MAP_7_18.md)
+  (negatives in `KernelAdmission` / `KernelEscapeControlPredicates` / `KernelLifecycleTopology` and siblings;
+  do not promote into beta without a Marketplace title)
 
 ## Fence
 - No `marketplace.test.ts` / `vitest.marketplace.config.ts` in this stream

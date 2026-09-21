@@ -31,5 +31,13 @@ Branch: `grok/kernel-comprehensive-fixtures`
   — consume dataNft prefix + destroy unlockers + token-free reclaim pads
 - ~~Read-bearing split~~ **SETTLED** (`KernelAtomicSplitReadLifecycle`) — preserve dataNft prefix
 
+## Next goal queue
+Authoritative prioritized inventory: [`KERNEL_EXTENSION_INVENTORY.md`](./KERNEL_EXTENSION_INVENTORY.md).
+
+- **Beta implement:** items 1–6 (caller identity, multi-continuation claims, multi-row argument framing, batched callsite identity, multi-producer results, multi computed writes).
+- **Fence / post-beta:** items 7–18 unless a Marketplace title proves immediate need.
+  Gate/fixture map: [`FENCE_MAP_7_18.md`](./FENCE_MAP_7_18.md) (also summarized under inventory “Post-beta / fenced admissions”).
+- Cross-cutting matrix and architectural invariants are in that inventory.
+
 ## Out of scope
 Marketplace / `requiredKernelProofs` / plan-wave labels / chipnet

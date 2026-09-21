@@ -92,6 +92,21 @@ contract Token() {
     expect(credit?.outputs?.some((output) => output.type.includes('bool'))).toBe(true);
   });
 
+  it('pools an explicit read-only mapping result wrapper with sibling writers', () => {
+    const artifact = assertKernelRoute(`
+pragma solidcash ^0.13.0;
+struct Record { uint256 stable; uint256 phase; string tail; }
+contract Store {
+  mapping(uint256 => Record) private records;
+  function mutate(uint256 key, uint256 phase) public { records[key].phase = phase; }
+  function read(uint256 key) public view returns (Record memory) { return records[key]; }
+  function finish(uint256 key, uint256 phase) public { records[key].phase = phase; }
+}
+`, 'read');
+    expect(artifact.invocationAnalysis?.functions.some((fn) => fn.name === '__message_bus_entry_read'))
+      .toBe(true);
+  });
+
   it('journals an expression-keyed mapping write on the runtime row loop', () => {
     assertKernelRoute(`
 pragma solidcash ^0.13.0;

@@ -8146,13 +8146,6 @@ function synthesizeMessageBusRoute(
       .some((resource) => resource.startsWith('collection:tokens:'));
     if (touchesTokenContainer) continue;
     if (graphTailHandlers.has(sourceHandler) && !kernelLoopDispatch) continue;
-    if (compilerOptions.messageBusKernel === true
-      && sourceHandler.returnTypes.length > 0
-      && !eligibleFootprint(sourceHandler).writes.some((resource) => resource.startsWith('collection:'))
-      && !collectionByName.has(sourceHandler.name)
-      && !contract.stateVariables.some((state) => state.name === sourceHandler.name)) {
-      continue;
-    }
     const handler = cloneMessageBusHandler(sourceHandler, cheapAdmission);
     nameMessageBusClone(handler, 'entry', sourceHandler);
     handler.modifiers = [FunctionModifier.INTERNAL];

@@ -1,6 +1,7 @@
 import { hexToBin } from '@bitauth/libauth';
 import { encodePushdataValue } from '@solidcash/utils';
-import { compileString } from 'solidc';
+import { compileString, compileStringMulti } from 'solidc';
+import { ethers } from 'ethers';
 import { describe, expect, it } from 'vitest';
 import { Contract, StatefulContract, messageBus } from '../../../src/index.js';
 import { createBareP2pkhFeeFunder, setupStatefulUtxos } from '../../test-util.js';
@@ -15,6 +16,110 @@ const KERNEL = {
 } as const;
 
 describe('kernel chunked mapping struct composition', () => {
+  it('returns the mapping struct at the intermediate row epoch', async () => {
+    const provider = createMessageBusCapstoneTestProvider();
+    const tail = 'row-epoch-payload';
+    const artifacts = compileStringMulti(`pragma solidity ^0.8.0;
+      struct Record { uint256 stable; uint256 phase; string tail; }
+      interface IObserver {
+        function inspect(uint256 key, uint256 during, uint256 finalValue) external;
+      }
+      interface IStore {
+        function read(uint256 key) external returns (Record memory);
+        function finish(uint256 key, uint256 finalValue) external;
+      }
+      contract Store {
+        mapping(uint256 => Record) private records;
+        function seed(uint256 key, string memory tail) public {
+          records[key] = Record(11, 1, tail);
+        }
+        function mutate(
+          uint256 key, address observer, uint256 during, uint256 finalValue
+        ) public {
+          records[key].phase = during;
+          IObserver(observer).inspect(key, during, finalValue);
+        }
+        function read(uint256 key) public view returns (Record memory) { return records[key]; }
+        function finish(uint256 key, uint256 finalValue) public { records[key].phase = finalValue; }
+        function check(uint256 key, uint256 finalValue, string memory tail) public view {
+          Record memory current = records[key];
+          require(current.stable == 11 && current.phase == finalValue && current.tail == tail);
+        }
+      }
+      contract Observer(address store) {
+        function inspect(uint256 key, uint256 during, uint256 finalValue) public {
+          Record memory current = IStore(store).read(key);
+          require(current.stable == 11 && current.phase == during
+            && current.tail == "${tail}");
+          IStore(store).finish(key, finalValue);
+        }
+      }`, { ...KERNEL, solidityImportCompat: true });
+
+    const storeBase = new Contract(artifacts.Store, [], { provider });
+    const storeSetup = await setupStatefulUtxos(
+      provider, storeBase, artifacts.Store.stateLayout!, {}, { saltContract: true },
+    );
+    const store = StatefulContract.withCategory(
+      storeBase.withCategory(hexToBin(storeSetup.categoryId)), storeSetup.categoryId,
+    );
+    const observerBase = new Contract(
+      artifacts.Observer, [store.inner.lockingBytecode], { provider },
+    );
+    const observerSetup = await setupStatefulUtxos(
+      provider, observerBase, artifacts.Observer.stateLayout!, {}, { saltContract: true },
+    );
+    const observer = StatefulContract.withCategory(
+      observerBase.withCategory(hexToBin(observerSetup.categoryId)), observerSetup.categoryId,
+    );
+    store._registerResolvedExternal('IObserver', observer);
+    observer._registerResolvedExternal('IStore', store);
+    await store.call.seed(7n, tail).send();
+
+    const inspectCallsite = artifacts.Store.abi.find((entry) => entry.name === 'mutate')!
+      .externalCalls!.find((call) => call.functionName === 'inspect')!.callsiteId!;
+    const inspectCalls = artifacts.Observer.abi.find((entry) => entry.name === 'inspect')!.externalCalls!;
+    const readCallsite = inspectCalls.find((call) => call.functionName === 'read')!.callsiteId!;
+    const finishCallsite = inspectCalls.find((call) => call.functionName === 'finish')!.callsiteId!;
+    const intermediate = hexToBin(ethers.AbiCoder.defaultAbiCoder().encode(
+      ['tuple(uint256,uint256,string)'], [[11n, 20n, tail]],
+    ).slice(2));
+    const funder = await createBareP2pkhFeeFunder(provider, 500_000n);
+    const composition = messageBus.compose({
+      preparedCalls: [
+        {
+          contract: store,
+          functionName: 'mutate',
+          args: [7n, observer.inner.lockingBytecode, 20n, 30n],
+        },
+        {
+          contract: observer,
+          functionName: 'inspect',
+          args: [7n, 20n, 30n],
+          callsiteId: inspectCallsite,
+        },
+        {
+          contract: store,
+          functionName: 'read',
+          args: [7n],
+          callsiteId: readCallsite,
+          provisionalResultCommitment: intermediate,
+        },
+        {
+          contract: store,
+          functionName: 'finish',
+          args: [7n, 30n],
+          callsiteId: finishCallsite,
+        },
+      ],
+      funder,
+      changeAddress: funder.unlocker.generateLockingBytecode(),
+    });
+    await expect(composition.send()).resolves.toMatchObject({
+      txid: expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
+    await expect(store.call.check(7n, 30n, tail).send()).resolves.toBeDefined();
+  }, 180_000);
+
   it('derives an ABI struct return from a chunked mapping entry', async () => {
     const provider = createMessageBusCapstoneTestProvider();
     const note = 'authenticated mapping payload '.repeat(10);

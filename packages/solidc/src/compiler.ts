@@ -3645,18 +3645,19 @@ function hasUntransportedChunkableWrite(
 }
 
 /**
- * Prove the narrow fixed-row continuation shape whose handler-local chunk pin is sound when the enclosing route
- * admits at most one such row. The proof deliberately excludes push/pop/element mutation, control-flow effects,
- * helper-hidden writes, and multiple resources. A route-level aggregate selector counter supplies the missing
- * terminality fact; without that counter, even two individually linear handlers could create orphan continuations
- * for the same physical entry.
+ * Prove the fixed-row continuation shape whose handler-local chunk pins are sound when the enclosing route
+ * admits at most one such row. The proof excludes push/pop/element mutation, control-flow effects, and
+ * helper-hidden writes. Multiple distinct storage resources (collections and/or keys) are allowed: the SDK
+ * publishes ordered continuation-resource claims so each band is authenticated independently under the scalar
+ * band[0] witness. A route-level aggregate selector counter still supplies the missing terminality fact across
+ * rows; without that counter, two individually linear handlers could create orphan continuations for one entry.
  */
 function fixedChunkableWriteWithSingleOccurrenceBound(
   fn: FunctionDefinitionNode,
   collections: ReadonlyMap<string, CollectionNode>,
   functionsByName: Map<string, FunctionDefinitionNode[]>,
   footprintCache: ReturnType<typeof createFootprintAnalysisCache>,
-): { collection: string; effectOrdinal: number } | undefined {
+): { collection: string; collections: string[]; effectOrdinal: number; effectOrdinals: number[] } | undefined {
   if (!fn.body) return undefined;
   const chunkableNames = new Set([...collections].flatMap(([name, collection]) => (
     collection.sorted && isChunkableValueType(collection.innermostValueType) ? [name] : []
@@ -3668,8 +3669,7 @@ function fixedChunkableWriteWithSingleOccurrenceBound(
       const name = resource.slice('collection:'.length).split(':', 1)[0];
       return chunkableNames.has(name) ? [name] : [];
     }));
-  if (footprintNames.size !== 1) return undefined;
-  const [collection] = [...footprintNames];
+  if (footprintNames.size === 0) return undefined;
   const locallyBound = new Set(fn.parameters.map((parameter) => parameter.name));
   walkInvocationAst(fn.body, (node) => {
     if (node instanceof VariableDefinitionNode) locallyBound.add(node.name);
@@ -3690,13 +3690,14 @@ function fixedChunkableWriteWithSingleOccurrenceBound(
       return;
     }
     if (node instanceof MappingAssignNode && chunkableNames.has(node.name)) {
-      if (node.name !== collection || node.arrayIndex || node.arrayPush || node.arrayPop
+      if (!footprintNames.has(node.name) || node.arrayIndex || node.arrayPush || node.arrayPop
         || node.messageBusJournalTransport || nestedConditional) {
         unsupported = true;
       } else {
         direct.push(node);
       }
-    } else if (node instanceof ArrayAssignNode && node.name === collection && !locallyBound.has(node.name)) {
+    } else if (node instanceof ArrayAssignNode && footprintNames.has(node.name)
+      && !locallyBound.has(node.name)) {
       // Solidity-compatible imports can retain a bare `m[k] = value` as ArrayAssign until the route clone's
       // collection normalization. It is the same whole mapping write because `collection` is compiler-resolved
       // above; an actual state array cannot appear in this collection map.
@@ -3726,13 +3727,18 @@ function fixedChunkableWriteWithSingleOccurrenceBound(
     }
   };
   scan(fn.body, false);
-  if (unsupported || direct.length !== 1) return undefined;
-  // Unsupported global flow deliberately has no general source-effect ordering. This exact capability has only
-  // one unconditional chunkable mutation, so ordinal zero is a stable selector-scoped occurrence identity. The
-  // completed ABI gate below requires the lowered access to retain this exact value.
-  const effectOrdinal = direct[0].sourceEffectOrdinal;
-  if (effectOrdinal === undefined) return undefined;
-  return { collection, effectOrdinal };
+  if (unsupported || direct.length === 0) return undefined;
+  const writtenCollections = new Set(direct.map((node) => node.name));
+  if ([...footprintNames].some((name) => !writtenCollections.has(name))) return undefined;
+  const effectOrdinals = direct.map((node) => node.sourceEffectOrdinal);
+  if (effectOrdinals.some((ordinal) => ordinal === undefined)) return undefined;
+  const orderedCollections = [...footprintNames];
+  return {
+    collection: orderedCollections[0]!,
+    collections: orderedCollections,
+    effectOrdinal: effectOrdinals[effectOrdinals.length - 1]!,
+    effectOrdinals: effectOrdinals as number[],
+  };
 }
 
 /**
@@ -13347,18 +13353,21 @@ function compileResolvedAst(
       ));
       const fixedChunkableAccesses = (abi?.entryAccesses ?? []).filter((access) =>
         access.operations.includes('write') && chunkableWriteCollections.has(access.collection));
-      const fixedChunkableWriteCollection = chunkableWriteCollections.size === 1
-        ? [...chunkableWriteCollections][0] : undefined;
+      // Provisional admission already proved the fixed-row shape (including multi-resource bands). Re-check that
+      // every chunkable write collection retained at least one mutation ordinal and stayed off the compact journal.
+      const fixedChunkableWriteCollections = fn.messageBusFixedChunkableWriteMaxRows === 1
+        ? chunkableWriteCollections : new Set<string>();
       const hasCompleteFixedChunkableOccurrenceTransport = fn.messageBusDispatched === true
         && fn.messageBusFixedChunkableWriteMaxRows === 1
-        && fixedChunkableWriteCollection !== undefined
-        && fixedChunkableAccesses.length === 1
-        && fixedChunkableAccesses[0].collection === fixedChunkableWriteCollection
-        && fixedChunkableAccesses[0].mutationEffectOrdinals?.length === 1
-        && fixedChunkableAccesses[0].mutationEffectOrdinals[0]
-          === fn.messageBusFixedChunkableWriteEffectOrdinal
+        && fixedChunkableWriteCollections.size > 0
+        && [...fixedChunkableWriteCollections].every((collection) => {
+          const accesses = fixedChunkableAccesses.filter((access) => access.collection === collection);
+          if (accesses.length === 0) return false;
+          const ordinals = accesses.flatMap((access) => access.mutationEffectOrdinals ?? []);
+          return ordinals.length > 0 && ordinals.every((ordinal) => Number.isSafeInteger(ordinal));
+        })
         && runtimeJournalAccesses.every((access) => access.op === 'read'
-          || access.collection !== fixedChunkableWriteCollection);
+          || !fixedChunkableWriteCollections.has(access.collection));
       // A direct linear mapping-array push uses the route's typed collection journal, not the compact runtime
       // mutation stream and not an SDK-replayed byte value. Every row key is compared to one global argument
       // witness before its OP_INVOKE; the returned whole-array cache is threaded into the next row and flushed
@@ -13482,14 +13491,14 @@ function compileResolvedAst(
         && runtimeJournalAccesses.every((access) => access.op === 'read'
           || access.collection !== pooledChunkableArrayPushCollection);
       const hasIncompleteChunkableTransport = [...chunkableWriteCollections].some((collection) => (
-        !(hasCompleteFixedChunkableOccurrenceTransport && collection === fixedChunkableWriteCollection)
+        !(hasCompleteFixedChunkableOccurrenceTransport && fixedChunkableWriteCollections.has(collection))
         && !(hasCompletePooledChunkableArrayPushTransport && collection === pooledChunkableArrayPushCollection)
         && !transportedChunkableWrites.some((transport) => transport.collection === collection)
       )) || exactTransportMatches.some((matches) => matches.length !== 1)
         || runtimeJournalAccesses.some((access) => chunkableWriteCollections.has(access.collection)
           && access.op !== 'read'
           && !(hasCompleteFixedChunkableOccurrenceTransport
-            && access.collection === fixedChunkableWriteCollection)
+            && fixedChunkableWriteCollections.has(access.collection))
           && !(hasCompletePooledChunkableArrayPushTransport
             && access.collection === pooledChunkableArrayPushCollection)
           && !transportedChunkableWrites.some((transport) => transport.collection === access.collection

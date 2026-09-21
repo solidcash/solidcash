@@ -46,6 +46,7 @@ import {
   canonicalValueChunkProducerResourceIdentity,
   canonicalValueChunkResourceOwnerIdentity,
   canonicalValueChunkStateOwner,
+  type TransportedContinuationResourceClaim,
   type ValueChunkProducerPathDisposition,
   type ValueChunkProducerResourceClaim,
 } from './ValueChunkProducerIdentity.js';
@@ -875,6 +876,21 @@ export function valueChunkBandWidth(parts: {
     ? Math.max(0, parts.derivedEnd - parts.chunkBase + 1)
     : 0;
   return Math.max(parts.minimum ?? 3, parts.planned ?? 0, parts.jobEventsCount ?? 0, derivedWidth);
+}
+
+/** Total trailing width reserved by ordered per-resource continuation bands. */
+export function valueChunkBandWidthForContinuationClaims(
+  claims: readonly Pick<TransportedContinuationResourceClaim, 'chunkCount'>[],
+  parts: {
+    minimum?: number;
+    planned?: number;
+    jobEventsCount?: number;
+    derivedEnd?: number;
+    chunkBase?: number;
+  } = {},
+): number {
+  const claimed = claims.reduce((width, claim) => width + Math.max(0, claim.chunkCount), 0);
+  return valueChunkBandWidth({ ...parts, planned: Math.max(parts.planned ?? 0, claimed) });
 }
 
 /** First output coordinate available before a reverse-indexed authenticated suffix and its terminal anchor. */
@@ -6285,6 +6301,11 @@ export interface ExternalCallUtxoGroup {
   logicalArtifact?: Artifact;
   /** Compiler-authenticated producer/resource occurrences represented by this physical or logical alias. */
   valueChunkProducerClaims?: readonly ValueChunkProducerResourceClaim[];
+  /**
+   * Ordered per-resource continuation bands under this carrier. Band[0] absolute base is also published as
+   * `valueChunkOutputBase` / `__internal__valueChunkOutputBase`; later bands are authenticated here.
+   */
+  continuationResourceClaims?: readonly TransportedContinuationResourceClaim[];
   /** Claims and exact post-values were transported from a prepared atomic invocation into this final carrier. */
   transportedValueChunkProductions?: boolean;
   /** Exact physical state owner against which producer claims are authenticated. */
@@ -14485,6 +14506,19 @@ export class StatefulTransactionBuilder {
       if (!ownsCapturedValueChunkOutputBase(carrier)) continue;
       const nextBase = currentBase + 1;
       carrier.valueChunkOutputBase = nextBase;
+      if (carrier.valueChunkWrites?.length) {
+        carrier.valueChunkWrites = carrier.valueChunkWrites.map((write) => (
+          write.outputBase >= insertAt ? { ...write, outputBase: write.outputBase + 1 } : write
+        ));
+      }
+      if (carrier.continuationResourceClaims?.length) {
+        carrier.continuationResourceClaims = Object.freeze(
+          carrier.continuationResourceClaims.map((claim) => Object.freeze({
+            ...claim,
+            bandOffset: claim.bandOffset + 1,
+          })),
+        );
+      }
       carrier.internalArgs = {
         ...carrier.internalArgs,
         __internal__valueChunkOutputBase: BigInt(nextBase),

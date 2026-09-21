@@ -63,9 +63,12 @@ import {
 } from './computed-dynamic-chunks.js';
 import { deriveCompiledGraphPlan, type WorklistParticipant } from './worklist.js';
 import {
+  buildTransportedContinuationResourceClaim,
   canonicalValueChunkProducerIdentity, canonicalValueChunkProducerPathContext,
   canonicalValueChunkProducerResourceClaim,
   canonicalValueChunkProducerResourceIdentity, canonicalValueChunkStateOwner,
+  orderTransportedContinuationResourceClaims,
+  type TransportedContinuationResourceClaim,
   type ValueChunkProducerPathDisposition, type ValueChunkProducerResourceClaim,
 } from '../stateful/ValueChunkProducerIdentity.js';
 
@@ -2893,12 +2896,15 @@ export class AtomicMessageBusComposition {
             + `slots but publishes ${valueChunkSlots.length}`,
           );
         }
-        // After the terminal selection above, each storage resource contributes exactly one lane. The routed
-        // builder's `selectSingletonValueChunkProducer` accepts one terminal claim per resource, and
-        // `carrier.valueChunkStateOwner` is a single owner, so a participant may still not publish lanes for
-        // several distinct resources.
-        if (transportedValueChunks.length > 1) {
-          throw new Error('messageBus: one routed participant cannot publish multiple continuation resource lanes');
+        // After terminal-per-resource selection, each distinct storage resource contributes one lane. Multiple
+        // lanes are packed as consecutive trailing bands under one owner; the scalar
+        // `__internal__valueChunkOutputBase` remains band[0], and ordered continuationResourceClaims authenticate
+        // every later band. Multi-owner productions on one carrier remain refused downstream.
+        const ownerKeys = new Set(transportedValueChunks.map((candidate) => (
+          canonicalValueChunkStateOwner(candidate.production.stateOwner)
+        )));
+        if (ownerKeys.has(undefined) || ownerKeys.size > 1) {
+          throw new Error('One routed execution carrier cannot own value productions from multiple state owners.');
         }
         const selectedValueChunkSlots = transportedChunkCount === 0
           ? [] : valueChunkSlots.slice(-transportedChunkCount);
@@ -2906,11 +2912,61 @@ export class AtomicMessageBusComposition {
           && slot.offset !== selectedValueChunkSlots[index - 1]!.offset + 1)) {
           throw new Error('messageBus: transported continuation slots are not one consecutive trailing run');
         }
+        const participantInputBase = graph.layout.participantInputs[participant.participant];
+        let bandCursor = 0;
+        const continuationResourceClaims: TransportedContinuationResourceClaim[] = [];
+        for (const candidate of transportedValueChunks) {
+          const chunkCount = candidate.chunks.length;
+          if (chunkCount === 0) {
+            throw new Error('messageBus: transported value production published an empty continuation band');
+          }
+          const bandOffset = selectedValueChunkSlots[bandCursor]!.offset;
+          const absoluteBase = participantInputBase + bandOffset;
+          const write = {
+            ...candidate.production.write,
+            outputBase: absoluteBase,
+            outputCount: chunkCount,
+          };
+          // Productions arriving from graph promotion are frozen; replace the map entry rather than mutate.
+          const nextProduction = Object.freeze({
+            ...candidate.production,
+            write: Object.freeze({ ...write }),
+          });
+          const producerIdentity = canonicalValueChunkProducerIdentity(nextProduction.claim.producer);
+          const resourceIdentity = canonicalValueChunkProducerResourceIdentity(
+            valueChunkWriteResourceIdentity(write),
+          );
+          if (!producerIdentity || !resourceIdentity) {
+            throw new Error('messageBus: transported continuation production lost its canonical identity');
+          }
+          valueChunkProductions.set(JSON.stringify([resourceIdentity, producerIdentity]), nextProduction);
+          candidate.production = nextProduction;
+          const claim = buildTransportedContinuationResourceClaim({
+            owner: nextProduction.stateOwner,
+            collectionSignature: write.collectionSignature,
+            collectionHash: write.collectionHash,
+            keySlot: write.keySlot,
+            digest: binToHex(sha256(nextProduction.value)),
+            chunkCount,
+            bandOffset,
+            producerClaim: nextProduction.claim,
+          });
+          if (!claim) {
+            throw new Error('messageBus: transported continuation resource claim is not canonical');
+          }
+          continuationResourceClaims.push(claim);
+          bandCursor += chunkCount;
+        }
+        const orderedContinuationClaims = continuationResourceClaims.length === 0
+          ? [] : orderTransportedContinuationResourceClaims(continuationResourceClaims);
+        if (continuationResourceClaims.length > 0 && orderedContinuationClaims === undefined) {
+          throw new Error('messageBus: transported continuation resource claims are not an ordered band list');
+        }
         const internalRouteWitnesses = {
           ...graphRouteContext(graph, participant.participant, upgradeStateSuffixes),
           ...(transportedChunkCount > 0 && {
             __internal__valueChunkOutputBase: BigInt(
-              graph.layout.participantInputs[participant.participant] + selectedValueChunkSlots[0]!.offset,
+              participantInputBase + selectedValueChunkSlots[0]!.offset,
             ),
           }),
         };
@@ -2921,13 +2977,20 @@ export class AtomicMessageBusComposition {
             transportedChunkCount,
             valueChunkSlots: valueChunkSlots.length,
             selected: selectedValueChunkSlots.map((slot) => slot.offset),
+            claims: (orderedContinuationClaims ?? []).map((claim) => ({
+              resource: claim.producerClaim.resourceIdentity,
+              bandOffset: claim.bandOffset,
+              chunkCount: claim.chunkCount,
+              digest: claim.digest.slice(0, 16),
+            })),
             transported: transportedValueChunks.map((candidate) => ({
               bytes: candidate.production.value.length,
               chunks: candidate.chunks.length,
               digest: binToHex(sha256(candidate.production.value)).slice(0, 16),
+              outputBase: candidate.production.write.outputBase,
             })),
             base: transportedChunkCount > 0
-              ? graph.layout.participantInputs[participant.participant] + selectedValueChunkSlots[0]!.offset
+              ? participantInputBase + selectedValueChunkSlots[0]!.offset
               : undefined,
           }));
         }

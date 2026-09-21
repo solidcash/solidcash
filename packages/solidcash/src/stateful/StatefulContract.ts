@@ -109,12 +109,15 @@ export { inactiveMessageBusRouteWitness } from '../message-bus/message-bus.js';
 import type { PreparedAtomicMessageBusCall } from '../message-bus/compose.js';
 import {
   advanceValueChunkProducerArgumentEpoch,
+  buildTransportedContinuationResourceClaim,
   canonicalValueChunkProducerPathContext,
   createValueChunkProducerArgumentEpoch,
   deriveValueChunkProducerChildPath,
+  orderTransportedContinuationResourceClaims,
   selectSingletonValueChunkProducer,
   terminalValueChunkProducerClaim,
   valueChunkProducerArgumentsInEpoch,
+  type TransportedContinuationResourceClaim,
   type ValueChunkProducerPathDisposition,
   type ValueChunkProducerResourceClaim,
 } from './ValueChunkProducerIdentity.js';
@@ -3067,19 +3070,48 @@ function chunkableValueWriteCollections(
   })))];
 }
 
-/** Resolve the one authenticated storage resource addressable by the scalar continuation-base witness. */
-export function resolveKernelValueChunkResourceLane(
+/**
+ * Resolve ordered authenticated storage-resource lanes for continuation placement.
+ *
+ * Repeated callsites for one resource collapse; incomplete slots fail closed. Distinct resources are
+ * preserved in first-seen order so each can receive its own trailing band under the scalar band[0]
+ * witness plus ordered continuation claims.
+ */
+export function resolveKernelValueChunkResourceLanes(
   runs: readonly { collection: string; slot?: Uint8Array }[],
-): string {
-  const resourceLanes = new Set(runs.flatMap((run) => (
-    run.slot?.length === 32 ? [`${run.collection}:${binToHex(run.slot)}`] : []
-  )));
-  if (resourceLanes.size !== 1 || runs.some((run) => run.slot?.length !== 32)) {
+): string[] {
+  if (runs.some((run) => run.slot?.length !== 32)) {
     throw new Error(
       'Kernel chunkable-value output placement requires one exact compiler-published resource lane.',
     );
   }
-  return [...resourceLanes][0];
+  const lanes: string[] = [];
+  const seen = new Set<string>();
+  for (const run of runs) {
+    const lane = `${run.collection}:${binToHex(run.slot!)}`;
+    if (seen.has(lane)) continue;
+    seen.add(lane);
+    lanes.push(lane);
+  }
+  if (lanes.length === 0) {
+    throw new Error(
+      'Kernel chunkable-value output placement requires one exact compiler-published resource lane.',
+    );
+  }
+  return lanes;
+}
+
+/** Resolve the one authenticated storage resource addressable by the scalar continuation-base witness. */
+export function resolveKernelValueChunkResourceLane(
+  runs: readonly { collection: string; slot?: Uint8Array }[],
+): string {
+  const lanes = resolveKernelValueChunkResourceLanes(runs);
+  if (lanes.length !== 1) {
+    throw new Error(
+      'Kernel chunkable-value output placement requires one exact compiler-published resource lane.',
+    );
+  }
+  return lanes[0]!;
 }
 
 /**
@@ -32480,13 +32512,42 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       }
       carrier.valueChunkWrites = [...provisionalWrites.values()];
       carrier.valueChunkOutputCount = transportedProductions.reduce((count, production) => (
-        count + Math.ceil((production.value.length - VALUE_HEAD_SIZE) / VALUE_CHUNK_SIZE)
+        production.write.outputCount > 0
+          ? count + production.write.outputCount
+          : count + Math.ceil((production.value.length - VALUE_HEAD_SIZE) / VALUE_CHUNK_SIZE)
       ), 0);
       carrier.valueChunkProducerClaims = Object.freeze(
         transportedProductions.map((production) => production.claim),
       );
       carrier.transportedValueChunkProductions = true;
       carrier.valueChunkStateOwner = Object.freeze({ ...transportedProductions[0]!.stateOwner });
+      const blockBase = overrides?.blockBase ?? 0;
+      const continuationClaims: TransportedContinuationResourceClaim[] = [];
+      for (const production of transportedProductions) {
+        if (production.write.outputBase < 0 || production.write.outputCount <= 0) continue;
+        const claim = buildTransportedContinuationResourceClaim({
+          owner: production.stateOwner,
+          collectionSignature: production.write.collectionSignature,
+          collectionHash: production.write.collectionHash,
+          keySlot: production.write.keySlot,
+          digest: binToHex(sha256Sync(production.value)),
+          chunkCount: production.write.outputCount,
+          bandOffset: production.write.outputBase - blockBase,
+          producerClaim: production.claim,
+        });
+        if (!claim) {
+          throw new Error('Transported continuation resource claim is not canonical.');
+        }
+        continuationClaims.push(claim);
+      }
+      if (continuationClaims.length > 0) {
+        const ordered = orderTransportedContinuationResourceClaims(continuationClaims);
+        if (ordered === undefined) {
+          throw new Error('Transported continuation resource claims are not an ordered band list.');
+        }
+        carrier.continuationResourceClaims = ordered;
+        carrier.valueChunkOutputBase = ordered[0]!.bandOffset + blockBase;
+      }
     }
     if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
       ?.SOLIDC_DEBUG_ENTRY_PLACEMENT === '1') {
@@ -33082,16 +33143,29 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       if (trailing.length === 0 || total === 0 || trailing.length < total) return undefined;
       return trailing[trailing.length - total];
     })();
+    // Pack one contiguous trailing band per mint in source order. Reusing composedChunkBase+i for every mint
+    // overwrote earlier resources and left later covenants without their authenticated continuation family.
+    let composedMintCursor = 0;
     for (const mint of valueChunkMints) {
       const chunkAddr = getValueChunkAddress(this.inner, this.categoryId, mint.collection, mint.slot, mint.digest);
       const chunkLock = addressToLockScript(chunkAddr);
+      const mintBandBase = composedChunkBase === undefined
+        ? undefined : composedChunkBase + composedMintCursor;
+      const collection = this.inner.artifact.stateLayout?.collections?.find((candidate) => (
+        candidate.name === mint.collection
+      ));
+      const resourceIdentity = collection === undefined ? undefined : [
+        this.categoryId.toLowerCase(),
+        binToHex(computeCollectionHash(collection.signature)),
+        binToHex(mint.slot),
+      ].join(':');
       if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
         ?.SOLIDC_DEBUG_CHUNK_MINT === '1') {
         console.error('chunk-mint-place', JSON.stringify({
           collection: mint.collection, chunks: mint.chunks.length,
           slot: binToHex(mint.slot), digest: binToHex(mint.digest),
-          lock: binToHex(chunkLock), composedChunkBase: composedChunkBase ?? null,
-          probeOnly: overrides?.returnProbeOnly === true,
+          lock: binToHex(chunkLock), composedChunkBase: mintBandBase ?? null,
+          bandOffset: mintBandBase, probeOnly: overrides?.returnProbeOnly === true,
         }));
       }
       mint.chunks.forEach((data, i) => {
@@ -33099,13 +33173,17 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         // A composed participant's continuation band lives INSIDE its balanced block: appending would grow the
         // block past the layout the covenant walks (`participant N built X/Y slots`), so pin the chunks at the
         // participant's own trailing coordinates instead.
-        if (composedChunkBase !== undefined
-          && builder.setDerivedChunkOutput(composedChunkBase + i, {
+        if (mintBandBase !== undefined
+          && builder.setDerivedChunkOutput(mintBandBase + i, {
             commitment,
             lockingBytecode: chunkLock,
             categoryId: this.categoryId,
             fixedIndex: true,
             semanticKind: 'valueChunk',
+            ...(resourceIdentity !== undefined && {
+              resourceIdentity,
+              resourcePart: `chunk:${i}`,
+            }),
           })) {
           return;
         }
@@ -33118,6 +33196,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           },
         });
       });
+      composedMintCursor += mint.chunks.length;
     }
     // Runtime-loop groups are final outputs in reverse iteration order. The covenant addresses group i as
     // outputCount - chunksAlreadyVerified - groupSize, so each group remains direct-indexed and bounded-cost.
@@ -34453,10 +34532,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           && writesChunkableValue(witness.carrier, witness.abiFunction);
       });
       if (valueChunkWitnessGroups.length > 0) {
-        // The route planner has already authenticated the computed storage key for every selected row. Collapse
-        // repeated callsites targeting the same resource, but never project the scalar output-base witness across
-        // distinct collections/keys: one coordinate cannot authenticate multiple continuation lanes.
-        resolveKernelValueChunkResourceLane(computedValueChunkRuns);
+        // Collapse repeated callsites for one resource, but keep distinct collections/keys as ordered lanes.
+        // The scalar `__internal__valueChunkOutputBase` authenticates band[0]; later bands ride ordered
+        // continuationResourceClaims rather than sharing one projected coordinate.
+        resolveKernelValueChunkResourceLanes(computedValueChunkRuns);
       }
       const graphValueChunkArgumentIndex = graphOwnsValueChunkWitness && entryAbiFunction
         ? entryAbiFunction.inputs.findIndex((input) => input.name === '__internal__valueChunkOutputBase')
@@ -34490,8 +34569,34 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           if (outputCount > 0) {
             const refreshWrites = (target: ExternalCallUtxoGroup): void => {
               if (!target.valueChunkWrites?.length) return;
+              const readyBases = target.valueChunkWrites
+                .map((write) => write.outputBase)
+                .filter((base) => Number.isSafeInteger(base) && base >= 0);
+              const distinctReadyBases = new Set(readyBases);
+              if (distinctReadyBases.size > 1) {
+                // Multi-lane transport already published per-resource absolute bases. Rebase the packed
+                // bands together so band[0] lands on the scalar witness without flattening counts.
+                const minBase = Math.min(...readyBases);
+                const delta = outputBase - minBase;
+                target.valueChunkWrites = target.valueChunkWrites.map((write) => (
+                  write.outputBase >= 0
+                    ? { ...write, outputBase: write.outputBase + delta }
+                    : write
+                ));
+                if (target.continuationResourceClaims?.length) {
+                  target.continuationResourceClaims = Object.freeze(
+                    target.continuationResourceClaims.map((claim) => Object.freeze({
+                      ...claim,
+                      bandOffset: claim.bandOffset + delta,
+                    })),
+                  );
+                }
+                return;
+              }
               target.valueChunkWrites = target.valueChunkWrites.map((write) => ({
-                ...write, outputBase, outputCount,
+                ...write,
+                outputBase,
+                outputCount: write.outputCount > 0 ? write.outputCount : outputCount,
               }));
             };
             refreshWrites(group);

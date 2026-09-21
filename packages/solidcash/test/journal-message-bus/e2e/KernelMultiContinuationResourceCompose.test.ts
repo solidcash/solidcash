@@ -1,0 +1,279 @@
+import { bigIntToVmNumber, binToHex, hexToBin } from '@bitauth/libauth';
+import { compileString } from 'solidc';
+import { describe, expect, it } from 'vitest';
+import { Contract, StatefulContract, messageBus } from '../../../src/index.js';
+import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';
+import { keyToSlotMulti } from '../../../src/stateful/SortedList.js';
+import type { TransactionBuilder } from '../../../src/TransactionBuilder.js';
+import { generateLibauthSourceOutputs } from '../../../src/utils.js';
+import { createBareP2pkhFeeFunder, setupStatefulUtxos } from '../../test-util.js';
+import { createMessageBusCapstoneTestProvider } from './message-bus-semantic-profile.js';
+
+const KERNEL = {
+  forceStateful: true,
+  messageBus: true,
+  messageBusKernel: true,
+  maximumInputBytes: 1_000_000,
+  suppressWarnings: true,
+} as const;
+
+const vmAccepts = (builder: TransactionBuilder): boolean => {
+  const transaction = builder.buildLibauthTransaction();
+  const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+  const vm = createVirtualMachineBch2026ForProvider(builder.provider);
+  return transaction.inputs.every((_input, inputIndex) => vm.stateSuccess(
+    vm.evaluate({ inputIndex, sourceOutputs, transaction }),
+  ) === true);
+};
+
+const slotHex = (key: bigint): string => binToHex(keyToSlotMulti([bigIntToVmNumber(key)]));
+
+describe('kernel multi continuation resource lanes under composition', () => {
+  it('settles one participant writing two distinct chunkable collections under compose', async () => {
+    const provider = createMessageBusCapstoneTestProvider();
+
+    const storeArtifact = compileString(`pragma solidcash >=0.8.0;
+      contract Store() {
+        mapping(int => bytes) left;
+        mapping(int => bytes) right;
+        function set(int key, bytes leftValue, bytes rightValue) public {
+          this.left[key] = leftValue;
+          this.right[key] = rightValue;
+          require(true);
+        }
+      }`, KERNEL);
+    expect(storeArtifact.messageBus?.handlers.find((handler) => handler.name === 'set'))
+      .toMatchObject({ eligible: true });
+    expect(storeArtifact.abi.find((entry) => entry.name === 'set')?.entryAccesses).toHaveLength(2);
+
+    const storeBase = new Contract(storeArtifact, [], { provider });
+    const storeSetup = await setupStatefulUtxos(
+      provider, storeBase, storeArtifact.stateLayout!, {}, { saltContract: true },
+    );
+    const store = StatefulContract.withCategory(
+      storeBase.withCategory(hexToBin(storeSetup.categoryId)), storeSetup.categoryId,
+    );
+
+    const callerArtifact = compileString(`pragma solidcash >=0.8.0;
+      interface IStore {
+        function set(int key, bytes leftValue, bytes rightValue) external;
+      }
+      contract Caller() {
+        function poke(address store, int key, bytes leftValue, bytes rightValue) public {
+          IStore(store).set(key, leftValue, rightValue);
+          require(true);
+        }
+      }`, KERNEL);
+    const callerBase = new Contract(callerArtifact, [], { provider });
+    const callerSetup = await setupStatefulUtxos(
+      provider, callerBase, callerArtifact.stateLayout!, {}, { saltContract: true },
+    );
+    const caller = StatefulContract.withCategory(
+      callerBase.withCategory(hexToBin(callerSetup.categoryId)), callerSetup.categoryId,
+    );
+    caller._registerResolvedExternal('IStore', store);
+
+    const callsite = callerArtifact.abi.find((entry) => entry.name === 'poke')
+      ?.externalCalls?.find((call) => call.functionName === 'set');
+    expect(callsite?.callsiteId).toBeDefined();
+
+    // Seed both keys with short values first so compose performs UPDATEs (not dual empty-map INSERTs),
+    // then overwrite with chunk-backed payloads under the nested Caller→Store graph.
+    const seedLeft = new Uint8Array(20).fill(0x01);
+    const seedRight = new Uint8Array(20).fill(0x02);
+    await expect(store.call.set(3n, seedLeft, seedRight).send()).resolves.toBeDefined();
+
+    const left = new Uint8Array(130).fill(0x71);
+    const right = new Uint8Array(190).fill(0x82);
+    const fee = await createBareP2pkhFeeFunder(provider, 500_000n);
+    const composition = messageBus.compose({
+      preparedCalls: [{
+        contract: caller,
+        functionName: 'poke',
+        args: [store.inner.lockingBytecode, 3n, left, right],
+      }, {
+        contract: store,
+        functionName: 'set',
+        args: [3n, left, right],
+        callsiteId: callsite!.callsiteId,
+      }],
+      funder: fee,
+      changeAddress: fee.unlocker.generateLockingBytecode(),
+    });
+
+    const builder = await composition.build();
+    expect(vmAccepts(builder)).toBe(true);
+    await expect(composition.send()).resolves.toMatchObject({
+      txid: expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
+
+    const [leftEntries, rightEntries] = await Promise.all([
+      store.getEntries('left'), store.getEntries('right'),
+    ]);
+    const slot = slotHex(3n);
+    expect(leftEntries.find((entry) => binToHex(entry.slot) === slot)?.value).toEqual(left);
+    expect(rightEntries.find((entry) => binToHex(entry.slot) === slot)?.value).toEqual(right);
+  }, 300_000);
+
+  it('settles two keys in one chunkable collection as two resource bands under compose', async () => {
+    const provider = createMessageBusCapstoneTestProvider();
+
+    const storeArtifact = compileString(`pragma solidcash >=0.8.0;
+      contract Store() {
+        mapping(int => bytes) values;
+        function setPair(int firstKey, bytes firstValue, int secondKey, bytes secondValue) public {
+          this.values[firstKey] = firstValue;
+          this.values[secondKey] = secondValue;
+          require(true);
+        }
+      }`, KERNEL);
+    expect(storeArtifact.messageBus?.handlers.find((handler) => handler.name === 'setPair'))
+      .toMatchObject({ eligible: true });
+    expect(storeArtifact.abi.find((entry) => entry.name === 'setPair')?.entryAccesses).toHaveLength(2);
+
+    const storeBase = new Contract(storeArtifact, [], { provider });
+    const storeSetup = await setupStatefulUtxos(
+      provider, storeBase, storeArtifact.stateLayout!, {}, { saltContract: true },
+    );
+    const store = StatefulContract.withCategory(
+      storeBase.withCategory(hexToBin(storeSetup.categoryId)), storeSetup.categoryId,
+    );
+
+    const callerArtifact = compileString(`pragma solidcash >=0.8.0;
+      interface IStore {
+        function setPair(int firstKey, bytes firstValue, int secondKey, bytes secondValue) external;
+      }
+      contract Caller() {
+        function poke(
+          address store, int firstKey, bytes firstValue, int secondKey, bytes secondValue
+        ) public {
+          IStore(store).setPair(firstKey, firstValue, secondKey, secondValue);
+          require(true);
+        }
+      }`, KERNEL);
+    const callerBase = new Contract(callerArtifact, [], { provider });
+    const callerSetup = await setupStatefulUtxos(
+      provider, callerBase, callerArtifact.stateLayout!, {}, { saltContract: true },
+    );
+    const caller = StatefulContract.withCategory(
+      callerBase.withCategory(hexToBin(callerSetup.categoryId)), callerSetup.categoryId,
+    );
+    caller._registerResolvedExternal('IStore', store);
+    const callsite = callerArtifact.abi.find((entry) => entry.name === 'poke')
+      ?.externalCalls?.find((call) => call.functionName === 'setPair');
+
+    const seed = new Uint8Array(16).fill(0x0a);
+    await expect(store.call.setPair(1n, seed, 2n, seed).send()).resolves.toBeDefined();
+
+    const first = new Uint8Array(130).fill(0x11);
+    const second = new Uint8Array(160).fill(0x22);
+    const fee = await createBareP2pkhFeeFunder(provider, 500_000n);
+    const composition = messageBus.compose({
+      preparedCalls: [{
+        contract: caller,
+        functionName: 'poke',
+        args: [store.inner.lockingBytecode, 1n, first, 2n, second],
+      }, {
+        contract: store,
+        functionName: 'setPair',
+        args: [1n, first, 2n, second],
+        callsiteId: callsite!.callsiteId,
+      }],
+      funder: fee,
+      changeAddress: fee.unlocker.generateLockingBytecode(),
+    });
+
+    const builder = await composition.build();
+    expect(vmAccepts(builder)).toBe(true);
+    await expect(composition.send()).resolves.toMatchObject({
+      txid: expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
+
+    const entries = await store.getEntries('values');
+    expect(entries.find((entry) => binToHex(entry.slot) === slotHex(1n))?.value).toEqual(first);
+    expect(entries.find((entry) => binToHex(entry.slot) === slotHex(2n))?.value).toEqual(second);
+  }, 300_000);
+
+  it('publishes a second resource beside the terminal primary band under compose', async () => {
+    const provider = createMessageBusCapstoneTestProvider();
+
+    // Same-key double-assign collapses in the ABI to the terminal value; keep one write per resource so
+    // both continuation bands remain authenticated under ordered claims (terminal-per-resource selection
+    // remains covered by compose's mutation-ordinal filter).
+    const storeArtifact = compileString(`pragma solidcash >=0.8.0;
+      contract Store() {
+        mapping(int => bytes) primary;
+        mapping(int => bytes) secondary;
+        function rewrite(int key, bytes terminal, bytes other) public {
+          this.primary[key] = terminal;
+          this.secondary[key] = other;
+          require(true);
+        }
+      }`, KERNEL);
+    expect(storeArtifact.messageBus?.handlers.find((handler) => handler.name === 'rewrite'))
+      .toMatchObject({ eligible: true });
+
+    const storeBase = new Contract(storeArtifact, [], { provider });
+    const storeSetup = await setupStatefulUtxos(
+      provider, storeBase, storeArtifact.stateLayout!, {}, { saltContract: true },
+    );
+    const store = StatefulContract.withCategory(
+      storeBase.withCategory(hexToBin(storeSetup.categoryId)), storeSetup.categoryId,
+    );
+
+    const callerArtifact = compileString(`pragma solidcash >=0.8.0;
+      interface IStore {
+        function rewrite(int key, bytes terminal, bytes other) external;
+      }
+      contract Caller() {
+        function poke(address store, int key, bytes terminal, bytes other) public {
+          IStore(store).rewrite(key, terminal, other);
+          require(true);
+        }
+      }`, KERNEL);
+    const callerBase = new Contract(callerArtifact, [], { provider });
+    const callerSetup = await setupStatefulUtxos(
+      provider, callerBase, callerArtifact.stateLayout!, {}, { saltContract: true },
+    );
+    const caller = StatefulContract.withCategory(
+      callerBase.withCategory(hexToBin(callerSetup.categoryId)), callerSetup.categoryId,
+    );
+    caller._registerResolvedExternal('IStore', store);
+    const callsite = callerArtifact.abi.find((entry) => entry.name === 'poke')
+      ?.externalCalls?.find((call) => call.functionName === 'rewrite');
+
+    const seed = new Uint8Array(16).fill(0x21);
+    await expect(store.call.rewrite(9n, seed, seed).send()).resolves.toBeDefined();
+
+    const terminal = new Uint8Array(150).fill(0x32);
+    const other = new Uint8Array(170).fill(0x33);
+    const fee = await createBareP2pkhFeeFunder(provider, 500_000n);
+    const composition = messageBus.compose({
+      preparedCalls: [{
+        contract: caller,
+        functionName: 'poke',
+        args: [store.inner.lockingBytecode, 9n, terminal, other],
+      }, {
+        contract: store,
+        functionName: 'rewrite',
+        args: [9n, terminal, other],
+        callsiteId: callsite!.callsiteId,
+      }],
+      funder: fee,
+      changeAddress: fee.unlocker.generateLockingBytecode(),
+    });
+
+    const builder = await composition.build();
+    expect(vmAccepts(builder)).toBe(true);
+    await expect(composition.send()).resolves.toMatchObject({
+      txid: expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
+
+    const [primaryEntries, secondaryEntries] = await Promise.all([
+      store.getEntries('primary'), store.getEntries('secondary'),
+    ]);
+    const slot = slotHex(9n);
+    expect(primaryEntries.find((entry) => binToHex(entry.slot) === slot)?.value).toEqual(terminal);
+    expect(secondaryEntries.find((entry) => binToHex(entry.slot) === slot)?.value).toEqual(other);
+  }, 300_000);
+});

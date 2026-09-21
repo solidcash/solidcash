@@ -217,10 +217,9 @@ const resolveArguments = (
     }
   }
   if (source.kind === 'selfAddress') {
-    // This source is emitted on an outgoing CALL edge. The implementation input authenticates delegate execution,
-    // but the participant master is the Solidity-visible state owner and therefore the exact identity observed by
-    // the callee as `msg.sender`. Keeping the owner bytecode here also keeps address(this)-derived arguments and
-    // the finalized call-manifest caller subject identical.
+    // `selfAddress` is the compiler's active-state-owner projection. It is distinct from the public identity a
+    // nested callee observes as msg.sender when that participant publishes an identity anchor. Preserve the exact
+    // source bytes here; graphInvocationCallerIdentity independently authenticates the caller-facing identity.
     if (!sourceParticipant.lockingBytecode) {
       throw new Error('messageBus: participant has no authenticated state-owner locking bytecode');
     }

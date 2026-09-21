@@ -698,7 +698,7 @@ describe('atomic compiled invocation graph', () => {
     }])).toThrow(/does not identify ABI function 'apply'/);
   });
 
-  it('uses one state-owner identity for a delegated outgoing raw edge', () => {
+  it('uses the physical state owner for a delegated outgoing raw edge', () => {
     const capability = (
       name: string,
       selector: string,
@@ -713,10 +713,11 @@ describe('atomic compiled invocation graph', () => {
         name: '__message_bus1', selector: '53434231', inputs: [], outputs: [],
         blockLayout: delegated
           ? {
-            blockSize: 2,
+            blockSize: 3,
             slots: [
               { kind: 'master' as const, offset: 0 },
               { kind: 'lowLevelCall' as const, offset: 1 },
+              { kind: 'identityAnchor' as const, offset: 2 },
             ],
           }
           : { blockSize: 1, slots: [{ kind: 'master' as const, offset: 0 }] },
@@ -759,6 +760,7 @@ describe('atomic compiled invocation graph', () => {
       } as unknown as Artifact,
       lockingBytecode: '52',
       logicalLockingBytecode: '54',
+      logicalIdentityOffset: 2,
       executionKind: 'delegate' as const,
       executorLockingBytecode: '56',
     };
@@ -1081,9 +1083,17 @@ describe('atomic compiled invocation graph', () => {
     ]);
   });
 
-  it('uses the authenticated physical owner identity for nested callers', () => {
+  it('uses the authenticated public identity for ordinary nested callers', () => {
     const withLogicalCaller = plan();
-    withLogicalCaller.participants[0].logicalLockingBytecode = '54';
+    withLogicalCaller.participants[0] = {
+      ...withLogicalCaller.participants[0],
+      logicalLockingBytecode: '54',
+      logicalIdentityOffset: 1,
+      blockLayout: {
+        blockSize: 2,
+        slots: [{ kind: 'master', offset: 0 }, { kind: 'identityAnchor', offset: 1 }],
+      },
+    };
     withLogicalCaller.participants[1] = {
       ...withLogicalCaller.participants[1],
       logicalLockingBytecode: '55',
@@ -1096,28 +1106,55 @@ describe('atomic compiled invocation graph', () => {
     withLogicalCaller.invocations[1] = {
       ...withLogicalCaller.invocations[1], targetLockingBytecode: '55', targetIdentityOffset: 1,
     };
+    withLogicalCaller.invocations[0] = {
+      ...withLogicalCaller.invocations[0], targetLockingBytecode: '54', targetIdentityOffset: 1,
+    };
     const finalized = messageBus.finalizeAtomicInvocationGraph(
       withLogicalCaller, ['aa'.repeat(32), 'bb'.repeat(32)], { 1: '2a' },
     );
     expect(finalized.callManifest.participants[0].lockingBytecode).toBe('51'.repeat(64));
-    expect(finalized.callManifest.rows[1].subjectHex).toBe('51'.repeat(64));
+    expect(finalized.callManifest.rows[1]).toMatchObject({ subjectHex: '54', sourceOffset: 1 });
     expect(finalized.plan.invocations[1].targetLockingBytecode).toBe('55');
     expect(finalized.callManifest.rows[1].targetOffset).toBe(1);
   });
 
-  it('uses the authenticated state owner as the nested high-level caller identity', () => {
+  it('keeps the physical caller identity when the parent entered through its state owner', () => {
+    const withLogicalCaller = plan();
+    withLogicalCaller.participants[0] = {
+      ...withLogicalCaller.participants[0],
+      logicalLockingBytecode: '54',
+      logicalIdentityOffset: 1,
+      blockLayout: {
+        blockSize: 2,
+        slots: [{ kind: 'master', offset: 0 }, { kind: 'identityAnchor', offset: 1 }],
+      },
+    };
+    withLogicalCaller.invocations[0] = {
+      ...withLogicalCaller.invocations[0], targetLockingBytecode: '51'.repeat(64), targetIdentityOffset: 0,
+    };
+    const finalized = messageBus.finalizeAtomicInvocationGraph(
+      withLogicalCaller, ['aa'.repeat(32), 'bb'.repeat(32)], { 1: '2a' },
+    );
+    expect(finalized.callManifest.rows[1]).toMatchObject({ subjectHex: '51'.repeat(64), sourceOffset: 0 });
+  });
+
+  it('uses the authenticated state owner as the nested delegate caller identity', () => {
     const delegatedCaller = plan();
     delegatedCaller.participants[0] = {
       ...delegatedCaller.participants[0],
       logicalLockingBytecode: '54',
-      logicalIdentityOffset: 0,
+      logicalIdentityOffset: 2,
       executionKind: 1,
       executorOffset: 1,
       executorInputIndex: 1,
       executorLockingBytecode: '56',
       blockLayout: {
-        blockSize: 2,
-        slots: [{ kind: 'master', offset: 0 }, { kind: 'lowLevelCall', offset: 1 }],
+        blockSize: 3,
+        slots: [
+          { kind: 'master', offset: 0 },
+          { kind: 'lowLevelCall', offset: 1 },
+          { kind: 'identityAnchor', offset: 2 },
+        ],
       },
     };
     const finalized = messageBus.finalizeAtomicInvocationGraph(
@@ -1126,7 +1163,7 @@ describe('atomic compiled invocation graph', () => {
     expect(finalized.callManifest.rows[1]).toMatchObject({ subjectHex: '51'.repeat(64), sourceOffset: 0 });
   });
 
-  it('uses the authenticated state owner as caller for a nested raw call', () => {
+  it('uses the authenticated state owner as caller for a nested delegate raw call', () => {
     const delegatedCaller = plan();
     delegatedCaller.participants[0] = {
       ...delegatedCaller.participants[0],
@@ -1141,14 +1178,18 @@ describe('atomic compiled invocation graph', () => {
         }],
       },
       logicalLockingBytecode: '54',
-      logicalIdentityOffset: 0,
+      logicalIdentityOffset: 2,
       executionKind: 1,
       executorOffset: 1,
       executorInputIndex: 1,
       executorLockingBytecode: '56',
       blockLayout: {
-        blockSize: 2,
-        slots: [{ kind: 'master', offset: 0 }, { kind: 'lowLevelCall', offset: 1 }],
+        blockSize: 3,
+        slots: [
+          { kind: 'master', offset: 0 },
+          { kind: 'lowLevelCall', offset: 1 },
+          { kind: 'identityAnchor', offset: 2 },
+        ],
       },
     };
     const finalized = messageBus.finalizeAtomicInvocationGraph(

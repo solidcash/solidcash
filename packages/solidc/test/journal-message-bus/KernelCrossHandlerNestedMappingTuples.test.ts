@@ -20,6 +20,16 @@ const SOURCE = `pragma solidity ^0.8.0;
 `;
 
 describe('kernel cross-handler nested-mapping tuple metadata', () => {
+  it('keeps the synthesized sender-anchor name unavailable to source parameters', () => {
+    expect(() => compileString(`pragma solidity ^0.8.0;
+      contract SourceOwnedAnchor {
+        function touch(uint256 __internal__msgSenderAnchorIdx) public {
+          require(__internal__msgSenderAnchorIdx > 0);
+        }
+      }
+    `, { solidityImportCompat: true })).toThrow(/uses reserved prefix '__internal__'/);
+  });
+
   it.each([2, 7])(
     'allocates the two tuple recipes independently of the %i-row route bound',
     (maximumRows) => {

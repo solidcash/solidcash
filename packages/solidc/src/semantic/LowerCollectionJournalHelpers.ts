@@ -1143,6 +1143,13 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
     // the same entry, which the SDK reports as a duplicate upsert slot.
     const sharedLocals: ActiveMultiCache['locals'] = [];
     const calls: FunctionCallNode[] = [];
+    const debugRoute = (globalThis as { process?: { env?: Record<string, string> } })
+      .process?.env?.SOLIDC_DEBUG_ROUTE === '1';
+    const debugCalls: Array<{
+      target: string;
+      runtimeAliases: boolean;
+      bindings: Array<{ local: string; keys: string[]; aliases: string[] }>;
+    }> = [];
     let runtimeAliasCallOrdinal = 0;
     this.walk(body, (node) => {
       if (node instanceof FunctionCallNode
@@ -1220,16 +1227,28 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
         };
       });
       cache.calls.set(call, callLocals);
+      if (debugRoute) {
+        debugCalls.push({
+          target: target.fn.name,
+          runtimeAliases: target.fn.collectionJournalRuntimeAliases === true,
+          bindings: callLocals.map((binding) => ({
+            local: binding.local.name,
+            keys: binding.local.keyIdentity,
+            aliases: (binding.runtimeAliases ?? []).map((alias) => alias.name),
+          })),
+        });
+      }
     }
-    if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env?.SOLIDC_DEBUG_ROUTE === '1'
-      && caches.size > 0) {
+    if (debugRoute && caches.size > 0) {
       console.error('collection-journal-message-bus-pool', JSON.stringify({
+        calls: debugCalls,
         pools: [...caches.entries()].map(([key, cache]) => ({
           key: key.name,
           targetEntries: cache.target.entries.map((entry) => ({
             collection: entry.collection,
             keys: entry.keyParameters,
             journalName: entry.journalName,
+            mutates: entry.mutates,
           })),
           locals: cache.locals.map((local) => ({
             name: local.name,

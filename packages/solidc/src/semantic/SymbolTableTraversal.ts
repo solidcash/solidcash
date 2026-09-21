@@ -1913,6 +1913,8 @@ export default class SymbolTableTraversal extends AstTraversal {
       || node.name.startsWith('__internal__leadingPushValue_')
       || node.name.startsWith('__internal__collectionIter')
       || compilerOwnedJournalSegment
+      || (node.name === '__internal__msgSenderAnchorIdx'
+        && (node.syntheticallyUsed || generatedOriginOf(node.location) !== undefined))
       || [
         '__internal__msgData',
         '__internal__msgSig',
@@ -3141,6 +3143,7 @@ export default class SymbolTableTraversal extends AstTraversal {
           if (this.compilerOptions.solidityImportCompat || this.compilerOptions.evmCompat) {
             const anchorParam = new ParameterNode(PrimitiveType.BIGINT, '__internal__msgSenderAnchorIdx');
             anchorParam.location = node.location;
+            anchorParam.syntheticallyUsed = true;
             node.parameters.push(anchorParam);
             this.symbolTables[0].set(Symbol.variable(anchorParam));
             this.symbolTables[0].get(anchorParam.name)?.references.push({ name: anchorParam.name } as IdentifierNode);

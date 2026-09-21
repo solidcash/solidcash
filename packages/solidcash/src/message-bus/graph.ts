@@ -29,9 +29,9 @@ export interface CompiledGraphParticipant {
   /**
    * Authenticated public target identity when it differs from the physical state owner, as it does for a
    * proxy/delegate execution or a contract with a published logical CREATE identity. This is the address a
-   * source-level call targets. Source-level `address(this)` still reads the exact active input returned by
-   * OP_UTXOBYTECODE; an outgoing call identifies its caller by the authenticated state owner, independently of
-   * whether the source encoded that call through an interface or a low-level address operation.
+   * source-level call targets. An ordinary CREATE identity is also the caller address observed by a nested callee;
+   * delegate execution instead keeps the proxy/state owner as its outgoing caller context. The physical state
+   * owner remains the settlement participant in both cases.
    */
   logicalLockingBytecode?: string;
   /**
@@ -1643,15 +1643,21 @@ export function resolveGraphAbiFunction(
   return resolveMessageBusAbiFunction(artifact, name, selector);
 }
 
-type GraphCallerParticipant = Pick<CompiledGraphParticipant, 'lockingBytecode'>;
+type GraphCallerParticipant = Pick<CompiledGraphParticipant,
+'lockingBytecode' | 'logicalLockingBytecode' | 'logicalIdentityOffset'> & {
+  executionKind?: 'owner' | 'delegate' | 0 | 1;
+};
 
 type GraphCallerInvocation = Pick<CompiledGraphInvocation,
-'parent' | 'callee' | 'function' | 'consumerCallsiteId'>;
+'parent' | 'callee' | 'function' | 'consumerCallsiteId' | 'targetLockingBytecode'> & {
+  targetIdentityOffset?: number;
+};
 
 /**
- * Every CALL/staticcall edge is made by the authenticated state owner. Delegate execution resources remain on
- * the separately pinned implementation input, but the outgoing caller is the proxy/state-owner context. Call
- * argument planning must use this same identity for source-level `address(this)` on the edge.
+ * Resolve the authenticated outgoing caller context. An ordinary call continues with the exact identity through
+ * which its parent invocation entered the participant: a physical-owner target calls as that owner, while a
+ * public CREATE target calls as its authenticated identity anchor. Delegate execution instead calls as its
+ * proxy/state owner. The returned offset identifies the participant-local input authenticating that identity.
  */
 export function graphInvocationCallerIdentity(
   participants: readonly GraphCallerParticipant[],
@@ -1661,10 +1667,19 @@ export function graphInvocationCallerIdentity(
   if (invocation.parent === null) {
     throw new Error('messageBus: transaction-origin invocation has no participant caller identity');
   }
-  const caller = participants[invocations[invocation.parent].callee];
+  const parent = invocations[invocation.parent];
+  const caller = participants[parent.callee];
+  const delegate = caller.executionKind === 'delegate' || caller.executionKind === 1;
+  const enteredAs = parent.targetLockingBytecode?.toLowerCase();
+  const physical = caller.lockingBytecode.toLowerCase();
+  const logical = caller.logicalLockingBytecode?.toLowerCase();
+  if (!delegate && enteredAs !== undefined && enteredAs !== physical && enteredAs !== logical) {
+    throw new Error('messageBus: parent invocation target is not an authenticated caller identity');
+  }
+  const useEnteredLogicalIdentity = !delegate && enteredAs !== undefined && enteredAs === logical;
   return {
-    lockingBytecode: caller.lockingBytecode,
-    offset: 0,
+    lockingBytecode: useEnteredLogicalIdentity ? caller.logicalLockingBytecode! : caller.lockingBytecode,
+    offset: useEnteredLogicalIdentity ? parent.targetIdentityOffset ?? caller.logicalIdentityOffset ?? 0 : 0,
   };
 }
 

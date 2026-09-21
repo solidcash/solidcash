@@ -3083,19 +3083,16 @@ function chunkableValueWriteCollections(
   })))];
 }
 
-/** Resolve the one authenticated storage resource addressable by the scalar continuation-base witness. */
-export function resolveKernelValueChunkResourceLane(
+/** Resolve the authenticated storage resources carried by one sequential continuation band. */
+export function resolveKernelValueChunkResourceLanes(
   runs: readonly { collection: string; slot?: Uint8Array }[],
-): string {
-  const resourceLanes = new Set(runs.flatMap((run) => (
-    run.slot?.length === 32 ? [`${run.collection}:${binToHex(run.slot)}`] : []
-  )));
-  if (resourceLanes.size !== 1 || runs.some((run) => run.slot?.length !== 32)) {
+): string[] {
+  if (runs.length === 0 || runs.some((run) => run.slot?.length !== 32)) {
     throw new Error(
-      'Kernel chunkable-value output placement requires one exact compiler-published resource lane.',
+      'Kernel chunkable-value output placement requires exact compiler-published resource lanes.',
     );
   }
-  return [...resourceLanes][0];
+  return [...new Set(runs.map((run) => `${run.collection}:${binToHex(run.slot!)}`))];
 }
 
 /**
@@ -34940,8 +34937,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       });
       if (valueChunkWitnessGroups.length > 0) {
         // The route planner has already authenticated the computed storage key for every selected row. Collapse
-        // repeated callsites targeting the same resource, but never project the scalar output-base witness across
-        // distinct collections/keys: one coordinate cannot authenticate multiple continuation lanes.
+        // repeated callsites targeting the same resource and reject incomplete identities. The scalar witness is
+        // the start of the complete sequential continuation band; each lane remains authenticated by its own
+        // collection/key-derived locking bytecode and compiler-published span claim.
         if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
           ?.SOLIDC_DEBUG_VALUE_CHUNKS === '1') {
           console.error('kernel-value-chunk-resource-lanes', JSON.stringify({
@@ -34958,7 +34956,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             })),
           }));
         }
-        resolveKernelValueChunkResourceLane(computedValueChunkRuns);
+        resolveKernelValueChunkResourceLanes(computedValueChunkRuns);
       }
       const graphValueChunkArgumentIndex = graphOwnsValueChunkWitness && entryAbiFunction
         ? entryAbiFunction.inputs.findIndex((input) => input.name === '__internal__valueChunkOutputBase')

@@ -58,6 +58,12 @@ or production bytecode. Verify any proposed identity fix again with the switch u
 reports, not alternate settlement modes. They can log large transaction or witness summaries, so use one named
 test and capture only the needed records. Recheck any fix with all three switches unset.
 
+`SOLIDC_DEBUG_ROUTE=1` includes `collection-journal-message-bus-pool` records when routed handlers share a
+collection journal. Each record identifies handler mutation effects, normalized key identities, pooled locals,
+and runtime aliases. Use it to distinguish a missing write from an alias/key-lane mismatch without relying on
+application names. Metadata collection and logging are both disabled when the switch is unset; the switch does
+not alter emitted bytecode.
+
 `SOLIDC_DEBUG_OUTPUT_TOKEN_COMPARE=1` reports mismatched `OP_OUTPUTTOKENCOMMITMENT` equalities during final
 preflight without changing the transaction. Use `SOLIDC_DEBUG_ROUTE_INPUT_INDEX` to select an input and
 `SOLIDC_DEBUG_OUTPUT_TOKEN_COMPARE_IP` to inspect one instruction's stack before the comparison.

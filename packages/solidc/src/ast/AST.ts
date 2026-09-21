@@ -2762,7 +2762,7 @@ export interface ExternalCallSlot {
    */
   callerIdentity?: {
     version: 1;
-    role: 'origin' | 'owner' | 'create' | 'proxy' | 'executor';
+    role: 'origin' | 'active' | 'owner' | 'create' | 'proxy' | 'executor';
     auth: 'input-bytecode' | 'category' | 'literal';
     authOffset: number;
     subjectLockingBytecode?: string;

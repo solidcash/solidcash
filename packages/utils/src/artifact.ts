@@ -1133,12 +1133,14 @@ export interface CallsiteCallerIdentityAbi {
   /**
    * Role of the authenticated caller subject for this edge.
    * - origin: transaction-origin / root (subject empty or rootCaller; authOffset 0xffff)
+   * - active: exact authenticated identity through which the calling participant entered; delegate execution
+   *   resolves to its state owner rather than its executor
    * - owner: physical state-owner master of the calling participant
    * - create: CREATE / getAddress() logical identity of the calling participant
    * - proxy: proxy-facing public identity when distinct from owner
    * - executor: co-spent implementation input (rare; only when the edge literally authenticates the executor)
    */
-  role: 'origin' | 'owner' | 'create' | 'proxy' | 'executor';
+  role: 'origin' | 'active' | 'owner' | 'create' | 'proxy' | 'executor';
   /**
    * How the covenant authenticates the subject bytes.
    * - input-bytecode: subject == lockingBytecode of caller participant input at authOffset

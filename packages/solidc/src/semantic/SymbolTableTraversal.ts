@@ -8735,10 +8735,19 @@ export default class SymbolTableTraversal extends AstTraversal {
       slots.push({
         interfaceName: node.callInfo.interfaceName,
         functionName: node.callInfo.functionName,
-        // Outgoing CALL/staticcall edges authenticate the physical state-owner master. CREATE/proxy/executor
-        // subjects are published only when a later pass proves the call expression uses that identity.
+        // Ordinary CALL/staticcall edges continue from the exact authenticated identity through which this
+        // participant entered. Delegate execution instead calls as its proxy/state owner, never its executor.
+        // `active` deliberately publishes a policy rather than guessing whether a future instance has a CREATE
+        // identity anchor; graph planning resolves it from the authenticated parent target.
         callerIdentity: {
-          version: 1, role: 'owner', auth: 'input-bytecode', authOffset: 0,
+          version: 1,
+          role: this.compilerOptions.autoDelegate === true
+            || this.currentFunction?.modifiers.includes(FunctionModifier.DELEGATE) === true
+            ? 'owner' : 'active',
+          auth: 'input-bytecode',
+          authOffset: this.compilerOptions.autoDelegate === true
+            || this.currentFunction?.modifiers.includes(FunctionModifier.DELEGATE) === true
+            ? 0 : 0xffff,
         },
         ...(node.sourceEffectOrdinal !== undefined && {
           sourceEffectOrdinal: node.sourceEffectOrdinal,

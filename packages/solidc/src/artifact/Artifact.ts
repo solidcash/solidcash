@@ -2007,6 +2007,9 @@ function buildFunctionAbiMetadata(
           : occurrenceInfoOf(func, ec.sourceCallNode);
         const resultArrayOutput = !ec.condition && occurrenceInfo.occurrence === 'loop'
           ? resultArrayOutputOf(func.body, ec.sourceCallNode) : undefined;
+        if (ec.callerIdentity === undefined && compilerOptions.messageBusKernel === true) {
+          throw new Error(`Kernel callsite ${func.name}:${ec.slotIndex} lacks caller identity metadata`);
+        }
         return {
           callsiteId: ec.slotIndex,
           ...(ec.sourceEffectOrdinal !== undefined && { sourceEffectOrdinal: ec.sourceEffectOrdinal }),
@@ -2021,10 +2024,7 @@ function buildFunctionAbiMetadata(
           ...(resultArrayOutput !== undefined && { resultArrayOutput }),
           interfaceName: ec.interfaceName,
           functionName: ec.functionName,
-          // Default authenticated subject is the physical state-owner master. Absence means a legacy artifact.
-          callerIdentity: ec.callerIdentity ?? {
-            version: 1 as const, role: 'owner' as const, auth: 'input-bytecode' as const, authOffset: 0,
-          },
+          ...(ec.callerIdentity !== undefined && { callerIdentity: ec.callerIdentity }),
           ...(ec.addressParam && { addressParam: ec.addressParam }),
           ...(ec.addressStateVar && { addressStateVar: ec.addressStateVar }),
           ...(ec.addressLiteral && { addressLiteral: ec.addressLiteral }),

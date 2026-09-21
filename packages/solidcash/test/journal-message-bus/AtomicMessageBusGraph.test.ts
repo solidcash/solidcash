@@ -1263,6 +1263,68 @@ describe('atomic compiled invocation graph', () => {
     expect(finalized.callManifest.rows[1]).toMatchObject({ subjectHex: '54', sourceOffset: 1 });
   });
 
+  it('resolves active caller identity from the authenticated physical or logical parent target', () => {
+    const activeCaller = plan();
+    activeCaller.participants[0] = {
+      ...activeCaller.participants[0],
+      artifact: {
+        ...activeCaller.participants[0].artifact,
+        messageBus: {
+          ...activeCaller.participants[0].artifact.messageBus!,
+          convention: 'kernel-row-loop',
+        },
+        abi: [{
+          name: 'run', selector: '11111111', inputs: [{ name: 'n', type: 'int' }], outputs: [],
+          externalCalls: [{
+            callsiteId: 7, interfaceName: 'IPeer', functionName: 'run', occurrence: 'once',
+            callerIdentity: {
+              version: 1, role: 'active', auth: 'input-bytecode', authOffset: 0xffff,
+            },
+          }],
+        }],
+      },
+      logicalLockingBytecode: '54',
+      logicalIdentityOffset: 1,
+      blockLayout: {
+        blockSize: 2,
+        slots: [{ kind: 'master', offset: 0 }, { kind: 'identityAnchor', offset: 1 }],
+      },
+    };
+    const physical = messageBus.graphInvocationCallerIdentity(
+      activeCaller.participants, activeCaller.invocations, activeCaller.invocations[1],
+    );
+    expect(physical).toMatchObject({ role: 'active', lockingBytecode: '51'.repeat(64), offset: 0 });
+
+    activeCaller.invocations[0] = {
+      ...activeCaller.invocations[0], targetLockingBytecode: '54', targetIdentityOffset: 1,
+    };
+    const logical = messageBus.graphInvocationCallerIdentity(
+      activeCaller.participants, activeCaller.invocations, activeCaller.invocations[1],
+    );
+    expect(logical).toMatchObject({ role: 'active', lockingBytecode: '54', offset: 1 });
+
+    const published = activeCaller.participants[0].artifact.abi[0].externalCalls![0].callerIdentity!;
+    Object.assign(published, { version: 2 });
+    expect(() => messageBus.graphInvocationCallerIdentity(
+      activeCaller.participants, activeCaller.invocations, activeCaller.invocations[1],
+    )).toThrow(/unsupported callsite callerIdentity version 2/);
+    Object.assign(published, { version: 1 });
+
+    const missingAnchor = activeCaller.participants.map((participant, index) => index === 0
+      ? { ...participant, logicalIdentityOffset: undefined }
+      : participant);
+    expect(() => messageBus.graphInvocationCallerIdentity(
+      missingAnchor, activeCaller.invocations, activeCaller.invocations[1],
+    )).toThrow(/does not match the authenticated parent target/);
+
+    activeCaller.invocations[0] = {
+      ...activeCaller.invocations[0], targetIdentityOffset: 0,
+    };
+    expect(() => messageBus.graphInvocationCallerIdentity(
+      activeCaller.participants, activeCaller.invocations, activeCaller.invocations[1],
+    )).toThrow(/does not match the authenticated parent target/);
+  });
+
   it('refuses to treat a delegate executor as caller when publication says owner', () => {
     const delegatedCaller = plan();
     delegatedCaller.participants[0] = {

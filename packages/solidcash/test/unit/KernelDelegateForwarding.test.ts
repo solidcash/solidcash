@@ -13,6 +13,7 @@ import {
   externalCallReachedOccurrenceIndices,
   externalReturnsForCallsites,
   producerResultOccurrenceIndex,
+  repeatedExternalResultNeedsOccurrenceIdentity,
   resolvePreparedKernelDelegateExecution,
   resolvePreparedKernelDelegateOwnerFrame,
   resolvePublishedEntryBlockOffset, selectKernelDelegateForwardingGroupIndex,
@@ -216,6 +217,25 @@ describe('kernel delegate entry coordinates', () => {
     expect(producerResultOccurrenceIndex({ callsiteId: 5, occurrence: 'conditional' })).toBe(0);
     expect(() => producerResultOccurrenceIndex({ callsiteId: 6, occurrence: 'loop' }))
       .toThrow(/no per-occurrence identity/);
+  });
+
+  it('requires occurrence identity for sparse or graph-consumed repeated returns', () => {
+    const repeated = { callsiteId: 6, hasReturnValues: true, occurrence: 'loop' as const };
+    const consumer = { consumerCallsiteId: 7, argument: 0, producerCallsiteId: 6 } as never;
+    const unrelated = { consumerCallsiteId: 7, argument: 0, producerCallsiteId: 5 } as never;
+    const dense = [{ sourceIteration: 0, occurrenceIndex: 0 }, { sourceIteration: 1, occurrenceIndex: 1 }];
+    expect(repeatedExternalResultNeedsOccurrenceIdentity(repeated, undefined, [])).toBe(false);
+    expect(repeatedExternalResultNeedsOccurrenceIdentity(repeated, [unrelated], dense)).toBe(false);
+    expect(repeatedExternalResultNeedsOccurrenceIdentity(repeated, undefined, [
+      { sourceIteration: 1, occurrenceIndex: 0 },
+    ])).toBe(true);
+    expect(repeatedExternalResultNeedsOccurrenceIdentity(repeated, undefined, [
+      { sourceIteration: 0, occurrenceIndex: 0 }, { sourceIteration: 2, occurrenceIndex: 1 },
+    ])).toBe(true);
+    expect(repeatedExternalResultNeedsOccurrenceIdentity(repeated, [consumer], dense)).toBe(true);
+    expect(repeatedExternalResultNeedsOccurrenceIdentity({
+      ...repeated, resultArrayOutput: 0,
+    }, [consumer], dense)).toBe(true);
   });
 
   it('does not alias sibling legacy callsites whose stable IDs are both absent', () => {

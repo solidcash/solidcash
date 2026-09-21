@@ -599,6 +599,27 @@ describe('Release 0 shared invocation analysis', () => {
     });
   });
 
+  it('does not publish an internally consumed loop return as a graph result consumer', () => {
+    const artifact = compileString(`pragma solidity ^0.8.0;
+      interface ISource { function read(uint16 value) external view returns (uint16); }
+      contract InternalLoopReturn(address source) {
+        function validate(uint16[3] memory values) public view {
+          uint16 observed;
+          for (uint256 index = 0; index < values.length; index++) {
+            if (values[index] != 0) observed = ISource(source).read(values[index]);
+          }
+          require(observed == 3);
+        }
+      }`, {
+      forceStateful: true, messageBus: true, messageBusKernel: true,
+      messageBusGraphContext: true, solidityImportCompat: true, suppressWarnings: true,
+    });
+    const fn = artifact.abi.find((candidate) => candidate.name === 'validate')!;
+    expect(fn.externalCalls?.[0]).toMatchObject({ occurrence: 'loop', hasReturnValues: true });
+    expect(fn.externalCalls?.[0].resultArrayOutput).toBeUndefined();
+    expect(fn.resultConsumers ?? []).toEqual([]);
+  });
+
   it('withholds an affine domain when a dependency changes inside the loop', () => {
     const artifact = compileString(`pragma solidcash >=0.8.0;
       interface ITarget { function step(bigint value); }

@@ -6473,6 +6473,20 @@ export function producerResultOccurrenceIndex(
   return 0;
 }
 
+/** Whether current metadata cannot address every reached occurrence of a repeated returning call. */
+export function repeatedExternalResultNeedsOccurrenceIdentity(
+  call: Pick<ExternalCallAbi, 'callsiteId' | 'hasReturnValues' | 'occurrence' | 'resultArrayOutput'>,
+  resultConsumers: readonly ExternalResultConsumerAbi[] | undefined,
+  reached: readonly Pick<PlannedExternalCallOccurrence, 'sourceIteration' | 'occurrenceIndex'>[],
+): boolean {
+  if (!call.hasReturnValues || call.occurrence !== 'loop' || call.callsiteId === undefined) return false;
+  if ((resultConsumers ?? []).some((consumer) => consumer.producerCallsiteId === call.callsiteId)) return true;
+  if (call.resultArrayOutput !== undefined) return false;
+  // The current return tail is addressed by the source loop index, while SDK carriers are compact. Without an
+  // explicit result-array identity, only a dense zero-based prefix makes those two identities equivalent.
+  return reached.some(({ sourceIteration, occurrenceIndex }) => sourceIteration !== occurrenceIndex);
+}
+
 /** Match one compiler callsite without allowing two legacy `undefined` identities to alias. */
 export function externalCallMetadataIdentityMatches(
   existing: { callsiteId?: number } | undefined,
@@ -7481,8 +7495,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         const match = selectMappingEntryByKeys(entries, keys, coll.keyTypes ?? [coll.keyType]);
         if (match) return match.value;
         // Solidity reads a missing mapping key as the value type's zero value, so a bool getter returns false
-        // rather than an SDK-level missing value. Strings/bytes must be empty sequences so
-        // `bytes(meceTags(tag)).length != 0` treats absent tags as non-MECE.
+        // rather than an SDK-level missing value. Strings/bytes likewise use empty sequences so source-level
+        // length checks on absent mapping values preserve Solidity zero-value semantics.
         const valueType = coll.valueType ?? '';
         if (valueType === 'bool') return false;
         if (/^u?int/.test(valueType) || valueType === 'bigint') return 0n;
@@ -27419,29 +27433,32 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 const arraySource = (nested.argSources ?? []).find((source) => source.kind === 'arrayElement');
                 const array = arraySource?.paramIndex !== undefined
                   ? delegateVisibleArgs[arraySource.paramIndex] : undefined;
-                if (Array.isArray(array) && array.length > 1) {
+                if (plannedNestedOccurrences.length > 1) {
                   loopReturnCommitments = precomputedReturnCommitment
                     ? [precomputedReturnCommitment]
                     : [];
-                  for (let index = loopReturnCommitments.length; index < array.length; index++) {
+                  for (let index = loopReturnCommitments.length;
+                    index < plannedNestedOccurrences.length; index++) {
                     loopReturnCommitments.push(await resolveLoopReturnCommitment(index));
                   }
                   if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
                     ?.SOLIDC_DEBUG_RETURN === '1') {
-                    console.error('mece-loop-returns', {
+                    console.error('loop-returns', {
                       functionName: nested.functionName,
-                      array: array.map((item) => (typeof item === 'string' ? item
-                        : item instanceof Uint8Array ? binToHex(item) : String(item))),
+                      sourceValues: Array.isArray(array) ? array.map((item) => (typeof item === 'string' ? item
+                        : item instanceof Uint8Array ? binToHex(item) : String(item))) : undefined,
                       precomputedHex: precomputedReturnCommitment
                         ? binToHex(precomputedReturnCommitment) : undefined,
                       commitments: loopReturnCommitments.map((part) => binToHex(part)),
                     });
                   }
                 } else if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-                  ?.SOLIDC_DEBUG_RETURN === '1' && nested.functionName === 'meceTags') {
-                  console.error('mece-loop-returns-skipped', {
+                  ?.SOLIDC_DEBUG_RETURN === '1') {
+                  console.error('loop-returns-single-or-empty', {
+                    functionName: nested.functionName,
                     arrayIsArray: Array.isArray(array),
                     arrayLength: Array.isArray(array) ? array.length : undefined,
+                    reachedOccurrences: plannedNestedOccurrences.length,
                     paramIndex: arraySource?.paramIndex,
                     visibleLen: delegateVisibleArgs.length,
                     precomputedHex: precomputedReturnCommitment
@@ -30510,11 +30527,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       const externalOutputStart = 1 + requiredNftIndices.length + externalReadUtxos.length
         + externalOutStateUtxoGroups.reduce((sum, g) => sum + 1 + g.dataNftUtxos.length, 0)
         + iterationEntryInputs.length;
-      // Only the *entry* implementation's own return channel occupies a slot before
-      // the nested tail. Nested view impls (MarketplaceData.arbitratorRegistered,
-      // meceTags) also have outputs, but those are the tail returns themselves —
-      // counting them here shifted updateJobPost's witnesses onto the empty output
-      // after the real 0x51 / tag-string returns.
+      // Only the *entry* implementation's own return channel occupies a slot before the nested tail. Nested view
+      // implementations also have outputs, but those are the tail returns themselves; counting them here shifts
+      // following witnesses onto the empty output after the real return values.
       const delegatedCallerReturnCount = (legacyRouteDelegateFn?.outputs?.length ?? 0) > 0 ? 1 : 0;
       const externalGroupOutputCount = externalCallUtxoGroups.reduce(
         (sum, g) => g.sharedGroupIndex === undefined
@@ -37830,10 +37845,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     }
     const violation = occurrenceCountViolation(call, reached.length);
     if (violation) throw new Error(`External graph occurrence mismatch: ${violation}`);
-    if (call.hasReturnValues && reached.length > 1 && call.resultArrayOutput === undefined) {
+    if (repeatedExternalResultNeedsOccurrenceIdentity(call, frame.resultConsumers, reached)) {
       throw new Error(
         `Returning repeated callsite ${call.callsiteId ?? 'unknown'} has ${reached.length} reached occurrences; `
-        + 'producer-result metadata has no per-occurrence identity.',
+        + 'return metadata has no per-occurrence source identity.',
       );
     }
     return Object.freeze(reached);

@@ -18,6 +18,10 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   The compiler preserves the source callsite-to-returned-array link before memory lowering; the SDK retains one
   physical callsite and resolves each reached occurrence from its planned arguments. This is a focused checkpoint,
   not evidence that the 66-title beta gate or the previously observed shared-owner callback cycle is resolved.
+- Internally consumed repeated returns now use compact carriers only for a dense zero-based reached prefix; sparse
+  source iterations and downstream graph consumers remain fail-closed without occurrence-qualified identities.
+  The focused invalid-tag Marketplace title advances through that check and now stops at an unresolved physical
+  mapping-entry witness. Treat that resource-resolution error as the next investigation, not as return support.
 
 ## Gate before the next leap
 

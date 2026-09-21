@@ -1,4 +1,4 @@
-import { hexToBin } from '@bitauth/libauth';
+import { binToHex, hexToBin } from '@bitauth/libauth';
 import { compileString } from 'solidc';
 import { describe, expect, it } from 'vitest';
 import {
@@ -144,7 +144,26 @@ describe('kernel late transitive sparse loop graph planning', () => {
     expect(vmAccepts(builder)).toBe(true);
 
     await expect((deployed as any).relayReturning(coordinator.inner.lockingBytecode, values).build())
-      .rejects.toThrow(/Returning repeated callsite .* has 2 reached occurrences/);
+      .rejects.toThrow(/return metadata has no per-occurrence source identity/);
+
+    // Compact return carriers are sound for a dense zero-based reached prefix: carrier occurrence and source
+    // loop indices are then the same authenticated identity even though the final source element is skipped.
+    const returningBuilder = await (deployed as any)
+      .relayReturning(coordinator.inner.lockingBytecode, [2n, 3n, 0n]).build();
+    const returningTransaction = returningBuilder.buildLibauthTransaction();
+    const returningSources = generateLibauthSourceOutputs(returningBuilder.inputs);
+    const returningVm = createVirtualMachineBch2026ForProvider(provider);
+    for (let inputIndex = 0; inputIndex < returningTransaction.inputs.length; inputIndex += 1) {
+      const state = returningVm.evaluate({
+        inputIndex, sourceOutputs: returningSources, transaction: returningTransaction,
+      });
+      expect(returningVm.stateSuccess(state), `input ${inputIndex}: ${JSON.stringify({
+        error: state.error, ip: state.ip, instructions: state.instructions.length,
+        nearby: state.instructions.slice(Math.max(0, state.ip - 8), state.ip + 2)
+          .map((instruction) => instruction.opcode),
+        stack: state.stack.slice(-6).map(binToHex),
+      })}`).toBe(true);
+    }
 
     await expect(call.send()).resolves.toMatchObject({
       txid: expect.stringMatching(/^[0-9a-f]{64}$/),

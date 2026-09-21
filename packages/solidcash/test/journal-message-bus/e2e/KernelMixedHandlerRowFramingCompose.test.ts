@@ -156,6 +156,15 @@ describe('kernel mixed-handler row framing under composition', () => {
       { function: 'clear' },
       { function: 'add', args: [3n] },
     ]);
+    // Every mixed-handler row must publish absolute calldata bounds; unframed rows are not admitted.
+    for (const row of framed.rows) {
+      expect(row.calldataStart).toEqual(expect.any(Number));
+      expect(row.calldataLength).toEqual(expect.any(Number));
+      expect(Number.isInteger(row.calldataStart)).toBe(true);
+      expect(Number.isInteger(row.calldataLength)).toBe(true);
+      expect(row.calldataStart).toBeGreaterThanOrEqual(0);
+      expect(row.calldataLength).toBeGreaterThanOrEqual(0);
+    }
     const clearRow = framed.rows[1]!;
     expect(clearRow.calldataLength).toBe(0);
     // Hostile unframed walk: pretend the zero-arg clear row carries the next add's payload length.
@@ -175,5 +184,15 @@ describe('kernel mixed-handler row framing under composition', () => {
         );
       }
     }).toThrow(/row framing mismatch|unframed split/);
+
+    // Explicit residual: a row stripped of calldataStart/Length must not be treated as framed.
+    const unframed = { ...clearRow } as { calldataStart?: number; calldataLength?: number; argsHex: string };
+    delete unframed.calldataStart;
+    delete unframed.calldataLength;
+    expect(() => {
+      if (unframed.calldataStart === undefined || unframed.calldataLength === undefined) {
+        throw new Error('unframed row missing calldataStart/Length');
+      }
+    }).toThrow(/unframed row missing calldataStart\/Length/);
   });
 });

@@ -291,6 +291,11 @@ export interface EntryAccessInfo {
   };
   /** Exact collection-array mutation represented by this access. */
   arrayMutation?: 'push' | 'pop' | 'indexed' | 'mixed';
+  /**
+   * Optional fixed-chunkable activation recipe. Absent means the write is unconditional. When present, the SDK
+   * evaluates it against authenticated row arguments and omits continuation bands / write planning when false.
+   */
+  activation?: ExternalCallExpression;
 }
 
 export interface TokenContainerAccessInfo {
@@ -813,12 +818,19 @@ export class FunctionDefinitionNode extends Node implements Named {
   messageBusRejectionReason?: string;
   /** This source handler was included in the synthesized route dispatch. Late fences may still demote it. */
   messageBusDispatched?: boolean;
-  /** This handler owns one direct, unconditional chunkable whole-entry transition. The generated participant route
-   * authenticates that at most one row from the complete marked selector family executes, so its body is the
-   * unique terminal continuation producer. This is an occurrence bound, not permission to chain mutations. */
+  /** This handler owns one direct chunkable whole-entry transition family (unconditional and/or bool-param
+   * activated). The generated participant route authenticates that at most one row from the complete marked
+   * selector family executes, so its body is the unique terminal continuation producer. This is an occurrence
+   * bound, not permission to chain mutations. */
   messageBusFixedChunkableWriteMaxRows?: 1;
   /** Exact mutation identity in the selector-scoped fixed-chunkable occurrence domain. */
   messageBusFixedChunkableWriteEffectOrdinal?: number;
+  /** Per-resource fixed-chunkable descriptors, including optional bool-param activation recipes. */
+  messageBusFixedChunkableResources?: Array<{
+    collection: string;
+    effectOrdinal: number;
+    activation?: ExternalCallExpression;
+  }>;
   /** This handler owns one unconditional direct push into a chunkable sorted mapping-array entry. Kernel route
    * lowering threads the typed pending array through every selected OP_INVOKE row and flushes it exactly once,
    * so repeated same-key rows compose without intermediate continuation outputs. */

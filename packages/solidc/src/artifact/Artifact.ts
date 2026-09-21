@@ -1963,6 +1963,16 @@ function buildFunctionAbiMetadata(
           },
         }),
         ...(ea.arrayMutation !== undefined && { arrayMutation: ea.arrayMutation }),
+        ...((() => {
+          const stamped = ea.activation
+            ?? func.messageBusFixedChunkableResources?.find((resource) =>
+              resource.collection === ea.collection
+              && (ea.mutationEffectOrdinals?.includes(resource.effectOrdinal) ?? false))
+              ?.activation;
+          return stamped !== undefined
+            ? { activation: cloneExternalCallExpression(stamped) }
+            : {};
+        })()),
       })),
     }),
     ...(publishedSourceEffectOrder !== undefined && { sourceEffectOrder: publishedSourceEffectOrder }),

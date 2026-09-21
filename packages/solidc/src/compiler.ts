@@ -48,6 +48,7 @@ import {
   TokenContainerMethodStatementNode, SelfdestructStatementNode,
   AssemblyStatementNode, CastNode, IntLiteralNode, TryCatchNode,
   WhileNode, DoWhileNode, TernaryOpNode, UnaryOpNode, BreakNode, ContinueNode,
+  ExternalCallExpression,
   BranchNode, UncheckedNode, SwitchNode, StateVariableNode, StateVariableVisibility,
 } from './ast/AST.js';
 import AstBuilder from './ast/AstBuilder.js';
@@ -3644,20 +3645,85 @@ function hasUntransportedChunkableWrite(
   return unsupported;
 }
 
+type FixedChunkableResourceWrite = {
+  node: MappingAssignNode | ArrayAssignNode;
+  activation?: ExternalCallExpression;
+};
+
+/**
+ * Bool-parameter activation recipes for fixed-chunkable path selection. v1 admits only a direct boolean
+ * handler parameter or its logical NOT — enough for resource-indexed presence without opening general
+ * path/effect schedules.
+ */
+function fixedChunkableBoolParamActivation(
+  expression: ExpressionNode,
+  fn: FunctionDefinitionNode,
+): ExternalCallExpression | undefined {
+  const visible = fn.parameters.filter((parameter) => !parameter.name.startsWith('__internal__'));
+  if (expression instanceof IdentifierNode) {
+    const parameterIndex = visible.findIndex((parameter) => parameter.name === expression.name);
+    if (parameterIndex < 0) return undefined;
+    if (visible[parameterIndex]!.type !== PrimitiveType.BOOL) return undefined;
+    return { kind: 'source', source: { kind: 'forward', paramIndex: parameterIndex } };
+  }
+  if (expression instanceof UnaryOpNode && expression.operator === UnaryOperator.NOT) {
+    const inner = fixedChunkableBoolParamActivation(expression.expression, fn);
+    return inner === undefined ? undefined : { kind: 'unary', operator: '!', expression: inner };
+  }
+  return undefined;
+}
+
+const nodeContainsChunkableWrite = (
+  root: Node,
+  chunkableNames: ReadonlySet<string>,
+  footprintNames: ReadonlySet<string>,
+  locallyBound: ReadonlySet<string>,
+): boolean => {
+  let found = false;
+  const walk = (node: Node): void => {
+    if (found) return;
+    if (node instanceof MappingAssignNode && chunkableNames.has(node.name) && footprintNames.has(node.name)) {
+      found = true;
+      return;
+    }
+    if (node instanceof ArrayAssignNode && footprintNames.has(node.name) && !locallyBound.has(node.name)) {
+      found = true;
+      return;
+    }
+    for (const [field, value] of Object.entries(node)) {
+      if (['location', 'resolvedFunction', 'functionReference', 'definition', 'collection', 'symbolTable',
+        'stateVariable', 'type'].includes(field)) continue;
+      if (value instanceof Node) walk(value);
+      else if (Array.isArray(value)) {
+        for (const item of value) if (item instanceof Node) walk(item);
+      }
+    }
+  };
+  walk(root);
+  return found;
+};
+
 /**
  * Prove the fixed-row continuation shape whose handler-local chunk pins are sound when the enclosing route
- * admits at most one such row. The proof excludes push/pop/element mutation, control-flow effects, and
- * helper-hidden writes. Multiple distinct storage resources (collections and/or keys) are allowed: the SDK
- * publishes ordered continuation-resource claims so each band is authenticated independently under the scalar
- * band[0] witness. A route-level aggregate selector counter still supplies the missing terminality fact across
- * rows; without that counter, two individually linear handlers could create orphan continuations for one entry.
+ * admits at most one such row. The proof excludes push/pop/element mutation, helper-hidden writes, and general
+ * control-flow effects. Multiple distinct storage resources are allowed: the SDK publishes ordered
+ * continuation-resource claims so each band is authenticated independently under the scalar band[0] witness.
+ * A write may also sit behind a single bool-parameter BranchNode (empty else); its activation recipe is
+ * published on the entry access so inactive resources omit continuation bands without shifting entry layout.
+ * A route-level aggregate selector counter still supplies the missing terminality fact across rows.
  */
 function fixedChunkableWriteWithSingleOccurrenceBound(
   fn: FunctionDefinitionNode,
   collections: ReadonlyMap<string, CollectionNode>,
   functionsByName: Map<string, FunctionDefinitionNode[]>,
   footprintCache: ReturnType<typeof createFootprintAnalysisCache>,
-): { collection: string; collections: string[]; effectOrdinal: number; effectOrdinals: number[] } | undefined {
+): {
+  collection: string;
+  collections: string[];
+  effectOrdinal: number;
+  effectOrdinals: number[];
+  resources: Array<{ collection: string; effectOrdinal: number; activation?: ExternalCallExpression }>;
+} | undefined {
   if (!fn.body) return undefined;
   const chunkableNames = new Set([...collections].flatMap(([name, collection]) => (
     collection.sorted && isChunkableValueType(collection.innermostValueType) ? [name] : []
@@ -3674,15 +3740,39 @@ function fixedChunkableWriteWithSingleOccurrenceBound(
   walkInvocationAst(fn.body, (node) => {
     if (node instanceof VariableDefinitionNode) locallyBound.add(node.name);
   });
-  const direct: Array<MappingAssignNode | ArrayAssignNode> = [];
+  const direct: FixedChunkableResourceWrite[] = [];
   let unsupported = false;
-  const scan = (node: Node, conditional: boolean): void => {
+  const scan = (node: Node, activation: ExternalCallExpression | undefined): void => {
     if (unsupported) return;
-    const nestedConditional = conditional || node instanceof BranchNode || node instanceof WhileNode
+    if (node instanceof BranchNode) {
+      const branchActivation = fixedChunkableBoolParamActivation(node.condition, fn);
+      if (branchActivation === undefined) {
+        unsupported = true;
+        return;
+      }
+      if (node.elseBlock !== undefined
+        && nodeContainsChunkableWrite(node.elseBlock, chunkableNames, footprintNames, locallyBound)) {
+        // Writes in both arms are same-iteration resource selection — still fenced.
+        unsupported = true;
+        return;
+      }
+      const combined: ExternalCallExpression = activation === undefined
+        ? branchActivation
+        : { kind: 'binary', operator: '&&', left: activation, right: branchActivation };
+      scan(node.ifBlock, combined);
+      return;
+    }
+    const nestedUnsupported = node instanceof WhileNode
       || node instanceof DoWhileNode || node instanceof SwitchNode || node instanceof TryCatchNode
       || node instanceof CollectionIterationNode || node instanceof TernaryOpNode
       || (node instanceof BinaryOpNode
         && (node.operator === BinaryOperator.AND || node.operator === BinaryOperator.OR));
+    if (nestedUnsupported) {
+      if (nodeContainsChunkableWrite(node, chunkableNames, footprintNames, locallyBound)) {
+        unsupported = true;
+      }
+      return;
+    }
     if (node instanceof ReturnNode && direct.length === 0) {
       // A successful early return can bypass a later top-level write even though the write itself has no
       // conditional ancestor. Final or post-write returns remain compatible with the exactly-once proof.
@@ -3691,18 +3781,20 @@ function fixedChunkableWriteWithSingleOccurrenceBound(
     }
     if (node instanceof MappingAssignNode && chunkableNames.has(node.name)) {
       if (!footprintNames.has(node.name) || node.arrayIndex || node.arrayPush || node.arrayPop
-        || node.messageBusJournalTransport || nestedConditional) {
+        || node.messageBusJournalTransport) {
         unsupported = true;
       } else {
-        direct.push(node);
+        direct.push({ node, ...(activation && { activation }) });
       }
-    } else if (node instanceof ArrayAssignNode && footprintNames.has(node.name)
+      return;
+    }
+    if (node instanceof ArrayAssignNode && footprintNames.has(node.name)
       && !locallyBound.has(node.name)) {
       // Solidity-compatible imports can retain a bare `m[k] = value` as ArrayAssign until the route clone's
       // collection normalization. It is the same whole mapping write because `collection` is compiler-resolved
       // above; an actual state array cannot appear in this collection map.
-      if (nestedConditional) unsupported = true;
-      else direct.push(node);
+      direct.push({ node, ...(activation && { activation }) });
+      return;
     }
     if ((node instanceof MappingFieldAssignNode || node instanceof MappingDeleteNode)
       && chunkableNames.has(node.name)) {
@@ -3720,24 +3812,36 @@ function fixedChunkableWriteWithSingleOccurrenceBound(
     for (const [field, value] of Object.entries(node)) {
       if (['location', 'resolvedFunction', 'functionReference', 'definition', 'collection', 'symbolTable',
         'stateVariable', 'type'].includes(field)) continue;
-      if (value instanceof Node) scan(value, nestedConditional);
+      if (value instanceof Node) scan(value, activation);
       else if (Array.isArray(value)) {
-        for (const item of value) if (item instanceof Node) scan(item, nestedConditional);
+        for (const item of value) if (item instanceof Node) scan(item, activation);
       }
     }
   };
-  scan(fn.body, false);
+  scan(fn.body, undefined);
   if (unsupported || direct.length === 0) return undefined;
-  const writtenCollections = new Set(direct.map((node) => node.name));
+  const writtenCollections = new Set(direct.map((entry) => entry.node.name));
   if ([...footprintNames].some((name) => !writtenCollections.has(name))) return undefined;
-  const effectOrdinals = direct.map((node) => node.sourceEffectOrdinal);
-  if (effectOrdinals.some((ordinal) => ordinal === undefined)) return undefined;
+  const resources = direct.map((entry) => {
+    const effectOrdinal = entry.node.sourceEffectOrdinal;
+    if (effectOrdinal === undefined) return undefined;
+    return {
+      collection: entry.node.name,
+      effectOrdinal,
+      ...(entry.activation && { activation: entry.activation }),
+    };
+  });
+  if (resources.some((resource) => resource === undefined)) return undefined;
+  const definedResources = resources as Array<{
+    collection: string; effectOrdinal: number; activation?: ExternalCallExpression;
+  }>;
   const orderedCollections = [...footprintNames];
   return {
     collection: orderedCollections[0]!,
     collections: orderedCollections,
-    effectOrdinal: effectOrdinals[effectOrdinals.length - 1]!,
-    effectOrdinals: effectOrdinals as number[],
+    effectOrdinal: definedResources[definedResources.length - 1]!.effectOrdinal,
+    effectOrdinals: definedResources.map((resource) => resource.effectOrdinal),
+    resources: definedResources,
   };
 }
 
@@ -5140,6 +5244,21 @@ function synthesizeMessageBusRoute(
     fn.messageBusPooledChunkableArrayPush = pooledChunkableArrayPush === undefined ? undefined : true;
     if (fixedChunkableWriteCollection !== undefined) {
       fixedChunkableWriteCollectionByHandler.set(fn, fixedChunkableWriteCollection);
+      fn.messageBusFixedChunkableResources = fixedChunkableWrite?.resources.map((resource) => ({
+        collection: resource.collection,
+        effectOrdinal: resource.effectOrdinal,
+        ...(resource.activation && { activation: resource.activation }),
+      }));
+      // Also stamp onto live entry accesses when ordinals are already present (Artifact republishes from
+      // messageBusFixedChunkableResources as the authoritative source).
+      for (const resource of fixedChunkableWrite?.resources ?? []) {
+        if (resource.activation === undefined) continue;
+        for (const access of fn.entryAccesses ?? []) {
+          if (access.collection !== resource.collection) continue;
+          if (!access.mutationEffectOrdinals?.includes(resource.effectOrdinal)) continue;
+          access.activation = resource.activation;
+        }
+      }
     }
     if (compilerOptions.messageBusKernel === true) {
       const chunkableWrites = [...footprint.writes].some((resource) => {

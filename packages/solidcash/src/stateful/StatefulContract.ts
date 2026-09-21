@@ -7651,10 +7651,25 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // operations of its direct handler using the compiler-published physical-slot correspondence. Per-row route
     // slots are copies of that canonical physical slot, so replace only the `_rN` coordinate and find the exact
     // copy rather than depending on route ordering or collection-specific conventions.
+    const fixedChunkableAccessActive = (
+      access: { activation?: ExternalCallExpression },
+      rowArgs: readonly FunctionArgument[] | undefined,
+    ): boolean => {
+      if (access.activation === undefined) return true;
+      if (rowArgs === undefined) {
+        throw new Error('messageBus: fixed-chunkable activation requires authenticated row arguments');
+      }
+      const active = evaluateFixedEffectPredicate(access.activation, rowArgs);
+      if (typeof active !== 'boolean') {
+        throw new Error('messageBus: fixed-chunkable activation could not be evaluated');
+      }
+      return active;
+    };
     const activeRouteEntryOperations = new Map<number, readonly string[]>();
     reachedHandlers.forEach((handler, rowIndex) => {
       const selected = executionArtifact.abi.find((candidate) =>
         candidate.selector === handler.selector || candidate.name === handler.name);
+      const rowArgs = effectiveRowArguments?.[rowIndex]?.args;
       handler.physicalEntrySlots?.forEach((physicalSlot, directIndex) => {
         const directAccess = selected?.entryAccesses?.[directIndex];
         if (!directAccess) return;
@@ -7673,9 +7688,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           const selectedSlot = selectedAccess.slotIndex
             ?? capability.route.entryAccesses!.indexOf(selectedAccess);
           const prior = activeRouteEntryOperations.get(selectedSlot) ?? [];
+          const operations = fixedChunkableAccessActive(directAccess, rowArgs)
+            ? directAccess.operations
+            : directAccess.operations.filter((operation) => operation !== 'write');
           activeRouteEntryOperations.set(
             selectedSlot,
-            [...new Set([...prior, ...directAccess.operations])],
+            [...new Set([...prior, ...operations])],
           );
         }
       });
@@ -7697,11 +7715,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // selected envelope can still advertise `write` because a sibling handler writes the same physical journal.
     // Preserve the concrete envelope's write set separately so output-only resources (such as long-value
     // continuations) are not provisioned for selected read calls.
-    const activeRouteWriteCollections = [...new Set(reachedHandlers.flatMap((handler) => {
+    const activeRouteWriteCollections = [...new Set(reachedHandlers.flatMap((handler, rowIndex) => {
       const selected = executionArtifact.abi.find((candidate) =>
         candidate.selector === handler.selector || candidate.name === handler.name);
+      const rowArgs = effectiveRowArguments?.[rowIndex]?.args;
       return (selected?.entryAccesses ?? [])
-        .filter((access) => access.operations.includes('write'))
+        .filter((access) => access.operations.includes('write')
+          && fixedChunkableAccessActive(access, rowArgs))
         .map((access) => access.collection);
     }))];
     const reachedFtTransfers = reachedHandlers.reduce((sum, handler) =>

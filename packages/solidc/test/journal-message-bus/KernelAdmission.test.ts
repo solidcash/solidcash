@@ -10501,16 +10501,58 @@ describe('required kernel admission', () => {
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'place')?.eligible).not.toBe(true);
   });
 
-  // Inventory #17 residual: one participant cannot publish multiple variable-width continuation
-  // lanes. Composer cousin is inventory #2 (`multiple continuation resource lanes`); do not treat
-  // that SDK Error as this compiler fence.
-  it('keeps multiple chunkable writes in one participant behind KERNEL_LAYOUT', () => {
+  // Handoff family 1 / inventory #2: unconditional multi-resource fixed chunkable writes are admitted.
+  // Ordered continuation-resource claims authenticate each band; the old single-lane KERNEL_LAYOUT
+  // residual no longer applies to this straight-line shape.
+  it('admits multiple unconditional fixed chunkable writes in one participant', () => {
     const artifact = compileString(`contract C() {
       mapping(int => bytes) left;
       mapping(int => bytes) right;
       function work(int key, bytes first, bytes second) public {
         left[key] = first;
         right[key] = second;
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'work'))
+      .toMatchObject({ eligible: true });
+  });
+
+  // Family 1: bool-param-activated second fixed-chunkable resource is admitted with a published activation.
+  it('admits a bool-param-activated second chunkable write in one participant', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => bytes) left;
+      mapping(int => bytes) right;
+      function work(int key, bytes first, bytes second, bool writeRight) public {
+        left[key] = first;
+        if (writeRight) {
+          right[key] = second;
+        }
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+    const work = artifact.abi.find((entry) => entry.name === 'work');
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'work'))
+      .toMatchObject({ eligible: true });
+    expect(work?.entryAccesses?.find((access) => access.collection === 'right')?.activation)
+      .toMatchObject({ kind: 'source', source: { kind: 'forward', paramIndex: 3 } });
+    expect(work?.entryAccesses?.find((access) => access.collection === 'left')?.activation)
+      .toBeUndefined();
+  });
+
+  // Family 1 residual: writes in both arms are same-iteration resource selection.
+  it('keeps chunkable writes in both branch arms behind KERNEL_LAYOUT', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => bytes) left;
+      mapping(int => bytes) right;
+      function work(int key, bytes first, bytes second, bool pickRight) public {
+        if (pickRight) {
+          right[key] = second;
+        } else {
+          left[key] = first;
+        }
         require(true);
       }
       function control() public { require(true); }

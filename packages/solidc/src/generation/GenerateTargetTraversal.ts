@@ -1925,7 +1925,24 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   /** Whether this physical invocation frame carries an authenticated participant-block owner. */
   private hasMessageBusParticipantOwner(node: FunctionDefinitionNode = this.currentFunction): boolean {
     return node?.parameters?.some((parameter) =>
-      parameter.name === MESSAGE_BUS_OWNER_INPUT) === true;
+      parameter.name === MESSAGE_BUS_OWNER_INPUT
+      // Merge-capable routes publish the survivor index as `__internal__lifecycleOwnerInput` instead of the
+      // ordinary handler owner witness. Treat it as the same participant-block authority so journal
+      // preallocation and state reads stay owner-relative when consumed masters share this unlocker.
+      || parameter.name === '__internal__lifecycleOwnerInput') === true;
+  }
+
+  /** Stack name of the authenticated participant-block owner for the current frame, if any. */
+  private messageBusParticipantOwnerName(
+    node: FunctionDefinitionNode = this.currentFunction,
+  ): string | undefined {
+    if (node?.parameters?.some((parameter) => parameter.name === MESSAGE_BUS_OWNER_INPUT)) {
+      return MESSAGE_BUS_OWNER_INPUT;
+    }
+    if (node?.parameters?.some((parameter) => parameter.name === '__internal__lifecycleOwnerInput')) {
+      return '__internal__lifecycleOwnerInput';
+    }
+    return undefined;
   }
 
   /**
@@ -6769,7 +6786,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         // own data NFTs there.
         if (this.delegateTakenFlagActive) this.emitConditionalDelegateStatePreservation(node);
       } else if (hasAnyStatefulAccess) {
-        // Full covenant checks
+        // Full covenant checks. Merge-capable routes resolve state through the lifecycle owner, so
+        // tails that share this unlocker still verify the survivor dataNft rather than a neighbour.
         this.emitTokenCategoryVerification(node);
       }
       if (!this.functionHasDelegatecall && hasEntryAccess) {
@@ -28065,7 +28083,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   /** Verify a data NFT preserves its locking bytecode and token category. */
   private emitDataNftPreservation(offset: number, loc: SingleLocationData): void {
-    if (this.currentFunctionIsDelegate) {
+    // Delegate and message-bus owner-base frames must address the authenticated participant block, not
+    // OP_INPUTINDEX. Merge tails share the route unlocker; baking INPUTINDEX into a shared helper would make
+    // them preserve a neighbouring consumed master instead of the survivor dataNft.
+    if (this.currentFunctionIsDelegate || this.usesMessageBusOwnerBlockBase()) {
       this.emitDataNftPreservationInline(offset, loc, true);
       return;
     }
@@ -28108,7 +28129,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   private emitDataNftCommitmentPreservation(offset: number, loc: SingleLocationData): void {
-    if (this.currentFunctionIsDelegate) {
+    if (this.currentFunctionIsDelegate || this.usesMessageBusOwnerBlockBase()) {
       this.emitDataNftCommitmentPreservationInline(offset, loc, true);
       return;
     }
@@ -28146,7 +28167,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   private emitDataNftOutputCommitment(offset: number, loc: SingleLocationData): void {
-    if (this.currentFunctionIsDelegate) {
+    if (this.currentFunctionIsDelegate || this.usesMessageBusOwnerBlockBase()) {
       this.emitMasterInputIndex(loc);
       this.emit(encodeInt(BigInt(offset)), loc);
       this.emit(Op.OP_ADD, loc);
@@ -28176,7 +28197,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   private emitDataNftOutputCommitmentInline(offset: number, loc: SingleLocationData): void {
-    this.emit(Op.OP_INPUTINDEX, loc);
+    if (this.usesMessageBusOwnerBlockBase()) {
+      this.emitMasterInputIndex(loc);
+    } else {
+      this.emit(Op.OP_INPUTINDEX, loc);
+    }
     this.emit(encodeInt(BigInt(offset)), loc);
     this.emit(Op.OP_ADD, loc);
     this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, loc);
@@ -32384,8 +32409,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const mergeTail = this.beginAtomicMergeTailExclusion(locationData);
 
     // Shared as a subroutine for non-delegate functions; delegate (altstack proxy index) inlines.
-    if (!this.currentFunctionIsDelegate && this.invokeSubroutineIfDefined(
-      GenerateTargetTraversalWithLocation.MASTER_SELF_PRES_SUBROUTINE_ID, locationData)) {
+    // Owner-base message-bus frames must not reuse an INPUTINDEX-baked shared body: merge tails share the
+    // route unlocker and would preserve the wrong input/output pair.
+    if (!this.currentFunctionIsDelegate && !this.usesMessageBusOwnerBlockBase()
+      && this.invokeSubroutineIfDefined(
+        GenerateTargetTraversalWithLocation.MASTER_SELF_PRES_SUBROUTINE_ID, locationData)) {
       if (mergeTail) this.emit(Op.OP_ENDIF, locationData);
       if (skipRetirement) this.emit(Op.OP_ENDIF, locationData);
       return;
@@ -32442,8 +32470,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private emitMasterValuePreservation(locationData: SingleLocationData): void {
     const skipRetirement = this.beginAtomicSelfdestructExclusion(locationData);
     const mergeTail = this.beginAtomicMergeTailExclusion(locationData);
-    if (!this.currentFunctionIsDelegate && this.invokeSubroutineIfDefined(
-      GenerateTargetTraversalWithLocation.MASTER_VALUE_PRES_SUBROUTINE_ID, locationData)) {
+    if (!this.currentFunctionIsDelegate && !this.usesMessageBusOwnerBlockBase()
+      && this.invokeSubroutineIfDefined(
+        GenerateTargetTraversalWithLocation.MASTER_VALUE_PRES_SUBROUTINE_ID, locationData)) {
       if (mergeTail) this.emit(Op.OP_ENDIF, locationData);
       if (skipRetirement) this.emit(Op.OP_ENDIF, locationData);
       return;
@@ -32487,8 +32516,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     return true;
   }
 
-  /** Skip ordinary master-output preservation only for verifier-authorized merge tail inputs. */
+  /**
+   * Skip ordinary INPUTINDEX-relative covenants for verifier-authorized merge tail inputs.
+   * Owner-base message-bus frames already address the survivor via `__internal__lifecycleOwnerInput`
+   * / `__internal__messageBusOwnerInput`, so their covenants are safe (and required for journal
+   * stack balance) on tails — do not exclude them.
+   */
   private beginAtomicMergeTailExclusion(locationData: SingleLocationData): boolean {
+    if (this.usesMessageBusOwnerBlockBase()) return false;
     const lifecycleModeIndex = this.currentFunctionIsMessageBusRoute
       ? this.getStackIndex('__message_bus_active_lifecycle_mode', true) : -1;
     const lifecycleOwnerIndex = this.currentFunctionIsMessageBusRoute
@@ -32782,7 +32817,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // untracked operands ABOVE the tracked frame, the top-relative form when the extras sit BELOW it. A fix
       // for the take-job coordinate must therefore correct the MODEL (or the specific base emitter), not the
       // addressing form. See DBG-COMPUTE-BASE / SOLIDC_DEBUG_COMPUTE_BASE.
-      const trackedOwnerIndex = this.getStackIndex(MESSAGE_BUS_OWNER_INPUT, true);
+      const ownerName = this.messageBusParticipantOwnerName() ?? MESSAGE_BUS_OWNER_INPUT;
+      const trackedOwnerIndex = this.getStackIndex(ownerName, true);
       if (this.currentFunction.messageBusOwnerAltAnchor === true) {
         // Re-read the entry-time capture without consuming it. The flag is reset at the start of every emission of
         // this function, so a stream that never captured the owner keeps its ordinary addressing.
@@ -32840,22 +32876,28 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           && !(forcedTopHandler !== undefined && forcedTopHandler.length > 0
             && this.currentFunction.name.includes(forcedTopHandler));
         const ownerSite = this.debugComputeBase(
-          graphRowHandler ? 'owner-bottom' : 'owner', '__internal__messageBusOwnerInput',
+          graphRowHandler ? 'owner-bottom' : 'owner', ownerName,
           trackedOwnerIndex, extraStackOffset,
         );
         this.emitComputeBaseSiteMarker(locationData, ownerSite);
         if (graphRowHandler) {
-          this.emitPickTrackedFromBottom('__internal__messageBusOwnerInput', locationData);
+          this.emitPickTrackedFromBottom(ownerName, locationData);
         } else {
-          this.emit(encodeInt(BigInt(trackedOwnerIndex + extraStackOffset)), locationData);
-          this.emit(Op.OP_PICK, locationData);
+          // Merge-capable routes keep `__internal__lifecycleOwnerInput` under a growing row frame; pick it by
+          // stable bottom ordinal. Ordinary handler owners keep the compact top-relative form.
+          if (ownerName === '__internal__lifecycleOwnerInput' || this.isCompilerMessageBusRoute()) {
+            this.emitPickTrackedFromBottom(ownerName, locationData);
+          } else {
+            this.emit(encodeInt(BigInt(trackedOwnerIndex + extraStackOffset)), locationData);
+            this.emit(Op.OP_PICK, locationData);
+          }
         }
       } else if (this.isSubroutineUseProbe) {
         // The call-graph probe has no physical function frame; its emitted instructions are discarded.
         this.emit(Op.OP_INPUTINDEX, locationData);
       } else {
         throw new StackVariableUnavailableError(
-          '__internal__messageBusOwnerInput', ` while compiling '${this.currentFunction.name}'`,
+          ownerName, ` while compiling '${this.currentFunction.name}'`,
         );
       }
     } else if (this.usesProxyStateBlockBase()) {
@@ -34073,20 +34115,21 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     this.emit(Op.OP_ELSE, locationData);
 
-    // === Path B: Consumed master (INPUTINDEX > 0) ===
+    // === Path B: Consumed master (INPUTINDEX != lifecycle owner) ===
 
-    // Verify input[0] is a valid surviving master of same contract
-    // input[0] category+capability must match ours (minting + same category)
-    this.emit(encodeInt(0n), locationData);
-    this.emit(Op.OP_UTXOTOKENCATEGORY, locationData);    // input[0].cat_cap
-    this.pushToStack('(input0_cat_cap)');
+    // Surviving master category+capability must match ours (minting + same category).
+    // Use emitMasterInputIndex (not hardcoded input[0]) so multi-participant compose works when
+    // the survivor sits at a non-zero base.
+    this.emitMasterInputIndex(locationData);
+    this.emit(Op.OP_UTXOTOKENCATEGORY, locationData);    // surviving master cat_cap
+    this.pushToStack('(master_cat_cap_b)');
     this.emit(Op.OP_INPUTINDEX, locationData);
     this.emit(Op.OP_UTXOTOKENCATEGORY, locationData);    // self.cat_cap
     this.pushToStack('(self_cat_cap)');
     this.emit(Op.OP_EQUALVERIFY, locationData);
     this.popFromStack(2);
 
-    // input[0] LBC must match ours (same contract)
+    // Surviving master LBC must match ours (same contract)
     this.emitMasterInputIndex(locationData);
     this.emit(Op.OP_UTXOBYTECODE, locationData);          // surviving master lbc
     this.pushToStack('(master_lbc_b)');

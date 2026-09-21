@@ -83,6 +83,17 @@ describe('kernel selfdestruct state compose', () => {
     expect(mappingFence.MappingVictim.messageBus?.handlers.find((handler) => handler.name === 'kill'))
       .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LIFECYCLE' });
 
+    const eventFence = compileStringMulti(`
+      contract EventVictim() {
+        event Ping();
+        int public marker;
+        function kill() public selfdestruct { require(true); }
+        function idle() public { require(true); }
+      }
+    `, KERNEL);
+    expect(eventFence.EventVictim.messageBus?.handlers.find((handler) => handler.name === 'kill'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LIFECYCLE' });
+
     const connect = async (artifact: Artifact, args: readonly unknown[] = []): Promise<{
       contract: StatefulContract; category: string; masterSats: bigint; dataSats: bigint;
     }> => {

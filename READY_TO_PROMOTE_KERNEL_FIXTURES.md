@@ -78,12 +78,13 @@ Legend: **S** = settle fixture · **F** = honest fence · **—** = deferred / t
 Peers already settled: fan-in/out, nested callsite, sidecar self/foreign/proxy/proxy×foreign, DirectSend entry order. DualRuntimeSet-width × keccak = inherent density fence in `KernelDualRuntimeKeccakCompose`.
 
 ### Lifecycle column
-- **Settle (S):** upgrade (`KernelUpgradeCompose`, `KernelProxyUpgradeThenCompose`), Yul create (`KernelTypedYulCreateCompose`), resource-free split (`KernelAtomicSplitLifecycle`), resource-free merge (`KernelAtomicMergeLifecycle`), resource-free + statement-form master-only selfdestruct (`KernelSelfdestructCompose`, `KernelSelfdestructStatementCompose`), lifecycle+V4 KTS (`KernelLifecycleV4SignatureCompose`).
-- **Honest fence (F):** state/effect-bearing split/merge/selfdestruct remain `KERNEL_LIFECYCLE` until journal-bound geometry; detached `sig` on lifecycle handlers remains `KERNEL_TX_SIGNATURE`.
+- **Settle (S):** upgrade (`KernelUpgradeCompose`, `KernelProxyUpgradeThenCompose`), Yul create (`KernelTypedYulCreateCompose`), resource-free split (`KernelAtomicSplitLifecycle`), resource-free merge (`KernelAtomicMergeLifecycle`), read-bearing split/merge (`KernelAtomicSplitReadLifecycle`, `KernelAtomicMergeReadLifecycle`), resource-free + statement-form master-only selfdestruct (`KernelSelfdestructCompose`, `KernelSelfdestructStatementCompose`), fixed-scalar state selfdestruct (`KernelSelfdestructStateCompose`), lifecycle+V4 KTS (`KernelLifecycleV4SignatureCompose`).
+- **Honest fence (F):** collection/event/blockhash selfdestruct, write/effect/collection lifecycle, state-clone-on-split remain `KERNEL_LIFECYCLE`; detached `sig` on lifecycle handlers remains `KERNEL_TX_SIGNATURE`; DualRuntimeSet-width × keccak density remains inherent.
 
 ## Product gaps closed this stream
 - **Fixed-scalar state-bearing selfdestruct:** modifier-only `kill()` with `int` dataNft under compose; destroy unlockers + token-free reclaim pads (`KernelSelfdestructStateCompose`).
-- **Read-bearing split:** `require(this.marker > 0)` under `split(count)` preserves dataNft prefix (`KernelAtomicSplitReadLifecycle`). Merge admits the same prefix; compose settle for merge tails pending.
+- **Read-bearing split:** `require(this.marker > 0)` under `split(count)` preserves dataNft prefix (`KernelAtomicSplitReadLifecycle`).
+- **Read-bearing merge:** same preserve prefix under `merge(count)`; merge-capable routes use `__internal__lifecycleOwnerInput` as the participant block base so consumed masters sharing the unlocker still decode/preserve the survivor dataNft (`KernelAtomicMergeReadLifecycle`).
 - **Statement-form selfdestruct(addr) under compose:** master-only contracts with constructor-bound recipients pin `outputs[INPUTINDEX]` under `messageBus: true`; standalone keeps whole-tx pin + fee floor. `KernelSelfdestructStatementCompose`.
 - **Lifecycle + V4 transaction-signature provenance:** remove SDK/verifier mutual exclusion; V4 suffix stays neutral while selector-derived lifecycle coexists with KTS siblings. `KernelLifecycleV4SignatureCompose`.
 - **Resource-free selfdestruct under compose:** offloaded `compactAtomicBinder` soft-binds token-free reclaim at the participant base; zero-parameter lifecycle handlers require mode 3 (not blanket mode 0). `KernelSelfdestructCompose` settles kill()+recipient reclaim with retired minting category.
@@ -105,8 +106,8 @@ Peers already settled: fan-in/out, nested callsite, sidecar self/foreign/proxy/p
 
 ## Still open / fence
 - DualRuntimeSet-width density wall (inherent)
-- Collection/event selfdestruct and merge-tail state-read compose remain open; fixed-scalar state selfdestruct,
-  read-bearing split, resource-free lifecycle, statement-form master-only selfdestruct, and lifecycle+V4 KTS settled
+- Collection/event/blockhash selfdestruct under one compose row (honest `KERNEL_LIFECYCLE`; use standalone destroy)
+- Detached `sig` on lifecycle handlers (`KERNEL_TX_SIGNATURE`)
 - ~~proxy→foreign-proxy variable-width Item[] remains non-delegate compile/eligibility fence (int[] settles)~~
   settled via FieldAccess rename guard in `InlineStoragePointerCalls`
 

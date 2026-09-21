@@ -11,11 +11,13 @@ Branch: `grok/kernel-comprehensive-fixtures`
 
 ## Residual
 - DualRuntimeSet-width × keccak density — inherent (probe: max trailing 130; salt cannot clear margin)
-- Read-bearing **merge** compose — admitted with preserve `resourcePrefix`, but consumed-master
-  tails still re-enter the handler body (unsafe for NFT state reads). Split-read compose is the
-  settled proof of the preserve prefix (`KernelAtomicSplitReadLifecycle`).
-- Collection/event/blockhash-bearing selfdestruct — still `KERNEL_LIFECYCLE`
+- Collection/event/blockhash-bearing selfdestruct — still `KERNEL_LIFECYCLE` (honest; standalone
+  `StatefulContract.destroy()` multi-tx batching remains the product path; locked negatives in
+  `KernelSelfdestructStateCompose`)
 - Detached `sig` leaves on lifecycle handlers — still `KERNEL_TX_SIGNATURE` (honest)
+- ~~Read-bearing **merge** compose~~ **SETTLED** (`KernelAtomicMergeReadLifecycle`) — preserve
+  `resourcePrefix`; merge-capable routes treat `__internal__lifecycleOwnerInput` as the participant
+  block base so tails that share the unlocker decode/preserve the survivor dataNft, not a neighbour
 - ~~proxy→foreign-proxy variable-width Item[] — non-delegate eligibility fence (int[] settles)~~
   **SETTLED**: `InlineStoragePointerCalls.applyRename` now skips `FieldAccessNode` member names
   (same guard as IRSH/IECH). `KernelProxyToProxyChunkedStructCompose` emits `delegateArtifact` for

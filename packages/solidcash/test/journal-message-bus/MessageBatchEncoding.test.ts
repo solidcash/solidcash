@@ -139,6 +139,24 @@ describe('messageBus.encodeMessageBatch', () => {
     ]);
     expect(hex.startsWith(`53434231010002${add.selector}000000000000`)).toBe(true);
     expect(hex).toContain(`${clear.selector}0100000000000000`);
+    // Item 3: mixed-arity rows publish absolute calldata bounds that reconstruct argsHex and tile the blob.
+    expect(encoded.rows[0]).toMatchObject({
+      calldataLength: encoded.rows[0]!.argsHex.length / 2,
+    });
+    expect(encoded.rows[1]).toMatchObject({
+      calldataLength: 0,
+      argsHex: '',
+    });
+    let cursor = encoded.rows[0]!.calldataStart;
+    for (const row of encoded.rows) {
+      expect(row.calldataStart).toBeGreaterThanOrEqual(7); // magic+flags+count
+      expect(row.calldataLength).toBe(row.argsHex.length / 2);
+      expect(binToHex(encoded.blob.subarray(row.calldataStart, row.calldataStart + row.calldataLength)))
+        .toBe(row.argsHex.toLowerCase());
+      expect(row.calldataStart).toBeGreaterThanOrEqual(cursor);
+      cursor = row.calldataStart + row.calldataLength;
+    }
+    expect(cursor).toBeLessThanOrEqual(encoded.blob.length);
   });
 
   it('enforces an aggregate fixed chunkable-write occurrence policy before encoding', () => {

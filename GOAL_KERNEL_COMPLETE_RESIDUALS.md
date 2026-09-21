@@ -27,8 +27,8 @@
 ## Phase checklist
 
 - [x] **0** Loop-nested external value-chunk compose (hetero ≥61B Caller→Store) — route publishes `valueChunkOutputBase` + trailing band; composed loop mints use in-band `valueChunkOutputs` (COND path) instead of late suffix append
-- [ ] **1a** Item 3 multi-row argument framing
-- [ ] **1b** Re-verify item 1 caller identity
+- [x] **1a** Item 3 multi-row argument framing (`calldataStart`/`calldataLength` + mixed-arity settle)
+- [x] **1b** Re-verify item 1 caller identity (`KernelCallsiteCallerIdentityCompose`, `KernelBatchedCallsiteIdentityCompose`)
 - [ ] **1c** Item 5 multi-producer result dependencies
 - [ ] **1d** Item 6 multiple computed writes / ordered claims
 - [ ] **2** Path/effect: selected events, non-bool selection, both-arms chunkable, maskable break/continue, bounded transfers-beside-journal

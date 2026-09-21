@@ -96,6 +96,13 @@ export interface EncodedMessageBatch {
     selectorHex: string;
     /** Exact pushdata-encoded ABI argument vector parsed by message-bus batch. */
     argsHex: string;
+    /**
+     * Absolute byte offset of this row's argument payload inside `blob`.
+     * Decode walks must stay inside `[calldataStart, calldataStart + calldataLength)`.
+     */
+    calldataStart: number;
+    /** Authoritative argument payload length in bytes (== `argsHex.length / 2`). */
+    calldataLength: number;
     /** Compiler-derived transaction-signature provenance; never contains signature bytes. */
     transactionSignatureFrameHex: string;
   }[];
@@ -956,13 +963,37 @@ export function encodeMessageBatch(
     );
   });
 
-  const blob = concat(
+  const blobHeader = concat(
     hexToBin('53434231'),
     Uint8Array.from([modeVersion ? 2 : 1, valueMode ? 1 : 0, invocations.length]),
-    ...rows,
   );
+  const blob = concat(blobHeader, ...rows);
   if (blob.length > capability.maximumBlobBytes) {
     throw new Error(`message-bus batch blob is ${blob.length} bytes; maximum is ${capability.maximumBlobBytes}`);
+  }
+  // Publish absolute argument bounds so mixed-handler / multi-row consumers slice without re-deriving
+  // schema walks that can OP_SPLIT past a shorter sibling row's payload.
+  let rowCursor = blobHeader.length;
+  const framedRows = projectedRows.map((row, index) => {
+    const rowBytes = rows[index]!;
+    const calldataLength = row.argsHex.length / 2;
+    if (calldataLength > rowBytes.length) {
+      throw new Error(`message-bus batch row ${index} argument length exceeds its encoded frame`);
+    }
+    const calldataStart = rowCursor + (rowBytes.length - calldataLength);
+    const slice = blob.subarray(calldataStart, calldataStart + calldataLength);
+    if (binToHex(slice) !== row.argsHex.toLowerCase()) {
+      throw new Error(`message-bus batch row ${index} calldata frame does not match encoded arguments`);
+    }
+    rowCursor += rowBytes.length;
+    return {
+      ...row,
+      calldataStart,
+      calldataLength,
+    };
+  });
+  if (rowCursor !== blob.length) {
+    throw new Error('message-bus batch row frames do not tile the authenticated blob');
   }
 
   const routeWitnesses = capability.route.inputs
@@ -1008,7 +1039,7 @@ export function encodeMessageBatch(
     routeWitnesses: Object.freeze(routeWitnesses),
     rowCount: invocations.length,
     results: Object.freeze(results),
-    rows: Object.freeze(projectedRows.map((row) => Object.freeze(row))),
+    rows: Object.freeze(framedRows.map((row) => Object.freeze(row))),
   };
 }
 

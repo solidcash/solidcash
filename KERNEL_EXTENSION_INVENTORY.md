@@ -93,7 +93,7 @@ Post-beta planning follows the missing-proof-object order (resource-indexed mult
 |---|---|
 | 1 | **Landed on tip** (`d3b98a487` / merge) — re-verify fixtures before treating as closed |
 | 2 | **Landed + verified** — multi-resource fixed chunkable + bool-param activation; family-1 A/B/C loop residuals (`KernelHeteroLoopStreamsCompose`, `KernelSameIterSelectionCompose`, `KernelMultiStreamEventCompose`) |
-| 3 | Open — multi-row calldata start/length framing |
+| 3 | **Landed** — `encodeMessageBatch` publishes per-row `calldataStart`/`calldataLength`; mixed-arity settle (`KernelMixedHandlerRowFramingCompose`, `MessageBatchEncoding`) |
 | 4 | **Landed on tip** (`9137ab4cc`) — batched callsite four-tuple |
 | 5–6 | Planned — `ext-plans/ITEMS_5_6_PLAN.md` |
 | 7–18 | **Fenced** — [`FENCE_MAP_7_18.md`](./FENCE_MAP_7_18.md); selected events / non-bool selection / relocatable blocks remain |

@@ -166,6 +166,8 @@ export interface PreparedAtomicMessageBusCall {
   resolveArgsFromResults?: (
     results: ReadonlyMap<number, FunctionArgument>,
   ) => readonly FunctionArgument[] | undefined;
+  /** Parent-frame callsites actually read while resolving this occurrence's selected expression path. */
+  resultProducerCallsiteIds?: readonly number[];
 }
 
 /** Validate one prepared compiler edge against the planner's canonical producer occurrence. */

@@ -628,6 +628,7 @@ type PlannedExternalCallOccurrence = Readonly<{
   sourceIteration: number;
   occurrenceIndex: number;
   expressionReturns: ReadonlyMap<string, FunctionArgument>;
+  usedProducerCallsiteIds: readonly number[];
   args: readonly FunctionArgument[];
   target?: FunctionArgument;
 }>;
@@ -6316,6 +6317,8 @@ export interface RouteExpressionKeyRow {
   sourceEffectOrdinal?: number;
   /** Exact root-to-row source occurrence transported by the compiled graph. */
   producerPath?: ValueChunkProducerPathDisposition;
+  /** Parent-frame producer callsites selected while resolving this exact row. */
+  usedProducerCallsiteIds?: readonly number[];
   handler: AbiFunction;
 }
 
@@ -26899,7 +26902,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               const directInvocationRows: readonly RouteExpressionKeyRow[] | undefined =
                 !childCompilerRoute && selectedFn && producerSelector
                   ? plannedNestedOccurrences.map(({
-                    args, occurrenceIndex, sourceIteration,
+                    args, occurrenceIndex, sourceIteration, usedProducerCallsiteIds,
                   }): RouteExpressionKeyRow => ({
                     args,
                     handler: selectedFn,
@@ -26909,6 +26912,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                     sourceIteration,
                     sourceEffectOrdinal: nested.sourceEffectOrdinal,
                     producerPath: producerPathForDirectOccurrence(occurrenceIndex),
+                    usedProducerCallsiteIds,
                   }))
                   : undefined;
               if (!proxyCallee && selectedFn?.blockLayout) {
@@ -28671,7 +28675,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               publishRouteValueChunkProducerBinding(latestRouteValueChunkProducerBinding);
               if (preparedAtomicNodes) {
                 const atomicNodeIndex = preparedAtomicNodes.length;
-                const runtimeRows = childCompilerRoute?.rowArguments ?? directInvocationRows;
+                const runtimeRows: readonly RouteExpressionKeyRow[] | undefined =
+                  childCompilerRoute?.rowArguments ?? directInvocationRows;
                 if (runtimeRows?.length) {
                   const runtimeRowsWithProducerPaths = runtimeRows.map((row) => ({
                     row,
@@ -28752,6 +28757,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                       occurrenceIndex: row.occurrenceIndex,
                       sourceEffectOrdinal: row.sourceEffectOrdinal,
                       producerPath,
+                      ...(row.usedProducerCallsiteIds?.length && {
+                        resultProducerCallsiteIds: row.usedProducerCallsiteIds,
+                      }),
                       ...(rowValueChunkProductions?.length && {
                         valueChunkProductions: rowValueChunkProductions,
                       }),
@@ -28840,6 +28848,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                       ...((nested.occurrence ?? 'once') !== 'loop' && { occurrenceIndex: 0 }),
                     }),
                     producerPath,
+                    ...(plannedNestedOccurrences[0]!.usedProducerCallsiteIds.length && {
+                      resultProducerCallsiteIds: plannedNestedOccurrences[0]!.usedProducerCallsiteIds,
+                    }),
                     ...(nodeValueChunkProductions?.length && {
                       valueChunkProductions: nodeValueChunkProductions,
                     }),
@@ -29242,7 +29253,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         }
         for (const { nested, occurrenceIndex, row } of plannedLateRows) {
           const {
-            sourceIteration, expressionReturns, args: plannedChildArgs, target: resolvedAddressTarget,
+            sourceIteration, expressionReturns, usedProducerCallsiteIds,
+            args: plannedChildArgs, target: resolvedAddressTarget,
           } = row;
           const childArgs = [...plannedChildArgs];
           // `sourceIteration` selects values while evaluating a repeated callsite. It is not a compiler source-row
@@ -29953,6 +29965,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   sourceCallsiteId: nested.callsiteId,
                   occurrenceIndex,
                   sourceEffectOrdinal: nested.sourceEffectOrdinal,
+                }),
+                ...(usedProducerCallsiteIds.length && {
+                  resultProducerCallsiteIds: usedProducerCallsiteIds,
                 }),
                 ...(resolveGraphChildArgs && { resolveArgsFromResults: resolveGraphChildArgs }),
                 active: true,
@@ -36100,6 +36115,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           ...(node.resolveArgsFromResults && {
             resolveArgsFromResults: node.resolveArgsFromResults,
           }),
+          ...(node.resultProducerCallsiteIds?.length && {
+            resultProducerCallsiteIds: Object.freeze([...node.resultProducerCallsiteIds]),
+          }),
         })));
       }
     }
@@ -37343,6 +37361,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     }
     const reached: PlannedExternalCallOccurrence[] = [];
     for (const sourceIteration of candidates) {
+      const usedProducerCallsiteIds = new Set<number>();
       const conditionReturns = call.condition
         ? await frame.registryOwner._resolveExternalExpressionReturns(
           [{ kind: 'expression', expression: call.condition }],
@@ -37361,6 +37380,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           },
           sourceIteration,
           frame.executionMsgSender,
+          usedProducerCallsiteIds,
         ) : new Map<string, FunctionArgument>();
       if (call.condition) {
         const active = frame.registryOwner._evaluateExternalExpression(
@@ -37396,6 +37416,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         undefined,
         sourceIteration,
         frame.executionMsgSender,
+        usedProducerCallsiteIds,
       );
       const argumentReturns = await frame.registryOwner._resolveExternalExpressionReturns(
         sources,
@@ -37414,6 +37435,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         },
         sourceIteration,
         frame.executionMsgSender,
+        usedProducerCallsiteIds,
       );
       const expressionReturns = new Map([...conditionReturns, ...addressReturns, ...argumentReturns]);
       const args = frame.registryOwner._resolveExternalArgs(
@@ -37464,6 +37486,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         sourceIteration,
         occurrenceIndex: reached.length,
         expressionReturns,
+        usedProducerCallsiteIds: Object.freeze([...usedProducerCallsiteIds]
+          .sort((left, right) => left - right)),
         args: Object.freeze([...args]),
         ...(target !== undefined && { target }),
       }));
@@ -37497,6 +37521,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     },
     occurrenceIndex = 0,
     executionMsgSender?: FunctionArgument,
+    usedProducerCallsiteIds?: Set<number>,
   ): Promise<Map<string, FunctionArgument>> {
     const resolved = new Map<string, FunctionArgument>();
     const producerByCallsite = new Map<number, ExternalCallAbi>();
@@ -37829,6 +37854,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               );
             }
           }
+          usedProducerCallsiteIds?.add(producer.callsiteId!);
           const result = await resolveProducer(producer);
           const selected = (producer.returnTypes?.length ?? 0) === 1
             ? result : Array.isArray(result) ? result[resultIndex] as FunctionArgument : undefined;
@@ -37839,6 +37865,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         const publishedProducer = candidate.callsiteId === undefined
           ? undefined : producerByCallsite.get(candidate.callsiteId);
         if (publishedProducer) {
+          usedProducerCallsiteIds?.add(publishedProducer.callsiteId!);
           const value = await resolveProducer(publishedProducer);
           if (value !== undefined) resolved.set(JSON.stringify(candidate), value);
           return;

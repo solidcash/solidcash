@@ -82,8 +82,8 @@ Authoritative gate/fixture map: [`FENCE_MAP_7_18.md`](./FENCE_MAP_7_18.md). Do n
 | 14 | `KERNEL_OPAQUE_EFFECT` | `KernelAdmission` opaque native / stack-divergent assembly; `CallManifestIneligibilityMatrixV1` |
 | 15 | `KERNEL_FOREIGN_DELEGATE` | `KernelAdmission` `refuses foreign delegatecall as KERNEL_FOREIGN_DELEGATE` |
 | 16 | `KERNEL_LIFECYCLE` | `KernelLifecycleTopology` collection-bearing + statement-form state selfdestruct; `KernelAdmission` unsafe(0/1) |
-| 17 | `KERNEL_LAYOUT` | Relocatable multi-span blocks; heterogeneous / same-iter multi-stream residuals. Unconditional and bool-param-activated multi-resource fixed chunkable are admitted (inventory #2 + `KernelConditionalMultiContinuationCompose`) |
-| 18 | `KERNEL_LAYOUT` | `KernelAdmission` both-arms chunkable selection / early-return bypass / phased break+emit+transfer; selected-event suites. Bool-param empty-else fixed-chunkable activation is admitted |
+| 17 | `KERNEL_LAYOUT` | Relocatable multi-span blocks. Admitted: unconditional/bool-param multi-resource fixed chunkable; hetero loop streams (`KernelHeteroLoopStreamsCompose`); bool-param same-iter selection (`KernelSameIterSelectionCompose`) |
+| 18 | `KERNEL_LAYOUT` | Selected/early-terminated events; both-arms non-loop chunkable selection; early-return bypass. Admitted: unconditional emit beside ≥2 mutation streams (`KernelMultiStreamEventCompose`); bool-param empty-else fixed-chunkable |
 
 ## Session status
 
@@ -92,12 +92,12 @@ Post-beta planning follows the missing-proof-object order (resource-indexed mult
 | Item | Status |
 |---|---|
 | 1 | **Landed on tip** (`d3b98a487` / merge) — re-verify fixtures before treating as closed |
-| 2 | **Landed + verified** (`cb740cc5b` + bool-param activation) — multi-resource fixed chunkable; `KernelMultiContinuationResourceCompose` 3/3; `KernelConditionalMultiContinuationCompose` true/false settle |
+| 2 | **Landed + verified** — multi-resource fixed chunkable + bool-param activation; family-1 A/B/C loop residuals (`KernelHeteroLoopStreamsCompose`, `KernelSameIterSelectionCompose`, `KernelMultiStreamEventCompose`) |
 | 3 | Open — multi-row calldata start/length framing |
 | 4 | **Landed on tip** (`9137ab4cc`) — batched callsite four-tuple |
 | 5–6 | Planned — `ext-plans/ITEMS_5_6_PLAN.md` |
-| 7–18 | **Fenced** — [`FENCE_MAP_7_18.md`](./FENCE_MAP_7_18.md); #17/#18 residuals exclude the admitted bool-param empty-else fixed-chunkable subset |
+| 7–18 | **Fenced** — [`FENCE_MAP_7_18.md`](./FENCE_MAP_7_18.md); selected events / non-bool selection / relocatable blocks remain |
 
-**Family 1 next residual (handoff):** heterogeneous loop streams (scalar+chunkable); same-iteration resource selection; events beside ≥2 mutation streams. Need broader resource-indexed stream metadata beyond bool-param fixed-chunkable activation.
+**Family 1 status:** A (hetero int+bytes loops), B (bool-param same-iter selection), C (unconditional emit beside ≥2 streams) admitted under resource-indexed stream metadata. Still fenced: non-bool selection, selected/early-terminated events, both-arms non-loop chunkable.
 
 Proof dir: `/tmp/grok-goal-6d38cca74b23/implementer/ext-plans/`

@@ -5276,7 +5276,34 @@ function synthesizeMessageBusRoute(
       const hasUntransportedWrite = hasUntransportedChunkableWrite(
         fn, chunkableCollections, signatureClosureByName, footprintCache,
       );
+      // Counter-keyed chunkable writes are transported by LowerVMapCounterLoops after this speculative pass.
+      // Defer their admission to the completed-ABI check so we do not permanently fence a later-proven stream.
+      let hasCounterKeyedChunkableCandidate = false;
+      if (fn.body && chunkableWrites) {
+        const scan = (node: Node, inLoop: boolean): void => {
+          if (hasCounterKeyedChunkableCandidate) return;
+          const nestedLoop = inLoop || node instanceof WhileNode || node instanceof DoWhileNode
+            || node instanceof CollectionIterationNode
+            || (node instanceof BlockNode && (node.statements?.some((statement) =>
+              statement instanceof WhileNode || statement instanceof DoWhileNode) ?? false));
+          if ((node instanceof MappingAssignNode || node instanceof ArrayAssignNode)
+            && chunkableCollections.has(node.name) && nestedLoop) {
+            hasCounterKeyedChunkableCandidate = true;
+            return;
+          }
+          for (const [field, value] of Object.entries(node)) {
+            if (['location', 'resolvedFunction', 'functionReference', 'definition', 'collection', 'symbolTable',
+              'stateVariable', 'type'].includes(field)) continue;
+            if (value instanceof Node) scan(value, nestedLoop);
+            else if (Array.isArray(value)) {
+              for (const item of value) if (item instanceof Node) scan(item, nestedLoop);
+            }
+          }
+        };
+        scan(fn.body, false);
+      }
       if (chunkableWrites && fixedChunkableWriteCollection === undefined && pooledChunkableArrayPush === undefined
+        && !hasCounterKeyedChunkableCandidate
         && (!hasCounterJournalTransport || hasUntransportedWrite)) {
         // A route may invoke this handler repeatedly. Until its completed entry descriptor is represented in the
         // authenticated compact journal ABI, every row would independently pin a terminal continuation family.
@@ -13609,11 +13636,35 @@ function compileResolvedAst(
         && hasValidStoredElementSource
         && runtimeJournalAccesses.every((access) => access.op === 'read'
           || access.collection !== pooledChunkableArrayPushCollection);
+      // Counter-loop journal streams publish authenticated settlement on the completed ABI even when the
+      // speculative AST walk did not stamp messageBusJournalTransport (common for chunkable value carriers).
+      const journalAuthenticatedChunkableAccess = (
+        collection: string, varyingArrayParam?: string,
+      ): boolean => runtimeJournalAccesses.some((access) => access.collection === collection
+        && access.op !== 'read'
+        && (varyingArrayParam === undefined || access.varyingArrayParam === varyingArrayParam)
+        && Number.isSafeInteger(access.journalAccessStreamIndex)
+        && access.settlementIdentity?.accessStreamIndex === access.journalAccessStreamIndex
+        && access.settlementIdentity.recordOrdinalScope === 'global-journal'
+        && access.settlementIdentity.accessOrdinalSource === 'access-program-order'
+        && access.settlementIdentity.settlementRole === 'mutation-settlement'
+        && access.settlementIdentity.settlementOwnership === 'last-mutating-access');
       const hasIncompleteChunkableTransport = [...chunkableWriteCollections].some((collection) => (
         !(hasCompleteFixedChunkableOccurrenceTransport && fixedChunkableWriteCollections.has(collection))
         && !(hasCompletePooledChunkableArrayPushTransport && collection === pooledChunkableArrayPushCollection)
         && !transportedChunkableWrites.some((transport) => transport.collection === collection)
-      )) || exactTransportMatches.some((matches) => matches.length !== 1)
+        && !journalAuthenticatedChunkableAccess(collection)
+      )) || exactTransportMatches.some((matches, index) => {
+        if (matches.length === 1) return false;
+        if (matches.length > 1) return true;
+        // Speculative AST transport without a matching ABI stream is recoverable when the completed journal
+        // already authenticates that collection's mutation stream (varying-param identity may differ across
+        // clone/lowering boundaries).
+        const transport = transportedChunkableWrites[index];
+        return transport === undefined
+          || (!journalAuthenticatedChunkableAccess(transport.collection, transport.varyingArrayParam)
+            && !journalAuthenticatedChunkableAccess(transport.collection));
+      })
         || runtimeJournalAccesses.some((access) => chunkableWriteCollections.has(access.collection)
           && access.op !== 'read'
           && !(hasCompleteFixedChunkableOccurrenceTransport
@@ -13621,7 +13672,8 @@ function compileResolvedAst(
           && !(hasCompletePooledChunkableArrayPushTransport
             && access.collection === pooledChunkableArrayPushCollection)
           && !transportedChunkableWrites.some((transport) => transport.collection === access.collection
-            && transport.varyingArrayParam === access.varyingArrayParam));
+            && transport.varyingArrayParam === access.varyingArrayParam)
+          && !journalAuthenticatedChunkableAccess(access.collection, access.varyingArrayParam));
       if (hasIncompleteChunkableTransport) {
         noteKernelLayoutGate(fn, 'incomplete-chunkable-transport');
         fn.messageBusEligible = false;
@@ -13647,8 +13699,20 @@ function compileResolvedAst(
           const homogeneousOperation = mutations.every((mutation) => mutation.op === first.op);
           const distinctCollections = new Set(mutations.map((mutation) => mutation.collectionHash)).size
             === mutations.length;
+          const boolParamActivation = (
+            expression: { kind?: string; operator?: string; source?: { kind?: string }; expression?: unknown } | undefined,
+          ): boolean => {
+            if (expression === undefined) return true;
+            if (expression.kind === 'source' && expression.source?.kind === 'forward') return true;
+            if (expression.kind === 'unary' && expression.operator === '!'
+              && boolParamActivation(expression.expression as typeof expression)) return true;
+            return false;
+          };
+          const boolParamSelection = mutations.every((mutation) =>
+            boolParamActivation(mutation.iterationCondition as { kind?: string } | undefined)
+            && mutation.iterationCondition !== undefined);
           const sharedKeyDomain = mutations.every((mutation) =>
-            mutation.varyingArrayParam === first.varyingArrayParam
+            (mutation.varyingArrayParam === first.varyingArrayParam || boolParamSelection)
             && JSON.stringify(mutation.fixedKeySources ?? []) === JSON.stringify(first.fixedKeySources ?? [])
             && JSON.stringify(collectionByName.get(mutation.collection)?.allKeyTypes.map((type) => type.toString()))
               === JSON.stringify(firstCollection?.allKeyTypes.map((type) => type.toString())));
@@ -13656,18 +13720,29 @@ function compileResolvedAst(
             mutation.settlementIdentity?.recordOrdinalScope === 'global-journal'
             && mutation.settlementIdentity.settlementRole === 'mutation-settlement'
             && mutation.settlementIdentity.settlementOwnership === 'last-mutating-access');
-          const fixedWidthScalarValues = mutations.every((mutation) => {
+          // Resource-indexed streams may carry heterogeneous value kinds on one shared key schedule: fixed-width
+          // scalars of differing types, and chunkable values whose journal stream already publishes settlement.
+          const supportedStreamValueKinds = mutations.every((mutation) => {
             const type = collectionByName.get(mutation.collection)?.innermostValueType;
-            return type !== undefined && isFixedWidthType(type)
-              && !(type instanceof ArrayType || type instanceof StructType || type instanceof TupleType)
-              && type.toString() === firstCollection?.innermostValueType.toString();
+            if (type === undefined) return false;
+            if (type instanceof ArrayType || type instanceof StructType || type instanceof TupleType) {
+              return false;
+            }
+            if (isChunkableValueType(type)) {
+              return Number.isSafeInteger(mutation.journalAccessStreamIndex)
+                && mutation.settlementIdentity?.accessStreamIndex === mutation.journalAccessStreamIndex
+                && mutation.settlementIdentity.recordOrdinalScope === 'global-journal'
+                && mutation.settlementIdentity.settlementRole === 'mutation-settlement'
+                && mutation.settlementIdentity.settlementOwnership === 'last-mutating-access';
+            }
+            return isFixedWidthType(type);
           });
-          // The first general multi-stream family deliberately shares one unconditional compiler-owned
-          // permutation. Ranged/selected domains, structural value mutation, and replay traces retain the beta
-          // fence until their transaction geometry has an equally exact proof.
+          // Shared compiler-owned schedule across streams. Bool-param iterationCondition is the authenticated
+          // selection bit for same-iteration resource choice; other ranged/selected domains stay fenced.
           const simpleSharedSchedule = mutations.every((mutation) =>
             mutation.condition === undefined
-            && mutation.iterationCondition === undefined
+            && (mutation.iterationCondition === undefined
+              || boolParamActivation(mutation.iterationCondition as { kind?: string } | undefined))
             && mutation.iterationBreakCondition === undefined
             && mutation.iterationBound === undefined
             && mutation.iterationStep === undefined
@@ -13680,7 +13755,6 @@ function compileResolvedAst(
             && mutation.keyDecodeTupleTypes === undefined
             && mutation.mutation === undefined
             && mutation.valueRuntimeLocal === undefined
-            && mutation.valueTraceWitnessParam === undefined
             && mutation.prefixCountWitnessParam === undefined
             && mutation.constructedKeyReplay !== true
             && mutation.multiArmConstructedKeyReplay !== true
@@ -13688,7 +13762,7 @@ function compileResolvedAst(
             && mutation.nestedHelperReturnReplay !== true
             && mutation.sameIterationMutableSelectionReplay !== true);
           return !(homogeneousOperation && distinctCollections && sharedKeyDomain
-            && globallyOwnedSettlements && fixedWidthScalarValues && simpleSharedSchedule);
+            && globallyOwnedSettlements && supportedStreamValueKinds && simpleSharedSchedule);
         });
       // Bounded symbolic replay can reconstruct keys read from a locally constructed array, but that provenance
       // currently has no authenticated old/absence carrier identity in the kernel settlement protocol. Preserve
@@ -13719,12 +13793,20 @@ function compileResolvedAst(
         && runtimeJournalAccesses.some((access) => access.op !== 'read'
           && access.valueArrayParam !== undefined && access.valueArrayIndexParam !== undefined
           && chunkableCollections.has(access.collection));
-      // Event output ordinals currently bind to one mutation journal stream. A handler with sequential or
-      // otherwise distinct mutation streams cannot publish one authenticated event settlement geometry, even
-      // when each stream is independently replayable. One stream with any number of event sites remains valid.
-      const hasDistinctEventMutationStreams = (abi?.runtimeLoopEvents?.length ?? 0) > 0
-        && new Set(runtimeJournalAccesses.filter((access) => access.op !== 'read')
-          .map((access) => access.journalAccessStreamIndex)).size > 1;
+      // Unconditional runtime events may share a row with multiple authenticated mutation streams when every
+      // stream already publishes settlement identity. Selected/early-terminated events stay fenced separately.
+      const mutationStreams = runtimeJournalAccesses.filter((access) => access.op !== 'read');
+      const distinctMutationStreamCount = new Set(mutationStreams.map((access) =>
+        access.journalAccessStreamIndex)).size;
+      const hasUnauthenticatedMultiStreamEvents = (abi?.runtimeLoopEvents?.length ?? 0) > 0
+        && distinctMutationStreamCount > 1
+        && (hasSelectedRuntimeEvent
+          || mutationStreams.some((access) =>
+            !(Number.isSafeInteger(access.journalAccessStreamIndex)
+              && access.settlementIdentity?.accessStreamIndex === access.journalAccessStreamIndex
+              && access.settlementIdentity.recordOrdinalScope === 'global-journal'
+              && access.settlementIdentity.settlementRole === 'mutation-settlement')));
+      const hasDistinctEventMutationStreams = hasUnauthenticatedMultiStreamEvents;
       let hasScalarStateMutationInClosure = false;
       for (const name of collectNamedFunctionClosure(fn, completedFunctionsByName)) {
         for (const candidate of completedFunctionsByName.get(name) ?? []) {

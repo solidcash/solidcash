@@ -10549,7 +10549,7 @@ describe('required kernel admission', () => {
       .toBeUndefined();
   });
 
-  // Family 1 residual: writes in both arms are same-iteration resource selection.
+  // Family 1 residual: writes in both arms are same-iteration resource selection (non-loop).
   it('keeps chunkable writes in both branch arms behind KERNEL_LAYOUT', () => {
     const artifact = compileString(`contract C() {
       mapping(int => bytes) left;
@@ -10566,5 +10566,100 @@ describe('required kernel admission', () => {
     }`, KERNEL);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'work'))
       .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+  });
+
+  // Family 1 wedge A: heterogeneous value kinds on one shared counter-key schedule.
+  it('admits a bounded loop writing int and bytes maps on one key schedule', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) scores;
+      mapping(int => bytes) payloads;
+      function writeBoth(int n, bytes payload) public {
+        for (int i = 0; i < n; i = i + 1) {
+          scores[i] = i;
+          payloads[i] = payload;
+        }
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+    const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'writeBoth');
+    const info = artifact.abi.find((candidate) => candidate.name === 'writeBoth')?.sortedUpsertLoopInfo;
+    expect(handler).toMatchObject({ eligible: true });
+    expect(info).toEqual([
+      expect.objectContaining({
+        collection: 'scores', journalAccessStreamIndex: 0, journalExecutionGroup: 0, op: 'set',
+      }),
+      expect.objectContaining({
+        collection: 'payloads', journalAccessStreamIndex: 1, journalExecutionGroup: 0, op: 'set',
+      }),
+    ]);
+    expect(new Set(info?.map((stream) => stream.varyingArrayParam)).size).toBe(1);
+  });
+
+  // Family 1 wedge B: bool-param same-iteration selection inside a bounded loop.
+  it('admits same-iteration bool-param selection across two int maps in one loop', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) left;
+      mapping(int => int) right;
+      function choose(int n, bool pickRight) public {
+        for (int i = 0; i < n; i = i + 1) {
+          if (pickRight) {
+            right[i] = i + 1;
+          } else {
+            left[i] = i + 1;
+          }
+        }
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+    const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'choose');
+    const info = artifact.abi.find((candidate) => candidate.name === 'choose')?.sortedUpsertLoopInfo;
+    expect(handler).toMatchObject({ eligible: true });
+    expect(info?.length).toBeGreaterThanOrEqual(2);
+    expect(new Set(info?.map((stream) => stream.journalExecutionGroup)).size).toBe(1);
+  });
+
+  it('keeps non-bool same-iteration selection behind KERNEL_LAYOUT', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) left;
+      mapping(int => int) right;
+      function choose(int n, int which) public {
+        for (int i = 0; i < n; i = i + 1) {
+          if (which == 0) {
+            left[i] = i;
+          } else {
+            right[i] = i;
+          }
+        }
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'choose'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+  });
+
+  // Family 1 wedge C: unconditional emit beside two mutation streams.
+  it('admits unconditional emit beside two int mutation streams in one loop', () => {
+    const artifact = compileString(`contract C() {
+      event Tick(int indexed i);
+      mapping(int => int) left;
+      mapping(int => int) right;
+      function writeEmit(int n) public {
+        for (int i = 0; i < n; i = i + 1) {
+          left[i] = i;
+          right[i] = i + 10;
+          emit Tick(i);
+        }
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+    const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'writeEmit');
+    const abi = artifact.abi.find((candidate) => candidate.name === 'writeEmit');
+    expect(handler).toMatchObject({ eligible: true });
+    expect(abi?.sortedUpsertLoopInfo).toHaveLength(2);
+    expect(abi?.runtimeLoopEvents?.length).toBeGreaterThan(0);
   });
 });

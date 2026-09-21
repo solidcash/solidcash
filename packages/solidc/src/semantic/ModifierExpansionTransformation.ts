@@ -192,6 +192,15 @@ function collectLocalDeclNames(nodes: Node[]): string[] {
   return names;
 }
 
+function containsReturnDeep(node: Node): boolean {
+  if (node instanceof ReturnNode) return true;
+  for (const value of Object.values(node)) {
+    if (value instanceof Node && containsReturnDeep(value)) return true;
+    if (Array.isArray(value) && value.some((item) => item instanceof Node && containsReturnDeep(item))) return true;
+  }
+  return false;
+}
+
 // Rename local variable declarations AND their references. Unlike renameParamRefs this also rewrites the
 // declaration's own `.name`, since a modifier local is declared inside the body (not injected as a binding).
 function renameLocalDecls(nodes: Node[], oldNames: string[], newNames: string[]): void {
@@ -349,6 +358,27 @@ function expandFunctionModifiers(
   // own alpha-renaming runs (the Uniswap Router removeLiquidityETH -> removeLiquidity shape).
   const frameSuffix = `${func.location.start.line}_${func.location.start.column}`;
 
+  // A source-body `return value` finishes the body, then Solidity executes every enclosing modifier's
+  // statements after `_`. Preserve that order for an unconditional scalar tail return: evaluate its value once
+  // at the source return site, run the modifier epilogues, and return the saved value only after expansion.
+  // Nested/conditional returns need path-sensitive unwinding and are left to their existing lowering path.
+  const sourceReturn = currentBody.at(-1);
+  const deferScalarReturn = func.returnTypes.length === 1 && func.returnNames.length === 0
+    && sourceReturn instanceof ReturnNode && sourceReturn.expressions.length === 1
+    && !currentBody.slice(0, -1).some(containsReturnDeep);
+  let deferredReturnName: string | undefined;
+  let deferredReturnDeclaration: VariableDefinitionNode | undefined;
+  if (deferScalarReturn) {
+    deferredReturnName = `__modifier_return_${frameSuffix}`;
+    deferredReturnDeclaration = new VariableDefinitionNode(func.returnTypes[0], [], deferredReturnName);
+    deferredReturnDeclaration.location = sourceReturn.location;
+    const target = new IdentifierNode(deferredReturnName);
+    target.location = sourceReturn.location;
+    const assign = new AssignNode(target, sourceReturn.expressions[0]);
+    assign.location = sourceReturn.location;
+    currentBody = [...currentBody.slice(0, -1), assign];
+  }
+
   // Expand right-to-left (innermost first)
   for (let i = func.customModifiers.length - 1; i >= 0; i--) {
     const invocation = func.customModifiers[i];
@@ -434,6 +464,13 @@ function expandFunctionModifiers(
   }
 
   // Replace the function body
+  if (deferredReturnName && deferredReturnDeclaration && sourceReturn instanceof ReturnNode) {
+    const result = new IdentifierNode(deferredReturnName);
+    result.location = sourceReturn.location;
+    const tail = new ReturnNode([result]);
+    tail.location = sourceReturn.location;
+    currentBody = [deferredReturnDeclaration, ...currentBody, tail];
+  }
   func.body = new BlockNode(currentBody);
   func.body.location = func.body.location ?? func.location;
 

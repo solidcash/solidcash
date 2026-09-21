@@ -15,6 +15,10 @@ contract Guard {
 contract C() is Guard {
   int count;
   function bump(int n) noReentrant { this.count = this.count + n; require(true); }
+  function bumpReturning(int n) noReentrant returns (int) {
+    this.count = this.count + n;
+    return this.count;
+  }
   function chk(int e) { require(this.count == e); }
 }`;
 
@@ -30,5 +34,11 @@ describe('inherited modifier accessing its own contract private state', () => {
     const sc = StatefulContract.withCategory(contract, categoryId);
     await sc.bump(5n).send();
     await sc.chk(5n).send();
+    await sc.bump(1n).send();
+    await sc.chk(6n).send();
+    await sc.bumpReturning(1n).send();
+    await sc.chk(7n).send();
+    await sc.bumpReturning(1n).send();
+    await sc.chk(8n).send();
   });
 });

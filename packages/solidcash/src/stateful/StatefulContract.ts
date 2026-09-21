@@ -29861,8 +29861,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 callee: selectedContract.inner.artifact.contractName,
                 functionName: nested.functionName,
                 callsiteId: nested.callsiteId,
-                value: typeof value === 'object' && value !== null
-                  ? `bytes:${binToHex(value as Uint8Array).slice(0, 24)}` : String(value),
+                value: value instanceof Uint8Array
+                  ? `bytes:${binToHex(value).slice(0, 24)}`
+                  : Array.isArray(value)
+                    ? `array:${value.map((item) => String(item)).join(',').slice(0, 96)}`
+                    : String(value),
               });
             }
             const returnType = selectedFn.outputs[0].type;

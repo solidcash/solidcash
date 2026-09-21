@@ -1059,7 +1059,7 @@ describe('atomic compiled invocation graph', () => {
         abi: [{
           name: 'run', selector: '11111111', inputs: [{ name: 'values', type: 'int[]' }], outputs: [],
           externalCalls: [{
-            callsiteId: 7, occurrence: 'loop' as const, maximumOccurrences: 3,
+            callsiteId: 7, sourceEffectOrdinal: 4, occurrence: 'loop' as const, maximumOccurrences: 3,
             interfaceName: 'ISink', functionName: 'ping',
             argSources: [{ kind: 'arrayElement' as const, paramIndex: 0, indexValue: 0 }],
           }],
@@ -1077,12 +1077,45 @@ describe('atomic compiled invocation graph', () => {
     expect(planned.invocations.slice(1).map((invocation) => ({
       physical: invocation.consumerCallsiteId,
       source: invocation.sourceCallsiteId,
+      logical: invocation.sourceLogicalIndex,
       occurrence: invocation.occurrenceIndex,
     }))).toEqual([
-      { physical: 7, source: 7, occurrence: 0 },
-      { physical: 7, source: 7, occurrence: 1 },
-      { physical: 7, source: 7, occurrence: 2 },
+      { physical: 7, source: 7, logical: undefined, occurrence: 0 },
+      { physical: 7, source: 7, logical: undefined, occurrence: 1 },
+      { physical: 7, source: 7, logical: undefined, occurrence: 2 },
     ]);
+    const first = planned.invocations[1];
+    expect(first.producerPath.status).toBe('complete');
+    expect(() => messageBus.assertPreparedInvocationIdentity({
+      contract: {} as never,
+      functionName: 'ping',
+      args: [1n],
+      callsiteId: 7,
+      sourceCallsiteId: 7,
+      occurrenceIndex: 0,
+      sourceEffectOrdinal: 4,
+      producerPath: first.producerPath,
+    }, first, 1)).not.toThrow();
+    if (first.producerPath.status !== 'complete') throw new Error('expected a complete producer path');
+    expect(() => messageBus.assertPreparedInvocationIdentity({
+      contract: {} as never,
+      functionName: 'ping',
+      args: [1n],
+      callsiteId: 7,
+      sourceCallsiteId: 7,
+      sourceLogicalIndex: 0,
+      occurrenceIndex: 0,
+      sourceEffectOrdinal: 4,
+      producerPath: {
+        status: 'complete',
+        context: {
+          version: 1,
+          sourcePath: first.producerPath.context.sourcePath.map((site) => ({
+            ...site, sourceLogicalIndex: 0,
+          })),
+        },
+      },
+    }, first, 1)).toThrow(/producer path disagrees/);
   });
 
   it('uses the authenticated public identity for ordinary nested callers', () => {

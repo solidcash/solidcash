@@ -86,6 +86,7 @@ import {
   FixedBchTransferAbi,
   KernelJournalDispositionsAbi,
   peekPushdataEncodedLength,
+  occurrenceCountViolation,
 } from '@solidcash/utils';
 import {
   RUNTIME_LOOP_EVENT_ITERATION_LIMIT,
@@ -621,6 +622,14 @@ type GraphPlanningProducerResultEntry = {
 export interface GraphPlanningProducerResultContext {
   readonly entries: Map<number, GraphPlanningProducerResultEntry[]>;
 }
+
+type PlannedExternalCallOccurrence = Readonly<{
+  sourceIteration: number;
+  occurrenceIndex: number;
+  expressionReturns: ReadonlyMap<string, FunctionArgument>;
+  args: readonly FunctionArgument[];
+  target?: FunctionArgument;
+}>;
 
 export function createGraphPlanningProducerResultContext(): GraphPlanningProducerResultContext {
   return { entries: new Map() };
@@ -6300,6 +6309,8 @@ export interface RouteExpressionKeyRow {
   sourceCallsiteId?: number;
   /** Source loop occurrence represented by this physical route row. */
   occurrenceIndex?: number;
+  /** Source loop index used only for argument-recipe evaluation; never part of graph identity. */
+  sourceIteration?: number;
   /** Compiler-authored program point shared by source entry mutations and graph calls. */
   sourceEffectOrdinal?: number;
   /** Exact root-to-row source occurrence transported by the compiled graph. */
@@ -6337,6 +6348,8 @@ export function externalCallReachedOccurrenceIndices(
       else visit(child, seen);
     }
   };
+  // Preserve the published argument-domain contract of this helper. Raw call arguments may use a different
+  // lowering shape; callers which deliberately plan from those sources pass them as `argSources` explicitly.
   visit(call.argSources);
   if (parameterIndices.size === 0) return undefined;
   const lengths = [...parameterIndices].map((parameterIndex) => {
@@ -6349,6 +6362,128 @@ export function externalCallReachedOccurrenceIndices(
   if ((call.minimumOccurrences !== undefined && count < call.minimumOccurrences)
     || (call.maximumOccurrences !== undefined && count > call.maximumOccurrences)) return undefined;
   return Object.freeze(Array.from({ length: count }, (_, occurrenceIndex) => occurrenceIndex));
+}
+
+/** Candidate source iterations which a late graph edge must evaluate before compacting reached occurrences. */
+export function externalCallCandidateIterationIndices(
+  call: Parameters<typeof externalCallReachedOccurrenceIndices>[0] & {
+    occurrenceBoundSource?: 'literal' | 'guard' | 'structural';
+  },
+  functionArgs: readonly FunctionArgument[],
+): readonly number[] | undefined {
+  const argumentDomain = externalCallReachedOccurrenceIndices(call, functionArgs);
+  if (argumentDomain !== undefined) return argumentDomain;
+  if (call.occurrence !== 'loop' || call.occurrenceBoundSource !== 'literal'
+    || !Number.isSafeInteger(call.maximumOccurrences) || call.maximumOccurrences! < 0
+    || call.maximumOccurrences! > 10_000) return undefined;
+  // A literal source loop has this exact candidate iteration domain. A nested branch can still skip candidates;
+  // the late planner evaluates its published condition per source iteration and numbers only reached rows.
+  return Object.freeze(Array.from(
+    { length: call.maximumOccurrences! }, (_, sourceIteration) => sourceIteration,
+  ));
+}
+
+/** Canonical producer occurrence addressable by current producer-result metadata. */
+export function producerResultOccurrenceIndex(
+  producer: { callsiteId?: number; occurrence?: 'once' | 'conditional' | 'loop' },
+): number {
+  if (producer.occurrence === 'loop') {
+    throw new Error(
+      `Graph producer callsite ${producer.callsiteId ?? 'unknown'} is repeated, but producer-result metadata has `
+      + 'no per-occurrence identity.',
+    );
+  }
+  return 0;
+}
+
+/** Match one compiler callsite without allowing two legacy `undefined` identities to alias. */
+export function externalCallMetadataIdentityMatches(
+  existing: { callsiteId?: number } | undefined,
+  reached: { callsiteId?: number },
+): boolean {
+  if (existing === undefined) return false;
+  if (existing.callsiteId !== undefined || reached.callsiteId !== undefined) {
+    return existing.callsiteId !== undefined && existing.callsiteId === reached.callsiteId;
+  }
+  // Legacy metadata has no serializable identity. Within one loaded artifact, the ABI entry itself is the only
+  // sound compatibility identity; sibling objects with absent IDs must never collapse into one callsite.
+  return existing === reached;
+}
+
+/** Fail closed when a previously materialized row no longer represents the reached semantic occurrence. */
+export function assertExternalCallRowPayload(
+  callsiteId: number | undefined,
+  occurrenceIndex: number,
+  existing: {
+    args: readonly FunctionArgument[];
+    targetLockingBytecode?: string;
+    sourceEffectOrdinal?: number;
+  },
+  reached: {
+    args: readonly FunctionArgument[];
+    targetLockingBytecode?: string;
+    sourceEffectOrdinal?: number;
+  },
+): void {
+  const existingTarget = existing.targetLockingBytecode?.toLowerCase();
+  const reachedTarget = reached.targetLockingBytecode?.toLowerCase();
+  if (!functionArgumentListsEqual(existing.args, reached.args)
+    || existingTarget !== reachedTarget
+    || existing.sourceEffectOrdinal !== reached.sourceEffectOrdinal) {
+    throw new Error(
+      `External graph callsite ${callsiteId ?? 'unknown'} occurrence ${occurrenceIndex} existing row `
+      + 'disagrees with its reached target, arguments, or effect identity.',
+    );
+  }
+}
+
+/** Authenticate reuse of one prepared graph row against its compiler identity, payload, and physical owner. */
+export function assertPreparedExternalCallRowReconciliation(
+  callsiteId: number | undefined,
+  occurrenceIndex: number,
+  existing: {
+    parent?: number | null;
+    sourceCallsiteId?: number;
+    occurrenceIndex?: number;
+    sourceLogicalIndex?: number;
+    sourceEffectOrdinal?: number;
+    producerPathKey?: string;
+    args: readonly FunctionArgument[];
+    targetLockingBytecode?: string;
+    contract: unknown;
+  } | undefined,
+  reached: {
+    args: readonly FunctionArgument[];
+    targetLockingBytecode?: string;
+    sourceEffectOrdinal?: number;
+  } | undefined,
+  expected: { parent?: number; producerPathKey?: string },
+  physical: {
+    contract: unknown;
+    lockingBytecode: string;
+    hasMaster: boolean;
+  },
+): void {
+  if (existing === undefined || reached === undefined) {
+    throw new Error(
+      `Transitive graph callsite ${callsiteId ?? 'unknown'} occurrence ${occurrenceIndex} has no reusable row.`,
+    );
+  }
+  assertExternalCallRowPayload(callsiteId, occurrenceIndex, existing, reached);
+  const reachedTarget = reached.targetLockingBytecode?.toLowerCase();
+  if (existing.parent !== expected.parent
+    || existing.sourceCallsiteId !== callsiteId
+    || existing.occurrenceIndex !== occurrenceIndex
+    || existing.sourceLogicalIndex !== undefined
+    || existing.producerPathKey !== expected.producerPathKey
+    || physical.contract !== existing.contract
+    || (reachedTarget !== undefined && physical.lockingBytecode.toLowerCase() !== reachedTarget)
+    || !physical.hasMaster) {
+    throw new Error(
+      `Transitive graph callsite ${callsiteId ?? 'unknown'} occurrence ${occurrenceIndex} was already `
+      + 'materialized with a different stable identity or physical owner.',
+    );
+  }
 }
 
 function routeRowCollectionKey(
@@ -26233,50 +26368,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               lockingBytecode: binToHex(publicSelfAddress),
             });
             const delegateSelfAddress = hexToBin(delegateCallerIdentity.lockingBytecode);
-            const nestedExternalCalls: ExternalCallAbi[] = [];
             for (const nested of publishedNestedExternalCalls) {
-              if (!nested.condition) {
-                // Older artifacts and control-flow shapes not yet expressible by ExternalCallExpression retain
-                // the existing covenant-driven occurrence handling. Never infer inactivity from a missing guard.
-                nestedExternalCalls.push(nested);
-                continue;
-              }
-              const conditionReturns = await this._resolveExternalExpressionReturns(
-                [{ kind: 'expression', expression: nested.condition }],
-                delegateVisibleArgs,
-                callInfo.contract,
-                onChainState.state,
-                delegateVisibleInputs,
-                delegateSelfAddress,
-                publishedNestedExternalCalls,
-                false,
-                graphPlanningResults,
-                {
-                  callsiteId: nested.callsiteId,
-                  resultConsumers: delegateFn?.resultConsumers,
-                  lane: 'condition',
-                },
-              );
-              const active = this._evaluateExternalExpression(
-                nested.condition,
-                delegateVisibleArgs,
-                callInfo.contract.inner.artifact,
-                onChainState.state,
-                delegateVisibleInputs,
-                conditionReturns,
-                0,
-                false,
-                delegateSelfAddress,
-              );
-              if (typeof active !== 'boolean') {
-                throw new Error(
-                  `Could not resolve runtime predicate for conditional external call `
-                  + `${nested.interfaceName}.${nested.functionName} at callsite ${nested.callsiteId ?? 'unknown'}.`,
-                );
-              }
-              if (active) nestedExternalCalls.push(nested);
-            }
-            for (const nested of nestedExternalCalls) {
               if (timingEnabled) console.error('nested-callsite-start', {
                 callsiteId: nested.callsiteId, interfaceName: nested.interfaceName, functionName: nested.functionName,
               });
@@ -26288,6 +26380,19 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 });
               }
               const nestedSources = nested.rawArgSources ?? nested.argSources;
+              const plannedNestedOccurrences = await this._planExternalCallOccurrences(nested, {
+                functionArgs: delegateVisibleArgs,
+                artifact: callInfo.contract.inner.artifact,
+                registryOwner: callInfo.contract,
+                state: onChainState.state,
+                callerInputs: delegateVisibleInputs,
+                executionSelfAddress: delegateSelfAddress,
+                producerCalls: publishedNestedExternalCalls,
+                resultConsumers: delegateFn?.resultConsumers,
+                planningContext: graphPlanningResults,
+                allowProvisionalArguments: preparedAtomicNodes !== undefined,
+              });
+              if (plannedNestedOccurrences.length === 0) continue;
               const usesEmptyArrayElement = (value: unknown, seen = new Set<object>()): boolean => {
                 if (!value || typeof value !== 'object' || seen.has(value as object)) return false;
                 seen.add(value as object);
@@ -26319,8 +26424,22 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               const addressParamIndex = nested.addressParam
                 ? delegateFn!.inputs.findIndex((input) => input.name === nested.addressParam)
                 : -1;
-              const addressValue = resolvedAddress
+              const addressValue = plannedNestedOccurrences[0]?.target
+                ?? resolvedAddress
                 ?? (addressParamIndex >= 0 ? delegateVisibleArgs[addressParamIndex] : undefined);
+              const plannedTargetIdentities = new Set(plannedNestedOccurrences.flatMap(({ target }) => {
+                if (target === undefined) return [];
+                const lockingBytecode = tryCashAddressToLockScript(target);
+                if (lockingBytecode) return [binToHex(lockingBytecode)];
+                if (target instanceof Uint8Array) return [binToHex(target)];
+                return [String(target)];
+              }));
+              if (plannedTargetIdentities.size > 1) {
+                throw new Error(
+                  `Delegate external callsite ${nested.callsiteId ?? 'unknown'} reaches more than one target; `
+                  + 'per-occurrence target identity is not yet representable by one physical carrier.',
+                );
+              }
               const resolvedTargetLockingBytecode = tryCashAddressToLockScript(addressValue);
               let deploymentAtAddress: unknown;
               if (typeof addressValue === 'string') {
@@ -26354,12 +26473,25 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   + 'pin its target address in the caller state or arguments.',
                 );
               }
-              const registeredCallee = (
-                deploymentAtAddress
-                ?? rawCandidates[0]
+              const registeredByName = rawCandidates[0]
                 ?? callInfo.contract._externalRegistry.get(nested.interfaceName)
                 ?? this._externalRegistry.get(nested.interfaceName)
-                ?? findDeploymentByName(this.inner.provider, nested.interfaceName)?.contract
+                ?? findDeploymentByName(this.inner.provider, nested.interfaceName)?.contract;
+              const targetHex = resolvedTargetLockingBytecode
+                ? binToHex(resolvedTargetLockingBytecode)
+                : addressValue instanceof Uint8Array ? binToHex(addressValue)
+                  : typeof addressValue === 'string' && /^(?:[0-9a-f]{2})+$/iu.test(addressValue)
+                    ? addressValue.toLowerCase() : undefined;
+              const namedPhysical = registeredByName && 'proxy' in registeredByName
+                ? registeredByName.proxy : registeredByName;
+              const exactRegisteredFallback = addressValue === undefined
+                ? registeredByName
+                : targetHex !== undefined
+                  && (namedPhysical as StatefulContract | undefined)?.inner.lockingBytecode === targetHex
+                  ? registeredByName : undefined;
+              const registeredCallee = (
+                deploymentAtAddress
+                ?? exactRegisteredFallback
               ) as StatefulContract | {
                 proxy: StatefulContract; implementation: StatefulContract;
                 forward: (name: string, args: FunctionArgument[]) => StatefulFunctionCall;
@@ -26368,6 +26500,17 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 ? registeredCallee : undefined;
               const callee = (proxyCallee?.proxy ?? registeredCallee) as StatefulContract | undefined;
               if (!callee) {
+                if ((globalThis as { process?: { env?: Record<string, string> } })
+                  .process?.env?.SOLIDC_DEBUG_ROUTE) {
+                  console.error('delegate-external-target-miss', {
+                    interfaceName: nested.interfaceName,
+                    targetHex,
+                    registeredByName: (registeredByName as StatefulContract | undefined)?.inner?.lockingBytecode,
+                    namedPhysical: (namedPhysical as StatefulContract | undefined)?.inner?.lockingBytecode,
+                    registeredShape: registeredByName && typeof registeredByName === 'object'
+                      ? Object.keys(registeredByName) : undefined,
+                  });
+                }
                 const addressDiagnostic = addressValue instanceof Uint8Array
                   ? binToHex(addressValue) : String(addressValue);
                 throw new Error(
@@ -26411,29 +26554,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   graphPlanningResults,
                 )
                 : undefined;
-              let nestedArgs = nestedExpressionReturns
-                ? this._resolveExternalArgs(
-                  nestedSources,
-                  delegateVisibleArgs,
-                  callInfo.contract.inner.artifact,
-                  onChainState.state,
-                  delegateVisibleInputs,
-                  nestedExpressionReturns,
-                  0,
-                  false,
-                  delegateSelfAddress,
-                )
-                : this._resolveExternalArgs(
-                  nestedSources, delegateVisibleArgs, callInfo.contract.inner.artifact, onChainState.state,
-                  delegateVisibleInputs, undefined, 0, false, delegateSelfAddress,
-                );
-              if (nestedArgs === undefined) {
-                throw new Error(
-                  `Delegate external call to ${nested.interfaceName}.${nested.functionName} `
-                  + `(offset ${nested.computedOffset ?? 0}) has arguments `
-                  + 'that cannot yet be resolved by the SDK.',
-                );
-              }
+              // The physical carrier is seeded from the first reached row, which need not be source iteration
+              // zero. Re-evaluating the recipe at zero here corrupts overload selection, state footprint, and
+              // route witnesses whenever an earlier source iteration was skipped.
+              let nestedArgs = [...plannedNestedOccurrences[0]!.args];
               // Historical legacy-unroll artifacts encoded their JobEvent payload after implicitly filling the
               // timestamp. Keep that wire adapter quarantined to its exact ABI schema. Kernel calls retain their
               // source arguments and derive mutations by executing the authenticated handler behind OP_INVOKE.
@@ -26751,38 +26875,18 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               });
               const directInvocationRows: readonly RouteExpressionKeyRow[] | undefined =
                 !childCompilerRoute && selectedFn && producerSelector
-                  ? externalCallReachedOccurrenceIndices(nested, delegateVisibleArgs)?.map(
-                    (occurrenceIndex): RouteExpressionKeyRow => {
-                      const occurrenceArgs = occurrenceIndex === 0
-                        ? graphNestedArgs
-                        : this._resolveExternalArgs(
-                          nestedSources,
-                          delegateVisibleArgs,
-                          callInfo.contract.inner.artifact,
-                          onChainState.state,
-                          delegateVisibleInputs,
-                          graphExpressionReturns,
-                          occurrenceIndex,
-                          false,
-                          delegateSelfAddress,
-                        );
-                      if (!occurrenceArgs) {
-                        throw new Error(
-                          `Delegate external callsite ${nested.callsiteId ?? 'unknown'} occurrence `
-                          + `${occurrenceIndex} has arguments that cannot be resolved by the SDK.`,
-                        );
-                      }
-                      return {
-                        args: occurrenceArgs,
-                        handler: selectedFn,
-                        selector: producerSelector,
-                        sourceCallsiteId: nested.callsiteId,
-                        occurrenceIndex,
-                        sourceEffectOrdinal: nested.sourceEffectOrdinal,
-                        producerPath: producerPathForDirectOccurrence(occurrenceIndex),
-                      };
-                    },
-                  )
+                  ? plannedNestedOccurrences.map(({
+                    args, occurrenceIndex, sourceIteration,
+                  }): RouteExpressionKeyRow => ({
+                    args,
+                    handler: selectedFn,
+                    selector: producerSelector,
+                    sourceCallsiteId: nested.callsiteId,
+                    occurrenceIndex,
+                    sourceIteration,
+                    sourceEffectOrdinal: nested.sourceEffectOrdinal,
+                    producerPath: producerPathForDirectOccurrence(occurrenceIndex),
+                  }))
                   : undefined;
               if (!proxyCallee && selectedFn?.blockLayout) {
                 // The caller records requirements against the source interface. A concrete deployment can have
@@ -28592,11 +28696,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                     resolveRowArgsFromResults = (row, results) => {
                       const resolved = resolveReturns(results);
                       if (!resolved) return undefined;
-                      const occurrenceIndex = row.occurrenceIndex ?? 0;
-                      if (occurrenceIndex === 0) return [...resolved.nextArgs];
+                      const sourceIteration = (row as RouteExpressionKeyRow).sourceIteration
+                        ?? row.occurrenceIndex ?? 0;
+                      if (sourceIteration === 0) return [...resolved.nextArgs];
                       const occurrenceArgs = this._resolveExternalArgs(
                         nestedSources, delegateVisibleArgs, callInfo.contract.inner.artifact, onChainState.state,
-                        delegateVisibleInputs, resolved.externalReturns, occurrenceIndex, false,
+                        delegateVisibleInputs, resolved.externalReturns, sourceIteration, false,
                         delegateSelfAddress,
                       );
                       return occurrenceArgs ? [...occurrenceArgs] : undefined;
@@ -28956,90 +29061,165 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         if (!parentFn?.externalCalls?.length) return;
         const graphPlanningResults = createGraphPlanningProducerResultContext();
         const parentState = await logicalParentContract.getState() as Record<string, StateValue>;
+        const plannedLateRows: Array<{
+          nested: ExternalCallAbi;
+          occurrenceIndex: number;
+          row: PlannedExternalCallOccurrence;
+        }> = [];
         for (const nested of parentFn.externalCalls) {
-          if (allGroupParentIndices.some((candidate, index) => candidate === parentGroupIndex
-            && (allGroupEcSlots[index] as ExternalCallAbi | undefined)?.callsiteId === nested.callsiteId)) {
-            continue;
+          if (preparedAtomicNodes !== undefined
+            && (!Number.isSafeInteger(nested.callsiteId) || nested.callsiteId! < 0)) {
+            throw new Error(
+              `Transitive graph call ${nested.interfaceName}.${nested.functionName} has no stable callsite ID.`,
+            );
           }
-          if (nested.condition) {
-            const conditionReturns = await logicalParentContract._resolveExternalExpressionReturns(
-              [{ kind: 'expression', expression: nested.condition }],
-              logicalParentArgs,
-              logicalParentContract,
-              parentState,
-              parentFn.inputs,
-              parentOutgoingSelfAddress,
-              parentFn.externalCalls,
-              false,
-              graphPlanningResults,
-              {
-                callsiteId: nested.callsiteId,
-                resultConsumers: parentFn.resultConsumers,
-                lane: 'condition',
-              },
-            );
-            const active = logicalParentContract._evaluateExternalExpression(
-              nested.condition,
-              logicalParentArgs,
-              logicalParentArtifact,
-              parentState,
-              parentFn.inputs,
-              conditionReturns,
-              0,
-              false,
-              parentOutgoingSelfAddress,
-            );
-            if (typeof active !== 'boolean') {
+          const reachedRows = await logicalParentContract._planExternalCallOccurrences(nested, {
+            functionArgs: logicalParentArgs,
+            artifact: logicalParentArtifact,
+            registryOwner: logicalParentContract,
+            state: parentState,
+            callerInputs: parentFn.inputs,
+            executionSelfAddress: parentOutgoingSelfAddress,
+            producerCalls: parentFn.externalCalls,
+            resultConsumers: parentFn.resultConsumers,
+            planningContext: graphPlanningResults,
+          });
+          const existingGroupIndices = allGroupParentIndices.flatMap((candidate, index) => (
+            candidate === parentGroupIndex
+              && externalCallMetadataIdentityMatches(allGroupEcSlots[index] as ExternalCallAbi, nested)
+              ? [index] : []
+          ));
+          const existingReachedRows = existingGroupIndices.length;
+          if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env?.SOLIDC_DEBUG_ROUTE) {
+            console.error('late-external-call-reconciliation', {
+              parent: logicalParentArtifact.contractName,
+              callsiteId: nested.callsiteId,
+              reachedRows: reachedRows.length,
+              existingRows: existingReachedRows,
+              prepared: preparedAtomicNodes !== undefined,
+            });
+          }
+          // Preserve the established direct/transitive builder outside an authenticated prepared graph. It has
+          // no per-occurrence identity with which to reconcile provisional rows, and one physical state owner
+          // cannot safely execute several writes. Prepared graphs below have exact producer paths and are promoted
+          // through the compiler route; other multi-row shapes remain fail-closed instead of applying one row.
+          if (preparedAtomicNodes === undefined) {
+            if (existingReachedRows > 0) {
+              if (existingReachedRows !== 1 || reachedRows.length !== 1) {
+                throw new Error(
+                  `Transitive callsite ${nested.callsiteId ?? 'unknown'} cannot reconcile `
+                  + `${existingReachedRows} existing rows with ${reachedRows.length} reached rows without an `
+                  + 'authenticated prepared graph.',
+                );
+              }
+              const existingGroup = externalCallUtxoGroups[existingGroupIndices[0]!];
+              const reached = reachedRows[0]!;
+              const targetLockingBytecode = tryCashAddressToLockScript(reached.target);
+              const targetHex = targetLockingBytecode
+                ? binToHex(targetLockingBytecode)
+                : reached.target instanceof Uint8Array ? binToHex(reached.target) : undefined;
+              const existingArgs = existingGroup.logicalFunctionArgs ?? existingGroup.functionArgs;
+              const existingMetadata = allGroupEcSlots[existingGroupIndices[0]!] as ExternalCallAbi | undefined;
+              assertExternalCallRowPayload(nested.callsiteId, 0, {
+                args: existingArgs,
+                ...(targetHex !== undefined && {
+                  targetLockingBytecode: existingGroup.externalContract.inner.lockingBytecode,
+                }),
+                sourceEffectOrdinal: existingMetadata?.sourceEffectOrdinal,
+              }, {
+                args: reached.args,
+                ...(targetHex !== undefined && { targetLockingBytecode: targetHex }),
+                sourceEffectOrdinal: nested.sourceEffectOrdinal,
+              });
+              continue;
+            }
+            if (reachedRows.length > 1) {
               throw new Error(
-                `Could not resolve runtime predicate for transitive external call `
-                + `${nested.interfaceName}.${nested.functionName} at callsite ${nested.callsiteId ?? 'unknown'}.`,
+                `Transitive loop callsite ${nested.callsiteId ?? 'unknown'} has ${reachedRows.length} reached `
+                + 'rows without an authenticated prepared graph.',
               );
             }
-            if (!active) continue;
           }
-          const nestedSources = nested.rawArgSources ?? nested.argSources;
-          const addressReturns = await logicalParentContract._resolveExternalExpressionReturns(
-            nested.addressSource ? [nested.addressSource] : [],
-            logicalParentArgs,
-            logicalParentContract,
-            parentState,
-            parentFn.inputs,
-            parentOutgoingSelfAddress,
-            parentFn.externalCalls,
-            false,
-            graphPlanningResults,
-          );
-          const argumentReturns = await logicalParentContract._resolveExternalExpressionReturns(
-            nestedSources,
-            logicalParentArgs,
-            logicalParentContract,
-            parentState,
-            parentFn.inputs,
-            parentOutgoingSelfAddress,
-            parentFn.externalCalls,
-            false,
-            graphPlanningResults,
-            {
-              callsiteId: nested.callsiteId,
-              resultConsumers: parentFn.resultConsumers,
-              lane: 'arguments',
-            },
-          );
-          const expressionReturns = new Map([...addressReturns, ...argumentReturns]);
-          const resolvedAddressTarget = nested.addressSource
-            ? logicalParentContract._resolveExternalArgs(
-              [nested.addressSource], logicalParentArgs, logicalParentArtifact, parentState,
-              parentFn.inputs, expressionReturns, 0, false, parentOutgoingSelfAddress,
-            )?.[0]
-            : nested.addressStateVar
-              ? parentState[nested.addressStateVar] as FunctionArgument | undefined
-              : undefined;
-          if (nested.addressSource && resolvedAddressTarget === undefined) {
+          if (existingReachedRows > reachedRows.length) {
             throw new Error(
-              `Could not resolve target for reached transitive external call `
-              + `${nested.interfaceName}.${nested.functionName} at callsite ${nested.callsiteId ?? 'unknown'}.`,
+              `Transitive graph callsite ${nested.callsiteId ?? 'unknown'} already materialized `
+              + `${existingReachedRows} rows but only ${reachedRows.length} are reachable.`,
             );
           }
+          for (let occurrenceIndex = 0; occurrenceIndex < existingReachedRows; occurrenceIndex += 1) {
+            const groupIndex = existingGroupIndices[occurrenceIndex]!;
+            const atomicNodeIndex = preparedAtomicNodeByExternalGroup.get(groupIndex);
+            const existingNode = atomicNodeIndex === undefined ? undefined : preparedAtomicNodes?.[atomicNodeIndex];
+            const reached = reachedRows[occurrenceIndex];
+            const existingGroup = externalCallUtxoGroups[groupIndex];
+            const expectedPath = parentAtomicNode === undefined ? undefined : preparedChildProducerPath(
+              parentAtomicNode,
+              {
+                sourceCallsiteId: nested.callsiteId,
+                occurrenceIndex,
+                sourceEffectOrdinal: nested.sourceEffectOrdinal,
+              },
+            );
+            const pathKey = (path: ValueChunkProducerPathDisposition | undefined): string | undefined => (
+              path?.status === 'complete'
+                ? canonicalValueChunkProducerPathContext(path.context)
+                : path?.status
+            );
+            const targetLockingBytecode = reached && tryCashAddressToLockScript(reached.target);
+            const targetHex = targetLockingBytecode
+              ? binToHex(targetLockingBytecode)
+              : reached?.target instanceof Uint8Array ? binToHex(reached.target) : undefined;
+            assertPreparedExternalCallRowReconciliation(
+              nested.callsiteId,
+              occurrenceIndex,
+              existingNode && {
+                parent: existingNode.parent,
+                sourceCallsiteId: existingNode.sourceCallsiteId,
+                occurrenceIndex: existingNode.occurrenceIndex,
+                sourceLogicalIndex: existingNode.sourceLogicalIndex,
+                sourceEffectOrdinal: existingNode.sourceEffectOrdinal,
+                producerPathKey: pathKey(existingNode.producerPath),
+                args: existingNode.args,
+                ...(existingNode.targetLockingBytecode !== undefined && {
+                  targetLockingBytecode: existingNode.targetLockingBytecode,
+                }),
+                contract: existingNode.contract,
+              },
+              reached && {
+                args: reached.args,
+                ...(targetHex !== undefined && { targetLockingBytecode: targetHex }),
+                sourceEffectOrdinal: nested.sourceEffectOrdinal,
+              },
+              { parent: parentAtomicNode, producerPathKey: pathKey(expectedPath) },
+              {
+                contract: existingGroup.externalContract,
+                lockingBytecode: existingGroup.externalContract.inner.lockingBytecode,
+                hasMaster: existingGroup.masterUtxo !== undefined,
+              },
+            );
+          }
+          for (let occurrenceIndex = existingReachedRows;
+            occurrenceIndex < reachedRows.length; occurrenceIndex += 1) {
+            if (nested.batchInvocations !== undefined) {
+              throw new Error(
+                `Late transitive callsite ${nested.callsiteId} still contains an unmaterialized compiler batch.`,
+              );
+            }
+            plannedLateRows.push({
+              nested, occurrenceIndex, row: reachedRows[occurrenceIndex]!,
+            });
+          }
+        }
+        for (const { nested, occurrenceIndex, row } of plannedLateRows) {
+          const {
+            sourceIteration, expressionReturns, args: plannedChildArgs, target: resolvedAddressTarget,
+          } = row;
+          const childArgs = [...plannedChildArgs];
+          // `sourceIteration` selects values while evaluating a repeated callsite. It is not a compiler source-row
+          // identity. Only a physical callsite with `batchInvocations` publishes `sourceLogicalIndex`, and that
+          // shape is materialized by `_buildRepeatedExternalBatch` before this late frontier is reached. Treating
+          // iteration zero as logical row zero changes the authenticated producer path even for an ordinary
+          // conditional callsite.
           const resolvedTargetLockingBytecode = tryCashAddressToLockScript(resolvedAddressTarget);
           const registeredByName = logicalParentContract._externalRegistry.get(nested.interfaceName)
             ?? parentContract._externalRegistry.get(nested.interfaceName)
@@ -29087,7 +29267,15 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 ));
               });
           }
-          if (!registered) continue;
+          if (!registered) {
+            if (preparedAtomicNodes !== undefined) {
+              throw new Error(
+                `Reached transitive graph callsite ${nested.callsiteId ?? 'unknown'} occurrence `
+                + `${occurrenceIndex} has no authenticated target deployment.`,
+              );
+            }
+            continue;
+          }
           const registeredCallee = registered as unknown as StatefulContract | {
             proxy: StatefulContract;
             implementation: StatefulContract;
@@ -29095,23 +29283,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           };
           const proxyCallee = 'implementation' in registeredCallee ? registeredCallee : undefined;
           const callee = (proxyCallee?.proxy ?? registeredCallee) as StatefulContract;
-          const childArgs = logicalParentContract._resolveExternalArgs(
-            nestedSources,
-            logicalParentArgs, logicalParentArtifact, parentState,
-            parentFn.inputs, expressionReturns, 0, false, parentOutgoingSelfAddress,
-          );
-          if (childArgs === undefined) {
-            throw new Error(
-              `Could not resolve arguments for reached transitive external call `
-              + `${nested.interfaceName}.${nested.functionName} at callsite ${nested.callsiteId ?? 'unknown'}.`,
-            );
-          }
           const graphChildArgs = graphParentArgs === logicalParentArgs
             ? childArgs
             : logicalParentContract._resolveExternalArgs(
               nested.rawArgSources ?? nested.argSources,
               [...graphParentArgs], logicalParentArtifact, parentState,
-              parentFn.inputs, undefined, 0, false, parentOutgoingSelfAddress,
+              parentFn.inputs, expressionReturns, sourceIteration, false, parentOutgoingSelfAddress,
             ) ?? childArgs;
           const graphChildSources = nested.rawArgSources ?? nested.argSources;
           const resolveGraphChildArgs = preparedAtomicNodes && graphChildSources
@@ -29126,7 +29303,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               if (externalReturns.size === 0) return undefined;
               return logicalParentContract._resolveExternalArgs(
                 graphChildSources, [...graphParentArgs], logicalParentArtifact, parentState,
-                parentFn.inputs, externalReturns, 0, false, parentOutgoingSelfAddress,
+                parentFn.inputs, externalReturns, sourceIteration, false, parentOutgoingSelfAddress,
               );
             }
             : undefined;
@@ -29135,9 +29312,26 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             ? nested.rawFunctionName ?? (selectedContract.inner.artifact.abi as readonly AbiFunction[])
               .find((candidate) => candidate.selector === nested.rawSelector)?.name
             : undefined;
-          const selectedFn = (selectedContract.inner.artifact.abi as readonly AbiFunction[])
-            .find((candidate) => candidate.name === (rawFunctionName ?? nested.functionName));
-          if (!selectedFn) continue;
+          const selectedName = rawFunctionName ?? nested.functionName;
+          const exactProducerEntry = resolvePreparedProducerEntry(
+            proxyCallee
+              ? [selectedContract.inner.artifact, callee.inner.artifact]
+              : [selectedContract.inner.artifact],
+            selectedName,
+            nested.rawSelector,
+          );
+          const selectedFn = preparedAtomicNodes === undefined
+            ? (selectedContract.inner.artifact.abi as readonly AbiFunction[])
+              .find((candidate) => candidate.name === selectedName)
+            : exactProducerEntry;
+          if (!selectedFn) {
+            if (preparedAtomicNodes !== undefined) {
+              throw new Error(
+                `Transitive graph callsite ${nested.callsiteId ?? 'unknown'} has no exact callee selector.`,
+              );
+            }
+            continue;
+          }
           // The static composition graph has no sound finite expansion for a recursive external-call chain.
           // Compare deployed target and selected function, not source names or application-specific shapes.
           assertAcyclicExternalCallPath(
@@ -29147,26 +29341,34 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           // As in direct expansion: the name match above drives layout, while producer identity is taken only
           // from the compiler-published selector for this edge, or from a name that resolves to one selector.
           // A late transitive edge publishes no selector of its own, so an overloaded name fails closed here.
-          const producerSelector = resolvePreparedProducerEntry(
-            proxyCallee
-              ? [selectedContract.inner.artifact, callee.inner.artifact]
-              : [selectedContract.inner.artifact],
-            rawFunctionName ?? nested.functionName,
-            nested.rawSelector,
-          )?.selector;
+          const producerSelector = exactProducerEntry?.selector;
           const childState = await nestedFullState(callee);
-          if (!childState.masterUtxo) continue;
+          if (!childState.masterUtxo) {
+            if (preparedAtomicNodes !== undefined) {
+              throw new Error(
+                `Reached transitive graph callsite ${nested.callsiteId ?? 'unknown'} occurrence `
+                + `${occurrenceIndex} has no master UTXO for its authenticated target.`,
+              );
+            }
+            continue;
+          }
           const requiredDataNftIndices = [...new Set(
             (selectedFn.blockLayout?.slots ?? [])
               .filter((slot) => slot.kind === 'dataNft' && slot.nftIndex !== undefined)
               .map((slot) => slot.nftIndex!),
           )];
-          const dataNftUtxos = requiredDataNftIndices.flatMap((nftIndex) => {
+          const dataNftUtxos = requiredDataNftIndices.map((nftIndex) => {
             const utxo = childState.dataNftUtxos[nftIndex];
-            return utxo ? [{
+            if (!utxo) {
+              throw new Error(
+                `Reached transitive graph callsite ${nested.callsiteId ?? 'unknown'} occurrence `
+                + `${occurrenceIndex} is missing required data NFT ${nftIndex}.`,
+              );
+            }
+            return {
               ...utxo,
               unlocker: createDataNftUnlocker(callee.inner, 0, callee.categoryId),
-            }] : [];
+            };
           });
           const existingPhysicalIndex = externalCallUtxoGroups.findIndex(
             (candidate) => candidate.categoryId === callee.categoryId,
@@ -29186,15 +29388,16 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           // repeated conditional alternatives selecting one handler keep their first carrier, while a distinct
           // writer replaces an ordinary (non-routed) carrier. A compiler route already owns all selectors it
           // advertises and must not be dismantled here.
-          const preserveConditionalOwner = nested.occurrence === 'conditional'
-            && selectedFn.writesState === true
-            && physicalOwnerFn?.selector === selectedFn.selector
-            && physicalOwnerFn?.writesState === true;
+          const preserveRepeatedOwner = selectedFn.writesState === true
+            && physicalOwnerFn?.writesState === true
+            && (preparedAtomicNodes !== undefined
+              || ((nested.occurrence === 'conditional' || nested.occurrence === 'loop')
+                && physicalOwnerFn.selector === selectedFn.selector));
           const retargetPhysicalOwner = physicalOwner !== undefined
             && selectedFn.writesState === true
             && physicalOwner.compilerRoute === undefined
             && !physicalRouteCoversCall
-            && !preserveConditionalOwner;
+            && !preserveRepeatedOwner;
           const lateInternalArgs: Record<string, FunctionArgument> = {};
           const lateRelativeOutputInternalArgs = new Set<string>();
           const latePlannedEntryInserts: Array<{
@@ -29599,7 +29802,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 graphPlanningResults,
                 nested.callsiteId,
                 childArgs,
-                undefined,
+                resolvedAddressTarget,
                 false,
                 evaluateReturn,
               );
@@ -29690,11 +29893,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 }),
                 ...(nested.callsiteId !== undefined && {
                   sourceCallsiteId: nested.callsiteId,
-                  ...((nested.occurrence ?? 'once') !== 'loop' && { occurrenceIndex: 0 }),
+                  occurrenceIndex,
                 }),
                 producerPath: preparedChildProducerPath(parentAtomicNode, {
                   sourceCallsiteId: nested.callsiteId,
-                  ...((nested.occurrence ?? 'once') !== 'loop' && { occurrenceIndex: 0 }),
+                  occurrenceIndex,
                   sourceEffectOrdinal: nested.sourceEffectOrdinal,
                 }),
                 ...(resolveGraphChildArgs && { resolveArgsFromResults: resolveGraphChildArgs }),
@@ -37058,6 +37261,167 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     return scriptToAddress(covenantScript, this.inner.provider.network, this.inner.addressType, true);
   }
 
+  /** Resolve one compiler callsite into compact reached occurrences without conflating source and graph indices. */
+  private async _planExternalCallOccurrences(
+    call: ExternalCallAbi,
+    frame: {
+      functionArgs: FunctionArgument[];
+      artifact: Artifact;
+      registryOwner: StatefulContract;
+      state: Record<string, unknown>;
+      callerInputs: readonly { name?: string; type: string }[];
+      executionSelfAddress: FunctionArgument;
+      producerCalls: readonly ExternalCallAbi[];
+      resultConsumers?: readonly ExternalResultConsumerAbi[];
+      planningContext: GraphPlanningProducerResultContext;
+      /** Only argument recipes may be provisional; reachability and target identity are always exact. */
+      allowProvisionalArguments?: boolean;
+    },
+  ): Promise<readonly PlannedExternalCallOccurrence[]> {
+    const sources = call.rawArgSources ?? call.argSources;
+    const candidates = externalCallCandidateIterationIndices({
+      ...call,
+      ...(sources && { argSources: sources, rawArgSources: undefined }),
+    }, frame.functionArgs);
+    if (candidates === undefined) {
+      throw new Error(
+        'Could not derive the candidate iteration domain for external graph call '
+        + `${call.interfaceName}.${call.functionName} at callsite ${call.callsiteId ?? 'unknown'}.`,
+      );
+    }
+    const reached: PlannedExternalCallOccurrence[] = [];
+    for (const sourceIteration of candidates) {
+      const conditionReturns = call.condition
+        ? await frame.registryOwner._resolveExternalExpressionReturns(
+          [{ kind: 'expression', expression: call.condition }],
+          frame.functionArgs,
+          frame.registryOwner,
+          frame.state,
+          frame.callerInputs,
+          frame.executionSelfAddress,
+          frame.producerCalls,
+          false,
+          frame.planningContext,
+          {
+            callsiteId: call.callsiteId,
+            resultConsumers: frame.resultConsumers,
+            lane: 'condition',
+          },
+          sourceIteration,
+        ) : new Map<string, FunctionArgument>();
+      if (call.condition) {
+        const active = frame.registryOwner._evaluateExternalExpression(
+          call.condition,
+          frame.functionArgs,
+          frame.artifact,
+          frame.state,
+          frame.callerInputs,
+          conditionReturns,
+          sourceIteration,
+          false,
+          frame.executionSelfAddress,
+        );
+        if (typeof active !== 'boolean') {
+          throw new Error(
+            'Could not resolve runtime predicate for external graph call '
+            + `${call.interfaceName}.${call.functionName} at callsite `
+            + `${call.callsiteId ?? 'unknown'} source iteration ${sourceIteration}.`,
+          );
+        }
+        if (!active) continue;
+      }
+      const addressReturns = await frame.registryOwner._resolveExternalExpressionReturns(
+        call.addressSource ? [call.addressSource] : [],
+        frame.functionArgs,
+        frame.registryOwner,
+        frame.state,
+        frame.callerInputs,
+        frame.executionSelfAddress,
+        frame.producerCalls,
+        false,
+        frame.planningContext,
+        undefined,
+        sourceIteration,
+      );
+      const argumentReturns = await frame.registryOwner._resolveExternalExpressionReturns(
+        sources,
+        frame.functionArgs,
+        frame.registryOwner,
+        frame.state,
+        frame.callerInputs,
+        frame.executionSelfAddress,
+        frame.producerCalls,
+        frame.allowProvisionalArguments === true,
+        frame.planningContext,
+        {
+          callsiteId: call.callsiteId,
+          resultConsumers: frame.resultConsumers,
+          lane: 'arguments',
+        },
+        sourceIteration,
+      );
+      const expressionReturns = new Map([...conditionReturns, ...addressReturns, ...argumentReturns]);
+      const args = frame.registryOwner._resolveExternalArgs(
+        sources,
+        frame.functionArgs,
+        frame.artifact,
+        frame.state,
+        frame.callerInputs,
+        expressionReturns,
+        sourceIteration,
+        false,
+        frame.executionSelfAddress,
+      );
+      if (args === undefined) {
+        throw new Error(
+          `Reached external graph callsite ${call.callsiteId ?? 'unknown'} source iteration `
+          + `${sourceIteration} has arguments that cannot be resolved by the SDK.`,
+        );
+      }
+      const target = call.addressSource
+        ? frame.registryOwner._resolveExternalArgs(
+          [call.addressSource],
+          frame.functionArgs,
+          frame.artifact,
+          frame.state,
+          frame.callerInputs,
+          expressionReturns,
+          sourceIteration,
+          false,
+          frame.executionSelfAddress,
+        )?.[0]
+        : call.addressStateVar !== undefined
+          ? frame.state[call.addressStateVar] as FunctionArgument | undefined
+          : call.addressLiteral ?? (() => {
+            const parameterIndex = call.addressParam === undefined ? -1
+              : frame.callerInputs.findIndex((input) => input.name === call.addressParam);
+            return parameterIndex < 0 ? undefined : frame.functionArgs[parameterIndex];
+          })();
+      if (call.addressSource && target === undefined) {
+        throw new Error(
+          `Reached external graph callsite ${call.callsiteId ?? 'unknown'} source iteration `
+          + `${sourceIteration} has an unresolved target.`,
+        );
+      }
+      reached.push(Object.freeze({
+        sourceIteration,
+        occurrenceIndex: reached.length,
+        expressionReturns,
+        args: Object.freeze([...args]),
+        ...(target !== undefined && { target }),
+      }));
+    }
+    const violation = occurrenceCountViolation(call, reached.length);
+    if (violation) throw new Error(`External graph occurrence mismatch: ${violation}`);
+    if (call.hasReturnValues && reached.length > 1) {
+      throw new Error(
+        `Returning repeated callsite ${call.callsiteId ?? 'unknown'} has ${reached.length} reached occurrences; `
+        + 'producer-result metadata has no per-occurrence identity.',
+      );
+    }
+    return Object.freeze(reached);
+  }
+
   /** Resolve returning calls nested inside another external-call argument expression. */
   private async _resolveExternalExpressionReturns(
     argSources: readonly ArgSource[] | undefined,
@@ -37074,6 +37438,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       resultConsumers?: readonly ExternalResultConsumerAbi[];
       lane: 'condition' | 'arguments';
     },
+    occurrenceIndex = 0,
   ): Promise<Map<string, FunctionArgument>> {
     const resolved = new Map<string, FunctionArgument>();
     const producerByCallsite = new Map<number, ExternalCallAbi>();
@@ -37298,6 +37663,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       }
       resolvingProducers.add(callsiteId);
       try {
+        // A once/conditional producer has one canonical result identity. The enclosing consumer's source loop
+        // iteration selects the consumer row, not the producer invocation; reusing it here silently clones a
+        // producer result under different arguments.
+        const producerOccurrenceIndex = producerResultOccurrenceIndex(producer);
         const sources = producer.rawArgSources ?? producer.argSources ?? [];
         for (const source of sources) {
           if (source.kind === 'expression') await visit(source.expression, undefined, false);
@@ -37307,13 +37676,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         }
         const values = this._resolveExternalArgs(
           sources, functionArgs, registryOwner.inner.artifact, state, callerInputs, resolved,
-          0, false, executionSelfAddress,
+          producerOccurrenceIndex, false, executionSelfAddress,
         );
         if (!values) return undefined;
         const target = producer.addressSource
           ? this._resolveExternalArgs(
             [producer.addressSource], functionArgs, registryOwner.inner.artifact, state, callerInputs, resolved,
-            0, false, executionSelfAddress,
+            producerOccurrenceIndex, false, executionSelfAddress,
           )?.[0]
           : producer.addressStateVar !== undefined
             ? state?.[producer.addressStateVar] as FunctionArgument | undefined
@@ -37419,12 +37788,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       const functionName = expression.name.slice(separator + 1);
       const values = (expression.args ?? []).map((argument) => this._evaluateExternalExpression(
         argument, functionArgs, registryOwner.inner.artifact, state, callerInputs, resolved,
-        0, false, executionSelfAddress,
+        occurrenceIndex, false, executionSelfAddress,
       ));
       if (values.some((value) => value === undefined)) return;
       const target = expression.target && this._evaluateExternalExpression(
         expression.target, functionArgs, registryOwner.inner.artifact, state, callerInputs, resolved,
-        0, false, executionSelfAddress,
+        occurrenceIndex, false, executionSelfAddress,
       );
       const value = await derive(
         interfaceName, functionName, values as FunctionArgument[], target,

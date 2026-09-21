@@ -7,7 +7,11 @@ import {
   resolveKernelDelegatePromotion,
 } from '../../src/stateful/KernelDelegateForwarding.js';
 import {
-  externalCallReachedOccurrenceIndices, resolvePreparedKernelDelegateExecution,
+  assertExternalCallRowPayload, assertPreparedExternalCallRowReconciliation,
+  externalCallCandidateIterationIndices, externalCallMetadataIdentityMatches,
+  externalCallReachedOccurrenceIndices,
+  producerResultOccurrenceIndex,
+  resolvePreparedKernelDelegateExecution,
   resolvePreparedKernelDelegateOwnerFrame,
   resolvePublishedEntryBlockOffset, selectKernelDelegateForwardingGroupIndex,
 } from '../../src/stateful/StatefulContract.js';
@@ -113,6 +117,96 @@ describe('kernel delegate entry coordinates', () => {
     expect(externalCallReachedOccurrenceIndices({
       occurrence: 'loop', maximumOccurrences: 1, argSources: [source],
     }, [[1n, 2n]])).toBeUndefined();
+  });
+
+  it('enumerates a literal loop candidate domain before sparse conditions compact reached rows', () => {
+    const call = {
+      occurrence: 'loop' as const,
+      occurrenceBoundSource: 'literal' as const,
+      maximumOccurrences: 5,
+      rawArgSources: [{ kind: 'expression', expression: { kind: 'source', source: { kind: 'loopIndex' } } }],
+    };
+
+    expect(externalCallReachedOccurrenceIndices(call, [])).toBeUndefined();
+    expect(externalCallCandidateIterationIndices(call, [])).toEqual([0, 1, 2, 3, 4]);
+    expect(externalCallCandidateIterationIndices({ ...call, maximumOccurrences: 0 }, [])).toEqual([]);
+    expect(externalCallCandidateIterationIndices({ ...call, maximumOccurrences: 1 }, [])).toEqual([0]);
+    expect(externalCallCandidateIterationIndices({ ...call, maximumOccurrences: 10_001 }, []))
+      .toBeUndefined();
+  });
+
+  it('does not clone one producer result across consumer loop iterations', () => {
+    expect(producerResultOccurrenceIndex({ callsiteId: 4, occurrence: 'once' })).toBe(0);
+    expect(producerResultOccurrenceIndex({ callsiteId: 5, occurrence: 'conditional' })).toBe(0);
+    expect(() => producerResultOccurrenceIndex({ callsiteId: 6, occurrence: 'loop' }))
+      .toThrow(/no per-occurrence identity/);
+  });
+
+  it('does not alias sibling legacy callsites whose stable IDs are both absent', () => {
+    const legacy = {};
+    expect(externalCallMetadataIdentityMatches(legacy, legacy)).toBe(true);
+    expect(externalCallMetadataIdentityMatches({}, {})).toBe(false);
+    expect(externalCallMetadataIdentityMatches({ callsiteId: 3 }, { callsiteId: 3 })).toBe(true);
+    expect(externalCallMetadataIdentityMatches({ callsiteId: 3 }, { callsiteId: 4 })).toBe(false);
+    expect(externalCallMetadataIdentityMatches({ callsiteId: 3 }, {})).toBe(false);
+  });
+
+  it('reuses a materialized row only for the same arguments, target, and effect', () => {
+    const existing = {
+      args: [1n, bytes('aabb')],
+      targetLockingBytecode: 'AABBCC',
+      sourceEffectOrdinal: 7,
+    };
+
+    expect(() => assertExternalCallRowPayload(12, 3, existing, {
+      args: [1n, bytes('aabb')],
+      targetLockingBytecode: 'aabbcc',
+      sourceEffectOrdinal: 7,
+    })).not.toThrow();
+    expect(() => assertExternalCallRowPayload(12, 3, existing, {
+      ...existing, args: [2n, bytes('aabb')],
+    })).toThrow(/callsite 12 occurrence 3.*arguments, or effect identity/);
+    expect(() => assertExternalCallRowPayload(12, 3, existing, {
+      ...existing, targetLockingBytecode: 'ddeeff',
+    })).toThrow(/callsite 12 occurrence 3.*arguments, or effect identity/);
+    expect(() => assertExternalCallRowPayload(12, 3, existing, {
+      ...existing, sourceEffectOrdinal: 8,
+    })).toThrow(/callsite 12 occurrence 3.*arguments, or effect identity/);
+  });
+
+  it('reconciles a prepared row only with the same producer path and physical owner', () => {
+    const contract = {};
+    const existing = {
+      parent: 2,
+      sourceCallsiteId: 12,
+      occurrenceIndex: 3,
+      sourceEffectOrdinal: 7,
+      producerPathKey: 'root/12:3',
+      args: [1n],
+      targetLockingBytecode: 'aabbcc',
+      contract,
+    };
+    const reached = {
+      args: [1n], targetLockingBytecode: 'AABBCC', sourceEffectOrdinal: 7,
+    };
+    const expected = { parent: 2, producerPathKey: 'root/12:3' };
+    const physical = { contract, lockingBytecode: 'aabbcc', hasMaster: true };
+
+    expect(() => assertPreparedExternalCallRowReconciliation(
+      12, 3, existing, reached, expected, physical,
+    )).not.toThrow();
+    for (const hostile of [
+      { existing: { ...existing, parent: 4 }, physical },
+      { existing: { ...existing, producerPathKey: 'root/12:2' }, physical },
+      { existing: { ...existing, sourceLogicalIndex: 0 }, physical },
+      { existing, physical: { ...physical, contract: {} } },
+      { existing, physical: { ...physical, lockingBytecode: 'ddeeff' } },
+      { existing, physical: { ...physical, hasMaster: false } },
+    ]) {
+      expect(() => assertPreparedExternalCallRowReconciliation(
+        12, 3, hostile.existing, reached, expected, hostile.physical,
+      )).toThrow(/different stable identity or physical owner/);
+    }
   });
 });
 
